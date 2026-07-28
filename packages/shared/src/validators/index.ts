@@ -25,6 +25,7 @@ export * from './quotes';
 export * from './contractTemplates';
 export * from './maintenanceWindow';
 export * from './agentVersionPins';
+export * from './enrollmentDefaults';
 export * from './softwareDetection';
 
 // ============================================

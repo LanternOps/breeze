@@ -1,6 +1,7 @@
 package watchdog
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -278,5 +279,63 @@ func TestHistoryMissingFileStartsEmpty(t *testing.T) {
 	r.SetHistoryPath(path)
 	if got := r.Count24h(); got != 0 {
 		t.Fatalf("missing-file Count24h: want 0, got %d", got)
+	}
+}
+
+// BestEffortEnsureStart runs at recovery exhaustion, right before FAILOVER:
+// it must dispatch an ensure-start WITHOUT consuming budget, history, or
+// being blocked by the exhausted/terminal state — entering FAILOVER with the
+// agent service stopped is permanent (#2763).
+func TestBestEffortEnsureStartConsumesNoBudget(t *testing.T) {
+	clk := &fakeClock{now: time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)}
+	svc := &noopServiceController{}
+	r := newTestRecovery(t, clk, svc)
+
+	// Exhaust the budget with real attempts.
+	for i := 0; i < 3; i++ {
+		if _, err := r.Attempt(RecoveryRequest{}); err != nil {
+			t.Fatalf("attempt %d: %v", i, err)
+		}
+	}
+	if r.CanAttempt() {
+		t.Fatal("precondition: budget should be exhausted")
+	}
+	attemptsBefore, count24hBefore := r.Attempts(), r.Count24h()
+
+	result, err := r.BestEffortEnsureStart(context.Background())
+	if err != nil {
+		t.Fatalf("BestEffortEnsureStart: %v", err)
+	}
+	if result.Intent != RecoveryIntentEnsureStart {
+		t.Fatalf("intent = %q, want %q", result.Intent, RecoveryIntentEnsureStart)
+	}
+	if svc.starts == 0 {
+		t.Fatal("expected an ensure-start dispatch to the controller")
+	}
+	if r.Attempts() != attemptsBefore || r.Count24h() != count24hBefore {
+		t.Fatalf("budget consumed: attempts %d->%d count24h %d->%d",
+			attemptsBefore, r.Attempts(), count24hBefore, r.Count24h())
+	}
+}
+
+// Even a terminal-exhausted manager (identity uncertainty latch) must still
+// dispatch the best-effort start — the latch protects against forced kills of
+// unidentified processes, and ensure-start kills nothing.
+func TestBestEffortEnsureStartWorksWhenTerminalExhausted(t *testing.T) {
+	clk := &fakeClock{now: time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)}
+	svc := &fakeStructuredController{result: RecoveryResult{Action: RecoveryActionStart, ActionTaken: true, Disposition: RecoveryDispositionFailover}}
+	r := newTestRecovery(t, clk, svc)
+	if _, err := r.Attempt(RecoveryRequest{}); err != nil {
+		t.Fatalf("attempt: %v", err)
+	}
+	if r.CanAttempt() {
+		t.Fatal("precondition: terminal exhaustion expected")
+	}
+	callsBefore := len(svc.calls)
+	if _, err := r.BestEffortEnsureStart(context.Background()); err != nil {
+		t.Fatalf("BestEffortEnsureStart: %v", err)
+	}
+	if len(svc.calls) != callsBefore+1 {
+		t.Fatal("ensure-start was not dispatched")
 	}
 }

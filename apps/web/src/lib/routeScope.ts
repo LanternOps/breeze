@@ -146,6 +146,18 @@ export function getRouteScope(pathname: string): RouteScopeKind | null {
 }
 
 /**
+ * Single-DOCUMENT workspace pages (quote/invoice detail). They keep their
+ * org-or-all classification (orgId injection etc.), but ContextScopeLine skips
+ * the fleet line here: the page's subject is one document whose customer is
+ * named right in its header, so "Showing all organizations" adds nothing — and
+ * as the only scroll-away content above the workspace's pinned header chrome,
+ * it was what made that header travel before locking.
+ */
+export function isSingleDocumentRoute(pathname: string): boolean {
+  return /^\/billing\/(quotes|invoices)\/[^/]+$/.test(normalize(pathname));
+}
+
+/**
  * Back-compat predicate used by the org-id injection chokepoint
  * (stores/orgStore.ts registerOrgIdProvider): catalog routes ignore the org
  * selector entirely, so no orgId is injected. Injection semantics are

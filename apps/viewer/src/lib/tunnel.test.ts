@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createVncTunnel, closeTunnel } from './tunnel';
+import { createVncTunnel, closeTunnel, retryVncTunnel } from './tunnel';
 
 type FetchResponse = { status: number; body: unknown };
 
@@ -80,6 +80,86 @@ describe('createVncTunnel', () => {
     const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
     expect(calls[2][0]).toBe('https://api.example.com/api/v1/tunnels/tun-zz');
     expect(calls[2][1].method).toBe('DELETE');
+  });
+});
+
+describe('retryVncTunnel', () => {
+  beforeEach(() => { vi.restoreAllMocks(); });
+
+  // A tunnel ws-ticket is single use. Once a handshake has consumed it — even
+  // one the server rejected before the HTTP 101 upgrade — the URL is dead and
+  // must never be replayed. Retrying therefore has to discard the old tunnel
+  // and mint a brand new ticket before any new WebSocket can be opened.
+  it('closes the burnt tunnel, then mints a fresh tunnel + ticket', async () => {
+    const fetchMock = makeFetch([
+      { status: 204, body: null },              // DELETE old tunnel
+      { status: 201, body: { id: 'tun-new' } }, // POST /tunnels
+      { status: 200, body: { ticket: 'tkt-new' } },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await retryVncTunnel('tun-old', 'dev-1', {
+      apiUrl: 'https://api.example.com',
+      accessToken: 'tok',
+    });
+
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls[0][0]).toBe('https://api.example.com/api/v1/tunnels/tun-old');
+    expect(calls[0][1].method).toBe('DELETE');
+    expect(calls[1][0]).toBe('https://api.example.com/api/v1/tunnels');
+    expect(calls[1][1].method).toBe('POST');
+    expect(calls[2][0]).toBe('https://api.example.com/api/v1/tunnels/tun-new/ws-ticket');
+    expect(calls[2][1].method).toBe('POST');
+
+    expect(res.tunnelId).toBe('tun-new');
+    expect(res.wsUrl).toBe('wss://api.example.com/api/v1/tunnel-ws/tun-new/ws?ticket=tkt-new');
+  });
+
+  it('never hands back the previous (burnt) ws url', async () => {
+    vi.stubGlobal('fetch', makeFetch([
+      { status: 201, body: { id: 'tun-1' } },
+      { status: 200, body: { ticket: 'tkt-1' } },
+      { status: 204, body: null },
+      { status: 201, body: { id: 'tun-2' } },
+      { status: 200, body: { ticket: 'tkt-2' } },
+    ]));
+    const auth = { apiUrl: 'https://api.example.com', accessToken: 'tok' };
+
+    const first = await createVncTunnel('dev-1', auth);
+    const second = await retryVncTunnel(first.tunnelId, 'dev-1', auth);
+
+    expect(second.wsUrl).not.toBe(first.wsUrl);
+    expect(second.tunnelId).not.toBe(first.tunnelId);
+  });
+
+  it('skips the DELETE when there is no previous tunnel to discard', async () => {
+    const fetchMock = makeFetch([
+      { status: 201, body: { id: 'tun-a' } },
+      { status: 200, body: { ticket: 'tkt-a' } },
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    await retryVncTunnel(null, 'dev-1', { apiUrl: 'https://api.example.com', accessToken: 'tok' });
+
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls).toHaveLength(2);
+    expect(calls[0][1].method).toBe('POST');
+  });
+
+  it('still mints a fresh tunnel when discarding the burnt one fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      if (init.method === 'DELETE') throw new Error('network gone');
+      if (url.endsWith('/ws-ticket')) {
+        return new Response(JSON.stringify({ ticket: 'tkt-z' }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ id: 'tun-z' }), { status: 201 });
+    }));
+
+    const res = await retryVncTunnel('tun-dead', 'dev-1', {
+      apiUrl: 'https://api.example.com',
+      accessToken: 'tok',
+    });
+    expect(res.tunnelId).toBe('tun-z');
   });
 });
 

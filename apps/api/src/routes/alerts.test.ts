@@ -94,7 +94,8 @@ vi.mock('../db', () => ({
     }))
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
+  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => any) => fn())
 }));
 
 vi.mock('../db/schema', () => ({
@@ -129,6 +130,11 @@ vi.mock('../middleware/auth', async () => ({
   // Real implementation (single source of truth for site-allowlist semantics) —
   // the create-ticket site gate resolves through it via tickets/siteScope.ts.
   siteAccessCheck: (await vi.importActual<typeof import('../middleware/auth')>('../middleware/auth')).siteAccessCheck,
+  // The channel-test route wraps its writes in withChannelsDbContext, which
+  // derives the DB access context from auth via dbAccessContextFromAuth. The
+  // db mock's withDbAccessContext ignores the context, so a passthrough stub
+  // is enough to keep the import from failing.
+  dbAccessContextFromAuth: (auth: any) => auth,
   authMiddleware: vi.fn((c: any, next: any) => {
     // Opt-in site restriction on the AUTH context (deviceInSiteScope reads
     // auth.allowedSiteIds, unlike the list narrowing which reads permissions).
@@ -181,6 +187,24 @@ describe('alert routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks resets call history but NOT queued mockReturnValueOnce
+    // values. Tests set precise per-call db.select/insert/update/delete queues;
+    // if a prior test queues a different number of calls than its code consumes
+    // (e.g. after a dispatcher refactor changes the call count), the leftover
+    // queue leaks into the next test. mockReset() flushes the once-queue, then
+    // we re-install the chainable defaults from the vi.mock factory.
+    vi.mocked(db.select).mockReset().mockImplementation((() => ({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) })
+    })) as any);
+    vi.mocked(db.insert).mockReset().mockImplementation((() => ({
+      values: () => ({ returning: () => Promise.resolve([]) })
+    })) as any);
+    vi.mocked(db.update).mockReset().mockImplementation((() => ({
+      set: () => ({ where: () => ({ returning: () => Promise.resolve([]) }) })
+    })) as any);
+    vi.mocked(db.delete).mockReset().mockImplementation((() => ({
+      where: () => Promise.resolve()
+    })) as any);
     permissionGate.deny = false;
     mfaGate.deny = false;
     sendSmsNotificationMock.mockResolvedValue({

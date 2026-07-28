@@ -1,0 +1,463 @@
+{
+  "patchApprovalModal": {
+    "title": "Examiner le correctif",
+    "close": "Fermer",
+    "cancel": "Annuler",
+    "deferUntil": "Reporter jusqu’au",
+    "actions": {
+      "approve": {
+        "label": "Approuver",
+        "description": "Autorisez ce patch à être déployé automatiquement ou lors de la prochaine fenêtre de maintenance."
+      },
+      "decline": {
+        "label": "Refuser",
+        "description": "Bloquez ce correctif jusqu’à sa prochaine révision."
+      },
+      "defer": {
+        "label": "Reporter",
+        "description": "Reporter la décision pour la réexaminer ultérieurement."
+      }
+    },
+    "notes": {
+      "label": "Notes",
+      "placeholder": "Ajouter du contexte ou une raison à la décision..."
+    },
+    "errors": {
+      "partnerLevel": "Les approbations des correctifs sont gérées au niveau du partenaire",
+      "chooseDeferUntil": "Choisissez la date jusqu’à laquelle reporter le correctif",
+      "updateFailed": "Impossible de mettre à jour l’approbation des correctifs"
+    },
+    "toast": {
+      "approved": "Correctif approuvé",
+      "declined": "Correctif refusé",
+      "deferred": "Correctif reporté"
+    },
+    "confirm": {
+      "title": "Confirmer l’approbation du correctif",
+      "selectedOrganization": "l’organisation sélectionnée",
+      "messageOne": "Approuver le correctif sur {{count}} appareil dans {{org}} ?",
+      "messageMany": "Approuver le correctif sur {{count}} appareils dans {{org}} ?"
+    }
+  },
+  "patchComplianceView": {
+    "unknownDevice": "Inconnu",
+    "emptyValue": "—",
+    "searchPlaceholder": "Rechercher des appareils...",
+    "showing": "Affichage de {{shown}} sur {{total}}",
+    "empty": "Aucun appareil trouvé.",
+    "emptyFiltered": "Aucun appareil ne correspond à vos filtres.",
+    "errors": {
+      "fetchData": "Impossible de récupérer les données de correctifs",
+      "loadPendingPatches": "Impossible de charger les correctifs en attente pour les {{deviceId}}"
+    },
+    "actions": {
+      "tryAgain": "Réessayer",
+      "export": "Exporter",
+      "refreshCompliance": "Actualiser les données de conformité",
+      "clear": "Effacer",
+      "scan": "Analyser",
+      "install": "Installer",
+      "installCount": "Installer ({{count}})",
+      "view": "Afficher"
+    },
+    "export": {
+      "selectOrganization": "Sélectionnez une organisation pour exporter un rapport de conformité",
+      "generateFailed": "Impossible de générer un rapport",
+      "queued": "Rapport de conformité {{reportId}} en file d’attente. Préparation du téléchargement...",
+      "ready": "Le rapport de conformité {{reportId}} est prêt. Téléchargement en cours...",
+      "failed": "Rapport de conformité {{reportId}} échoué",
+      "checkFailed": "Impossible de vérifier le statut du rapport",
+      "noReportId": "Le rapport était mis en file d’attente mais aucun rapport ID n’a été retourné"
+    },
+    "summary": {
+      "compliantPercent": "{{percent}} % conforme",
+      "devices": "{{compliant}} de {{total}} dispositifs",
+      "pendingDevices": "{{count}} ont des correctifs en attente",
+      "approved": "{{count}} approuvé",
+      "pendingApproval": "{{count}} en attente d’approbation",
+      "critical": "{{count}} critique",
+      "reboot": "{{count}} redémarrage"
+    },
+    "filters": {
+      "allDevices": "Tous les appareils ({{count}})",
+      "pendingPatches": "Correctifs en attente ({{count}})",
+      "critical": "Critique ({{count}})",
+      "pendingReboot": "Redémarrage en attente ({{count}})",
+      "thirdPartyPending": "En attente de tiers ({{count}})",
+      "compliant": "Docile ({{count}})"
+    },
+    "selection": {
+      "selected": "{{count}} sélectionné",
+      "selectAll": "Sélectionner tout",
+      "deselectAll": "Désélectionner tout",
+      "selectDevice": "Sélectionner {{name}}",
+      "deselectDevice": "Désélectionner {{name}}"
+    },
+    "table": {
+      "device": "Dispositif",
+      "status": "Statut",
+      "approved": "Approuvé",
+      "approvedTitle": "Correctifs en cours approuvés pour l’installation",
+      "pendingApproval": "En attente d’approbation",
+      "pendingApprovalTitle": "Les correctifs en attente sont encore en attente d’approbation",
+      "osPatches": "Correctifs OS",
+      "osPatchesTitle": "Mises à jour en attente de Windows Update, Apple, ou Linux gestionnaires de paquets",
+      "thirdParty": "Troisième Parti",
+      "thirdPartyTitle": "Mises à jour en attente provenant de sources tierces ou personnalisées",
+      "critical": "Critique",
+      "criticalTitle": "Les correctifs exceptionnels évalués comme étant de gravité critique",
+      "lastActivity": "Dernière activité",
+      "lastActivityTitle": "Dernière installation de patch ou activité de scan",
+      "reboot": "Redémarrage",
+      "rebootTitle": "OS signale un redémarrage imminent — toute cause (Windows mises à jour, CBS, renommages de fichiers en attente) ; signalé par l’agent. Pour les appareils hors ligne, cela reflète l’état lors de leur dernier check-in.",
+      "actions": "Actions"
+    },
+    "status": {
+      "ok": "OK",
+      "outstanding": "{{count}} exceptionnel"
+    },
+    "reboot": {
+      "offlineTitle": "L’appareil est hors ligne — cela reflète l’état du système d’exploitation lors de son dernier check-in et peut être obsolète.",
+      "yes": "Oui",
+      "yesAsOf": "Oui · à {{time}}"
+    },
+    "relative": {
+      "justNow": "À l’instant",
+      "minutesAgo": "{{count}}m",
+      "hoursAgo": "{{count}}h",
+      "daysAgo": "{{count}}d"
+    },
+    "activity": {
+      "noActivity": "Aucune activité enregistrée",
+      "installed": "Installé {{time}}",
+      "scanned": "Numérisé {{time}}",
+      "lastScanned": "Dernier scin {{time}}",
+      "lastInstalled": "Dernière installation {{time}}",
+      "noScan": "Aucun scan enregistré",
+      "noInstall": "Aucune installation enregistrée"
+    },
+    "confirm": {
+      "title": "Confirmez l’action de la flotte",
+      "selectedOrganization": "L’organisation sélectionnée",
+      "scanAction": "Scanner pour des patchs",
+      "installAction": "Installer les correctifs",
+      "messageOne": "{{action}} sur {{count}} appareil dans {{org}} ?",
+      "messageMany": "{{action}} sur {{count}} appareils dans {{org}} ?",
+      "messageMultiOrg": "{{action}} sur {{count}} appareils à travers {{orgCount}} organisations ({{orgNames}}) ?"
+    }
+  },
+  "patchInstallHistory": {
+    "title": "Historique des opérations Patch",
+    "loading": "Chargement de l’historique des patchs...",
+    "empty": "Aucune opération de patch trouvée.",
+    "emptyValue": "--",
+    "unknownPatch": "Correctif inconnu",
+    "operationCountOne": "{{count}} opération",
+    "operationCountMany": "{{count}} opérations",
+    "errors": {
+      "fetchHistory": "Impossible de récupérer l’historique des correctifs"
+    },
+    "actions": {
+      "retry": "Réessayer",
+      "refresh": "Actualiser",
+      "refreshing": "Actualisation...",
+      "clearFilters": "Effacer les filtres"
+    },
+    "filters": {
+      "allTypes": "Tous types",
+      "allStatus": "Tous les statuts"
+    },
+    "operationTypes": {
+      "install": "Installation",
+      "scan": "Analyse",
+      "rollback": "Retour en arrière",
+      "download": "Télécharger"
+    },
+    "status": {
+      "completed": "Terminée",
+      "failed": "Échec",
+      "pending": "En attente",
+      "running": "En cours",
+      "timeout": "Temps mort",
+      "unknown": "Inconnu"
+    },
+    "table": {
+      "operation": "Fonctionnement",
+      "status": "Statut",
+      "patches": "Correctifs",
+      "duration": "Durée",
+      "date": "Date"
+    },
+    "pagination": {
+      "showing": "Affichage de {{start}} à {{end}} sur {{total}}",
+      "pageStatus": "Page {{current}} de {{total}}"
+    },
+    "duration": {
+      "lessThanSecond": "<1",
+      "seconds": "{{count}}s",
+      "minutesSeconds": "{{minutes}}m {{seconds}}s"
+    },
+    "relative": {
+      "justNow": "À l’instant",
+      "minutesAgo": "{{count}}m il y a",
+      "hoursAgo": "{{count}}h",
+      "daysAgo": "{{count}}d"
+    },
+    "detail": {
+      "installed": "Installé",
+      "failed": "Échec",
+      "pending": "En attente",
+      "scanned": "Numérisé",
+      "rebootRequired": "Redémarrage requis",
+      "yes": "Oui",
+      "started": "Démarré",
+      "completed": "Terminée le",
+      "error": "Erreur",
+      "patchResults": "Résultats des patchs",
+      "reboot": "Redémarrage",
+      "empty": "Aucun résultat détaillé des patchs n’est disponible.",
+      "table": {
+        "patch": "Correctif",
+        "kb": "KB",
+        "status": "Statut",
+        "error": "Erreur"
+      }
+    }
+  },
+  "patchList": {
+    "title": "Correctifs",
+    "summary": "{{shown}} de {{total}} patchs",
+    "searchPlaceholder": "Rechercher des correctifs...",
+    "loading": "Chargement des correctifs...",
+    "empty": "Aucun patch trouvé. Essayez d’ajuster votre recherche ou vos filtres.",
+    "vendorBy": "par {{vendor}}",
+    "moreCves": "+{{count}} autres",
+    "sortBy": "Trier par {{label}}",
+    "errors": {
+      "approvePatches": "Impossible d’approuver les correctifs",
+      "declinePatches": "Impossible de refuser les correctifs"
+    },
+    "severity": {
+      "critical": "Critique",
+      "important": "Important",
+      "moderate": "Modéré",
+      "low": "Faible"
+    },
+    "approval": {
+      "pending": "En attente",
+      "approved": "Approuvé",
+      "declined": "Refusé",
+      "deferred": "Reporté"
+    },
+    "filters": {
+      "allSeverities": "Tous les niveaux de gravité",
+      "allStatus": "Tous les statuts",
+      "moreFilters": "Plus de filtres",
+      "lessFilters": "Moins de filtres",
+      "allSources": "Toutes les sources",
+      "allOs": "Tous OS"
+    },
+    "actions": {
+      "deploy": "Déployer",
+      "review": "Critique",
+      "details": "Détails",
+      "approveCount": "Approuvez {{count}}",
+      "declineCount": "Déclin {{count}}",
+      "deployCount": "Déploiement {{count}}",
+      "clearSelection": "Effacer la sélection",
+      "tryAgain": "Réessayer"
+    },
+    "selection": {
+      "selected": "{{count}} sélectionné",
+      "selectAll": "Sélectionner tout",
+      "deselectAll": "Désélectionner tout",
+      "selectAllPatches": "Sélectionner tous les correctifs",
+      "deselectAllPatches": "Désélectionner tous les correctifs",
+      "selectPatch": "Sélectionner {{title}}",
+      "deselectPatch": "Désélectionner {{title}}"
+    },
+    "table": {
+      "patch": "Correctif",
+      "severity": "Gravité",
+      "source": "Source",
+      "os": "OS",
+      "release": "Sortie",
+      "approval": "Approbation",
+      "actions": "Actions"
+    },
+    "pagination": {
+      "rowsPerPage": "Lignes par page",
+      "pageStatus": "Page {{current}} de {{total}}"
+    }
+  },
+  "patchesPage": {
+    "title": "Gestion des correctifs",
+    "description": "Gérer les anneaux de mise à jour, les approbations, la conformité et les déploiements de correctifs.",
+    "ringScopeHint": "Les anneaux de mise à jour sont gérés au niveau du partenaire",
+    "loadingRings": "Chargement des anneaux de mise à jour...",
+    "tabs": {
+      "compliance": "Conformité",
+      "patches": "Correctifs",
+      "updateRings": "Anneaux de mise à jour"
+    },
+    "actions": {
+      "runScan": "Lancer Scan",
+      "scanning": "En train de scanner...",
+      "newRing": "Nouvel anneau",
+      "tryAgain": "Réessayer",
+      "scan": "Analyser",
+      "close": "Fermer",
+      "saving": "Enregistrement...",
+      "creating": "Création…",
+      "saveChanges": "Enregistrer les modifications",
+      "createRing": "Créer un anneau"
+    },
+    "errors": {
+      "fetchRings": "Impossible de récupérer les anneaux de mise à jour",
+      "fetchPatches": "Impossible de récupérer des correctifs",
+      "partnerLevel": "Les approbations des correctifs sont gérées au niveau du partenaire",
+      "approvePatches": "Impossible d’approuver les correctifs",
+      "approveCountOne": "Impossible d’approuver {{count}} correctif",
+      "approveCountMany": "Impossible d’approuver {{count}} correctifs",
+      "declineCount": "Impossible de refuser {{count}} correctifs",
+      "loadDevicesForScan": "Impossible de charger les appareils pour le scan",
+      "noDevicesForScan": "Aucun appareil disponible pour la balayage",
+      "updateRing": "Impossible de mettre à jour l’anneau",
+      "createRing": "Impossible de créer un anneau de mise à jour",
+      "deleteRing": "Impossible de supprimer l’anneau"
+    },
+    "toast": {
+      "ringSaved": "Anneau de mise à jour enregistré",
+      "ringCreated": "Anneau de mise à jour créé",
+      "ringDeleted": "Anneau de mise à jour supprimé",
+      "chooseDevicesForInstall": "Choisissez les appareils sur lesquels installer ce correctif depuis l’onglet Conformité."
+    },
+    "scan": {
+      "confirmTitle": "Confirmez le scan du patch",
+      "selectedOrganization": "L’organisation sélectionnée",
+      "confirmMessageOne": "Scanner les patchs sur un appareil {{count}} dans {{org}} ?",
+      "confirmMessageMany": "Scanner les correctifs sur {{count}} appareils dans {{org}} ?",
+      "confirmMessageMultiOrg": "Scanner les correctifs sur {{count}} appareils à travers {{orgCount}} organisations ({{orgNames}}) ?",
+      "failedFallback": "Échec du scan des correctifs",
+      "deviceOne": "Dispositif",
+      "deviceMany": "Dispositifs",
+      "failedToQueue": "{{count}} n’a pas réussi à faire la queue",
+      "skipped": "{{count}} sauté (pas d’accès / non trouvé)",
+      "failedZero": "Échec du scan de la mise en boucle : 0 de {{requested}} {{noun}} en file d’attente.",
+      "failedZeroWithShortfall": "Échec du balayage de patch : 0 de {{requested}} {{noun}} en file d’attente ({{shortfall}}).",
+      "queuedPartial": "Scan de patch en file d’attente pour {{queued}} de {{requested}} {{noun}} — {{shortfall}}.",
+      "dispatchedSuffix": ", {{count}} envoyé immédiatement",
+      "queuedSuccess": "Scan de patch en file d’attente pour {{queued}} {{noun}}{{dispatchSuffix}}."
+    },
+    "ringModal": {
+      "editTitle": "Modifier l’anneau de mise à jour",
+      "createTitle": "Créer un anneau de mise à jour"
+    }
+  },
+  "ringSelector": {
+    "label": "Anneau de mise à jour :",
+    "allRings": "Tous les anneaux",
+    "ringOption": "{{name}} (Ordre {{order}}, +{{days}}d)"
+  },
+  "sourceFilterChips": {
+    "sources": {
+      "all": "Tous",
+      "microsoft": "Microsoft",
+      "apple": "Apple",
+      "linux": "Linux",
+      "thirdParty": "Tiers"
+    }
+  },
+  "updateRingForm": {
+    "validation": {
+      "selectCategory": "Sélectionnez une catégorie",
+      "selectSeverity": "Sélectionnez au moins une sévérité pour l’approbation automatique.",
+      "nameRequired": "Un nom d’anneau est requis"
+    },
+    "categories": {
+      "security": "Mises à jour de sécurité",
+      "feature": "Mises à jour des fonctionnalités",
+      "firmware": "Micrologiciel",
+      "driver": "Pilotes",
+      "thirdPartyApp": "Applications tierces",
+      "definitions": "Mises à jour des définitions"
+    },
+    "severities": {
+      "critical": "Critique",
+      "important": "Important",
+      "moderate": "Modéré",
+      "low": "Faible"
+    },
+    "approveToggle": {
+      "ariaLabel": "Correctifs d’approbation automatique",
+      "autoApprove": "Approbation automatique",
+      "manual": "Manuel"
+    },
+    "holdAfterRelease": "Arrêter après la libération",
+    "days": "Jours",
+    "fields": {
+      "name": "Nom",
+      "rolloutOrder": "Ordre de déploiement",
+      "description": "Description",
+      "deadlineDays": "Date limite (jours)",
+      "rebootGraceHours": "Délai avant redémarrage (heures)",
+      "autoApproveSeverities": "Sévérités à approbation automatique",
+      "category": "Catégorie"
+    },
+    "placeholders": {
+      "name": "par exemple Pilot, Broad",
+      "description": "Facultatif — indiquez l’objectif de cet anneau",
+      "noDeadline": "Pas de date limite"
+    },
+    "help": {
+      "rolloutOrder": "Les chiffres les plus bas sont déployés en premier."
+    },
+    "installEnforcement": {
+      "title": "Installation forcée",
+      "description": "Combien de temps les appareils ont pour installer les correctifs approuvés, et combien de temps un utilisateur peut reporter le redémarrage. Le comportement du redémarrage lui-même est défini par la politique sur l’onglet Correctif."
+    },
+    "approvalPolicy": {
+      "title": "Politique d’approbation",
+      "description": "Ce qui est approuvé automatiquement dans cet anneau, et combien de temps il faut conserver un patch après sa sortie chez le fabricant. Le principe par défaut s’applique à toutes les catégories ; Ajoutez une dérogation pour traiter un autre type différemment.",
+      "allCategories": "Toutes les catégories",
+      "default": "Par défaut",
+      "severityNote": "Les sévérités s’appliquent aux mises à jour du système d’exploitation. Les mises à jour d’applications tierces (winget, Homebrew) n’ont aucune sévérité du fournisseur — lorsqu’une politique permet à d’autres sources logicielles, elles sont approuvées automatiquement selon le rythme de cet anneau, quel que soit le niveau de sévérité sélectionné ici.",
+      "manualDefault": "Chaque correctif de cet anneau nécessite une approbation manuelle.",
+      "manualCategory": "Les correctifs de cette catégorie nécessitent une approbation manuelle.",
+      "noOverrides": "Toutes les catégories suivent la norme par défaut. Ajoutez une dérogation pour traiter un autre type différemment."
+    },
+    "usage": {
+      "messageOne": "Cet anneau s’applique à {{count}} appareil. Les modifications prendront effet lors de son prochain check-in.",
+      "messageMany": "Cet anneau s’applique à {{count}} appareils. Les modifications prendront effet lors de leur prochain check-in."
+    },
+    "actions": {
+      "addOverride": "Ajouter une dérogation",
+      "removeOverride": "Supprimer la dérogation",
+      "cancel": "Annuler",
+      "saving": "Enregistrement...",
+      "saveRing": "Enregistrer l’anneau"
+    }
+  },
+  "updateRingList": {
+    "title": "Anneaux de mise à jour",
+    "summary": "{{shown}} de {{total}} anneaux",
+    "searchPlaceholder": "Rechercher des anneaux...",
+    "empty": "Aucun anneau de mise à jour trouvé.",
+    "emptyValue": "—",
+    "none": "Aucun",
+    "days": "{{count}} jours",
+    "editRing": "Modifier {{name}}",
+    "deleteRing": "Supprimer {{name}}",
+    "pageStatus": "Page {{current}} de {{total}}",
+    "table": {
+      "order": "Ordre",
+      "ring": "Anneau",
+      "deferral": "Report",
+      "deadline": "Échéance",
+      "devices": "Dispositifs",
+      "compliance": "Conformité",
+      "updated": "Mise à jour",
+      "actions": "Actions"
+    }
+  }
+}

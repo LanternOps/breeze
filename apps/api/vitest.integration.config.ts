@@ -21,6 +21,11 @@ export default defineConfig({
       // Co-located real-DB integration test for the contract renewal sweep
       // service. Follows the same pattern as the inboundEmail test above.
       'src/services/contractRenewal.integration.test.ts',
+      // Co-located real-DB integration test for the platform-admin bootstrap
+      // (#2655): the mocked unit suite executes no SQL, so it never caught the
+      // prod-bundle `= ANY(::text[])` array-literal failure. This drives the
+      // real promotion UPDATE against Postgres under system-scoped RLS.
+      'src/services/platformAdminBootstrap.integration.test.ts',
       // Worker-level integration test: renewal pre-pass runs before billing sweep
       // so an at-boundary auto-renew contract bills instead of expiring.
       'src/jobs/contractWorker.renewal.integration.test.ts',
@@ -66,6 +71,12 @@ export default defineConfig({
       // the mocked `changes.test.ts` unit suite, so this drives the real
       // `changesRoutes` handler + RLS insert/select policies against Postgres.
       'src/routes/agents/changes.integration.test.ts',
+      // Co-located real-DB integration test for #2725 (installed inventory must
+      // not erase pending third-party rows): proves the raw-SQL CASE guard in
+      // upsertInstalledPatches against the real device_patch_status enum and
+      // the sweep→installed self-heal across both ingest endpoints — the
+      // mocked patches.test.ts can only assert the generated SQL's shape.
+      'src/routes/agents/patches.integration.test.ts',
       // Co-located real-DB integration test for BREEZE-3: software report
       // wipe-and-reinsert with linked vuln findings — proves the SET NULL FK
       // (constraint name + delete action) and the re-link UPDATE under the
@@ -142,6 +153,14 @@ export default defineConfig({
       // (real Redis; no Postgres fixtures used). Belongs to
       // vitest.integration.config.ts, not the no-Redis unit runner.
       'src/services/mfaStepUpGrant.integration.test.ts',
+      // Co-located real-DB integration test for the nightly enrollment-key
+      // purge sweep: the #2775 live-bootstrap-token exemption (proving
+      // Postgres itself evaluates the correlated NOT EXISTS subquery per row,
+      // where the mocked unit suite only asserts the generated SQL's shape)
+      // AND the #2821 deployment_invites cascade lifetime. Only BullMQ's
+      // Queue/Worker classes are mocked; imports
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate).
+      'src/jobs/enrollmentKeyCleanup.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;

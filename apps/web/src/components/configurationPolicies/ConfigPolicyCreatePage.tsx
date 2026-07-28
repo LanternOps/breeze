@@ -260,10 +260,11 @@ export default function ConfigPolicyCreatePage() {
           </div>
           <div className="mt-4 grid gap-4">
             <div>
-              <label className="text-sm font-medium">
+              <label htmlFor="config-policy-name" className="text-sm font-medium">
                 {i18n.t("common:labels.name")}
               </label>
               <input
+                id="config-policy-name"
                 {...register("name")}
                 className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 placeholder={i18n.t(
@@ -277,10 +278,11 @@ export default function ConfigPolicyCreatePage() {
               )}
             </div>
             <div>
-              <label className="text-sm font-medium">
+              <label htmlFor="config-policy-description" className="text-sm font-medium">
                 {i18n.t("common:labels.description")}
               </label>
               <textarea
+                id="config-policy-description"
                 {...register("description")}
                 className="mt-2 h-20 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 placeholder={i18n.t(
@@ -289,10 +291,11 @@ export default function ConfigPolicyCreatePage() {
               />
             </div>
             <div>
-              <label className="text-sm font-medium">
+              <label htmlFor="config-policy-status" className="text-sm font-medium">
                 {i18n.t("common:labels.status")}
               </label>
               <select
+                id="config-policy-status"
                 {...register("status")}
                 className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
               >

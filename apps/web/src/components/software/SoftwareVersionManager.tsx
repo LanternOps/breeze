@@ -303,7 +303,16 @@ export default function SoftwareVersionManager({
         setUploadProgress(90);
         if (!response.ok) {
           const errData = await response.json().catch(() => ({}));
-          throw new Error(errData.error ?? "Failed to upload version");
+          // Always show the status. Every API failure path returns a JSON body
+          // with an `error` key, so the bare fallback means the response was
+          // not JSON at all — a reverse-proxy 413/502/504 HTML page or a
+          // truncated connection. Including the status makes that case
+          // distinguishable from an API-level failure at a glance (#2794).
+          const detail =
+            typeof errData.error === "string"
+              ? errData.error
+              : "Failed to upload version";
+          throw new Error(`${detail} (HTTP ${response.status})`);
         }
         const newVersionData = await response.json();
         const newVersion = normalizeVersion(

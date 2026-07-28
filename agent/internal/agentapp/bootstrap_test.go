@@ -2,8 +2,12 @@ package agentapp
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync/atomic"
 	"testing"
 )
 
@@ -83,6 +87,46 @@ func TestResolveBootstrapInputs(t *testing.T) {
 				t.Fatalf("got (%q,%q), want (%q,%q)", tok, server, tc.wantToken, tc.wantServer)
 			}
 		})
+	}
+}
+
+// The MSI BootstrapEnroll CA runs on major upgrades too. An already-enrolled
+// agent must return before ANY HTTP redemption: the bootstrap token is
+// single-use, so a redeem-then-skip flow burns the customer's token (and an
+// already-redeemed filename token would 4xx → exit 1 → the deferred CA's
+// Return="check" rolls back the entire upgrade).
+func TestRunBootstrapSkipsRedeemWhenAlreadyEnrolled(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+	// agent_id must be a VALID UUID: config.Load validates it and falls back
+	// to Default() (empty AgentID) on an invalid value — which correctly
+	// fails OPEN into enrollment, but would vacuously pass the wrong way here.
+	if err := os.WriteFile(cfgPath, []byte(
+		"agent_id: 0f0e0d0c-0b0a-4908-8706-050403020100\nlog_file: "+filepath.ToSlash(filepath.Join(dir, "agent.log"))+"\n",
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1) // single-use token: any request here IS the bug
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	origCfg, origData, origQuiet := cfgFile, bootstrapInstallData, quietEnroll
+	t.Cleanup(func() { cfgFile, bootstrapInstallData, quietEnroll = origCfg, origData, origQuiet })
+	cfgFile, quietEnroll = cfgPath, true
+	bootstrapInstallData = `C:\dl\breeze-agent.msi|TESTTOKEN1|` + srv.URL
+
+	origExit := osExit
+	osExit = func(code int) { panic(fmt.Sprintf("unexpected exit %d", code)) }
+	t.Cleanup(func() { osExit = origExit })
+
+	runBootstrap()
+
+	if n := hits.Load(); n != 0 {
+		t.Fatalf("bootstrap endpoint contacted %d time(s) despite existing enrollment — single-use token would be burned on upgrade", n)
 	}
 }
 

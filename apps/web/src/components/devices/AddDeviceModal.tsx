@@ -13,6 +13,14 @@ import { buildInstallCommands } from "@/lib/installCommands";
 import { navigateTo } from "@/lib/navigation";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import {
+  clampTtlToOfferableOption,
+  enrollmentTtlOptionsIncluding,
+  ENROLLMENT_TTL_I18N_KEYS,
+  MAX_ENROLLMENT_TTL_MINUTES,
+  PRODUCT_DEFAULT_ENROLLMENT_DEVICE_COUNT,
+  PRODUCT_DEFAULT_ENROLLMENT_TTL_MINUTES,
+} from "@breeze/shared";
 
 function detectUserOS(): "windows" | "macos" | "linux" {
   if (typeof navigator === "undefined") return "linux";
@@ -99,11 +107,43 @@ export default function AddDeviceModal({
   // modal has to distinguish "still loading", "load failed", and "genuinely no
   // sites" — otherwise a failed fetch looks identical to an unconfigured org and
   // nudges the user to create a duplicate site.
-  const { currentOrgId, sites, fetchSites, isLoading: sitesLoading, error: sitesError } = useOrgStore();
+  const {
+    currentOrgId,
+    sites,
+    fetchSites,
+    isLoading: sitesLoading,
+    error: sitesError,
+    enrollmentDefaults,
+  } = useOrgStore();
   const orgSites = useMemo(
     () => sites.filter((s) => s.orgId === currentOrgId),
     [sites, currentOrgId],
   );
+
+  // The partner/org enrollment defaults ride along on the sites response
+  // (#2776); until that resolves — or if the API soft-failed the settings read
+  // — fall back to the product defaults and the global ceiling, which is
+  // exactly the behaviour this modal had before defaults existed.
+  const defaultTtlMinutes =
+    enrollmentDefaults?.ttlMinutes ?? PRODUCT_DEFAULT_ENROLLMENT_TTL_MINUTES;
+  const defaultDeviceCount =
+    enrollmentDefaults?.deviceCount ?? PRODUCT_DEFAULT_ENROLLMENT_DEVICE_COUNT;
+  const maxTtlMinutes =
+    enrollmentDefaults?.maxTtlMinutes ?? MAX_ENROLLMENT_TTL_MINUTES;
+  // ONE option set for both tabs and both settings editors, filtered to what
+  // the partner cap actually permits. Offering a longer lifetime than the
+  // server will mint is the silent-discard defect this work removes: the mint
+  // routes 400 an over-cap ttlMinutes outright.
+  //
+  // The per-tab option lists live below, next to the state they depend on.
+  // Canonical options carry a `devices` namespace key shared with both settings
+  // editors. A cap set below every canonical option (API-only — the partner UI
+  // offers canonical values) surfaces as the raw cap, labelled with the existing
+  // pluralised minutes string rather than a new key in seven locales.
+  const ttlOptionLabel = (minutes: number): string =>
+    ENROLLMENT_TTL_I18N_KEYS[minutes]
+      ? t(/* i18n-dynamic */ ENROLLMENT_TTL_I18N_KEYS[minutes])
+      : t("addDeviceModal.expiryMinutes", { count: minutes });
 
   // Sites are fetched lazily now that the org switcher no longer preloads
   // them; make sure the site picker has data when the modal opens.
@@ -121,16 +161,24 @@ export default function AddDeviceModal({
     userOS === "macos" ? "macos" : "windows",
   );
   const [selectedSiteId, setSelectedSiteId] = useState("");
-  const [deviceCount, setDeviceCount] = useState(1);
+  const [deviceCount, setDeviceCount] = useState(defaultDeviceCount);
   // Lifetime of the installer / shared link the admin distributes. Sent to
   // the child-key mint routes (installer download + installer-link), where
   // the server resolves it to a fresh absolute expiry measured from mint
-  // time — not the transient parent key. 24h is the product default (it
-  // happens to coincide with the server's CHILD_ENROLLMENT_KEY_TTL_MINUTES
-  // fallback, but is set explicitly here, not inherited). "Never expires"
-  // is intentionally omitted until the partner-level cap
-  // (maxEnrollmentLinkTtlMinutes) lands in a sibling PR.
-  const [ttlMinutes, setTtlMinutes] = useState<number>(1440);
+  // time — not the transient parent key. Seeded from the partner/org resolved
+  // default and bounded by the partner cap (`maxEnrollmentLinkTtlMinutes`,
+  // shipped in #2776 — see services/enrollmentDefaults.ts); the product
+  // fallback when neither is set is still 24h.
+  //
+  // "Never expires" stays deliberately unimplemented, and is NOT merely a UI
+  // omission: `installer_bootstrap_tokens.expires_at` is NOT NULL with a
+  // CHECK (expires_at > created_at). Offering it needs a migration to relax
+  // both, plus null-handling through issuance
+  // (services/installerBootstrapTokenIssuance.ts), the consume path, the
+  // enrollment-key cleanup job (which sweeps on expires_at), and every expiry
+  // renderer here. A cap-exempt, never-expiring installer credential is also a
+  // policy decision, not just a schema one.
+  const [ttlMinutes, setTtlMinutes] = useState<number>(defaultTtlMinutes);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string>();
   const [downloadSuccess, setDownloadSuccess] = useState(false);
@@ -151,7 +199,32 @@ export default function AddDeviceModal({
   // #1108: how many machines this CLI token may enroll, and its real expiry,
   // both reported by the server so the UI never advertises a stale single-use
   // token as good for the whole fleet.
-  const [cliDeviceCount, setCliDeviceCount] = useState(1);
+  const [cliDeviceCount, setCliDeviceCount] = useState(defaultDeviceCount);
+  // Independent of the installer tab's ttlMinutes. Both seed from the SAME
+  // resolved default (#2776), but the CLI command is typically pasted into a
+  // GPO/imaging script that runs later while an installer is hand-carried, so
+  // the two are kept as separate state: retuning one tab's expiry must never
+  // move the other's.
+  const [cliTtlMinutes, setCliTtlMinutes] = useState<number>(defaultTtlMinutes);
+  // Each tab renders its own option list, passing its OWN current value so a
+  // non-canonical one (an API-set default of, say, 20000 under a 43200 cap) is
+  // rendered as its own option. Without that the <select> matches nothing, the
+  // browser displays the first option ("1 hour") and the download URL still
+  // carries 20000 — display and submission disagreeing, which is the very
+  // defect this task removes. Over-cap values cannot reach here: both are
+  // folded down by the clamp effect below before any render uses them.
+  //
+  // Declared after the state they read, not up with `maxTtlMinutes` — a
+  // useMemo body runs during render, so referencing `ttlMinutes` above its
+  // `useState` would hit the temporal dead zone.
+  const ttlOptions = useMemo(
+    () => enrollmentTtlOptionsIncluding(maxTtlMinutes, ttlMinutes),
+    [maxTtlMinutes, ttlMinutes],
+  );
+  const cliTtlOptions = useMemo(
+    () => enrollmentTtlOptionsIncluding(maxTtlMinutes, cliTtlMinutes),
+    [maxTtlMinutes, cliTtlMinutes],
+  );
   const [tokenMaxUsage, setTokenMaxUsage] = useState<number | null>(null);
   const [tokenExpiresAt, setTokenExpiresAt] = useState<string | null>(null);
   const [selectedOS, setSelectedOS] = useState<"windows" | "macos" | "linux">(
@@ -189,12 +262,12 @@ export default function AddDeviceModal({
     if (isOpen) {
       setDownloadError(undefined);
       setDownloadSuccess(false);
-      setDeviceCount(1);
-      setTtlMinutes(1440);
+      // deviceCount / ttlMinutes / cliDeviceCount / cliTtlMinutes are reset by
+      // the seeding effect below instead — they come from the resolved
+      // partner/org defaults, which may still be in flight when this runs.
       setCliInitialized(false);
       setOnboardingToken("");
       setTokenError(undefined);
-      setCliDeviceCount(1);
       setTokenMaxUsage(null);
       setTokenExpiresAt(null);
       setGeneratedLink("");
@@ -202,6 +275,38 @@ export default function AddDeviceModal({
       setLinkCopied(false);
     }
   }, [isOpen]);
+
+  // Seed the pickers from the resolved partner/org defaults (#2776). Separate
+  // from the reset effect above because the defaults arrive asynchronously with
+  // the sites response, so this must re-seed once they land instead of leaving
+  // the operator on the product fallback. Keeping it out of the reset effect
+  // also stops a late arrival from clearing `cliInitialized` and re-minting a
+  // CLI token that already exists.
+  //
+  // The dep array keys on the three PRIMITIVE values, not the
+  // `enrollmentDefaults` object: Zustand hands back a fresh object on every
+  // sites fetch, so an object dep would let any unrelated refetch re-seed over
+  // an edit the operator had already made. Keying on numbers makes a refetch
+  // carrying identical values a no-op.
+  //
+  // Both tabs seed from the SAME default but into their own state, so a later
+  // edit on one tab never follows through to the other.
+  useEffect(() => {
+    if (!isOpen) return;
+    setDeviceCount(defaultDeviceCount);
+    setCliDeviceCount(defaultDeviceCount);
+    setTtlMinutes(clampTtlToOfferableOption(defaultTtlMinutes, maxTtlMinutes));
+    setCliTtlMinutes(clampTtlToOfferableOption(defaultTtlMinutes, maxTtlMinutes));
+  }, [isOpen, defaultTtlMinutes, defaultDeviceCount, maxTtlMinutes]);
+
+  // Belt-and-braces against a stale selection outliving a cap change: if the
+  // cap tightens under a value the operator already picked (or a resolved
+  // default lands above it), fold it down to the largest still-offerable
+  // option rather than posting a ttlMinutes the mint routes will 400.
+  useEffect(() => {
+    setTtlMinutes((prev) => clampTtlToOfferableOption(prev, maxTtlMinutes));
+    setCliTtlMinutes((prev) => clampTtlToOfferableOption(prev, maxTtlMinutes));
+  }, [maxTtlMinutes]);
 
   // Guards against overlapping CLI token fetches (the auto-init effect racing a
   // manual "Generate new token", or a fast double-click). A ref, not state, so
@@ -214,7 +319,7 @@ export default function AddDeviceModal({
   // gating lives in the auto-init effect; the "Generate new token" button and
   // error-retry call this directly to re-mint, so it only self-guards against
   // concurrent runs rather than against being called again.
-  const initializeCli = useCallback(async (count: number) => {
+  const initializeCli = useCallback(async (count: number, ttlMinutes: number) => {
     if (cliFetchInFlight.current) return;
     cliFetchInFlight.current = true;
     setCliInitialized(true);
@@ -228,7 +333,11 @@ export default function AddDeviceModal({
     try {
       const response = await fetchWithAuth("/devices/onboarding-token", {
         method: "POST",
-        body: JSON.stringify({ count }),
+        // The route validates its body with a strict Zod schema, so the
+        // JSON content type is mandatory — without it Hono hands the
+        // validator `{}` and ttlMinutes is silently dropped (#2777).
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ count, ttlMinutes }),
       });
 
       if (!response.ok) {
@@ -292,9 +401,9 @@ export default function AddDeviceModal({
   // Re-mint the CLI token, e.g. after the operator bumps the device count or
   // wants a fresh one mid-session (#1108).
   const regenerateCliToken = useCallback(
-    (count: number) => {
+    (count: number, ttlMinutes: number) => {
       setTokenCopied(false);
-      void initializeCli(count);
+      void initializeCli(count, ttlMinutes);
     },
     [initializeCli],
   );
@@ -325,9 +434,16 @@ export default function AddDeviceModal({
   // the Linux default where the CLI tab is already active on open (#1108).
   useEffect(() => {
     if (isOpen && activeTab === "cli" && !cliInitialized) {
-      void initializeCli(cliDeviceCount);
+      void initializeCli(cliDeviceCount, cliTtlMinutes);
     }
-  }, [isOpen, activeTab, cliInitialized, cliDeviceCount, initializeCli]);
+  }, [
+    isOpen,
+    activeTab,
+    cliInitialized,
+    cliDeviceCount,
+    cliTtlMinutes,
+    initializeCli,
+  ]);
 
   const handleTabChange = (tab: "installer" | "cli") => {
     setActiveTab(tab);
@@ -573,6 +689,7 @@ export default function AddDeviceModal({
             <button
               key={tab}
               type="button"
+              data-testid={`tab-${tab}`}
               onClick={() => handleTabChange(tab)}
               className={`px-4 py-2 text-sm font-medium border-b-2 transition ${
                 activeTab === tab
@@ -678,6 +795,7 @@ export default function AddDeviceModal({
                   </label>
                   <input
                     id="device-count"
+                    data-testid="device-count"
                     type="number"
                     value={deviceCount}
                     onChange={(e) =>
@@ -715,14 +833,11 @@ export default function AddDeviceModal({
                     className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     data-testid="link-ttl"
                   >
-                    <option value={60}>{t("addDeviceModal.n1Hour")}</option>
-                    <option value={1440}>{t("addDeviceModal.n24Hours")}</option>
-                    <option value={10080}>{t("addDeviceModal.n7Days")}</option>
-                    <option value={43200}>{t("addDeviceModal.n30Days")}</option>
-                    <option value={129600}>
-                      {t("addDeviceModal.n90Days")}
-                    </option>
-                    <option value={525600}>{t("addDeviceModal.n1Year")}</option>
+                    {ttlOptions.map((minutes) => (
+                      <option key={minutes} value={minutes}>
+                        {ttlOptionLabel(minutes)}
+                      </option>
+                    ))}
                   </select>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {t(
@@ -938,7 +1053,7 @@ export default function AddDeviceModal({
                     <button
                       type="button"
                       onClick={() => {
-                        void initializeCli(cliDeviceCount);
+                        void initializeCli(cliDeviceCount, cliTtlMinutes);
                       }}
                       className="ml-2 underline hover:no-underline"
                     >
@@ -965,6 +1080,7 @@ export default function AddDeviceModal({
                         </label>
                         <input
                           id="cli-device-count"
+                          data-testid="cli-device-count"
                           type="number"
                           min={1}
                           max={1000}
@@ -980,9 +1096,36 @@ export default function AddDeviceModal({
                           className="w-24 rounded-md border bg-background px-2 py-1 text-sm"
                         />
                       </div>
+                      <div>
+                        <label
+                          htmlFor="cli-link-ttl"
+                          className="block text-xs font-medium text-muted-foreground mb-1"
+                        >
+                          {t("addDeviceModal.linkExpiresIn")}
+                        </label>
+                        <select
+                          id="cli-link-ttl"
+                          data-testid="cli-link-ttl"
+                          value={cliTtlMinutes}
+                          onChange={(e) => {
+                            const n = Number(e.target.value);
+                            if (Number.isFinite(n)) setCliTtlMinutes(n);
+                          }}
+                          className="rounded-md border bg-background px-2 py-1 text-sm"
+                        >
+                          {cliTtlOptions.map((minutes) => (
+                            <option key={minutes} value={minutes}>
+                              {ttlOptionLabel(minutes)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                       <button
                         type="button"
-                        onClick={() => regenerateCliToken(cliDeviceCount)}
+                        data-testid="cli-regenerate-token"
+                        onClick={() =>
+                          regenerateCliToken(cliDeviceCount, cliTtlMinutes)
+                        }
                         className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
                       >
                         {t("addDeviceModal.generateNewToken")}{" "}

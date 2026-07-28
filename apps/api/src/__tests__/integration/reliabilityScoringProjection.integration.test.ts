@@ -179,15 +179,27 @@ describe('reliability scoring — projected read golden value (integration)', ()
     expect(row!.trendDirection).toBe('stable');
   });
 
-  // #1105 regression lock: computeAndPersistDeviceReliability MUST run under a
-  // system context. Its ml-feature-flag gate reads `organizations INNER JOIN
-  // partners`, and under an ORG-scoped RLS context the partners row is invisible
-  // (breeze_has_partner_access is false for org tokens) → the join yields nothing
-  // → the flag resolves `org_not_found` → the compute silently no-ops and persists
-  // NOTHING. This is exactly why the ingest route's Redis-outage fallback opens a
-  // fresh system context instead of reusing its org context. If a future change
-  // "simplifies" that back to org scope, this test fails.
-  it('silently no-ops (persists nothing) when run under an org-scoped context', async () => {
+  // WAS a #1105 regression lock asserting the OPPOSITE: that an org-scoped
+  // compute "silently no-ops (persists nothing)". That assertion encoded the
+  // #2822 bug as the expected behaviour. The ml-feature-flag gate read
+  // `organizations INNER JOIN partners`; `partners` is partner-axis, an
+  // org-scoped context has accessiblePartnerIds = [], so the invisible partner
+  // row erased the whole joined row and the flag resolved `org_not_found` — a
+  // statement that was false on both counts (the org exists and the feature may
+  // well be enabled). #2822 splits that read so the org half stays under RLS and
+  // only the partner half is escaped, so the gate now answers honestly and the
+  // compute proceeds.
+  //
+  // The #1105 protection is NOT lost, because it never actually lived here. What
+  // matters for #1105 is CALLER DISCIPLINE — that the two production callers open
+  // a system context — and that is asserted directly, on the callers, in
+  // routes/agents/reliability.test.ts ("...falls back to an inline compute in a
+  // fresh SYSTEM context", which pins `fallbackScope === 'system'` AND
+  // `runOutsideDbContext` having been called) and in jobs/reliabilityWorker.test.ts.
+  // Those guards hold regardless of what an org-scoped compute happens to do, so
+  // they are strictly stronger than inferring caller discipline from a symptom.
+  // No production path invokes this under an org context.
+  it('computes and persists under an org-scoped context now that the flag gate no longer lies (#2822)', async () => {
     const orgContext = {
       scope: 'organization' as const,
       orgId,
@@ -197,11 +209,16 @@ describe('reliability scoring — projected read golden value (integration)', ()
     };
 
     const ok = await withDbAccessContext(orgContext, () => computeAndPersistDeviceReliability(deviceId));
-    expect(ok).toBe(false);
+    expect(ok).toBe(true);
 
     const rows = await withSystemDbAccessContext(() =>
       getTestDb().select().from(deviceReliability).where(eq(deviceReliability.deviceId, deviceId)).limit(1),
     );
-    expect(rows).toHaveLength(0);
+    expect(rows).toHaveLength(1);
+    // Tenant-correct: the row lands under the caller's OWN org. The write still
+    // runs under org-scoped RLS, so this is the device's own tenant, not a
+    // system-scope escape hatch that could write anywhere.
+    expect(rows[0]!.deviceId).toBe(deviceId);
+    expect(rows[0]!.orgId).toBe(orgId);
   });
 });

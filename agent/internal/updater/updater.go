@@ -28,7 +28,14 @@ var log = logging.L("updater")
 
 // Config holds updater configuration
 type Config struct {
-	ServerURL      string
+	// ServerURL resolves the control-plane base URL. It is a provider
+	// (func() string) rather than a plain string so that long-lived callers
+	// re-resolve it on every download and follow the heartbeat's
+	// backup-server-URL promotion (#2323) after a failover, instead of pinning
+	// the (possibly dead) primary captured at construction. Making it a func —
+	// rather than a plain string — is what makes the copied-string mistake
+	// unrepresentable at the call sites (#2478, matching #2454/#2463/#2477).
+	ServerURL      func() string
 	AuthToken      *secmem.SecureString
 	CurrentVersion string
 	Component      string
@@ -55,6 +62,16 @@ func New(cfg *Config) *Updater {
 		config: cfg,
 		client: &http.Client{Timeout: 5 * time.Minute},
 	}
+}
+
+// serverURL resolves the control-plane base URL from the ServerURL provider.
+// Nil-safe: a misconfigured Config (nil provider) yields "" rather than
+// panicking, and the resulting request fails closed with an unparseable URL.
+func (u *Updater) serverURL() string {
+	if u.config == nil || u.config.ServerURL == nil {
+		return ""
+	}
+	return u.config.ServerURL()
 }
 
 // ErrReadOnlyFS is returned when the binary path is on a read-only filesystem.
@@ -660,7 +677,7 @@ func (u *Updater) downloadBinary(version string) (string, updateManifest, []byte
 	}
 	// Step 1: Get download URL + checksum from API.
 	infoURL := fmt.Sprintf("%s/api/v1/agent-versions/%s/download?platform=%s&arch=%s&component=%s",
-		u.config.ServerURL, version, runtime.GOOS, runtime.GOARCH, url.QueryEscape(u.component()))
+		u.serverURL(), version, runtime.GOOS, runtime.GOARCH, url.QueryEscape(u.component()))
 
 	req, err := http.NewRequest("GET", infoURL, nil)
 	if err != nil {
@@ -925,7 +942,7 @@ func (u *Updater) downloadFromURL(rawURL string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid download URL: %w", err)
 	}
-	serverParsed, err := url.Parse(u.config.ServerURL)
+	serverParsed, err := url.Parse(u.serverURL())
 	if err != nil {
 		return "", fmt.Errorf("invalid server URL: %w", err)
 	}

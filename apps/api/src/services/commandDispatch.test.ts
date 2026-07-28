@@ -17,10 +17,21 @@ vi.mock('../db/schema', () => ({
     id: 'deviceCommands.id',
     deviceId: 'deviceCommands.deviceId',
     status: 'deviceCommands.status',
+    type: 'deviceCommands.type',
+    targetRole: 'deviceCommands.targetRole',
     createdAt: 'deviceCommands.createdAt',
     executedAt: 'deviceCommands.executedAt',
   },
 }));
+
+// Spy on inArray (pass-through to the real implementation) so the #2774
+// drain-mode type filter is assertable without mocking all of drizzle.
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  return { ...actual, inArray: vi.fn((...args: Parameters<typeof actual.inArray>) => actual.inArray(...args)) };
+});
+
+import { inArray } from 'drizzle-orm';
 
 import { db } from '../db';
 import {
@@ -86,6 +97,32 @@ describe('command dispatch helpers', () => {
 
     expect(claimed).toHaveLength(1);
     expect(claimed[0]?.id).toBe('cmd-1');
+    // No drain allowlist → no type filter applied.
+    expect(vi.mocked(inArray)).not.toHaveBeenCalledWith('deviceCommands.type', expect.anything());
+  });
+
+  // #2774 — during an offboarding drain the claim narrows to self_uninstall.
+  it('applies the type allowlist to the claim query when provided', async () => {
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                for: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        }),
+      }),
+      update: vi.fn(),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    const claimed = await claimPendingCommandsForDevice('dev-1', 10, 'agent', ['self_uninstall']);
+
+    expect(claimed).toEqual([]);
+    expect(vi.mocked(inArray)).toHaveBeenCalledWith('deviceCommands.type', ['self_uninstall']);
   });
 
   it('releases a claimed command back to pending state', async () => {

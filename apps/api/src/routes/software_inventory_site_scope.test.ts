@@ -71,11 +71,18 @@ vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../services/deploymentTargetResolver', () => ({
   resolveDeploymentTargets: vi.fn().mockResolvedValue([]),
 }));
-vi.mock('../services/s3Storage', () => ({
-  uploadBinary: vi.fn(),
-  getPresignedUrl: vi.fn(),
-  isS3Configured: vi.fn(() => false),
-}));
+vi.mock('../services/s3Storage', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/s3Storage')>();
+  return {
+    uploadBinary: vi.fn(),
+    getPresignedUrl: vi.fn(),
+    isS3Configured: vi.fn(() => false),
+    // routes/software.ts branches on these with `instanceof` (#2794); a mock
+    // that omits them makes the export access throw.
+    S3ConfigError: actual.S3ConfigError,
+    S3OperationError: actual.S3OperationError,
+  };
+});
 vi.mock('./agentWs', () => ({ sendCommandToAgent: vi.fn() }));
 
 const ORG_ID = 'org-111';

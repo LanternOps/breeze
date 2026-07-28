@@ -143,6 +143,21 @@ export interface DbAccessContext {
    * apply.
    */
   currentPartnerId?: string | null;
+  /**
+   * Short, low-cardinality name for the code path that opened this context,
+   * e.g. `agentWs.heartbeat`. Purely diagnostic — it grants nothing and is
+   * never sent to Postgres. Emitted as the `dbContextLabel` Sentry tag on the
+   * #1105 held-connection warning so a recurring hold can be broken down by
+   * source instead of arriving as one opaque bucket.
+   *
+   * Why this exists: BREEZE-A accumulated ~7k held-context warnings from the
+   * agent WebSocket that were impossible to act on, because all 12 contexts
+   * there funnel through ONE helper closure and every production frame minifies
+   * to an anonymous arrow inside `onMessage`. The stack alone cannot tell
+   * `heartbeat` from `command_result`. Set this wherever several distinct paths
+   * share a context helper.
+   */
+  label?: string;
 }
 
 export const SYSTEM_DB_ACCESS_CONTEXT: DbAccessContext = {
@@ -260,6 +275,22 @@ export async function withDbAccessContext<T>(
 
     const warnMs = getHeldContextWarnMs();
     const startedAt = warnMs > 0 ? Date.now() : 0;
+    // Capture the OPENER's stack here, synchronously, while the call chain that
+    // opened this context is still on the stack.
+    //
+    // The warning below used to build its stack inside the `finally`, which runs
+    // after `await` — by then the synchronous frames are gone and all that
+    // remains is the microtask trampoline plus whatever host loop is at the
+    // bottom (`processTicksAndRejections` / `sql.begin` / bullmq's worker.js).
+    // That is why BREEZE-9 accumulated ~12k events that name nothing
+    // actionable: every one pointed at this emitter instead of at the code
+    // holding the connection. Allocating the Error here records the real opener.
+    //
+    // Cost: `new Error()` captures the structured trace but V8 only formats it
+    // on first `.stack` access, which we do ONLY when a hold actually breaches
+    // the threshold. So the hot path pays one small allocation, not stack
+    // serialization, and only when the tripwire is armed at all.
+    const opener = warnMs > 0 ? new Error('withDbAccessContext opened here') : undefined;
     try {
       return await dbContextStorage.run(tx as unknown as typeof baseDb, () =>
         dbContextMetaStorage.run(context, fn),
@@ -273,8 +304,14 @@ export async function withDbAccessContext<T>(
         if (warnMs > 0) {
           const heldMs = Date.now() - startedAt;
           if (heldMs >= warnMs) {
+            // The label goes in the MESSAGE, not just the tag: Sentry groups by
+            // message, so including it splits one bucket into per-source issues
+            // that can be resolved independently. Unlabelled callers keep the
+            // exact previous message text, so their existing grouping is not
+            // disturbed by this change.
+            const labelPart = context.label ? ` [${context.label}]` : '';
             const message =
-              `withDbAccessContext (scope=${context.scope}) held a pooled connection in an open `
+              `withDbAccessContext (scope=${context.scope})${labelPart} held a pooled connection in an open `
               + `transaction for ${heldMs}ms (>= ${warnMs}ms) — long enough that it likely did slow `
               + `non-DB work (Redis/HTTP/loops) or a slow query inside the context. If the former, `
               + `move it after the context closes or wrap it in runOutsideDbContext (#1105).`;
@@ -282,7 +319,16 @@ export async function withDbAccessContext<T>(
             // Throttle the Sentry capture per scope (see getHeldContextCaptureThrottleMs)
             // so a recurring conn-hold can't flood the org's event quota.
             if (shouldCaptureHeldContext(context.scope, Date.now(), getHeldContextCaptureThrottleMs())) {
-              captureMessage(message, 'warning', { heldMs, scope: context.scope, stack: new Error().stack });
+              captureMessage(message, 'warning', {
+                heldMs,
+                scope: context.scope,
+                // `openedAt` is the actionable one — it names the caller that
+                // opened the context. `stack` is kept (emitter-side, i.e. the
+                // await trampoline) only because the previous shape had it and
+                // dropping a field silently is worse than an extra one.
+                openedAt: opener?.stack,
+                stack: new Error().stack,
+              }, context.label ? { dbContextLabel: context.label } : undefined);
             }
           }
         }

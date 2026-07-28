@@ -16,6 +16,7 @@ import { interpolateTemplate } from '../services/alertConditions';
 import { resolveReevalHorizonMinutes } from '../services/alertConditions/offlineDuration';
 import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
+import { envInt } from '../utils/envInt';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -159,8 +160,8 @@ export async function processDetectOffline(data: DetectOfflineJobData): Promise<
   const thresholdTime = new Date(Date.now() - thresholdMinutes * 60 * 1000);
 
   // Env tunables — same shape as alertWorker. cap=0 means unlimited per run.
-  const cap = Number(process.env.OFFLINE_DETECTOR_MAX_DEVICES_PER_RUN ?? '5000');
-  const chunkSize = Math.max(1, Number(process.env.OFFLINE_DETECTOR_CHUNK_SIZE ?? '500'));
+  const cap = envInt('OFFLINE_DETECTOR_MAX_DEVICES_PER_RUN', 5000);
+  const chunkSize = Math.max(1, envInt('OFFLINE_DETECTOR_CHUNK_SIZE', 500));
 
   const queue = getOfflineQueue();
   let totalDetected = 0;
@@ -550,8 +551,8 @@ export async function processReevaluateOfflineSweep(): Promise<{
   const horizonTime = new Date(Date.now() - selectionMinutes * 60 * 1000);
 
   // Env tunables — same shape as the detect sweep. cap=0 means unlimited per run.
-  const cap = Number(process.env.OFFLINE_DETECTOR_REEVAL_MAX_DEVICES_PER_RUN ?? '5000');
-  const chunkSize = Math.max(1, Number(process.env.OFFLINE_DETECTOR_REEVAL_CHUNK_SIZE ?? '500'));
+  const cap = envInt('OFFLINE_DETECTOR_REEVAL_MAX_DEVICES_PER_RUN', 5000);
+  const chunkSize = Math.max(1, envInt('OFFLINE_DETECTOR_REEVAL_CHUNK_SIZE', 500));
 
   const queue = getOfflineQueue();
   let totalQueued = 0;
@@ -635,7 +636,7 @@ export async function scheduleOfflineJobs(): Promise<void> {
   if (isReevalEnabled()) {
     const reevalIntervalMs = Math.max(
       5_000,
-      Number(process.env.OFFLINE_DETECTOR_REEVAL_INTERVAL_MS ?? String(DEFAULT_REEVAL_INTERVAL_MS))
+      envInt('OFFLINE_DETECTOR_REEVAL_INTERVAL_MS', DEFAULT_REEVAL_INTERVAL_MS)
     );
     await queue.add(
       'reevaluate-offline-sweep',

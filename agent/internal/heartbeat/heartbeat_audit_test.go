@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
 
@@ -97,5 +98,36 @@ func TestExecuteCommandDoesNotDedupeStopDesktop(t *testing.T) {
 	second := h.executeCommand(cmd)
 	if second.Status == "duplicate" {
 		t.Fatalf("stop_desktop retry must bypass dedup (#434): second=%q", second.Status)
+	}
+}
+
+// TestExecuteCommandDoesNotDedupeDesktopStreamStop proves durable stop
+// redelivery always reaches the idempotent sink. Marking the command ID before
+// execution cannot become stop proof because the process may crash between the
+// mark and handler dispatch.
+func TestExecuteCommandDoesNotDedupeDesktopStreamStop(t *testing.T) {
+	h := &Heartbeat{
+		wsDesktopMgr: desktop.NewWsSessionManager(),
+	}
+	cmd := Command{
+		ID:   "22222222-2222-4222-8222-222222222222",
+		Type: tools.CmdDesktopStreamStop,
+		Payload: map[string]any{
+			"sessionId":      "11111111-1111-4111-8111-111111111111",
+			"finalizationId": "22222222-2222-4222-8222-222222222222",
+		},
+	}
+
+	// Model the dangerous crash boundary: the command ID was recorded but the
+	// handler never ran. Redelivery must still execute the stop.
+	h.markCommandSeen(cmd.ID)
+	first := h.executeCommand(cmd)
+	if first.Status == "duplicate" {
+		t.Fatalf("desktop_stream_stop must execute after a pre-dispatch crash, got %q", first.Status)
+	}
+
+	second := h.executeCommand(cmd)
+	if second.Status == "duplicate" {
+		t.Fatalf("desktop_stream_stop redelivery must reach the idempotent sink, got %q", second.Status)
 	}
 }

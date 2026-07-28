@@ -50,8 +50,12 @@
     "es419Description": "Spanish (Latin America)",
     "frFRLabel": "Français (France)",
     "frFRDescription": "French (France)",
+    "frCALabel": "Français (Canada)",
+    "frCADescription": "French (Canada)",
     "deDELabel": "Deutsch (Deutschland)",
-    "deDEDescription": "German (Germany)"
+    "deDEDescription": "German (Germany)",
+    "itITLabel": "Italiano (Italia)",
+    "itITDescription": "Italian (Italy)"
   },
   "partner": {
     "regional": {
@@ -138,6 +142,16 @@
       "enable": "Enable auto-enrollment for new devices",
       "requireApproval": "Require admin approval",
       "sendWelcome": "Send welcome notification"
+    },
+    "enrollment": {
+      "title": "Device enrollment",
+      "ttl": "Default link expiry",
+      "ttlHint": "Pre-selects how long new enrollment links and installers stay valid. Organizations can pick a different default for themselves.",
+      "deviceCount": "Default devices per link",
+      "deviceCountHint": "How many machines one enrollment link may enroll by default. Organizations can pick a different default for themselves.",
+      "maxTtl": "Maximum link lifetime",
+      "maxTtlHint": "A ceiling on key lifetime, not just on what an admin may request: nothing minted under this partner stays usable for longer — enrollment links, MCP deployment invites, and the child credentials issued when an installer is redeemed.",
+      "maxTtlWarning": "Organizations cannot raise this. A short cap also shortens the time a machine has to finish enrolling after redeeming a link, not just the time to download it."
     }
   },
   "partnerEventLogs": {
@@ -724,6 +738,7 @@
     "title": "Default settings",
     "description": "Tune the default policies and enrollment behavior for {{organization}}.",
     "save": "Save defaults",
+    "managedByPartner": "Managed by partner",
     "policies": {
       "title": "Default policies",
       "fields": {
@@ -792,6 +807,16 @@
         "invalidWindow": "Enter a valid window — start and end times must differ.",
         "storedInvalid": "Your saved maintenance window was invalid and is being ignored, so agents may currently update at any time. Choose a valid setting below and save to fix it."
       }
+    },
+    "enrollment": {
+      "title": "Device enrollment",
+      "ttl": "Default link expiry",
+      "deviceCount": "Default devices per link",
+      "inherit": "Inherit from partner",
+      "description": "Pre-selects the expiry and device count in the Add Device dialog. Leave a field on “Inherit from partner” to follow your partner’s default.",
+      "capNotice": "Your partner caps enrollment link lifetime at {{value}}. Links, MCP deployment invites, and installer-issued credentials all stop working once that elapses, so a machine also has to finish enrolling inside that window.",
+      "capNoticeUnknown": "Your partner sets a maximum enrollment link lifetime. Links and installer-issued credentials stop working once it elapses, so a machine also has to finish enrolling inside that window.",
+      "capMinutes": "{{minutes}} minutes"
     }
   },
   "orgEventLogSettings": {
@@ -2765,7 +2790,8 @@
       "active": "Active",
       "trial": "Trial",
       "suspended": "Suspended",
-      "churned": "Churned"
+      "churned": "Churned",
+      "offboarding": "Offboarding"
     }
   },
   "organizationList": {
@@ -2777,7 +2803,8 @@
       "active": "Active",
       "trial": "Trial",
       "suspended": "Suspended",
-      "churned": "Churned"
+      "churned": "Churned",
+      "offboarding": "Offboarding"
     },
     "columns": {
       "devices": "Devices"
@@ -2808,7 +2835,8 @@
       "active": "Active",
       "trial": "Trial",
       "suspended": "Suspended",
-      "churned": "Churned"
+      "churned": "Churned",
+      "offboarding": "Offboarding"
     },
     "deviceCount": "{{count}} devices",
     "list": {

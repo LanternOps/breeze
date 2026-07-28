@@ -50,8 +50,12 @@
     "es419Description": "Spanisch (Lateinamerika)",
     "frFRLabel": "Français (France)",
     "frFRDescription": "Französisch (Frankreich)",
+    "frCALabel": "Français (Canada)",
+    "frCADescription": "Französisch (Kanada)",
     "deDELabel": "Deutsch (Deutschland)",
-    "deDEDescription": "Deutsch (Deutschland)"
+    "deDEDescription": "Deutsch (Deutschland)",
+    "itITLabel": "Italiano (Italia)",
+    "itITDescription": "Italienisch (Italien)"
   },
   "partner": {
     "regional": {
@@ -138,6 +142,16 @@
       "enable": "Aktivieren Sie die automatische Registrierung für neue Geräte",
       "requireApproval": "Erfordert die Genehmigung des Administrators",
       "sendWelcome": "Willkommensbenachrichtigung senden"
+    },
+    "enrollment": {
+      "title": "Geräteregistrierung",
+      "ttl": "Standardgültigkeit von Links",
+      "ttlHint": "Legt vorab fest, wie lange neue Registrierungslinks und Installer gültig bleiben. Organisationen können einen abweichenden Standard wählen.",
+      "deviceCount": "Standardanzahl Geräte pro Link",
+      "deviceCountHint": "Wie viele Rechner ein Registrierungslink standardmäßig registrieren darf. Organisationen können einen abweichenden Standard wählen.",
+      "maxTtl": "Maximale Gültigkeit von Links",
+      "maxTtlHint": "Eine Obergrenze für die Lebensdauer von Schlüsseln, nicht nur dafür, was ein Administrator anfordern darf: Nichts, was unter diesem Partner ausgestellt wird, bleibt länger nutzbar — Registrierungslinks, MCP-Bereitstellungseinladungen und die untergeordneten Anmeldedaten, die beim Einlösen eines Installers ausgestellt werden.",
+      "maxTtlWarning": "Organisationen können diesen Wert nicht erhöhen. Eine kurze Obergrenze verkürzt auch die Zeit, die ein Rechner nach dem Einlösen eines Links zum Abschluss der Registrierung hat — nicht nur die Zeit zum Herunterladen."
     }
   },
   "partnerEventLogs": {
@@ -724,6 +738,7 @@
     "title": "Standardeinstellungen",
     "description": "Optimieren Sie die Standardrichtlinien und das Registrierungsverhalten für {{organization}}.",
     "save": "Standardeinstellungen speichern",
+    "managedByPartner": "Verwaltet durch Partner",
     "policies": {
       "title": "Standardrichtlinien",
       "fields": {
@@ -792,6 +807,16 @@
         "invalidWindow": "Geben Sie ein gültiges Fenster ein – Start- und Endzeit müssen unterschiedlich sein.",
         "storedInvalid": "Ihr gespeichertes Wartungsfenster war ungültig und wird ignoriert, sodass Agenten derzeit jederzeit Aktualisierungen durchführen können. Wählen Sie unten eine gültige Einstellung aus und speichern Sie sie, um das Problem zu beheben."
       }
+    },
+    "enrollment": {
+      "title": "Geräteregistrierung",
+      "ttl": "Standardgültigkeit von Links",
+      "deviceCount": "Standardanzahl Geräte pro Link",
+      "inherit": "Vom Partner übernehmen",
+      "description": "Wählt Gültigkeit und Geräteanzahl im Dialog „Gerät hinzufügen“ vorab aus. Belassen Sie ein Feld auf „Vom Partner übernehmen“, um dem Standard Ihres Partners zu folgen.",
+      "capNotice": "Ihr Partner begrenzt die Gültigkeit von Registrierungslinks auf {{value}}. Links, MCP-Bereitstellungseinladungen und vom Installer ausgestellte Anmeldedaten funktionieren danach nicht mehr — ein Rechner muss die Registrierung also ebenfalls innerhalb dieses Zeitraums abschließen.",
+      "capNoticeUnknown": "Ihr Partner legt eine maximale Gültigkeit für Registrierungslinks fest. Links und vom Installer ausgestellte Anmeldedaten funktionieren danach nicht mehr — ein Rechner muss die Registrierung also ebenfalls innerhalb dieses Zeitraums abschließen.",
+      "capMinutes": "{{minutes}} Minuten"
     }
   },
   "orgEventLogSettings": {
@@ -2712,7 +2737,8 @@
       "active": "Aktiv",
       "trial": "Prozess",
       "suspended": "Suspendiert",
-      "churned": "Aufgewühlt"
+      "churned": "Aufgewühlt",
+      "offboarding": "Abmeldung läuft"
     }
   },
   "organizationList": {
@@ -2724,7 +2750,8 @@
       "active": "Aktiv",
       "trial": "Prozess",
       "suspended": "Suspendiert",
-      "churned": "Aufgewühlt"
+      "churned": "Aufgewühlt",
+      "offboarding": "Abmeldung läuft"
     },
     "columns": {
       "devices": "Geräte"
@@ -2755,7 +2782,8 @@
       "active": "Aktiv",
       "trial": "Prozess",
       "suspended": "Suspendiert",
-      "churned": "Aufgewühlt"
+      "churned": "Aufgewühlt",
+      "offboarding": "Abmeldung läuft"
     },
     "deviceCount": "{{count}} Geräte",
     "list": {

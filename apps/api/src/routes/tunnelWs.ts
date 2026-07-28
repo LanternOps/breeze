@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { tunnelSessions, devices, users } from '../db/schema';
 import { consumeWsTicket } from '../services/remoteSessionAuth';
@@ -12,10 +12,33 @@ import { getTrustedClientIp } from '../services/clientIp';
 import { createAuditLogAsync } from '../services/auditService';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
+import {
+  bindRemoteConnection,
+  installLocalRemoteConnection,
+  ownsSafeRemoteConnection,
+  removeExactLocalRemoteConnection,
+  renewExactRemoteConnectionLease,
+  type RemoteConnectionIdentity,
+  type RemoteConnectionLease,
+} from '../services/remoteWsOwnership';
+import {
+  getRemoteWsSharedLeaseManager,
+  REMOTE_WS_SHARED_LEASE_RENEW_EVERY_MS,
+  type RemoteWsSharedLeaseClaim,
+  type RemoteWsSharedLeaseManager,
+} from '../services/remoteWsSharedLease';
+import { authorizeConsumedRemoteWsTicket } from '../services/remoteWsAuthorization';
+import {
+  assertRemoteWsUpgradeRuntimeReady,
+  getRemoteWsUpgradeConnection,
+  requireRemoteWsUpgrade,
+  type RemoteWsUpgradeContext,
+} from '../services/remoteWsUpgrade';
 
 // Store active tunnel connections: Map<tunnelId, TunnelConnection>
-interface TunnelConnection {
-  userWs: WSContext;
+interface TunnelConnection extends RemoteConnectionLease {
+  sharedOwner: RemoteWsSharedLeaseClaim;
+  sharedLeases: RemoteWsSharedLeaseManager;
   agentId: string;
   userId: string;
   deviceId: string;
@@ -23,6 +46,8 @@ interface TunnelConnection {
   tunnelType: 'vnc' | 'proxy';
   startedAt: Date;
   pingInterval?: ReturnType<typeof setInterval>;
+  leaseRenewalInterval?: ReturnType<typeof setInterval>;
+  cleanupRetryTimeout?: ReturnType<typeof setTimeout>;
   lastPongAt: number;
 }
 
@@ -52,6 +77,7 @@ const PING_INTERVAL_MS = 30_000;
 // tabs can throttle client timers, so give the client up to ~2 minutes of
 // silence before declaring the tunnel dead.
 const PONG_TIMEOUT_MS = 90_000;
+const TUNNEL_CLEANUP_RETRY_MS = 1_000;
 
 // E1: Redis-backed sliding window rate limiter for user WS upgrades.
 // Decision: fail closed on Redis outage (matches terminalWs/desktopWs).
@@ -242,10 +268,17 @@ async function validateTunnelAccess(
   });
 }
 
-function cleanupTunnelConnection(tunnelId: string) {
+function cleanupTunnelConnection(tunnelId: string, expected?: TunnelConnection) {
   const conn = activeTunnelConnections.get(tunnelId);
+  if (expected && conn !== expected) return;
   if (conn?.pingInterval) {
     clearInterval(conn.pingInterval);
+  }
+  if (conn?.leaseRenewalInterval) {
+    clearInterval(conn.leaseRenewalInterval);
+  }
+  if (conn?.cleanupRetryTimeout) {
+    clearTimeout(conn.cleanupRetryTimeout);
   }
   activeTunnelConnections.delete(tunnelId);
   tunnelDataCallbacks.delete(tunnelId);
@@ -253,19 +286,57 @@ function cleanupTunnelConnection(tunnelId: string) {
   earlyFrameBuffers.delete(tunnelId);
 }
 
-async function closeTunnelLifecycle(tunnelId: string, options: { notifyAgent: boolean; reason?: string } = { notifyAgent: true }) {
+function closeTunnelLifecycle(
+  tunnelId: string,
+  options: {
+    expectedWs: WSContext;
+    connection: RemoteConnectionIdentity;
+    notifyAgent: boolean;
+    reason?: string;
+  },
+) {
   const conn = activeTunnelConnections.get(tunnelId);
-  cleanupTunnelConnection(tunnelId);
-
-  if (options.notifyAgent && conn) {
-    sendCommandToAgent(conn.agentId, {
-      id: `tun-close-${Date.now()}`,
-      type: 'tunnel_close',
-      payload: { tunnelId },
-    });
+  if (
+    !conn
+    || conn.userWs !== options.expectedWs
+    || conn.connectionId !== options.connection.connectionId
+    || conn.generation !== options.connection.generation
+    || conn.instanceId !== options.connection.instanceId
+    || conn.leaseToken !== options.connection.leaseToken
+  ) {
+    return Promise.resolve();
   }
+  if (conn.cleanupPromise) return conn.cleanupPromise;
+  if (conn.cleanupRetryTimeout) {
+    clearTimeout(conn.cleanupRetryTimeout);
+    conn.cleanupRetryTimeout = undefined;
+  }
+  conn.state = 'closing';
+  conn.safeForwardingUntilMonotonicMs = 0;
+  if (conn.pingInterval) clearInterval(conn.pingInterval);
+  if (conn.leaseRenewalInterval) clearInterval(conn.leaseRenewalInterval);
 
-  try {
+  const cleanupAttempt = (async () => {
+    const close = await conn.sharedLeases.beginClose(conn.sharedOwner);
+    if (!close.ok && close.reason === 'owner_mismatch') {
+      cleanupTunnelConnection(tunnelId, conn);
+      return;
+    }
+    if (!close.ok) {
+      // Forwarding must stop immediately, but the exact local record stays
+      // installed so the same owner can retry beginClose.  Treating an
+      // indeterminate Redis result as success would strand the shared lease
+      // and its agent callback without a future teardown attempt.
+      tunnelDataCallbacks.delete(tunnelId);
+      earlyFrameBuffers.delete(tunnelId);
+      try {
+        conn.userWs?.close(1011, 'Tunnel ownership unavailable');
+      } catch {
+        // The retry below is still required if the socket is already gone.
+      }
+      throw new Error('Tunnel close ownership proof unavailable');
+    }
+
     await withSystemDbAccessContext(async () => {
       await db
         .update(tunnelSessions)
@@ -274,13 +345,57 @@ async function closeTunnelLifecycle(tunnelId: string, options: { notifyAgent: bo
           endedAt: new Date(),
           ...(options.reason ? { errorMessage: options.reason } : {}),
         })
-        .where(eq(tunnelSessions.id, tunnelId));
+        .where(and(
+          eq(tunnelSessions.id, tunnelId),
+          inArray(tunnelSessions.status, ['pending', 'connecting', 'active']),
+        ));
     });
-  } catch (err) {
-    console.error(`[TunnelWs] Failed to update tunnel ${tunnelId} status on close:`, err);
-  }
+    await revokeViewerSession(tunnelId);
+    tunnelDataCallbacks.delete(tunnelId);
+    earlyFrameBuffers.delete(tunnelId);
+    tunnelAgentOwnership.delete(tunnelId);
+    if (options.notifyAgent) {
+      sendCommandToAgent(conn.agentId, {
+        id: `tun-close-${tunnelId}-${conn.generation}`,
+        type: 'tunnel_close',
+        payload: { tunnelId },
+      });
+    }
+    removeExactLocalRemoteConnection(
+      activeTunnelConnections,
+      tunnelId,
+      options.connection,
+    );
+    await conn.sharedLeases.release(conn.sharedOwner);
+  })();
+  const cleanup = cleanupAttempt.catch((error) => {
+    if (activeTunnelConnections.get(tunnelId) === conn) {
+      conn.cleanupPromise = undefined;
+      conn.cleanupRetryTimeout = setTimeout(() => {
+        conn.cleanupRetryTimeout = undefined;
+        void closeTunnelLifecycle(tunnelId, options).catch(() => {
+          // The lifecycle schedules the next exact retry while this same
+          // closing connection remains installed.
+        });
+      }, TUNNEL_CLEANUP_RETRY_MS);
+    }
+    throw error;
+  });
+  conn.cleanupPromise = cleanup;
+  return cleanup;
+}
 
-  await revokeViewerSession(tunnelId);
+function closeTunnelInBackground(
+  tunnelId: string,
+  options: Parameters<typeof closeTunnelLifecycle>[1],
+  trigger: 'relay_send' | 'pong_timeout' | 'ping_send' | 'lease_renewal',
+): void {
+  void closeTunnelLifecycle(tunnelId, options).catch(() => {
+    console.error('[TunnelWs] cleanup retained for retry', {
+      tunnelId: tunnelId.slice(0, 12),
+      trigger,
+    });
+  });
 }
 
 /**
@@ -347,6 +462,32 @@ export async function revalidateTunnelSession(
   });
 }
 
+async function closeRevokedTunnelSocket(
+  tunnelId: string,
+  conn: TunnelConnection,
+  ws: WSContext,
+  lifecycleReason: string,
+  socketReason: string,
+): Promise<true> {
+  await closeTunnelLifecycle(tunnelId, {
+    expectedWs: ws,
+    connection: conn,
+    notifyAgent: true,
+    reason: lifecycleReason,
+  }).catch(() => {
+    console.error('[TunnelWs] cleanup retained for retry', {
+      tunnelId: tunnelId.slice(0, 12),
+      trigger: 'revocation',
+    });
+  });
+  try {
+    ws.close(4003, socketReason);
+  } catch {
+    // The exact socket may already be closing; forwarding is inert.
+  }
+  return true;
+}
+
 /**
  * Mid-session revocation gate for a live tunnel socket. Combines the
  * cross-instance Redis revoke flag (`isViewerSessionRevoked`, set by
@@ -357,23 +498,35 @@ export async function revalidateTunnelSession(
  */
 export async function enforceTunnelRevocation(tunnelId: string, ws: WSContext): Promise<boolean> {
   const conn = activeTunnelConnections.get(tunnelId);
-  if (!conn) return false;
+  if (
+    !conn
+    || conn.userWs !== ws
+    || !ownsSafeRemoteConnection(activeTunnelConnections, tunnelId, conn, ws)
+  ) return false;
 
   try {
     const revoked = await isViewerSessionRevoked(tunnelId);
     if (revoked) {
       console.warn(`[TunnelWs] Tunnel ${tunnelId} revoked mid-session, closing socket`);
-      await closeTunnelLifecycle(tunnelId, { notifyAgent: true, reason: 'Tunnel revoked' });
-      try { ws.close(4003, 'Tunnel revoked'); } catch { /* already closing */ }
-      return true;
+      return closeRevokedTunnelSocket(
+        tunnelId,
+        conn,
+        ws,
+        'Tunnel revoked',
+        'Tunnel revoked',
+      );
     }
 
     const check = await revalidateTunnelSession(tunnelId, conn);
     if (!check.ok) {
       console.warn(`[TunnelWs] Tunnel ${tunnelId} access revoked mid-session (${check.reason}), closing socket`);
-      await closeTunnelLifecycle(tunnelId, { notifyAgent: true, reason: check.reason });
-      try { ws.close(4003, 'Access revoked'); } catch { /* already closing */ }
-      return true;
+      return closeRevokedTunnelSocket(
+        tunnelId,
+        conn,
+        ws,
+        check.reason,
+        'Access revoked',
+      );
     }
 
     return false;
@@ -382,9 +535,13 @@ export async function enforceTunnelRevocation(tunnelId: string, ws: WSContext): 
     // but a DB error here must not leave the tunnel relaying) tears the
     // socket down this tick.
     console.error(`[TunnelWs] Revocation check failed for tunnel ${tunnelId}, closing socket (fail-closed):`, err);
-    await closeTunnelLifecycle(tunnelId, { notifyAgent: true, reason: 'Revocation check failed' });
-    try { ws.close(4003, 'Revocation check failed'); } catch { /* already closing */ }
-    return true;
+    return closeRevokedTunnelSocket(
+      tunnelId,
+      conn,
+      ws,
+      'Revocation check failed',
+      'Revocation check failed',
+    );
   }
 }
 
@@ -397,13 +554,83 @@ export async function enforceTunnelRevocation(tunnelId: string, ws: WSContext): 
  */
 export function __setTunnelConnectionForTest(
   tunnelId: string,
-  conn: TunnelConnection | undefined,
+  conn: (
+    Omit<
+      TunnelConnection,
+      | 'connectionId'
+      | 'generation'
+      | 'instanceId'
+      | 'leaseToken'
+      | 'state'
+      | 'safeForwardingUntilMonotonicMs'
+      | 'sharedOwner'
+      | 'sharedLeases'
+    >
+    & Partial<Pick<
+      TunnelConnection,
+      | 'connectionId'
+      | 'generation'
+      | 'instanceId'
+      | 'leaseToken'
+      | 'state'
+      | 'safeForwardingUntilMonotonicMs'
+      | 'sharedOwner'
+      | 'sharedLeases'
+    >>
+  ) | undefined,
 ): void {
   if (conn) {
-    activeTunnelConnections.set(tunnelId, conn);
+    const identity = {
+      connectionId: conn.connectionId ?? '33333333-3333-4333-8333-333333333333',
+      generation: conn.generation ?? 1,
+      instanceId: conn.instanceId ?? '44444444-4444-4444-8444-444444444444',
+      leaseToken: conn.leaseToken ?? '55555555-5555-4555-8555-555555555555',
+    };
+    const sharedOwner = conn.sharedOwner ?? {
+      ...identity,
+      kind: 'tunnel' as const,
+      sessionId: tunnelId,
+      ownerValue: 'test-tunnel-owner',
+      safeForwardingUntilMonotonicMs: Number.MAX_SAFE_INTEGER,
+    };
+    activeTunnelConnections.set(tunnelId, {
+      ...conn,
+      ...identity,
+      state: conn.state ?? 'active',
+      safeForwardingUntilMonotonicMs:
+        conn.safeForwardingUntilMonotonicMs ?? Number.MAX_SAFE_INTEGER,
+      sharedOwner,
+      sharedLeases: conn.sharedLeases ?? ({
+        beginClose: async () => ({ ok: true, ownership: 'still_owner' }),
+        release: async () => true,
+      } as unknown as RemoteWsSharedLeaseManager),
+    });
   } else {
-    activeTunnelConnections.delete(tunnelId);
+    cleanupTunnelConnection(tunnelId);
   }
+}
+
+async function validateTunnelUpgradeContext(
+  context: RemoteWsUpgradeContext,
+): Promise<Awaited<ReturnType<typeof validateTunnelAccess>>> {
+  const result = context.authorizationPhase === 'complete'
+    ? { ok: true as const, context: context.authorization }
+    : await authorizeConsumedRemoteWsTicket(context.ticket);
+  if (!result.ok) return { valid: false, error: result.reason };
+  const authorization = result.context;
+  return {
+    valid: true,
+    userId: authorization.userId,
+    agentId: authorization.agentId,
+    session: {
+      id: authorization.sessionId,
+      type: authorization.tunnelType ?? 'proxy',
+      userId: authorization.userId,
+      deviceId: authorization.deviceId,
+      orgId: authorization.orgId,
+      status: 'pending',
+    } as typeof tunnelSessions.$inferSelect,
+  };
 }
 
 /**
@@ -412,12 +639,29 @@ export function __setTunnelConnectionForTest(
 function createTunnelWsHandlers(
   tunnelId: string,
   ticket: string | undefined,
-  caller: { ip: string; userAgent: string }
+  caller: { ip: string; userAgent: string },
+  sharedLeases: RemoteWsSharedLeaseManager,
+  upgradeContext?: RemoteWsUpgradeContext,
 ) {
   let validationResult: Awaited<ReturnType<typeof validateTunnelAccess>> | null = null;
-  const validationPromise = validateTunnelAccess(tunnelId, ticket, caller).then(result => {
+  let connectionIdentity: RemoteConnectionIdentity | null = null;
+  const validationPromise = (
+    upgradeContext
+      ? validateTunnelUpgradeContext(upgradeContext)
+      : validateTunnelAccess(tunnelId, ticket, caller)
+  ).then(result => {
     validationResult = result;
   });
+  const releaseOpeningReservation = async () => {
+    if (!upgradeContext) return;
+    removeExactLocalRemoteConnection(
+      activeTunnelConnections,
+      tunnelId,
+      getRemoteWsUpgradeConnection(upgradeContext),
+    );
+    upgradeContext.sharedClaim.safeForwardingUntilMonotonicMs = 0;
+    await sharedLeases.release(upgradeContext.sharedClaim);
+  };
 
   return {
     onOpen: async (_event: unknown, ws: WSContext) => {
@@ -425,6 +669,7 @@ function createTunnelWsHandlers(
         await validationPromise;
 
         if (!validationResult || !validationResult.valid) {
+          await releaseOpeningReservation();
           console.warn(`[TunnelWs] Rejected tunnel ${tunnelId}: ${validationResult?.error}`);
           ws.send(JSON.stringify({ type: 'error', message: validationResult?.error ?? 'Validation failed' }));
           ws.close(4001, validationResult?.error ?? 'Validation failed');
@@ -433,29 +678,124 @@ function createTunnelWsHandlers(
 
         const { session, agentId, userId } = validationResult;
         if (!session || !agentId || !userId) {
+          await releaseOpeningReservation();
           ws.close(4001, 'Missing session data');
           return;
         }
 
-        if (await isUserTunnelWsRateLimited(userId)) {
+        if (!upgradeContext && await isUserTunnelWsRateLimited(userId)) {
           ws.send(JSON.stringify({ type: 'error', message: 'Too many tunnel connections' }));
           ws.close(4029, 'Rate limited');
           return;
         }
 
         if (!isAgentConnected(agentId)) {
+          await releaseOpeningReservation();
           ws.send(JSON.stringify({ type: 'error', message: 'Agent is not connected' }));
           ws.close(4002, 'Agent offline');
           return;
         }
 
+        const acquired = upgradeContext
+          ? { ok: true as const, claim: upgradeContext.sharedClaim }
+          : await sharedLeases.acquire('tunnel', tunnelId);
+        if (!acquired.ok) {
+          ws.close(
+            acquired.reason === 'already_owned' ? 4009 : 1011,
+            'Tunnel ownership unavailable',
+          );
+          return;
+        }
+        connectionIdentity = {
+          connectionId: acquired.claim.connectionId,
+          generation: acquired.claim.generation,
+          instanceId: acquired.claim.instanceId,
+          leaseToken: acquired.claim.leaseToken,
+        };
+        const existingReservation = upgradeContext
+          ? activeTunnelConnections.get(tunnelId)
+          : undefined;
+        const connection: TunnelConnection = existingReservation ?? {
+          ...acquired.claim,
+          state: 'opening' as const,
+          userWs: null,
+          sharedOwner: acquired.claim,
+          sharedLeases,
+          agentId,
+          userId,
+          deviceId: session.deviceId,
+          orgId: session.orgId,
+          tunnelType: session.type,
+          startedAt: new Date(),
+          lastPongAt: Date.now(),
+        };
+        if (existingReservation) {
+          Object.assign(existingReservation, {
+            agentId,
+            userId,
+            deviceId: session.deviceId,
+            orgId: session.orgId,
+            tunnelType: session.type,
+            startedAt: new Date(),
+            lastPongAt: Date.now(),
+          });
+        }
+        const installed = upgradeContext
+          ? (
+              existingReservation
+              && existingReservation.connectionId === acquired.claim.connectionId
+              && existingReservation.generation === acquired.claim.generation
+              && existingReservation.instanceId === acquired.claim.instanceId
+              && existingReservation.leaseToken === acquired.claim.leaseToken
+                ? { ok: true as const }
+                : { ok: false as const, reason: 'already_owned' as const }
+            )
+          : installLocalRemoteConnection(
+              activeTunnelConnections,
+              tunnelId,
+              acquired.claim,
+              () => connection,
+            );
+        if (
+          !installed.ok
+          || !bindRemoteConnection(
+            activeTunnelConnections,
+            tunnelId,
+            connectionIdentity,
+            ws,
+          )
+        ) {
+          removeExactLocalRemoteConnection(
+            activeTunnelConnections,
+            tunnelId,
+            connectionIdentity,
+          );
+          await sharedLeases.release(acquired.claim);
+          ws.close(4009, 'Tunnel already owned');
+          return;
+        }
+
         // Register data callback: agent data → user WebSocket
         tunnelDataCallbacks.set(tunnelId, (data: Uint8Array) => {
+          if (
+            !connectionIdentity
+            || !ownsSafeRemoteConnection(
+              activeTunnelConnections,
+              tunnelId,
+              connectionIdentity,
+              ws,
+            )
+          ) return;
           try {
             ws.send(data as Uint8Array<ArrayBuffer>);
           } catch (err) {
             console.warn(`[TunnelWs] Failed to relay data for tunnel ${tunnelId}, cleaning up:`, err);
-            void closeTunnelLifecycle(tunnelId, { notifyAgent: true, reason: 'Relay send failed' });
+            closeTunnelInBackground(tunnelId, {
+              expectedWs: ws,
+              connection: connectionIdentity,
+              notifyAgent: true,
+              reason: 'Relay send failed',
+            }, 'relay_send');
             try { ws.close(4005, 'Relay error'); } catch { /* already closing */ }
           }
         });
@@ -465,32 +805,44 @@ function createTunnelWsHandlers(
         const buffered = earlyFrameBuffers.get(tunnelId);
         if (buffered && buffered.length > 0) {
           for (const frame of buffered) {
+            if (
+              !connectionIdentity
+              || !ownsSafeRemoteConnection(
+                activeTunnelConnections,
+                tunnelId,
+                connectionIdentity,
+                ws,
+              )
+            ) {
+              break;
+            }
             try { ws.send(frame as Uint8Array<ArrayBuffer>); } catch { break; }
           }
         }
         earlyFrameBuffers.delete(tunnelId);
 
-        // Store connection
-        const connection: TunnelConnection = {
-          userWs: ws,
-          agentId,
-          userId,
-          deviceId: session.deviceId,
-          orgId: session.orgId,
-          tunnelType: session.type,
-          startedAt: new Date(),
-          lastPongAt: Date.now(),
-        };
-        activeTunnelConnections.set(tunnelId, connection);
-
         // Server-side ping to detect stale connections
         connection.pingInterval = setInterval(() => {
           const conn = activeTunnelConnections.get(tunnelId);
-          if (!conn) return;
+          if (
+            !conn
+            || !connectionIdentity
+            || !ownsSafeRemoteConnection(
+              activeTunnelConnections,
+              tunnelId,
+              connectionIdentity,
+              ws,
+            )
+          ) return;
 
           if (Date.now() - conn.lastPongAt > PING_INTERVAL_MS + PONG_TIMEOUT_MS) {
             console.warn(`[TunnelWs] Stale tunnel connection ${tunnelId}, closing`);
-            void closeTunnelLifecycle(tunnelId, { notifyAgent: true, reason: 'Connection timeout' });
+            closeTunnelInBackground(tunnelId, {
+              expectedWs: ws,
+              connection: connectionIdentity,
+              notifyAgent: true,
+              reason: 'Connection timeout',
+            }, 'pong_timeout');
             ws.close(4003, 'Connection timeout');
             return;
           }
@@ -502,13 +854,46 @@ function createTunnelWsHandlers(
           // once the relay is forwarding.
           void enforceTunnelRevocation(tunnelId, ws).then((closed) => {
             if (closed) return;
+            if (
+              !connectionIdentity
+              || !ownsSafeRemoteConnection(
+                activeTunnelConnections,
+                tunnelId,
+                connectionIdentity,
+                ws,
+              )
+            ) return;
             try {
               ws.send(JSON.stringify({ type: 'ping' }));
             } catch {
-              void closeTunnelLifecycle(tunnelId, { notifyAgent: true, reason: 'Relay ping failed' });
+              closeTunnelInBackground(tunnelId, {
+                expectedWs: ws,
+                connection: connectionIdentity!,
+                notifyAgent: true,
+                reason: 'Relay ping failed',
+              }, 'ping_send');
             }
           });
         }, PING_INTERVAL_MS);
+        connection.leaseRenewalInterval = setInterval(() => {
+          if (!connectionIdentity) return;
+          void renewExactRemoteConnectionLease(
+            activeTunnelConnections,
+            tunnelId,
+            connectionIdentity,
+            ws,
+            () => sharedLeases.renew(connection.sharedOwner),
+          ).then((renewed) => {
+            if (!renewed && connectionIdentity) {
+              closeTunnelInBackground(tunnelId, {
+                expectedWs: ws,
+                connection: connectionIdentity,
+                notifyAgent: true,
+                reason: 'Lease renewal failed',
+              }, 'lease_renewal');
+            }
+          });
+        }, REMOTE_WS_SHARED_LEASE_RENEW_EVERY_MS);
 
         // Only transition to active if the tunnel_open succeeded (status = connecting).
         // If the agent already failed, session.status will be 'failed' and we should not override.
@@ -521,24 +906,75 @@ function createTunnelWsHandlers(
           return row ?? null;
         });
 
+        if (!ownsSafeRemoteConnection(
+          activeTunnelConnections,
+          tunnelId,
+          connectionIdentity,
+          ws,
+        )) {
+          await closeTunnelLifecycle(tunnelId, {
+            expectedWs: ws,
+            connection: connectionIdentity,
+            notifyAgent: true,
+            reason: 'Tunnel ownership lost during setup',
+          });
+          return;
+        }
+
         if (currentSession?.status === 'failed') {
           ws.send(JSON.stringify({ type: 'error', message: 'Tunnel failed to open on agent' }));
-          cleanupTunnelConnection(tunnelId);
+          await closeTunnelLifecycle(tunnelId, {
+            expectedWs: ws,
+            connection: connectionIdentity,
+            notifyAgent: false,
+            reason: 'Tunnel failed to open on agent',
+          });
           ws.close(4004, 'Tunnel open failed');
           return;
         }
 
-        await withSystemDbAccessContext(async () => {
-          await db
+        const [activated] = await withSystemDbAccessContext(async () =>
+          db
             .update(tunnelSessions)
             .set({ status: 'active', startedAt: new Date() })
-            .where(eq(tunnelSessions.id, tunnelId));
-        });
+            .where(and(
+              eq(tunnelSessions.id, tunnelId),
+              inArray(tunnelSessions.status, ['pending', 'connecting', 'active']),
+            ))
+            .returning({ id: tunnelSessions.id }),
+        );
+        if (
+          !activated
+          || !ownsSafeRemoteConnection(
+            activeTunnelConnections,
+            tunnelId,
+            connectionIdentity,
+            ws,
+          )
+        ) {
+          await closeTunnelLifecycle(tunnelId, {
+            expectedWs: ws,
+            connection: connectionIdentity,
+            notifyAgent: true,
+            reason: 'Tunnel activation race',
+          });
+          return;
+        }
 
         ws.send(JSON.stringify({ type: 'connected', tunnelId }));
       } catch (error) {
         console.error(`[TunnelWs] Error in onOpen for tunnel ${tunnelId}:`, error);
         captureException(error);
+        if (connectionIdentity) {
+          await closeTunnelLifecycle(tunnelId, {
+            expectedWs: ws,
+            connection: connectionIdentity,
+            notifyAgent: true,
+            reason: 'Tunnel setup failed',
+          }).catch(() => undefined);
+        } else {
+          await releaseOpeningReservation();
+        }
         ws.close(4000, 'Internal error');
       }
     },
@@ -549,6 +985,15 @@ function createTunnelWsHandlers(
         ws.close(4001, 'No active tunnel connection');
         return;
       }
+      if (
+        !connectionIdentity
+        || !ownsSafeRemoteConnection(
+          activeTunnelConnections,
+          tunnelId,
+          connectionIdentity,
+          ws,
+        )
+      ) return;
 
       // Any inbound message (binary or text) is liveness evidence — noVNC
       // consumes the WebSocket directly and never sees or replies to our JSON
@@ -576,7 +1021,12 @@ function createTunnelWsHandlers(
           if (!sent) {
             console.warn(`[TunnelWs] Agent ${conn.agentId} disconnected, cannot relay for tunnel ${tunnelId}`);
             ws.send(JSON.stringify({ type: 'error', message: 'Agent disconnected' }));
-            await closeTunnelLifecycle(tunnelId, { notifyAgent: false, reason: 'Agent disconnected' });
+            await closeTunnelLifecycle(tunnelId, {
+              expectedWs: ws,
+              connection: connectionIdentity,
+              notifyAgent: false,
+              reason: 'Agent disconnected',
+            });
             ws.close(4002, 'Agent offline');
             return;
           }
@@ -610,7 +1060,12 @@ function createTunnelWsHandlers(
           if (!sent) {
             console.warn(`[TunnelWs] Agent ${conn.agentId} disconnected, cannot relay for tunnel ${tunnelId}`);
             ws.send(JSON.stringify({ type: 'error', message: 'Agent disconnected' }));
-            await closeTunnelLifecycle(tunnelId, { notifyAgent: false, reason: 'Agent disconnected' });
+            await closeTunnelLifecycle(tunnelId, {
+              expectedWs: ws,
+              connection: connectionIdentity,
+              notifyAgent: false,
+              reason: 'Agent disconnected',
+            });
             ws.close(4002, 'Agent offline');
             return;
           }
@@ -621,15 +1076,23 @@ function createTunnelWsHandlers(
       }
     },
 
-    onClose: async () => {
+    onClose: async (_event: unknown, ws: WSContext) => {
       console.log(`[TunnelWs] Tunnel ${tunnelId} WebSocket closed`);
-      await closeTunnelLifecycle(tunnelId, { notifyAgent: true });
+      if (!connectionIdentity) return;
+      await closeTunnelLifecycle(tunnelId, {
+        expectedWs: ws,
+        connection: connectionIdentity,
+        notifyAgent: true,
+      });
     },
 
-    onError: async (error: unknown) => {
+    onError: async (error: unknown, ws: WSContext) => {
       console.error(`[TunnelWs] Error for tunnel ${tunnelId}:`, error);
       captureException(error);
+      if (!connectionIdentity) return;
       await closeTunnelLifecycle(tunnelId, {
+        expectedWs: ws,
+        connection: connectionIdentity,
         notifyAgent: true,
         reason: error instanceof Error ? error.message : 'Tunnel WebSocket error',
       });
@@ -641,10 +1104,48 @@ function createTunnelWsHandlers(
  * Create tunnel WebSocket routes.
  * Pattern: GET /api/v1/tunnel-ws/:tunnelId/ws?ticket=xxx
  */
-export function createTunnelWsRoutes(upgradeWebSocket: (createEvents: () => ReturnType<typeof createTunnelWsHandlers>) => any) {
+export function createTunnelWsRoutes(
+  upgradeWebSocket: (createEvents: () => ReturnType<typeof createTunnelWsHandlers>) => any,
+  options: { sharedLeases?: RemoteWsSharedLeaseManager } = {},
+) {
+  assertRemoteWsUpgradeRuntimeReady();
   const routes = new Hono();
 
-  routes.get('/:tunnelId/ws', (c) => {
+  routes.get(
+    '/:tunnelId/ws',
+    async (c, next) => {
+      const sharedLeases = options.sharedLeases ?? getRemoteWsSharedLeaseManager();
+      if (!sharedLeases) {
+        return c.json({ error: 'Remote ownership unavailable' }, 503);
+      }
+      return requireRemoteWsUpgrade({
+        expectedType: 'tunnel',
+        sharedLeases,
+        installLocal: (tunnelId, claim) =>
+          installLocalRemoteConnection(
+            activeTunnelConnections,
+            tunnelId,
+            claim,
+            (shared): TunnelConnection => ({
+              ...shared,
+              state: 'opening',
+              userWs: null,
+              sharedOwner: shared,
+              sharedLeases,
+              agentId: '',
+              userId: '',
+              deviceId: '',
+              orgId: '',
+              tunnelType: 'proxy',
+              startedAt: new Date(),
+              lastPongAt: Date.now(),
+            }),
+          ),
+        removeLocal: (tunnelId, claim) =>
+          removeExactLocalRemoteConnection(activeTunnelConnections, tunnelId, claim),
+      })(c, next);
+    },
+    (c) => {
     const tunnelId = c.req.param('tunnelId');
     const ticket = c.req.query('ticket');
 
@@ -657,10 +1158,19 @@ export function createTunnelWsRoutes(upgradeWebSocket: (createEvents: () => Retu
       ip: getTrustedClientIp(c),
       userAgent: c.req.header('user-agent') ?? '',
     };
+    const sharedLeases = options.sharedLeases ?? getRemoteWsSharedLeaseManager();
+    if (!sharedLeases) {
+      return c.json({ error: 'Remote ownership unavailable' }, 503);
+    }
 
-    const wsHandler = upgradeWebSocket(() => createTunnelWsHandlers(tunnelId, ticket, caller));
+    const context = (c as unknown as { get?: (key: string) => unknown })
+      .get?.('remoteWs') as RemoteWsUpgradeContext | undefined;
+    const wsHandler = upgradeWebSocket(() =>
+      createTunnelWsHandlers(tunnelId, ticket, caller, sharedLeases, context),
+    );
     return wsHandler(c, c.req.raw);
-  });
+    },
+  );
 
   return routes;
 }

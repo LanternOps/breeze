@@ -164,7 +164,7 @@
     "slack": "Slack",
     "connectAWorkspaceWithOAuthAndPostAlerts": "Connect a workspace with OAuth and post alerts to channels. ",
     "workspace": "Workspace",
-    "workspaceID": "Workspace ID: ",
+    "workspaceID": "Workspace ID: {{id}}",
     "connectWorkspace": "Connect workspace ",
     "oauthRedirectStartsWhenYouConnectASlack": "OAuth redirect starts when you connect a Slack workspace. ",
     "defaultChannel": "Default channel",
@@ -334,10 +334,7 @@
     "unmap": "Unmap ",
     "noHuntressOrganizationsDiscoveredYetSaveCredentialsAnd": "No Huntress organizations discovered yet. Save credentials and run Sync Now. ",
     "noOrganizationsMatchTheCurrentFilter": "No organizations match the current filter. ",
-    "showing": "Showing ",
-    "of": "of ",
     "previous": "Previous ",
-    "page": "Page ",
     "next": "Next ",
     "recentIncidents": "Recent incidents",
     "liveStatusError": "Live Huntress status could not be fully loaded. Coverage and incident data below may be incomplete or out of date.",
@@ -376,7 +373,9 @@
     "update": "Update",
     "saveAndConnect": "Save & Connect",
     "unknownTime": "Unknown time",
-    "askAdminToConnect": "Huntress is configured once at the partner level and shared across every organization. Ask your MSP administrator to connect it."
+    "askAdminToConnect": "Huntress is configured once at the partner level and shared across every organization. Ask your MSP administrator to connect it.",
+    "showingRange": "Showing {{start}}–{{end}} of {{total}}",
+    "pageOf": "Page {{current}} of {{total}}"
   },
   "integrationsPage": {
     "webhooks": "Webhooks",
@@ -797,7 +796,7 @@
     "stripeDashboard": "Stripe dashboard ",
     "loadingStripeConnection": "Loading Stripe connection…",
     "couldNotLoadStripeConnection": "Could not load Stripe connection.",
-    "key": "key •••• ",
+    "key": "key •••• {{last4}}",
     "skLiveOrRkLive": "sk_live_… or rk_live_…",
     "connected": "Connected",
     "live": "Live",
@@ -947,15 +946,14 @@
     "loadingWebhooks": "Loading webhooks...",
     "tryAgain": "Try again ",
     "webhooks": "Webhooks",
-    "endpoints": "endpoints, ",
-    "averageSuccessRate": "% average success rate ",
     "addWebhook": "Add webhook ",
     "events": "Events",
     "lastTriggered": "Last Triggered",
     "successRate": "Success Rate",
     "anErrorOccurred": "An error occurred",
     "justNow": "Just now",
-    "url": "URL"
+    "url": "URL",
+    "endpointsSummary": "{{total}} endpoints, {{successRate}}% average success rate"
   },
   "webhookTestPanel": {
     "failedToFetchTestHistory": "Failed to fetch test history",

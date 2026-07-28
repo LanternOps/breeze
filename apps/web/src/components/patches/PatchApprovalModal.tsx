@@ -191,6 +191,8 @@ export default function PatchApprovalModal({
                 type="button"
                 onClick={() => setAction(option)}
                 disabled={isSubmitting}
+                data-testid={`patch-approval-action-${option}`}
+                aria-pressed={action === option}
                 className={cn(
                   'flex w-full items-start gap-3 rounded-md border px-4 py-3 text-left transition',
                   action === option ? config.color : 'border-muted text-muted-foreground hover:text-foreground',
@@ -208,8 +210,9 @@ export default function PatchApprovalModal({
         </div>
 
         <div className="mt-6">
-          <label className="text-sm font-medium">{t('patchApprovalModal.notes.label')}</label>
+          <label htmlFor="patch-approval-notes" className="text-sm font-medium">{t('patchApprovalModal.notes.label')}</label>
           <textarea
+            id="patch-approval-notes"
             value={notes}
             onChange={event => setNotes(event.target.value)}
             placeholder={t('patchApprovalModal.notes.placeholder')}
@@ -259,6 +262,7 @@ export default function PatchApprovalModal({
             type="button"
             onClick={handleSubmit}
             disabled={!canSubmit}
+            data-testid="patch-approval-submit"
             title={isOrgScope ? t('patchApprovalModal.errors.partnerLevel') : undefined}
             className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >

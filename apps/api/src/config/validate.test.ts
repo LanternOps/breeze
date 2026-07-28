@@ -44,6 +44,11 @@ const validEnv = {
   // many "production happy-path" tests below from tripping the new check.
   // Tests that assert the missing/invalid IS_HOSTED throw override this.
   IS_HOSTED: 'true',
+  // Production-required (Wave 3 live authorization): the event-socket
+  // permission epoch mode must be declared explicitly so a rolling deploy
+  // never guesses its compatibility posture. Tests that assert the
+  // missing/invalid throw override this.
+  EVENT_PERMISSION_EPOCH_MODE: 'compat',
 };
 
 describe('validateConfig', () => {
@@ -1154,6 +1159,88 @@ describe('validateConfig', () => {
     });
   });
 
+  // ---- Wave 3 live-authorization rollout controls -------------------------
+  // OAUTH_AUTH_EPOCH_ENFORCE_AFTER and EVENT_PERMISSION_EPOCH_MODE decide how
+  // long pre-Wave-3 OAuth tokens and version-one event tickets keep working.
+  // Both refusals live here rather than in config/env.ts: env.ts is imported
+  // by this validator, by jobs, by seeds and by scripts, so a module-scope
+  // throw there would preempt this aggregated report and take down unrelated
+  // processes that never touch OAuth or event sockets.
+  describe('live authorization rollout config', () => {
+    const prodEnv = {
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    };
+
+    it('refuses boot in production when EVENT_PERMISSION_EPOCH_MODE is missing', () => {
+      withEnv({ ...prodEnv, EVENT_PERMISSION_EPOCH_MODE: '' }, () => {
+        expect(() => validateConfig()).toThrow(/EVENT_PERMISSION_EPOCH_MODE/i);
+      });
+    });
+
+    it.each(['compat', 'enforce'])(
+      'boots in production with EVENT_PERMISSION_EPOCH_MODE=%s',
+      (mode) => {
+        withEnv({ ...prodEnv, EVENT_PERMISSION_EPOCH_MODE: mode }, () => {
+          expect(() => validateConfig()).not.toThrow();
+        });
+      },
+    );
+
+    // Shape is enforced in EVERY environment — an unrecognized mode would
+    // otherwise fall back to the closed value at import and silently change
+    // ticket acceptance.
+    it.each(['development', 'production'])(
+      'refuses boot in %s when EVENT_PERMISSION_EPOCH_MODE is not compat or enforce',
+      (nodeEnv) => {
+        withEnv({ ...prodEnv, NODE_ENV: nodeEnv, EVENT_PERMISSION_EPOCH_MODE: 'strict' }, () => {
+          expect(() => validateConfig()).toThrow(/EVENT_PERMISSION_EPOCH_MODE must be compat or enforce/i);
+        });
+      },
+    );
+
+    it('refuses boot in production when MCP_OAUTH_ENABLED=true and OAUTH_AUTH_EPOCH_ENFORCE_AFTER is missing', () => {
+      withEnv({ ...prodEnv, MCP_OAUTH_ENABLED: 'true', OAUTH_AUTH_EPOCH_ENFORCE_AFTER: '' }, () => {
+        expect(() => validateConfig()).toThrow(/OAUTH_AUTH_EPOCH_ENFORCE_AFTER/i);
+      });
+    });
+
+    it('does not require OAUTH_AUTH_EPOCH_ENFORCE_AFTER when OAuth is disabled', () => {
+      withEnv({ ...prodEnv, MCP_OAUTH_ENABLED: 'false', OAUTH_AUTH_EPOCH_ENFORCE_AFTER: '' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    // A local timestamp would move the compatibility boundary with the host
+    // timezone, so an explicit UTC/offset suffix is mandatory everywhere.
+    it.each(['development', 'production'])(
+      'refuses boot in %s when OAUTH_AUTH_EPOCH_ENFORCE_AFTER has no UTC/offset suffix',
+      (nodeEnv) => {
+        withEnv({
+          ...prodEnv,
+          NODE_ENV: nodeEnv,
+          OAUTH_AUTH_EPOCH_ENFORCE_AFTER: '2026-08-06T00:30:00',
+        }, () => {
+          expect(() => validateConfig()).toThrow(/OAUTH_AUTH_EPOCH_ENFORCE_AFTER/i);
+        });
+      },
+    );
+
+    it('accepts an absolute UTC OAUTH_AUTH_EPOCH_ENFORCE_AFTER in production', () => {
+      withEnv({
+        ...prodEnv,
+        MCP_OAUTH_ENABLED: 'true',
+        OAUTH_JWKS_PRIVATE_JWK: '{"kty":"oct"}',
+        OAUTH_COOKIE_SECRET: 'prod-test-oauth-cookie-secret-32-chars-min-strong-random',
+        OAUTH_AUTH_EPOCH_ENFORCE_AFTER: '2026-08-06T00:30:00Z',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
   // ---- TRUST_PROXY_HEADERS / TRUSTED_PROXY_CIDRS hardening (CRIT-1, Task 25) ----
   // When the API runs behind a reverse proxy in production, both
   //   TRUST_PROXY_HEADERS=true AND a non-empty TRUSTED_PROXY_CIDRS
@@ -1331,6 +1418,10 @@ describe('validateConfig', () => {
         MCP_OAUTH_ENABLED: 'true',
         OAUTH_JWKS_PRIVATE_JWK: '{"keys":[{"kty":"OKP"}]}',
         OAUTH_COOKIE_SECRET: 'a-strong-random-cookie-secret-32-chars-min',
+        // Wave 3: enabling OAuth in production also requires the absolute
+        // auth-epoch compatibility deadline. Asserted on its own in the
+        // "live authorization rollout config" suite above.
+        OAUTH_AUTH_EPOCH_ENFORCE_AFTER: '2026-08-06T00:30:00Z',
       }, () => {
         expect(() => validateConfig()).not.toThrow();
       });

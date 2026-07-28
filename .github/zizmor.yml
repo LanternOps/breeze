@@ -2,10 +2,6 @@ rules:
   unpinned-uses:
     config:
       policies:
-        # Repo posture: first-party GitHub-owned actions may float on major
-        # version tags; everything else must be pinned to a commit SHA.
-        actions/*: ref-pin
-        github/*: ref-pin
         "*": hash-pin
   cache-poisoning:
     # Accepted tradeoff (2026-06): the release workflow uses setup-node /

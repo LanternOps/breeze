@@ -43,10 +43,14 @@ import {
   restoreOrganizationTenantAccess,
   revokeOrganizationTenantAccess,
 } from './tenantLifecycle';
+import { abortOrganizationOffboarding } from './tenantOffboarding';
 
 // Mirrors the org PATCH route's status set (schema orgStatusEnum). Kept as a
 // literal array (not orgStatusEnum.enumValues) so schema mocks in tests don't
 // break the zod/tool definitions.
+// Deliberately excludes `offboarding` (#2774): entering the drain state queues
+// an irreversible fleet-wide self_uninstall, which stays a human, MFA-gated
+// action (PATCH /organizations/:id) — never an AI-tool transition.
 const ORG_STATUSES = ['active', 'suspended', 'trial', 'churned'] as const;
 type OrgStatus = (typeof ORG_STATUSES)[number];
 
@@ -338,10 +342,14 @@ async function handleUpdateOrg(
   if (!org) return jsonError('Organization not found or access denied');
 
   // Status-transition invariants from the org PATCH route: suspending/churning
-  // severs agent tenant access; re-activating restores it.
+  // severs agent tenant access; re-activating restores it. Any transition off
+  // `offboarding` (#2774) first cancels in-flight drain uninstalls (no-op
+  // otherwise) so an uncollected self_uninstall can't survive a reactivation.
   if (status !== undefined && status !== 'active' && status !== 'trial') {
+    await abortOrganizationOffboarding(org.id);
     await revokeOrganizationTenantAccess(org.id);
   } else if (status === 'active' || status === 'trial') {
+    await abortOrganizationOffboarding(org.id);
     await restoreOrganizationTenantAccess(org.id);
   }
 

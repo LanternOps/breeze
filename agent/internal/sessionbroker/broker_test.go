@@ -88,7 +88,7 @@ func TestSessionForUserPrefersMostRecentUserSession(t *testing.T) {
 			userSessionOld.SessionID: userSessionOld,
 			userSessionNew.SessionID: userSessionNew,
 		},
-		byIdentity:   make(map[string][]*Session),
+		byIdentity: make(map[string][]*Session),
 	}
 
 	got := b.SessionForUser("alice")
@@ -112,7 +112,7 @@ func TestSessionForUserSelectsRDPHelper(t *testing.T) {
 			consoleSession.SessionID: consoleSession,
 			rdpSession.SessionID:     rdpSession,
 		},
-		byIdentity:   make(map[string][]*Session),
+		byIdentity: make(map[string][]*Session),
 	}
 
 	if got := b.SessionForUser("alice"); got != rdpSession {
@@ -138,7 +138,7 @@ func TestLaunchProcessViaUserHelperBroadcastsToAllUserSessions(t *testing.T) {
 			olderSession.SessionID: olderSession,
 			newerSession.SessionID: newerSession,
 		},
-		byIdentity:   make(map[string][]*Session),
+		byIdentity: make(map[string][]*Session),
 	}
 
 	seen := make(chan string, 2)
@@ -204,7 +204,7 @@ func TestLaunchProcessViaUserHelperForSessionTargetsMatchingHelper(t *testing.T)
 			sessionA.SessionID: sessionA,
 			sessionB.SessionID: sessionB,
 		},
-		byIdentity:   make(map[string][]*Session),
+		byIdentity: make(map[string][]*Session),
 	}
 
 	seen := make(chan string, 1)
@@ -260,7 +260,7 @@ func TestLaunchProcessViaUserHelperForSessionTargetsMatchingRDPHelper(t *testing
 			consoleSession.SessionID: consoleSession,
 			rdpSession.SessionID:     rdpSession,
 		},
-		byIdentity:   make(map[string][]*Session),
+		byIdentity: make(map[string][]*Session),
 	}
 
 	seen := make(chan string, 1)
@@ -310,7 +310,7 @@ func TestReapIdleSessionsReapsStrandedCaptureSessions(t *testing.T) {
 		sessions: map[string]*Session{
 			session.SessionID: session,
 		},
-		byIdentity:   map[string][]*Session{session.IdentityKey: []*Session{session}},
+		byIdentity: map[string][]*Session{session.IdentityKey: {session}},
 	}
 
 	b.reapIdleSessions()
@@ -423,7 +423,7 @@ func TestPreferredSessionWithScopePrefersNewestUserHelper(t *testing.T) {
 			olderUser.SessionID:     olderUser,
 			newerUser.SessionID:     newerUser,
 		},
-		byIdentity:   make(map[string][]*Session),
+		byIdentity: make(map[string][]*Session),
 	}
 
 	got := b.PreferredSessionWithScope("run_as_user")
@@ -459,7 +459,7 @@ func TestPreferredDesktopSession_LoginWindowConsole_PrefersLoginWindowHelper(t *
 			userSession.SessionID:  userSession,
 			loginSession.SessionID: loginSession,
 		},
-		byIdentity:   make(map[string][]*Session),
+		byIdentity: make(map[string][]*Session),
 	}
 
 	// Without console user set, user_session wins (existing behavior).
@@ -503,7 +503,7 @@ func TestPreferredDesktopSession_LoggedInConsole_PrefersUserSession(t *testing.T
 			userSession.SessionID:  userSession,
 			loginSession.SessionID: loginSession,
 		},
-		byIdentity:   make(map[string][]*Session),
+		byIdentity: make(map[string][]*Session),
 	}
 
 	// With a real user logged in, user_session should still win.
@@ -532,7 +532,7 @@ func TestPreferredDesktopSession_LoginWindowConsole_OnlyLoginHelpers(t *testing.
 		sessions: map[string]*Session{
 			userSession.SessionID: userSession,
 		},
-		byIdentity:   make(map[string][]*Session),
+		byIdentity: make(map[string][]*Session),
 	}
 
 	b.SetConsoleUser("loginwindow")
@@ -574,7 +574,7 @@ func TestPreferredDesktopSession_LoginWindow_DeterministicRegardlessOfOrder(t *t
 				userSession.SessionID:  userSession,
 				loginSession.SessionID: loginSession,
 			},
-			byIdentity:   make(map[string][]*Session),
+			byIdentity: make(map[string][]*Session),
 		}
 		b.SetConsoleUser("loginwindow")
 
@@ -615,7 +615,7 @@ func TestCloseSessionsByDesktopContext(t *testing.T) {
 			loginSession.SessionID:  loginSession,
 			notifySession.SessionID: notifySession,
 		},
-		byIdentity:   make(map[string][]*Session),
+		byIdentity: make(map[string][]*Session),
 	}
 
 	closed := b.CloseSessionsByDesktopContext(ipc.DesktopContextUserSession)
@@ -676,7 +676,7 @@ func TestCloseSessionsByDesktopContext_MultipleMatches(t *testing.T) {
 			sess2.SessionID:     sess2,
 			loginSess.SessionID: loginSess,
 		},
-		byIdentity:   make(map[string][]*Session),
+		byIdentity: make(map[string][]*Session),
 	}
 
 	closed := b.CloseSessionsByDesktopContext(ipc.DesktopContextUserSession)
@@ -1127,7 +1127,7 @@ func TestConsentUIFallbackScopeGrant(t *testing.T) {
 	b := &Broker{}
 	tests := []struct {
 		name            string
-		role            string
+		role            ipc.HelperRole
 		supportsConsent bool
 		wantFallback    bool
 	}{

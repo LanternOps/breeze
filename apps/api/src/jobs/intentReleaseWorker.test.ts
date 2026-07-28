@@ -36,6 +36,12 @@ const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, 
     googleHeadlessMock: {
       isHeadlessGoogleTool: vi.fn(() => false),
       executeGoogleToolHeadless: vi.fn(),
+      executeGoogleSecretToolHeadless: vi.fn(),
+      // A plain (non-mock-fn) object, mutated in place by tests via
+      // mockHeadlessGoogleSecret/resetGoogleSecretActions — vi.mock's factory
+      // captures this object reference once, so tests must mutate its keys
+      // rather than reassigning the variable.
+      secretActions: {} as Record<string, unknown>,
     },
     m365HeadlessMock: {
       isHeadlessM365Tool: vi.fn(() => false),
@@ -103,6 +109,8 @@ vi.mock('../middleware/auth', () => ({
 vi.mock('../services/googleToolsHeadless', () => ({
   isHeadlessGoogleTool: googleHeadlessMock.isHeadlessGoogleTool,
   executeGoogleToolHeadless: googleHeadlessMock.executeGoogleToolHeadless,
+  executeGoogleSecretToolHeadless: googleHeadlessMock.executeGoogleSecretToolHeadless,
+  GOOGLE_HEADLESS_SECRET_ACTIONS: googleHeadlessMock.secretActions,
   GoogleConnectionUnavailableError: class GoogleConnectionUnavailableError extends Error {
     constructor(public readonly toolResult: string) { super('unavailable'); }
   },
@@ -157,6 +165,10 @@ import { releaseApprovedIntent, processIntentReleaseJob } from './intentReleaseW
 import type { ActionIntent } from '../db/schema/actionIntents';
 import { GoogleConnectionUnavailableError } from '../services/googleToolsHeadless';
 import { M365ConnectionUnavailableError } from '../services/m365ToolsHeadless';
+// Deliberately REAL (not mocked) — assertNoPlaintextSecret is the exact guard
+// the worker calls on both persistence paths; testing it directly here pins
+// the invariant the worker relies on without inventing a parallel harness.
+import { assertNoPlaintextSecret, type SecretToolResult } from '../services/actionIntents/secretBearingTools';
 
 function baseIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
   return {
@@ -209,6 +221,49 @@ function resetDbState() {
   dbState.selectApprovalRequestsResults.length = 0;
 }
 
+/** Clears GOOGLE_HEADLESS_SECRET_ACTIONS keys in place (see the hoisted
+ *  comment on googleHeadlessMock.secretActions for why this mutates rather
+ *  than reassigns). */
+function resetGoogleSecretActions() {
+  for (const key of Object.keys(googleHeadlessMock.secretActions)) {
+    delete googleHeadlessMock.secretActions[key];
+  }
+}
+
+/** Arranges the worker's secret-bearing Google branch to fire for `actionName`,
+ *  resolving executeGoogleSecretToolHeadless with `carrier`. */
+function mockHeadlessGoogleSecret(actionName: string, carrier: SecretToolResult) {
+  googleHeadlessMock.secretActions[actionName] = true;
+  googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(true);
+  googleHeadlessMock.executeGoogleSecretToolHeadless.mockResolvedValueOnce(carrier);
+}
+
+/** Runs releaseApprovedIntent through to the executing->completed CAS and
+ *  returns the `result` payload it persisted. */
+async function runReleaseAndCaptureResult(opts: {
+  actionName: string;
+  orgId: string;
+}): Promise<Record<string, unknown>> {
+  const intent = baseIntent({ actionName: opts.actionName, orgId: opts.orgId });
+  primeThroughRevalidation(intent);
+  intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+  await releaseApprovedIntent(intent.id);
+
+  const lastPatch = intentServiceMock.transitionIntent.mock.lastCall![3] as {
+    result: Record<string, unknown>;
+  };
+  return lastPatch.result;
+}
+
+/** Exercises the exact guard the worker calls immediately before persisting a
+ *  result (both the returned-error and completion paths call
+ *  assertNoPlaintextSecret) — proves it rejects a plaintext credential rather
+ *  than trusting a particular code path was taken. */
+async function persistResultForTest(actionName: string, result: Record<string, unknown>): Promise<void> {
+  assertNoPlaintextSecret(actionName, result);
+}
+
 /** Sets up the common happy-path mocks through the last revalidation step, before executeTool. */
 function primeThroughRevalidation(intent: ActionIntent) {
   intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // approved -> executing
@@ -229,6 +284,7 @@ describe('releaseApprovedIntent', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetDbState();
+    resetGoogleSecretActions();
     googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(false);
     m365HeadlessMock.isHeadlessM365Tool.mockReturnValue(false);
   });
@@ -767,6 +823,113 @@ describe('releaseApprovedIntent', () => {
       );
       expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('secret-bearing release', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetDbState();
+    resetGoogleSecretActions();
+    googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(false);
+    m365HeadlessMock.isHeadlessM365Tool.mockReturnValue(false);
+  });
+
+  it('seals a google_reset_password credential instead of storing prose', async () => {
+    process.env.APP_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
+    process.env.APP_ENCRYPTION_KEY_ID = 'test-key-1';
+
+    const PW = 'Bz9!oVnL920blvsjqqMy';
+    mockHeadlessGoogleSecret('google_reset_password', {
+      kind: 'success',
+      llmText: 'Reset the password for a@b.com. The temporary credential is available for one-time reveal.',
+      secrets: { temporaryPassword: PW },
+    });
+
+    const stored = await runReleaseAndCaptureResult({
+      actionName: 'google_reset_password',
+      orgId: 'org-1',
+    });
+
+    expect(stored.temporaryPasswordEnc).toMatch(/^enc:v3:/);
+    expect(JSON.stringify(stored)).not.toContain(PW);
+    expect(stored.raw).toBeUndefined();
+  });
+
+  it('refuses to persist a plaintext credential if sealing is bypassed', async () => {
+    await expect(
+      persistResultForTest('google_reset_password', { raw: 'Temporary password: hunter2 (…)' }),
+    ).rejects.toThrow(/plaintext credential/i);
+  });
+
+  // The two tests below pin the ACTUAL call sites inside releaseApprovedIntent
+  // (the returned-error path and the completion path), not just the guard
+  // function in isolation — `persistResultForTest` above calls the real
+  // assertNoPlaintextSecret directly, so it would keep passing even if BOTH
+  // in-worker call sites were deleted. These feed a carrier through the real
+  // worker flow so a deleted guard call is caught by an actual regression
+  // here, not just in secretBearingTools.test.ts.
+
+  it('returned-error path: guard trips on a plaintext credential in an error carrier and fails secret_seal_invariant_violated, with no result body', async () => {
+    // llmText is valid JSON with an {error, message} shape (errorString()'s
+    // real output shape) so isReturnedToolError(rawResult) is true and this
+    // routes through the FIRST guard call site (before the
+    // tool_returned_error CAS), not the completion path.
+    mockHeadlessGoogleSecret('google_reset_password', {
+      kind: 'error',
+      llmText: JSON.stringify({
+        error: 'google_error',
+        message: 'Reset partially failed. Temporary password: hunter2leaked (raw prose bypass)',
+      }),
+    });
+    const intent = baseIntent({ actionName: 'google_reset_password', orgId: 'org-1' });
+    primeThroughRevalidation(intent);
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+    await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
+
+    // Exactly two transitionIntent calls: the claim CAS, then the guard's
+    // fail CAS — no attempt to CAS to `completed`, and no `tool_returned_error`
+    // fail-with-result either (that would be a THIRD distinct shape).
+    expect(intentServiceMock.transitionIntent).toHaveBeenCalledTimes(2);
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'failed',
+      { errorCode: 'secret_seal_invariant_violated', executedAt: expect.any(Date) },
+    );
+    const lastPatch = intentServiceMock.transitionIntent.mock.lastCall![3] as Record<string, unknown>;
+    expect(lastPatch).not.toHaveProperty('result');
+    expect(sentryMock.captureException).toHaveBeenCalled();
+    // The audit/log/error paths must never carry the plaintext either.
+    expect(JSON.stringify(auditMock.writeAuditEvent.mock.calls)).not.toContain('hunter2leaked');
+  });
+
+  it('completion path: guard trips on a plaintext credential in a non-JSON error carrier and fails secret_seal_invariant_violated, with no result body', async () => {
+    // llmText is plain prose (not valid JSON), so isReturnedToolError(rawResult)
+    // is FALSE and this falls through to the completion path's guard call
+    // site instead of the returned-error one.
+    mockHeadlessGoogleSecret('google_reset_password', {
+      kind: 'error',
+      llmText: 'Reset partially failed. Temporary password: hunter2leaked (raw prose bypass)',
+    });
+    const intent = baseIntent({ actionName: 'google_reset_password', orgId: 'org-1' });
+    primeThroughRevalidation(intent);
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+    await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
+
+    expect(intentServiceMock.transitionIntent).toHaveBeenCalledTimes(2);
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id,
+      'executing',
+      'failed',
+      { errorCode: 'secret_seal_invariant_violated', executedAt: expect.any(Date) },
+    );
+    const lastPatch = intentServiceMock.transitionIntent.mock.lastCall![3] as Record<string, unknown>;
+    expect(lastPatch).not.toHaveProperty('result');
+    expect(sentryMock.captureException).toHaveBeenCalled();
+    expect(JSON.stringify(auditMock.writeAuditEvent.mock.calls)).not.toContain('hunter2leaked');
   });
 });
 

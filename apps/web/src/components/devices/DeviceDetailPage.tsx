@@ -105,6 +105,12 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         pendingReboot: data.pendingReboot === true,
         desktopAccess: data.desktopAccess ?? undefined,
         remoteAccessPolicy: data.remoteAccessPolicy ?? undefined,
+        // Link-group membership (#2138/#2308). Carried through so the detail
+        // page can hide the Linked Profiles tab on an unlinked device (#2865)
+        // without a second fetch — the detail endpoint already returns both
+        // columns (neither is in SENSITIVE_DEVICE_FIELDS).
+        linkGroupId: data.linkGroupId ?? null,
+        linkGroupRole: data.linkGroupRole ?? null,
       };
 
       setDevice(transformedDevice);

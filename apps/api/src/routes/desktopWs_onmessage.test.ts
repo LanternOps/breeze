@@ -94,7 +94,8 @@ import {
   unregisterDesktopFrameCallback,
   createDesktopWsRoutes,
   isDesktopSessionOwnedByAgent,
-  getActiveDesktopSessionCount
+  getActiveDesktopSessionCount,
+  __resetDesktopWsForTest,
 } from './desktopWs';
 
 // -------------------------------------------------------------------
@@ -104,6 +105,27 @@ import {
 const SESSION_ID = 'session-desktop-001';
 const DEVICE_ID = 'device-xyz';
 const AGENT_ID = 'agent-xyz';
+let leaseGeneration = 0;
+const testSharedLeases = {
+  acquire: vi.fn(async (kind: 'desktop', sessionId: string) => ({
+    ok: true as const,
+    claim: {
+      kind,
+      sessionId,
+      connectionId: '33333333-3333-4333-8333-333333333333',
+      generation: ++leaseGeneration,
+      instanceId: '44444444-4444-4444-8444-444444444444',
+      leaseToken: '55555555-5555-4555-8555-555555555555',
+      ownerValue: `owner-${leaseGeneration}`,
+      safeForwardingUntilMonotonicMs: Number.MAX_SAFE_INTEGER,
+    },
+  })),
+  renew: vi.fn(async (claim: any) => claim),
+  beginClose: vi.fn(async () => ({ ok: true as const, ownership: 'still_owner' as const })),
+  release: vi.fn(async () => true),
+  writeDesktopFinalizationIntent: vi.fn(async () => 'written' as const),
+  releaseDesktopFinalizationIntent: vi.fn(async () => true),
+};
 
 // Use a unique user ID per successful onOpen to avoid the in-memory
 // rate limiter (10 connections per user per 60s) blocking later tests.
@@ -137,7 +159,9 @@ function mockSelectChain(result: unknown) {
 function mockUpdateNoReturn() {
   return {
     set: vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(undefined)
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: SESSION_ID }]),
+      }),
     })
   } as any;
 }
@@ -153,7 +177,7 @@ function captureWsHandlers(sessionId: string, ticket?: string) {
     return (_c: any, _next: any) => {};
   });
 
-  createDesktopWsRoutes(upgradeWebSocket);
+  createDesktopWsRoutes(upgradeWebSocket, { sharedLeases: testSharedLeases as any });
 
   const fakeContext = {
     req: {
@@ -237,6 +261,7 @@ function buildApp() {
 describe('desktopWs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __resetDesktopWsForTest();
   });
 
   // ==========================================
@@ -294,6 +319,23 @@ describe('desktopWs', () => {
           })
         })
       );
+    });
+
+    it('does not let a foreign socket relay input for the owned session', async () => {
+      const foreignWs = wsMock();
+
+      await handlers.onMessage(
+        {
+          data: JSON.stringify({
+            type: 'input',
+            event: { type: 'mousemove', x: 100, y: 200 },
+          }),
+        },
+        foreignWs,
+      );
+
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+      expect(foreignWs.send).not.toHaveBeenCalled();
     });
 
     it('relays keyboard input events', async () => {

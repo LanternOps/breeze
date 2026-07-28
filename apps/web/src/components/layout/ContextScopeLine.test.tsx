@@ -86,4 +86,22 @@ describe('ContextScopeLine', () => {
     render(<ContextScopeLine />);
     expect(screen.queryByTestId('context-scope-line')).toBeNull();
   });
+
+  it('renders nothing on a quote DETAIL page even in fleet view (single-document suppression)', () => {
+    // The document names its customer in its own header, and the line is the
+    // only scroll-away content above the workspace's pinned chrome.
+    stubPathname('/billing/quotes/q-1');
+    mockStoreState.currentOrgId = null;
+    mockStoreState.allOrgs = true;
+    render(<ContextScopeLine />);
+    expect(screen.queryByTestId('context-scope-line')).toBeNull();
+  });
+
+  it('still states fleet view on the quotes LIST page', () => {
+    stubPathname('/billing/quotes');
+    mockStoreState.currentOrgId = null;
+    mockStoreState.allOrgs = true;
+    render(<ContextScopeLine />);
+    expect(screen.getByTestId('context-scope-line').getAttribute('data-kind')).toBe('fleet');
+  });
 });

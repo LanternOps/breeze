@@ -544,7 +544,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	go func() { <-h.stopChan; helperCancel() }()
 
 	if runtime.GOOS == "windows" && cfg.IsService {
-		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, secToken, cfg.AgentID,
+		h.helperMgr = helper.New(helperCtx, h.ServerURL, secToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
 			helper.WithAgentVersion(version),
 			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
@@ -572,7 +572,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		// (the needsBroker block below), so a broker-backed headless spawn arm here
 		// would always be dead code; the user-role IPC spawn path is wired via the
 		// session broker after it exists.
-		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, secToken, cfg.AgentID,
+		h.helperMgr = helper.New(helperCtx, h.ServerURL, secToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
 			helper.WithAgentVersion(version),
 			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
@@ -836,6 +836,11 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 		}
 	case backupipc.TypeBackupProgress:
 		if h.wsClient == nil {
+			// The only progress-drop path that produced no record at all: a
+			// backup still running while the WS is down loses every keepalive,
+			// and server-side that is indistinguishable from an agent that
+			// stopped reporting. The send failure below is already logged.
+			log.Warn("dropping backup progress, no websocket client")
 			return
 		}
 		var progress backupipc.BackupProgress
@@ -2315,15 +2320,11 @@ func (h *Heartbeat) collectPatchInventory() ([]map[string]any, []map[string]any,
 // everything was skipped serializes as an empty coveredSources array (sweep
 // nothing) rather than being omitted (legacy sweep-all).
 //
-// INTERIM LIMITATION (until #2216 lands): the coverage mechanism keys off
-// providers returning patching.ErrScanSkipped, but the current winget provider
-// still returns (nil, nil) when it can't run (no connected user helper session)
-// instead of the sentinel. So a skipped winget is counted as "scanned and found
-// nothing" and its third_party bucket is treated as COVERED — the coverage guard
-// is inert-but-correct for winget: it never wrongly narrows the sweep, it just
-// can't yet protect winget's own rows. #2216 splits winget.go and has its SYSTEM
-// provider adopt ErrScanSkipped, at which point this mechanism becomes fully
-// effective for winget with no change here. Do not edit winget.go for #2217.
+// The SYSTEM winget provider now participates properly, so a winget that never
+// actually looked at anything no longer marks third_party as covered: an
+// unresolvable winget is never registered as a provider at all, a failed
+// invocation returns an error, and output with no parsable table returns
+// patching.ErrScanSkipped rather than an empty result (#2726).
 func (h *Heartbeat) coveredPatchSources(providerIDs, coveredProviders []string) []string {
 	coveredSet := make(map[string]bool, len(coveredProviders))
 	for _, id := range coveredProviders {
@@ -3774,6 +3775,17 @@ func (h *Heartbeat) applyRotatedCredentials(authToken, watchdogAuthToken, helper
 	h.config.HelperAuthToken = helperAuthToken
 	h.mu.Unlock()
 
+	// The credentials are known-good — the server just confirmed the promotion.
+	// Clearing the auth monitor here matters because this is the ONE repair path
+	// that runs while auth-dead: the per-tick reconcile above deliberately sits
+	// in front of the ShouldSkip() gate, so an agent that 401'd its way into
+	// backoff can fix its token and would otherwise still have to serve out the
+	// remaining window before it was allowed to prove it. Without this the wait
+	// is bounded only by maxBackoff, which is now 30 minutes rather than 30s.
+	if h.authMon != nil {
+		h.authMon.RecordSuccess()
+	}
+
 	// Notify the watchdog of its role-scoped token so it can use it for failover heartbeats.
 	h.sendWatchdogTokenUpdate(watchdogAuthToken)
 
@@ -4288,7 +4300,9 @@ func (h *Heartbeat) executeCommand(cmd Command) tools.CommandResult {
 	// expires into "session ended". SessionManager.StartSession enforces
 	// single-active-session and tears down any existing session before
 	// creating the new one, so re-invocation is safe.
-	dedupable := cmd.Type != tools.CmdStartDesktop && cmd.Type != tools.CmdStopDesktop
+	dedupable := cmd.Type != tools.CmdStartDesktop &&
+		cmd.Type != tools.CmdStopDesktop &&
+		cmd.Type != tools.CmdDesktopStreamStop
 
 	if dedupable && !h.markCommandSeen(cmd.ID) {
 		cmdLog.Debug("skipping duplicate command")
@@ -4778,7 +4792,7 @@ const watchdogUpgradeRetryCooldown = 30 * time.Minute
 // download lives in one place.
 func (h *Heartbeat) downloadWatchdogBinary(targetVersion string) (string, error) {
 	u := updater.New(&updater.Config{
-		ServerURL:             h.serverURL(),
+		ServerURL:             h.serverURL,
 		AuthToken:             h.secureToken,
 		CurrentVersion:        h.agentVersion,
 		Component:             "watchdog",
@@ -4848,7 +4862,7 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 	download := h.userHelperDownloader
 	if download == nil {
 		helperCfg := &updater.Config{
-			ServerURL:             h.serverURL(),
+			ServerURL:             h.serverURL,
 			AuthToken:             h.secureToken,
 			CurrentVersion:        h.agentVersion,
 			Component:             "user-helper",
@@ -4941,7 +4955,7 @@ func (h *Heartbeat) reconcileUserHelper(binaryPath string) {
 	download := h.userHelperDownloader
 	if download == nil {
 		helperCfg := &updater.Config{
-			ServerURL:             h.serverURL(),
+			ServerURL:             h.serverURL,
 			AuthToken:             h.secureToken,
 			CurrentVersion:        h.agentVersion,
 			Component:             "user-helper",
@@ -5064,7 +5078,7 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	backupPath := filepath.Join(backupDir, "breeze-agent.backup")
 
 	updaterCfg := &updater.Config{
-		ServerURL:             h.serverURL(),
+		ServerURL:             h.serverURL,
 		AuthToken:             h.secureToken,
 		CurrentVersion:        h.agentVersion,
 		BinaryPath:            binaryPath,

@@ -14,6 +14,8 @@ import {
   restoreJobs,
   backupJobs,
   devices,
+  organizations,
+  partners,
   STALE_BACKUP_REAP_MARKER,
 } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
@@ -22,6 +24,7 @@ import { captureException } from '../services/sentry';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { queueBackupStopCommand } from '../services/commandQueue';
+import { envInt } from '../utils/envInt';
 
 const QUEUE_NAME = 'stale-command-reaper';
 const REAP_INTERVAL_MS = 2 * 60 * 1000; // every 2 minutes
@@ -36,13 +39,16 @@ const REAP_INTERVAL_MS = 2 * 60 * 1000; // every 2 minutes
 // `.limit(0)` returns zero rows, which would silently disable the
 // reaper. Normalize to `Number.MAX_SAFE_INTEGER` so the consistent
 // "cap=0 == unlimited" knob actually behaves that way here.
-const RAW_MAX_REAP = Number(process.env.STALE_REAPER_MAX_PER_RUN ?? '5000');
-const MAX_REAP_PER_RUN =
-  Number.isFinite(RAW_MAX_REAP) && RAW_MAX_REAP > 0
-    ? RAW_MAX_REAP
-    : RAW_MAX_REAP === 0
-      ? Number.MAX_SAFE_INTEGER
-      : 5000; // negative / NaN fall back to default rather than disabling the reaper
+//
+// Exported (and pure) so the mapping is testable without re-importing this
+// module: the env read stays at module scope, only the derivation moves.
+export function resolveMaxReapPerRun(raw: number): number {
+  if (raw > 0) return raw;
+  if (raw === 0) return Number.MAX_SAFE_INTEGER;
+  return 5000; // negative falls back to the default rather than disabling the reaper
+}
+
+const MAX_REAP_PER_RUN = resolveMaxReapPerRun(envInt('STALE_REAPER_MAX_PER_RUN', 5000));
 const SHORTEST_TIMEOUT_MS = 5 * 60 * 1000; // conservative SQL pre-filter
 
 // Backup-related command types — used to guard backup-specific Prometheus metrics
@@ -164,6 +170,29 @@ export async function reapStaleDeviceCommands(): Promise<number> {
       )})`,
     );
   }
+
+  // #2774 — a drain-window self_uninstall must outlive the 30-minute command
+  // timeout: the whole point of the `offboarding` state is waiting (up to
+  // OFFBOARDING_DRAIN_WINDOW_HOURS) for offline devices to come collect it.
+  // Scoped to tenants CURRENTLY offboarding, deliberately NOT a blanket
+  // self_uninstall exemption: abuse-queued uninstalls (partner `suspended`)
+  // must keep expiring, or an abuse suspension reversed days later would
+  // deliver stale uninstalls to a reinstated fleet. The offboarding drain
+  // reaper cancels these rows itself (with a never-drained report) when the
+  // window closes, so they cannot linger past the drain either.
+  whereConditions.push(
+    sql`NOT (
+      ${deviceCommands.type} = 'self_uninstall'
+      AND EXISTS (
+        SELECT 1
+        FROM ${devices}
+        JOIN ${organizations} ON ${organizations.id} = ${devices.orgId}
+        JOIN ${partners} ON ${partners.id} = ${organizations.partnerId}
+        WHERE ${devices.id} = ${deviceCommands.deviceId}
+          AND (${organizations.status} = 'offboarding' OR ${partners.status} = 'offboarding')
+      )
+    )`,
+  );
 
   const staleCommands = await db
     .select({

@@ -33,8 +33,6 @@ pnpm-debug.log*
 
 # Testing
 coverage/
-e2e-tests/doc-verify/reports/
-e2e-tests/doc-verify/assertions.json
 
 # Database
 *.db
@@ -42,6 +40,7 @@ e2e-tests/doc-verify/assertions.json
 
 # Go
 agent/breeze-agent
+agent/breeze-backup
 agent/breeze-watchdog
 agent/bin/
 viewer/bin/

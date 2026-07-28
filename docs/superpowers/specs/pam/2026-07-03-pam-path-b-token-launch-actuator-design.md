@@ -130,8 +130,10 @@ implementing the existing `Actuator` interface. Everything else — discovery, d
    the credential-UI path. The SYSTEM-context injection path is not explicitly named as blocked, but
    Path B's `Dismiss` (suppression) touches consent.exe input — verify empirically on the VM matrix.
 5. **EDR scrutiny.** `CreateProcessAsUser` from SYSTEM to a freshly-promoted hidden admin account is
-   a behavior AV/EDR may flag. The existing EDR-allowlist work (#1158) covers the broker binary;
-   confirm the new launch pattern is within the submitted exclusions.
+   a behavior AV/EDR may flag. **There is no EDR-allowlist coverage today** — #1158 was closed
+   unimplemented on 2026-06-27 and reopened on 2026-07-25 after a Defender false positive was
+   reported in the field. Assume the launch pattern is unprotected until those vendor submissions
+   are actually filed, and validate empirically on the VM matrix.
 
 ## AP boundary (explicit)
 

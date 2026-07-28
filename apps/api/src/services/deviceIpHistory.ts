@@ -107,7 +107,7 @@ function normalizeEntry(entry: DeviceIPHistoryEntryInput | undefined): Normalize
     ipAddress: clamp(ipAddress, 45),
     ipType: normalizeIpType(entry.ipType, ipAddress),
     assignmentType: normalizeAssignmentType(entry.assignmentType),
-    macAddress: normalizeOptionalString(entry.macAddress, 17),
+    macAddress: normalizeOptionalString(entry.macAddress, 64),
     subnetMask: normalizeOptionalString(entry.subnetMask, 45),
     gateway: normalizeOptionalString(entry.gateway, 45),
     dnsServers: normalizeDnsServers(entry.dnsServers),

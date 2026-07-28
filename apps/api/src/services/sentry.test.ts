@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import type { Context } from 'hono';
 
 // Mock the Sentry SDK so we can observe how initSentry/captureException/flushSentry
 // drive it without making real network calls.
@@ -10,13 +11,23 @@ const flushMock = vi.fn().mockResolvedValue(true);
 const setTagMock = vi.fn();
 const setUserMock = vi.fn();
 const moduleSetTagMock = vi.fn();
+const captureMessageMock = vi.fn();
+const setLevelMock = vi.fn();
+const setExtrasMock = vi.fn();
+const setContextMock = vi.fn();
 const withScopeMock = vi.fn((cb: (scope: unknown) => void) =>
-  cb({ setTag: setTagMock, setContext: vi.fn() }),
+  cb({
+    setTag: setTagMock,
+    setContext: setContextMock,
+    setLevel: setLevelMock,
+    setExtras: setExtrasMock,
+  }),
 );
 
 vi.mock('@sentry/node', () => ({
   init: (...args: unknown[]) => initMock(...args),
   captureException: (...args: unknown[]) => captureMock(...args),
+  captureMessage: (...args: unknown[]) => captureMessageMock(...args),
   flush: (...args: unknown[]) => flushMock(...args),
   withScope: (cb: (scope: unknown) => void) => withScopeMock(cb),
   setUser: (...args: unknown[]) => setUserMock(...args),
@@ -33,6 +44,10 @@ describe('sentry service', () => {
     flushMock.mockClear();
     setTagMock.mockClear();
     withScopeMock.mockClear();
+    captureMessageMock.mockClear();
+    setLevelMock.mockClear();
+    setExtrasMock.mockClear();
+    setContextMock.mockClear();
     process.env = { ...ORIGINAL_ENV };
   });
 
@@ -55,6 +70,55 @@ describe('sentry service', () => {
     const initArg = initMock.mock.calls[0]![0] as { release?: string; dsn?: string };
     expect(initArg.release).toBe('9.9.9-test');
     expect(initArg.release).not.toBe('0.64.1');
+  });
+
+  it('captureMessage drops arbitrary extras and non-allowlisted tags', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureMessage } = await import('./sentry');
+    initSentry();
+
+    captureMessage('held a pooled connection', 'warning', { heldMs: 12000 }, {
+      dbContextLabel: 'agentWs.heartbeat',
+    });
+
+    expect(captureMessageMock).toHaveBeenCalledWith('held a pooled connection');
+    expect(setTagMock).not.toHaveBeenCalledWith('dbContextLabel', expect.anything());
+    expect(setLevelMock).toHaveBeenCalledWith('warning');
+    expect(setExtrasMock).not.toHaveBeenCalled();
+  });
+
+  it('captureMessage retains only bounded allowlisted tags', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureMessage } = await import('./sentry');
+    initSentry();
+
+    captureMessage('database warning', 'warning', undefined, {
+      pg_code: '42501',
+      org_id: '00000000-0000-4000-8000-000000000001',
+      path: '/quotes/raw-capability',
+      route_template: '/quotes/:token',
+      partner_id: 'x'.repeat(129),
+    });
+
+    expect(setTagMock).toHaveBeenCalledWith('pg_code', '42501');
+    expect(setTagMock).toHaveBeenCalledWith(
+      'org_id',
+      '00000000-0000-4000-8000-000000000001',
+    );
+    expect(setTagMock).not.toHaveBeenCalledWith('path', expect.anything());
+    expect(setTagMock).not.toHaveBeenCalledWith('route_template', expect.anything());
+    expect(setTagMock).not.toHaveBeenCalledWith('partner_id', expect.anything());
+  });
+
+  it('captureMessage sets no tags when none are passed (existing callers unaffected)', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureMessage } = await import('./sentry');
+    initSentry();
+
+    captureMessage('plain warning');
+
+    expect(captureMessageMock).toHaveBeenCalledWith('plain warning');
+    expect(setTagMock).not.toHaveBeenCalled();
   });
 
   it('does not initialize the SDK when no DSN is configured', async () => {
@@ -135,6 +199,47 @@ describe('sentry service', () => {
     expect(setTagMock).not.toHaveBeenCalledWith('rls_deny', expect.anything());
     expect(captureMock).toHaveBeenCalledTimes(1);
   });
+
+  it('captureException retains a matched template without reading the raw path', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureException } = await import('./sentry');
+    initSentry();
+
+    const c = {
+      req: {
+        method: 'GET',
+        routePath: '/public/quotes/:token',
+        get path() {
+          throw new Error('raw path must not be read');
+        },
+        get url() {
+          throw new Error('raw URL must not be read');
+        },
+      },
+    } as unknown as Context;
+
+    expect(() => captureException(new Error('failed'), c)).not.toThrow();
+    expect(setTagMock).toHaveBeenCalledWith('method', 'GET');
+    expect(setTagMock).toHaveBeenCalledWith(
+      'route_template',
+      '/public/quotes/:token',
+    );
+    expect(setTagMock).not.toHaveBeenCalledWith('path', expect.anything());
+    expect(setContextMock).not.toHaveBeenCalled();
+  });
+
+  it('captureException labels wildcard and unavailable route matches as unmatched', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureException } = await import('./sentry');
+    initSentry();
+
+    const c = {
+      req: { method: 'GET', routePath: '*' },
+    } as unknown as Context;
+    captureException(new Error('failed'), c);
+
+    expect(setTagMock).toHaveBeenCalledWith('route_template', 'unmatched');
+  });
 });
 
 describe('setSentryRequestContext', () => {
@@ -164,9 +269,10 @@ describe('setSentryRequestContext', () => {
     initSentry();
     setSentryRequestContext({ userId: 'u-1', scope: 'organization', orgId: 'o-1', partnerId: 'p-1' });
     expect(setUserMock).toHaveBeenCalledWith({ id: 'u-1' });
+    expect(moduleSetTagMock).toHaveBeenCalledWith('user_id', 'u-1');
     expect(moduleSetTagMock).toHaveBeenCalledWith('scope', 'organization');
-    expect(moduleSetTagMock).toHaveBeenCalledWith('orgId', 'o-1');
-    expect(moduleSetTagMock).toHaveBeenCalledWith('partnerId', 'p-1');
+    expect(moduleSetTagMock).toHaveBeenCalledWith('org_id', 'o-1');
+    expect(moduleSetTagMock).toHaveBeenCalledWith('partner_id', 'p-1');
   });
 
   it('maps null orgId and partnerId to "none"', async () => {
@@ -174,35 +280,109 @@ describe('setSentryRequestContext', () => {
     const { initSentry, setSentryRequestContext } = await import('./sentry');
     initSentry();
     setSentryRequestContext({ userId: 'u-2', scope: 'system', orgId: null, partnerId: null });
-    expect(moduleSetTagMock).toHaveBeenCalledWith('orgId', 'none');
-    expect(moduleSetTagMock).toHaveBeenCalledWith('partnerId', 'none');
+    expect(moduleSetTagMock).toHaveBeenCalledWith('org_id', 'none');
+    expect(moduleSetTagMock).toHaveBeenCalledWith('partner_id', 'none');
   });
 });
 
 describe('scrubEvent', () => {
-  it('redacts authorization and cookie headers', async () => {
+  it('rebuilds request and telemetry surfaces from allowlisted fields only', async () => {
     const { scrubEvent } = await import('./sentry');
     const out = scrubEvent({
-      request: { headers: { authorization: 'Bearer brz_secret', cookie: 'session=abc', 'user-agent': 'x' } },
+      release: '1.2.3',
+      request: {
+        method: 'POST',
+        url: '/public/quotes/raw-capability',
+        path: '/public/quotes/raw-capability',
+        query_string: 'token=raw-capability',
+        headers: {
+          Authorization: 'Bearer raw-capability',
+          COOKIE: 'session=raw-capability',
+          'user-agent': 'sdk',
+        },
+        data: { token: 'raw-capability' },
+        cookies: { session: 'raw-capability' },
+        env: { REMOTE_ADDR: 'raw-capability' },
+      },
+      transaction: '/public/quotes/raw-capability',
+      message: 'raw-capability',
+      logentry: { message: 'raw-capability', params: ['raw-capability'] },
+      breadcrumbs: [{ message: 'raw-capability', data: { path: 'raw-capability' } }],
+      contexts: { trace: { op: 'raw-capability' } },
+      extra: {
+        password: 'raw-capability',
+        harmless: { nested: ['raw-capability'] },
+      },
+      tags: {
+        method: 'POST',
+        route_template: '/public/quotes/:token',
+        pg_code: '42501',
+        rls_deny: true,
+        user_id: 'u-1',
+        scope: 'organization',
+        org_id: 'o-1',
+        partner_id: 'p-1',
+        path: '/public/quotes/raw-capability',
+        arbitrary: 'raw-capability',
+      },
+      exception: {
+        values: [{
+          type: 'TypeError',
+          value: 'raw-capability',
+          mechanism: { type: 'raw-capability', data: { token: 'raw-capability' } },
+          stacktrace: {
+            frames: [{
+              function: 'handleQuote',
+              module: 'quotesPublic',
+              lineno: 42,
+              colno: 7,
+              in_app: true,
+              filename: '/srv/raw-capability.ts',
+              abs_path: '/srv/raw-capability.ts',
+              context_line: 'throw new Error("raw-capability")',
+              pre_context: ['raw-capability'],
+              post_context: ['raw-capability'],
+              vars: { token: 'raw-capability' },
+            }],
+          },
+        }],
+      },
     } as any);
-    expect(out.request.headers.authorization).toBe('[redacted]');
-    expect(out.request.headers.cookie).toBe('[redacted]');
-    expect(out.request.headers['user-agent']).toBe('x');
-  });
 
-  it('redacts password and mfaSecret in extra', async () => {
-    const { scrubEvent } = await import('./sentry');
-    const out = scrubEvent({ extra: { password: 'p', mfaSecret: 's', orgId: 'o-1' } } as any);
-    expect(out.extra.password).toBe('[redacted]');
-    expect(out.extra.mfaSecret).toBe('[redacted]');
-    expect(out.extra.orgId).toBe('o-1');
-  });
-
-  it('redacts extra values starting with brz_', async () => {
-    const { scrubEvent } = await import('./sentry');
-    const out = scrubEvent({ extra: { apiKey: 'brz_abc123', orgId: 'o-1' } } as any);
-    expect(out.extra.apiKey).toBe('[redacted]');
-    expect(out.extra.orgId).toBe('o-1');
+    expect(out.release).toBe('1.2.3');
+    expect(out.request).toEqual({ method: 'POST' });
+    expect(out.transaction).toBeUndefined();
+    expect(out.message).toBeUndefined();
+    expect(out.logentry).toBeUndefined();
+    expect(out.breadcrumbs).toBeUndefined();
+    expect(out.contexts).toBeUndefined();
+    expect(out.extra).toBeUndefined();
+    expect(out.tags).toEqual({
+      method: 'POST',
+      route_template: '/public/quotes/:token',
+      pg_code: '42501',
+      rls_deny: true,
+      user_id: 'u-1',
+      scope: 'organization',
+      org_id: 'o-1',
+      partner_id: 'p-1',
+    });
+    expect(out.exception).toEqual({
+      values: [{
+        type: 'TypeError',
+        value: '[redacted]',
+        stacktrace: {
+          frames: [{
+            function: 'handleQuote',
+            module: 'quotesPublic',
+            lineno: 42,
+            colno: 7,
+            in_app: true,
+          }],
+        },
+      }],
+    });
+    expect(JSON.stringify(out)).not.toContain('raw-capability');
   });
 
   it('does not throw on events missing request/headers/extra', async () => {

@@ -87,18 +87,29 @@ export function createNotificationWorker(): Worker<NotificationJobData> {
   return new Worker<NotificationJobData>(
     NOTIFICATION_QUEUE,
     async (job: Job<NotificationJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        switch (job.data.type) {
-          case 'send':
-            return await processSendNotification(job.data);
+      switch (job.data.type) {
+        case 'send':
+          // processSendNotification manages its own short DB contexts and
+          // performs the actual outbound send (email/webhook/Slack/Teams/
+          // PagerDuty/Pushover/SMS) OUTSIDE any of them (#1105). Do NOT wrap
+          // this call in runWithSystemDbAccess — that would re-introduce a
+          // pooled connection held idle-in-transaction for the full send
+          // duration, on every alert notification fleet-wide.
+          return await processSendNotification(job.data);
 
-          case 'process-alert':
-            return await processAlertNotifications(job.data);
-
-          default:
-            throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
+        case 'process-alert': {
+          // processAlertNotifications only does DB reads/writes plus fast
+          // Redis enqueues (queue.addBulk / queue.add), so it keeps the
+          // existing single-context shape. Bind the switch-narrowed job.data
+          // to a const so the discriminated-union narrowing survives into the
+          // runWithSystemDbAccess closure.
+          const alertJobData = job.data;
+          return await runWithSystemDbAccess(() => processAlertNotifications(alertJobData));
         }
-      });
+
+        default:
+          throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
+      }
     },
     {
       connection: getBullMQConnection(),
@@ -304,7 +315,48 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
 }
 
 /**
- * Send a notification through a specific channel
+ * Result shape returned by the short "prepare" DB context below: either an
+ * early-exit result (nothing left to send) or everything needed to perform
+ * the outbound send once the context has closed.
+ */
+type PrepareSendResult =
+  | {
+      send: false;
+      result: { success: boolean; channelType: string; error?: string };
+    }
+  | {
+      send: true;
+      alert: typeof alerts.$inferSelect;
+      channel: typeof notificationChannels.$inferSelect;
+      notificationRecord: typeof alertNotifications.$inferSelect;
+      device: typeof devices.$inferSelect | undefined;
+      org: typeof organizations.$inferSelect | undefined;
+    };
+
+/**
+ * Send a notification through a specific channel.
+ *
+ * Split into three phases to avoid holding a pooled DB connection across the
+ * outbound send (#1105):
+ *   1. `runWithSystemDbAccess` — resolve alert/channel, create the pending
+ *      notification record, and run the rate-limit/throttle guards. Any
+ *      early exit (channel missing, rate limited, throttled, ...) is decided
+ *      and persisted INSIDE this short context, before the send is attempted
+ *      ("mark-attempted before send").
+ *   2. Outside any DB context — perform the actual outbound send (email/
+ *      webhook/Slack/Teams/PagerDuty/Pushover/SMS).
+ *   3. `runWithSystemDbAccess` — persist the final sent/failed result AFTER
+ *      the send completes ("record-result after send").
+ *
+ * Trade-off: previously steps 1-3 were one transaction, so a crash between
+ * the pending insert and the final update would roll back the whole thing —
+ * a BullMQ retry would insert a fresh pending row and try again cleanly. Now
+ * step 1 commits before the send runs, so the same crash instead leaves an
+ * orphaned 'pending' row (retry still inserts a fresh row and resends,
+ * exactly as before). That failure mode already existed for a crash on the
+ * old code's own final `db.update` (rollback of an already-sent message), so
+ * this does not introduce a new double-send risk — it only adds a harmless
+ * orphaned 'pending' row on the rare mid-send crash case.
  */
 async function processSendNotification(data: SendNotificationJobData): Promise<{
   success: boolean;
@@ -314,171 +366,171 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
 }> {
   const startTime = Date.now();
 
-  // Get alert details
-  const [alert] = await db
-    .select()
-    .from(alerts)
-    .where(eq(alerts.id, data.alertId))
-    .limit(1);
+  const prepared: PrepareSendResult = await runWithSystemDbAccess(async () => {
+    // Get alert details
+    const [alert] = await db
+      .select()
+      .from(alerts)
+      .where(eq(alerts.id, data.alertId))
+      .limit(1);
 
-  if (!alert) {
-    return {
-      success: false,
-      channelType: 'unknown',
-      error: 'Alert not found',
-      durationMs: Date.now() - startTime
-    };
-  }
+    if (!alert) {
+      return {
+        send: false,
+        result: { success: false, channelType: 'unknown', error: 'Alert not found' }
+      } satisfies PrepareSendResult;
+    }
 
-  // Get channel — the alert org's own, or a partner-wide channel owned by
-  // that org's partner (#2130).
-  const sendOrgPartnerId = await partnerIdForOrg(alert.orgId);
-  const [channel] = await db
-    .select()
-    .from(notificationChannels)
-    .where(
-      and(
-        eq(notificationChannels.id, data.channelId),
-        railOwnershipCondition(notificationChannels.orgId, notificationChannels.partnerId, alert.orgId, sendOrgPartnerId),
-        eq(notificationChannels.enabled, true)
+    // Get channel — the alert org's own, or a partner-wide channel owned by
+    // that org's partner (#2130).
+    const sendOrgPartnerId = await partnerIdForOrg(alert.orgId);
+    const [channel] = await db
+      .select()
+      .from(notificationChannels)
+      .where(
+        and(
+          eq(notificationChannels.id, data.channelId),
+          railOwnershipCondition(notificationChannels.orgId, notificationChannels.partnerId, alert.orgId, sendOrgPartnerId),
+          eq(notificationChannels.enabled, true)
+        )
       )
-    )
-    .limit(1);
+      .limit(1);
 
-  if (!channel) {
-    // A resolved {success:false} completes the BullMQ job (no 'failed' event)
-    // and no alert_notifications row exists yet on this path — without a log
-    // this send (possibly a DELAYED escalation step whose channel/partner
-    // state drifted since scheduling) vanishes without a trace (#2130 review).
-    console.warn(
-      `[NotificationDispatcher] Channel ${data.channelId} not found (or disabled) for alert ${data.alertId}`
-      + `${data.escalationStep ? ` escalation step ${data.escalationStep}` : ''} — send dropped`
-    );
-    return {
-      success: false,
-      channelType: 'unknown',
-      error: 'Channel not found for alert organization or its partner',
-      durationMs: Date.now() - startTime
-    };
-  }
-
-  // Create notification record (pending)
-  const [notificationRecord] = await db
-    .insert(alertNotifications)
-    .values({
-      alertId: data.alertId,
-      channelId: data.channelId,
-      status: 'pending'
-    })
-    .returning();
-
-  if (!notificationRecord) {
-    return {
-      success: false,
-      channelType: channel.type,
-      error: 'Failed to create notification record',
-      durationMs: Date.now() - startTime
-    };
-  }
-
-  // Get device info for context
-  const [device] = await db
-    .select()
-    .from(devices)
-    .where(eq(devices.id, alert.deviceId))
-    .limit(1);
-
-  // Get org info
-  const [org] = await db
-    .select()
-    .from(organizations)
-    .where(eq(organizations.id, alert.orgId))
-    .limit(1);
-
-  // Phase 4b: Notification rate limiting
-  const redis = isRedisAvailable() ? getRedis() : null;
-  if (!redis) {
-    console.warn(`[NotificationDispatcher] Redis unavailable — notification rate limiting DISABLED for org ${alert.orgId}`);
-  }
-  if (redis) {
-    const rateKey = `notify:${alert.orgId}:${channel.type}`;
-    const rateLimitResult = await rateLimiter(redis, rateKey, 60, 300); // 60 per 5 min
-    if (!rateLimitResult.allowed) {
-      console.warn(`[NotificationDispatcher] Rate limited for ${channel.type} channel in org ${alert.orgId}. Remaining: ${rateLimitResult.remaining}`);
-      // Update pending record to reflect rate limiting
-      if (notificationRecord?.id) {
-        await db.update(alertNotifications)
-          .set({ status: 'failed', errorMessage: 'Rate limited' })
-          .where(eq(alertNotifications.id, notificationRecord.id));
-      }
-      return {
-        success: false,
-        channelType: channel.type,
-        error: `Rate limited (resets at ${rateLimitResult.resetAt.toISOString()})`,
-        durationMs: Date.now() - startTime
-      };
-    }
-  }
-
-  // Feature #4: per-channel sliding-window throttle (defense-in-depth vs alert storms).
-  // Keyed by (channelId, device:<deviceId>) so one flooding device cannot starve other devices.
-  if (channel.throttleMaxPerWindow && channel.throttleMaxPerWindow > 0) {
-    const windowSeconds = channel.throttleWindowSeconds ?? 3600;
-    const throttle = await checkNotificationThrottle(
-      channel.id,
-      `device:${alert.deviceId}`,
-      channel.throttleMaxPerWindow,
-      windowSeconds
-    );
-    if (!throttle.allowed) {
-      const windowExpiresIso = new Date(throttle.windowExpiresAt).toISOString();
-      const throttleMessage = `Throttled: ${throttle.currentCount} delivered in last ${windowSeconds}s (cap=${channel.throttleMaxPerWindow})`;
+    if (!channel) {
+      // A resolved {success:false} completes the BullMQ job (no 'failed' event)
+      // and no alert_notifications row exists yet on this path — without a log
+      // this send (possibly a DELAYED escalation step whose channel/partner
+      // state drifted since scheduling) vanishes without a trace (#2130 review).
       console.warn(
-        `[NotificationThrottle] Suppressed: channel=${channel.id} device=${alert.deviceId} ` +
-        `count=${throttle.currentCount}/${channel.throttleMaxPerWindow} resetsAt=${windowExpiresIso}`
+        `[NotificationDispatcher] Channel ${data.channelId} not found (or disabled) for alert ${data.alertId}`
+        + `${data.escalationStep ? ` escalation step ${data.escalationStep}` : ''} — send dropped`
       );
-      // Use 'failed' status + descriptive errorMessage so UI / queries that
-      // filter by status see throttled rows alongside other delivery failures.
-      // The alert_notifications.status column carries pending/sent/failed only;
-      // 'suppressed' belongs to the separate alertStatusEnum and would render
-      // as a phantom value here. (See #796 review.)
-      await db.update(alertNotifications)
-        .set({
-          status: 'failed',
-          errorMessage: throttleMessage
-        })
-        .where(eq(alertNotifications.id, notificationRecord.id));
-      // Operator-visible audit event so a misconfigured cap silently eating
-      // alerts is investigable instead of buried in stdout. (See #796 review.)
-      createAuditLogAsync({
-        orgId: alert.orgId,
-        actorType: 'system',
-        actorId: '00000000-0000-0000-0000-000000000000',
-        action: 'alert.notification.throttled',
-        resourceType: 'alert_notification',
-        resourceId: notificationRecord.id,
-        result: 'denied',
-        errorMessage: throttleMessage,
-        details: {
-          channelId: channel.id,
-          channelType: channel.type,
-          deviceId: alert.deviceId,
-          currentCount: throttle.currentCount,
-          maxPerWindow: channel.throttleMaxPerWindow,
-          windowSeconds,
-          windowExpiresAt: windowExpiresIso,
-        },
-      });
       return {
-        success: false,
-        channelType: channel.type,
-        error: `Throttled (resets at ${windowExpiresIso})`,
-        durationMs: Date.now() - startTime
-      };
+        send: false,
+        result: { success: false, channelType: 'unknown', error: 'Channel not found for alert organization or its partner' }
+      } satisfies PrepareSendResult;
     }
+
+    // Create notification record (pending)
+    const [notificationRecord] = await db
+      .insert(alertNotifications)
+      .values({
+        alertId: data.alertId,
+        channelId: data.channelId,
+        status: 'pending'
+      })
+      .returning();
+
+    if (!notificationRecord) {
+      return {
+        send: false,
+        result: { success: false, channelType: channel.type, error: 'Failed to create notification record' }
+      } satisfies PrepareSendResult;
+    }
+
+    // Get device info for context
+    const [device] = await db
+      .select()
+      .from(devices)
+      .where(eq(devices.id, alert.deviceId))
+      .limit(1);
+
+    // Get org info
+    const [org] = await db
+      .select()
+      .from(organizations)
+      .where(eq(organizations.id, alert.orgId))
+      .limit(1);
+
+    // Phase 4b: Notification rate limiting
+    const redis = isRedisAvailable() ? getRedis() : null;
+    if (!redis) {
+      console.warn(`[NotificationDispatcher] Redis unavailable — notification rate limiting DISABLED for org ${alert.orgId}`);
+    }
+    if (redis) {
+      const rateKey = `notify:${alert.orgId}:${channel.type}`;
+      const rateLimitResult = await rateLimiter(redis, rateKey, 60, 300); // 60 per 5 min
+      if (!rateLimitResult.allowed) {
+        console.warn(`[NotificationDispatcher] Rate limited for ${channel.type} channel in org ${alert.orgId}. Remaining: ${rateLimitResult.remaining}`);
+        // Update pending record to reflect rate limiting
+        if (notificationRecord?.id) {
+          await db.update(alertNotifications)
+            .set({ status: 'failed', errorMessage: 'Rate limited' })
+            .where(eq(alertNotifications.id, notificationRecord.id));
+        }
+        return {
+          send: false,
+          result: { success: false, channelType: channel.type, error: `Rate limited (resets at ${rateLimitResult.resetAt.toISOString()})` }
+        } satisfies PrepareSendResult;
+      }
+    }
+
+    // Feature #4: per-channel sliding-window throttle (defense-in-depth vs alert storms).
+    // Keyed by (channelId, device:<deviceId>) so one flooding device cannot starve other devices.
+    if (channel.throttleMaxPerWindow && channel.throttleMaxPerWindow > 0) {
+      const windowSeconds = channel.throttleWindowSeconds ?? 3600;
+      const throttle = await checkNotificationThrottle(
+        channel.id,
+        `device:${alert.deviceId}`,
+        channel.throttleMaxPerWindow,
+        windowSeconds
+      );
+      if (!throttle.allowed) {
+        const windowExpiresIso = new Date(throttle.windowExpiresAt).toISOString();
+        const throttleMessage = `Throttled: ${throttle.currentCount} delivered in last ${windowSeconds}s (cap=${channel.throttleMaxPerWindow})`;
+        console.warn(
+          `[NotificationThrottle] Suppressed: channel=${channel.id} device=${alert.deviceId} ` +
+          `count=${throttle.currentCount}/${channel.throttleMaxPerWindow} resetsAt=${windowExpiresIso}`
+        );
+        // Use 'failed' status + descriptive errorMessage so UI / queries that
+        // filter by status see throttled rows alongside other delivery failures.
+        // The alert_notifications.status column carries pending/sent/failed only;
+        // 'suppressed' belongs to the separate alertStatusEnum and would render
+        // as a phantom value here. (See #796 review.)
+        await db.update(alertNotifications)
+          .set({
+            status: 'failed',
+            errorMessage: throttleMessage
+          })
+          .where(eq(alertNotifications.id, notificationRecord.id));
+        // Operator-visible audit event so a misconfigured cap silently eating
+        // alerts is investigable instead of buried in stdout. (See #796 review.)
+        createAuditLogAsync({
+          orgId: alert.orgId,
+          actorType: 'system',
+          actorId: '00000000-0000-0000-0000-000000000000',
+          action: 'alert.notification.throttled',
+          resourceType: 'alert_notification',
+          resourceId: notificationRecord.id,
+          result: 'denied',
+          errorMessage: throttleMessage,
+          details: {
+            channelId: channel.id,
+            channelType: channel.type,
+            deviceId: alert.deviceId,
+            currentCount: throttle.currentCount,
+            maxPerWindow: channel.throttleMaxPerWindow,
+            windowSeconds,
+            windowExpiresAt: windowExpiresIso,
+          },
+        });
+        return {
+          send: false,
+          result: { success: false, channelType: channel.type, error: `Throttled (resets at ${windowExpiresIso})` }
+        } satisfies PrepareSendResult;
+      }
+    }
+
+    return { send: true, alert, channel, notificationRecord, device, org } satisfies PrepareSendResult;
+  });
+
+  if (!prepared.send) {
+    return { ...prepared.result, durationMs: Date.now() - startTime };
   }
 
-  // Phase 4c: Per-channel notification templates
+  const { alert, channel, notificationRecord, device, org } = prepared;
+
+  // Phase 4c: Per-channel notification templates (pure computation — no DB/Redis needed)
   const channelTemplates = channel.templates as Record<string, string> | null;
   let messageBody = alert.message || alert.title;
   if (channelTemplates?.alert_triggered) {
@@ -498,7 +550,7 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
     ? { ...alert, message: messageBody }
     : alert;
 
-  // Send notification based on channel type
+  // Send notification based on channel type — OUTSIDE any DB context (#1105).
   let success = false;
   let error: string | undefined;
 
@@ -598,15 +650,18 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
     error = err instanceof Error ? err.message : 'Unknown error';
   }
 
-  // Update notification record
-  await db
-    .update(alertNotifications)
-    .set({
-      status: success ? 'sent' : 'failed',
-      sentAt: success ? new Date() : null,
-      errorMessage: error || null
-    })
-    .where(eq(alertNotifications.id, notificationRecord.id));
+  // Persist the final result — short DB context, AFTER the send completes
+  // ("record-result after send"), so the transaction never spans the send.
+  await runWithSystemDbAccess(() =>
+    db
+      .update(alertNotifications)
+      .set({
+        status: success ? 'sent' : 'failed',
+        sentAt: success ? new Date() : null,
+        errorMessage: error || null
+      })
+      .where(eq(alertNotifications.id, notificationRecord.id))
+  );
 
   if (success) {
     console.log(`[NotificationDispatcher] Sent ${channel.type} notification for alert ${data.alertId}`);
@@ -662,12 +717,20 @@ async function sendWebhookChannelNotification(
   device: typeof devices.$inferSelect | undefined,
   org: typeof organizations.$inferSelect | undefined
 ): Promise<{ success: boolean; error?: string }> {
-  // Get rule for additional context (ruleId may be null for config policy alerts)
-  const rule = alert.ruleId ? (await db
-    .select()
-    .from(alertRules)
-    .where(eq(alertRules.id, alert.ruleId))
-    .limit(1))[0] : undefined;
+  // Get rule for additional context (ruleId may be null for config policy alerts).
+  // This now runs during the outbound-send phase (#1105), with no ambient DB
+  // context, so it must open its own short one rather than assume `db` is
+  // already inside a transaction.
+  const ruleId = alert.ruleId;
+  const rule = ruleId
+    ? await runWithSystemDbAccess(async () =>
+        (await db
+          .select()
+          .from(alertRules)
+          .where(eq(alertRules.id, ruleId))
+          .limit(1))[0]
+      )
+    : undefined;
 
   return sendWebhookNotification(config, {
     alertId: alert.id,

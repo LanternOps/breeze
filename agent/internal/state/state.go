@@ -38,6 +38,22 @@ type AgentState struct {
 	Timestamp     time.Time `json:"timestamp"`
 }
 
+// Rename retry bounds. The Windows renameReplace primitive uses POSIX rename
+// semantics so a concurrent reader (the watchdog polling agent.state) never
+// blocks the swap — that was the 2026-07-22 US prod restart-storm root cause,
+// where MoveFileEx(REPLACE_EXISTING) failed ~78% of the time under a live
+// reader. The bounded backoff remains a secondary safety net for a genuinely
+// exclusive holder (third-party AV/search indexers briefly locking the fresh
+// file with no share access at all), which POSIX rename cannot bypass.
+const (
+	renameAttempts    = 4
+	renameBackoffBase = 25 * time.Millisecond
+)
+
+// renameStateFile is a seam for tests to inject rename failures. It defaults to
+// renameReplace: POSIX-semantics rename on Windows, os.Rename elsewhere.
+var renameStateFile = renameReplace
+
 // Write atomically writes the state file as JSON.
 func Write(path string, s *AgentState) error {
 	data, err := json.MarshalIndent(s, "", "  ")
@@ -48,16 +64,25 @@ func Write(path string, s *AgentState) error {
 	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
 		return fmt.Errorf("write temp state: %w", err)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("rename state file: %w", err)
+	var renameErr error
+	for attempt := 0; attempt < renameAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(renameBackoffBase << (attempt - 1))
+		}
+		if renameErr = renameStateFile(tmpPath, path); renameErr == nil {
+			return nil
+		}
 	}
-	return nil
+	_ = os.Remove(tmpPath)
+	// Name the attempt count: a caller's warn log must distinguish "failed
+	// instantly once" from "destination held across ~175ms of retries" —
+	// the AV-scan-vs-wedged-reader distinction incident forensics hinge on.
+	return fmt.Errorf("rename state file after %d attempts: %w", renameAttempts, renameErr)
 }
 
 // Read reads the state file. Returns nil, nil if the file doesn't exist.
 func Read(path string) (*AgentState, error) {
-	data, err := os.ReadFile(path)
+	data, err := readStateFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -71,14 +96,31 @@ func Read(path string) (*AgentState, error) {
 	return &s, nil
 }
 
-// UpdateHeartbeat updates only the last_heartbeat field in the state file.
+// UpdateHeartbeat updates only the last_heartbeat field in the state file,
+// recreating the file if it has gone missing.
+//
+// The recreate path is load-bearing. This is read-modify-write, and without
+// it a single absent agent.state means the agent never records another
+// heartbeat for the entire life of the process — every call returns "state
+// file not found" and nothing ever puts the file back. The watchdog then
+// reads a permanently stale/absent heartbeat and restarts a perfectly healthy
+// agent until it burns the 24h budget (#2763). That is not hypothetical: on
+// the field endpoint the startup Write lost its rename to a sharing violation
+// (AV/EDR on ProgramData), so the file never existed and every subsequent
+// heartbeat logged "state file not found".
+//
+// PID is repopulated because the caller IS the agent process, and the
+// watchdog's process check is skipped entirely when PID is 0 — a recreated
+// file that omitted it would silently disable liveness checking. Status and
+// Version are left to the owning writer in agentapp; the watchdog does not
+// branch on them.
 func UpdateHeartbeat(path string, t time.Time) error {
 	s, err := Read(path)
 	if err != nil {
 		return err
 	}
 	if s == nil {
-		return fmt.Errorf("state file not found")
+		s = &AgentState{PID: os.Getpid()}
 	}
 	s.LastHeartbeat = t
 	s.Timestamp = time.Now()

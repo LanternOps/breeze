@@ -1,0 +1,101 @@
+{
+  "assetCheckout": {
+    "expectedReturnDate": "Date de retour prévue",
+    "notes": "Notes (optionnelles)",
+    "notesPlaceholder": "Ajoutez tous les détails de la collecte ou de la livraison",
+    "requesting": "Demande d’emprunt : {{assetName}}",
+    "submit": "Demander l’emprunt",
+    "submitting": "Envoi de la demande...",
+    "title": "Emprunt d’actif",
+    "validation": {
+      "expectedReturnDate": "Sélectionnez une date de retour prévue"
+    }
+  },
+  "assetHistory": {
+    "actions": {
+      "check-in": "retour",
+      "check-out": "emprunt"
+    },
+    "description": "Activité récente d’emprunt et de retour",
+    "title": "Historique des actifs"
+  },
+  "branding": {
+    "defaultName": "Breeze Portal"
+  },
+  "customerDeviceList": {
+    "deviceCount": "{{count}} appareils liés à votre compte",
+    "deviceCount_one": "{{count}} appareil lié à votre compte",
+    "deviceCount_other": "{{count}} appareils liés à votre compte",
+    "title": "Mes appareils"
+  },
+  "deviceStatus": {
+    "lastSeen": "Vu pour la dernière fois {{lastSeen}}",
+    "status": {
+      "maintenance": "Maintenance",
+      "offline": "hors ligne",
+      "online": "en ligne"
+    },
+    "unknown": "Inconnu"
+  },
+  "header": {
+    "customerPortal": "Portail client",
+    "profile": "Profil",
+    "signOut": "Se déconnecter"
+  },
+  "login": {
+    "email": "Courriel",
+    "emailPlaceholder": "you@company.com",
+    "forgotPassword": "Mot de passe oublié ?",
+    "lookup": "Rechercher",
+    "needHelp": "Besoin d’aide ?",
+    "organization": "Organisation",
+    "organizationPlaceholder": "Acme Corp ou ORG-123",
+    "password": "Mot de passe",
+    "passwordPlaceholder": "Saisissez votre mot de passe",
+    "signingIn": "Connexion en cours...",
+    "submit": "Se connecter",
+    "validation": {
+      "email": "Saisissez une adresse courriel valide",
+      "organization": "Saisissez le nom ou le code de votre organisation",
+      "passwordLength": "Le mot de passe doit faire au moins 8 caractères"
+    }
+  },
+  "passwordReset": {
+    "confirm": {
+      "code": "Code de réinitialisation",
+      "codePlaceholder": "123456",
+      "confirmPassword": "Confirmer le mot de passe",
+      "confirmPasswordPlaceholder": "Saisissez à nouveau votre nouveau mot de passe",
+      "newPassword": "Nouveau mot de passe",
+      "newPasswordPlaceholder": "Saisissez un nouveau mot de passe",
+      "resetting": "Réinitialisation du mot de passe...",
+      "submit": "Réinitialiser le mot de passe"
+    },
+    "email": "Courriel",
+    "emailPlaceholder": "you@company.com",
+    "rememberedPassword": "Vous vous souvenez de votre mot de passe ?",
+    "request": {
+      "sending": "Envoi d’un courriel de réinitialisation...",
+      "submit": "Envoyer le lien de réinitialisation"
+    },
+    "signIn": "Se connecter",
+    "validation": {
+      "code": "Entrez le code de réinitialisation à 6 chiffres",
+      "email": "Saisissez une adresse courriel valide",
+      "passwordLength": "Le mot de passe doit faire au moins 8 caractères",
+      "passwordsMatch": "Les mots de passe ne correspondent pas"
+    }
+  },
+  "sidebar": {
+    "collapse": "Réduire la navigation du portail",
+    "expand": "Étendre la navigation du portail",
+    "items": {
+      "assetCheckout": "Emprunt d’actifs",
+      "helpCenter": "Centre d’aide",
+      "myDevices": "Mes appareils",
+      "overview": "Aperçu",
+      "supportTickets": "Billets de soutien"
+    },
+    "navigation": "Navigation du portail"
+  }
+}

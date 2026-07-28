@@ -35,6 +35,9 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   assetCheckouts: {},
   devices: {},
+  // networkBaseline.ts (pulled in transitively by the portal route graph) reads
+  // discoveredAssetTypeEnum.enumValues at module load — required for the mock.
+  discoveredAssetTypeEnum: { enumValues: [] },
   portalBranding: {
     id: 'portalBranding.id',
     customDomain: 'portalBranding.customDomain',

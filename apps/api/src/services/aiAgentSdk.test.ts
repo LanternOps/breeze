@@ -73,7 +73,7 @@ vi.mock('./auditEvents', () => ({
 }));
 
 vi.mock('./aiAgentSdkTools', () => ({
-  TOOL_TIERS: { query_devices: 1, take_screenshot: 2, execute_command: 3 },
+  TOOL_TIERS: { query_devices: 1, take_screenshot: 2, execute_command: 3, m365_reset_password: 3, google_reset_password: 3 },
   BREEZE_MCP_TOOL_NAMES: [],
 }));
 
@@ -127,6 +127,14 @@ vi.mock('./actionIntents/revalidateRelease', () => ({
 // actionIntents table object the query builder references here too.
 vi.mock('../db/schema/actionIntents', () => ({
   actionIntents: { id: 'id', status: 'status' },
+}));
+
+// Real (unmocked) module: TEMP_PASSWORD_ENC_KEY is a plain string constant,
+// no DB/network surface, and asserting against the real value pins the
+// actual key resultSecrets.ts uses rather than a test-local guess.
+const mockCaptureException = vi.fn();
+vi.mock('./sentry', () => ({
+  captureException: (...args: unknown[]) => mockCaptureException(...args),
 }));
 
 // ============================================
@@ -688,7 +696,10 @@ describe('createSessionPreToolUse', () => {
 
       const result = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
 
-      expect(result).toEqual({ allowed: true });
+      // The tier-3 branch now threads the created intent id back on the
+      // terminal return (Task 6) — this is what lets postToolUse seal
+      // against the right intent without relying solely on the WeakMap.
+      expect(result).toEqual({ allowed: true, intentId: 'intent-2' });
       expect(mockTransitionIntent).toHaveBeenCalledWith('intent-2', 'approved', 'executing', expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }), { requireNotExpired: true });
       // ai_tool_executions ledger row marked executing (the inline path today's UX).
       expect(mockSet).toHaveBeenCalledWith({ status: 'executing' });
@@ -779,7 +790,7 @@ describe('createSessionPreToolUse', () => {
       const session = makeActiveSession({ approvalMode: 'per_step' });
 
       const preResult = await createSessionPreToolUse(session)('execute_command', {});
-      expect(preResult).toEqual({ allowed: true });
+      expect(preResult).toEqual({ allowed: true, intentId: 'intent-6' });
 
       mockTransitionIntent.mockClear();
       const postToolUse = createSessionPostToolUse(session);
@@ -807,7 +818,7 @@ describe('createSessionPreToolUse', () => {
       const session = makeActiveSession({ approvalMode: 'per_step' });
 
       const preResult = await createSessionPreToolUse(session)('execute_command', {});
-      expect(preResult).toEqual({ allowed: true });
+      expect(preResult).toEqual({ allowed: true, intentId: 'intent-7' });
 
       mockTransitionIntent.mockClear();
       const postToolUse = createSessionPostToolUse(session);
@@ -1325,6 +1336,499 @@ describe('createSessionPostToolUse', () => {
     const setCall = set.mock.calls.find((c) => c[0] && 'status' in c[0]);
     expect(setCall).toBeDefined();
     expect((setCall![0] as any).delegantToolCallId).toBe('tc-456');
+  });
+});
+
+// ============================================
+// Task 6: routing the sealed secret-bearing result to the intent write
+// ============================================
+
+describe('inline secret-bearing completion (Task 6)', () => {
+  let mockSet: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+    } as any);
+    vi.mocked(checkToolPermission).mockResolvedValue(null);
+    vi.mocked(checkToolRateLimit).mockResolvedValue(null);
+    mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+    vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+    mockInsertValues();
+    mockTransitionIntent.mockResolvedValue(true);
+  });
+
+  /** Every `db.update(...).set(...)` payload — the aiToolExecutions ledger row. */
+  function updateSetPayloads(): unknown[] {
+    return mockSet.mock.calls.map((c) => c[0]);
+  }
+
+  /** Every SSE event published to the client for this session. */
+  function publishedPayloads(session: { eventBus: { publish: ReturnType<typeof vi.fn> } }): unknown[] {
+    return vi.mocked(session.eventBus.publish).mock.calls.map((c) => c[0]);
+  }
+
+  it('writes the sealed blob to the intent, and never to the chat row, the execution ledger row, or the SSE stream', async () => {
+    const session = makeActiveSession();
+    const callback = createSessionPostToolUse(session);
+
+    await callback(
+      'm365_reset_password',
+      { userIdentifier: 'a@b.com' },
+      'Reset done; credential available for one-time reveal.',
+      false,
+      12,
+      { intentId: 'intent-1', sealedResult: { temporaryPasswordEnc: 'enc:v3:abc' } },
+    );
+
+    // The intent write gets the sealed ciphertext, keyed off sealed.intentId
+    // (not pendingIntentBySession — preToolUse never ran on this session).
+    expect(mockTransitionIntent).toHaveBeenCalledWith(
+      'intent-1',
+      'executing',
+      'completed',
+      expect.objectContaining({ result: { temporaryPasswordEnc: 'enc:v3:abc' } }),
+    );
+
+    // Sink 1: aiMessages (db.insert) — the chat-context row fed back to the model.
+    const insertedAiMessages = vi.mocked(db.insert).mock.results
+      .map((r) => (r.value as any)?.values?.mock?.calls?.[0]?.[0])
+      .filter(Boolean);
+    expect(JSON.stringify(insertedAiMessages)).not.toContain('enc:v3:abc');
+
+    // Sink 2: aiToolExecutions (db.update(...).set(...)) — the execution ledger
+    // row. A prior version of this test only swept db.insert, so a bug that
+    // set `toolOutput: sealed?.sealedResult ?? parsedOutput` here instead of
+    // `parsedOutput` would have passed silently.
+    expect(JSON.stringify(updateSetPayloads())).not.toContain('enc:v3:abc');
+
+    // Sink 3: the SSE tool_result event streamed to the browser/mobile client.
+    expect(JSON.stringify(publishedPayloads(session))).not.toContain('enc:v3:abc');
+  });
+
+  it('CASes the intent to failed (with the stable error code) when the sealed tool call itself errored', async () => {
+    const session = makeActiveSession();
+    const callback = createSessionPostToolUse(session);
+
+    await callback(
+      'm365_reset_password',
+      { userIdentifier: 'a@b.com' },
+      'The password reset failed.',
+      true,
+      8,
+      { intentId: 'intent-err', sealedResult: { raw: 'The password reset failed.' } },
+    );
+
+    expect(mockTransitionIntent).toHaveBeenCalledWith(
+      'intent-err',
+      'executing',
+      'failed',
+      expect.objectContaining({
+        errorCode: 'tool_execution_failed',
+        result: { raw: 'The password reset failed.' },
+      }),
+    );
+  });
+
+  it('prefers sealed.intentId over pendingIntentBySession when both are present (genuine tier-3 run, not an empty map)', async () => {
+    // A prior version of this test called preToolUse with a tool name absent
+    // from the TOOL_TIERS mock, so it hit the very first "Unknown tool" guard
+    // and never created an intent — pendingIntentBySession stayed empty and
+    // the `not.toHaveBeenCalledWith('intent-legacy', ...)` assertion passed
+    // trivially, even against the regression it claimed to catch (flipping
+    // the `??` precedence). Fixed by registering m365_reset_password as a
+    // tier-3 tool in the TOOL_TIERS mock (below) and driving the full tier-3
+    // release-CAS path so the WeakMap is genuinely populated.
+    const selectChain: Record<string, unknown> = {
+      from: vi.fn(() => selectChain),
+      where: vi.fn(() => selectChain),
+      limit: vi.fn(async () => [{ id: 'intent-legacy', boundArgumentDigest: 'digest' }]),
+    };
+    vi.mocked(db.select).mockReturnValue(selectChain as any);
+    mockInsertReturning({ id: 'exec-legacy' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-legacy', approvalRequestIds: ['appr-legacy'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    const session = makeActiveSession({ approvalMode: 'per_step' });
+
+    const preResult = await createSessionPreToolUse(session)('m365_reset_password', { userIdentifier: 'a@b.com' });
+
+    // Proves the tier-3 branch genuinely ran (created a real intent and won
+    // the release CAS) rather than being refused as an unknown tool.
+    expect(preResult).toEqual({ allowed: true, intentId: 'intent-legacy' });
+    expect(mockCreateActionIntent).toHaveBeenCalled();
+
+    mockTransitionIntent.mockClear();
+    const callback = createSessionPostToolUse(session);
+    await callback(
+      'm365_reset_password',
+      { userIdentifier: 'a@b.com' },
+      'Reset done.',
+      false,
+      12,
+      { intentId: 'intent-sealed', sealedResult: { temporaryPasswordEnc: 'enc:v3:xyz' } },
+    );
+
+    expect(mockTransitionIntent).toHaveBeenCalledWith(
+      'intent-sealed',
+      'executing',
+      'completed',
+      expect.objectContaining({ result: { temporaryPasswordEnc: 'enc:v3:xyz' } }),
+    );
+    expect(mockTransitionIntent).not.toHaveBeenCalledWith(
+      'intent-legacy',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('applies the size cap AFTER sealing — an oversize sealed result is truncated, with a warn, not dropped silently or stored whole', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const session = makeActiveSession();
+    const callback = createSessionPostToolUse(session);
+    const oversizeCiphertext = `enc:v3:${'a'.repeat(70 * 1024)}`;
+
+    await callback(
+      'm365_reset_password',
+      { userIdentifier: 'a@b.com' },
+      'Reset done.',
+      false,
+      12,
+      { intentId: 'intent-big', sealedResult: { temporaryPasswordEnc: oversizeCiphertext } },
+    );
+
+    expect(mockTransitionIntent).toHaveBeenCalledWith(
+      'intent-big',
+      'executing',
+      'completed',
+      expect.objectContaining({ result: { truncated: true } }),
+    );
+    // Mirrors intentReleaseWorker.ts's warn: dropping the only copy of an
+    // irreversibly-reset credential for size reasons must leave a forensic
+    // trail, not vanish silently.
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Dropping sealed credential for intent intent-big'));
+    warnSpy.mockRestore();
+  });
+
+  it('does NOT warn when a non-secret oversize result is truncated (no credential was dropped)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const session = makeActiveSession();
+    const callback = createSessionPostToolUse(session);
+
+    await callback(
+      'execute_command',
+      { deviceId: 'd-1' },
+      JSON.stringify({ stdout: 'x'.repeat(70 * 1024) }),
+      false,
+      12,
+      { intentId: 'intent-nonsecret-big', sealedResult: { stdout: 'x'.repeat(70 * 1024) } },
+    );
+
+    expect(mockTransitionIntent).toHaveBeenCalledWith(
+      'intent-nonsecret-big',
+      'executing',
+      'completed',
+      expect.objectContaining({ result: { truncated: true } }),
+    );
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('CASes the intent straight to failed (no result body) and reports to Sentry when a plaintext credential slips through as the sealed result, without aborting the rest of postToolUse', async () => {
+    // assertNoPlaintextSecret is the real (unmocked) Task-1 guard — this
+    // proves it is actually wired into the inline write path, not just
+    // imported. Confidentiality is preserved either way (the write is
+    // refused); what's under test here is availability/forensics: the
+    // intent must not be stranded in `executing`, and the guard tripping
+    // must be reported, not silently swallowed by safePostToolUse upstream.
+    const session = makeActiveSession({ auditSnapshot: { requestId: 'req-1' } as any });
+    const callback = createSessionPostToolUse(session);
+
+    await callback(
+      'm365_reset_password',
+      { userIdentifier: 'a@b.com' },
+      'Reset done.',
+      false,
+      12,
+      { intentId: 'intent-leak', sealedResult: { temporaryPassword: 'hunter2-plaintext' } },
+    );
+
+    // CASed to failed with the SAME error_code the durable worker uses
+    // (jobs/intentReleaseWorker.ts's failOnPlaintextSecretGuard), and no
+    // `result` key at all — the guarded plaintext value must never reach
+    // the result column, not even as {truncated:true}.
+    expect(mockTransitionIntent).toHaveBeenCalledTimes(1);
+    const call = mockTransitionIntent.mock.calls[0] as unknown[] | undefined;
+    expect(call).toBeDefined();
+    const details = call?.[3];
+    expect(mockTransitionIntent).toHaveBeenCalledWith(
+      'intent-leak',
+      'executing',
+      'failed',
+      expect.objectContaining({ errorCode: 'secret_seal_invariant_violated' }),
+    );
+    expect(details).not.toHaveProperty('result');
+
+    // Reported for forensics, not just console-logged.
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    const captureCall = mockCaptureException.mock.calls[0] as unknown[] | undefined;
+    expect(captureCall?.[0]).toBeInstanceOf(Error);
+
+    // The callback did NOT throw/reject — steps 2c-2e (session auto-flag,
+    // plan completion, audit event) still ran for this postToolUse call
+    // instead of being aborted by an uncaught throw.
+    expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'tool_result' }));
+  });
+
+  describe('Important 4: PAM-helper tier-3-but-intentless path pins intentId===undefined (out of scope for Task 7 — the plan-step sibling case is fixed below; general defect tracked in internal/security/tier3-plan-mode-intent-bypass.md)', () => {
+    it('PAM-helper session: intentId is undefined for a secret-bearing tool auto-approved by organization policy', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Reset password',
+      } as any);
+      mockInsertReturning({ id: 'exec-helper' });
+      mockDecideHelperToolAction.mockResolvedValue('auto_approved');
+      vi.mocked(waitForApproval).mockResolvedValue(true);
+      const session = makeActiveSession({
+        auth: makeAuth({
+          scope: 'organization',
+          helperDeviceId: 'device-9',
+          user: { id: 'device-9', email: 'helper@host-09', name: 'HOST-09' },
+        } as any),
+        approvalMode: 'per_step',
+      });
+
+      const result = await createSessionPreToolUse(session)('m365_reset_password', { userIdentifier: 'a@b.com' });
+
+      expect(result).toEqual({ allowed: true });
+      expect((result as { intentId?: string }).intentId).toBeUndefined();
+      // No durable intent was ever created on this path — confirms this is
+      // the PAM-governed helper path, not the tier-3 durable-intent flow.
+      expect(mockCreateActionIntent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Task 7: plan-step shortcut excludes secret-bearing tools', () => {
+    beforeEach(() => {
+      // The plan-secret and plan-decision-blocking assertions below only need
+      // createActionIntent to have been reached, not the full release CAS —
+      // stop right after it via a 'rejected' decision, same shortcut the
+      // existing Tier-3 tests above use to avoid re-driving revalidation/CAS
+      // plumbing that is orthogonal to what this describe is proving.
+      mockWaitForIntentDecision.mockResolvedValue('rejected');
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+    });
+
+    it.each(['action_plan', 'hybrid_plan'] as const)(
+      'does not take the plan shortcut for a secret-bearing tool matched against an approved plan step in %s mode — falls through to createActionIntent',
+      async (mode) => {
+        vi.mocked(checkGuardrails).mockReturnValue({
+          allowed: true,
+          tier: 3,
+          requiresApproval: true,
+          description: 'Reset password',
+        } as any);
+        mockInsertReturning({ id: 'exec-plan-secret' });
+        mockCreateActionIntent.mockResolvedValue(
+          makeIntentSnapshot({ id: 'intent-plan-secret', approvalRequestIds: ['appr-plan-secret'] }),
+        );
+        const session = makeActiveSession({
+          approvalMode: mode,
+          activePlanId: 'plan-1',
+          approvedPlanSteps: new Map([
+            [0, { toolName: 'm365_reset_password', input: { userIdentifier: 'a@b.com', reason: 'r' } }],
+          ]),
+        });
+
+        const result = await createSessionPreToolUse(session)(
+          'm365_reset_password',
+          { userIdentifier: 'a@b.com', reason: 'r' },
+        );
+
+        // The matched plan step is proof the shortcut's own matching logic
+        // would have fired here — reaching createActionIntent anyway (rather
+        // than the plan_step_start/short-circuit `{allowed:true}` the
+        // shortcut returns) is the direct evidence the gate excluded this
+        // tool from taking it.
+        expect(mockCreateActionIntent).toHaveBeenCalledWith(session.auth, expect.objectContaining({
+          toolName: 'm365_reset_password',
+        }));
+        expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
+        expect(session.eventBus.publish).not.toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'plan_step_start' }),
+        );
+      },
+    );
+
+    it.each(['action_plan', 'hybrid_plan'] as const)(
+      'still takes the plan shortcut for a non-secret tool in %s mode (regression guard: the gate must not broaden beyond secret-bearing tools)',
+      async (mode) => {
+        vi.mocked(checkGuardrails).mockReturnValue({
+          allowed: true,
+          tier: 3,
+          requiresApproval: true,
+          description: 'Execute command',
+        } as any);
+        const values = mockInsertValues();
+        const session = makeActiveSession({
+          approvalMode: mode,
+          activePlanId: 'plan-1',
+          approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { deviceId: 'd-1' } }]]),
+        });
+
+        const result = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+        expect(result).toEqual({ allowed: true });
+        expect(mockCreateActionIntent).not.toHaveBeenCalled();
+        expect(values).toHaveBeenCalledWith(expect.objectContaining({
+          sessionId: 'session-1',
+          toolName: 'execute_command',
+          status: 'executing',
+        }));
+        expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'plan_step_start' }));
+      },
+    );
+
+    describe('plan bookkeeping stays coherent when a secret-bearing tool declines the shortcut', () => {
+      it('a later, non-secret step still matches its plan step after an earlier secret-bearing step fell through (index did not desync)', async () => {
+        vi.mocked(checkGuardrails).mockReturnValue({
+          allowed: true,
+          tier: 3,
+          requiresApproval: true,
+          description: 'Step',
+        } as any);
+        mockInsertReturning({ id: 'exec-plan-first-secret' });
+        mockCreateActionIntent.mockResolvedValue(
+          makeIntentSnapshot({ id: 'intent-plan-first-secret', approvalRequestIds: ['appr-1'] }),
+        );
+        const session = makeActiveSession({
+          approvalMode: 'action_plan',
+          activePlanId: 'plan-1',
+          approvedPlanSteps: new Map([
+            [0, { toolName: 'm365_reset_password', input: { userIdentifier: 'a@b.com' } }],
+            [1, { toolName: 'execute_command', input: { deviceId: 'd-1' } }],
+          ]),
+        });
+
+        // Step 0: secret-bearing tool matches the plan's first step but must
+        // decline the shortcut and fall through to createActionIntent.
+        const first = await createSessionPreToolUse(session)('m365_reset_password', { userIdentifier: 'a@b.com' });
+        expect(mockCreateActionIntent).toHaveBeenCalledTimes(1);
+        expect(first).toEqual({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
+        // Bookkeeping advanced even though the shortcut itself was declined —
+        // this is the fix: without it, `currentPlanStepIndex` stays at 0 and
+        // every later step in the plan mismatches against step 0 forever.
+        expect(session.currentPlanStepIndex).toBe(1);
+
+        // Step 1: a later, non-secret step must still match against the
+        // advanced index — proving the plan didn't desync into treating this
+        // as a deviation (which would silently demand fresh manual approval
+        // for every remaining step with no signal to the user).
+        const values = mockInsertValues();
+        const second = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+        expect(second).toEqual({ allowed: true });
+        expect(values).toHaveBeenCalledWith(expect.objectContaining({
+          toolName: 'execute_command',
+          status: 'executing',
+        }));
+        expect(session.eventBus.publish).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'plan_step_start', stepIndex: 1, toolName: 'execute_command' }),
+        );
+        expect(session.currentPlanStepIndex).toBe(2);
+        // createActionIntent must not have fired again for the non-secret step.
+        expect(mockCreateActionIntent).toHaveBeenCalledTimes(1);
+      });
+
+      it('a plan ENDING on a secret-bearing tool still reaches completion', async () => {
+        vi.mocked(checkGuardrails).mockReturnValue({
+          allowed: true,
+          tier: 3,
+          requiresApproval: true,
+          description: 'Reset password',
+        } as any);
+        mockInsertReturning({ id: 'exec-plan-last-secret' });
+        mockCreateActionIntent.mockResolvedValue(
+          makeIntentSnapshot({ id: 'intent-plan-last-secret', approvalRequestIds: ['appr-last-secret'] }),
+        );
+        const session = makeActiveSession({
+          approvalMode: 'action_plan',
+          activePlanId: 'plan-1',
+          approvedPlanSteps: new Map([
+            [0, { toolName: 'google_reset_password', input: { userIdentifier: 'a@b.com' } }],
+          ]),
+        });
+
+        await createSessionPreToolUse(session)('google_reset_password', { userIdentifier: 'a@b.com' });
+        // Precondition for the completion check below: the single-step plan's
+        // index must have advanced to its size (1) even though the shortcut
+        // that normally does this never ran for this tool.
+        expect(session.currentPlanStepIndex).toBe(1);
+        expect(session.approvedPlanSteps.size).toBe(1);
+
+        await createSessionPostToolUse(session)(
+          'google_reset_password',
+          { userIdentifier: 'a@b.com' },
+          'Reset done.',
+          false,
+          10,
+        );
+
+        // The completion check (currentPlanStepIndex >= approvedPlanSteps.size)
+        // is only satisfiable if the index advanced above — without the fix
+        // this never fires and activePlanId is stranded set forever.
+        expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
+          type: 'plan_complete',
+          planId: 'plan-1',
+          status: 'completed',
+        }));
+        expect(session.activePlanId).toBeNull();
+        expect(session.approvedPlanSteps.size).toBe(0);
+        expect(session.currentPlanStepIndex).toBe(0);
+      });
+
+      it('does not create a duplicate ai_tool_executions row when a secret-bearing tool falls through from a matched plan step', async () => {
+        vi.mocked(checkGuardrails).mockReturnValue({
+          allowed: true,
+          tier: 3,
+          requiresApproval: true,
+          description: 'Reset password',
+        } as any);
+        const insertValues = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'exec-once' }]) });
+        vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+        mockCreateActionIntent.mockResolvedValue(
+          makeIntentSnapshot({ id: 'intent-once', approvalRequestIds: ['appr-once'] }),
+        );
+        const session = makeActiveSession({
+          approvalMode: 'action_plan',
+          activePlanId: 'plan-1',
+          approvedPlanSteps: new Map([
+            [0, { toolName: 'm365_reset_password', input: { userIdentifier: 'a@b.com' } }],
+          ]),
+        });
+
+        await createSessionPreToolUse(session)('m365_reset_password', { userIdentifier: 'a@b.com' });
+
+        // Exactly one aiToolExecutions row for this call — the tier-3
+        // approval record. A regression that let the shortcut ALSO fire
+        // (e.g. forgetting to gate the early-return branch, only the
+        // bookkeeping one) would insert a second row here.
+        expect(insertValues).toHaveBeenCalledTimes(1);
+        expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+          toolName: 'm365_reset_password',
+          status: 'pending',
+        }));
+      });
+    });
   });
 });
 

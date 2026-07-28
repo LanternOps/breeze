@@ -36,8 +36,33 @@
 
     <SummaryInformation Description="Breeze RMM endpoint agent" />
     <MediaTemplate EmbedCab="yes" />
+    <!-- Schedule="afterInstallExecute" is LOAD-BEARING — do not move it
+         earlier. The old product's uninstall (RemoveExistingProducts) runs
+         AFTER the new product's files/components are registered, so shared
+         component refcounts keep cmpCleanConfigOnUninstall alive and its
+         RemoveFile rows (secrets.yaml / agent.yaml) do NOT fire during an
+         upgrade. With an early schedule the old product uninstalls while
+         refcount is still 1 and every upgrade would DELETE THE ENROLLMENT
+         CREDENTIALS — and shipped old MSIs can't be changed, so this cannot
+         be mitigated package-side. The protection additionally requires the
+         old MSI to carry the same component GUID for
+         cmpCleanConfigOnUninstall ({D4E5F6A7-...} is hardcoded below, so
+         all shipped versions match). The VM upgrade test MUST assert that
+         secrets.yaml + agent.yaml survive the upgrade — that is the
+         empirical check of this refcount reasoning. The costs of the late schedule (the old
+         uninstall runs after our services/task are set up) are compensated
+         by RecoverBreezeAfterUpgrade / ReRegisterUserHelperTaskAfterUpgrade
+         below.
+
+         AllowSameVersionUpgrades: ProductCode is auto-generated per build,
+         so two builds of the SAME version are unrelated products. Without
+         this flag, reinstalling a rebuilt same-version MSI (common with the
+         signing-service pipeline) installs SIDE-BY-SIDE: two ARP entries
+         both claiming the services, and the eventual uninstall of either
+         one rips the services out from under the survivor. -->
     <MajorUpgrade
       DowngradeErrorMessage="A newer version of Breeze Agent is already installed."
+      AllowSameVersionUpgrades="yes"
       Schedule="afterInstallExecute" />
 
     <Launch Condition="VersionNT64" Message="Breeze Agent requires 64-bit Windows." />
@@ -84,17 +109,122 @@
          dropped onto the box by another mechanism. Skipping the kill on
          REMOVE is fine because ServiceControl handles service shutdown on
          uninstall and the user-helper exits cleanly when its tray menu
-         exits. The taskkill /F is idempotent: `& exit /b 0` swallows the
-         "process not found" error so a fresh box with nothing to kill
-         still returns success (#944). Admin token (required by the MSI)
-         is sufficient for cross-session SeDebugPrivilege-backed
-         termination. -->
+         exits. `& exit /b 0` swallows every per-step error so a fresh box
+         with nothing to disarm/stop/kill still returns success (#944).
+
+         Command structure (each step best-effort, joined with single `&`):
+           1. `sc failure ... actions= ""` DISARMS the SCM recovery config
+              that a PREVIOUS install's ConfigureBreezeFailureActions set
+              (restart/5000/...). Without this, taskkill'ing the service
+              processes makes the SCM RESURRECT them ~5s later — the old
+              exes re-lock the install folder mid-file-copy and the upgrade
+              stalls/fails. This only bites when a previous version was
+              installed, which is exactly the reported "hangs on upgrade"
+              shape. Failure actions are re-armed by
+              ConfigureBreezeFailureActions (success), RecoverBreezeAfterUpgrade
+              (upgrade), or RollbackServiceRecovery (failed install).
+           2. `sc stop` watchdog FIRST (so it cannot restart the agent),
+              then the agent — a clean SCM stop never triggers failure
+              actions, unlike a kill.
+           3. Wait ~3s only if BreezeAgent is still RUNNING/PENDING (fresh
+              boxes skip the wait entirely) so the stop can complete before
+              the fallback kill.
+           4. taskkill WITHOUT /T. /T kills the named process's whole child
+              tree — and when this MSI is deployed through Breeze's own
+              script engine, msiexec/powershell run as DESCENDANTS of
+              breeze-agent.exe, so /T killed the very msiexec client
+              performing this install. Every process we actually need dead
+              is already named explicitly.
+
+         Immediate CAs impersonate the installing user, so on an interactive
+         double-click + UAC-consent install the filtered token may be denied
+         on all of these (same class as the old HardenProgramDataAcl bug) —
+         that's why PrepareServiceShutdown below repeats the disarm (both
+         services) + watchdog stop as a deferred LocalSystem action before
+         StopServices. -->
     <SetProperty Id="BREEZE_KILL_CMD" Value="[System64Folder]cmd.exe" Before="KillBreezeProcesses" Sequence="execute" />
     <CustomAction
       Id="KillBreezeProcesses"
       Property="BREEZE_KILL_CMD"
-      ExeCommand="/c &quot;taskkill /F /T /IM breeze-agent.exe /IM breeze-user-helper.exe /IM breeze-watchdog.exe /IM breeze-desktop-helper.exe /IM breeze-backup.exe &amp; exit /b 0&quot;"
+      ExeCommand="/c sc failure BreezeWatchdog reset= 0 actions= &quot;&quot; >nul 2>&amp;1 &amp; sc failure BreezeAgent reset= 0 actions= &quot;&quot; >nul 2>&amp;1 &amp; sc stop BreezeWatchdog >nul 2>&amp;1 &amp; sc stop BreezeAgent >nul 2>&amp;1 &amp; (sc query BreezeAgent | findstr &quot;PENDING RUNNING&quot; >nul 2>&amp;1 &amp;&amp; ping -n 4 127.0.0.1 >nul) &amp; taskkill /F /IM breeze-agent.exe /IM breeze-user-helper.exe /IM breeze-watchdog.exe /IM breeze-desktop-helper.exe /IM breeze-backup.exe >nul 2>&amp;1 &amp; exit /b 0"
       Execute="immediate"
+      Return="ignore" />
+
+    <!-- Deferred/LocalSystem twin of the disarm + watchdog-stop portion of
+         KillBreezeProcesses (the agent stop itself is left to StopServices,
+         which waits properly). The immediate CA above can silently no-op on
+         UAC-filtered tokens; this one always runs with full rights, in the
+         execute script BEFORE StopServices, so:
+           - SCM failure actions are guaranteed disarmed before any process
+             of ours dies (no resurrection race), and
+           - the watchdog is already down when StopServices stops BreezeAgent
+             (StopServices stops the agent first per ServiceControl table
+             order — rows sort by Id, svcControlBreezeAgent &lt;
+             svcControlWatchdog, so renaming those Ids can silently flip the
+             order — and a live watchdog restarting the agent in that window
+             blocks the file copy).
+         Runs on uninstall too — same watchdog race exists there. -->
+    <SetProperty Id="BREEZE_SVC_CMD" Value="[System64Folder]cmd.exe" Before="RollbackServiceRecovery" Sequence="execute" />
+    <CustomAction
+      Id="PrepareServiceShutdown"
+      Property="BREEZE_SVC_CMD"
+      ExeCommand="/c sc failure BreezeWatchdog reset= 0 actions= &quot;&quot; >nul 2>&amp;1 &amp; sc failure BreezeAgent reset= 0 actions= &quot;&quot; >nul 2>&amp;1 &amp; sc stop BreezeWatchdog >nul 2>&amp;1 &amp; exit /b 0"
+      Execute="deferred"
+      Impersonate="no"
+      Return="ignore" />
+
+    <!-- If the install fails after PrepareServiceShutdown disarmed recovery,
+         restore the previous state: re-arm failure actions (values must stay
+         in sync with ConfigureBreezeFailureActions below) and restart the
+         services MSI stopped, so a failed upgrade never leaves the box with
+         a dead agent AND no SCM auto-restart. -->
+    <CustomAction
+      Id="RollbackServiceRecovery"
+      Property="BREEZE_SVC_CMD"
+      ExeCommand="/c sc failure BreezeAgent reset= 86400 actions= restart/5000/restart/10000/restart/30000 >nul 2>&amp;1 &amp; sc failure BreezeWatchdog reset= 86400 actions= restart/5000/restart/10000/restart/30000 >nul 2>&amp;1 &amp; sc start BreezeAgent >nul 2>&amp;1 &amp; sc start BreezeWatchdog >nul 2>&amp;1 &amp; ((sc query BreezeAgent | findstr &quot;RUNNING PENDING&quot; >nul 2>&amp;1) || echo %DATE% %TIME% RollbackServiceRecovery: BreezeAgent not running after install rollback > &quot;[ProgramDataBreezeLogsDir]upgrade-recovery-last-error.txt&quot;) &amp; exit /b 0"
+      Execute="rollback"
+      Impersonate="no"
+      Return="ignore" />
+
+    <!-- With Schedule="afterInstallExecute", RemoveExistingProducts runs the
+         OLD product's uninstall AFTER our services are installed/started and
+         our task is registered. Old packages' ServiceControl uninstall-stop
+         events and their UnregisterUserHelperTask CA execute during that
+         nested uninstall and can leave the NEW services stopped and the NEW
+         scheduled task deleted (old MSIs run the freshly-installed copy of
+         remove-windows-task.ps1 — now that its TaskPath bug is fixed, the
+         unregister actually works, so this backstop is mandatory, not
+         paranoia). Stop-vs-delete asymmetry: the service COMPONENTS use
+         Guid="*", which WiX derives deterministically from install path +
+         keypath, so old and new products share the component GUID — during
+         REP the refcount held by the new product suppresses the old
+         ServiceControl Remove="uninstall" (service NOT deleted), while the
+         stop event can still fire. That's why `sc start` here is a
+         sufficient remedy (it cannot recreate a deleted service — VM
+         upgrade test must confirm services exist + RUNNING afterward).
+         These two CAs run after REP, upgrade-only, Return=ignore
+         (worst case they no-op against already-running services / an
+         existing task). Failure-action values must stay in sync with
+         ConfigureBreezeFailureActions. If recovery still leaves BreezeAgent
+         not running, a sentinel line is written to
+         logs\upgrade-recovery-last-error.txt (best-effort; same convention
+         as the user-helper install sentinel) so the dead-agent cause is
+         diagnosable locally — otherwise the only signal would be
+         server-side offline alerting with zero context. -->
+    <CustomAction
+      Id="RecoverBreezeAfterUpgrade"
+      Property="BREEZE_SVC_CMD"
+      ExeCommand="/c sc failure BreezeAgent reset= 86400 actions= restart/5000/restart/10000/restart/30000 >nul 2>&amp;1 &amp; sc failure BreezeWatchdog reset= 86400 actions= restart/5000/restart/10000/restart/30000 >nul 2>&amp;1 &amp; sc start BreezeAgent >nul 2>&amp;1 &amp; sc start BreezeWatchdog >nul 2>&amp;1 &amp; ((sc query BreezeAgent | findstr &quot;RUNNING PENDING&quot; >nul 2>&amp;1) || echo %DATE% %TIME% RecoverBreezeAfterUpgrade: BreezeAgent not running after post-upgrade recovery > &quot;[ProgramDataBreezeLogsDir]upgrade-recovery-last-error.txt&quot;) &amp; exit /b 0"
+      Execute="deferred"
+      Impersonate="no"
+      Return="ignore" />
+
+    <CustomAction
+      Id="ReRegisterUserHelperTaskAfterUpgrade"
+      Property="POWERSHELL_EXE"
+      ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#filInstallWindowsPs1]&quot;"
+      Execute="deferred"
+      Impersonate="no"
       Return="ignore" />
 
     <SetProperty Id="BREEZE_ACL_CMD" Value="[System64Folder]cmd.exe" Before="HardenProgramDataAcl" Sequence="execute" />
@@ -139,7 +269,9 @@
          a slash-separated list of (actionType/delayMs) pairs. `Return="ignore"`
          (below) is what prevents a transient sc-error from rolling back the
          install — keep both the static ExeCommand and Return="ignore" in
-         sync if either is ever edited. -->
+         sync if either is ever edited. The same failure-action values are
+         duplicated in RollbackServiceRecovery and RecoverBreezeAfterUpgrade
+         above — edit all three together. -->
     <SetProperty Id="BREEZE_SC_FAILURE_CMD" Value="[System64Folder]cmd.exe" Before="ConfigureBreezeFailureActions" Sequence="execute" />
     <CustomAction
       Id="ConfigureBreezeFailureActions"
@@ -345,6 +477,10 @@
            CA definition above and issue #944. -->
       <Custom Action="KillBreezeProcesses" Before="InstallValidate" Condition="NOT REMOVE" />
       <Custom Action="SetPowerShellPath" After="InstallInitialize" />
+      <!-- Rollback CA must be scheduled before the deferred actions whose
+           damage it undoes (rollback script is written in sequence order). -->
+      <Custom Action="RollbackServiceRecovery" Before="PrepareServiceShutdown" />
+      <Custom Action="PrepareServiceShutdown" Before="StopServices" />
       <Custom Action="HardenProgramDataAcl" After="CreateFolders" Condition="NOT REMOVE" />
       <!-- Rollback rolls back the FIRST-install case only; on upgrade or
            repair the existing task is valid prior state and shouldn't be
@@ -392,7 +528,18 @@
            directly (baked at schedule time, here, while it still names the
            downloaded file) — no immediate capture CA is needed. -->
       <Custom Action="BootstrapEnroll" Before="InstallServices" Condition="NOT Installed AND NOT (SERVER_URL AND ENROLLMENT_KEY)" />
-      <Custom Action="UnregisterUserHelperTask" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
+      <!-- Post-upgrade backstop: undo whatever the OLD product's nested
+           uninstall (REP, scheduled afterInstallExecute) did to the NEW
+           services and scheduled task. See CA definitions above. -->
+      <Custom Action="RecoverBreezeAfterUpgrade" After="RemoveExistingProducts" Condition="WIX_UPGRADE_DETECTED" />
+      <Custom Action="ReRegisterUserHelperTaskAfterUpgrade" After="RecoverBreezeAfterUpgrade" Condition="WIX_UPGRADE_DETECTED" />
+      <!-- NOT UPGRADINGPRODUCTCODE: when THIS version is later the old
+           product being removed by a successor's RemoveExistingProducts,
+           skip task unregistration — the successor has already registered
+           the (shared-path) task and would have it yanked out from under it.
+           Real uninstalls (REMOVE=ALL without an upgrade in flight) still
+           clean up. -->
+      <Custom Action="UnregisterUserHelperTask" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
 
     <Feature Id="MainFeature" Title="Breeze Agent" Level="1">

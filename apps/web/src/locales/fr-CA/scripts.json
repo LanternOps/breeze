@@ -1,0 +1,1166 @@
+{
+  "automationEditPage": {
+    "errors": {
+      "fetch": "Impossible de récupérer l’automatisation",
+      "generic": "Une erreur est survenue",
+      "save": "Impossible d’enregistrer l’automatisation"
+    },
+    "loading": "Chargement de l’automatisation...",
+    "breadcrumb": {
+      "automations": "Automatisations",
+      "new": "Nouvelle automatisation",
+      "edit": "Modifier l’automatisation"
+    },
+    "title": {
+      "create": "Créer une automatisation",
+      "edit": "Modifier l’automatisation"
+    },
+    "description": {
+      "create": "Créez un flux de travail automatisé avec des déclencheurs, des conditions et des actions.",
+      "edit": "Modifiez la configuration de l’automatisation."
+    },
+    "actions": {
+      "create": "Créer l’automatisation",
+      "saveChanges": "Enregistrer les modifications"
+    }
+  },
+  "automationForm": {
+    "cron": {
+      "invalid": "Expression cron non valide",
+      "everyHourAtMinuteZero": "Toutes les heures à la minute 0",
+      "everyFiveMinutes": "Toutes les 5 minutes",
+      "everyFifteenMinutes": "Toutes les 15 minutes",
+      "everyThirtyMinutes": "Toutes les 30 minutes",
+      "everyDayAtMidnight": "Tous les jours à minuit",
+      "everyDayAtNine": "Tous les jours à 9:00",
+      "weekdaysAtNine": "Jours ouvrés à 9:00",
+      "everySundayAtMidnight": "Tous les dimanches à minuit",
+      "firstDayEveryMonth": "Le premier jour de chaque mois à minuit",
+      "everyMinute": "Toutes les minutes",
+      "everyNMinutes": "Toutes les {{count}} minutes",
+      "everyHourAtMinute": "Toutes les heures à la minute {{minute}}",
+      "quickPresets": "Préréglages rapides :",
+      "presets": {
+        "everyFifteenMin": "Toutes les 15 min",
+        "everyHour": "Toutes les heures",
+        "dailyNine": "Tous les jours 9:00",
+        "weekdaysNine": "Jours ouvrés 9:00",
+        "weeklySunday": "Chaque dimanche"
+      }
+    },
+    "validation": {
+      "valueRequired": "La valeur est obligatoire",
+      "nameRequired": "Le nom de l’automatisation est obligatoire",
+      "actionRequired": "Au moins une action est obligatoire"
+    },
+    "triggerTypes": {
+      "schedule": {
+        "label": "Planification",
+        "description": "Exécuter selon une planification cron"
+      },
+      "event": {
+        "label": "Événement",
+        "description": "Exécuter lorsqu’un événement survient"
+      },
+      "webhook": {
+        "label": "Webhook",
+        "description": "Exécuter via un webhook HTTP"
+      },
+      "manual": {
+        "label": "Manuel",
+        "description": "Exécuter uniquement manuellement"
+      }
+    },
+    "eventTypes": {
+      "deviceOnline": "Appareil en ligne",
+      "deviceOffline": "Appareil hors ligne",
+      "alertTriggered": "Alerte déclenchée",
+      "alertResolved": "Alerte résolue",
+      "scriptCompleted": "Script terminé",
+      "scriptFailed": "Script en échec",
+      "policyViolation": "Violation de politique",
+      "huntressIncidentCreated": "Incident Huntress créé",
+      "huntressIncidentUpdated": "Incident Huntress mis à jour",
+      "huntressAgentOffline": "Agent Huntress hors ligne",
+      "sentinelOneThreatDetected": "Menace SentinelOne détectée",
+      "sentinelOneDeviceIsolated": "Appareil SentinelOne isolé",
+      "sentinelOneThreatActionCompleted": "Action de menace SentinelOne terminée"
+    },
+    "conditionTypes": {
+      "group": "Groupe",
+      "operatingSystem": "Système d’exploitation",
+      "tag": "Étiquette"
+    },
+    "operators": {
+      "is": "Est",
+      "isNot": "N’est pas",
+      "contains": "Contient",
+      "doesNotContain": "Ne contient pas"
+    },
+    "actionTypes": {
+      "runScript": "Exécuter un script",
+      "sendNotification": "Envoyer une notification",
+      "createAlert": "Créer une alerte",
+      "executeCommand": "Exécuter une commande",
+      "deploySoftware": "Déployer un logiciel"
+    },
+    "severity": {
+      "critical": "Critique",
+      "high": "Élevée",
+      "medium": "Moyenne",
+      "low": "Faible",
+      "info": "Information"
+    },
+    "failure": {
+      "stop": {
+        "label": "Arrêter l’exécution",
+        "description": "Arrêter toutes les actions restantes"
+      },
+      "continue": {
+        "label": "Continuer",
+        "description": "Continuer avec les actions restantes"
+      },
+      "notify": {
+        "label": "Notifier et continuer",
+        "description": "Envoyer une notification et continuer"
+      }
+    },
+    "actions": {
+      "saveAutomation": "Enregistrer l’automatisation",
+      "copyUrl": "Copier l’URL",
+      "addCondition": "Ajouter une condition",
+      "addAction": "Ajouter une action"
+    },
+    "scope": {
+      "title": "Périmètre",
+      "allOrganizations": "Toutes les organisations",
+      "partnerWide": "(automatisation à l’échelle du partenaire)",
+      "organizationOnly": "Cette organisation uniquement"
+    },
+    "fields": {
+      "name": "Nom de l’automatisation",
+      "cronExpression": "Expression cron",
+      "eventType": "Type d’événement",
+      "webhookUrl": "URL du webhook",
+      "webhookSecret": "Secret du webhook (facultatif)",
+      "mode": "Mode",
+      "script": "Script",
+      "notificationChannel": "Canal de notification",
+      "severity": "Gravité",
+      "message": "Message",
+      "command": "Commande",
+      "software": "Logiciel",
+      "failureNotificationChannel": "Canal de notification d’échec"
+    },
+    "placeholders": {
+      "name": "Contrôle de maintenance quotidien",
+      "description": "Décrivez ce que fait cette automatisation...",
+      "webhookSecret": "Laisser vide pour générer automatiquement",
+      "value": "Valeur",
+      "selectScript": "Sélectionner un script...",
+      "selectChannel": "Sélectionner un canal...",
+      "alertMessage": "Message d’alerte",
+      "selectSoftware": "Sélectionner un logiciel..."
+    },
+    "sections": {
+      "trigger": "Déclencheur",
+      "deviceTargeting": "Ciblage des appareils (facultatif)",
+      "deviceTargetingDescription": "Filtrer les appareils auxquels cette automatisation s’applique",
+      "actions": "Actions",
+      "actionsDescription": "Définir ce qui se passe lorsque cette automatisation s’exécute",
+      "onFailure": "Comportement en cas d’échec"
+    },
+    "webhook": {
+      "generatedAfterSaving": "Une URL de webhook sera générée après l’enregistrement.",
+      "postHint": "Envoyez une requête POST à cette URL pour déclencher l’automatisation"
+    },
+    "manual": {
+      "hint": "Cette automatisation ne s’exécutera que lorsqu’elle sera déclenchée manuellement depuis l’interface ou l’API."
+    },
+    "modes": {
+      "simple": "Simple",
+      "advanced": "Avancé"
+    },
+    "software": {
+      "installLatestHint": "Installe la dernière version du logiciel sélectionné ; ignore les appareils qui l’ont déjà."
+    },
+    "empty": {
+      "noActions": "Aucune action définie. Cliquez sur \"Ajouter une action\" pour en créer une."
+    }
+  },
+  "automationList": {
+    "relativeTime": {
+      "justNow": "À l’instant",
+      "minutesAgo": "Il y a {{count}} min",
+      "hoursAgo": "Il y a {{count}} h",
+      "daysAgo": "Il y a {{count}} j"
+    },
+    "title": "Automatisations",
+    "summary": "{{shown}} sur {{total}} automatisations",
+    "searchPlaceholder": "Rechercher des automatisations...",
+    "filters": {
+      "allTriggers": "Tous les déclencheurs",
+      "allStatus": "Tous les statuts"
+    },
+    "trigger": {
+      "schedule": "Planification",
+      "event": "Événement",
+      "webhook": "Webhook",
+      "manual": "Manuel"
+    },
+    "headers": {
+      "trigger": "Déclencheur",
+      "lastRun": "Dernière exécution"
+    },
+    "empty": "Aucune automatisation trouvée. Essayez d’ajuster votre recherche ou vos filtres.",
+    "partnerWideTitle": "Automatisation à l’échelle du partenaire — s’applique à toutes les organisations",
+    "allOrgs": "À l’échelle du partenaire",
+    "never": "Jamais",
+    "actions": {
+      "viewHistory": "Voir l’historique",
+      "runNow": "Exécuter maintenant",
+      "runHistory": "Historique d’exécution"
+    },
+    "pagination": {
+      "showing": "Affichage de {{start}} à {{end}} sur {{total}}",
+      "page": "Page {{page}} sur {{total}}"
+    },
+    "status": {
+      "idle": "Inactif",
+      "running": "En cours",
+      "success": "Réussi",
+      "failed": "Échec",
+      "partial": "Partiel"
+    }
+  },
+  "automationRunHistory": {
+    "relativeTime": {
+      "justNow": "À l’instant",
+      "minutesAgo": "Il y a {{count}} min",
+      "hoursAgo": "Il y a {{count}} h",
+      "daysAgo": "Il y a {{count}} j"
+    },
+    "deviceCount": "{{count}} appareils",
+    "resultCount": {
+      "passed": "{{count}} réussis",
+      "failed": "{{count}} en échec",
+      "skipped": "{{count}} ignorés"
+    },
+    "duration": "Durée : {{duration}}",
+    "progress": {
+      "finished": "{{finished}} appareils sur {{total}} terminés"
+    },
+    "deviceResults": {
+      "title": "Résultats par appareil",
+      "loading": "Chargement des résultats par appareil…",
+      "error": "Impossible de charger les résultats par appareil. Essayez de rouvrir l’exécution.",
+      "empty": "Aucun résultat par appareil enregistré pour cette exécution."
+    },
+    "actions": {
+      "hideLogs": "Masquer les journaux",
+      "viewLogs": "Voir les journaux"
+    },
+    "timestamps": {
+      "started": "Démarré le {{date}}",
+      "completed": "Terminé : {{date}}"
+    },
+    "title": "Historique d’exécution",
+    "summary": "{{shown}} sur {{total}} exécutions",
+    "filters": {
+      "allStatus": "Tous les statuts"
+    },
+    "status": {
+      "success": "Réussi",
+      "failed": "Échec",
+      "partial": "Partiel",
+      "running": "En cours",
+      "pending": "En attente",
+      "skipped": "Ignoré"
+    },
+    "empty": "Aucun historique d’exécution disponible.",
+    "triggeredBy": {
+      "scheduled": "Planifié",
+      "event": "Déclenché par événement",
+      "webhook": "Webhook",
+      "manual": "Manuel",
+      "api": "Appel API"
+    }
+  },
+  "automationsPage": {
+    "fallback": {
+      "untitled": "Automatisation sans titre"
+    },
+    "errors": {
+      "fetch": "Impossible de récupérer les automatisations",
+      "generic": "Une erreur est survenue",
+      "run": "Impossible d’exécuter l’automatisation",
+      "enable": "Impossible d’activer l’automatisation",
+      "disable": "Impossible de désactiver l’automatisation",
+      "delete": "Impossible de supprimer l’automatisation"
+    },
+    "loading": "Chargement des automatisations...",
+    "title": "Automatisations",
+    "description": "Créez et gérez des flux de travail automatisés.",
+    "actions": {
+      "new": "Nouvelle automatisation",
+      "deleting": "Suppression…"
+    },
+    "deleteDialog": {
+      "title": "Supprimer l’automatisation",
+      "confirmPrefix": "Voulez-vous vraiment supprimer",
+      "confirmSuffix": "Cette action est irréversible."
+    }
+  },
+  "complianceDashboard": {
+    "relativeTime": {
+      "justNow": "À l’instant",
+      "minutesAgo": "Il y a {{count}} min",
+      "hoursAgo": "Il y a {{count}} h",
+      "daysAgo": "Il y a {{count}} j"
+    },
+    "noData": "Aucune donnée",
+    "status": {
+      "compliant": "Conforme",
+      "nonCompliant": "Non conforme",
+      "unknown": "Inconnu"
+    },
+    "trend": {
+      "notEnoughData": "Données insuffisantes pour la tendance",
+      "noChange": "Aucun changement",
+      "vsLastPeriod": "vs période précédente"
+    },
+    "overview": {
+      "overall": "Conformité globale",
+      "deviceRatio": "{{compliant}} appareils sur {{total}}",
+      "passingAllPolicies": "appareils conformes à toutes les politiques",
+      "withViolations": "appareils avec violations",
+      "pendingEvaluation": "appareils en attente d’évaluation"
+    },
+    "sections": {
+      "byStatus": "Conformité par statut",
+      "trend": "Tendance de conformité",
+      "policyBreakdown": "Répartition par politique",
+      "nonCompliantDevices": "Appareils non conformes"
+    },
+    "legend": {
+      "compliant": "Conforme ({{count}})",
+      "nonCompliant": "Non conforme ({{count}})",
+      "unknown": "Inconnu ({{count}})"
+    },
+    "empty": {
+      "noPolicies": "Aucune politique configurée",
+      "allCompliant": "Tous les appareils sont conformes !",
+      "noMatchingDevices": "Aucun appareil correspondant trouvé."
+    },
+    "policyComplianceRatio": "{{compliant}} / {{total}} conformes",
+    "searchDevices": "Rechercher des appareils...",
+    "violationCount": "{{count}} violation",
+    "moreViolations": "+{{count}} violations supplémentaires",
+    "lastChecked": "Dernier contrôle : {{date}}",
+    "pagination": {
+      "showing": "Affichage de {{start}} à {{end}} sur {{total}}",
+      "page": "Page {{page}} sur {{total}}"
+    }
+  },
+  "compliancePage": {
+    "errors": {
+      "fetch": "Impossible de récupérer les données de conformité",
+      "generic": "Une erreur est survenue"
+    },
+    "loading": "Chargement des données de conformité...",
+    "policyTitle": "Conformité : {{policy}}",
+    "policyFallback": "Politique",
+    "title": "Tableau de bord de conformité",
+    "description": {
+      "policy": "Consultez l’état de conformité pour cette politique.",
+      "overview": "Vue d’ensemble de la conformité aux politiques sur tous les appareils."
+    }
+  },
+  "policiesPage": {
+    "errors": {
+      "fetch": "Impossible de récupérer des stratégies",
+      "generic": "Une erreur est survenue",
+      "enable": "Impossible d’activer la politique",
+      "disable": "Impossible de désactiver la politique",
+      "delete": "Impossible de supprimer la politique"
+    },
+    "loading": "Chargement des politiques...",
+    "title": "Politiques",
+    "description": "Définissez et appliquez des politiques de conformité sur vos appareils.",
+    "actions": {
+      "complianceDashboard": "Tableau de bord de conformité",
+      "new": "Nouvelle politique",
+      "deleting": "Suppression…"
+    },
+    "stats": {
+      "activePolicies": "Politiques actives",
+      "overallCompliance": "Conformité globale",
+      "devicesMonitored": "Appareils supervisés"
+    },
+    "deleteDialog": {
+      "title": "Supprimer la politique",
+      "confirmPrefix": "Voulez-vous vraiment supprimer",
+      "confirmSuffix": "Cette action est irréversible."
+    }
+  },
+  "policyEditPage": {
+    "errors": {
+      "fetch": "Impossible de récupérer la stratégie",
+      "generic": "Une erreur est survenue",
+      "save": "Impossible d’enregistrer la stratégie"
+    },
+    "loading": "Chargement de la politique...",
+    "breadcrumb": {
+      "policies": "Politiques",
+      "new": "Nouvelle politique",
+      "edit": "Modifier la politique"
+    },
+    "title": {
+      "create": "Créer une politique",
+      "edit": "Modifier la politique"
+    },
+    "description": {
+      "create": "Définissez les règles de conformité et le comportement d’application.",
+      "edit": "Modifiez la configuration de la politique."
+    },
+    "actions": {
+      "create": "Créer la politique",
+      "saveChanges": "Enregistrer les modifications"
+    }
+  },
+  "policyForm": {
+    "validation": {
+      "softwareNameRequired": "Le nom du logiciel est obligatoire",
+      "versionRequired": "La version est obligatoire pour les opérateurs exact/minimum/maximum",
+      "diskSpacePositive": "L’espace libre minimum doit être supérieur à 0",
+      "registryPathRequired": "Le chemin du registre est obligatoire",
+      "registryValueRequired": "Le nom de la valeur du registre est obligatoire",
+      "configPathRequired": "Le chemin du fichier de configuration est obligatoire",
+      "configKeyRequired": "La clé de configuration est obligatoire",
+      "nameRequired": "Le nom de la politique est obligatoire",
+      "ruleRequired": "Au moins une règle est obligatoire",
+      "minimumInterval": "L’intervalle minimum est de 5 minutes",
+      "maximumInterval": "L’intervalle maximum est de 24 heures"
+    },
+    "enforcement": {
+      "monitor": {
+        "label": "Surveiller",
+        "description": "Suivre l’état de conformité sans agir. Idéal pour le déploiement initial d’une politique."
+      },
+      "warn": {
+        "label": "Avertir",
+        "description": "Générer des alertes lorsque des violations sont détectées. Notifie les admins sans remédiation automatique."
+      },
+      "enforce": {
+        "label": "Appliquer",
+        "description": "Exécuter automatiquement des scripts de remédiation lorsque des violations sont détectées. À utiliser avec prudence."
+      }
+    },
+    "ruleTypes": {
+      "requiredSoftware": "Logiciel requis",
+      "prohibitedSoftware": "Logiciel interdit",
+      "minimumDiskSpace": "Espace disque minimum",
+      "osVersion": "Exigence de version d’OS",
+      "registryCheck": "Contrôle du registre (Windows)",
+      "configFileCheck": "Contrôle de fichier de configuration"
+    },
+    "targetTypes": {
+      "allDevices": "Tous les appareils",
+      "specificSites": "Sites spécifiques",
+      "specificGroups": "Groupes spécifiques",
+      "specificTags": "Tags spécifiques"
+    },
+    "versionOperators": {
+      "any": "Toute version",
+      "exact": "Version exacte",
+      "minimum": "Version minimum",
+      "maximum": "Version maximum"
+    },
+    "osTypes": {
+      "any": "Tout OS",
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "actions": {
+      "savePolicy": "Enregistrer la stratégie",
+      "addRule": "Ajouter une règle"
+    },
+    "fields": {
+      "name": "Nom de la politique",
+      "targetType": "Type de cible",
+      "softwareName": "Nom du logiciel",
+      "versionCheck": "Contrôle de version",
+      "version": "Version",
+      "minimumFreeSpace": "Espace libre minimum (Go)",
+      "diskPath": "Disque/chemin (facultatif)",
+      "operatingSystem": "Système d’exploitation",
+      "minimumVersion": "Version minimum",
+      "registryPath": "Chemin du registre",
+      "valueName": "Nom de la valeur",
+      "expectedValue": "Valeur attendue",
+      "configFilePath": "Chemin du fichier de configuration",
+      "configKey": "Clé de configuration",
+      "remediationScript": "Script de remédiation",
+      "evaluateEvery": "Évaluer toutes les"
+    },
+    "placeholders": {
+      "name": "Politique de référence sécurité",
+      "description": "Décrivez ce que cette politique impose...",
+      "softwareNameRequired": "p. ex., Google Chrome",
+      "version": "Version",
+      "softwareNameProhibited": "p. ex., BitTorrent",
+      "diskPath": "C: ou /home",
+      "minimumVersion": "p. ex., 10.0 ou 22.04",
+      "registryPath": "HKLM\\SOFTWARE\\Policies\\...",
+      "remediationScript": "Sélectionner un script de remédiation..."
+    },
+    "sections": {
+      "targetDevices": "Appareils ciblés",
+      "targetDevicesDescription": "Sélectionnez les appareils auxquels cette politique s’applique",
+      "rules": "Règles de politique",
+      "rulesDescription": "Définissez ce que cette politique contrôle",
+      "enforcement": "Niveau d’application",
+      "enforcementDescription": "Choisissez comment traiter les violations",
+      "checkInterval": "Intervalle de contrôle"
+    },
+    "selectTargets": "Sélectionner {{target}}",
+    "targetLabels": {
+      "sites": "Sites",
+      "groups": "Groupes",
+      "tags": "Étiquettes",
+      "sitesLower": "sites",
+      "groupsLower": "groupes",
+      "tagsLower": "étiquettes"
+    },
+    "empty": {
+      "noTargets": "Aucun {{target}} disponible.",
+      "noRules": "Aucune règle définie. Cliquez sur \"Ajouter une règle\" pour en créer une."
+    },
+    "hints": {
+      "prohibitedSoftware": "Violation si ce logiciel est installé",
+      "checkInterval": "Fréquence à laquelle les appareils doivent être contrôlés pour la conformité"
+    },
+    "remediation": {
+      "title": "Remédiation automatique",
+      "description": "Lorsque l’application est activée, un script de remédiation s’exécute automatiquement sur les appareils non conformes."
+    }
+  },
+  "policyList": {
+    "relativeTime": {
+      "justNow": "À l’instant",
+      "minutesAgo": "Il y a {{count}} min",
+      "hoursAgo": "Il y a {{count}} h",
+      "daysAgo": "Il y a {{count}} j"
+    },
+    "notAvailable": "N/A",
+    "title": "Politiques",
+    "summary": "{{shown}} sur {{total}} politiques",
+    "searchPlaceholder": "Rechercher des politiques...",
+    "filters": {
+      "allEnforcement": "Tous les niveaux d’application",
+      "allStatus": "Tous les statuts"
+    },
+    "enforcement": {
+      "monitor": {
+        "label": "Surveiller"
+      },
+      "warn": {
+        "label": "Avertir"
+      },
+      "enforce": {
+        "label": "Appliquer"
+      }
+    },
+    "headers": {
+      "enforcement": "Application",
+      "compliance": "Conformité",
+      "lastEvaluated": "Dernière évaluation"
+    },
+    "empty": "Aucune politique trouvée. Essayez d’ajuster votre recherche ou vos filtres.",
+    "partnerWideTitle": "Politique à l’échelle du partenaire — évalue les appareils de toutes les organisations",
+    "allOrgs": "À l’échelle du partenaire",
+    "ruleCount": "{{count}} règle",
+    "moreTargets": " +{{count}} de plus",
+    "actions": {
+      "viewDetails": "Voir les détails",
+      "viewCompliance": "Voir la conformité"
+    },
+    "never": "Jamais",
+    "pagination": {
+      "showing": "Affichage de {{start}} à {{end}} sur {{total}}",
+      "page": "Page {{page}} sur {{total}}"
+    }
+  },
+  "executionDetails": {
+    "output": {
+      "emptyMarker": "(vide)",
+      "noOutput": "Aucune sortie",
+      "title": "Sortie",
+      "stdout": "Sortie standard (stdout)",
+      "stderr": "Erreur standard (stderr)"
+    },
+    "actions": {
+      "copyToClipboard": "Copier dans le presse-papiers"
+    },
+    "title": "Détails d’exécution",
+    "statusDescription": {
+      "running": "Le script est en cours d’exécution...",
+      "completed": "Script terminé avec succès",
+      "failed": "Échec de l’exécution du script",
+      "timeout": "Délai d’exécution du script dépassé",
+      "pending": "Le script attend son exécution"
+    },
+    "fields": {
+      "startedAt": "Démarré le",
+      "duration": "Durée",
+      "exitCode": "Code de sortie",
+      "completedAt": "Terminé le"
+    },
+    "status": {
+      "running": "En cours…",
+      "pending": "En attente",
+      "completed": "Terminée",
+      "failed": "Échec",
+      "timeout": "Délai dépassé"
+    }
+  },
+  "executionHistory": {
+    "relativeTime": {
+      "yesterday": "Hier {{time}}"
+    },
+    "searchPlaceholder": "Rechercher...",
+    "filters": {
+      "allStatus": "Tous les statuts",
+      "allTime": "Toute la période",
+      "lastHour": "Dernière heure",
+      "lastDay": "Dernières 24 heures",
+      "lastWeek": "7 derniers jours",
+      "lastMonth": "30 derniers jours"
+    },
+    "status": {
+      "pending": "En attente",
+      "running": "En cours…",
+      "completed": "Terminée",
+      "failed": "Échec",
+      "timeout": "Délai dépassé"
+    },
+    "summary": "{{shown}} sur {{total}}",
+    "headers": {
+      "script": "Script",
+      "started": "Démarré",
+      "duration": "Durée",
+      "exitCode": "Code de sortie"
+    },
+    "empty": "Aucune exécution trouvée. Essayez d’ajuster vos filtres.",
+    "actions": {
+      "viewDetails": "Voir les détails"
+    },
+    "pagination": {
+      "showing": "Affichage de {{start}} à {{end}} sur {{total}}",
+      "page": "Page {{page}} sur {{total}}"
+    }
+  },
+  "scriptAiInput": {
+    "placeholder": {
+      "ready": "Décrivez le script dont vous avez besoin...",
+      "opening": "Ouverture de l’assistant IA..."
+    },
+    "actions": {
+      "stopGenerating": "Arrêter la génération",
+      "sendMessage": "Envoyer le message"
+    }
+  },
+  "scriptAiMessages": {
+    "tool": {
+      "applyFailed": "Impossible d’appliquer dans l’éditeur",
+      "applied": "Appliqué dans l’éditeur",
+      "call": "Appel d’outil"
+    },
+    "approval": {
+      "title": "Approbation requise",
+      "approve": "Approuver",
+      "reject": "Rejeter"
+    },
+    "empty": {
+      "title": "Assistant IA de script",
+      "description": "Décrivez votre besoin et j’écrirai le script pour vous."
+    }
+  },
+  "scriptAiPanel": {
+    "title": "Assistant IA de script",
+    "actions": {
+      "redoTitle": "Réappliquer la modification IA",
+      "redo": "Rétablir",
+      "revertTitle": "Annuler la dernière modification IA",
+      "revert": "Annuler",
+      "dismiss": "Fermer"
+    }
+  },
+  "scriptCategoryTree": {
+    "errors": {
+      "fetch": "Impossible de récupérer les scripts",
+      "generic": "Une erreur est survenue",
+      "rename": "Impossible de renommer la catégorie"
+    },
+    "allScripts": "Tous les scripts",
+    "selectedCategory": "Catégorie sélectionnée",
+    "loading": "Chargement des catégories...",
+    "title": "Catégories de scripts",
+    "description": "Organisez les scripts dans des dossiers imbriqués.",
+    "actions": {
+      "newCategory": "Nouvelle catégorie",
+      "rename": "Renommer",
+      "addSubcategory": "Ajouter une sous-catégorie"
+    },
+    "empty": {
+      "categories": "Aucune catégorie trouvée. Créez-en une pour commencer.",
+      "scripts": "Aucun script trouvé."
+    },
+    "highlightDescription": "Scripts tagués sous {{category}} et ses sous-catégories",
+    "selectDescription": "Sélectionnez une catégorie pour mettre ses scripts en évidence.",
+    "idLabel": "ID : {{id}}",
+    "renameDialog": {
+      "title": "Renommer la catégorie",
+      "description": "Mettre à jour le titre de la catégorie."
+    },
+    "newDialog": {
+      "title": "Nouvelle catégorie",
+      "subcategoryTitle": "Ajouter une sous-catégorie",
+      "description": "Créer une nouvelle catégorie de premier niveau.",
+      "subcategoryDescription": "Nommer la nouvelle sous-catégorie."
+    },
+    "deleteDialog": {
+      "title": "Supprimer la catégorie",
+      "description": "Cela supprimera la catégorie et ses sous-catégories. Les scripts resteront mais ne seront plus catégorisés."
+    },
+    "status": {
+      "active": "Actif",
+      "draft": "Brouillon",
+      "archived": "Archivé"
+    }
+  },
+  "scriptEditPage": {
+    "errors": {
+      "fetch": "Impossible de récupérer le script",
+      "generic": "Une erreur est survenue",
+      "save": "Impossible d’enregistrer le script"
+    },
+    "toast": {
+      "created": "Script créé",
+      "saved": "Script enregistré"
+    },
+    "loading": "Chargement du script...",
+    "actions": {
+      "backToScripts": "Retour aux scripts",
+      "executionHistory": "Historique d’exécution",
+      "create": "Créer le script",
+      "saveChanges": "Enregistrer les modifications"
+    },
+    "breadcrumb": {
+      "scripts": "Scripts",
+      "new": "Nouveau script",
+      "edit": "Modifier le script"
+    },
+    "title": {
+      "new": "Nouveau script",
+      "edit": "Modifier le script"
+    }
+  },
+  "scriptExecutionModal": {
+    "errors": {
+      "selectDevice": "Veuillez sélectionner au moins un appareil",
+      "executionFailed": "Échec de l’exécution"
+    },
+    "title": "Exécuter le script",
+    "fields": {
+      "language": "Langage",
+      "category": "Catégorie",
+      "targetOs": "OS cible",
+      "runAs": "Exécuter en tant que"
+    },
+    "runAs": {
+      "system": "Système",
+      "user": "Utilisateur connecté",
+      "systemDescription": "S’exécute dans le contexte du service agent.",
+      "userDescription": "S’exécute dans le contexte de l’utilisateur actuellement connecté lorsqu’un assistant utilisateur est connecté."
+    },
+    "sections": {
+      "selectDevices": "Sélectionner des appareils"
+    },
+    "actions": {
+      "selectAllOnline": "Sélectionner tous les appareils en ligne",
+      "clear": "Effacer ({{count}})",
+      "advancedFilters": "Filtres avancés",
+      "executing": "Exécution...",
+      "started": "Démarré !",
+      "confirmExecute": "Confirmer l’exécution",
+      "execute": "Exécuter"
+    },
+    "searchPlaceholder": "Rechercher par nom d’hôte...",
+    "filters": {
+      "allSites": "Tous les sites",
+      "allStatus": "Tous les statuts"
+    },
+    "status": {
+      "maintenance": "Maintenance"
+    },
+    "matchCount": "{{count}} correspondance",
+    "empty": {
+      "noCompatibleDevices": "Aucun appareil compatible trouvé. Ce script nécessite {{os}}."
+    },
+    "orSeparator": " ou ",
+    "progress": {
+      "submitting": "Envoi à {{count}} appareils...",
+      "submitted": "Envoyé à {{count}} appareils"
+    },
+    "confirm": {
+      "title": "Confirmer l’exécution",
+      "description": "Exécuter « {{name}} » sur {{count}} appareil(s) en tant que {{runAs}}. Les scripts sont mis en file d’attente et commencent à s’exécuter immédiatement."
+    },
+    "selectedCount": "{{count}} appareil(s) sélectionné(s)",
+    "languages": {
+      "powershell": "PowerShell",
+      "bash": "Bash",
+      "python": "Python",
+      "cmd": "CMD"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    }
+  },
+  "scriptExecutionsPage": {
+    "errors": {
+      "fetchScript": "Impossible de récupérer le script",
+      "generic": "Une erreur est survenue",
+      "fetchExecutions": "Impossible de charger les exécutions",
+      "execute": "Impossible d’exécuter un script"
+    },
+    "loading": "Chargement des exécutions...",
+    "actions": {
+      "backToScripts": "Retour aux scripts",
+      "runScript": "Exécuter un script"
+    },
+    "breadcrumb": {
+      "scripts": "Scripts",
+      "script": "Script",
+      "executions": "Exécutions"
+    },
+    "title": "Historique d’exécution",
+    "fields": {
+      "language": "Langage",
+      "category": "Catégorie",
+      "targetOs": "OS cible"
+    },
+    "languages": {
+      "powershell": "PowerShell",
+      "bash": "Bash",
+      "python": "Python",
+      "cmd": "CMD"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "status": {
+      "active": "Actif",
+      "draft": "Brouillon",
+      "archived": "Archivé"
+    }
+  },
+  "scriptForm": {
+    "editor": {
+      "loadError": "Impossible de charger l’éditeur de code. Essayez d’actualiser la page.",
+      "refreshPage": "Actualiser la page",
+      "loading": "Chargement de l’éditeur..."
+    },
+    "unsavedConfirm": "Vous avez des modifications non enregistrées. Quitter cette page ?",
+    "actions": {
+      "saveScript": "Enregistrer le script",
+      "removeParameter": "Supprimer le paramètre",
+      "addParameter": "Ajouter un paramètre",
+      "removeMapping": "Supprimer l’association",
+      "addExitCode": "Ajouter un code de sortie"
+    },
+    "availability": {
+      "title": "Disponible pour",
+      "description": "Modifiez les organisations qui peuvent voir et exécuter ce script. « Toutes mes organisations » le rend disponible à l’échelle du partenaire.",
+      "partner": "Toutes mes organisations",
+      "organization": "Une organisation spécifique",
+      "selectOrganization": "Sélectionner une organisation"
+    },
+    "fields": {
+      "name": "Nom du script",
+      "category": "Catégorie",
+      "language": "Langage",
+      "targetOs": "OS cible",
+      "defaultValue": "Valeur par défaut",
+      "options": "Options",
+      "timeoutSeconds": "Délai d’expiration (secondes)",
+      "runAs": "Exécuter en tant que",
+      "exitCode": "Code de sortie",
+      "severity": "Gravité"
+    },
+    "placeholders": {
+      "name": "Nettoyer les fichiers temporaires",
+      "description": "Décrivez ce que fait ce script...",
+      "parameterName": "paramName",
+      "defaultValue": "Par défaut",
+      "options": "option1, option2, option3",
+      "exitCode": "p. ex. 1"
+    },
+    "sections": {
+      "content": "Contenu du script",
+      "parameters": "Paramètres",
+      "executionSettings": "Paramètres d’exécution",
+      "exitCodeSeverity": "Sévérité des codes de sortie"
+    },
+    "ai": {
+      "toggleTitle": "Activer/désactiver l’assistant IA de script (⌘⇧I)",
+      "button": "Assistant IA"
+    },
+    "parameters": {
+      "emptyPrefix": "Aucun paramètre pour l’instant. Les paramètres permettent aux utilisateurs de fournir des valeurs à l’exécution — référencez-les dans votre script comme",
+      "emptyMiddle": "(PowerShell/Bash) ou",
+      "emptySuffix": "(Python)."
+    },
+    "execution": {
+      "timeoutHint": "Le script est arrêté après cette durée. La valeur par défaut 300s (5 min) convient à la plupart des tâches. Maximum 3600s (1 heure).",
+      "elevatedHint": "Utilisez sudo sur macOS/Linux, runas sur Windows."
+    },
+    "exitCodeSeverity": {
+      "emptyPrefix": "Associez des codes de sortie spécifiques à des sévérités d’alerte. Lorsque le script renvoie l’un de ces codes, une alerte est créée avec la sévérité configurée. Choisissez",
+      "suppressAlert": "Masquer l’alerte",
+      "emptySuffix": "pour marquer un code comme informatif (aucun incident créé). Les codes de sortie non listés ici utilisent le traitement par défaut.",
+      "suppressHint": "Masquer l’alerte : le code de sortie est considéré comme informatif et aucun incident n’est créé."
+    },
+    "keyboardSave": "{{shortcut}} pour enregistrer",
+    "languages": {
+      "powershell": "PowerShell",
+      "bash": "Bash",
+      "python": "Python",
+      "cmd": "CMD (Batch)"
+    },
+    "runAs": {
+      "system": {
+        "label": "Système",
+        "description": "Exécuter avec le compte système/root"
+      },
+      "user": {
+        "label": "Utilisateur actuel",
+        "description": "Exécuter avec l’utilisateur connecté"
+      },
+      "elevated": {
+        "label": "Élevé",
+        "description": "Exécuter avec des privilèges administrateur"
+      }
+    },
+    "parameterTypes": {
+      "string": "Texte",
+      "number": "Nombre",
+      "boolean": "Booléen",
+      "select": "Liste de sélection"
+    },
+    "severity": {
+      "critical": "Critique",
+      "high": "Élevée",
+      "medium": "Moyenne",
+      "low": "Faible",
+      "info": "Information",
+      "__suppress__": "Masquer l’alerte"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    }
+  },
+  "scriptList": {
+    "never": "Jamais",
+    "relativeTime": {
+      "justNow": "À l’instant",
+      "minutesAgo": "Il y a {{count}} min",
+      "hoursAgo": "Il y a {{count}} h",
+      "daysAgo": "Il y a {{count}} j"
+    },
+    "searchPlaceholder": "Rechercher des scripts...",
+    "filters": {
+      "allCategories": "Toutes les catégories",
+      "allLanguages": "Tous les langages",
+      "allOs": "Tous les OS"
+    },
+    "languages": {
+      "powershell": "PowerShell",
+      "bash": "Bash",
+      "python": "Python",
+      "cmd": "CMD"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "summary": "{{shown}} sur {{total}}",
+    "headers": {
+      "language": "Langage",
+      "category": "Catégorie",
+      "os": "OS",
+      "lastRun": "Dernière exécution"
+    },
+    "empty": "Aucun script trouvé. Essayez d’ajuster votre recherche ou vos filtres.",
+    "actions": {
+      "runTitle": "Exécuter le script",
+      "editTitle": "Modifier le script",
+      "deleteTitle": "Supprimer le script"
+    },
+    "pagination": {
+      "showing": "Affichage de {{start}} à {{end}} sur {{total}}",
+      "page": "Page {{page}} sur {{total}}"
+    },
+    "status": {
+      "active": "Actif",
+      "draft": "Brouillon",
+      "archived": "Archivé"
+    }
+  },
+  "scriptParametersForm": {
+    "validation": {
+      "required": "Le paramètre \"{{name}}\" est obligatoire",
+      "number": "Le paramètre \"{{name}}\" doit être un nombre valide"
+    },
+    "title": "Paramètres",
+    "selectPlaceholder": "Sélectionner..."
+  },
+  "scriptTagManager": {
+    "errors": {
+      "fetch": "Impossible de récupérer les scripts",
+      "generic": "Une erreur est survenue",
+      "add": "Impossible d’ajouter un tag",
+      "delete": "Impossible de supprimer le tag",
+      "assign": "Impossible d’attribuer des tags"
+    },
+    "loading": "Chargement des tags...",
+    "title": "Tags de scripts",
+    "summary": "{{tagCount}} tags sur {{scriptCount}} scripts",
+    "description": "Gérer les libellés réutilisables",
+    "sections": {
+      "allTags": "Tous les tags",
+      "addNew": "Ajouter un tag",
+      "bulkAssign": "Attribution groupée de tags"
+    },
+    "empty": {
+      "tags": "Aucun tag trouvé. Créez-en un ci-dessous.",
+      "scripts": "Aucun script trouvé."
+    },
+    "usedOn": "Utilisé sur {{count}} scripts",
+    "actions": {
+      "deleteTag": "Supprimer le tag",
+      "applyTags": "Appliquer les tags aux scripts sélectionnés"
+    },
+    "placeholders": {
+      "tagName": "Nom du tag"
+    },
+    "bulkDescription": "Sélectionnez des scripts, puis choisissez les tags à appliquer.",
+    "deleteDialog": {
+      "title": "Supprimer le tag",
+      "confirmPrefix": "Supprimer le tag",
+      "confirmSuffix": "? Cela le retirera de tous les scripts."
+    }
+  },
+  "scriptTemplateGallery": {
+    "errors": {
+      "fetch": "Impossible de récupérer des modèles",
+      "load": "Impossible de charger des modèles"
+    },
+    "title": "Galerie de modèles",
+    "description": "Parcourez les modèles de scripts réutilisables.",
+    "searchPlaceholder": "Rechercher des modèles",
+    "languages": {
+      "powershell": "PowerShell",
+      "bash": "Bash",
+      "python": "Python",
+      "cmd": "CMD"
+    },
+    "empty": "Aucun modèle ne correspond à vos critères.",
+    "downloadCount": "{{count}} téléchargements",
+    "actions": {
+      "useTemplate": "Utiliser le modèle"
+    }
+  },
+  "scriptVersionHistory": {
+    "errors": {
+      "fetch": "Impossible de récupérer les versions des scripts",
+      "generic": "Une erreur est survenue",
+      "rollback": "Impossible de revenir en arrière au script",
+      "rollbackFailed": "Échec du retour arrière"
+    },
+    "currentVersion": "Version actuelle",
+    "loading": "Chargement de l’historique des versions...",
+    "title": "Historique des versions",
+    "description": "Suivez les révisions du script et comparez les changements.",
+    "activeVersion": "Version active :",
+    "empty": "Aucun historique de versions disponible.",
+    "actions": {
+      "rollback": "Revenir en arrière",
+      "rollingBack": "Retour arrière...",
+      "confirmRollback": "Confirmer le retour arrière"
+    },
+    "compare": {
+      "title": "Comparer les versions",
+      "onlyOne": "Une seule version disponible. Apportez des modifications pour voir les diffs.",
+      "selectTwo": "Sélectionnez deux versions pour afficher un diff."
+    },
+    "rollbackDialog": {
+      "title": "Retour arrière du script",
+      "confirmPrefix": "Revenir à la version",
+      "confirmSuffix": "Cela en fera la révision active."
+    }
+  },
+  "scriptsPage": {
+    "errors": {
+      "fetch": "Impossible de récupérer les scripts",
+      "generic": "Une erreur est survenue",
+      "execute": "Impossible d’exécuter un script",
+      "delete": "Impossible de supprimer un script",
+      "deleteTryAgain": "Impossible de supprimer le script. Veuillez réessayer.",
+      "alreadyInLibrary": "\"{{name}}\" est déjà dans votre bibliothèque",
+      "import": "Impossible d’importer un script"
+    },
+    "toast": {
+      "deleting": "Suppression de \"{{name}}\"...",
+      "deleteCancelled": "Suppression du script annulée",
+      "deleted": "\"{{name}}\" supprimé"
+    },
+    "loading": "Chargement des scripts...",
+    "title": "Bibliothèque de scripts",
+    "description": "Gérez et exécutez des scripts sur vos appareils.",
+    "actions": {
+      "importFromLibrary": "Importer depuis la bibliothèque",
+      "newScript": "Nouveau script",
+      "createScript": "Créer un script",
+      "deleting": "Suppression…"
+    },
+    "empty": {
+      "title": "Aucun script pour l’instant",
+      "description": "Créez votre premier script pour automatiser les tâches sur votre parc."
+    },
+    "deleteDialog": {
+      "title": "Supprimer le script",
+      "confirmPrefix": "Voulez-vous vraiment supprimer",
+      "confirmSuffix": "Cette action est irréversible."
+    },
+    "library": {
+      "title": "Bibliothèque de scripts système",
+      "description": "Importez des scripts dans votre organisation",
+      "searchPlaceholder": "Rechercher des scripts système...",
+      "empty": "Aucun script système disponible",
+      "noMatches": "Aucun script ne correspond à votre recherche",
+      "imported": "Importé",
+      "import": "Importer",
+      "availableCount": "Scripts disponibles : {{count}}"
+    }
+  }
+}

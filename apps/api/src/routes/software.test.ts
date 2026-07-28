@@ -2,7 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { softwareRoutes, computeSoftwareDeploymentAggregateStatus } from './software';
 import { db } from '../db';
-import { uploadBinary, isS3Configured } from '../services/s3Storage';
+import {
+  uploadBinary,
+  isS3Configured,
+  S3ConfigError,
+  S3OperationError,
+} from '../services/s3Storage';
 import { captureException } from '../services/sentry';
 import { parseStreamingMultipart } from '../services/streamingUpload';
 import { createHash } from 'node:crypto';
@@ -105,11 +110,19 @@ vi.mock('../services/deploymentTargetResolver', () => ({
   resolveDeploymentTargets: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock('../services/s3Storage', () => ({
-  uploadBinary: vi.fn(),
-  getPresignedUrl: vi.fn(() => Promise.resolve('https://s3.example.com/presigned')),
-  isS3Configured: vi.fn(() => false)
-}));
+vi.mock('../services/s3Storage', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/s3Storage')>();
+  return {
+    uploadBinary: vi.fn(),
+    getPresignedUrl: vi.fn(() => Promise.resolve('https://s3.example.com/presigned')),
+    isS3Configured: vi.fn(() => false),
+    // Real classes, not stubs: the upload route branches on `instanceof` to
+    // pick 502 vs 503 (#2794), and a stubbed/undefined export would make that
+    // check throw at runtime instead of mapping the error.
+    S3ConfigError: actual.S3ConfigError,
+    S3OperationError: actual.S3OperationError,
+  };
+});
 
 vi.mock('./agentWs', () => ({
   sendCommandToAgent: vi.fn(() => true)
@@ -378,6 +391,92 @@ describe('software routes', () => {
       const call = vi.mocked(uploadBinary).mock.calls[0]!;
       expect(call[2]).toBe(expectedChecksum); // checksum from the streamed hash
       expect(typeof call[0]).toBe('string');  // temp file path, not an in-memory buffer
+    });
+
+    // #2794: object-storage faults used to reach the global error handler as an
+    // opaque `500 {error:'Internal Server Error'}`, so a self-hoster had no path
+    // from "Failed to upload version" to a cause.
+    describe('object storage failure mapping', () => {
+      const uploadOnce = async () => {
+        vi.mocked(isS3Configured).mockReturnValueOnce(true);
+        vi.mocked(db.select).mockReturnValueOnce(
+          selectResult([{ id: catalogId, orgId: 'org-123', name: 'Acme Tool' }])
+        );
+        const fd = new FormData();
+        fd.append('version', '1.0.0');
+        fd.append('file', new File(['payload'], 'pkg.msi', { type: 'application/octet-stream' }));
+        return app.request(`/software/catalog/${catalogId}/versions/upload`, {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token' },
+          body: fd,
+        });
+      };
+
+      it('maps an S3OperationError to 502 with the actionable hint and failure code', async () => {
+        vi.mocked(uploadBinary).mockRejectedValueOnce(
+          new S3OperationError(
+            'uploadBinary',
+            {
+              code: 'bucket_missing',
+              message: 'The configured bucket does not exist. Check S3_BUCKET.',
+            },
+            new Error('NoSuchBucket')
+          )
+        );
+
+        const res = await uploadOnce();
+        const body = await res.json();
+
+        expect(res.status).toBe(502);
+        expect(body.error).toMatch(/S3_BUCKET/);
+        expect(body.storageFailure).toBe('bucket_missing');
+      });
+
+      it('maps an S3ConfigError to 503, matching the isS3Configured() gate', async () => {
+        vi.mocked(uploadBinary).mockRejectedValueOnce(
+          new S3ConfigError('Invalid S3_ENDPOINT env var: Invalid URL')
+        );
+
+        const res = await uploadOnce();
+        const body = await res.json();
+
+        expect(res.status).toBe(503);
+        expect(body.error).toMatch(/S3_ENDPOINT/);
+      });
+
+      // `message` quotes the offending S3_ENDPOINT value (redacted at the
+      // source, but still server config). The 503 body must use
+      // `clientMessage`, which drops the value entirely — belt and braces, so
+      // a future S3ConfigError thrower can't leak through this route (#2794).
+      it('does not echo inline endpoint credentials in the 503 body', async () => {
+        vi.mocked(uploadBinary).mockRejectedValueOnce(
+          new S3ConfigError(
+            'Invalid S3_ENDPOINT env var: S3 endpoint "s3://AKIAIOSFODNN7EXAMPLE:sUp3r-s3cr3t@host" is not a valid URL.',
+            'The S3_ENDPOINT env var is not a valid URL.'
+          )
+        );
+
+        const res = await uploadOnce();
+        const body = await res.json();
+
+        expect(res.status).toBe(503);
+        expect(JSON.stringify(body)).not.toMatch(/AKIAIOSFODNN7EXAMPLE/);
+        expect(JSON.stringify(body)).not.toMatch(/sUp3r-s3cr3t/);
+        expect(body.error).toMatch(/S3_ENDPOINT/);
+      });
+
+      it('maps an unrecognized throw to 502 without echoing the raw error', async () => {
+        vi.mocked(uploadBinary).mockRejectedValueOnce(
+          new Error('ENOENT: open /tmp/breeze-uploads/secret-path.upload')
+        );
+
+        const res = await uploadOnce();
+        const body = await res.json();
+
+        expect(res.status).toBe(502);
+        expect(body.error).not.toMatch(/ENOENT|secret-path/);
+        expect(body.error).toMatch(/object storage/i);
+      });
     });
 
     it('rejects a disallowed file extension during streaming (400)', async () => {

@@ -352,7 +352,13 @@ export function dbAccessContextFromAuth(auth: AuthContext): DbAccessContext {
     orgId: auth.orgId,
     accessibleOrgIds: auth.accessibleOrgIds,
     partnerId: auth.partnerId,
-    userId: auth.user.id,
+    // Optional-chained on purpose: `AuthContext.user` is typed non-optional,
+    // but API-key-derived contexts are built by hand elsewhere in the codebase
+    // and `routes/devices/provision.ts` already guards `auth.user?.id`. Since
+    // #2822 routed the AI-tool handlers through this builder, an unguarded
+    // dereference here would turn a missing `user` into a TypeError inside
+    // every tool call rather than a benign null user id.
+    userId: auth.user?.id ?? null,
   });
 }
 

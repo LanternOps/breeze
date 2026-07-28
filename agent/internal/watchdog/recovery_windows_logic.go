@@ -101,6 +101,15 @@ const (
 	windowsProcessExitTimeout = 35 * time.Second
 
 	windowsRecoveryPollInterval = 500 * time.Millisecond
+
+	// windowsControlAckGrace is how long after issuing a control SCM may keep
+	// reporting the PRE-transition state before we treat it as a firm wrong
+	// answer. A stopping agent needs ~100-200ms to acknowledge STOP_PENDING;
+	// reading that window as "settled in an unexpected terminal state" made
+	// every graceful restart fail in 0-1ms with an orphaned stop already in
+	// flight (#2763 — the field's `transition_timeout failed during
+	// wait_stopped, elapsed_ms:0` on every kill cycle).
+	windowsControlAckGrace = 5 * time.Second
 )
 
 // errUnexpectedTerminalState means SCM settled in a definite state that is not
@@ -124,6 +133,7 @@ type windowsRecoveryController struct {
 	observeTimeout     time.Duration
 	processExitTimeout time.Duration
 	pollInterval       time.Duration
+	ackGrace           time.Duration
 }
 
 func newWindowsRecoveryController(backend windowsRecoveryBackend, clk recoveryClock) *windowsRecoveryController {
@@ -135,6 +145,7 @@ func newWindowsRecoveryController(backend windowsRecoveryBackend, clk recoveryCl
 		observeTimeout:     windowsObserveTimeout,
 		processExitTimeout: windowsProcessExitTimeout,
 		pollInterval:       windowsRecoveryPollInterval,
+		ackGrace:           windowsControlAckGrace,
 	}
 }
 
@@ -240,7 +251,20 @@ func (c *windowsRecoveryController) ensureStartRecovery(result RecoveryResult, r
 	result.FinalState = string(snapshot.State)
 
 	if isPendingState(snapshot.State) {
-		return c.observeTransition(result, req, snapshot)
+		observed, oerr := c.observeTransition(result, req, snapshot)
+		if oerr != nil {
+			return observed, oerr
+		}
+		if observed.FinalState == string(serviceStopped) {
+			// The transition we watched settled to Stopped. The generic
+			// observe path leaves Stopped alone so "the next attempt can
+			// issue Start" — but the ensure-start intent has no next attempt
+			// (it runs once, e.g. on the recovery-exhaustion path before
+			// FAILOVER, #2763). The transition has settled, so starting now
+			// races nothing.
+			return c.ensureStarted(observed, req, 0)
+		}
+		return observed, nil
 	}
 	if snapshot.State == serviceRunning {
 		// Already started. Nothing was restarted, so the disposition stays
@@ -724,9 +748,15 @@ func (c *windowsRecoveryController) control(
 // waitForState polls SCM until it reports want, returning the matching
 // snapshot. It fails on cancellation, query error, deadline, or when SCM
 // settles in a definite state that is not want — there is no point waiting out
-// a firm wrong answer.
+// a firm wrong answer. "Settles" allows for the acknowledge window: right
+// after a control is issued SCM can still report the pre-transition state
+// (RUNNING immediately after a stop request) until the service acknowledges,
+// so a non-pending, non-target state only becomes a firm wrong answer once it
+// persists past ackGrace.
 func (c *windowsRecoveryController) waitForState(req RecoveryRequest, want serviceState, timeout time.Duration) (serviceSnapshot, error) {
-	deadline := c.clk.Now().Add(timeout)
+	start := c.clk.Now()
+	deadline := start.Add(timeout)
+	ackDeadline := start.Add(c.ackGrace)
 	var last serviceSnapshot
 	for {
 		if err := req.Context.Err(); err != nil {
@@ -740,7 +770,7 @@ func (c *windowsRecoveryController) waitForState(req RecoveryRequest, want servi
 		if snapshot.State == want {
 			return snapshot, nil
 		}
-		if !isPendingState(snapshot.State) {
+		if !isPendingState(snapshot.State) && !c.clk.Now().Before(ackDeadline) {
 			return snapshot, fmt.Errorf("%w: %s while waiting for %s", errUnexpectedTerminalState, snapshot.State, want)
 		}
 		if !c.clk.Now().Before(deadline) {

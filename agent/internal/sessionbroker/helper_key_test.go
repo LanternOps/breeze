@@ -1,12 +1,16 @@
 package sessionbroker
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/breeze-rmm/agent/internal/ipc"
+)
 
 func TestHelperRoleDesired(t *testing.T) {
 	tests := []struct {
 		name string
 		s    DetectedSession
-		role string
+		role ipc.HelperRole
 		want bool
 	}{
 		{"system active", DetectedSession{Session: "7", State: "active", Type: "rdp"}, "system", true},

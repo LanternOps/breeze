@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { sql } from 'drizzle-orm';
+import JSZip from 'jszip';
 import { getTestDb } from './setup';
 import { buildOrgExportZip } from '../../services/tenantExport';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
@@ -32,6 +33,7 @@ interface SeededOrgs {
   partnerId: string;
   orgA: string;
   orgB: string;
+  prohibitedSentinels: string[];
 }
 
 async function seedTwoOrgs(): Promise<SeededOrgs> {
@@ -51,6 +53,33 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
       (${orgB}, ${partnerId}, ${'Org B ' + suffix}, ${'org-b-' + suffix})
   `);
 
+  const userId = crypto.randomUUID();
+  const prohibitedSentinels = [
+    `PASSWORD-HASH-${suffix}`,
+    `MFA-SEED-${suffix}`,
+    `MFA-RECOVERY-${suffix}`,
+    `API-KEY-HASH-${suffix}`,
+  ];
+  await db.execute(sql`
+    INSERT INTO users (
+      id, partner_id, org_id, email, name,
+      password_hash, mfa_secret, mfa_recovery_codes
+    ) VALUES (
+      ${userId}, ${partnerId}, ${orgA},
+      ${'roundtrip-' + suffix + '@breeze.test'}, 'Roundtrip User',
+      ${prohibitedSentinels[0]}, ${prohibitedSentinels[1]},
+      jsonb_build_array(${prohibitedSentinels[2]}::text)
+    )
+  `);
+  await db.execute(sql`
+    INSERT INTO api_keys (
+      org_id, name, key_hash, key_prefix, created_by
+    ) VALUES (
+      ${orgA}, 'Roundtrip API Key', ${prohibitedSentinels[3]},
+      'brz_roundtri', ${userId}
+    )
+  `);
+
   // Org A: 2 sites + 2 device_groups. Org B: 1 site + 1 device_group.
   await db.execute(sql`
     INSERT INTO sites (id, org_id, name) VALUES
@@ -65,7 +94,7 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
       (${crypto.randomUUID()}, ${orgB}, 'B-Group-1')
   `);
 
-  return { partnerId, orgA, orgB };
+  return { partnerId, orgA, orgB, prohibitedSentinels };
 }
 
 function rowCount(db: ReturnType<typeof getTestDb>, table: string, orgId: string) {
@@ -81,7 +110,7 @@ describe('tenant export + erasure round-trip (live DB)', () => {
   });
 
   it('export manifest reflects only the target org rows', async () => {
-    const { orgA } = await seedTwoOrgs();
+    const { orgA, prohibitedSentinels } = await seedTwoOrgs();
 
     const { manifest, zipBuffer } = await buildOrgExportZip(orgA, PERFORMED_BY, PERFORMED_EMAIL);
 
@@ -100,6 +129,22 @@ describe('tenant export + erasure round-trip (live DB)', () => {
       expect(f.sha256).toMatch(/^[0-9a-f]{64}$/);
     }
     expect(manifest.orgId).toBe(orgA);
+
+    const zip = await JSZip.loadAsync(zipBuffer);
+    const serializedZip = await Promise.all(
+      Object.values(zip.files).map((entry) => entry.async('string')),
+    ).then((entries) => entries.join('\n'));
+    for (const prohibitedKey of [
+      'password_hash',
+      'mfa_secret',
+      'mfa_recovery_codes',
+      'key_hash',
+    ]) {
+      expect(serializedZip).not.toContain(prohibitedKey);
+    }
+    for (const sentinel of prohibitedSentinels) {
+      expect(serializedZip).not.toContain(sentinel);
+    }
   });
 
   it('cascade erases the target org and leaves the other org intact', async () => {

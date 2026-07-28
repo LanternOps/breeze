@@ -82,6 +82,12 @@ vi.mock('../db', () => ({
   withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
   withSystemDbAccessContext: vi.fn((fn: any) => fn()),
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+  // The bootstrap billing-email read goes through readWithPartnerAxisVisibility
+  // (#2822), which probes the ambient scope. This suite only started needing the
+  // export once the swallowing try/catch around that read was removed — before
+  // that, the missing-export error was silently absorbed into partnerAdminEmail
+  // = '', which is precisely the failure mode the removal exists to prevent.
+  getCurrentDbAccessContext: vi.fn(() => undefined),
 }));
 
 vi.mock('../db/schema', () => ({

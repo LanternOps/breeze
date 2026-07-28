@@ -37,6 +37,7 @@ import {
 import { m365ReadActionSchema, type M365ReadAction } from '@breeze/shared/m365';
 import { executeM365ReadAction, type M365ReadActionServiceResult } from './m365ControlPlane/readActionService';
 import type { AiTool } from './aiTools';
+import type { SecretToolResult } from './actionIntents/secretBearingTools';
 
 const env = {
   DELEGANT_BASE_URL, DELEGANT_SERVICE_TOKEN, DELEGANT_PRINCIPAL_SIGNING_KEY, DELEGANT_PRINCIPAL_KID,
@@ -245,33 +246,45 @@ export async function m365ResetPasswordHandler(
   input: Record<string, unknown>,
   auth: AuthContext,
   sessionId: string,
-): Promise<string> {
+): Promise<SecretToolResult> {
   const reason = requireString(input, 'reason');
-  if (!reason) return errorString('missing_reason', 'A reason is required for this action.');
+  if (!reason) return { kind: 'error', llmText: errorString('missing_reason', 'A reason is required for this action.') };
 
   const ctx = await resolveContext(auth, sessionId);
-  if ('error' in ctx) return ctx.error;
+  if ('error' in ctx) return { kind: 'error', llmText: ctx.error };
   const identifier = requireString(input, 'userIdentifier');
-  if (!identifier) return errorString('missing_user', 'A user identifier (UPN or object id) is required.');
+  if (!identifier) return { kind: 'error', llmText: errorString('missing_user', 'A user identifier (UPN or object id) is required.') };
 
   const resolved = await resolveUserId(identifier, ctx, auth, sessionId);
   if (!resolved.ok) {
-    return resolved.error.code === 'not_found'
-      ? unresolvedUser(identifier)
-      : errorTemplate(resolved.error);
+    return {
+      kind: 'error',
+      llmText: resolved.error.code === 'not_found' ? unresolvedUser(identifier) : errorTemplate(resolved.error),
+    };
   }
   const userId = resolved.userId;
 
   const result = await call(ctx, auth, sessionId, 'reset_user_password', { userId, reason });
-  return formatResultForLlm(result, {
-    successTemplate: (data) => {
-      const temp = (data as any)?.temporaryPassword;
-      return temp
-        ? `Reset the password for ${identifier}. Temporary password: ${temp} (the user must change it at next sign-in).`
-        : `Reset the password for ${identifier}. ${JSON.stringify(data)}`;
-    },
-    errorTemplate,
-  });
+  if (result.kind !== 'ok') {
+    return { kind: 'error', llmText: errorTemplate({ code: result.code, message: result.message }) };
+  }
+
+  const temp = (result.data as { temporaryPassword?: unknown } | undefined)?.temporaryPassword;
+  if (typeof temp !== 'string' || temp.length === 0) {
+    // Backend returned no credential — surface failure rather than promising a reveal that won't exist.
+    return {
+      kind: 'error',
+      llmText: errorString('no_credential', 'The password was reset but no temporary credential was returned.'),
+    };
+  }
+
+  // The credential goes in `secrets`, NEVER in llmText.
+  return {
+    kind: 'success',
+    llmText: `Reset the password for ${identifier}. The temporary credential is available for one-time reveal; the user must change it at next sign-in.`,
+    secrets: { temporaryPassword: temp },
+    ...(typeof result.toolCallId === 'string' ? { meta: { delegantToolCallId: result.toolCallId } } : {}),
+  };
 }
 
 // ============================================

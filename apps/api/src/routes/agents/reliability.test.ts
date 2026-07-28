@@ -137,12 +137,22 @@ describe('agent reliability ingestion route', () => {
     expect(vi.mocked(enqueueDeviceReliabilityComputation)).toHaveBeenCalledWith('device-1');
     expect(vi.mocked(captureException)).toHaveBeenCalledWith(expect.any(Error));
     expect(vi.mocked(computeAndPersistDeviceReliability)).toHaveBeenCalledWith('device-1');
-    // #1105 Critical fix: the inline fallback reads the ml-feature-flag gate
-    // (an `organizations INNER JOIN partners` — needs partner-axis visibility) and
-    // writes deviceReliability. It MUST run under a *system* context: an org context
-    // can't see the partner row, so the flag gate would resolve `org_not_found` and
-    // the compute would silently no-op. Mirrors the worker (runOutsideDbContext +
-    // withSystemDbAccessContext), not an org-scoped wrap.
+    // #1105: the inline fallback must run OUTSIDE the request's transaction and
+    // in a fresh system context, mirroring the worker (runOutsideDbContext +
+    // withSystemDbAccessContext) rather than reusing an org-scoped wrap.
+    //
+    // These three assertions ARE the #1105 guard. They pin caller discipline
+    // directly, on the caller, which is why they survived #2822 unchanged when
+    // the symptom-based lock in reliabilityScoringProjection.integration.test.ts
+    // had to be inverted. Keep them that way: do NOT weaken this to inferring
+    // the context from downstream behaviour.
+    //
+    // (Historical note: the original rationale here was that an org context
+    // "can't see the partner row, so the flag gate would resolve org_not_found
+    // and the compute would silently no-op". #2822 fixed that lie — the gate now
+    // answers honestly under an org context — so that is no longer WHY a system
+    // context is required. The surviving reasons are the #1105 connection-hold
+    // discipline and parity with the worker path.)
     expect(fallbackScope).toBe('system');
     expect(vi.mocked(runOutsideDbContext)).toHaveBeenCalled();
     expect(vi.mocked(withSystemDbAccessContext)).toHaveBeenCalled();

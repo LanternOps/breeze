@@ -51,6 +51,8 @@ import { isViewerSessionRevoked } from '../services/viewerTokenRevocation';
 import {
   getActiveTerminalSession,
   createTerminalWsRoutes,
+  __createTerminalSharedLeasesForTest,
+  __resetTerminalWsForTest,
   closeTerminalSession,
 } from './terminalWs';
 
@@ -61,6 +63,8 @@ let userIdCounter = 0;
 let sessionCounter = 0;
 const nextUserId = () => `user-term-${++userIdCounter}`;
 const nextSessionId = () => `session-term-${++sessionCounter}`;
+// Mirrors terminalWs.ts's server-side ping cadence.
+const PING_INTERVAL_MS = 30_000;
 
 function wsMock() {
   return { send: vi.fn(), close: vi.fn() };
@@ -87,7 +91,10 @@ function captureWsHandlers(sessionId: string) {
     capturedFactory = factory;
     return (_c: any, _next: any) => {};
   });
-  createTerminalWsRoutes(upgradeWebSocket);
+  // Every capture gets its own lease manager, but generations are globally
+  // monotonic — a replaced generation can never reuse a prior identity.
+  const testSharedLeases = __createTerminalSharedLeasesForTest();
+  createTerminalWsRoutes(upgradeWebSocket, { sharedLeases: testSharedLeases });
   const fakeContext = {
     req: {
       param: vi.fn((key: string) => (key === 'id' ? sessionId : undefined)),
@@ -128,14 +135,19 @@ async function openLiveSession(sessionId: string) {
   const ws = wsMock();
   const handlers = captureWsHandlers(sessionId);
   await handlers.onOpen({}, ws);
-  return { ws, userId };
+  return { ws, userId, handlers };
 }
 
 describe('closeTerminalSession', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    // Ownership is now exact: a leftover session from a prior test would
+    // legitimately refuse replacement, so start each test from a clean map.
+    __resetTerminalWsForTest();
+    vi.clearAllMocks();
+  });
 
-  it('returns false and does nothing for an unknown session', () => {
-    expect(closeTerminalSession('does-not-exist')).toBe(false);
+  it('returns false and does nothing for an unknown session', async () => {
+    await expect(closeTerminalSession('does-not-exist')).resolves.toBe(false);
     expect(sendCommandToAgent).not.toHaveBeenCalled();
   });
 
@@ -145,7 +157,7 @@ describe('closeTerminalSession', () => {
     expect(getActiveTerminalSession(sessionId)).toBeDefined();
     vi.mocked(sendCommandToAgent).mockClear();
 
-    const result = closeTerminalSession(sessionId);
+    const result = await closeTerminalSession(sessionId);
 
     expect(result).toBe(true);
     expect(sendCommandToAgent).toHaveBeenCalledWith(AGENT_ID, {
@@ -161,6 +173,9 @@ describe('closeTerminalSession', () => {
 
 describe('terminal ping loop — mid-session revocation', () => {
   beforeEach(() => {
+    // Ownership is now exact: a leftover session from a prior test would
+    // legitimately refuse replacement, so start each test from a clean map.
+    __resetTerminalWsForTest();
     vi.clearAllMocks();
     vi.useFakeTimers();
   });
@@ -206,6 +221,42 @@ describe('terminal ping loop — mid-session revocation', () => {
     expect(ws.close).not.toHaveBeenCalled();
     expect(getActiveTerminalSession(sessionId)).toBeDefined();
     // Clean up the live session so its interval doesn't leak into other tests.
-    closeTerminalSession(sessionId);
+    await closeTerminalSession(sessionId);
+  });
+
+  it('makes a captured timer from an old generation inert after reopen', async () => {
+    const sessionId = nextSessionId();
+    // Select the PING timer by its interval, not by creation order — the
+    // session also installs a lease-renewal timer, and picking index 0 would
+    // silently assert against the wrong closure.
+    const intervalCallbacks: Array<{ callback: () => void; delay?: number }> = [];
+    const realSetInterval = globalThis.setInterval;
+    vi.spyOn(globalThis, 'setInterval').mockImplementation(((callback: () => void, delay?: number) => {
+      intervalCallbacks.push({ callback, delay });
+      return realSetInterval(callback, delay);
+    }) as typeof setInterval);
+
+    const { ws: staleWs, handlers: staleHandlers } = await openLiveSession(sessionId);
+    const staleTimer = intervalCallbacks.find(entry => entry.delay === PING_INTERVAL_MS)?.callback;
+    expect(staleTimer).toBeDefined();
+    await staleHandlers.onClose({}, staleWs);
+
+    const { ws: replacementWs } = await openLiveSession(sessionId);
+    const replacement = getActiveTerminalSession(sessionId);
+    expect(replacement).toBeDefined();
+
+    vi.mocked(isViewerSessionRevoked).mockResolvedValue(true);
+    vi.mocked(sendCommandToAgent).mockClear();
+    staleWs.send.mockClear();
+    staleTimer!();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(staleWs.send).not.toHaveBeenCalledWith(expect.stringContaining('"ping"'));
+    expect(replacementWs.close).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(getActiveTerminalSession(sessionId)).toBe(replacement);
+
+    await closeTerminalSession(sessionId);
   });
 });

@@ -1,5 +1,29 @@
 import { describe, it, expect } from 'vitest';
-import { reportTypeEnum } from './reports';
+import { getTableColumns } from 'drizzle-orm';
+import { reportRuns, reports, reportTypeEnum } from './reports';
+
+const executionScopeColumns = [
+  'executionScopeVersion',
+  'executionScopeKind',
+  'executionScopeSiteIds',
+  'executionScopeUserId',
+  'executionScopeFingerprint',
+  'executionScopeCapturedAt',
+] as const;
+
+describe('report execution scope provenance', () => {
+  it.each([
+    ['reports', reports],
+    ['report_runs', reportRuns],
+  ])('exposes all six nullable execution-scope columns on %s', (_name, table) => {
+    const columns = getTableColumns(table);
+
+    for (const columnName of executionScopeColumns) {
+      expect(columns).toHaveProperty(columnName);
+      expect(columns[columnName].notNull).toBe(false);
+    }
+  });
+});
 
 describe('reportTypeEnum', () => {
   it('includes the security & compliance posture type', () => {

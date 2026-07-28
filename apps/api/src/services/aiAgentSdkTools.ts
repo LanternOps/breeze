@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
+import { dbAccessContextFromAuth } from '../middleware/auth';
 import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
@@ -36,15 +37,40 @@ import {
   googleResetTwoSvHandler, googleAddMailDelegateHandler, googleRemoveMailDelegateHandler,
   googleListLicensesHandler, googleAssignLicenseHandler, googleRemoveLicenseHandler,
 } from './aiToolsGoogle';
+import {
+  sealToolSecrets,
+  isSecretBearingTool,
+  SECRET_UNAVAILABLE_TEXT,
+  type SecretToolResult,
+} from './actionIntents/secretBearingTools';
+
+/**
+ * Shown when a secret-bearing tool call is refused BEFORE execution because
+ * there is no action intent available to seal the resulting credential into.
+ *
+ * Deliberately distinct wording from SECRET_UNAVAILABLE_TEXT: that message
+ * reports a reset that ALREADY HAPPENED with the credential subsequently
+ * lost; this one reports that the action was NOT performed at all. Confusing
+ * the two would tell an operator a reset succeeded when it didn't (or vice
+ * versa) — never conflate them.
+ */
+const SECRET_ACTION_REFUSED_TEXT =
+  'This action was not performed: no durable approval record was available to store the '
+  + 'resulting credential securely. Retry once the approval workflow is available.';
 
 /**
  * Callback invoked before tool execution to enforce guardrails, RBAC,
  * rate limits, and approval gates. Blocks execution until resolved.
+ *
+ * `intentId` (Task 6) is set only when the tool call has a durable action
+ * intent row it can seal a secret into. Secret-bearing tools use its absence
+ * to fail closed (see makeSessionAwareHandler) rather than mint a credential
+ * with nowhere safe to store it.
  */
 export type PreToolUseCallback = (
   toolName: string,
   input: Record<string, unknown>,
-) => Promise<{ allowed: true } | { allowed: false; error: string }>;
+) => Promise<{ allowed: true; intentId?: string } | { allowed: false; error: string }>;
 
 /**
  * Callback invoked after each tool execution (success or failure).
@@ -57,6 +83,10 @@ export type PostToolUseCallback = (
   output: string,
   isError: boolean,
   durationMs: number,
+  /** Present only for secret-bearing tools that sealed a credential. Carries
+   *  the blob destined for action_intents.result, which must never appear in
+   *  `output`. */
+  sealed?: { intentId: string; sealedResult: Record<string, unknown> },
 ) => Promise<void>;
 
 // ============================================
@@ -232,11 +262,12 @@ async function safePostToolUse(
   output: string,
   isError: boolean,
   durationMs: number,
+  sealed?: { intentId: string; sealedResult: Record<string, unknown> },
 ): Promise<void> {
   if (!onPostToolUse) return;
   try {
     await withToolTimeout(
-      onPostToolUse(toolName, args, output, isError, durationMs),
+      onPostToolUse(toolName, args, output, isError, durationMs, sealed),
       POST_TOOL_USE_TIMEOUT_MS,
       `postToolUse:${toolName}`,
     );
@@ -300,11 +331,21 @@ function makeHandler(
       const auth = getAuth();
       // Use the user's actual auth scope instead of system context so that
       // RLS policies and DB-level tenant isolation are enforced.
-      const dbContext: DbAccessContext = {
-        scope: auth.scope as DbAccessContext['scope'],
-        orgId: auth.orgId ?? null,
-        accessibleOrgIds: auth.accessibleOrgIds ?? null,
-      };
+      //
+      // Built via the canonical `dbAccessContextFromAuth` (#2822). The literal
+      // this replaced omitted `accessiblePartnerIds`, `currentPartnerId` and
+      // `userId`; `serializeAccessibleIds` maps an absent list to '' →
+      // `ARRAY[]::uuid[]` for any non-system scope, so `breeze_has_partner_access`
+      // was FALSE and `breeze_current_partner_id()` NULL for EVERY AI tool call —
+      // including a partner-scope MSP admin's, who is entitled to the rows. And
+      // because `makeHandler` deliberately calls `runOutsideDbContext` first,
+      // there was no ambient context to fall back on: this literal was the only
+      // context Postgres saw. Result was a silent partner-axis blackout (scripts,
+      // alert templates, catalog, update rings, integrations all reported empty
+      // with a 200) across the whole chat surface. Same builder the request path
+      // and `jobs/intentReleaseWorker.ts` use, so the re-entered context is
+      // identical to the one authMiddleware opened — not wider.
+      const dbContext: DbAccessContext = dbAccessContextFromAuth(auth);
       const result = await withToolTimeout(
         withDbAccessContext(dbContext, () => executeTool(toolName, args, auth)),
         toolTimeout,
@@ -415,7 +456,11 @@ function makeSessionAwareHandler(
   toolName: string,
   getAuth: () => AuthContext,
   getActiveSession: (() => ActiveSession | undefined) | undefined,
-  sessionHandler: (args: Record<string, unknown>, auth: AuthContext, sessionId: string) => Promise<string>,
+  sessionHandler: (
+    args: Record<string, unknown>,
+    auth: AuthContext,
+    sessionId: string,
+  ) => Promise<string | SecretToolResult>,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
 ) {
@@ -439,8 +484,9 @@ function makeSessionAwareHandler(
     }
 
     // Pre-execution check (guardrails, RBAC, rate limits, approval). IDENTICAL to makeHandler.
+    let intentId: string | undefined;
     if (onPreToolUse) {
-      let check: { allowed: true } | { allowed: false; error: string };
+      let check: { allowed: true; intentId?: string } | { allowed: false; error: string };
       try {
         check = await onPreToolUse(toolName, args);
       } catch (err) {
@@ -458,20 +504,79 @@ function makeSessionAwareHandler(
           isError: true,
         };
       }
+      intentId = check.intentId;
     }
+
+    // Fail closed on confidentiality BEFORE the provider-side action executes,
+    // not after. Without this, a secret-bearing tool with no intent to seal
+    // into would still perform the (irreversible) provider-side reset and
+    // only then discover there's nowhere safe to put the credential. Refusing
+    // outright here means the reset genuinely never happens, so
+    // SECRET_ACTION_REFUSED_TEXT (not performed) is accurate — as opposed to
+    // SECRET_UNAVAILABLE_TEXT (performed, credential lost) used below for the
+    // case where a carrier somehow reaches the post-execution split anyway.
+    if (isSecretBearingTool(toolName) && !intentId) {
+      console.error(
+        `[AI-SDK] ${toolName} refused: no action intent available to seal a credential into (fail closed before execution)`,
+      );
+      const refusalText = compactToolResultForChat(
+        toolName,
+        JSON.stringify({ error: 'no_action_intent', message: SECRET_ACTION_REFUSED_TEXT }),
+      );
+      await safePostToolUse(onPostToolUse, toolName, args, refusalText, true, 0);
+      return {
+        content: [{ type: 'text' as const, text: refusalText }],
+        isError: true,
+      };
+    }
+
     try {
       const auth = getAuth();
-      // Use the user's actual auth scope so RLS / DB-level tenant isolation is enforced.
-      const dbContext: DbAccessContext = {
-        scope: auth.scope as DbAccessContext['scope'],
-        orgId: auth.orgId ?? null,
-        accessibleOrgIds: auth.accessibleOrgIds ?? null,
-      };
-      const result = await withToolTimeout(
+      // Use the user's actual auth scope so RLS / DB-level tenant isolation is
+      // enforced. Canonical builder — see the note on the sibling literal in
+      // `makeHandler` above for why the hand-rolled object was a partner-axis
+      // blackout (#2822).
+      const dbContext: DbAccessContext = dbAccessContextFromAuth(auth);
+      // Bound to `handlerResult`, not `result`: the secret-carrier split below
+      // declares its own `result: string` from `llmText`, so the raw handler
+      // return must never share that name.
+      const handlerResult = await withToolTimeout(
         withDbAccessContext(dbContext, () => sessionHandler(args, auth, session.breezeSessionId)),
         toolTimeout,
         toolName,
       );
+
+      // Split a secret carrier BEFORE anything else sees it. Everything downstream —
+      // compaction, the MCP/LLM response, the SSE stream, and DB persistence — may
+      // only ever see llmText.
+      let result: string;
+      let sealed: { intentId: string; sealedResult: Record<string, unknown> } | undefined;
+
+      if (typeof handlerResult === 'string') {
+        result = handlerResult;
+      } else if (handlerResult.kind === 'error') {
+        result = handlerResult.llmText;
+      } else if (!intentId) {
+        // Unreachable in practice for any toolName registered in
+        // isSecretBearingTool's registry: the pre-execution guard above
+        // already refuses the call before sessionHandler ever runs. Kept as
+        // defense-in-depth type-narrowing (so `sealed` below can require
+        // `intentId: string` without a non-null assertion) for the case where
+        // a handler returns a SecretToolResult carrier under a toolName the
+        // registry doesn't recognize as secret-bearing. If reached, the
+        // provider-side action already happened and cannot be undone, so
+        // fail closed on confidentiality and drop the credential rather than
+        // ever storing plaintext.
+        console.error(
+          `[AI-SDK] ${toolName} minted a credential with no action intent to seal it into — dropped (fail closed)`,
+        );
+        result = SECRET_UNAVAILABLE_TEXT;
+      } else {
+        const split = sealToolSecrets(handlerResult);
+        result = split.llmText;
+        sealed = { intentId, sealedResult: split.sealedResult };
+      }
+
       const compactResult = compactToolResultForChat(toolName, result);
 
       // Detect error responses returned as JSON strings by tool handlers
@@ -484,7 +589,7 @@ function makeSessionAwareHandler(
       } catch { /* not JSON, treat as success */ }
 
       const durationMs = Date.now() - startTime;
-      await safePostToolUse(onPostToolUse, toolName, args, compactResult, isToolError, durationMs);
+      await safePostToolUse(onPostToolUse, toolName, args, compactResult, isToolError, durationMs, sealed);
       return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
     } catch (err) {
       const durationMs = Date.now() - startTime;
@@ -1009,7 +1114,7 @@ export function createBreezeMcpServer(
 
     tool(
       'get_security_posture',
-      'Get fleet-wide or device-level security posture scores with recommendations.',
+      'Get fleet-wide or device-level security posture scores with recommendations. Posture is a scored summary of security CONTROLS (AV, firewall, encryption, patch currency) — it does NOT list CVEs or vulnerability findings. For CVEs, vulnerable software, or vulnerability findings use get_vulnerability_report (fleet) or get_device_vulnerabilities (one device).',
       {
         deviceId: uuid.optional(),
         orgId: uuid.optional(),
@@ -1294,6 +1399,42 @@ export function createBreezeMcpServer(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('manage_patches', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Vulnerability management (BE-16). These were registered in the aiTools
+    // execution registry + TOOL_TIERS but NEVER given tool() definitions here,
+    // so the in-product chat never saw them and routed every CVE question to
+    // posture/patch tools (#2605). Descriptions are duplicated here (as for
+    // every other tool in this file); aiToolsVulnerability.ts carries the copy
+    // served to external MCP clients via getToolDefinitions(). Both are pinned
+    // by tests so the CVE vocabulary cannot drift out of either surface.
+    tool(
+      'get_vulnerability_report',
+      'THE tool for CVE and vulnerability questions across the fleet: open CVE findings from vulnerability scanning, counts by severity, and the highest-risk CVEs with how many devices each affects (CVSS, known-exploited/CISA KEV). Use this for "vulnerabilities", "vulnerability report", "vulnerability findings", "CVEs", "vulnerable software", "exploitable", or "known exploited" — NOT get_security_posture (control scores) and NOT manage_patches (patch/KB inventory). Optionally filter by finding status (default: open) or severity.',
+      {
+        status: z.enum(['open', 'patched', 'mitigated', 'accepted', 'all']).optional(),
+        severity: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+      },
+      makeHandler('get_vulnerability_report', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_device_vulnerabilities',
+      "List one device's CVE / vulnerability findings: CVE id, severity, CVSS, EPSS, risk score, exploited-in-the-wild (CISA KEV) flag and patch availability. Use this for per-device \"which CVEs / vulnerabilities does this device have\" questions instead of get_security_posture or manage_patches. Defaults to open findings.",
+      {
+        deviceId: uuid,
+        status: z.enum(['open', 'patched', 'mitigated', 'accepted', 'all']).optional(),
+      },
+      makeHandler('get_device_vulnerabilities', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'remediate_vulnerability',
+      'Remediate CVE / vulnerability findings by queueing the approved patch that fixes each CVE on its device. High-risk: requires approval. Takes the finding ids returned by get_vulnerability_report / get_device_vulnerabilities. Only partner-approved patches install; unapproved, unavailable or out-of-site findings come back in "skipped".',
+      {
+        deviceVulnerabilityIds: z.array(uuid).min(1).max(100),
+      },
+      makeHandler('remediate_vulnerability', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

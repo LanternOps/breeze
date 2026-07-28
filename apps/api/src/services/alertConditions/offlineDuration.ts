@@ -11,13 +11,15 @@
  * the sweep read this same env, so the cap always matches the horizon that
  * actually governs re-evaluation.
  */
+import { envInt } from '../../utils/envInt';
+
 export const DEFAULT_REEVAL_HORIZON_MINUTES = 1440; // 24h
 
 /** Resolve the re-eval horizon (minutes) from env, clamped to >= 1. */
 export function resolveReevalHorizonMinutes(): number {
   return Math.max(
     1,
-    Number(process.env.OFFLINE_DETECTOR_REEVAL_HORIZON_MINUTES ?? String(DEFAULT_REEVAL_HORIZON_MINUTES))
+    envInt('OFFLINE_DETECTOR_REEVAL_HORIZON_MINUTES', DEFAULT_REEVAL_HORIZON_MINUTES)
   );
 }
 

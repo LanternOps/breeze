@@ -159,7 +159,7 @@ export function QuoteBulkBar({ count, busy, onSetMarkup, onSetCost, onSetTaxable
             onClick={apply}
             disabled={busy}
             data-testid="quote-bulk-apply"
-            className="inline-flex h-8 items-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            className="inline-flex h-8 items-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {t('quotes.editor.bulk.apply')}
           </button>

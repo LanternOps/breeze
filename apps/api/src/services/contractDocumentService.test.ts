@@ -37,6 +37,7 @@ import {
   createExecutedDocuments,
   buildContractHashParts,
   assertContractRenderDataComplete,
+  getContractDocumentPdf,
   linkContractDocument,
   ContractDocumentServiceError,
 } from './contractDocumentService';
@@ -227,5 +228,57 @@ describe('contractDocumentService.linkContractDocument', () => {
   it('surfaces a ContractDocumentServiceError type on the already-linked guard', async () => {
     queueResult([{ id: 'doc1', orgId: 'org1', contractId: 'c', pdfData: Buffer.from('x'), mime: 'application/pdf', byteSize: 1, sha256: 's' }]);
     await expect(linkContractDocument(auth, 'doc1', 'c2')).rejects.toBeInstanceOf(ContractDocumentServiceError);
+  });
+});
+
+describe('contractDocumentService.getContractDocumentPdf', () => {
+  beforeEach(() => {
+    insertedValues.length = 0;
+    selectResults.length = 0;
+    vi.clearAllMocks();
+  });
+
+  it('returns the authorized document organization with the prepared PDF metadata', async () => {
+    const canAccessOrg = vi.fn(() => true);
+    const auth = { canAccessOrg } as unknown as AuthContext;
+    const pdfData = Buffer.from('%PDF-1.7');
+    queueResult([{
+      id: 'doc1',
+      orgId: 'org1',
+      pdfData,
+      mime: 'application/pdf',
+      byteSize: pdfData.length,
+      sha256: 'a'.repeat(64),
+    }]);
+
+    const result = await getContractDocumentPdf(auth, 'doc1');
+
+    expect(canAccessOrg).toHaveBeenCalledWith('org1');
+    expect(result).toEqual({
+      orgId: 'org1',
+      pdfData,
+      mime: 'application/pdf',
+      byteSize: pdfData.length,
+      sha256: 'a'.repeat(64),
+    });
+  });
+
+  it('keeps the existing organization authorization gate before returning bytes', async () => {
+    const canAccessOrg = vi.fn(() => false);
+    const auth = { canAccessOrg } as unknown as AuthContext;
+    queueResult([{
+      id: 'doc1',
+      orgId: 'org-denied',
+      pdfData: Buffer.from('%PDF-1.7'),
+      mime: 'application/pdf',
+      byteSize: 8,
+      sha256: 'a'.repeat(64),
+    }]);
+
+    await expect(getContractDocumentPdf(auth, 'doc1')).rejects.toMatchObject({
+      status: 403,
+      code: 'ORG_DENIED',
+    });
+    expect(canAccessOrg).toHaveBeenCalledWith('org-denied');
   });
 });

@@ -51,7 +51,13 @@ async function sendDeskStartResult(
       result,
     }),
   } as MessageEvent;
+  // A desk-start result only carries teardown/consent authority on the
+  // agent's CURRENT socket (delivery-epoch proof) — register it first, as
+  // the real transport does on connect.
+  await handlers.onOpen({}, fakeWs);
   await handlers.onMessage(event, fakeWs);
+  // Close the lease so the per-socket ping interval doesn't outlive the test.
+  await handlers.onClose({}, fakeWs);
 }
 
 async function insertDevice(orgId: string, siteId: string): Promise<{ id: string; agentId: string }> {

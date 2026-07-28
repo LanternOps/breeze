@@ -5,6 +5,66 @@ export function envFlag(name: string, fallback = false): boolean {
   return v === '1' || v === 'true' || v === 'yes' || v === 'on';
 }
 
+export type RemoteAccessAdmissionMode = 'open' | 'closed';
+export type RemoteWsRuntimeAuthMode = 'post_upgrade' | 'pre_upgrade';
+export type RemoteWsRedisTopology = 'standalone-single-primary';
+
+function requiredEnum<T extends string>(
+  source: NodeJS.ProcessEnv,
+  name: string,
+  allowed: readonly T[],
+  fallback: T,
+): T {
+  const raw = source[name]?.trim();
+  const productionLike = (
+    source.NODE_ENV === 'production'
+    || source.DEPLOYMENT_ENV === 'staging'
+  );
+  if (!raw) {
+    if (productionLike) throw new Error(`${name} is required`);
+    return fallback;
+  }
+  if (!allowed.includes(raw as T)) {
+    throw new Error(`${name} must be one of: ${allowed.join(', ')}`);
+  }
+  return raw as T;
+}
+
+export function getRemoteWsRuntimeConfig(
+  source: NodeJS.ProcessEnv = process.env,
+): {
+  admissionMode: RemoteAccessAdmissionMode;
+  authMode: RemoteWsRuntimeAuthMode;
+  redisTopology: RemoteWsRedisTopology;
+  legacyTicketWriterDrainedAt: string | undefined;
+  legacyViewerIssuerDrainedAt: string | undefined;
+} {
+  return {
+    admissionMode: requiredEnum(
+      source,
+      'REMOTE_ACCESS_ADMISSION_MODE',
+      ['open', 'closed'] as const,
+      'open',
+    ),
+    authMode: requiredEnum(
+      source,
+      'REMOTE_WS_AUTH_MODE',
+      ['post_upgrade', 'pre_upgrade'] as const,
+      'post_upgrade',
+    ),
+    redisTopology: requiredEnum(
+      source,
+      'REMOTE_WS_REDIS_TOPOLOGY',
+      ['standalone-single-primary'] as const,
+      'standalone-single-primary',
+    ),
+    legacyTicketWriterDrainedAt:
+      source.REMOTE_WS_LEGACY_TICKET_WRITER_DRAINED_AT?.trim() || undefined,
+    legacyViewerIssuerDrainedAt:
+      source.REMOTE_WS_LEGACY_VIEWER_ISSUER_DRAINED_AT?.trim() || undefined,
+  };
+}
+
 export const MCP_OAUTH_ENABLED = envFlag('MCP_OAUTH_ENABLED');
 
 /** Strictly decode the dedicated partner export cursor HMAC key from base64. */
@@ -119,6 +179,104 @@ export const OAUTH_DCR_REQUIRE_IAT = envFlag('OAUTH_DCR_REQUIRE_IAT', false);
 export const OAUTH_DCR_ALLOW_ANONYMOUS = envFlag('OAUTH_DCR_ALLOW_ANONYMOUS', false);
 export const OAUTH_ISSUER = process.env.OAUTH_ISSUER ?? '';
 export const OAUTH_RESOURCE_URL = process.env.OAUTH_RESOURCE_URL ?? '';
+
+export interface OAuthAuthEpochDeadlineOptions {
+  oauthEnabled: boolean;
+  nodeEnv: string | undefined;
+}
+
+export function parseOAuthAuthEpochEnforceAfter(
+  raw: string | undefined,
+  options: OAuthAuthEpochDeadlineOptions,
+): Date | null {
+  const value = raw?.trim() ?? '';
+  const strictEnvironment = options.nodeEnv === 'production' || options.nodeEnv === 'staging';
+  if (!value) {
+    if (options.oauthEnabled && strictEnvironment) {
+      throw new Error(
+        'OAUTH_AUTH_EPOCH_ENFORCE_AFTER is required when MCP OAuth is enabled in production or staging',
+      );
+    }
+    return null;
+  }
+
+  // Require a complete timestamp and an explicit UTC/offset suffix. A local
+  // timestamp would move the compatibility boundary with host timezone.
+  const absoluteIso =
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u;
+  const timestamp = Date.parse(value);
+  if (!absoluteIso.test(value) || !Number.isFinite(timestamp)) {
+    throw new Error('OAUTH_AUTH_EPOCH_ENFORCE_AFTER must be a valid absolute ISO timestamp');
+  }
+  return new Date(timestamp);
+}
+
+// Import-time resolution must never THROW, for two reasons:
+//   1. config/validate.ts imports this module. A module-scope throw here runs
+//      before the boot validator can collect and report every misconfigured
+//      key, replacing an actionable aggregated message with a bare import
+//      stack trace — and skipping the rest of the checks entirely.
+//   2. env.ts is imported by jobs, seeds, scripts and unrelated test suites
+//      that merely want one unrelated constant. Any of them running with
+//      NODE_ENV=production would die on import even though they never touch
+//      OAuth or event sockets.
+// The authoritative "required in production" and "must be a valid absolute
+// ISO timestamp" refusals therefore live in config/validate.ts, which runs
+// first in bootstrap(). The fallback below is only reachable in a process that
+// bypassed that validator, so it takes the CLOSED value: a deadline already in
+// the past rejects every claimless legacy access token.
+function resolveOAuthAuthEpochEnforceAfterAtImport(): Date | null {
+  try {
+    return parseOAuthAuthEpochEnforceAfter(process.env.OAUTH_AUTH_EPOCH_ENFORCE_AFTER, {
+      oauthEnabled: MCP_OAUTH_ENABLED,
+      nodeEnv: process.env.NODE_ENV,
+    });
+  } catch {
+    return new Date(0);
+  }
+}
+
+export const OAUTH_AUTH_EPOCH_ENFORCE_AFTER = resolveOAuthAuthEpochEnforceAfterAtImport();
+
+export type EventPermissionEpochMode = 'compat' | 'enforce';
+
+export function parseEventPermissionEpochMode(
+  raw: string | undefined,
+  nodeEnv: string | undefined,
+): EventPermissionEpochMode {
+  const value = raw?.trim().toLowerCase();
+  const strictEnvironment = nodeEnv === 'production' || nodeEnv === 'staging';
+  if (!value) {
+    if (strictEnvironment) {
+      throw new Error(
+        'EVENT_PERMISSION_EPOCH_MODE is required in production and staging',
+      );
+    }
+    return 'compat';
+  }
+  if (value !== 'compat' && value !== 'enforce') {
+    throw new Error('EVENT_PERMISSION_EPOCH_MODE must be compat or enforce');
+  }
+  return value;
+}
+
+// Non-throwing at import for the same reasons as the OAuth deadline above;
+// config/validate.ts owns the boot refusal. The fallback is the CLOSED mode:
+// `enforce` rejects tickets that carry no permissions epoch, whereas `compat`
+// still accepts version-one tickets.
+function resolveEventPermissionEpochModeAtImport(): EventPermissionEpochMode {
+  try {
+    return parseEventPermissionEpochMode(
+      process.env.EVENT_PERMISSION_EPOCH_MODE,
+      process.env.NODE_ENV,
+    );
+  } catch {
+    return 'enforce';
+  }
+}
+
+export const EVENT_PERMISSION_EPOCH_MODE = resolveEventPermissionEpochModeAtImport();
+
 // Optional override for the consent UI base. Defaults to '' (relative path)
 // — in prod the API and web share the same origin behind Caddy, so a
 // relative redirect works. In local dev where API and web run on different

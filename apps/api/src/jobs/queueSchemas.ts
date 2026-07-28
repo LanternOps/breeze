@@ -1,5 +1,11 @@
 import { z } from 'zod';
 
+export const desktopSessionFinalizationJobDataSchema = z.object({
+  version: z.literal(1),
+  sessionId: z.string().uuid(),
+  finalizationId: z.string().uuid(),
+}).strict();
+
 export const queueActorMetaSchema = z.object({
   actorType: z.enum(['system', 'agent', 'user', 'service']),
   actorId: z.string().min(1).nullable().optional(),

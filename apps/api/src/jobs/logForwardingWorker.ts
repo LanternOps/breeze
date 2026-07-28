@@ -42,7 +42,7 @@ const MAX_LOG_FORWARDING_EVENTS = 500;
 const MAX_LOG_FORWARDING_HOSTNAME = 255;
 const MAX_LOG_FORWARDING_FIELD = 256;
 const MAX_LOG_FORWARDING_MESSAGE = 4096;
-const MAX_LOG_FORWARDING_RAW_DATA_BYTES = 16 * 1024;
+const MAX_LOG_FORWARDING_DETAILS_BYTES = 16 * 1024;
 
 interface LogForwardingJobData {
   orgId: string;
@@ -54,7 +54,7 @@ interface LogForwardingJobData {
     source: string;
     message: string;
     timestamp: string;
-    rawData?: unknown;
+    details?: unknown;
   }>;
 }
 
@@ -65,17 +65,17 @@ function truncateLogString(value: string, max: number): string {
   return value.length <= max ? value : value.slice(0, max);
 }
 
-function sanitizeRawData(value: unknown): unknown {
+function sanitizeDetails(value: unknown): unknown {
   if (value === undefined) {
     return undefined;
   }
   try {
     const serialized = JSON.stringify(value);
-    if (!serialized || serialized.length <= MAX_LOG_FORWARDING_RAW_DATA_BYTES) {
+    if (!serialized || serialized.length <= MAX_LOG_FORWARDING_DETAILS_BYTES) {
       return value;
     }
   } catch (err) {
-    console.warn('[LogForwarding] Failed to serialize rawData payload, dropping field:', err);
+    console.warn('[LogForwarding] Failed to serialize details payload, dropping field:', err);
     return undefined;
   }
   return undefined;
@@ -92,7 +92,7 @@ function sanitizeLogForwardingData(data: LogForwardingJobData): LogForwardingJob
       source: truncateLogString(event.source, MAX_LOG_FORWARDING_FIELD),
       message: truncateLogString(event.message, MAX_LOG_FORWARDING_MESSAGE),
       timestamp: event.timestamp,
-      rawData: sanitizeRawData(event.rawData),
+      details: sanitizeDetails(event.details),
     })),
   };
 }
@@ -146,7 +146,7 @@ export async function initializeLogForwardingWorker(): Promise<void> {
           source: e.source,
           message: e.message,
           timestamp: e.timestamp,
-          rawData: e.rawData,
+          details: e.details,
         }));
 
         const result = await bulkIndexEvents(orgId, docs);

@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, eq, sql, desc, gte, lte, inArray, type SQL } from 'drizzle-orm';
+import { and, eq, or, sql, desc, gte, lte, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   devices,
@@ -12,12 +12,71 @@ import {
 } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
+import {
+  resolveRequestReportAuthority,
+  resolveRequestReportAuthorityMap,
+  type LiveSiteScopeV1,
+} from '../../services/siteScope';
 import { ensureOrgAccess, getOrgIdsForAuth } from './helpers';
 import { dataQuerySchema } from './schemas';
 
 export const dataRoutes = new Hono();
 
 dataRoutes.use('*', authMiddleware);
+
+/** Zero-safe alerts-summary payload, returned before any database call. */
+function emptyAlertsSummary() {
+  return {
+    data: { bySeverity: {}, byStatus: {}, byDay: [], topRules: [] },
+    total: 0
+  };
+}
+
+function normalizeSiteIdList(siteIds: readonly string[]): string[] {
+  return [...new Set(siteIds)].sort((left, right) => left.localeCompare(right));
+}
+
+/**
+ * Device-level site condition for one exact-organization live scope.
+ * `unrestricted` adds no predicate; `restricted` binds its normalized UUIDs.
+ */
+function alertsDeviceSiteCondition(scope: LiveSiteScopeV1): SQL | undefined {
+  return scope.kind === 'restricted'
+    ? inArray(devices.siteId, normalizeSiteIdList(scope.siteIds))
+    : undefined;
+}
+
+/**
+ * One parameterized device predicate of `(devices.org_id = orgX AND
+ * siteCondition(scopeX))` branches for a partner multi-organization request.
+ * Denied and restricted-empty organizations get no branch at all, so an empty
+ * scope list returns `null` and the caller must answer zero-safe without
+ * querying. One organization's site set is never applied to another's rows.
+ */
+function alertsMultiOrgDeviceCondition(
+  scopes: readonly LiveSiteScopeV1[]
+): SQL | null {
+  const scopesByOrgId = new Map<string, LiveSiteScopeV1>();
+  for (const scope of scopes) {
+    if (scope.kind === 'restricted' && scope.siteIds.length === 0) continue;
+    if (!scopesByOrgId.has(scope.orgId)) scopesByOrgId.set(scope.orgId, scope);
+  }
+
+  const branches = [...scopesByOrgId.values()]
+    .sort((left, right) => left.orgId.localeCompare(right.orgId))
+    .map((scope) => {
+      const orgCondition = eq(devices.orgId, scope.orgId);
+      const siteCondition = alertsDeviceSiteCondition(scope);
+      return siteCondition ? and(orgCondition, siteCondition)! : orgCondition;
+    });
+
+  if (branches.length === 0) return null;
+  return branches.length === 1 ? branches[0]! : or(...branches)!;
+}
+
+function scopeAdmitsSite(scope: LiveSiteScopeV1, siteId: string): boolean {
+  return scope.kind === 'unrestricted' || scope.siteIds.includes(siteId);
+}
 
 function emptyMetricsData() {
   return {
@@ -225,20 +284,82 @@ dataRoutes.get(
 
     const orgIds = await getOrgIdsForAuth(auth);
     if (orgIds !== null && orgIds.length === 0) {
-      return c.json({ data: { bySeverity: {}, byStatus: {}, byDay: [], topRules: [] }, total: 0 });
+      return c.json(emptyAlertsSummary());
     }
-
-    // Build conditions
-    const conditions: ReturnType<typeof eq>[] = [];
 
     if (query.orgId) {
       const hasAccess = await ensureOrgAccess(query.orgId, auth);
       if (!hasAccess) {
         return c.json({ error: 'Access to this organization denied' }, 403);
       }
+    }
+
+    // ── Authority mode: resolved once, before any aggregate query ───────────
+    // Organization tokens and any request naming an explicit organization
+    // derive one exact-organization scope so an organization membership's
+    // site_ids beats a broader partner fallback. A partner without an explicit
+    // organization gets one composite per-organization predicate. A system
+    // caller without an explicit organization is unrestricted per row.
+    let deviceScopeCondition: SQL | undefined;
+    const exactOrgId =
+      query.orgId ?? (auth.scope === 'organization' ? auth.orgId ?? undefined : undefined);
+
+    if (exactOrgId) {
+      const authorityResult = await resolveRequestReportAuthority(auth, exactOrgId, 'export');
+      if (!authorityResult.ok) {
+        return authorityResult.reason === 'empty_scope'
+          ? c.json(emptyAlertsSummary())
+          : c.json({ error: 'Access to this organization denied' }, 403);
+      }
+      const scope = authorityResult.authority.scope;
+      if (scope.kind === 'legacy_unscoped') {
+        return c.json({ error: 'Access to this organization denied' }, 403);
+      }
+      if (query.siteId && !scopeAdmitsSite(scope, query.siteId)) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      deviceScopeCondition = alertsDeviceSiteCondition(scope);
+    } else if (auth.scope === 'organization') {
+      // Organization token without an organization: nothing is authorized.
+      return c.json(emptyAlertsSummary());
+    } else if (auth.scope === 'partner') {
+      const authorityMap = await resolveRequestReportAuthorityMap(auth, orgIds ?? [], 'export');
+      const authorizedScopes: LiveSiteScopeV1[] = [];
+      for (const result of authorityMap.values()) {
+        if (!result.ok) continue;
+        const scope = result.authority.scope;
+        if (scope.kind === 'legacy_unscoped') continue;
+        authorizedScopes.push(scope);
+      }
+      const compositeCondition = alertsMultiOrgDeviceCondition(authorizedScopes);
+      if (!compositeCondition) {
+        return c.json(emptyAlertsSummary());
+      }
+      if (
+        query.siteId &&
+        !authorizedScopes.some((scope) => scopeAdmitsSite(scope, query.siteId!))
+      ) {
+        return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      deviceScopeCondition = compositeCondition;
+    }
+
+    // Build conditions. `deviceScopeCondition` is a single object reused by
+    // every aggregate below — never re-expressed per query.
+    const conditions: SQL[] = [];
+
+    if (query.orgId) {
       conditions.push(eq(alerts.orgId, query.orgId));
     } else if (orgIds) {
       conditions.push(inArray(alerts.orgId, orgIds));
+    }
+
+    if (deviceScopeCondition) {
+      conditions.push(deviceScopeCondition);
+    }
+
+    if (query.siteId) {
+      conditions.push(eq(devices.siteId, query.siteId));
     }
 
     if (query.startDate) {
@@ -258,6 +379,7 @@ dataRoutes.get(
         count: sql<number>`count(*)`
       })
       .from(alerts)
+      .innerJoin(devices, eq(alerts.deviceId, devices.id))
       .where(whereCondition)
       .groupBy(alerts.severity);
 
@@ -268,6 +390,7 @@ dataRoutes.get(
         count: sql<number>`count(*)`
       })
       .from(alerts)
+      .innerJoin(devices, eq(alerts.deviceId, devices.id))
       .where(whereCondition)
       .groupBy(alerts.status);
 
@@ -281,11 +404,8 @@ dataRoutes.get(
         count: sql<number>`count(*)`
       })
       .from(alerts)
-      .where(
-        conditions.length > 0
-          ? and(...conditions, gte(alerts.triggeredAt, thirtyDaysAgo))
-          : gte(alerts.triggeredAt, thirtyDaysAgo)
-      )
+      .innerJoin(devices, eq(alerts.deviceId, devices.id))
+      .where(and(...conditions, gte(alerts.triggeredAt, thirtyDaysAgo)))
       .groupBy(sql`date_trunc('day', ${alerts.triggeredAt})`)
       .orderBy(sql`date_trunc('day', ${alerts.triggeredAt})`);
 
@@ -298,6 +418,7 @@ dataRoutes.get(
       })
       .from(alerts)
       .innerJoin(alertRules, eq(alerts.ruleId, alertRules.id))
+      .innerJoin(devices, eq(alerts.deviceId, devices.id))
       .where(whereCondition)
       .groupBy(alerts.ruleId, alertRules.name)
       .orderBy(desc(sql`count(*)`))
@@ -307,6 +428,7 @@ dataRoutes.get(
     const countResult = await db
       .select({ count: sql<number>`count(*)` })
       .from(alerts)
+      .innerJoin(devices, eq(alerts.deviceId, devices.id))
       .where(whereCondition);
 
     return c.json({

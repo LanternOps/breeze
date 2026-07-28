@@ -582,7 +582,7 @@ func TestNamedPipeSessionIDCollisionRejected(t *testing.T) {
 func TestAssistRoleRejectsSystemSID(t *testing.T) {
 	cases := []struct {
 		name       string
-		role       string
+		role       ipc.HelperRole
 		sid        string
 		wantReason string
 		wantReject bool

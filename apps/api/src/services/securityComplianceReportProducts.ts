@@ -1,6 +1,12 @@
 import type { PostureProduct, PostureProductCategory } from '@breeze/shared';
 
-export type SecurityProductEvidence = Omit<PostureProduct, 'deviceCoverage'> & {
+// `deviceCoverage` and `activeDeviceCoverage` are computed by the inventory
+// builder from `deviceIds` + `active`, so they are not part of the per-source
+// evidence input.
+export type SecurityProductEvidence = Omit<
+  PostureProduct,
+  'deviceCoverage' | 'activeDeviceCoverage'
+> & {
   deviceIds?: Iterable<string>;
 };
 
@@ -49,14 +55,23 @@ export function buildSecurityProductInventory(
       category: PostureProductCategory;
       active: boolean;
       lastSyncStatus: string | null;
+      // All devices the product is inventoried across (installed count).
       deviceIds: Set<string> | null;
+      // Subset of `deviceIds` where THIS device's evidence was active — for native
+      // AV rows that is "real-time protection on". Tracked separately from the
+      // OR-merged `active` flag so one RTP-on device can't paint the whole product
+      // as fully protecting the fleet (issue #2517). Integration evidence keeps the
+      // OR-merge on `active`; its per-device set is either full (all devices active)
+      // or absent (no deviceIds), so it never produces a misleading partial count.
+      activeDeviceIds: Set<string> | null;
     }
   >();
 
   for (const item of evidence) {
     const key = productKey(item.product);
-    const current = merged.get(key);
     const ids = item.deviceIds ? new Set(item.deviceIds) : null;
+    const activeIds = ids && item.active ? new Set(ids) : null;
+    const current = merged.get(key);
     if (!current) {
       merged.set(key, {
         product: item.product,
@@ -64,6 +79,7 @@ export function buildSecurityProductInventory(
         active: item.active,
         lastSyncStatus: item.lastSyncStatus ?? null,
         deviceIds: ids,
+        activeDeviceIds: activeIds,
       });
       continue;
     }
@@ -72,6 +88,10 @@ export function buildSecurityProductInventory(
     if (ids) {
       current.deviceIds ??= new Set();
       for (const id of ids) current.deviceIds.add(id);
+    }
+    if (activeIds) {
+      current.activeDeviceIds ??= new Set();
+      for (const id of activeIds) current.activeDeviceIds.add(id);
     }
   }
 
@@ -82,6 +102,10 @@ export function buildSecurityProductInventory(
       active: item.active,
       lastSyncStatus: item.lastSyncStatus,
       deviceCoverage: item.deviceIds?.size ?? null,
+      // Only meaningful when we have per-device evidence; null otherwise so the
+      // renderer skips the "N with real-time protection on" suffix for pure
+      // integration health rows (DNS, backup, M365).
+      activeDeviceCoverage: item.deviceIds ? (item.activeDeviceIds?.size ?? 0) : null,
     }))
     .sort(
       (a, b) =>

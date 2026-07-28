@@ -9,8 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
-	"log/slog"
 	"os"
 	"path"
 	"sort"
@@ -395,8 +393,11 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		}
 		if len(resumedFiles) > 0 {
 			markDone(len(resumedFiles), resumedBytes)
-			log.Printf("[backup] resuming snapshot %s: %d file(s) / %d bytes already uploaded in a prior run",
-				snapshot.ID, len(resumedFiles), resumedBytes)
+			log.Info("resuming interrupted snapshot from checkpoint journal",
+				"snapshotId", snapshot.ID,
+				"resumedFiles", len(resumedFiles),
+				"resumedBytes", resumedBytes,
+			)
 			emitProgress(true)
 		}
 	}
@@ -439,12 +440,41 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		backupPath := path.Join(prefix, snapshotFilesDir, file.snapshotPath)
 		backupPath = ensureGzipExtension(backupPath)
 
+		// Log the file we are ABOUT to upload, at debug, before we block on it.
+		// This is the line that makes a wedged backup diagnosable: the deadline
+		// below scales with file size and has no ceiling, so a large file whose
+		// upload stalls mid-body can hold the loop for hours with no other
+		// output. Without a start line the last thing in the log is the
+		// previous file's success and there is no way to tell which file is
+		// stuck (#2790, #2798).
+		deadline := uploadDeadline(file.size)
+		log.Debug("uploading file",
+			"path", file.sourcePath,
+			"backupPath", backupPath,
+			"bytes", file.size,
+			"deadlineMs", deadline.Milliseconds(),
+			"snapshotId", snapshot.ID,
+		)
+
+		uploadStart := time.Now()
 		uploadErr := attemptFileUpload(ctx, provider, file, backupPath)
 		if uploadErr != nil && !errors.Is(uploadErr, errBackupStopped) {
 			// Exactly one retry, only for a non-cancel failure (including a
 			// per-file deadline expiry, which attemptFileUpload has already
 			// converted to a plain error). Job-context cancel during the
 			// backoff wait aborts immediately — never retried.
+			//
+			// Warn, not debug: a single retry is the first observable symptom
+			// of a stalling destination, and it is the point at which we have
+			// already burned the full per-file deadline.
+			log.Warn("file upload failed, retrying once",
+				"path", file.sourcePath,
+				"bytes", file.size,
+				"elapsedMs", time.Since(uploadStart).Milliseconds(),
+				"deadlineMs", deadline.Milliseconds(),
+				"retryDelayMs", uploadRetryDelay.Milliseconds(),
+				"error", uploadErr.Error(),
+			)
 			select {
 			case <-ctx.Done():
 				uploadErr = errBackupStopped
@@ -458,9 +488,19 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			}
 			err := fmt.Errorf("failed to upload %s: %w", file.sourcePath, uploadErr)
 			errs = append(errs, err)
-			log.Printf("[backup] upload failed: %s: %v", file.sourcePath, err)
+			// This is skip-and-continue: the file is dropped from the backup
+			// but the job carries on. Warn so it is visible without debug
+			// shipping, and count it so the summary at the end is trustworthy.
+			log.Warn("file upload failed, skipping file",
+				"path", file.sourcePath,
+				"bytes", file.size,
+				"elapsedMs", time.Since(uploadStart).Milliseconds(),
+				"failedSoFar", len(errs),
+				"error", uploadErr.Error(),
+			)
 			continue
 		}
+		uploadMs := time.Since(uploadStart).Milliseconds()
 
 		// Checksum the source bytes so integrity/test-restore can detect silent
 		// corruption of the stored object. A hash failure here is non-fatal —
@@ -475,10 +515,27 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		// consistent with the pre-existing size-from-collection vs content-from-
 		// upload race. Eliminating it fully requires hashing the bytes as they
 		// stream to the provider (a provider-interface change) — left as future work.
+		// Timed separately from the upload: this is a second full read of the
+		// source file, so on a large file or a slow/network-mounted path it is
+		// a real chunk of wall-clock that produces zero network traffic and
+		// zero progress movement. Without its own timing it looks identical to
+		// a stalled upload from the outside.
+		sumStart := time.Now()
 		checksum, sumErr := sha256File(file.sourcePath)
 		if sumErr != nil {
-			log.Printf("[backup] checksum failed for %s: %v", file.sourcePath, sumErr)
+			log.Warn("checksum failed, file stored without one",
+				"path", file.sourcePath,
+				"bytes", file.size,
+				"error", sumErr.Error(),
+			)
 		}
+		log.Debug("file uploaded",
+			"path", file.sourcePath,
+			"bytes", file.size,
+			"uploadMs", uploadMs,
+			"checksumMs", time.Since(sumStart).Milliseconds(),
+			"snapshotId", snapshot.ID,
+		)
 
 		entry := SnapshotFile{
 			SourcePath:   file.sourcePath,
@@ -546,7 +603,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 
 	if journal != nil {
 		if err := journal.Complete(); err != nil {
-			log.Printf("[backup] failed to remove completed checkpoint journal: %v", err)
+			log.Warn("failed to remove completed checkpoint journal", "error", err.Error())
 		}
 		completed = true
 	}
@@ -560,12 +617,22 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 // converted to a plain error so the caller can distinguish "this file
 // stalled" (retry / skip-and-continue) from "the job was cancelled" (abort).
 func attemptFileUpload(ctx context.Context, provider providers.BackupProvider, file backupFile, backupPath string) error {
-	attemptCtx, cancelAttempt := context.WithTimeout(ctx, uploadDeadline(file.size))
+	deadline := uploadDeadline(file.size)
+	attemptCtx, cancelAttempt := context.WithTimeout(ctx, deadline)
 	defer cancelAttempt()
 	uploadErr := uploadSnapshotFile(attemptCtx, provider, file.sourcePath, backupPath)
 	if errors.Is(uploadErr, errBackupStopped) && ctx.Err() == nil {
-		// The per-file deadline fired, not a job cancel.
-		uploadErr = fmt.Errorf("upload stalled: no completion within %s", uploadDeadline(file.size))
+		// The per-file deadline fired, not a job cancel. Log it distinctly:
+		// a deadline expiry means we sat on one file for the whole (size-
+		// scaled, uncapped) window with the destination accepting the request
+		// and never finishing it. That is a different failure from an outright
+		// upload error and it is the signature of the stall in #2798.
+		log.Warn("file upload deadline expired",
+			"path", file.sourcePath,
+			"bytes", file.size,
+			"deadlineMs", deadline.Milliseconds(),
+		)
+		uploadErr = fmt.Errorf("upload stalled: no completion within %s", deadline)
 	}
 	return uploadErr
 }
@@ -594,12 +661,12 @@ func uploadSnapshotFile(ctx context.Context, provider providers.BackupProvider, 
 func cleanupSnapshotPrefix(provider providers.BackupProvider, snapshotID string) {
 	items, err := listSnapshotPrefixItems(provider, snapshotID)
 	if err != nil {
-		slog.Error("failed to list aborted snapshot for cleanup", "snapshotId", snapshotID, "error", err.Error())
+		log.Error("failed to list aborted snapshot for cleanup", "snapshotId", snapshotID, "error", err.Error())
 		return
 	}
 	for _, item := range items {
 		if err := provider.Delete(item); err != nil {
-			slog.Error("failed to clean up aborted snapshot file", "item", item, "error", err.Error())
+			log.Error("failed to clean up aborted snapshot file", "item", item, "error", err.Error())
 		}
 	}
 }
@@ -627,7 +694,7 @@ func ListSnapshots(provider providers.BackupProvider) ([]Snapshot, error) {
 		if err != nil {
 			err = fmt.Errorf("failed to create temp manifest: %w", err)
 			errs = append(errs, err)
-			log.Printf("[backup] snapshot manifest temp file failed: %v", err)
+			log.Warn("snapshot manifest temp file failed", "error", err.Error())
 			continue
 		}
 		tempPath := tempFile.Name()
@@ -637,7 +704,7 @@ func ListSnapshots(provider providers.BackupProvider) ([]Snapshot, error) {
 			os.Remove(tempPath)
 			err = fmt.Errorf("failed to download manifest %s: %w", item, err)
 			errs = append(errs, err)
-			log.Printf("[backup] snapshot manifest download failed: %s: %v", item, err)
+			log.Warn("snapshot manifest download failed", "item", item, "error", err.Error())
 			continue
 		}
 
@@ -646,7 +713,7 @@ func ListSnapshots(provider providers.BackupProvider) ([]Snapshot, error) {
 			os.Remove(tempPath)
 			err = fmt.Errorf("failed to open manifest %s: %w", tempPath, err)
 			errs = append(errs, err)
-			log.Printf("[backup] snapshot manifest open failed: %s: %v", item, err)
+			log.Warn("snapshot manifest open failed", "item", item, "error", err.Error())
 			continue
 		}
 		var snapshot Snapshot
@@ -655,13 +722,13 @@ func ListSnapshots(provider providers.BackupProvider) ([]Snapshot, error) {
 			os.Remove(tempPath)
 			err = fmt.Errorf("failed to decode manifest %s: %w", item, err)
 			errs = append(errs, err)
-			log.Printf("[backup] snapshot manifest decode failed: %s: %v", item, err)
+			log.Warn("snapshot manifest decode failed", "item", item, "error", err.Error())
 			continue
 		}
 		if err := manifestFile.Close(); err != nil {
 			err = fmt.Errorf("failed to close manifest %s: %w", item, err)
 			errs = append(errs, err)
-			log.Printf("[backup] snapshot manifest close failed: %s: %v", item, err)
+			log.Warn("snapshot manifest close failed", "item", item, "error", err.Error())
 		}
 		os.Remove(tempPath)
 
@@ -713,7 +780,7 @@ func DeleteSnapshotContext(ctx context.Context, provider providers.BackupProvide
 		if listErr != nil {
 			listErr = fmt.Errorf("failed to list snapshot %s: %w", snapshot.ID, listErr)
 			errs = append(errs, listErr)
-			log.Printf("[backup] snapshot list failed: %s: %v", snapshot.ID, listErr)
+			log.Warn("snapshot list failed", "snapshotId", snapshot.ID, "error", listErr.Error())
 			continue
 		}
 
@@ -724,7 +791,7 @@ func DeleteSnapshotContext(ctx context.Context, provider providers.BackupProvide
 			if delErr := provider.Delete(item); delErr != nil {
 				delErr = fmt.Errorf("failed to delete %s: %w", item, delErr)
 				errs = append(errs, delErr)
-				log.Printf("[backup] snapshot delete failed: %s: %v", item, delErr)
+				log.Warn("snapshot delete failed", "item", item, "error", delErr.Error())
 			}
 		}
 	}

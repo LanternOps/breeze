@@ -1,10 +1,14 @@
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
 import { randomBytes } from 'crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, withSystemDbAccessContext } from '../db';
-import { users } from '../db/schema';
+import { organizationUsers, organizations, partnerUsers, users } from '../db/schema';
+import {
+  EVENT_PERMISSION_EPOCH_MODE,
+  type EventPermissionEpochMode,
+} from '../config/env';
 import { getRedis } from '../services/redis';
 import { getEventDispatcher, type ClientEntry } from '../services/eventDispatcher';
 import { authMiddleware, resolveOrgAccess } from '../middleware/auth';
@@ -18,40 +22,52 @@ const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const REDIS_KEY_PREFIX = 'event:ws_ticket:';
 const EVENT_TYPE_RE = /^(\*|[a-z]+\.\*|[a-z]+\.[a-z_]+)$/;
 
-// Mid-session revalidation cadence. The ticket snapshots the user's org access
-// at consume time and the connection then delivers events indefinitely with no
-// further authorization check — so a user whose status/access is revoked keeps
-// receiving live org events until idle/disconnect. Re-check the user is still
-// active on this interval and tear the socket down fail-closed if not. Matches
-// the desktop/terminal WS ~30s revocation cadence.
+// Mid-session revalidation cadence. Every connection re-resolves user state,
+// permission epoch, membership, and site scope at 30s plus bounded jitter.
+// One transient database failure gets a short retry; a second failure closes.
 const REVALIDATE_INTERVAL_MS = 30 * 1000; // 30 seconds
+const REVALIDATE_JITTER_MAX_MS = 5 * 1000;
+const REVALIDATE_DB_RETRY_MS = 5 * 1000;
 
 // ---------------------------------------------------------------------------
 // Ticket store (in-memory for dev, Redis for production)
 // ---------------------------------------------------------------------------
 
-interface TicketRecord {
+interface EventTicketV1 {
+  version?: 1;
   userId: string;
-  // The full set of orgs this ticket grants access to. Always populated.
-  // For org-scoped users this is a single id; for partner-scoped users
-  // it can be the full accessible-orgs set so a single connection
-  // receives events across all of them.
-  orgIds: string[];
-  // Legacy field — kept so older serialised records (in Redis or
-  // in-memory across a deploy) still parse cleanly. New writes always
-  // populate orgIds.
+  orgIds?: string[];
   orgId?: string;
-  // App-layer-only SITE-scope axis (`permissions.allowedSiteIds`). RLS only
-  // enforces ORG; events are delivered over Redis pub/sub with no DB backstop,
-  // so a site-restricted user's connection must be filtered in the WS layer
-  // (see `buildSiteFilter` / the dispatch-time predicate). `undefined` or
-  // empty = full org access (no site restriction). Captured at mint time so
-  // the restriction is bound to the ticket, not re-derived at connect time.
   allowedSiteIds?: string[];
   expiresAt: number;
 }
 
-const ticketStore = new Map<string, TicketRecord>();
+export interface EventTicketV2 {
+  version: 2;
+  userId: string;
+  orgId: string | null;
+  partnerId: string;
+  allowedOrgIds: string[];
+  allowedSiteIds: string[] | null;
+  permissionsEpoch: number;
+  expiresAt: number;
+}
+
+export type EventAuthorizationCheck =
+  | { ok: true; identity: EventTicketV2 }
+  | {
+      ok: false;
+      reason:
+        | 'user_inactive'
+        | 'permission_epoch_mismatch'
+        | 'membership_removed'
+        | 'legacy_ticket_rejected'
+        | 'live_state_unavailable';
+    };
+
+type StoredTicketRecord = EventTicketV1 | EventTicketV2;
+
+const ticketStore = new Map<string, StoredTicketRecord>();
 
 function shouldUseRedis(): boolean {
   return (process.env.NODE_ENV ?? 'development') === 'production';
@@ -76,29 +92,59 @@ function purgeExpired(): void {
 export async function createEventWsTicket(
   userId: string,
   orgIdOrIds: string | string[],
-  allowedSiteIds?: string[],
+  allowedSiteIds?: string[] | null,
+  authority?: { orgId?: string | null; partnerId?: string | null },
 ): Promise<{ ticket: string; expiresInSeconds: number }> {
-  purgeExpired();
-
   const orgIds = Array.isArray(orgIdOrIds) ? [...new Set(orgIdOrIds)] : [orgIdOrIds];
   if (orgIds.length === 0) {
     throw new Error('createEventWsTicket requires at least one orgId');
   }
 
-  // Only persist a site restriction when one is actually present. An empty or
-  // undefined allowlist means "no site restriction" (full org access) and is
-  // dropped so the ticket carries no `allowedSiteIds` key.
+  const liveUser = await withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select({
+        status: users.status,
+        permissionsEpoch: users.permissionsEpoch,
+        partnerId: users.partnerId,
+        orgId: users.orgId,
+      })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    return row;
+  });
+  if (!liveUser || liveUser.status !== 'active') {
+    throw new Error('Event WS authorization is unavailable');
+  }
+  if (authority?.partnerId && authority.partnerId !== liveUser.partnerId) {
+    throw new Error('Event WS authorization is unavailable');
+  }
+  if (authority?.orgId && authority.orgId !== liveUser.orgId) {
+    throw new Error('Event WS authorization is unavailable');
+  }
+
+  // Only mutate the ticket store after the live authorization gates above
+  // have succeeded. A denied mint must have no cleanup/storage side effects.
+  purgeExpired();
+
   const normalisedSiteIds =
-    allowedSiteIds && allowedSiteIds.length > 0 ? [...new Set(allowedSiteIds)] : undefined;
+    allowedSiteIds == null ? null : [...new Set(allowedSiteIds)];
+  const authorityOrgId =
+    authority?.orgId !== undefined
+      ? authority.orgId
+      : liveUser.orgId && orgIds.includes(liveUser.orgId)
+        ? liveUser.orgId
+        : null;
 
   const ticket = randomBytes(32).toString('base64url');
-  const record: TicketRecord = {
+  const record: EventTicketV2 = {
+    version: 2,
     userId,
-    orgIds,
-    // Populate the legacy field for forward compat with any reader that
-    // hasn't been redeployed yet. Pick the first id deterministically.
-    orgId: orgIds[0],
-    ...(normalisedSiteIds ? { allowedSiteIds: normalisedSiteIds } : {}),
+    orgId: authorityOrgId,
+    partnerId: liveUser.partnerId,
+    allowedOrgIds: orgIds,
+    allowedSiteIds: normalisedSiteIds,
+    permissionsEpoch: liveUser.permissionsEpoch,
     expiresAt: Date.now() + TICKET_TTL_MS,
   };
 
@@ -121,39 +167,20 @@ export async function createEventWsTicket(
 // Ticket consumption (atomic one-time use)
 // ---------------------------------------------------------------------------
 
-// Redis Lua script for atomic GET+DEL (one-time ticket semantics).
-// This is the same pattern used in remoteSessionAuth.ts.
-const CONSUME_LUA = `
-  local v = redis.call('GET', KEYS[1])
-  if v then
-    redis.call('DEL', KEYS[1])
-  end
-  return v
-`;
-
-export interface TicketIdentity {
-  userId: string;
-  orgIds: string[];
-  // Carried from the ticket. `undefined` = no site restriction (full org
-  // access); a non-empty array means the connection may only receive events
-  // positively attributable to one of these sites.
-  allowedSiteIds?: string[];
-}
-
-function normaliseTicketRecord(record: TicketRecord): TicketIdentity | null {
-  // Backward-compat: an older record might only carry orgId.
-  const ids = record.orgIds && record.orgIds.length > 0
-    ? record.orgIds
+function legacyOrgIds(record: EventTicketV1): string[] {
+  return record.orgIds && record.orgIds.length > 0
+    ? [...new Set(record.orgIds)]
     : record.orgId
       ? [record.orgId]
       : [];
-  if (ids.length === 0) return null;
-  const allowedSiteIds =
-    record.allowedSiteIds && record.allowedSiteIds.length > 0 ? record.allowedSiteIds : undefined;
-  return { userId: record.userId, orgIds: ids, allowedSiteIds };
 }
 
-export async function consumeTicket(ticket: string): Promise<TicketIdentity | null> {
+type PeekedTicket = {
+  record: StoredTicketRecord;
+  redisRaw: string | null;
+};
+
+async function peekTicket(ticket: string): Promise<PeekedTicket | null> {
   if (shouldUseRedis()) {
     const redis = getRedis();
     if (!redis) {
@@ -161,28 +188,189 @@ export async function consumeTicket(ticket: string): Promise<TicketIdentity | nu
       return null;
     }
 
-    // Atomic GET+DEL via Lua for one-time semantics across replicas
-    const raw = await redis.eval(CONSUME_LUA, 1, `${REDIS_KEY_PREFIX}${ticket}`);
+    const raw = await redis.get(`${REDIS_KEY_PREFIX}${ticket}`);
     if (!raw || typeof raw !== 'string') return null;
 
-    let record: TicketRecord;
+    let record: StoredTicketRecord;
     try {
-      record = JSON.parse(raw) as TicketRecord;
+      record = JSON.parse(raw) as StoredTicketRecord;
     } catch (err) {
       console.error('[EventWs] Failed to parse ticket record from Redis:', err instanceof Error ? err.message : err);
       return null;
     }
 
-    if (isExpired(record.expiresAt)) return null;
-    return normaliseTicketRecord(record);
+    return isExpired(record.expiresAt) ? null : { record, redisRaw: raw };
   }
 
-  // In-memory path (development)
   const record = ticketStore.get(ticket);
   if (!record) return null;
-  ticketStore.delete(ticket); // one-time semantics
-  if (isExpired(record.expiresAt)) return null;
-  return normaliseTicketRecord(record);
+  return isExpired(record.expiresAt) ? null : { record, redisRaw: null };
+}
+
+// Compare-and-delete preserves one-time semantics without mutating a ticket
+// that fails live authorization. The compare closes the race between the
+// authorization query and consumption: exactly one concurrent upgrader wins.
+const CONSUME_IF_UNCHANGED_LUA = `
+  local v = redis.call('GET', KEYS[1])
+  if v and v == ARGV[1] then
+    redis.call('DEL', KEYS[1])
+    return 1
+  end
+  return 0
+`;
+
+async function consumePeekedTicket(
+  ticket: string,
+  peeked: PeekedTicket,
+): Promise<boolean> {
+  if (shouldUseRedis()) {
+    const redis = getRedis();
+    if (!redis || peeked.redisRaw === null) return false;
+    const consumed = await redis.eval(
+      CONSUME_IF_UNCHANGED_LUA,
+      1,
+      `${REDIS_KEY_PREFIX}${ticket}`,
+      peeked.redisRaw,
+    );
+    return consumed === 1;
+  }
+
+  if (ticketStore.get(ticket) !== peeked.record) return false;
+  return ticketStore.delete(ticket);
+}
+
+async function resolveLegacyEventAuthorization(
+  record: EventTicketV1,
+): Promise<EventAuthorizationCheck> {
+  const requestedOrgIds = legacyOrgIds(record);
+  if (requestedOrgIds.length === 0) {
+    return { ok: false, reason: 'legacy_ticket_rejected' };
+  }
+
+  try {
+    return await withSystemDbAccessContext(async (): Promise<EventAuthorizationCheck> => {
+      const [user] = await db
+        .select({
+          status: users.status,
+          permissionsEpoch: users.permissionsEpoch,
+          partnerId: users.partnerId,
+          orgId: users.orgId,
+        })
+        .from(users)
+        .where(eq(users.id, record.userId))
+        .limit(1);
+      if (!user || user.status !== 'active') {
+        return { ok: false, reason: 'user_inactive' };
+      }
+
+      if (user.orgId) {
+        if (requestedOrgIds.length !== 1 || requestedOrgIds[0] !== user.orgId) {
+          return { ok: false, reason: 'membership_removed' };
+        }
+        const [membership] = await db
+          .select({
+            roleId: organizationUsers.roleId,
+            siteIds: organizationUsers.siteIds,
+          })
+          .from(organizationUsers)
+          .where(
+            and(
+              eq(organizationUsers.userId, record.userId),
+              eq(organizationUsers.orgId, user.orgId),
+            ),
+          )
+          .limit(1);
+        if (!membership?.roleId) {
+          return { ok: false, reason: 'membership_removed' };
+        }
+        const identity: EventTicketV2 = {
+          version: 2,
+          userId: record.userId,
+          orgId: user.orgId,
+          partnerId: user.partnerId,
+          allowedOrgIds: [user.orgId],
+          allowedSiteIds:
+            membership.siteIds == null ? null : [...new Set(membership.siteIds)],
+          permissionsEpoch: user.permissionsEpoch,
+          expiresAt: record.expiresAt,
+        };
+        return { ok: true, identity };
+      }
+
+      const [membership] = await db
+        .select({
+          roleId: partnerUsers.roleId,
+          orgAccess: partnerUsers.orgAccess,
+          orgIds: partnerUsers.orgIds,
+        })
+        .from(partnerUsers)
+        .where(
+          and(
+            eq(partnerUsers.userId, record.userId),
+            eq(partnerUsers.partnerId, user.partnerId),
+          ),
+        )
+        .limit(1);
+      if (!membership?.roleId || membership.orgAccess === 'none') {
+        return { ok: false, reason: 'membership_removed' };
+      }
+
+      const candidateIds =
+        membership.orgAccess === 'selected' ? membership.orgIds ?? [] : undefined;
+      const currentOrganizations = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(
+          and(
+            eq(organizations.partnerId, user.partnerId),
+            inArray(organizations.status, ['active', 'trial']),
+            isNull(organizations.deletedAt),
+            ...(candidateIds ? [inArray(organizations.id, candidateIds)] : []),
+          ),
+        )
+        .limit(10_000);
+      const currentOrgIds = new Set(currentOrganizations.map((org) => org.id));
+      if (requestedOrgIds.some((orgId) => !currentOrgIds.has(orgId))) {
+        return { ok: false, reason: 'membership_removed' };
+      }
+      const identity: EventTicketV2 = {
+        version: 2,
+        userId: record.userId,
+        orgId: null,
+        partnerId: user.partnerId,
+        allowedOrgIds: requestedOrgIds,
+        allowedSiteIds: null,
+        permissionsEpoch: user.permissionsEpoch,
+        expiresAt: record.expiresAt,
+      };
+      return { ok: true, identity };
+    });
+  } catch {
+    return { ok: false, reason: 'live_state_unavailable' };
+  }
+}
+
+export async function consumeTicket(
+  ticket: string,
+  mode: EventPermissionEpochMode = EVENT_PERMISSION_EPOCH_MODE,
+): Promise<EventTicketV2 | null> {
+  const peeked = await peekTicket(ticket);
+  if (!peeked) return null;
+
+  let resolved: EventAuthorizationCheck;
+  if (peeked.record.version === 2) {
+    resolved = await resolveLiveEventAuthorization(peeked.record);
+  } else if (
+    peeked.record.version === undefined ||
+    peeked.record.version === 1
+  ) {
+    if (mode === 'enforce') return null;
+    resolved = await resolveLegacyEventAuthorization(peeked.record);
+  } else {
+    return null;
+  }
+  if (!resolved.ok) return null;
+  return (await consumePeekedTicket(ticket, peeked)) ? resolved.identity : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -229,9 +417,9 @@ export type ClientMessage = z.infer<typeof clientMessageSchema>;
  * synchronous cache and is out of scope for this WS-layer fix.
  */
 export function buildSiteFilter(
-  allowedSiteIds: string[] | undefined,
+  allowedSiteIds: string[] | null | undefined,
 ): ((event: Record<string, unknown>) => boolean) | undefined {
-  if (!allowedSiteIds || allowedSiteIds.length === 0) return undefined;
+  if (allowedSiteIds == null) return undefined;
 
   const allowed = new Set(allowedSiteIds);
 
@@ -263,15 +451,9 @@ function extractEventSiteId(event: Record<string, unknown>): string | undefined 
 /**
  * Mid-session revalidation: confirm the connection's user is still active.
  *
- * The WS ticket carries only `userId` + the org set captured at mint time, so
- * we re-check the authoritative "access revoked" signal the rest of the system
- * uses — `users.status === 'active'` (see `authMiddleware`, which 403s an
- * inactive user). A deactivated/suspended user, or a deleted row, must stop
- * receiving events. Runs under system DB scope because the WS path bypasses
- * JWT middleware (no RLS context set).
- *
- * Fails CLOSED: a thrown DB error resolves to `false` (revoked) at the call
- * site so a transient failure tears the socket down rather than leaking events.
+ * Compatibility helper retained for direct status callers. Socket lifecycle
+ * authorization uses `resolveLiveEventAuthorization`, which additionally
+ * checks the permission epoch and current membership/site authority.
  */
 export async function isEventWsUserActive(userId: string): Promise<boolean> {
   return withSystemDbAccessContext(async () => {
@@ -282,6 +464,123 @@ export async function isEventWsUserActive(userId: string): Promise<boolean> {
       .limit(1);
     return !!user && user.status === 'active';
   });
+}
+
+function equalStringSets(left: string[] | null, right: string[] | null): boolean {
+  if (left === null || right === null) return left === right;
+  if (left.length !== right.length) return false;
+  const rightSet = new Set(right);
+  return left.every((value) => rightSet.has(value));
+}
+
+/**
+ * Resolve the complete live authority for an already-consumed v2 ticket.
+ * Every database read runs in one system context because the ticket path does
+ * not carry a request JWT/RLS context. The result is deliberately bounded to
+ * a reason enum; callers never expose database details or tenant identifiers.
+ */
+export async function resolveLiveEventAuthorization(
+  ticket: EventTicketV2,
+): Promise<EventAuthorizationCheck> {
+  try {
+    return await withSystemDbAccessContext(async (): Promise<EventAuthorizationCheck> => {
+      const [user] = await db
+        .select({
+          status: users.status,
+          permissionsEpoch: users.permissionsEpoch,
+          partnerId: users.partnerId,
+          orgId: users.orgId,
+        })
+        .from(users)
+        .where(eq(users.id, ticket.userId))
+        .limit(1);
+
+      if (!user || user.status !== 'active') {
+        return { ok: false, reason: 'user_inactive' };
+      }
+      if (
+        user.permissionsEpoch !== ticket.permissionsEpoch ||
+        user.partnerId !== ticket.partnerId
+      ) {
+        return { ok: false, reason: 'permission_epoch_mismatch' };
+      }
+
+      if (ticket.orgId) {
+        if (
+          user.orgId !== ticket.orgId ||
+          ticket.allowedOrgIds.length !== 1 ||
+          ticket.allowedOrgIds[0] !== ticket.orgId
+        ) {
+          return { ok: false, reason: 'membership_removed' };
+        }
+        const [membership] = await db
+          .select({
+            roleId: organizationUsers.roleId,
+            siteIds: organizationUsers.siteIds,
+          })
+          .from(organizationUsers)
+          .where(
+            and(
+              eq(organizationUsers.userId, ticket.userId),
+              eq(organizationUsers.orgId, ticket.orgId),
+            ),
+          )
+          .limit(1);
+        if (!membership?.roleId) {
+          return { ok: false, reason: 'membership_removed' };
+        }
+        const currentSiteIds =
+          membership.siteIds == null ? null : [...new Set(membership.siteIds)];
+        if (!equalStringSets(ticket.allowedSiteIds, currentSiteIds)) {
+          return { ok: false, reason: 'permission_epoch_mismatch' };
+        }
+        return { ok: true, identity: ticket };
+      }
+
+      if (user.orgId !== null || ticket.allowedSiteIds !== null) {
+        return { ok: false, reason: 'membership_removed' };
+      }
+      const [membership] = await db
+        .select({
+          roleId: partnerUsers.roleId,
+          orgAccess: partnerUsers.orgAccess,
+          orgIds: partnerUsers.orgIds,
+        })
+        .from(partnerUsers)
+        .where(
+          and(
+            eq(partnerUsers.userId, ticket.userId),
+            eq(partnerUsers.partnerId, ticket.partnerId),
+          ),
+        )
+        .limit(1);
+      if (!membership?.roleId || membership.orgAccess === 'none') {
+        return { ok: false, reason: 'membership_removed' };
+      }
+
+      const candidateIds =
+        membership.orgAccess === 'selected' ? membership.orgIds ?? [] : undefined;
+      const currentOrganizations = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(
+          and(
+            eq(organizations.partnerId, ticket.partnerId),
+            inArray(organizations.status, ['active', 'trial']),
+            isNull(organizations.deletedAt),
+            ...(candidateIds ? [inArray(organizations.id, candidateIds)] : []),
+          ),
+        )
+        .limit(10_000);
+      const currentOrgIds = new Set(currentOrganizations.map((org) => org.id));
+      if (ticket.allowedOrgIds.some((orgId) => !currentOrgIds.has(orgId))) {
+        return { ok: false, reason: 'membership_removed' };
+      }
+      return { ok: true, identity: ticket };
+    });
+  } catch {
+    return { ok: false, reason: 'live_state_unavailable' };
+  }
 }
 
 function sendJson(ws: WSContext, payload: Record<string, unknown>): void {
@@ -337,14 +636,17 @@ export function createEventWsTicketRoute(): Hono {
     // Capture the SITE-scope restriction (app-layer-only axis) so it's bound to
     // the ticket. A site-restricted org user must not receive live events for
     // sites outside their allowlist — RLS doesn't defend this and events are
-    // pub/sub, not Postgres. `undefined`/empty = unrestricted (full org access).
+    // pub/sub, not Postgres. Null/undefined means unrestricted; [] means none.
     // Sourced from `auth.allowedSiteIds` (set by authMiddleware), NOT
     // `c.get('permissions')` — this route mints a ticket behind authMiddleware
     // only, and `permissions` is populated solely by requirePermission, which
     // does not run here.
     const allowedSiteIds = auth.allowedSiteIds;
 
-    const result = await createEventWsTicket(auth.user.id, orgIds, allowedSiteIds);
+    const result = await createEventWsTicket(auth.user.id, orgIds, allowedSiteIds, {
+      orgId: auth.orgId ?? null,
+      partnerId: auth.partnerId ?? null,
+    });
     return c.json(result);
   });
 
@@ -375,11 +677,25 @@ export function createEventWsRoutes(upgradeWebSocket: Function): Hono {
 
 // Exported for tests: drives the WS lifecycle (onOpen/onClose) so the
 // mid-session revalidation interval can be exercised without a real socket.
-export function createEventWsHandlers(ticket: string | undefined) {
+interface EventWsHandlerOptions {
+  jitterMs?: () => number;
+  resolveAuthorization?: (
+    identity: EventTicketV2,
+  ) => Promise<EventAuthorizationCheck>;
+}
+
+export function createEventWsHandlers(
+  ticket: string | undefined,
+  options: EventWsHandlerOptions = {},
+) {
   let client: ClientEntry | null = null;
   let registeredOrgIds: string[] = [];
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
-  let revalidateTimer: ReturnType<typeof setInterval> | null = null;
+  let revalidateTimer: ReturnType<typeof setTimeout> | null = null;
+  let consecutiveDbFailures = 0;
+  const resolveAuthorization =
+    options.resolveAuthorization ?? resolveLiveEventAuthorization;
+  const jitterMs = options.jitterMs ?? (() => Math.random() * REVALIDATE_JITTER_MAX_MS);
 
   function resetIdleTimer(ws: WSContext) {
     if (idleTimer) clearTimeout(idleTimer);
@@ -395,7 +711,7 @@ export function createEventWsHandlers(ticket: string | undefined) {
       idleTimer = null;
     }
     if (revalidateTimer) {
-      clearInterval(revalidateTimer);
+      clearTimeout(revalidateTimer);
       revalidateTimer = null;
     }
     if (client && registeredOrgIds.length > 0) {
@@ -425,24 +741,35 @@ export function createEventWsHandlers(ticket: string | undefined) {
     }
   }
 
-  function startRevalidation(ws: WSContext, userId: string) {
-    revalidateTimer = setInterval(() => {
-      // Fail CLOSED: any inactive/deleted user OR a thrown DB error closes the
-      // socket within at most one revalidation interval. Nothing else
-      // re-checks authorization once the connection is delivering events.
-      void isEventWsUserActive(userId)
-        .then((active) => {
-          if (!active && client) {
-            closeRevoked(ws, 'User no longer active');
+  function scheduleRevalidation(
+    ws: WSContext,
+    identity: EventTicketV2,
+    delayMs?: number,
+  ) {
+    const boundedJitter = Math.max(
+      0,
+      Math.min(REVALIDATE_JITTER_MAX_MS, Math.floor(jitterMs())),
+    );
+    const delay = delayMs ?? REVALIDATE_INTERVAL_MS + boundedJitter;
+    revalidateTimer = setTimeout(() => {
+      revalidateTimer = null;
+      void resolveAuthorization(identity).then((result) => {
+        if (!client) return;
+        if (result.ok) {
+          consecutiveDbFailures = 0;
+          scheduleRevalidation(ws, result.identity);
+          return;
+        }
+        if (result.reason === 'live_state_unavailable') {
+          consecutiveDbFailures += 1;
+          if (consecutiveDbFailures === 1) {
+            scheduleRevalidation(ws, identity, REVALIDATE_DB_RETRY_MS);
+            return;
           }
-        })
-        .catch((err) => {
-          if (client) {
-            console.error('[EventWs] Revalidation check failed, closing socket (fail-closed):', err instanceof Error ? err.message : err);
-            closeRevoked(ws, 'Revalidation check failed');
-          }
-        });
-    }, REVALIDATE_INTERVAL_MS);
+        }
+        closeRevoked(ws, result.reason);
+      });
+    }, delay);
   }
 
   return {
@@ -461,14 +788,25 @@ export function createEventWsHandlers(ticket: string | undefined) {
           return;
         }
 
-        registeredOrgIds = identity.orgIds;
+        // A consumed ticket is still only a recent snapshot. Resolve it once
+        // more before registering with the dispatcher so a revocation between
+        // mint and upgrade cannot receive even one event.
+        const initialAuthorization = await resolveAuthorization(identity);
+        if (!initialAuthorization.ok) {
+          sendJson(ws, { type: 'error', message: 'Access revoked' });
+          ws.close(4003, 'Access revoked');
+          return;
+        }
+        const liveIdentity = initialAuthorization.identity;
+
+        registeredOrgIds = liveIdentity.allowedOrgIds;
         client = {
           ws,
-          userId: identity.userId,
+          userId: liveIdentity.userId,
           subscribedTypes: new Set<string>(),
           // Site-scope (app-layer-only) delivery gate. Undefined for
           // unrestricted users — no filtering, no behaviour change.
-          filter: buildSiteFilter(identity.allowedSiteIds),
+          filter: buildSiteFilter(liveIdentity.allowedSiteIds),
         };
 
         const dispatcher = getEventDispatcher();
@@ -478,9 +816,13 @@ export function createEventWsHandlers(ticket: string | undefined) {
         resetIdleTimer(ws);
         // Mid-session revalidation: stop delivering and close fail-closed once
         // the user's access is revoked (status flipped inactive / row deleted).
-        startRevalidation(ws, identity.userId);
+        scheduleRevalidation(ws, liveIdentity);
 
-        sendJson(ws, { type: 'connected', userId: identity.userId, orgIds: registeredOrgIds });
+        sendJson(ws, {
+          type: 'connected',
+          userId: liveIdentity.userId,
+          orgIds: registeredOrgIds,
+        });
       } catch (err) {
         console.error('[EventWs] onOpen error:', err);
         // Tear down any partial state (dispatcher registration, timers) so a
@@ -553,4 +895,11 @@ export function createEventWsHandlers(ticket: string | undefined) {
 /** @internal Clear the in-memory ticket store (for testing) */
 export function _clearTicketStore(): void {
   ticketStore.clear();
+}
+
+/** @internal Store a legacy ticket to exercise the rolling-deploy reader. */
+export function _storeLegacyTicketForTests(record: EventTicketV1): string {
+  const ticket = randomBytes(32).toString('base64url');
+  ticketStore.set(ticket, record);
+  return ticket;
 }

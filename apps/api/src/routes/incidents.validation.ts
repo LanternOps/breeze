@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { envStr } from '../utils/envStr';
 
 export const incidentSeveritySchema = z.enum(['p1', 'p2', 'p3', 'p4']);
 export const incidentStatusSchema = z.enum(['detected', 'analyzing', 'contained', 'recovering', 'closed']);
@@ -90,10 +91,29 @@ export const HIGH_RISK_CONTAINMENT_ACTIONS = new Set([
   'process_kill',
 ]);
 
-export const ALLOWED_EVIDENCE_STORAGE_SCHEMES = new Set(
-  (process.env.EVIDENCE_STORAGE_ALLOWED_SCHEMES ?? 's3,gs,r2,azblob,immutable,https')
+const DEFAULT_EVIDENCE_STORAGE_SCHEMES = 's3,gs,r2,azblob,immutable,https';
+
+/** Exported for tests — pure, so the fallback below needs no module re-import. */
+export function parseEvidenceStorageSchemes(raw: string): string[] {
+  return raw
     .split(',')
     .map((value) => value.trim().toLowerCase())
-    .filter((value) => value.length > 0)
+    .filter((value) => value.length > 0);
+}
+
+// `envStr` guarantees a non-empty string, but the caller's real invariant is a
+// non-empty *parsed* list: a value like `","` or `",,"` survives envStr and
+// then parses to zero schemes — an empty allowlist that rejects EVERY evidence
+// path. That is the same total-feature-failure outcome as #2823, reached
+// through a malformed value instead of an empty one, so fall back to the
+// defaults rather than shipping an allowlist that denies everything.
+const configuredEvidenceSchemes = parseEvidenceStorageSchemes(
+  envStr('EVIDENCE_STORAGE_ALLOWED_SCHEMES', DEFAULT_EVIDENCE_STORAGE_SCHEMES)
+);
+
+export const ALLOWED_EVIDENCE_STORAGE_SCHEMES = new Set(
+  configuredEvidenceSchemes.length > 0
+    ? configuredEvidenceSchemes
+    : parseEvidenceStorageSchemes(DEFAULT_EVIDENCE_STORAGE_SCHEMES)
 );
 export const EVIDENCE_HASH_ALGORITHM = 'sha256';

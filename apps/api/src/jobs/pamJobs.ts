@@ -24,6 +24,7 @@ import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
+import { envInt } from '../utils/envInt';
 
 const ENFORCER_QUEUE = 'pam-elevation-expiry-enforcer';
 const ENFORCER_INTERVAL_MS = 60 * 1000; // every 60s
@@ -32,10 +33,7 @@ const STALE_INTERVAL_MS = 5 * 60 * 1000; // every 5 min
 const MAX_PER_RUN = 500;
 
 // Pending requests older than this are expired. Overridable for ops via env.
-const STALE_PENDING_TTL_MINUTES = Number.parseInt(
-  process.env.PAM_PENDING_REQUEST_TTL_MINUTES ?? '15',
-  10,
-);
+const STALE_PENDING_TTL_MINUTES = envInt('PAM_PENDING_REQUEST_TTL_MINUTES', 15);
 
 type PamJobData = { type: 'enforce-elevation-expiry' | 'expire-stale-requests'; queuedAt: string };
 

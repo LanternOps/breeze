@@ -42,6 +42,7 @@ services:
       ACME_EMAIL: ${ACME_EMAIL:-}
       CADDY_TRUSTED_PROXIES: "${CADDY_TRUSTED_PROXIES:-127.0.0.1/32 ::1/128}"
       CADDY_CLIENT_IP_HEADERS: "${CADDY_CLIENT_IP_HEADERS:-CF-Connecting-IP X-Forwarded-For}"
+      REMOTE_ACCESS_ADMISSION_MODE: ${REMOTE_ACCESS_ADMISSION_MODE:?Set REMOTE_ACCESS_ADMISSION_MODE to open or closed}
     volumes:
       - ./docker/Caddyfile.prod:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -94,6 +95,11 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD_FILE: /run/secrets/redis_password
+      REMOTE_ACCESS_ADMISSION_MODE: ${REMOTE_ACCESS_ADMISSION_MODE:?Set REMOTE_ACCESS_ADMISSION_MODE to open or closed}
+      REMOTE_WS_AUTH_MODE: ${REMOTE_WS_AUTH_MODE:?Set REMOTE_WS_AUTH_MODE to post_upgrade or pre_upgrade}
+      REMOTE_WS_REDIS_TOPOLOGY: ${REMOTE_WS_REDIS_TOPOLOGY:?Set REMOTE_WS_REDIS_TOPOLOGY to standalone-single-primary}
+      REMOTE_WS_LEGACY_TICKET_WRITER_DRAINED_AT: ${REMOTE_WS_LEGACY_TICKET_WRITER_DRAINED_AT:-}
+      REMOTE_WS_LEGACY_VIEWER_ISSUER_DRAINED_AT: ${REMOTE_WS_LEGACY_VIEWER_ISSUER_DRAINED_AT:-}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       PARTNER_API_CURSOR_SIGNING_KEY: ${PARTNER_API_CURSOR_SIGNING_KEY:?Set PARTNER_API_CURSOR_SIGNING_KEY in .env}
       AGENT_ENROLLMENT_SECRET: ${AGENT_ENROLLMENT_SECRET:?Set AGENT_ENROLLMENT_SECRET in .env}
@@ -141,6 +147,7 @@ services:
       OPS_ALERT_EMAIL: ${OPS_ALERT_EMAIL:-}
       OPS_ALERT_LABEL: ${OPS_ALERT_LABEL:-}
       ABUSE_SIGNAL_OVERRIDES: ${ABUSE_SIGNAL_OVERRIDES:-}
+      ABUSE_SCRIPT_INDICATORS: ${ABUSE_SCRIPT_INDICATORS:-}
       # Native APNs push for the iOS app (all optional; unset = push disabled).
       # All-or-none: setting ANY of these makes the four credentials required,
       # so a half-configured relay fails at boot instead of silently at first
@@ -240,6 +247,8 @@ services:
       MCP_OAUTH_ENABLED: ${MCP_OAUTH_ENABLED:-false}
       OAUTH_ISSUER: ${OAUTH_ISSUER:-}
       OAUTH_RESOURCE_URL: ${OAUTH_RESOURCE_URL:-}
+      OAUTH_AUTH_EPOCH_ENFORCE_AFTER: ${OAUTH_AUTH_EPOCH_ENFORCE_AFTER:-}
+      EVENT_PERMISSION_EPOCH_MODE: ${EVENT_PERMISSION_EPOCH_MODE:?Set EVENT_PERMISSION_EPOCH_MODE to compat or enforce}
       OAUTH_COOKIE_SECRET: ${OAUTH_COOKIE_SECRET:-}
       OAUTH_JWKS_PRIVATE_JWK: ${OAUTH_JWKS_PRIVATE_JWK:-}
       OAUTH_JWKS_PUBLIC_JWK: ${OAUTH_JWKS_PUBLIC_JWK:-}
@@ -262,6 +271,16 @@ services:
       JWT_ACTIVE_KID: ${JWT_ACTIVE_KID:-}
       WS_TICKET_BIND_IP: ${WS_TICKET_BIND_IP:-}
       ENROLLMENT_KEY_DEFAULT_TTL_MINUTES: ${ENROLLMENT_KEY_DEFAULT_TTL_MINUTES:-}
+      # Real defaults, not `:-}` — an unset var rendered as `VAR: ""` reaches the
+      # container SET to an empty string, and any reader doing
+      # `Number(process.env.X ?? default)` then gets 0 (`??` skips '', and
+      # Number('') is 0). The readers all use utils/envInt now, which treats ''
+      # as absent; these baked defaults are the second line of defence (#2776).
+      CHILD_ENROLLMENT_KEY_TTL_MINUTES: ${CHILD_ENROLLMENT_KEY_TTL_MINUTES:-1440}
+      INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES: ${INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES:-1440}
+      INSTALLER_PARENT_MIN_REMAINING_SECONDS: ${INSTALLER_PARENT_MIN_REMAINING_SECONDS:-60}
+      ENROLLMENT_KEY_CLEANUP_ENABLED: ${ENROLLMENT_KEY_CLEANUP_ENABLED:-true}
+      ENROLLMENT_KEY_PURGE_AFTER_DAYS: ${ENROLLMENT_KEY_PURGE_AFTER_DAYS:-7}
       AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET: ${AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET:-}
       # Email — SMTP extras + Mailgun provider
       SMTP_FROM: ${SMTP_FROM:-}

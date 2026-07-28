@@ -1,0 +1,719 @@
+{
+  "assetDetailModal": {
+    "actions": {
+      "connect": "Connetti",
+      "connecting": "Connessione in corso...",
+      "deleteAsset": "Elimina asset",
+      "deleting": "Eliminazione in corso...",
+      "enabling": "Abilitazione in corso...",
+      "linkAsset": "Collega asset",
+      "linking": "Collegamento in corso...",
+      "resetType": "Ripristina il rilevamento automatico",
+      "unlink": "Scollega",
+      "working": "Operazione in corso..."
+    },
+    "assetInfoTitle": "Informazioni sull'asset",
+    "confirmDelete": "Eliminare l'asset rilevato \"{{name}}\"?",
+    "confirmUnlink": "Scollegare questo dispositivo?",
+    "deleteDescription": "Rimuovi questo asset dai risultati del rilevamento.",
+    "detailsUnavailableDescription": "Impossibile caricare il record di questo dispositivo. Potrebbe essere stato rimosso oppure potresti non disporre delle autorizzazioni necessarie.",
+    "detailsUnavailableTitle": "Dettagli non disponibili",
+    "deviceDetailsTitle": "Dettagli dispositivo",
+    "errors": {
+      "createAllowlist": "Impossibile creare la voce nell'elenco di autorizzazione",
+      "createProxyTunnel": "Impossibile creare il tunnel proxy",
+      "createTunnel": "Impossibile creare il tunnel",
+      "delete": "Impossibile eliminare l'asset",
+      "generic": "Si è verificato un errore",
+      "link": "Impossibile collegare l'asset",
+      "resetType": "Impossibile ripristinare il tipo",
+      "saveInfo": "Impossibile salvare le informazioni sull'asset",
+      "selectDeviceToLink": "Seleziona un dispositivo da collegare.",
+      "unlink": "Impossibile scollegare l'asset"
+    },
+    "fields": {
+      "assetType": "Tipo di asset",
+      "displayName": "Nome visualizzato",
+      "notesDescription": "Note/Descrizione",
+      "osFingerprint": "Fingerprint del sistema operativo",
+      "ping": "Ping",
+      "tags": "Tag (separati da virgole)"
+    },
+    "identityOnlyBefore": "Solo per identità e tracciamento dell'asset: questa operazione",
+    "lastSeen": "Ultimo rilevamento {{time}}",
+    "linkManagedDeviceDescription": "Associa questo asset rilevato a un dispositivo esistente gestito da un agente, in modo che Breeze li consideri la stessa macchina. Questa operazione non installa un agente né crea un nuovo dispositivo. L'asset verrà contrassegnato come approvato.",
+    "linkManagedDeviceTitle": "Collega a un dispositivo gestito",
+    "loadingDetails": "Caricamento dei dettagli del dispositivo…",
+    "messages": {
+      "linked": "Asset collegato. Ora è contrassegnato come approvato.",
+      "linkedToDevice": "Asset collegato a {{device}}. Ora è contrassegnato come approvato.",
+      "unlinked": "Dispositivo scollegato."
+    },
+    "networkDetailsTitle": "Dettagli di rete",
+    "noOpenPorts": "Nessuna porta aperta rilevata.",
+    "noSnmpData": "Non è stato raccolto alcun dato SNMP: il dispositivo potrebbe non aver risposto oppure il controllo SNMP potrebbe non essere stato eseguito. Verifica che il metodo SNMP sia abilitato e che la stringa community sia impostata nel profilo di rilevamento.",
+    "openPorts": "Porte aperte",
+    "options": {
+      "selectManagedDevice": "Seleziona un dispositivo gestito"
+    },
+    "placeholders": {
+      "displayName": "es. Switch principale",
+      "notes": "es. Situato nell'armadio A, 2° piano",
+      "tags": "es. critico, piano-2, rete"
+    },
+    "proxy": {
+      "allowSelfSigned": "Consenti certificato autofirmato (comune per stampanti, iLO/IPMI e switch)",
+      "description": "Accedi all'interfaccia web di questo dispositivo dal browser tramite un tunnel attraverso un agente online nella stessa rete. L'abilitazione aggiunge l'IP del dispositivo all'elenco di autorizzazione, consentendo a un agente di fungere da proxy.",
+      "enable": "Abilita accesso proxy",
+      "enabled": "Proxy abilitato",
+      "noOnlineAgent": "Nessun agente online disponibile per fungere da proxy verso questo dispositivo. Un agente deve essere online e trovarsi nella stessa rete di {{ip}} per stabilire il collegamento.",
+      "port": "Porta {{port}}",
+      "portWithService": "Porta {{port}} ({{service}})",
+      "throughAgent": "Proxy tramite agente",
+      "throughAgentHelp": "Scegli un agente online in grado di raggiungere {{ip}} nella propria rete, in genere quello che lo ha rilevato. Questa impostazione è distinta dal collegamento di identità precedente.",
+      "title": "Accesso proxy"
+    },
+    "snmpDataTitle": "Dati SNMP",
+    "notText": "non",
+    "identityOnlyAfter": "controlla l'accesso proxy né seleziona l'agente proxy; configura queste opzioni nella sezione Accesso proxy qui sotto.",
+    "snmpFields": {
+      "systemName": "Nome sistema",
+      "objectId": "ID oggetto"
+    }
+  },
+  "assetMonitoringSection": {
+    "actions": {
+      "addUpdate": "Aggiungi/Aggiorna monitoraggio",
+      "disableActive": "Disabilita monitoraggio attivo",
+      "disabling": "Disabilitazione in corso...",
+      "enable": "Abilita monitoraggio",
+      "open": "Apri monitoraggio"
+    },
+    "activeChecks": "{{active}}/{{total}} controlli di rete attivi",
+    "errors": {
+      "disable": "Impossibile disabilitare il monitoraggio",
+      "loadMonitors": "Impossibile caricare i monitor di rete",
+      "loadStatus": "Impossibile caricare lo stato del monitoraggio"
+    },
+    "loading": "Caricamento dello stato del monitoraggio...",
+    "monitorTypes": {
+      "icmp_ping": "Ping ICMP",
+      "tcp_port": "Porta TCP",
+      "http_check": "Controllo HTTP",
+      "dns_check": "Controllo DNS"
+    },
+    "networkMonitorsTitle": "Monitor di rete ({{count}})",
+    "noChecks": "Nessun controllo di rete configurato",
+    "snmpSummary": "{{version}} · ogni {{seconds}} s",
+    "snmpTitle": "Monitor dispositivo SNMP",
+    "state": {
+      "active": "Attivo",
+      "configuredPaused": "Configurato (in pausa)",
+      "paused": "In pausa",
+      "notConfigured": "Non configurato"
+    },
+    "title": "Monitoraggio",
+    "lastPolled": " • ultima interrogazione {{time}}"
+  },
+  "discoveredAssetList": {
+    "actions": {
+      "approve": "Approva",
+      "approveSelected": "Approva selezionati ({{count}})",
+      "approving": "Approvazione in corso...",
+      "clearAll": "Cancella tutto",
+      "clearSelection": "Cancella selezione",
+      "deselectAllVisible": "Deseleziona tutti quelli visibili",
+      "dismiss": "Ignora",
+      "dismissSelected": "Ignora selezionati ({{count}})",
+      "dismissing": "Operazione in corso...",
+      "selectAllVisible": "Seleziona tutti quelli visibili",
+      "selectAllVisibleAssets": "Seleziona tutti gli asset visibili",
+      "selectAsset": "Seleziona asset {{asset}}",
+      "viewDetails": "Visualizza dettagli"
+    },
+    "columns": {
+      "approval": "Approvazione",
+      "host": "Host",
+      "lastSeen": "Ultimo rilevamento"
+    },
+    "description": "Esamina gli asset rilevati nell'ambiente.",
+    "empty": "Nessun asset rilevato finora.",
+    "emptyFiltered": "Nessun asset corrisponde ai filtri attuali.",
+    "errors": {
+      "approve": "Impossibile approvare l'asset",
+      "bulkApprove": "Impossibile approvare gli asset selezionati",
+      "bulkDismiss": "Impossibile ignorare gli asset selezionati",
+      "dismiss": "Impossibile ignorare l'asset",
+      "fetch": "Impossibile recuperare gli asset rilevati",
+      "generic": "Si è verificato un errore"
+    },
+    "filters": {
+      "profile": "Profilo",
+      "subnet": "Subnet"
+    },
+    "loading": "Caricamento degli asset rilevati...",
+    "monitored": "Monitorato",
+    "title": "Asset rilevati",
+    "tryAgain": "Riprova"
+  },
+  "discoveryJobList": {
+    "actions": {
+      "assets": "Asset",
+      "cancelJob": "Annulla processo",
+      "clearAll": "Cancella tutto",
+      "clearFilter": "Cancella filtro",
+      "viewDiscoveredAssets": "Visualizza asset rilevati"
+    },
+    "columns": {
+      "duration": "Durata",
+      "finished": "Terminato",
+      "hostsDiscovered": "Host rilevati",
+      "newAssets": "Nuovi asset",
+      "profile": "Profilo",
+      "progress": "Avanzamento",
+      "scheduled": "Pianificato",
+      "started": "Avviato"
+    },
+    "description": "Monitora le scansioni in corso e pianificate.",
+    "empty": "Nessun processo di rilevamento.",
+    "emptyForProfile": "Nessun processo per questo profilo.",
+    "errors": {
+      "cancel": "Impossibile annullare il processo",
+      "fetch": "Impossibile recuperare i processi di rilevamento",
+      "generic": "Si è verificato un errore"
+    },
+    "filteredByProfile": "Filtrato per profilo:",
+    "filters": {
+      "subnet": "Subnet"
+    },
+    "loading": "Caricamento dei processi di rilevamento...",
+    "status": {
+      "scheduled": "Pianificato",
+      "running": "In esecuzione",
+      "completed": "Completato",
+      "failed": "Non riuscito",
+      "cancelled": "Annullato",
+      "pending": "In sospeso"
+    },
+    "title": "Processi di rilevamento",
+    "tryAgain": "Riprova",
+    "unknownProfile": "Profilo sconosciuto"
+  },
+  "discoveryPage": {
+    "actions": {
+      "newProfile": "Nuovo profilo"
+    },
+    "allOrgs": {
+      "description": "Il rilevamento della rete è limitato a una singola organizzazione, un singolo sito e un singolo agente. Scegli un'organizzazione nel selettore dell'ambito per visualizzarne asset rilevati, profili, processi di scansione e topologia."
+    },
+    "confirmDeleteProfile": "Eliminare il profilo \"{{name}}\"? Verranno rimossi anche tutti i processi di scansione associati.",
+    "description": "Configura i profili di rilevamento, monitora le scansioni e gestisci gli asset di rete.",
+    "errors": {
+      "deleteProfile": "Impossibile eliminare il profilo",
+      "fetchProfiles": "Impossibile recuperare i profili di rilevamento",
+      "generic": "Si è verificato un errore",
+      "loadProfileDetails": "Impossibile caricare i dettagli del profilo",
+      "loadProfileDetailsHttp": "Impossibile caricare i dettagli del profilo (HTTP {{status}})",
+      "profileDeletedRefresh": "Questo profilo potrebbe essere stato eliminato. Aggiorna la pagina.",
+      "profileDetailsUnavailable": "Endpoint dei dettagli del profilo non disponibile. Le credenziali SNMP potrebbero non essere state caricate.",
+      "runProfile": "Impossibile eseguire il profilo di rilevamento \"{{name}}\"",
+      "saveProfile": "Impossibile salvare il profilo",
+      "selectSite": "Seleziona un sito per questo profilo di rilevamento.",
+      "snmpAuthPassphrase": "La passphrase di autenticazione SNMPv3 è obbligatoria.",
+      "snmpUsername": "Il nome utente SNMPv3 è obbligatorio."
+    },
+    "modal": {
+      "closeAria": "Chiudi la finestra delle impostazioni del profilo",
+      "createProfile": "Crea profilo",
+      "creating": "Creazione in corso...",
+      "description": "Configura l'ambito di rete, i metodi di scansione e le impostazioni di pianificazione.",
+      "editTitle": "Modifica profilo di rilevamento",
+      "newTitle": "Nuovo profilo di rilevamento",
+      "updateProfile": "Aggiorna profilo",
+      "updating": "Aggiornamento in corso..."
+    },
+    "relative": {
+      "daysAgo": "{{count}} g fa",
+      "hoursAgo": "{{count}} h fa",
+      "justNow": "adesso",
+      "minutesAgo": "{{count}} min fa",
+      "monthsAgo": "{{count}} mesi fa"
+    },
+    "schedule": {
+      "cron": "Pianificazione cron",
+      "cronValue": "Cron: {{cron}}",
+      "daily": "Ogni giorno alle {{time}}",
+      "everyHours": "Ogni {{count}} ore",
+      "everyMinutes": "Ogni {{count}} min",
+      "interval": "Pianificazione a intervalli",
+      "manual": "Manuale",
+      "monthly": "Ogni mese il giorno {{day}} alle {{time}}",
+      "weekly": "Ogni settimana il giorno {{day}} alle {{time}}"
+    },
+    "tabs": {
+      "assets": "Asset",
+      "changes": "Modifiche",
+      "jobs": "Processi",
+      "profiles": "Profili",
+      "topology": "Topologia"
+    },
+    "title": "Rilevamento rete",
+    "toasts": {
+      "scanQueued": "Scansione di rilevamento accodata per \"{{name}}\""
+    },
+    "days": {
+      "monday": "Lunedì",
+      "tuesday": "Martedì",
+      "wednesday": "Mercoledì",
+      "thursday": "Giovedì",
+      "friday": "Venerdì",
+      "saturday": "Sabato",
+      "sunday": "Domenica"
+    }
+  },
+  "discoveryProfileForm": {
+    "alerting": {
+      "alertOnChanged": "Dispositivi modificati",
+      "alertOnDisappeared": "Dispositivi scomparsi",
+      "alertOnNew": "Nuovi dispositivi",
+      "description": "Genera un avviso quando vengono rilevati dispositivi nuovi o modificati in questa subnet.",
+      "enable": "Abilita avvisi di rete",
+      "title": "Avvisi di rete"
+    },
+    "cadence": {
+      "daily": "Giornaliera",
+      "hourly": "Ogni ora",
+      "interval": "Intervallo personalizzato",
+      "monthly": "Mensile",
+      "weekly": "Settimanale"
+    },
+    "days": {
+      "monday": "Lunedì",
+      "tuesday": "Martedì",
+      "wednesday": "Mercoledì",
+      "thursday": "Giovedì",
+      "friday": "Venerdì",
+      "saturday": "Sabato",
+      "sunday": "Domenica"
+    },
+    "fields": {
+      "authPassphrase": "Passphrase di autenticazione",
+      "authProtocol": "Protocollo di autenticazione",
+      "community": "Stringa community",
+      "dayOfMonth": "Giorno del mese",
+      "dayOfWeek": "Giorno della settimana",
+      "methods": "Metodi di rilevamento",
+      "port": "Porta",
+      "privacyPassphrase": "Passphrase di privacy",
+      "privacyProtocol": "Protocollo di privacy",
+      "profileName": "Nome profilo",
+      "repeatEvery": "Ripeti ogni",
+      "repeatEveryMinutes": "Ripeti ogni (minuti)",
+      "retainChangeLog": "Conserva registro modifiche (giorni)",
+      "retries": "Tentativi",
+      "scheduleCadence": "Frequenza pianificazione",
+      "snmpVersion": "Versione SNMP",
+      "subnets": "Subnet da analizzare",
+      "time": "Ora",
+      "timeout": "Timeout (ms)",
+      "timezone": "Fuso orario",
+      "username": "Nome utente"
+    },
+    "options": {
+      "everyHours": "Ogni {{count}} ore",
+      "selectSite": "Seleziona un sito..."
+    },
+    "placeholders": {
+      "profileName": "Scansione sede centrale",
+      "subnets": "10.0.0.0/24\n10.0.1.0/24"
+    },
+    "profileDetails": {
+      "description": "Definisci l'ambito di rete e i metodi di rilevamento.",
+      "title": "Dettagli profilo"
+    },
+    "schedule": {
+      "description": "Imposta quando devono essere eseguiti i processi di rilevamento.",
+      "title": "Pianificazione"
+    },
+    "snmp": {
+      "description": "Credenziali utilizzate per le sonde di rilevamento SNMP.",
+      "title": "Impostazioni SNMP"
+    },
+    "subnetsHelp": "Inserisci intervalli CIDR separati da virgole o su righe distinte.",
+    "validation": {
+      "invalidCidr": "\"{{value}}\": intervallo CIDR o indirizzo IP non valido",
+      "octet": "\"{{value}}\": il valore dell'ottetto supera 255",
+      "prefix": "\"{{value}}\": la lunghezza del prefisso deve essere compresa tra 0 e 32",
+      "subnetRequired": "È necessaria almeno una subnet o un indirizzo IP."
+    },
+    "actions": {
+      "saveProfile": "Salva profilo"
+    },
+    "methods": {
+      "ping": "Ping ICMP",
+      "arp": "Scansione ARP",
+      "snmp": "Sonda SNMP",
+      "portScan": "Scansione porte TCP"
+    }
+  },
+  "discoveryProfileList": {
+    "actions": {
+      "deleteProfile": "Elimina profilo",
+      "editProfile": "Modifica profilo",
+      "runNow": "Esegui ora",
+      "runProfile": "Esegui {{name}}",
+      "running": "Esecuzione in corso...",
+      "runningProfile": "Esecuzione di {{name}}",
+      "viewJobs": "Visualizza processi"
+    },
+    "columns": {
+      "methods": "Metodi",
+      "profile": "Profilo",
+      "schedule": "Pianificazione",
+      "subnets": "Subnet"
+    },
+    "configuredCount": "{{count}} profili configurati",
+    "empty": "Nessun profilo di rilevamento. Crea il primo profilo per iniziare la scansione.",
+    "lastRun": "Ultima esecuzione {{time}}",
+    "loading": "Caricamento dei profili di rilevamento...",
+    "nextRun": "Prossima: {{time}}",
+    "notRunYet": "Mai eseguito",
+    "scheduleHint": "Le pianificazioni vengono eseguite automaticamente o su richiesta",
+    "status": {
+      "active": "Attivo",
+      "paused": "In pausa",
+      "draft": "Bozza",
+      "error": "Errore"
+    },
+    "title": "Profili di rilevamento",
+    "tryAgain": "Riprova"
+  },
+  "enableMonitoringForm": {
+    "actions": {
+      "addNetworkMonitor": "Aggiungi monitor di rete",
+      "enableSnmp": "Abilita monitoraggio SNMP",
+      "enabling": "Abilitazione in corso..."
+    },
+    "description": "Il monitoraggio supporta il polling SNMP e i controlli di rete Ping/TCP/HTTP/DNS. Puoi configurare una delle due opzioni o entrambe.",
+    "errors": {
+      "communityRequired": "La stringa community è obbligatoria per SNMP v1/v2c",
+      "enable": "Impossibile abilitare il monitoraggio",
+      "generic": "Si è verificato un errore",
+      "loadTemplates": "Impossibile caricare i modelli",
+      "usernameRequired": "Il nome utente è obbligatorio per SNMP v3"
+    },
+    "fields": {
+      "authPassword": "Password di autenticazione",
+      "authProtocol": "Protocollo di autenticazione",
+      "community": "Stringa community",
+      "pollingInterval": "Intervallo di polling (secondi)",
+      "privacyPassword": "Password di privacy",
+      "privacyProtocol": "Protocollo di privacy",
+      "snmpVersion": "Versione SNMP",
+      "template": "Modello",
+      "username": "Nome utente"
+    },
+    "networkChecksDescription": "Aggiungi monitor ping, TCP, HTTP o DNS per questo asset.",
+    "networkChecksTitle": "Controlli di rete",
+    "noTemplate": "Nessun modello",
+    "placeholders": {
+      "community": "public"
+    },
+    "snmpTitle": "Monitoraggio dispositivo SNMP"
+  },
+  "networkBaselinesPanel": {
+    "actions": {
+      "changes": "Modifiche",
+      "create": "Crea baseline",
+      "creating": "Creazione in corso...",
+      "runNow": "Esegui ora",
+      "saveSettings": "Salva impostazioni baseline",
+      "viewChanges": "Visualizza modifiche"
+    },
+    "alertLabels": {
+      "changed": "Dispositivo modificato",
+      "disappeared": "Dispositivo scomparso",
+      "newDevice": "Nuovo dispositivo",
+      "rogue": "Dispositivo non autorizzato"
+    },
+    "alertNames": {
+      "changed": "modificato",
+      "gone": "scomparso",
+      "new": "nuovo",
+      "rogue": "non autorizzato"
+    },
+    "alertsSummary": "Avvisi: {{alerts}}",
+    "columns": {
+      "knownDevices": "Dispositivi noti",
+      "lastScan": "Ultima scansione",
+      "schedule": "Pianificazione",
+      "subnet": "Subnet"
+    },
+    "deleteDialog": {
+      "confirm": "Elimina baseline",
+      "message": "Eliminare la baseline {{subnet}}? Verranno eliminati anche gli eventi di modifica associati. Questa azione non può essere annullata.",
+      "title": "Elimina baseline di rete"
+    },
+    "empty": "Nessuna baseline di rete. Creane una per abilitare il rilevamento continuo delle modifiche.",
+    "errors": {
+      "create": "Impossibile creare la baseline",
+      "delete": "Impossibile eliminare la baseline",
+      "load": "Impossibile caricare le baseline di rete",
+      "run": "Impossibile avviare la scansione della baseline",
+      "save": "Impossibile salvare la baseline",
+      "update": "Impossibile aggiornare la baseline"
+    },
+    "everyHoursShort": "Ogni {{count}} h",
+    "fields": {
+      "alertSettings": "Impostazioni avvisi",
+      "enableScheduledScans": "Abilita scansioni pianificate",
+      "scanInterval": "Intervallo di scansione (ore)",
+      "subnetCidr": "Subnet (CIDR)"
+    },
+    "form": {
+      "createDescription": "Crea una baseline della subnet per i confronti di rilevamento pianificati.",
+      "createTitle": "Crea baseline",
+      "editDescription": "Aggiorna la frequenza di scansione e il comportamento degli avvisi.",
+      "editTitle": "Modifica baseline",
+      "immutableHint": "Il sito e la subnet non possono essere modificati dopo la creazione."
+    },
+    "loading": "Caricamento delle baseline di rete...",
+    "messages": {
+      "created": "Baseline creata.",
+      "deleted": "Baseline {{subnet}} eliminata.",
+      "scanQueued": "Scansione accodata.",
+      "scanQueuedWithId": "Scansione accodata ({{id}}).",
+      "updated": "Impostazioni della baseline aggiornate."
+    },
+    "next": "Prossima: {{time}}",
+    "options": {
+      "selectSite": "Seleziona sito"
+    },
+    "paused": "In pausa",
+    "permissionManage": "Le azioni di modifica sono disabilitate dopo il mancato superamento del controllo delle autorizzazioni. È richiesta `devices:write`.",
+    "placeholders": {
+      "subnet": "192.168.1.0/24"
+    },
+    "title": "Baseline di rete",
+    "validation": {
+      "cidr": "La subnet deve essere in formato CIDR (esempio: 192.168.1.0/24).",
+      "interval": "L'intervallo di scansione deve essere compreso tra 1 e 168 ore.",
+      "selectSite": "Seleziona un sito prima di salvare."
+    },
+    "configuredCount": "{{count}} baseline configurate"
+  },
+  "networkChangeDetailModal": {
+    "acknowledgeTitle": "Conferma evento",
+    "actions": {
+      "acknowledge": "Conferma",
+      "acknowledging": "Conferma in corso...",
+      "linkDevice": "Collega dispositivo",
+      "linking": "Collegamento in corso..."
+    },
+    "alreadyAcknowledged": "Questo evento è già stato confermato.",
+    "currentState": "Stato attuale",
+    "errors": {
+      "acknowledge": "Impossibile confermare l'evento",
+      "linkDevice": "Impossibile collegare il dispositivo",
+      "selectDeviceBeforeLinking": "Seleziona un dispositivo prima di collegarlo."
+    },
+    "eventDetailsTitle": "Dettagli evento",
+    "fields": {
+      "acknowledgedAt": "Confermato il",
+      "alertId": "ID avviso",
+      "assetType": "Tipo di asset",
+      "linkedDevice": "Dispositivo collegato",
+      "subnet": "Subnet"
+    },
+    "linkManagedDeviceTitle": "Collega dispositivo gestito",
+    "noNotes": "Nessuna nota registrata.",
+    "notLinked": "Non collegato",
+    "notesTitle": "Note",
+    "options": {
+      "selectDevice": "Seleziona dispositivo"
+    },
+    "permissionAcknowledge": "Nascosto dopo il mancato superamento del controllo delle autorizzazioni. È richiesta `alerts:acknowledge`.",
+    "permissionLinkDevice": "Nascosto dopo il mancato superamento del controllo delle autorizzazioni. È richiesta `devices:write`.",
+    "placeholders": {
+      "ackNotes": "Note di conferma facoltative"
+    },
+    "previousState": "Stato precedente",
+    "status": {
+      "acknowledged": "Confermato",
+      "unacknowledged": "Non confermato"
+    },
+    "summary": "IP {{ip}} • MAC {{mac}} • Rilevato {{detected}}"
+  },
+  "networkChangesPanel": {
+    "actions": {
+      "ack": "Conferma",
+      "acknowledgeSelected": "Conferma selezionati",
+      "acknowledging": "Conferma in corso...",
+      "details": "Dettagli",
+      "goToProfiles": "Vai ai profili",
+      "link": "Collega",
+      "resetFilters": "Reimposta filtri"
+    },
+    "columns": {
+      "detected": "Rilevato",
+      "event": "Evento",
+      "linkedDevice": "Dispositivo collegato"
+    },
+    "description": "Esamina e classifica gli eventi di modifica della rete nei profili di rilevamento.",
+    "empty": {
+      "alertingDisabled": "Le scansioni di rilevamento non registreranno le modifiche finché gli avvisi non verranno abilitati in un profilo di rilevamento.",
+      "enableAlerting": "Abilita avvisi",
+      "filtered": "Nessun evento di modifica corrisponde ai filtri selezionati.",
+      "noEventsTitle": "Nessun evento di modifica registrato.",
+      "noProfilesDescription": "Gli eventi di modifica della rete vengono creati dai profili di rilevamento. Crea un profilo e abilita gli avvisi per registrare dispositivi nuovi, modificati o scomparsi.",
+      "noProfilesTitle": "Configura un profilo di rilevamento della rete per iniziare a monitorare le modifiche.",
+      "profileAlertingDisabled": "Le scansioni di rilevamento per “{{profile}}” non registreranno le modifiche finché gli avvisi non verranno abilitati nel profilo.",
+      "enableAlertingSuffix": "nelle impostazioni del profilo (scheda Profili) per iniziare a monitorare le modifiche della rete."
+    },
+    "errors": {
+      "acknowledgeEvent": "Impossibile confermare l'evento",
+      "acknowledgeSelected": "Impossibile confermare gli eventi selezionati",
+      "linkDevice": "Impossibile collegare il dispositivo",
+      "loadChanges": "Impossibile caricare le modifiche della rete",
+      "loadDevices": "Impossibile caricare i dispositivi",
+      "loadMetadata": "Impossibile caricare i metadati di rete",
+      "loadProfileFilters": "Impossibile caricare i filtri dei profili"
+    },
+    "eventsLoaded": "{{count}} eventi caricati",
+    "fields": {
+      "acknowledged": "Confermato",
+      "eventType": "Tipo di evento",
+      "profile": "Profilo",
+      "since": "Da"
+    },
+    "loading": "Caricamento delle modifiche della rete...",
+    "messages": {
+      "acknowledgedCount": "Confermati {{count}} eventi.",
+      "deviceLinked": "Dispositivo collegato.",
+      "eventAcknowledged": "Evento confermato."
+    },
+    "noMac": "Nessun MAC",
+    "notLinked": "Non collegato",
+    "options": {
+      "allProfiles": "Tutti i profili",
+      "allSites": "Tutti i siti",
+      "allTypes": "Tutti i tipi"
+    },
+    "permissionAcknowledge": "Le azioni di conferma sono disabilitate dopo il mancato superamento del controllo delle autorizzazioni. È richiesta `alerts:acknowledge`.",
+    "permissionLink": "Il collegamento dei dispositivi è disabilitato dopo il mancato superamento del controllo delle autorizzazioni. È richiesta `devices:write`.",
+    "placeholders": {
+      "bulkNotes": "Note facoltative per la conferma in blocco"
+    },
+    "selectedUnacknowledged": "{{count}} eventi non confermati selezionati",
+    "status": {
+      "acknowledged": "Confermato",
+      "unacknowledged": "Non confermato"
+    },
+    "title": "Modifiche della rete",
+    "unknownHost": "Host sconosciuto"
+  },
+  "networkEvents": {
+    "type": {
+      "device_changed": "Modificato",
+      "device_disappeared": "Scomparso",
+      "new_device": "Nuovo dispositivo",
+      "rogue_device": "Non autorizzato"
+    }
+  },
+  "networkTopologyMap": {
+    "actions": {
+      "addPlaceholderTitle": "Aggiungi un segnaposto {{role}}",
+      "autoArrange": "Disponi automaticamente",
+      "clearSelection": "Cancella selezione",
+      "collapse": "Comprimi",
+      "confirmDelete": "Confermare l'eliminazione?",
+      "confirmDeleteConnection": "Conferma eliminazione connessione",
+      "confirmDeleteNode": "Conferma eliminazione nodo",
+      "deleteConnection": "Elimina connessione",
+      "deleteNode": "Elimina nodo",
+      "doneEditing": "Termina modifica",
+      "editMap": "Modifica mappa",
+      "exitFullScreenTitle": "Esci da schermo intero (Esc)",
+      "expand": "Espandi",
+      "expandTitle": "Espandi la mappa a schermo intero",
+      "fit": "Adatta",
+      "fitTitle": "Adatta l'intera mappa alla visualizzazione",
+      "selectSingleSiteTitle": "Seleziona un singolo sito per aggiungere nodi manuali",
+      "viewDetails": "Visualizza dettagli"
+    },
+    "addNodeAria": "Aggiungi nodo:",
+    "addNodeLabel": "Aggiungi nodo",
+    "adjacencyNote": "Le linee di connessione vengono visualizzate solo dove è stata misurata un'adiacenza reale (LLDP/CDP/SNMP). Non è ancora stato raccolto alcun dato, pertanto gli asset sono raggruppati per subnet senza collegamenti dedotti.",
+    "allDevices": "Tutti i dispositivi ({{count}})",
+    "canvasAriaEmpty": "Mappa della topologia di rete: nessun dispositivo rilevato.",
+    "canvasAriaWithDevices": "Mappa della topologia di rete: {{count}} dispositiv{{suffix}}. Usa l'elenco sottostante per esaminare ciascun dispositivo con la tastiera.",
+    "confidence": "Attendibilità: {{confidence}}",
+    "connectHint": "Tocca un altro nodo per collegarlo",
+    "connection": "Connessione",
+    "edgeMethods": {
+      "fdb": "FDB bridge",
+      "manual": "Manuale",
+      "lldp": "LLDP",
+      "cdp": "CDP"
+    },
+    "editHint": "Trascina per disporre · tocca due nodi per collegarli",
+    "empty": {
+      "description": "Esegui una scansione di rilevamento della rete per popolare la mappa topologica.",
+      "title": "Nessun asset rilevato"
+    },
+    "errors": {
+      "addNode": "Impossibile aggiungere il nodo",
+      "addNodeSentence": "Impossibile aggiungere il nodo.",
+      "connectNodes": "Impossibile collegare i nodi",
+      "connectNodesSentence": "Impossibile collegare i nodi.",
+      "deleteConnection": "Impossibile eliminare la connessione",
+      "deleteConnectionSentence": "Impossibile eliminare la connessione.",
+      "deleteNode": "Impossibile eliminare il nodo",
+      "deleteNodeSentence": "Impossibile eliminare il nodo.",
+      "fetch": "Impossibile recuperare la topologia",
+      "generic": "Si è verificato un errore",
+      "savePosition": "Impossibile salvare la posizione del nodo"
+    },
+    "handMapped": "Mappato manualmente",
+    "legend": {
+      "lldpCdp": "LLDP/CDP",
+      "title": "Legenda"
+    },
+    "loading": "Caricamento della topologia...",
+    "manualBadge": "Manuale",
+    "measuredAdjacency": "Adiacenza misurata",
+    "measuredNotEditable": "Misurata dalla scansione, non modificabile",
+    "messages": {
+      "connectionAdded": "Connessione aggiunta",
+      "connectionRemoved": "Connessione rimossa",
+      "layoutSaved": "Layout salvato",
+      "nodeAdded": "Nodo aggiunto",
+      "nodeRemoved": "Nodo rimosso"
+    },
+    "title": "Topologia di rete",
+    "tryAgain": "Riprova",
+    "vlan": "VLAN {{vlan}}",
+    "escToCancel": "· Esc per annullare"
+  },
+  "assetTypes": {
+    "workstation": "Workstation",
+    "server": "Server",
+    "printer": "Stampante",
+    "router": "Router",
+    "switch": "Switch",
+    "firewall": "Firewall",
+    "accessPoint": "Access point",
+    "phone": "Telefono",
+    "iot": "IoT",
+    "camera": "Telecamera",
+    "nas": "NAS",
+    "unknown": "Sconosciuto",
+    "patchPanel": "Patch panel",
+    "other": "Altro"
+  },
+  "approvalStatus": {
+    "pending": "In sospeso",
+    "approved": "Approvato",
+    "dismissed": "Ignorato"
+  }
+}

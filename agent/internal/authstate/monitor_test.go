@@ -74,17 +74,42 @@ func TestMonitor_BackoffProgression(t *testing.T) {
 	}
 }
 
-func TestMonitor_BackoffCapsAt30s(t *testing.T) {
+// Derived from maxBackoff rather than a literal: the cap is tuned against the
+// heartbeat interval (see monitor.go), so pinning a number here just means this
+// test has to be edited every time the cap moves, which is how it ends up
+// asserting a stale value.
+func TestMonitor_BackoffCapsAtMaxBackoff(t *testing.T) {
 	m := NewMonitor(1)
 	for i := 0; i < 20; i++ {
 		m.RecordAuthFailure()
 	}
 	d := m.BackoffDuration()
-	if d > 36*time.Second {
-		t.Fatalf("expected backoff capped near 30s, got %v", d)
+	// BackoffDuration applies +/- jitterFrac jitter around the base.
+	upper := time.Duration(float64(maxBackoff) * (1 + jitterFrac))
+	lower := time.Duration(float64(maxBackoff) * (1 - jitterFrac))
+	if d > upper {
+		t.Fatalf("expected backoff capped at ~%v (max %v with jitter), got %v", maxBackoff, upper, d)
 	}
-	if d < 24*time.Second {
-		t.Fatalf("expected backoff near 30s cap (>=24s with jitter), got %v", d)
+	if d < lower {
+		t.Fatalf("expected backoff near the %v cap (min %v with jitter), got %v", maxBackoff, lower, d)
+	}
+
+	// BackoffDuration() is REPORTED (one caller: a Debug log field). The value
+	// that actually decides whether a request is sent is the raw, unjittered
+	// m.backoff read by ShouldSkip(), so assert the gate too — otherwise this
+	// test reads as coverage of the cap's real behaviour when it only covers the
+	// number we print. Note the consequence: jitter never reaches the gate, so a
+	// fleet deauthorized at the same instant retries on one unjittered grid.
+	now := time.Unix(6_000_000, 0)
+	m.now = func() time.Time { return now }
+	m.RecordAuthFailure() // re-stamp lastFailure against the injected clock
+	now = now.Add(maxBackoff - time.Second)
+	if !m.ShouldSkip() {
+		t.Fatalf("expected ShouldSkip()=true just inside the %v cap", maxBackoff)
+	}
+	now = now.Add(2 * time.Second)
+	if m.ShouldSkip() {
+		t.Fatalf("expected ShouldSkip()=false just past the %v cap", maxBackoff)
 	}
 }
 

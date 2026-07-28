@@ -558,6 +558,7 @@ export default function PatchesPage() {
               type="button"
               onClick={handleScan}
               disabled={scanLoading}
+              data-testid="patch-run-scan"
               className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted disabled:opacity-50"
             >
               {scanLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
@@ -574,6 +575,7 @@ export default function PatchesPage() {
               }}
               disabled={!canManageRings}
               title={!canManageRings ? RING_SCOPE_HINT : undefined}
+              data-testid="patch-new-ring"
               className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Plus className="h-4 w-4" />
@@ -591,6 +593,8 @@ export default function PatchesPage() {
               key={tab.id}
               type="button"
               onClick={() => setActiveTab(tab.id)}
+              data-testid={`patch-tab-${tab.id}`}
+              aria-current={activeTab === tab.id ? 'page' : undefined}
               className={`flex items-center gap-2 whitespace-nowrap border-b-2 px-1 py-3 text-sm font-medium transition ${
                 activeTab === tab.id
                   ? 'border-primary text-primary'

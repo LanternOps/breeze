@@ -12,7 +12,7 @@
     "securityEventsCouldNotBeLoadedDenialData": "Sicherheitsereignisse konnten nicht geladen werden. Die Ablehnungsdaten sind möglicherweise unvollständig.",
     "tabs": "Tabs",
     "toolExecutionGuardrailsApprovalHistoryAndAnalytics": "Richtlinien zur Toolausführung, Genehmigungsverlauf und Analysen",
-    "updated": "Aktualisiert",
+    "updated": "Aktualisiert {{time}}",
     "value24h": "24h",
     "value30d": "30d",
     "value7d": "7d"
@@ -21,11 +21,11 @@
     "all2": "Alle",
     "approved": "Genehmigt",
     "error": "Fehler",
-    "exec": "Geschäftsführer:",
+    "exec": "Geschäftsführer: {{duration}}ms",
     "noTier3ToolExecutionsFound": "Es wurden keine Werkzeugausführungen der Stufe 3 gefunden.",
     "pending": "Ausstehend",
     "rejected": "Abgelehnt",
-    "session": "Sitzung:",
+    "session": "Sitzung: {{sessionId}}",
     "tempPasswordAlreadyRevealed": "Das temporäre Passwort wurde bereits angezeigt.",
     "tempPasswordCopied": "Kopiert",
     "tempPasswordCopy": "Kopieren",
@@ -37,7 +37,7 @@
     "tempPasswordTitle": "Temporäres Passwort",
     "tier3ApprovalHistory": "Tier-3-Zulassungshistorie",
     "toolInput": "Werkzeugeingabe",
-    "wait": "Warten Sie:"
+    "wait": "Warten Sie: {{duration}}"
   },
   "aiRiskRateLimitStatus": {
     "filterRateLimits": "Filterratengrenzen...",
@@ -49,7 +49,7 @@
     "ruleCount": "{{count}} Regeln",
     "ruleCount_one": "{{count}}-Regel",
     "ruleCount_other": "{{count}} Regeln",
-    "t": "T",
+    "t": "T{{tier}}",
     "tier": "Stufe",
     "tool": "Werkzeug",
     "window": "Fenster"
@@ -71,7 +71,7 @@
   "aiRiskTierOverviewMatrix": {
     "filterTools": "Filterwerkzeuge...",
     "guardrailTierMatrix": "Leitplanken-Stufenmatrix",
-    "tier": "Stufe",
+    "tier": "Stufe {{tier}}",
     "toolCount": "{{count}} Werkzeuge",
     "toolCount_one": "{{count}} Werkzeug",
     "toolCount_other": "{{count}} Werkzeuge"

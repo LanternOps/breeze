@@ -17,6 +17,7 @@ import {
 import { userRateLimit } from "../middleware/userRateLimit";
 import { randomBytes } from "crypto";
 import { createAuditLogAsync } from "../services/auditService";
+import { ANONYMOUS_ACTOR_ID } from "../services/auditEvents";
 import { PERMISSIONS } from "../services/permissions";
 import { hashEnrollmentKey, hashEnrollmentKeyCandidates } from "../services/enrollmentKeySecurity";
 import {
@@ -40,6 +41,7 @@ import {
   issueBootstrapTokenForKey,
   BootstrapTokenIssuanceError,
 } from "../services/installerBootstrapTokenIssuance";
+import { assertTtlWithinCap, clampTtlToCap } from "../services/enrollmentDefaults";
 import { captureException } from "../services/sentry";
 
 // ============================================================
@@ -296,6 +298,12 @@ export async function redeemShortCode(
 
     const rawKey = generateEnrollmentKey();
     const tokenHash = hashEnrollmentKey(rawKey);
+    // Clamp (never reject — no interactive caller here) the child's default
+    // TTL to the partner cap (fix round 3, #2776): the cap bounds KEY
+    // LIFETIME, not just interactively-chosen input, so this MCP-invite
+    // redemption path must not hand out a child key longer-lived than the
+    // partner allows just because it uses the server-constant default.
+    const cappedTtlMinutes = await clampTtlToCap(parent.orgId, CHILD_ENROLLMENT_KEY_TTL_MINUTES);
 
     const [child] = await db
       .insert(enrollmentKeys)
@@ -306,7 +314,7 @@ export async function redeemShortCode(
         key: tokenHash,
         keySecretHash: parent.keySecretHash,
         maxUsage: 1,
-        expiresAt: freshChildExpiresAt(),
+        expiresAt: freshChildExpiresAt(cappedTtlMinutes),
         createdBy: null,
         installerPlatform: parent.installerPlatform,
       })
@@ -409,6 +417,26 @@ export async function mintChildEnrollmentKey(
     orgId = org.id;
   }
 
+  // Clamp (never reject — this is a non-interactive helper with no HTTP
+  // request to surface a 400 to) the requested lifetime to the partner cap
+  // (fix round 3, #2776). This function is an exported, general-purpose
+  // helper — its only current caller (send_deployment_invites) hardcodes a
+  // 7-day server constant, but leaving the bound here (rather than trusting
+  // every caller to remember it) is what stops the next caller that threads
+  // a truly dynamic value through `expiresInSeconds` from reopening the
+  // exact escalation this whole plan exists to close.
+  // FLOOR, not ceil, with a 1-minute floor (fix round 4, #2776): the minute
+  // conversion feeds `expiresAt` directly, so rounding UP would LENGTHEN a
+  // sub-minute lifetime (90s -> 120s) in the very function this cap exists to
+  // bound. Rounding down can only shorten, which is the fail-closed direction;
+  // the max(1, ...) keeps a 1-59s request from collapsing to an
+  // already-expired key.
+  const rawTtlMinutes = Math.max(
+    1,
+    Math.floor((input.expiresInSeconds ?? CHILD_ENROLLMENT_KEY_TTL_MINUTES * 60) / 60),
+  );
+  const cappedTtlMinutes = await clampTtlToCap(orgId, rawTtlMinutes);
+
   let siteId = input.siteId;
   if (!siteId) {
     const [site] = await db
@@ -426,10 +454,7 @@ export async function mintChildEnrollmentKey(
   const rawKey = generateEnrollmentKey();
   const keyHash = hashEnrollmentKey(rawKey);
   const shortCode = await allocateShortCode();
-  const expiresAt = new Date(
-    Date.now() +
-      (input.expiresInSeconds ?? CHILD_ENROLLMENT_KEY_TTL_MINUTES * 60) * 1000,
-  );
+  const expiresAt = new Date(Date.now() + cappedTtlMinutes * 60 * 1000);
 
   const [row] = await db
     .insert(enrollmentKeys)
@@ -656,6 +681,25 @@ enrollmentKeyRoutes.post(
       return c.json({ error: "orgId is required" }, 400);
     }
 
+    // Reject (never clamp) a caller-supplied TTL above the partner cap
+    // (fix round 1, #2776 task 3.4). This route has TWO paths to an expiry —
+    // `ttlMinutes` and an explicit `expiresAt` — and createEnrollmentKeySchema's
+    // refine guarantees only one is ever set. Both must be checked: capping
+    // only `ttlMinutes` would leave `expiresAt` as a wide-open bypass (a
+    // parent enrollment key is itself an enrollment credential). For the
+    // `expiresAt` path there's no ttlMinutes to check directly, so the implied
+    // duration from now is computed and checked against the same cap; Math.ceil
+    // rounds UP so a request timed to land exactly at the cap is never
+    // rejected by wall-clock rounding, while a value that's genuinely over the
+    // cap is never rounded down into passing.
+    const impliedTtlMinutes = data.ttlMinutes !== undefined
+      ? data.ttlMinutes
+      : data.expiresAt !== undefined
+        ? Math.ceil((new Date(data.expiresAt).getTime() - Date.now()) / 60_000)
+        : undefined;
+    const capError = await assertTtlWithinCap(orgId, impliedTtlMinutes);
+    if (capError) return c.json({ error: capError }, 400);
+
     // Verify siteId belongs to the target org (if provided)
     if (data.siteId) {
       const [site] = await db
@@ -856,6 +900,21 @@ enrollmentKeyRoutes.post(
       return c.json({ error: "Access denied" }, 403);
     }
 
+    // Reject (never clamp) a caller-supplied expiresAt above the partner cap
+    // (fix round 2, #2776 task 3.4). rotateEnrollmentKeySchema has no
+    // ttlMinutes field — only expiresAt — so there is only one path to gate
+    // here. Rotation re-mints the key value via generateEnrollmentKey(), so
+    // leaving this uncapped would let a caller bound by a short cap create a
+    // key at the cap and immediately rotate it past it — a complete bypass
+    // of the ceiling. An omitted expiresAt falls back to the existing key's
+    // own (already-validated) expiresAt below, which is not a newly-chosen
+    // value, so there's nothing to check in that case.
+    const impliedTtlMinutes = data.expiresAt !== undefined
+      ? Math.ceil((new Date(data.expiresAt).getTime() - Date.now()) / 60_000)
+      : undefined;
+    const capError = await assertTtlWithinCap(existingKey.orgId, impliedTtlMinutes);
+    if (capError) return c.json({ error: capError }, 400);
+
     const rawKey = generateEnrollmentKey();
     const keyHash = hashEnrollmentKey(rawKey);
     const expiresAt = data.expiresAt
@@ -993,6 +1052,11 @@ enrollmentKeyRoutes.get(
       return c.json({ error: "Access denied" }, 403);
     }
 
+    // Reject (never clamp) a caller-supplied TTL above the partner cap.
+    // Must run after the parent key load — parentKey.orgId is required.
+    const capError = await assertTtlWithinCap(parentKey.orgId, childTtlMinutes);
+    if (capError) return c.json({ error: capError }, 400);
+
     // Verify key is still usable
     if (parentKey.expiresAt && new Date(parentKey.expiresAt) < new Date()) {
       return c.json({ error: "Enrollment key has expired" }, 410);
@@ -1086,6 +1150,7 @@ enrollmentKeyRoutes.get(
             parentEnrollmentKeyId: parentKey.id,
             createdByUserId: auth.user.id,
             maxUsage: childMaxUsage,
+            ttlMinutes: childTtlMinutes,
           });
         } catch (err) {
           if (err instanceof BootstrapTokenIssuanceError) {
@@ -1202,6 +1267,7 @@ enrollmentKeyRoutes.get(
           parentEnrollmentKeyId: parentKey.id,
           createdByUserId: auth.user.id,
           maxUsage: childMaxUsage,
+          ttlMinutes: childTtlMinutes,
           installerPlatform: "windows",
         });
       } catch (err) {
@@ -1303,9 +1369,27 @@ enrollmentKeyRoutes.get(
       }
     }
 
-    // Generate a child enrollment key. Child gets a FRESH TTL independent
-    // of the parent's remaining lifetime — otherwise late-in-life parents
-    // produce dead-on-arrival installers (see CHILD_ENROLLMENT_KEY_TTL_MINUTES).
+    // The partner cap bounds KEY LIFETIME, not merely caller-supplied input
+    // (#2776 fix round 3 ruling). `assertTtlWithinCap` above already 400s an
+    // EXPLICIT over-cap childTtlMinutes, but it returns null for `undefined`
+    // by design — so an admin who simply OMITS ttlMinutes used to take the
+    // uncapped CHILD_ENROLLMENT_KEY_TTL_MINUTES server constant (1440), which
+    // is 24x a 60-minute partner cap, on the two most-used download routes.
+    // Clamp the fallback too. Deliberately unconditional rather than
+    // `childTtlMinutes ?? await clampTtlToCap(...)`: this plan produced six
+    // one-at-a-time cap gaps precisely because each site assumed some other
+    // site had already checked. Costs one extra settings read on the explicit
+    // path, where it is a same-value no-op.
+    //
+    // The child's TTL is FRESH from mint time, never the parent's remaining
+    // lifetime — otherwise late-in-life parents produce DOA installers.
+    const childExpiresAt = freshChildExpiresAt(
+      await clampTtlToCap(
+        parentKey.orgId,
+        childTtlMinutes ?? CHILD_ENROLLMENT_KEY_TTL_MINUTES,
+      ),
+    );
+
     const rawChildKey = generateEnrollmentKey();
     const childKeyHash = hashEnrollmentKey(rawChildKey);
     const shortCode = await allocateShortCode();
@@ -1319,7 +1403,7 @@ enrollmentKeyRoutes.get(
         key: childKeyHash,
         keySecretHash: parentKey.keySecretHash,
         maxUsage: childMaxUsage,
-        expiresAt: freshChildExpiresAt(childTtlMinutes),
+        expiresAt: childExpiresAt,
         createdBy: auth.user.id,
         shortCode,
         installerPlatform: platform,
@@ -1416,6 +1500,7 @@ enrollmentKeyRoutes.get(
 
 const bootstrapTokenBodySchema = z.object({
   maxUsage: z.number().int().min(1).max(1000).default(1),
+  ttlMinutes: z.number().int().min(1).max(MAX_TTL_MINUTES).optional(),
 }).strict();
 
 enrollmentKeyRoutes.post(
@@ -1432,7 +1517,7 @@ enrollmentKeyRoutes.post(
   async (c) => {
     const auth = c.get("auth");
     const { id: keyId } = c.req.valid("param");
-    const { maxUsage } = c.req.valid("json");
+    const { maxUsage, ttlMinutes } = c.req.valid("json");
 
     const [parent] = await db
       .select()
@@ -1449,6 +1534,20 @@ enrollmentKeyRoutes.post(
       return c.json({ error: "Access denied" }, 403);
     }
 
+    // Reject (never clamp) a caller-supplied TTL above the partner cap.
+    const capError = await assertTtlWithinCap(parent.orgId, ttlMinutes);
+    if (capError) return c.json({ error: capError }, 400);
+
+    if (parentKeyTooCloseToExpiry(parent.expiresAt)) {
+      return c.json(
+        {
+          error:
+            "Parent enrollment key expires too soon to build an installer — regenerate the key with a longer TTL",
+        },
+        410,
+      );
+    }
+
     try {
       const {
         id: tokenId,
@@ -1458,6 +1557,7 @@ enrollmentKeyRoutes.post(
         parentEnrollmentKeyId: parent.id,
         createdByUserId: auth.user.id,
         maxUsage,
+        ttlMinutes,
       });
 
       writeEnrollmentKeyAudit(c, auth, {
@@ -1520,6 +1620,10 @@ enrollmentKeyRoutes.post(
       return c.json({ error: "Access denied" }, 403);
     }
 
+    // Reject (never clamp) a caller-supplied TTL above the partner cap.
+    const capError = await assertTtlWithinCap(parentKey.orgId, childTtlMinutes);
+    if (capError) return c.json({ error: capError }, 400);
+
     // Verify key is still usable
     if (parentKey.expiresAt && new Date(parentKey.expiresAt) < new Date()) {
       return c.json({ error: "Enrollment key has expired" }, 410);
@@ -1570,7 +1674,27 @@ enrollmentKeyRoutes.post(
       }
     }
 
-    // Generate a child enrollment key with a fresh TTL independent of parent
+    // The partner cap bounds KEY LIFETIME, not merely caller-supplied input
+    // (#2776 fix round 3 ruling). `assertTtlWithinCap` above already 400s an
+    // EXPLICIT over-cap childTtlMinutes, but it returns null for `undefined`
+    // by design — so an admin who simply OMITS ttlMinutes used to take the
+    // uncapped CHILD_ENROLLMENT_KEY_TTL_MINUTES server constant (1440), which
+    // is 24x a 60-minute partner cap, on the two most-used download routes.
+    // Clamp the fallback too. Deliberately unconditional rather than
+    // `childTtlMinutes ?? await clampTtlToCap(...)`: this plan produced six
+    // one-at-a-time cap gaps precisely because each site assumed some other
+    // site had already checked. Costs one extra settings read on the explicit
+    // path, where it is a same-value no-op.
+    //
+    // The child's TTL is FRESH from mint time, never the parent's remaining
+    // lifetime — otherwise late-in-life parents produce DOA installers.
+    const childExpiresAt = freshChildExpiresAt(
+      await clampTtlToCap(
+        parentKey.orgId,
+        childTtlMinutes ?? CHILD_ENROLLMENT_KEY_TTL_MINUTES,
+      ),
+    );
+
     const rawChildKey = generateEnrollmentKey();
     const childKeyHash = hashEnrollmentKey(rawChildKey);
     const shortCode = await allocateShortCode();
@@ -1584,7 +1708,7 @@ enrollmentKeyRoutes.post(
         key: childKeyHash,
         keySecretHash: parentKey.keySecretHash,
         maxUsage: childMaxUsage,
-        expiresAt: freshChildExpiresAt(childTtlMinutes),
+        expiresAt: childExpiresAt,
         createdBy: auth.user.id,
         shortCode,
         installerPlatform: platform,
@@ -1807,6 +1931,14 @@ async function serveInstaller(
       410,
     );
   }
+  if (parentKeyTooCloseToExpiry(keyRow.expiresAt)) {
+    // Public/unauthenticated path — no parent-key detail (name, id) in the
+    // response, matching the other rejection messages in this function.
+    return c.json(
+      { error: "This download link is expiring too soon to build an installer" },
+      410,
+    );
+  }
   if (!keyRow.siteId) {
     return c.json({ error: "Invalid enrollment key configuration" }, 400);
   }
@@ -1848,6 +1980,12 @@ async function serveInstaller(
         // insert with `invalid input syntax for type uuid: ""` (500 on /s/:code).
         createdByUserId: keyRow.createdBy ?? null,
         maxUsage: 1,
+        // Short-link downloads carry no per-request picker (the link was
+        // generated once, by an admin who already chose a TTL for the CHILD
+        // key at /installer-link time). There is no ttlMinutes in scope here
+        // to forward, so the bootstrap token deliberately takes the 24h base
+        // rather than inheriting a stale selection. Deliberate — not an
+        // oversight (#2775).
         installerPlatform: "windows",
       });
     } catch (err) {
@@ -1879,7 +2017,7 @@ async function serveInstaller(
 
     createAuditLogAsync({
       orgId: keyRow.orgId,
-      actorId: "public",
+      actorId: ANONYMOUS_ACTOR_ID,
       action: "enrollment_key.public_download",
       resourceType: "enrollment_key",
       resourceId: keyRow.id,
@@ -1918,7 +2056,7 @@ async function serveInstaller(
 
     createAuditLogAsync({
       orgId: keyRow.orgId,
-      actorId: "public",
+      actorId: ANONYMOUS_ACTOR_ID,
       action: "enrollment_key.public_download",
       resourceType: "enrollment_key",
       resourceId: keyRow.id,
@@ -2099,6 +2237,13 @@ publicShortLinkRoutes.get("/:code", async (c) => {
     // if the short-link row is near its own expiry.
     const rawToken = generateEnrollmentKey();
     const tokenHash = hashEnrollmentKey(rawToken);
+    // Clamp (never reject — public, unauthenticated redemption path with no
+    // interactive caller) the child's default TTL to the partner cap (fix
+    // round 3, #2776): the cap bounds KEY LIFETIME, not just interactively-
+    // chosen input, so this short-link download must not hand out a child
+    // key longer-lived than the partner allows just because it uses the
+    // server-constant default.
+    const cappedTtlMinutes = await clampTtlToCap(row.orgId, CHILD_ENROLLMENT_KEY_TTL_MINUTES);
 
     const [downloadKey] = await db
       .insert(enrollmentKeys)
@@ -2109,7 +2254,7 @@ publicShortLinkRoutes.get("/:code", async (c) => {
         key: tokenHash,
         keySecretHash: row.keySecretHash,
         maxUsage: 1,
-        expiresAt: freshChildExpiresAt(),
+        expiresAt: freshChildExpiresAt(cappedTtlMinutes),
         createdBy: null,
         installerPlatform: row.installerPlatform,
       })

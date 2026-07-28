@@ -33,22 +33,60 @@ describe('metric rollup maintenance service', () => {
     expect(parseMetricRollupPartitionMonth('metric_rollups_default')).toBeNull();
   });
 
-  it('creates monthly partitions with RLS policies and breeze_app grants', async () => {
-    await ensureMetricRollupPartitions({
+  it('ensures monthly partitions through the SECURITY DEFINER function, one call per month', async () => {
+    executeMock
+      .mockResolvedValueOnce([{ partitionName: 'metric_rollups_y2026m06' }])
+      .mockResolvedValueOnce([{ partitionName: 'metric_rollups_y2026m07' }]);
+
+    const ensured = await ensureMetricRollupPartitions({
       referenceDate: new Date('2026-06-18T12:00:00.000Z'),
       monthsBack: 0,
       monthsAhead: 1,
     });
 
+    expect(ensured).toEqual(['metric_rollups_y2026m06', 'metric_rollups_y2026m07']);
+    // One call per month, not the 24 statements the inline DDL used to issue.
+    expect(executeMock).toHaveBeenCalledTimes(2);
+
     const executedSql = JSON.stringify(executeMock.mock.calls);
-    expect(executeMock).toHaveBeenCalledTimes(24);
-    expect(executedSql).toContain('metric_rollups_y2026m06');
-    expect(executedSql).toContain('metric_rollups_y2026m07');
-    expect(executedSql).toContain('PARTITION OF metric_rollups');
-    expect(executedSql).toContain('FOR VALUES FROM');
-    expect(executedSql).toContain('ENABLE ROW LEVEL SECURITY');
-    expect(executedSql).toContain('FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id))');
-    expect(executedSql).toContain('GRANT SELECT, INSERT, UPDATE, DELETE');
+    expect(executedSql).toContain('public.breeze_ensure_metric_rollup_partition');
+    expect(executedSql).toContain('2026-06-01 00:00:00');
+    expect(executedSql).toContain('2026-07-01 00:00:00');
+    // The DDL must NOT be issued from the app connection — that is the bug
+    // (BREEZE-10): breeze_app has no CREATE on schema public and owns neither
+    // metric_rollups nor its children, so every one of these aborted the run.
+    expect(executedSql).not.toContain('PARTITION OF metric_rollups');
+    expect(executedSql).not.toContain('ENABLE ROW LEVEL SECURITY');
+    expect(executedSql).not.toContain('CREATE POLICY');
+    expect(executedSql).not.toContain('GRANT SELECT, INSERT, UPDATE, DELETE');
+  });
+
+  it('treats a NULL partition name as a default-partition overlap skip', async () => {
+    executeMock
+      .mockResolvedValueOnce([{ partitionName: null }])
+      .mockResolvedValueOnce([{ partitionName: 'metric_rollups_y2026m07' }]);
+
+    const ensured = await ensureMetricRollupPartitions({
+      referenceDate: new Date('2026-06-18T12:00:00.000Z'),
+      monthsBack: 0,
+      monthsAhead: 1,
+    });
+
+    expect(ensured).toEqual(['metric_rollups_y2026m07']);
+  });
+
+  it('throws rather than silently skipping when the maintenance function is missing', async () => {
+    // A DB that has not applied migration 2026-08-05 returns no such column.
+    // Swallowing that would turn a broken deployment into an invisible no-op.
+    executeMock.mockResolvedValueOnce([]);
+
+    await expect(
+      ensureMetricRollupPartitions({
+        referenceDate: new Date('2026-06-18T12:00:00.000Z'),
+        monthsBack: 0,
+        monthsAhead: 0,
+      }),
+    ).rejects.toThrow(/partitionName column/);
   });
 
   it('uses tableoid and ctid for bounded deletes through the partitioned parent', async () => {
@@ -90,15 +128,29 @@ describe('metric rollup maintenance service', () => {
         { partitionName: 'metric_rollups_y2026m06' },
         { partitionName: 'metric_rollups_default' },
       ])
-      .mockResolvedValueOnce({ rowCount: 0 });
+      .mockResolvedValueOnce([{ partitionName: 'metric_rollups_y2022m12' }]);
 
     const dropped = await dropExpiredMetricRollupPartitions(new Date('2026-06-18T12:00:00.000Z'));
 
     expect(dropped).toEqual(['metric_rollups_y2022m12']);
     expect(executeMock).toHaveBeenCalledTimes(2);
     const dropSql = JSON.stringify(executeMock.mock.calls[1]);
-    expect(dropSql).toContain('DROP TABLE IF EXISTS');
-    expect(dropSql).toContain('metric_rollups_y2022m12');
+    // Owner-only DDL goes through the SECURITY DEFINER seam, and it receives the
+    // month rather than the discovered identifier — so the function re-derives
+    // and re-verifies attachment, keeping metric_rollups_default unreachable.
+    expect(dropSql).toContain('public.breeze_drop_metric_rollup_partition');
+    expect(dropSql).toContain('2022-12-01 00:00:00');
+    expect(dropSql).not.toContain('DROP TABLE');
+  });
+
+  it('does not report a drop when nothing was attached for that month', async () => {
+    executeMock
+      .mockResolvedValueOnce([{ partitionName: 'metric_rollups_y2022m12' }])
+      .mockResolvedValueOnce([{ partitionName: null }]);
+
+    const dropped = await dropExpiredMetricRollupPartitions(new Date('2026-06-18T12:00:00.000Z'));
+
+    expect(dropped).toEqual([]);
   });
 
   it('skips maintenance when another worker holds the advisory lock', async () => {

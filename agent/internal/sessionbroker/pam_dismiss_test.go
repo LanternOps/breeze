@@ -60,7 +60,7 @@ func TestDismissPamConsentReturnsCorrelatedHelperResult(t *testing.T) {
 func TestDismissPamConsentRequiresSystemPamSession(t *testing.T) {
 	tests := []struct {
 		name    string
-		role    string
+		role    ipc.HelperRole
 		scopes  []string
 		wantErr string
 	}{

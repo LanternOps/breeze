@@ -1038,7 +1038,7 @@ export function EditableLineRow({
           aria-invalid={fieldErrors.qty ? true : undefined}
           aria-describedby={describedByIds(fieldErrors.qty && `quote-line-qty-error-${line.id}`, qtyDirty && unsavedHintId(line.id, 'qty'))}
           data-testid={`quote-line-qty-${line.id}`}
-          className={`h-9 w-14 rounded-md border bg-transparent px-2 text-right text-sm tabular-nums transition-colors focus:outline-hidden disabled:opacity-60 ${fieldErrors.qty ? 'border-destructive' : seamless(fieldRing(qtyDirty, saved))}`}
+          className={`h-9 w-14 rounded-md border bg-transparent px-2 text-right text-sm tabular-nums transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(qtyDirty, saved), !!fieldErrors.qty)}`}
         />
         <UnsavedFieldHint id={unsavedHintId(line.id, 'qty')} show={qtyDirty} />
       </td>
@@ -1055,7 +1055,7 @@ export function EditableLineRow({
           aria-describedby={describedByIds(fieldErrors.price && `quote-line-price-error-${line.id}`, priceDirty && unsavedHintId(line.id, 'price'))}
           data-testid={`quote-line-price-${line.id}`}
           style={{ width: growWidth(priceDisplay, 8, 16) }}
-          className={`h-9 rounded-md border bg-transparent px-2 text-right text-sm tabular-nums transition-colors focus:outline-hidden disabled:opacity-60 ${fieldErrors.price ? 'border-destructive' : seamless(fieldRing(priceDirty, saved))}`}
+          className={`h-9 rounded-md border bg-transparent px-2 text-right text-sm tabular-nums transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(priceDirty, saved), !!fieldErrors.price)}`}
         />
         <UnsavedFieldHint id={unsavedHintId(line.id, 'price')} show={priceDirty} />
         {/* Billing cadence belongs with the price ("$1,499.00 /mo"), so its
@@ -1176,7 +1176,7 @@ export function EditableLineRow({
               </button>
               {moveTargets.length > 0 && !line.parentLineId && (
                 <>
-                  <p className="mt-1 border-t px-3 pb-0.5 pt-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.actions.moveTo')}</p>
+                  <p className="mt-1 border-t px-3 pb-0.5 pt-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.editor.actions.moveTo')}</p>
                   {moveTargets.map((t) => (
                     <button
                       key={t.id}
@@ -1410,7 +1410,7 @@ export function EditableLineRow({
                 onClick={attachImageFromUrl}
                 disabled={imageBusy || fieldBusy('image') || !imageUrlDraft.trim()}
                 data-testid={`quote-line-image-url-fetch-${line.id}`}
-                className="inline-flex h-8 items-center rounded-md bg-primary px-2 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                className="inline-flex h-8 items-center rounded-md bg-primary px-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 {t('quotes.editor.actions.fetch')}
               </button>
@@ -1469,7 +1469,7 @@ export function EditableLineRow({
               title={t('quotes.editor.line.skuHelp')}
               aria-describedby={describedByIds(`quote-line-sku-help-${line.id}`, skuDirty && unsavedHintId(line.id, 'sku'))}
               data-testid={`quote-line-sku-${line.id}`}
-              className={`h-6 w-28 rounded border bg-background px-1 text-foreground transition-shadow ${fieldRing(skuDirty, saved)}`}
+              className={`h-6 w-28 rounded border bg-background px-1 text-foreground transition-colors ${fieldRing(skuDirty, saved)}`}
             />
             <span id={`quote-line-sku-help-${line.id}`} className="sr-only">{t('quotes.editor.line.skuHelp')}</span>
             <UnsavedFieldHint id={unsavedHintId(line.id, 'sku')} show={skuDirty} />
@@ -1484,7 +1484,7 @@ export function EditableLineRow({
               title={t('quotes.editor.line.partNumberHelp')}
               aria-describedby={describedByIds(`quote-line-partnumber-help-${line.id}`, partDirty && unsavedHintId(line.id, 'pn'))}
               data-testid={`quote-line-partnumber-${line.id}`}
-              className={`h-6 w-28 rounded border bg-background px-1 text-foreground transition-shadow ${fieldRing(partDirty, saved)}`}
+              className={`h-6 w-28 rounded border bg-background px-1 text-foreground transition-colors ${fieldRing(partDirty, saved)}`}
             />
             <span id={`quote-line-partnumber-help-${line.id}`} className="sr-only">{t('quotes.editor.line.partNumberHelp')}</span>
             <UnsavedFieldHint id={unsavedHintId(line.id, 'pn')} show={partDirty} />
@@ -1506,11 +1506,14 @@ export function EditableLineRow({
               data-testid={`quote-line-cost-${line.id}`}
               style={{ width: growWidth(costDisplay, 6, 14) }}
               // Priority: validation error (destructive) > unsaved edit (amber
-              // dirty ring) > a genuinely missing cost (warning tint — Task 2's
-              // "distinct from the amber dirty ring" treatment, using the same
+              // dirty border) > a genuinely missing cost (warning tint —
+              // "distinct from the amber dirty border" treatment, using the same
               // warning token family at lower opacity so it reads as related but
               // not identical) > saved flash / rest.
-              className={`h-6 rounded border bg-background px-1 text-right tabular-nums text-foreground transition-shadow ${
+              // The transition names both channels because this field is the one
+              // place they mix: the error branch is a ring (box-shadow) while
+              // every other branch is border-color.
+              className={`h-6 rounded border bg-background px-1 text-right tabular-nums text-foreground transition-[border-color,box-shadow] ${
                 fieldErrors.cost
                   ? 'border-destructive ring-1 ring-destructive'
                   : costDirty

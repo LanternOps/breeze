@@ -1,3 +1,4 @@
+import type { ResolvedEnrollmentDefaults } from '@breeze/shared';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { fetchWithAuth, registerOrgIdProvider } from './auth';
@@ -49,6 +50,15 @@ interface OrgState {
   partners: Partner[];
   organizations: Organization[];
   sites: Site[];
+  /**
+   * The current org's resolved enrollment defaults (TTL, device count, partner
+   * TTL cap), delivered on the GET /orgs/sites response rather than by a
+   * dedicated fetch — the Add Device modal is on the device-add hot path and
+   * already waits on that request (#2776). Null until the first sites fetch for
+   * the selected org resolves, or when the API soft-failed the settings read;
+   * consumers must fall back to the shared product defaults.
+   */
+  enrollmentDefaults: ResolvedEnrollmentDefaults | null;
   isLoading: boolean;
   error: string | null;
   /**
@@ -95,6 +105,7 @@ export const useOrgStore = create<OrgState>()(
       partners: [],
       organizations: [],
       sites: [],
+      enrollmentDefaults: null,
       isLoading: false,
       error: null,
       organizationsLoaded: false,
@@ -110,7 +121,8 @@ export const useOrgStore = create<OrgState>()(
           // The new partner's org list hasn't loaded yet — back to the
           // "loading" shape until the refetch below resolves.
           organizationsLoaded: false,
-          sites: []
+          sites: [],
+          enrollmentDefaults: null
         });
         // Fetch organizations for the new partner
         get().fetchOrganizations();
@@ -124,6 +136,9 @@ export const useOrgStore = create<OrgState>()(
         set({
           currentOrgId: orgId,
           sites: [],
+          // Belongs to the org we just left — never show one org's cap while
+          // minting a link for another.
+          enrollmentDefaults: null,
           allOrgs: false,
           // Remember the concrete org so the "Current" pill can return to it.
           lastOrgId: orgId
@@ -132,14 +147,14 @@ export const useOrgStore = create<OrgState>()(
       },
 
       selectAllOrgs: () => {
-        set({ currentOrgId: null, sites: [], allOrgs: true });
+        set({ currentOrgId: null, sites: [], enrollmentDefaults: null, allOrgs: true });
       },
 
       resetSelection: () => {
         // Clear WITHOUT asserting fleet intent: currentOrgId null + allOrgs
         // false is the transient/unresolved shape, distinct from an explicit
         // All-orgs choice.
-        set({ currentOrgId: null, sites: [], allOrgs: false });
+        set({ currentOrgId: null, sites: [], enrollmentDefaults: null, allOrgs: false });
       },
 
       setOrganization: (orgId) => {
@@ -248,13 +263,21 @@ export const useOrgStore = create<OrgState>()(
       fetchSites: async () => {
         const { currentOrgId } = get();
         if (!currentOrgId) {
-          set({ sites: [] });
+          set({ sites: [], enrollmentDefaults: null });
           return;
         }
 
         set({ isLoading: true, error: null });
         try {
-          const response = await fetchWithAuth(`/orgs/sites?organizationId=${currentOrgId}`);
+          // `includeEnrollmentDefaults=1` opts this ONE caller into the extra
+          // org⋈partner settings read (#2776). It is opt-in because that read
+          // takes a second pooled connection while this request holds the
+          // first, and GET /orgs/sites is called from several places — see the
+          // pool-exhaustion note at the route. This store is the only consumer
+          // of `enrollmentDefaults`, so it is the only caller that asks.
+          const response = await fetchWithAuth(
+            `/orgs/sites?organizationId=${currentOrgId}&includeEnrollmentDefaults=1`,
+          );
           if (!response.ok) {
             throw new Error('Failed to fetch sites');
           }
@@ -266,8 +289,14 @@ export const useOrgStore = create<OrgState>()(
               : Array.isArray(data)
                 ? data
                 : [];
+          // #2776: the API rides the org's resolved enrollment defaults along
+          // on this response. Absent when the settings read soft-failed server
+          // side — keep the previous value rather than blanking a good one.
+          const enrollmentDefaults = (data?.enrollmentDefaults ??
+            get().enrollmentDefaults) as ResolvedEnrollmentDefaults | null;
           set({
             sites,
+            enrollmentDefaults,
             isLoading: false
           });
         } catch (error) {
@@ -291,6 +320,7 @@ export const useOrgStore = create<OrgState>()(
           organizations: [],
           organizationsLoaded: false,
           sites: [],
+          enrollmentDefaults: null,
           error: null
         });
       }

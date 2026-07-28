@@ -46,7 +46,7 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
     setError(null);
 
     try {
-      const response = await fetch(buildPortalApiUrl('/auth/accept-invite'), {
+      const response = await fetch(buildPortalApiUrl('/portal/auth/accept-invite'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',

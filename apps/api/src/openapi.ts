@@ -220,7 +220,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           name: { type: 'string' },
           slug: { type: 'string' },
           type: { type: 'string', enum: ['customer', 'internal'] },
-          status: { type: 'string', enum: ['active', 'suspended', 'trial', 'churned'] },
+          status: { type: 'string', enum: ['active', 'suspended', 'trial', 'churned', 'offboarding'] },
           maxDevices: { type: 'integer', nullable: true },
           contractStart: { type: 'string', format: 'date-time', nullable: true },
           contractEnd: { type: 'string', format: 'date-time', nullable: true },
@@ -1850,7 +1850,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
                   name: { type: 'string', minLength: 1 },
                   slug: { type: 'string', minLength: 1, maxLength: 100 },
                   type: { type: 'string', enum: ['customer', 'internal'] },
-                  status: { type: 'string', enum: ['active', 'suspended', 'trial', 'churned'] },
+                  status: { type: 'string', enum: ['active', 'suspended', 'trial', 'churned', 'offboarding'] },
                   maxDevices: { type: 'integer', nullable: true },
                   contractStart: { type: 'string', format: 'date-time', nullable: true },
                   contractEnd: { type: 'string', format: 'date-time', nullable: true }
@@ -1938,7 +1938,15 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         parameters: [
           { $ref: '#/components/parameters/pageParam' },
           { $ref: '#/components/parameters/limitParam' },
-          { name: 'orgId', in: 'query', required: true, schema: { type: 'string', format: 'uuid' } }
+          { name: 'orgId', in: 'query', required: true, schema: { type: 'string', format: 'uuid' } },
+          {
+            name: 'includeEnrollmentDefaults',
+            in: 'query',
+            required: false,
+            description:
+              "Set to '1' to also resolve the org's enrollment link defaults into the response. Off by default: it costs an extra settings read that holds a second pooled connection.",
+            schema: { type: 'string', enum: ['1', 'true'] }
+          }
         ],
         responses: {
           '200': {
@@ -1949,7 +1957,18 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
                   type: 'object',
                   properties: {
                     data: { type: 'array', items: { $ref: '#/components/schemas/Site' } },
-                    pagination: { $ref: '#/components/schemas/Pagination' }
+                    pagination: { $ref: '#/components/schemas/Pagination' },
+                    enrollmentDefaults: {
+                      type: 'object',
+                      description:
+                        "The org's resolved enrollment link defaults. Present only when includeEnrollmentDefaults is set AND a single org is in scope. Rides along on this response so the Add Device modal can seed its pickers without a second round trip; omitted if the settings read fails.",
+                      properties: {
+                        ttlMinutes: { type: 'integer' },
+                        deviceCount: { type: 'integer' },
+                        maxTtlMinutes: { type: 'integer' }
+                      },
+                      required: ['ttlMinutes', 'deviceCount', 'maxTtlMinutes']
+                    }
                   }
                 }
               }

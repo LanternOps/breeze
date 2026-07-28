@@ -3,14 +3,50 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // DB mock supporting both the simple user-status select and the
 // tunnelSessions⋈devices join used by `revalidateTunnelSession`. Tests drive
 // the returned rows via the setters below.
-let userRow: { id: string; status: string } | undefined = { id: 'user-1', status: 'active' };
+let userRow: { id: string; status: string; partnerId?: string | null } | undefined = {
+  id: 'user-1',
+  status: 'active',
+  partnerId: null,
+};
 let joinRow:
-  | { session: { userId: string; status: string; deviceId: string }; device: { id: string; status: string } }
+  | {
+      session: {
+        userId: string;
+        status: string;
+        deviceId: string;
+        orgId?: string;
+        type?: 'vnc' | 'proxy';
+      };
+      device: {
+        id: string;
+        orgId?: string;
+        siteId?: string | null;
+        status: string;
+        agentId?: string;
+        hostname?: string;
+        osType?: string;
+      };
+    }
   | undefined = {
-  session: { userId: 'user-1', status: 'active', deviceId: 'dev-1' },
-  device: { id: 'dev-1', status: 'online' },
+  session: {
+    userId: 'user-1',
+    status: 'active',
+    deviceId: 'dev-1',
+    orgId: 'org-1',
+    type: 'vnc',
+  },
+  device: {
+    id: 'dev-1',
+    orgId: 'org-1',
+    siteId: null,
+    status: 'online',
+    agentId: 'agent-1',
+    hostname: 'device-1',
+    osType: 'linux',
+  },
 };
 let throwOnJoin = false;
+let plainSelectOverride: (() => Promise<unknown[]>) | null = null;
 
 function setUserRow(row: typeof userRow) {
   userRow = row;
@@ -21,29 +57,50 @@ function setJoinRow(row: typeof joinRow) {
 function setThrowOnJoin(v: boolean) {
   throwOnJoin = v;
 }
+function setPlainSelectOverride(value: typeof plainSelectOverride) {
+  plainSelectOverride = value;
+}
 
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
-      from: vi.fn(() => ({
+      from: vi.fn((table: string) => ({
         // Plain user-status query: .from().where().limit()
         where: vi.fn(() => ({
-          limit: vi.fn(async () => (userRow ? [userRow] : [])),
+          limit: vi.fn(async () => (
+            table === 'users'
+              ? (
+                  plainSelectOverride
+                    ? plainSelectOverride()
+                    : (userRow ? [userRow] : [])
+                )
+              : table === 'tunnelSessions' && plainSelectOverride
+                ? plainSelectOverride()
+              : table === 'organizationUsers'
+                ? [{ roleId: 'role-1', siteIds: null }]
+                : []
+          )),
         })),
         // Join query: .from().innerJoin().where().limit()
         innerJoin: vi.fn(() => ({
-          where: vi.fn(() => ({
-            limit: vi.fn(async () => {
-              if (throwOnJoin) throw new Error('db down');
-              return joinRow ? [joinRow] : [];
-            }),
-          })),
+          where: vi.fn(() => (
+            table === 'rolePermissions'
+              ? Promise.resolve([{ resource: 'remote', action: 'access' }])
+              : {
+                  limit: vi.fn(async () => {
+                    if (throwOnJoin) throw new Error('db down');
+                    return joinRow ? [joinRow] : [];
+                  }),
+                }
+          )),
         })),
       })),
     })),
     update: vi.fn(() => ({
       set: vi.fn(() => ({
-        where: vi.fn(async () => undefined),
+        where: vi.fn(() => ({
+          returning: vi.fn(async () => [{ id: 'tunnel-1' }]),
+        })),
       })),
     })),
   },
@@ -51,9 +108,13 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  tunnelSessions: {},
-  devices: {},
-  users: {},
+  tunnelSessions: 'tunnelSessions',
+  devices: 'devices',
+  users: 'users',
+  organizationUsers: 'organizationUsers',
+  partnerUsers: 'partnerUsers',
+  rolePermissions: 'rolePermissions',
+  permissions: 'permissions',
 }));
 
 vi.mock('../services/remoteSessionAuth', () => ({
@@ -91,14 +152,19 @@ vi.mock('../services/rate-limit', () => ({
 }));
 
 import { sendCommandToAgent } from './agentWs';
+import { isAgentConnected } from './agentWs';
 import { rateLimiter } from '../services/rate-limit';
 import { getRedis } from '../services/redis';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
+import { consumeWsTicket } from '../services/remoteSessionAuth';
 import {
   __setTunnelConnectionForTest,
+  createTunnelWsRoutes,
   enforceTunnelRevocation,
+  handleTunnelDataFromAgent,
   isUserTunnelWsRateLimited,
+  registerTunnelOwnership,
   revalidateTunnelSession,
   validateTunnelTextRelayFrame,
 } from './tunnelWs';
@@ -113,7 +179,11 @@ function makeFakeWs() {
 // A registered active connection, as `onOpen` would have stored. The revocation
 // gate only acts when a connection is present in the module map, so tests seed
 // one via the test-only helper.
-function registerLiveConnection(tunnelId: string, ws: { close: ReturnType<typeof vi.fn> }) {
+function registerLiveConnection(
+  tunnelId: string,
+  ws: { close: ReturnType<typeof vi.fn> },
+  sharedLeases?: Record<string, unknown>,
+) {
   __setTunnelConnectionForTest(tunnelId, {
     userWs: ws as never,
     agentId: 'agent-1',
@@ -123,19 +193,84 @@ function registerLiveConnection(tunnelId: string, ws: { close: ReturnType<typeof
     tunnelType: 'vnc',
     startedAt: new Date(),
     lastPongAt: Date.now(),
+    ...(sharedLeases ? { sharedLeases: sharedLeases as never } : {}),
   });
+}
+
+function testSharedLeases(safeForwardingUntilMonotonicMs: number) {
+  const claim = {
+    kind: 'tunnel' as const,
+    sessionId: 'tunnel-1',
+    connectionId: '33333333-3333-4333-8333-333333333333',
+    generation: 1,
+    instanceId: '44444444-4444-4444-8444-444444444444',
+    leaseToken: '55555555-5555-4555-8555-555555555555',
+    ownerValue: 'test-tunnel-owner',
+    safeForwardingUntilMonotonicMs,
+  };
+  return {
+    acquire: vi.fn(async () => ({ ok: true as const, claim })),
+    renew: vi.fn(async () => claim),
+    beginClose: vi.fn(async () => ({
+      ok: true as const,
+      ownership: 'still_owner' as const,
+    })),
+    release: vi.fn(async () => true),
+  };
+}
+
+async function captureTunnelHandlers(sharedLeases: ReturnType<typeof testSharedLeases>) {
+  let handlers: ReturnType<Parameters<Parameters<typeof createTunnelWsRoutes>[0]>[0]> | undefined;
+  const upgradeWebSocket = vi.fn((createEvents: () => typeof handlers) =>
+    () => {
+      handlers = createEvents();
+      return new Response(null, { status: 200 });
+    });
+  const routes = createTunnelWsRoutes(upgradeWebSocket as never, {
+    sharedLeases: sharedLeases as never,
+  });
+  await routes.request('/tunnel-1/ws?ticket=valid-ticket');
+  if (!handlers) throw new Error('tunnel handlers were not captured');
+  return handlers;
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  setUserRow({ id: 'user-1', status: 'active' });
+  setUserRow({ id: 'user-1', status: 'active', partnerId: null });
   setJoinRow({
-    session: { userId: 'user-1', status: 'active', deviceId: 'dev-1' },
-    device: { id: 'dev-1', status: 'online' },
+    session: {
+      userId: 'user-1',
+      status: 'active',
+      deviceId: 'dev-1',
+      orgId: 'org-1',
+      type: 'vnc',
+    },
+    device: {
+      id: 'dev-1',
+      orgId: 'org-1',
+      siteId: null,
+      status: 'online',
+      agentId: 'agent-1',
+      hostname: 'device-1',
+      osType: 'linux',
+    },
   });
   setThrowOnJoin(false);
+  setPlainSelectOverride(null);
   vi.mocked(checkRemoteAccess).mockResolvedValue({ allowed: true });
   vi.mocked(isViewerSessionRevoked).mockResolvedValue(false);
+  vi.mocked(isAgentConnected).mockReturnValue(true);
+  vi.mocked(sendCommandToAgent).mockReturnValue(true);
+  vi.mocked(consumeWsTicket).mockResolvedValue({
+    ok: true,
+    sessionId: 'tunnel-1',
+    sessionType: 'tunnel',
+    userId: 'user-1',
+    expiresAt: Date.now() + 60_000,
+    version: 2,
+    ticketJti: 'ticket-jti',
+    mfaSatisfied: true,
+  });
 });
 
 describe('isUserTunnelWsRateLimited', () => {
@@ -179,6 +314,60 @@ describe('validateTunnelTextRelayFrame', () => {
     if (!result.ok) {
       expect(result.error).toMatch(/decoded|encoded/i);
     }
+  });
+});
+
+describe('exact tunnel relay ownership', () => {
+  afterEach(() => {
+    __setTunnelConnectionForTest('tunnel-1', undefined);
+    vi.useRealTimers();
+  });
+
+  it('does not flush an early agent frame after the forwarding deadline has expired', async () => {
+    vi.useFakeTimers();
+    const earlyFrame = new Uint8Array([1, 2, 3]);
+    registerTunnelOwnership('tunnel-1', 'agent-1');
+    handleTunnelDataFromAgent('tunnel-1', earlyFrame);
+    const handlers = await captureTunnelHandlers(testSharedLeases(0));
+    const ws = makeFakeWs();
+
+    await handlers.onOpen({}, ws as never);
+
+    expect(ws.send).not.toHaveBeenCalledWith(earlyFrame);
+    await handlers.onClose({}, ws as never);
+  });
+
+  it('does not reactivate or notify connected after lease loss during a DB read', async () => {
+    vi.useFakeTimers();
+    let plainSelectCount = 0;
+    let resolveCurrent!: (rows: unknown[]) => void;
+    const current = new Promise<unknown[]>((resolve) => {
+      resolveCurrent = resolve;
+    });
+    setPlainSelectOverride(async () => {
+      plainSelectCount += 1;
+      if (plainSelectCount === 1) return [{ id: 'user-1', status: 'active' }];
+      return current;
+    });
+    const sharedLeases = testSharedLeases(Number.MAX_SAFE_INTEGER);
+    sharedLeases.renew = vi.fn(async () => {
+      throw new Error('lease lost');
+    });
+    const handlers = await captureTunnelHandlers(sharedLeases);
+    const ws = makeFakeWs();
+
+    const opening = handlers.onOpen({}, ws as never);
+    for (let i = 0; i < 10 && plainSelectCount < 2; i += 1) {
+      await Promise.resolve();
+    }
+    await vi.advanceTimersByTimeAsync(5_000);
+    resolveCurrent([{ status: 'connecting' }]);
+    await opening;
+
+    expect(sharedLeases.renew).toHaveBeenCalledTimes(1);
+    expect(ws.send).not.toHaveBeenCalledWith(
+      JSON.stringify({ type: 'connected', tunnelId: 'tunnel-1' }),
+    );
   });
 });
 
@@ -264,6 +453,7 @@ describe('enforceTunnelRevocation', () => {
   afterEach(() => {
     // Drop any seeded connection so cross-test state never leaks.
     __setTunnelConnectionForTest('tunnel-1', undefined);
+    vi.useRealTimers();
   });
 
   it('returns false and leaves the socket open when access is still valid', async () => {
@@ -306,6 +496,74 @@ describe('enforceTunnelRevocation', () => {
       expect.objectContaining({ type: 'tunnel_close', payload: { tunnelId: 'tunnel-1' } }),
     );
     expect(revokeViewerSession).toHaveBeenCalledWith('tunnel-1');
+  });
+
+  it('still closes the exact socket when viewer revocation persistence fails', async () => {
+    vi.useFakeTimers();
+    vi.mocked(isViewerSessionRevoked).mockResolvedValue(true);
+    vi.mocked(revokeViewerSession).mockRejectedValueOnce(
+      new Error('redis unavailable'),
+    );
+    const ws = makeFakeWs();
+    registerLiveConnection('tunnel-1', ws);
+
+    await expect(
+      enforceTunnelRevocation('tunnel-1', ws as never),
+    ).resolves.toBe(true);
+
+    expect(ws.close).toHaveBeenCalledWith(4003, 'Tunnel revoked');
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.waitFor(() => {
+      expect(revokeViewerSession).toHaveBeenCalledTimes(2);
+    });
+    expect(sendCommandToAgent).toHaveBeenCalledWith(
+      'agent-1',
+      expect.objectContaining({
+        type: 'tunnel_close',
+        payload: { tunnelId: 'tunnel-1' },
+      }),
+    );
+  });
+
+  it('safety-detaches and retries when exact close ownership is unavailable', async () => {
+    vi.useFakeTimers();
+    vi.mocked(isViewerSessionRevoked).mockResolvedValue(true);
+    const sharedLeases = {
+      beginClose: vi.fn(async () => ({
+        ok: false as const,
+        reason: 'unavailable' as const,
+      })),
+      release: vi.fn(async () => true),
+    };
+    const ws = makeFakeWs();
+    registerLiveConnection('tunnel-1', ws, sharedLeases);
+
+    await expect(
+      enforceTunnelRevocation('tunnel-1', ws as never),
+    ).resolves.toBe(true);
+    expect(ws.close).toHaveBeenCalledWith(4003, 'Tunnel revoked');
+    expect(revokeViewerSession).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(sharedLeases.beginClose).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not let a foreign socket revoke or tear down the owned tunnel', async () => {
+    vi.mocked(isViewerSessionRevoked).mockResolvedValue(true);
+    const ownerWs = makeFakeWs();
+    const foreignWs = makeFakeWs();
+    registerLiveConnection('tunnel-1', ownerWs);
+
+    const closed = await enforceTunnelRevocation('tunnel-1', foreignWs as never);
+
+    expect(closed).toBe(false);
+    expect(ownerWs.close).not.toHaveBeenCalled();
+    expect(foreignWs.close).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(revokeViewerSession).not.toHaveBeenCalled();
   });
 
   it('closes 4003 and tears down when the DB predicate revokes (device offline)', async () => {

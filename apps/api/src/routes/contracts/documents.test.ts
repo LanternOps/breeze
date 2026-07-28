@@ -33,9 +33,14 @@ vi.mock('../../middleware/auth', () => ({
   requirePermission: () => async (_c: any, next: any) => next(),
 }));
 
+vi.mock('../../services/sensitiveReadAudit', () => ({
+  auditSensitiveRead: vi.fn(),
+}));
+
 import { contractRoutes } from './index';
 import * as svc from '../../services/contractDocumentService';
 import { ContractDocumentServiceError } from '../../services/contractDocumentService';
+import { auditSensitiveRead } from '../../services/sensitiveReadAudit';
 
 function app() {
   return contractRoutes;
@@ -105,12 +110,22 @@ describe('contract document routes', () => {
       mime: 'application/pdf',
       byteSize: pdfBytes.length,
       sha256: 'a'.repeat(64),
+      orgId: ORG_ID,
     });
     const res = await app().request(`${BASE}/${DOC_ID}/pdf`, { method: 'GET' });
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('application/pdf');
     const buf = Buffer.from(await res.arrayBuffer());
     expect(buf.equals(pdfBytes)).toBe(true);
+    expect(auditSensitiveRead).toHaveBeenCalledWith(expect.anything(), {
+      action: 'contract.document.download',
+      orgId: ORG_ID,
+      resourceType: 'contract_document',
+      resourceId: DOC_ID,
+      format: 'pdf',
+      rowCount: 1,
+      byteCount: pdfBytes.length,
+    });
   });
 
   it('GET /:id/pdf maps DOCUMENT_NOT_FOUND to 404', async () => {
@@ -121,6 +136,50 @@ describe('contract document routes', () => {
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body.code).toBe('DOCUMENT_NOT_FOUND');
+    expect(auditSensitiveRead).not.toHaveBeenCalled();
+  });
+
+  it('GET /:id/pdf does not audit a cross-org denial', async () => {
+    (svc.getContractDocumentPdf as any).mockRejectedValue(
+      new ContractDocumentServiceError('Organization access denied', 403, 'ORG_DENIED'),
+    );
+    const res = await app().request(`${BASE}/${DOC_ID}/pdf`, { method: 'GET' });
+    expect(res.status).toBe(403);
+    expect(auditSensitiveRead).not.toHaveBeenCalled();
+  });
+
+  it('GET /:id/pdf does not audit when response byte preparation fails', async () => {
+    (svc.getContractDocumentPdf as any).mockResolvedValue({
+      pdfData: Symbol('invalid pdf bytes'),
+      mime: 'application/pdf',
+      byteSize: 10,
+      sha256: 'a'.repeat(64),
+      orgId: ORG_ID,
+    });
+
+    const res = await app().request(`${BASE}/${DOC_ID}/pdf`, { method: 'GET' });
+
+    expect(res.status).toBe(500);
+    expect(auditSensitiveRead).not.toHaveBeenCalled();
+  });
+
+  it('GET /:id/pdf keeps response bytes unchanged when audit delivery is non-blocking', async () => {
+    const pdfBytes = Buffer.from('%PDF-1.7\nsame bytes');
+    (svc.getContractDocumentPdf as any).mockResolvedValue({
+      pdfData: pdfBytes,
+      mime: 'application/pdf',
+      byteSize: pdfBytes.length,
+      sha256: 'a'.repeat(64),
+      orgId: ORG_ID,
+    });
+    vi.mocked(auditSensitiveRead).mockImplementationOnce(() => {
+      void Promise.reject(new Error('audit backend unavailable')).catch(() => undefined);
+    });
+
+    const res = await app().request(`${BASE}/${DOC_ID}/pdf`, { method: 'GET' });
+
+    expect(res.status).toBe(200);
+    expect(Buffer.from(await res.arrayBuffer())).toEqual(pdfBytes);
   });
 
   it('PATCH /:id links a document to a contract', async () => {

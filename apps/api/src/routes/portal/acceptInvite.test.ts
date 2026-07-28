@@ -12,9 +12,17 @@ vi.mock('../../db', () => ({
     update: () => ({ set: (v: any) => ({ where: () => { updateSpy(v); return Promise.resolve(); } }) })
   },
   withDbAccessContext: (_ctx: any, fn: any) => fn(),
-  withSystemDbAccessContext: (fn: any) => fn()
+  withSystemDbAccessContext: (fn: any) => fn(),
+  // helpers.ts now imports auth/helpers, which transitively pulls in the
+  // services barrel; something there reads runOutsideDbContext at module load,
+  // so the full-module mock must provide it (synchronous passthrough, matching
+  // the real signature <T>(fn: () => T): T).
+  runOutsideDbContext: <T>(fn: () => T) => fn()
 }));
-vi.mock('../../db/schema', () => ({ portalUsers: { id: 'id', orgId: 'orgId', email: 'email', name: 'name', passwordHash: 'passwordHash', receiveNotifications: 'receiveNotifications', status: 'status' } }));
+// discoveredAssetTypeEnum: networkBaseline.ts (transitive import of the portal
+// route graph) reads its .enumValues at module load, so the full-module mock
+// must provide it or the suite fails to load.
+vi.mock('../../db/schema', () => ({ discoveredAssetTypeEnum: { enumValues: [] }, portalUsers: { id: 'id', orgId: 'orgId', email: 'email', name: 'name', passwordHash: 'passwordHash', receiveNotifications: 'receiveNotifications', status: 'status' } }));
 vi.mock('../../services/email', () => ({ getEmailService: () => null }));
 
 import { authRoutes } from './auth';

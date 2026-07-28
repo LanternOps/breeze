@@ -4,12 +4,14 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const localesDir = join(dirname(fileURLToPath(import.meta.url)), '../../locales');
-const translatedLocales = ['pt-BR', 'es-419', 'fr-FR', 'de-DE'] as const;
+const translatedLocales = ['pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT'] as const;
 type TranslatedLocale = (typeof translatedLocales)[number];
 
 // Per-namespace count caps for exact-English duplicates that survived review
 // (mostly intentionally preserved literals). These limit net duplicate growth;
 // translating an existing duplicate creates headroom because keys are not pinned.
+// Language labels are self-names, so `language.frCALabel` is intentionally the
+// same `Français (Canada)` value in every catalog.
 const namespaceDuplicateBaselines = {
   'pt-BR': {
     'admin.json': 19,
@@ -40,7 +42,8 @@ const namespaceDuplicateBaselines = {
     'reports.json': 39,
     'scripts.json': 55,
     'security.json': 140,
-    'settings.json': 108,
+    // +1: the it-IT locale's self-name is intentionally identical in every catalog.
+    'settings.json': 110,
     'tickets.json': 13,
     'vulnerabilities.json': 13,
   },
@@ -72,7 +75,7 @@ const namespaceDuplicateBaselines = {
     'reports.json': 32,
     'scripts.json': 57,
     'security.json': 114,
-    'settings.json': 111,
+    'settings.json': 113,
     'tickets.json': 13,
     'vulnerabilities.json': 16,
   },
@@ -108,8 +111,42 @@ const namespaceDuplicateBaselines = {
     'reports.json': 43,
     'scripts.json': 60,
     'security.json': 144,
-    'settings.json': 141,
+    // +1: orgDefaultsEditor.enrollment.capMinutes — "{{minutes}} minutes" is
+    // spelled identically in French.
+    'settings.json': 144,
     'tickets.json': 21,
+    'vulnerabilities.json': 15,
+  },
+  'fr-CA': {
+    'admin.json': 27,
+    'ai.json': 9,
+    'alerts.json': 59,
+    'auth.json': 13,
+    'backup.json': 60,
+    // Contract-template format strings, French cognates, and locale-invariant
+    // quote composer fields are intentionally identical to English.
+    // +2: liveTotals "Total" is the identical French cognate (already accepted
+    // in fr-FR), and unassigned.qtyPrice "{{qty}} × {{price}}" is two
+    // interpolations plus a multiplication sign with no wording to translate.
+    'billing.json': 50,
+    // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
+    // acronym.
+    'common.json': 96,
+    'devices.json': 136,
+    'discovery.json': 15,
+    'integrations.json': 40,
+    'patches.json': 20,
+    'peripherals.json': 9,
+    'policies.json': 204,
+    'portal.json': 4,
+    'remote.json': 17,
+    'reports.json': 43,
+    'scripts.json': 60,
+    'security.json': 144,
+    // +1: orgDefaultsEditor.enrollment.capMinutes — "{{minutes}} minutes" is
+    // spelled identically in French.
+    'settings.json': 149,
+    'tickets.json': 20,
     'vulnerabilities.json': 15,
   },
   'de-DE': {
@@ -139,9 +176,36 @@ const namespaceDuplicateBaselines = {
     'reports.json': 53,
     'scripts.json': 53,
     'security.json': 166,
-    'settings.json': 163,
+    'settings.json': 165,
     'tickets.json': 13,
     'vulnerabilities.json': 20,
+  },
+  'it-IT': {
+    'admin.json': 31,
+    'ai.json': 12,
+    'alerts.json': 57,
+    'auth.json': 21,
+    'backup.json': 45,
+    // +1: unassigned.qtyPrice "{{qty}} × {{price}}" is two interpolations plus a
+    // multiplication sign with no wording to translate.
+    'billing.json': 30,
+    // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
+    // acronym.
+    'common.json': 97,
+    'devices.json': 144,
+    'discovery.json': 22,
+    'integrations.json': 81,
+    'patches.json': 18,
+    'peripherals.json': 4,
+    'policies.json': 363,
+    'portal.json': 9,
+    'remote.json': 14,
+    'reports.json': 51,
+    'scripts.json': 57,
+    'security.json': 163,
+    'settings.json': 155,
+    'tickets.json': 6,
+    'vulnerabilities.json': 17,
   },
 } satisfies Record<TranslatedLocale, Record<string, number>>;
 

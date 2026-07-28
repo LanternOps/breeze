@@ -1300,6 +1300,15 @@ export function validateToolInput(
     return { success: true };
   }
 
-  const issues = result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ');
+  // Object-level refinements (e.g. "install requires patchIds and deviceIds")
+  // carry an empty `path`, so prefixing every message with `${path}: ` yields a
+  // dangling `: message` and, once joined onto the banner, a doubled colon
+  // ("Invalid input: : ..."). Only prefix the path when there is one.
+  const issues = result.error.issues
+    .map(i => {
+      const path = i.path.join('.');
+      return path ? `${path}: ${i.message}` : i.message;
+    })
+    .join('; ');
   return { success: false, error: `Invalid input: ${issues}` };
 }

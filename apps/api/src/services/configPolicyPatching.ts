@@ -2,6 +2,7 @@ import { and, eq, isNull, SQL } from 'drizzle-orm';
 import type { z } from 'zod';
 import { patchInlineSettingsSchema, policyAppRuleSchema } from '@breeze/shared/validators';
 import { db } from '../db';
+import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { captureException } from './sentry';
 import {
   configurationPolicies,
@@ -197,19 +198,30 @@ export async function resolvePatchPolicyReference(
     };
   }
 
-  const [patchPolicy] = await db
-    .select({
-      id: patchPolicies.id,
-      kind: patchPolicies.kind,
-      name: patchPolicies.name,
-      categoryRules: patchPolicies.categoryRules,
-      categories: patchPolicies.categories,
-      excludeCategories: patchPolicies.excludeCategories,
-      autoApprove: patchPolicies.autoApprove,
-    })
-    .from(patchPolicies)
-    .where(and(eq(patchPolicies.id, featurePolicyId), eq(patchPolicies.partnerId, partnerId)))
-    .limit(1);
+  // System context (#2822). `patch_policies` is partner-axis, and the four
+  // routes in routes/configurationPolicies/patchJobs.ts that consume this are
+  // requireScope('organization','partner','system'). Under an org-scoped
+  // caller the read returned zero rows and fell through to
+  // `classification: 'missing_target', valid: false` — so the UI reported a
+  // perfectly good update ring as "invalid" (400 on POST /:id/patch-job,
+  // `ok: 0` on GET /patch-inventory) while the scheduler, which runs
+  // system-scoped, happily executed that same job. Self-tenanted by the
+  // caller-derived `partnerId`, so no cross-partner reach.
+  const [patchPolicy] = await readWithPartnerAxisVisibility(() =>
+    db
+      .select({
+        id: patchPolicies.id,
+        kind: patchPolicies.kind,
+        name: patchPolicies.name,
+        categoryRules: patchPolicies.categoryRules,
+        categories: patchPolicies.categories,
+        excludeCategories: patchPolicies.excludeCategories,
+        autoApprove: patchPolicies.autoApprove,
+      })
+      .from(patchPolicies)
+      .where(and(eq(patchPolicies.id, featurePolicyId), eq(patchPolicies.partnerId, partnerId)))
+      .limit(1)
+  );
 
   if (patchPolicy) {
     if (patchPolicy.kind === 'ring') {

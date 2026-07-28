@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
 const (
@@ -96,8 +98,8 @@ func (m *HelperLifecycleManager) handleSCMEvent(event SCMSessionEvent) {
 	if event.SessionID == 0 {
 		return
 	}
-	systemKey := HelperKey{WindowsSessionID: event.SessionID, Role: "system"}
-	userKey := HelperKey{WindowsSessionID: event.SessionID, Role: "user"}
+	systemKey := HelperKey{WindowsSessionID: event.SessionID, Role: ipc.HelperRoleSystem}
+	userKey := HelperKey{WindowsSessionID: event.SessionID, Role: ipc.HelperRoleUser}
 	switch event.EventType {
 	// Session became usable. Reconnect (console 0x1 / remote 0x3) belongs here:
 	// the session already exists and the user never logged off, so no

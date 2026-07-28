@@ -5,7 +5,10 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { usePermissions } from '../../lib/permissions';
-import { UnsavedBadge, MarginPanel } from './billingUi';
+import { formatTime } from '../../lib/dateTimeFormat';
+import { showToast } from '../shared/Toast';
+import { UnsavedBadge, MarginPanel, useShowMargin } from './billingUi';
+import { useSavedFlash, SrSaved, fieldRing, unsavedHintId, UnsavedFieldHint } from './shared/saveCues';
 import {
   type InvoiceDetail,
   type InvoiceLine,
@@ -13,6 +16,7 @@ import {
   lineTitle,
   computeInvoiceProfit,
 } from './invoiceTypes';
+import { toCents, fromCents } from '@breeze/shared';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
 import PolishButton from '../catalog/PolishButton';
 import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
@@ -23,53 +27,126 @@ const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 interface Props {
   detail: InvoiceDetail;
   onChanged: () => void;
+  /** Reports "is work actually IN FLIGHT?" — an open mutation or a deferred
+   *  deletion whose DELETE hasn't fired yet. The header's Issue buttons wait on
+   *  this, because it is the only state that resolves on its own. Deliberately
+   *  NOT true for a merely-dirty field: see onUnsavedEditsChange. */
+  onPendingEditsChange?: (hasPendingEdits: boolean) => void;
+  /** Reports a field holding an edit that is dirty with NOTHING in flight —
+   *  i.e. its save failed, or never fired. Waiting cannot clear this, so the
+   *  header must refuse the Issue and name the field instead of promising the
+   *  user that a save is on its way. Null when everything is clean or genuinely
+   *  saving. The string is a translated field label. */
+  onUnsavedEditsChange?: (unsavedFieldLabel: string | null) => void;
+  /** Reports every save FAILURE. Quiescence alone is not a safe Issue signal:
+   *  a failed delete-flush restores its rows and a failed line blur-save
+   *  clears its in-flight key, both of which read as "quiet" — the workspace
+   *  forwards this to InvoiceActions so a queued Issue is canceled instead. */
+  onSaveFailure?: () => void;
+  /** Registers a "flush deferred deletions NOW" hook with the workspace, so a
+   *  held Issue fires as soon as the deferred DELETE lands instead of waiting
+   *  out the undo grace window (mirrors the quote editor's Send bridge). */
+  onRegisterPendingDeleteFlush?: (flush: (() => void) | null) => void;
+  /** Controlled cost/margin visibility from the workspace's header toggle;
+   *  standalone mounts (tests) fall back to the shared persisted hook. */
+  showMargin?: boolean;
 }
 
 type AddMode = 'catalog' | 'manual';
 
-// ── Save-grammar helpers (byte-similar local copies of QuoteEditor's — kept
-//    inline per CLAUDE.md; a later pass may extract them to shared/). ─────────
+// Grace window for undo-able line deletion: the line leaves the UI instantly,
+// but the DELETE fires only after this window (or on Issue/unmount/page-hide),
+// so a fat-fingered Remove on a money document is recoverable.
+const UNDO_GRACE_MS = 6000;
 
-// A transient "Saved" cue for a blur-to-save field. Returns the on-flag (drives
-// the SR live region + green ring) and a trigger; clears its timer on unmount so
-// a late fire can't setState a gone node.
-function useSavedFlash(): [boolean, () => void] {
-  const [on, setOn] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
-  const flash = useCallback(() => {
-    setOn(true);
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => setOn(false), 1500);
-  }, []);
-  return [on, flash];
-}
+/** One deferred line deletion awaiting its grace window. `memberIds` includes
+ *  bundle children — the server FK-cascades them, so they hide and restore as
+ *  one unit with their parent. Keyed by the parent line id in
+ *  `pendingDeleteEntries`; the id is NOT repeated here, so an entry can't be
+ *  filed under a key that disagrees with it. */
+type PendingDelete = { memberIds: string[]; timer: ReturnType<typeof setTimeout> };
 
-// Visually-hidden polite live region — announces a transient "Saved" to screen
-// readers, pairing with the dirty-ring clearing that sighted users see. The
-// single per-field announcer (no toast) so SR users hear "Saved" once.
-function SrSaved({ show, label, testId }: { show: boolean; label: string; testId?: string }) {
-  // role="status" already implies aria-live="polite" — don't double it.
-  return <span role="status" className="sr-only" data-testid={testId}>{show ? label : ''}</span>;
-}
-
-// A field's save-state outline: amber while unsaved, a brief green pulse when it
-// lands, nothing at rest. It's a box-shadow (ring), so it never reflows
-// neighbours. Pair with a constant `transition-shadow` on the field.
-function fieldRing(dirty: boolean, saved: boolean): string {
-  return dirty ? 'ring-1 ring-warning' : saved ? 'ring-1 ring-success' : '';
-}
-
-export default function InvoiceEditor({ detail, onChanged }: Props) {
+export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange, onUnsavedEditsChange, onSaveFailure, onRegisterPendingDeleteFlush, showMargin }: Props) {
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const canWrite = can('invoices', 'write');
   // Cost/margin is a read affordance (mirrors InvoiceDetail + the quote rails'
-  // `quotes:read` gate) — anyone who can read the invoice sees it.
+  // `quotes:read` gate) — anyone who can read the invoice sees it, but ONLY
+  // while the persisted "show cost & margin" preference is on: the margin panel
+  // must honor "no margin on screen" here exactly as it does on every quote
+  // surface (a screen-sharing tech who hid margin on a quote must not have it
+  // reappear the moment a draft invoice opens).
   const canSeeMargin = can('invoices', 'read');
-  const { invoice, lines } = detail;
+  const [fallbackShowMargin] = useShowMargin();
+  const effectiveShowMargin = showMargin ?? fallbackShowMargin;
+  const { invoice, lines: serverLines } = detail;
   const currency = invoice.currencyCode;
+
+  // ---- undo-able deletion (deferred DELETE + grace window) -----------------
+  // Confirming a line removal hides it here and starts a grace timer; the real
+  // DELETE fires when the timer lapses, on Issue (via the workspace flush
+  // bridge), on unmount, or on page-hide — never lost, always undoable inside
+  // the window. Mirrors the quote editor's model.
+  const pendingDeleteEntries = useRef<Map<string, PendingDelete>>(new Map());
+  // Two hidden-row sets with different contracts: `pending` rows await their
+  // DELETE (they block Issue via hasPendingEdits and can still be undone);
+  // `flushed` rows' DELETE already SUCCEEDED, so they stay hidden but must NOT
+  // hold Issue — coupling their clearance to the refetch would let one failed
+  // quiet reload brick the Issue buttons over a deletion that actually landed.
+  const [pendingDeletedLineIds, setPendingDeletedLineIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [flushedDeletedLineIds, setFlushedDeletedLineIds] = useState<ReadonlySet<string>>(() => new Set());
+  const lines = useMemo(
+    () => serverLines.filter((l) => !pendingDeletedLineIds.has(l.id) && !flushedDeletedLineIds.has(l.id)),
+    [serverLines, pendingDeletedLineIds, flushedDeletedLineIds],
+  );
+  // Retire hidden ids once the refetch actually drops the rows, so the sets
+  // can't grow stale entries across reloads.
+  useEffect(() => {
+    const present = new Set(serverLines.map((l) => l.id));
+    const trim = (s: ReadonlySet<string>): ReadonlySet<string> => {
+      if (s.size === 0) return s;
+      const n = new Set([...s].filter((id) => present.has(id)));
+      return n.size === s.size ? s : n;
+    };
+    setPendingDeletedLineIds(trim);
+    setFlushedDeletedLineIds(trim);
+  }, [serverLines]);
+
   const profit = useMemo(() => computeInvoiceProfit(lines), [lines]);
+
+  // The figures the summary rail + sticky bar render: optimistic recompute
+  // while any deletion is hidden client-side (sitting in its undo window, or
+  // flushed but not yet dropped by the refetch) — the server totals still
+  // include those lines, so for that window Subtotal/Tax/Total would
+  // contradict the table the user is looking at (the quote editor's
+  // optimisticTotals pattern). The math mirrors the API's
+  // computeInvoiceTotals (services/invoiceMath.ts) EXACTLY: sum the persisted
+  // lineTotal over customer-visible lines — bundle children persist
+  // lineTotal '0.00', so recomputing qty×price here would double-count them —
+  // then tax = taxable basis × the invoice's committed rate, one
+  // round-half-up at the cent boundary. Same inputs, same rounding: the
+  // optimistic figures can never settle different from the next GET.
+  const optimisticTotals = useMemo(() => {
+    if (pendingDeletedLineIds.size === 0 && flushedDeletedLineIds.size === 0) return null;
+    let subtotalCents = 0;
+    let taxableCents = 0;
+    for (const l of lines) {
+      if (!l.customerVisible) continue;
+      const c = toCents(l.lineTotal);
+      subtotalCents += c;
+      if (l.taxable) taxableCents += c;
+    }
+    const rate = invoice.taxRate ? Number(invoice.taxRate) : 0;
+    const taxCents = Math.floor(taxableCents * rate + 0.5);
+    return {
+      subtotal: fromCents(subtotalCents),
+      taxTotal: fromCents(taxCents),
+      total: fromCents(subtotalCents + taxCents),
+    };
+  }, [pendingDeletedLineIds, flushedDeletedLineIds, lines, invoice.taxRate]);
+  const railSubtotal = optimisticTotals?.subtotal ?? invoice.subtotal;
+  const railTax = optimisticTotals?.taxTotal ?? invoice.taxTotal;
+  const railTotal = optimisticTotals?.total ?? invoice.total;
 
   // Per-item "saving" state, keyed so one in-flight mutation never freezes the
   // rest of the editor. Keys: 'notes', 'terms', 'addLine', `qty-<lineId>`,
@@ -79,6 +156,16 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
   const inFlight = useRef<Set<string>>(new Set());
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
   const isPending = useCallback((key: string) => pending.has(key), [pending]);
+  // Timestamp of the last successful mutation, for the quiet "Saved 2:41 PM"
+  // indicator near the autosave hint — null until this session's first save
+  // (nothing to report before that; the indicator itself stays unrendered).
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  // Keys whose most recent save attempt FAILED, cleared when one succeeds.
+  // Dirty-ness alone cannot be the "you have unsaved work" signal: after a
+  // SUCCESSFUL save the local value legitimately differs from the server copy
+  // until the refetch lands, so "dirty with nothing in flight" is also the
+  // normal happy path for one round-trip. Failure is unambiguous.
+  const [failedKeys, setFailedKeys] = useState<ReadonlySet<string>>(() => new Set());
 
   // Run a scoped mutation: mark the key pending, run, surface failures via the
   // standard handleActionError path, and always clear the key. Returns whether
@@ -90,16 +177,20 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
       setPending((s) => { const n = new Set(s); n.add(key); return n; });
       try {
         await fn();
+        setLastSavedAt(Date.now());
+        setFailedKeys((s) => { if (!s.has(key)) return s; const n = new Set(s); n.delete(key); return n; });
         return true;
       } catch (err) {
         handleActionError(err, errMsg);
+        setFailedKeys((s) => { if (s.has(key)) return s; const n = new Set(s); n.add(key); return n; });
+        onSaveFailure?.();
         return false;
       } finally {
         inFlight.current.delete(key);
         setPending((s) => { const n = new Set(s); n.delete(key); return n; });
       }
     },
-    [],
+    [onSaveFailure],
   );
 
   const [notes, setNotes] = useState(invoice.notes ?? '');
@@ -109,6 +200,57 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
   const [termsDirty, setTermsDirty] = useState(false);
   const [termsSaved, flashTermsSaved] = useSavedFlash();
 
+  // Per-line dirty fields, reported up from each LineRow. This MUST be lifted:
+  // a line field whose save failed keeps its local value (nothing reverts it)
+  // while runScoped's `finally` clears its in-flight key — so `pending` alone
+  // reads as perfectly quiet while an amber "unsaved" border sits on a quantity.
+  // Leaving it unlifted let Issue number an invoice at the pre-edit money.
+  const [dirtyLineKeys, setDirtyLineKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const reportLineDirty = useCallback((key: string, dirty: boolean) => {
+    setDirtyLineKeys((s) => {
+      if (dirty === s.has(key)) return s; // no-op keeps the reference stable
+      const n = new Set(s);
+      if (dirty) n.add(key); else n.delete(key);
+      return n;
+    });
+  }, []);
+
+  // Two DIFFERENT questions, deliberately kept apart — conflating them is what
+  // produced both a false "Saving changes…" and an Issue that skipped a failed
+  // edit:
+  //
+  // - hasPendingEdits: work is genuinely IN FLIGHT (an open mutation, or a
+  //   deferred deletion whose DELETE hasn't fired). This resolves on its own,
+  //   so a queued Issue may legitimately wait for it. Deferred deletions count:
+  //   Issue must not snapshot an invoice the user has visibly already trimmed
+  //   (clicking Issue also flushes them — see onRegisterPendingDeleteFlush).
+  // - unsavedFieldLabel: a field whose save FAILED and which is still dirty.
+  //   Waiting will never clear it, so the header refuses the Issue and names
+  //   the field.
+  //
+  // The second signal is the intersection of "last attempt failed" and "still
+  // differs from the server", and it needs both halves. Failure alone would
+  // keep blocking after the user reverts the field by hand (the commit path
+  // short-circuits on an unchanged value, so no fresh attempt ever clears the
+  // flag). Dirty alone would fire during the one round-trip between a
+  // successful save and its refetch, refusing an Issue that is perfectly valid.
+  //
+  // A field that is mid-save is dirty AND in flight; `pending.size > 0` is
+  // checked first so that reads as "saving", not as "stuck".
+  const hasPendingEdits = pending.size > 0 || pendingDeletedLineIds.size > 0;
+  const unsavedFieldLabel = useMemo(() => {
+    if (pending.size > 0) return null; // something is genuinely on its way
+    if (failedKeys.has('notes') && notesDirty) return t('invoiceEditor.notes.title');
+    if (failedKeys.has('terms') && termsDirty) return t('invoiceEditor.terms.title');
+    for (const key of failedKeys) if (dirtyLineKeys.has(key)) return t('invoiceEditor.unsavedField.lines');
+    return null;
+  }, [pending.size, failedKeys, notesDirty, termsDirty, dirtyLineKeys, t]);
+  useEffect(() => { onPendingEditsChange?.(hasPendingEdits); }, [hasPendingEdits, onPendingEditsChange]);
+  useEffect(() => { onUnsavedEditsChange?.(unsavedFieldLabel); }, [unsavedFieldLabel, onUnsavedEditsChange]);
+  // Clear BOTH on unmount so a stale signal can't lock Issue after the editor is
+  // gone (e.g. the invoice was just issued and the tab switched).
+  useEffect(() => () => { onPendingEditsChange?.(false); onUnsavedEditsChange?.(null); }, [onPendingEditsChange, onUnsavedEditsChange]);
+
   // Add-line form
   const [addMode, setAddMode] = useState<AddMode>('catalog');
   const [manualName, setManualName] = useState('');
@@ -117,18 +259,31 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
   const [manualPrice, setManualPrice] = useState('0.00');
   const [manualTaxable, setManualTaxable] = useState(false);
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  const [catalogFailed, setCatalogFailed] = useState(false);
   const [picked, setPicked] = useState<CatalogItem | null>(null);
   const [pickQty, setPickQty] = useState('1');
 
   useEffect(() => { setNotes(invoice.notes ?? ''); setNotesDirty(false); }, [invoice.notes]);
   useEffect(() => { setTerms(invoice.termsAndConditions ?? ''); setTermsDirty(false); }, [invoice.termsAndConditions]);
 
+  // An empty catalog and a BROKEN catalog need different copy: rendering "No
+  // catalog items — add in catalog" because the response failed to parse sends
+  // the user off to create items that already exist. Everything that can throw
+  // is inside the try, including the JSON parse (a 200 with a truncated body
+  // rejects there), and the rejection is surfaced rather than voided away.
   const loadCatalog = useCallback(async () => {
-    const res = await listCatalog({ isActive: true, limit: 200 });
-    if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) { handleActionError(new Error(res.statusText), t('invoiceEditor.errors.loadCatalog')); return; }
-    const body = (await res.json()) as { data: CatalogItem[] };
-    setCatalog(body.data ?? []);
+    try {
+      const res = await listCatalog({ isActive: true, limit: 200 });
+      if (res.status === 401) return UNAUTHORIZED();
+      if (!res.ok) throw new Error(res.statusText);
+      const body = (await res.json().catch(() => null)) as { data?: CatalogItem[] } | null;
+      if (!body || !Array.isArray(body.data)) throw new Error('malformed catalog response');
+      setCatalog(body.data);
+      setCatalogFailed(false);
+    } catch (err) {
+      handleActionError(err, t('invoiceEditor.errors.loadCatalog'));
+      setCatalogFailed(true);
+    }
   }, [t]);
 
   useEffect(() => { void loadCatalog(); }, [loadCatalog]);
@@ -148,23 +303,27 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
 
   const refresh = useCallback(() => onChanged(), [onChanged]);
 
-  const addLine = useCallback(() =>
-    runScoped('addLine', async () => {
-      if (addMode === 'manual') {
-        // A line needs at least a title (name) or a description (mirrors the API refine).
-        if (!manualName.trim() && !manualDesc.trim()) return;
-        // Guard qty/price with the same rules as the inline commit path so a bad
-        // manual entry is explained, not silently coerced (Number('abc') → NaN).
-        const q = Number(manualQty);
-        const p = Number(manualPrice);
-        if (!Number.isFinite(q) || q <= 0) {
-          handleActionError(new Error('invalid quantity'), t('invoiceEditor.errors.quantityGreaterThanZero'));
-          return;
-        }
-        if (!Number.isFinite(p) || p < 0) {
-          handleActionError(new Error('invalid price'), t('invoiceEditor.errors.nonNegativeUnitPrice'));
-          return;
-        }
+  // Validation runs OUTSIDE runScoped. Inside it, a plain `return` is
+  // indistinguishable from a completed save, so runScoped would stamp the
+  // "Saved <time>" indicator on an entry it had just rejected — a success cue on
+  // a money document at the exact moment of a failure.
+  const addLine = useCallback(async () => {
+    if (addMode === 'manual') {
+      // A line needs at least a title (name) or a description (mirrors the API refine).
+      if (!manualName.trim() && !manualDesc.trim()) return;
+      // Guard qty/price with the same rules as the inline commit path so a bad
+      // manual entry is explained, not silently coerced (Number('abc') → NaN).
+      const q = Number(manualQty);
+      const p = Number(manualPrice);
+      if (!Number.isFinite(q) || q <= 0) {
+        handleActionError(new Error('invalid quantity'), t('invoiceEditor.errors.quantityGreaterThanZero'));
+        return;
+      }
+      if (!Number.isFinite(p) || p < 0) {
+        handleActionError(new Error('invalid price'), t('invoiceEditor.errors.nonNegativeUnitPrice'));
+        return;
+      }
+      await runScoped('addLine', async () => {
         await runAction({
           request: () => fetchWithAuth(`/invoices/${invoice.id}/lines`, {
             method: 'POST',
@@ -181,29 +340,33 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
           onUnauthorized: UNAUTHORIZED,
         });
         setManualName(''); setManualDesc(''); setManualQty('1'); setManualPrice('0.00'); setManualTaxable(false);
-      } else {
-        if (!picked) return;
-        const pq = Number(pickQty);
-        if (!Number.isFinite(pq) || pq <= 0) {
-          handleActionError(new Error('invalid quantity'), t('invoiceEditor.errors.quantityGreaterThanZero'));
-          return;
-        }
-        const path = picked.isBundle
-          ? `/invoices/${invoice.id}/lines/bundle`
-          : `/invoices/${invoice.id}/lines/catalog`;
-        const body = picked.isBundle
-          ? { bundleId: picked.id, quantity: pq }
-          : { catalogItemId: picked.id, quantity: pq };
-        await runAction({
-          request: () => fetchWithAuth(path, { method: 'POST', body: JSON.stringify(body) }),
-          errorFallback: t('invoiceEditor.errors.addLine'),
-          successMessage: t('invoiceEditor.success.lineAdded'),
-          onUnauthorized: UNAUTHORIZED,
-        });
-        setPicked(null); setPickQty('1');
-      }
+        refresh();
+      }, t('invoiceEditor.errors.addLine'));
+      return;
+    }
+    if (!picked) return;
+    const pq = Number(pickQty);
+    if (!Number.isFinite(pq) || pq <= 0) {
+      handleActionError(new Error('invalid quantity'), t('invoiceEditor.errors.quantityGreaterThanZero'));
+      return;
+    }
+    const path = picked.isBundle
+      ? `/invoices/${invoice.id}/lines/bundle`
+      : `/invoices/${invoice.id}/lines/catalog`;
+    const body = picked.isBundle
+      ? { bundleId: picked.id, quantity: pq }
+      : { catalogItemId: picked.id, quantity: pq };
+    await runScoped('addLine', async () => {
+      await runAction({
+        request: () => fetchWithAuth(path, { method: 'POST', body: JSON.stringify(body) }),
+        errorFallback: t('invoiceEditor.errors.addLine'),
+        successMessage: t('invoiceEditor.success.lineAdded'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setPicked(null); setPickQty('1');
       refresh();
-    }, t('invoiceEditor.errors.addLine')),
+    }, t('invoiceEditor.errors.addLine'));
+  },
   [runScoped, addMode, manualName, manualDesc, manualQty, manualPrice, manualTaxable, picked, pickQty, invoice.id, refresh, t]);
 
   // Inline edit of an existing line. `scopeKey` is per-field so one in-flight
@@ -222,17 +385,134 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
     }, t('invoiceEditor.errors.updateLine')),
   [runScoped, invoice.id, refresh, t]);
 
-  const removeLine = useCallback((lineId: string) =>
+  // The real DELETE — only ever reached through the deferred-deletion lifecycle
+  // below. No success toast: the undo toast at removal time already told the
+  // user. keepalive so a flush fired from pagehide survives the page teardown.
+  const deleteLine = useCallback((lineId: string) =>
     runScoped(`remove-${lineId}`, async () => {
       await runAction({
-        request: () => fetchWithAuth(`/invoices/${invoice.id}/lines/${lineId}`, { method: 'DELETE' }),
+        request: () => fetchWithAuth(`/invoices/${invoice.id}/lines/${lineId}`, { method: 'DELETE', keepalive: true }),
         errorFallback: t('invoiceEditor.errors.removeLine'),
-        successMessage: t('invoiceEditor.success.lineRemoved'),
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
     }, t('invoiceEditor.errors.removeLine')),
   [runScoped, invoice.id, refresh, t]);
+
+  // undo → cancel the timer, unhide (nothing was ever sent).
+  const undoLineDelete = useCallback((lineId: string) => {
+    const entry = pendingDeleteEntries.current.get(lineId);
+    if (!entry) {
+      // Already flushed (e.g. an Issue click landed the DELETE before the undo
+      // toast expired) — the deletion is real now. Say so: a silently dead
+      // Undo click reads as "the app ate my line back... or did it?"
+      showToast({ type: 'warning', message: t('invoiceEditor.undo.tooLate') });
+      return;
+    }
+    clearTimeout(entry.timer);
+    pendingDeleteEntries.current.delete(lineId);
+    setPendingDeletedLineIds((s) => {
+      const n = new Set(s);
+      for (const id of entry.memberIds) n.delete(id);
+      return n;
+    });
+  }, [t]);
+
+  // flush → fire the real DELETE; on failure the line is honestly restored (it
+  // IS still there) on top of the delete path's own error toast.
+  const flushLineDelete = useCallback(async (lineId: string): Promise<boolean> => {
+    const entry = pendingDeleteEntries.current.get(lineId);
+    if (!entry) return true; // undone, or another flush already owns it — not a failure
+    clearTimeout(entry.timer);
+    pendingDeleteEntries.current.delete(lineId);
+    const ok = await deleteLine(lineId);
+    // Success or failure, the ids leave the PENDING set (they no longer hold
+    // Issue): success promotes them to the flushed set so they stay hidden
+    // until the refetch drops the rows; failure just unhides them.
+    setPendingDeletedLineIds((s) => {
+      const n = new Set(s);
+      for (const id of entry.memberIds) n.delete(id);
+      return n;
+    });
+    if (ok) {
+      setFlushedDeletedLineIds((s) => {
+        const n = new Set(s);
+        for (const id of entry.memberIds) n.add(id);
+        return n;
+      });
+    }
+    return ok;
+  }, [deleteLine]);
+
+  const startLineDelete = useCallback((lineId: string) => {
+    if (pendingDeleteEntries.current.has(lineId)) return;
+    // Bundle children ride with their parent (the server cascade deletes them),
+    // so they hide — and restore — as one unit.
+    const memberIds = [lineId, ...serverLines.filter((l) => l.parentLineId === lineId).map((l) => l.id)];
+    const timer = setTimeout(() => { void flushLineDelete(lineId); }, UNDO_GRACE_MS);
+    pendingDeleteEntries.current.set(lineId, { memberIds, timer });
+    setPendingDeletedLineIds((s) => {
+      const n = new Set(s);
+      for (const id of memberIds) n.add(id);
+      return n;
+    });
+    showToast({
+      type: 'undo',
+      message: t('invoiceEditor.undo.lineDeleted'),
+      duration: UNDO_GRACE_MS,
+      onUndo: () => undoLineDelete(lineId),
+    });
+  }, [serverLines, flushLineDelete, undoLineDelete, t]);
+
+  // Flush every deferred deletion immediately. Issue (via the workspace),
+  // unmount and page-hide all route through here — the grace window is a UI
+  // nicety, never a way for a confirmed deletion to be lost or to outlive the
+  // editor.
+  const flushAllPendingDeletes = useCallback(() => {
+    const ids = [...pendingDeleteEntries.current.keys()];
+    if (ids.length === 0) return;
+    void (async () => {
+      const results = await Promise.all(ids.map((id) => flushLineDelete(id)));
+      const failed = results.filter((ok) => !ok).length;
+      // A PARTIAL flush is the case that silently misleads: the deletions that
+      // landed are permanent (their undo toasts are spent, and deleteLine has no
+      // success toast of its own), the failed one's row is back, and the only
+      // other thing the user sees is a generic "Issue was canceled". Read
+      // together those say "nothing happened", which is wrong in both
+      // directions. An all-or-nothing outcome needs no extra narration.
+      if (failed > 0 && failed < results.length) {
+        showToast({
+          type: 'warning',
+          message: t('invoiceEditor.undo.partialFlush', { applied: results.length - failed, failed }),
+        });
+      }
+    })();
+  }, [flushLineDelete, t]);
+  const flushAllRef = useRef(flushAllPendingDeletes);
+  useEffect(() => { flushAllRef.current = flushAllPendingDeletes; }, [flushAllPendingDeletes]);
+  useEffect(() => {
+    // Two teardown signals, deliberately layered:
+    // - visibilitychange→hidden fires while the page is still alive, so the
+    //   full request path (including a token refresh, which is NOT keepalive)
+    //   can complete and failures restore + toast normally. This is the
+    //   primary flush for tab switches and most navigations.
+    // - pagehide (not beforeunload: pagehide also fires on bfcache
+    //   navigations) is the last resort for hard teardowns; the DELETE goes
+    //   out with keepalive so it survives the page being torn down.
+    const onVisibilityHidden = () => { if (document.visibilityState === 'hidden') flushAllRef.current(); };
+    const onPageHide = () => flushAllRef.current();
+    document.addEventListener('visibilitychange', onVisibilityHidden);
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityHidden);
+      window.removeEventListener('pagehide', onPageHide);
+      flushAllRef.current();
+    };
+  }, []);
+  useEffect(() => {
+    onRegisterPendingDeleteFlush?.(flushAllPendingDeletes);
+    return () => onRegisterPendingDeleteFlush?.(null);
+  }, [onRegisterPendingDeleteFlush, flushAllPendingDeletes]);
 
   const saveNotes = useCallback(async () => {
     if (!notesDirty) return;
@@ -276,6 +556,25 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
 
   return (
     <div className="space-y-6" data-testid="invoice-editor">
+      {/* Autosave hint + quiet sync indicator — same save-language strip as the
+          quote editor, so "how do I save?" has one answer across billing. */}
+      {canWrite && (
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-xs text-muted-foreground" data-testid="invoice-editor-autosave-hint">
+            {t('invoiceEditor.autosaveHint')}
+          </p>
+          {/* "Saving…" while any mutation is in flight, else "Saved 2:41 PM" once
+              this session has saved at least once. Purely informational — never
+              disables Issue or any other control. */}
+          {(pending.size > 0 || lastSavedAt !== null) && (
+            <p className="text-xs text-muted-foreground" data-testid="invoice-editor-last-saved">
+              {pending.size > 0
+                ? t('invoiceEditor.lastSaved.saving')
+                : t('invoiceEditor.lastSaved.saved', { time: formatTime(lastSavedAt as number, { hour: '2-digit', minute: '2-digit' }) })}
+            </p>
+          )}
+        </div>
+      )}
       {unapprovedCount > 0 && (
         <div
           className="rounded-md border border-warning/40 bg-warning/15 px-4 py-3 text-sm text-[hsl(36_92%_28%)] dark:text-warning"
@@ -285,11 +584,19 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
         </div>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_300px]">
+      {/* xl (not lg): matches the quote editor — below xl the rail stacks under
+          the content so the lines table isn't starved into sideways scrolling.
+          min-w-0 lets the 1fr track shrink below the table's content width. */}
+      <div className="grid gap-6 xl:grid-cols-[1fr_300px]">
         {/* Lines */}
-        <div className="space-y-4">
+        <div className="min-w-0 space-y-4">
           <div className="rounded-lg border bg-card shadow-xs">
-            <table className="w-full text-sm" data-testid="invoice-editor-lines">
+            {/* Labeled, keyboard-reachable scroll region: the row's fixed-width
+                inputs set a min-content width beyond phone viewports, so the
+                table scrolls inside the card instead of bleeding past its
+                rounded edge (same pattern as QuoteDetail's LineTable). */}
+            <div className="overflow-x-auto" role="region" aria-label={t('invoiceEditor.linesScrollAria')} tabIndex={0}>
+            <table className="w-full min-w-[40rem] text-sm" data-testid="invoice-editor-lines">
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
                   <th className="px-3 py-2 font-medium">{t('invoiceEditor.table.item')}</th>
@@ -317,12 +624,14 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
                       currency={currency}
                       isPending={isPending}
                       onPatch={patchLine}
-                      onRemove={removeLine}
+                      onRemove={startLineDelete}
+                      onDirtyChange={reportLineDirty}
                     />
                   ))
                 )}
               </tbody>
             </table>
+            </div>
           </div>
 
           {/* Add line */}
@@ -419,6 +728,18 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
                   {t('invoiceEditor.addLine.add')}
                 </button>
               </div>
+            ) : catalogFailed ? (
+              <p className="text-sm text-muted-foreground" data-testid="invoice-catalog-error">
+                {t('invoiceEditor.addLine.catalogLoadFailed')}{' '}
+                <button
+                  type="button"
+                  onClick={() => void loadCatalog()}
+                  className="underline hover:text-foreground"
+                  data-testid="invoice-catalog-retry"
+                >
+                  {t('invoiceEditor.addLine.retry')}
+                </button>
+              </p>
             ) : catalog.length === 0 ? (
               <p className="text-sm text-muted-foreground" data-testid="invoice-catalog-empty">
                 {t('invoiceEditor.addLine.noCatalogItems')}{' '}
@@ -436,14 +757,16 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
           )}
         </div>
 
-        {/* Summary + bill-to + notes + actions */}
-        <div className="space-y-4">
+        {/* Summary + bill-to + notes + actions. Sticky on xl so the totals you're
+            building against stay visible while scrolling the lines; below xl this
+            column stacks under the table. */}
+        <div className="space-y-4 xl:sticky xl:top-4 xl:self-start">
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-summary">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('invoiceEditor.summary.title')}</h3>
             <dl className="space-y-1 text-sm">
-              <div className="flex justify-between"><dt className="text-muted-foreground">{t('invoiceEditor.summary.subtotal')}</dt><dd data-testid="invoice-subtotal">{formatMoney(invoice.subtotal, currency)}</dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">{t('invoiceEditor.summary.tax')}{!noTaxRate ? ` (${formatPercent(Number(invoice.taxRate), { minimumFractionDigits: 2, maximumFractionDigits: 2 })})` : ''}</dt><dd data-testid="invoice-tax">{formatMoney(invoice.taxTotal, currency)}</dd></div>
-              <div className="flex justify-between border-t pt-1 font-semibold"><dt>{t('invoiceEditor.summary.total')}</dt><dd data-testid="invoice-total">{formatMoney(invoice.total, currency)}</dd></div>
+              <div className="flex justify-between"><dt className="text-muted-foreground">{t('invoiceEditor.summary.subtotal')}</dt><dd data-testid="invoice-subtotal">{formatMoney(railSubtotal, currency)}</dd></div>
+              <div className="flex justify-between"><dt className="text-muted-foreground">{t('invoiceEditor.summary.tax')}{!noTaxRate ? ` (${formatPercent(Number(invoice.taxRate), { minimumFractionDigits: 2, maximumFractionDigits: 2 })})` : ''}</dt><dd data-testid="invoice-tax">{formatMoney(railTax, currency)}</dd></div>
+              <div className="flex justify-between border-t pt-1 font-semibold"><dt>{t('invoiceEditor.summary.total')}</dt><dd data-testid="invoice-total">{formatMoney(railTotal, currency)}</dd></div>
             </dl>
             {hasTaxableLine && noTaxRate && (
               <p className="mt-3 text-xs text-muted-foreground" data-testid="invoice-tax-rate-hint">
@@ -451,10 +774,11 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
                 <a href="/settings/billing" className="underline hover:text-foreground">{t('invoiceEditor.summary.setTaxRate')}</a>.
               </p>
             )}
-            {/* Internal margin summary — at-a-glance profitability while building the
-                invoice (the per-line cost/margin breakdown lives in InvoiceDetail's
-                Accounting view). Reuses the shared quote math; never customer-facing. */}
-            {canSeeMargin && <MarginPanel profit={profit} currency={currency} idPrefix="invoice" />}
+            {/* Internal margin summary — at-a-glance profitability while building
+                the invoice. Gated on the SAME persisted "show cost & margin"
+                preference as every quote surface, so "no margin on screen" holds
+                across the whole billing area. Never customer-facing. */}
+            {canSeeMargin && effectiveShowMargin && <MarginPanel profit={profit} currency={currency} idPrefix="invoice" />}
           </div>
 
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-bill-to">
@@ -487,7 +811,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
               disabled={!canWrite || isPending('notes')}
               data-testid="invoice-notes"
               rows={3}
-              className={`w-full rounded-md border bg-background px-3 py-2 text-sm transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(notesDirty, notesSaved)}`}
+              className={`w-full rounded-md border bg-background px-3 py-2 text-sm transition-colors focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(notesDirty, notesSaved)}`}
               placeholder={t('invoiceEditor.notes.placeholder')}
             />
           </div>
@@ -504,7 +828,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
               disabled={!canWrite || isPending('terms')}
               data-testid="invoice-terms"
               rows={3}
-              className={`w-full rounded-md border bg-background px-3 py-2 text-sm transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(termsDirty, termsSaved)}`}
+              className={`w-full rounded-md border bg-background px-3 py-2 text-sm transition-colors focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(termsDirty, termsSaved)}`}
               placeholder={t('invoiceEditor.terms.placeholder')}
             />
           </div>
@@ -514,12 +838,34 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
               — mirrors the quote editor, which carries no Send button of its own. */}
         </div>
       </div>
+
+      {/* Below xl the summary rail stacks under the lines table, which would
+          break the edit→see-total loop mid-task — so a slim summary stays pinned
+          to the viewport bottom (sticky bottom releases once you scroll down to
+          the real rail). aria-hidden: purely a visual affordance; the rail's
+          figures are the canonical ones (mirrors the quote editor's sticky bar). */}
+      <div
+        aria-hidden="true"
+        data-testid="invoice-totals-sticky"
+        className="sticky bottom-2 z-10 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-lg border bg-card px-4 py-2 text-sm shadow-md xl:hidden"
+      >
+        <span className="flex items-baseline gap-2">
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('invoiceEditor.summary.total')}</span>
+          <span className="text-base font-semibold tabular-nums" data-testid="invoice-totals-sticky-total">{formatMoney(railTotal, currency)}</span>
+        </span>
+        {Number(railTax) > 0 && (
+          <span className="flex items-baseline gap-1 text-muted-foreground">
+            <span className="text-xs">{t('invoiceEditor.summary.tax')}</span>
+            <span className="font-medium tabular-nums">{formatMoney(railTax, currency)}</span>
+          </span>
+        )}
+      </div>
     </div>
   );
 }
 
 function LineRow({
-  line, children, currency, isPending, onPatch, onRemove,
+  line, children, currency, isPending, onPatch, onRemove, onDirtyChange,
 }: {
   line: InvoiceLine;
   children: InvoiceLine[];
@@ -527,6 +873,10 @@ function LineRow({
   isPending: (key: string) => boolean;
   onPatch: (lineId: string, patch: Record<string, unknown>, scopeKey: string) => Promise<boolean>;
   onRemove: (lineId: string) => void;
+  /** Reports this row's per-field dirty state to the editor, which folds it into
+   *  the Issue gate. Without it a line edit whose PATCH failed is invisible to
+   *  the header — see the hasPendingEdits comment. */
+  onDirtyChange: (key: string, dirty: boolean) => void;
 }) {
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
@@ -591,6 +941,21 @@ function LineRow({
   const qtyDirty = Number(qty) !== Number(line.quantity);
   const priceDirty = Number(price) !== Number(line.unitPrice);
 
+  // Report each field's dirty state up so the header's Issue gate can see it.
+  // The unmount cleanup is load-bearing: a row that disappears (deleted, or
+  // dropped by a refetch) while dirty would otherwise pin the invoice's
+  // "unsaved" state to a field that no longer exists, blocking Issue forever.
+  useEffect(() => { onDirtyChange(nameKey, nameDirty); }, [onDirtyChange, nameKey, nameDirty]);
+  useEffect(() => { onDirtyChange(descKey, descDirty); }, [onDirtyChange, descKey, descDirty]);
+  useEffect(() => { onDirtyChange(qtyKey, qtyDirty); }, [onDirtyChange, qtyKey, qtyDirty]);
+  useEffect(() => { onDirtyChange(priceKey, priceDirty); }, [onDirtyChange, priceKey, priceDirty]);
+  useEffect(() => () => {
+    onDirtyChange(nameKey, false);
+    onDirtyChange(descKey, false);
+    onDirtyChange(qtyKey, false);
+    onDirtyChange(priceKey, false);
+  }, [onDirtyChange, nameKey, descKey, qtyKey, priceKey]);
+
   const commitName = () => {
     if (!canWrite) return;
     const next = name.trim();
@@ -649,35 +1014,44 @@ function LineRow({
           <input
             type="text" value={name} disabled={!canWrite || isPending(nameKey)}
             aria-label={t('invoiceEditor.fields.lineName')} placeholder={t('invoiceEditor.fields.name')}
+            aria-describedby={nameDirty ? unsavedHintId('invoice-line', line.id, 'name') : undefined}
             onChange={(e) => { setName(e.target.value); nameEdited.current = true; }}
             onBlur={commitName}
             data-testid={`invoice-line-name-${line.id}`}
-            className={`h-8 w-full rounded-md border bg-background px-2 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(nameDirty, saved)}`}
+            className={`h-8 w-full rounded-md border bg-background px-2 text-sm font-medium transition-colors focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(nameDirty, saved)}`}
           />
+          <UnsavedFieldHint id={unsavedHintId('invoice-line', line.id, 'name')} show={nameDirty} />
         </td>
         <td className="px-3 py-2 text-right">
           <input
             type="number" min="0" step="0.01" value={qty} disabled={!canWrite || isPending(qtyKey)}
             aria-label={t('invoiceEditor.fields.quantity')}
+            aria-describedby={qtyDirty ? unsavedHintId('invoice-line', line.id, 'qty') : undefined}
             onChange={(e) => { setQty(e.target.value); qtyEdited.current = true; }}
             onBlur={commitQty}
             data-testid={`invoice-line-qty-${line.id}`}
-            className={`h-8 w-20 rounded-md border bg-background px-2 text-right text-sm transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(qtyDirty, saved)}`}
+            className={`h-8 w-20 rounded-md border bg-background px-2 text-right text-sm transition-colors focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(qtyDirty, saved)}`}
           />
+          <UnsavedFieldHint id={unsavedHintId('invoice-line', line.id, 'qty')} show={qtyDirty} />
         </td>
         <td className="px-3 py-2 text-right">
           <input
             type="number" min="0" step="0.01" value={price} disabled={!canWrite || isPending(priceKey)}
             aria-label={t('invoiceEditor.fields.unitPrice')}
+            aria-describedby={priceDirty ? unsavedHintId('invoice-line', line.id, 'price') : undefined}
             onChange={(e) => { setPrice(e.target.value); priceEdited.current = true; }}
             onBlur={commitPrice}
             data-testid={`invoice-line-price-${line.id}`}
-            className={`h-8 w-24 rounded-md border bg-background px-2 text-right text-sm transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(priceDirty, saved)}`}
+            className={`h-8 w-24 rounded-md border bg-background px-2 text-right text-sm transition-colors focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(priceDirty, saved)}`}
           />
+          <UnsavedFieldHint id={unsavedHintId('invoice-line', line.id, 'price')} show={priceDirty} />
         </td>
         <td className="px-3 py-2 text-center">
           <input
             type="checkbox" checked={line.taxable} disabled={!canWrite || isPending(taxableKey)}
+            // Explicit name: header-cell inference doesn't survive the
+            // two-<tr>-per-line table structure for screen readers.
+            aria-label={t('invoiceEditor.fields.taxable')}
             onChange={(e) => void edit({ taxable: e.target.checked }, taxableKey)}
             data-testid={`invoice-line-taxable-${line.id}`}
           />
@@ -685,6 +1059,9 @@ function LineRow({
         <td className="px-3 py-2 text-center">
           <input
             type="checkbox" checked={line.customerVisible} disabled={!canWrite || isPending(visibleKey)}
+            // The abbreviated "Cust" column header only explains itself via a
+            // title tooltip — give AT users the full meaning directly.
+            aria-label={t('invoiceEditor.table.customerVisibleTitle')}
             onChange={(e) => void edit({ customerVisible: e.target.checked }, visibleKey)}
             data-testid={`invoice-line-visible-${line.id}`}
           />
@@ -715,12 +1092,14 @@ function LineRow({
             disabled={!canWrite || isPending(descKey)}
             aria-label={t('invoiceEditor.fields.lineDescription')}
             placeholder={t('invoiceEditor.fields.descriptionOptional')}
+            aria-describedby={descDirty ? unsavedHintId('invoice-line', line.id, 'desc') : undefined}
             onChange={(e) => { setDesc(e.target.value); descEdited.current = true; autoGrowDesc(); }}
             onBlur={commitDesc}
             rows={2}
             data-testid={`invoice-line-desc-${line.id}`}
-            className={`min-h-8 w-full resize-y overflow-hidden rounded-md border bg-background px-2 py-1 text-sm text-muted-foreground transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(descDirty, saved)}`}
+            className={`min-h-8 w-full resize-y overflow-hidden rounded-md border bg-background px-2 py-1 text-sm text-muted-foreground transition-colors focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(descDirty, saved)}`}
           />
+          <UnsavedFieldHint id={unsavedHintId('invoice-line', line.id, 'desc')} show={descDirty} />
         </td>
       </tr>
       {children.map((ch) => (

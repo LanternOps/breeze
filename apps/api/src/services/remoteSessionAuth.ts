@@ -1,11 +1,13 @@
-import { createHash, randomBytes } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { getRedis } from './redis';
 import { VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS } from './jwt';
 
-type SessionType = 'terminal' | 'desktop' | 'tunnel' | 'tunnel-http';
+export type RemoteWsTicketSessionType = 'terminal' | 'desktop' | 'tunnel' | 'tunnel-http';
 
-const WS_TICKET_TTL_MS = 60 * 1000; // 60 seconds
-export const HTTP_TICKET_TTL_MS = 5 * 60 * 1000; // 5 minutes (interactive proxy page load window)
+export const WS_TICKET_TTL_SECONDS = 60;
+export const HTTP_TUNNEL_TICKET_TTL_SECONDS = 300;
+const WS_TICKET_TTL_MS = WS_TICKET_TTL_SECONDS * 1000;
+export const HTTP_TICKET_TTL_MS = HTTP_TUNNEL_TICKET_TTL_SECONDS * 1000;
 const DESKTOP_CONNECT_CODE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 const VNC_CONNECT_CODE_TTL_MS = 60 * 1000; // 60 seconds
 // Viewer-token advertised expiry derives from the real signed TTL
@@ -18,9 +20,10 @@ const VNC_CONNECT_CODE_TTL_MS = 60 * 1000; // 60 seconds
 // better than exact-UA equality.
 const UA_HASH_LEN = 16;
 
-interface WsTicketRecord {
+export interface RemoteWsTicketRecordV0 {
+  version?: never;
   sessionId: string;
-  sessionType: SessionType;
+  sessionType: RemoteWsTicketSessionType;
   userId: string;
   expiresAt: number;
   // Caller-binding metadata (Task 16). Stored at issue time so we can reject
@@ -31,6 +34,34 @@ interface WsTicketRecord {
   ip?: string;
   uaHash?: string;
 }
+
+export interface RemoteWsTicketRecordV1 {
+  version: 1;
+  jti: string;
+  sessionId: string;
+  sessionType: 'desktop' | 'tunnel';
+  userId: string;
+  expiresAt: number;
+  ip?: string;
+  uaHash?: string;
+}
+
+export interface RemoteWsTicketRecordV2 {
+  version: 2;
+  jti: string;
+  sessionId: string;
+  sessionType: RemoteWsTicketSessionType;
+  userId: string;
+  mfaSatisfied: boolean;
+  expiresAt: number;
+  ip?: string;
+  uaHash?: string;
+}
+
+export type RemoteWsTicketRecord =
+  | RemoteWsTicketRecordV0
+  | RemoteWsTicketRecordV1
+  | RemoteWsTicketRecordV2;
 
 interface DesktopConnectCodeRecord {
   sessionId: string;
@@ -48,7 +79,7 @@ interface VncConnectCodeRecord {
   expiresAt: number;
 }
 
-const wsTickets = new Map<string, WsTicketRecord>();
+const wsTickets = new Map<string, RemoteWsTicketRecord>();
 const desktopConnectCodes = new Map<string, DesktopConnectCodeRecord>();
 const vncConnectCodes = new Map<string, VncConnectCodeRecord>();
 
@@ -120,7 +151,20 @@ function shouldBindTicketIp(): boolean {
  * an adversary cannot probe.
  */
 export type ConsumeWsTicketResult =
-  | { ok: true; sessionId: string; sessionType: SessionType; userId: string; expiresAt: number }
+  | (
+      {
+        ok: true;
+        sessionId: string;
+        sessionType: RemoteWsTicketSessionType;
+        userId: string;
+        expiresAt: number;
+      }
+      & (
+        | { version?: 0; ticketJti?: null }
+        | { version: 1; ticketJti: string }
+        | { version: 2; ticketJti: string; mfaSatisfied: boolean }
+      )
+    )
   | { ok: false; reason: 'not_found' | 'expired' | 'ip_mismatch' | 'ua_mismatch' };
 
 function isExpired(expiresAt: number): boolean {
@@ -167,15 +211,75 @@ async function redisConsumeJson<T>(key: string): Promise<T | null> {
   try {
     return JSON.parse(raw) as T;
   } catch (err) {
-    console.error('[session-auth] Failed to parse Redis JSON for key:', key, err);
+    console.error(
+      '[session-auth] Failed to parse remote-session Redis JSON:',
+      err instanceof Error ? err.message : 'unknown parse error',
+    );
     return null;
+  }
+}
+
+function hasTicketBaseShape(value: Record<string, unknown>): boolean {
+  return (
+    typeof value.sessionId === 'string'
+    && typeof value.sessionType === 'string'
+    && ['terminal', 'desktop', 'tunnel', 'tunnel-http'].includes(value.sessionType)
+    && typeof value.userId === 'string'
+    && typeof value.expiresAt === 'number'
+    && Number.isFinite(value.expiresAt)
+    && (value.ip === undefined || typeof value.ip === 'string')
+    && (value.uaHash === undefined || typeof value.uaHash === 'string')
+  );
+}
+
+function parseRemoteWsTicketRecord(value: unknown): RemoteWsTicketRecord | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  if (!hasTicketBaseShape(candidate)) return null;
+
+  if (candidate.version === undefined) {
+    return candidate as unknown as RemoteWsTicketRecordV0;
+  }
+  if (
+    candidate.version === 1
+    && typeof candidate.jti === 'string'
+    && candidate.jti.length > 0
+    && (candidate.sessionType === 'desktop' || candidate.sessionType === 'tunnel')
+  ) {
+    return candidate as unknown as RemoteWsTicketRecordV1;
+  }
+  if (
+    candidate.version === 2
+    && typeof candidate.jti === 'string'
+    && candidate.jti.length > 0
+    && typeof candidate.mfaSatisfied === 'boolean'
+  ) {
+    return candidate as unknown as RemoteWsTicketRecordV2;
+  }
+  return null;
+}
+
+async function storeWsTicket(
+  ticket: string,
+  record: RemoteWsTicketRecord,
+  ttlSeconds: number,
+): Promise<void> {
+  if (shouldUseRedis()) {
+    const redis = getRedis();
+    if (!redis) {
+      throw new Error('Remote session tickets are unavailable (Redis required)');
+    }
+    await redis.setex(`${REDIS_KEY_PREFIX_WS_TICKET}${ticket}`, ttlSeconds, JSON.stringify(record));
+  } else {
+    wsTickets.set(ticket, record);
   }
 }
 
 export async function createWsTicket(input: {
   sessionId: string;
-  sessionType: SessionType;
+  sessionType: RemoteWsTicketSessionType;
   userId: string;
+  mfaSatisfied: true;
   /** Trusted client IP of the issuer (the user agent that just authenticated). */
   ip?: string;
   /** User-Agent of the issuer; stored as sha256(ua)[:16]. */
@@ -185,11 +289,15 @@ export async function createWsTicket(input: {
 }): Promise<{ ticket: string; expiresInSeconds: number }> {
   purgeExpiredRecords(wsTickets);
   const ticket = generateSecret(32);
-  const effectiveTtlMs = input.ttlMs ?? WS_TICKET_TTL_MS;
-  const record: WsTicketRecord = {
+  const effectiveTtlMs = input.ttlMs
+    ?? (input.sessionType === 'tunnel-http' ? HTTP_TICKET_TTL_MS : WS_TICKET_TTL_MS);
+  const record: RemoteWsTicketRecordV2 = {
+    version: 2,
+    jti: randomUUID(),
     sessionId: input.sessionId,
     sessionType: input.sessionType,
     userId: input.userId,
+    mfaSatisfied: input.mfaSatisfied,
     expiresAt: Date.now() + effectiveTtlMs,
     // Only persist caller binding when the issuer provided it. Callsites
     // that pre-date Task 16 keep working but lose the IP/UA binding.
@@ -198,22 +306,40 @@ export async function createWsTicket(input: {
   };
 
   const ttlSeconds = Math.floor(effectiveTtlMs / 1000);
-  if (shouldUseRedis()) {
-    const redis = getRedis();
-    if (!redis) {
-      // Production hardening: if Redis is unavailable, don't fall back to in-memory tickets.
-      // This avoids cross-replica inconsistencies that can break security assumptions.
-      throw new Error('Remote session tickets are unavailable (Redis required)');
-    }
-    await redis.setex(`${REDIS_KEY_PREFIX_WS_TICKET}${ticket}`, ttlSeconds, JSON.stringify(record));
-  } else {
-    wsTickets.set(ticket, record);
-  }
+  await storeWsTicket(ticket, record, ttlSeconds);
 
   return {
     ticket,
     expiresInSeconds: ttlSeconds
   };
+}
+
+export async function createLegacyViewerCompatibilityWsTicket(input: {
+  mode: 'post_upgrade' | 'pre_upgrade';
+  sessionId: string;
+  sessionType: 'desktop' | 'tunnel';
+  userId: string;
+  ip?: string;
+  userAgent?: string;
+}): Promise<{ ticket: string; expiresInSeconds: number }> {
+  if (input.mode !== 'post_upgrade') {
+    throw new Error('Legacy viewer compatibility tickets require post_upgrade mode');
+  }
+
+  purgeExpiredRecords(wsTickets);
+  const ticket = generateSecret(32);
+  const record: RemoteWsTicketRecordV1 = {
+    version: 1,
+    jti: randomUUID(),
+    sessionId: input.sessionId,
+    sessionType: input.sessionType,
+    userId: input.userId,
+    expiresAt: Date.now() + WS_TICKET_TTL_MS,
+    ...(input.ip ? { ip: input.ip } : {}),
+    ...(input.userAgent ? { uaHash: hashUa(input.userAgent) } : {}),
+  };
+  await storeWsTicket(ticket, record, WS_TICKET_TTL_SECONDS);
+  return { ticket, expiresInSeconds: WS_TICKET_TTL_SECONDS };
 }
 
 /**
@@ -236,11 +362,12 @@ export async function consumeWsTicket(
   // which let two concurrent claims both succeed and silently violated the
   // documented one-time semantics — fine for legit racers (e.g. React
   // strict-mode double-fire) but not what the design promises.
-  let record: WsTicketRecord | null = null;
+  let record: RemoteWsTicketRecord | null = null;
 
   if (shouldUseRedis()) {
     try {
-      record = await redisConsumeJson<WsTicketRecord>(`${REDIS_KEY_PREFIX_WS_TICKET}${ticket}`);
+      const rawRecord = await redisConsumeJson<unknown>(`${REDIS_KEY_PREFIX_WS_TICKET}${ticket}`);
+      record = parseRemoteWsTicketRecord(rawRecord);
     } catch (err) {
       console.error('[session-auth] Failed to atomically consume WS ticket from Redis:', err);
       return { ok: false, reason: 'not_found' };
@@ -277,13 +404,25 @@ export async function consumeWsTicket(
     return { ok: false, reason: 'ua_mismatch' };
   }
 
-  return {
-    ok: true,
+  const base = {
+    ok: true as const,
     sessionId: record.sessionId,
     sessionType: record.sessionType,
     userId: record.userId,
     expiresAt: record.expiresAt,
   };
+  if (record.version === 2) {
+    return {
+      ...base,
+      version: 2,
+      ticketJti: record.jti,
+      mfaSatisfied: record.mfaSatisfied,
+    };
+  }
+  if (record.version === 1) {
+    return { ...base, version: 1, ticketJti: record.jti };
+  }
+  return { ...base, version: 0, ticketJti: null };
 }
 
 export async function createDesktopConnectCode(input: {

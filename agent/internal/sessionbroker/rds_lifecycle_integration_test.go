@@ -175,7 +175,7 @@ func TestRDSBrokerAdmissionAndLifecycleConvergeTwentySessions(t *testing.T) {
 		desired := make(map[HelperKey]struct{}, MaxConnectionsPerIdentity+1)
 		keys := make([]HelperKey, 0, MaxConnectionsPerIdentity+1)
 		for slot := 1; slot <= MaxConnectionsPerIdentity+1; slot++ {
-			key := HelperKey{WindowsSessionID: windowsSessionID, Role: fmt.Sprintf("pre-auth-%d", slot)}
+			key := HelperKey{WindowsSessionID: windowsSessionID, Role: ipc.HelperRole(fmt.Sprintf("pre-auth-%d", slot))}
 			desired[key] = struct{}{}
 			keys = append(keys, key)
 		}

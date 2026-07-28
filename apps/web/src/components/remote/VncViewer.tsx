@@ -16,10 +16,25 @@ import '@/lib/i18n';
 
 type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error' | 'password_required';
 
+/**
+ * Why the session went away. The browser never exposes the HTTP status behind
+ * a failed WebSocket upgrade, so `opened` is the only way for a caller to tell
+ * a handshake the server refused before the `101` (`opened: false`) from an
+ * ordinary end-of-session (`opened: true`). `clean` mirrors noVNC's
+ * `disconnect` detail, and is always true for a teardown this component
+ * initiated itself (the toolbar Disconnect, the credentials Cancel).
+ */
+export interface VncDisconnectInfo {
+  /** True once noVNC reported `connect` — i.e. the upgrade succeeded. */
+  opened: boolean;
+  /** True for an orderly shutdown; false for a refused or dropped connection. */
+  clean: boolean;
+}
+
 interface VncViewerProps {
   wsUrl: string;
   tunnelId: string;
-  onDisconnect?: () => void;
+  onDisconnect?: (info: VncDisconnectInfo) => void;
   className?: string;
 }
 
@@ -35,6 +50,10 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
   const { t } = useTranslation('remote');
   const containerRef = useRef<HTMLDivElement>(null);
   const rfbRef = useRef<any>(null);
+  // Whether noVNC ever reported `connect` for the CURRENT wsUrl. A ws-ticket is
+  // single use and is spent by the handshake, so "never opened" is exactly the
+  // signal a caller needs to tell a refused upgrade from a session that ended.
+  const openedRef = useRef(false);
 
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -50,6 +69,8 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
 
     let rfb: any = null;
     let disposed = false;
+    // Each wsUrl carries its own one-time ticket, so the open flag is per-URL.
+    openedRef.current = false;
 
     async function connect() {
       const { RFB } = await import('@/lib/novnc');
@@ -67,7 +88,10 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
       rfb.showDotCursor = true;
 
       rfb.addEventListener('connect', () => {
-        if (!disposed) setStatus('connected');
+        if (!disposed) {
+          openedRef.current = true;
+          setStatus('connected');
+        }
         console.log('[VNC] connected; framebuffer:',
           rfb._fbWidth || 'unknown', 'x', rfb._fbHeight || 'unknown',
           'scheme:', rfb._rfbAuthScheme);
@@ -76,13 +100,17 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
       rfb.addEventListener('disconnect', (e: CustomEvent) => {
         console.log('[VNC] disconnect', e.detail);
         if (disposed) return;
-        if (e.detail?.clean) {
+        const clean = e.detail?.clean === true;
+        if (clean) {
           setStatus('disconnected');
         } else {
           setStatus('error');
           setErrorMessage(t('vncViewer.errors.connectionLost'));
         }
-        onDisconnect?.();
+        // An unclean disconnect with no preceding `connect` is a handshake the
+        // server refused before the upgrade — the caller needs to tell that
+        // apart from a session that ended.
+        onDisconnect?.({ opened: openedRef.current, clean });
       });
 
       rfb.addEventListener('credentialsrequired', (e: CustomEvent) => {
@@ -236,7 +264,10 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
     rfbRef.current?.disconnect();
     rfbRef.current = null;
     setStatus('disconnected');
-    onDisconnect?.();
+    // Operator-initiated teardown (toolbar Disconnect / credentials Cancel).
+    // Always orderly, never a refused handshake, even if it happens before the
+    // session opened.
+    onDisconnect?.({ opened: openedRef.current, clean: true });
   }, [onDisconnect]);
 
   const submitPassword = useCallback(() => {

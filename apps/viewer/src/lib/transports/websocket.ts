@@ -30,8 +30,21 @@ export interface WebSocketSessionWrapper extends TransportSession {
 
 /**
  * Connects a JPEG-over-WebSocket fallback session.
- * Returns null if the ticket exchange fails.
- * Lifecycle callbacks fire unconditionally; React stale-session guards belong in the caller.
+ *
+ * Resolves a usable wrapper **only after the socket has opened**. It resolves
+ * `null` when the ticket exchange fails, or when the server rejected the
+ * handshake before the HTTP 101 upgrade (401/403/409/429). The browser
+ * WebSocket API never exposes that status — the only observable signal is an
+ * `error`/`close` that arrives with no preceding `open` — so a pre-open
+ * failure is treated as one-shot: the attempt is disposed (timers cleared,
+ * listeners detached, socket closed) and the burnt one-time ticket is
+ * discarded. A retry must call this function again, which mints a brand new
+ * ticket; the rejected URL is never replayed.
+ *
+ * Lifecycle callbacks describe an *established* session only. A pre-open
+ * rejection is reported solely through the resolved `null`, so it can never
+ * drive the session UI or the caller's auto-reconnect loop.
+ * React stale-session guards belong in the caller.
  */
 export async function connectWebSocket(
   auth: AuthenticatedConnectionParams,
@@ -46,27 +59,44 @@ export async function connectWebSocket(
   const ws = new WebSocket(wsUrl);
   ws.binaryType = 'arraybuffer';
 
+  let opened = false;
   let closed = false;
   let hadError = false;
+  let pingInterval: ReturnType<typeof setInterval> | null = null;
 
-  // Ping keep-alive
-  const pingInterval = setInterval(() => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'ping' }));
+  const clearPing = () => {
+    if (pingInterval !== null) {
+      clearInterval(pingInterval);
+      pingInterval = null;
     }
-  }, 15000);
+  };
 
   const cleanup = () => {
     if (closed) return;
     closed = true;
-    clearInterval(pingInterval);
+    clearPing();
     if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
       ws.close();
     }
   };
 
-  ws.onopen = () => {
-    console.log('Desktop WebSocket connected');
+  /**
+   * Disposes an attempt the server refused before the upgrade. Detaching every
+   * handler is what makes the attempt inert: a late `open`, frame, or `close`
+   * from this socket must not touch the caller's state.
+   */
+  const disposeRejectedHandshake = () => {
+    closed = true;
+    clearPing();
+    ws.onopen = null;
+    ws.onmessage = null;
+    ws.onerror = null;
+    ws.onclose = null;
+    try {
+      ws.close();
+    } catch {
+      // Already closing/closed — nothing to unwind.
+    }
   };
 
   ws.onmessage = (event) => {
@@ -100,23 +130,6 @@ export async function connectWebSocket(
     }
   };
 
-  ws.onclose = () => {
-    // If the caller already invoked cleanup() (closed=true), this is a
-    // teardown close, not a network disconnection — skip disconnect callback.
-    const wasCleanedUp = closed;
-    cleanup();
-    if (wasCleanedUp) return;
-    if (!hadError) {
-      deps.onDisconnected();
-    }
-  };
-
-  ws.onerror = () => {
-    hadError = true;
-    cleanup();
-    deps.onError('WebSocket connection error');
-  };
-
   const wrapper: WebSocketSessionWrapper = {
     kind: 'websocket',
     capabilities: capabilitiesFor('websocket'),
@@ -136,5 +149,52 @@ export async function connectWebSocket(
     close: cleanup,
   };
 
-  return wrapper;
+  return await new Promise<WebSocketSessionWrapper | null>((resolve) => {
+    let settled = false;
+    const settle = (value: WebSocketSessionWrapper | null) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    ws.onopen = () => {
+      console.log('Desktop WebSocket connected');
+      opened = true;
+      // Keep-alive starts only once the upgrade succeeded, so a refused
+      // handshake can never leave a ping timer behind.
+      pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 15000);
+      settle(wrapper);
+    };
+
+    ws.onclose = () => {
+      if (!opened) {
+        disposeRejectedHandshake();
+        settle(null);
+        return;
+      }
+      // If the caller already invoked cleanup() (closed=true), this is a
+      // teardown close, not a network disconnection — skip disconnect callback.
+      const wasCleanedUp = closed;
+      cleanup();
+      if (wasCleanedUp) return;
+      if (!hadError) {
+        deps.onDisconnected();
+      }
+    };
+
+    ws.onerror = () => {
+      if (!opened) {
+        disposeRejectedHandshake();
+        settle(null);
+        return;
+      }
+      hadError = true;
+      cleanup();
+      deps.onError('WebSocket connection error');
+    };
+  });
 }

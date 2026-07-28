@@ -4,11 +4,12 @@ import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { partners, users, organizations, sites, invoices, invoiceLines, invoiceDocuments, contracts, contractLines, contractBillingPeriods, mlFeedbackEvents, unifiCollectors, unifiDeviceTelemetry, unifiClients } from '../../db/schema';
 import { approvalRequests } from '../../db/schema/approvals';
 import { manifestSigningKeys } from '../../db/schema/manifestSigningKeys';
-import { partnerAbuseSignals } from '../../db/schema/abuseSignals';
+import { partnerAbuseSignals, abuseScriptHosts } from '../../db/schema/abuseSignals';
 import { automations, automationRuns } from '../../db/schema/automations';
 import { configurationPolicies } from '../../db/schema/configurationPolicies';
 import { scripts, scriptExecutionBatches } from '../../db/schema/scripts';
 import { unifiIntegrations, unifiDevices } from '../../db/schema/unifi';
+import { oauthRevocationRetries } from '../../db/schema/oauth';
 
 /**
  * Contract test: every tenant-scoped public table must have RLS enabled and
@@ -50,6 +51,8 @@ const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
   'manifest_signing_keys',
   'm365_consent_sessions',
   'partner_abuse_signals',
+  'abuse_script_hosts',
+  'abuse_sweep_state',
 ]);
 
 // System-scoped tables: forced RLS with either no permissive policies at all,
@@ -80,6 +83,8 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'third_party_package_catalog', // System-wide curated catalog of third-party packages; writes gated by platform-admin role at the route layer.
   'third_party_release_tests', // System-wide release test results; references catalog (unscoped) and is platform-admin-only at the route layer.
   'partner_abuse_signals', // Operator abuse signals ABOUT partners. Forced RLS, system-only policy — partners must never see their own risk signals.
+  'abuse_script_hosts', // Cross-partner download-host corpus for the script-content abuse detector. Carries partner_id but is deliberately operator-only (mirrors partner_abuse_signals). Forced RLS, system-only policy.
+  'abuse_sweep_state', // Abuse-sweep scan state (incremental execution-scan high-water mark). No tenant column. Forced RLS, system-only policy.
   'sso_sessions', // Pre-auth SSO CSRF/PKCE transaction store (state/nonce/code_verifier + link binding). No tenant column; written/consumed only by unauthenticated callback + system-context routes. Forced RLS, system-only policy → only system context.
   'installed_extensions', // Global runtime-extension operational state (version/trust/lifecycle/enabled). No tenant axis. Forced RLS, system-only policy → only system context.
   'extension_schema_history', // Global append-only record of the schema-compatibility floor each extension bundle version applied. No tenant axis. Forced RLS, system-only policy → only system context.
@@ -551,6 +556,10 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // the owning user via breeze_current_user_id(), with an
   // OR breeze_current_scope() = 'system' branch (Shape 6). Mirrors user_passkeys.
   'authenticator_devices',
+  // oauth_revocation_retries: durable retry work for OAuth grant/JTI markers.
+  // Request paths are limited to the exact user owner; the explicit system
+  // branch lets the bounded retry worker drain work for every user.
+  'oauth_revocation_retries',
 ]);
 
 const REQUIRED_CMDS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] as const;
@@ -1238,6 +1247,258 @@ describe('RLS coverage contract', () => {
 });
 
 // ===========================================================================
+// oauth_revocation_retries — Shape 6 forge and worker-context enforcement
+//
+// Durable retry rows carry revocation marker identifiers and therefore must
+// never be visible or forgeable across users. The system branch is intentional:
+// the retry worker must process due rows without impersonating each owner.
+// ===========================================================================
+describe('oauth_revocation_retries RLS — user ownership and system worker access (Shape 6)', () => {
+  const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const partnerSlug = `rls-oauth-retries-partner-${runSuffix}`;
+  const userAEmail = `rls-oauth-retries-a-${runSuffix}@example.test`;
+  const userBEmail = `rls-oauth-retries-b-${runSuffix}@example.test`;
+
+  let partnerId: string;
+  let userAId: string;
+  let userBId: string;
+  const retryIds = new Set<string>();
+
+  async function ensureFixtures(): Promise<void> {
+    if (partnerId) return;
+    await withSystemDbAccessContext(async () => {
+      const [partner] = await db
+        .insert(partners)
+        .values({
+          name: `RLS OAuth Retries Partner ${runSuffix}`,
+          slug: partnerSlug,
+          type: 'msp',
+          plan: 'pro',
+          status: 'active',
+        })
+        .returning({ id: partners.id });
+      if (!partner) throw new Error('failed to seed partner for OAuth retry RLS test');
+      partnerId = partner.id;
+
+      const [a, b] = await db
+        .insert(users)
+        .values([
+          {
+            partnerId: partner.id,
+            email: userAEmail,
+            name: 'RLS OAuth Retry User A',
+            status: 'active',
+          },
+          {
+            partnerId: partner.id,
+            email: userBEmail,
+            name: 'RLS OAuth Retry User B',
+            status: 'active',
+          },
+        ])
+        .returning({ id: users.id });
+      if (!a || !b) throw new Error('failed to seed users for OAuth retry RLS test');
+      userAId = a.id;
+      userBId = b.id;
+    });
+  }
+
+  function userContext(userId: string) {
+    return {
+      scope: 'organization' as const,
+      orgId: null,
+      accessibleOrgIds: [],
+      accessiblePartnerIds: [],
+      userId,
+    };
+  }
+
+  async function seedRetry(userId: string, markerId: string): Promise<string> {
+    const [row] = await withSystemDbAccessContext(async () =>
+      db
+        .insert(oauthRevocationRetries)
+        .values({
+          userId,
+          markerType: 'grant',
+          markerId,
+          expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+          nextAttemptAt: new Date(),
+          lastErrorCode: 'redis_unavailable',
+        })
+        .returning({ id: oauthRevocationRetries.id }),
+    );
+    if (!row) throw new Error('failed to seed OAuth revocation retry');
+    retryIds.add(row.id);
+    return row.id;
+  }
+
+  afterAll(async () => {
+    await withSystemDbAccessContext(async () => {
+      for (const id of retryIds) {
+        await db.delete(oauthRevocationRetries).where(eq(oauthRevocationRetries.id, id));
+      }
+      if (userAId) await db.delete(users).where(eq(users.id, userAId));
+      if (userBId) await db.delete(users).where(eq(users.id, userBId));
+      if (partnerId) await db.delete(partners).where(eq(partners.id, partnerId));
+    });
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)('permits own-user CRUD', async () => {
+    await ensureFixtures();
+
+    const [inserted] = await withDbAccessContext(userContext(userAId), async () =>
+      db
+        .insert(oauthRevocationRetries)
+        .values({
+          userId: userAId,
+          markerType: 'jti',
+          markerId: `own-${runSuffix}`,
+          expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+          nextAttemptAt: new Date(),
+          lastErrorCode: 'redis_write_failed',
+        })
+        .returning({ id: oauthRevocationRetries.id }),
+    );
+    expect(inserted).toBeDefined();
+    retryIds.add(inserted!.id);
+
+    const visible = await withDbAccessContext(userContext(userAId), async () =>
+      db
+        .select({ id: oauthRevocationRetries.id })
+        .from(oauthRevocationRetries)
+        .where(eq(oauthRevocationRetries.id, inserted!.id)),
+    );
+    expect(visible).toEqual([{ id: inserted!.id }]);
+
+    const updated = await withDbAccessContext(userContext(userAId), async () =>
+      db
+        .update(oauthRevocationRetries)
+        .set({ attempts: 2 })
+        .where(eq(oauthRevocationRetries.id, inserted!.id))
+        .returning({ attempts: oauthRevocationRetries.attempts }),
+    );
+    expect(updated).toEqual([{ attempts: 2 }]);
+
+    const deleted = await withDbAccessContext(userContext(userAId), async () =>
+      db
+        .delete(oauthRevocationRetries)
+        .where(eq(oauthRevocationRetries.id, inserted!.id))
+        .returning({ id: oauthRevocationRetries.id }),
+    );
+    expect(deleted).toEqual([{ id: inserted!.id }]);
+    retryIds.delete(inserted!.id);
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'denies cross-user SELECT, UPDATE, DELETE, and forged INSERT without mutation',
+    async () => {
+      await ensureFixtures();
+      const retryId = await seedRetry(userAId, `cross-user-${runSuffix}`);
+
+      const visible = await withDbAccessContext(userContext(userBId), async () =>
+        db
+          .select({ id: oauthRevocationRetries.id })
+          .from(oauthRevocationRetries)
+          .where(eq(oauthRevocationRetries.id, retryId)),
+      );
+      expect(visible).toEqual([]);
+
+      const updated = await withDbAccessContext(userContext(userBId), async () =>
+        db
+          .update(oauthRevocationRetries)
+          .set({ attempts: 99 })
+          .where(eq(oauthRevocationRetries.id, retryId))
+          .returning({ id: oauthRevocationRetries.id }),
+      );
+      expect(updated).toEqual([]);
+
+      const deleted = await withDbAccessContext(userContext(userBId), async () =>
+        db
+          .delete(oauthRevocationRetries)
+          .where(eq(oauthRevocationRetries.id, retryId))
+          .returning({ id: oauthRevocationRetries.id }),
+      );
+      expect(deleted).toEqual([]);
+
+      let caught: unknown;
+      try {
+        await withDbAccessContext(userContext(userBId), async () =>
+          db.insert(oauthRevocationRetries).values({
+            userId: userAId,
+            markerType: 'grant',
+            markerId: `forged-${runSuffix}`,
+            expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+            nextAttemptAt: new Date(),
+            lastErrorCode: 'redis_unavailable',
+          }),
+        );
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeDefined();
+      const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+      expect(cause?.cause?.message ?? cause?.message ?? '').toMatch(
+        /row-level security|permission denied/i,
+      );
+
+      const unchanged = await withSystemDbAccessContext(async () =>
+        db
+          .select({ attempts: oauthRevocationRetries.attempts })
+          .from(oauthRevocationRetries)
+          .where(eq(oauthRevocationRetries.id, retryId)),
+      );
+      expect(unchanged).toEqual([{ attempts: 0 }]);
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)('permits explicit system-context CRUD for the retry worker', async () => {
+    await ensureFixtures();
+
+    const [inserted] = await withSystemDbAccessContext(async () =>
+      db
+        .insert(oauthRevocationRetries)
+        .values({
+          userId: userBId,
+          markerType: 'grant',
+          markerId: `system-${runSuffix}`,
+          expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+          nextAttemptAt: new Date(),
+          lastErrorCode: 'redis_unavailable',
+        })
+        .returning({ id: oauthRevocationRetries.id }),
+    );
+    expect(inserted).toBeDefined();
+    retryIds.add(inserted!.id);
+
+    const visible = await withSystemDbAccessContext(async () =>
+      db
+        .select({ id: oauthRevocationRetries.id })
+        .from(oauthRevocationRetries)
+        .where(eq(oauthRevocationRetries.id, inserted!.id)),
+    );
+    expect(visible).toEqual([{ id: inserted!.id }]);
+
+    const updated = await withSystemDbAccessContext(async () =>
+      db
+        .update(oauthRevocationRetries)
+        .set({ completedAt: new Date() })
+        .where(eq(oauthRevocationRetries.id, inserted!.id))
+        .returning({ id: oauthRevocationRetries.id }),
+    );
+    expect(updated).toEqual([{ id: inserted!.id }]);
+
+    const deleted = await withSystemDbAccessContext(async () =>
+      db
+        .delete(oauthRevocationRetries)
+        .where(eq(oauthRevocationRetries.id, inserted!.id))
+        .returning({ id: oauthRevocationRetries.id }),
+    );
+    expect(deleted).toEqual([{ id: inserted!.id }]);
+    retryIds.delete(inserted!.id);
+  });
+});
+
+// ===========================================================================
 // approval_requests — Shape 6 forge test
 //
 // The pg_catalog inspection above only checks that a policy referencing
@@ -1743,6 +2004,154 @@ describe('partner_abuse_signals RLS — system-only enforcement', () => {
           .select({ id: partnerAbuseSignals.id })
           .from(partnerAbuseSignals)
           .where(eq(partnerAbuseSignals.id, result[0]!.id));
+      });
+      expect(readBack).toHaveLength(1);
+    },
+  );
+});
+
+// ===========================================================================
+// abuse_script_hosts RLS lockout
+//
+// Mirrors the partner_abuse_signals block above: the catalog test only proves
+// abuse_script_hosts is in INTENTIONAL_UNSCOPED as documentation. This block
+// forges as `breeze_app` the specific threat this table exists to prevent —
+// a partner reading the cross-partner download-host corpus (which would
+// reveal what the operator correlates on), including its OWN rows via a
+// partner-scoped context. The system-scope branch confirms the script-content
+// scan write path (services/abuseSignals/scriptContent.ts) still works.
+// ===========================================================================
+describe('abuse_script_hosts RLS — system-only enforcement', () => {
+  const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const partnerSlug = `rls-abuse-hosts-partner-${runSuffix}`;
+
+  let partnerId: string;
+  const insertedHostIds: string[] = [];
+
+  async function ensureFixtures(): Promise<void> {
+    if (partnerId) return;
+    await withSystemDbAccessContext(async () => {
+      const [partner] = await db
+        .insert(partners)
+        .values({
+          name: `RLS Abuse Hosts Partner ${runSuffix}`,
+          slug: partnerSlug,
+          type: 'msp',
+          plan: 'pro',
+          status: 'active',
+        })
+        .returning({ id: partners.id });
+      if (!partner) throw new Error('failed to seed partner for abuse-script-hosts RLS forge test');
+      partnerId = partner.id;
+    });
+  }
+
+  afterAll(async () => {
+    await withSystemDbAccessContext(async () => {
+      for (const id of insertedHostIds) {
+        await db.delete(abuseScriptHosts).where(eq(abuseScriptHosts.id, id));
+      }
+      if (partnerId) await db.delete(partners).where(eq(partners.id, partnerId));
+    });
+  });
+
+  function partnerContext(accessiblePartnerId: string) {
+    return {
+      scope: 'partner' as const,
+      orgId: null,
+      accessibleOrgIds: [],
+      accessiblePartnerIds: [accessiblePartnerId],
+      userId: null,
+    };
+  }
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'INSERT as breeze_app under a tenant (partner-scoped) context is rejected by RLS',
+    async () => {
+      await ensureFixtures();
+
+      let caught: unknown;
+      try {
+        await withDbAccessContext(partnerContext(partnerId), async () =>
+          db.insert(abuseScriptHosts).values({
+            partnerId,
+            host: `rls-forge-deny-${runSuffix}.invalid`,
+            source: 'script',
+          }),
+        );
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeDefined();
+      const cause = caught as
+        | { cause?: { message?: string }; message?: string }
+        | undefined;
+      const message = cause?.cause?.message ?? cause?.message ?? '';
+      expect(message).toMatch(/row-level security|permission denied/i);
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    "SELECT under a partner context matching the row's own partner_id returns zero rows",
+    async () => {
+      await ensureFixtures();
+
+      const seededHost = `rls-forge-seed-${runSuffix}.invalid`;
+      const seeded = await withSystemDbAccessContext(async () => {
+        return db
+          .insert(abuseScriptHosts)
+          .values({ partnerId, host: seededHost, source: 'execution' })
+          .returning({ id: abuseScriptHosts.id });
+      });
+      expect(seeded).toHaveLength(1);
+      insertedHostIds.push(seeded[0]!.id);
+
+      let rows: unknown[] = [];
+      let err: unknown = null;
+      try {
+        rows = await withDbAccessContext(partnerContext(partnerId), async () =>
+          db
+            .select({ id: abuseScriptHosts.id })
+            .from(abuseScriptHosts)
+            .where(eq(abuseScriptHosts.partnerId, partnerId)),
+        );
+      } catch (e) {
+        err = e;
+      }
+
+      if (err) {
+        const cause = err as
+          | { cause?: { message?: string }; message?: string };
+        const message = cause?.cause?.message ?? cause?.message ?? '';
+        expect(message).toMatch(/permission denied|row-level security/i);
+      } else {
+        expect(rows).toEqual([]);
+      }
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'withSystemDbAccessContext INSERT + SELECT round-trips successfully',
+    async () => {
+      await ensureFixtures();
+
+      const host = `rls-forge-system-${runSuffix}.invalid`;
+      const result = await withSystemDbAccessContext(async () => {
+        return db
+          .insert(abuseScriptHosts)
+          .values({ partnerId, host, source: 'script' })
+          .returning({ id: abuseScriptHosts.id, host: abuseScriptHosts.host });
+      });
+      expect(result).toHaveLength(1);
+      expect(result[0]!.host).toBe(host);
+      insertedHostIds.push(result[0]!.id);
+
+      const readBack = await withSystemDbAccessContext(async () => {
+        return db
+          .select({ id: abuseScriptHosts.id })
+          .from(abuseScriptHosts)
+          .where(eq(abuseScriptHosts.id, result[0]!.id));
       });
       expect(readBack).toHaveLength(1);
     },

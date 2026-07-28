@@ -104,6 +104,26 @@ export async function getLatestFilesystemSnapshot(deviceId: string) {
   return snapshot ?? null;
 }
 
+/**
+ * Slim variant for the cleanup preview/execute paths, which only need the
+ * snapshot id and its cleanup candidates. Avoids transferring and deserializing
+ * the full set of large jsonb columns (largest files/dirs, duplicates, the
+ * duplicate rawPayload blob, etc.) that those callers never read.
+ */
+export async function getLatestFilesystemCleanupSnapshot(deviceId: string) {
+  const [snapshot] = await db
+    .select({
+      id: deviceFilesystemSnapshots.id,
+      cleanupCandidates: deviceFilesystemSnapshots.cleanupCandidates,
+    })
+    .from(deviceFilesystemSnapshots)
+    .where(eq(deviceFilesystemSnapshots.deviceId, deviceId))
+    .orderBy(desc(deviceFilesystemSnapshots.capturedAt))
+    .limit(1);
+
+  return snapshot ?? null;
+}
+
 export async function getFilesystemScanState(deviceId: string) {
   const [state] = await db
     .select()
@@ -252,6 +272,11 @@ export function mergeFilesystemAnalysisPayload(existing: AnyObject, incoming: An
     path: asString(incoming.path) ?? asString(existing.path),
     partial: asBoolean(existing.partial, false) || asBoolean(incoming.partial, false),
     reason: asString(incoming.reason) ?? asString(existing.reason),
+    // The checkpoint is the resume frontier of the CURRENT run, not something to
+    // accumulate. A completed run omits it (Go `omitempty` on an empty map); the
+    // `...existing` spread would otherwise inherit the previous run's stale
+    // pending dirs, so a resumed baseline could never register as complete.
+    checkpoint: asRecord(incoming.checkpoint) ?? {},
     summary: {
       filesScanned: asNumber(existingSummary.filesScanned, 0) + asNumber(incomingSummary.filesScanned, 0),
       dirsScanned: asNumber(existingSummary.dirsScanned, 0) + asNumber(incomingSummary.dirsScanned, 0),
@@ -349,3 +374,18 @@ export function buildCleanupPreview(
 }
 
 export const safeCleanupCategories = Array.from(SAFE_CLEANUP_CATEGORIES);
+
+/**
+ * Extracts the previewed cleanup candidates from a stored cleanup-run `plan`
+ * (jsonb). Used by cleanup-execute to pin deletions to exactly what the user
+ * previewed. Only safe candidates in known-safe categories are returned, so a
+ * stale or hand-edited plan can never widen the deletion set.
+ */
+export function readPlanPreviewCandidates(plan: unknown): FilesystemCleanupCandidate[] {
+  const planRecord = asRecord(plan);
+  const preview = asRecord(planRecord?.preview);
+  return asArray(preview?.candidates)
+    .map(toCleanupCandidate)
+    .filter((candidate): candidate is FilesystemCleanupCandidate => candidate !== null)
+    .filter((candidate) => candidate.safe && SAFE_CLEANUP_CATEGORIES.has(candidate.category));
+}

@@ -13,6 +13,17 @@ vi.mock('../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: vi.fn()
 }));
 
+// GET /orgs/sites rides the org's resolved enrollment defaults along for the
+// Add Device modal (#2776). Mocked so these route tests don't depend on the
+// org⋈partner settings join.
+vi.mock('../services/enrollmentDefaults', () => ({
+  getEnrollmentDefaultsForOrg: vi.fn(async () => ({
+    ttlMinutes: 10080,
+    deviceCount: 25,
+    maxTtlMinutes: 43200
+  }))
+}));
+
 vi.mock('../services/ipAllowlist', () => ({
   clearPartnerAllowlistCache: vi.fn(),
   ipAllowlistMode: vi.fn(() => 'enforce'),
@@ -38,6 +49,37 @@ vi.mock('../services/tenantLifecycle', () => ({
   }),
   restorePartnerTenantAccess: vi.fn().mockResolvedValue({ agentTokensRestored: 0 }),
   restoreOrganizationTenantAccess: vi.fn().mockResolvedValue({ agentTokensRestored: 0 })
+}));
+
+vi.mock('../services/tenantOffboarding', () => ({
+  beginOrganizationOffboarding: vi.fn().mockResolvedValue({
+    revocation: {
+      apiKeysRevoked: 0,
+      userSessionsRevoked: 0,
+      oauthGrantsRevoked: 0,
+      oauthRefreshTokensRevoked: 0,
+      agentTokensSuspended: 0,
+      enrollmentKeysInvalidated: 0
+    },
+    devicesTargeted: 0,
+    uninstallsQueued: 0,
+    otherCommandsCancelled: 0
+  }),
+  beginPartnerOffboarding: vi.fn().mockResolvedValue({
+    revocation: {
+      apiKeysRevoked: 0,
+      userSessionsRevoked: 0,
+      oauthGrantsRevoked: 0,
+      oauthRefreshTokensRevoked: 0,
+      agentTokensSuspended: 0,
+      enrollmentKeysInvalidated: 0
+    },
+    devicesTargeted: 0,
+    uninstallsQueued: 0,
+    otherCommandsCancelled: 0
+  }),
+  abortOrganizationOffboarding: vi.fn().mockResolvedValue({ aborted: false, uninstallsCancelled: 0 }),
+  abortPartnerOffboarding: vi.fn().mockResolvedValue({ aborted: false, uninstallsCancelled: 0 })
 }));
 
 vi.mock('../db', () => ({
@@ -80,7 +122,13 @@ vi.mock('../db', () => ({
     })
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
+  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  // PATCH /orgs/organizations/:id calls assertNotLocked, whose partner-axis
+  // read now goes through readWithPartnerAxisVisibility (#2822). That helper
+  // probes the ambient scope, so the factory must export it — `undefined`
+  // (no ambient context) makes it take the escape, which these pass-through
+  // stubs then flatten.
+  getCurrentDbAccessContext: vi.fn(() => undefined)
 }));
 
 vi.mock('../services/ticketConfigService', () => ({
@@ -154,6 +202,7 @@ vi.mock('../middleware/auth', () => ({
 import { inArray } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { sites } from '../db/schema';
+import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { authMiddleware } from '../middleware/auth';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { clearPartnerAllowlistCache, readPartnerAllowlist } from '../services/ipAllowlist';
@@ -163,6 +212,12 @@ import {
   revokeOrganizationTenantAccess,
   revokePartnerTenantAccess,
 } from '../services/tenantLifecycle';
+import {
+  abortOrganizationOffboarding,
+  abortPartnerOffboarding,
+  beginOrganizationOffboarding,
+  beginPartnerOffboarding,
+} from '../services/tenantOffboarding';
 import { captureException } from '../services/sentry';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 
@@ -249,6 +304,22 @@ describe('org routes', () => {
       const body = await res.json();
       expect(body.data).toHaveLength(2);
       expect(body.pagination.total).toBe(2);
+
+      // The page query (second select) must use an explicit projection that
+      // excludes internal metadata columns rather than the whole partners row.
+      const pageProjection = vi.mocked(db.select).mock.calls[1]?.[0] as Record<string, unknown> | undefined;
+      expect(pageProjection).toBeDefined();
+      const keys = Object.keys(pageProjection!);
+      expect(keys).toContain('id');
+      expect(keys).toContain('name');
+      expect(keys).toContain('status');
+      for (const internal of [
+        'signupIp', 'paymentMethodAttachedAt', 'stripeCustomerId', 'ssoConfig', 'mcpOriginIp',
+        'billingCardholderName', 'billingCardFingerprint', 'billingSubscriptionStatus',
+        'billingPaymentMethodsFirstSeenAt', 'billingPaymentMethodsLastSeenAt',
+      ]) {
+        expect(keys).not.toContain(internal);
+      }
     });
   });
 
@@ -331,6 +402,20 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.id).toBe('partner-1');
+
+      // Explicit projection: internal metadata columns must not be selected.
+      const projection = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+      expect(projection).toBeDefined();
+      const keys = Object.keys(projection!);
+      expect(keys).toContain('id');
+      expect(keys).toContain('settings');
+      for (const internal of [
+        'signupIp', 'paymentMethodAttachedAt', 'stripeCustomerId', 'ssoConfig', 'mcpOriginIp',
+        'billingCardholderName', 'billingCardFingerprint', 'billingSubscriptionStatus',
+        'billingPaymentMethodsFirstSeenAt', 'billingPaymentMethodsLastSeenAt',
+      ]) {
+        expect(keys).not.toContain(internal);
+      }
     });
 
     it('should return 404 when partner not found', async () => {
@@ -550,6 +635,68 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       expect(restorePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
       expect(revokePartnerTenantAccess).not.toHaveBeenCalled();
+    });
+
+    // #2774 — partner offboarding drains rather than severs.
+    it('begins the partner offboarding drain when status is set to offboarding', async () => {
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'P', status: 'offboarding', settings: {} }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'offboarding' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(beginPartnerOffboarding).toHaveBeenCalledWith('partner-1', expect.anything());
+      expect(revokePartnerTenantAccess).not.toHaveBeenCalled();
+      expect(restorePartnerTenantAccess).not.toHaveBeenCalled();
+    });
+
+    it('aborts a partner drain before severing when forced to suspended', async () => {
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'P', status: 'suspended', settings: {} }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'suspended' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(abortPartnerOffboarding).toHaveBeenCalledWith('partner-1');
+      expect(revokePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
+    });
+
+    it('aborts a partner drain on reactivation so in-flight uninstalls cannot fire later', async () => {
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'P', status: 'active', settings: {} }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'active' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(abortPartnerOffboarding).toHaveBeenCalledWith('partner-1');
+      expect(restorePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
     });
 
     it('does not sever the fleet on a transient active->pending transition (preserves enrollment keys)', async () => {
@@ -1549,6 +1696,73 @@ describe('org routes', () => {
       expect(revokeOrganizationTenantAccess).not.toHaveBeenCalled();
     });
 
+    // #2774 — offboarding is the drain entry: users out via
+    // beginOrganizationOffboarding (agent channel kept), NOT the immediate
+    // sever of revokeOrganizationTenantAccess.
+    it('begins the offboarding drain (not an immediate sever) when status is set to offboarding', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O', status: 'offboarding' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'offboarding' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(beginOrganizationOffboarding).toHaveBeenCalledWith('org-1', expect.anything());
+      expect(revokeOrganizationTenantAccess).not.toHaveBeenCalled();
+      expect(restoreOrganizationTenantAccess).not.toHaveBeenCalled();
+    });
+
+    it('aborts a drain before severing when an org is forced to suspended', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O', status: 'suspended' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'suspended' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(abortOrganizationOffboarding).toHaveBeenCalledWith('org-1');
+      expect(revokeOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
+    });
+
+    it('aborts a drain on reactivation so in-flight uninstalls cannot fire later', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O', status: 'active' }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'active' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(abortOrganizationOffboarding).toHaveBeenCalledWith('org-1');
+      expect(restoreOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
+    });
+
     it('should return 404 when organization not found', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
       vi.mocked(db.update).mockReturnValue({
@@ -1743,6 +1957,127 @@ describe('org routes', () => {
       expect(db.update).toHaveBeenCalled();
     });
 
+    // issue #2776: defaultEnrollmentTtlMinutes/defaultEnrollmentDeviceCount are
+    // inherit-with-override, same contract as agentVersionPins above — a
+    // partner-set value must NOT block an org override via assertNotLocked.
+    it('lets an org override the partner TTL default without a 403', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      primeAcceptSelect([], { defaults: { defaultEnrollmentTtlMinutes: 10080 } });
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { defaults: { defaultEnrollmentTtlMinutes: 60 } } })
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
+    });
+
+    // maxEnrollmentLinkTtlMinutes is the hard ceiling — partner-only, deliberately
+    // NOT exempt from assertNotLocked. An org attempting to raise it must 403.
+    it('403s when an org tries to set the partner-owned cap', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      primeAcceptSelect([], { defaults: { maxEnrollmentLinkTtlMinutes: 129600 } });
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { defaults: { maxEnrollmentLinkTtlMinutes: 525600 } } })
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    // The org `settings` blob is z.any() — nothing structurally validates it
+    // except the explicit enrollmentDefaultsSchema.safeParse check added for
+    // issue #2776. An out-of-range value must 400 before any DB work.
+    it('400s on an out-of-range org enrollment default (org settings are z.any())', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { defaults: { defaultEnrollmentTtlMinutes: 525601 } } })
+      });
+
+      expect(res.status).toBe(400);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    // Carried-forward edge case from the Task 3.1 review: `'field' in obj` is
+    // true even when the value is explicitly `null`, which would make the
+    // resolver fall through to the product default instead of the partner's
+    // value. A stored null must be unreachable — reject it at write time.
+    it('400s on a null enrollment default value instead of storing it', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { defaults: { defaultEnrollmentTtlMinutes: null } } })
+      });
+
+      expect(res.status).toBe(400);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    // #2752 — the org defaults editor posts the WHOLE category on every save, so a
+    // partner-set `autoEnrollment` was re-submitted even when the operator only
+    // touched the device group. The old presence-only lock check 403'd the entire
+    // request, making every org-level default in the category unsaveable. Echoing
+    // the partner's own value back is a no-op and must be accepted.
+    it('accepts a save that re-sends a partner-locked field unchanged alongside edited fields (200)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const enforced = { enabled: false, requireApproval: false, sendWelcome: false };
+      primeAcceptSelect([], { defaults: { autoEnrollment: enforced } });
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          settings: {
+            defaults: {
+              autoEnrollment: enforced, // untouched, locked by the partner
+              deviceGroup: 'Contractors', // the field the operator actually changed
+              alertThreshold: 'medium',
+              agentUpdatePolicy: 'manual',
+              maintenanceWindow: '24/7',
+            },
+          },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.update).toHaveBeenCalled();
+    });
+
+    it('still rejects a save that changes a partner-locked field (403)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      primeAcceptSelect([], {
+        defaults: { autoEnrollment: { enabled: false, requireApproval: false, sendWelcome: false } },
+      });
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          settings: {
+            defaults: {
+              autoEnrollment: { enabled: true, requireApproval: false, sendWelcome: false },
+              deviceGroup: 'Contractors',
+            },
+          },
+        }),
+      });
+
+      expect(res.status).toBe(403);
+      // HTTPException surfaces its message as plain text, not a JSON envelope.
+      expect(await res.text()).toContain('defaults.autoEnrollment');
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
     // SR2-05: `security.allowedMfaMethods` is a legacy input alias — it must be
     // folded into the canonical `security.allowedMethods` before the write and
     // never persisted as a second key (the dead spelling the SMS-enable reader
@@ -1873,6 +2208,29 @@ describe('org routes', () => {
       })
     }) as any;
 
+  // The three db.select calls GET /orgs/sites makes for one page of results:
+  // count, the page itself, then the grouped device counts.
+  const mockSitesPage = () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ count: 1 }])
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockReturnValue({
+              offset: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+              })
+            })
+          })
+        })
+      } as any)
+      .mockReturnValueOnce(mockSiteDeviceCounts([{ siteId: 'site-1', count: 4 }]));
+  };
+
   describe('GET /orgs/sites', () => {
     it('should return sites with pagination', async () => {
       setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
@@ -1944,6 +2302,74 @@ describe('org routes', () => {
       const res = await app.request('/orgs/sites?orgId=11111111-1111-1111-1111-111111111111');
 
       expect(res.status).toBe(403);
+    });
+
+    it('carries the org\'s resolved enrollment defaults for the Add Device modal (#2776)', async () => {
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      mockSitesPage();
+
+      const res = await app.request(
+        '/orgs/sites?orgId=11111111-1111-1111-1111-111111111111&includeEnrollmentDefaults=1'
+      );
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // Seeds the modal's pickers without a second round trip on the
+      // device-add path.
+      expect(body.enrollmentDefaults).toEqual({
+        ttlMinutes: 10080,
+        deviceCount: 25,
+        maxTtlMinutes: 43200
+      });
+      expect(getEnrollmentDefaultsForOrg).toHaveBeenCalledWith(
+        '11111111-1111-1111-1111-111111111111'
+      );
+    });
+
+    it('does NOT resolve enrollment defaults unless the caller opts in', async () => {
+      // The resolver escapes to a system context, taking a SECOND pooled
+      // connection while this request still holds the first. postgres-js has no
+      // acquire timeout, so at N concurrent requests >= DB_POOL_MAX the API
+      // stalls indefinitely. This route fires on org switch, on Discovery, and
+      // on every Add Device modal open — so only the caller that needs the
+      // values pays for them.
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      mockSitesPage();
+
+      const res = await app.request('/orgs/sites?orgId=11111111-1111-1111-1111-111111111111');
+
+      expect(res.status).toBe(200);
+      expect('enrollmentDefaults' in (await res.json())).toBe(false);
+      expect(getEnrollmentDefaultsForOrg).not.toHaveBeenCalled();
+    });
+
+    it('omits enrollment defaults when no single org is in scope', async () => {
+      // A cross-org list has no one org whose defaults would be correct.
+      setAuthContext({ scope: 'system' });
+      mockSitesPage();
+
+      const res = await app.request('/orgs/sites?includeEnrollmentDefaults=1');
+
+      expect(res.status).toBe(200);
+      expect('enrollmentDefaults' in (await res.json())).toBe(false);
+      expect(getEnrollmentDefaultsForOrg).not.toHaveBeenCalled();
+    });
+
+    it('still serves the site list when the enrollment-defaults read fails', async () => {
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      mockSitesPage();
+      vi.mocked(getEnrollmentDefaultsForOrg).mockRejectedValueOnce(new Error('pg down'));
+
+      const res = await app.request(
+        '/orgs/sites?orgId=11111111-1111-1111-1111-111111111111&includeEnrollmentDefaults=1'
+      );
+
+      // A settings read must never take down a sites list — the client falls
+      // back to the product defaults.
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect('enrollmentDefaults' in body).toBe(false);
     });
 
     it('should return empty list for partner with no accessible orgs', async () => {
@@ -2603,6 +3029,61 @@ describe('org routes', () => {
 
       expect(res.status).toBe(404);
     });
+
+    it('selects an explicit column projection that excludes internal metadata columns', async () => {
+      // Serialization hygiene: the handler must pass an explicit column map to
+      // db.select() so internal columns (signup attribution, Stripe linkage,
+      // MCP-origin metadata, ssoConfig) never reach partner-scoped tokens —
+      // and a future column added to the schema does not auto-appear in the
+      // response. The db is mocked, so the enforcing assertion here is the
+      // projection object the handler hands to select(), not the mocked body.
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      let selectedColumns: Record<string, unknown> | undefined;
+      vi.mocked(db.select).mockImplementationOnce(((columns: Record<string, unknown>) => {
+        selectedColumns = columns;
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'Acme MSP', slug: 'acme', settings: {} }])
+            })
+          })
+        };
+      }) as any);
+
+      const res = await app.request('/orgs/partners/me');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toMatchObject({ id: 'partner-123', name: 'Acme MSP', slug: 'acme' });
+
+      expect(selectedColumns).toBeDefined();
+      const keys = Object.keys(selectedColumns!);
+      for (const expected of [
+        'id', 'name', 'slug', 'type', 'plan', 'status', 'timezone', 'settings',
+        'billingEmail', 'emailSignature', 'inboundLocalPart', 'currencyCode',
+        'defaultTaxRate', 'invoiceNumberPrefix', 'invoiceTermsDays', 'invoiceFooter',
+        'billingCompanyName', 'billingPhone', 'billingWebsite',
+        'billingAddressLine1', 'billingAddressLine2', 'billingAddressCity',
+        'billingAddressRegion', 'billingAddressPostalCode', 'billingAddressCountry',
+        'billingTermsAndConditions', 'defaultMarkupPercent', 'autoTaxHardware',
+        'catalogAiStyle', 'aiForOfficeEnabled', 'createdAt', 'updatedAt',
+      ]) {
+        expect(keys).toContain(expected);
+      }
+      for (const internal of [
+        'signupIp', 'signupUserAgent', 'mcpOrigin', 'mcpOriginIp', 'mcpOriginUserAgent',
+        'emailVerifiedAt', 'paymentMethodAttachedAt', 'stripeCustomerId', 'ssoConfig', 'deletedAt',
+        // Billing identity snapshot (written by the billing service, read by
+        // the abuse sweep). Cardholder name and card fingerprint must never be
+        // served to a partner-scoped token.
+        'billingCardholderName', 'billingCardCountry', 'billingCardFingerprint',
+        'billingDistinctPaymentMethods', 'billingFailedAttempts',
+        'billingPaymentMethodsFirstSeenAt', 'billingPaymentMethodsLastSeenAt',
+        'billingIdentitySyncedAt', 'billingSubscriptionStatus',
+      ]) {
+        expect(keys).not.toContain(internal);
+      }
+    });
   });
 
   describe('GET /partners/me/ip-allowlist/status', () => {
@@ -2637,7 +3118,7 @@ describe('org routes', () => {
   });
 
   describe('PATCH /orgs/partners/me', () => {
-    it.each(['pt-BR', 'es-419', 'fr-FR', 'de-DE'] as const)(
+    it.each(['pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT'] as const)(
       'accepts %s as the partner default language',
       async (language) => {
         setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
@@ -2694,6 +3175,60 @@ describe('org routes', () => {
       expect(db.update).not.toHaveBeenCalled();
     });
 
+    it('passes an explicit column projection to .returning() that excludes internal metadata columns', async () => {
+      // Same serialization-hygiene contract as GET /partners/me: the updated
+      // row is echoed back to a partner-scoped token, so the .returning()
+      // clause must be an explicit projection — never the whole partners row.
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner]),
+          }),
+        }),
+      } as any);
+      let returningColumns: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockImplementation((columns: Record<string, unknown>) => {
+              returningColumns = columns;
+              return Promise.resolve([{ ...currentPartner, name: 'Acme Managed Services' }]);
+            }),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Acme Managed Services' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ id: 'partner-123', name: 'Acme Managed Services' });
+
+      expect(returningColumns).toBeDefined();
+      const keys = Object.keys(returningColumns!);
+      for (const expected of ['id', 'name', 'slug', 'status', 'settings', 'billingEmail', 'emailSignature', 'updatedAt']) {
+        expect(keys).toContain(expected);
+      }
+      for (const internal of [
+        'signupIp', 'signupUserAgent', 'mcpOrigin', 'mcpOriginIp', 'mcpOriginUserAgent',
+        'emailVerifiedAt', 'paymentMethodAttachedAt', 'stripeCustomerId', 'ssoConfig', 'deletedAt',
+        // Billing identity snapshot (written by the billing service, read by
+        // the abuse sweep). Cardholder name and card fingerprint must never be
+        // served to a partner-scoped token.
+        'billingCardholderName', 'billingCardCountry', 'billingCardFingerprint',
+        'billingDistinctPaymentMethods', 'billingFailedAttempts',
+        'billingPaymentMethodsFirstSeenAt', 'billingPaymentMethodsLastSeenAt',
+        'billingIdentitySyncedAt', 'billingSubscriptionStatus',
+      ]) {
+        expect(keys).not.toContain(internal);
+      }
+    });
+
     it('rejects a logoUrl exceeding 400 KB', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
 
@@ -2729,6 +3264,60 @@ describe('org routes', () => {
       const body = await res.json();
       expect(body.error).toContain('9.9.9');
       expect(db.update).not.toHaveBeenCalled();
+    });
+
+    // issue #2776: the partner `defaults` Zod block has no `.passthrough()`, so
+    // unlisted keys are silently stripped rather than rejected — a partner PATCH
+    // would appear to succeed while discarding the values unless all three
+    // enrollment fields are listed explicitly in the schema.
+    it('persists partner enrollment defaults through PATCH /partners/me', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            }),
+            limit: vi.fn().mockResolvedValue([currentPartner])
+          })
+        })
+      } as any);
+      // Capture the ACTUAL settings object the handler sends to db.update rather
+      // than trusting a hardcoded mock return value — otherwise this test can't
+      // distinguish "persisted" from "silently stripped by zod then echoed back
+      // by the mock" (the exact trap this task calls out: the partner `defaults`
+      // block has no `.passthrough()`).
+      let capturedUpdateData: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          capturedUpdateData = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{
+                ...currentPartner,
+                settings: data.settings,
+              }])
+            })
+          };
+        })
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { defaults: {
+          defaultEnrollmentTtlMinutes: 10080,
+          maxEnrollmentLinkTtlMinutes: 43200,
+        } } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(capturedUpdateData.settings.defaults.defaultEnrollmentTtlMinutes).toBe(10080);
+      expect(capturedUpdateData.settings.defaults.maxEnrollmentLinkTtlMinutes).toBe(43200);
+      const body = await res.json();
+      expect(body.settings.defaults.defaultEnrollmentTtlMinutes).toBe(10080);
+      expect(body.settings.defaults.maxEnrollmentLinkTtlMinutes).toBe(43200);
     });
 
     it('accepts a valid branding update within size limits', async () => {

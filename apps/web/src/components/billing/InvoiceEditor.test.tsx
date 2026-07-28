@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import InvoiceEditor from './InvoiceEditor';
 import type { InvoiceDetail } from './invoiceTypes';
 import { fetchWithAuth } from '../../stores/auth';
+import { _resetShowMarginMemoryForTests } from './billingUi';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
@@ -46,6 +47,13 @@ const manualLine: InvoiceDetail['lines'][number] = {
 describe('InvoiceEditor', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Margin visibility persists to localStorage — start each test from the
+    // default (hidden); tests that need the panel opt in explicitly.
+    localStorage.clear();
+    // The memory mirror deliberately outlives localStorage.clear(), so a suite
+    // that ever clicks a MarginToggle would leak the preference into its
+    // neighbours without this.
+    _resetShowMarginMemoryForTests();
     fetchMock.mockImplementation(async (input: string) => {
       if (input.startsWith('/catalog')) return json({ data: [] });
       return json({ data: {} });
@@ -130,6 +138,9 @@ describe('InvoiceEditor', () => {
   });
 
   it('renders the internal margin summary from line costs', async () => {
+    // The panel honors the billing-wide persisted "show cost & margin"
+    // preference — pre-enable it (default is hidden).
+    localStorage.setItem('breeze:quote-editor-show-margin', '1');
     const costedLine = { ...manualLine, id: 'line-c', costBasis: '30.00', quantity: '2.00', unitPrice: '50.00', lineTotal: '100.00' };
     render(<InvoiceEditor detail={draft([costedLine])} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
@@ -141,6 +152,7 @@ describe('InvoiceEditor', () => {
   });
 
   it('flags a missing cost in the margin summary', async () => {
+    localStorage.setItem('breeze:quote-editor-show-margin', '1');
     // manualLine has costBasis null → excluded from net and counted as missing.
     render(<InvoiceEditor detail={draft([manualLine])} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
@@ -347,5 +359,62 @@ describe('InvoiceEditor', () => {
       });
     });
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Terms saved' }));
+  });
+
+  it('tells "catalog is empty" apart from "catalog failed to load", and offers a retry', async () => {
+    // Rendering the empty state on a failed load sends a tech off to re-create
+    // items that already exist — and the rejection used to be voided entirely,
+    // so there was no toast either.
+    let fail = true;
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/catalog')) {
+        // A 200 with an unparseable body — the shape a proxy/truncation
+        // produces, and the one an `!res.ok` check alone sails straight past.
+        if (fail) return ({ ok: true, status: 200, statusText: 'OK', json: () => Promise.reject(new Error('bad json')) }) as unknown as Response;
+        return json({ data: [{ id: 'cat-1', name: 'Widget', unitPrice: '10.00', isBundle: false }] });
+      }
+      return json({ data: {} });
+    });
+    render(<InvoiceEditor detail={draft([])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-catalog-error')).toBeInTheDocument());
+    expect(screen.queryByTestId('invoice-catalog-empty')).not.toBeInTheDocument();
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+
+    fail = false;
+    fireEvent.click(screen.getByTestId('invoice-catalog-retry'));
+    await waitFor(() => expect(screen.getByTestId('invoice-catalog-picker')).toBeInTheDocument());
+    expect(screen.queryByTestId('invoice-catalog-error')).not.toBeInTheDocument();
+  });
+
+  it('namespaces its unsaved-hint ids with the invoice prefix so quote ids cannot collide', async () => {
+    // unsavedHintId takes three same-typed strings and the invoice side hand
+    // types the prefix at every call site, so a swap or a typo compiles fine.
+    render(<InvoiceEditor detail={draft([manualLine])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    const qty = screen.getByTestId('invoice-line-qty-line-1');
+    fireEvent.change(qty, { target: { value: '7' } });
+
+    await waitFor(() => expect(document.getElementById('invoice-line-qty-unsaved-line-1')).toBeInTheDocument());
+    expect(qty.getAttribute('aria-describedby')).toContain('invoice-line-qty-unsaved-line-1');
+    // The quote namespace must be untouched by the invoice editor.
+    expect(document.getElementById('quote-line-qty-unsaved-line-1')).toBeNull();
+  });
+
+  it('does not stamp "Saved" when an add-line entry fails validation', async () => {
+    // Validation early-returns used to run INSIDE runScoped, where a plain
+    // `return` is indistinguishable from a completed save — so a rejected
+    // quantity produced an error toast AND a fresh "Saved 3:14 PM".
+    render(<InvoiceEditor detail={draft([])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('invoice-add-mode-manual'));
+    fireEvent.change(screen.getByTestId('invoice-manual-desc'), { target: { value: 'Thing' } });
+    fireEvent.change(screen.getByTestId('invoice-manual-qty'), { target: { value: 'abc' } });
+    fireEvent.click(screen.getByTestId('invoice-add-line-submit'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/lines') && (c[1] as RequestInit)?.method === 'POST')).toBe(false);
+    expect(screen.queryByTestId('invoice-editor-last-saved')).not.toBeInTheDocument();
   });
 });

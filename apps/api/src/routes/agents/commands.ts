@@ -136,7 +136,13 @@ commandsRoutes.get('/:id/commands', async (c) => {
 
   const commands = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
-      claimPendingCommandsForDevice(agent.deviceId, 10, agent.role)
+      claimPendingCommandsForDevice(
+        agent.deviceId,
+        10,
+        agent.role,
+        // #2774 — offboarding drain: only self_uninstall is deliverable.
+        agent.tenantDraining ? ['self_uninstall'] : undefined
+      )
     )
   );
 
@@ -338,7 +344,7 @@ commandsRoutes.post(
 
     if (command.type === filesystemAnalysisCommandType) {
       try {
-        await handleFilesystemAnalysisCommandResult(command, normalizedData);
+        await handleFilesystemAnalysisCommandResult(command, normalizedData, agent.orgId);
       } catch (err) {
         console.error(`[agents] filesystem analysis post-processing failed for ${commandId}:`, err);
         captureException(err);

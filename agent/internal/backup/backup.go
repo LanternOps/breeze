@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -19,7 +18,16 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 	"github.com/breeze-rmm/agent/internal/backup/vss"
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/logging"
 )
+
+// log is the package logger. Everything in this package used to call stdlib
+// log.Printf, which writes raw text to stderr and so bypassed slog, the log
+// file and the log shipper entirely — under a Windows service that stderr is
+// NUL, which is why a hung backup produced no diagnostics anywhere (#2790).
+// Routing through logging.L also tags every line with component=backup so it
+// is filterable via the diagnostic-logs API.
+var log = logging.L("backup")
 
 const (
 	jobStatusRunning   = "running"
@@ -178,7 +186,7 @@ func (m *BackupManager) Stop() bool {
 	jobDoneCh := m.jobDoneCh
 	m.mu.Unlock()
 
-	log.Printf("[backup] stopping backup manager")
+	log.Info("stopping backup manager")
 	if jobCancel != nil {
 		jobCancel()
 	}
@@ -191,7 +199,7 @@ func (m *BackupManager) Stop() bool {
 		m.jobDoneCh = nil
 	}
 	m.mu.Unlock()
-	log.Printf("[backup] backup manager stopped")
+	log.Info("backup manager stopped")
 	return true
 }
 
@@ -266,6 +274,14 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		Status:    jobStatusRunning,
 	}
 	backupPaths := append([]string(nil), m.config.Paths...)
+	log.Info("backup run starting",
+		"jobId", job.ID,
+		"paths", strings.Join(backupPaths, string(os.PathListSeparator)),
+		"excludeCount", len(excludes),
+		"vssEnabled", m.config.VSSEnabled,
+		"systemStateEnabled", m.config.SystemStateEnabled,
+		"retention", m.config.Retention,
+	)
 	stopBackupRun := func() (*BackupJob, error) {
 		job.Status = jobStatusStopped
 		job.CompletedAt = time.Now().UTC()
@@ -302,7 +318,10 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		session, vssErr := provider.CreateShadowCopy(vssCtx, extractVolumes(m.config.Paths))
 		cancel()
 		if vssErr != nil {
-			log.Printf("[backup] VSS shadow copy failed, proceeding without VSS: %v", vssErr)
+			log.Warn("VSS shadow copy failed, proceeding without VSS",
+				"elapsedMs", time.Since(vssStart).Milliseconds(),
+				"error", vssErr.Error(),
+			)
 		} else {
 			vssSession = session
 			job.VSSMetadata = &vss.VSSMetadata{
@@ -314,11 +333,14 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 				DurationMs:   time.Since(vssStart).Milliseconds(),
 			}
 			if len(session.Warnings) > 0 {
-				log.Printf("[backup] VSS completed with %d warning(s): %v", len(session.Warnings), session.Warnings)
+				log.Warn("VSS completed with warnings",
+					"warningCount", len(session.Warnings),
+					"warnings", strings.Join(session.Warnings, "; "),
+				)
 			}
 			defer func() {
 				if releaseErr := provider.ReleaseShadowCopy(session); releaseErr != nil {
-					log.Printf("[backup] failed to release VSS shadow copy: %v", releaseErr)
+					log.Warn("failed to release VSS shadow copy", "error", releaseErr.Error())
 				}
 			}()
 		}
@@ -339,7 +361,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		manifest, stagingDir, ssErr := collectSystemState()
 		if ssErr != nil {
 			systemStateErr = ssErr
-			log.Printf("[backup] system state collection failed, proceeding without: %v", ssErr)
+			log.Warn("system state collection failed, proceeding without", "error", ssErr.Error())
 		} else {
 			job.SystemStateManifest = manifest
 			// Collection succeeded on all *required* artifacts (missing a
@@ -349,14 +371,14 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			// is visible without discarding an otherwise-usable backup.
 			if len(manifest.IncompleteSteps) > 0 {
 				job.Warning = fmt.Sprintf("system state collection incomplete: %v failed", manifest.IncompleteSteps)
-				log.Printf("[backup] %s", job.Warning)
+				log.Warn("system state collection incomplete", "warning", job.Warning)
 			}
 			// Append staging dir to backup paths so artifacts are included in snapshot
 			systemStateStagingIdx = len(backupPaths)
 			backupPaths = append(backupPaths, stagingDir)
 			defer func() {
 				if removeErr := os.RemoveAll(stagingDir); removeErr != nil {
-					log.Printf("[backup] failed to clean up system state staging dir: %v", removeErr)
+					log.Warn("failed to clean up system state staging dir", "dir", stagingDir, "error", removeErr.Error())
 				}
 			}()
 		}
@@ -380,13 +402,24 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	if err := runCtx.Err(); err != nil {
 		return stopBackupRun()
 	}
+	// The tree walk emits nothing of its own and can run for many minutes on a
+	// large volume, so without a bounding pair of log lines it is
+	// indistinguishable from a hang. Same reasoning as the per-file upload
+	// timing in snapshot.go (#2790).
+	log.Info("scanning backup paths", "jobId", job.ID, "pathCount", len(backupPaths))
+	scanStart := time.Now()
 	files, scanErr := m.collectBackupFilesFromPaths(runCtx, backupPaths, newExcludeMatcher(excludes))
 	if scanErr != nil {
 		if errors.Is(scanErr, errBackupStopped) {
 			return stopBackupRun()
 		}
-		log.Printf("[backup] backup file scan completed with errors: %v", scanErr)
+		log.Warn("backup file scan completed with errors", "error", scanErr.Error())
 	}
+	log.Info("scan complete",
+		"jobId", job.ID,
+		"files", len(files),
+		"elapsedMs", time.Since(scanStart).Milliseconds(),
+	)
 	if vssSession != nil {
 		// Recover the pre-VSS-rewrite path for each file so the checkpoint
 		// journal has a stable resume key — see originalPathsForVSS and the
@@ -433,7 +466,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	if incrementalDedupeActive {
 		prev, reason := previousManifest(runCtx, m.config.Provider)
 		if prev == nil {
-			log.Printf("[backup] running full backup (no reference dedupe): %s", reason)
+			log.Info("running full backup, no reference dedupe", "reason", reason)
 		} else {
 			prevSnapshot = prev
 		}
@@ -470,7 +503,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	var journal *snapshotJournal
 	var resumedJournal bool
 	if journalDir, ok := resolveJournalDir(m.GetStagingDir()); !ok {
-		log.Printf("[backup] no secure checkpoint journal directory available (only the world-writable temp dir); proceeding without resume support")
+		log.Warn("no secure checkpoint journal directory available, proceeding without resume support")
 	} else {
 		var journalErr error
 		journal, resumedJournal, journalErr = openSnapshotJournal(journalDir, backupIdentity(m.config.Provider, m.config.Paths), journalMaxAge)
@@ -478,7 +511,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			// A journal is a best-effort checkpoint, never a correctness
 			// requirement: degrade to a journal-less run rather than failing
 			// the backup over it.
-			log.Printf("[backup] failed to open checkpoint journal, proceeding without resume support: %v", journalErr)
+			log.Warn("failed to open checkpoint journal, proceeding without resume support", "error", journalErr.Error())
 			journal = nil
 		}
 	}
@@ -488,13 +521,17 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			// journal and the (near-impossible) identity-mismatch case — see
 			// openSnapshotJournal — so the message below is deliberately
 			// generic rather than claiming a specific cause.
-			log.Printf("[backup] discarding unusable checkpoint journal (snapshot %s, older than %s or identity-mismatched), cleaning up its remote prefix",
-				staleID, journalMaxAge)
+			log.Warn("discarding unusable checkpoint journal, cleaning up its remote prefix",
+				"snapshotId", staleID,
+				"maxAge", journalMaxAge.String(),
+			)
 			cleanupSnapshotPrefix(m.config.Provider, staleID)
 		}
 		if resumedJournal {
-			log.Printf("[backup] resuming interrupted backup: journal snapshot %s (%d bytes already uploaded)",
-				journal.snapshotID, journal.ResumedBytes())
+			log.Info("resuming interrupted backup from checkpoint journal",
+				"snapshotId", journal.snapshotID,
+				"resumedBytes", journal.ResumedBytes(),
+			)
 		}
 	}
 
@@ -544,7 +581,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			if errors.Is(retentionErr, errBackupStopped) {
 				return stopBackupRun()
 			}
-			log.Printf("[backup] failed to enforce snapshot retention: %v", retentionErr)
+			log.Warn("failed to enforce snapshot retention", "error", retentionErr.Error())
 		}
 	}
 
@@ -569,7 +606,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		job.ErrorCount = len(snapshot.UploadFailures)
 		failureWarning := summarizeUploadFailures(snapshot.UploadFailures, len(files))
 		appendWarning(job, failureWarning)
-		log.Printf("[backup] %s", failureWarning)
+		log.Warn("snapshot completed with upload failures", "warning", failureWarning, "errorCount", job.ErrorCount)
 	}
 
 	// Collection-phase (scan) errors — permission-denied files, walk failures,
@@ -584,12 +621,31 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		job.ErrorCount += len(scanFailures)
 		scanWarning := summarizeScanErrors(scanFailures)
 		appendWarning(job, scanWarning)
-		log.Printf("[backup] %s", scanWarning)
+		log.Warn("snapshot completed with scan failures", "warning", scanWarning)
 	}
 
 	job.Status = jobStatusCompleted
 	job.Error = errors.Join(scanErr, retentionErr)
+	log.Info("backup run completed",
+		"jobId", job.ID,
+		"snapshotId", snapshotID(snapshot),
+		"filesBackedUp", job.FilesBackedUp,
+		"bytesBackedUp", job.BytesBackedUp,
+		"referencedFiles", job.ReferencedFiles,
+		"referencedBytes", job.ReferencedBytes,
+		"errorCount", job.ErrorCount,
+		"elapsedMs", time.Since(job.StartedAt).Milliseconds(),
+	)
 	return job, nil
+}
+
+// snapshotID returns s.ID, or "" for a nil snapshot, so completion logging
+// never has to guard the nil case inline.
+func snapshotID(s *Snapshot) string {
+	if s == nil {
+		return ""
+	}
+	return s.ID
 }
 
 // maxUploadFailureDetails caps how many individual per-file error messages
@@ -811,7 +867,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 			}
 			snapshotPath := filepath.ToSlash(filepath.Join(rootLabel, relPath))
 			if _, exists := seen[snapshotPath]; exists {
-				log.Printf("[backup] duplicate backup path skipped: %s", snapshotPath)
+				log.Debug("duplicate backup path skipped", "snapshotPath", snapshotPath)
 				continue
 			}
 			seen[snapshotPath] = struct{}{}
@@ -865,7 +921,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 			}
 			snapshotPath := filepath.ToSlash(filepath.Join(rootLabel, relPath))
 			if _, exists := seen[snapshotPath]; exists {
-				log.Printf("[backup] duplicate backup path skipped: %s", snapshotPath)
+				log.Debug("duplicate backup path skipped", "snapshotPath", snapshotPath)
 				return nil
 			}
 			seen[snapshotPath] = struct{}{}

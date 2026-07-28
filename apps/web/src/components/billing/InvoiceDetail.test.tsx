@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import InvoiceDetail from './InvoiceDetail';
 import type { InvoiceDetail as InvoiceDetailData } from './invoiceTypes';
+import { _resetShowMarginMemoryForTests } from './billingUi';
 import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
@@ -50,30 +51,42 @@ const issued: InvoiceDetailData = {
 describe('InvoiceDetail', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The cost/margin toggle persists to localStorage (plus an in-memory
+    // mirror that survives storage clears) — reset both so each test starts
+    // from the default (internal view OFF).
+    localStorage.clear();
+    _resetShowMarginMemoryForTests();
     fetchMock.mockImplementation(async (input: string) => {
       if (input.endsWith('/payments')) return json({ data: [] });
       return json({ data: {} });
     });
   });
 
-  it('hides cost/margin and hidden components until accounting view is on', async () => {
+  it('hides cost/margin, hidden components and the margin panel until the internal view is on — and persists the choice', async () => {
     render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
 
-    // Customer view: hidden bundle child not rendered, no per-line cost/margin
-    // columns. (Scoped to the table headers — the internal margin summary panel
-    // carries its own "Cost" label and is always visible to readers.)
+    // Customer view (default): hidden bundle child not rendered, no per-line
+    // cost/margin columns, and no margin summary panel — "no margin on screen"
+    // is the default until the operator opts in.
     expect(screen.queryByTestId('invoice-detail-line-l2')).not.toBeInTheDocument();
     expect(screen.queryByRole('columnheader', { name: 'Cost' })).not.toBeInTheDocument();
     expect(screen.queryByRole('columnheader', { name: 'Margin' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-margin')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId('invoice-accounting-toggle'));
+    fireEvent.click(screen.getByTestId('invoice-detail-toggle-margin'));
     expect(screen.getByTestId('invoice-detail-line-l2')).toBeInTheDocument();
     expect(screen.getByRole('columnheader', { name: 'Cost' })).toBeInTheDocument();
     expect(screen.getByRole('columnheader', { name: 'Margin' })).toBeInTheDocument();
+    expect(screen.getByTestId('invoice-margin')).toBeInTheDocument();
+    // The preference persists under the SAME key the quote surfaces use, so
+    // "hide cost & margin" holds across the whole billing area.
+    expect(localStorage.getItem('breeze:quote-editor-show-margin')).toBe('1');
   });
 
   it('renders the internal margin summary (billed-only, one-time, excludes tax)', async () => {
+    // Internal view pre-enabled via the persisted preference.
+    localStorage.setItem('breeze:quote-editor-show-margin', '1');
     render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
 
@@ -103,6 +116,7 @@ describe('InvoiceDetail', () => {
         { ...lines[1], id: 'c1', parentLineId: 'p1', costBasis: '10.00', revenueAllocation: '40.00', customerVisible: true, quantity: '1.00', unitPrice: '0.00', lineTotal: '0.00' },
       ],
     };
+    localStorage.setItem('breeze:quote-editor-show-margin', '1');
     render(<InvoiceDetail detail={bundle} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
     expect(screen.getByTestId('invoice-margin-cost')).toHaveTextContent('$80.00');
@@ -115,6 +129,7 @@ describe('InvoiceDetail', () => {
       ...issued,
       lines: [{ ...lines[0], costBasis: null }],
     };
+    localStorage.setItem('breeze:quote-editor-show-margin', '1');
     render(<InvoiceDetail detail={noCost} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
     expect(screen.getByTestId('invoice-margin-missing-cost')).toHaveTextContent('1 line missing a cost');
@@ -201,6 +216,42 @@ describe('InvoiceDetail', () => {
     await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
     expect(screen.getByTestId('invoice-stripe-nudge')).toBeInTheDocument();
     expect(screen.queryByTestId('invoice-pay-link')).not.toBeInTheDocument();
+  });
+
+  it('shows a dashed empty state with an Editor CTA on an empty draft (no CTA once issued)', async () => {
+    const emptyDraft: InvoiceDetailData = {
+      ...issued,
+      invoice: { ...issued.invoice, status: 'draft', invoiceNumber: null },
+      lines: [],
+    };
+    const { rerender } = render(<InvoiceDetail detail={emptyDraft} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    // No bare table header — a dashed card explains the state and routes to the
+    // Editor (mirrors QuoteDetail's empty state).
+    expect(screen.queryByTestId('invoice-detail-lines')).not.toBeInTheDocument();
+    expect(screen.getByTestId('invoice-detail-empty')).toBeInTheDocument();
+    expect(screen.getByTestId('invoice-detail-empty-edit')).toBeInTheDocument();
+
+    // Issued + empty: state renders, but the CTA is gone — there is no Editor
+    // tab to send the user to once the invoice has left draft.
+    rerender(<InvoiceDetail detail={{ ...issued, lines: [] }} onChanged={vi.fn()} />);
+    expect(screen.getByTestId('invoice-detail-empty')).toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-detail-empty-edit')).not.toBeInTheDocument();
+  });
+
+  it('explains an all-internal invoice instead of rendering a bare table when the internal view is off', async () => {
+    const allHidden: InvoiceDetailData = {
+      ...issued,
+      lines: [{ ...lines[0], customerVisible: false }],
+    };
+    render(<InvoiceDetail detail={allHidden} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    expect(screen.getByTestId('invoice-detail-all-hidden')).toBeInTheDocument();
+
+    // Turning the internal view on reveals the hidden line and drops the notice.
+    fireEvent.click(screen.getByTestId('invoice-detail-toggle-margin'));
+    expect(screen.queryByTestId('invoice-detail-all-hidden')).not.toBeInTheDocument();
+    expect(screen.getByTestId('invoice-detail-line-l1')).toBeInTheDocument();
   });
 
   it('badges Stripe payments as Online and hides manual void on them', async () => {

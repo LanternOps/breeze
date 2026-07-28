@@ -17,12 +17,19 @@ import {
   revokeOrganizationTenantAccess,
   revokePartnerTenantAccess,
 } from '../services/tenantLifecycle';
+import {
+  abortOrganizationOffboarding,
+  abortPartnerOffboarding,
+  beginOrganizationOffboarding,
+  beginPartnerOffboarding,
+} from '../services/tenantOffboarding';
 import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
 import { escapeLike } from '../utils/sql';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema } from '@breeze/shared';
-import type { IpAllowlistStatus, SupportedLocale } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema } from '@breeze/shared';
+import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
+import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
@@ -131,7 +138,8 @@ function settingsAllowlistEntriesValid(settings: unknown): boolean {
 }
 
 const updatePartnerSchema = createPartnerSchema.partial().extend({
-  status: z.enum(['pending', 'active', 'suspended', 'churned']).optional(),
+  // `offboarding` (#2774): terminal-intent drain — see services/tenantOffboarding.ts.
+  status: z.enum(['pending', 'active', 'suspended', 'churned', 'offboarding']).optional(),
   // Operator-only per-partner AI for Office entitlement. Settable here (system
   // scope) but NOT on /partners/me (partner scope) — partners can't self-enable.
   aiForOfficeEnabled: z.boolean().optional(),
@@ -178,13 +186,22 @@ const createOrganizationSchema = z.object({
   billingContact: z.any().optional()
 });
 
-const updateOrganizationSchema = createOrganizationSchema.partial().omit({ partnerId: true });
+// Update (not create) additionally accepts `offboarding` (#2774) — the
+// terminal-intent drain state. Creating an org directly in `offboarding`
+// makes no sense, so the create schema keeps the original set.
+const updateOrganizationSchema = createOrganizationSchema.partial().omit({ partnerId: true }).extend({
+  status: z.enum(['active', 'suspended', 'trial', 'churned', 'offboarding']).optional(),
+});
 
 const listSitesSchema = z.object({
   orgId: z.string().guid().optional(),
   organizationId: z.string().guid().optional(), // Alias for orgId (frontend compatibility)
   page: z.string().optional(),
-  limit: z.string().optional()
+  limit: z.string().optional(),
+  // Opt-in: resolve and attach the org's enrollment defaults (#2776). Costs an
+  // extra org⋈partner settings read that runs in an escaped system context, so
+  // it is OFF by default — see the call site for the pool-exhaustion reason.
+  includeEnrollmentDefaults: z.enum(['1', 'true']).optional()
 });
 
 // IANA timezone validation lives in @breeze/shared (`isValidIanaTimezone`) so
@@ -288,6 +305,60 @@ orgRoutes.get('/', requireScope('organization', 'partner', 'system'), requireOrg
 
 // --- Partners (system admins) ---
 
+// Explicit wire shape for partner rows. Every handler that serializes a partner
+// row (the /partners list/create/get/patch handlers and GET/PATCH /partners/me)
+// must project through this map instead of returning the whole `partners` row,
+// so internal/operational columns never reach API clients — and a column added
+// to the schema later does not silently start appearing in responses until it
+// is deliberately added here. Intentionally excluded: signupIp,
+// signupUserAgent, mcpOrigin, mcpOriginIp, mcpOriginUserAgent (signup
+// attribution), emailVerifiedAt (activation-gate bookkeeping read by
+// middleware), paymentMethodAttachedAt, stripeCustomerId (billing-provider
+// linkage), ssoConfig (may carry IdP secrets; managed via dedicated SSO
+// routes), deletedAt (soft-delete bookkeeping — these handlers already filter
+// deleted rows out).
+//
+// Built lazily (a function, not a module-scope object) so importing this module
+// never dereferences `partners.*` at load time. Test files that
+// `vi.mock('../db/schema')` with a partial mock would otherwise fail to import
+// orgs.ts at all ("No 'partners' export is defined on the mock").
+const partnerPublicColumns = () => ({
+  id: partners.id,
+  name: partners.name,
+  slug: partners.slug,
+  inboundLocalPart: partners.inboundLocalPart,
+  type: partners.type,
+  plan: partners.plan,
+  status: partners.status,
+  maxOrganizations: partners.maxOrganizations,
+  maxDevices: partners.maxDevices,
+  timezone: partners.timezone,
+  settings: partners.settings,
+  billingEmail: partners.billingEmail,
+  emailSignature: partners.emailSignature,
+  currencyCode: partners.currencyCode,
+  defaultTaxRate: partners.defaultTaxRate,
+  invoiceNumberPrefix: partners.invoiceNumberPrefix,
+  invoiceTermsDays: partners.invoiceTermsDays,
+  invoiceFooter: partners.invoiceFooter,
+  billingCompanyName: partners.billingCompanyName,
+  billingPhone: partners.billingPhone,
+  billingWebsite: partners.billingWebsite,
+  billingAddressLine1: partners.billingAddressLine1,
+  billingAddressLine2: partners.billingAddressLine2,
+  billingAddressCity: partners.billingAddressCity,
+  billingAddressRegion: partners.billingAddressRegion,
+  billingAddressPostalCode: partners.billingAddressPostalCode,
+  billingAddressCountry: partners.billingAddressCountry,
+  billingTermsAndConditions: partners.billingTermsAndConditions,
+  defaultMarkupPercent: partners.defaultMarkupPercent,
+  autoTaxHardware: partners.autoTaxHardware,
+  catalogAiStyle: partners.catalogAiStyle,
+  aiForOfficeEnabled: partners.aiForOfficeEnabled,
+  createdAt: partners.createdAt,
+  updatedAt: partners.updatedAt,
+});
+
 orgRoutes.get('/partners', requireScope('system'), requireOrgRead, zValidator('query', paginationSchema), async (c) => {
   const { page, limit, offset } = getPagination(c.req.valid('query'));
 
@@ -299,7 +370,7 @@ orgRoutes.get('/partners', requireScope('system'), requireOrgRead, zValidator('q
   const count = countResult[0]?.count ?? 0;
 
   const data = await db
-    .select()
+    .select(partnerPublicColumns())
     .from(partners)
     .where(conditions)
     .limit(limit)
@@ -344,7 +415,7 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
         settings: data.settings,
         billingEmail: data.billingEmail
       })
-      .returning();
+      .returning(partnerPublicColumns());
     if (newPartner) {
       await seedSystemTicketStatuses(tx, newPartner.id);
     }
@@ -379,7 +450,7 @@ const dayScheduleSchema = z.object({
   closed: z.boolean().optional()
 });
 
-const supportedLocales = ['en', 'pt-BR', 'es-419', 'fr-FR', 'de-DE'] as const satisfies readonly SupportedLocale[];
+const supportedLocales = ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT'] as const satisfies readonly SupportedLocale[];
 
 const partnerSettingsSchema = z.object({
   // Partner tz is the canonical default for every downstream tz field (#1318),
@@ -476,6 +547,12 @@ const partnerSettingsSchema = z.object({
     // the "version must be registered" check needs a DB lookup and is done in
     // the handler via validateAgentVersionPins (same as the org PATCH path).
     agentVersionPins: agentVersionPinsSchema.optional(),
+    // Enrollment link defaults/cap (issue #2776). Spread the shared schema's
+    // shape rather than redefining bounds here — this block has no
+    // `.passthrough()`, so without these three keys listed explicitly a
+    // partner PATCH carrying them would have them silently stripped, not
+    // rejected.
+    ...enrollmentDefaultsSchema.shape,
   }).optional(),
   branding: z.object({
     logoUrl: z.string().max(400_000, 'Logo data exceeds maximum size (400 KB)').optional(),
@@ -572,7 +649,7 @@ orgRoutes.get('/partners/me', requireScope('partner'), requirePartner, requireOr
   const auth = c.get('auth');
 
   const [partner] = await db
-    .select()
+    .select(partnerPublicColumns())
     .from(partners)
     .where(and(eq(partners.id, auth.partnerId as string), isNull(partners.deletedAt)))
     .limit(1);
@@ -755,7 +832,7 @@ orgRoutes.patch(
     .update(partners)
     .set(updateData)
     .where(and(eq(partners.id, auth.partnerId as string), isNull(partners.deletedAt)))
-    .returning();
+    .returning(partnerPublicColumns());
 
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
@@ -786,7 +863,7 @@ orgRoutes.get('/partners/:id', requireScope('system'), requireOrgRead, async (c)
   const id = c.req.param('id')!;
 
   const [partner] = await db
-    .select()
+    .select(partnerPublicColumns())
     .from(partners)
     .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
     .limit(1);
@@ -886,7 +963,7 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
     .update(partners)
     .set(updates)
     .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
-    .returning();
+    .returning(partnerPublicColumns());
 
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
@@ -903,10 +980,20 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   // (signup/billing limbo) and is already blocked for agents by the live
   // tenant cascade (getActivePartner is strict) — severing here would expire
   // enrollment keys irreversibly on a transient state.
-  if ('status' in data && (data.status === 'suspended' || data.status === 'churned')) {
+  if ('status' in data && data.status === 'offboarding') {
+    // #2774 — terminal-intent drain across every org under the partner:
+    // users out now, agents narrowed to self_uninstall delivery until the
+    // drain reaper severs and flips to churned.
+    await beginPartnerOffboarding(partner.id, auth.user?.id ?? null);
+  } else if ('status' in data && (data.status === 'suspended' || data.status === 'churned')) {
+    // Cancel in-flight drain uninstalls first (no-op unless offboarding) —
+    // an uncollected self_uninstall must not survive into a later
+    // reactivation of a suspended partner.
+    await abortPartnerOffboarding(partner.id);
     await revokePartnerTenantAccess(partner.id);
   } else if ('status' in data && data.status === 'active') {
     // Reactivation: restore agent tokens this partner's revoke suspended.
+    await abortPartnerOffboarding(partner.id);
     await restorePartnerTenantAccess(partner.id);
   }
 
@@ -941,6 +1028,9 @@ orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requi
     return c.json({ error: 'Partner not found' }, 404);
   }
 
+  // Hard delete keeps the immediate-sever semantics; if a drain was in
+  // progress, cancel its uninstalls so nothing lingers (no-op otherwise).
+  await abortPartnerOffboarding(partner.id);
   await revokePartnerTenantAccess(partner.id);
 
   const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
@@ -1311,20 +1401,49 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
       if (pinError) {
         return c.json({ error: pinError }, 400);
       }
+
+      // Enrollment link defaults/cap (issue #2776) — same reason as the window
+      // and pin checks above: the org `settings` blob is z.any(), so nothing
+      // validates these three fields structurally until here. A `null` value is
+      // rejected (not treated as "clear my override") rather than stored: the
+      // schema's fields are optional-only, not nullable, so `null` fails parse
+      // and this 400s before reaching the DB — keeping the resolver's `'field'
+      // in obj` presence check safe from a stored null that would otherwise
+      // fall through to the product default instead of the partner's value.
+      const enrollmentParsed = enrollmentDefaultsSchema.safeParse(
+        (defaults as Record<string, unknown>) ?? {},
+      );
+      if (!enrollmentParsed.success) {
+        return c.json({ error: 'Invalid enrollment defaults', details: enrollmentParsed.error.issues }, 400);
+      }
     }
 
     // Enforce partner locks on settings categories (after auth check).
     for (const category of ['security', 'notifications', 'eventLogs', 'defaults', 'branding']) {
       if (settingsObj[category] && typeof settingsObj[category] === 'object') {
-        let fields = Object.keys(settingsObj[category] as Record<string, unknown>);
+        // Pass the submitted VALUES, not just the field names: assertNotLocked
+        // only rejects a locked field whose value actually diverges from the
+        // partner's, so re-submitting the enforced value is a permitted no-op
+        // (issue #2752 — this handler receives the org's whole settings blob on
+        // every save, so a name-only check 403'd untouched categories).
+        let fields = settingsObj[category] as Record<string, unknown>;
         // Issue #2124: `agentVersionPins` is INHERIT-WITH-OVERRIDE, not partner-
         // locked — an org may override the partner's pinned version (that's what
         // lets a partner pilot a new version on one org). So it is deliberately
         // exempt from the lock model here; a partner pin is only a default, and
         // getOrgAgentUpdateConfig resolves org-over-partner. Do NOT "fix" this
         // back to a lock without a per-field enforcement flag.
+        //
+        // Issue #2776: the two enrollment default VALUES are likewise
+        // inherit-with-override — a partner sets a house default, an org may
+        // deviate for a customer with different staging needs. The CAP
+        // (maxEnrollmentLinkTtlMinutes) is deliberately NOT exempt: a ceiling
+        // an org can raise is not a ceiling.
         if (category === 'defaults') {
-          fields = fields.filter((f) => f !== 'agentVersionPins');
+          fields = { ...fields };
+          delete fields.agentVersionPins;
+          delete fields.defaultEnrollmentTtlMinutes;
+          delete fields.defaultEnrollmentDeviceCount;
         }
         await assertNotLocked(id, category, fields);
       }
@@ -1365,10 +1484,22 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
     return c.json({ error: 'Organization not found' }, 404);
   }
 
-  if (data.status !== undefined && data.status !== 'active' && data.status !== 'trial') {
+  if (data.status === 'offboarding') {
+    // #2774 — terminal-intent drain: users/API keys/OAuth out now, agents kept
+    // authenticated (narrowed to self_uninstall delivery) until the fleet
+    // drains or the window closes; the offboarding drain reaper then severs
+    // and flips to churned with a never-drained report.
+    await beginOrganizationOffboarding(organization.id, auth.user?.id ?? null);
+  } else if (data.status !== undefined && data.status !== 'active' && data.status !== 'trial') {
+    // Leaving a drain for suspended/churned must not leave uncollected
+    // self_uninstalls behind: a later reactivation would deliver them to the
+    // reinstated fleet. No-op when the org wasn't offboarding.
+    await abortOrganizationOffboarding(organization.id);
     await revokeOrganizationTenantAccess(organization.id);
   } else if (data.status === 'active' || data.status === 'trial') {
-    // Reactivation: restore agent tokens this org's revoke suspended.
+    // Reactivation: cancel any in-flight drain uninstalls (see above), then
+    // restore agent tokens this org's revoke suspended.
+    await abortOrganizationOffboarding(organization.id);
     await restoreOrganizationTenantAccess(organization.id);
   }
 
@@ -1414,6 +1545,9 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requir
     return c.json({ error: 'Organization not found' }, 404);
   }
 
+  // Hard delete keeps the immediate-sever semantics; if a drain was in
+  // progress, cancel its uninstalls so nothing lingers (no-op otherwise).
+  await abortOrganizationOffboarding(organization.id);
   await revokeOrganizationTenantAccess(organization.id);
 
   writeRouteAudit(c, {
@@ -1431,7 +1565,7 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requir
 
 orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requireSiteRead, zValidator('query', listSitesSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const { orgId, organizationId, ...pagination } = c.req.valid('query');
+  const { orgId, organizationId, includeEnrollmentDefaults, ...pagination } = c.req.valid('query');
 
   // Precedence: the explicit `organizationId` (the resource the page is
   // managing) MUST win over `orgId`. `orgId` may be an *ambient* value the web
@@ -1527,9 +1661,56 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
     deviceCount: deviceCountBySite.get(site.id) ?? 0
   }));
 
+  // Ride the org's resolved enrollment defaults along on this response (#2776).
+  //
+  // The Add Device modal needs the partner/org default TTL + device count and
+  // the partner TTL cap to seed its pickers, and it is on the device-add hot
+  // path — a dedicated GET would be a second round trip on every open. This
+  // sites list IS the org read that modal already performs (orgStore.fetchSites
+  // fires from the modal's open effect, always with `organizationId=<current>`),
+  // so the values arrive with data the client is already waiting on.
+  //
+  // Deliberately NOT hung off GET /organizations, the other candidate: that
+  // route returns a LIST, so resolving per row would be one org⋈partner join
+  // per organization on a partner-wide fetch, and its organization-scope branch
+  // returns a name-only projection that carries no settings at all.
+  //
+  // OPT-IN, and that is load-bearing — not a nicety. getEnrollmentDefaultsForOrg
+  // runs its join in a system context reached via runOutsideDbContext, which
+  // opens a SECOND transaction on a SECOND pooled connection while this
+  // request's own withDbAccessContext transaction still holds the first. The
+  // hazard is cross-request, not self-deadlock: at N concurrent requests >=
+  // DB_POOL_MAX (default 30; the US region sits nearer 25) every connection is
+  // held by a request queued for a connection only a peer can release, and
+  // postgres-js has NO acquire timeout — `connect_timeout` governs the TCP
+  // connect, not the queue wait — so the API stalls indefinitely rather than
+  // degrading. This is the same failure mode as the HIGH finding fixed in
+  // #2776 round 4. GET /orgs/sites is not low-frequency admin traffic: it fires
+  // on every org switch, on the Discovery page, and on every Add Device modal
+  // open. So only the caller that actually needs the values asks for them
+  // (orgStore.fetchSites); every other caller pays exactly nothing.
+  //
+  // Also requires a single org in scope — an unfiltered cross-org sites list has
+  // no one org whose defaults would be correct. Soft-fails to an omitted field
+  // (the client falls back to the product defaults) rather than 500ing a sites
+  // list over a settings read, matching the org-ordering read above.
+  let enrollmentDefaults: ResolvedEnrollmentDefaults | undefined;
+  if (includeEnrollmentDefaults && effectiveOrgId) {
+    try {
+      enrollmentDefaults = await getEnrollmentDefaultsForOrg(effectiveOrgId);
+    } catch (err) {
+      console.error('[orgs.sites.enrollmentDefaults] Failed to resolve enrollment defaults', {
+        orgId: effectiveOrgId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      captureException(err, c);
+    }
+  }
+
   return c.json({
     data: dataWithCounts,
-    pagination: { page, limit, total: Number(count) }
+    pagination: { page, limit, total: Number(count) },
+    ...(enrollmentDefaults && { enrollmentDefaults })
   });
 });
 

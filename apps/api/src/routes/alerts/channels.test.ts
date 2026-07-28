@@ -41,6 +41,10 @@ vi.mock('../../middleware/auth', () => ({
   // Referenced (unused) by ./helpers' import of siteAccessCheck; not invoked
   // by any path these tests exercise.
   siteAccessCheck: () => () => true,
+  // The test route is self-managed (#1105 / BREEZE-A) and builds its own DB
+  // context from auth via dbAccessContextFromAuth; stub it to pass the auth
+  // straight through to the (also-stubbed) withDbAccessContext.
+  dbAccessContextFromAuth: (auth: any) => auth,
 }));
 
 // Minimal insert/update/select builder — shared across insert/update/select
@@ -84,6 +88,7 @@ vi.mock('../../db', () => {
     },
     runOutsideDbContext: (fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn(),
+    withDbAccessContext: (_ctx: unknown, fn: () => unknown) => fn(),
   };
 });
 

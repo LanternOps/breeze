@@ -6,7 +6,11 @@ import { createHash } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
 import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, remoteSessions, backupJobs, restoreJobs, tunnelSessions } from '../db/schema';
-import { handleTerminalOutput, getActiveTerminalSession, unregisterTerminalOutputCallback } from './terminalWs';
+import {
+  handleTerminalOutput,
+  getActiveTerminalSession,
+  failTerminalStartForExactCommand,
+} from './terminalWs';
 import { handleDesktopFrame, isDesktopSessionOwnedByAgent } from './desktopWs';
 import { handleTunnelDataFromAgent, isTunnelOwnedByAgent, registerTunnelOwnership } from './tunnelWs';
 import { enqueueDiscoveryResults, type DiscoveredHostResult, type DeviceAdjacency } from '../jobs/discoveryWorker';
@@ -34,7 +38,7 @@ import {
 import { backupCommandResultSchema } from './backup/resultSchemas';
 import { matchRoleScopedAgentTokenHash, suspendAgentToken, type AgentCredentialRole } from '../middleware/agentAuth';
 import { AGENT_TOKEN_SUSPEND_REASON } from '../services/agentTokenSuspension';
-import { isAgentTenantActive } from '../services/tenantStatus';
+import { getAgentTenantState } from '../services/tenantStatus';
 import { createAuditLogAsync } from '../services/auditService';
 import { ANONYMOUS_ACTOR_ID, writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { redactSecretsFromOutput, redactOptionalSecretText, redactAgentResultErrorFields } from '../services/secretRedaction';
@@ -524,6 +528,45 @@ const TERMINAL_TRANSITION_FAMILIES_ON_VALIDATION_FAILURE = new Set<CriticalResul
 // Map<agentId, WSContext>
 const activeConnections = new Map<string, WSContext>();
 
+// Delivery epoch, monotonic per agent. Bumped every time a socket is installed
+// in `activeConnections`, so every command is dispatched on a known epoch.
+//
+// A superseded socket stays readable for as long as its close frame takes to
+// land, and its onMessage closure keeps its original authorization. Without an
+// epoch, a result (including a desktop/terminal stop result) submitted on that
+// dying socket is indistinguishable from one submitted on the live connection —
+// which is exactly how a stale generation gets to speak for the current one.
+// Result-bearing frames therefore require proof that they arrived on the same
+// epoch the command was delivered on: the socket must still be the mapped one.
+const agentSocketEpochs = new Map<string, number>();
+let lastAgentSocketEpoch = 0;
+
+function installAgentSocketEpoch(agentId: string): number {
+  lastAgentSocketEpoch += 1;
+  agentSocketEpochs.set(agentId, lastAgentSocketEpoch);
+  return lastAgentSocketEpoch;
+}
+
+/**
+ * Exact delivery-epoch proof for a frame received on `ws`. Both halves matter:
+ * the epoch rules out a socket that was replaced and re-replaced, and the map
+ * identity rules out a socket that was never installed at all.
+ */
+function ownsCurrentAgentSocket(agentId: string, ws: WSContext, epoch: number): boolean {
+  return agentSocketEpochs.get(agentId) === epoch && activeConnections.get(agentId) === ws;
+}
+
+/**
+ * Drop an agent's connection outright. Both maps move together: leaving an
+ * epoch behind is harmless for correctness (the proof ANDs epoch equality with
+ * map identity, so it stays closed) but the map would never shrink for an agent
+ * that never reconnects.
+ */
+function evictAgentSocket(agentId: string): void {
+  activeConnections.delete(agentId);
+  agentSocketEpochs.delete(agentId);
+}
+
 // Track per-agent ping/pong state for stale connection detection
 interface AgentPingState {
   pingInterval: ReturnType<typeof setInterval>;
@@ -946,7 +989,14 @@ export async function validateAgentToken(agentId: string, token: string): Promis
   // Tenant-status gate (mirror of the REST agent-auth path): refuse the WS
   // upgrade for a suspended/churned/soft-deleted org or partner before we
   // accept the persistent control channel.
-  if (!(await isAgentTenantActive(device.orgId))) {
+  //
+  // #2774 — 'draining' (offboarding) is refused here too, even though the
+  // REST drain surface stays open: ~20 call sites (terminal, desktop, tunnel,
+  // software installs, workers) push commands over this socket WITHOUT a
+  // device_commands row, so any WS session is a fully-capable control channel
+  // that the drain-mode command filtering can't see. The agent falls back to
+  // heartbeat polling, which is the actual self_uninstall delivery path.
+  if ((await getAgentTenantState(device.orgId)) !== 'active') {
     return { ok: false, reason: 'unauthorized' };
   }
 
@@ -1831,7 +1881,19 @@ async function processCommandResult(
 export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext) {
   const agentDb = preValidatedAgent;
 
-  const runWithAgentDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  /**
+   * `label` is REQUIRED, and deliberately so. Every context on this socket
+   * funnels through this one closure, so in a minified production build all of
+   * them collapse to an anonymous arrow inside `onMessage` — the #1105
+   * held-connection warning could not name which agent message was responsible.
+   * That is how BREEZE-A became ~7k events that could not be triaged. A
+   * required parameter means a handler added later cannot silently rejoin that
+   * pile: it will not compile without a label.
+   *
+   * Keep labels stable and low-cardinality (a handler name, never an id or
+   * sessionId) — they become a Sentry tag and part of the grouping message.
+   */
+  const runWithAgentDbAccess = async <T>(label: string, fn: () => Promise<T>): Promise<T> => {
     return withDbAccessContext(
       {
         scope: 'organization',
@@ -1841,11 +1903,16 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         accessiblePartnerIds: [],
         // Agents don't browse the catalog as org users; null disables the
         // partner-wide read branch (safe).
-        currentPartnerId: null
+        currentPartnerId: null,
+        label
       },
       fn
     );
   };
+
+  // The delivery epoch this handler set owns, stamped when its socket is
+  // installed. Zero until then, which never matches a live epoch.
+  let socketEpoch = 0;
 
   return {
     onOpen: async (_event: unknown, ws: WSContext) => {
@@ -1872,8 +1939,9 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         agentPingStates.delete(agentId);
       }
 
-      // Store connection
+      // Store connection and stamp this socket's delivery epoch.
       activeConnections.set(agentId, ws);
+      socketEpoch = installAgentSocketEpoch(agentId);
       console.log(`Agent ${agentId} connected via WebSocket. Active connections: ${activeConnections.size}`);
 
       // Update device status under tenant DB context. Pending commands are
@@ -1887,14 +1955,14 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
       // HTTP heartbeat claim (the agent heartbeats immediately on startup)
       // and executeCommand's direct per-command push while the socket is
       // live.
-      await runWithAgentDbAccess(async () => {
+      await runWithAgentDbAccess('agentWs.onOpen.markOnline', async () => {
         await updateDeviceStatus(agentId, 'online');
       });
 
       // Publish device.online event for real-time UI updates
       if (agentDb) {
         try {
-          const [deviceInfo] = await runWithAgentDbAccess(async () =>
+          const [deviceInfo] = await runWithAgentDbAccess('agentWs.onOpen.loadDevice', async () =>
             db.select({ id: devices.id, siteId: devices.siteId, hostname: devices.hostname, agentVersion: devices.agentVersion })
               .from(devices)
               .where(eq(devices.agentId, agentId))
@@ -2022,6 +2090,10 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             console.warn(`[AgentWs] Dropping malformed terminal_output from agent ${agentId}: ${parsed.error.issues[0]?.message}`);
             return;
           }
+          if (!ownsCurrentAgentSocket(agentId, ws, socketEpoch)) {
+            console.warn(`[AgentWs] Dropping terminal_output from superseded socket for agent ${agentId}`);
+            return;
+          }
           const { sessionId, data: termData, encoding } = parsed.data;
           const termSession = getActiveTerminalSession(sessionId);
           if (!termSession || termSession.agentId !== agentId) {
@@ -2044,7 +2116,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         // Handle update_status messages: agent is about to self-update
         if (message.type === 'update_status' && typeof message.targetVersion === 'string') {
           if (agentDb) {
-            await runWithAgentDbAccess(async () => {
+            await runWithAgentDbAccess('agentWs.updateStatus', async () => {
               try {
                 // Same terminal-status guard as updateDeviceStatus (#2230):
                 // this write must not resurrect a decommissioned/quarantined
@@ -2074,6 +2146,15 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         // parse failure we drop + log without touching the DB or downstream.
         if (message?.type === 'command_result' && typeof message.commandId === 'string' &&
             (message.commandId.startsWith('term-') || message.commandId.startsWith('desk-'))) {
+          // Exact delivery-epoch proof: a stop/start result carries authority
+          // to tear down a live session, so a superseded socket may not submit
+          // one. (Applies to desk-stop results too — those finalize a desktop.)
+          if (!ownsCurrentAgentSocket(agentId, ws, socketEpoch)) {
+            console.warn(
+              `[AgentWs] Dropping ${message.commandId.slice(0, 12)} result from superseded socket for agent ${agentId}`
+            );
+            return;
+          }
           const isTerm = message.commandId.startsWith('term-');
           const fastPathParse = isTerm
             ? terminalCommandResultSchema.safeParse(message)
@@ -2094,30 +2175,29 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             fastMsg.result as Record<string, unknown> | undefined;
           const fastError = fastMsg.error;
           if (isTerm && fastStatus === 'failed') {
-            // Extract sessionId from commandId (e.g. "term-start-<sessionId>")
-            const parts = fastCommandId.split('-');
-            // Format: term-<action>-<sessionId>, sessionId may contain hyphens (UUID)
-            const termSessionId = parts.length >= 3 ? parts.slice(2).join('-') : null;
-            if (termSessionId) {
-              const termSession = getActiveTerminalSession(termSessionId);
-              if (termSession && termSession.agentId === agentId) {
-                const errorDetail = fastError ?? 'Unknown error';
-                try {
-                  termSession.userWs.send(JSON.stringify({
-                    type: 'error',
-                    code: 'TERMINAL_START_FAILED',
-                    message: `Agent failed to start terminal: ${errorDetail}`
-                  }));
-                  termSession.userWs.close(4003, 'Terminal start failed');
-                } catch (sendErr) {
-                  console.error(`[AgentWs] Failed to notify user of terminal failure for session ${termSessionId}:`, sendErr);
-                }
-                unregisterTerminalOutputCallback(termSessionId);
-                console.warn(`[AgentWs] Terminal start failed for session ${termSessionId}: ${errorDetail}`);
-              } else if (termSession) {
-                // Schema-passing but ownership-failing — count as probe drop.
-                recordCrossTenantDrop(agentId, authenticatedAgent?.deviceId, 'term_failed');
-              }
+            // The start command id embeds the terminal connection generation
+            // that issued it, so the failure is resolved against that exact
+            // lease rather than against whatever currently holds the session
+            // id. A late failure from a superseded generation therefore cannot
+            // close, notify, or unregister the generation that owns the
+            // session now — the previous identifier-only lookup did exactly
+            // that whenever a user reconnected while a start was in flight.
+            const errorDetail = fastError ?? 'Unknown error';
+            const outcome = await failTerminalStartForExactCommand(
+              fastCommandId,
+              agentId,
+              errorDetail,
+            );
+            if (outcome === 'delivered') {
+              console.warn(`[AgentWs] Terminal start failed for command ${fastCommandId}: ${errorDetail}`);
+            } else if (outcome === 'foreign_agent') {
+              // A live start claimed by an agent that never received it.
+              recordCrossTenantDrop(agentId, authenticatedAgent?.deviceId, 'term_failed');
+            } else {
+              // Benign: a superseded generation, or a start issued before this
+              // instance restarted. Ignored, but NOT counted as a probe — doing
+              // so would let a rolling deploy auto-suspend healthy agents.
+              console.warn(`[AgentWs] Ignoring terminal start failure for unknown command ${fastCommandId}`);
             }
           }
           // Handle WebRTC peer disconnect notifications from agent
@@ -2134,7 +2214,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                 : null;
             if (sessionId && fastResult.event === 'peer_disconnected') {
               try {
-                await runWithAgentDbAccess(async () => {
+                await runWithAgentDbAccess('agentWs.desktop.peerDisconnected', async () => {
                   const result = await db
                     .update(remoteSessions)
                     .set({ status: 'disconnected', endedAt: new Date() })
@@ -2178,7 +2258,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             const reason = typeof fastResult.reason === 'string' ? fastResult.reason : 'no_user';
             if (sessionId) {
               try {
-                await runWithAgentDbAccess(async () => {
+                await runWithAgentDbAccess('agentWs.desktop.consentDenied', async () => {
                   const [updated] = await db
                     .update(remoteSessions)
                     .set({ status: 'denied', endedAt: new Date() })
@@ -2231,7 +2311,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             const answer = typeof fastResult.answer === 'string' ? fastResult.answer : null;
             if (sessionId && answer && answer.length < 65536) {
               try {
-                await runWithAgentDbAccess(async () => {
+                await runWithAgentDbAccess('agentWs.desktop.webrtcAnswer', async () => {
                   const [updated] = await db
                     .update(remoteSessions)
                     .set({
@@ -2298,7 +2378,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             );
             if (sessionId) {
               try {
-                await runWithAgentDbAccess(async () => {
+                await runWithAgentDbAccess('agentWs.desktop.captureFailed', async () => {
                   const result = await db
                     .update(remoteSessions)
                     .set({
@@ -2350,7 +2430,18 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
 
         switch (parsed.data.type) {
           case 'command_result':
-            await runWithAgentDbAccess(async () =>
+            // Exact delivery-epoch proof. Desktop finalization stop results
+            // arrive here, not on the `desk-` fast path — their command id IS
+            // the finalization UUID — so this is the path that actually carries
+            // authority to finalize a session. A superseded socket submitting
+            // one would let a dying connection speak for the agent.
+            if (!ownsCurrentAgentSocket(agentId, ws, socketEpoch)) {
+              console.warn(
+                `[AgentWs] Dropping command_result ${parsed.data.commandId} from superseded socket for agent ${agentId}`
+              );
+              return;
+            }
+            await runWithAgentDbAccess('agentWs.commandResult', async () =>
               processCommandResult(agentId, parsed.data as z.infer<typeof commandResultSchema>, authenticatedAgent.deviceId, authenticatedAgent.orgId)
             );
             ws.send(JSON.stringify({
@@ -2361,7 +2452,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
 
           case 'backup_progress': {
             const progressMessage = parsed.data as z.infer<typeof backupProgressMessageSchema>;
-            await runWithAgentDbAccess(async () => {
+            await runWithAgentDbAccess('agentWs.backupProgress', async () => {
               const applied = await applyBackupProgress({
                 agentId,
                 commandId: progressMessage.commandId,
@@ -2408,7 +2499,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               }
 
             // Update last seen timestamp
-              await runWithAgentDbAccess(async () => {
+              await runWithAgentDbAccess('agentWs.heartbeat', async () => {
                 await updateDeviceStatus(agentId, 'online');
                 if (heartbeatMessage.ipHistoryUpdate) {
                   if (heartbeatMessage.ipHistoryUpdate.deviceId && heartbeatMessage.ipHistoryUpdate.deviceId !== authenticatedAgent.deviceId) {
@@ -2506,12 +2597,15 @@ onClose: async (_event: unknown, ws: WSContext) => {
       // the new connection's entry would make the agent unreachable.
       if (activeConnections.get(agentId) === ws) {
         activeConnections.delete(agentId);
+        if (agentSocketEpochs.get(agentId) === socketEpoch) {
+          agentSocketEpochs.delete(agentId);
+        }
         console.log(`Agent ${agentId} disconnected. Active connections: ${activeConnections.size}`);
 
         // Update device status to offline (but preserve 'updating' — let
         // the offline detector handle the timeout for stale updating devices)
         if (agentDb) {
-          await runWithAgentDbAccess(async () => {
+          await runWithAgentDbAccess('agentWs.onClose.markOffline', async () => {
             try {
               const [current] = await db
                 .select({ id: devices.id, siteId: devices.siteId, status: devices.status, hostname: devices.hostname })
@@ -2563,9 +2657,12 @@ onClose: async (_event: unknown, ws: WSContext) => {
       }
 if (activeConnections.get(agentId) === ws) {
         activeConnections.delete(agentId);
+        if (agentSocketEpochs.get(agentId) === socketEpoch) {
+          agentSocketEpochs.delete(agentId);
+        }
       }
       if (agentDb) {
-        void runWithAgentDbAccess(async () => {
+        void runWithAgentDbAccess('agentWs.onError.markOffline', async () => {
           try {
             const [current] = await db
               .select({ status: devices.status })
@@ -2805,7 +2902,7 @@ function recordCrossTenantDrop(agentId: string, deviceId: string | undefined, ki
       } catch {
         // Connection may already be torn down.
       }
-      activeConnections.delete(agentId);
+      evictAgentSocket(agentId);
     }
   }
 
@@ -2912,7 +3009,7 @@ export function sendCommandToAgent(agentId: string, command: AgentCommand): bool
     return true;
   } catch (error) {
     console.error(`Failed to send command to agent ${agentId.slice(0,12)}:`, error);
-    activeConnections.delete(agentId);
+    evictAgentSocket(agentId);
     return false;
   }
 }
@@ -2993,7 +3090,7 @@ export function broadcastToAgents(
       sent++;
     } catch (error) {
       console.error(`Failed to broadcast to agent ${agentId}:`, error);
-      activeConnections.delete(agentId);
+      evictAgentSocket(agentId);
     }
   }
 

@@ -3,6 +3,8 @@ package authstate
 import (
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/config"
 )
 
 // trip drives the monitor to the auth-dead state using a controllable clock.
@@ -82,6 +84,64 @@ func TestMonitor_FailedRetryLengthensBackoff(t *testing.T) {
 	now = now.Add(2 * time.Second) // past 2s
 	if m.ShouldSkip() {
 		t.Fatal("expected retry allowed after the lengthened backoff elapsed")
+	}
+}
+
+// The cap has to exceed the caller's tick interval or it suppresses nothing.
+//
+// ShouldSkip() is evaluated once per heartbeat tick and compares elapsed-since-
+// last-failure against the backoff. With the default 60s heartbeat
+// (config.HeartbeatIntervalSeconds), a cap at or below 60s means 60s has always
+// elapsed by the next tick, so every tick goes through and the backoff never
+// removes a single request. That was the state that let ~87 permanently
+// deauthorized devices in US prod keep heartbeating at full cadence (#2774
+// follow-up): the machinery ran, reported itself as backing off, and cost
+// nothing.
+// Read from config rather than copied, so raising the heartbeat default fails
+// this test instead of silently invalidating the invariant it documents.
+var defaultHeartbeatInterval = time.Duration(config.DefaultHeartbeatIntervalSeconds) * time.Second
+
+func TestMonitor_MaxBackoffSuppressesTicksAtDefaultCadence(t *testing.T) {
+	if maxBackoff <= defaultHeartbeatInterval {
+		t.Fatalf("maxBackoff = %s, must exceed the %s default heartbeat interval or "+
+			"ShouldSkip() never suppresses a tick", maxBackoff, defaultHeartbeatInterval)
+	}
+}
+
+// End-to-end rate check: a permanently deauthorized agent, ticking at the
+// default heartbeat cadence for 24h, must settle to a small number of requests.
+// This is the property that matters to the API — not the value of any constant.
+func TestMonitor_StrandedAgentDailyRequestBudget(t *testing.T) {
+	now := time.Unix(5_000_000, 0)
+	m := NewMonitor(3)
+	m.now = func() time.Time { return now }
+
+	attempts := 0
+	for elapsed := time.Duration(0); elapsed < 24*time.Hour; elapsed += defaultHeartbeatInterval {
+		if !m.ShouldSkip() {
+			attempts++
+			// The server is permanently rejecting this agent.
+			m.RecordAuthFailure()
+		}
+		now = now.Add(defaultHeartbeatInterval)
+	}
+
+	t.Logf("stranded agent: %d requests/day (uncapped cadence would be %d)",
+		attempts, int(24*time.Hour/defaultHeartbeatInterval))
+
+	// 24h at 60s ticks is 1440 attempts with no effective backoff. Allow generous
+	// headroom over the theoretical floor (24h / maxBackoff) so the bound tracks
+	// the behaviour, not the exact escalation curve.
+	const maxDailyAttempts = 100
+	if attempts > maxDailyAttempts {
+		t.Fatalf("stranded agent made %d requests/day, want <= %d "+
+			"(uncapped cadence would be %d)", attempts, maxDailyAttempts,
+			int(24*time.Hour/defaultHeartbeatInterval))
+	}
+	// Guard the other direction: it must never go fully silent, or a recovered
+	// tenant could never reach its fleet again.
+	if attempts == 0 {
+		t.Fatal("stranded agent made no attempts at all — it must keep probing so it can self-heal")
 	}
 }
 

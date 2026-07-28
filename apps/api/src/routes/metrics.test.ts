@@ -3,7 +3,30 @@ import { Hono } from 'hono';
 
 const selectMock = vi.hoisted(() => vi.fn());
 
+// Site scope carried by `c.get('permissions')`. `undefined` is unrestricted,
+// `[]` is restricted-to-no-sites; the two must never be conflated.
+const permissionState = vi.hoisted(() => ({
+  permissions: undefined as { allowedSiteIds?: string[] } | undefined,
+}));
+
 vi.mock('../services', () => ({}));
+
+// Structural stand-ins for the condition builders so tests can inspect the
+// predicate tree the route hands to Drizzle. Everything else (sql, avg,
+// pg-core column construction) keeps its real implementation.
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  return {
+    ...actual,
+    and: (...conditions: unknown[]) => ({
+      op: 'and',
+      conditions: conditions.filter(Boolean),
+    }),
+    eq: (column: unknown, value: unknown) => ({ op: 'eq', column, value }),
+    gte: (column: unknown, value: unknown) => ({ op: 'gte', column, value }),
+    inArray: (column: unknown, values: unknown) => ({ op: 'inArray', column, values }),
+  };
+});
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -27,6 +50,7 @@ vi.mock('../middleware/auth', () => ({
       scope: 'system',
       orgId: 'org-123'
     });
+    c.set('permissions', permissionState.permissions);
     return next();
   }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
@@ -35,6 +59,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { authMiddleware } from '../middleware/auth';
+import { devices } from '../db/schema';
 import {
   metricsMiddleware,
   metricsRoutes,
@@ -91,6 +116,86 @@ function mockRawTrendRows(selectMock: ReturnType<typeof vi.fn>, rows: unknown[])
   });
 }
 
+/** Finds a `{op, column, value}` node anywhere in a mocked condition tree. */
+function findCondition(condition: any, op: string, column: unknown): any | undefined {
+  if (!condition || typeof condition !== 'object') return undefined;
+  if (condition.op === 'and' || condition.op === 'or') {
+    for (const child of condition.conditions ?? []) {
+      const found = findCondition(child, op, column);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  return condition.op === op && condition.column === column ? condition : undefined;
+}
+
+type ScopedRow = { siteId: string | null };
+
+function rowAllowedByCondition(row: ScopedRow, condition: any): boolean {
+  const siteFilter = findCondition(condition, 'inArray', devices.siteId);
+  if (!siteFilter) return true;
+  return row.siteId !== null && (siteFilter.values as string[]).includes(row.siteId);
+}
+
+/**
+ * Mocks the three aggregate queries `GET /metrics/` issues (device status
+ * counts, active remote sessions, 30-day remote sessions) and records the
+ * WHERE condition each one received.
+ */
+function mockCurrentMetricsQueries(
+  deviceRows: Array<ScopedRow & { status: string }>,
+  activeSessionRows: ScopedRow[],
+  recentSessionRows: ScopedRow[]
+): any[] {
+  const captured: any[] = [];
+
+  selectMock
+    .mockReturnValueOnce({
+      from: () => ({
+        where: (condition: any) => {
+          captured.push(condition);
+          const visible = deviceRows.filter((row) => rowAllowedByCondition(row, condition));
+          const byStatus = new Map<string, number>();
+          for (const row of visible) {
+            byStatus.set(row.status, (byStatus.get(row.status) ?? 0) + 1);
+          }
+          return {
+            groupBy: () =>
+              Promise.resolve(
+                [...byStatus.entries()].map(([status, count]) => ({ status, count }))
+              ),
+          };
+        },
+      }),
+    })
+    .mockReturnValueOnce({
+      from: () => ({
+        innerJoin: () => ({
+          where: (condition: any) => {
+            captured.push(condition);
+            return Promise.resolve([
+              { count: activeSessionRows.filter((row) => rowAllowedByCondition(row, condition)).length },
+            ]);
+          },
+        }),
+      }),
+    })
+    .mockReturnValueOnce({
+      from: () => ({
+        innerJoin: () => ({
+          where: (condition: any) => {
+            captured.push(condition);
+            return Promise.resolve([
+              { count: recentSessionRows.filter((row) => rowAllowedByCondition(row, condition)).length },
+            ]);
+          },
+        }),
+      }),
+    });
+
+  return captured;
+}
+
 function getMetricLine(metrics: string, name: string, labels?: Record<string, string>): string | undefined {
   const labelText = labels ? `{${Object.entries(labels).map(([k, v]) => `${k}="${v}"`).join(',')}}` : '';
   return metrics
@@ -109,6 +214,7 @@ describe('metrics routes', () => {
         where: () => Promise.resolve([{ count: 0 }]),
       }),
     });
+    permissionState.permissions = undefined;
     process.env.NODE_ENV = 'test';
     process.env.METRICS_SCRAPE_TOKEN = 'test-scrape-token';
     delete process.env.METRICS_INCLUDE_ORG_ID;
@@ -460,5 +566,146 @@ describe('metrics routes', () => {
       process.env.NODE_ENV = prevNodeEnv;
       resetMetricsForTesting();
     }
+  });
+
+  describe('GET / current metrics site scope', () => {
+    const SITE_A = '22222222-2222-2222-2222-222222222222';
+    const SITE_B = '33333333-3333-3333-3333-333333333333';
+
+    const deviceRows = [
+      { status: 'online', siteId: SITE_A },
+      { status: 'offline', siteId: SITE_B },
+      { status: 'online', siteId: null },
+    ];
+    const activeSessionRows = [
+      { siteId: SITE_A },
+      { siteId: SITE_B },
+      { siteId: null },
+    ];
+    const recentSessionRows = [
+      { siteId: SITE_A },
+      { siteId: SITE_A },
+      { siteId: SITE_B },
+      { siteId: null },
+    ];
+
+    it('excludes other-site and null-site devices and remote sessions for a restricted caller', async () => {
+      permissionState.permissions = { allowedSiteIds: [SITE_A] };
+      const captured = mockCurrentMetricsQueries(deviceRows, activeSessionRows, recentSessionRows);
+
+      const res = await app.request('/', { headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.devices).toEqual({ total: 1, online: 1, offline: 0, pending: 0 });
+      expect(body.data.remoteSessions).toBe(1);
+      expect(body.data.sessions).toBe(2);
+      expect(body.data.business_metrics).toEqual({
+        devices_total: 1,
+        devices_active: 1,
+        devices_pending: 0,
+      });
+
+      // Every aggregate — including both remote-session counts, which must
+      // join through devices — carries the same allowed-site predicate.
+      expect(captured).toHaveLength(3);
+      for (const condition of captured) {
+        const siteFilter = findCondition(condition, 'inArray', devices.siteId);
+        expect(siteFilter).toBeDefined();
+        expect(siteFilter.values).toEqual([SITE_A]);
+      }
+    });
+
+    it('returns zero-safe metrics without issuing any select for a restricted-empty caller', async () => {
+      permissionState.permissions = { allowedSiteIds: [] };
+      mockCurrentMetricsQueries(deviceRows, activeSessionRows, recentSessionRows);
+
+      const res = await app.request('/', { headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        data: {
+          uptime: 0,
+          remoteSessions: 0,
+          sessions: 0,
+          devices: { total: 0, online: 0, offline: 0, pending: 0 },
+          business_metrics: {
+            devices_total: 0,
+            devices_active: 0,
+            devices_pending: 0,
+          },
+        },
+      });
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+
+    it('leaves the unrestricted query chains unchanged', async () => {
+      const captured = mockCurrentMetricsQueries(deviceRows, activeSessionRows, recentSessionRows);
+
+      const res = await app.request('/', { headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.devices).toEqual({ total: 3, online: 2, offline: 1, pending: 0 });
+      expect(body.data.remoteSessions).toBe(3);
+      expect(body.data.sessions).toBe(4);
+
+      expect(captured).toHaveLength(3);
+      for (const condition of captured) {
+        expect(findCondition(condition, 'inArray', devices.siteId)).toBeUndefined();
+      }
+    });
+  });
+
+  describe('GET /trends site scope', () => {
+    const SITE_A = '22222222-2222-2222-2222-222222222222';
+
+    it('denies a site-restricted caller before any aggregate query', async () => {
+      permissionState.permissions = { allowedSiteIds: [SITE_A] };
+
+      const res = await app.request('/trends?range=7d', {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({
+        error: 'Trend metrics are unavailable for site-restricted users',
+        code: 'SITE_SCOPED_TRENDS_UNAVAILABLE',
+      });
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+
+    it('denies a restricted-empty caller before any aggregate query', async () => {
+      permissionState.permissions = { allowedSiteIds: [] };
+
+      const res = await app.request('/trends?range=7d', {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({
+        error: 'Trend metrics are unavailable for site-restricted users',
+        code: 'SITE_SCOPED_TRENDS_UNAVAILABLE',
+      });
+      expect(selectMock).not.toHaveBeenCalled();
+    });
+
+    it('still serves an unrestricted caller', async () => {
+      const { db } = await import('../db');
+      const trendSelectMock = vi.mocked(db.select);
+      mockRollupTrendRows(trendSelectMock, [
+        { bucket: new Date('2026-06-18T00:00:00.000Z'), metricName: 'cpu_percent', value: 20 },
+        { bucket: new Date('2026-06-18T00:00:00.000Z'), metricName: 'ram_percent', value: 70 },
+      ]);
+
+      const res = await app.request('/trends?range=7d', {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual([
+        { timestamp: '2026-06-18T00:00:00.000Z', cpu: 20, memory: 70 },
+      ]);
+    });
   });
 });

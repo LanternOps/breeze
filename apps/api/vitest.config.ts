@@ -48,11 +48,21 @@ export default defineConfig({
       // beforeAll), so the unit runner's no-DB environment fails the suite on
       // connect. Belongs to vitest.integration.config.ts.
       'src/routes/agents/changes.integration.test.ts',
+      // Patch ingest status-transition real-DB test (#2725): imports
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate), so
+      // the no-DB unit runner would fail it on connect. Belongs to
+      // vitest.integration.config.ts.
+      'src/routes/agents/patches.integration.test.ts',
       // Software-report re-link real-DB test (BREEZE-3): imports
       // `__tests__/integration/setup` (real postgres pool + autoMigrate), so the
       // no-DB unit runner would fail it on connect. Belongs to
       // vitest.integration.config.ts.
       'src/routes/agents/inventorySoftwareRelink.integration.test.ts',
+      // Platform-admin bootstrap real-DB test (#2655): imports
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate in its
+      // beforeAll), so the no-DB unit runner would fail it on connect. Belongs to
+      // vitest.integration.config.ts (already in its include).
+      'src/services/platformAdminBootstrap.integration.test.ts',
       // Auth-email worker real-DB test (SR2-22): imports `__tests__/integration/setup`
       // (real postgres pool + autoMigrate + real Redis) and lives in src/jobs/ — outside
       // the `src/__tests__/integration/**` glob above — so the no-DB unit runner would
@@ -113,6 +123,13 @@ export default defineConfig({
       // list). NOT the same file as the co-located mocked unit suite
       // `mfaStepUpGrant.test.ts`, which stays on this runner.
       'src/services/mfaStepUpGrant.integration.test.ts',
+      // Enrollment-key cleanup sweep real-DB test (#2775 live-bootstrap-token
+      // exemption): imports `__tests__/integration/setup` (real postgres pool
+      // + autoMigrate) and lives in src/jobs/ outside the
+      // `src/__tests__/integration/**` glob, so the no-DB unit runner would
+      // fail it on connect. Belongs to vitest.integration.config.ts
+      // (registered in its include list).
+      'src/jobs/enrollmentKeyCleanup.integration.test.ts',
     ],
     setupFiles: ['src/__tests__/setup.ts'],
     coverage: {

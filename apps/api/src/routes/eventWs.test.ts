@@ -9,11 +9,60 @@ vi.mock('../services/redis', () => ({
   resolveRedisUrl: vi.fn(() => 'redis://localhost:6379'),
 }));
 
-// DB mock — `isEventWsUserActive` selects the user's status under system
-// scope. Tests drive the returned row via `setUserStatusRow`.
-let userStatusRow: { status: string } | undefined = { status: 'active' };
-function setUserStatusRow(row: { status: string } | undefined) {
-  userStatusRow = row;
+const schemaTables = vi.hoisted(() => ({
+  users: { table: 'users' },
+  organizationUsers: { table: 'organizationUsers' },
+  partnerUsers: { table: 'partnerUsers' },
+  organizations: { table: 'organizations' },
+}));
+
+type LiveUserRow = {
+  status: string;
+  permissionsEpoch: number;
+  partnerId: string;
+  orgId: string | null;
+};
+
+let userStatusRow: LiveUserRow | undefined = {
+  status: 'active',
+  permissionsEpoch: 7,
+  partnerId: 'partner-1',
+  orgId: 'org-1',
+};
+let organizationMembershipRow:
+  | { roleId: string; siteIds: string[] | null }
+  | undefined = { roleId: 'org-role-1', siteIds: null };
+let partnerMembershipRow:
+  | { roleId: string; orgAccess: 'all' | 'selected' | 'none'; orgIds: string[] | null }
+  | undefined = { roleId: 'partner-role-1', orgAccess: 'all', orgIds: null };
+let partnerOrganizationRows: Array<{ id: string }> = [
+  { id: 'org-1' },
+  { id: 'org-2' },
+  { id: 'org-3' },
+];
+
+function setUserStatusRow(row: Partial<LiveUserRow> | undefined) {
+  userStatusRow = row
+    ? {
+        status: 'active',
+        permissionsEpoch: 7,
+        partnerId: 'partner-1',
+        orgId: 'org-1',
+        ...row,
+      }
+    : undefined;
+}
+function setOrganizationMembership(
+  row: { roleId: string; siteIds: string[] | null } | undefined,
+) {
+  organizationMembershipRow = row;
+}
+function setPartnerMembership(
+  row:
+    | { roleId: string; orgAccess: 'all' | 'selected' | 'none'; orgIds: string[] | null }
+    | undefined,
+) {
+  partnerMembershipRow = row;
 }
 let throwOnSelect = false;
 function setThrowOnSelect(v: boolean) {
@@ -23,11 +72,19 @@ function setThrowOnSelect(v: boolean) {
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
-      from: vi.fn(() => ({
+      from: vi.fn((table: unknown) => ({
         where: vi.fn(() => ({
           limit: vi.fn(async () => {
             if (throwOnSelect) throw new Error('db down');
-            return userStatusRow ? [userStatusRow] : [];
+            if (table === schemaTables.users) return userStatusRow ? [userStatusRow] : [];
+            if (table === schemaTables.organizationUsers) {
+              return organizationMembershipRow ? [organizationMembershipRow] : [];
+            }
+            if (table === schemaTables.partnerUsers) {
+              return partnerMembershipRow ? [partnerMembershipRow] : [];
+            }
+            if (table === schemaTables.organizations) return partnerOrganizationRows;
+            return [];
           }),
         })),
       })),
@@ -37,7 +94,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  users: {},
+  ...schemaTables,
 }));
 
 vi.mock('../services/eventDispatcher', () => {
@@ -70,9 +127,12 @@ import {
   createEventWsTicketRoute,
   buildSiteFilter,
   isEventWsUserActive,
+  resolveLiveEventAuthorization,
   createEventWsHandlers,
   _clearTicketStore,
+  _storeLegacyTicketForTests,
 } from './eventWs';
+import { parseEventPermissionEpochMode } from '../config/env';
 
 // -------------------------------------------------------------------
 // Setup
@@ -81,7 +141,10 @@ import {
 beforeEach(() => {
   _clearTicketStore();
   vi.clearAllMocks();
-  setUserStatusRow({ status: 'active' });
+  setUserStatusRow({ status: 'active', permissionsEpoch: 7 });
+  setOrganizationMembership({ roleId: 'org-role-1', siteIds: null });
+  setPartnerMembership({ roleId: 'partner-role-1', orgAccess: 'all', orgIds: null });
+  partnerOrganizationRows = [{ id: 'org-1' }, { id: 'org-2' }, { id: 'org-3' }];
   setThrowOnSelect(false);
 });
 
@@ -122,7 +185,7 @@ describe('event WS mid-session revocation (handler interval)', () => {
 
   async function openConnection(ws: any) {
     const { ticket } = await createEventWsTicket('user-1', 'org-1');
-    const handlers = createEventWsHandlers(ticket);
+    const handlers = createEventWsHandlers(ticket, { jitterMs: () => 0 });
     await handlers.onOpen(undefined, ws);
     return handlers;
   }
@@ -154,7 +217,7 @@ describe('event WS mid-session revocation (handler interval)', () => {
     }
   });
 
-  it('fails closed when the revalidation DB check throws', async () => {
+  it('retries one failed DB check shortly, then closes on the second failure', async () => {
     vi.useFakeTimers();
     try {
       const ws = makeWs();
@@ -162,6 +225,46 @@ describe('event WS mid-session revocation (handler interval)', () => {
 
       setThrowOnSelect(true);
       await vi.advanceTimersByTimeAsync(30_000);
+      expect(ws.close).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(ws.close).toHaveBeenCalledWith(4003, 'Access revoked');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['permission epoch mismatch', () => setUserStatusRow({ permissionsEpoch: 8 })],
+    ['role change epoch bump', () => setUserStatusRow({ permissionsEpoch: 9 })],
+    ['site change epoch bump', () => setUserStatusRow({ permissionsEpoch: 10 })],
+    ['membership removal', () => setOrganizationMembership(undefined)],
+  ])('closes when live authorization detects %s', async (_label, revoke) => {
+    vi.useFakeTimers();
+    try {
+      const ws = makeWs();
+      await openConnection(ws);
+      revoke();
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(ws.close).toHaveBeenCalledWith(4003, 'Access revoked');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not extend the DB close bound when Redis pub/sub is absent', async () => {
+    const { getRedis } = await import('../services/redis');
+    vi.mocked(getRedis).mockReturnValue(null);
+
+    vi.useFakeTimers();
+    try {
+      const ws = makeWs();
+      await openConnection(ws);
+      setThrowOnSelect(true);
+
+      await vi.advanceTimersByTimeAsync(35_000);
 
       expect(ws.close).toHaveBeenCalledWith(4003, 'Access revoked');
     } finally {
@@ -234,9 +337,15 @@ describe('createEventWsTicket', () => {
   });
 
   it('accepts an array of orgIds for multi-org partner tickets', async () => {
+    setUserStatusRow({ orgId: null });
     const { ticket } = await createEventWsTicket('user-1', ['org-1', 'org-2', 'org-3']);
     const identity = await consumeTicket(ticket);
-    expect(identity).toEqual({ userId: 'user-1', orgIds: ['org-1', 'org-2', 'org-3'] });
+    expect(identity).toMatchObject({
+      version: 2,
+      userId: 'user-1',
+      allowedOrgIds: ['org-1', 'org-2', 'org-3'],
+      permissionsEpoch: 7,
+    });
   });
 
   it('rejects an empty orgIds array', async () => {
@@ -244,25 +353,29 @@ describe('createEventWsTicket', () => {
   });
 
   it('carries allowedSiteIds onto the consumed identity', async () => {
+    setOrganizationMembership({ roleId: 'org-role-1', siteIds: ['site-a', 'site-b'] });
     const { ticket } = await createEventWsTicket('user-1', 'org-1', ['site-a', 'site-b']);
     const identity = await consumeTicket(ticket);
-    expect(identity).toEqual({
+    expect(identity).toMatchObject({
+      version: 2,
       userId: 'user-1',
-      orgIds: ['org-1'],
+      allowedOrgIds: ['org-1'],
       allowedSiteIds: ['site-a', 'site-b'],
+      permissionsEpoch: 7,
     });
   });
 
-  it('treats an empty allowedSiteIds array as unrestricted (full org access)', async () => {
+  it('preserves an empty allowedSiteIds array as restricted-to-none', async () => {
+    setOrganizationMembership({ roleId: 'org-role-1', siteIds: [] });
     const { ticket } = await createEventWsTicket('user-1', 'org-1', []);
     const identity = await consumeTicket(ticket);
-    expect(identity).toEqual({ userId: 'user-1', orgIds: ['org-1'], allowedSiteIds: undefined });
+    expect(identity?.allowedSiteIds).toEqual([]);
   });
 
   it('omits allowedSiteIds when not provided (unrestricted)', async () => {
     const { ticket } = await createEventWsTicket('user-1', 'org-1');
     const identity = await consumeTicket(ticket);
-    expect(identity?.allowedSiteIds).toBeUndefined();
+    expect(identity?.allowedSiteIds).toBeNull();
   });
 });
 
@@ -277,7 +390,12 @@ describe('createEventWsTicket', () => {
 describe('buildSiteFilter', () => {
   it('returns undefined for an unrestricted user (no allowlist)', () => {
     expect(buildSiteFilter(undefined)).toBeUndefined();
-    expect(buildSiteFilter([])).toBeUndefined();
+  });
+
+  it('returns a deny-all filter for restricted-to-none', () => {
+    const filter = buildSiteFilter([]);
+    expect(filter).toBeTypeOf('function');
+    expect(filter!({ type: 'device.online', payload: { siteId: 'site-a' } })).toBe(false);
   });
 
   it('delivers an in-site event (siteId on payload)', () => {
@@ -357,7 +475,12 @@ describe('consumeTicket', () => {
   it('returns identity for a valid ticket', async () => {
     const { ticket } = await createEventWsTicket('user-1', 'org-1');
     const identity = await consumeTicket(ticket);
-    expect(identity).toEqual({ userId: 'user-1', orgIds: ['org-1'] });
+    expect(identity).toMatchObject({
+      version: 2,
+      userId: 'user-1',
+      allowedOrgIds: ['org-1'],
+      permissionsEpoch: 7,
+    });
   });
 
   it('returns null on second consumption (one-time use)', async () => {
@@ -387,6 +510,156 @@ describe('consumeTicket', () => {
   });
 });
 
+describe('event ticket permission epoch compatibility', () => {
+  it('mints a version-two ticket with the current permission epoch and authority axes', async () => {
+    setUserStatusRow({
+      status: 'active',
+      permissionsEpoch: 41,
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+    });
+
+    const { ticket } = await createEventWsTicket('user-1', 'org-1', null);
+    const identity = await consumeTicket(ticket);
+
+    expect(identity).toMatchObject({
+      version: 2,
+      userId: 'user-1',
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+      allowedOrgIds: ['org-1'],
+      allowedSiteIds: null,
+      permissionsEpoch: 41,
+    });
+  });
+
+  it('accepts a version-one ticket in compat only after fresh complete authorization resolution', async () => {
+    setUserStatusRow({
+      status: 'active',
+      permissionsEpoch: 12,
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+    });
+    setOrganizationMembership({ roleId: 'fresh-role', siteIds: ['fresh-site'] });
+    const ticket = _storeLegacyTicketForTests({
+      userId: 'user-1',
+      orgIds: ['org-1'],
+      allowedSiteIds: ['stale-site'],
+      expiresAt: Date.now() + 30_000,
+    });
+
+    const identity = await consumeTicket(ticket, 'compat');
+
+    expect(identity).toMatchObject({
+      version: 2,
+      permissionsEpoch: 12,
+      allowedSiteIds: ['fresh-site'],
+    });
+    expect(identity?.allowedSiteIds).not.toContain('stale-site');
+  });
+
+  it('rejects a version-one ticket in enforce mode', async () => {
+    const ticket = _storeLegacyTicketForTests({
+      userId: 'user-1',
+      orgIds: ['org-1'],
+      expiresAt: Date.now() + 30_000,
+    });
+
+    await expect(consumeTicket(ticket, 'enforce')).resolves.toBeNull();
+  });
+});
+
+describe('resolveLiveEventAuthorization', () => {
+  async function mintIdentity(overrides?: {
+    allowedSiteIds?: string[] | null;
+    permissionsEpoch?: number;
+  }) {
+    setUserStatusRow({
+      status: 'active',
+      permissionsEpoch: overrides?.permissionsEpoch ?? 7,
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+    });
+    const { ticket } = await createEventWsTicket(
+      'user-1',
+      'org-1',
+      overrides?.allowedSiteIds ?? null,
+    );
+    return (await consumeTicket(ticket))!;
+  }
+
+  it('keeps a matching active membership authorized', async () => {
+    setOrganizationMembership({ roleId: 'org-role-1', siteIds: ['site-a'] });
+    const identity = await mintIdentity({ allowedSiteIds: ['site-a'] });
+
+    await expect(resolveLiveEventAuthorization(identity)).resolves.toEqual({
+      ok: true,
+      identity,
+    });
+  });
+
+  it.each([
+    ['inactive user', { status: 'disabled' }, 'user_inactive'],
+    ['permission epoch mismatch', { permissionsEpoch: 8 }, 'permission_epoch_mismatch'],
+  ])('rejects %s', async (_label, userPatch, reason) => {
+    const identity = await mintIdentity();
+    setUserStatusRow(userPatch);
+
+    await expect(resolveLiveEventAuthorization(identity)).resolves.toEqual({ ok: false, reason });
+  });
+
+  it('rejects removed membership', async () => {
+    const identity = await mintIdentity();
+    setOrganizationMembership(undefined);
+
+    await expect(resolveLiveEventAuthorization(identity)).resolves.toEqual({
+      ok: false,
+      reason: 'membership_removed',
+    });
+  });
+
+  it('rejects a site snapshot change even if an epoch trigger is temporarily unavailable', async () => {
+    setOrganizationMembership({ roleId: 'org-role-1', siteIds: ['site-a'] });
+    const identity = await mintIdentity({ allowedSiteIds: ['site-a'] });
+    setOrganizationMembership({ roleId: 'org-role-1', siteIds: ['site-b'] });
+
+    await expect(resolveLiveEventAuthorization(identity)).resolves.toEqual({
+      ok: false,
+      reason: 'permission_epoch_mismatch',
+    });
+  });
+
+  it('reports an unavailable authoritative check without treating it as authorized', async () => {
+    const identity = await mintIdentity();
+    setThrowOnSelect(true);
+
+    await expect(resolveLiveEventAuthorization(identity)).resolves.toEqual({
+      ok: false,
+      reason: 'live_state_unavailable',
+    });
+  });
+});
+
+describe('EVENT_PERMISSION_EPOCH_MODE validation', () => {
+  it('defaults to compat only outside strict environments', () => {
+    expect(parseEventPermissionEpochMode(undefined, 'test')).toBe('compat');
+  });
+
+  it.each(['production', 'staging'])('requires an explicit value in %s', (nodeEnv) => {
+    expect(() => parseEventPermissionEpochMode(undefined, nodeEnv)).toThrow(
+      'EVENT_PERMISSION_EPOCH_MODE is required',
+    );
+  });
+
+  it('accepts compat and enforce and rejects every other value', () => {
+    expect(parseEventPermissionEpochMode('compat', 'production')).toBe('compat');
+    expect(parseEventPermissionEpochMode('enforce', 'production')).toBe('enforce');
+    expect(() => parseEventPermissionEpochMode('unknown', 'test')).toThrow(
+      'EVENT_PERMISSION_EPOCH_MODE must be compat or enforce',
+    );
+  });
+});
+
 // -------------------------------------------------------------------
 // Tests: POST /ws-ticket route
 // -------------------------------------------------------------------
@@ -395,6 +668,7 @@ describe('createEventWsTicketRoute', () => {
   it('returns a ticket when auth context is set', async () => {
     const { Hono } = await import('hono');
     const app = new Hono();
+    setUserStatusRow({ orgId: 'org-xyz' });
 
     // Simulate auth middleware setting the auth context
     app.use('*', async (c, next) => {
@@ -444,6 +718,8 @@ describe('createEventWsTicketRoute', () => {
   it('resolves orgId from query param for partner users', async () => {
     const { Hono } = await import('hono');
     const app = new Hono();
+    setUserStatusRow({ orgId: null });
+    partnerOrganizationRows = [{ id: 'org-from-query' }];
 
     app.use('*', async (c, next) => {
       c.set('auth', {
@@ -470,12 +746,18 @@ describe('createEventWsTicketRoute', () => {
     expect(body.ticket).toBeTruthy();
 
     const identity = await consumeTicket(body.ticket);
-    expect(identity).toEqual({ userId: 'user-abc', orgIds: ['org-from-query'] });
+    expect(identity).toMatchObject({
+      version: 2,
+      userId: 'user-abc',
+      allowedOrgIds: ['org-from-query'],
+    });
   });
 
   it('issues a multi-org ticket for partner users when allOrgs=1', async () => {
     const { Hono } = await import('hono');
     const app = new Hono();
+    setUserStatusRow({ orgId: null });
+    partnerOrganizationRows = [{ id: 'org-a' }, { id: 'org-b' }];
 
     app.use('*', async (c, next) => {
       c.set('auth', {
@@ -503,7 +785,11 @@ describe('createEventWsTicketRoute', () => {
 
     const body = await res.json();
     const identity = await consumeTicket(body.ticket);
-    expect(identity).toEqual({ userId: 'user-abc', orgIds: ['org-a', 'org-b'] });
+    expect(identity).toMatchObject({
+      version: 2,
+      userId: 'user-abc',
+      allowedOrgIds: ['org-a', 'org-b'],
+    });
   });
 
   // Regression guard (#2256): the All-Organizations Devices view opens the
@@ -514,6 +800,8 @@ describe('createEventWsTicketRoute', () => {
   it('issues a multi-org ticket for partner users by default (no orgId, no allOrgs) — #2256', async () => {
     const { Hono } = await import('hono');
     const app = new Hono();
+    setUserStatusRow({ orgId: null });
+    partnerOrganizationRows = [{ id: 'org-a' }, { id: 'org-b' }, { id: 'org-c' }];
 
     app.use('*', async (c, next) => {
       c.set('auth', {
@@ -542,7 +830,11 @@ describe('createEventWsTicketRoute', () => {
 
     const body = await res.json();
     const identity = await consumeTicket(body.ticket);
-    expect(identity).toEqual({ userId: 'user-abc', orgIds: ['org-a', 'org-b', 'org-c'] });
+    expect(identity).toMatchObject({
+      version: 2,
+      userId: 'user-abc',
+      allowedOrgIds: ['org-a', 'org-b', 'org-c'],
+    });
   });
 
   // Branch-order guard: the `auth.orgId` short-circuit is the route-level
@@ -553,6 +845,7 @@ describe('createEventWsTicketRoute', () => {
   it('org-token users get a single-org ticket even when orgAccess resolves to multiple', async () => {
     const { Hono } = await import('hono');
     const app = new Hono();
+    setUserStatusRow({ orgId: 'org-x' });
 
     app.use('*', async (c, next) => {
       c.set('auth', {
@@ -578,7 +871,11 @@ describe('createEventWsTicketRoute', () => {
 
     const body = await res.json();
     const identity = await consumeTicket(body.ticket);
-    expect(identity).toEqual({ userId: 'user-abc', orgIds: ['org-x'] });
+    expect(identity).toMatchObject({
+      version: 2,
+      userId: 'user-abc',
+      allowedOrgIds: ['org-x'],
+    });
   });
 
   // A partner user with zero accessible orgs (just-onboarded partner) must get
@@ -612,6 +909,7 @@ describe('createEventWsTicketRoute', () => {
   it('issued ticket is consumable with correct identity', async () => {
     const { Hono } = await import('hono');
     const app = new Hono();
+    setUserStatusRow({ orgId: 'org-xyz' });
 
     app.use('*', async (c, next) => {
       c.set('auth', { user: { id: 'user-abc', email: 'a@b.com', name: 'A' }, orgId: 'org-xyz' } as any);
@@ -625,7 +923,11 @@ describe('createEventWsTicketRoute', () => {
     const body = await res.json();
 
     const identity = await consumeTicket(body.ticket);
-    expect(identity).toEqual({ userId: 'user-abc', orgIds: ['org-xyz'] });
+    expect(identity).toMatchObject({
+      version: 2,
+      userId: 'user-abc',
+      allowedOrgIds: ['org-xyz'],
+    });
   });
 
   // Regression guard (Finding #8): the SITE-scope restriction must be sourced
@@ -639,6 +941,8 @@ describe('createEventWsTicketRoute', () => {
   it('threads allowedSiteIds from the authenticated identity into the minted ticket', async () => {
     const { Hono } = await import('hono');
     const app = new Hono();
+    setUserStatusRow({ orgId: 'org-xyz' });
+    setOrganizationMembership({ roleId: 'org-role-1', siteIds: ['site-a'] });
 
     app.use('*', async (c, next) => {
       c.set('auth', {
@@ -663,9 +967,10 @@ describe('createEventWsTicketRoute', () => {
 
     const body = await res.json();
     const identity = await consumeTicket(body.ticket);
-    expect(identity).toEqual({
+    expect(identity).toMatchObject({
+      version: 2,
       userId: 'user-abc',
-      orgIds: ['org-xyz'],
+      allowedOrgIds: ['org-xyz'],
       allowedSiteIds: ['site-a'],
     });
   });
@@ -673,6 +978,7 @@ describe('createEventWsTicketRoute', () => {
   it('mints an unrestricted ticket when the identity carries no allowedSiteIds', async () => {
     const { Hono } = await import('hono');
     const app = new Hono();
+    setUserStatusRow({ orgId: 'org-xyz' });
 
     app.use('*', async (c, next) => {
       c.set('auth', {
@@ -691,7 +997,11 @@ describe('createEventWsTicketRoute', () => {
 
     const body = await res.json();
     const identity = await consumeTicket(body.ticket);
-    expect(identity).toEqual({ userId: 'user-abc', orgIds: ['org-xyz'] });
-    expect(identity?.allowedSiteIds).toBeUndefined();
+    expect(identity).toMatchObject({
+      version: 2,
+      userId: 'user-abc',
+      allowedOrgIds: ['org-xyz'],
+      allowedSiteIds: null,
+    });
   });
 });

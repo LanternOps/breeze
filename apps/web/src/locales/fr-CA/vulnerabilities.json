@@ -1,0 +1,332 @@
+{
+  "vulnerabilityLandingPage": {
+    "title": "Vulnérabilités",
+    "subtitle": "Exposition du parc aux CVE, regroupée pour la qualification : corrigez, acceptez le risque ou créez un ticket."
+  },
+  "createVulnTicketModal": {
+    "title": "Créer un ticket",
+    "heading": "Créer un ticket — {{count}} constats",
+    "heading_one": "Créer un ticket — {{count}} constat",
+    "heading_other": "Créer un ticket — {{count}} constats",
+    "crossOrgNote": "La sélection s’étend à {{count}} organisations — un ticket par organisation sera créé.",
+    "crossOrgNote_one": "La sélection couvre {{count}} organisation — un ticket sera créé pour cette organisation.",
+    "crossOrgNote_other": "La sélection couvre {{count}} organisations — un ticket sera créé par organisation.",
+    "autoDetailNote": "Les détails de l’appareil et des CVE sont ajoutés automatiquement, par organisation.",
+    "fields": {
+      "title": "Titre",
+      "note": "Note (optionnelle)",
+      "notePlaceholder": "Ajoutez un contexte pour le technicien (optionnel)",
+      "priority": "Priorité"
+    },
+    "priorities": {
+      "low": "Faible",
+      "normal": "Normal",
+      "high": "Élevée",
+      "urgent": "Urgent"
+    },
+    "actions": {
+      "create": "Créer un ticket"
+    }
+  },
+  "cveDrawer": {
+    "errors": {
+      "load": "Impossible de charger CVE",
+      "reopen": "Impossible de rouvrir le constat",
+      "scheduleRemediation": "Impossible de programmer une remédiation",
+      "acceptRisk": "Impossible d’accepter le risque",
+      "mitigate": "Impossible de compenser",
+      "createTicket": "Impossible de créer un ticket"
+    },
+    "meta": {
+      "cvss": "CVSS {{version}}",
+      "vector": "Vecteur",
+      "epss": "EPSS",
+      "knownExploited": "Exploités connus",
+      "published": "Publié",
+      "modified": "Modifié"
+    },
+    "sections": {
+      "devices": "Appareils ({{count}} constats)",
+      "devices_one": "Appareils ({{count}} constat)",
+      "devices_other": "Appareils ({{count}} constats)"
+    },
+    "selection": {
+      "selectAll": "Sélectionner tout",
+      "selectAllAria": "Sélectionner tous les constats",
+      "deselectAllAria": "Désélectionner tous les constats",
+      "selectFindingAria": "Sélectionner le constat sur {{deviceName}}",
+      "selected": "{{count}} sélectionné",
+      "selected_one": "{{count}} sélectionné",
+      "selected_other": "{{count}} sélectionné"
+    },
+    "empty": {
+      "noFindings": "Aucun appareil de votre parc n’est actuellement touché par cette CVE — aucune intervention n’est requise."
+    },
+    "findings": {
+      "patch": "Correctif",
+      "ticket": "Ticket"
+    },
+    "actions": {
+      "reopen": "Rouvrir",
+      "remediate": "Corriger",
+      "acceptRisk": "Accepter le risque",
+      "mitigate": "Atténuer",
+      "createTicket": "Créer un ticket"
+    },
+    "ticket": {
+      "defaultTitle": "Remédier {{cveId}}"
+    }
+  },
+  "findingStatus": {
+    "acceptedUntil": "Accepté jusqu’à {{date}}",
+    "status": {
+      "open": "Ouvert",
+      "accepted": "Accepté",
+      "mitigated": "Atténué",
+      "patched": "Correctif appliqué"
+    }
+  },
+  "kevBadge": {
+    "label": "KEV",
+    "title": "Vulnérabilité exploitée connue (catalogue CISA KEV)"
+  },
+  "severityBadge": {
+    "critical": "Critique",
+    "high": "Élevée",
+    "medium": "Moyenne",
+    "low": "Faible",
+    "unknown": "Inconnu"
+  },
+  "softwareGroupDrawer": {
+    "titleFallback": "Groupe logiciel",
+    "errors": {
+      "load": "Impossible de charger le groupe logiciel",
+      "reopen": "Impossible de rouvrir le constat",
+      "scheduleRemediation": "Impossible de programmer une remédiation",
+      "acceptRisk": "Impossible d’accepter le risque",
+      "mitigate": "Impossible de compenser",
+      "createTicket": "Impossible de créer un ticket"
+    },
+    "summary": {
+      "devices": "{{count}} dispositifs",
+      "devices_one": "dispositif {{count}}",
+      "devices_other": "{{count}} appareils",
+      "maxRisk": "Risque max {{risk}}"
+    },
+    "tickets": {
+      "number": "Ticket {{number}}",
+      "view": "Voir le ticket"
+    },
+    "sections": {
+      "cves": "CVEs ({{count}})",
+      "devices": "Appareils ({{count}} constats)",
+      "devices_one": "Appareils ({{count}} constat)",
+      "devices_other": "Appareils ({{count}} constats)"
+    },
+    "cveMeta": {
+      "cvss": "CVSS {{score}}",
+      "epss": "EPSS {{score}}"
+    },
+    "selection": {
+      "selectAll": "Sélectionner tout",
+      "selectAllAria": "Sélectionner tous les constats",
+      "deselectAllAria": "Désélectionner tous les constats",
+      "selectFindingAria": "Sélectionner le constat {{cveId}} sur {{deviceName}}",
+      "selected": "{{count}} sélectionné",
+      "selected_one": "{{count}} sélectionné",
+      "selected_other": "{{count}} sélectionné"
+    },
+    "empty": {
+      "noFindings": "Aucun constat concernant un appareil ne subsiste dans ce groupe — aucune action requise."
+    },
+    "findings": {
+      "patch": "Correctif",
+      "ticket": "Ticket"
+    },
+    "actions": {
+      "reopen": "Rouvrir",
+      "remediate": "Corriger",
+      "acceptRisk": "Accepter le risque",
+      "mitigate": "Atténuer",
+      "createTicket": "Créer un ticket"
+    },
+    "ticket": {
+      "defaultTitle": "Remédier {{name}}"
+    }
+  },
+  "softwareGroupTable": {
+    "errors": {
+      "load": "Impossible de charger des groupes logiciels"
+    },
+    "table": {
+      "software": "Logiciels",
+      "severity": "Gravité",
+      "risk": "Risque",
+      "cves": "CVE",
+      "devices": "Appareils",
+      "patch": "Correctif"
+    },
+    "help": {
+      "riskAria": "À propos du score de risque"
+    },
+    "actions": {
+      "openDetailsAria": "Ouvrir les détails de vulnérabilité de {{name}}"
+    },
+    "patch": {
+      "ready": "Prêt · {{ready}}/{{total}} appareils",
+      "ready_one": "Prêt · {{ready}}/{{total}} appareil",
+      "ready_other": "Prêt · {{ready}}/{{total}} appareils"
+    },
+    "hasMore": "Affichage des 500 groupes présentant le risque le plus élevé — affinez les filtres pour voir les autres."
+  },
+  "vulnBulkActionModal": {
+    "headings": {
+      "remediate": "Corriger les constats",
+      "accept": "Accepter le risque",
+      "mitigate": "Marquer comme atténués"
+    },
+    "headingWithCount": "{{heading}} — {{count}} constats",
+    "headingWithCount_one": "{{heading}} — {{count}} constat",
+    "headingWithCount_other": "{{heading}} — {{count}} constats",
+    "counts": {
+      "devices": "{{count}} dispositifs",
+      "devices_one": "{{count}} appareil",
+      "devices_other": "{{count}} dispositifs",
+      "findings": "{{count}} constats",
+      "findings_one": "{{count}} constat",
+      "findings_other": "{{count}} constats"
+    },
+    "selection": {
+      "more": "et {{count}} encore"
+    },
+    "consequence": {
+      "remediate": "Installe le correctif approuvé pour chaque CVE sur {{deviceText}} ({{findingText}}). Les constats sans correctif approuvé applicable sont ignorés.",
+      "accept": "Masque {{findingText}} sur {{deviceText}} de la file des constats ouverts jusqu’à la date définie. Ces constats ne se rouvrent pas automatiquement ; les acceptations arrivant à expiration apparaissent dans la carte « Acceptés, expiration prochaine ».",
+      "mitigate": "Marque {{findingText}} sur {{deviceText}} comme atténués et enregistre votre note comme contrôle compensatoire. Breeze ne modifie pas les appareils."
+    },
+    "fields": {
+      "reason": "Raison",
+      "mitigationNote": "Note d’atténuation",
+      "acceptedUntil": "Accepté jusqu’à"
+    },
+    "actions": {
+      "working": "Traitement...",
+      "remediate": "Corriger",
+      "accept": "Accepter le risque",
+      "mitigate": "Marquer comme atténués"
+    }
+  },
+  "vulnEmptyState": {
+    "filtered": {
+      "message": "Aucune vulnérabilité ne correspond aux filtres actuels.",
+      "clearFilters": "Effacer les filtres"
+    },
+    "clean": {
+      "title": "Aucune vulnérabilité ouverte dans votre flotte",
+      "description": "Tous les constats détectés ont été corrigés, atténués ou acceptés. Les nouveaux constats apparaîtront ici à mesure de l’exécution des analyses.",
+      "lastDetected": "Dernier constat détecté le {{date}}"
+    },
+    "unscanned": {
+      "title": "Aucun constat de vulnérabilité pour le moment",
+      "description": "Breeze vérifie l’inventaire logiciel et OS de chaque appareil par rapport aux CVE connus et met en file tout ce qui nécessite des correctifs, des mitigations ou une acceptation de risque ici.",
+      "setupHint": "Le balayage est désactivé par défaut — activez-la dans l’onglet Vulnérabilité d’une politique de configuration.",
+      "setupAction": "Configurez l’analyse des vulnérabilités"
+    },
+    "unknown": {
+      "message": "Aucune vulnérabilité à montrer."
+    }
+  },
+  "vulnFilterBar": {
+    "searchPlaceholder": {
+      "software": "Rechercher un logiciel ou une CVE...",
+      "cves": "Rechercher un identifiant CVE..."
+    },
+    "labels": {
+      "severity": "Gravité"
+    },
+    "statusOptions": {
+      "open": "Ouvrir",
+      "accepted": "Accepté",
+      "mitigated": "Atténué",
+      "patched": "Patché",
+      "all": "Tous les statuts"
+    },
+    "filters": {
+      "kevOnly": "KEV uniquement",
+      "patchAvailable": "Patch disponible"
+    },
+    "expiring": {
+      "clearAria": "Effacer le filtre d’expiration dans {{count}} jours",
+      "clearAria_one": "Effacer le filtre d’expiration dans {{count}} jour",
+      "clearAria_other": "Effacer le filtre d’expiration dans {{count}} jours",
+      "label": "Expirant dans les {{count}} jours",
+      "label_one": "Expirant dans les {{count}} jours",
+      "label_other": "Expirant dans les {{count}} jours"
+    }
+  },
+  "vulnerabilityFleetPage": {
+    "stats": {
+      "critical": {
+        "label": "Critiques ouverts",
+        "detail": "{{count}} constats ouverts de sévérité critique",
+        "detail_one": "{{count}} constat ouvert de sévérité critique",
+        "detail_other": "{{count}} constats ouverts de sévérité critique"
+      },
+      "kev": {
+        "label": "Exposition aux KEV",
+        "detail": "{{count}} CVE connus et exploités · {{deviceText}}",
+        "detail_one": "{{count}} CVE connue comme exploitée · {{deviceText}}",
+        "detail_other": "{{count}} CVE connus et exploités · {{deviceText}}",
+        "devices": "{{count}} dispositifs",
+        "devices_one": "dispositif {{count}}",
+        "devices_other": "{{count}} dispositifs"
+      },
+      "patchReady": {
+        "label": "Correctif disponible",
+        "detail": "{{count}} constats ouverts avec un correctif disponible",
+        "detail_one": "{{count}} constat ouvert avec un correctif disponible",
+        "detail_other": "{{count}} constats ouverts avec un correctif disponible"
+      },
+      "acceptedExpiring": {
+        "label": "Acceptés, expiration prochaine",
+        "detail": "{{count}} constats acceptés expirant dans les {{days}} jours",
+        "detail_one": "{{count}} constat accepté expirant dans les {{days}} jours",
+        "detail_other": "{{count}} constats acceptés expirant dans les {{days}} jours"
+      }
+    },
+    "tabs": {
+      "ariaLabel": "Vues des vulnérabilités",
+      "software": "Par logiciel",
+      "cves": "Par CVE"
+    }
+  },
+  "vulnerabilityTable": {
+    "errors": {
+      "load": "Impossible de charger les vulnérabilités"
+    },
+    "table": {
+      "cve": "CVE",
+      "severity": "Gravité",
+      "cvss": "CVSS",
+      "risk": "Risque",
+      "epss": "EPSS",
+      "patch": "Correctif",
+      "affectedDevices": "Appareils affectés",
+      "kev": "KEV",
+      "knownExploited": "Exploités connus"
+    },
+    "help": {
+      "cvssAria": "À propos du score CVSS",
+      "riskAria": "À propos du score de risque",
+      "epssAria": "À propos du score EPSS",
+      "kevAria": "À propos de l’indicateur KEV"
+    },
+    "actions": {
+      "openDetailsAria": "Ouvrir les détails de {{cveId}}"
+    },
+    "patch": {
+      "ready": "Prêt"
+    },
+    "hasMore": "Affichage des 500 CVE présentant le risque le plus élevé — affinez les filtres pour voir les autres."
+  }
+}

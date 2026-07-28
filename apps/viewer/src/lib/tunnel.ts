@@ -47,6 +47,28 @@ export async function createVncTunnel(deviceId: string, auth: TunnelAuth): Promi
 }
 
 /**
+ * Re-establishes a VNC tunnel after a handshake the server refused (or a lost
+ * connection).
+ *
+ * A tunnel ws-ticket is single use. Once a handshake has consumed it — even
+ * one rejected before the HTTP 101 upgrade — the URL in the previous
+ * `VncTunnelInfo` is dead and must never be replayed. Discarding the old
+ * tunnel first and only then minting a fresh tunnel + ticket makes that
+ * impossible to get wrong at the call site: the returned `wsUrl` is always
+ * backed by a ticket that has never been presented.
+ */
+export async function retryVncTunnel(
+  previousTunnelId: string | null,
+  deviceId: string,
+  auth: TunnelAuth,
+): Promise<VncTunnelInfo> {
+  if (previousTunnelId) {
+    await closeTunnel(previousTunnelId, auth);
+  }
+  return createVncTunnel(deviceId, auth);
+}
+
+/**
  * Best-effort close. Swallows errors — callers invoke this from cleanup paths
  * where surfacing an error would just mask the real cleanup reason.
  */

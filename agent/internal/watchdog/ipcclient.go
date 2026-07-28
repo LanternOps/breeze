@@ -25,6 +25,14 @@ type IPCClient struct {
 	stopCh     chan struct{}
 	lastPingAt time.Time
 	lastPongAt time.Time
+	// lastRecvAt is the time ANY envelope was received from the agent —
+	// state_sync, token updates, pongs, anything. A pipe that is actively
+	// delivering messages is proof of agent liveness even when a specific
+	// pong goes missing (the agent's ping handler can starve behind heavy
+	// collection work like WUA scans). Counting only pongs produced three
+	// consecutive false negatives on a live pipe and a kill cycle of a
+	// healthy agent in the field (#2763).
+	lastRecvAt time.Time
 }
 
 // NewIPCClient constructs an IPCClient that will connect to socketPath and
@@ -98,22 +106,35 @@ func (c *IPCClient) Connect() error {
 	return nil
 }
 
-// Ping implements IPCProber. It checks whether the previous ping received a
-// pong (indicating the agent is responsive), records the current time as the
-// new ping timestamp, and sends a watchdog_ping. On the very first call there
-// is no prior ping/pong pair, so true is returned optimistically.
+// pingVerdict decides whether the agent counts as responsive at ping time.
+// Alive means: a pong arrived since the previous ping, OR any other envelope
+// arrived since the previous ping (an actively-delivering pipe is liveness —
+// see lastRecvAt), OR this is the very first ping (no opportunity for a pong
+// yet, benefit of the doubt). Pure function for testability.
+func pingVerdict(firstPing bool, lastPingAt, lastPongAt, lastRecvAt time.Time) bool {
+	if firstPing {
+		return true
+	}
+	if !lastPongAt.IsZero() && lastPongAt.After(lastPingAt) {
+		return true
+	}
+	return !lastRecvAt.IsZero() && lastRecvAt.After(lastPingAt)
+}
+
+// Ping implements IPCProber. It checks whether the agent showed life since
+// the previous ping (a pong OR any other received envelope), records the
+// current time as the new ping timestamp, and sends a watchdog_ping.
 //
-// Because pongs arrive asynchronously, three consecutive calls without any
-// pong in between will return false — indicating a hung agent.
+// Because responses arrive asynchronously, consecutive calls with a truly
+// silent pipe in between return false — indicating a hung agent.
 func (c *IPCClient) Ping() (bool, error) {
 	c.mu.Lock()
 	if !c.connected || c.conn == nil {
 		c.mu.Unlock()
 		return false, fmt.Errorf("watchdog ipc: not connected")
 	}
-	// Check whether the last ping got a response.
 	firstPing := c.lastPingAt.IsZero()
-	gotPong := !c.lastPongAt.IsZero() && c.lastPongAt.After(c.lastPingAt)
+	alive := pingVerdict(firstPing, c.lastPingAt, c.lastPongAt, c.lastRecvAt)
 	c.lastPingAt = time.Now()
 	conn := c.conn
 	c.mu.Unlock()
@@ -123,13 +144,7 @@ func (c *IPCClient) Ping() (bool, error) {
 		return false, fmt.Errorf("watchdog ipc: send ping: %w", err)
 	}
 
-	// On the very first ping there has been no opportunity to receive a pong
-	// yet, so we give the agent the benefit of the doubt.
-	if firstPing {
-		return true, nil
-	}
-
-	return gotPong, nil
+	return alive, nil
 }
 
 // IsConnected returns whether the client currently has an active connection.
@@ -190,11 +205,12 @@ func (c *IPCClient) readLoop() {
 			return
 		}
 
+		c.mu.Lock()
+		c.lastRecvAt = time.Now()
 		if env.Type == ipc.TypeWatchdogPong {
-			c.mu.Lock()
-			c.lastPongAt = time.Now()
-			c.mu.Unlock()
+			c.lastPongAt = c.lastRecvAt
 		}
+		c.mu.Unlock()
 
 		if c.onMessage != nil {
 			c.onMessage(env)

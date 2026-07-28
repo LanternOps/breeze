@@ -85,28 +85,24 @@ describe('withSentryRequestScope — concurrent tenant isolation', () => {
     await Sentry.flush(1000);
 
     // Both events should have been recorded by the processor above.
-    const eventA = recorded.find(
-      (e) => e.exception?.values?.[0]?.value?.includes('event-A')
-    );
-    const eventB = recorded.find(
-      (e) => e.exception?.values?.[0]?.value?.includes('event-B')
-    );
+    const eventA = recorded.find((e) => e.tags?.['user_id'] === 'uA');
+    const eventB = recorded.find((e) => e.tags?.['user_id'] === 'uB');
 
     expect(eventA).toBeDefined();
     expect(eventB).toBeDefined();
 
     // Event A must carry oA's tags and uA's user — NOT oB/uB.
-    expect(eventA?.tags?.['orgId']).toBe('oA');
-    expect(eventA?.tags?.['partnerId']).toBe('none');
+    expect(eventA?.tags?.['org_id']).toBe('oA');
+    expect(eventA?.tags?.['partner_id']).toBe('none');
     expect(eventA?.user?.id).toBe('uA');
 
     // Event B must carry pB's tags and uB's user — NOT oA/uA.
-    expect(eventB?.tags?.['orgId']).toBe('none');
-    expect(eventB?.tags?.['partnerId']).toBe('pB');
+    expect(eventB?.tags?.['org_id']).toBe('none');
+    expect(eventB?.tags?.['partner_id']).toBe('pB');
     expect(eventB?.user?.id).toBe('uB');
 
     // Cross-check: no bleed between scopes.
-    expect(eventA?.tags?.['orgId']).not.toBe('none');  // A has a real orgId
+    expect(eventA?.tags?.['org_id']).not.toBe('none');  // A has a real orgId
     expect(eventB?.user?.id).not.toBe('uA');           // B didn't pick up A's user
   });
 });

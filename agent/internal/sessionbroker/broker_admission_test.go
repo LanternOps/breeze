@@ -137,7 +137,7 @@ func TestWindowsAdmissionIdentityAndRateBucketsAreRoleAware(t *testing.T) {
 	if systemKey == otherSessionSystemKey {
 		t.Fatalf("system helpers in distinct Windows sessions shared %q", systemKey)
 	}
-	for role, pair := range map[string][2]string{
+	for role, pair := range map[ipc.HelperRole][2]string{
 		ipc.HelperRoleAssist:       {assistKey, userSID},
 		ipc.HelperRoleWatchdog:     {watchdogKey, systemSID},
 		backupipc.HelperRoleBackup: {backupKey, systemSID},
@@ -164,9 +164,9 @@ func TestWindowsAdmissionIdentityAndRateBucketsAreRoleAware(t *testing.T) {
 }
 
 func TestWindowsNonLifecycleRegistrationUsesLegacyIdentityAndQuota(t *testing.T) {
-	roles := []string{ipc.HelperRoleAssist, ipc.HelperRoleWatchdog, backupipc.HelperRoleBackup}
+	roles := []ipc.HelperRole{ipc.HelperRoleAssist, ipc.HelperRoleWatchdog, backupipc.HelperRoleBackup}
 	for _, role := range roles {
-		t.Run(role, func(t *testing.T) {
+		t.Run(string(role), func(t *testing.T) {
 			b := New("test", nil)
 			b.goos = "windows"
 			base := "S-1-5-18"
@@ -194,7 +194,7 @@ func TestWindowsNonLifecycleRegistrationUsesLegacyIdentityAndQuota(t *testing.T)
 					len(b.helperByKey), len(b.helperReservations))
 			}
 
-			overLimit, client := newPairedSession(t, role+"-over-limit", base)
+			overLimit, client := newPairedSession(t, string(role)+"-over-limit", base)
 			clients = append(clients, client)
 			overLimit.HelperRole = role
 			overLimit.WinSessionID = "7"
@@ -418,7 +418,7 @@ func TestTwentySystemSIDsAcrossWindowsSessionsHaveIndependentAdmission(t *testin
 		desired[HelperKey{WindowsSessionID: sessionID, Role: ipc.HelperRoleSystem}] = struct{}{}
 	}
 	for i := 0; i < MaxConnectionsPerIdentity+1; i++ {
-		desired[HelperKey{WindowsSessionID: 99, Role: fmt.Sprintf("quota-%d", i)}] = struct{}{}
+		desired[HelperKey{WindowsSessionID: 99, Role: ipc.HelperRole(fmt.Sprintf("quota-%d", i))}] = struct{}{}
 	}
 	b.UpdateDesiredHelperKeys(desired)
 
@@ -432,12 +432,12 @@ func TestTwentySystemSIDsAcrossWindowsSessionsHaveIndependentAdmission(t *testin
 
 	quotaIdentity := admissionIdentityKey("S-1-5-18", 99, "windows")
 	for i := 0; i < MaxConnectionsPerIdentity; i++ {
-		key := HelperKey{WindowsSessionID: 99, Role: fmt.Sprintf("quota-%d", i)}
+		key := HelperKey{WindowsSessionID: 99, Role: ipc.HelperRole(fmt.Sprintf("quota-%d", i))}
 		if _, err := b.reserveWindowsHelper(quotaIdentity, "S-1-5-18", key); err != nil {
 			t.Fatalf("quota reservation %d: %v", i, err)
 		}
 	}
-	key := HelperKey{WindowsSessionID: 99, Role: fmt.Sprintf("quota-%d", MaxConnectionsPerIdentity)}
+	key := HelperKey{WindowsSessionID: 99, Role: ipc.HelperRole(fmt.Sprintf("quota-%d", MaxConnectionsPerIdentity))}
 	if _, err := b.reserveWindowsHelper(quotaIdentity, "S-1-5-18", key); !errors.Is(err, errMaxConnectionsPerIdentity) {
 		t.Fatalf("sixth reservation err=%v, want errMaxConnectionsPerIdentity", err)
 	}
@@ -447,7 +447,7 @@ func TestUnixAndNonLifecycleRolesBypassWindowsLogicalReservation(t *testing.T) {
 	tests := []struct {
 		name string
 		goos string
-		role string
+		role ipc.HelperRole
 	}{
 		{name: "unix system", goos: "linux", role: ipc.HelperRoleSystem},
 		{name: "assist", goos: "windows", role: ipc.HelperRoleAssist},

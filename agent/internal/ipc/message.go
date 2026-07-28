@@ -120,12 +120,20 @@ type Envelope struct {
 	HMAC    string          `json:"hmac"`
 }
 
+// HelperRole identifies a connecting helper process and gates its scopes. It is
+// a named string so signatures and struct fields can state intent and so
+// conversions are forced at the wire/CLI boundary; it still marshals as a plain
+// JSON string. Note that a named string type does NOT give exhaustiveness —
+// HelperRole("sytem") still compiles — so the spawnable allow-list, the
+// fail-closed switch defaults, and scopesForRole remain the real safety gates.
+type HelperRole string
+
 // Helper role constants identify connecting helper processes and gate their scopes.
 const (
-	HelperRoleSystem   = "system"
-	HelperRoleUser     = "user"
-	HelperRoleWatchdog = "watchdog"
-	HelperRoleAssist   = "assist" // Breeze Assist Tauri helper; receives helper token only
+	HelperRoleSystem   HelperRole = "system"
+	HelperRoleUser     HelperRole = "user"
+	HelperRoleWatchdog HelperRole = "watchdog"
+	HelperRoleAssist   HelperRole = "assist" // Breeze Assist Tauri helper; receives helper token only
 )
 
 // Scope constants identify the capabilities granted to a helper session.
@@ -161,18 +169,18 @@ type ConsoleUserChangedPayload struct {
 
 // AuthRequest is sent by the user helper to the root daemon after connecting.
 type AuthRequest struct {
-	ProtocolVersion int    `json:"protocolVersion"`
-	UID             uint32 `json:"uid"`
-	SID             string `json:"sid,omitempty"` // Windows Security Identifier
-	Username        string `json:"username"`
-	SessionID       string `json:"sessionId"`
-	DisplayEnv      string `json:"displayEnv"`
-	PID             int    `json:"pid"`
-	BinaryHash      string `json:"binaryHash"`
-	WinSessionID    uint32 `json:"winSessionId,omitempty"` // Windows session ID (1, 2, etc.)
-	HelperRole      string `json:"helperRole,omitempty"`   // "system" | "user" | "watchdog" | "assist" (default: "system")
-	BinaryKind      string `json:"binaryKind,omitempty"`   // "user_helper", "desktop_helper", or "assist_helper"
-	DesktopContext  string `json:"desktopContext,omitempty"`
+	ProtocolVersion int        `json:"protocolVersion"`
+	UID             uint32     `json:"uid"`
+	SID             string     `json:"sid,omitempty"` // Windows Security Identifier
+	Username        string     `json:"username"`
+	SessionID       string     `json:"sessionId"`
+	DisplayEnv      string     `json:"displayEnv"`
+	PID             int        `json:"pid"`
+	BinaryHash      string     `json:"binaryHash"`
+	WinSessionID    uint32     `json:"winSessionId,omitempty"` // Windows session ID (1, 2, etc.)
+	HelperRole      HelperRole `json:"helperRole,omitempty"`   // "system" | "user" | "watchdog" | "assist" (default: "system")
+	BinaryKind      string     `json:"binaryKind,omitempty"`   // "user_helper", "desktop_helper", or "assist_helper"
+	DesktopContext  string     `json:"desktopContext,omitempty"`
 
 	// SupportsConsentUI advertises that this helper can natively render the
 	// remote-session consent dialog (consent_request). The granted

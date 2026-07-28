@@ -39,6 +39,43 @@ describe('parseExtensionManifestV1', () => {
       web: { ...valid.web, slots: [{ slot: 'device.detail.tabs', contractVersion: 1, element: 'demo-device-tab' }] },
     });
     expect(parsed.web!.slots[0]).toEqual({ slot: 'device.detail.tabs', contractVersion: 1, element: 'demo-device-tab' });
+    expect(parsed.tenancy.orgExportColumns).toEqual({});
+  });
+
+  it('accepts exact extension org-export include/exclude classifications', () => {
+    const parsed = parseExtensionManifestV1({
+      ...valid,
+      tenancy: {
+        ...valid.tenancy,
+        orgCascadeDeleteTables: ['demo_items'],
+        orgExportColumns: {
+          demo_items: {
+            include: ['id', 'org_id', 'display_name'],
+            exclude: ['credential_hash'],
+          },
+        },
+      },
+    });
+
+    expect(parsed.tenancy.orgExportColumns).toEqual({
+      demo_items: {
+        include: ['id', 'org_id', 'display_name'],
+        exclude: ['credential_hash'],
+      },
+    });
+    expect(() => parseExtensionManifestV1({
+      ...valid,
+      tenancy: {
+        ...valid.tenancy,
+        orgExportColumns: {
+          demo_items: {
+            include: ['id'],
+            exclude: [],
+            unexpected: true,
+          },
+        },
+      },
+    })).toThrow();
   });
 
   it.each([

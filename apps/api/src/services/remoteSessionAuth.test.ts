@@ -1,9 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  encodeLegacyRemoteWsTicket,
+  readWithFrozenLegacyRemoteWsTicketCodec,
+} from '../__tests__/fixtures/legacyRemoteWsTicketCodec';
 
 // Mock Redis so module load doesn't reach out to a real instance.
-vi.mock('./redis', () => ({
-  getRedis: () => null,
+const { getRedisMock } = vi.hoisted(() => ({
+  getRedisMock: vi.fn<() => unknown>(() => null),
 }));
+vi.mock('./redis', () => ({
+  getRedis: getRedisMock,
+}));
+
+beforeEach(() => {
+  getRedisMock.mockReset();
+  getRedisMock.mockReturnValue(null);
+});
 
 describe('shouldUseRedis', () => {
   const originalNodeEnv = process.env.NODE_ENV;
@@ -115,6 +127,7 @@ describe('WS ticket caller binding (IP + UA)', () => {
       sessionId: 's1',
       sessionType: 'terminal',
       userId: 'u1',
+      mfaSatisfied: true,
       ip: '203.0.113.1',
       userAgent: 'Mozilla/5.0',
     });
@@ -132,6 +145,7 @@ describe('WS ticket caller binding (IP + UA)', () => {
       sessionId: 's1',
       sessionType: 'terminal',
       userId: 'u1',
+      mfaSatisfied: true,
       ip: '203.0.113.1',
       userAgent: 'Mozilla/5.0',
     });
@@ -149,6 +163,7 @@ describe('WS ticket caller binding (IP + UA)', () => {
       sessionId: 's1',
       sessionType: 'terminal',
       userId: 'u1',
+      mfaSatisfied: true,
       ip: '203.0.113.1',
       userAgent: 'Mozilla/5.0',
     });
@@ -170,6 +185,7 @@ describe('WS ticket caller binding (IP + UA)', () => {
       sessionId: 's1',
       sessionType: 'terminal',
       userId: 'u1',
+      mfaSatisfied: true,
       ip: '203.0.113.1',
       userAgent: 'Mozilla/5.0',
     });
@@ -199,6 +215,7 @@ describe('WS ticket caller binding (IP + UA)', () => {
       sessionId: 's1',
       sessionType: 'terminal',
       userId: 'u1',
+      mfaSatisfied: true,
       ip: '203.0.113.1',
       userAgent: 'Mozilla/5.0',
     });
@@ -213,6 +230,7 @@ describe('WS ticket caller binding (IP + UA)', () => {
       sessionId: 's1',
       sessionType: 'terminal',
       userId: 'u1',
+      mfaSatisfied: true,
       ip: '203.0.113.1',
       userAgent: 'Mozilla/5.0',
     });
@@ -234,6 +252,7 @@ describe('WS ticket caller binding (IP + UA)', () => {
       sessionId: 's1',
       sessionType: 'terminal',
       userId: 'u1',
+      mfaSatisfied: true,
       ip: '203.0.113.1',
       userAgent: 'Mozilla/5.0',
     });
@@ -278,6 +297,7 @@ describe('tunnel-http ticket TTL', () => {
       sessionId: 's-tunnel',
       sessionType: 'tunnel',
       userId: 'u1',
+      mfaSatisfied: true,
       ip: '1.2.3.4',
       userAgent: 'ua',
     });
@@ -285,6 +305,7 @@ describe('tunnel-http ticket TTL', () => {
       sessionId: 's-http',
       sessionType: 'tunnel-http',
       userId: 'u1',
+      mfaSatisfied: true,
       ip: '1.2.3.4',
       userAgent: 'ua',
       ttlMs: 5 * 60 * 1000, // 5 minutes
@@ -302,5 +323,133 @@ describe('tunnel-http ticket TTL', () => {
     if (httpResult.ok) {
       expect(httpResult.sessionType).toBe('tunnel-http');
     }
+  });
+});
+
+describe('Wave 4 ticket version and assurance compatibility', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalOverride = process.env.WS_TICKETS_REQUIRE_REDIS;
+
+  function makeRedisStore() {
+    const values = new Map<string, string>();
+    const expiries = new Map<string, number>();
+    return {
+      values,
+      expiries,
+      setex: vi.fn(async (key: string, ttl: number, value: string) => {
+        values.set(key, value);
+        expiries.set(key, ttl);
+        return 'OK';
+      }),
+      eval: vi.fn(async (_script: string, _keyCount: number, key: string) => {
+        const value = values.get(key) ?? null;
+        values.delete(key);
+        return value;
+      }),
+    };
+  }
+
+  beforeEach(() => {
+    vi.resetModules();
+    process.env.NODE_ENV = 'test';
+    process.env.WS_TICKETS_REQUIRE_REDIS = 'true';
+  });
+
+  afterEach(() => {
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalNodeEnv;
+    if (originalOverride === undefined) delete process.env.WS_TICKETS_REQUIRE_REDIS;
+    else process.env.WS_TICKETS_REQUIRE_REDIS = originalOverride;
+  });
+
+  it('reads a truthful unversioned V0 with literal null JTI and no MFA assertion', async () => {
+    const redis = makeRedisStore();
+    getRedisMock.mockReturnValue(redis);
+    redis.values.set(
+      'remote:ws_ticket:legacy-ticket',
+      encodeLegacyRemoteWsTicket({
+        sessionId: 'legacy-session',
+        sessionType: 'desktop',
+        userId: 'legacy-user',
+        expiresAt: Date.now() + 60_000,
+        ip: '203.0.113.1',
+      }),
+    );
+
+    const { consumeWsTicket } = await import('./remoteSessionAuth');
+    const consumed = await consumeWsTicket('legacy-ticket', {
+      ip: '203.0.113.1',
+      userAgent: 'legacy-agent',
+    });
+
+    expect(consumed).toMatchObject({
+      ok: true,
+      version: 0,
+      ticketJti: null,
+    });
+    expect(consumed).not.toHaveProperty('mfaSatisfied');
+  });
+
+  it('normal issuers write V2 with unique JTI, true MFA, and the frozen old reader tolerates it', async () => {
+    const redis = makeRedisStore();
+    getRedisMock.mockReturnValue(redis);
+    const { createWsTicket, WS_TICKET_TTL_SECONDS } = await import('./remoteSessionAuth');
+
+    const first = await createWsTicket({
+      sessionId: 'session-v2',
+      sessionType: 'terminal',
+      userId: 'user-v2',
+      mfaSatisfied: true,
+    });
+    const second = await createWsTicket({
+      sessionId: 'session-v2',
+      sessionType: 'terminal',
+      userId: 'user-v2',
+      mfaSatisfied: true,
+    });
+
+    const records = [...redis.values.values()].map((raw) => JSON.parse(raw));
+    expect(records).toHaveLength(2);
+    expect(records[0]).toMatchObject({ version: 2, mfaSatisfied: true });
+    expect(records[0].jti).toEqual(expect.any(String));
+    expect(records[1].jti).not.toBe(records[0].jti);
+    expect(redis.expiries.get(`remote:ws_ticket:${first.ticket}`)).toBe(WS_TICKET_TTL_SECONDS);
+
+    const legacyRead = readWithFrozenLegacyRemoteWsTicketCodec(
+      redis.values.get(`remote:ws_ticket:${second.ticket}`)!,
+    );
+    expect(legacyRead).toMatchObject({
+      sessionId: 'session-v2',
+      sessionType: 'terminal',
+      userId: 'user-v2',
+    });
+  });
+
+  it('uses exported 60-second WebSocket and 300-second tunnel HTTP lifetimes', async () => {
+    const redis = makeRedisStore();
+    getRedisMock.mockReturnValue(redis);
+    const {
+      createWsTicket,
+      HTTP_TUNNEL_TICKET_TTL_SECONDS,
+      WS_TICKET_TTL_SECONDS,
+    } = await import('./remoteSessionAuth');
+
+    const ws = await createWsTicket({
+      sessionId: 'ws-session',
+      sessionType: 'tunnel',
+      userId: 'user',
+      mfaSatisfied: true,
+    });
+    const http = await createWsTicket({
+      sessionId: 'http-session',
+      sessionType: 'tunnel-http',
+      userId: 'user',
+      mfaSatisfied: true,
+    });
+
+    expect(WS_TICKET_TTL_SECONDS).toBe(60);
+    expect(HTTP_TUNNEL_TICKET_TTL_SECONDS).toBe(300);
+    expect(redis.expiries.get(`remote:ws_ticket:${ws.ticket}`)).toBe(60);
+    expect(redis.expiries.get(`remote:ws_ticket:${http.ticket}`)).toBe(300);
   });
 });

@@ -19,11 +19,13 @@ const {
   hasSessionOwnership,
   logSessionAudit,
   revokeViewerSession,
+  sendCommandToAgent,
 } = vi.hoisted(() => ({
   getSessionWithOrgCheck: vi.fn(),
   hasSessionOwnership: vi.fn(() => true),
   logSessionAudit: vi.fn(() => Promise.resolve()),
   revokeViewerSession: vi.fn(() => Promise.resolve()),
+  sendCommandToAgent: vi.fn(() => true),
 }));
 
 vi.mock('../../db', () => ({
@@ -95,7 +97,7 @@ vi.mock('../../services/remoteAccessPolicy', () => ({
     Promise.resolve({ clipboard: 'both', idleTimeoutMinutes: 0, maxSessionDurationHours: 0 })
   ),
 }));
-vi.mock('../agentWs', () => ({ sendCommandToAgent: vi.fn(() => true) }));
+vi.mock('../agentWs', () => ({ sendCommandToAgent }));
 vi.mock('../../services/remoteSessionAuth', () => ({
   createDesktopConnectCode: vi.fn(),
   createWsTicket: vi.fn(),
@@ -147,6 +149,7 @@ describe('POST /remote/sessions/:id/deny', () => {
     hasSessionOwnership.mockReturnValue(true);
     logSessionAudit.mockResolvedValue(undefined);
     revokeViewerSession.mockResolvedValue(undefined);
+    sendCommandToAgent.mockReturnValue(true);
     app = new Hono();
     app.route('/remote', sessionRoutes);
   });
@@ -161,6 +164,28 @@ describe('POST /remote/sessions/:id/deny', () => {
     expect(body.status).toBe('denied');
 
     expect(revokeViewerSession).toHaveBeenCalledWith(SESSION_ID);
+    expect(logSessionAudit).toHaveBeenCalledWith(
+      'session_consent_denied',
+      'user-1',
+      'org-111',
+      expect.objectContaining({ sessionId: SESSION_ID, reason: 'user' }),
+      '10.0.0.1'
+    );
+  });
+
+  it('fails closed while still stopping desktop capture and auditing when viewer revocation is unavailable', async () => {
+    getSessionWithOrgCheck.mockResolvedValue(sessionRow('connecting'));
+    rigDenyUpdate();
+    revokeViewerSession.mockRejectedValueOnce(new Error('viewer session revocation unavailable'));
+
+    const res = await app.request(denyReq('user'));
+
+    expect(res.status).toBe(500);
+    expect(sendCommandToAgent).toHaveBeenCalledWith('agent-1', {
+      id: `desk-stop-${SESSION_ID}`,
+      type: 'stop_desktop',
+      payload: { sessionId: SESSION_ID },
+    });
     expect(logSessionAudit).toHaveBeenCalledWith(
       'session_consent_denied',
       'user-1',

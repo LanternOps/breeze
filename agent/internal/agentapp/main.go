@@ -269,7 +269,7 @@ func init() {
 	enrollCmd.Flags().BoolVar(&quietEnroll, "quiet", false, "Suppress stdout progress output (errors still go to stderr). Intended for unattended installs.")
 	bootstrapCmd.Flags().StringVar(&bootstrapInstallData, "install-data", "", "Pipe-packed bootstrap inputs from the MSI BootstrapEnroll CA: <OriginalDatabase>|<BOOTSTRAP_TOKEN>|<SERVER_URL>")
 	bootstrapCmd.Flags().BoolVar(&quietEnroll, "quiet", false, "Suppress stdout progress output (errors still go to stderr)")
-	userHelperCmd.Flags().StringVar(&helperRole, "role", "user", "Helper role: 'system' (desktop capture) or 'user' (script execution)")
+	userHelperCmd.Flags().StringVar(&helperRole, "role", string(ipc.HelperRoleUser), "Helper role: 'system' (desktop capture) or 'user' (script execution)")
 	desktopHelperCmd.Flags().StringVar(&desktopContext, "context", ipc.DesktopContextUserSession, "Desktop context: 'user_session' or 'login_window'")
 
 	rootCmd.AddCommand(startCmd)
@@ -1461,21 +1461,23 @@ func checkStatus() {
 // runUserHelper starts the per-user session helper process.
 // It connects to the root daemon via IPC and handles user-context operations.
 func runUserHelper() {
-	runHelperProcess("user helper", helperRole, "", ipc.HelperBinaryUserHelper)
+	// helperRole is bound to the cobra --role string flag; convert at this
+	// CLI boundary into the typed HelperRole used everywhere downstream.
+	runHelperProcess("user helper", ipc.HelperRole(helperRole), "", ipc.HelperBinaryUserHelper)
 }
 
 func runDesktopHelper() {
 	runHelperProcess("desktop helper", desktopHelperRole(), desktopContext, ipc.HelperBinaryDesktopHelper)
 }
 
-func desktopHelperRole() string {
+func desktopHelperRole() ipc.HelperRole {
 	if runtime.GOOS == "darwin" {
 		return ipc.HelperRoleUser
 	}
 	return ipc.HelperRoleSystem
 }
 
-func runHelperProcess(name, role, context, binaryKind string) {
+func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind string) {
 	// Detach any inherited console immediately. This runs at the top of
 	// every helper role — user-helper, desktop-helper, and any future
 	// helper subcommand routed through runHelperProcess — because all of
@@ -1513,9 +1515,14 @@ func runHelperProcess(name, role, context, binaryKind string) {
 	}
 	logging.Init("text", "info", output)
 
-	// Load agent config for IPC socket path and helper-scoped log shipping credentials.
-	cfg, _ := config.Load(cfgFile)
-	if cfg == nil {
+	// Load agent config for IPC socket path and helper-scoped log shipping
+	// credentials. Use LoadHelperConfig, NOT Load: this process runs as the
+	// logged-in user on the user-helper path, and Load() unconditionally reads
+	// root-only secrets.yaml and returns an error there, leaving the helper with
+	// no shipper at all (#2483). LoadHelperConfig reads agent.yaml only.
+	cfg, err := config.LoadHelperConfig(cfgFile)
+	if err != nil {
+		slog.Warn("helper config load failed; helper log shipping disabled", "error", err)
 		cfg = config.Default()
 	}
 
@@ -1534,13 +1541,11 @@ func runHelperProcess(name, role, context, binaryKind string) {
 	// world-readable precisely so the helper can read its server URL, so the
 	// provider re-reads it there on a TTL.
 	//
-	// NOTE: this whole block is currently reachable only in a SYSTEM/root-context
-	// helper. config.Load above returns an error in a user-context helper —
-	// it unconditionally reads root-only secrets.yaml — so cfg falls back to
-	// config.Default(), whose empty AgentID/ServerURL fail this gate and leave
-	// the user helper with no shipper at all. That is a separate, pre-existing
-	// bug (#2483); the provider below is what the SYSTEM-context helpers that
-	// DO ship today need.
+	// This block is reachable in BOTH user- and SYSTEM-context helpers: the
+	// LoadHelperConfig above reads agent.yaml (world-readable) and skips
+	// root-only secrets.yaml, so the AgentID/ServerURL/HelperAuthToken this gate
+	// needs are populated in a user session too (#2483). Everything the gate
+	// checks lives in agent.yaml by design (see secretKeyAllowedInAgentYAML).
 	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.HelperAuthToken != "" {
 		helperToken := secmem.NewSecureString(cfg.HelperAuthToken)
 		cfg.AuthToken = ""

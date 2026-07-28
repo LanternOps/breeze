@@ -6,6 +6,10 @@ import { Hono } from 'hono';
 // set. The count select is distinguishable from the row select by its shape:
 // the count projection has a `count` key; the row projection does not.
 const countQueryCalls = vi.fn();
+// Captures the WHERE condition handed to the feed query so tests can prove the
+// org_id scoping is present (BREEZE-B — it is load-bearing for performance, not
+// cosmetic; see the comment in events.ts).
+const feedWhereArgs: unknown[] = [];
 
 vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -15,13 +19,16 @@ vi.mock('../../db', () => ({
     select: vi.fn((projection?: Record<string, unknown>) => ({
       from: vi.fn(() => ({
         leftJoin: vi.fn(() => ({
-          where: vi.fn(() => ({
-            orderBy: vi.fn(() => ({
-              limit: vi.fn(() => ({
-                offset: vi.fn().mockResolvedValue([])
+          where: vi.fn((cond: unknown) => {
+            feedWhereArgs.push(cond);
+            return {
+              orderBy: vi.fn(() => ({
+                limit: vi.fn(() => ({
+                  offset: vi.fn().mockResolvedValue([])
+                }))
               }))
-            }))
-          }))
+            };
+          })
         })),
         where: vi.fn(() => {
           if (projection && 'count' in projection) countQueryCalls();
@@ -35,6 +42,7 @@ vi.mock('../../db', () => ({
 vi.mock('../../db/schema', () => ({
   auditLogs: {
     id: 'id',
+    orgId: 'org_id',
     timestamp: 'timestamp',
     action: 'action',
     actorType: 'actor_type',
@@ -251,5 +259,36 @@ describe('GET /devices/:id/events validation', () => {
       { method: 'GET', headers: { Authorization: 'Bearer token' } }
     );
     expect(res.status).toBe(400);
+  });
+});
+
+describe("GET /devices/:id/events — org scoping of the audit feed (BREEZE-B)", () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    feedWhereArgs.length = 0;
+    app = new Hono();
+    app.route('/devices', eventsRoutes);
+  });
+
+  it("filters on the device's org_id so the scan can use audit_logs_org_timestamp_idx", async () => {
+    const res = await app.request(
+      '/devices/11111111-1111-1111-1111-111111111111/events',
+      { method: 'GET', headers: { Authorization: 'Bearer token' } }
+    );
+    expect(res.status).toBe(200);
+
+    // Without this predicate the feed query cannot use ANY index under RLS: the
+    // `details->>'deviceId'` arm is non-leakproof so Postgres may not evaluate
+    // it before the security qual, which makes its expression index unusable
+    // and forces a full scan (measured 11,938ms on 800k rows vs 178ms with
+    // this predicate). Assert the org column and the device's org id are both
+    // in the WHERE, so removing the scoping fails here rather than silently
+    // regressing to a seq scan in production.
+    expect(feedWhereArgs).toHaveLength(1);
+    const serialized = JSON.stringify(feedWhereArgs[0]);
+    expect(serialized).toContain('org_id');
+    expect(serialized).toContain('org-123');
   });
 });

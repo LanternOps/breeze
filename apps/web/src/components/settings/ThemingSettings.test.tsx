@@ -57,6 +57,7 @@ describe('ThemingSettings language fieldset', () => {
     expect(screen.getByText('Español (Latinoamérica)')).toBeInTheDocument();
     expect(screen.getByText('Français (France)')).toBeInTheDocument();
     expect(screen.getByText('Deutsch (Deutschland)')).toBeInTheDocument();
+    expect(screen.getByText('Italiano (Italia)')).toBeInTheDocument();
   });
 
   it('applies and persists pt-BR when selected', async () => {

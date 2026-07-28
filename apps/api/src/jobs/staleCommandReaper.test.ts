@@ -87,7 +87,7 @@ vi.mock('../services/commandQueue', async (importOriginal) => {
   };
 });
 
-import { reapStaleDeviceCommands, reapStaleBackupJobs } from './staleCommandReaper';
+import { reapStaleDeviceCommands, reapStaleBackupJobs, resolveMaxReapPerRun } from './staleCommandReaper';
 
 function selectChain(resolvedValue: unknown) {
   const chain: Record<string, any> = {};
@@ -106,6 +106,27 @@ function backupUpdateChain(returningValue: unknown) {
     })),
   };
 }
+
+// The `0 == unlimited` knob is subtle and availability-critical: drizzle's
+// `.limit(0)` returns ZERO rows, so a naive pass-through would silently
+// disable the reaper entirely rather than uncapping it. #2823 also changed
+// what an EMPTY `STALE_REAPER_MAX_PER_RUN` resolves to — it used to reach
+// this mapping as 0 (unlimited); it now reaches it as the 5000 default.
+describe('resolveMaxReapPerRun', () => {
+  it('passes a positive cap through', () => {
+    expect(resolveMaxReapPerRun(5000)).toBe(5000);
+    expect(resolveMaxReapPerRun(1)).toBe(1);
+  });
+
+  it('maps an explicit 0 to unlimited, never to a zero-row limit', () => {
+    expect(resolveMaxReapPerRun(0)).toBe(Number.MAX_SAFE_INTEGER);
+    expect(resolveMaxReapPerRun(0)).not.toBe(0);
+  });
+
+  it('falls back to the default for a negative cap', () => {
+    expect(resolveMaxReapPerRun(-1)).toBe(5000);
+  });
+});
 
 describe('stale command reaper', () => {
   beforeEach(() => {
@@ -182,6 +203,32 @@ describe('stale command reaper', () => {
     expect(reaped).toBe(4);
     expect(deviceCommandReturning).toHaveBeenCalledTimes(4);
     expect(restoreWhere).toHaveBeenCalledTimes(4);
+  });
+
+  // #2774 — a drain-window self_uninstall must outlive the 30-min timeout
+  // while (and only while) its tenant is `offboarding`. Pin that the SELECT's
+  // WHERE carries the offboarding-scoped exemption so a refactor can't
+  // silently drop it and resurrect the silent-expiry bug.
+  it('scopes the self_uninstall reap exemption to offboarding tenants', async () => {
+    const chain = selectChain([]);
+    selectMock.mockReturnValueOnce(chain);
+
+    await reapStaleDeviceCommands();
+
+    const whereArg = chain.where.mock.calls[0]?.[0];
+    const containsString = (root: unknown, needle: string): boolean => {
+      const seen = new WeakSet<object>();
+      const walk = (value: unknown): boolean => {
+        if (typeof value === 'string') return value.includes(needle);
+        if (!value || typeof value !== 'object') return false;
+        if (seen.has(value as object)) return false;
+        seen.add(value as object);
+        return Object.values(value as Record<string, unknown>).some(walk);
+      };
+      return walk(root);
+    };
+    expect(containsString(whereArg, 'self_uninstall')).toBe(true);
+    expect(containsString(whereArg, 'offboarding')).toBe(true);
   });
 });
 

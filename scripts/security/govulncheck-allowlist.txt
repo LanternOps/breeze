@@ -1,0 +1,17 @@
+# Reviewed govulncheck exceptions — agent Go module.
+#
+# An entry here suppresses a SYMBOL-LEVEL govulncheck finding in CI. The bar
+# for adding one is high: the advisory must have NO fixed release to upgrade
+# to, the call site must carry a code-level mitigation, and a tracking issue
+# must exist to remove the entry the moment a fixed release ships. A finding
+# with an available fix must be fixed by upgrading, never listed here.
+#
+# Format: one OSV id per line; '#' starts a comment.
+
+# go-smb2 ReadDir out-of-bounds read / panic. Fixed in: N/A (no patched
+# release of github.com/hirochachacha/go-smb2 exists). Mitigated by the
+# recover guard in agent/internal/workspaceindex/fs_smb.go (smbFS.ReadDir),
+# which contains the panic and surfaces it as a redacted error. Remove this
+# entry and that guard's allowlist reference when a fixed go-smb2 ships.
+# Tracking: #2860
+GO-2026-5051

@@ -424,6 +424,10 @@ func runWatchdog(stopCh <-chan struct{}) {
 		startedAt time.Time
 	}
 
+	// Transition flag for journaling process-ticker state-file read failures
+	// without flooding the journal at the 5s cadence.
+	var processReadFailJournaled bool
+
 	// Wrap auth token in a mutable holder so IPC token updates are visible
 	// to every goroutine that reads the token (failover client, updater, etc.).
 	tokenStore := &tokenHolder{}
@@ -498,11 +502,21 @@ func runWatchdog(stopCh <-chan struct{}) {
 			return
 
 		case <-processTicker.C:
-			// Re-read state file for fresh PID.
+			// Re-read state file for fresh PID. Journal read failures on
+			// the transition only — this ticker runs every few seconds and
+			// a persistent failure would otherwise flood the journal; the
+			// heartbeat ticker journals its own read failures every time.
 			if s, err := state.Read(statePath); err == nil && s != nil {
 				pid = s.PID
 				agentState = s
+				processReadFailJournaled = false
 			} else if err != nil {
+				if !processReadFailJournaled {
+					processReadFailJournaled = true
+					journal.Log(watchdog.LevelWarn, "state.read_failed", map[string]any{
+						"path": statePath, "error": err.Error(),
+					})
+				}
 				slog.Warn("state.read_failed", "path", statePath, "error", err.Error())
 			}
 
@@ -542,20 +556,40 @@ func runWatchdog(stopCh <-chan struct{}) {
 			}
 
 		case <-heartbeatTicker.C:
-			// Re-read state file for heartbeat staleness.
+			// Re-read state file for heartbeat staleness. Journal (not
+			// slog) the failure: this read feeds a restart decision, and
+			// as an SCM service stderr is discarded — the journal is what
+			// collect_diagnostics ships. A persistent read failure here
+			// (ACL regression, EDR quarantine, torn JSON) plays out as
+			// stale → escalated restarts of a healthy agent, and the
+			// shipped evidence must say why.
 			if s, err := state.Read(statePath); err == nil {
 				agentState = s
 			} else {
-				slog.Warn("state.read_failed", "path", statePath, "error", err.Error())
+				journal.Log(watchdog.LevelWarn, "state.read_failed", map[string]any{
+					"path": statePath, "error": err.Error(),
+				})
 			}
-			result := healthChecker.CheckHeartbeatStaleness(agentState)
-			if result == watchdog.CheckHeartbeatStale {
-				journal.Log(watchdog.LevelWarn, "check.heartbeat_stale", nil)
+			// Stale check + bounded IPC-corroboration veto — see
+			// EvaluateStaleHeartbeat for why a stale state file alone
+			// must not trigger a restart, and what the count means.
+			ipcUp := ipcClient.IsConnected()
+			decision, vetoes := healthChecker.EvaluateStaleHeartbeat(agentState, ipcUp)
+			switch decision {
+			case watchdog.StaleRestart:
+				journal.Log(watchdog.LevelWarn, "check.heartbeat_stale", map[string]any{
+					"ipc_connected": ipcUp,
+					"vetoes_before": vetoes,
+				})
 				wd.HandleEvent(watchdog.EventAgentUnhealthy)
+			case watchdog.StaleVetoed:
+				journal.Log(watchdog.LevelWarn, "check.heartbeat_stale_ipc_alive", map[string]any{
+					"consecutive_vetoes": vetoes,
+				})
 			}
 
 		case env := <-ipcMessages:
-			handleIPCMessage(env, wd, journal, cfg, tokenStore)
+			handleIPCMessage(env, wd, journal, cfg, tokenStore, healthChecker)
 
 		case <-failoverTicker.C:
 			// Only poll in FAILOVER state.
@@ -578,7 +612,9 @@ func runWatchdog(stopCh <-chan struct{}) {
 				if s, err := state.Read(statePath); err == nil && s != nil {
 					agentState = s
 				} else if err != nil {
-					slog.Warn("state.read_failed", "path", statePath, "error", err.Error())
+					journal.Log(watchdog.LevelWarn, "state.read_failed", map[string]any{
+						"path": statePath, "error": err.Error(),
+					})
 				}
 				// Success = heartbeat advanced past (startedAt + grace).
 				verifyDeadline := pendingVerify.startedAt.Add(cfg.Watchdog.RestartVerificationGrace)
@@ -606,6 +642,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 				journal.Log(watchdog.LevelError, "recovery.flap_detected", map[string]any{
 					"count_24h": recovery.Count24h(),
 				})
+				ensureAgentStartedBeforeFailover(runCtx, recovery, journal)
 				wd.HandleEvent(watchdog.EventRecoveryExhausted)
 				break
 			}
@@ -614,6 +651,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 				journal.Log(watchdog.LevelError, "recovery.exhausted", map[string]any{
 					"attempts": recovery.Attempts(),
 				})
+				ensureAgentStartedBeforeFailover(runCtx, recovery, journal)
 				wd.HandleEvent(watchdog.EventRecoveryExhausted)
 				break
 			}
@@ -654,6 +692,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 
 			if shouldFailoverRecovery(result) {
 				pendingVerify = nil
+				ensureAgentStartedBeforeFailover(runCtx, recovery, journal)
 				wd.HandleEvent(watchdog.EventRecoveryExhausted)
 			} else if shouldVerifyRecovery(result, err) {
 				pendingVerify = &struct{ startedAt time.Time }{startedAt: time.Now()}
@@ -662,6 +701,25 @@ func runWatchdog(stopCh <-chan struct{}) {
 		case watchdog.StateFailover:
 			if pendingVerify != nil {
 				pendingVerify = nil
+			}
+			// Self-recovery: if the agent is demonstrably healthy — live IPC
+			// AND a fresh heartbeat from any source (state file or IPC
+			// state_sync) — leave FAILOVER. Without this the only exits were
+			// a server-delivered command (useless when the server or the
+			// poll channel is down) and an IPC *re*connect edge (never fires
+			// on a continuously-connected pipe), so a healthy box could sit
+			// in FAILOVER forever (#2763). Manual `sc start BreezeAgent` on
+			// a stranded box now heals the watchdog too.
+			if ipcClient.IsConnected() {
+				if hb := healthChecker.LastKnownHeartbeat(agentState); !hb.IsZero() && time.Since(hb) <= wdCfg.HeartbeatStaleThreshold {
+					journal.Log(watchdog.LevelInfo, "failover.agent_healthy_recovered", map[string]any{
+						"last_heartbeat": hb.Format(time.RFC3339),
+					})
+					// recovery.Reset() happens in the MONITORING block on the
+					// next tick — no need to duplicate it here.
+					wd.HandleEvent(watchdog.EventAgentRecovered)
+					break
+				}
 			}
 			if failoverClient == nil && tokenStore.Reveal() != "" {
 				// Re-read the on-disk config at every failover-window start:
@@ -720,7 +778,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 }
 
 // handleIPCMessage dispatches IPC envelope messages from the agent.
-func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdog.Journal, cfg *config.Config, tokens *tokenHolder) {
+func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdog.Journal, cfg *config.Config, tokens *tokenHolder, health *watchdog.HealthChecker) {
 	switch env.Type {
 	case ipc.TypeShutdownIntent:
 		var intent ipc.ShutdownIntent
@@ -767,6 +825,20 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 			"connected":     sync.Connected,
 			"lastHeartbeat": sync.LastHeartbeat,
 		})
+		// Feed the staleness check: the agent sends a state_sync only after
+		// a successful server heartbeat, so this is authoritative liveness
+		// even when agent.state on disk is unwritable (AV/EDR sharing
+		// violations). Without this, the file alone drove restart decisions
+		// and a blocked writer read as a dead agent (#2763).
+		if health != nil && sync.LastHeartbeat != "" {
+			if hb, perr := time.Parse(time.RFC3339, sync.LastHeartbeat); perr == nil {
+				health.NoteStateSync(hb)
+			} else {
+				journal.Log(watchdog.LevelWarn, "ipc.bad_state_sync_heartbeat", map[string]any{
+					"value": sync.LastHeartbeat, "error": perr.Error(),
+				})
+			}
+		}
 
 	case ipc.TypeWatchdogPong:
 		// Pong received — IPC is healthy. Already tracked by health checker.
@@ -777,6 +849,26 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 			"type": env.Type,
 		})
 	}
+}
+
+// ensureAgentStartedBeforeFailover issues a budget-free, best-effort
+// ensure-start right before the watchdog parks in FAILOVER. A failed graceful
+// attempt may have already stopped the agent service when the flap/budget
+// gate aborts the ladder; FAILOVER ignores health events, so entering it with
+// the agent stopped is permanent until a human intervenes (#2763). The
+// outcome is journaled and failure never blocks the transition.
+func ensureAgentStartedBeforeFailover(ctx context.Context, recovery *watchdog.RecoveryManager, journal *watchdog.Journal) {
+	result, err := recovery.BestEffortEnsureStart(ctx)
+	fields := map[string]any{
+		"action_taken": result.ActionTaken,
+		"final_state":  result.FinalState,
+	}
+	if err != nil {
+		fields["error"] = err.Error()
+		journal.Log(watchdog.LevelError, "recovery.ensure_started_before_failover_failed", fields)
+		return
+	}
+	journal.Log(watchdog.LevelInfo, "recovery.ensure_started_before_failover", fields)
 }
 
 // handleFailoverPoll sends a heartbeat and polls for commands during failover.
@@ -806,7 +898,7 @@ func handleFailoverPoll(
 		return
 	}
 	*failoverFailures = 0
-	heartbeatCmds := processHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery)
+	heartbeatCmds := processHeartbeatResponse(resp, wd, journal, fc.BaseURL, cfg, tokens, recovery)
 
 	// Commands targeted at the watchdog are claimed by the heartbeat (the
 	// server marks them 'sent' and returns them inline), so the poll below
@@ -841,7 +933,7 @@ func handleInitialFailoverHeartbeatResponse(
 	tokens *tokenHolder,
 	recovery *watchdog.RecoveryManager,
 ) {
-	processInitialFailoverHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery, func(cmd watchdog.FailoverCommand) {
+	processInitialFailoverHeartbeatResponse(resp, wd, journal, fc.BaseURL, cfg, tokens, recovery, func(cmd watchdog.FailoverCommand) {
 		handleFailoverCommand(ctx, fc, cmd, wd, journal, cfg, tokens, recovery)
 	})
 }
@@ -850,12 +942,13 @@ func processInitialFailoverHeartbeatResponse(
 	resp *watchdog.HeartbeatResponse,
 	wd *watchdog.Watchdog,
 	journal *watchdog.Journal,
+	serverURL func() string,
 	cfg *config.Config,
 	tokens *tokenHolder,
 	recovery *watchdog.RecoveryManager,
 	run func(watchdog.FailoverCommand),
 ) {
-	heartbeatCmds := processHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery)
+	heartbeatCmds := processHeartbeatResponse(resp, wd, journal, serverURL, cfg, tokens, recovery)
 	executeFailoverCommands(heartbeatCmds, nil, run)
 }
 
@@ -887,6 +980,7 @@ func processHeartbeatResponse(
 	resp *watchdog.HeartbeatResponse,
 	wd *watchdog.Watchdog,
 	journal *watchdog.Journal,
+	serverURL func() string,
 	cfg *config.Config,
 	tokens *tokenHolder,
 	recovery *watchdog.RecoveryManager,
@@ -898,13 +992,23 @@ func processHeartbeatResponse(
 		journal.Log(watchdog.LevelInfo, "failover.upgrade_agent", map[string]any{
 			"version": resp.UpgradeTo,
 		})
-		doUpdateAgent(resp.UpgradeTo, cfg, tokens, journal)
+		if err := doUpdateAgent(resp.UpgradeTo, serverURL, cfg, tokens, journal); err != nil {
+			journal.Log(watchdog.LevelError, "failover.upgrade_agent_failed", map[string]any{
+				"version": resp.UpgradeTo,
+				"error":   err.Error(),
+			})
+		}
 	}
 	if resp.WatchdogUpgradeTo != "" {
 		journal.Log(watchdog.LevelInfo, "failover.upgrade_watchdog", map[string]any{
 			"version": resp.WatchdogUpgradeTo,
 		})
-		doUpdateWatchdog(resp.WatchdogUpgradeTo, cfg, tokens, journal)
+		if err := doUpdateWatchdog(resp.WatchdogUpgradeTo, serverURL, cfg, tokens, journal); err != nil {
+			journal.Log(watchdog.LevelError, "failover.upgrade_watchdog_failed", map[string]any{
+				"version": resp.WatchdogUpgradeTo,
+				"error":   err.Error(),
+			})
+		}
 	}
 	return resp.Commands
 }
@@ -1005,7 +1109,7 @@ func handleFailoverCommand(
 			resultStatus = "failed"
 			errMsg = "missing version in payload"
 		} else {
-			err := doUpdateAgent(targetVersion, cfg, tokens, journal)
+			err := doUpdateAgent(targetVersion, fc.BaseURL, cfg, tokens, journal)
 			if err != nil {
 				resultStatus = "failed"
 				errMsg = err.Error()
@@ -1021,7 +1125,7 @@ func handleFailoverCommand(
 			resultStatus = "failed"
 			errMsg = "missing version in payload"
 		} else {
-			err := doUpdateWatchdog(targetVersion, cfg, tokens, journal)
+			err := doUpdateWatchdog(targetVersion, fc.BaseURL, cfg, tokens, journal)
 			if err != nil {
 				resultStatus = "failed"
 				errMsg = err.Error()
@@ -1044,15 +1148,20 @@ func handleFailoverCommand(
 	}
 }
 
-// doUpdateAgent creates an updater and downloads the target version for the agent binary.
-func doUpdateAgent(targetVersion string, cfg *config.Config, tokens *tokenHolder, journal *watchdog.Journal) error {
+// doUpdateAgent creates an updater and downloads the target version for the
+// agent binary. serverURL is a provider (func() string) resolved at download
+// time — during a failover the watchdog's FailoverClient retargets itself to
+// the promoted backup (SetBaseURL), and passing c.BaseURL here means binary
+// downloads follow that promotion instead of pinning the dead primary captured
+// in cfg at startup (#2478).
+func doUpdateAgent(targetVersion string, serverURL func() string, cfg *config.Config, tokens *tokenHolder, journal *watchdog.Journal) error {
 	tok := tokens.Get()
 	if tok == nil {
 		return fmt.Errorf("no auth token available")
 	}
 	binaryPath := agentBinaryPath()
 	u := updater.New(&updater.Config{
-		ServerURL:             cfg.ServerURL,
+		ServerURL:             serverURL,
 		AuthToken:             tok,
 		CurrentVersion:        "", // Not tracking agent version from watchdog.
 		BinaryPath:            binaryPath,
@@ -1073,7 +1182,10 @@ func doUpdateAgent(targetVersion string, cfg *config.Config, tokens *tokenHolder
 }
 
 // doUpdateWatchdog updates the watchdog binary and restarts the service.
-func doUpdateWatchdog(targetVersion string, cfg *config.Config, tokens *tokenHolder, journal *watchdog.Journal) error {
+// serverURL is a provider resolved at download time so a self-update follows
+// the FailoverClient's backup-server-URL promotion during a failover rather
+// than pinning the startup primary (#2478).
+func doUpdateWatchdog(targetVersion string, serverURL func() string, cfg *config.Config, tokens *tokenHolder, journal *watchdog.Journal) error {
 	tok := tokens.Get()
 	if tok == nil {
 		return fmt.Errorf("no auth token available")
@@ -1083,7 +1195,7 @@ func doUpdateWatchdog(targetVersion string, cfg *config.Config, tokens *tokenHol
 		return fmt.Errorf("failed to determine executable path: %w", err)
 	}
 	u := updater.New(&updater.Config{
-		ServerURL:             cfg.ServerURL,
+		ServerURL:             serverURL,
 		AuthToken:             tok,
 		CurrentVersion:        version,
 		Component:             "watchdog",

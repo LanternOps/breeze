@@ -66,6 +66,10 @@ vi.mock('../services/ticketService', () => ({
 vi.mock('../db/schema', () => ({
   assetCheckouts: {},
   devices: {},
+  // The portal route graph transitively imports networkBaseline.ts, which reads
+  // discoveredAssetTypeEnum.enumValues at module load — the full-module mock must
+  // provide it or the whole suite fails to load.
+  discoveredAssetTypeEnum: { enumValues: [] },
   portalBranding: {},
   portalUsers: {},
   ticketComments: {},

@@ -65,8 +65,8 @@ func TestKeepaliveReapsStrandedSession(t *testing.T) {
 	}()
 
 	b := &Broker{
-		sessions:     map[string]*Session{session.SessionID: session},
-		byIdentity:   map[string][]*Session{session.IdentityKey: {session}},
+		sessions:   map[string]*Session{session.SessionID: session},
+		byIdentity: map[string][]*Session{session.IdentityKey: {session}},
 	}
 
 	done := make(chan struct{})
@@ -121,8 +121,8 @@ func TestKeepaliveKeepsHealthySessionAlive(t *testing.T) {
 	defer close(stopDrain)
 
 	b := &Broker{
-		sessions:     map[string]*Session{session.SessionID: session},
-		byIdentity:   map[string][]*Session{session.IdentityKey: {session}},
+		sessions:   map[string]*Session{session.SessionID: session},
+		byIdentity: map[string][]*Session{session.IdentityKey: {session}},
 	}
 
 	keepaliveDone := make(chan struct{})
@@ -155,7 +155,7 @@ func TestKeepaliveKeepsHealthySessionAlive(t *testing.T) {
 // connection was being evicted at keepaliveTimeout and reconnecting forever.
 func TestRoleSupportsKeepalive_ExcludesWatchdog(t *testing.T) {
 	cases := []struct {
-		role string
+		role ipc.HelperRole
 		want bool
 	}{
 		{ipc.HelperRoleSystem, true},
@@ -186,8 +186,8 @@ func TestMaybeStartKeepalive_WatchdogSessionStaysAlive(t *testing.T) {
 	session.lastPongAt.Store(time.Now().Add(-time.Hour).UnixNano())
 
 	b := &Broker{
-		sessions:     map[string]*Session{session.SessionID: session},
-		byIdentity:   map[string][]*Session{session.IdentityKey: {session}},
+		sessions:   map[string]*Session{session.SessionID: session},
+		byIdentity: map[string][]*Session{session.IdentityKey: {session}},
 	}
 
 	b.maybeStartKeepalive(session, ipc.HelperRoleWatchdog)
@@ -223,8 +223,8 @@ func TestMaybeStartKeepalive_SystemSessionIsReaped(t *testing.T) {
 	}()
 
 	b := &Broker{
-		sessions:     map[string]*Session{session.SessionID: session},
-		byIdentity:   map[string][]*Session{session.IdentityKey: {session}},
+		sessions:   map[string]*Session{session.SessionID: session},
+		byIdentity: map[string][]*Session{session.IdentityKey: {session}},
 	}
 
 	b.maybeStartKeepalive(session, ipc.HelperRoleSystem)
@@ -258,8 +258,8 @@ func TestAdmitOrEvictEvictsIdleSession(t *testing.T) {
 	victim.LastSeen = now.Add(-(EvictIdleThreshold + 10*time.Second))
 
 	b := &Broker{
-		sessions:     make(map[string]*Session),
-		byIdentity:   map[string][]*Session{identity: sessions},
+		sessions:   make(map[string]*Session),
+		byIdentity: map[string][]*Session{identity: sessions},
 	}
 	for _, s := range sessions {
 		b.sessions[s.SessionID] = s
@@ -294,8 +294,8 @@ func TestAdmitOrEvictRejectsWhenAllRecent(t *testing.T) {
 	}
 
 	b := &Broker{
-		sessions:     make(map[string]*Session),
-		byIdentity:   map[string][]*Session{identity: sessions},
+		sessions:   make(map[string]*Session),
+		byIdentity: map[string][]*Session{identity: sessions},
 	}
 	for _, s := range sessions {
 		b.sessions[s.SessionID] = s
@@ -326,8 +326,8 @@ func TestKeepaliveClosesAfterRepeatedSendFailures(t *testing.T) {
 	_ = clientIPC.Close()
 
 	b := &Broker{
-		sessions:     map[string]*Session{session.SessionID: session},
-		byIdentity:   map[string][]*Session{session.IdentityKey: {session}},
+		sessions:   map[string]*Session{session.SessionID: session},
+		byIdentity: map[string][]*Session{session.IdentityKey: {session}},
 	}
 
 	done := make(chan struct{})
@@ -364,8 +364,8 @@ func TestRecvLoopDispatchesPongToNotePong(t *testing.T) {
 	}
 
 	b := &Broker{
-		sessions:     map[string]*Session{session.SessionID: session},
-		byIdentity:   map[string][]*Session{session.IdentityKey: {session}},
+		sessions:   map[string]*Session{session.SessionID: session},
+		byIdentity: map[string][]*Session{session.IdentityKey: {session}},
 	}
 
 	recvDone := make(chan struct{})
@@ -407,8 +407,8 @@ func TestAdmitOrEvictUnderCapAdmits(t *testing.T) {
 	defer client.Close()
 
 	b := &Broker{
-		sessions:     map[string]*Session{s.SessionID: s},
-		byIdentity:   map[string][]*Session{identity: {s}},
+		sessions:   map[string]*Session{s.SessionID: s},
+		byIdentity: map[string][]*Session{identity: {s}},
 	}
 
 	if !b.admitOrEvict(identity) {

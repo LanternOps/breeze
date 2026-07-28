@@ -21,6 +21,7 @@ import { createQuotePayLink } from '../services/quotePay';
 import { computeQuoteTotals, toQuoteDepositConfig, type QuoteLineForMath } from '../services/quoteMath';
 import { captureException } from '../services/sentry';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
+import { toPublicQuoteHeader } from '../services/publicQuoteDto';
 
 /**
  * Unauthenticated, token-gated quote acceptance surface for prospects without a
@@ -71,7 +72,7 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
       // and replaces its raw authoring content with the token-gated render contract.
       const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/quotes/public/${encodeURIComponent(token)}/contract-file/${blockId}`);
       const serializedLines = attachCustomerLineImages(lines, (lineId) => `/quotes/public/${encodeURIComponent(token)}/line-image/${lineId}`);
-      return { quote: { ...quote, status: quote.status === 'sent' ? 'viewed' : quote.status, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines: serializedLines, branding: { partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null } };
+      return { quote: toPublicQuoteHeader(quote, totals), blocks, lines: serializedLines, branding: { partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null } };
     }));
     if (!data) return c.json({ error: 'Quote not found' }, 404);
     return c.json({ data });

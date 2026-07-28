@@ -1,6 +1,8 @@
+import { isDeepStrictEqual } from 'node:util';
 import { eq } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { db } from '../db';
+import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { organizations, partners } from '../db/schema/orgs';
 import { aiBudgets } from '../db/schema/ai';
 
@@ -128,11 +130,22 @@ export async function getEffectiveOrgSettings(
     throw new HTTPException(404, { message: 'Organization not found' });
   }
 
-  const partner = await db
-    .select({ settings: partners.settings })
-    .from(partners)
-    .where(eq(partners.id, org.partnerId))
-    .then((rows) => rows[0]);
+  // System context (#2822). `partners` is partner-axis
+  // (`breeze_has_partner_access(id)`) and `computeAccessiblePartnerIds` returns
+  // [] for scope 'organization', but GET /orgs/organizations/:id/effective-settings
+  // is requireScope('organization','partner','system') and even has an explicit
+  // org-scope branch — org callers are intended. Under the ambient context the
+  // read returned zero rows and this threw 404 "Partner not found" for an org
+  // admin looking at their OWN org's settings. Pinned to the partnerId of an
+  // `organizations` row already resolved under the caller's own RLS context,
+  // so it cannot reach a partner the caller can't already see through its org.
+  const partner = await readWithPartnerAxisVisibility(() =>
+    db
+      .select({ settings: partners.settings })
+      .from(partners)
+      .where(eq(partners.id, org.partnerId))
+      .then((rows) => rows[0])
+  );
 
   if (!partner) {
     throw new HTTPException(404, { message: 'Partner not found' });
@@ -199,14 +212,29 @@ export async function getEffectiveOrgSettings(
 /**
  * Guard for org-level PATCH routes.
  *
- * Loads the partner's settings for the given org and checks whether any of the
- * `patchFields` are locked (i.e. set in the partner's category). Throws a 403
- * HTTPException listing the locked fields if any are found.
+ * `patch` maps each submitted field name to the value the org is trying to write.
+ * A field is rejected only when the partner has set it AND the org is submitting
+ * a *different* value — i.e. the org is genuinely attempting to change a locked
+ * field. Re-submitting the value the partner already mandates is a no-op and is
+ * allowed.
+ *
+ * That distinction matters because the org settings editors PUT the whole
+ * `settings` blob on every save (see handleSaveSettings in OrgSettingsPage), so
+ * every stored category is re-submitted even when the operator only touched one
+ * field. Under the old presence-only test (`field in partnerCat`) a single
+ * partner-set field therefore 403'd the entire request, blocking unrelated
+ * fields the partner never intended to enforce (issue #2752 — `autoEnrollment`
+ * is always present in the `defaults` payload, so it locked the whole category).
+ *
+ * Note this deliberately does NOT change `mergeCategory`/`locked` reporting: a
+ * partner-set field is still advertised as locked, and getOrgAgentUpdateConfig's
+ * presence-based resolution stays in lockstep with it. Only the write guard's
+ * strictness changes, from "field present" to "value actually diverges".
  */
 export async function assertNotLocked(
   orgId: string,
   category: string,
-  patchFields: string[],
+  patch: Record<string, unknown>,
 ): Promise<void> {
   const org = await db
     .select({ partnerId: organizations.partnerId })
@@ -218,11 +246,18 @@ export async function assertNotLocked(
     throw new HTTPException(404, { message: 'Organization not found' });
   }
 
-  const partner = await db
-    .select({ settings: partners.settings })
-    .from(partners)
-    .where(eq(partners.id, org.partnerId))
-    .then((rows) => rows[0]);
+  // System context (#2822). Reached from PUT /ai/budget, which is
+  // requireScope('organization','partner','system'): the ambient-context read
+  // returned zero rows for an org-scoped admin, so this 404'd "Partner not
+  // found" and the budget update never ran. Same pinning argument as
+  // getEffectiveOrgSettings above.
+  const partner = await readWithPartnerAxisVisibility(() =>
+    db
+      .select({ settings: partners.settings })
+      .from(partners)
+      .where(eq(partners.id, org.partnerId))
+      .then((rows) => rows[0])
+  );
 
   if (!partner) {
     throw new HTTPException(404, { message: 'Partner not found' });
@@ -231,7 +266,9 @@ export async function assertNotLocked(
   const partnerSettings = asRecord(partner.settings);
   const partnerCat = asRecord(partnerSettings[category]);
 
-  const lockedFields = patchFields.filter((f) => f in partnerCat);
+  const lockedFields = Object.keys(patch).filter(
+    (f) => f in partnerCat && !isDeepStrictEqual(patch[f], partnerCat[f]),
+  );
 
   if (lockedFields.length > 0) {
     throw new HTTPException(403, {
@@ -263,12 +300,22 @@ export async function getEffectiveAiBudget(
     throw new HTTPException(404, { message: 'Organization not found' });
   }
 
+  // The `partners` half runs in a system context (#2822). Callers
+  // (services/aiCostTracker.ts checkBudget / checkAiRateLimit) wrap this in a
+  // bare `withSystemDbAccessContext`, which is a NO-OP inside a request — it
+  // inherits the caller's org scope — so under an org-scoped AI chat session
+  // the read returned zero rows and every turn failed with "Unable to verify
+  // budget. Please try again." Pinned to the org's own partnerId; the
+  // `ai_budgets` half deliberately stays in the caller's context (it is
+  // org-axis and RLS must keep guarding it).
   const [partner, orgBudgetRow] = await Promise.all([
-    db
-      .select({ settings: partners.settings })
-      .from(partners)
-      .where(eq(partners.id, org.partnerId))
-      .then((rows) => rows[0]),
+    readWithPartnerAxisVisibility(() =>
+      db
+        .select({ settings: partners.settings })
+        .from(partners)
+        .where(eq(partners.id, org.partnerId))
+        .then((rows) => rows[0])
+    ),
     db
       .select()
       .from(aiBudgets)

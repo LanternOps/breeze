@@ -95,8 +95,7 @@ function TierCard({
           <span
             className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${tier.badgeBg} ${tier.badgeText}`}
           >
-            {t("aiRiskTierOverviewMatrix.tier")}
-            {tier.tier}
+            {t("aiRiskTierOverviewMatrix.tier", { tier: tier.tier })}
           </span>
           <h3 className="text-sm font-semibold">{tier.label}</h3>
         </div>

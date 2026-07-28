@@ -62,7 +62,6 @@ services:
       - ./apps/portal/package.json:/app/apps/portal/package.json:ro
       - ./apps/portal/tsconfig.json:/app/apps/portal/tsconfig.json:ro
       - ./apps/portal/astro.config.mjs:/app/apps/portal/astro.config.mjs:ro
-      - ./apps/portal/tailwind.config.mjs:/app/apps/portal/tailwind.config.mjs:ro
       - ./packages/shared/src:/app/packages/shared/src:cached
       - /app/node_modules
       - /app/apps/portal/node_modules

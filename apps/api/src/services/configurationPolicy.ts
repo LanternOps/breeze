@@ -1,4 +1,5 @@
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import {
   configurationPolicies,
   configPolicyFeatureLinks,
@@ -2043,17 +2044,25 @@ export async function validateFeaturePolicyExists(
       return { valid: false, error: `Update ring "${featurePolicyId}" not found — organization has no partner` };
     }
 
-    const [ring] = await db
-      .select({ id: patchPolicies.id })
-      .from(patchPolicies)
-      .where(
-        and(
-          eq(patchPolicies.id, featurePolicyId),
-          eq(patchPolicies.partnerId, partnerId),
-          eq(patchPolicies.kind, 'ring')
+    // System context, for the same reason the `backup` branch below already
+    // does it (#2822): `patch_policies` is partner-axis, so an org-scoped
+    // caller (accessiblePartnerIds = []) sees zero rows and a perfectly valid
+    // ring link is rejected as `not found for this partner`. The lookup is
+    // self-tenanted by the `partnerId` derived from the config policy's own
+    // owner above, so escaping RLS here cannot reach another partner's rings.
+    const [ring] = await readWithPartnerAxisVisibility(() =>
+      db
+        .select({ id: patchPolicies.id })
+        .from(patchPolicies)
+        .where(
+          and(
+            eq(patchPolicies.id, featurePolicyId),
+            eq(patchPolicies.partnerId, partnerId),
+            eq(patchPolicies.kind, 'ring')
+          )
         )
-      )
-      .limit(1);
+        .limit(1)
+    );
 
     if (!ring) {
       return { valid: false, error: `Update ring "${featurePolicyId}" not found for this partner` };

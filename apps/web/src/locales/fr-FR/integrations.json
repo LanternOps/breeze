@@ -164,7 +164,7 @@
     "slack": "Slack",
     "connectAWorkspaceWithOAuthAndPostAlerts": "Connectez un espace de travail avec OAuth et publiez des alertes sur les canaux. ",
     "workspace": "Espace de travail",
-    "workspaceID": "Espace de travail ID : ",
+    "workspaceID": "Espace de travail ID : {{id}}",
     "connectWorkspace": "Espace de travail Connect ",
     "oauthRedirectStartsWhenYouConnectASlack": "OAuth redirection commence lorsque vous connectez un espace de travail Slack. ",
     "defaultChannel": "Canal par défaut",
@@ -334,10 +334,7 @@
     "unmap": "Dissocier ",
     "noHuntressOrganizationsDiscoveredYetSaveCredentialsAnd": "Aucune organisation Huntress découverte pour le moment. Enregistrez les identifiants, puis lancez Synchroniser maintenant. ",
     "noOrganizationsMatchTheCurrentFilter": "Aucune organisation ne correspond au filtre actuel. ",
-    "showing": "Affichage ",
-    "of": "de ",
     "previous": "Précédent ",
-    "page": "Page ",
     "next": "Suivant ",
     "recentIncidents": "Incidents récents",
     "liveStatusError": "Le statut Live Huntress n’a pas pu être entièrement chargé. Les données de couverture et d’incidents ci-dessous peuvent être incomplètes ou obsolètes.",
@@ -376,7 +373,9 @@
     "update": "Mettre à jour",
     "saveAndConnect": "Enregistrer & connecter",
     "unknownTime": "Heure inconnue",
-    "askAdminToConnect": "Huntress se configure une seule fois au niveau du partenaire et est partagé entre toutes les organisations. Demandez à votre administrateur MSP de le connecter."
+    "askAdminToConnect": "Huntress se configure une seule fois au niveau du partenaire et est partagé entre toutes les organisations. Demandez à votre administrateur MSP de le connecter.",
+    "showingRange": "Affichage {{start}}–{{end}} de {{total}}",
+    "pageOf": "Page {{current}} de {{total}}"
   },
   "integrationsPage": {
     "webhooks": "Webhooks",
@@ -797,7 +796,7 @@
     "stripeDashboard": "tableau de bord Stripe ",
     "loadingStripeConnection": "Chargement de la connexion Stripe...",
     "couldNotLoadStripeConnection": "Impossible de charger la connexion Stripe.",
-    "key": "Clé •••• ",
+    "key": "Clé •••• {{last4}}",
     "skLiveOrRkLive": "sk_live_... ou rk_live_...",
     "connected": "Connecté",
     "live": "En direct",
@@ -947,15 +946,14 @@
     "loadingWebhooks": "Chargement des webhooks...",
     "tryAgain": "Réessayer ",
     "webhooks": "Webhooks",
-    "endpoints": "points de terminaison, ",
-    "averageSuccessRate": "% de taux moyen de réussite ",
     "addWebhook": "Ajouter un webhook ",
     "events": "Événements",
     "lastTriggered": "Dernier déclenchement",
     "successRate": "Taux de réussite",
     "anErrorOccurred": "Une erreur s’est produite",
     "justNow": "À l’instant",
-    "url": "URL"
+    "url": "URL",
+    "endpointsSummary": "{{total}} points de terminaison, {{successRate}}% de taux moyen de réussite"
   },
   "webhookTestPanel": {
     "failedToFetchTestHistory": "Impossible de récupérer l’historique des tests",

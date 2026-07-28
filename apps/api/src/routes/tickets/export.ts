@@ -5,6 +5,7 @@ import { PERMISSIONS } from '../../services/permissions';
 import { billablesExportQuerySchema } from '@breeze/shared';
 import { listBillables } from '../../services/timeEntryService';
 import { csvRow } from '../../services/spreadsheetExport';
+import { auditSensitiveRead } from '../../services/sensitiveReadAudit';
 
 export const ticketExportRoutes = new Hono();
 
@@ -34,8 +35,18 @@ ticketExportRoutes.get(
         r.amount, r.billingStatus, r.isApproved === null ? '' : String(r.isApproved)
       ]));
     }
+    const body = lines.join('\n');
     c.header('Content-Type', 'text/csv');
     c.header('Content-Disposition', 'attachment; filename="billables.csv"');
-    return c.body(lines.join('\n'));
+    auditSensitiveRead(c, {
+      action: 'billing.billables.download',
+      orgId: q.orgId ?? null,
+      resourceType: 'billing_export',
+      resourceId: 'billables',
+      format: 'csv',
+      rowCount: rows.length,
+      byteCount: Buffer.byteLength(body, 'utf8'),
+    });
+    return c.body(body);
   }
 );

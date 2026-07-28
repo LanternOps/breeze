@@ -11,8 +11,8 @@ import {
   organizations,
   reportRuns
 } from '../db/schema';
-import { canAccessSite, type UserPermissions } from './permissions';
 import type { ExecutiveSummary } from '@breeze/shared';
+import type { ReportExecutionAuthority } from './siteScope';
 
 export type ReportType =
   | 'device_inventory'
@@ -43,7 +43,10 @@ export type ReportResult = {
  * throws: this sits in the success path of both generation call sites, so a
  * lookup failure must degrade to "no baseline" rather than fail an otherwise
  * good run. */
-export async function previousBaselineFor(reportId: string): Promise<ReportResult['previous']> {
+export async function previousBaselineFor(
+  reportId: string,
+  scopeFingerprint: string,
+): Promise<ReportResult['previous']> {
   try {
     const [prior] = await db
       .select({
@@ -52,7 +55,11 @@ export async function previousBaselineFor(reportId: string): Promise<ReportResul
         completedAt: reportRuns.completedAt,
       })
       .from(reportRuns)
-      .where(and(eq(reportRuns.reportId, reportId), eq(reportRuns.status, 'completed')))
+      .where(and(
+        eq(reportRuns.reportId, reportId),
+        eq(reportRuns.status, 'completed'),
+        eq(reportRuns.executionScopeFingerprint, scopeFingerprint),
+      ))
       .orderBy(desc(reportRuns.completedAt))
       .limit(1);
     if (!prior?.summary || typeof prior.summary !== 'object') return undefined;
@@ -66,15 +73,24 @@ export async function previousBaselineFor(reportId: string): Promise<ReportResul
   }
 }
 
-export async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
-  if (!perms?.allowedSiteIds) return null;
+export async function resolveSiteAllowedDeviceIds(
+  orgId: string,
+  authority: ReportExecutionAuthority,
+): Promise<string[] | null> {
+  assertExecutableAuthority(orgId, authority);
+  if (authority.scope.kind === 'unrestricted') return null;
+  if (authority.scope.kind !== 'restricted') {
+    throw new UnexecutableReportScopeError();
+  }
+  if (authority.scope.siteIds.length === 0) return [];
   const orgDevices = await db
     .select({ id: devices.id, siteId: devices.siteId })
     .from(devices)
-    .where(eq(devices.orgId, orgId));
-  return orgDevices
-    .filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId))
-    .map((d) => d.id);
+    .where(and(
+      eq(devices.orgId, orgId),
+      inArray(devices.siteId, authority.scope.siteIds),
+    ));
+  return orgDevices.map((device) => device.id);
 }
 
 function asStringArray(value: unknown): string[] | null {
@@ -89,43 +105,78 @@ function emptyRowsReport() {
   return { rows: [], rowCount: 0 };
 }
 
-function addAllowedSiteCondition(conditions: SQL[], perms: UserPermissions | undefined): boolean {
-  if (!perms?.allowedSiteIds) return false;
-  if (perms.allowedSiteIds.length === 0) return true;
-  conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
+function addAllowedSiteCondition(
+  conditions: SQL[],
+  authority: ReportExecutionAuthority,
+): boolean {
+  if (authority.scope.kind === 'unrestricted') return false;
+  if (authority.scope.kind !== 'restricted') {
+    throw new UnexecutableReportScopeError();
+  }
+  if (authority.scope.siteIds.length === 0) return true;
+  conditions.push(inArray(devices.siteId, authority.scope.siteIds));
   return false;
 }
 
-export async function siteScopeRequestAllowed(
+export class UnexecutableReportScopeError extends Error {
+  constructor(message = 'Report execution authority is not executable') {
+    super(message);
+    this.name = 'UnexecutableReportScopeError';
+  }
+}
+
+function assertExecutableAuthority(
   orgId: string,
+  authority: ReportExecutionAuthority | null | undefined,
+): asserts authority is ReportExecutionAuthority {
+  if (!authority || !authority.scope) {
+    throw new UnexecutableReportScopeError('Report execution authority is required');
+  }
+  if (authority.scope.orgId !== orgId) {
+    throw new UnexecutableReportScopeError('Report execution authority organization mismatch');
+  }
+  if (authority.scope.kind === 'legacy_unscoped') {
+    throw new UnexecutableReportScopeError('Legacy report scope cannot execute');
+  }
+}
+
+function assertRequestedScopeWithinAuthority(
   config: Record<string, unknown>,
-  perms: UserPermissions | undefined
-): Promise<boolean> {
-  if (!perms?.allowedSiteIds) return true;
+  authority: ReportExecutionAuthority,
+): void {
+  if (authority.scope.kind === 'unrestricted') return;
+  if (authority.scope.kind !== 'restricted') {
+    throw new UnexecutableReportScopeError();
+  }
+  const restrictedScope = authority.scope;
 
   const filters = filtersFor(config);
   const siteIds = asStringArray(filters.siteIds);
-  if (siteIds?.some((siteId) => !canAccessSite(perms, siteId))) {
-    return false;
+  if (siteIds?.some((siteId) => !restrictedScope.siteIds.includes(siteId))) {
+    throw new UnexecutableReportScopeError('Requested site is outside report execution authority');
   }
 
   const postureSiteIds = asStringArray(config.sites);
-  if (postureSiteIds?.some((siteId) => !canAccessSite(perms, siteId))) {
-    return false;
+  if (postureSiteIds?.some((siteId) => !restrictedScope.siteIds.includes(siteId))) {
+    throw new UnexecutableReportScopeError('Requested site is outside report execution authority');
   }
-
-  const deviceIds = asStringArray(filters.deviceIds);
-  if (deviceIds && deviceIds.length > 0) {
-    const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, perms);
-    if (deviceIds.some((deviceId) => !allowedDeviceIds?.includes(deviceId))) {
-      return false;
-    }
-  }
-
-  return true;
 }
 
-export async function generateDeviceInventoryReport(orgId: string, config: Record<string, unknown>, perms?: UserPermissions) {
+export function assertReportExecutionPreflight(
+  orgId: string,
+  config: Record<string, unknown>,
+  authority: ReportExecutionAuthority | null | undefined,
+): asserts authority is ReportExecutionAuthority {
+  assertExecutableAuthority(orgId, authority);
+  assertRequestedScopeWithinAuthority(config, authority);
+}
+
+export async function generateDeviceInventoryReport(
+  orgId: string,
+  config: Record<string, unknown>,
+  authority: ReportExecutionAuthority,
+) {
+  assertExecutableAuthority(orgId, authority);
   const conditions: SQL[] = [eq(devices.orgId, orgId)];
 
   const filters = config.filters as Record<string, unknown> | undefined;
@@ -133,7 +184,7 @@ export async function generateDeviceInventoryReport(orgId: string, config: Recor
     conditions.push(inArray(devices.siteId, filters.siteIds));
   }
 
-  if (addAllowedSiteCondition(conditions, perms)) {
+  if (addAllowedSiteCondition(conditions, authority)) {
     return emptyRowsReport();
   }
 
@@ -166,7 +217,12 @@ export async function generateDeviceInventoryReport(orgId: string, config: Recor
   return { rows: data, rowCount: data.length };
 }
 
-export async function generateSoftwareInventoryReport(orgId: string, config: Record<string, unknown>, perms?: UserPermissions) {
+export async function generateSoftwareInventoryReport(
+  orgId: string,
+  config: Record<string, unknown>,
+  authority: ReportExecutionAuthority,
+) {
+  assertExecutableAuthority(orgId, authority);
   const conditions: SQL[] = [eq(devices.orgId, orgId)];
 
   const filters = config.filters as Record<string, unknown> | undefined;
@@ -174,7 +230,7 @@ export async function generateSoftwareInventoryReport(orgId: string, config: Rec
     conditions.push(inArray(devices.id, filters.deviceIds));
   }
 
-  if (addAllowedSiteCondition(conditions, perms)) {
+  if (addAllowedSiteCondition(conditions, authority)) {
     return emptyRowsReport();
   }
 
@@ -196,7 +252,12 @@ export async function generateSoftwareInventoryReport(orgId: string, config: Rec
   return { rows: data, rowCount: data.length };
 }
 
-export async function generateAlertSummaryReport(orgId: string, config: Record<string, unknown>, perms?: UserPermissions) {
+export async function generateAlertSummaryReport(
+  orgId: string,
+  config: Record<string, unknown>,
+  authority: ReportExecutionAuthority,
+) {
+  assertExecutableAuthority(orgId, authority);
   const conditions: SQL[] = [eq(alerts.orgId, orgId)];
 
   const dateRange = config.dateRange as Record<string, string> | undefined;
@@ -212,7 +273,7 @@ export async function generateAlertSummaryReport(orgId: string, config: Record<s
     conditions.push(inArray(alerts.severity, filters.severity));
   }
 
-  const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, perms);
+  const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, authority);
   if (allowedDeviceIds) {
     if (allowedDeviceIds.length === 0) {
       return { rows: [], rowCount: 0, summary: {} };
@@ -256,7 +317,12 @@ export async function generateAlertSummaryReport(orgId: string, config: Record<s
   };
 }
 
-export async function generateComplianceReport(orgId: string, config: Record<string, unknown>, perms?: UserPermissions) {
+export async function generateComplianceReport(
+  orgId: string,
+  config: Record<string, unknown>,
+  authority: ReportExecutionAuthority,
+) {
+  assertExecutableAuthority(orgId, authority);
   const conditions: SQL[] = [eq(devices.orgId, orgId)];
 
   const filters = config.filters as Record<string, unknown> | undefined;
@@ -264,7 +330,7 @@ export async function generateComplianceReport(orgId: string, config: Record<str
     conditions.push(inArray(devices.siteId, filters.siteIds));
   }
 
-  if (addAllowedSiteCondition(conditions, perms)) {
+  if (addAllowedSiteCondition(conditions, authority)) {
     return {
       rows: [],
       rowCount: 0,
@@ -322,9 +388,14 @@ export async function generateComplianceReport(orgId: string, config: Record<str
   };
 }
 
-export async function generatePerformanceReport(orgId: string, config: Record<string, unknown>, perms?: UserPermissions) {
+export async function generatePerformanceReport(
+  orgId: string,
+  config: Record<string, unknown>,
+  authority: ReportExecutionAuthority,
+) {
+  assertExecutableAuthority(orgId, authority);
   const deviceConditions: SQL[] = [eq(devices.orgId, orgId)];
-  if (addAllowedSiteCondition(deviceConditions, perms)) {
+  if (addAllowedSiteCondition(deviceConditions, authority)) {
     return emptyRowsReport();
   }
 
@@ -382,7 +453,15 @@ export async function generatePerformanceReport(orgId: string, config: Record<st
   return { rows, rowCount: rows.length };
 }
 
-export async function generateExecutiveSummaryReport(orgId: string, config: Record<string, unknown>, perms?: UserPermissions) {
+export async function generateExecutiveSummaryReport(
+  orgId: string,
+  config: Record<string, unknown>,
+  authority: ReportExecutionAuthority,
+) {
+  assertExecutableAuthority(orgId, authority);
+  if (authority.scope.kind === 'restricted' && authority.scope.siteIds.length === 0) {
+    return zeroSafeReport('executive_summary', orgId);
+  }
   const [orgRow] = await db
     .select({ id: organizations.id, name: organizations.name })
     .from(organizations)
@@ -391,7 +470,7 @@ export async function generateExecutiveSummaryReport(orgId: string, config: Reco
 
   const dateRange = config.dateRange as Record<string, string> | undefined;
   const deviceConditions: SQL[] = [eq(devices.orgId, orgId)];
-  const emptyDeviceScope = addAllowedSiteCondition(deviceConditions, perms);
+  const emptyDeviceScope = addAllowedSiteCondition(deviceConditions, authority);
   const deviceWhereCondition = and(...deviceConditions);
 
   // Device stats
@@ -415,7 +494,7 @@ export async function generateExecutiveSummaryReport(orgId: string, config: Reco
     alertConditions.push(lte(alerts.triggeredAt, new Date(dateRange.end)));
   }
 
-  const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, perms);
+  const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, authority);
   if (allowedDeviceIds) {
     alertConditions.push(inArray(alerts.deviceId, allowedDeviceIds));
   }
@@ -490,26 +569,71 @@ export async function generateReport(
   type: ReportType,
   orgId: string,
   config: Record<string, unknown>,
-  perms?: UserPermissions
+  authority: ReportExecutionAuthority,
 ): Promise<ReportResult> {
+  assertReportExecutionPreflight(orgId, config, authority);
+  if (authority.scope.kind === 'restricted' && authority.scope.siteIds.length === 0) {
+    return zeroSafeReport(type, orgId);
+  }
+
   switch (type) {
     case 'device_inventory':
-      return generateDeviceInventoryReport(orgId, config, perms);
+      return generateDeviceInventoryReport(orgId, config, authority);
     case 'software_inventory':
-      return generateSoftwareInventoryReport(orgId, config, perms);
+      return generateSoftwareInventoryReport(orgId, config, authority);
     case 'alert_summary':
-      return generateAlertSummaryReport(orgId, config, perms);
+      return generateAlertSummaryReport(orgId, config, authority);
     case 'compliance':
-      return generateComplianceReport(orgId, config, perms);
+      return generateComplianceReport(orgId, config, authority);
     case 'performance':
-      return generatePerformanceReport(orgId, config, perms);
+      return generatePerformanceReport(orgId, config, authority);
     case 'executive_summary':
-      return generateExecutiveSummaryReport(orgId, config, perms);
+      return generateExecutiveSummaryReport(orgId, config, authority);
     case 'security_compliance_posture': {
       const { generateSecurityCompliancePostureReport } = await import('./securityComplianceReport');
-      return generateSecurityCompliancePostureReport(orgId, config, perms);
+      return generateSecurityCompliancePostureReport(orgId, config, authority);
     }
-    default:
-      throw new Error(`Invalid report type: ${type}`);
+    default: {
+      const exhaustive: never = type;
+      throw new Error(`Invalid report type: ${String(exhaustive)}`);
+    }
+  }
+}
+
+function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
+  switch (type) {
+    case 'alert_summary':
+      return { rows: [], rowCount: 0, summary: {} };
+    case 'compliance':
+      return {
+        rows: [],
+        rowCount: 0,
+        summary: {
+          totalDevices: 0,
+          compliantDevices: 0,
+          nonCompliantDevices: 0,
+          complianceRate: 100,
+        },
+      };
+    case 'executive_summary':
+      return {
+        summary: {
+          org: { id: orgId, name: '' },
+          devices: { total: 0, online: 0, offline: 0, healthPercentage: 100 },
+          alerts: { total: 0, critical: 0, high: 0, resolved: 0, resolutionRate: 100 },
+          osDistribution: {},
+          siteBreakdown: [],
+        },
+        generatedAt: new Date().toISOString(),
+      };
+    case 'device_inventory':
+    case 'software_inventory':
+    case 'performance':
+    case 'security_compliance_posture':
+      return emptyRowsReport();
+    default: {
+      const exhaustive: never = type;
+      throw new Error(`Invalid report type: ${String(exhaustive)}`);
+    }
   }
 }

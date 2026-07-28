@@ -67,16 +67,28 @@ type smbFS struct {
 	closeErr   error
 }
 
-func (s *smbFS) ReadDir(name string) ([]fs.DirEntry, error) {
+func (s *smbFS) ReadDir(name string) (entries []fs.DirEntry, err error) {
 	sharePath, err := s.resolve(name)
 	if err != nil {
 		return nil, s.redactError("readdir", name, err)
 	}
+	// GO-2026-5051: go-smb2's ReadDir can panic (out-of-bounds read) on a
+	// malformed server response, and no fixed release exists. A hostile or
+	// buggy SMB server must not be able to crash the agent, so contain the
+	// panic here and surface it as an ordinary error. Drop this guard and the
+	// matching entry in scripts/security/govulncheck-allowlist.txt when
+	// go-smb2 ships a fix.
+	defer func() {
+		if r := recover(); r != nil {
+			entries = nil
+			err = s.redactError("readdir", sharePath, fmt.Errorf("smb readdir panicked: %v", r))
+		}
+	}()
 	infos, err := s.share.ReadDir(sharePath)
 	if err != nil {
 		return nil, s.redactError("readdir", sharePath, err)
 	}
-	entries := make([]fs.DirEntry, len(infos))
+	entries = make([]fs.DirEntry, len(infos))
 	for i, info := range infos {
 		entries[i] = smbDirEntry{info: info}
 	}

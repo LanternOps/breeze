@@ -19,6 +19,7 @@
 
 import { randomBytes } from 'node:crypto';
 import type { AuthContext } from '../middleware/auth';
+import type { SecretToolResult } from './actionIntents/secretBearingTools';
 import {
   errorString,
   loadSession,
@@ -271,11 +272,15 @@ export async function googleLookupUserHandler(
 export async function googleResetPasswordAction(
   ctx: GoogleToolContext,
   input: Record<string, unknown>,
-): Promise<string> {
+): Promise<SecretToolResult> {
   const reason = requireString(input, 'reason');
-  if (!reason) return errorString('missing_reason', 'A reason is required for this action.');
+  if (!reason) {
+    return { kind: 'error', llmText: errorString('missing_reason', 'A reason is required for this action.') };
+  }
   const email = requireString(input, 'userEmail');
-  if (!email) return errorString('missing_user', 'A user email is required.');
+  if (!email) {
+    return { kind: 'error', llmText: errorString('missing_user', 'A user email is required.') };
+  }
 
   const temp = generateTempPassword();
   try {
@@ -284,9 +289,15 @@ export async function googleResetPasswordAction(
       userKey: email,
       requestBody: { password: temp, changePasswordAtNextLogin: true },
     });
-    return `Reset the password for ${email}. Temporary password: ${temp} (the user must change it at next sign-in).`;
+    // The credential goes in `secrets`, NEVER in llmText — llmText reaches the
+    // model, the transcript, and the browser.
+    return {
+      kind: 'success',
+      llmText: `Reset the password for ${email}. The temporary credential is available for one-time reveal; the user must change it at next sign-in.`,
+      secrets: { temporaryPassword: temp },
+    };
   } catch (err) {
-    return googleError(err);
+    return { kind: 'error', llmText: googleError(err) };
   }
 }
 
@@ -294,9 +305,9 @@ export async function googleResetPasswordHandler(
   input: Record<string, unknown>,
   auth: AuthContext,
   sessionId: string,
-): Promise<string> {
+): Promise<SecretToolResult> {
   const ctx = await resolveContext(auth, sessionId);
-  if ('error' in ctx) return ctx.error;
+  if ('error' in ctx) return { kind: 'error', llmText: ctx.error };
   return googleResetPasswordAction(ctx, input);
 }
 

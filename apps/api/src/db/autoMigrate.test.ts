@@ -9,9 +9,13 @@ import {
   partitionLedgerRows,
 } from './autoMigrate';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { getTableConfig } from 'drizzle-orm/pg-core';
+import { users } from './schema/users';
+import * as oauthSchema from './schema/oauth';
+import { quotes } from './schema/quotes';
 
 describe('autoMigrate', () => {
   describe('detectState', () => {
@@ -256,6 +260,109 @@ describe('CHECKSUM_RECONCILIATIONS', () => {
       expect(rec.to).toMatch(/^[0-9a-f]{64}$/);
       expect(rec.reason.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('core migration ordering', () => {
+  const migrationsDir = path.resolve(__dirname, '../../migrations');
+
+  it('discovers the report site-scope migration exactly once in lexical order', () => {
+    const filenames = readdirSync(migrationsDir)
+      .filter((filename) => /^\d{4}-.*\.sql$/.test(filename))
+      .sort((a, b) => a.localeCompare(b));
+    const ledgerNames = planMigrations(filenames).map((migration) => migration.ledgerName);
+    const reserved = '2026-08-06-a-report-site-scope.sql';
+
+    expect(ledgerNames.filter((filename) => filename === reserved)).toHaveLength(1);
+    expect(ledgerNames).toEqual([...ledgerNames].sort((a, b) => a.localeCompare(b)));
+    // 2026-08-06-a..f is reserved by the remediation program and later waves
+    // append to it, so assert the block is the contiguous lexical tail opened
+    // by this file rather than pinning it as the single last migration.
+    const reservedBlock = ledgerNames.filter((filename) => filename.startsWith('2026-08-06-'));
+    expect(ledgerNames.slice(-reservedBlock.length)).toEqual(reservedBlock);
+    expect(reservedBlock[0]).toBe(reserved);
+  });
+});
+
+describe('Wave 3 durable live authorization expansion', () => {
+  const migrationsDir = path.resolve(__dirname, '../../migrations');
+
+  it('maps the user permission epoch as a non-null bigint defaulting to zero', () => {
+    const column = getTableConfig(users).columns.find((candidate) => candidate.name === 'permissions_epoch');
+
+    expect(column).toBeDefined();
+    expect(column?.getSQLType()).toBe('bigint');
+    expect(column?.notNull).toBe(true);
+    expect(column?.default).toBe(0);
+  });
+
+  it('defines the complete oauth_revocation_retries schema contract', () => {
+    const retryTable = (oauthSchema as Record<string, unknown>).oauthRevocationRetries;
+    expect(retryTable).toBeDefined();
+    if (!retryTable) return;
+
+    const config = getTableConfig(retryTable as Parameters<typeof getTableConfig>[0]);
+    expect(config.name).toBe('oauth_revocation_retries');
+    expect(config.columns.map((column) => column.name)).toEqual([
+      'id',
+      'user_id',
+      'marker_type',
+      'marker_id',
+      'expires_at',
+      'attempts',
+      'next_attempt_at',
+      'last_error_code',
+      'completed_at',
+      'created_at',
+      'updated_at',
+    ]);
+    expect(config.indexes.map((index) => index.config.name).sort()).toEqual([
+      'oauth_revocation_retries_due_idx',
+      'oauth_revocation_retries_incomplete_marker_uq',
+      'oauth_revocation_retries_user_idx',
+    ]);
+  });
+
+  it('maps versioned quote response and read-link revocation columns', () => {
+    const columns = new Map(
+      getTableConfig(quotes).columns.map((column) => [column.name, column]),
+    );
+
+    expect(columns.get('public_token_version')?.getSQLType()).toBe('integer');
+    expect(columns.get('public_token_version')?.notNull).toBe(true);
+    expect(columns.get('public_token_version')?.default).toBe(0);
+    expect(columns.get('public_response_jti')?.getSQLType()).toBe('varchar(128)');
+    expect(columns.get('public_response_consumed_at')?.getSQLType()).toBe('timestamp with time zone');
+    expect(columns.get('public_response_outcome')?.getSQLType()).toBe('varchar(16)');
+    expect(columns.get('public_link_revoked_at')?.getSQLType()).toBe('timestamp with time zone');
+  });
+
+  it('orders the reserved live-authorization migrations after all preceding migrations', () => {
+    const files = readdirSync(migrationsDir)
+      .filter((file) => /^\d{4}-.*\.sql$/.test(file))
+      .sort((a, b) => a.localeCompare(b));
+    const liveAuthorization = '2026-08-06-b-live-authorization.sql';
+    const quoteCapability = '2026-08-06-c-quote-response-capability.sql';
+
+    expect(files).toContain(liveAuthorization);
+    expect(files).toContain(quoteCapability);
+    // Later waves append -d..-f to the reserved 2026-08-06 block, so assert
+    // adjacency within the block instead of pinning the global tail.
+    const reservedBlock = files.filter((file) => file.startsWith('2026-08-06-'));
+    expect(files.slice(-reservedBlock.length)).toEqual(reservedBlock);
+    expect(reservedBlock.indexOf(quoteCapability)).toBe(reservedBlock.indexOf(liveAuthorization) + 1);
+  });
+
+  it('registers oauth_revocation_retries as a user-id-scoped RLS table', () => {
+    const rlsCoverage = readFileSync(
+      path.resolve(__dirname, '../__tests__/integration/rls-coverage.integration.test.ts'),
+      'utf8',
+    );
+    const allowlist = rlsCoverage.match(
+      /const USER_ID_SCOPED_TABLES[\s\S]*?new Set<string>\(\[([\s\S]*?)\]\);/,
+    )?.[1];
+
+    expect(allowlist).toContain("'oauth_revocation_retries'");
   });
 });
 

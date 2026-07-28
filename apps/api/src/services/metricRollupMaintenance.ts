@@ -85,19 +85,27 @@ function formatTimestampLiteral(value: Date): string {
   return value.toISOString().slice(0, 19).replace('T', ' ');
 }
 
-function quoteIdentifier(identifier: string): string {
-  if (!/^[a-z0-9_]+$/.test(identifier)) {
-    throw new Error(`Unsafe SQL identifier: ${identifier}`);
+/**
+ * Reads the single `partitionName` column returned by the partition-maintenance
+ * SECURITY DEFINER functions. A SQL NULL is a meaningful answer ("skipped" /
+ * "nothing attached"), so it is returned as null — but a missing row or a
+ * missing column is NOT: that means the function is absent or changed shape,
+ * and silently treating it as a skip would turn a broken deployment into an
+ * invisible no-op, which is precisely how BREEZE-10 stayed hidden.
+ */
+function readPartitionNameResult(result: unknown, context: string): string | null {
+  const row = Array.isArray(result) ? (result[0] as Record<string, unknown> | undefined) : undefined;
+  if (!row || !('partitionName' in row)) {
+    throw new Error(
+      `[MetricRollupMaintenance] ${context} returned no partitionName column — expected public.breeze_ensure_metric_rollup_partition/breeze_drop_metric_rollup_partition (migration 2026-08-05) to exist`,
+    );
   }
-  return `"${identifier}"`;
-}
-
-function isDefaultPartitionOverlapError(error: unknown): boolean {
-  const message = String((error as { message?: unknown })?.message ?? error);
-  return (
-    message.includes('updated partition constraint for default partition') &&
-    message.includes('would be violated by some row')
-  );
+  const value = row.partitionName;
+  if (value === null) return null;
+  if (typeof value !== 'string') {
+    throw new Error(`[MetricRollupMaintenance] ${context} returned a non-string partitionName: ${typeof value}`);
+  }
+  return value;
 }
 
 export function metricRollupPartitionName(monthStart: Date): string {
@@ -146,52 +154,32 @@ export async function ensureMetricRollupPartitions(options: EnsurePartitionOptio
 
   for (let offset = -monthsBack; offset <= monthsAhead; offset += 1) {
     const from = addMonths(anchor, offset);
-    const to = addMonths(from, 1);
     const partitionName = metricRollupPartitionName(from);
-    const partitionIdentifier = sql.raw(quoteIdentifier(partitionName));
-    const fromLiteral = sql.raw(`'${formatTimestampLiteral(from)}'::timestamp`);
-    const toLiteral = sql.raw(`'${formatTimestampLiteral(to)}'::timestamp`);
 
-    try {
-      await db.execute(sql`
-        CREATE TABLE IF NOT EXISTS ${partitionIdentifier}
-          PARTITION OF metric_rollups
-          FOR VALUES FROM (${fromLiteral}) TO (${toLiteral});
-      `);
-    } catch (error) {
-      if (isDefaultPartitionOverlapError(error)) {
-        console.warn(
-          `[MetricRollupMaintenance] Skipping ${partitionName}; metric_rollups_default already contains rows for that month`,
-        );
-        continue;
-      }
-      throw error;
+    // The DDL lives in a SECURITY DEFINER function owned by the migration role
+    // (2026-08-05-metric-rollup-partition-maintenance-privileges.sql). Issuing
+    // it directly from here fails as `breeze_app`, which has no CREATE on
+    // schema public and owns neither metric_rollups nor its children — the
+    // whole maintenance run aborted on this statement in production, taking
+    // retention down with it (BREEZE-10). The function takes the month and
+    // derives the partition name itself, so no identifier crosses the boundary.
+    const result = await db.execute(sql`
+      SELECT public.breeze_ensure_metric_rollup_partition(
+        ${formatTimestampLiteral(from)}::timestamp
+      ) AS "partitionName"
+    `);
+
+    // NULL means the function skipped the month because metric_rollups_default
+    // already holds rows for it — the same condition the inline DDL used to
+    // surface as a check_violation.
+    const ensuredName = readPartitionNameResult(result, `ensure ${partitionName}`);
+    if (ensuredName === null) {
+      console.warn(
+        `[MetricRollupMaintenance] Skipping ${partitionName}; metric_rollups_default already contains rows for that month`,
+      );
+      continue;
     }
-    await db.execute(sql`ALTER TABLE ${partitionIdentifier} ENABLE ROW LEVEL SECURITY`);
-    await db.execute(sql`ALTER TABLE ${partitionIdentifier} FORCE ROW LEVEL SECURITY`);
-    await db.execute(sql`DROP POLICY IF EXISTS breeze_org_isolation_select ON ${partitionIdentifier}`);
-    await db.execute(sql`DROP POLICY IF EXISTS breeze_org_isolation_insert ON ${partitionIdentifier}`);
-    await db.execute(sql`DROP POLICY IF EXISTS breeze_org_isolation_update ON ${partitionIdentifier}`);
-    await db.execute(sql`DROP POLICY IF EXISTS breeze_org_isolation_delete ON ${partitionIdentifier}`);
-    await db.execute(sql`
-      CREATE POLICY breeze_org_isolation_select ON ${partitionIdentifier}
-        FOR SELECT USING (public.breeze_has_org_access(org_id))
-    `);
-    await db.execute(sql`
-      CREATE POLICY breeze_org_isolation_insert ON ${partitionIdentifier}
-        FOR INSERT WITH CHECK (public.breeze_has_org_access(org_id))
-    `);
-    await db.execute(sql`
-      CREATE POLICY breeze_org_isolation_update ON ${partitionIdentifier}
-        FOR UPDATE USING (public.breeze_has_org_access(org_id))
-        WITH CHECK (public.breeze_has_org_access(org_id))
-    `);
-    await db.execute(sql`
-      CREATE POLICY breeze_org_isolation_delete ON ${partitionIdentifier}
-        FOR DELETE USING (public.breeze_has_org_access(org_id))
-    `);
-    await db.execute(sql`GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE ${partitionIdentifier} TO breeze_app`);
-    ensured.push(partitionName);
+    ensured.push(ensuredName);
   }
 
   return ensured;
@@ -230,8 +218,19 @@ export async function dropExpiredMetricRollupPartitions(now = new Date()): Promi
     const partitionEnd = addMonths(partitionStart, 1);
     if (partitionEnd.getTime() > dailyCutoff.getTime()) continue;
 
-    await db.execute(sql`DROP TABLE IF EXISTS ${sql.raw(quoteIdentifier(partitionName))}`);
-    dropped.push(partitionName);
+    // DROP TABLE is owner-only DDL, so it goes through the same SECURITY DEFINER
+    // seam as the create path. Passing the month (not the discovered name) means
+    // the function re-derives and re-verifies attachment to metric_rollups
+    // before dropping — metric_rollups_default is unreachable by construction.
+    const result = await db.execute(sql`
+      SELECT public.breeze_drop_metric_rollup_partition(
+        ${formatTimestampLiteral(partitionStart)}::timestamp
+      ) AS "partitionName"
+    `);
+    const droppedName = readPartitionNameResult(result, `drop ${partitionName}`);
+    if (droppedName !== null) {
+      dropped.push(droppedName);
+    }
   }
 
   return dropped;
@@ -358,6 +357,20 @@ export async function runMetricRollupMaintenance(options: {
       durationMs: Date.now() - startedAt,
     };
   } finally {
-    await releaseMaintenanceLock();
+    // A poisoned transaction (25P02 — an earlier DDL/DELETE in this same
+    // withSystemDbAccessContext transaction already failed) or a dropped
+    // session makes the advisory unlock throw. A throw from `finally` REPLACES
+    // fn's real error, so the true root cause was invisible in Sentry — only
+    // the secondary pg_advisory_unlock failure surfaced (BREEZE-M). Swallow it
+    // so the original error propagates; the session-scoped advisory lock is
+    // released on connection recycle regardless.
+    try {
+      await releaseMaintenanceLock();
+    } catch (err) {
+      console.error(
+        '[MetricRollupMaintenance] releaseMaintenanceLock failed; advisory lock will release on connection recycle:',
+        err,
+      );
+    }
   }
 }

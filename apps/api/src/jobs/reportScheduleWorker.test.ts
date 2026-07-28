@@ -17,10 +17,17 @@ vi.mock('../db/schema', () => ({
   reports: {
     id: 'reports.id',
     orgId: 'reports.org_id',
+    createdBy: 'reports.created_by',
     schedule: 'reports.schedule',
     lastGeneratedAt: 'reports.last_generated_at',
     config: 'reports.config',
     updatedAt: 'reports.updated_at',
+    executionScopeVersion: 'reports.execution_scope_version',
+    executionScopeKind: 'reports.execution_scope_kind',
+    executionScopeSiteIds: 'reports.execution_scope_site_ids',
+    executionScopeUserId: 'reports.execution_scope_user_id',
+    executionScopeFingerprint: 'reports.execution_scope_fingerprint',
+    executionScopeCapturedAt: 'reports.execution_scope_captured_at',
   },
   reportRuns: {
     id: 'report_runs.id',
@@ -42,10 +49,53 @@ vi.mock('../db/schema', () => ({
 type PreviousBaseline = { generatedAt: string | null; summary?: Record<string, unknown> } | undefined;
 
 const generateReportMock = vi.fn();
-const previousBaselineForMock = vi.fn<() => Promise<PreviousBaseline>>(async () => undefined);
+const reportExecutionPreflightMock = vi.fn();
+const previousBaselineForMock = vi.fn<
+  (reportId: string, fingerprint: string) => Promise<PreviousBaseline>
+>(async () => undefined);
 vi.mock('../services/reportGenerationService', () => ({
   generateReport: (...args: unknown[]) => generateReportMock(...(args as [])),
-  previousBaselineFor: (...args: unknown[]) => previousBaselineForMock(...(args as [])),
+  assertReportExecutionPreflight: (...args: unknown[]) =>
+    reportExecutionPreflightMock(...args),
+  previousBaselineFor: (...args: unknown[]) =>
+    previousBaselineForMock(...(args as [string, string])),
+}));
+
+const scopeState = vi.hoisted(() => ({
+  liveResult: null as any,
+  decodedScope: null as any,
+  intersection: null as any,
+  decodeError: null as Error | null,
+}));
+const resolveLiveReportAuthorityMock = vi.fn(
+  async (_userId: string, _orgId: string, _action: 'read') => scopeState.liveResult,
+);
+const decodeSiteScopeMock = vi.fn((_row: unknown, _orgId: string) => {
+  if (scopeState.decodeError) throw scopeState.decodeError;
+  return scopeState.decodedScope;
+});
+const intersectSiteScopesMock = vi.fn(
+  (_persistedScope: unknown, _currentScope: unknown) => scopeState.intersection,
+);
+vi.mock('../services/siteScope', () => ({
+  resolveLiveReportAuthority: (...args: unknown[]) =>
+    resolveLiveReportAuthorityMock(...(args as [string, string, 'read'])),
+  decodeSiteScope: (...args: unknown[]) =>
+    decodeSiteScopeMock(...(args as [unknown, string])),
+  intersectSiteScopes: (...args: unknown[]) =>
+    intersectSiteScopesMock(...(args as [unknown, unknown])),
+  siteScopeFingerprint: vi.fn((scope: { kind: string }) =>
+    scope.kind === 'restricted' ? 'a'.repeat(64) : 'f'.repeat(64)
+  ),
+  persistedSiteScopeValues: vi.fn((authority: any) => ({
+    executionScopeVersion: 1,
+    executionScopeKind: authority.scope.kind,
+    executionScopeSiteIds:
+      authority.scope.kind === 'restricted' ? authority.scope.siteIds : null,
+    executionScopeUserId: authority.principalUserId,
+    executionScopeFingerprint: authority.fingerprint,
+    executionScopeCapturedAt: authority.capturedAt,
+  })),
 }));
 
 const sendEmailMock = vi.fn();
@@ -118,9 +168,11 @@ function selectChain(rows: unknown[]) {
 }
 
 function insertChain(rows: unknown[]) {
-  const chain: Record<string, unknown> = {};
-  chain.values = vi.fn(() => chain);
-  chain.returning = vi.fn(async () => rows);
+  const chain = {
+    values: vi.fn(),
+    returning: vi.fn(async () => rows),
+  };
+  chain.values.mockReturnValue(chain);
   return chain;
 }
 
@@ -133,8 +185,45 @@ function updateChain() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  selectMock.mockReset();
+  insertMock.mockReset();
+  updateMock.mockReset();
+  generateReportMock.mockReset();
+  reportExecutionPreflightMock.mockReset();
+  previousBaselineForMock.mockReset();
+  sendEmailMock.mockReset();
+  loadReportBrandingForOrgMock.mockReset();
+  loadReportBrandingForOrgMock.mockResolvedValue({
+    name: 'Olive MSP',
+    logoDataUrl: null,
+    logoAspect: null,
+  });
   pdfRender.shouldThrow = false;
   previousBaselineForMock.mockResolvedValue(undefined);
+  scopeState.decodeError = null;
+  scopeState.decodedScope = {
+    version: 1,
+    kind: 'unrestricted',
+    orgId: ORG_ID,
+  };
+  scopeState.intersection = {
+    version: 1,
+    kind: 'unrestricted',
+    orgId: ORG_ID,
+  };
+  scopeState.liveResult = {
+    ok: true,
+    authority: {
+      scope: {
+        version: 1,
+        kind: 'unrestricted',
+        orgId: ORG_ID,
+      },
+      principalUserId: '44444444-4444-4444-8444-444444444444',
+      capturedAt: new Date('2026-07-25T12:00:00.000Z'),
+      fingerprint: 'f'.repeat(64),
+    },
+  };
 });
 
 // ─── Occurrence math (pure) ──────────────────────────────────────────────────
@@ -244,6 +333,7 @@ describe('findDueReports', () => {
         },
       ]),
     );
+    selectMock.mockReturnValueOnce(selectChain([{ count: 0 }]));
 
     const due = await findDueReports(now);
     expect(due).toEqual([{ id: REPORT_ID, occurrenceKey: 202607010900 }]);
@@ -266,8 +356,27 @@ describe('findDueReports', () => {
         },
       ]),
     );
+    selectMock.mockReturnValueOnce(selectChain([{ count: 0 }]));
 
     expect(await findDueReports(now)).toEqual([]);
+  });
+
+  it('observes legacy/null schedules skipped by the complete-scope polling gate', async () => {
+    selectMock
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain([{ count: 2 }]));
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      expect(await findDueReports(new Date('2026-07-01T15:00:00Z')))
+        .toEqual([]);
+      expect(consoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining('scope reauthorization'),
+        expect.objectContaining({ count: 2 }),
+      );
+    } finally {
+      consoleWarn.mockRestore();
+    }
   });
 });
 
@@ -283,6 +392,12 @@ describe('processRunScheduledReport', () => {
     schedule: 'daily',
     config: { schedule: { time: '09:00' }, emailRecipients: ['ops@example.com', 'not-an-email'] },
     lastGeneratedAt: null,
+    executionScopeVersion: 1,
+    executionScopeKind: 'unrestricted',
+    executionScopeSiteIds: null,
+    executionScopeUserId: '44444444-4444-4444-8444-444444444444',
+    executionScopeFingerprint: 'f'.repeat(64),
+    executionScopeCapturedAt: new Date('2026-07-24T12:00:00.000Z'),
   };
 
   it('stores a completed run, stamps lastGeneratedAt, and emails valid recipients with a CSV', async () => {
@@ -296,7 +411,31 @@ describe('processRunScheduledReport', () => {
 
     await processRunScheduledReport({ type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 });
 
-    expect(generateReportMock).toHaveBeenCalledWith('device_inventory', ORG_ID, report.config, undefined);
+    expect(resolveLiveReportAuthorityMock).toHaveBeenCalledWith(
+      report.executionScopeUserId,
+      ORG_ID,
+      'read',
+    );
+    expect(generateReportMock).toHaveBeenCalledWith(
+      'device_inventory',
+      ORG_ID,
+      report.config,
+      expect.objectContaining({
+        scope: expect.objectContaining({ kind: 'unrestricted', orgId: ORG_ID }),
+        principalUserId: report.executionScopeUserId,
+        fingerprint: 'f'.repeat(64),
+      }),
+    );
+    expect(runInsert.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionScopeVersion: 1,
+        executionScopeKind: 'unrestricted',
+        executionScopeSiteIds: null,
+        executionScopeUserId: report.executionScopeUserId,
+        executionScopeFingerprint: 'f'.repeat(64),
+        executionScopeCapturedAt: expect.any(Date),
+      }),
+    );
     // First update stamps reports.lastGeneratedAt, second completes the run.
     expect(updates[0]!.set).toHaveBeenCalledWith(expect.objectContaining({ lastGeneratedAt: expect.any(Date) }));
     expect(updates[1]!.set).toHaveBeenCalledWith(
@@ -312,6 +451,54 @@ describe('processRunScheduledReport', () => {
     expect(mail.subject).toContain('Nightly inventory');
     expect(mail.attachments).toHaveLength(1);
     expect(mail.attachments[0]!.filename).toMatch(/device_inventory-report-.*\.csv/);
+  });
+
+  it('rejects an out-of-authority saved config before running insert, baseline, generation, update, or delivery', async () => {
+    const restricted = {
+      version: 1 as const,
+      kind: 'restricted' as const,
+      orgId: ORG_ID,
+      siteIds: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
+    };
+    const scopedReport = {
+      ...report,
+      config: {
+        filters: { siteIds: ['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'] },
+      },
+      executionScopeKind: 'restricted',
+      executionScopeSiteIds: restricted.siteIds,
+    };
+    selectMock.mockReturnValueOnce(selectChain([scopedReport]));
+    scopeState.decodedScope = restricted;
+    scopeState.intersection = restricted;
+    scopeState.liveResult = {
+      ok: true,
+      authority: {
+        ...scopeState.liveResult.authority,
+        scope: restricted,
+      },
+    };
+    reportExecutionPreflightMock.mockImplementationOnce(() => {
+      throw new Error('outside authority');
+    });
+    const failedInsert = insertChain([{ id: RUN_ID }]);
+    insertMock.mockReturnValueOnce(failedInsert);
+
+    await processRunScheduledReport({
+      type: 'run-scheduled-report',
+      reportId: REPORT_ID,
+      occurrenceKey: 202607010900,
+    });
+
+    expect(reportExecutionPreflightMock).toHaveBeenCalled();
+    expect(failedInsert.values).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'failed',
+      errorMessage: 'scope_config_outside_authority',
+    }));
+    expect(generateReportMock).not.toHaveBeenCalled();
+    expect(previousBaselineForMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
   });
 
   it('marks the run failed (and still stamps lastGeneratedAt) when generation throws', async () => {
@@ -342,6 +529,136 @@ describe('processRunScheduledReport', () => {
     expect(generateReportMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['inactive creator', { ok: false, reason: 'user_inactive' }],
+    ['removed membership', { ok: false, reason: 'membership_removed' }],
+    ['removed report permission', { ok: false, reason: 'permission_removed' }],
+    ['restricted-empty live scope', { ok: false, reason: 'empty_scope' }],
+  ])('fails closed for %s before generation, baseline, storage, delivery, or success audit', async (_name, liveResult) => {
+    selectMock.mockReturnValueOnce(selectChain([report]));
+    scopeState.liveResult = liveResult;
+    const failedInsert = insertChain([{ id: RUN_ID }]);
+    insertMock.mockReturnValueOnce(failedInsert);
+
+    await processRunScheduledReport({
+      type: 'run-scheduled-report',
+      reportId: REPORT_ID,
+      occurrenceKey: 202607010900,
+    });
+
+    expect(failedInsert.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reportId: REPORT_ID,
+        status: 'failed',
+        errorMessage: expect.stringMatching(/^scope_[a-z_]+$/),
+      }),
+    );
+    const failedValues = failedInsert.values.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(failedValues).not.toHaveProperty('result');
+    expect(generateReportMock).not.toHaveBeenCalled();
+    expect(previousBaselineForMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(loadReportBrandingForOrgMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['legacy_unscoped definition', { decodedScope: { version: 1, kind: 'legacy_unscoped', orgId: ORG_ID } }],
+    ['malformed partial definition scope', { decodeError: new Error('partial scope') }],
+    ['empty persisted/current intersection', { intersection: { version: 1, kind: 'restricted', orgId: ORG_ID, siteIds: [] } }],
+  ])('fails closed for %s before generation or delivery', async (_name, state) => {
+    selectMock.mockReturnValueOnce(selectChain([report]));
+    if ('decodedScope' in state) scopeState.decodedScope = state.decodedScope;
+    if ('decodeError' in state) scopeState.decodeError = state.decodeError;
+    if ('intersection' in state) scopeState.intersection = state.intersection;
+    const failedInsert = insertChain([{ id: RUN_ID }]);
+    insertMock.mockReturnValueOnce(failedInsert);
+
+    await processRunScheduledReport({
+      type: 'run-scheduled-report',
+      reportId: REPORT_ID,
+      occurrenceKey: 202607010900,
+    });
+
+    expect(failedInsert.values).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed' }),
+    );
+    expect(generateReportMock).not.toHaveBeenCalled();
+    expect(previousBaselineForMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when live authority cannot be verified', async () => {
+    selectMock.mockReturnValueOnce(selectChain([report]));
+    resolveLiveReportAuthorityMock.mockRejectedValueOnce(new Error('database unavailable'));
+    const failedInsert = insertChain([{ id: RUN_ID }]);
+    insertMock.mockReturnValueOnce(failedInsert);
+
+    await processRunScheduledReport({
+      type: 'run-scheduled-report',
+      reportId: REPORT_ID,
+      occurrenceKey: 202607010900,
+    });
+
+    expect(failedInsert.values).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed', errorMessage: 'scope_unverifiable' }),
+    );
+    expect(generateReportMock).not.toHaveBeenCalled();
+    expect(previousBaselineForMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('uses the narrowed immutable intersection for the run, baseline, and generator', async () => {
+    const restricted = {
+      version: 1 as const,
+      kind: 'restricted' as const,
+      orgId: ORG_ID,
+      siteIds: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
+    };
+    scopeState.decodedScope = {
+      ...restricted,
+      siteIds: [
+        'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      ],
+    };
+    scopeState.liveResult = {
+      ok: true,
+      authority: {
+        ...scopeState.liveResult.authority,
+        scope: restricted,
+        fingerprint: 'a'.repeat(64),
+      },
+    };
+    scopeState.intersection = restricted;
+    selectMock.mockReturnValueOnce(selectChain([{ ...report, config: {} }]));
+    const runInsert = insertChain([{ id: RUN_ID }]);
+    insertMock.mockReturnValueOnce(runInsert);
+    updateMock.mockReturnValueOnce(updateChain()).mockReturnValueOnce(updateChain());
+    generateReportMock.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    await processRunScheduledReport({
+      type: 'run-scheduled-report',
+      reportId: REPORT_ID,
+      occurrenceKey: 202607010900,
+    });
+
+    expect(runInsert.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionScopeKind: 'restricted',
+        executionScopeSiteIds: restricted.siteIds,
+        executionScopeFingerprint: 'a'.repeat(64),
+      }),
+    );
+    expect(previousBaselineForMock).toHaveBeenCalledWith(REPORT_ID, 'a'.repeat(64));
+    expect(generateReportMock).toHaveBeenCalledWith(
+      'device_inventory',
+      ORG_ID,
+      {},
+      expect.objectContaining({ scope: restricted, fingerprint: 'a'.repeat(64) }),
+    );
+  });
+
   it('includes a trend line in the email when a previous baseline exists', async () => {
     const postureReport = {
       ...report,
@@ -365,7 +682,10 @@ describe('processRunScheduledReport', () => {
 
     await processRunScheduledReport({ type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 });
 
-    expect(previousBaselineForMock).toHaveBeenCalledWith(REPORT_ID);
+    expect(previousBaselineForMock).toHaveBeenCalledWith(
+      REPORT_ID,
+      'f'.repeat(64),
+    );
     // The stored snapshot carries the baseline forward so the download path
     // (and any future re-render) reflects the same trend as this email.
     expect(updates[1]!.set).toHaveBeenCalledWith(
@@ -530,6 +850,12 @@ describe('scheduled report failure handling', () => {
     schedule: 'daily',
     config: { schedule: { time: '09:00' }, emailRecipients: ['ops@example.com'] },
     lastGeneratedAt: null,
+    executionScopeVersion: 1,
+    executionScopeKind: 'unrestricted',
+    executionScopeSiteIds: null,
+    executionScopeUserId: '44444444-4444-4444-8444-444444444444',
+    executionScopeFingerprint: 'f'.repeat(64),
+    executionScopeCapturedAt: new Date('2026-07-24T12:00:00.000Z'),
   };
 
   const arrangeFailingRun = () => {
@@ -580,6 +906,7 @@ describe('scheduled report failure handling', () => {
         { id: second.id, schedule: 'daily', lastGeneratedAt: null, config: second.config, orgSettings: null, partnerTimezone: null, partnerSettings: null },
       ]),
     );
+    selectMock.mockReturnValueOnce(selectChain([{ count: 0 }]));
     // report 1: load -> throws during generation
     selectMock.mockReturnValueOnce(selectChain([report]));
     insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));

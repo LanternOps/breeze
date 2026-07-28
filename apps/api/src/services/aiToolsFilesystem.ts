@@ -19,6 +19,7 @@ import { AGENT_MAX_FILE_WRITE_BYTES } from '../routes/systemTools/schemas';
 import {
   buildCleanupPreview,
   getLatestFilesystemSnapshot,
+  getLatestFilesystemCleanupSnapshot,
   parseFilesystemAnalysisStdout,
   saveFilesystemSnapshot,
   safeCleanupCategories,
@@ -249,7 +250,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, action === 'execute');
       if ('error' in access) return JSON.stringify({ error: access.error });
 
-      const snapshot = await getLatestFilesystemSnapshot(deviceId);
+      const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId);
       if (!snapshot) {
         return JSON.stringify({ message: 'No filesystem analysis snapshot available. Run analyze_disk_usage with refresh=true first.' });
       }

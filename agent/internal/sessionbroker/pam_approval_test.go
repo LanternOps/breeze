@@ -77,7 +77,7 @@ func TestRequestPamApprovalTimeoutDeniesAndDismisses(t *testing.T) {
 func TestRequestPamApprovalRequiresSystemPamSession(t *testing.T) {
 	tests := []struct {
 		name    string
-		role    string
+		role    ipc.HelperRole
 		scopes  []string
 		wantErr string
 	}{

@@ -11,8 +11,10 @@ export * from './auth';
 export type PartnerType = 'msp' | 'enterprise' | 'internal';
 export type PlanType = 'free' | 'pro' | 'enterprise' | 'unlimited';
 export type OrgType = 'customer' | 'internal';
-export type OrgStatus = 'active' | 'suspended' | 'trial' | 'churned';
-export type SupportedLocale = 'en' | 'pt-BR' | 'es-419' | 'fr-FR' | 'de-DE';
+// `offboarding` (#2774): terminal-intent drain state — users locked out, agents
+// kept authenticated (self_uninstall-only) until drained, then auto-`churned`.
+export type OrgStatus = 'active' | 'suspended' | 'trial' | 'churned' | 'offboarding';
+export type SupportedLocale = 'en' | 'pt-BR' | 'es-419' | 'fr-FR' | 'fr-CA' | 'de-DE' | 'it-IT';
 
 export interface Partner {
   id: string;
@@ -637,6 +639,12 @@ export interface InheritableDefaultSettings {
     agent?: string;
     watchdog?: string;
   };
+  /** Pre-selected link TTL in the Add Device modal. Inherit-with-override. */
+  defaultEnrollmentTtlMinutes?: number;
+  /** Pre-selected device count in the Add Device modal. Inherit-with-override. */
+  defaultEnrollmentDeviceCount?: number;
+  /** Hard ceiling on link TTL. Partner-only — orgs cannot raise it. */
+  maxEnrollmentLinkTtlMinutes?: number;
 }
 
 export interface InheritableBrandingSettings {
@@ -783,3 +791,4 @@ export * from './executiveSummaryReport';
 // ============================================
 
 export * from './loginContext';
+export * from './publicQuote';

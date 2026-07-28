@@ -254,6 +254,13 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
   // effective pins (shown when `defaults.agentVersionPins` is partner-locked).
   const [pinnableVersions, setPinnableVersions] = useState<PinnableVersions | null>(null);
   const [partnerPins, setPartnerPins] = useState<AgentVersionPinsValue | undefined>(undefined);
+  // Issue #2776: the partner's enrollment-link lifetime cap, for the read-only
+  // notice in the defaults editor. Partner-only — the org never edits it.
+  const [partnerMaxEnrollmentTtl, setPartnerMaxEnrollmentTtl] = useState<number | undefined>(undefined);
+  // Issue #2752: the merged `defaults` category. OrgDefaultsEditor seeds its
+  // partner-locked fields from this so a disabled control shows the value that is
+  // actually in force (and re-posts it unchanged, which the API accepts).
+  const [effectiveDefaults, setEffectiveDefaults] = useState<Record<string, unknown> | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [copiedOrgId, setCopiedOrgId] = useState(false);
@@ -293,6 +300,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         const effData = await effRes.json();
         const lockedList: string[] = effData.locked || [];
         setLocked(lockedList);
+        setEffectiveDefaults(effData.effective?.defaults);
         // Issue #2124: pins are inherit-with-override, NOT enforced-locked (see the
         // assertNotLocked exemption in the org PATCH). But `locked` still carries
         // `defaults.agentVersionPins` when the PARTNER set one — we use that purely
@@ -302,6 +310,17 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         setPartnerPins(
           lockedList.includes('defaults.agentVersionPins')
             ? effData.effective?.defaults?.agentVersionPins
+            : undefined,
+        );
+        // Same signal for the enrollment cap (#2776): `locked` is what tells us
+        // the value came from the PARTNER. Without that check the merged value
+        // could be the org's own stale cap, which the resolver ignores — showing
+        // it as "your partner caps you at X" would be a lie.
+        const effectiveCap = effData.effective?.defaults?.maxEnrollmentLinkTtlMinutes;
+        setPartnerMaxEnrollmentTtl(
+          lockedList.includes('defaults.maxEnrollmentLinkTtlMinutes') &&
+            typeof effectiveCap === 'number'
+            ? effectiveCap
             : undefined,
         );
       } else {
@@ -702,9 +721,15 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
               organizationName={displayOrg.name}
               defaults={orgDetails?.settings?.defaults}
               onDirty={handleDirty}
-              onSave={(data) => handleSave('defaults', data)}
+              // The editor now emits the shared `InheritableDefaultSettings`
+              // interface, which (unlike a type alias) has no implicit index
+              // signature — spread it into a plain record for the save helper.
+              onSave={(data) => handleSave('defaults', { ...data })}
               pinnableVersions={pinnableVersions}
               partnerPins={partnerPins}
+              locked={locked}
+              partnerMaxEnrollmentTtlMinutes={partnerMaxEnrollmentTtl}
+              effectiveDefaults={effectiveDefaults}
             />
           </div>
         );
