@@ -138,6 +138,9 @@ vi.mock('../services/ticketConfigService', () => ({
 vi.mock('../db/schema', () => ({
   partners: {},
   organizations: {},
+  // #2879 — the suspended-org lifecycle override re-reads the caller's raw
+  // partner_users.org_ids selection under a system context.
+  partnerUsers: { userId: {}, partnerId: {}, orgIds: {} },
   // Give sites.id a recognizable sentinel so the site-allowlist test can assert
   // inArray was called against the sites.id column specifically.
   sites: { id: { __column: 'sites.id' }, orgId: { __column: 'sites.orgId' } },
@@ -225,7 +228,7 @@ describe('org routes', () => {
   let app: Hono;
 
   const setAuthContext = (overrides: Partial<{
-    user: { id: string; email: string; name: string };
+    user: { id: string; email: string; name: string; isPlatformAdmin?: boolean };
     token: Record<string, unknown>;
     partnerId: string | null;
     orgId: string | null;
@@ -1780,6 +1783,247 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+
+    // #2879 — suspended orgs are excluded from accessibleOrgIds, which made
+    // suspended→offboarding (and reactivation) unreachable for the partner
+    // that suspended the org. A narrow override lets a partner admin apply a
+    // STATUS-ONLY lifecycle transition to a suspended org it owns; everything
+    // else stays 404.
+    describe('suspended-org lifecycle override (#2879)', () => {
+      // db.select mock for one .select().from().where().limit() call.
+      const selectLimitOnce = (rows: unknown[]) => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(rows)
+          })
+        })
+      });
+
+      const mockUpdateReturning = (rows: unknown[]) => {
+        const returning = vi.fn().mockResolvedValue(rows);
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ returning })
+          })
+        } as any);
+        return returning;
+      };
+
+      // Partner admin whose accessible set does NOT include the suspended org
+      // (that's the bug's precondition — computeAccessibleOrgIds filtered it out).
+      const setSuspendedOrgPartnerContext = (
+        partnerOrgAccess: 'all' | 'selected' | 'none' = 'all'
+      ) => {
+        setAuthContext({
+          scope: 'partner',
+          partnerId: 'partner-123',
+          accessibleOrgIds: ['org-1'],
+          partnerOrgAccess
+        });
+      };
+
+      const patchOrg = (orgId: string, body: Record<string, unknown>) =>
+        app.request(`/orgs/organizations/${orgId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+
+      it('lets the owning partner admin move a suspended org to offboarding', async () => {
+        setSuspendedOrgPartnerContext('all');
+        // Ownership probe: suspended org under the caller's partner.
+        vi.mocked(db.select).mockReturnValueOnce(
+          selectLimitOnce([{ partnerId: 'partner-123', status: 'suspended' }]) as any
+        );
+        mockUpdateReturning([{ id: 'org-suspended', name: 'O', status: 'offboarding' }]);
+
+        const res = await patchOrg('org-suspended', { status: 'offboarding' });
+
+        expect(res.status).toBe(200);
+        expect(beginOrganizationOffboarding).toHaveBeenCalledWith('org-suspended', 'user-123');
+        // The override write must escape the partner RLS context (which cannot
+        // see the suspended org) into a fresh system-scope transaction.
+        expect(withSystemDbAccessContext).toHaveBeenCalled();
+      });
+
+      it('lets the owning partner admin reactivate a suspended org to active', async () => {
+        setSuspendedOrgPartnerContext('all');
+        vi.mocked(db.select).mockReturnValueOnce(
+          selectLimitOnce([{ partnerId: 'partner-123', status: 'suspended' }]) as any
+        );
+        mockUpdateReturning([{ id: 'org-suspended', name: 'O', status: 'active' }]);
+
+        const res = await patchOrg('org-suspended', { status: 'active' });
+
+        expect(res.status).toBe(200);
+        expect(restoreOrganizationTenantAccess).toHaveBeenCalledWith('org-suspended');
+      });
+
+      it('denies the override for a cross-partner suspended org (404, no write)', async () => {
+        setSuspendedOrgPartnerContext('all');
+        vi.mocked(db.select).mockReturnValueOnce(
+          selectLimitOnce([{ partnerId: 'partner-OTHER', status: 'suspended' }]) as any
+        );
+
+        const res = await patchOrg('org-suspended', { status: 'offboarding' });
+
+        expect(res.status).toBe(404);
+        expect(db.update).not.toHaveBeenCalled();
+        expect(beginOrganizationOffboarding).not.toHaveBeenCalled();
+      });
+
+      it('denies the override when the target org is not actually suspended', async () => {
+        setSuspendedOrgPartnerContext('all');
+        // e.g. an org already flipped to churned out-of-band.
+        vi.mocked(db.select).mockReturnValueOnce(
+          selectLimitOnce([{ partnerId: 'partner-123', status: 'churned' }]) as any
+        );
+
+        const res = await patchOrg('org-invisible', { status: 'offboarding' });
+
+        expect(res.status).toBe(404);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('does NOT let a non-status edit ride the override — suspended orgs stay unwritable', async () => {
+        setSuspendedOrgPartnerContext('all');
+
+        const res = await patchOrg('org-suspended', { name: 'Renamed while suspended' });
+
+        expect(res.status).toBe(404);
+        expect(db.select).not.toHaveBeenCalled(); // rejected before any DB probe
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('does NOT allow extra fields alongside status on the override', async () => {
+        setSuspendedOrgPartnerContext('all');
+
+        const res = await patchOrg('org-suspended', { status: 'offboarding', name: 'sneaky' });
+
+        expect(res.status).toBe(404);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('does NOT allow suspended→churned (must drain via offboarding)', async () => {
+        setSuspendedOrgPartnerContext('all');
+
+        const res = await patchOrg('org-suspended', { status: 'churned' });
+
+        expect(res.status).toBe(404);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('fails closed for a partner user with org_access none', async () => {
+        setSuspendedOrgPartnerContext('none');
+
+        const res = await patchOrg('org-suspended', { status: 'offboarding' });
+
+        expect(res.status).toBe(404);
+        expect(db.select).not.toHaveBeenCalled();
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it("grants a 'selected' user the override only when the org is in their raw selection", async () => {
+        setSuspendedOrgPartnerContext('selected');
+        vi.mocked(db.select)
+          .mockReturnValueOnce(selectLimitOnce([{ partnerId: 'partner-123', status: 'suspended' }]) as any)
+          .mockReturnValueOnce(selectLimitOnce([{ orgIds: ['org-suspended', 'org-1'] }]) as any);
+        mockUpdateReturning([{ id: 'org-suspended', name: 'O', status: 'offboarding' }]);
+
+        const res = await patchOrg('org-suspended', { status: 'offboarding' });
+
+        expect(res.status).toBe(200);
+        expect(beginOrganizationOffboarding).toHaveBeenCalledWith('org-suspended', 'user-123');
+      });
+
+      it("denies a 'selected' user whose selection does not include the org", async () => {
+        setSuspendedOrgPartnerContext('selected');
+        vi.mocked(db.select)
+          .mockReturnValueOnce(selectLimitOnce([{ partnerId: 'partner-123', status: 'suspended' }]) as any)
+          .mockReturnValueOnce(selectLimitOnce([{ orgIds: ['org-1'] }]) as any);
+
+        const res = await patchOrg('org-suspended', { status: 'offboarding' });
+
+        expect(res.status).toBe(404);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('ordinary read routes still cannot see the suspended org (no visibility widening)', async () => {
+        setSuspendedOrgPartnerContext('all');
+
+        const res = await app.request('/orgs/organizations/org-suspended');
+
+        expect(res.status).toBe(404);
+        expect(db.select).not.toHaveBeenCalled();
+      });
+    });
+
+    // #2879 — a membership-less platform admin has no role row, so plain
+    // requirePermission 403s and system scope could not drive lifecycle
+    // transitions. The update route grants scope=system + isPlatformAdmin
+    // directly (mirroring platformAdminMiddleware's authority model).
+    describe('platform-admin permission bypass on org update (#2879)', () => {
+      it('lets a membership-less platform admin update an org when role permissions resolve to none', async () => {
+        permissionMockState.granted = false; // simulate "No permissions found"
+        setAuthContext({
+          scope: 'system',
+          partnerId: null,
+          user: { id: 'admin-1', email: 'admin@example.com', name: 'Admin', isPlatformAdmin: true }
+        });
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O', status: 'offboarding' }])
+            })
+          })
+        } as any);
+
+        const res = await app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'offboarding' })
+        });
+
+        expect(res.status).toBe(200);
+        expect(beginOrganizationOffboarding).toHaveBeenCalledWith('org-1', 'admin-1');
+      });
+
+      it('does NOT bypass permissions for a system-scope caller without isPlatformAdmin', async () => {
+        permissionMockState.granted = false;
+        setAuthContext({
+          scope: 'system',
+          partnerId: null,
+          user: { id: 'svc-1', email: 'svc@example.com', name: 'Svc', isPlatformAdmin: false }
+        });
+
+        const res = await app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'offboarding' })
+        });
+
+        expect(res.status).toBe(403);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('does NOT bypass permissions for partner scope even for a platform admin flag', async () => {
+        permissionMockState.granted = false;
+        setAuthContext({
+          scope: 'partner',
+          partnerId: 'partner-123',
+          user: { id: 'user-123', email: 'test@example.com', name: 'T', isPlatformAdmin: true }
+        });
+
+        const res = await app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'offboarding' })
+        });
+
+        expect(res.status).toBe(403);
+        expect(db.update).not.toHaveBeenCalled();
+      });
     });
 
     // issue #1963: the org write path feeds getOrgAgentUpdatePolicy, so a
