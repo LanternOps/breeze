@@ -60,6 +60,24 @@ partner-ownership migration playbook does not literally apply, and widening owne
 would grow an already-large security branch. A follow-up issue tracks adding a partner tier so
 the effective allowlist becomes a partner + organization + site union.
 
+**D3 — the unsafe-address classification is a positive test, not the constraint's closed list (Task 2).**
+The Global Constraints name loopback, link-local, unspecified, multicast, and metadata endpoints as
+the universally unsafe set, and RFC1918/ULA as the allowlist-gated private set. Implemented
+literally, every other range classifies public and is dialable with no allowlist entry — including
+`100.64.0.0/10` CGNAT, which is Tailscale's range, making a tailnet-joined endpoint an SSRF pivot
+onto arbitrary tailnet peers. Classification is therefore inverted to a positive test
+(`IsGlobalUnicast() && !IsPrivate()`) plus an explicit reserved-prefix table:
+
+- `100.64.0.0/10` joins RFC1918 and IPv6 ULA as **allowlist-gated private** — a legitimate CDN is
+  never CGNAT, so exact-origin approval is the right gate rather than an outright ban;
+- `240.0.0.0/4`, `198.18.0.0/15`, `192.0.0.0/24`, `0.0.0.0/8`, and `255.255.255.255` are
+  **forbidden** outright, alongside the constraint's named classes;
+- embedded-IPv4 extraction additionally covers IPv4-compatible `::/96` and IPv4-translated
+  `::ffff:0:0/96`, matching the existing worst-of-wrapper-and-embedded rule.
+
+The named classes stay unallowlistable exactly as the constraint requires; this widens what is
+caught, never narrows it.
+
 ## Finding Coverage
 
 | Finding | Owning tasks | Red-green regression | Enforcement acceptance |
