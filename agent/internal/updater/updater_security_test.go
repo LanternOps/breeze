@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"reflect"
 	"strings"
@@ -112,6 +113,108 @@ func TestUpdaterPolicy_NilConfig(t *testing.T) {
 	if _, err := netpolicy.NewClient(p); err != nil {
 		t.Fatalf("nil-config policy should still construct: %v", err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Error hygiene: PolicyRejectionReason / SafeDownloadErrorFields
+//
+// These are unit tests of the two helper functions in isolation, with
+// synthetic errors constructed directly — no network, no policy client — so
+// each case is unambiguous about which branch it exercises. The integration
+// tests elsewhere in this file (assertPolicyReason, the various rejection
+// tests) already prove these helpers work against REAL errors produced by
+// the real client; these tests instead pin the CONTRACT: what each shape of
+// input error maps to, including the shape review round 1 flagged as
+// missing — a *url.Error wrapping an ORDINARY network failure (no
+// PolicyError anywhere in the chain), which is the common case in
+// production (a CDN timeout, TLS handshake failure, connection reset), not
+// the minority policy-rejection path.
+// ---------------------------------------------------------------------------
+
+func TestPolicyRejectionReason(t *testing.T) {
+	t.Run("nil error", func(t *testing.T) {
+		if _, ok := PolicyRejectionReason(nil); ok {
+			t.Fatal("nil error should not report a policy rejection")
+		}
+	})
+	t.Run("non-policy error", func(t *testing.T) {
+		if _, ok := PolicyRejectionReason(errors.New("boom")); ok {
+			t.Fatal("a plain error should not report a policy rejection")
+		}
+	})
+	t.Run("direct PolicyError", func(t *testing.T) {
+		pe := &netpolicy.PolicyError{Reason: netpolicy.ReasonForbiddenAddress}
+		reason, ok := PolicyRejectionReason(pe)
+		if !ok || reason != netpolicy.ReasonForbiddenAddress {
+			t.Fatalf("reason=%q ok=%v, want %q true", reason, ok, netpolicy.ReasonForbiddenAddress)
+		}
+	})
+	t.Run("PolicyError wrapped in url.Error", func(t *testing.T) {
+		// This is the realistic shape: net/http wraps every RoundTrip/dial
+		// error (including ones netpolicy originates) in *url.Error.
+		wrapped := &url.Error{Op: "Get", URL: "https://attacker.example/x?token=SECRET", Err: &netpolicy.PolicyError{Reason: netpolicy.ReasonPrivateAddressNotAllowed}}
+		reason, ok := PolicyRejectionReason(wrapped)
+		if !ok || reason != netpolicy.ReasonPrivateAddressNotAllowed {
+			t.Fatalf("reason=%q ok=%v, want %q true", reason, ok, netpolicy.ReasonPrivateAddressNotAllowed)
+		}
+	})
+}
+
+func TestSafeDownloadErrorFields(t *testing.T) {
+	const secretURL = "https://cdn.example/asset.bin?token=CAPABILITY-SECRET"
+
+	t.Run("nil error", func(t *testing.T) {
+		key, value := SafeDownloadErrorFields(nil)
+		if key != "error" || value != "" {
+			t.Fatalf("key=%q value=%q, want \"error\", \"\"", key, value)
+		}
+	})
+
+	t.Run("PolicyError wrapped in url.Error prefers the bounded reason", func(t *testing.T) {
+		wrapped := &url.Error{Op: "Get", URL: secretURL, Err: &netpolicy.PolicyError{Reason: netpolicy.ReasonForbiddenAddress}}
+		key, value := SafeDownloadErrorFields(wrapped)
+		if key != "policyReason" || value != netpolicy.ReasonForbiddenAddress {
+			t.Fatalf("key=%q value=%q, want \"policyReason\", %q", key, value, netpolicy.ReasonForbiddenAddress)
+		}
+		if strings.Contains(value, secretURL) {
+			t.Fatalf("value leaked the request URL: %q", value)
+		}
+	})
+
+	t.Run("url.Error wrapping an ORDINARY network failure strips the URL", func(t *testing.T) {
+		// This is review round-1 Important-1's exact scenario: an ordinary
+		// CDN timeout or connection failure on the signed-manifest asset
+		// URL, with NO PolicyError anywhere in the chain — the majority
+		// case, not the minority policy-rejection path.
+		netErr := errors.New("connection reset by peer")
+		wrapped := &url.Error{Op: "Get", URL: secretURL, Err: netErr}
+		key, value := SafeDownloadErrorFields(wrapped)
+		if key != "error" {
+			t.Fatalf("key=%q, want \"error\"", key)
+		}
+		if value != netErr.Error() {
+			t.Fatalf("value=%q, want the underlying error only: %q", value, netErr.Error())
+		}
+		if strings.Contains(value, "cdn.example") || strings.Contains(value, "CAPABILITY-SECRET") {
+			t.Fatalf("value leaked the request URL or capability token: %q", value)
+		}
+		// url.Error.Error() itself DOES contain the URL — pinning that the
+		// naive (wrong) approach this finding was about would have failed
+		// this test.
+		if !strings.Contains(wrapped.Error(), secretURL) {
+			t.Fatalf("test setup invariant broken: url.Error.Error() should contain the URL (%q), got %q", secretURL, wrapped.Error())
+		}
+	})
+
+	t.Run("non-network, non-policy error passes through unchanged", func(t *testing.T) {
+		// A checksum mismatch or manifest-verification failure: no URL is
+		// embedded, so the raw text is safe and informative.
+		err := errors.New("checksum mismatch: expected abc, got def")
+		key, value := SafeDownloadErrorFields(err)
+		if key != "error" || value != err.Error() {
+			t.Fatalf("key=%q value=%q, want \"error\", %q", key, value, err.Error())
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +426,52 @@ func TestClient_RedirectPolicy_KeepsAuthorizationOnSameOrigin(t *testing.T) {
 	}
 }
 
+// TestDownloadFromURL_Rejects{Loopback,Metadata}Target above only prove
+// address-shape rejection for the INITIAL request target. redirectPolicy
+// calls the exact same validateRequestURL on every subsequent hop — there is
+// no separate "hop" code path in netpolicy — but nothing pinned that a
+// control plane's 302 pointing at a loopback or metadata address is caught
+// too, not just a directly-supplied one. These two prove it, via the same
+// real u.client.CheckRedirect entry point net/http invokes on every hop.
+//
+// A redirect hop to an UNAPPROVED PRIVATE (RFC1918) address is not provable
+// this way: unlike loopback/metadata (classForbidden, rejected by shape
+// alone in validateRequestURL), a private address's reachability depends on
+// the request's origin and is decided only at dial time
+// (policyDialer.DialContext), which CheckRedirect never reaches on its own —
+// net/http only calls DialContext after CheckRedirect approves a hop, via a
+// real RoundTrip. Proving that requires hop 1 to actually complete over a
+// real connection, which (see the file header) nothing in this package can
+// do against a local server. That specific case is proven at the netpolicy
+// layer instead, with a real completed first hop via its package-private
+// rawDial seam: netpolicy/http_test.go's TestRedirectToPrivateAddressRejected.
+func TestClient_RedirectPolicy_RejectsHopToLoopback(t *testing.T) {
+	u := testAuthedUpdater(t, "https://control.example", "")
+
+	initial := mustRequest(t, "https://control.example/manifest")
+	next := mustRequest(t, "https://127.0.0.1:8080/agent")
+
+	err := u.client.CheckRedirect(next, []*http.Request{initial})
+	assertPolicyReason(t, err, netpolicy.ReasonForbiddenAddress)
+}
+
+func TestClient_RedirectPolicy_RejectsHopToMetadata(t *testing.T) {
+	u := testAuthedUpdater(t, "https://control.example", "")
+
+	t.Run("literal address", func(t *testing.T) {
+		initial := mustRequest(t, "https://control.example/manifest")
+		next := mustRequest(t, "http://169.254.169.254/latest/meta-data/")
+		err := u.client.CheckRedirect(next, []*http.Request{initial})
+		assertPolicyReason(t, err, netpolicy.ReasonForbiddenAddress)
+	})
+	t.Run("gcp hostname", func(t *testing.T) {
+		initial := mustRequest(t, "https://control.example/manifest")
+		next := mustRequest(t, "https://metadata.google.internal/computeMetadata/v1/")
+		err := u.client.CheckRedirect(next, []*http.Request{initial})
+		assertPolicyReason(t, err, netpolicy.ReasonForbiddenHostname)
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Allowed destinations that need a dial attempt: negative-assertion tests.
 // See file header for why these cannot complete a full exchange.
@@ -409,33 +558,59 @@ func TestDownloadFromURL_ConfiguredBackupOriginIsPolicyAllowed(t *testing.T) {
 	}
 }
 
-// A hostile HTTP_PROXY / HTTPS_PROXY must never be consulted, even when it
-// is reachable and the primary request fails for an unrelated reason. The
-// primary target is deliberately a policy-rejected address (loopback) so the
-// download fails immediately and deterministically without depending on any
-// real network reachability; the only thing under test is whether the
-// configured proxy was ever dialed.
+// A hostile HTTP_PROXY / HTTPS_PROXY must never be consulted.
+//
+// The target MUST be an address that PASSES policy validation (a stub-
+// resolved PUBLIC address, so a real dial is actually attempted) rather than
+// a loopback literal. An earlier version of this test targeted
+// "https://127.0.0.1:1/agent" — that is rejected by validateRequestURL
+// before RoundTrip ever reaches the transport, on every code path, so the
+// test could not fail even with Policy.Proxy mutated from nil to
+// http.ProxyFromEnvironment: I confirmed this by making that exact mutation
+// against the old test and it stayed green (see the fix-round-1 section of
+// this report for the command and output).
+//
+// The observable difference once the target passes validation: with a proxy
+// configured, http.Transport routes HTTPS traffic through a CONNECT tunnel
+// dialed to the PROXY's address, not the origin's — and our own
+// policyDialer.DialContext (which the transport always uses, proxied or not)
+// would then classify THAT address. The proxy URLs below are loopback
+// (127.0.0.1:9, the discard port — nothing needs to actually listen there:
+// the property under test is which address gets dialed, and a loopback
+// address is rejected before any real connect regardless of whether a
+// listener exists), so a consulted proxy surfaces as forbidden_address. With
+// Proxy correctly nil, the dial target is the stub-resolved PUBLIC origin
+// address instead — never itself forbidden — so the eventual failure
+// (nothing really listens at 203.0.113.10, a documentation/TEST-NET-3
+// address) is an ordinary network error, never forbidden_address. This is
+// also why a hit-counter on a real local proxy listener cannot prove this
+// property: in both the correct and the mutated case, whichever loopback
+// address is involved gets rejected before any real TCP handshake completes,
+// so the listener would never actually be reached either way.
 func TestDownloadFromURL_IgnoresHostileProxyEnvironment(t *testing.T) {
-	var proxyHits int
-	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		proxyHits++
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer proxy.Close()
-
-	t.Setenv("HTTP_PROXY", proxy.URL)
-	t.Setenv("HTTPS_PROXY", proxy.URL)
-	t.Setenv("http_proxy", proxy.URL)
-	t.Setenv("ALL_PROXY", proxy.URL)
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:9/")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:9/")
+	t.Setenv("http_proxy", "http://127.0.0.1:9/")
+	t.Setenv("ALL_PROXY", "http://127.0.0.1:9/")
 	t.Setenv("NO_PROXY", "")
 
 	u := testAuthedUpdater(t, "https://control.example", "")
 
-	_, err := u.downloadFromURL("https://127.0.0.1:1/agent")
-	assertPolicyReason(t, err, netpolicy.ReasonForbiddenAddress)
+	policy := updaterPolicy(u.config)
+	policy.Resolver = stubResolver{"cdn.example": {netip.MustParseAddr("203.0.113.10")}}
+	policy.Dialer = shortDialer()
+	client, err := netpolicy.NewClient(policy)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	u.client = client
 
-	if proxyHits != 0 {
-		t.Fatalf("hostile proxy was contacted %d times; Transport.Proxy must be nil", proxyHits)
+	_, err = u.downloadFromURL("https://cdn.example/agent")
+	if err == nil {
+		t.Fatal("expected an error — nothing listens at the stub-resolved address")
+	}
+	if reason, ok := PolicyRejectionReason(err); ok && reason == netpolicy.ReasonForbiddenAddress {
+		t.Fatalf("dial targeted a loopback address instead of the stub-resolved origin — HTTP_PROXY was consulted: %v", err)
 	}
 }
 

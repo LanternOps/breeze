@@ -151,6 +151,40 @@ func PolicyRejectionReason(err error) (string, bool) {
 	return "", false
 }
 
+// SafeDownloadErrorFields returns the single structured log key/value pair a
+// caller should attach when reporting a download failure — chosen so the
+// value never contains a request URL:
+//
+//   - a *netpolicy.PolicyError anywhere in the chain: ("policyReason", the
+//     bounded reason).
+//   - a *url.Error: net/http wraps EVERY transport-level failure this way —
+//     TLS handshake errors, connection refused/reset, timeouts, EOF, not just
+//     policy rejections — and its Error() repeats the full request URL,
+//     capability query string included, regardless of what the underlying
+//     error is. Returns ("error", the underlying error's text only, with the
+//     URL stripped).
+//   - anything else (e.g. a checksum mismatch or manifest verification
+//     failure, where no URL is embedded): ("error", err.Error()) unchanged.
+//
+// Every download-failure log line in this codebase should go through this
+// (or PolicyRejectionReason directly, for a caller that wants to skip
+// non-policy failures entirely) rather than hand-rolling the errors.As dance
+// per call site — that duplication is exactly how a download path ends up on
+// the unsafe err.Error() branch unnoticed.
+func SafeDownloadErrorFields(err error) (key, value string) {
+	if err == nil {
+		return "error", ""
+	}
+	if reason, ok := PolicyRejectionReason(err); ok {
+		return "policyReason", reason
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return "error", urlErr.Err.Error()
+	}
+	return "error", err.Error()
+}
+
 // serverURL resolves the control-plane base URL from the ServerURL provider.
 // Nil-safe: a misconfigured Config (nil provider) yields "" rather than
 // panicking, and the resulting request fails closed with an unparseable URL.
@@ -584,11 +618,15 @@ func (u *Updater) parseDownloadInfo(resp *http.Response) (downloadInfo, error) {
 		return info, nil
 
 	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
-		location, err := resp.Location()
-		if err != nil {
+		if _, err := resp.Location(); err != nil {
 			return downloadInfo{}, fmt.Errorf("download redirect missing location: %w", err)
 		}
-		return downloadInfo{}, fmt.Errorf("download redirects are not trusted without a signed release manifest (location %s)", location.String())
+		// Deliberately does NOT embed the redirect Location in the error: this
+		// message reaches callers' download-failure logs verbatim (it is a
+		// plain error, not a *netpolicy.PolicyError or *url.Error, so
+		// SafeDownloadErrorFields's stripping does not apply to it), and the
+		// target may carry a capability query string.
+		return downloadInfo{}, fmt.Errorf("download redirects are not trusted without a signed release manifest")
 
 	default:
 		return downloadInfo{}, fmt.Errorf("download info request failed with status %d", resp.StatusCode)
@@ -799,8 +837,12 @@ func (u *Updater) downloadBinary(version string) (string, updateManifest, []byte
 	// checksum lookup in UpdateTo.
 	verifiedPayload := []byte(info.Manifest)
 
-	// Step 2: Download the actual binary from the manifest URL. downloadFromURL
-	// enforces scheme and origin against the configured control-plane URL.
+	// Step 2: Download the actual binary from the manifest URL. info.URL may
+	// be cross-origin from the configured control plane (a signed manifest
+	// legitimately points at a public CDN); downloadFromURL no longer
+	// enforces an origin match itself — destination safety (scheme, dial-time
+	// address, redirect chain, credential stripping) is u.client's job alone,
+	// via the netpolicy.Policy built in updaterPolicy.
 	tempPath, err := u.downloadFromURL(info.URL)
 	if err != nil {
 		return "", updateManifest{}, nil, err
@@ -960,8 +1002,17 @@ func (u *Updater) DownloadAndVerify(url, expectedChecksum string) (string, error
 // silently inherited whatever UpdateToWithUserHelper had last stuffed into
 // u.extras, which was a real footgun for any future dev-push surface that
 // shared an Updater instance with the heartbeat upgrade path.
-func (u *Updater) UpdateFromURL(url, expectedChecksum string, opts UpdateOptions) error {
-	log.Info("starting dev update from URL", "url", url)
+func (u *Updater) UpdateFromURL(rawURL, expectedChecksum string, opts UpdateOptions) error {
+	// Log only the host, never the full URL: dev_update's downloadUrl is
+	// operator/control-plane supplied and may legitimately carry a
+	// capability query string (e.g. a signed CDN asset URL), which must
+	// never reach a log line. host is best-effort — a parse failure logs
+	// "" rather than falling back to the raw URL.
+	host := ""
+	if parsed, perr := url.Parse(rawURL); perr == nil {
+		host = parsed.Host
+	}
+	log.Info("starting dev update from URL", "host", host)
 
 	// Pre-flight: verify we can write to the binary's directory.
 	// Skip on Windows — the running exe is locked by the OS, but
@@ -974,7 +1025,7 @@ func (u *Updater) UpdateFromURL(url, expectedChecksum string, opts UpdateOptions
 	}
 
 	// 1. Download binary directly
-	tempPath, err := u.downloadFromURL(url)
+	tempPath, err := u.downloadFromURL(rawURL)
 	if err != nil {
 		return fmt.Errorf("failed to download binary: %w", err)
 	}

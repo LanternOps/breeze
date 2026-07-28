@@ -3,7 +3,6 @@ package helper
 import (
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
@@ -11,58 +10,44 @@ import (
 	"github.com/breeze-rmm/agent/internal/updater"
 )
 
-// TestDefaultHelperDownloaderRejectsOffOriginRedirect proves the production
-// helper download path (the updater-backed verified downloader) never fetches
-// bytes from an attacker-controlled CDN a redirect points at. This is the core
-// of the HIGH-severity finding: the old downloadFile used http.DefaultClient
-// (follows redirects) and ran the result as SYSTEM/root with no integrity
-// check.
+// TestDefaultHelperDownloaderRejectsOffOriginRedirect (pre-wave-06 test,
+// DELETED — see below) used to prove the production helper download path
+// never follows an off-origin CDN redirect, by pointing a local httptest
+// "control plane" at a local httptest "evil CDN" via a 302 and asserting the
+// evil server was never hit. This is the core of the original HIGH-severity
+// finding: the old downloadFile used http.DefaultClient (follows redirects)
+// and ran the result as SYSTEM/root with no integrity check.
 //
-// Wave-06 security remediation update: the downloader now routes through the
-// agent's shared outbound network policy (agent/internal/netpolicy), which
-// rejects EVERY loopback destination outright and unconditionally — so
-// "control" below (a local httptest server, standing in for the configured
-// control plane) is now itself unreachable, and the request fails before it
-// ever reaches control's redirect handler. That is a strictly stronger
-// guarantee than the original test proved (a rejected redirect); the
-// assertion that matters and still holds is the one below: the evil CDN is
-// never contacted, however early the rejection happens. The narrower "an
-// off-origin redirect specifically is rejected" property is covered
-// exhaustively at the netpolicy layer (netpolicy/http_test.go) and the
-// updater layer (updater/updater_security_test.go).
-func TestDefaultHelperDownloaderRejectsOffOriginRedirect(t *testing.T) {
-	// A malicious "CDN" that, if ever reached, would serve poisoned bytes.
-	var evilHits int
-	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		evilHits++
-		_, _ = w.Write([]byte("POISONED-INSTALLER-PAYLOAD"))
-	}))
-	defer evil.Close()
-
-	// The control plane: its download-info endpoint 302-redirects off-origin to
-	// the evil CDN (mirrors BINARY_SOURCE=github serving the helper download).
-	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/download") {
-			http.Redirect(w, r, evil.URL+"/breeze-helper-windows.msi", http.StatusFound)
-			return
-		}
-		http.Error(w, "not found", http.StatusNotFound)
-	}))
-	defer control.Close()
-
-	dl := defaultHelperDownloader(func() string { return control.URL }, nil, secmem.NewSecureString("tok"), "1.2.3", nil)
-	path, err := dl("1.2.3")
-	if err == nil {
-		if path != "" {
-			_ = os.Remove(path)
-		}
-		t.Fatalf("expected the verified download to fail, got success (path=%q)", path)
-	}
-	if evilHits != 0 {
-		t.Fatalf("evil CDN was contacted %d times — an off-origin redirect payload was fetched", evilHits)
-	}
-}
-
+// It no longer holds as written: since the wave-06 network-policy hardening,
+// EVERY loopback destination is rejected outright and unconditionally by
+// agent/internal/netpolicy, so "control" (a local httptest server) is itself
+// unreachable and the request now fails before it ever reaches control's
+// redirect handler — evilHits becomes structurally unreachable, and the test
+// would pass even if off-origin redirects were followed unconditionally
+// (i.e. it regressed to vacuous, the same defect the review flagged in
+// TestDownloadFromURL_IgnoresHostileProxyEnvironment).
+//
+// I deleted it rather than rebuild it here: defaultHelperDownloader has no
+// seam to inject a netpolicy.Resolver (it constructs updater.New(cfg)
+// entirely inside its own closure — see helperUpdaterConfig below), so a
+// helper-package test cannot make the control-plane hop reachable without
+// adding test-only surface to production code for a property this package
+// does not itself implement. defaultHelperDownloader contributes no
+// redirect-handling logic of its own; it only builds an *updater.Config
+// (Component: "helper" plus the same ServerURL/BackupServerURL/AuthToken
+// shape every other updater.New caller uses) and delegates to
+// updater.Updater.DownloadBinary. The off-origin-redirect property is
+// covered where it is actually enforced:
+//   - agent/internal/netpolicy/http_test.go: TestRedirectToUnsafeTargetRejected,
+//     TestRedirectToPrivateAddressRejected, TestRedirectCrossOriginStripsCredentials
+//   - agent/internal/updater/updater_security_test.go:
+//     TestClient_RedirectPolicy_RejectsHTTPSDowngrade,
+//     TestClient_RedirectPolicy_StripsAuthorizationOnOriginChange,
+//     TestClient_RedirectPolicy_EnforcesTenHopLimit,
+//     TestClient_RedirectPolicy_RejectsHopToLoopback,
+//     TestClient_RedirectPolicy_RejectsHopToMetadata (redirect-hop coverage,
+//     not just an initial target)
+//
 // TestHelperUpdaterConfig_UsesHelperComponent confirms the verified downloader
 // queries the agent-versions download endpoint with component=helper, so the
 // signed release manifest's helper asset (breeze-helper-*) is the trust
@@ -71,8 +56,8 @@ func TestDefaultHelperDownloaderRejectsOffOriginRedirect(t *testing.T) {
 // This asserts the built *updater.Config directly (via helperUpdaterConfig)
 // rather than observing an actual HTTP request: since the wave-06 network-
 // policy hardening, no test in this package can complete a real request
-// against a local httptest server at all (see the doc comment on
-// TestDefaultHelperDownloaderRejectsOffOriginRedirect above).
+// against a local httptest server at all (see the deleted-test comment
+// above).
 func TestHelperUpdaterConfig_UsesHelperComponent(t *testing.T) {
 	cfg := helperUpdaterConfig(func() string { return "https://control.example" }, nil, secmem.NewSecureString("tok"), "9.9.9", nil)
 	if cfg.Component != "helper" {
@@ -118,7 +103,8 @@ func TestHelperUpdaterConfig_NilBackupServerURLIsNoOp(t *testing.T) {
 // Wave-06 update: both test servers are loopback, which the shared network
 // policy now rejects outright regardless of which one is targeted, so this
 // can no longer prove routing by observing which server received a request
-// (see TestDefaultHelperDownloaderRejectsOffOriginRedirect's doc comment).
+// (see the deleted TestDefaultHelperDownloaderRejectsOffOriginRedirect's
+// comment above for the general pattern this hits).
 // net/http wraps the rejection in a *url.Error that names the exact request
 // URL attempted; asserting on that (test-only — production code must never
 // log this raw error, only the bounded netpolicy.PolicyError.Reason) proves

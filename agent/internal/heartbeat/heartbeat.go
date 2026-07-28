@@ -5375,8 +5375,12 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 	log.Info("watchdog upgrade requested", "targetVersion", targetVersion)
 	if err := install(targetVersion); err != nil {
 		// Leave watchdogInstalledVersion unset so a transient failure retries
-		// after the cooldown rather than every tick.
-		log.Error("failed to update watchdog", "targetVersion", targetVersion, "error", err.Error())
+		// after the cooldown rather than every tick. install() -> ...
+		// -> downloadWatchdogBinary is a netpolicy-enforced download; see
+		// SafeDownloadErrorFields for why err.Error() must not be logged
+		// directly.
+		key, value := updater.SafeDownloadErrorFields(err)
+		log.Error("failed to update watchdog", "targetVersion", targetVersion, key, value)
 		return
 	}
 	h.watchdogUpgradeMu.Lock()
@@ -5485,11 +5489,12 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 
 	tempPath, dlErr := download(targetVersion)
 	if dlErr != nil {
+		key, value := updater.SafeDownloadErrorFields(dlErr)
 		log.Warn(
 			"user-helper download failed; proceeding with agent-only upgrade",
 			"currentVersion", h.agentVersion,
 			"targetVersion", targetVersion,
-			"error", dlErr.Error(),
+			key, value,
 		)
 		return nil
 	}
@@ -5623,20 +5628,25 @@ const (
 // WARN every tick. The ERROR carries a stable reason + consecutiveFailures so
 // fleet telemetry can GROUP BY and alert on it.
 func (h *Heartbeat) noteUserHelperReconcileFailure(reason string, err error) {
+	// reason=="download_failed" is a netpolicy-enforced download error (see
+	// SafeDownloadErrorFields); reason=="install_failed" is a local
+	// file/broker error with no URL risk. Applying the same helper to both is
+	// safe — a non-network error falls through to its unchanged Error() text.
+	key, value := updater.SafeDownloadErrorFields(err)
 	n := h.userHelperReconcileFailures.Add(1)
 	switch {
 	case n >= userHelperReconcilePersistentThreshold &&
 		(n == userHelperReconcilePersistentThreshold || n%userHelperReconcileReLogEvery == 0):
 		log.Error("user-helper reconciliation persistently failing — device cannot self-heal its missing helper",
 			"reason", reason, "consecutiveFailures", n,
-			"currentVersion", h.agentVersion, "error", err.Error())
+			"currentVersion", h.agentVersion, key, value)
 	case n == 1:
 		log.Warn("user-helper reconciliation failed; will retry on a later tick",
 			"reason", reason, "consecutiveFailures", n,
-			"currentVersion", h.agentVersion, "error", err.Error())
+			"currentVersion", h.agentVersion, key, value)
 	default:
 		log.Debug("user-helper reconciliation still failing",
-			"reason", reason, "consecutiveFailures", n, "error", err.Error())
+			"reason", reason, "consecutiveFailures", n, key, value)
 	}
 }
 
@@ -5730,17 +5740,14 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 			log.Warn("update deferred: binary is executing, will retry", "targetVersion", targetVersion, "error", err.Error())
 			return
 		}
-		// A download failure here may be a *netpolicy.PolicyError wrapped in
-		// net/http's *url.Error, whose message repeats the full request URL —
-		// including any capability query string. Log the bounded policy
-		// reason instead of the raw error whenever one is present; only fall
-		// back to err.Error() for non-network failures (checksum mismatch,
-		// manifest verification, etc.) where no URL is at risk.
-		if reason, ok := updater.PolicyRejectionReason(err); ok {
-			log.Error("failed to update: network policy rejected the download", "targetVersion", targetVersion, "policyReason", reason)
-		} else {
-			log.Error("failed to update", "targetVersion", targetVersion, "error", err.Error())
-		}
+		// A download failure here may carry a *netpolicy.PolicyError, or be a
+		// *url.Error — net/http wraps EVERY transport-level failure that way
+		// (TLS handshake, connection refused/reset, timeout, EOF — not just
+		// policy rejections), and its message repeats the full request URL,
+		// capability query string included. SafeDownloadErrorFields picks the
+		// key/value that never leaks it.
+		key, value := updater.SafeDownloadErrorFields(err)
+		log.Error("failed to update", "targetVersion", targetVersion, key, value)
 		return
 	}
 

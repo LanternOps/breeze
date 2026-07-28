@@ -320,15 +320,13 @@ func handleDevUpdateAgent(h *Heartbeat, start time.Time, downloadURL, checksum, 
 		// future dev-push surface needs to swap a companion binary too, pass
 		// updater.UpdateOptions{UserHelper: ...} here.
 		if err := u.UpdateFromURL(downloadURL, checksum, updater.UpdateOptions{}); err != nil {
-			// See heartbeat.go's doUpgrade for why this must not log
-			// err.Error() on a network-policy rejection: net/http wraps the
-			// bounded PolicyError in a *url.Error that repeats the full
-			// request URL.
-			if reason, ok := updater.PolicyRejectionReason(err); ok {
-				log.Error("dev_update failed: network policy rejected the download", "version", version, "policyReason", reason)
-			} else {
-				log.Error("dev_update failed", "version", version, "error", err.Error())
-			}
+			// See updater.SafeDownloadErrorFields: this must not log
+			// err.Error() directly. net/http wraps EVERY transport-level
+			// failure — not just a policy rejection — in a *url.Error that
+			// repeats the full request URL, capability query string
+			// included.
+			key, value := updater.SafeDownloadErrorFields(err)
+			log.Error("dev_update failed", "version", version, key, value)
 		}
 	}()
 
