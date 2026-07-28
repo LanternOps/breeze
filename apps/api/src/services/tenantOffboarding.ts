@@ -64,8 +64,20 @@ const NON_TERMINAL_COMMAND_STATUSES = ['pending', 'sent'] as const;
  * partners row succeeded under that scope (so the stamp UPDATE passes the
  * identical policy), the org's devices are covered by the same org
  * allowlist, and device_commands is intentionally unscoped (see the
- * rls-coverage allowlist). Background callers (drain reaper, jobs) have no
- * ambient context and keep the fresh system context, exactly as before.
+ * rls-coverage allowlist). Callers with NO ambient context (e.g. a bare job
+ * entrypoint) keep the fresh system context, exactly as before. Note the
+ * drain reaper DOES run inside a system ambient context — it never calls the
+ * begin/abort functions, but a future background caller that does would take
+ * the ambient branch, which is the desired behavior there too (its own
+ * transaction, no second connection).
+ *
+ * Cost, accepted deliberately: on the ambient path the request transaction
+ * now holds the queueDrainUninstalls device FOR UPDATE locks (and performs
+ * the abort path's Redis cache invalidation) until the handler commits. The
+ * remaining handler work after these calls is only a fire-and-forget audit
+ * write and response serialization, and offboarding transitions are rare
+ * admin operations — a short, bounded hold, vs. the alternative of a
+ * permanent deadlock (#1105 tripwire still watches the duration).
  */
 function inCallerOrSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
   if (hasDbAccessContext()) {
@@ -604,6 +616,28 @@ async function repairIncompleteEntry(
   console.warn(
     `[tenantOffboarding] ${scope} ${scopeId} is offboarding with no drain stamp — completing the entry`
   );
+  // Take the TENANT ROW lock first, matching the request path's acquisition
+  // order (route UPDATE on organizations/partners, then key/device work).
+  // Without this, a repair racing an operator's PATCH retry on the same torn
+  // tenant inverts the order: the reaper locks enrollment_keys/devices/
+  // device_commands and then blocks on the tenant row the request holds,
+  // while the request's fresh-connection revoke blocks on those key rows —
+  // the same cross-connection cycle Postgres cannot detect (#2877). Row lock
+  // first means whichever side wins the tenant row proceeds while the other
+  // waits holding nothing.
+  if (scope === 'organization') {
+    await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.id, scopeId))
+      .for('update');
+  } else {
+    await db
+      .select({ id: partners.id })
+      .from(partners)
+      .where(eq(partners.id, scopeId))
+      .for('update');
+  }
   // Drain prep FIRST, matching begin*Offboarding: #2785 made this step the one
   // that lifts a superseded token suspension, so queueing before it would leave
   // a window where the uninstall exists but the fleet is still 401ing.

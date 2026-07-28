@@ -313,7 +313,7 @@ describe('#2877 ambient request-transaction reuse', () => {
     expect(withSystemDbAccessContext).not.toHaveBeenCalled();
   });
 
-  it('background callers (no ambient context) still get a fresh system context', async () => {
+  it('callers with no ambient context still get a fresh system context', async () => {
     queueSelect([]); // devices
 
     await beginOrganizationOffboarding('org-1', null);
@@ -575,6 +575,7 @@ describe('sweepOffboardingTenants', () => {
   // indistinguishable from a clean drain (the #2774 false-confidence bug).
   it('repairs an incomplete entry (queues uninstalls) instead of finalizing it', async () => {
     queueCandidates([{ id: 'org-1', startedAt: null }], []);
+    queueSelect([{ id: 'org-1' }]); // tenant row FOR UPDATE (lock-order guard, #2877)
     queueSelect([{ id: 'd1' }]); // devices to queue
     queueSelect([]); // no existing uninstalls
 
@@ -601,6 +602,7 @@ describe('sweepOffboardingTenants', () => {
       return { enrollmentKeysInvalidated: 0, agentTokensRestored: 0 };
     });
     queueCandidates([{ id: 'org-1', startedAt: null }], []);
+    queueSelect([{ id: 'org-1' }]); // tenant row FOR UPDATE (lock-order guard, #2877)
     queueSelect([{ id: 'd1' }]); // devices to queue
     queueSelect([]); // no existing uninstalls
 
