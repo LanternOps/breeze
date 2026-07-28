@@ -144,6 +144,11 @@ Roll out enforcement in three steps, each requiring an explicit operator change 
   unsupported.
 </Aside>
 
+`AGENT_MTLS_BINDING_MODE` is mapped explicitly into the API service in both `docker-compose.yml`
+and `deploy/docker-compose.prod.yml`, defaulted to `off` (`${AGENT_MTLS_BINDING_MODE:-off}`) — set
+it in your `.env` file to change it. It is never inferred from `NODE_ENV`, `IS_HOSTED`, or the
+`CF_MTLS_*` issuance variables; the operator always selects the mode explicitly.
+
 ## Certificate Lifecycle
 
 | Event | Trigger | Action |

@@ -130,6 +130,11 @@ services:
       # client could otherwise spoof it. Off by default; set true in .env only
       # if you front Breeze with Cloudflare.
       TRUST_CF_CONNECTING_IP: ${TRUST_CF_CONNECTING_IP:-}
+      # off is the safe mixed-version and self-hosted default: the edge
+      # certificate assertion is never consulted, so leaving this unset is a
+      # no-op. Never inferred from NODE_ENV/IS_HOSTED/CF_MTLS_* — the operator
+      # must opt in explicitly. See docs/operations/cloudflare-mtls-setup.md.
+      AGENT_MTLS_BINDING_MODE: ${AGENT_MTLS_BINDING_MODE:-off}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
       MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?Set MFA_ENCRYPTION_KEY in .env}
       ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER:?Set ENROLLMENT_KEY_PEPPER in .env}

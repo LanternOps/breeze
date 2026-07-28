@@ -378,6 +378,16 @@ for compose in docker-compose.yml deploy/docker-compose.prod.yml; do
     "$compose must require ENROLLMENT_KEY_PEPPER for production API startup"
   require_grep 'MFA_RECOVERY_CODE_PEPPER:[[:space:]]+\$\{MFA_RECOVERY_CODE_PEPPER:\?Set MFA_RECOVERY_CODE_PEPPER' "$compose" \
     "$compose must require MFA_RECOVERY_CODE_PEPPER for production API startup"
+  # Agent mTLS binding mode (Wave 05 Task 9): must be explicitly mapped into
+  # the API service with a defaulted (not required) interpolation, so a
+  # self-host compose with no override in .env behaves exactly as before —
+  # off is the safe mixed-version and self-hosted default.
+  require_grep 'AGENT_MTLS_BINDING_MODE:[[:space:]]+\$\{AGENT_MTLS_BINDING_MODE:-off\}' "$compose" \
+    "$compose must map AGENT_MTLS_BINDING_MODE into the API service, defaulting to off"
+  reject_grep 'AGENT_MTLS_BINDING_MODE:[[:space:]]+\$\{AGENT_MTLS_BINDING_MODE:\?' "$compose" \
+    "$compose must not make AGENT_MTLS_BINDING_MODE a required env var; off must stay the no-config default"
+  reject_grep 'AGENT_MTLS_BINDING_MODE:[[:space:]]*[^[:space:]]*\$\{?(NODE_ENV|IS_HOSTED|CF_MTLS_[A-Z_]*)\b' "$compose" \
+    "$compose must not infer AGENT_MTLS_BINDING_MODE from NODE_ENV, IS_HOSTED, or CF_MTLS_* — the operator must select the mode explicitly"
 done
 reject_grep '/var/run/docker\.sock' docker-compose.monitoring.yml \
   "monitoring compose must not mount the raw Docker socket"
@@ -455,6 +465,9 @@ require_grep 'ENABLE_REGISTRATION=false' .env.example \
   "root env example must default registration off"
 require_grep 'ENABLE_REGISTRATION=false' deploy/.env.example \
   "deploy env example must default API registration off"
+
+require_grep '^AGENT_MTLS_BINDING_MODE=off' .env.example \
+  "root env example must document AGENT_MTLS_BINDING_MODE and default it to off"
 
 require_grep 'not\.toContain.*AGENT_BINARY_DIR' apps/api/src/routes/agents/download.test.ts \
   "agent public 404 tests must assert AGENT_BINARY_DIR is not disclosed"

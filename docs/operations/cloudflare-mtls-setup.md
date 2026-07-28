@@ -389,6 +389,21 @@ client sent — is **explicitly unsupported** and equivalent to disabling authen
 protected route once the mode is anything other than `off`. If you don't operate your own
 mTLS-terminating proxy, do not enable `audit` or `enforce`.
 
+### Setting the mode (self-hosted and hosted alike)
+
+`AGENT_MTLS_BINDING_MODE` is mapped explicitly into the `api` service `environment:` block in both
+`docker-compose.yml` and `deploy/docker-compose.prod.yml`, defaulted to `off`:
+
+```yaml
+AGENT_MTLS_BINDING_MODE: ${AGENT_MTLS_BINDING_MODE:-off}
+```
+
+Set it in your `.env` file — `docker-compose.yml` does not read it any other way, and an unset
+`.env` value resolves to `off` with no behavior change. There is no build-time or `NODE_ENV`-based
+inference: `IS_HOSTED`, `NODE_ENV`, and the `CF_MTLS_*` issuance variables never influence this
+value, on either the self-hosted or hosted stack. The operator always selects the mode by hand,
+per the rollout sequence above.
+
 ---
 
 ## Org-Level Settings
