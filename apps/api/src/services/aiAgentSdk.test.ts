@@ -781,9 +781,13 @@ describe('createSessionPreToolUse', () => {
 
       const result = await createSessionPreToolUse(session)('execute_command', {});
 
+      // No plan is active on this session, so nothing was stopped — the
+      // "plan has been stopped" clause must NOT appear (Important 1 fix:
+      // that sentence is now appended only when failMatchedPlanStep actually
+      // aborts a plan).
       expect(result).toEqual({
         allowed: false,
-        error: 'Approval still pending; this action will complete once approved. The plan has been stopped.',
+        error: 'Approval still pending; this action will complete once approved.',
       });
       // The intent is left exactly as-is: no release CAS attempted.
       expect(mockTransitionIntent).not.toHaveBeenCalled();
@@ -1845,7 +1849,15 @@ describe('inline secret-bearing completion (Task 6)', () => {
       // at the release-CAS-won + revalidated point) — which these tests, using
       // a REJECTED decision throughout, never reach. Rewritten below to assert
       // the new, correct behavior instead of the old (buggy) one.
-      it('a secret-bearing step that declines the shortcut does not consume its plan slot — a retry still matches the same step', async () => {
+      it('a secret-bearing step that declines the shortcut aborts the plan (Task 3) — a retry no longer matches any plan step', async () => {
+        // Pre-Task-3, this test asserted the plan SLOT survived a decline
+        // (the index didn't advance, so the same step "still matched" on a
+        // retry). Task 3 changes the outcome: a matched-and-declined tier-3
+        // step now aborts the WHOLE plan on the first rejection, not just
+        // leaves its one slot open. A reviewer probing the old assertions
+        // found they never actually checked `session.activePlanId` and so
+        // passed even though the plan is now gone (`expected null to be
+        // 'plan-1'` when checked). Rewritten to assert the post-abort truth.
         vi.mocked(checkGuardrails).mockReturnValue({
           allowed: true,
           tier: 3,
@@ -1865,25 +1877,29 @@ describe('inline secret-bearing completion (Task 6)', () => {
         });
 
         // First attempt: matches plan step 0 but declines the shortcut
-        // (secret-bearing); the durable decision comes back rejected.
+        // (secret-bearing); the durable decision comes back rejected. Task 3
+        // aborts the plan on this exit.
         const first = await createSessionPreToolUse(session)('m365_reset_password', { userIdentifier: 'a@b.com' });
         expect(mockCreateActionIntent).toHaveBeenCalledTimes(1);
         expect(first).toEqual({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
-
-        // The index must NOT have advanced: a rejected step must not be marked
-        // complete. (Previously this advanced unconditionally right here —
-        // exactly the bug Task 1 removes.)
         expect(session.currentPlanStepIndex).toBe(0);
+        expect(session.activePlanId).toBeNull();
+        expect(session.approvedPlanSteps.size).toBe(0);
 
-        // Because the index didn't move, the SAME step still matches on a
-        // retry — proving the plan slot was not silently consumed by the
-        // declined attempt.
+        // Second attempt (same tool, same args): activePlanId is now null,
+        // so the plan-matching block is skipped entirely — this is a fresh,
+        // plan-less tier-3 call, NOT a retry against a still-open slot. It
+        // still reaches createActionIntent (m365_reset_password is
+        // unconditionally tier 3, independent of any plan) and still gets
+        // rejected — but not because it matched a plan step; there is no
+        // plan left to match against.
         const second = await createSessionPreToolUse(session)('m365_reset_password', { userIdentifier: 'a@b.com' });
         expect(mockCreateActionIntent).toHaveBeenCalledTimes(2);
         expect(second).toEqual({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
         expect(session.eventBus.publish).not.toHaveBeenCalledWith(
           expect.objectContaining({ type: 'plan_step_start' }),
         );
+        expect(session.activePlanId).toBeNull();
       });
 
       it('a plan ENDING on a secret-bearing tool aborts (Task 3) rather than completing or staying dangling when the approval is rejected', async () => {
@@ -2306,60 +2322,316 @@ describe('Task 3: a plan aborts when a tier-3 step does not execute', () => {
     );
   });
 
-  it('a following step does not execute after the plan aborted', async () => {
+  // NOTE (review finding, Important 3): a prior version of this describe
+  // block had a test named "a following step does not execute after the
+  // plan aborted" that called createSessionPreToolUse a second time for a
+  // DIFFERENT tool at plan index 1 and asserted the second call didn't take
+  // the shortcut. It was vacuous — with the abort disabled, every
+  // substantive assertion in it still passed identically. The reason:
+  // matchPlanStep only ever reads `session.currentPlanStepIndex`, and Task 2
+  // deliberately leaves that at 0 after any non-executing exit (advancing it
+  // early is exactly the bug Task 2 removes) — so a "step 1" entry can never
+  // be reached from this flow, whether or not the plan aborted. The only
+  // observable, abort-caused differences are `session.activePlanId`,
+  // `session.approvedPlanSteps`, and the `plan_complete`/'aborted' event —
+  // all already covered by the `it.each(denials)` block above and the
+  // dedicated per-exit tests below. Deleted rather than kept as a test whose
+  // title and comments describe a mechanism that cannot fire.
+
+  // ----------------------------------------------------------------------
+  // Per-exit coverage for sites the `it.each(denials)` block above does NOT
+  // reach: the shared ledger-insert failure (534/538, before the tier>=3
+  // split), the intent-row-vanished exit (766), and the revalidation-failed
+  // exit (775). A prior review unwrapped all four simultaneously and the
+  // suite stayed green — these tests close that gap, one exit per test.
+  // ----------------------------------------------------------------------
+
+  it('aborts the plan when creating the approval ledger record throws (line 534)', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({
       allowed: true,
       tier: 3,
       requiresApproval: true,
       description: 'Execute command',
     } as any);
-    mockInsertReturning({ id: 'exec-task3-follow' });
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn(() => ({ returning: vi.fn().mockRejectedValue(new Error('db down')) })),
+    } as any);
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+    });
+
+    const res = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+    expect(res).toEqual({ allowed: false, error: 'Failed to create approval record' });
+    // Never reached createActionIntent — the ledger insert failed first.
+    expect(mockCreateActionIntent).not.toHaveBeenCalled();
+    expect(session.activePlanId).toBeNull();
+    expect(session.approvedPlanSteps.size).toBe(0);
+  });
+
+  it('aborts the plan when the approval ledger insert returns no row (line 538)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) })),
+    } as any);
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+    });
+
+    const res = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+    expect(res).toEqual({ allowed: false, error: 'Failed to create approval record' });
+    expect(mockCreateActionIntent).not.toHaveBeenCalled();
+    expect(session.activePlanId).toBeNull();
+    expect(session.approvedPlanSteps.size).toBe(0);
+  });
+
+  it('aborts the plan when the intent row vanished after winning the release CAS (line 766)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-task3-vanish' });
     mockCreateActionIntent.mockResolvedValue(
-      makeIntentSnapshot({ id: 'intent-task3-follow', approvalRequestIds: ['appr-task3-follow'] }),
+      makeIntentSnapshot({ id: 'intent-task3-vanish', approvalRequestIds: ['appr-task3-vanish'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(true); // wins the release CAS
+    // Override this test's system-context select so BOTH the intent-row and
+    // approval-row reads come back empty — reaches the `!intentRow` branch.
+    const vanishedSelectChain: Record<string, unknown> = {
+      from: vi.fn(() => vanishedSelectChain),
+      where: vi.fn(() => vanishedSelectChain),
+      limit: vi.fn(async () => []),
+    };
+    vi.mocked(db.select).mockReturnValue(vanishedSelectChain as any);
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+    });
+
+    const res = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+    expect(res).toEqual({ allowed: false, error: 'Approved action could not be revalidated for execution.' });
+    expect(session.activePlanId).toBeNull();
+    expect(session.approvedPlanSteps.size).toBe(0);
+  });
+
+  it('aborts the plan when the release CAS is won but revalidation fails (line 775)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-task3-revalidate' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-task3-revalidate', approvalRequestIds: ['appr-task3-revalidate'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(true); // wins the release CAS
+    mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: false, errorCode: 'actor_invalid' });
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+    });
+
+    const res = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+    expect(res).toEqual({
+      allowed: false,
+      error: 'Authorization for this action could no longer be verified; it was not executed.',
+    });
+    expect(session.activePlanId).toBeNull();
+    expect(session.approvedPlanSteps.size).toBe(0);
+  });
+
+  // ----------------------------------------------------------------------
+  // Important 5: an uncaught throw anywhere in the tier-3 body (not just a
+  // handled `allowed:false` exit) must still funnel through
+  // failMatchedPlanStep, not propagate out and skip the abort entirely.
+  // ----------------------------------------------------------------------
+
+  it('aborts the plan when an uncaught error is thrown mid-flow (Important 5 — e.g. waitForIntentDecision throws)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-task3-throw' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-task3-throw', approvalRequestIds: ['appr-task3-throw'] }),
+    );
+    mockWaitForIntentDecision.mockRejectedValue(new Error('boom-throw'));
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+    });
+
+    const res = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+    expect(res).toEqual({
+      allowed: false,
+      error: 'An unexpected error occurred while processing this action; it was not executed.',
+    });
+    expect(session.activePlanId).toBeNull();
+    expect(session.approvedPlanSteps.size).toBe(0);
+  });
+
+  // ----------------------------------------------------------------------
+  // Important 2 (guard clause): only a call that MATCHED an approved plan
+  // step may stop the plan. A tier-3 call that deviated from the plan
+  // (never matched — `matchedPlanStepIndex` stays null) must leave a live
+  // plan alone, even though it fails for the exact same underlying reason
+  // (denial) as a matched step would. Deleting the
+  // `matchedPlanStepIndex !== null &&` half of the guard clause makes every
+  // tier-3 exit abort ANY active plan, including this one — this test is
+  // what catches that regression (a prior review found removing the guard
+  // clause was invisible without it).
+  // ----------------------------------------------------------------------
+
+  it('does NOT abort the plan when the tier-3 call deviated from the plan (never matched a step)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-task3-deviate' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-task3-deviate', approvalRequestIds: ['appr-task3-deviate'] }),
     );
     mockWaitForIntentDecision.mockResolvedValue('rejected');
     const session = makeActiveSession({
       approvalMode: 'action_plan',
       activePlanId: 'plan-1',
-      approvedPlanSteps: new Map([
-        [0, { toolName: 'execute_command', input: { command: 'whoami' } }],
-        [1, { toolName: 'take_screenshot', input: {} }],
-      ]),
+      // Plan step 0 is take_screenshot — execute_command was never part of
+      // this plan, so matchPlanStep returns matches:false and
+      // matchedPlanStepIndex stays null.
+      approvedPlanSteps: new Map([[0, { toolName: 'take_screenshot', input: { deviceId: 'd-1' } }]]),
     });
 
-    await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
-    expect(session.activePlanId).toBeNull();
+    const res = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
 
-    // Step 2 would have matched its plan entry and shortcut-executed
-    // ({allowed:true} immediately, no approval wait, per lines 449-460) if
-    // the plan were still active. With the plan aborted, the shortcut's own
-    // `session.activePlanId` gate is now false, so this must fall through to
-    // the ordinary tier-2 per-step approval bridge instead — which blocks on
-    // waitForApproval. Forced to resolve false so a shortcut-taken
-    // {allowed:true} and a bridge-taken {allowed:false} are unambiguous from
-    // each other (vi.clearAllMocks() in this describe's beforeEach clears
-    // call history but NOT a prior test's mockResolvedValue implementation).
+    expect(res).toEqual({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
+    // The still-live plan (for its own, unrelated step) must be untouched.
+    expect(session.activePlanId).toBe('plan-1');
+    expect(session.approvedPlanSteps.size).toBe(1);
+  });
+
+  // ----------------------------------------------------------------------
+  // Important 1: the timeout message must state "the plan has been stopped"
+  // ONLY when a plan actually stopped — not unconditionally. `check.error`
+  // is serialized straight into the tool result the model reads
+  // (aiAgentSdkTools.ts:321-327), so a false claim here misleads the model,
+  // not just an operator.
+  // ----------------------------------------------------------------------
+
+  it('states both facts in the timeout message when the plan actually aborts', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-task3-timeout-msg' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-task3-timeout-msg', approvalRequestIds: ['appr-task3-timeout-msg'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('pending_approval');
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+    });
+
+    const res = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+    expect(res).toEqual({
+      allowed: false,
+      error: 'Approval still pending; this action will complete once approved. The plan has been stopped.',
+    });
+    expect(session.activePlanId).toBeNull();
+  });
+
+  it('does NOT claim the plan stopped when a deviating tier-3 call times out and the plan is still live', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-task3-deviate-timeout' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-task3-deviate-timeout', approvalRequestIds: ['appr-task3-deviate-timeout'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('pending_approval');
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      // execute_command was never part of the plan (step 0 is
+      // take_screenshot) — a deviation, so matchedPlanStepIndex stays null
+      // and this call must not abort, or claim to have aborted, the plan.
+      approvedPlanSteps: new Map([[0, { toolName: 'take_screenshot', input: { deviceId: 'd-1' } }]]),
+    });
+
+    const res = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+    expect(res).toEqual({
+      allowed: false,
+      error: 'Approval still pending; this action will complete once approved.',
+    });
+    expect(session.activePlanId).toBe('plan-1');
+  });
+
+  // ----------------------------------------------------------------------
+  // "Also fold in" item: the tier-2 legacy per-step bridge's own
+  // `!approved` exit (line ~978) now also routes through
+  // failMatchedPlanStep. Not reachable with a non-null matchedPlanStepIndex
+  // under the REAL static TOOL_TIERS map (both secret-bearing tools are
+  // statically tier 3), but exercised here by mocking checkGuardrails to
+  // report tier 2 for a secret-bearing tool — proving the wrap is correct
+  // and safe rather than leaving it as an unverified, "should be a no-op"
+  // claim resting on two other files' tier assignments never changing.
+  // ----------------------------------------------------------------------
+
+  it('aborts the plan when a tier-2 secret-bearing step is rejected via the legacy per-step bridge (defensive coverage)', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({
       allowed: true,
       tier: 2,
       requiresApproval: true,
-      description: 'Take screenshot',
+      description: 'Reset password',
     } as any);
+    mockInsertReturning({ id: 'exec-task3-legacy-secret' });
     vi.mocked(waitForApproval).mockResolvedValue(false);
-    const { values } = mockInsertReturning({ id: 'exec-task3-follow-2' });
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'm365_reset_password', input: { userIdentifier: 'a@b.com' } }]]),
+    });
 
-    const res2 = await createSessionPreToolUse(session)('take_screenshot', {});
+    const res = await createSessionPreToolUse(session)('m365_reset_password', { userIdentifier: 'a@b.com' });
 
-    expect(res2).not.toEqual({ allowed: true });
-    expect(res2).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
-    expect(mockCreateActionIntent).toHaveBeenCalledTimes(1); // not called again for the tier-2 step
-    expect(session.eventBus.publish).not.toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'plan_step_start', stepIndex: 1 }),
-    );
-    expect(values).toHaveBeenCalledWith(expect.objectContaining({
-      toolName: 'take_screenshot',
-      status: 'pending',
-    }));
+    expect(res).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+    // Legacy bridge, not the durable-intent flow.
+    expect(mockCreateActionIntent).not.toHaveBeenCalled();
+    expect(session.activePlanId).toBeNull();
+    expect(session.approvedPlanSteps.size).toBe(0);
   });
 });
 

@@ -437,9 +437,25 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       // exists purely to stop the plan. abortActivePlan swallows its own DB
       // error and still clears in-memory plan state, so the tool's result
       // must not depend on it succeeding.
-      const failMatchedPlanStep = async <T extends { allowed: false; error: string }>(result: T): Promise<T> => {
+      //
+      // `appendIfAborted` (optional): text appended to `result.error` ONLY
+      // when this call actually aborts a plan — never unconditionally. A
+      // tier-3 call can reach every one of these exits with
+      // `matchedPlanStepIndex === null` (a deviation from the plan, or a
+      // paused session, which forces per_step and never sets it at all)
+      // while `session.activePlanId` is still live — the message must not
+      // claim the plan stopped when it did not, because `check.error` is
+      // serialized straight into the tool result the model reads
+      // (aiAgentSdkTools.ts).
+      const failMatchedPlanStep = async <T extends { allowed: false; error: string }>(
+        result: T,
+        appendIfAborted?: string,
+      ): Promise<T> => {
         if (matchedPlanStepIndex !== null && session.activePlanId) {
           await abortActivePlan(session);
+          if (appendIfAborted) {
+            return { ...result, error: `${result.error}${appendIfAborted}` };
+          }
         }
         return result;
       };
@@ -596,6 +612,15 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       const description = guardrailCheck.description ?? `Execute ${toolName}`;
 
       if (guardrailCheck.tier >= 3) {
+        // Wrapped so an uncaught throw anywhere in this flow (e.g.
+        // waitForIntentDecision, transitionIntent, the system-context
+        // select, or revalidateApprovedIntentForRelease — none of which are
+        // individually try/caught) still funnels through
+        // failMatchedPlanStep instead of propagating straight out of
+        // createSessionPreToolUse, where it would be converted to a generic
+        // tool error further up the stack (aiAgentSdkTools.ts) WITHOUT ever
+        // stopping a plan a matched step belonged to.
+        try {
         // ---- Tier 3+: durable action-intents flow (spec §6.1) ----
         // For M365 mutation tools, enrich the approval card with the customer
         // tenant + target user + reason. Non-fatal: any DB hiccup falls back to
@@ -693,10 +718,13 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         );
 
         if (decisionStatus === 'pending_approval') {
-          return await failMatchedPlanStep({
-            allowed: false,
-            error: 'Approval still pending; this action will complete once approved. The plan has been stopped.',
-          });
+          return await failMatchedPlanStep(
+            {
+              allowed: false,
+              error: 'Approval still pending; this action will complete once approved.',
+            },
+            ' The plan has been stopped.',
+          );
         }
 
         if (decisionStatus === 'rejected' || decisionStatus === 'cancelled' || decisionStatus === 'expired') {
@@ -811,6 +839,13 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           );
         } catch (err) {
           console.error('[AI-SDK] Failed to update approval status to executing:', approvalExec.id, err);
+        }
+        } catch (err) {
+          console.error('[AI-SDK] Unexpected error in tier-3 durable-intent flow:', toolName, err);
+          return await failMatchedPlanStep({
+            allowed: false,
+            error: 'An unexpected error occurred while processing this action; it was not executed.',
+          });
         }
       } else {
         // ---- Tier 2 under per_step: legacy lightweight approval bridge ----
@@ -933,7 +968,15 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         );
 
         if (!approved) {
-          return { allowed: false, error: 'Tool execution was rejected or timed out' };
+          // Not reachable with a non-null matchedPlanStepIndex today (both
+          // secret-bearing tools are statically tier 3, so the only way to
+          // land in this tier<3 legacy branch with a matched-but-declined
+          // plan step — a tier-2 secret-bearing tool — is dead code). Wrap
+          // anyway: it costs nothing (failMatchedPlanStep no-ops when
+          // matchedPlanStepIndex is null) and removes a latent trap that is
+          // currently safe only by the coincidence of two other files'
+          // static tier assignments.
+          return await failMatchedPlanStep({ allowed: false, error: 'Tool execution was rejected or timed out' });
         }
 
         // Mark as executing
