@@ -14,7 +14,9 @@ export type PartnerServicePrincipalScope =
   (typeof PARTNER_SERVICE_PRINCIPAL_SCOPES)[number];
 
 export const DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES = Object.freeze(
-  [...PARTNER_SERVICE_PRINCIPAL_SCOPES] as PartnerServicePrincipalScope[],
+  PARTNER_SERVICE_PRINCIPAL_SCOPES.filter(
+    (s): s is PartnerServicePrincipalScope => s !== 'enrollment-keys:write',
+  ),
 );
 
 const PARTNER_SERVICE_PRINCIPAL_SCOPE_SET = new Set<string>(

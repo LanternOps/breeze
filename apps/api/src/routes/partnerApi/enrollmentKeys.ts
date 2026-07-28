@@ -2,12 +2,12 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db } from '../../db';
 import { enrollmentKeys } from '../../db/schema';
 import { sites } from '../../db/schema/orgs';
 import { requirePartnerApiScope } from '../../middleware/partnerApiAuth';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
-import { createAuditLogAsync } from '../../services/auditService';
+import { writeAuditEventAsync } from '../../services/auditEvents';
 import { getRedis } from '../../services/redis';
 import { zValidator } from '../../lib/validation';
 
@@ -16,12 +16,21 @@ export const partnerEnrollmentKeyRoutes = new Hono();
 const MAX_TTL_MINUTES = 525_600; // 1 year
 const IDEMPOTENCY_TTL_SECONDS = 86_400; // 24 hours
 
+function envInt(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (!raw) return defaultValue;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : defaultValue;
+}
+
+const DEFAULT_TTL_MINUTES = envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60);
+
 const createEnrollmentKeySchema = z.object({
   orgId: z.string().uuid(),
   siteId: z.string().uuid().optional(),
   name: z.string().min(1).max(255),
   maxUsage: z.number().int().min(1).max(100_000).default(1),
-  ttlMinutes: z.number().int().min(1).max(MAX_TTL_MINUTES).default(60),
+  ttlMinutes: z.number().int().min(1).max(MAX_TTL_MINUTES).default(DEFAULT_TTL_MINUTES),
 }).strict();
 
 function generateEnrollmentKey(): string {
@@ -53,13 +62,11 @@ partnerEnrollmentKeyRoutes.post(
 
     // Verify siteId belongs to the target org when provided.
     if (data.siteId) {
-      const [site] = await withSystemDbAccessContext(() =>
-        db
-          .select({ id: sites.id })
-          .from(sites)
-          .where(and(eq(sites.id, data.siteId!), eq(sites.orgId, data.orgId)))
-          .limit(1)
-      );
+      const [site] = await db
+        .select({ id: sites.id })
+        .from(sites)
+        .where(and(eq(sites.id, data.siteId!), eq(sites.orgId, data.orgId)))
+        .limit(1);
       if (!site) {
         return c.json({ error: 'siteId does not belong to the specified org' }, 400);
       }
@@ -84,26 +91,24 @@ partnerEnrollmentKeyRoutes.post(
     const keyHash = hashEnrollmentKey(rawKey);
     const expiresAt = new Date(Date.now() + data.ttlMinutes * 60 * 1000);
 
-    const [enrollmentKey] = await withSystemDbAccessContext(() =>
-      db
-        .insert(enrollmentKeys)
-        .values({
-          orgId: data.orgId,
-          siteId: data.siteId ?? null,
-          name: data.name,
-          key: keyHash,
-          maxUsage: data.maxUsage,
-          expiresAt,
-          createdBy: principal.partnerServicePrincipalId,
-        })
-        .returning()
-    );
+    const [enrollmentKey] = await db
+      .insert(enrollmentKeys)
+      .values({
+        orgId: data.orgId,
+        siteId: data.siteId ?? null,
+        name: data.name,
+        key: keyHash,
+        maxUsage: data.maxUsage,
+        expiresAt,
+        createdBy: principal.partnerServicePrincipalId,
+      })
+      .returning();
 
     if (!enrollmentKey) {
       return c.json({ error: 'Failed to create enrollment key' }, 500);
     }
 
-    createAuditLogAsync({
+    writeAuditEventAsync(c, {
       orgId: data.orgId,
       actorType: 'api_key',
       actorId: principal.partnerServicePrincipalId,
