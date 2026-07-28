@@ -226,6 +226,8 @@ import { initializeUnifiTelemetryWorker } from './jobs/unifiTelemetryWorker';
 import { initializeSnmpRetention, shutdownSnmpRetention } from './jobs/snmpRetention';
 import { initializeReliabilityRetention, shutdownReliabilityRetention } from './jobs/reliabilityRetention';
 import { initializeProcessSampleRetention, shutdownProcessSampleRetention } from './jobs/processSampleRetention';
+import { initializeDeviceMetricsRetention, shutdownDeviceMetricsRetention } from './jobs/deviceMetricsRetention';
+import { initializeServiceProcessCheckRetention, shutdownServiceProcessCheckRetention } from './jobs/serviceProcessCheckRetention';
 import { initializePlaybookRetention, shutdownPlaybookRetention } from './jobs/playbookRetention';
 import { initializePolicyEvaluationWorker, shutdownPolicyEvaluationWorker } from './jobs/policyEvaluationWorker';
 import { initializeAutomationWorker, shutdownAutomationWorker } from './jobs/automationWorker';
@@ -1239,6 +1241,8 @@ async function initializeWorkers(): Promise<void> {
     ['ipHistoryRetention', initializeIPHistoryRetention],
     ['reliabilityRetention', initializeReliabilityRetention],
     ['processSampleRetention', initializeProcessSampleRetention],
+    ['deviceMetricsRetention', initializeDeviceMetricsRetention],
+    ['serviceProcessCheckRetention', initializeServiceProcessCheckRetention],
     ['changeLogRetention', initializeChangeLogRetention],
     ['oauthCleanup', initializeOauthCleanupWorker],
     ['oauthRevocationRetryWorker', async () => { initializeOAuthRevocationRetryWorker(); }],
@@ -1449,6 +1453,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownMlOutputRetention,
     shutdownReliabilityRetention,
     shutdownProcessSampleRetention,
+    shutdownDeviceMetricsRetention,
+    shutdownServiceProcessCheckRetention,
     shutdownChangeLogRetention,
     shutdownOauthCleanupWorker,
     shutdownOAuthRevocationRetryWorker,
