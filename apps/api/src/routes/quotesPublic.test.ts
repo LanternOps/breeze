@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 // DB mock: select().from().where().limit()/orderBy() resolves to the next queued
 // row set, consumed FIFO in call order. Mirrors the pattern in
@@ -323,6 +325,16 @@ describe('quotesPublic POST /:token/decline + durable response capability', () =
     });
     expect(setArg.publicResponseConsumedAt).toBeInstanceOf(Date);
     expect(revokeQuoteAcceptJti).toHaveBeenCalledWith(JTI);
+
+    // Pin the guarded UPDATE's WHERE content: the write-time status re-check +
+    // non-consumption re-assert are what close the concurrent-accept race, so
+    // their removal must fail this test, not just the queued-rows simulation.
+    const whereCalls = (db as unknown as { where: { mock: { calls: unknown[][] } } }).where.mock.calls;
+    const updateWhere = whereCalls.at(-1)![0] as SQL;
+    const rendered = new PgDialect().sqlToQuery(updateWhere);
+    expect(rendered.sql).toContain('"status" in (');
+    expect(rendered.sql).toContain('"public_response_consumed_at" is null');
+    expect(rendered.params).toEqual(expect.arrayContaining(['sent', 'viewed']));
   });
 
   it('replayed decline 401s off the durable columns when the Redis marker is gone, without writing', async () => {
@@ -337,9 +349,28 @@ describe('quotesPublic POST /:token/decline + durable response capability', () =
       body: JSON.stringify({ reason: 'again' }),
     });
     expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body.code).toBe('RESPONSE_CONSUMED');
     const setCalls = (db as unknown as { set: { mock: { calls: unknown[][] } } }).set.mock.calls;
     expect(setCalls).toHaveLength(0); // no UPDATE issued
-    expect(revokeQuoteAcceptJti).not.toHaveBeenCalled();
+    // The lost Redis marker is re-armed so repeat replays die at the resolve() gate.
+    expect(revokeQuoteAcceptJti).toHaveBeenCalledWith(JTI);
+  });
+
+  it('decline 401s when a version-1 row was issued a different jti (v1 forward-compat guard)', async () => {
+    dbResults.push([{
+      id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'sent',
+      expiryDate: null, publicTokenVersion: 1, publicResponseJti: 'jti-issued-at-send',
+      publicResponseConsumedAt: null, publicResponseOutcome: null,
+    }]); // v1 row: jti persisted at send; presented token carries jti-1
+
+    const res = await app().request(`/quotes/public/${TOKEN}/decline`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'mismatch' }),
+    });
+    expect(res.status).toBe(401);
+    const setCalls = (db as unknown as { set: { mock: { calls: unknown[][] } } }).set.mock.calls;
+    expect(setCalls).toHaveLength(0); // the stored jti is never rewritten
   });
 
   it('decline 409s (not consumed-401) when the row was consumed by a DIFFERENT jti', async () => {
@@ -387,7 +418,8 @@ describe('quotesPublic POST /:token/decline + durable response capability', () =
     expect(res.status).toBe(401);
     const body = await res.json();
     expect(body.code).toBe('RESPONSE_CONSUMED');
-    expect(revokeQuoteAcceptJti).not.toHaveBeenCalled();
+    // The lost Redis marker is re-armed so repeat replays die at the resolve() gate.
+    expect(revokeQuoteAcceptJti).toHaveBeenCalledWith(JTI);
   });
 });
 

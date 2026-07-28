@@ -89,6 +89,18 @@ export async function acceptQuote(
   ) {
     throw new QuoteServiceError('This link is invalid or has expired', 401, 'RESPONSE_CONSUMED');
   }
+  // Forward-compat guard for the wave-3 v1 model (response jti persisted at
+  // send with public_token_version=1): a version-1 row may only ever be
+  // consumed by the exact jti it was issued with — a different signed token
+  // must never claim or rewrite the stored response jti. Inert for today's
+  // version-0 rows.
+  if (
+    params.acceptanceTokenJti
+    && (quote.publicTokenVersion ?? 0) !== 0
+    && quote.publicResponseJti !== params.acceptanceTokenJti
+  ) {
+    throw new QuoteServiceError('This link is invalid or has expired', 401, 'RESPONSE_CONSUMED');
+  }
   if (quote.status !== 'sent' && quote.status !== 'viewed') {
     throw new QuoteServiceError(`Cannot accept a quote in status ${quote.status}`, 409, 'INVALID_STATE');
   }

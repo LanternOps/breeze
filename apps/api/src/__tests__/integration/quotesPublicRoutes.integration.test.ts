@@ -186,6 +186,9 @@ describe('public quote routes (HTTP, unauthenticated token)', () => {
     // still rejects it — 401 (same shape as the Redis path), quote untouched.
     const replay = await postJson(`/quotes/public/${token}/accept`, { signerName: 'Replay Ray' });
     expect(replay.status).toBe(401);
+    // Cross-route: a decline replay of the consumed accept link is 401 too.
+    await redis!.del(`quote-accept-jti-revoked:${q!.publicResponseJti}`); // backstop re-armed the marker — drop it again
+    expect((await postJson(`/quotes/public/${token}/decline`, { reason: 'flip' })).status).toBe(401);
     const [q2] = await withSystemDbAccessContext(() => db.select().from(quotes).where(eq(quotes.id, quoteId)));
     expect(q2!.status).toBe('converted');
     expect(q2!.publicResponseOutcome).toBe('accepted');
@@ -205,6 +208,9 @@ describe('public quote routes (HTTP, unauthenticated token)', () => {
     expect(redis).toBeTruthy();
     await redis!.del(`quote-accept-jti-revoked:${q!.publicResponseJti}`);
     expect((await postJson(`/quotes/public/${token}/decline`, { reason: 'again' })).status).toBe(401);
+    // The backstop re-arms the Redis marker on a replay — drop it again so the
+    // cross-route accept replay below also proves the DURABLE path, not Redis.
+    await redis!.del(`quote-accept-jti-revoked:${q!.publicResponseJti}`);
     expect((await postJson(`/quotes/public/${token}/accept`, { signerName: 'Flip Flop' })).status).toBe(401);
     const [q2] = await withSystemDbAccessContext(() => db.select().from(quotes).where(eq(quotes.id, quoteId)));
     expect(q2!.status).toBe('declined');

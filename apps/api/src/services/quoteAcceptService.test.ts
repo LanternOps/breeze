@@ -207,6 +207,40 @@ describe('acceptQuote deposit snapshot', () => {
     expect(chain.set.mock.calls).toHaveLength(0);    // no update issued
   });
 
+  // v1 forward-compat guard: once public_token_version=1 rows exist (jti
+  // persisted at send), only the issued jti may consume — a different signed
+  // token must never claim/rewrite the stored jti.
+  it('v1 row with a mismatched jti → 401 RESPONSE_CONSUMED, nothing written', async () => {
+    queueResult([{
+      id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent',
+      expiryDate: null, quoteNumber: 'Q-2026-0001', taxRate: null,
+      currencyCode: 'USD', siteId: null,
+      publicTokenVersion: 1, publicResponseJti: 'jti-issued-at-send',
+      publicResponseConsumedAt: null, publicResponseOutcome: null,
+    }]);
+
+    await expect(acceptQuote({ ...baseParams, acceptanceTokenJti: 'jti-forged' }))
+      .rejects.toMatchObject({ status: 401, code: 'RESPONSE_CONSUMED' });
+
+    const chain = db as unknown as Chain;
+    expect(chain.insert.mock.calls).toHaveLength(0);
+    expect(chain.set.mock.calls).toHaveLength(0);
+  });
+
+  it('v1 row with the ISSUED jti proceeds and consumes normally', async () => {
+    queueAcceptHappyPath({ publicTokenVersion: 1, publicResponseJti: 'jti-issued-at-send', publicResponseConsumedAt: null });
+
+    await acceptQuote({ ...baseParams, acceptanceTokenJti: 'jti-issued-at-send' });
+
+    const setMock = (db as unknown as Chain).set;
+    const quotesSet = setMock.mock.calls[1]![0] as Record<string, unknown>;
+    expect(quotesSet).toMatchObject({
+      status: 'converted',
+      publicResponseJti: 'jti-issued-at-send',
+      publicResponseOutcome: 'accepted',
+    });
+  });
+
   it('a consumed row with a DIFFERENT jti does not trip the backstop (falls through to the status guard)', async () => {
     queueResult([{
       id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'converted',
