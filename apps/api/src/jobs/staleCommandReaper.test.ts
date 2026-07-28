@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJobsTable, devicesTable, queueBackupStopCommandMock } = vi.hoisted(() => ({
+const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJobsTable, devicesTable, softwareDeploymentsTable, deploymentResultsTable, queueBackupStopCommandMock } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   updateMock: vi.fn(),
   deviceCommandsTable: {
@@ -37,6 +37,18 @@ const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJob
     status: 'devices.status',
     lastSeenAt: 'devices.last_seen_at',
   },
+  softwareDeploymentsTable: {
+    id: 'software_deployments.id',
+    dispatchedAt: 'software_deployments.dispatched_at',
+  },
+  deploymentResultsTable: {
+    id: 'deployment_results.id',
+    deploymentId: 'deployment_results.deployment_id',
+    status: 'deployment_results.status',
+    completedAt: 'deployment_results.completed_at',
+    errorMessage: 'deployment_results.error_message',
+    deviceCommandId: 'deployment_results.device_command_id',
+  },
   queueBackupStopCommandMock: vi.fn(),
 }));
 
@@ -66,6 +78,8 @@ vi.mock('../db/schema', async (importOriginal) => {
     restoreJobs: restoreJobsTable,
     backupJobs: backupJobsTable,
     devices: devicesTable,
+    softwareDeployments: softwareDeploymentsTable,
+    deploymentResults: deploymentResultsTable,
   };
 });
 
@@ -87,11 +101,18 @@ vi.mock('../services/commandQueue', async (importOriginal) => {
   };
 });
 
-import { reapStaleDeviceCommands, reapStaleBackupJobs, resolveMaxReapPerRun } from './staleCommandReaper';
+import {
+  reapStaleDeviceCommands,
+  reapStaleBackupJobs,
+  reapStaleSoftwareDeploymentResults,
+  resolveMaxReapPerRun,
+  SOFTWARE_INSTALL_TIMEOUT_MS,
+  SOFTWARE_QUEUED_EXPIRY_MS,
+} from './staleCommandReaper';
 
 function selectChain(resolvedValue: unknown) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'innerJoin', 'where', 'orderBy', 'limit']) {
+  for (const method of ['from', 'innerJoin', 'leftJoin', 'where', 'orderBy', 'limit']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -727,5 +748,169 @@ describe('reapStaleBackupJobs — boundary pins (frozen clock, N±1ms)', () => {
       .mockReturnValueOnce(selectChain([]))
       .mockReturnValueOnce(selectChain([{ id: 'job-b', errorLog: null, createdAt: new Date(T - (PENDING_MS - 1)), lastProgressAt: null }]));
     expectReaped(await reapStaleBackupJobs(), 0);
+  });
+});
+
+describe('reapStaleSoftwareDeploymentResults', () => {
+  const minutesAgo = (n: number) => new Date(Date.now() - n * 60 * 1000);
+  const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000);
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  function setUpUpdates(opts: { raced?: boolean } = {}) {
+    const resultReturning = vi.fn().mockResolvedValue(opts.raced ? [] : [{ id: 'reaped' }]);
+    const resultWhere = vi.fn(() => ({ returning: resultReturning }));
+    const resultSet = vi.fn(() => ({ where: resultWhere }));
+    const commandWhere = vi.fn().mockResolvedValue(undefined);
+    const commandSet = vi.fn(() => ({ where: commandWhere }));
+    updateMock.mockImplementation((table: unknown) => {
+      if (table === deploymentResultsTable) return { set: resultSet };
+      if (table === deviceCommandsTable) return { set: commandSet };
+      throw new Error(`Unexpected table update: ${String(table)}`);
+    });
+    return { resultSet, resultReturning, commandSet, commandWhere };
+  }
+
+  it('pins the exported timeout constants (55 min install, 7 day queued expiry)', () => {
+    expect(SOFTWARE_INSTALL_TIMEOUT_MS).toBe(55 * 60 * 1000);
+    expect(SOFTWARE_QUEUED_EXPIRY_MS).toBe(7 * 24 * 60 * 60 * 1000);
+  });
+
+  it('tier 1: reaps delivered-but-silent rows past the timeout (WS-dispatched and queued-then-sent/completed)', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      // WS-dispatched directly — no queued command row
+      { id: 'res-ws', deviceCommandId: null, dispatchedAt: minutesAgo(60), commandStatus: null },
+      // Offline-queued, agent claimed it (sent) then went silent
+      { id: 'res-sent', deviceCommandId: 'cmd-sent', dispatchedAt: minutesAgo(90), commandStatus: 'sent' },
+      // Command completed but the result POST never landed
+      { id: 'res-done', deviceCommandId: 'cmd-done', dispatchedAt: minutesAgo(90), commandStatus: 'completed' },
+    ]));
+    const { resultSet, commandSet } = setUpUpdates();
+
+    const reaped = await reapStaleSoftwareDeploymentResults();
+
+    expect(reaped).toBe(3);
+    expect(resultSet).toHaveBeenCalledTimes(3);
+    expect(resultSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'failed',
+        errorMessage: 'Server-side timeout: no response from agent',
+      })
+    );
+    // Delivered rows never touch device_commands
+    expect(commandSet).not.toHaveBeenCalled();
+  });
+
+  it('tier 1: leaves a delivered row alone before the 55-min timeout', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      { id: 'res-fresh', deviceCommandId: null, dispatchedAt: minutesAgo(30), commandStatus: null },
+    ]));
+
+    const reaped = await reapStaleSoftwareDeploymentResults();
+
+    expect(reaped).toBe(0);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('tier 2: leaves a queued-offline row (device_commands still pending) alone before the 7-day expiry', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      { id: 'res-queued', deviceCommandId: 'cmd-queued', dispatchedAt: daysAgo(2), commandStatus: 'pending' },
+    ]));
+
+    const reaped = await reapStaleSoftwareDeploymentResults();
+
+    expect(reaped).toBe(0);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('tier 2: reaps a queued-offline row after the 7-day expiry AND cancels the queued device_commands row', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      { id: 'res-expired', deviceCommandId: 'cmd-expired', dispatchedAt: daysAgo(8), commandStatus: 'pending' },
+    ]));
+    const { resultSet, commandSet, commandWhere } = setUpUpdates();
+
+    const reaped = await reapStaleSoftwareDeploymentResults();
+
+    expect(reaped).toBe(1);
+    expect(resultSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'failed',
+        errorMessage: 'Device did not come online before the deployment expired',
+      })
+    );
+    expect(commandSet).toHaveBeenCalledTimes(1);
+    expect(commandSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'cancelled',
+        result: expect.objectContaining({ status: 'cancelled', cancelledBy: 'stale-command-reaper' }),
+      })
+    );
+    expect(commandWhere).toHaveBeenCalledTimes(1);
+  });
+
+  it('never touches rows whose deployment dispatchedAt is NULL (scheduled, not yet dispatched)', async () => {
+    // The SQL filter excludes these; pin the defensive JS guard too.
+    selectMock.mockReturnValueOnce(selectChain([
+      { id: 'res-scheduled', deviceCommandId: null, dispatchedAt: null, commandStatus: null },
+      { id: 'res-scheduled-2', deviceCommandId: 'cmd-x', dispatchedAt: null, commandStatus: 'pending' },
+    ]));
+
+    const reaped = await reapStaleSoftwareDeploymentResults();
+
+    expect(reaped).toBe(0);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('does not count a row (or cancel its command) when a concurrent real result wins the pending-guard race', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      { id: 'res-race', deviceCommandId: 'cmd-race', dispatchedAt: daysAgo(8), commandStatus: 'pending' },
+    ]));
+    const { commandSet } = setUpUpdates({ raced: true });
+
+    const reaped = await reapStaleSoftwareDeploymentResults();
+
+    expect(reaped).toBe(0);
+    expect(commandSet).not.toHaveBeenCalled();
+  });
+
+  it('boundary: dispatchedAt exactly 1ms past each threshold reaps, 1ms short does not', async () => {
+    vi.useFakeTimers();
+    const T = new Date('2026-07-17T00:00:00.000Z').getTime();
+    vi.setSystemTime(T);
+    try {
+      // Tier 1 over/under
+      setUpUpdates();
+      selectMock.mockReturnValueOnce(selectChain([
+        { id: 'r1', deviceCommandId: null, dispatchedAt: new Date(T - SOFTWARE_INSTALL_TIMEOUT_MS - 1), commandStatus: null },
+      ]));
+      expect(await reapStaleSoftwareDeploymentResults()).toBe(1);
+
+      vi.resetAllMocks();
+      vi.setSystemTime(T);
+      selectMock.mockReturnValueOnce(selectChain([
+        { id: 'r1', deviceCommandId: null, dispatchedAt: new Date(T - SOFTWARE_INSTALL_TIMEOUT_MS + 1), commandStatus: null },
+      ]));
+      expect(await reapStaleSoftwareDeploymentResults()).toBe(0);
+
+      // Tier 2 over/under
+      vi.resetAllMocks();
+      vi.setSystemTime(T);
+      setUpUpdates();
+      selectMock.mockReturnValueOnce(selectChain([
+        { id: 'r2', deviceCommandId: 'cmd-b', dispatchedAt: new Date(T - SOFTWARE_QUEUED_EXPIRY_MS - 1), commandStatus: 'pending' },
+      ]));
+      expect(await reapStaleSoftwareDeploymentResults()).toBe(1);
+
+      vi.resetAllMocks();
+      vi.setSystemTime(T);
+      selectMock.mockReturnValueOnce(selectChain([
+        { id: 'r2', deviceCommandId: 'cmd-b', dispatchedAt: new Date(T - SOFTWARE_QUEUED_EXPIRY_MS + 1), commandStatus: 'pending' },
+      ]));
+      expect(await reapStaleSoftwareDeploymentResults()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
