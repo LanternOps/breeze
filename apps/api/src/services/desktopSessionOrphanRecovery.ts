@@ -18,6 +18,15 @@ import {
 
 export interface DesktopOrphanSession {
   id: string;
+  /**
+   * Session type from the remote_sessions row. Orphan recovery is a
+   * DESKTOP-ONLY mechanism: it observes the desktop lease keyspace
+   * (`remote:ws:{desktop:<id>}:*`), so a live terminal session always looks
+   * "absent" to it and would be falsely finalized (revoking its viewer
+   * session ~30-60s after it goes active — issue #2871). Every entry point
+   * must refuse non-desktop rows.
+   */
+  type: string;
   deviceId: string;
   orgId: string;
   userId: string;
@@ -98,6 +107,15 @@ export function createDesktopSessionOrphanRecoveryService(
         firstAbsentObservation.delete(sessionId);
         return 'not_orphaned';
       }
+      // Never treat a non-desktop session as a desktop orphan. Terminal (and
+      // any future non-desktop) sessions keep their lease under a different
+      // keyspace, so the desktop observation below is vacuously "absent" for
+      // them and, unguarded, a healthy live terminal session gets claimed and
+      // finalized (viewer session revoked) within two scan intervals (#2871).
+      if (session.type !== 'desktop') {
+        firstAbsentObservation.delete(sessionId);
+        return 'not_orphaned';
+      }
       if (
         session.status === 'pending'
         && deps.now() - session.createdAt.getTime() < 90_000
@@ -155,7 +173,11 @@ export function createDesktopSessionOrphanRecoveryService(
       // Re-load after the full lease interval. A row that became terminal is
       // never claimed as an orphan.
       const current = await deps.loadSession(sessionId);
-      if (!current || !['pending', 'connecting', 'active'].includes(current.status)) {
+      if (
+        !current
+        || current.type !== 'desktop'
+        || !['pending', 'connecting', 'active'].includes(current.status)
+      ) {
         firstAbsentObservation.delete(sessionId);
         return 'not_orphaned';
       }
@@ -210,6 +232,7 @@ function getProductionService() {
         db
           .select({
             id: remoteSessions.id,
+            type: remoteSessions.type,
             deviceId: remoteSessions.deviceId,
             orgId: remoteSessions.orgId,
             userId: remoteSessions.userId,
@@ -298,6 +321,10 @@ async function scanDesktopSessionOrphans(): Promise<void> {
       .select({ id: remoteSessions.id })
       .from(remoteSessions)
       .where(and(
+        // Desktop-only: this scanner recovers desktop finalization orphans.
+        // Sweeping other session types here is what killed every live
+        // terminal session at ~60s (#2871).
+        eq(remoteSessions.type, 'desktop'),
         inArray(remoteSessions.status, ['pending', 'connecting', 'active']),
         cursor === null ? undefined : gt(remoteSessions.id, cursor),
       ))
