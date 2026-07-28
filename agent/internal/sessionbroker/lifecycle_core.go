@@ -30,6 +30,13 @@ const (
 	// connected. main's deleted KillStaleHelpers was strictly more aggressive —
 	// it killed before EVERY respawn with no timeout at all.
 	helperStartupTimeout = 90 * time.Second
+
+	// disconnectedHelperRetention caps how long the SYSTEM helper of a
+	// disconnected RDP session stays desired. Long enough to survive brief
+	// network drops and RDP reconnects; short enough that helpers don't
+	// accumulate on terminal servers where disconnected sessions linger for
+	// days. Phase 1's on-demand lifecycle re-spawns on target if needed.
+	disconnectedHelperRetention = 10 * time.Minute
 )
 
 type SCMSessionEvent struct {
@@ -149,6 +156,9 @@ type HelperLifecycleManager struct {
 	doneOnce       sync.Once
 	gracePeriod    time.Duration
 	finalWait      time.Duration
+
+	disconnectedSince map[uint32]time.Time
+	now               func() time.Time
 }
 
 func newHelperLifecycleManager(broker *Broker, detector SessionDetector, scmCh <-chan SCMSessionEvent, spawner helperSpawner) *HelperLifecycleManager {
@@ -163,6 +173,9 @@ func newHelperLifecycleManager(broker *Broker, detector SessionDetector, scmCh <
 		stopCh:      make(chan struct{}),
 		gracePeriod: 2 * time.Second,
 		finalWait:   2 * time.Second,
+
+		disconnectedSince: make(map[uint32]time.Time),
+		now:               time.Now,
 	}
 	if broker != nil {
 		m.observerRemove = broker.AddSessionLifecycleObserver(m.sessionAuthenticated, m.sessionClosed)
@@ -193,6 +206,9 @@ func (m *HelperLifecycleManager) detectedDesired() (map[HelperKey]bool, error) {
 			desired[key] = true
 		}
 	}
+	m.mu.Lock()
+	applyDisconnectedRetention(desired, sessions, m.disconnectedSince, m.now(), disconnectedHelperRetention)
+	m.mu.Unlock()
 	return desired, nil
 }
 
