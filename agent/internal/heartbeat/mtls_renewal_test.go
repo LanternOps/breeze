@@ -76,8 +76,9 @@ type mtlsRenewalServer struct {
 	certificateID       string
 	activationExpiresAt string
 	legacyRenewResponse bool
-	confirmStatus       int // 0 => 200 success
-	renewStatus         int // 0 => 200
+	confirmStatus       int    // 0 => 200 success
+	confirmConflictBody string // body returned with a non-200 confirmStatus
+	renewStatus         int    // 0 => 200
 }
 
 func (s *mtlsRenewalServer) counts() (renew, confirm, challenge int) {
@@ -128,11 +129,16 @@ func newMTLSRenewalServer(t *testing.T) *mtlsRenewalServer {
 			rs.confirmedIDs = append(rs.confirmedIDs, id)
 		}
 		status := rs.confirmStatus
+		conflictBody := rs.confirmConflictBody
 		rs.mu.Unlock()
 
 		if status != 0 && status != http.StatusOK {
+			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
-			_, _ = w.Write([]byte(`{"error":"confirmation denied"}`))
+			if conflictBody == "" {
+				conflictBody = `{"error":"confirmation denied"}`
+			}
+			_, _ = w.Write([]byte(conflictBody))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -510,10 +516,22 @@ func TestReconcilePendingMTLSCertNoOpWithoutPending(t *testing.T) {
 	}
 }
 
-// An activation window that has already elapsed can never be confirmed. The
+// An activation window that has GENUINELY elapsed can never be confirmed. The
 // agent must discard the pending certificate locally — without even
 // attempting to call confirm — and keep using its current active
 // certificate.
+//
+// UPDATED by the Wave 5 final whole-branch review (I10): this test used to
+// use a deadline one minute in the past, which now falls inside
+// pendingActivationClockSkew and is deliberately still sent to the server.
+// The local comparison is against a SERVER-supplied timestamp using the LOCAL
+// clock, so a raw compare meant an agent whose clock ran fast — a resumed VM
+// snapshot, a bad NTP peer, a dead CMOS battery — discarded every pending
+// certificate the instant it arrived and could never renew, with nothing in
+// the logs pointing at the clock. The server is the authority (it answers 410
+// when the window has truly closed), so the local check only exists to avoid a
+// pointless round-trip. The skew-tolerance behavior itself is pinned by
+// TestPendingActivationToleratesClockSkew.
 func TestReconcilePendingMTLSCertDiscardsExpiredPending(t *testing.T) {
 	srv := newMTLSRenewalServer(t)
 	h, cfgPath := newMTLSTestHeartbeat(t, srv.URL)
@@ -523,7 +541,8 @@ func TestReconcilePendingMTLSCertDiscardsExpiredPending(t *testing.T) {
 	h.config.PendingMTLSCertificate = srv.renewCertPEM
 	h.config.PendingMTLSPrivateKey = srv.renewKeyPEM
 	h.config.PendingMTLSCertificateID = srv.certificateID
-	h.config.PendingMTLSExpiresAt = time.Now().Add(-1 * time.Minute) // already elapsed
+	// Well beyond the clock-skew allowance — genuinely, unambiguously elapsed.
+	h.config.PendingMTLSExpiresAt = time.Now().Add(-2 * pendingActivationClockSkew)
 	h.config.AuthToken = "brz_current_agent"
 	if err := config.SaveTo(h.config, cfgPath); err != nil {
 		t.Fatalf("config.SaveTo (simulate expired pending): %v", err)
@@ -558,5 +577,286 @@ func TestReconcilePendingMTLSCertDiscardsExpiredPending(t *testing.T) {
 	if loaded.PendingMTLSCertificate != "" || loaded.PendingMTLSCertificateID != "" {
 		t.Errorf("persisted pending fields survived expiry discard: cert=%q id=%q",
 			loaded.PendingMTLSCertificate, loaded.PendingMTLSCertificateID)
+	}
+}
+
+// =====================================================================
+// Wave 5 FINAL WHOLE-BRANCH REVIEW regression tests.
+//
+// C4 — a dropped confirm response must never cost the agent its identity.
+// I1 — the renewal request must present the current client certificate.
+// I2 — expired-certificate recovery must be reachable without a server signal.
+// I10 — the pending activation window must tolerate local clock skew.
+// =====================================================================
+
+// C4: the server activated the certificate but the response was lost. The
+// agent retries, gets 409, and MUST adopt the material — the server is now
+// authenticating it by that certificate. Discarding it (the pre-fix behavior,
+// via the activation-window expiry path) is permanent identity loss.
+func TestConfirm409PromotesInsteadOfLosingIdentity(t *testing.T) {
+	srv := newMTLSRenewalServer(t)
+	srv.confirmStatus = http.StatusConflict
+	h, cfgPath := newMTLSTestHeartbeat(t, srv.URL)
+
+	oldCertPEM := h.config.MtlsCertPEM
+	h.handleCertRenewal()
+
+	if h.config.MtlsCertPEM == oldCertPEM {
+		t.Fatal("409 on confirm discarded the certificate the server had already activated — permanent identity loss")
+	}
+	if h.config.MtlsCertPEM != srv.renewCertPEM {
+		t.Fatalf("active certificate = %q, want the server-issued certificate", h.config.MtlsCertPEM)
+	}
+	if h.config.PendingMTLSCertificate != "" || h.config.PendingMTLSCertificateID != "" {
+		t.Fatal("pending fields survived adoption")
+	}
+	if h.pendingMTLSCertOnDisk.Load() {
+		t.Fatal("pendingMTLSCertOnDisk should be false after adoption")
+	}
+
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if loaded.MtlsCertPEM != srv.renewCertPEM {
+		t.Fatal("adoption was not durably persisted")
+	}
+}
+
+// C4: a 409 that EXPLICITLY reports a terminal state is the one case where the
+// material must be discarded rather than adopted.
+func TestConfirm409WithTerminalStateDiscardsAndKeepsCurrentCert(t *testing.T) {
+	srv := newMTLSRenewalServer(t)
+	srv.confirmStatus = http.StatusConflict
+	srv.confirmConflictBody = `{"error":"Certificate is not pending activation","state":"revoked"}`
+	h, _ := newMTLSTestHeartbeat(t, srv.URL)
+
+	oldCertPEM := h.config.MtlsCertPEM
+	h.handleCertRenewal()
+
+	if h.config.MtlsCertPEM != oldCertPEM {
+		t.Fatal("a revoked certificate must never be adopted as the active identity")
+	}
+	if h.config.PendingMTLSCertificate != "" {
+		t.Fatal("terminal pending material should have been discarded")
+	}
+	if h.pendingMTLSCertOnDisk.Load() {
+		t.Fatal("pendingMTLSCertOnDisk should be false after discarding terminal material")
+	}
+}
+
+// C4: 410 means the window closed server-side and the row was never
+// activated — genuinely dead, and the OLD certificate stays in force.
+func TestConfirm410DiscardsPendingAndKeepsCurrentCert(t *testing.T) {
+	srv := newMTLSRenewalServer(t)
+	srv.confirmStatus = http.StatusGone
+	h, _ := newMTLSTestHeartbeat(t, srv.URL)
+
+	oldCertPEM := h.config.MtlsCertPEM
+	h.handleCertRenewal()
+
+	if h.config.MtlsCertPEM != oldCertPEM {
+		t.Fatal("410 must leave the OLD active certificate in force")
+	}
+	if h.config.PendingMTLSCertificate != "" {
+		t.Fatal("410 pending material should have been discarded")
+	}
+}
+
+// C4 (inert-retry half): the server confirmed, but the local disk write
+// failed. In-memory state must stay CONSISTENT WITH DISK so a resume actually
+// finds the pending material. Pre-fix, promote zeroed the in-memory pending
+// fields before SaveTo and left them zeroed on failure, so hasPendingMTLSCert
+// — which reads exactly those fields — reported "nothing pending" and
+// reconcilePendingMTLSCert no-opped forever.
+func TestPromoteSaveFailureLeavesPendingResumable(t *testing.T) {
+	srv := newMTLSRenewalServer(t)
+	h, cfgPath := newMTLSTestHeartbeat(t, srv.URL)
+
+	// Stage pending material durably first (a normal renewal up to confirm).
+	h.config.PendingMTLSCertificate = srv.renewCertPEM
+	h.config.PendingMTLSPrivateKey = srv.renewKeyPEM
+	h.config.PendingMTLSCertificateID = srv.certificateID
+	h.config.PendingMTLSExpiresAt = time.Now().Add(10 * time.Minute)
+	if err := config.SaveTo(h.config, cfgPath); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	h.pendingMTLSCertOnDisk.Store(true)
+
+	// Make the promotion's SaveTo fail by pointing the active config file at
+	// a path that cannot be written.
+	unwritable := filepath.Join(cfgPath, "not-a-directory", "agent.yaml")
+	viper.SetConfigFile(unwritable)
+
+	h.promotePendingMTLSCert(srv.renewCertPEM, srv.renewKeyPEM)
+
+	if !h.hasPendingMTLSCert() {
+		t.Fatal("a failed promotion left the in-memory pending fields zeroed — the documented retry is inert and the certificate is stranded")
+	}
+	if !h.pendingMTLSCertOnDisk.Load() {
+		t.Fatal("pendingMTLSCertOnDisk must stay set so the tick retries")
+	}
+
+	// And the on-disk state still holds the pending material, so a RESTART
+	// resumes too.
+	viper.SetConfigFile(cfgPath)
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if loaded.PendingMTLSCertificateID != srv.certificateID {
+		t.Fatalf("on-disk pending id = %q, want %q", loaded.PendingMTLSCertificateID, srv.certificateID)
+	}
+
+	// Resuming now completes: the server's confirm is idempotent for an
+	// already-active row, and this mock answers 200.
+	h.reconcilePendingMTLSCert()
+	if h.config.MtlsCertPEM != srv.renewCertPEM {
+		t.Fatal("resume after a save failure did not complete the promotion")
+	}
+}
+
+// C4 (clear half): the same defect class in clearPendingMTLSCert.
+func TestClearSaveFailureLeavesPendingResumable(t *testing.T) {
+	srv := newMTLSRenewalServer(t)
+	h, cfgPath := newMTLSTestHeartbeat(t, srv.URL)
+
+	h.config.PendingMTLSCertificate = srv.renewCertPEM
+	h.config.PendingMTLSPrivateKey = srv.renewKeyPEM
+	h.config.PendingMTLSCertificateID = srv.certificateID
+	h.config.PendingMTLSExpiresAt = time.Now().Add(10 * time.Minute)
+	h.pendingMTLSCertOnDisk.Store(true)
+
+	viper.SetConfigFile(filepath.Join(cfgPath, "not-a-directory", "agent.yaml"))
+	h.clearPendingMTLSCert()
+
+	if !h.hasPendingMTLSCert() {
+		t.Fatal("a failed clear zeroed the in-memory pending fields, so the 'will retry on the next tick' path can never observe anything to retry")
+	}
+	if !h.pendingMTLSCertOnDisk.Load() {
+		t.Fatal("pendingMTLSCertOnDisk must stay set after a failed clear")
+	}
+}
+
+// I10: a fast local clock must not discard a pending certificate the server
+// still considers activatable. The server-supplied deadline here is already
+// in the (local) past, but within the skew allowance.
+func TestPendingActivationToleratesClockSkew(t *testing.T) {
+	srv := newMTLSRenewalServer(t)
+	h, _ := newMTLSTestHeartbeat(t, srv.URL)
+
+	h.config.PendingMTLSCertificate = srv.renewCertPEM
+	h.config.PendingMTLSPrivateKey = srv.renewKeyPEM
+	h.config.PendingMTLSCertificateID = srv.certificateID
+	// Local clock runs ahead of the server by less than the allowance.
+	h.config.PendingMTLSExpiresAt = time.Now().Add(-pendingActivationClockSkew / 2)
+	h.pendingMTLSCertOnDisk.Store(true)
+
+	h.reconcilePendingMTLSCert()
+
+	_, confirm, _ := srv.counts()
+	if confirm != 1 {
+		t.Fatalf("confirm calls = %d, want 1 — a modest clock skew discarded the pending certificate without even asking the server", confirm)
+	}
+	if h.config.MtlsCertPEM != srv.renewCertPEM {
+		t.Fatal("pending certificate was not promoted despite the server accepting it")
+	}
+}
+
+// I10: beyond the allowance it is still discarded — the tolerance is bounded,
+// not unlimited.
+func TestPendingActivationDiscardedWellPastTheWindow(t *testing.T) {
+	srv := newMTLSRenewalServer(t)
+	h, _ := newMTLSTestHeartbeat(t, srv.URL)
+
+	h.config.PendingMTLSCertificate = srv.renewCertPEM
+	h.config.PendingMTLSPrivateKey = srv.renewKeyPEM
+	h.config.PendingMTLSCertificateID = srv.certificateID
+	h.config.PendingMTLSExpiresAt = time.Now().Add(-2 * pendingActivationClockSkew)
+	h.pendingMTLSCertOnDisk.Store(true)
+
+	h.reconcilePendingMTLSCert()
+
+	if _, confirm, _ := srv.counts(); confirm != 0 {
+		t.Fatalf("confirm calls = %d, want 0 for a genuinely elapsed window", confirm)
+	}
+	if h.config.PendingMTLSCertificate != "" {
+		t.Fatal("a genuinely elapsed pending certificate should have been discarded")
+	}
+}
+
+// I1: an unexpired certificate is PRESENTED on the renewal request; an
+// expired one is not (the edge would reject the handshake and take the
+// recovery path down with it).
+func TestNewRenewalClientPresentsUnexpiredCertificate(t *testing.T) {
+	certPEM, keyPEM := generateHeartbeatTestCert(t, "active", time.Now().Add(-time.Hour), time.Now().Add(24*time.Hour))
+
+	if _, presented := newRenewalClient("https://example.test", "tok", "agent", certPEM, keyPEM, false); !presented {
+		t.Fatal("an unexpired certificate must be presented on /renew-cert — an enforce-mode server denies a bearer-only renewal for a device with an unexpired active row, which would lock out the entire fleet")
+	}
+	if _, presented := newRenewalClient("https://example.test", "tok", "agent", certPEM, keyPEM, true); presented {
+		t.Fatal("an EXPIRED certificate must not be presented — the edge rejects the handshake, breaking the recovery path")
+	}
+	if _, presented := newRenewalClient("https://example.test", "tok", "agent", "", "", false); presented {
+		t.Fatal("no certificate material means no certificate to present")
+	}
+}
+
+// I2: an agent whose certificate has expired must initiate renewal ITSELF.
+// Pre-fix, renewal was only ever triggered by the server's `renewCert`
+// heartbeat flag — but in enforce an expired certificate makes the heartbeat
+// itself fail, so the signal could never arrive and the recovery proof path
+// was unreachable in exactly the situation it exists for.
+func TestSelfInitiatedRenewalRecoversAnExpiredCertificate(t *testing.T) {
+	srv := newMTLSRenewalServer(t)
+	h, _ := newMTLSTestHeartbeat(t, srv.URL)
+
+	h.config.MtlsCertExpires = time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339)
+	oldCertPEM := h.config.MtlsCertPEM
+
+	h.maybeSelfInitiateCertRenewal()
+
+	renew, confirm, challenge := srv.counts()
+	if renew != 1 {
+		t.Fatalf("renew calls = %d, want 1 — an expired agent never asked to renew, which is the enforce-mode fleet lockout", renew)
+	}
+	if challenge != 1 {
+		t.Fatalf("challenge calls = %d, want 1 — the expired-certificate recovery proof was never requested", challenge)
+	}
+	if confirm != 1 {
+		t.Fatalf("confirm calls = %d, want 1", confirm)
+	}
+	if h.config.MtlsCertPEM == oldCertPEM {
+		t.Fatal("expired certificate was not replaced")
+	}
+}
+
+// I2: a healthy certificate well inside its lifetime must NOT trigger
+// self-initiated renewal — this path is a recovery mechanism, not a second
+// renewal scheduler competing with the server's signal.
+func TestSelfInitiatedRenewalSkipsHealthyCertificate(t *testing.T) {
+	srv := newMTLSRenewalServer(t)
+	h, _ := newMTLSTestHeartbeat(t, srv.URL)
+
+	h.config.MtlsCertExpires = time.Now().Add(60 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	h.maybeSelfInitiateCertRenewal()
+
+	if renew, _, _ := srv.counts(); renew != 0 {
+		t.Fatalf("renew calls = %d, want 0 for a healthy certificate", renew)
+	}
+}
+
+// I2: a bearer-only device (no certificate material at all) must never
+// attempt a renewal — enrollment, not renewal, issues a first certificate.
+func TestSelfInitiatedRenewalSkipsBearerOnlyDevice(t *testing.T) {
+	srv := newMTLSRenewalServer(t)
+	h, _ := newMTLSTestHeartbeat(t, srv.URL)
+
+	h.config.MtlsCertPEM = ""
+	h.config.MtlsKeyPEM = ""
+	h.maybeSelfInitiateCertRenewal()
+
+	if renew, _, _ := srv.counts(); renew != 0 {
+		t.Fatalf("renew calls = %d, want 0 for a bearer-only device", renew)
 	}
 }

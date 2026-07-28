@@ -63,6 +63,19 @@ var desktopSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
 const backupProbeThreshold = 10 // keep in sync with agent/cmd/breeze-watchdog
 
+// FINAL-REVIEW I10: slack allowed on the LOCAL comparison against the
+// server-supplied pending-activation deadline, so an agent with a fast clock
+// doesn't discard every pending certificate before it can be confirmed. The
+// server-side window is 15 minutes (PENDING_ACTIVATION_TTL_MS) and the server
+// answers 410 when it has genuinely closed, so this only avoids a pointless
+// round-trip and can be generous.
+const pendingActivationClockSkew = 10 * time.Minute
+
+// FINAL-REVIEW I2: how close to expiry an active mTLS certificate may get
+// before the agent initiates renewal ITSELF, rather than waiting for the
+// server's `renewCert` heartbeat signal. See maybeSelfInitiateCertRenewal.
+const selfInitiatedRenewalLeadTime = 24 * time.Hour
+
 type HeartbeatPayload struct {
 	Metrics          *collectors.SystemMetrics `json:"metrics,omitempty"`
 	MetricsAvailable *bool                     `json:"metricsAvailable,omitempty"`
@@ -1005,6 +1018,12 @@ func (h *Heartbeat) Start() {
 	// safe to run: a no-op when nothing is pending.
 	go h.reconcilePendingMTLSCert()
 
+	// FINAL-REVIEW I2 — recover an expired (or nearly expired) certificate
+	// without waiting for a server signal the agent may never be able to
+	// receive. Runs after the reconcile above so staged material is finished
+	// first. See maybeSelfInitiateCertRenewal.
+	go h.maybeSelfInitiateCertRenewal()
+
 	// Proactively spawn helpers into user sessions so remote desktop works
 	// instantly after reboot (Windows service only). The SCM session event
 	// channel (created in constructor) is fed by the service handler
@@ -1124,6 +1143,14 @@ func (h *Heartbeat) Start() {
 			if h.pendingMTLSCertOnDisk.Load() {
 				go h.reconcilePendingMTLSCert()
 			}
+			// FINAL-REVIEW I2 — also BEFORE the auth-dead skip, and for the
+			// same reason as the rotation reconcile above: an agent whose
+			// heartbeats are being refused because its certificate expired is
+			// exactly the agent that needs to renew, and the renewal endpoints
+			// are reachable without a valid certificate by design. Waiting for
+			// a `renewCert` signal that can only arrive in a heartbeat
+			// response the server is refusing to send is a deadlock.
+			go h.maybeSelfInitiateCertRenewal()
 			if h.authMon != nil && h.authMon.ShouldSkip() {
 				log.Debug("skipping heartbeat tick, auth-dead",
 					"backoff", h.authMon.BackoffDuration())
@@ -3595,6 +3622,74 @@ func (h *Heartbeat) handleCertRenewal() {
 	h.issueAndStageMTLSCert()
 }
 
+// maybeSelfInitiateCertRenewal renews the mTLS certificate WITHOUT waiting for
+// the server's `renewCert` heartbeat signal, when the active certificate has
+// expired or is about to.
+//
+// FINAL-REVIEW I2: renewal used to be reachable only via that heartbeat
+// signal, which made the expired-certificate recovery path — the whole reason
+// the proof-of-possession challenge exists — unreachable in `enforce`. The
+// chain was circular: the certificate expires, so the edge no longer verifies
+// it, so the heartbeat is denied by the binding gate, so the response carrying
+// `renewCert: true` never arrives, so the agent never asks to renew. The
+// agent sat at 401 forever holding a private key that could have proved its
+// identity the entire time. The startup path had the same hole from the other
+// side: it called the legacy bearer-only RenewCert with no proof at all.
+//
+// The renewal endpoints are deliberately exempt from the edge mTLS rule
+// (/renew-cert, /renew-cert/challenge — see docs/operations/cloudflare-mtls-setup.md),
+// precisely so an agent with a dead certificate can still reach them, and the
+// server accepts bearer + recovery proof there. Nothing but the missing
+// trigger stood between an expired agent and recovery.
+//
+// Runs on startup and on every tick, before the auth-dead skip — an agent
+// whose heartbeats are being refused is exactly the one that needs this. The
+// certRenewing guard (shared with handleCertRenewal and
+// reconcilePendingMTLSCert) keeps it from racing a server-signaled renewal,
+// and the server's own per-device renewal cooldown bounds the request rate
+// even if this fires on every tick.
+func (h *Heartbeat) maybeSelfInitiateCertRenewal() {
+	h.mu.Lock()
+	certPEM := h.config.MtlsCertPEM
+	keyPEM := h.config.MtlsKeyPEM
+	certExpires := h.config.MtlsCertExpires
+	h.mu.Unlock()
+
+	// No certificate material of any kind: this device is bearer-only (never
+	// issued one, or mTLS isn't configured server-side). Nothing to renew,
+	// and enrollment — not renewal — is what would issue a first certificate.
+	// The key alone is enough to proceed: it is what signs the recovery
+	// proof, and a startup path that declined to load an expired certificate
+	// may have left only the key and the expiry behind.
+	if (certPEM == "" && keyPEM == "") || certExpires == "" {
+		return
+	}
+
+	if !mtls.IsExpired(certExpires) && !mtls.ExpiresWithin(certExpires, selfInitiatedRenewalLeadTime) {
+		return
+	}
+
+	if !h.certRenewing.CompareAndSwap(false, true) {
+		return
+	}
+	defer h.certRenewing.Store(false)
+
+	if h.hasPendingMTLSCert() {
+		// Staged material already exists — finish that rather than issuing
+		// another certificate (which would supersede it server-side anyway).
+		h.confirmPendingMTLSCert()
+		return
+	}
+
+	if mtls.IsExpired(certExpires) {
+		log.Warn("active mTLS certificate has expired; initiating recovery renewal without waiting for a server signal")
+	} else {
+		log.Info("active mTLS certificate is approaching expiry; initiating renewal without waiting for a server signal",
+			"expires", certExpires)
+	}
+	h.issueAndStageMTLSCert()
+}
+
 // reconcilePendingMTLSCert recovers a two-phase mTLS renewal that staged
 // pending material durably but never confirmed it — the crash/restart
 // window (or a lost confirm response) the design exists to survive. Safe to
@@ -3634,16 +3729,35 @@ func (h *Heartbeat) hasPendingMTLSCert() bool {
 func (h *Heartbeat) issueAndStageMTLSCert() {
 	h.mu.Lock()
 	activeCertExpires := h.config.MtlsCertExpires
+	activeCertPEM := h.config.MtlsCertPEM
 	activeKeyPEM := h.config.MtlsKeyPEM
 	deviceID := h.config.DeviceID
 	agentID := h.config.AgentID
 	h.mu.Unlock()
 
 	token := h.secureToken.Reveal()
-	renewClient := api.NewClient(h.serverURL(), token, agentID)
+	certExpired := mtls.IsExpired(activeCertExpires)
+
+	// FINAL-REVIEW I1: the renewal request must PRESENT the current client
+	// certificate. This used to build a bearer-only client, so in `enforce`
+	// the server's own rule — an unexpired active row requires a matching
+	// certificate assertion (evaluateRenewalAuthorization) — denied 100% of
+	// renewals: every agent's certificate would have run to expiry and the
+	// whole fleet would have locked itself out. /renew-cert is exempt from
+	// the edge mTLS rule (it must stay reachable for recovery), but being
+	// allowed through the edge without a certificate is not the same as being
+	// authorized by the API, and only the latter was ever tested.
+	//
+	// An EXPIRED certificate is deliberately NOT presented: the edge would
+	// reject the handshake outright, taking the recovery path down with it.
+	// That case authenticates with bearer + a recovery proof instead.
+	renewClient, presentedCert := newRenewalClient(h.serverURL(), token, agentID, activeCertPEM, activeKeyPEM, certExpired)
+	if !certExpired && !presentedCert {
+		log.Warn("renewing without presenting the active mTLS certificate; an enforce-mode server will deny this")
+	}
 
 	var proof *api.RecoveryProof
-	if mtls.IsExpired(activeCertExpires) && activeKeyPEM != "" {
+	if certExpired && activeKeyPEM != "" {
 		proof = h.buildExpiredCertRecoveryProof(renewClient, deviceID, activeKeyPEM)
 	}
 
@@ -3681,6 +3795,38 @@ func (h *Heartbeat) issueAndStageMTLSCert() {
 	}
 
 	h.stagePendingMTLSCert(renewResp)
+}
+
+// newRenewalClient builds the API client used for /renew-cert.
+//
+// FINAL-REVIEW I1: the renewal request must PRESENT the current client
+// certificate whenever there is a usable one. This path used to always build a
+// bearer-only client, so under AGENT_MTLS_BINDING_MODE=enforce the server's
+// own rule — an unexpired active certificate row requires a matching
+// certificate assertion (evaluateRenewalAuthorization) — denied 100% of
+// renewals. Every agent's certificate would have run to expiry and the entire
+// fleet would have locked itself out. /renew-cert is exempt from the EDGE
+// mTLS rule so that recovery stays reachable, but passing the edge without a
+// certificate is not the same as being authorized by the API.
+//
+// An EXPIRED certificate is deliberately NOT presented: the edge rejects the
+// handshake outright, which would take the recovery path down with it. That
+// case authenticates with bearer + a recovery proof instead.
+//
+// Returns the client and whether the active certificate is being presented.
+func newRenewalClient(serverURL, token, agentID, certPEM, keyPEM string, certExpired bool) (*api.Client, bool) {
+	if certExpired || certPEM == "" || keyPEM == "" {
+		return api.NewClient(serverURL, token, agentID), false
+	}
+	tlsCfg, err := mtls.BuildTLSConfig(certPEM, keyPEM)
+	if err != nil || tlsCfg == nil {
+		if err != nil {
+			log.Warn("could not build a TLS config from the active mTLS certificate; requesting renewal bearer-only",
+				"error", err.Error())
+		}
+		return api.NewClient(serverURL, token, agentID), false
+	}
+	return api.NewClientWithTLS(serverURL, token, agentID, tlsCfg), true
 }
 
 // buildExpiredCertRecoveryProof requests a recovery challenge and signs it
@@ -3826,7 +3972,17 @@ func (h *Heartbeat) confirmPendingMTLSCert() {
 	// Ordering invariant: an activation window that has already elapsed can
 	// never be confirmed — the server's own sweep independently revokes it.
 	// Discard locally and keep using the current active certificate.
-	if !pendingExpiresAt.IsZero() && time.Now().After(pendingExpiresAt) {
+	//
+	// FINAL-REVIEW I10: compared against the LOCAL clock with a skew
+	// allowance. activationExpiresAt is a server timestamp; a raw local
+	// compare meant an agent whose clock ran fast (a stopped-VM resume, a
+	// bad NTP peer, a dead CMOS battery) discarded every pending certificate
+	// the instant it arrived and could never complete a renewal, with nothing
+	// in the logs pointing at the clock. The server is the authority on the
+	// window anyway — it answers 410 when the window has genuinely closed —
+	// so this local check only needs to avoid pointless round-trips, and can
+	// afford to be generous.
+	if !pendingExpiresAt.IsZero() && time.Now().Add(-pendingActivationClockSkew).After(pendingExpiresAt) {
 		log.Warn("pending mTLS certificate's activation window expired before it could be confirmed; discarding and keeping the current certificate",
 			"certificateId", pendingCertID)
 		h.clearPendingMTLSCert()
@@ -3849,9 +4005,61 @@ func (h *Heartbeat) confirmPendingMTLSCert() {
 
 	resp, err := confirmClient.ConfirmCertRenewal(pendingCertID)
 	if err != nil {
-		// Non-2xx or transport failure: do NOT promote. The old active
-		// certificate is untouched; the pending material stays on disk and
-		// the next tick/heartbeat retries.
+		var httpErr *api.ErrHTTPStatus
+		if errors.As(err, &httpErr) {
+			switch httpErr.StatusCode {
+			case http.StatusConflict:
+				// FINAL-REVIEW C4 — the identity-loss bug. A 409 means the
+				// row is no longer pending_activation. The dominant cause by
+				// far is that a PREVIOUS confirm succeeded and its response
+				// was lost in flight: the server already activated this
+				// certificate and considers it the device's identity. Treating
+				// that as a generic failure (what this code used to do) meant
+				// the agent retried until activation_expires_at elapsed and
+				// then clearPendingMTLSCert DELETED the only copy of the cert
+				// the server is now authenticating it by — permanent identity
+				// loss from a single dropped response.
+				//
+				// A current server never sends 409 for that case at all (it
+				// re-confirms idempotently, see routes/agents/mtls.ts), and
+				// when it does send one it includes the row `state` so the
+				// two outcomes are distinguishable. Adopt on "active" or on
+				// an absent state (older server, and the safe direction:
+				// keeping material the server has activated can be corrected
+				// by another renewal, discarding it cannot be corrected at
+				// all); discard only on an explicitly terminal state.
+				if state := parseConfirmConflictState(httpErr.Body); isTerminalCertState(state) {
+					log.Warn("server reports the pending mTLS certificate is terminally unusable; discarding and keeping the current certificate",
+						"certificateId", pendingCertID, "state", state)
+					h.clearPendingMTLSCert()
+					return
+				} else {
+					log.Info("mTLS certificate confirmation returned conflict — the server has already activated this certificate; adopting it locally",
+						"certificateId", pendingCertID, "state", state)
+					h.promotePendingMTLSCert(pendingCert, pendingKey)
+					return
+				}
+			case http.StatusGone:
+				// 410: the activation window elapsed server-side and the row
+				// was never activated. The server's own sweep revokes it, so
+				// this material is genuinely dead — discard it explicitly
+				// rather than waiting for the local expiry check to notice.
+				log.Warn("pending mTLS certificate's activation window expired server-side; discarding and keeping the current certificate",
+					"certificateId", pendingCertID)
+				h.clearPendingMTLSCert()
+				return
+			case http.StatusNotFound:
+				// The row does not exist (or belongs to another device):
+				// nothing to confirm, ever. Retrying cannot help.
+				log.Warn("server does not recognize the pending mTLS certificate; discarding and keeping the current certificate",
+					"certificateId", pendingCertID)
+				h.clearPendingMTLSCert()
+				return
+			}
+		}
+		// Transport failure or any other status: do NOT promote. The old
+		// active certificate is untouched; the pending material stays on disk
+		// and the next tick/heartbeat retries.
 		log.Warn("mTLS certificate confirmation failed; retaining current certificate and will retry",
 			"certificateId", pendingCertID, "error", err.Error())
 		return
@@ -3861,8 +4069,32 @@ func (h *Heartbeat) confirmPendingMTLSCert() {
 			"certificateId", pendingCertID, "error", resp.Error)
 		return
 	}
+	if resp.AlreadyActive {
+		log.Info("server confirmed this mTLS certificate was already active (idempotent re-confirm); adopting it locally",
+			"certificateId", pendingCertID)
+	}
 
 	h.promotePendingMTLSCert(pendingCert, pendingKey)
+}
+
+// parseConfirmConflictState extracts the certificate row state from a 409
+// /renew-cert/confirm body. Returns "" when the body is absent, unparseable,
+// or produced by a server that predates the `state` field.
+func parseConfirmConflictState(body string) string {
+	var parsed api.ConfirmConflictBody
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		return ""
+	}
+	return parsed.State
+}
+
+// isTerminalCertState reports whether a server-reported certificate state
+// means the pending material can never become this device's identity. Only an
+// EXPLICIT terminal state qualifies: an unknown/absent state must fall through
+// to adoption, because discarding material the server has already activated is
+// unrecoverable while adopting material the server later revokes is not.
+func isTerminalCertState(state string) bool {
+	return state == "revoked" || state == "pending_revocation"
 }
 
 // promotePendingMTLSCert collapses a server-confirmed pending certificate
@@ -3885,6 +4117,23 @@ func (h *Heartbeat) promotePendingMTLSCert(certPEM, keyPEM string) {
 
 	token := h.secureToken.Reveal()
 	h.mu.Lock()
+	// FINAL-REVIEW C4 (inert retry): snapshot every field this write mutates
+	// so a failed SaveTo can restore ALL of them. The previous version zeroed
+	// the in-memory pending fields BEFORE SaveTo and left them zeroed when the
+	// save failed. hasPendingMTLSCert reads those same in-memory fields, so
+	// the "will retry" path it logged was inert: reconcilePendingMTLSCert saw
+	// no pending certificate and returned immediately, while the disk still
+	// held the un-promoted pending state. In-memory and on-disk state now
+	// stay identical through a failure, so a resume — this tick's retry or a
+	// restart reading the file — genuinely finds the pending material.
+	prevCertPEM := h.config.MtlsCertPEM
+	prevKeyPEM := h.config.MtlsKeyPEM
+	prevExpires := h.config.MtlsCertExpires
+	prevPendingCert := h.config.PendingMTLSCertificate
+	prevPendingKey := h.config.PendingMTLSPrivateKey
+	prevPendingCertID := h.config.PendingMTLSCertificateID
+	prevPendingExpiresAt := h.config.PendingMTLSExpiresAt
+
 	h.config.MtlsCertPEM = certPEM
 	h.config.MtlsKeyPEM = keyPEM
 	if expiresStr != "" {
@@ -3897,14 +4146,24 @@ func (h *Heartbeat) promotePendingMTLSCert(certPEM, keyPEM string) {
 	h.config.AuthToken = token
 	saveErr := config.SaveTo(h.config, config.ActiveConfigFile())
 	h.config.AuthToken = ""
+	if saveErr != nil {
+		h.config.MtlsCertPEM = prevCertPEM
+		h.config.MtlsKeyPEM = prevKeyPEM
+		h.config.MtlsCertExpires = prevExpires
+		h.config.PendingMTLSCertificate = prevPendingCert
+		h.config.PendingMTLSPrivateKey = prevPendingKey
+		h.config.PendingMTLSCertificateID = prevPendingCertID
+		h.config.PendingMTLSExpiresAt = prevPendingExpiresAt
+	}
 	h.mu.Unlock()
 
 	if saveErr != nil {
 		// The server has ALREADY confirmed/promoted this certificate — only
-		// our local disk write failed. Leave pendingMTLSCertOnDisk set so the
-		// retry loop keeps trying; a subsequent confirm attempt against an
-		// already-activated certificateId is a known, accepted limitation
-		// (see task-5-report.md) rather than a silently-lost promotion.
+		// our local disk write failed. Both in-memory and on-disk state have
+		// been left holding the pending material, so hasPendingMTLSCert is
+		// true and the retry loop (and a restart) will actually resume. The
+		// server's confirm is idempotent for an already-active row, so the
+		// retry completes rather than 409-looping.
 		log.Error("mTLS certificate confirmed by server but promoting it locally failed; will retry", "error", saveErr.Error())
 		h.pendingMTLSCertOnDisk.Store(true)
 		return
@@ -3926,6 +4185,16 @@ func (h *Heartbeat) promotePendingMTLSCert(certPEM, keyPEM string) {
 func (h *Heartbeat) clearPendingMTLSCert() {
 	token := h.secureToken.Reveal()
 	h.mu.Lock()
+	// FINAL-REVIEW C4 (same defect class as promotePendingMTLSCert): restore
+	// the in-memory pending fields when SaveTo fails. Zeroing them and leaving
+	// them zeroed made hasPendingMTLSCert report "nothing pending" while the
+	// disk still held the row, so the "will retry on the next tick" path was
+	// inert and the stale pending state survived on disk indefinitely.
+	prevPendingCert := h.config.PendingMTLSCertificate
+	prevPendingKey := h.config.PendingMTLSPrivateKey
+	prevPendingCertID := h.config.PendingMTLSCertificateID
+	prevPendingExpiresAt := h.config.PendingMTLSExpiresAt
+
 	h.config.PendingMTLSCertificate = ""
 	h.config.PendingMTLSPrivateKey = ""
 	h.config.PendingMTLSCertificateID = ""
@@ -3933,10 +4202,17 @@ func (h *Heartbeat) clearPendingMTLSCert() {
 	h.config.AuthToken = token
 	err := config.SaveTo(h.config, config.ActiveConfigFile())
 	h.config.AuthToken = ""
+	if err != nil {
+		h.config.PendingMTLSCertificate = prevPendingCert
+		h.config.PendingMTLSPrivateKey = prevPendingKey
+		h.config.PendingMTLSCertificateID = prevPendingCertID
+		h.config.PendingMTLSExpiresAt = prevPendingExpiresAt
+	}
 	h.mu.Unlock()
 
 	if err != nil {
 		log.Error("failed to clear expired pending mTLS certificate from disk; will retry on the next tick", "error", err.Error())
+		h.pendingMTLSCertOnDisk.Store(true)
 		return
 	}
 	h.pendingMTLSCertOnDisk.Store(false)

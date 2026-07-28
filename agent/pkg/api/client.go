@@ -157,6 +157,23 @@ type RenewalChallengeResponse struct {
 type ConfirmCertRenewalResponse struct {
 	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`
+	// AlreadyActive is set by the server when the confirmed certificate was
+	// ALREADY this device's active identity — i.e. a previous confirm
+	// succeeded and its response was lost in flight. The agent must still
+	// promote the pending material in that case, not discard it.
+	AlreadyActive bool `json:"alreadyActive,omitempty"`
+}
+
+// ConfirmConflictBody is the shape a two-phase-capable server returns with a
+// 409 from /renew-cert/confirm. `State` is the certificate row's actual state,
+// which tells the agent whether the material it is holding was already adopted
+// by the server ("active") or is terminally dead ("revoked",
+// "pending_revocation") and must be discarded. An older server sends no
+// `state`, which the agent treats as the far more likely "already active"
+// case — see heartbeat.confirmPendingMTLSCert.
+type ConfirmConflictBody struct {
+	Error string `json:"error,omitempty"`
+	State string `json:"state,omitempty"`
 }
 
 type RotateTokenResponse struct {

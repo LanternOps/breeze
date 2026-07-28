@@ -73,6 +73,29 @@ func IsExpired(expiresStr string) bool {
 	return time.Now().After(t)
 }
 
+// ExpiresWithin reports whether the cert expires inside the given lead time
+// (or has already expired). Returns false for an empty string (no cert
+// configured) and, like IsExpired, fails closed to true on an unparseable
+// date so the agent attempts renewal rather than silently running to expiry.
+//
+// Used by the agent's self-initiated renewal path (Wave 5 final review, I2):
+// an agent must not depend solely on the server's `renewCert` heartbeat signal
+// to learn it needs a new certificate, because in `enforce` an expired
+// certificate causes the heartbeat itself to be denied and the signal can
+// never arrive.
+func ExpiresWithin(expiresStr string, lead time.Duration) bool {
+	if expiresStr == "" {
+		return false
+	}
+	t, err := parseExpiryTime(expiresStr)
+	if err != nil {
+		log.Warn("unable to parse mTLS cert expiry, treating as due for renewal for safety",
+			"expires", expiresStr, "error", err)
+		return true
+	}
+	return time.Now().Add(lead).After(t)
+}
+
 // NeedsRenewal checks if the cert has passed 2/3 of its lifetime.
 // Returns false if either timestamp is empty or unparseable.
 func NeedsRenewal(issuedStr, expiresStr string) bool {
