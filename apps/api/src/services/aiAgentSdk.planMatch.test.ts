@@ -185,12 +185,13 @@ describe('createSessionPreToolUse — approved plan step argument matching', () 
     vi.mocked(checkToolRateLimit).mockResolvedValue(null);
     mockGetUserPushTokens.mockResolvedValue([]);
     mockSendExpoPush.mockResolvedValue([]);
-    // Default effective tier is 2, NOT 3 (Task 1 review finding, reported in
-    // task-1-report.md: the previous tier-3 default made the whole
-    // arg-tampering suite below vacuous — with the shortcut now gated on
-    // `guardrailCheck.tier < 3`, a tier-3 call can never reach it regardless
-    // of what matchPlanStep returns, so "requires fresh approval" was true
-    // unconditionally for every deviation case). Tier 2 keeps the shortcut
+    // Default effective tier is 2, NOT 3. A tier-3 default here would make
+    // the arg-tampering suite below vacuous — with the shortcut gated on
+    // `guardrailCheck.tier < 3` (design doc
+    // docs/superpowers/specs/ai-mcp/2026-07-27-tier3-plan-mode-approval-parity-design.md
+    // §3.1), a tier-3 call can never reach it regardless of what
+    // matchPlanStep returns, so "requires fresh approval" would be true
+    // unconditionally for every deviation case. Tier 2 keeps the shortcut
     // reachable, so a genuine arg mismatch is what turns it away — the
     // sibling "matches" tests below rely on this same default. One dedicated
     // tier-3 case is kept further down to pin the tier gate itself.
@@ -252,14 +253,13 @@ describe('createSessionPreToolUse — approved plan step argument matching', () 
     expect(session.currentPlanStepIndex).toBe(1);
   });
 
-  // The one tier-3 case retained in this file (Task 1 review finding,
-  // reported in task-1-report.md): every OTHER deviation test below moved to
-  // effective tier 2 so a genuine arg mismatch is what makes them meaningful.
-  // This one instead pins the tier gate itself — a tier-3 deviation must
-  // fall through to the durable action-intents branch regardless of what
-  // matchPlanStep says, which is guaranteed by `guardrailCheck.tier < 3`
-  // alone, independent of the arg-matching logic under test everywhere else
-  // in this file.
+  // The one tier-3 case retained in this file: every OTHER deviation test
+  // below moved to effective tier 2 so a genuine arg mismatch is what makes
+  // them meaningful. This one instead pins the tier gate itself — a tier-3
+  // deviation must fall through to the durable action-intents branch
+  // regardless of what matchPlanStep says, which is guaranteed by
+  // `guardrailCheck.tier < 3` alone (design doc §3.1), independent of the
+  // arg-matching logic under test everywhere else in this file.
   it('requires fresh approval (via the durable tier-3 branch) when a high-impact arg (command) is mutated at effective tier 3', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({
       allowed: true,
@@ -309,7 +309,8 @@ describe('createSessionPreToolUse — approved plan step argument matching', () 
     // bridge (waitForApproval), never the tier-3 durable-intent branch and
     // never the shortcut's plan_step_start. If matchPlanStep were gutted to
     // always match, this would instead take the shortcut and none of these
-    // would fire — see the load-bearing proof in task-1-report.md.
+    // would fire — this is the load-bearing proof that it's the tier gate,
+    // not the arg-matching logic, under test here.
     expect(waitForApproval).toHaveBeenCalled();
     expect(mockWaitForIntentDecision).not.toHaveBeenCalled();
     expect(session.eventBus.publish).not.toHaveBeenCalledWith(

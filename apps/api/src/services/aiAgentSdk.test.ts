@@ -1157,14 +1157,14 @@ describe('createSessionPreToolUse', () => {
 
   describe('plan-step shortcut is gated on effective tier', () => {
     // A "still shortcuts an effective-tier-1 step" case originally lived here.
-    // Removed (Task 1 review finding, reported in task-1-report.md): tier 1
-    // never enters the `guardrailCheck.tier >= 2` block at all (:313), so the
-    // whole plan-shortcut code path — gate included — is unreached. The
-    // assertions (`allowed:true`, createActionIntent not called) would pass
-    // identically with the gate deleted, the plan block deleted, or the gate
-    // set to `tier < 0`; it proved nothing about this change. The real
-    // "shortcut still works for an eligible tool" case is covered below by
-    // "still takes the plan shortcut for a non-secret, effective-tier-2 tool".
+    // Removed: tier 1 never enters the `guardrailCheck.tier >= 2` block at
+    // all (:313), so the whole plan-shortcut code path — gate included — is
+    // unreached. The assertions (`allowed:true`, createActionIntent not
+    // called) would pass identically with the gate deleted, the plan block
+    // deleted, or the gate set to `tier < 0`; it proved nothing about this
+    // change. The real "shortcut still works for an eligible tool" case is
+    // covered below by "still takes the plan shortcut for a non-secret,
+    // effective-tier-2 tool".
     it.each(['action_plan', 'hybrid_plan'] as const)(
       'does NOT shortcut a statically-tier-3 step in %s mode',
       async (mode) => {
@@ -1226,14 +1226,15 @@ describe('createSessionPreToolUse', () => {
     });
 
     // Proves the retained `!isSecretBearingTool(toolName)` clause actually
-    // discriminates (Task 1 review finding, reported in task-1-report.md):
-    // every other secret-bearing test in this file runs at effective tier 3,
-    // where `guardrailCheck.tier < 3` alone already blocks the shortcut —
-    // deleting `&& !isSecretBearingTool(toolName)` would leave every one of
-    // them green. Tier 2 here is the only tier at which the clause is the
-    // SOLE thing standing between a secret-bearing tool and the shortcut —
-    // exactly the "future mis-tiering" defence-in-depth scenario it exists
-    // for.
+    // discriminates: every other secret-bearing test in this file runs at
+    // effective tier 3, where `guardrailCheck.tier < 3` alone already blocks
+    // the shortcut (design doc
+    // docs/superpowers/specs/ai-mcp/2026-07-27-tier3-plan-mode-approval-parity-design.md
+    // §3.1) — deleting `&& !isSecretBearingTool(toolName)` would leave every
+    // one of them green. Tier 2 here is the only tier at which the clause is
+    // the SOLE thing standing between a secret-bearing tool and the
+    // shortcut — exactly the "future mis-tiering" defence-in-depth scenario
+    // it exists for.
     it('declines the shortcut for a secret-bearing tool even at an eligible (non-tier-3) effective tier', async () => {
       vi.mocked(checkGuardrails).mockReturnValue({
         allowed: true,
@@ -1716,7 +1717,7 @@ describe('inline secret-bearing completion (Task 6)', () => {
     expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'tool_result' }));
   });
 
-  describe('Important 4: PAM-helper tier-3-but-intentless path pins intentId===undefined (out of scope for Task 7 — the plan-step sibling case is fixed below; general defect tracked in internal/security/tier3-plan-mode-intent-bypass.md)', () => {
+  describe('Important 4: PAM-helper tier-3-but-intentless path pins intentId===undefined (deliberately out of scope for the plan-step fix below — PAM/helper sessions use their own elevation governance, not durable action-intents; see design doc docs/superpowers/specs/ai-mcp/2026-07-27-tier3-plan-mode-approval-parity-design.md §1.5)', () => {
     it('PAM-helper session: intentId is undefined for a secret-bearing tool auto-approved by organization policy', async () => {
       vi.mocked(checkGuardrails).mockReturnValue({
         allowed: true,
@@ -1801,14 +1802,14 @@ describe('inline secret-bearing completion (Task 6)', () => {
     );
 
     it.each(['action_plan', 'hybrid_plan'] as const)(
-      // NOTE (Task 1 deviation, reported in task-1-report.md): this originally
-      // used execute_command at (mocked) tier 3, asserting the shortcut still
-      // fires. That is exactly the bypass Task 1 closes (Global Constraint:
-      // "no effective-tier-3 action executes without a durable approval") —
-      // keeping it as-written would pin the vulnerability as "correct". Swapped
-      // to an effective-tier-2 tool so this test still guards its original,
-      // valid intent: the gate must not broaden beyond secret-bearing tools
-      // for tools that ARE eligible for the shortcut.
+      // NOTE: this originally used execute_command at (mocked) tier 3,
+      // asserting the shortcut still fires. That is exactly the bypass this
+      // branch closes (design doc §3.1: "no effective-tier-3 action executes
+      // without a durable approval") — keeping it as-written would pin the
+      // vulnerability as "correct". Swapped to an effective-tier-2 tool so
+      // this test still guards its original, valid intent: the gate must not
+      // broaden beyond secret-bearing tools for tools that ARE eligible for
+      // the shortcut.
       'still takes the plan shortcut for a non-secret, effective-tier-2 tool in %s mode (regression guard: the gate must not broaden beyond secret-bearing tools)',
       async (mode) => {
         vi.mocked(checkGuardrails).mockReturnValue({
@@ -1838,17 +1839,19 @@ describe('inline secret-bearing completion (Task 6)', () => {
     );
 
     describe('plan bookkeeping stays coherent when a secret-bearing tool declines the shortcut', () => {
-      // NOTE (Task 1 deviation, reported in task-1-report.md): the two tests in
-      // this block previously asserted `session.currentPlanStepIndex` advanced
-      // synchronously on decline, and that a REJECTED terminal step still
-      // completed the plan. Task 1's Global Constraint #3 ("never advance
-      // currentPlanStepIndex before the step is authorized") removes exactly
-      // that early advance — it is the mechanism by which a rejected/never-run
-      // step could get silently marked `plan_step_complete`/`completed`. The
-      // advance now happens only once the step is genuinely authorized (Task 2,
-      // at the release-CAS-won + revalidated point) — which these tests, using
-      // a REJECTED decision throughout, never reach. Rewritten below to assert
-      // the new, correct behavior instead of the old (buggy) one.
+      // NOTE: the two tests in this block previously asserted
+      // `session.currentPlanStepIndex` advanced synchronously on decline, and
+      // that a REJECTED terminal step still completed the plan. Deferring the
+      // index advance until the step is genuinely authorized (design doc
+      // docs/superpowers/specs/ai-mcp/2026-07-27-tier3-plan-mode-approval-parity-design.md
+      // §3.2 — "never advance currentPlanStepIndex before the step is
+      // authorized") removes exactly that early advance — it was the
+      // mechanism by which a rejected/never-run step could get silently
+      // marked `plan_step_complete`/`completed`. The advance now happens only
+      // once the step is genuinely authorized (at the release-CAS-won +
+      // revalidated point) — which these tests, using a REJECTED decision
+      // throughout, never reach. Rewritten below to assert the new, correct
+      // behavior instead of the old (buggy) one.
       it('a secret-bearing step that declines the shortcut aborts the plan (Task 3) — a retry no longer matches any plan step', async () => {
         // Pre-Task-3, this test asserted the plan SLOT survived a decline
         // (the index didn't advance, so the same step "still matched" on a

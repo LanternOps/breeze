@@ -426,14 +426,15 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       // branch below so the action has a durable, second-approver intent row.
 
       // Set when this call matches an approved plan step but declines the
-      // shortcut (effective tier 3, or secret-bearing). Tasks 2/3 use it to
-      // advance the plan index only once the step is authorized, and to abort
-      // the plan on any non-executing exit.
+      // shortcut (effective tier 3, or secret-bearing). The durable tier-3
+      // approval branch below uses it to advance the plan index only once
+      // the step is authorized, and to abort the plan on any non-executing
+      // exit.
       let matchedPlanStepIndex: number | null = null;
 
       // Terminate a matched plan step that is NOT going to execute. The plan
       // must not continue past a step nobody authorized, and with the index
-      // no longer advanced early (Task 2) there is nothing to unwind — this
+      // no longer advanced early there is nothing to unwind — this
       // exists purely to stop the plan. abortActivePlan swallows its own DB
       // error and still clears in-memory plan state, so the tool's result
       // must not depend on it succeeding.
@@ -503,7 +504,8 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // lost release CAS, revalidation failure, thrown errors), and a
           // stale index makes postToolUse emit plan_step_complete for a step
           // that never ran and can mark the plan completed. The advance now
-          // happens at the authorize point instead (Task 2).
+          // happens at the authorize point instead, in the durable tier-3
+          // approval branch below.
           //
           // Also deliberately no plan_step_start / aiToolExecutions row here:
           // the tier-3 branch creates its own approval-record row and
@@ -521,8 +523,9 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       // below tier 3 (services/actionIntents/intentService.ts), so Tier 2
       // under per_step keeps the legacy lightweight bridge below (regression
       // fix: a prior revision routed both tiers through createActionIntent,
-      // which silently failed every Tier-2 per_step approval — see
-      // .superpowers/sdd/task-8-report.md "Fix: tier-2 per_step regression").
+      // which silently failed every Tier-2 per_step approval — reverted so
+      // Tier 2 uses the lightweight bridge and only Tier 3 uses the durable
+      // intents path).
       // ai_tool_executions is still created here as the execution-ledger row
       // the SSE approval_required event references and the inline-completion
       // path below (via createSessionPostToolUse) updates to completed/
