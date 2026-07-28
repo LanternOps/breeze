@@ -9,7 +9,9 @@ import QuoteEditor from './QuoteEditor';
 import QuoteDetail from './QuoteDetail';
 import QuoteDocumentPreview from './QuoteDocument';
 import QuoteActions, { QuoteSendOutcomeBanners } from './QuoteActions';
-import { QuoteHeaderMeta } from './QuoteHeaderMeta';
+import { QuoteCustomerSwitcher, QuoteHeaderMeta } from './QuoteHeaderMeta';
+import { MarginToggle } from '../billingUi';
+import { useShowInternalMargin } from './quoteEditorShared';
 import { useOrgStore } from '../../../stores/orgStore';
 import { STATUS_ROLES, type QuoteDetail as QuoteDetailData, resolveQuoteOrgName } from './quoteTypes';
 
@@ -44,9 +46,20 @@ export default function QuoteWorkspace({ id }: Props) {
   // True while the editor has an in-flight save or a dirty rail field — the
   // header Send button waits for quiescence so it can't race a blur-save.
   const [editorSavePending, setEditorSavePending] = useState(false);
-  // The header's editable title/customer (drafts) report their own pending
-  // state; Send waits for BOTH surfaces to be quiescent.
-  const [headerSavePending, setHeaderSavePending] = useState(false);
+  // The header's editable title and the customer switcher (drafts) each report
+  // their own pending state; Send waits for ALL surfaces to be quiescent.
+  const [titleSavePending, setTitleSavePending] = useState(false);
+  const [customerSavePending, setCustomerSavePending] = useState(false);
+  // Monotonic count of editor save FAILURES, and the label of a field left
+  // dirty by one. A failed save still produces "quiescence", so Send needs both
+  // to tell "on its way" from "gave up" (mirrors InvoiceWorkspace).
+  const [saveFailureNonce, setSaveFailureNonce] = useState(0);
+  const reportSaveFailure = useCallback(() => setSaveFailureNonce((n) => n + 1), []);
+  const [editorUnsavedField, setEditorUnsavedField] = useState<string | null>(null);
+  const [titleUnsavedField, setTitleUnsavedField] = useState<string | null>(null);
+  // Cost/margin visibility is workspace state so the toggle can live in the
+  // pinned header (next to Send) while the editor's internal surfaces consume it.
+  const [showInternal, toggleShowInternal] = useShowInternalMargin();
   // Bridge between the editor's deferred deletions (undo grace window) and the
   // header's Send: the editor registers a "flush now" hook, and QuoteActions
   // calls it when Send is clicked while edits are pending — so a held Send
@@ -61,9 +74,9 @@ export default function QuoteWorkspace({ id }: Props) {
   }, []);
 
   // A `quiet` reload (after an inline edit) refetches without flipping `loading`,
-  // so the editor stays mounted — a full-page spinner would remount the form and
-  // discard the user's in-progress local state and cursor position. Only the
-  // initial load shows the spinner / replaces the view on error.
+  // so the editor stays mounted — a full-page loading state would remount the
+  // form and discard the user's in-progress local state and cursor position.
+  // Only the initial load shows the skeleton / replaces the view on error.
   const fetchDetail = useCallback(async (quiet = false) => {
     if (!id) { setError(t('quotes.workspace.errors.missingId')); setLoading(false); return; }
     try {
@@ -109,9 +122,38 @@ export default function QuoteWorkspace({ id }: Props) {
   }, []);
 
   if (loading) {
+    // Skeleton, not a spinner: sketches the workspace shape (back link, title
+    // row + actions, tabs, canvas + rail) so the load reads as the page
+    // assembling rather than a blank wait. aria-busy + the sr-only status give
+    // AT users the same signal.
     return (
-      <div className="flex items-center justify-center py-16" data-testid="quote-workspace-loading">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+      <div aria-busy="true" data-testid="quote-workspace-loading">
+        <span role="status" className="sr-only">{t('quotes.workspace.loading')}</span>
+        <div className="animate-pulse" aria-hidden="true">
+          <div className="h-3 w-16 rounded bg-muted" />
+          <div className="mt-2 flex items-center justify-between gap-3">
+            <div className="h-7 w-72 max-w-[50%] rounded bg-muted" />
+            <div className="flex gap-2">
+              <div className="h-9 w-28 rounded-md bg-muted" />
+              <div className="h-9 w-28 rounded-md bg-muted" />
+            </div>
+          </div>
+          <div className="mt-5 flex gap-4 border-b pb-2">
+            <div className="h-4 w-14 rounded bg-muted" />
+            <div className="h-4 w-14 rounded bg-muted" />
+            <div className="h-4 w-14 rounded bg-muted" />
+          </div>
+          <div className="mt-6 flex gap-6">
+            <div className="min-w-0 flex-1 space-y-4">
+              <div className="h-40 rounded-lg border bg-muted/40" />
+              <div className="h-40 rounded-lg border bg-muted/40" />
+            </div>
+            <div className="hidden w-72 shrink-0 space-y-4 lg:block">
+              <div className="h-56 rounded-lg border bg-muted/40" />
+              <div className="h-24 rounded-lg border bg-muted/40" />
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
@@ -159,13 +201,24 @@ export default function QuoteWorkspace({ id }: Props) {
       backHref="/billing/quotes"
       backLabel={t('quotes.workspace.backLabel')}
       title={detail.quote.title?.trim() || detail.quote.quoteNumber || t('quotes.workspace.draftTitle')}
-      // Drafts get the editable identity row (title input + customer select) in
-      // place of the static h1 — the editor no longer carries a title strip.
-      titleSlot={isDraft ? <QuoteHeaderMeta detail={detail} onChanged={() => void reload()} onPendingChange={setHeaderSavePending} /> : undefined}
+      // Drafts get the editable title in place of the static h1, with the
+      // customer switcher on its own meta line below — inline next to the title
+      // it squeezed the h1 and floated mis-aligned against the status pill.
+      titleSlot={isDraft ? <QuoteHeaderMeta detail={detail} onChanged={() => void reload()} onPendingChange={setTitleSavePending} onUnsavedChange={setTitleUnsavedField} onSaveFailure={reportSaveFailure} /> : undefined}
+      metaSlot={isDraft ? <QuoteCustomerSwitcher detail={detail} onChanged={() => void reload()} onPendingChange={setCustomerSavePending} /> : undefined}
       statusPill={statusPill}
       // Primary actions live in the header so Send (the money-moment) and Download
-      // are reachable from any tab, not buried inside the Detail tab.
-      actions={<QuoteActions detail={detail} onChanged={reload} variant="header" savePending={editorSavePending || headerSavePending} onSendWhilePending={flushEditorPendingDeletes} />}
+      // are reachable from any tab, not buried inside the Detail tab. The
+      // cost/margin toggle joins them while the Editor tab is up, so the
+      // "no margin on screen" control is available without scrolling.
+      actions={
+        <>
+          {isDraft && activeTab === 'editor' && (
+            <MarginToggle show={showInternal} onToggle={toggleShowInternal} testId="quote-editor-toggle-internal" size="md" />
+          )}
+          <QuoteActions detail={detail} onChanged={reload} variant="header" savePending={editorSavePending || titleSavePending || customerSavePending} unsavedFieldLabel={editorUnsavedField ?? titleUnsavedField} saveFailureNonce={saveFailureNonce} onSendWhilePending={flushEditorPendingDeletes} />
+        </>
+      }
       tabs={tabs}
       activeTab={activeTab}
       onTabChange={selectTab}
@@ -189,7 +242,7 @@ export default function QuoteWorkspace({ id }: Props) {
           while previewing. */}
       {isDraft && (
         <div className={activeTab === 'editor' ? '' : 'hidden'}>
-          <QuoteEditor detail={detail} onChanged={() => void reload()} onPendingEditsChange={setEditorSavePending} onRegisterPendingDeleteFlush={registerPendingDeleteFlush} />
+          <QuoteEditor detail={detail} onChanged={() => void reload()} onPendingEditsChange={setEditorSavePending} onSaveFailure={reportSaveFailure} onUnsavedEditsChange={setEditorUnsavedField} onRegisterPendingDeleteFlush={registerPendingDeleteFlush} showInternal={showInternal} onToggleInternal={toggleShowInternal} />
         </div>
       )}
       {activeTab === 'preview' && (

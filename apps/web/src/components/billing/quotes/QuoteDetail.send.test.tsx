@@ -239,11 +239,112 @@ describe('QuoteDetail — send proposal', () => {
 
     expect(screen.queryByTestId('quote-send')).not.toBeInTheDocument();
     expect(screen.getByTestId('quote-send-countdown')).toBeInTheDocument();
+    // The ticking chip is visual-only (a per-second live region narrated the
+    // whole window to screen readers); the one-shot announcement carries the
+    // org name in the always-mounted status region.
+    expect(screen.getByTestId('quote-send-countdown')).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByTestId('quote-send-countdown-sr')).toHaveTextContent('Acme');
+    // Send now is session-scoped: without a compose in THIS session there are
+    // no options to replay, so the button must not be offered — synthesizing
+    // send options after a reload would email content the user never reviewed.
+    expect(screen.queryByTestId('quote-send-now')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('quote-send-undo'));
     await waitFor(() => {
       expect(cancelScheduledSend).toHaveBeenCalledWith('q-1');
       expect(onChanged).toHaveBeenCalled();
+    });
+  });
+
+  /** Compose with overrides, confirm (schedules), then land the schedule in
+   *  props the way the real app's refetch would — same component instance, so
+   *  the session's lastSendOpts survive and Send now renders. Returns the
+   *  exact options the schedule call received. */
+  async function composeAndSchedule(rerender: ReturnType<typeof render>['rerender'], onChanged: () => void) {
+    await openComposer();
+    fireEvent.change(screen.getByTestId('quote-send-subject'), { target: { value: 'Custom subject' } });
+    fireEvent.click(screen.getByTestId('quote-send-confirm'));
+    await waitFor(() => expect(quotesApi.scheduleQuoteSend).toHaveBeenCalledTimes(1));
+    const scheduledOpts = vi.mocked(quotesApi.scheduleQuoteSend).mock.calls[0]![1];
+    rerender(<QuoteDetail
+      detail={{
+        ...filledDraft,
+        quote: { ...filledDraft.quote, sendScheduledAt: new Date(Date.now() + 25_000).toISOString() },
+      }}
+      onChanged={onChanged}
+    />);
+    await waitFor(() => expect(screen.getByTestId('quote-send-now')).toBeInTheDocument());
+    return scheduledOpts;
+  }
+
+  it('Send now cancels the schedule, then dispatches the SAME composed options exactly once', async () => {
+    const cancelScheduledSend = vi.mocked(quotesApi.cancelScheduledSend);
+    cancelScheduledSend.mockResolvedValue(resp({ data: { canceled: true } }));
+    vi.mocked(quotesApi.sendQuote).mockResolvedValue(resp({ data: {} }));
+    const onChanged = vi.fn();
+
+    const { rerender } = render(<QuoteDetail detail={filledDraft} onChanged={onChanged} />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+    const scheduledOpts = await composeAndSchedule(rerender, onChanged);
+
+    fireEvent.click(screen.getByTestId('quote-send-now'));
+    await waitFor(() => {
+      expect(cancelScheduledSend).toHaveBeenCalledWith('q-1');
+      // The immediate dispatch replays EXACTLY what the user reviewed and
+      // confirmed — a drift here mails the wrong recipients/subject.
+      expect(quotesApi.sendQuote).toHaveBeenCalledWith('q-1', scheduledOpts);
+    });
+    // No second schedule: cancel→send, never re-schedule.
+    expect(quotesApi.scheduleQuoteSend).toHaveBeenCalledTimes(1);
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it('Send now with canceled:false NEVER dispatches a second email, and acknowledges the click', async () => {
+    const { showToast } = await import('../../shared/Toast');
+    const cancelScheduledSend = vi.mocked(quotesApi.cancelScheduledSend);
+    // The window fired server-side first — the worker owns the send. A
+    // re-dispatch here would email the customer TWICE.
+    cancelScheduledSend.mockResolvedValue(resp({ data: { canceled: false } }));
+    const onChanged = vi.fn();
+
+    const { rerender } = render(<QuoteDetail detail={filledDraft} onChanged={onChanged} />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+    await composeAndSchedule(rerender, onChanged);
+
+    fireEvent.click(screen.getByTestId('quote-send-now'));
+    await waitFor(() => expect(cancelScheduledSend).toHaveBeenCalledWith('q-1'));
+    expect(quotesApi.sendQuote).not.toHaveBeenCalled();
+    // The click is acknowledged — the draft→sent flip can land 5-10s later,
+    // and a silently re-armed Send button reads as a dead click.
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'success',
+        message: expect.stringContaining('on its way'),
+      }));
+    });
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it('Send now with a FAILED cancel dispatches nothing and says the schedule still stands', async () => {
+    const { showToast } = await import('../../shared/Toast');
+    const cancelScheduledSend = vi.mocked(quotesApi.cancelScheduledSend);
+    // The DELETE dies on the network: the schedule is STILL LIVE and the
+    // window send WILL fire — the copy must say that, not "could not send".
+    // (A thrown request makes runAction toast the step's errorFallback; a
+    // non-ok response would toast the server's own error message instead.)
+    cancelScheduledSend.mockRejectedValue(new Error('network down'));
+
+    const { rerender } = render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+    await composeAndSchedule(rerender, vi.fn());
+
+    fireEvent.click(screen.getByTestId('quote-send-now'));
+    await waitFor(() => expect(cancelScheduledSend).toHaveBeenCalledWith('q-1'));
+    expect(quotesApi.sendQuote).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+        message: expect.stringContaining('will still send as scheduled'),
+      }));
     });
   });
 

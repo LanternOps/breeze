@@ -1,7 +1,27 @@
 import { describe, it, expect } from 'vitest';
 import { readdirSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
-import { getRouteScope, isGlobalScopeRoute, ROUTE_SCOPES } from './routeScope';
+import { getRouteScope, isGlobalScopeRoute, isSingleDocumentRoute, ROUTE_SCOPES } from './routeScope';
+
+describe('isSingleDocumentRoute', () => {
+  it('matches quote and invoice DETAIL pages only', () => {
+    expect(isSingleDocumentRoute('/billing/quotes/q-1')).toBe(true);
+    expect(isSingleDocumentRoute('/billing/quotes/q-1/')).toBe(true);
+    expect(isSingleDocumentRoute('/billing/invoices/abc-123')).toBe(true);
+  });
+  it('does NOT match the list pages — the fleet scope line is load-bearing there', () => {
+    expect(isSingleDocumentRoute('/billing/quotes')).toBe(false);
+    expect(isSingleDocumentRoute('/billing/invoices')).toBe(false);
+    expect(isSingleDocumentRoute('/billing')).toBe(false);
+  });
+  it('does NOT match deeper sub-paths (a loosened [^/]+ would over-suppress)', () => {
+    expect(isSingleDocumentRoute('/billing/quotes/q-1/edit')).toBe(false);
+    expect(isSingleDocumentRoute('/billing/other/q-1')).toBe(false);
+  });
+  it('leaves the org-or-all classification untouched (orgId injection must not change)', () => {
+    expect(getRouteScope('/billing/quotes/q-1')).toBe('org-or-all');
+  });
+});
 
 describe('isGlobalScopeRoute', () => {
   it('treats the script library, new, and detail routes as global', () => {

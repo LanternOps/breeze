@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import InvoiceEditor from './InvoiceEditor';
 import type { InvoiceDetail } from './invoiceTypes';
 import { fetchWithAuth } from '../../stores/auth';
+import { _resetShowMarginMemoryForTests } from './billingUi';
 
 type Perm = { resource: string; action: string };
 
@@ -50,6 +51,14 @@ const draft: InvoiceDetail = {
 beforeEach(() => {
   vi.clearAllMocks();
   state.permissions = [];
+  // Pre-enable the persisted cost/margin preference so margin visibility below
+  // is decided purely by the permission gate under test, not the toggle default.
+  localStorage.clear();
+  // The memory mirror deliberately outlives localStorage.clear(), so a suite
+  // that ever clicks a MarginToggle would leak the preference into its
+  // neighbours without this.
+  _resetShowMarginMemoryForTests();
+  localStorage.setItem('breeze:quote-editor-show-margin', '1');
   fetchMock.mockImplementation(async (input: string) => {
     if (input.startsWith('/catalog')) return json({ data: [] });
     return json({ data: {} });

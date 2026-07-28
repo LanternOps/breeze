@@ -1,11 +1,115 @@
 // Shared presentational helpers for the quote + invoice billing UI, so copy and
 // affordances can't drift between the editor and detail/document surfaces.
 
-import { AlertTriangle } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { AlertTriangle, Eye, EyeOff } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import { marginPct, type QuoteProfit } from '@breeze/shared';
 import { formatMoney } from './quotes/quoteTypes';
+
+/**
+ * The ONE persisted "internal costs on screen?" preference for the whole billing
+ * area. Its contract is "no margin on screen": when a screen-sharing tech hides
+ * cost & margin it must STAY hidden across tabs and across quote/invoice
+ * surfaces — a per-surface preference would leak margin the moment they open the
+ * other document type. (The key name predates the invoice adoption; it's kept so
+ * existing saved preferences survive.)
+ */
+export const SHOW_INTERNAL_MARGIN_KEY = 'breeze:quote-editor-show-margin';
+
+// Same-page sync channel between hook instances: the `storage` event only fires
+// in OTHER browser tabs, so without this a workspace-header toggle and a Detail
+// pill on the same page would drift apart — "hide cost & margin" that leaves a
+// second copy of the margin on screen is a broken promise.
+const SHOW_MARGIN_EVENT = 'breeze:show-margin-change';
+
+// In-memory fallback for restricted-storage contexts (private mode, blocked
+// third-party storage): when localStorage is unusable the preference still has
+// to stay coherent across every mounted instance for the life of the page —
+// "hide cost & margin" that leaves a second copy of the margin on screen is
+// the exact broken promise this hook exists to prevent. Session-only by nature.
+let memoryShowMargin: boolean | null = null;
+
+/** Test-only: the memory mirror outlives `localStorage.clear()` (that's its
+ *  job), so suites that toggle the preference reset it between tests — same
+ *  pattern as Toast's `_resetToastQueueForTests`. */
+export function _resetShowMarginMemoryForTests() {
+  memoryShowMargin = null;
+}
+
+function readShowMargin(): boolean {
+  try {
+    // Healthy storage is the single source of truth — including "key absent"
+    // meaning the default (off). The memory mirror takes over only when
+    // storage ACCESS throws (private mode / blocked storage); preferring it on
+    // a merely-absent key would let a stale mirror override a cleared pref.
+    if (typeof localStorage !== 'undefined') return localStorage.getItem(SHOW_INTERNAL_MARGIN_KEY) === '1';
+  } catch { /* storage unusable — fall through to the memory mirror */ }
+  return memoryShowMargin ?? false;
+}
+
+/** Read + flip the persisted cost/margin visibility preference. Every mounted
+ *  instance stays in sync: same-page via SHOW_MARGIN_EVENT, cross-tab via the
+ *  browser's `storage` event. */
+export function useShowMargin(): [boolean, () => void] {
+  const [showMargin, setShowMargin] = useState(readShowMargin);
+  useEffect(() => {
+    const sync = () => setShowMargin(readShowMargin());
+    window.addEventListener('storage', sync);
+    window.addEventListener(SHOW_MARGIN_EVENT, sync);
+    return () => {
+      window.removeEventListener('storage', sync);
+      window.removeEventListener(SHOW_MARGIN_EVENT, sync);
+    };
+  }, []);
+  const toggleMargin = useCallback(() => {
+    setShowMargin((v) => {
+      const next = !v;
+      // The memory mirror is written unconditionally and the sibling-sync event
+      // ALWAYS dispatches — even when localStorage is unavailable — so every
+      // instance on the page agrees regardless of storage health. The dispatch
+      // is deferred to a microtask so listeners re-read state after this
+      // updater's writes have landed (and a StrictMode double-invoke stays
+      // idempotent: same value written, same event fired).
+      memoryShowMargin = next;
+      try { localStorage.setItem(SHOW_INTERNAL_MARGIN_KEY, next ? '1' : '0'); } catch { /* memory mirror carries it */ }
+      queueMicrotask(() => window.dispatchEvent(new Event(SHOW_MARGIN_EVENT)));
+      return next;
+    });
+  }, []);
+  return [showMargin, toggleMargin];
+}
+
+/**
+ * The toggle that flips the preference — one control vocabulary for
+ * "show/hide internal costs" across the billing surfaces: the detail rails
+ * (`sm`) and the quote workspace's pinned header (`md`). The quote editor's
+ * toolbar keeps an uncontrolled fallback copy only for standalone
+ * mounts/tests; in the app the workspace header owns the control.
+ */
+export function MarginToggle({ show, onToggle, testId, size = 'sm' }: { show: boolean; onToggle: () => void; testId: string; size?: 'sm' | 'md' }) {
+  const { t } = useTranslation('billing');
+  // 'sm' — the quiet inline pill on the detail surfaces (h-7 / 28px: the
+  // smallest hit target that clears WCAG 2.5.8's 24px floor with margin — this
+  // pill gates the most sensitive data on screen and must not be the hardest
+  // thing to hit). 'md' — sized to sit among the workspace header's action
+  // buttons. One component so the control reads identically everywhere.
+  const look = size === 'md' ? 'gap-1.5 px-3 py-2 text-sm' : 'h-7 gap-1 px-2.5 text-xs';
+  const icon = size === 'md' ? 'h-4 w-4' : 'h-3.5 w-3.5';
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={show}
+      data-testid={testId}
+      className={`inline-flex shrink-0 items-center rounded-md border font-medium transition-colors hover:bg-muted focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${look} ${show ? 'border-primary/40 bg-primary/10 text-primary' : 'text-muted-foreground'}`}
+    >
+      {show ? <EyeOff className={icon} aria-hidden="true" /> : <Eye className={icon} aria-hidden="true" />}
+      {show ? t('billingUi.hideCostMargin') : t('billingUi.showCostMargin')}
+    </button>
+  );
+}
 
 /**
  * Inline "Unsaved" affordance for blur-saved fields (terms / notes). Shown while
@@ -22,7 +126,7 @@ export function UnsavedBadge({ show, testId = 'unsaved-badge' }: { show: boolean
       // when a blur-save fails and the edit stays dirty — is announced, not just
       // shown. Dark-amber text (not the ~2:1 bright warning) keeps it readable.
       role="status"
-      className="inline-flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-warning-foreground dark:text-warning"
+      className="inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-warning-foreground dark:text-warning"
       data-testid={testId}
     >
       <span className="h-1.5 w-1.5 rounded-full bg-warning" aria-hidden="true" />

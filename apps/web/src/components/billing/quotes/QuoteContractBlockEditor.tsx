@@ -180,7 +180,7 @@ export function ContractBlockEditor({
             onClick={() => void commit()}
             disabled={busy}
             data-testid={`quote-block-contract-save-${block.id}`}
-            className="inline-flex h-8 items-center justify-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            className="inline-flex h-8 items-center justify-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {t('quotes.editor.contract.saveVariables')}
           </button>
