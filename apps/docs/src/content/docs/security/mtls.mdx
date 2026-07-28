@@ -114,8 +114,10 @@ reads raw Cloudflare headers (`Cf-Client-Cert-*`) directly. The bundled `docker/
 normalizes this at the last hop before the API: it discards any inbound copy of the two Breeze
 headers a client could forge directly, discards Cloudflare's raw certificate material (including
 PEM/DER, which must never reach the API), and sets the two Breeze headers only from a verified
-Cloudflare result via a strict allowlist map. Full detail:
-`docs/operations/cloudflare-mtls-setup.md`.
+Cloudflare result via a strict allowlist map. The serial is gated on that **same** verified
+condition — not just the verified flag — so an unverified or spoofed result can never carry a
+real-looking serial number downstream. Full detail: `docs/operations/cloudflare-mtls-setup.md`
+(including a spoofing-resistance test you can run against your own deployment).
 
 <Aside type="danger">
   This contract depends entirely on the API never being reachable except through the trusted edge.

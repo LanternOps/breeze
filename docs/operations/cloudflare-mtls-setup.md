@@ -249,9 +249,9 @@ Exact exemptions (bearer-only; a device has no active certificate identity to bi
 **Do not use `contains`, a trailing-wildcard renewal path, or any other broad substring match for the
 exemption.** The identity regex above already requires a full 36-character UUID segment, so none of
 the three exempt paths can ever match it by accident — the exemption clause exists for defense in
-depth and auditability, not because the regex is ambiguous. A broad `contains "/renew-cert"` (the
-previous form of this rule) also accidentally exempted `/renew-cert/confirm`, which defeats the
-entire point of confirmation being protected.
+depth and auditability, not because the regex is ambiguous. A broad substring match on the renewal
+path (the previous form of this rule) also accidentally exempted the confirmation route, which
+defeats the entire point of confirmation being protected.
 
 ### 5b. Test Enforcement
 
@@ -267,6 +267,42 @@ curl -X POST https://your-api.example.com/api/v1/agents/enroll \
   -H "Content-Type: application/json" \
   -d '{"enrollmentKey": "test"}'
 ```
+
+### 5c. Test Spoofing Resistance
+
+The WAF rule stops an unverified request at the edge, but that alone doesn't prove the API can't be
+fooled by a forged assertion header if a request ever reaches it some other way (e.g. from inside
+your own network, or from a host that can reach the API's port directly). Prove the API's own
+trust-gating holds independently of Cloudflare's block, by sending a request that presents **no
+real client certificate at all** but forges both assertion headers directly — from a host that is
+*not* your configured trusted proxy (i.e. not through Caddy, or from outside `TRUSTED_PROXY_CIDRS`):
+
+```bash
+# From a host that is NOT the configured trusted proxy (bypassing Caddy/Cloudflare
+# entirely — e.g. reaching the api container's port directly inside your network):
+curl -X POST http://api-host:3001/api/v1/agents/<agent-id>/heartbeat \
+  -H "Authorization: Bearer brz_..." \
+  -H "X-Breeze-Client-Cert-Verified: true" \
+  -H "X-Breeze-Client-Cert-Serial: DEADBEEF00000000000000000000000000000000" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Expected: the API must treat this exactly as if no assertion had been presented at all — the forged
+headers must have **zero effect** on the outcome. Concretely:
+
+- In `audit` mode, the certificate-binding metric
+  (`breeze_agent_certificate_binding_total{mode="audit",reason,path_class}`) must record
+  `missing_assertion` or `untrusted_assertion` for this request, never `matched` — proving
+  `assertionTrusted` came back `false` because the request's immediate peer wasn't a configured
+  trusted proxy, regardless of what the forged headers claimed.
+- In `enforce` mode with the device's certificate history `active`, this exact request must be
+  **denied** (`401`), not merely counted.
+
+If this probe ever succeeds as if it were a genuine verified assertion, something is trusting
+headers from an unconfigured source — check `TRUSTED_PROXY_CIDRS` and `trustsForwardedHeadersFrom`
+before assuming the edge normalization itself is at fault; the API never reads a raw provider header
+directly, so a bypass here means the trust boundary, not the header names, is misconfigured.
 
 ---
 

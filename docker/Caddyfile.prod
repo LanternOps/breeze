@@ -139,9 +139,19 @@
     #    passes; every other value, including absent/malformed/spoofed input,
     #    becomes "false". This is an allowlist, not a rename — it discards any
     #    other shape a misconfigured or spoofing upstream might send.
+    #
+    #    The serial is gated on the SAME input, not forwarded unconditionally:
+    #    when verified is anything other than the literal "true", the serial
+    #    placeholder also collapses to empty, so an unverified/absent result
+    #    can never carry a real-looking serial number downstream. Both
+    #    placeholders come from one map so they can never disagree.
     map {http.request.header.Cf-Client-Cert-Verified} {breeze_agent_cert_verified} {
       true true
       default false
+    }
+    map {http.request.header.Cf-Client-Cert-Verified} {breeze_agent_cert_serial} {
+      true {http.request.header.Cf-Client-Cert-Serial}
+      default ""
     }
 
     reverse_proxy api:3001 {
@@ -152,12 +162,15 @@
       header_up -X-Breeze-Client-Cert-Serial
 
       # 3) Set the two Breeze headers ONLY from the verified Cloudflare mTLS
-      #    result (via the allowlist map above) or, for a self-hosted operator
+      #    result (via the allowlist maps above) or, for a self-hosted operator
       #    terminating mTLS locally, their own certificate-validating proxy's
       #    equivalent output — see docs/operations/cloudflare-mtls-setup.md.
-      #    Never derive these from arbitrary client-supplied input.
+      #    Never derive these from arbitrary client-supplied input. The serial
+      #    is bound to the identical verified condition as above (step 1), so
+      #    unverified/spoofed input yields an empty serial too, not just a
+      #    false verified flag.
       header_up X-Breeze-Client-Cert-Verified {breeze_agent_cert_verified}
-      header_up X-Breeze-Client-Cert-Serial {http.request.header.Cf-Client-Cert-Serial}
+      header_up X-Breeze-Client-Cert-Serial {breeze_agent_cert_serial}
 
       # 4) Discard Cloudflare's raw client-certificate headers so PEM/DER/
       #    fingerprint material — and the raw pre-map verified/serial fields
