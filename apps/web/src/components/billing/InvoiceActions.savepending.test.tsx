@@ -152,6 +152,35 @@ describe('InvoiceActions — savePending gating', () => {
     expect(issuePosted()).toBe(false);
   });
 
+  it('re-checks the unsaved-field refusal before firing a queued Issue', async () => {
+    // The click gate tests savePending FIRST, so a click during a deferred
+    // delete queues even while an earlier failed price save keeps a field
+    // dirty (its nonce bump happened BEFORE the click, so the captured nonce
+    // never changes). When the flush succeeds and the editor goes quiet, the
+    // queue must re-check the label and refuse — firing would issue the
+    // invoice at the pre-edit money.
+    const { rerender } = render(
+      <InvoiceActions detail={detail()} variant="header" savePending unsavedFieldLabel="Notes" />,
+    );
+    fireEvent.click(screen.getByTestId('invoice-issue'));
+    expect(issuePosted()).toBe(false);
+
+    // Quiescence arrives with the field STILL flagged unsaved.
+    rerender(
+      <InvoiceActions detail={detail()} variant="header" savePending={false} unsavedFieldLabel="Notes" />,
+    );
+
+    // The refusal surfaces exactly like an immediate click's would — a warning
+    // naming the field — and above all no POST.
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'warning', message: expect.stringContaining('Notes') }),
+    ));
+    await act(async () => {});
+    expect(issuePosted()).toBe(false);
+    // The queue is gone (no spinner promising a fire that isn't coming).
+    expect(screen.getByTestId('invoice-issue').querySelector('.animate-spin')).toBeNull();
+  });
+
   it('re-checks the visible-lines precondition before firing a queued Issue', async () => {
     // The queue can outlive the gate: flushing the deferred delete of the last
     // customer-visible line is itself what the Issue click triggered.

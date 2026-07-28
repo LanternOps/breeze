@@ -204,7 +204,7 @@ export default function QuoteWorkspace({ id }: Props) {
       // Drafts get the editable title in place of the static h1, with the
       // customer switcher on its own meta line below — inline next to the title
       // it squeezed the h1 and floated mis-aligned against the status pill.
-      titleSlot={isDraft ? <QuoteHeaderMeta detail={detail} onChanged={() => void reload()} onPendingChange={setTitleSavePending} onUnsavedChange={setTitleUnsavedField} /> : undefined}
+      titleSlot={isDraft ? <QuoteHeaderMeta detail={detail} onChanged={() => void reload()} onPendingChange={setTitleSavePending} onUnsavedChange={setTitleUnsavedField} onSaveFailure={reportSaveFailure} /> : undefined}
       metaSlot={isDraft ? <QuoteCustomerSwitcher detail={detail} onChanged={() => void reload()} onPendingChange={setCustomerSavePending} /> : undefined}
       statusPill={statusPill}
       // Primary actions live in the header so Send (the money-moment) and Download

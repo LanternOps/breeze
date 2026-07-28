@@ -321,6 +321,14 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     setSendMessage('');
   }, [sending]);
 
+  // Refuse a click (or a queued click reaching quiescence) for a field that
+  // already failed to save — waiting can never clear it, so name the field.
+  // Hoisted so the immediate-click refusal and the queue's re-check share one
+  // toast/message.
+  const refuseForUnsaved = useCallback(() => {
+    showToast({ type: 'warning', message: t('quotes.actions.sendBlockedUnsaved', { field: unsavedFieldLabel }) });
+  }, [unsavedFieldLabel, t]);
+
   // Resolve the queued Send in strict priority: failed → cancel; still working
   // → wait; otherwise open. Cancelling on a CHANGED failure nonce (captured at
   // click time) is what makes quiescence safe to trust — a failed blur-save
@@ -335,8 +343,18 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     }
     if (savePending) return;
     setQueued(null);
+    // The unsaved-field refusal is re-checked here too: the click gate tests
+    // savePending FIRST, so a click during a deferred delete queues even while
+    // an earlier failed save (its nonce bump already captured at click time)
+    // keeps a field dirty. Quiescence cannot clear that field — opening the
+    // composer would quote a stale total. Refuse and name the field, exactly
+    // as an immediate click would have.
+    if (unsavedFieldLabel) {
+      refuseForUnsaved();
+      return;
+    }
     openSend();
-  }, [queued, saveFailureNonce, savePending, openSend, t]);
+  }, [queued, saveFailureNonce, savePending, unsavedFieldLabel, refuseForUnsaved, openSend, t]);
 
   // Escape hatch for a hung save: the queued-open above normally fires within a
   // blur-save round-trip. If the editor is still not quiescent after 10s the
@@ -684,10 +702,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
               if (savePending) { onSendWhilePending?.(); setQueued({ atFailureNonce: saveFailureNonce }); return; }
               // A field that already failed to save will never go quiet on its
               // own — say which one instead of parking the click forever.
-              if (unsavedFieldLabel) {
-                showToast({ type: 'warning', message: t('quotes.actions.sendBlockedUnsaved', { field: unsavedFieldLabel }) });
-                return;
-              }
+              if (unsavedFieldLabel) { refuseForUnsaved(); return; }
               openSend();
             }}
             disabled={sending || isEmpty}

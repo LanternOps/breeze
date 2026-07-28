@@ -34,9 +34,14 @@ interface Props {
   /** Reports a translated field label when this surface's save FAILED and the
    *  field is still dirty, so Send can name it instead of waiting forever. */
   onUnsavedChange?: (label: string | null) => void;
+  /** Reports every save FAILURE (the workspace bumps its failure nonce). A
+   *  failed title PATCH still reads as "quiet" once titleBusy clears, so a
+   *  queued Send must be canceled by this signal rather than open a composer
+   *  carrying a stale title (same contract as QuoteEditor's onSaveFailure). */
+  onSaveFailure?: () => void;
 }
 
-export function QuoteHeaderMeta({ detail, onChanged, onPendingChange, onUnsavedChange }: Props) {
+export function QuoteHeaderMeta({ detail, onChanged, onPendingChange, onUnsavedChange, onSaveFailure }: Props) {
   const { t } = useTranslation('billing');
   const { quote } = detail;
 
@@ -67,10 +72,13 @@ export function QuoteHeaderMeta({ detail, onChanged, onPendingChange, onUnsavedC
       // record the failure — reporting dirty as "pending" is what used to pin
       // "Saving changes…" over the Send button for the rest of the session.
       setTitleFailed(true);
+      // …and bump the workspace failure nonce: a Send queued behind this save
+      // sees only "quiet" when titleBusy clears, and must cancel instead.
+      onSaveFailure?.();
     } finally {
       setTitleBusy(false);
     }
-  }, [titleDirty, title, quote.id, flashTitleSaved, onChanged, t]);
+  }, [titleDirty, title, quote.id, flashTitleSaved, onChanged, onSaveFailure, t]);
 
   // Pending means IN FLIGHT only. A dirty title is not a promise of a save: the
   // Send gate still holds from the first keystroke because clicking Send blurs

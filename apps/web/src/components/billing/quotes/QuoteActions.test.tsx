@@ -187,6 +187,32 @@ describe('QuoteActions — header variant', () => {
     expect(screen.queryByTestId('quote-send-confirm')).not.toBeInTheDocument();
   });
 
+  it('re-checks the unsaved-field refusal before opening a queued Send composer', async () => {
+    // The click gate tests savePending FIRST, so a click during a deferred
+    // delete queues even while an earlier failed save keeps a field dirty
+    // (its nonce bump happened BEFORE the click, so the captured nonce never
+    // changes). When the editor goes quiet the queue must re-check the label
+    // and refuse — opening the composer would quote a stale total.
+    const { rerender } = render(
+      <QuoteActions detail={sendable()} onChanged={vi.fn()} variant="header" savePending unsavedFieldLabel="Terms & Conditions" />,
+    );
+    await waitFor(() => expect(screen.getByTestId('quote-actions-header')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('quote-send'));
+    expect(screen.queryByTestId('quote-send-confirm')).not.toBeInTheDocument();
+
+    // Quiescence arrives with the field STILL flagged unsaved.
+    rerender(
+      <QuoteActions detail={sendable()} onChanged={vi.fn()} variant="header" savePending={false} unsavedFieldLabel="Terms & Conditions" />,
+    );
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'warning', message: expect.stringContaining('Terms & Conditions') }),
+    ));
+    await act(async () => {});
+    expect(screen.queryByTestId('quote-send-confirm')).not.toBeInTheDocument();
+  });
+
   it('does not spin the Send button on a bare savePending — only on a queued click', async () => {
     // A spinner promises forthcoming completion. Spinning on savePending meant
     // a field left dirty by a failed save spun indefinitely.

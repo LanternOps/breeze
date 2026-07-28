@@ -136,6 +136,14 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
     }
   }, [issuing, invoice.id, refresh, t]);
 
+  // Refuse a click (or a queued click reaching quiescence) that can only ever
+  // wait on a save that isn't coming — name the field instead. Hoisted above
+  // the queue effect so both the immediate-click refusal and the queue's
+  // re-check share one toast/message.
+  const refuseForUnsaved = useCallback(() => {
+    showToast({ type: 'warning', message: t('invoiceActions.issueBlockedUnsaved', { field: unsavedFieldLabel }) });
+  }, [unsavedFieldLabel, t]);
+
   // One effect resolves the queue, in strict priority: failed → cancel;
   // still working → keep waiting; preconditions lapsed → refuse; otherwise fire.
   //
@@ -157,6 +165,16 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
     }
     if (savePending) return;
     setQueued(null);
+    // The unsaved-field refusal is re-checked here too: the click gate tests
+    // savePending FIRST, so a click during a deferred delete queues even while
+    // an earlier failed save (nonce already captured at click time — no new
+    // bump is coming) keeps a field dirty. Quiescence cannot clear that field,
+    // so firing would issue the invoice at the pre-edit money. Refuse and name
+    // the field, exactly as an immediate click would have.
+    if (unsavedFieldLabel) {
+      refuseForUnsaved();
+      return;
+    }
     // The button's own gate is re-checked here: the queue can outlive it. The
     // last customer-visible line may have been sitting in its undo window, and
     // the flush this very click triggered is what deleted it for good.
@@ -168,7 +186,7 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
     // its confirm dialog — the user still confirms the email before it sends.
     if (queued.kind === 'issue') void issue(false);
     else setIssueSendOpen(true);
-  }, [queued, saveFailureNonce, savePending, hasVisibleLines, issue, t]);
+  }, [queued, saveFailureNonce, savePending, unsavedFieldLabel, refuseForUnsaved, hasVisibleLines, issue, t]);
 
   // Slow-save backstop: with failures handled above, the only way a queue waits
   // this long is a save that is genuinely still in flight (or a pending-state
@@ -224,10 +242,6 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
   // names the field. Order matters: a field mid-save is dirty AND in flight.
   const heldReason: 'saving' | 'unsaved' | null = savePending ? 'saving' : unsavedFieldLabel ? 'unsaved' : null;
   const heldHintId = `invoice-issue-held-hint-${variant}`;
-  // Refuse a click that can only ever wait on a save that isn't coming.
-  const refuseForUnsaved = () => {
-    showToast({ type: 'warning', message: t('invoiceActions.issueBlockedUnsaved', { field: unsavedFieldLabel }) });
-  };
 
   return (
     <>

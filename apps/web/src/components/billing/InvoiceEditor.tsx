@@ -16,6 +16,7 @@ import {
   lineTitle,
   computeInvoiceProfit,
 } from './invoiceTypes';
+import { toCents, fromCents } from '@breeze/shared';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
 import PolishButton from '../catalog/PolishButton';
 import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
@@ -112,6 +113,40 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
   }, [serverLines]);
 
   const profit = useMemo(() => computeInvoiceProfit(lines), [lines]);
+
+  // The figures the summary rail + sticky bar render: optimistic recompute
+  // while any deletion is hidden client-side (sitting in its undo window, or
+  // flushed but not yet dropped by the refetch) — the server totals still
+  // include those lines, so for that window Subtotal/Tax/Total would
+  // contradict the table the user is looking at (the quote editor's
+  // optimisticTotals pattern). The math mirrors the API's
+  // computeInvoiceTotals (services/invoiceMath.ts) EXACTLY: sum the persisted
+  // lineTotal over customer-visible lines — bundle children persist
+  // lineTotal '0.00', so recomputing qty×price here would double-count them —
+  // then tax = taxable basis × the invoice's committed rate, one
+  // round-half-up at the cent boundary. Same inputs, same rounding: the
+  // optimistic figures can never settle different from the next GET.
+  const optimisticTotals = useMemo(() => {
+    if (pendingDeletedLineIds.size === 0 && flushedDeletedLineIds.size === 0) return null;
+    let subtotalCents = 0;
+    let taxableCents = 0;
+    for (const l of lines) {
+      if (!l.customerVisible) continue;
+      const c = toCents(l.lineTotal);
+      subtotalCents += c;
+      if (l.taxable) taxableCents += c;
+    }
+    const rate = invoice.taxRate ? Number(invoice.taxRate) : 0;
+    const taxCents = Math.floor(taxableCents * rate + 0.5);
+    return {
+      subtotal: fromCents(subtotalCents),
+      taxTotal: fromCents(taxCents),
+      total: fromCents(subtotalCents + taxCents),
+    };
+  }, [pendingDeletedLineIds, flushedDeletedLineIds, lines, invoice.taxRate]);
+  const railSubtotal = optimisticTotals?.subtotal ?? invoice.subtotal;
+  const railTax = optimisticTotals?.taxTotal ?? invoice.taxTotal;
+  const railTotal = optimisticTotals?.total ?? invoice.total;
 
   // Per-item "saving" state, keyed so one in-flight mutation never freezes the
   // rest of the editor. Keys: 'notes', 'terms', 'addLine', `qty-<lineId>`,
@@ -729,9 +764,9 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-summary">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('invoiceEditor.summary.title')}</h3>
             <dl className="space-y-1 text-sm">
-              <div className="flex justify-between"><dt className="text-muted-foreground">{t('invoiceEditor.summary.subtotal')}</dt><dd data-testid="invoice-subtotal">{formatMoney(invoice.subtotal, currency)}</dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">{t('invoiceEditor.summary.tax')}{!noTaxRate ? ` (${formatPercent(Number(invoice.taxRate), { minimumFractionDigits: 2, maximumFractionDigits: 2 })})` : ''}</dt><dd data-testid="invoice-tax">{formatMoney(invoice.taxTotal, currency)}</dd></div>
-              <div className="flex justify-between border-t pt-1 font-semibold"><dt>{t('invoiceEditor.summary.total')}</dt><dd data-testid="invoice-total">{formatMoney(invoice.total, currency)}</dd></div>
+              <div className="flex justify-between"><dt className="text-muted-foreground">{t('invoiceEditor.summary.subtotal')}</dt><dd data-testid="invoice-subtotal">{formatMoney(railSubtotal, currency)}</dd></div>
+              <div className="flex justify-between"><dt className="text-muted-foreground">{t('invoiceEditor.summary.tax')}{!noTaxRate ? ` (${formatPercent(Number(invoice.taxRate), { minimumFractionDigits: 2, maximumFractionDigits: 2 })})` : ''}</dt><dd data-testid="invoice-tax">{formatMoney(railTax, currency)}</dd></div>
+              <div className="flex justify-between border-t pt-1 font-semibold"><dt>{t('invoiceEditor.summary.total')}</dt><dd data-testid="invoice-total">{formatMoney(railTotal, currency)}</dd></div>
             </dl>
             {hasTaxableLine && noTaxRate && (
               <p className="mt-3 text-xs text-muted-foreground" data-testid="invoice-tax-rate-hint">
@@ -816,12 +851,12 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
       >
         <span className="flex items-baseline gap-2">
           <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('invoiceEditor.summary.total')}</span>
-          <span className="text-base font-semibold tabular-nums" data-testid="invoice-totals-sticky-total">{formatMoney(invoice.total, currency)}</span>
+          <span className="text-base font-semibold tabular-nums" data-testid="invoice-totals-sticky-total">{formatMoney(railTotal, currency)}</span>
         </span>
-        {Number(invoice.taxTotal) > 0 && (
+        {Number(railTax) > 0 && (
           <span className="flex items-baseline gap-1 text-muted-foreground">
             <span className="text-xs">{t('invoiceEditor.summary.tax')}</span>
-            <span className="font-medium tabular-nums">{formatMoney(invoice.taxTotal, currency)}</span>
+            <span className="font-medium tabular-nums">{formatMoney(railTax, currency)}</span>
           </span>
         )}
       </div>

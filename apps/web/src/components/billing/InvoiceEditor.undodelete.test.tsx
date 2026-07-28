@@ -160,6 +160,48 @@ describe('InvoiceEditor — undo-able line deletion', () => {
     expect(screen.getByTestId('invoice-line-child-line-child')).toBeInTheDocument();
   });
 
+  it('optimistically excludes a deleted line from Subtotal/Tax/Total during the undo window (and restores them on undo)', async () => {
+    // The deferred DELETE hides the row and updates margin instantly, but the
+    // server totals still include the line until the flush + refetch land. For
+    // the whole undo window the rail/sticky bar must render totals computed
+    // from the VISIBLE lines — a money document whose Total contradicts its
+    // own line table reads as broken (the quote editor's optimisticTotals
+    // contract, carried over).
+    const taxed: InvoiceDetail['lines'][number] = {
+      ...manualLine, id: 'line-2', name: 'Hardware', quantity: '1.00', unitPrice: '50.00',
+      lineTotal: '50.00', taxable: true,
+    };
+    const detail = draft([manualLine, taxed]);
+    detail.invoice.subtotal = '150.00';
+    detail.invoice.taxRate = '0.10000';
+    detail.invoice.taxTotal = '5.00';
+    detail.invoice.total = '155.00';
+    render(<InvoiceEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-line-line-2')).toBeInTheDocument());
+
+    // At rest the rail renders the authoritative server figures.
+    expect(screen.getByTestId('invoice-subtotal')).toHaveTextContent('$150.00');
+    expect(screen.getByTestId('invoice-tax')).toHaveTextContent('$5.00');
+    expect(screen.getByTestId('invoice-total')).toHaveTextContent('$155.00');
+
+    fireEvent.click(screen.getByTestId('invoice-line-remove-line-2'));
+
+    // The line is hidden and the totals immediately exclude it — including the
+    // tax it carried and the sticky mobile bar's total.
+    expect(screen.queryByTestId('invoice-line-line-2')).not.toBeInTheDocument();
+    expect(screen.getByTestId('invoice-subtotal')).toHaveTextContent('$100.00');
+    expect(screen.getByTestId('invoice-tax')).toHaveTextContent('$0.00');
+    expect(screen.getByTestId('invoice-total')).toHaveTextContent('$100.00');
+    expect(screen.getByTestId('invoice-totals-sticky-total')).toHaveTextContent('$100.00');
+
+    // Undo restores the row AND the authoritative server totals.
+    act(() => { lastUndoToast().onUndo(); });
+    expect(screen.getByTestId('invoice-line-line-2')).toBeInTheDocument();
+    expect(screen.getByTestId('invoice-subtotal')).toHaveTextContent('$150.00');
+    expect(screen.getByTestId('invoice-tax')).toHaveTextContent('$5.00');
+    expect(screen.getByTestId('invoice-total')).toHaveTextContent('$155.00');
+  });
+
   it('an Undo click after the DELETE already flushed gets a "too late" notice, not silence', async () => {
     let flush: (() => void) | null = null;
     render(<InvoiceEditor detail={draft([manualLine])} onChanged={vi.fn()} onRegisterPendingDeleteFlush={(f) => { flush = f; }} />);

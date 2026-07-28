@@ -92,4 +92,27 @@ describe('QuoteHeaderMeta — title save reporting', () => {
     fireEvent.blur(input);
     await waitFor(() => expect(onUnsaved).toHaveBeenLastCalledWith(null));
   });
+
+  it('a FAILED title save bumps the workspace failure nonce (onSaveFailure); a success does not', async () => {
+    // Without this signal a queued Send saw only "quiet" once titleBusy
+    // cleared, and the composer opened carrying the stale title. The nonce is
+    // what cancels it (same contract as QuoteEditor's onSaveFailure).
+    let fail = true;
+    fetchMock.mockImplementation(async () => (fail ? json({ error: 'no' }, false, 500) : json({ data: {} })));
+    const onSaveFailure = vi.fn();
+
+    render(<QuoteHeaderMeta detail={detail()} onChanged={vi.fn()} onSaveFailure={onSaveFailure} />);
+
+    const input = screen.getByTestId('quote-title');
+    fireEvent.change(input, { target: { value: 'Renewal' } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(onSaveFailure).toHaveBeenCalledTimes(1));
+
+    // A successful save reports nothing — the nonce only counts FAILURES.
+    fail = false;
+    fireEvent.change(input, { target: { value: 'Renewal v2' } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(screen.getByTestId('quote-title')).not.toBeDisabled());
+    expect(onSaveFailure).toHaveBeenCalledTimes(1);
+  });
 });
