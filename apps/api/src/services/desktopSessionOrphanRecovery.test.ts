@@ -145,8 +145,13 @@ describe('desktop orphan recovery', () => {
     const service = createDesktopSessionOrphanRecoveryService(deps);
 
     await service.recover(session.id, 'background');
-    // Second observation reloads the row; a non-desktop row must not be claimed.
-    vi.mocked(deps.loadSession).mockResolvedValue({ ...session, type: 'terminal' });
+    // Within the second recover() call the row is loaded twice: the entry
+    // check sees a desktop row, but the post-lease-TTL RE-load returns a
+    // non-desktop row. The re-load guard must refuse the claim — this is the
+    // deep checkpoint, distinct from the entry guard covered above.
+    vi.mocked(deps.loadSession)
+      .mockResolvedValueOnce(session)
+      .mockResolvedValueOnce({ ...session, type: 'terminal' });
     deps.setNow!(31_000);
     await expect(service.recover(session.id, 'background')).resolves.toBe('not_orphaned');
 

@@ -491,4 +491,29 @@ describe('RemoteTerminal keepalive & silent-death watchdog (#2871)', () => {
     expect(screen.getByTestId('terminal-disconnect-overlay')).toBeInTheDocument();
     expect(screen.getByTestId('terminal-overlay-reconnect')).toBeInTheDocument();
   });
+
+  it('the overlay reconnect button actually reconnects after a watchdog teardown', async () => {
+    await openConnected();
+
+    // Kill the session via the silence watchdog, then click the overlay button.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(55_000);
+    });
+    const reconnect = screen.getByTestId('terminal-overlay-reconnect');
+    await act(async () => {
+      reconnect.click();
+    });
+    // Flush the session + ticket fetches and the socket construction.
+    for (let i = 0; i < 5 && MockWebSocket.instances.length < 2; i++) {
+      await act(async () => {});
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(200);
+      });
+    }
+
+    // A brand-new session and socket — the dead attempt is not reused.
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(sessionPostCount()).toBe(2);
+    expect(ticketPostCount()).toBe(2);
+  });
 });

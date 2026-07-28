@@ -54,6 +54,12 @@ export type RemoteTerminalProps = {
 // the keepalive survive a lost server→client ping, and expecting *some*
 // server frame (ping, pong, or output) lets the client detect a half-dead
 // connection instead of freezing silently.
+//
+// Contract with apps/api/src/routes/terminalWs.ts (PING_INTERVAL_MS = 30s,
+// PONG_TIMEOUT_MS = 10s): CLIENT_PING_INTERVAL_MS must stay well under the
+// server's 40s deadline, and SERVER_SILENCE_TIMEOUT_MS must stay above the
+// server's ping interval — otherwise healthy idle sessions get killed on
+// whichever side drifted.
 const CLIENT_PING_INTERVAL_MS = 20_000;
 const SERVER_SILENCE_TIMEOUT_MS = 45_000;
 const LIVENESS_CHECK_INTERVAL_MS = 5_000;
@@ -702,25 +708,33 @@ export default function RemoteTerminal({
         />
         {/* Disconnect overlay (issue #2871): a dead session must be unmissable,
             not a silent freeze. Shown for any post-connect terminal state that
-            is no longer live, with an explicit reconnect affordance. */}
+            is no longer live, with an explicit reconnect affordance. The
+            container is pointer-events-none (only the inner panel captures
+            clicks) so the scrollback behind it stays selectable/copyable, and
+            only a genuine failure dims the transcript. */}
         {(status === 'failed' || (status === 'disconnected' && autoConnectAttempted)) && (
           <div
             data-testid="terminal-disconnect-overlay"
-            className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black/70"
+            className={cn(
+              'pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center',
+              status === 'failed' && 'bg-black/40'
+            )}
           >
-            <WifiOff className="h-8 w-8 text-red-400" />
-            <span className="text-sm font-medium text-white">
-              {t(/* i18n-dynamic */ statusConfig[status].labelKey)}
-            </span>
-            <button
-              type="button"
-              data-testid="terminal-overlay-reconnect"
-              onClick={connect}
-              className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
-            >
-              <RefreshCw className="h-4 w-4" />
-              {t(status === 'failed' ? 'common:actions.retry' : 'remoteTerminal.reconnect')}
-            </button>
+            <div className="pointer-events-auto flex flex-col items-center gap-3 rounded-lg bg-black/80 px-6 py-4">
+              <WifiOff className="h-8 w-8 text-red-400" />
+              <span className="text-sm font-medium text-white">
+                {t(/* i18n-dynamic */ statusConfig[status].labelKey)}
+              </span>
+              <button
+                type="button"
+                data-testid="terminal-overlay-reconnect"
+                onClick={connect}
+                className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
+              >
+                <RefreshCw className="h-4 w-4" />
+                {status === 'failed' ? t('common:actions.retry') : t('remoteTerminal.reconnect')}
+              </button>
+            </div>
           </div>
         )}
       </div>
