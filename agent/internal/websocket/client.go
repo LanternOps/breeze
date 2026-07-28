@@ -134,6 +134,10 @@ type Client struct {
 	// ordering also holds across reconnects.
 	orderedCmdChan  chan Command
 	orderedPumpOnce sync.Once
+	// orderedEnqueueTimeout bounds how long dispatchCommand may block the
+	// read pump waiting for lane space. Overridable in tests; defaults to
+	// defaultOrderedEnqueueTimeout.
+	orderedEnqueueTimeout time.Duration
 	stopOnce        sync.Once
 	isRunning       bool
 	runningMu       sync.RWMutex
@@ -459,15 +463,29 @@ func isOrderedCommand(cmdType string) bool {
 	return false
 }
 
+// defaultOrderedEnqueueTimeout is the ceiling on how long an ordered dispatch
+// may stall the read pump when the ordered lane is full. The lane only fills
+// when its consumer is wedged (a hung ConPTY write/stop) or 512 commands
+// behind — a healthy terminal session can't get there (PTY writes are
+// sub-millisecond and the API rate-limits terminal input to 200 msgs/min per
+// session). Past the timeout the command is DROPPED with an error log:
+// losing input to an already-broken session is strictly better than the
+// alternative, which is readPump parked forever on a channel send — that
+// freezes every WS-delivered command (desktop, tunnels, scripts), stops ping
+// replies, and is unrecoverable even by ForceReconnect (closing the socket
+// cannot release a goroutine blocked on a channel send).
+const defaultOrderedEnqueueTimeout = 5 * time.Second
+
 // dispatchCommand routes a decoded command to its execution lane: ordered
 // interactive commands are serialized through orderedCmdChan (one consumer,
 // FIFO), everything else keeps the concurrent per-command goroutine so a slow
 // script can never head-of-line-block an unrelated command.
 //
-// The ordered send deliberately BLOCKS when the lane is full (same philosophy
-// as SendTunnelData): dropping PTY input corrupts the byte stream, so the read
-// loop stalls instead and TCP backpressure throttles the sender. The <-c.done
-// arm keeps a stopped client from wedging the read pump forever.
+// The ordered send blocks briefly when the lane is full — backpressure in the
+// spirit of SendTunnelData, but bounded, because this send runs on the shared
+// readPump and stalls the entire command plane, not just one tunnel's read
+// loop (see defaultOrderedEnqueueTimeout). The <-c.done arm keeps a stopped
+// client from wedging the read pump at shutdown.
 func (c *Client) dispatchCommand(cmd Command) {
 	if !isOrderedCommand(cmd.Type) {
 		go c.processCommand(cmd)
@@ -476,24 +494,67 @@ func (c *Client) dispatchCommand(cmd Command) {
 
 	c.orderedPumpOnce.Do(func() { go c.orderedCommandPump() })
 
+	// Fast path: lane has room (always true unless the consumer is wedged).
+	select {
+	case c.orderedCmdChan <- cmd:
+		return
+	default:
+	}
+
+	timeout := c.orderedEnqueueTimeout
+	if timeout <= 0 {
+		timeout = defaultOrderedEnqueueTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
 	select {
 	case c.orderedCmdChan <- cmd:
 	case <-c.done:
 		log.Warn("dropping ordered command, client stopped", "commandId", cmd.ID, "commandType", cmd.Type)
+	case <-timer.C:
+		log.Error("ordered command lane wedged, dropping command to protect the WS command plane",
+			"commandId", cmd.ID, "commandType", cmd.Type, "laneDepth", len(c.orderedCmdChan))
 	}
 }
 
 // orderedCommandPump is the single consumer for order-sensitive commands.
 // Runs for the client lifetime (started lazily by dispatchCommand), so
 // ordering holds across reconnects; exits when the client is stopped.
+//
+// The consume loop is restarted if a panic ever escapes processCommand
+// (processCommand has its own Recoverer, so this is defense-in-depth): the
+// pump is started through a sync.Once, so a dead consumer could never be
+// replaced, and once the lane filled up dispatchCommand would block the read
+// pump forever — a silent, permanent hang of the whole WS command plane.
+// Restarting keeps the lane owned for the client lifetime no matter what.
 func (c *Client) orderedCommandPump() {
+	for !c.consumeOrderedCommands() {
+		log.Error("ordered command pump recovered from panic, restarting consumer")
+	}
+	// Client stopped: drain anything still queued so shutdown-timing drops are
+	// diagnosable (mirrors the Warn on the dispatch-side drop arm).
+	for {
+		select {
+		case cmd := <-c.orderedCmdChan:
+			log.Warn("dropping queued ordered command, client stopped", "commandId", cmd.ID, "commandType", cmd.Type)
+		default:
+			return
+		}
+	}
+}
+
+// consumeOrderedCommands processes ordered commands until the client stops
+// (returns true) or a panic is recovered (returns false — the zero value —
+// so orderedCommandPump restarts the loop).
+func (c *Client) consumeOrderedCommands() (stopped bool) {
 	defer observability.Recoverer("websocket.orderedCommandPump")
 	for {
 		select {
 		case cmd := <-c.orderedCmdChan:
 			c.processCommand(cmd)
 		case <-c.done:
-			return
+			return true
 		}
 	}
 }
