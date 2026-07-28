@@ -421,14 +421,17 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       }
 
       // Action plan / hybrid plan mode: check if tool matches an approved plan step.
-      // Secret-bearing tools never take this shortcut — they must fall through to
-      // the tier-3 createActionIntent branch so the minted credential has an
-      // immutable intent row to be sealed into. (The general case, where any
-      // tier-3 tool can execute via an approved plan with no intent row, is
-      // tracked separately in internal/security/tier3-plan-mode-intent-bypass.md.)
+      // Tier-3 (effective, post-escalation) and secret-bearing tools never take
+      // this shortcut — they must fall through to the tier-3 createActionIntent
+      // branch below so the action has a durable, second-approver intent row.
+      // Set when this call matches an approved plan step but declines the
+      // shortcut (effective tier 3, or secret-bearing). Tasks 2/3 use it to
+      // advance the plan index only once the step is authorized, and to abort
+      // the plan on any non-executing exit.
+      let matchedPlanStepIndex: number | null = null;
       if ((effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan') && session.activePlanId) {
         const match = matchPlanStep(session, toolName, input);
-        if (match.matches && !isSecretBearingTool(toolName)) {
+        if (match.matches && guardrailCheck.tier < 3 && !isSecretBearingTool(toolName)) {
           // Emit plan_step_start event
           session.eventBus.publish({
             type: 'plan_step_start',
@@ -455,26 +458,27 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           return { allowed: true };
         }
         if (match.matches) {
-          // Matched the plan, but it's a secret-bearing tool: decline the
-          // shortcut (fall through below) while still keeping plan bookkeeping
-          // coherent. `currentPlanStepIndex` is the ONLY place matchPlanStep
-          // (above) and the completion check (`currentPlanStepIndex >=
-          // approvedPlanSteps.size`, createSessionPostToolUse) read progress
-          // from, and the shortcut branch above is the sole place that
-          // normally advances it — which this tool never reaches. Without
-          // this, a plan containing a secret-bearing step desyncs every
-          // subsequent step into a false "deviation" (matched against the
-          // wrong index) and a plan ENDING on one never auto-completes.
+          // Matched an approved plan step but declined the shortcut: this
+          // call's EFFECTIVE tier is 3 (statically or via action-escalation),
+          // or it's a secret-bearing tool — either way it must go through the
+          // durable action-intents approval below (second approver, digest
+          // binding, immutable record) — the plan's own approval does not
+          // cover tier 3.
           //
-          // Deliberately do NOT emit plan_step_start or insert an
-          // aiToolExecutions row here: the tier-3 branch below creates its
-          // own approval-record row for this exact call (with its own
-          // approval_required SSE event), so doing either here would
-          // duplicate the audit trail / double-signal the UI for one
-          // physical tool call. postToolUse's plan_step_complete event still
-          // fires correctly off the advanced index once this call finishes,
-          // regardless of which branch below actually ran it.
-          session.currentPlanStepIndex = match.stepIndex + 1;
+          // Deliberately do NOT advance session.currentPlanStepIndex here.
+          // Advancing before the approval resolves is the defect this change
+          // removes: at least six exits below return allowed:false after this
+          // point (denial, timeout, ledger failure, intent-creation failure,
+          // lost release CAS, revalidation failure, thrown errors), and a
+          // stale index makes postToolUse emit plan_step_complete for a step
+          // that never ran and can mark the plan completed. The advance now
+          // happens at the authorize point instead (Task 2).
+          //
+          // Also deliberately no plan_step_start / aiToolExecutions row here:
+          // the tier-3 branch creates its own approval-record row and
+          // approval_required event for this same physical call, and emits
+          // plan_step_start once the step is actually authorized.
+          matchedPlanStepIndex = match.stepIndex;
         }
         // No match at all — deviation from plan — fall through to per-step approval
       }

@@ -209,6 +209,22 @@ describe('createSessionPreToolUse — approved plan step argument matching', () 
   });
 
   it('runs WITHOUT fresh approval when executing args exactly match the approved step', async () => {
+    // NOTE (Task 1 deviation, reported in task-1-report.md): this file's
+    // beforeEach mocks checkGuardrails at (effective) tier 3 by default, which
+    // was fine before Task 1 — the plan shortcut didn't check tier. It now
+    // does (Global Constraint: no effective-tier-3 action executes without a
+    // durable approval), so an argument-match at tier 3 must NOT take the
+    // shortcut. Override to tier 2 here so this test still exercises what it
+    // was written for — the arg-matching (TOCTOU) logic taking the shortcut —
+    // without asserting the now-closed tier-3 bypass. The sibling "deviation"
+    // tests below are unaffected: they never take the shortcut and keep
+    // tier 3 from the shared beforeEach.
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 2,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
     const approvedArgs = { deviceId: 'd-1', command: 'whoami', scope: 'standard' };
     const session = makeActiveSession({
       approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: approvedArgs }]]),
@@ -313,6 +329,15 @@ describe('createSessionPreToolUse — approved plan step argument matching', () 
   });
 
   it('matches nested arg objects regardless of key ordering', async () => {
+    // NOTE (Task 1 deviation, reported in task-1-report.md): see the identical
+    // note on the first test in this describe — overridden to tier 2 so the
+    // shortcut is still reachable for this arg-matching assertion.
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 2,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
     const session = makeActiveSession({
       approvedPlanSteps: new Map([[0, {
         toolName: 'execute_command',
