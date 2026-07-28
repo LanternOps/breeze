@@ -119,19 +119,28 @@
     },
     "sections": {
       "cves": "CVE ({{count}})",
-      "devices": "Dispositivi ({{count}} rilevamenti)",
-      "devices_one": "Dispositivi ({{count}} rilevamento)",
-      "devices_other": "Dispositivi ({{count}} rilevamenti)"
+      "devices": "Dispositivi ({{deviceCount}}) · {{count}} rilevamenti",
+      "devices_one": "Dispositivi ({{deviceCount}}) · {{count}} rilevamento",
+      "devices_other": "Dispositivi ({{deviceCount}}) · {{count}} rilevamenti"
+    },
+    "deviceRow": {
+      "findings": "{{count}} rilevamenti",
+      "findings_one": "{{count}} rilevamento",
+      "findings_other": "{{count}} rilevamenti",
+      "open": "{{count}} aperti",
+      "open_one": "{{count}} aperto",
+      "open_other": "{{count}} aperti"
     },
     "cveMeta": {
       "cvss": "CVSS {{score}}",
       "epss": "EPSS {{score}}"
     },
     "selection": {
-      "selectAll": "Seleziona tutto",
-      "selectAllAria": "Seleziona tutti i rilevamenti",
-      "deselectAllAria": "Deseleziona tutti i rilevamenti",
+      "selectAll": "Seleziona tutti gli aperti ({{count}})",
+      "selectAllAria": "Seleziona tutti i rilevamenti aperti",
+      "deselectAllAria": "Deseleziona tutti i rilevamenti aperti",
       "selectFindingAria": "Seleziona il rilevamento {{cveId}} su {{deviceName}}",
+      "selectDeviceAria": "Seleziona tutti i rilevamenti aperti su {{deviceName}}",
       "selected": "{{count}} selezionati",
       "selected_one": "{{count}} selezionato",
       "selected_other": "{{count}} selezionati"

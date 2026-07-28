@@ -119,19 +119,28 @@
     },
     "sections": {
       "cves": "CVEs ({{count}})",
-      "devices": "Appareils ({{count}} constats)",
-      "devices_one": "Appareils ({{count}} constat)",
-      "devices_other": "Appareils ({{count}} constats)"
+      "devices": "Appareils ({{deviceCount}}) · {{count}} constats",
+      "devices_one": "Appareils ({{deviceCount}}) · {{count}} constat",
+      "devices_other": "Appareils ({{deviceCount}}) · {{count}} constats"
+    },
+    "deviceRow": {
+      "findings": "{{count}} constats",
+      "findings_one": "{{count}} constat",
+      "findings_other": "{{count}} constats",
+      "open": "{{count}} ouverts",
+      "open_one": "{{count}} ouvert",
+      "open_other": "{{count}} ouverts"
     },
     "cveMeta": {
       "cvss": "CVSS {{score}}",
       "epss": "EPSS {{score}}"
     },
     "selection": {
-      "selectAll": "Sélectionner tout",
-      "selectAllAria": "Sélectionner tous les constats",
-      "deselectAllAria": "Désélectionner tous les constats",
+      "selectAll": "Sélectionner tous les ouverts ({{count}})",
+      "selectAllAria": "Sélectionner tous les constats ouverts",
+      "deselectAllAria": "Désélectionner tous les constats ouverts",
       "selectFindingAria": "Sélectionner le constat {{cveId}} sur {{deviceName}}",
+      "selectDeviceAria": "Sélectionner tous les constats ouverts sur {{deviceName}}",
       "selected": "{{count}} sélectionné",
       "selected_one": "{{count}} sélectionné",
       "selected_other": "{{count}} sélectionné"

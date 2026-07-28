@@ -97,15 +97,78 @@ describe('SoftwareGroupDrawer', () => {
     vi.mocked(api.fetchSoftwareGroupDetail).mockResolvedValue(DETAIL);
   });
 
-  it('renders header, CVE list, and device findings with open findings pre-selected', async () => {
+  it('renders header, CVE list, and one row per device with open findings pre-selected', async () => {
     render(
       <SoftwareGroupDrawer groupKey="sw:google chrome|google llc" onClose={() => {}} onActionComplete={() => {}} onSelectCve={() => {}} />,
     );
     expect(await screen.findByTestId('vuln-software-drawer')).toHaveTextContent('Google Chrome');
     expect(screen.getByTestId('vuln-drawer-cve-CVE-2026-0001')).toBeInTheDocument();
-    expect(screen.getByTestId('vuln-finding-check-dv-1')).toBeChecked();       // open — pre-selected
-    expect(screen.getByTestId('vuln-finding-check-dv-2')).not.toBeChecked();   // accepted — not pre-selected
-    expect(screen.getByTestId('vuln-finding-ticket-dv-2')).toBeInTheDocument();
+    // One row per device, not one per finding.
+    expect(screen.getByTestId('vuln-device-row-dev-1')).toHaveTextContent('WS-01');
+    expect(screen.getByTestId('vuln-device-row-dev-2')).toHaveTextContent('WS-02');
+    expect(screen.getByTestId('vuln-device-check-dev-1')).toBeChecked();       // its only finding is open — pre-selected
+    const dev2Check = screen.getByTestId('vuln-device-check-dev-2');
+    expect(dev2Check).not.toBeChecked();                                       // accepted only — nothing selectable
+    expect(dev2Check).toBeDisabled();
+    // Per-finding rows stay collapsed until the device is expanded.
+    expect(screen.queryByTestId('vuln-finding-check-dv-1')).toBeNull();
+    expect(screen.queryByTestId('vuln-finding-ticket-dv-2')).toBeNull();
+  });
+
+  it('expansion shows the device’s per-CVE rows with status, ticket link, and no checkbox on non-open findings', async () => {
+    render(
+      <SoftwareGroupDrawer groupKey="sw:google chrome|google llc" onClose={() => {}} onActionComplete={() => {}} onSelectCve={() => {}} />,
+    );
+    await screen.findByTestId('vuln-software-drawer');
+    const toggle = screen.getByTestId('vuln-device-toggle-dev-2');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    const row = screen.getByTestId('vuln-device-row-dev-2');
+    expect(row).toHaveTextContent('CVE-2026-0001');
+    expect(screen.getByTestId('vuln-finding-ticket-dv-2')).toHaveTextContent('T-2026-C009');
+    // Accepted finding — not selectable, so no checkbox.
+    expect(screen.queryByTestId('vuln-finding-check-dv-2')).toBeNull();
+    // The open finding on dev-1 does get a checkbox once expanded.
+    fireEvent.click(screen.getByTestId('vuln-device-toggle-dev-1'));
+    expect(screen.getByTestId('vuln-finding-check-dv-1')).toBeChecked();
+    // Collapse hides the rows again.
+    fireEvent.click(toggle);
+    expect(screen.queryByTestId('vuln-finding-ticket-dv-2')).toBeNull();
+  });
+
+  it('device checkbox selects only that device’s open findings, with indeterminate for partial selection', async () => {
+    // dev-1 carries two open findings and one accepted one.
+    vi.mocked(api.fetchSoftwareGroupDetail).mockResolvedValue({
+      ...DETAIL,
+      findings: [
+        DETAIL.findings[0]!,
+        { ...DETAIL.findings[0]!, deviceVulnerabilityId: 'dv-3', cveId: 'CVE-2026-0002' },
+        { ...DETAIL.findings[1]!, deviceVulnerabilityId: 'dv-4', deviceId: 'dev-1', deviceName: 'WS-01', ticketId: null, ticketNumber: null },
+        DETAIL.findings[1]!,
+      ],
+    });
+    render(
+      <SoftwareGroupDrawer groupKey="sw:google chrome|google llc" onClose={() => {}} onActionComplete={() => {}} onSelectCve={() => {}} />,
+    );
+    const dev1Check = (await screen.findByTestId('vuln-device-check-dev-1')) as HTMLInputElement;
+    expect(dev1Check.checked).toBe(true); // both open findings pre-selected
+    expect(screen.getByTestId('vuln-device-row-dev-1')).toHaveTextContent('3 findings · 2 open');
+
+    fireEvent.click(dev1Check); // deselect the device's open findings
+    expect(dev1Check.checked).toBe(false);
+    expect(dev1Check.indeterminate).toBe(false);
+    expect(screen.getByTestId('vuln-software-drawer')).toHaveTextContent('0 selected');
+
+    fireEvent.click(dev1Check); // reselect — only the open ones come back
+    expect(dev1Check.checked).toBe(true);
+    expect(screen.getByTestId('vuln-software-drawer')).toHaveTextContent('2 selected');
+
+    // Deselect one of the two via the expanded per-finding checkbox — device box goes indeterminate.
+    fireEvent.click(screen.getByTestId('vuln-device-toggle-dev-1'));
+    fireEvent.click(screen.getByTestId('vuln-finding-check-dv-3'));
+    expect(dev1Check.checked).toBe(false);
+    expect(dev1Check.indeterminate).toBe(true);
   });
 
   it('shows an empty message instead of a bare heading when the group has no findings', async () => {
@@ -133,6 +196,7 @@ describe('SoftwareGroupDrawer', () => {
     expect(chip).toHaveTextContent('Ticket T-2026-C009');
     expect(chip).toHaveAttribute('href', '/tickets#T-2026-C009');
     // Per-finding inline link for the finding whose own ticketId is also t-9 — distinct testid, no collision.
+    fireEvent.click(screen.getByTestId('vuln-device-toggle-dev-2'));
     expect(screen.getByTestId('vuln-finding-ticket-dv-2')).toHaveTextContent('T-2026-C009');
   });
 
@@ -201,7 +265,7 @@ describe('SoftwareGroupDrawer', () => {
     expect(screen.queryByTestId('vuln-bulk-error')).toBeNull();
   });
 
-  it('pluralizes the devices meta line and findings heading', async () => {
+  it('pluralizes the devices meta line and shows device + finding counts distinctly in the heading', async () => {
     vi.mocked(api.fetchSoftwareGroupDetail).mockResolvedValue({
       ...DETAIL,
       group: { ...DETAIL.group, deviceCount: 1 },
@@ -212,9 +276,17 @@ describe('SoftwareGroupDrawer', () => {
     );
     const drawer = await screen.findByTestId('vuln-software-drawer');
     expect(drawer).toHaveTextContent('1 device ·');
-    expect(drawer).toHaveTextContent('Devices (1 finding)');
+    expect(drawer).toHaveTextContent('Devices (1) · 1 finding');
     expect(drawer).not.toHaveTextContent('1 devices');
     expect(drawer).not.toHaveTextContent('1 findings');
+  });
+
+  it('heading counts devices distinctly from findings', async () => {
+    render(
+      <SoftwareGroupDrawer groupKey="sw:google chrome|google llc" onClose={() => {}} onActionComplete={() => {}} onSelectCve={() => {}} />,
+    );
+    // 2 devices, 2 findings total.
+    expect(await screen.findByTestId('vuln-software-drawer')).toHaveTextContent('Devices (2) · 2 findings');
   });
 
   it('remediate confirmation can be cancelled without firing the mutation', async () => {
@@ -227,11 +299,16 @@ describe('SoftwareGroupDrawer', () => {
     expect(api.remediateVuln).not.toHaveBeenCalled();
   });
 
-  it('names each finding checkbox after its device for screen readers', async () => {
+  it('names the device and finding checkboxes for screen readers', async () => {
     render(
       <SoftwareGroupDrawer groupKey="sw:google chrome|google llc" onClose={() => {}} onActionComplete={() => {}} onSelectCve={() => {}} />,
     );
-    expect(await screen.findByTestId('vuln-finding-check-dv-1')).toHaveAttribute(
+    expect(await screen.findByTestId('vuln-device-check-dev-1')).toHaveAttribute(
+      'aria-label',
+      'Select all open findings on WS-01',
+    );
+    fireEvent.click(screen.getByTestId('vuln-device-toggle-dev-1'));
+    expect(screen.getByTestId('vuln-finding-check-dv-1')).toHaveAttribute(
       'aria-label',
       'Select CVE-2026-0001 finding on WS-01',
     );
@@ -283,6 +360,8 @@ describe('SoftwareGroupDrawer', () => {
       <SoftwareGroupDrawer groupKey="sw:google chrome|google llc" onClose={() => {}} onActionComplete={onActionComplete} onSelectCve={() => {}} />,
     );
     await screen.findByTestId('vuln-software-drawer');
+    fireEvent.click(screen.getByTestId('vuln-device-toggle-dev-1'));
+    fireEvent.click(screen.getByTestId('vuln-device-toggle-dev-2'));
     expect(screen.queryByTestId('vuln-reopen-dv-1')).toBeNull();      // open finding
     fireEvent.click(screen.getByTestId('vuln-reopen-dv-2'));          // accepted finding
     await waitFor(() => expect(api.reopenVuln).toHaveBeenCalledWith('dv-2'));
@@ -296,33 +375,63 @@ describe('SoftwareGroupDrawer', () => {
       <SoftwareGroupDrawer groupKey="sw:google chrome|google llc" onClose={() => {}} onActionComplete={() => {}} onSelectCve={() => {}} />,
     );
     await screen.findByTestId('vuln-software-drawer');
+    fireEvent.click(screen.getByTestId('vuln-device-toggle-dev-2'));
     expect(screen.queryByTestId('vuln-reopen-dv-2')).toBeNull();
   });
 
-  it('select-all toggles between every finding and none, with indeterminate for partial selection', async () => {
+  it('select-all covers only OPEN findings, with indeterminate for partial selection', async () => {
+    // Two devices, three findings: dv-1 + dv-3 open, dv-2 accepted.
+    vi.mocked(api.fetchSoftwareGroupDetail).mockResolvedValue({
+      ...DETAIL,
+      findings: [
+        DETAIL.findings[0]!,
+        { ...DETAIL.findings[0]!, deviceVulnerabilityId: 'dv-3', cveId: 'CVE-2026-0002' },
+        DETAIL.findings[1]!,
+      ],
+    });
     render(
       <SoftwareGroupDrawer groupKey="sw:google chrome|google llc" onClose={() => {}} onActionComplete={() => {}} onSelectCve={() => {}} />,
     );
     const selectAll = (await screen.findByTestId('vuln-select-all')) as HTMLInputElement;
-    // Pre-selection is open-only (dv-1 of 2) — partial, so indeterminate.
-    expect(selectAll.checked).toBe(false);
-    expect(selectAll.indeterminate).toBe(true);
-    expect(selectAll).toHaveAccessibleName('Select all findings');
-
-    fireEvent.click(selectAll); // partial → all
-    expect(screen.getByTestId('vuln-finding-check-dv-1')).toBeChecked();
-    expect(screen.getByTestId('vuln-finding-check-dv-2')).toBeChecked();
+    // Pre-selection is every open finding — select-all starts fully checked; the
+    // accepted dv-2 does NOT count against it.
     expect(selectAll.checked).toBe(true);
     expect(selectAll.indeterminate).toBe(false);
-    expect(selectAll).toHaveAccessibleName('Deselect all findings');
+    expect(selectAll).toHaveAccessibleName('Deselect all open findings');
+    // Label counts the selectable (open) findings, not all findings.
+    expect(screen.getByTestId('vuln-software-drawer')).toHaveTextContent('Select all open (2)');
 
     fireEvent.click(selectAll); // all → none
-    expect(screen.getByTestId('vuln-finding-check-dv-1')).not.toBeChecked();
-    expect(screen.getByTestId('vuln-finding-check-dv-2')).not.toBeChecked();
     expect(selectAll.checked).toBe(false);
     expect(selectAll.indeterminate).toBe(false);
+    expect(selectAll).toHaveAccessibleName('Select all open findings');
+    expect(screen.getByTestId('vuln-device-check-dev-1')).not.toBeChecked();
     // Nothing selected — the bulk actions disable.
     expect(screen.getByTestId('vuln-action-remediate')).toBeDisabled();
+
+    // Partial: select one of the two open findings — indeterminate, and toggling
+    // select-all selects only the open ones (2 selected, never dv-2's 3).
+    fireEvent.click(screen.getByTestId('vuln-device-toggle-dev-1'));
+    fireEvent.click(screen.getByTestId('vuln-finding-check-dv-1'));
+    expect(selectAll.checked).toBe(false);
+    expect(selectAll.indeterminate).toBe(true);
+    fireEvent.click(selectAll); // partial → all open
+    expect(selectAll.checked).toBe(true);
+    expect(screen.getByTestId('vuln-finding-check-dv-1')).toBeChecked();
+    expect(screen.getByTestId('vuln-finding-check-dv-3')).toBeChecked();
+    expect(screen.getByTestId('vuln-software-drawer')).toHaveTextContent('2 selected');
+  });
+
+  it('hides select-all when the group has no open findings', async () => {
+    vi.mocked(api.fetchSoftwareGroupDetail).mockResolvedValue({
+      ...DETAIL,
+      findings: [DETAIL.findings[1]!], // accepted only
+    });
+    render(
+      <SoftwareGroupDrawer groupKey="sw:google chrome|google llc" onClose={() => {}} onActionComplete={() => {}} onSelectCve={() => {}} />,
+    );
+    await screen.findByTestId('vuln-device-row-dev-2');
+    expect(screen.queryByTestId('vuln-select-all')).toBeNull();
   });
 
   it('passes the selected devices (with CVE ids) to the bulk modal summary', async () => {
@@ -361,6 +470,6 @@ describe('SoftwareGroupDrawer', () => {
     );
     expect(await screen.findByTestId('vuln-drawer-error')).toHaveTextContent('boom');
     fireEvent.click(screen.getByTestId('vuln-drawer-retry'));
-    expect(await screen.findByTestId('vuln-finding-check-dv-1')).toBeInTheDocument();
+    expect(await screen.findByTestId('vuln-device-row-dev-1')).toBeInTheDocument();
   });
 });

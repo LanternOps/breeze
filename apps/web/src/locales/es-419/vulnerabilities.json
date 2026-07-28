@@ -119,19 +119,28 @@
     },
     "sections": {
       "cves": "CVE ({{count}})",
-      "devices": "Dispositivos (hallazgos de {{count}})",
-      "devices_one": "Dispositivos (hallazgo {{count}})",
-      "devices_other": "Dispositivos (hallazgos de {{count}})"
+      "devices": "Dispositivos ({{deviceCount}}) · {{count}} hallazgos",
+      "devices_one": "Dispositivos ({{deviceCount}}) · {{count}} hallazgo",
+      "devices_other": "Dispositivos ({{deviceCount}}) · {{count}} hallazgos"
+    },
+    "deviceRow": {
+      "findings": "{{count}} hallazgos",
+      "findings_one": "{{count}} hallazgo",
+      "findings_other": "{{count}} hallazgos",
+      "open": "{{count}} abiertos",
+      "open_one": "{{count}} abierto",
+      "open_other": "{{count}} abiertos"
     },
     "cveMeta": {
       "cvss": "CVSS {{score}}",
       "epss": "EPSS {{score}}"
     },
     "selection": {
-      "selectAll": "Seleccionar todo",
-      "selectAllAria": "Seleccionar todos los hallazgos",
-      "deselectAllAria": "Deseleccionar todos los hallazgos",
+      "selectAll": "Seleccionar todos los abiertos ({{count}})",
+      "selectAllAria": "Seleccionar todos los hallazgos abiertos",
+      "deselectAllAria": "Deseleccionar todos los hallazgos abiertos",
       "selectFindingAria": "Seleccionar hallazgo {{cveId}} en {{deviceName}}",
+      "selectDeviceAria": "Seleccionar todos los hallazgos abiertos en {{deviceName}}",
       "selected": "{{count}} seleccionado",
       "selected_one": "{{count}} seleccionado",
       "selected_other": "{{count}} seleccionado"

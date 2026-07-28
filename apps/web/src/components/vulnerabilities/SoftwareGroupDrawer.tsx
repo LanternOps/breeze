@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Drawer } from '../shared/Drawer';
@@ -29,6 +29,34 @@ function fmtEpss(value: number | null): string {
   return value === null ? '—' : formatPercent(value, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 
+type Finding = SoftwareGroupDetail['findings'][number];
+
+type DeviceGroup = {
+  deviceId: string;
+  deviceName: string;
+  orgName: string | null;
+  findings: Finding[];
+  /** deviceVulnerabilityIds of this device's OPEN findings — the selectable ones. */
+  openIds: string[];
+};
+
+/** Groups the flat per-(device, CVE) finding rows by device, preserving the API's deviceName/cveId sort order. */
+function groupByDevice(findings: Finding[]): DeviceGroup[] {
+  const byId = new Map<string, DeviceGroup>();
+  const groups: DeviceGroup[] = [];
+  for (const f of findings) {
+    let g = byId.get(f.deviceId);
+    if (!g) {
+      g = { deviceId: f.deviceId, deviceName: f.deviceName, orgName: f.orgName, findings: [], openIds: [] };
+      byId.set(f.deviceId, g);
+      groups.push(g);
+    }
+    g.findings.push(f);
+    if (f.status === 'open') g.openIds.push(f.deviceVulnerabilityId);
+  }
+  return groups;
+}
+
 export function SoftwareGroupDrawer({
   groupKey,
   onClose,
@@ -44,6 +72,7 @@ export function SoftwareGroupDrawer({
   const [detail, setDetail] = useState<SoftwareGroupDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<'remediate' | 'accept' | 'mitigate' | 'ticket' | 'reopen' | null>(null);
   const [modal, setModal] = useState<'remediate' | 'accept' | 'mitigate' | null>(null);
   // Inline failure message for the bulk-action modal (in addition to the
@@ -77,6 +106,12 @@ export function SoftwareGroupDrawer({
     void load();
   }, [load]);
 
+  // Collapse the device rows when switching groups — but NOT on in-place reloads
+  // (e.g. after Reopen), which would yank the row the user is working in shut.
+  useEffect(() => {
+    setExpanded(new Set());
+  }, [groupKey]);
+
   const toggle = (id: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -90,12 +125,38 @@ export function SoftwareGroupDrawer({
   const selectedFindings = detail ? detail.findings.filter((f) => selected.has(f.deviceVulnerabilityId)) : [];
   const selectedDeviceCount = new Set(selectedFindings.map((f) => f.deviceId)).size;
 
+  const deviceGroups = useMemo(() => groupByDevice(detail?.findings ?? []), [detail]);
+  // Only OPEN findings are selectable — accepted/mitigated/patched rows go
+  // through their own flows (Reopen), never the bulk actions.
+  const openIds = useMemo(() => deviceGroups.flatMap((g) => g.openIds), [deviceGroups]);
+
   // All/none toggle for the pre-checked findings list — deselecting a large
-  // pre-selection one checkbox at a time is unreasonable.
-  const allSelected = detail !== null && detail.findings.length > 0 && detail.findings.every((f) => selected.has(f.deviceVulnerabilityId));
+  // pre-selection one checkbox at a time is unreasonable. Only open findings
+  // participate, matching the pre-selection on load.
+  const allSelected = openIds.length > 0 && openIds.every((id) => selected.has(id));
   const toggleAll = () => {
-    if (!detail) return;
-    setSelected(allSelected ? new Set() : new Set(detail.findings.map((f) => f.deviceVulnerabilityId)));
+    setSelected(allSelected ? new Set() : new Set(openIds));
+  };
+
+  const toggleDevice = (g: DeviceGroup) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const deviceAllSelected = g.openIds.every((id) => next.has(id));
+      for (const id of g.openIds) {
+        if (deviceAllSelected) next.delete(id);
+        else next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const toggleExpanded = (deviceId: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(deviceId)) next.delete(deviceId);
+      else next.add(deviceId);
+      return next;
+    });
   };
 
   const runBulk = useCallback(
@@ -235,9 +296,9 @@ export function SoftwareGroupDrawer({
             <section>
               <div className="flex items-center justify-between gap-2">
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  {t('softwareGroupDrawer.sections.devices', { count: detail.findings.length })}
+                  {t('softwareGroupDrawer.sections.devices', { deviceCount: deviceGroups.length, count: detail.findings.length })}
                 </h3>
-                {detail.findings.length > 0 && (
+                {openIds.length > 0 && (
                   <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">
                     <input
                       type="checkbox"
@@ -251,7 +312,7 @@ export function SoftwareGroupDrawer({
                       onChange={toggleAll}
                       className="h-4 w-4 rounded border"
                     />
-                    {t('softwareGroupDrawer.selection.selectAll')}
+                    {t('softwareGroupDrawer.selection.selectAll', { count: openIds.length })}
                   </label>
                 )}
               </div>
@@ -266,46 +327,109 @@ export function SoftwareGroupDrawer({
                 </p>
               ) : (
               <ul className="mt-2 divide-y rounded-md border">
-                {detail.findings.map((f) => (
-                  <li key={f.deviceVulnerabilityId} className="flex items-center gap-3 px-3 py-2 text-sm">
-                    <input
-                      type="checkbox"
-                      data-testid={`vuln-finding-check-${f.deviceVulnerabilityId}`}
-                      aria-label={t('softwareGroupDrawer.selection.selectFindingAria', { cveId: f.cveId, deviceName: f.deviceName })}
-                      checked={selected.has(f.deviceVulnerabilityId)}
-                      onChange={() => toggle(f.deviceVulnerabilityId)}
-                      className="h-4 w-4 rounded border"
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate font-medium">{f.deviceName}</span>
-                      <span className="block truncate text-xs text-muted-foreground">
-                        {[f.orgName, f.cveId].filter(Boolean).join(' · ')}
-                      </span>
-                    </span>
-                    <FindingStatus status={f.status} acceptedUntil={f.acceptedUntil} />
-                    <span className="text-xs">{f.patchAvailable ? t('softwareGroupDrawer.findings.patch') : '—'}</span>
-                    {f.ticketId && (
-                      <a
-                        href={`/tickets#${f.ticketNumber ?? f.ticketId}`}
-                        data-testid={`vuln-finding-ticket-${f.deviceVulnerabilityId}`}
-                        className="text-xs underline"
-                      >
-                        {f.ticketNumber ?? t('softwareGroupDrawer.findings.ticket')}
-                      </a>
-                    )}
-                    {canAcceptRisk && (f.status === 'accepted' || f.status === 'mitigated') && (
-                      <button
-                        type="button"
-                        data-testid={`vuln-reopen-${f.deviceVulnerabilityId}`}
-                        className="text-xs font-medium text-primary hover:underline disabled:opacity-50"
-                        disabled={busy !== null}
-                        onClick={() => void onReopen(f.deviceVulnerabilityId)}
-                      >
-                        {t('softwareGroupDrawer.actions.reopen')}
-                      </button>
-                    )}
-                  </li>
-                ))}
+                {deviceGroups.map((g) => {
+                  const isExpanded = expanded.has(g.deviceId);
+                  const deviceSelectedCount = g.openIds.filter((id) => selected.has(id)).length;
+                  const deviceAllSelected = g.openIds.length > 0 && deviceSelectedCount === g.openIds.length;
+                  const counts = [
+                    t('softwareGroupDrawer.deviceRow.findings', { count: g.findings.length }),
+                    // Only call out the open count when some findings are NOT open —
+                    // "94 findings · 94 open" is noise.
+                    g.openIds.length < g.findings.length
+                      ? t('softwareGroupDrawer.deviceRow.open', { count: g.openIds.length })
+                      : null,
+                  ].filter(Boolean);
+                  return (
+                    <li key={g.deviceId} data-testid={`vuln-device-row-${g.deviceId}`}>
+                      <div className="flex items-center gap-3 px-3 py-2 text-sm">
+                        <input
+                          type="checkbox"
+                          data-testid={`vuln-device-check-${g.deviceId}`}
+                          aria-label={t('softwareGroupDrawer.selection.selectDeviceAria', { deviceName: g.deviceName })}
+                          // No open findings — nothing selectable on this device.
+                          disabled={g.openIds.length === 0}
+                          checked={deviceAllSelected}
+                          // Native indeterminate has no attribute form — set it via ref.
+                          ref={(el) => {
+                            if (el) el.indeterminate = !deviceAllSelected && deviceSelectedCount > 0;
+                          }}
+                          onChange={() => toggleDevice(g)}
+                          className="h-4 w-4 rounded border"
+                        />
+                        <button
+                          type="button"
+                          data-testid={`vuln-device-toggle-${g.deviceId}`}
+                          aria-expanded={isExpanded}
+                          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                          onClick={() => toggleExpanded(g.deviceId)}
+                        >
+                          <svg
+                            className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+                            viewBox="0 0 20 20"
+                            fill="currentColor"
+                            aria-hidden="true"
+                          >
+                            <path
+                              fillRule="evenodd"
+                              d="M7.21 14.77a.75.75 0 01.02-1.06L10.94 10 7.23 6.29a.75.75 0 111.06-1.06l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-.02z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium">{g.deviceName}</span>
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {[g.orgName, counts.join(' · ')].filter(Boolean).join(' · ')}
+                            </span>
+                          </span>
+                        </button>
+                      </div>
+                      {isExpanded && (
+                        <ul className="divide-y border-t bg-muted/20">
+                          {g.findings.map((f) => (
+                            <li key={f.deviceVulnerabilityId} className="flex items-center gap-3 py-2 pl-10 pr-3 text-sm">
+                              {f.status === 'open' ? (
+                                <input
+                                  type="checkbox"
+                                  data-testid={`vuln-finding-check-${f.deviceVulnerabilityId}`}
+                                  aria-label={t('softwareGroupDrawer.selection.selectFindingAria', { cveId: f.cveId, deviceName: f.deviceName })}
+                                  checked={selected.has(f.deviceVulnerabilityId)}
+                                  onChange={() => toggle(f.deviceVulnerabilityId)}
+                                  className="h-4 w-4 rounded border"
+                                />
+                              ) : (
+                                // Spacer keeps CVE ids aligned with selectable rows.
+                                <span className="h-4 w-4 shrink-0" aria-hidden="true" />
+                              )}
+                              <span className="min-w-0 flex-1 truncate font-medium">{f.cveId}</span>
+                              <FindingStatus status={f.status} acceptedUntil={f.acceptedUntil} />
+                              <span className="text-xs">{f.patchAvailable ? t('softwareGroupDrawer.findings.patch') : '—'}</span>
+                              {f.ticketId && (
+                                <a
+                                  href={`/tickets#${f.ticketNumber ?? f.ticketId}`}
+                                  data-testid={`vuln-finding-ticket-${f.deviceVulnerabilityId}`}
+                                  className="text-xs underline"
+                                >
+                                  {f.ticketNumber ?? t('softwareGroupDrawer.findings.ticket')}
+                                </a>
+                              )}
+                              {canAcceptRisk && (f.status === 'accepted' || f.status === 'mitigated') && (
+                                <button
+                                  type="button"
+                                  data-testid={`vuln-reopen-${f.deviceVulnerabilityId}`}
+                                  className="text-xs font-medium text-primary hover:underline disabled:opacity-50"
+                                  disabled={busy !== null}
+                                  onClick={() => void onReopen(f.deviceVulnerabilityId)}
+                                >
+                                  {t('softwareGroupDrawer.actions.reopen')}
+                                </button>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
               )}
             </section>

@@ -119,19 +119,28 @@
     },
     "sections": {
       "cves": "CVEs ({{count}})",
-      "devices": "Geräte ({{count}} Befunde)",
-      "devices_one": "Geräte ({{count}} Befund)",
-      "devices_other": "Geräte ({{count}} Befunde)"
+      "devices": "Geräte ({{deviceCount}}) · {{count}} Befunde",
+      "devices_one": "Geräte ({{deviceCount}}) · {{count}} Befund",
+      "devices_other": "Geräte ({{deviceCount}}) · {{count}} Befunde"
+    },
+    "deviceRow": {
+      "findings": "{{count}} Befunde",
+      "findings_one": "{{count}} Befund",
+      "findings_other": "{{count}} Befunde",
+      "open": "{{count}} offen",
+      "open_one": "{{count}} offen",
+      "open_other": "{{count}} offen"
     },
     "cveMeta": {
       "cvss": "CVSS {{score}}",
       "epss": "EPSS {{score}}"
     },
     "selection": {
-      "selectAll": "Alles auswählen",
-      "selectAllAria": "Wählen Sie alle Befunde aus",
-      "deselectAllAria": "Alle Befunde abwählen",
+      "selectAll": "Alle offenen auswählen ({{count}})",
+      "selectAllAria": "Alle offenen Befunde auswählen",
+      "deselectAllAria": "Alle offenen Befunde abwählen",
       "selectFindingAria": "Befund {{cveId}} auf {{deviceName}} auswählen",
+      "selectDeviceAria": "Alle offenen Befunde auf {{deviceName}} auswählen",
       "selected": "{{count}} ausgewählt",
       "selected_one": "{{count}} ausgewählt",
       "selected_other": "{{count}} ausgewählt"
