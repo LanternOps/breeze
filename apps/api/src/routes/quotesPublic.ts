@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteBlocks, quoteLines } from '../db/schema/quotes';
 import { partners } from '../db/schema/orgs';
@@ -195,15 +195,32 @@ quotesPublicRoutes.post('/:token/decline', zValidator('param', tokenParam), zVal
   if (!claims) return c.json({ error: 'This link is invalid or has expired' }, 401);
   const result = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const [quote] = await db.select().from(quotes).where(and(eq(quotes.id, claims.quoteId), eq(quotes.orgId, claims.orgId))).limit(1);
-    if (!quote || (quote.status !== 'sent' && quote.status !== 'viewed')) return 'bad_state' as const;
+    if (!quote) return 'bad_state' as const;
+    // Durable single-use backstop (#2875, wave-3 schema 2026-08-06-c): this jti
+    // was already consumed on the row → replay, even when the Redis revocation
+    // marker was lost (flush/failover/TTL). Checked BEFORE the status guard so
+    // a replayed link 401s exactly like the Redis resolve() gate does.
+    if (quote.publicResponseConsumedAt != null && quote.publicResponseJti === claims.jti) return 'consumed' as const;
+    if (quote.status !== 'sent' && quote.status !== 'viewed') return 'bad_state' as const;
     // Read-time expiry guard (Phase 3): an expired quote is terminal — mirror the
     // acceptQuote / declineQuoteByActor 410 so the sub-sweep window is covered here too.
     if (isQuoteExpired(quote.expiryDate)) return 'expired' as const;
     const now = new Date();
-    await db.update(quotes).set({ status: 'declined', declineReason: reason ?? null, declinedAt: now, updatedAt: now }).where(eq(quotes.id, quote.id));
+    // Consume the durable response capability in the SAME statement as the
+    // decline (#2875): jti + consumed_at + outcome land atomically with the
+    // status change; the Redis revoke below stays the hot-path check. The
+    // status filter re-asserts the guard at write time so a concurrent accept
+    // (which holds a FOR UPDATE lock and flips status to 'converted') can't be
+    // overwritten by this unlocked read-then-write — 0 rows matched → 409.
+    const updated = await db.update(quotes).set({
+      status: 'declined', declineReason: reason ?? null, declinedAt: now, updatedAt: now,
+      publicResponseJti: claims.jti, publicResponseConsumedAt: now, publicResponseOutcome: 'declined',
+    }).where(and(eq(quotes.id, quote.id), inArray(quotes.status, ['sent', 'viewed']))).returning({ id: quotes.id });
+    if (updated.length === 0) return 'bad_state' as const;
     return 'ok' as const;
   }));
   if (result === 'expired') return c.json({ error: 'This quote has expired', code: 'QUOTE_EXPIRED' }, 410);
+  if (result === 'consumed') return c.json({ error: 'This link is invalid or has expired' }, 401);
   if (result !== 'ok') return c.json({ error: 'This quote can no longer be declined' }, 409);
   // Consume the single-use token post-commit so a declined link can't be replayed.
   // A failed revoke leaves the link replayable (security-relevant) → capture.

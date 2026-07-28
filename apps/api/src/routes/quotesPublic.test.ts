@@ -8,7 +8,7 @@ const { dbResults } = vi.hoisted(() => ({ dbResults: [] as unknown[][] }));
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    for (const m of ['select', 'from', 'where', 'orderBy', 'limit']) chain[m] = vi.fn(() => chain);
+    for (const m of ['select', 'from', 'where', 'orderBy', 'limit', 'update', 'set', 'returning', 'for']) chain[m] = vi.fn(() => chain);
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = dbResults.shift() ?? [];
       return Promise.resolve(rows).then(resolve);
@@ -33,7 +33,8 @@ vi.mock('../services/quoteAcceptToken', () => ({
 vi.mock('../services/quoteLifecycle', () => ({ markQuoteViewed: vi.fn() }));
 
 import { quotesPublicRoutes } from './quotesPublic';
-import { verifyQuoteAcceptToken, isQuoteAcceptJtiRevoked } from '../services/quoteAcceptToken';
+import { db } from '../db';
+import { verifyQuoteAcceptToken, isQuoteAcceptJtiRevoked, revokeQuoteAcceptJti } from '../services/quoteAcceptToken';
 import { markQuoteViewed } from '../services/quoteLifecycle';
 
 const QUOTE_ID = '11111111-1111-1111-1111-111111111111';
@@ -280,6 +281,113 @@ describe('quotesPublic GET /:token', () => {
     expect(contractBlock.content.sourceType).toBe('uploaded');
     expect(contractBlock.content.renderedHtml).toBeNull();
     expect(contractBlock.content.fileUrl).toBe(`/quotes/public/${encodeURIComponent(TOKEN)}/contract-file/${BLOCK_ID}`);
+  });
+});
+
+// #2875: the public decline/accept mutations consume the durable response
+// capability (2026-08-06-c columns) and honor it as a replay backstop that
+// holds even when the Redis jti-revocation marker has been lost.
+describe('quotesPublic POST /:token/decline + durable response capability', () => {
+  const JTI = 'jti-1';
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbResults.length = 0;
+    (verifyQuoteAcceptToken as ReturnType<typeof vi.fn>).mockResolvedValue({
+      quoteId: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, jti: JTI,
+    });
+    (isQuoteAcceptJtiRevoked as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+    (revokeQuoteAcceptJti as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+  });
+
+  it('decline writes the durable consumption columns in the same UPDATE as the status change', async () => {
+    dbResults.push([{
+      id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'sent',
+      expiryDate: null, publicResponseJti: null, publicResponseConsumedAt: null, publicResponseOutcome: null,
+    }]); // quote SELECT
+    dbResults.push([{ id: QUOTE_ID }]); // UPDATE ... RETURNING
+
+    const res = await app().request(`/quotes/public/${TOKEN}/decline`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'Budget cut' }),
+    });
+    expect(res.status).toBe(200);
+
+    const setCalls = (db as unknown as { set: { mock: { calls: unknown[][] } } }).set.mock.calls;
+    expect(setCalls).toHaveLength(1);
+    const setArg = setCalls[0]![0] as Record<string, unknown>;
+    expect(setArg).toMatchObject({
+      status: 'declined',
+      declineReason: 'Budget cut',
+      publicResponseJti: JTI,
+      publicResponseOutcome: 'declined',
+    });
+    expect(setArg.publicResponseConsumedAt).toBeInstanceOf(Date);
+    expect(revokeQuoteAcceptJti).toHaveBeenCalledWith(JTI);
+  });
+
+  it('replayed decline 401s off the durable columns when the Redis marker is gone, without writing', async () => {
+    dbResults.push([{
+      id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'declined',
+      expiryDate: null, publicResponseJti: JTI,
+      publicResponseConsumedAt: new Date('2026-07-27T00:00:00Z'), publicResponseOutcome: 'declined',
+    }]); // quote SELECT — Redis says not revoked (marker lost), durable columns say consumed
+
+    const res = await app().request(`/quotes/public/${TOKEN}/decline`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'again' }),
+    });
+    expect(res.status).toBe(401);
+    const setCalls = (db as unknown as { set: { mock: { calls: unknown[][] } } }).set.mock.calls;
+    expect(setCalls).toHaveLength(0); // no UPDATE issued
+    expect(revokeQuoteAcceptJti).not.toHaveBeenCalled();
+  });
+
+  it('decline 409s (not consumed-401) when the row was consumed by a DIFFERENT jti', async () => {
+    dbResults.push([{
+      id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'converted',
+      expiryDate: null, publicResponseJti: 'jti-other',
+      publicResponseConsumedAt: new Date('2026-07-27T00:00:00Z'), publicResponseOutcome: 'accepted',
+    }]);
+
+    const res = await app().request(`/quotes/public/${TOKEN}/decline`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it('decline 409s when the write-time status re-check matches 0 rows (concurrent accept won the race)', async () => {
+    dbResults.push([{
+      id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'sent',
+      expiryDate: null, publicResponseJti: null, publicResponseConsumedAt: null, publicResponseOutcome: null,
+    }]); // quote SELECT reads 'sent'…
+    dbResults.push([]); // …but the guarded UPDATE matches 0 rows (status changed underneath)
+
+    const res = await app().request(`/quotes/public/${TOKEN}/decline`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'race' }),
+    });
+    expect(res.status).toBe(409);
+    expect(revokeQuoteAcceptJti).not.toHaveBeenCalled();
+  });
+
+  it('replayed accept 401s off the durable columns when the Redis marker is gone (service backstop through the route)', async () => {
+    dbResults.push([]); // quoteBlocks pre-fetch (accept route) — no contract blocks
+    dbResults.push([{
+      id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'converted',
+      expiryDate: null, quoteNumber: 'Q-1', currencyCode: 'USD', taxRate: null, siteId: null,
+      publicResponseJti: JTI,
+      publicResponseConsumedAt: new Date('2026-07-27T00:00:00Z'), publicResponseOutcome: 'accepted',
+    }]); // acceptQuote's SELECT ... FOR UPDATE
+
+    const res = await app().request(`/quotes/public/${TOKEN}/accept`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ signerName: 'Replay Ray' }),
+    });
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body.code).toBe('RESPONSE_CONSUMED');
+    expect(revokeQuoteAcceptJti).not.toHaveBeenCalled();
   });
 });
 
