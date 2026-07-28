@@ -430,6 +430,20 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       // advance the plan index only once the step is authorized, and to abort
       // the plan on any non-executing exit.
       let matchedPlanStepIndex: number | null = null;
+
+      // Terminate a matched plan step that is NOT going to execute. The plan
+      // must not continue past a step nobody authorized, and with the index
+      // no longer advanced early (Task 2) there is nothing to unwind — this
+      // exists purely to stop the plan. abortActivePlan swallows its own DB
+      // error and still clears in-memory plan state, so the tool's result
+      // must not depend on it succeeding.
+      const failMatchedPlanStep = async <T extends { allowed: false; error: string }>(result: T): Promise<T> => {
+        if (matchedPlanStepIndex !== null && session.activePlanId) {
+          await abortActivePlan(session);
+        }
+        return result;
+      };
+
       if ((effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan') && session.activePlanId) {
         const match = matchPlanStep(session, toolName, input);
         if (match.matches && guardrailCheck.tier < 3 && !isSecretBearingTool(toolName)) {
@@ -517,11 +531,11 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         approvalExec = row;
       } catch (err) {
         console.error('[AI-SDK] Failed to create approval record:', toolName, err);
-        return { allowed: false, error: 'Failed to create approval record' };
+        return await failMatchedPlanStep({ allowed: false, error: 'Failed to create approval record' });
       }
 
       if (!approvalExec) {
-        return { allowed: false, error: 'Failed to create approval record' };
+        return await failMatchedPlanStep({ allowed: false, error: 'Failed to create approval record' });
       }
 
       // Look up device + active user sessions for the approval UI
@@ -613,7 +627,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           });
         } catch (err) {
           console.error('[AI-SDK] Failed to create action intent:', toolName, err);
-          return { allowed: false, error: 'Failed to create approval record' };
+          return await failMatchedPlanStep({ allowed: false, error: 'Failed to create approval record' });
         }
 
         // Stamp the intent link onto the ledger row so handleApproval (web
@@ -679,14 +693,14 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         );
 
         if (decisionStatus === 'pending_approval') {
-          return {
+          return await failMatchedPlanStep({
             allowed: false,
-            error: 'Approval still pending; this action will complete once approved.',
-          };
+            error: 'Approval still pending; this action will complete once approved. The plan has been stopped.',
+          });
         }
 
         if (decisionStatus === 'rejected' || decisionStatus === 'cancelled' || decisionStatus === 'expired') {
-          return { allowed: false, error: 'Tool execution was rejected, cancelled, or expired' };
+          return await failMatchedPlanStep({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
         }
 
         // decisionStatus is one of approved/executing/completed/failed here.
@@ -715,10 +729,10 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // already claimed this intent for execution. Do NOT run the tool
           // inline — that would double-execute a real side effect. The worker
           // owns the ledger write and the intent's final result/error_code.
-          return {
+          return await failMatchedPlanStep({
             allowed: false,
             error: 'This action is already being completed by the approval worker; it will not run twice.',
-          };
+          });
         }
 
         // Won the release: re-prove the requester's CURRENT authorization
@@ -749,7 +763,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
 
         if (!intentRow) {
           console.error(`[AI-SDK] intent ${intent.id} vanished after winning release CAS`);
-          return { allowed: false, error: 'Approved action could not be revalidated for execution.' };
+          return await failMatchedPlanStep({ allowed: false, error: 'Approved action could not be revalidated for execution.' });
         }
 
         const revalidation = await revalidateApprovedIntentForRelease(intentRow, winningApproval);
@@ -758,10 +772,10 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           console.error(
             `[AI-SDK] inline release revalidation failed for intent ${intent.id}: ${revalidation.errorCode}`,
           );
-          return {
+          return await failMatchedPlanStep({
             allowed: false,
             error: 'Authorization for this action could no longer be verified; it was not executed.',
-          };
+          });
         }
 
         // Won the release: track the intent id so createSessionPostToolUse can
