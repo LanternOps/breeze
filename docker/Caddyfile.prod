@@ -110,11 +110,64 @@
     respond "{\"error\":\"remote access temporarily unavailable\"}" 503
   }
 
+  # --- Wave 5 Task 7: agent mTLS protected route set (documentation/parity) --
+  # Mirrors the Cloudflare WAF custom rule in
+  # docs/operations/cloudflare-mtls-setup.md and the fixtures in
+  # scripts/check-agent-mtls-edge-policy.sh verbatim, so all three copies of
+  # this expression can never silently drift apart. This matcher is NOT itself
+  # an enforcement point — Cloudflare's edge blocks unverified mTLS before the
+  # request reaches this tunnel hop, and the API's certificate/device binding
+  # service (agentCertificateBinding.ts) makes the final per-device decision.
+  # Exempt (bearer-only, no active identity to bind yet): /api/v1/agents/enroll,
+  # /api/v1/agents/renew-cert, /api/v1/agents/renew-cert/challenge — none of
+  # these match the expression below. Never widen it to a bare substring
+  # (`contains`) or wildcard-style renewal exemption.
+  @agentMtlsProtected {
+    expression path_regexp('^/api/v1/agents/[0-9a-fA-F-]{36}(?:/.*)?$') || path('/api/v1/agents/renew-cert/confirm') || path_regexp('^/api/v1/agent-ws/[0-9a-fA-F-]{36}/ws$')
+  }
+
   # --- API routes (with compression) ---
   @api path /api/* /s/* /health /health/* /ready /metrics/* /i/* /activate/*
   handle @api {
     encode zstd gzip
-    reverse_proxy api:3001
+
+    # Wave 5 Task 7 — normalize the agent mTLS assertion at this, the final
+    # trusted hop before the API (Internet -> cloudflared -> Caddy -> api).
+    # 1) Map Cloudflare's own verified-mTLS result to a strict boolean-text
+    #    placeholder. Only the literal "true" (as emitted by the operator's
+    #    Cloudflare Transform Rule from `cf.tls_client_auth.cert_verified`)
+    #    passes; every other value, including absent/malformed/spoofed input,
+    #    becomes "false". This is an allowlist, not a rename — it discards any
+    #    other shape a misconfigured or spoofing upstream might send.
+    map {http.request.header.Cf-Client-Cert-Verified} {breeze_agent_cert_verified} {
+      true true
+      default false
+    }
+
+    reverse_proxy api:3001 {
+      # 2) Discard any inbound Breeze assertion headers a client could forge
+      #    directly against this origin — they must never survive from the
+      #    request as received, regardless of what happens below.
+      header_up -X-Breeze-Client-Cert-Verified
+      header_up -X-Breeze-Client-Cert-Serial
+
+      # 3) Set the two Breeze headers ONLY from the verified Cloudflare mTLS
+      #    result (via the allowlist map above) or, for a self-hosted operator
+      #    terminating mTLS locally, their own certificate-validating proxy's
+      #    equivalent output — see docs/operations/cloudflare-mtls-setup.md.
+      #    Never derive these from arbitrary client-supplied input.
+      header_up X-Breeze-Client-Cert-Verified {breeze_agent_cert_verified}
+      header_up X-Breeze-Client-Cert-Serial {http.request.header.Cf-Client-Cert-Serial}
+
+      # 4) Discard Cloudflare's raw client-certificate headers so PEM/DER/
+      #    fingerprint material — and the raw pre-map verified/serial fields
+      #    themselves — never reach the API. Only the normalized Breeze pair
+      #    set above may cross this hop.
+      header_up -Cf-Client-Cert-Verified
+      header_up -Cf-Client-Cert-Serial
+      header_up -Cf-Client-Cert-Der-Base64
+      header_up -Cf-Client-Cert-Sha256
+    }
   }
 
   # --- MSP Invoice Engine + Quotes pages live in the web app at

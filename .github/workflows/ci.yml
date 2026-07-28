@@ -603,6 +603,9 @@ jobs:
       - name: Run customer-PII guard
         run: bash scripts/security/check-customer-pii.sh
 
+      - name: Run agent mTLS edge policy guard
+        run: pnpm check:agent-mtls-edge-policy
+
   build-api:
     name: Build API
     runs-on: ubuntu-latest

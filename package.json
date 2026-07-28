@@ -16,6 +16,7 @@
     "pin:github-actions": "node scripts/security/pin-github-actions.mjs",
     "test:override-floors": "node --test scripts/security/check-override-floors.test.mjs",
     "check:override-floors": "node scripts/security/check-override-floors.mjs",
+    "check:agent-mtls-edge-policy": "bash scripts/check-agent-mtls-edge-policy.sh",
     "db:migrate": "turbo run db:migrate --filter=@breeze/api",
     "db:check-drift": "turbo run db:check-drift --filter=@breeze/api",
     "db:seed": "turbo run db:seed --filter=@breeze/api",
