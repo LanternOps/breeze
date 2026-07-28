@@ -20,6 +20,11 @@ import (
 
 var log = logging.L("helper")
 
+// sweepLegacyAutoStart enables the one-time HKLM Run cleanup in Apply. The
+// value only ever exists on Windows (legacy installs); other platforms use
+// launchd/systemd artifacts handled by migrate/uninstall.
+var sweepLegacyAutoStart = runtime.GOOS == "windows"
+
 // Settings mirrors the API HelperSettings shape.
 type Settings struct {
 	Enabled            bool   `json:"enabled" yaml:"-"`
@@ -112,6 +117,8 @@ type Manager struct {
 	pendingHelperVersion string
 	updateFailures       int
 	abandonedVersion     string // version we gave up updating to
+
+	legacyAutoStartCleaned bool
 }
 
 // New creates a new helper Manager. serverURL is a provider (func() string) so
@@ -225,6 +232,20 @@ func (m *Manager) Apply(settings *Settings) {
 	// autostart) in an endless migrate/uninstall thrash loop on every heartbeat.
 	if m.needsSessionMigration() && (settings.Enabled || wasInstalled) {
 		m.migrateToSessions()
+	}
+
+	// Nothing installs the HKLM Run "BreezeHelper" value anymore — spawning is
+	// manager-driven — but hosts upgraded before the per-session migration may
+	// still carry it, and Windows fires it for EVERY logon session, bypassing
+	// the console-only enumerator filter on RDS hosts. The migration-time
+	// removal only runs under one-time conditions, so sweep it here once per
+	// agent process. Idempotent: removeAutoStart is a no-op when absent.
+	if sweepLegacyAutoStart && !m.legacyAutoStartCleaned {
+		if err := removeAutoStartFunc(); err != nil {
+			log.Warn("failed to remove legacy HKLM Run autostart", "error", err.Error())
+		} else {
+			m.legacyAutoStartCleaned = true
+		}
 	}
 
 	if m.sessionEnumerator == nil {

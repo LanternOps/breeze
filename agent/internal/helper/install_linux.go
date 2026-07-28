@@ -72,21 +72,6 @@ X-GNOME-Autostart-enabled=true
 `, binaryPath)
 }
 
-func installAutoStart(binaryPath string) error {
-	entry := renderAutoStartEntry(binaryPath)
-
-	if err := os.MkdirAll(desktopEntryDir, 0755); err != nil {
-		return fmt.Errorf("create autostart dir: %w", err)
-	}
-
-	if err := os.WriteFile(desktopEntryPath, []byte(entry), 0644); err != nil {
-		return fmt.Errorf("write desktop entry: %w", err)
-	}
-
-	log.Info("installed XDG autostart entry", "path", desktopEntryPath)
-	return nil
-}
-
 func removeAutoStart() error {
 	if err := os.Remove(desktopEntryPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove desktop entry: %w", err)

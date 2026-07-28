@@ -306,3 +306,61 @@ func TestApplyDisabledInstalledCleansUpOnce(t *testing.T) {
 		t.Fatalf("second disabled tick should be a no-op, got %d uninstall calls", uninstallCalls)
 	}
 }
+
+func TestApplySweepsLegacyAutoStartOncePerProcess(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	var removeCalls int
+	origRemove := removeAutoStartFunc
+	origSweep := sweepLegacyAutoStart
+	origStopLegacy := stopHelperLegacyFunc
+	t.Cleanup(func() {
+		removeAutoStartFunc = origRemove
+		sweepLegacyAutoStart = origSweep
+		stopHelperLegacyFunc = origStopLegacy
+	})
+	removeAutoStartFunc = func() error { removeCalls++; return nil }
+	stopHelperLegacyFunc = func() {}
+	sweepLegacyAutoStart = true // simulate Windows on any test platform
+
+	mgr := New(context.Background(), nil, nil, "")
+	mgr.baseDir = tmpDir
+	mgr.sessionEnumerator = &mockEnumerator{}
+
+	mgr.Apply(&Settings{Enabled: false})
+	mgr.Apply(&Settings{Enabled: false})
+
+	// One sweep per process lifetime — not one per heartbeat tick. (The
+	// migration/uninstall paths have their own removeAutoStartFunc calls;
+	// with Enabled=false and no residual state those do not fire here.)
+	if removeCalls != 1 {
+		t.Fatalf("removeAutoStartFunc called %d times, want exactly 1", removeCalls)
+	}
+}
+
+func TestApplySkipsLegacyAutoStartSweepOffWindows(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	var removeCalls int
+	origRemove := removeAutoStartFunc
+	origSweep := sweepLegacyAutoStart
+	origStopLegacy := stopHelperLegacyFunc
+	t.Cleanup(func() {
+		removeAutoStartFunc = origRemove
+		sweepLegacyAutoStart = origSweep
+		stopHelperLegacyFunc = origStopLegacy
+	})
+	removeAutoStartFunc = func() error { removeCalls++; return nil }
+	stopHelperLegacyFunc = func() {}
+	sweepLegacyAutoStart = false
+
+	mgr := New(context.Background(), nil, nil, "")
+	mgr.baseDir = tmpDir
+	mgr.sessionEnumerator = &mockEnumerator{}
+
+	mgr.Apply(&Settings{Enabled: false})
+
+	if removeCalls != 0 {
+		t.Fatalf("removeAutoStartFunc called %d times, want 0 when sweep disabled", removeCalls)
+	}
+}
