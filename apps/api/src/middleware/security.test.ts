@@ -7,6 +7,8 @@ function createApp(options?: Parameters<typeof securityMiddleware>[0]) {
   app.use('*', securityMiddleware(options));
   app.get('/test', (c) => c.text('ok'));
   app.get('/health', (c) => c.text('healthy'));
+  app.get('/health/live', (c) => c.text('live'));
+  app.get('/health/ready', (c) => c.text('ready-probe'));
   app.get('/ready', (c) => c.text('ready'));
   return app;
 }
@@ -185,6 +187,24 @@ describe('securityMiddleware', () => {
       const res = await app.request(req);
       expect(res.status).toBe(200);
       expect(await res.text()).toBe('ready');
+    });
+
+    // Regression: an orchestrator/load-balancer probes /health/ready and
+    // /health/live over plain HTTP with a raw IP/localhost Host (NOT the
+    // canonical PUBLIC_API_URL host) and NO X-Forwarded-Proto. Under FORCE_HTTPS
+    // these probe paths must pass through, never 400 for the non-canonical Host
+    // (the CI smoke-test failure this covers) and never redirect.
+    it.each([
+      ['/health/live', 'live'],
+      ['/health/ready', 'ready-probe'],
+    ])('passes %s through under FORCE_HTTPS with a non-canonical Host over http', async (path, body) => {
+      const app = createApp({ forceHttps: 'true', publicApiUrl: PUBLIC_API_URL });
+      const req = new Request(`http://localhost:3001${path}`, {
+        headers: { host: 'localhost:3001' },
+      });
+      const res = await app.request(req);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe(body);
     });
   });
 

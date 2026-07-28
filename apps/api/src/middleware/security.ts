@@ -27,7 +27,15 @@ import { canonicalHttpsRedirect, effectiveRequestScheme, isCanonicalRequestHost 
  * a redirect to whatever the client claimed.
  */
 
-const HEALTH_CHECK_PATHS = new Set(['/health', '/ready']);
+// Liveness/readiness probes are hit by orchestrators and load balancers with a
+// raw IP/localhost Host over plain HTTP — they must never be redirected to HTTPS
+// or 400'd for a non-canonical Host. This set must cover EVERY health route
+// registered below (/health, /health/live, /health/ready) plus the legacy /ready
+// alias. Wave 5 Task 8 (TRANSPORT-001) note: effectiveRequestScheme() reports
+// `http` for a direct request even with no X-Forwarded-Proto, so a probe path
+// omitted here is actively rejected under FORCE_HTTPS — not merely un-redirected
+// as under the prior raw-header check.
+const HEALTH_CHECK_PATHS = new Set(['/health', '/health/live', '/health/ready', '/ready']);
 
 interface SecurityMiddlewareOptions {
   /** Override NODE_ENV for testing. Defaults to process.env.NODE_ENV */
