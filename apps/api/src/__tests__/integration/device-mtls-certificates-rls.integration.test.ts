@@ -207,8 +207,20 @@ describe('device_mtls_certificates RLS (breeze_app)', () => {
       caught = err;
     }
     expect(caught, 'mismatched (device_id, org_id) tuple must be rejected by the composite FK').toBeDefined();
-    const cause = (caught as { cause?: { code?: string; message?: string } } | undefined)?.cause;
-    expect(cause?.code).toBe('23503'); // foreign_key_violation
-    expect(cause?.message).toMatch(/device_mtls_certificates_device_org_fkey/);
+    // This FK is DEFERRABLE INITIALLY DEFERRED (2026-08-06-d-device-mtls-certificate-history.sql,
+    // added so POST /devices/:id/move-org can flip devices.org_id — see the
+    // schema module doc), so the violation is raised at COMMIT of the
+    // wrapping withSystemDbAccessContext transaction, not at the INSERT
+    // statement itself. That changes the thrown error's SHAPE: an
+    // immediate (non-deferred) constraint failure comes back as Drizzle's
+    // `DrizzleQueryError` wrapping the raw driver error in `.cause`, but a
+    // deferred failure surfacing at COMMIT is the raw `postgres` driver
+    // `PostgresError` itself (no Drizzle wrapper, so no `.cause`) — assert
+    // against whichever shape is present rather than assuming `.cause`.
+    const raw = caught as { cause?: { code?: string; message?: string }; code?: string; message?: string } | undefined;
+    const code = raw?.cause?.code ?? raw?.code;
+    const message = raw?.cause?.message ?? raw?.message;
+    expect(code).toBe('23503'); // foreign_key_violation
+    expect(message).toMatch(/device_mtls_certificates_device_org_fkey/);
   });
 });
