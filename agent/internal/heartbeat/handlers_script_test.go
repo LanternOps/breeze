@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -217,8 +218,9 @@ func TestHandleScriptRunAsSystemFallsThrough(t *testing.T) {
 }
 
 func TestHandleScriptRunAsUserNoHelper(t *testing.T) {
-	// When no user helper is connected, runAs=user falls through to the local
-	// executor which correctly rejects it — there's no user session to target.
+	// When no user helper is connected, runAs=user must fail fast with the
+	// real reason — before the local executor is involved — instead of the
+	// old misleading "downgraded to SYSTEM" fallthrough (#1009 symptom).
 	broker := sessionbroker.New("/tmp/test-broker-no-helper.sock", nil)
 	h := newTestHeartbeat(broker)
 
@@ -233,12 +235,39 @@ func TestHandleScriptRunAsUserNoHelper(t *testing.T) {
 		},
 	})
 
-	// The executor rejects runAs=user without a connected user helper
 	if result.Status != "failed" {
 		t.Fatalf("expected failed (no helper for runAs=user), got %s", result.Status)
 	}
-	if result.Error == "" {
-		t.Fatal("expected error message")
+	if !strings.Contains(result.Error, "no eligible session found") {
+		t.Fatalf("expected fail-fast error naming the missing session, got: %q", result.Error)
+	}
+	if !strings.Contains(result.Error, "script was not executed") {
+		t.Fatalf("error must state the script did not run, got: %q", result.Error)
+	}
+}
+
+func TestHandleScriptRunAsUserNoBroker(t *testing.T) {
+	// Same fail-fast contract when there is no session broker at all
+	// (non-service mode) — previously this fell through to a late executor
+	// rejection.
+	h := newTestHeartbeat(nil)
+
+	result := handleScript(h, Command{
+		ID:   "cmd-user-nobroker",
+		Type: tools.CmdScript,
+		Payload: map[string]any{
+			"content":        "echo 'x'",
+			"language":       "bash",
+			"runAs":          "user",
+			"timeoutSeconds": 10,
+		},
+	})
+
+	if result.Status != "failed" {
+		t.Fatalf("expected failed, got %s", result.Status)
+	}
+	if !strings.Contains(result.Error, "script was not executed") {
+		t.Fatalf("expected fail-fast error, got: %q", result.Error)
 	}
 }
 
