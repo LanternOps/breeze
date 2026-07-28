@@ -3,6 +3,7 @@ import { roles, permissions, rolePermissions, partnerUsers, organizationUsers } 
 import { eq, and } from 'drizzle-orm';
 import { getRedis } from './redis';
 import { PERMISSION_GRANTS } from '@breeze/shared';
+import { permissionGrantMatches } from './permissionMatching';
 
 export interface Permission {
   resource: string;
@@ -212,8 +213,7 @@ export function hasPermission(
   action: string
 ): boolean {
   return userPerms.permissions.some(
-    p => (p.resource === resource || p.resource === '*') &&
-         (p.action === action || p.action === '*')
+    p => permissionGrantMatches(p, resource, action)
   );
 }
 

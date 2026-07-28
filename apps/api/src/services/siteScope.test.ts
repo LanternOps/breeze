@@ -1122,6 +1122,115 @@ describe('live report authority resolution', () => {
     },
   );
 
+  // #2874: the report authority check must honor '*' wildcard grants the same
+  // way the canonical resolver (services/permissions.ts hasPermission) does.
+  // The seeded Partner Admin role carries a single `*|*` row and nothing else.
+  it.each([
+    { name: '*|* (Partner Admin shape)', resource: '*', action: '*' },
+    { name: 'wildcard resource with exact action', resource: '*', action: 'read' },
+    { name: 'exact resource with wildcard action', resource: 'reports', action: '*' },
+  ])(
+    'grants partner fallback authority via a $name grant',
+    async ({ resource, action }) => {
+      queueRows(
+        [activeUser()],
+        [organization()],
+        [],
+        [{ roleId: ROLE_PARTNER, orgAccess: 'all', orgIds: null }],
+        [{
+          resource,
+          action,
+          roleScope: 'partner',
+          roleIsSystem: false,
+          roleOrgId: null,
+          rolePartnerId: PARTNER_A,
+        }],
+      );
+
+      const result = await resolveLiveReportAuthority(USER_ID, ORG_A, 'read');
+
+      expect(result).toMatchObject({
+        ok: true,
+        authority: { scope: unrestricted() },
+      });
+      // The SQL filter must let wildcard rows through — a JS-only match would
+      // pass this mock but never see the row against a real database.
+      const renderedPermissionWhere = renderSql(
+        liveDbState.whereConditions.at(-1) as SQL,
+      );
+      expect(renderedPermissionWhere.params).toContain('reports');
+      expect(renderedPermissionWhere.params).toContain('read');
+      expect(
+        renderedPermissionWhere.params.filter((param) => param === '*'),
+      ).toHaveLength(2);
+    },
+  );
+
+  it('a *|* grant does not widen a restricted organization membership beyond its sites', async () => {
+    queueRows(
+      [activeUser()],
+      [organization()],
+      [orgMembership([SITE_A])],
+      [{
+        resource: '*',
+        action: '*',
+        roleScope: 'organization',
+        roleIsSystem: false,
+        roleOrgId: ORG_A,
+        rolePartnerId: PARTNER_A,
+      }],
+    );
+
+    await expect(resolveLiveReportAuthority(USER_ID, ORG_A, 'write'))
+      .resolves.toMatchObject({
+        ok: true,
+        authority: { scope: restricted([SITE_A]) },
+      });
+  });
+
+  it.each([
+    { name: 'unrelated resource with wildcard action', resource: 'devices', action: '*' },
+    { name: 'wildcard resource with a different action', resource: '*', action: 'write' },
+  ])('still denies partner fallback for a $name grant', async ({ resource, action }) => {
+    queueRows(
+      [activeUser()],
+      [organization()],
+      [],
+      [{ roleId: ROLE_PARTNER, orgAccess: 'all', orgIds: null }],
+      [{
+        resource,
+        action,
+        roleScope: 'partner',
+        roleIsSystem: false,
+        roleOrgId: null,
+        rolePartnerId: PARTNER_A,
+      }],
+    );
+
+    await expect(resolveLiveReportAuthority(USER_ID, ORG_A, 'read'))
+      .resolves.toEqual({ ok: false, reason: 'permission_removed' });
+  });
+
+  it('a wildcard grant on a role owned by another partner is still rejected', async () => {
+    queueRows(
+      [activeUser()],
+      [organization()],
+      [],
+      [{ roleId: ROLE_PARTNER, orgAccess: 'all', orgIds: null }],
+      [{
+        resource: '*',
+        action: '*',
+        roleScope: 'partner',
+        roleIsSystem: false,
+        roleOrgId: null,
+        rolePartnerId: PARTNER_B,
+      }],
+    );
+
+    await expect(resolveLiveReportAuthority(USER_ID, ORG_A, 'read'))
+      .resolves.toEqual({ ok: false, reason: 'permission_removed' });
+  });
+
   it('returns unrestricted for current scheduled platform authority', async () => {
     queueRows(
       [activeUser({ isPlatformAdmin: true })],
@@ -1507,6 +1616,142 @@ describe('live report authority resolution', () => {
     expect(result.get(ORG_A)).toMatchObject({
       ok: true,
       authority: { scope: unrestricted() },
+    });
+  });
+
+  // #2874: the batched resolver shares the wildcard semantics — on BOTH of
+  // its branches. The org-membership branch runs a separate permission query
+  // (its own SQL filter) from the partner fallback, so each needs its own
+  // rendered-WHERE wildcard guard.
+  it('honors a *|* grant on a batched organization membership', async () => {
+    queueRows(
+      [activeUser()],
+      [organization()],
+      [{ orgId: ORG_A, roleId: ROLE_ORG, siteIds: null }],
+      [{
+        roleId: ROLE_ORG,
+        resource: '*',
+        action: '*',
+        roleScope: 'organization',
+        roleIsSystem: false,
+        roleOrgId: ORG_A,
+        rolePartnerId: PARTNER_A,
+      }],
+    );
+    const auth = requestAuth({
+      scope: 'partner',
+      orgId: null,
+      accessibleOrgIds: [ORG_A],
+      canAccessOrg: () => true,
+    });
+
+    const result = await resolveRequestReportAuthorityMap(
+      auth,
+      [ORG_A],
+      'read',
+    );
+
+    expect(result.get(ORG_A)).toMatchObject({
+      ok: true,
+      authority: { scope: unrestricted() },
+    });
+    // Every accessible org has a membership, so no partner fallback queries
+    // run and the last captured WHERE is the org-branch permission query —
+    // the one whose SQL filter must let the two '*' params through.
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(4);
+    const renderedPermissionWhere = renderSql(
+      liveDbState.whereConditions.at(-1) as SQL,
+    );
+    expect(renderedPermissionWhere.params).toContain('reports');
+    expect(renderedPermissionWhere.params).toContain('read');
+    expect(
+      renderedPermissionWhere.params.filter((param) => param === '*'),
+    ).toHaveLength(2);
+  });
+
+  it('honors a *|* grant in the batched partner fallback', async () => {
+    queueRows(
+      [activeUser()],
+      [organization()],
+      [],
+      [{
+        partnerId: PARTNER_A,
+        roleId: ROLE_PARTNER,
+        orgAccess: 'all',
+        orgIds: null,
+      }],
+      [{
+        roleId: ROLE_PARTNER,
+        resource: '*',
+        action: '*',
+        roleScope: 'partner',
+        roleIsSystem: false,
+        roleOrgId: null,
+        rolePartnerId: PARTNER_A,
+      }],
+    );
+    const auth = requestAuth({
+      scope: 'partner',
+      orgId: null,
+      accessibleOrgIds: [ORG_A],
+      canAccessOrg: () => true,
+    });
+
+    const result = await resolveRequestReportAuthorityMap(
+      auth,
+      [ORG_A],
+      'read',
+    );
+
+    expect(result.get(ORG_A)).toMatchObject({
+      ok: true,
+      authority: { scope: unrestricted() },
+    });
+    const renderedPermissionWhere = renderSql(
+      liveDbState.whereConditions.at(-1) as SQL,
+    );
+    expect(
+      renderedPermissionWhere.params.filter((param) => param === '*'),
+    ).toHaveLength(2);
+  });
+
+  it('still denies an unrelated wildcard-action grant in the batched fallback', async () => {
+    queueRows(
+      [activeUser()],
+      [organization()],
+      [],
+      [{
+        partnerId: PARTNER_A,
+        roleId: ROLE_PARTNER,
+        orgAccess: 'all',
+        orgIds: null,
+      }],
+      [{
+        roleId: ROLE_PARTNER,
+        resource: 'devices',
+        action: '*',
+        roleScope: 'partner',
+        roleIsSystem: false,
+        roleOrgId: null,
+        rolePartnerId: PARTNER_A,
+      }],
+    );
+    const auth = requestAuth({
+      scope: 'partner',
+      orgId: null,
+      accessibleOrgIds: [ORG_A],
+      canAccessOrg: () => true,
+    });
+
+    const result = await resolveRequestReportAuthorityMap(
+      auth,
+      [ORG_A],
+      'read',
+    );
+
+    expect(result.get(ORG_A)).toEqual({
+      ok: false,
+      reason: 'permission_removed',
     });
   });
 });
