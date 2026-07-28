@@ -11,15 +11,52 @@ vi.mock('../../stores/auth', () => ({
 const showToast = vi.fn();
 vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
 
-// DeploymentWizard / SoftwareVersionManager pull in their own fetches; stub them
-// out so this test exercises only the catalog delete flow.
-// Probe echoes the preselected package id so we can assert per-card deploy preselect.
+// DeploymentWizard / SoftwareVersionManager / the deployments-tab components
+// pull in their own fetches; stub them out so these tests exercise only the
+// catalog's own logic. Probes echo the props we need to assert on.
 vi.mock('./DeploymentWizard', () => ({
-  default: (props: { initialCatalogId?: string }) => (
-    <div data-testid="wizard">wizard:{props.initialCatalogId ?? 'none'}</div>
+  default: (props: {
+    initialCatalogId?: string;
+    initialDeviceIds?: string[];
+    onViewDeployment?: (id: string) => void;
+  }) => (
+    <div data-testid="wizard">
+      wizard:{props.initialCatalogId ?? 'none'};devices:
+      {(props.initialDeviceIds ?? []).join('|') || 'none'}
+      <button
+        type="button"
+        data-testid="wizard-view-deployment"
+        onClick={() => props.onViewDeployment?.('dep-42')}
+      >
+        view
+      </button>
+    </div>
   ),
 }));
 vi.mock('./SoftwareVersionManager', () => ({ default: () => null }));
+vi.mock('./DeploymentList', () => ({
+  default: (props: { onSelectDeployment?: (id: string) => void }) => (
+    <div data-testid="deployment-list-probe">
+      <button
+        type="button"
+        data-testid="select-deployment"
+        onClick={() => props.onSelectDeployment?.('dep-7')}
+      >
+        select
+      </button>
+    </div>
+  ),
+}));
+vi.mock('./DeploymentProgress', () => ({
+  default: (props: { deploymentId: string; onBack?: () => void }) => (
+    <div data-testid="deployment-progress-probe">
+      progress:{props.deploymentId}
+      <button type="button" data-testid="progress-back" onClick={() => props.onBack?.()}>
+        back
+      </button>
+    </div>
+  ),
+}));
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -240,5 +277,113 @@ describe('SoftwareCatalog built-in packages', () => {
 
     expect(screen.queryByText(/Upload installer to enable deploy/i)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Deploy$/ })).not.toBeDisabled();
+  });
+});
+
+const SUMMARY = { active: 2, scheduled: 1, completedLast7d: 3, failedLast7d: 4 };
+
+/** Route catalog + summary fetches by URL so hash-driven mounts are order-robust. */
+function routeDeployments() {
+  fetchMock.mockImplementation((url: string) => {
+    if (url === '/software/catalog') return Promise.resolve(jsonResponse({ data: [ITEM] }));
+    if (url === '/software/deployments/summary')
+      return Promise.resolve(jsonResponse({ data: SUMMARY }));
+    return Promise.resolve(jsonResponse({ data: null }));
+  });
+}
+
+const setHash = (hash: string) =>
+  window.history.replaceState(null, '', window.location.pathname + (hash ? `#${hash}` : ''));
+
+describe('SoftwareCatalog deployments tab (hash-driven)', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    showToast.mockReset();
+    setHash('');
+  });
+
+  it('defaults to the catalog tab and switches to Deployments on tab click', async () => {
+    routeDeployments();
+    render(<SoftwareCatalog />);
+    await waitFor(() => expect(screen.getByText('TestApp')).toBeInTheDocument());
+    expect(screen.queryByTestId('deployment-list-probe')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('software-tab-deployments'));
+
+    expect(await screen.findByTestId('deployment-list-probe')).toBeInTheDocument();
+    expect(window.location.hash).toBe('#deployments');
+    // Catalog grid is hidden while the Deployments tab is active.
+    expect(screen.queryByText('TestApp')).not.toBeInTheDocument();
+  });
+
+  it('deep link #deployments renders summary cards and the deployment list', async () => {
+    routeDeployments();
+    setHash('deployments');
+    render(<SoftwareCatalog />);
+
+    expect(await screen.findByTestId('deployment-list-probe')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId('deployment-summary-cards')).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId('deployment-summary-active')).toHaveTextContent('2');
+    expect(screen.getByTestId('deployment-summary-scheduled')).toHaveTextContent('1');
+    expect(screen.getByTestId('deployment-summary-completed-7d')).toHaveTextContent('3');
+    expect(screen.getByTestId('deployment-summary-failed-7d')).toHaveTextContent('4');
+  });
+
+  it('deep link #deployment=<id> renders that deployment progress view; back returns to the list', async () => {
+    routeDeployments();
+    setHash('deployment=dep-7');
+    render(<SoftwareCatalog />);
+
+    expect(await screen.findByTestId('deployment-progress-probe')).toHaveTextContent(
+      'progress:dep-7',
+    );
+
+    fireEvent.click(screen.getByTestId('progress-back'));
+    expect(await screen.findByTestId('deployment-list-probe')).toBeInTheDocument();
+    expect(window.location.hash).toBe('#deployments');
+  });
+
+  it('selecting a deployment in the list navigates to its progress view via the hash', async () => {
+    routeDeployments();
+    setHash('deployments');
+    render(<SoftwareCatalog />);
+    await screen.findByTestId('deployment-list-probe');
+
+    fireEvent.click(screen.getByTestId('select-deployment'));
+
+    expect(await screen.findByTestId('deployment-progress-probe')).toHaveTextContent(
+      'progress:dep-7',
+    );
+    expect(window.location.hash).toBe('#deployment=dep-7');
+  });
+
+  it('consumes #deploy=<ids> (#2866): opens the wizard with the devices pre-selected and clears the hash', async () => {
+    routeDeployments();
+    setHash('deploy=dev-a,dev-b');
+    render(<SoftwareCatalog />);
+
+    const wizard = await screen.findByTestId('wizard');
+    // No package preselected — the user picks it first; devices carried over.
+    expect(wizard).toHaveTextContent('wizard:none');
+    expect(wizard).toHaveTextContent('devices:dev-a|dev-b');
+    // Hash consumed so a refresh doesn't re-open the wizard.
+    expect(window.location.hash).toBe('');
+  });
+
+  it('wizard "View deployment" closes the modal and jumps to that deployment', async () => {
+    routeDeployments();
+    setHash('deploy=dev-a');
+    render(<SoftwareCatalog />);
+    await screen.findByTestId('wizard');
+
+    fireEvent.click(screen.getByTestId('wizard-view-deployment'));
+
+    expect(screen.queryByTestId('wizard')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('deployment-progress-probe')).toHaveTextContent(
+      'progress:dep-42',
+    );
+    expect(window.location.hash).toBe('#deployment=dep-42');
   });
 });

@@ -112,17 +112,17 @@ The UI is pointless if the rows lie, so this lands first.
 
 Placement decision: a **"Deployments" tab on `/software`** (the Software Library / `SoftwareCatalog` page) rather than a new sidebar entry — it's where the user already is when the wizard finishes. Tab + selection state via `window.location.hash` per the repo convention (`#deployments`, `#deployment=<id>`) — **not** query params.
 
-- [ ] **Tab shell** in `SoftwareCatalog.tsx` (or a thin wrapper page component): `Catalog` | `Deployments`, hash-driven, catalog remains the default.
-- [ ] **Overview cards** at the top of the tab from `GET /software/deployments/summary`: In progress / Scheduled / Completed (7d) / Failed (7d).
-- [ ] **Rewire `DeploymentList.tsx`**: delete the mock array (L69-120); fetch `GET /software/deployments` with server pagination; status/type filters map to the computed aggregate statuses; progress bar from the per-status counts; row click sets `#deployment=<id>`. **Fix the two i18n bugs** (L323, L351): status is compared against *translated* strings (`item.status === i18n.t(...)`), so the progress bar and Cancel button never render — compare against canonical status constants and translate only for display.
-- [ ] **Rewire `DeploymentProgress.tsx`**: take `deploymentId`; fetch `GET /:id` + `/:id/results` (hostnames now included); per-device table with status, started/completed, exit code, error message, and "queued — device offline" for `queuedOffline` rows; poll every 5s while the aggregate is `pending`/`in_progress` and stop on terminal states; replace the decorative "Live updates enabled" pill with an honest auto-refresh indicator. Wire **Retry failed** → `POST /:id/retry` and **Cancel** → `POST /:id/cancel`.
-- [ ] **`runAction` everywhere**: retry and cancel go through `runAction` (`apps/web/src/lib/runAction.ts`) with the standard catch pattern; keep `no-silent-mutations.test.ts` green (no allowlist entries expected — these are simple mutations).
-- [ ] **Close the wizard loop**: the success card (`DeploymentWizard.tsx:638-668`) gets a "View deployment" button → `/software#deployment=<id>` replacing the bare UUID dead-end.
-- [ ] **#2866 tie-in**: this PR touches `SoftwareCatalog.tsx` and `DeploymentWizard.tsx`; implement (or rebase onto) the `initialDeviceIds` preselect fix so hash parsing for `#deploy=<ids>` and `#deployment=<id>` is designed once, coherently.
-- [ ] `data-testid` attributes on tab, cards, list rows, progress table, retry/cancel buttons (e2e convention).
-- [ ] i18n: all new strings through the existing i18n setup; no raw literals.
-- [ ] Tests: component tests for `DeploymentList` (fetch, filters, progress bar renders for in-progress status — regression for the i18n bug) and `DeploymentProgress` (polling starts/stops on terminal status, retry/cancel invoke `runAction`, offline-queued row rendering); wizard success-card link test alongside `DeploymentWizard.preselect.test.tsx`.
-- [ ] Optional e2e: `e2e-tests/tests/software-deployments.spec.ts` — create → tab shows deployment → detail shows per-device rows.
+- [x] **Tab shell** in `SoftwareCatalog.tsx` (or a thin wrapper page component): `Catalog` | `Deployments`, hash-driven, catalog remains the default.
+- [x] **Overview cards** at the top of the tab from `GET /software/deployments/summary`: In progress / Scheduled / Completed (7d) / Failed (7d).
+- [x] **Rewire `DeploymentList.tsx`**: delete the mock array (L69-120); fetch `GET /software/deployments` with server pagination; status/type filters map to the computed aggregate statuses; progress bar from the per-status counts; row click sets `#deployment=<id>`. **Fix the two i18n bugs** (L323, L351): status is compared against *translated* strings (`item.status === i18n.t(...)`), so the progress bar and Cancel button never render — compare against canonical status constants and translate only for display.
+- [x] **Rewire `DeploymentProgress.tsx`**: take `deploymentId`; fetch `GET /:id` + `/:id/results` (hostnames now included); per-device table with status, started/completed, exit code, error message, and "queued — device offline" for `queuedOffline` rows; poll every 5s while the aggregate is `pending`/`in_progress` and stop on terminal states; replace the decorative "Live updates enabled" pill with an honest auto-refresh indicator. Wire **Retry failed** → `POST /:id/retry` and **Cancel** → `POST /:id/cancel`.
+- [x] **`runAction` everywhere**: retry and cancel go through `runAction` (`apps/web/src/lib/runAction.ts`) with the standard catch pattern; keep `no-silent-mutations.test.ts` green (no allowlist entries expected — these are simple mutations).
+- [x] **Close the wizard loop**: the success card (`DeploymentWizard.tsx:638-668`) gets a "View deployment" button → `/software#deployment=<id>` replacing the bare UUID dead-end.
+- [x] **#2866 tie-in**: this PR touches `SoftwareCatalog.tsx` and `DeploymentWizard.tsx`; implement (or rebase onto) the `initialDeviceIds` preselect fix so hash parsing for `#deploy=<ids>` and `#deployment=<id>` is designed once, coherently.
+- [x] `data-testid` attributes on tab, cards, list rows, progress table, retry/cancel buttons (e2e convention).
+- [x] i18n: all new strings through the existing i18n setup; no raw literals.
+- [x] Tests: component tests for `DeploymentList` (fetch, filters, progress bar renders for in-progress status — regression for the i18n bug) and `DeploymentProgress` (polling starts/stops on terminal status, retry/cancel invoke `runAction`, offline-queued row rendering); wizard success-card link test alongside `DeploymentWizard.preselect.test.tsx`.
+- [x] Optional e2e: `e2e-tests/tests/software-deployments.spec.ts` — create → tab shows deployment → detail shows per-device rows.
 
 ---
 
