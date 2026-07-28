@@ -7,6 +7,8 @@ import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/re
 // NewTicketForm.test.tsx does.
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
+import { renderToString } from 'react-dom/server';
+
 import AcceptInviteForm from './AcceptInviteForm';
 
 // `buildPortalApiUrl` is deliberately NOT mocked: the whole point of this test is
@@ -58,5 +60,42 @@ describe('AcceptInviteForm — posts to the portal-scoped accept-invite route (#
     expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({
       token: 'invite-token-abc'
     });
+  });
+});
+
+describe('AcceptInviteForm — pre-hydration fallback must never GET-submit credentials (#2868)', () => {
+  // Astro SSRs the island with `client:load`; until React hydrates, the raw
+  // HTML is what the browser gets. A bare <form> with no method falls back to
+  // a native GET submit that serializes ?password=...&confirmPassword=... into
+  // the URL (history, proxies, access logs) and drops the invite token.
+  // renderToString reproduces exactly that pre-hydration HTML.
+
+  it('SSR HTML declares method="post" on the form', () => {
+    const html = renderToString(<AcceptInviteForm token="invite-token-abc" />);
+    expect(html).toMatch(/<form[^>]*method="post"/i);
+    // and never an explicit GET or a page action that would carry a query string
+    expect(html).not.toMatch(/<form[^>]*method="get"/i);
+  });
+
+  it('SSR HTML renders the submit button disabled until hydration', () => {
+    const html = renderToString(<AcceptInviteForm token="invite-token-abc" />);
+    const button = html.match(/<button[^>]*type="submit"[^>]*>/i)?.[0];
+    expect(button).toBeDefined();
+    expect(button).toContain('disabled');
+  });
+
+  it('enables the submit button after hydration and still submits via fetch', async () => {
+    render(<AcceptInviteForm token="invite-token-abc" />);
+    const button = screen.getByRole('button', {
+      name: /set password & activate/i
+    }) as HTMLButtonElement;
+    await waitFor(() => expect(button.disabled).toBe(false));
+
+    fireEvent.input(screen.getByLabelText(/new password/i), { target: { value: 'Password123' } });
+    fireEvent.input(screen.getByLabelText(/confirm password/i), { target: { value: 'Password123' } });
+    fireEvent.click(button);
+    await waitFor(() => expect(globalThis.fetch as ReturnType<typeof vi.fn>).toHaveBeenCalled());
+    const [url] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toBe('/api/v1/portal/auth/accept-invite');
   });
 });
