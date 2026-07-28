@@ -158,3 +158,84 @@ func TestAcquireLeaseKicksReconcile(t *testing.T) {
 		t.Fatal("AcquireLease must queue a reconcile kick")
 	}
 }
+
+func TestComputeDesiredModeSwitch(t *testing.T) {
+	det := &stubLeaseDetector{sessions: []DetectedSession{activeRDP("3", "bob")}}
+	sysKey := HelperKey{WindowsSessionID: 3, Role: ipc.HelperRoleSystem}
+	userKey := HelperKey{WindowsSessionID: 3, Role: ipc.HelperRoleUser}
+
+	t.Run("always-on ignores leases and desires every eligible session", func(t *testing.T) {
+		m := newHelperLifecycleManager(nil, det, nil, nil)
+		desired, err := m.computeDesired()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !desired[sysKey] || !desired[userKey] {
+			t.Fatalf("always-on must desire both roles: %v", desired)
+		}
+	})
+
+	t.Run("on-demand with no leases desires nothing", func(t *testing.T) {
+		m := newHelperLifecycleManager(nil, det, nil, nil)
+		m.mode = LifecycleModeOnDemand
+		desired, err := m.computeDesired()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(desired) != 0 {
+			t.Fatalf("on-demand at rest must desire nothing: %v", desired)
+		}
+	})
+
+	t.Run("on-demand desires exactly the leased key and reaps expired leases", func(t *testing.T) {
+		m := newHelperLifecycleManager(nil, det, nil, nil)
+		m.mode = LifecycleModeOnDemand
+		if err := m.AcquireLease(3, ipc.HelperRoleSystem, "op1", 0); err != nil {
+			t.Fatal(err)
+		}
+		desired, err := m.computeDesired()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !desired[sysKey] || desired[userKey] || len(desired) != 1 {
+			t.Fatalf("on-demand must desire exactly the leased key: %v", desired)
+		}
+
+		// Session disappears -> lease reaped from the table on next compute.
+		det2 := &stubLeaseDetector{}
+		m.detector = det2
+		desired, err = m.computeDesired()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(desired) != 0 {
+			t.Fatalf("gone session must not be desired: %v", desired)
+		}
+		m.mu.Lock()
+		_, still := m.leases[sysKey]
+		m.mu.Unlock()
+		if still {
+			t.Fatal("expired lease must be deleted from the table")
+		}
+	})
+}
+
+func TestDropLeases(t *testing.T) {
+	det := &stubLeaseDetector{sessions: []DetectedSession{activeRDP("3", "bob")}}
+	m := newHelperLifecycleManager(nil, det, nil, nil)
+	m.mode = LifecycleModeOnDemand
+	if err := m.AcquireLease(3, ipc.HelperRoleSystem, "op1", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.AcquireLease(3, ipc.HelperRoleUser, "op1", 0); err != nil {
+		t.Fatal(err)
+	}
+	m.dropLeases(3, ipc.HelperRoleSystem, ipc.HelperRoleUser)
+	desired, err := m.computeDesired()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(desired) != 0 {
+		t.Fatalf("dropped leases must leave nothing desired: %v", desired)
+	}
+}

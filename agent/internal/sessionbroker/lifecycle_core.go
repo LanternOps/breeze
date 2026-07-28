@@ -226,6 +226,29 @@ func (m *HelperLifecycleManager) detectedDesired() (map[HelperKey]bool, error) {
 	return desired, nil
 }
 
+// computeDesired is the single desired-set entry point: detector-driven in
+// always-on mode (the historical behavior), lease-driven in on-demand mode.
+func (m *HelperLifecycleManager) computeDesired() (map[HelperKey]bool, error) {
+	if m.mode != LifecycleModeOnDemand {
+		return m.detectedDesired()
+	}
+	if m.detector == nil {
+		return map[HelperKey]bool{}, nil
+	}
+	sessions, err := m.detector.ListSessions()
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	desired, expired := leasedDesired(m.leases, sessions, m.now())
+	for _, key := range expired {
+		log.Info("lease expired", "helperKey", key.String())
+		delete(m.leases, key)
+	}
+	m.mu.Unlock()
+	return desired, nil
+}
+
 // Bootstrap publishes one detector snapshot without spawning. Heartbeat calls
 // this before the broker starts accepting helpers so scheduled helpers can
 // authenticate against authoritative desired state during startup.
@@ -233,7 +256,7 @@ func (m *HelperLifecycleManager) Bootstrap() error {
 	if m.broker == nil {
 		return nil
 	}
-	desired, err := m.detectedDesired()
+	desired, err := m.computeDesired()
 	if err != nil {
 		return err
 	}
@@ -251,7 +274,7 @@ func (m *HelperLifecycleManager) reconcile() {
 	if m.detector == nil || m.broker == nil || m.spawner == nil {
 		return
 	}
-	desired, err := m.detectedDesired()
+	desired, err := m.computeDesired()
 	if err != nil {
 		log.Warn("lifecycle: failed to list sessions", "error", err.Error())
 		return

@@ -94,6 +94,8 @@ func (m *HelperLifecycleManager) Start(ctx context.Context) {
 			}
 		case <-ticker.C:
 			m.reconcile()
+		case <-m.kickCh:
+			m.reconcile()
 		}
 	}
 }
@@ -113,12 +115,22 @@ func (m *HelperLifecycleManager) handleSCMEvent(event SCMSessionEvent) {
 		m.reconcile()
 	// Session went away but is still logged on. The user helper requires
 	// state=="active" so it goes; the SYSTEM helper is retained deliberately
-	// (an RDP session keeps running when disconnected).
+	// in always-on mode (an RDP session keeps running when disconnected). In
+	// on-demand mode a disconnected session is no longer shadowable, so its
+	// SYSTEM lease dies with the connection.
 	case wtsRemoteDisconnect, wtsConsoleDisconnect:
+		if m.mode == LifecycleModeOnDemand {
+			m.dropLeases(event.SessionID, ipc.HelperRoleSystem)
+			m.removeDesired(systemKey)
+			m.stopKey(systemKey)
+		}
 		m.removeDesired(userKey)
 		m.stopKey(userKey)
 		m.reconcile()
 	case wtsSessionLogoff, wtsSessionTerminate:
+		if m.mode == LifecycleModeOnDemand {
+			m.dropLeases(event.SessionID, ipc.HelperRoleSystem, ipc.HelperRoleUser)
+		}
 		m.removeDesired(systemKey, userKey)
 		m.stopKey(userKey)
 		m.stopKey(systemKey)
