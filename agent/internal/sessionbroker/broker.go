@@ -947,6 +947,28 @@ func (b *Broker) SessionsWithScope(scope string) []*Session {
 	return sessions
 }
 
+// SessionWithScopeInWinSession returns the best connected helper session in
+// exactly the given Windows session that holds the scope. Unlike
+// PreferredSessionWithScope this never falls back to another session — it is
+// the routing primitive for per-session consent/notify/banner delivery on
+// multi-session hosts (the user being shadowed must be the one who sees the
+// prompt).
+func (b *Broker) SessionWithScopeInWinSession(scope, winSessionID string) *Session {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	var best *Session
+	for _, s := range b.sessions {
+		if s.WinSessionID != winSessionID || !s.HasScope(scope) {
+			continue
+		}
+		if betterSession(s, best) {
+			best = s
+		}
+	}
+	return best
+}
+
 // PreferredSessionWithScope returns the most appropriate connected session
 // that is authorized for the given scope. User-role helpers are preferred
 // over system helpers, then the newest active session wins.
@@ -1305,6 +1327,10 @@ func (b *Broker) SessionCount() int {
 	return len(b.sessions)
 }
 
+// isSessionDisconnectedFn is swappable in tests; IsSessionDisconnected makes a
+// live WTS syscall.
+var isSessionDisconnectedFn = IsSessionDisconnected
+
 // FindCapableSession returns the best connected session whose helper reports
 // the given capability (e.g., "capture"). If targetWinSession is non-empty,
 // only sessions in that Windows session are considered. Otherwise, the console
@@ -1320,6 +1346,12 @@ func (b *Broker) FindCapableSession(capability string, targetWinSession string) 
 	// to a locked read for test fixtures. On the hot path the snapshot is always
 	// available, so no lock is held during the OS calls below.
 	sessions, _ := b.snapshotSessions()
+
+	// explicitTarget must be captured before the console rewrite below —
+	// once targetWinSession is rewritten to the console session id, an
+	// untargeted caller becomes indistinguishable from one that explicitly
+	// asked for the console session.
+	explicitTarget := targetWinSession != "" && targetWinSession != "0"
 
 	// When no target specified, prefer the console session (physical display).
 	// NOTE: GetConsoleSessionID() is called outside any lock — safe because we
@@ -1354,8 +1386,14 @@ func (b *Broker) FindCapableSession(capability string, targetWinSession string) 
 	var best *Session
 
 	// First pass: find a capable session in the target (console) session.
+	// An explicitly-targeted session that is disconnected has no input desktop
+	// to capture — reject it here so the caller fails with a clear reason
+	// instead of answering with a black stream.
 	for _, s := range sessions {
 		if s.WinSessionID != targetWinSession {
+			continue
+		}
+		if explicitTarget && isSessionDisconnectedFn(s.WinSessionID) {
 			continue
 		}
 		if hasCapability(s) {
@@ -1375,12 +1413,12 @@ func (b *Broker) FindCapableSession(capability string, targetWinSession string) 
 	}
 
 	// Second pass: fall back to any capable session that isn't disconnected.
-	// IsSessionDisconnected makes a WTS syscall — safe outside any lock.
+	// isSessionDisconnectedFn makes a WTS syscall — safe outside any lock.
 	for _, s := range sessions {
 		if !hasCapability(s) {
 			continue
 		}
-		if IsSessionDisconnected(s.WinSessionID) {
+		if isSessionDisconnectedFn(s.WinSessionID) {
 			continue
 		}
 		if betterSession(s, best) {
