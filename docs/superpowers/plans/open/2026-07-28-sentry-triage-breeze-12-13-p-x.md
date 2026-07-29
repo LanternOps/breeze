@@ -6,7 +6,7 @@
 >
 > | PR | Commit | Result |
 > |---|---|---|
-> | A — BREEZE-12/13 | `d7a498e6a` | Reproduced BOTH shipped error shapes (23503 and 22P02) against real Postgres with the fix reverted, then fixed. |
+> | A — BREEZE-12/13 | `d7a498e6a` | Reproduced the shipped 23503 and the reachable 22P02 against real Postgres with the fix reverted, then fixed. Sentry BREEZE-12/13 resolved-in-next-release 2026-07-29. |
 > | B — BREEZE-P residuals (a)+(b) | `03112c5df` | AI-tool bypass closed, blank-string persist stopped. |
 > | C — BREEZE-X | `2856b5a08` | `prior_status`/`cas_label` tags on both the WS and REST 0-row CAS paths. |
 >
@@ -71,8 +71,10 @@ Consequences:
   and **fails open to L1 approvals** — which is why nobody noticed.
 - A forged non-UUID header (`X-Breeze-Mobile-Device-Id: hello`) passes
   `normalizeDeviceId` (`services/mobileDeviceBinding.ts:18-23` — only trims and caps at
-  255 chars) and produces Postgres **22P02** instead. That is almost certainly the
-  BREEZE-12/13 split: same line, two error shapes.
+  255 chars) and produces Postgres **22P02** instead — a second reachable failure shape
+  from the same line. (Corrected 2026-07-29 after reading the actual events: this is NOT
+  the BREEZE-12/13 split. Both issues are `pg_code 23503` on one single event, same trace
+  id — BREEZE-12 is the raw `PostgresError`, BREEZE-13 the `DrizzleQueryError` wrapper.)
 - The FK would only ever have proved existence anyway. Nothing checks ownership, and
   RLS won't: `mobile_devices`' SELECT policy
   (`migrations/2026-04-11-bucket-c-phase-6-user-scoped-rls.sql:142-182`) has an `OR EXISTS`
