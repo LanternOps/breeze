@@ -265,23 +265,23 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		return "", fmt.Errorf("failed to get screen bounds: %w", err)
 	}
 	probeStart := time.Now()
-	if probeImg, probeErr := capturer.Capture(); probeErr == nil && probeImg != nil {
-		pw, ph := probeImg.Rect.Dx(), probeImg.Rect.Dy()
-		if pw != w || ph != h {
-			slog.Info("Capture probe: actual dimensions differ from GetScreenBounds",
-				"session", sessionID,
-				"screenBounds", fmt.Sprintf("%dx%d", w, h),
-				"actualCapture", fmt.Sprintf("%dx%d", pw, ph))
-			w, h = pw, ph
-		}
-		captureImagePool.Put(probeImg)
-	} else if probeErr != nil {
-		// If the probe capture fails, the display is inaccessible (e.g. the
-		// helper is in a disconnected Windows session with no active display).
-		// Abort instead of returning a WebRTC answer that will stream zero frames.
-		// The defer at line 80 calls StopSession which closes the capturer.
+	probeImg, probeErr := probeCapture(capturer.Capture, 5, 200*time.Millisecond)
+	if probeErr != nil {
+		// The display is inaccessible (disconnected Windows session, no input
+		// desktop, GDI handle churn). Abort instead of returning a WebRTC
+		// answer that will stream zero frames. The defer at line 80 calls
+		// StopSession which closes the capturer.
 		return "", fmt.Errorf("screen capture failed (display may be unavailable): %w", probeErr)
 	}
+	pw, ph := probeImg.Rect.Dx(), probeImg.Rect.Dy()
+	if pw != w || ph != h {
+		slog.Info("Capture probe: actual dimensions differ from GetScreenBounds",
+			"session", sessionID,
+			"screenBounds", fmt.Sprintf("%dx%d", w, h),
+			"actualCapture", fmt.Sprintf("%dx%d", pw, ph))
+		w, h = pw, ph
+	}
+	captureImagePool.Put(probeImg)
 	slog.Info("StartSession: probe capture done", "session", sessionID, "elapsed", time.Since(probeStart))
 
 	// Start at 2.5Mbps — matches the viewer's default max-bitrate slider.
