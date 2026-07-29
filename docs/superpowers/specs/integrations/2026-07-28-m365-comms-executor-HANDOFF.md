@@ -1,9 +1,18 @@
 # Handoff — M365 communications-delegated executor & session state
 
 **Date:** 2026-07-28 (updated same day)
-**Status:** Design drafted, reviewed, and **revised to v2**. Next step is a re-review of v2 (§6), not implementation — except task 0 (principal kind), which is unblocked now.
+**Status:** Design at **v3**, after two review rounds. **Task 0 (principal kind) is SHIPPED — PR #2915.** Two new prerequisites now block comms code; see §6.
 
-> **Update.** The revision §3 called for is **done**. The design doc is now v2 with a §0 changelog mapping each v1 position to what replaced it. §3 below is retained as the *record of what the review found* — it is the input to that revision, not an open work list. What changed, in one line each:
+> ## Latest state (read this first)
+>
+> - **Design doc is v3.** §0.a of the design is the single most important thing in it.
+> - **PR #2915 open** — principal-kind discriminator, no behaviour change, full suite green.
+> - **The v2 re-review found a bypass that two revisions missed:** approved intents are released by **two** paths — the durable worker *and* the live chat session (`aiAgentSdk.ts:755-828`), which race for the same CAS. The inline path revalidates authorization correctly but then runs the **ordinary tool handler**, never the headless transport. So every binding guarantee (stored envelope, pinned sender, digest claim, executor recomputation) is simply absent on that path. Verified directly. v3 §0.a closes it by making comms Tier-3 tools inline-ineligible before the CAS and funnelling every send through `releaseCommsSend(intentId)`.
+> - **One latent shipped issue worth knowing about, independent of comms:** `approval_requests.action_arguments` is a *copy* of the intent's arguments that the approval UI displays, and the decide path compares digest-to-digest without re-deriving from that copy. The intent's copy is trigger-protected; the displayed copy is not. Nothing writes it today, so this is latent rather than live — but for mail the displayed content *is* the effect. v3 task 15b adds the trigger for every intent-backed approval.
+>
+> ### v2 revision (superseded by v3, kept for the audit trail)
+>
+> §3 below is the *record of what the first review found* — input to the v2 revision, not an open work list. What changed, in one line each:
 >
 > | §3 item | Resolution in v2 |
 > |---|---|
@@ -109,13 +118,16 @@ Spot-checked directly, not taken from the reviewer:
 
 ## 6. Recommended next step
 
-**Done:** the v2 revision (see the update box at the top).
+**Done:** v2 revision → re-review → v3 revision. Task 0 shipped as PR #2915.
 
 **Now, in order:**
 
-1. **Re-review v2** — same posture as the first pass (read-only, `xhigh`), focused on §3.2 (token cache), §4 (consent + constraint), §5 (envelope), §6 (principal kind). Give the reviewer the §0 changelog so it reviews the new architecture rather than re-finding v1's problems.
-2. **Ship task 0 (principal kind) regardless of the re-review outcome.** It is self-contained, valuable on its own, unblocked now, and a hard prerequisite for this executor however the rest lands. v2 scopes it as a no-behaviour-change PR — add the required field, let the compiler enumerate every `AuthContext` construction site, gate nothing yet — so a regression is isolable.
-3. **Todd's calls, which no amount of review resolves:** where the token-cache store lives (§3.2 of the design), whether master-spec §6.1 gets the proposed amendment, and the Tier-3-over-MCP question in §4 below.
+1. **Merge PR #2915** once CI is green. It stands alone regardless of where the comms design lands.
+2. **Ship the two new prerequisites** (design tasks 0a and 0b), both of which are self-contained and valuable independently of comms:
+   - **0a — single release funnel.** Comms Tier-3 tools inline-ineligible before the CAS + `releaseCommsSend(intentId)` + a parity test. This is the §0.a fix and should land *before* any send tool exists, so the tool cannot be added to an unguarded path.
+   - **0b — persisted origin principal.** Immutable `origin_principal_kind`/`origin_principal_id` on `action_intents`. #2915 derives the kind from `intent.source` as an interim; a persisted column makes the release-time check prove the same fact the creation-time check proved.
+3. **Third review of v3, or start implementing.** My read: v3's remaining risk is concentrated in §3.2 (the token cache's fencing/keyring/tombstone semantics) and §5.3 (the operation-plan digest). Those are the two worth another adversarial pass; the rest of v3 is mechanical enough to review in the PRs. A third full-design round has diminishing returns — the last one earned its keep almost entirely on §0.a, which is now closed.
+4. **Todd's calls, which no amount of review resolves:** where the token-cache store lives (§3.2), whether master-spec §6.1 gets the proposed amendment, and the Tier-3-over-MCP question in §4 below.
 
 Everything in §5 (release, Azure provisioning, executor runtime, acceptance run) is unchanged and still blocking production, independent of this design.
 

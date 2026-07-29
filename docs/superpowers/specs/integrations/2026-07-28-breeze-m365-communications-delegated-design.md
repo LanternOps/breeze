@@ -1,11 +1,54 @@
 # Breeze M365 Communications-Delegated Executor — Design Spec
 
 **Date:** 2026-07-28
-**Revision:** v2 (v1 drafted 2026-07-28, reviewed by Codex `gpt-5.6-sol` at `xhigh`, 18 findings)
+**Revision:** v3 (v1 drafted 2026-07-28; v2 after an 18-finding Codex `gpt-5.6-sol` `xhigh` review; v3 after a second review of v2 returned 16 design findings, 11 blocking)
 **Status:** Proposed design, pre-implementation
 **Stage:** Delivery-sequence stage 4/5 remainder (master spec §17, `docs/superpowers/specs/integrations/2026-07-13-breeze-m365-control-plane-design.md:476-489`) — the communications executor defined in §11.1 (lines 306-311).
 
-## 0. What changed in v2, and why
+## 0. What changed in v3
+
+The v2 review confirmed the direction and then found that v2's *central guarantees still had bypasses*. The single worst one was not a weakness in a v2 mechanism — it was a **path that skips them all**. Read §0.a before anything else; the rest of v3 is detail by comparison.
+
+### 0.a The bypass: there are two release paths, and v2 only hardened one
+
+Approved intents are released by **two** code paths, not one:
+
+| Path | Code | What it runs |
+|---|---|---|
+| Durable worker | `jobs/intentReleaseWorker.ts:242-385` | headless dispatch (`m365ToolsHeadless.ts`) |
+| **Live chat session** | `services/aiAgentSdk.ts:755-828` | **the normal tool handler, under live `session.auth`** |
+
+Both race for the same `approved → executing` CAS; whichever wins executes. The inline path *does* run the identical `revalidateApprovedIntentForRelease` (`aiAgentSdk.ts:811`) — so v2's authorization story survives — but after that it calls **the ordinary tool handler**, not the headless mapper. Every v2 guarantee that lives in the headless/executor transport — the stored envelope, the pinned sender binding, the `effectDigest` claim, the executor-side recomputation — is simply **not on that path**.
+
+Verified directly, not taken from the review.
+
+**v3 resolution — one funnel, enforced structurally:**
+
+1. A single `releaseCommsSend(intentId)` is the **only** way a comms send reaches Graph. It loads the intent itself, revalidates, resolves the binding, and calls the executor. It takes an intent id and nothing else — no action name, no arguments, no user id — so it is impossible to invoke with attacker-shaped input.
+2. The inline chat path **must not claim comms intents at all.** Comms Tier-3 tools are added to an inline-ineligible set checked *before* the CAS attempt; the session reports "queued for approval release" and the durable worker does the work. Rationale: the inline path exists as a latency optimization for interactive tools, and a mail send that already waited for a human approval has nothing to gain from it.
+3. A test asserts the ineligible set equals the comms Tier-3 tool set — the same parity-test pattern that pins `M365_HEADLESS_ACTIONS`. Without it, a future comms action silently becomes inline-eligible.
+
+**Generalization worth taking seriously:** any future action family whose safety depends on transport-level binding inherits this trap. The durable/inline split is invisible at the tool-definition layer, which is exactly why v2 missed it.
+
+### 0.b The rest of v3
+
+| # | v2 said | v3 says | Because |
+|---|---|---|---|
+| 1 | Envelope digest binds approved content to sent content | **Digest binds the canonical Graph *operation plan*** (§5.3) | The envelope→Graph-DTO mapping inside the executor was still unbound. A mapper emitting HTML instead of text, dropping BCC, or flipping `saveToSentItems` passes an envelope-only digest. Shipped executors validate then construct (`operations.ts`, `microsoft/writeActions.ts`) — the construction step is the gap. |
+| 2 | `effectDigest` is a JWT claim (§5.2) *and* a request field (§9) | **JWT claim only**, surfaced as authenticated metadata (§5.2) | v2 said both. An implementer following §9 would compare the envelope against a digest computed from that same envelope — a self-consistency check that always passes. My drafting error, and a dangerous one. `internalAuth.verify` currently returns only `{correlationId}` and must return the claim. |
+| 3 | The approver sees the approved content | **Approval must render from immutable `intent.arguments`** (§5.4) | `approval_requests.action_arguments` is a *copy* (`intentService.ts:374-385`) that the approval API serves (`approvals.ts:980-1002`), and the decide path compares digest-to-digest (`approvals.ts:500-505`) without re-deriving from what the human saw. Nothing writes that column today and the intent's copy is trigger-protected, so this is **latent, not live** — but for mail the displayed content *is* the effect. |
+| 4 | Lease + CAS serializes redemption | **Fenced** lease + CAS; defined absent/corrupt/tombstone semantics (§3.2) | An unfenced lease does not exclude a paused holder that resumes after expiry. And v2 left "cache row missing" undefined, so a revoke racing a refresh could be silently undone by re-initialization. |
+| 5 | Verify, then persist (§4.2) | **Redeem under an ephemeral cache**, verify, then commit (§4.2) | Ordering alone cannot achieve this once MSAL owns persistence: MSAL writes the cache *during* acquisition, before our checks run. The fix is to give the consent redemption a throwaway in-memory cache and promote it only after verification. |
+| 6 | Consent generation pinned at creation, checked at release | Also **carried in cache metadata and re-checked at credential acquisition** (§5.2) | API-side checking leaves a TOCTOU: reconnect can promote generation *n+1* between the API's check and the executor's Graph call, and `tid`/`oid` still match. |
+| 7 | Principal kind derived from `intent.source` | **Persisted as an immutable column** (§6) | `source` is a proxy. Origin principal should be recorded as the fact it is, so the release-time check proves the same thing the creation-time check did. |
+| 8 | KEK rollover via "two-version read window" | **Explicit keyring: reader set + single writer, staged flip, rewrap sweep** (§3.2) | One config-level KEK version cannot express "decrypt with either, write with the new one" during a rolling deploy. |
+| 9 | 32,000-char bodies | **Wire and Unicode contract aligned** (§7) | The cloned executor caps bodies at 16 KiB *before* authentication, so a valid max-size mail is rejected at the door. Postgres `jsonb` also rejects `U+0000` and ill-formed surrogates that Node's validation accepts. |
+
+Accepted as **should-fix, deferred with the risk recorded** rather than designed now: executor-side replay defence (§8 — `jti` is validated but never consumed; the durable single-use CAS makes duplicate *release* hard, but a replayed executor POST is a duplicate *send*).
+
+Rejected from the v2 review: nothing outright, though finding 7's "certificate profiles could use the null-credential branch" was checked and is **not** possible — `profile_binding_check` confines `auth_mode = 'delegated'` to `communications-delegated`. The reviewer reached the same conclusion.
+
+## 0.c What changed in v2, and why
 
 v1's trust-boundary mirroring, ruthless 5-action first cut, and tenancy analysis survived review. Its **credential layer and its binding layer did not.** Six changes, each replacing a v1 position rather than refining it:
 
@@ -49,7 +92,8 @@ The read and actions executors are structural siblings of each other because the
 
 These are identical because the API↔executor trust boundary does not care what kind of Microsoft credential sits behind it:
 
-1. **Process shape.** Hono app, `GET /healthz`, typed POST operations, 16 KiB bounded body, strict content-type, schema-validate-in/schema-validate-out, blanket `internal_error` on throw — clone of `apps/m365-graph-actions-executor/src/app.ts:70-158`.
+1. **Process shape.** Hono app, `GET /healthz`, typed POST operations, bounded body, strict content-type, schema-validate-in/schema-validate-out, blanket `internal_error` on throw — clone of `apps/m365-graph-actions-executor/src/app.ts:70-158`.
+   ⚠️ **The body cap is a deliberate divergence, not a clone.** The siblings default to 16 KiB (`app.ts:18`), which is *smaller than a legal comms request*: a 32,000-character body exceeds it before authentication even runs, so a valid max-size mail would be rejected at the door with an opaque error. The comms executor sets `maxBodyBytes` to **128 KiB**, which bounds the worst case (32,000 chars × 4 bytes ≈ 125 KB) with headroom for envelope metadata. This is the kind of inherited constant that silently defeats a feature; see §7 for the full wire contract.
 2. **Internal request auth.** Ed25519-signed 60s JWT from the API with `iss=breeze-api`, `sub=breeze-control-plane`, per-operation claim, `jti`, `correlationId`, and `bodySha256` binding the exact signed bytes (`internalAuth.ts:64-113`, client side `graphActionsExecutorClient.ts:153-200`). New audience: **`m365-communications-executor`**, new dedicated Ed25519 keypair — never shared with the other two (per the secret-ownership discipline in `docs/deploy/m365-customer-graph-actions-executor.md:114-123`).
 3. **Config discipline.** All env parsed at boot, fail-fast, private RFC1918/ULA bind only, no default Azure credential fallback (`config.ts:52-66, 200-218`). Convention: port 3005 (read=3003, actions=3004).
 4. **Closed catalog.** A new `packages/shared/src/m365/commsActions.ts` with a discriminated-union Zod schema, `.strict()` objects, per-action projection allowlists for reads, and enumerated failure codes — the `readActions.ts:13-38` / `writeActions.ts:10-39` pattern.
@@ -86,19 +130,29 @@ This also closes a v1 omission the review caught outright: **v1 never specified 
 ```
 comms_token_cache(
   connection_id      uuid primary key,
-  cache_version      bigint  not null,   -- optimistic concurrency
-  ciphertext         bytea   not null,   -- AES-256-GCM(MSAL cache blob)
-  kek_version        text    not null,   -- which KEK version wrapped this
+  cache_version      bigint  not null,   -- optimistic concurrency (CAS)
+  fence              bigint  not null,   -- monotonic lease fencing token
+  consent_generation integer not null,   -- must match the intent's binding (§5.2)
+  state              text    not null,   -- 'active' | 'tombstoned'
+  ciphertext         bytea,              -- AES-256-GCM(MSAL cache blob); null iff tombstoned
+  kek_version        text,               -- which KEK version wrapped this
   lease_holder       uuid,               -- replica instance id
+  lease_fence        bigint,             -- fence issued with the current lease
   lease_expires_at   timestamptz,        -- short, ~30s
   updated_at         timestamptz not null
 )
 ```
 
-- **Write is `UPDATE … WHERE connection_id = $1 AND cache_version = $2`.** Zero rows updated ⇒ another replica redeemed concurrently ⇒ re-read and retry the *silent* path (never re-redeem the stale RT). This is the CAS that AKV cannot provide.
-- **Redemption is serialized by a short lease**, not a process mutex — so it holds across replicas and across a rolling deploy. Lease acquisition failure ⇒ brief wait, re-read cache, try silent acquisition; the common case after waiting is that the other replica already refreshed and the silent path just works.
-- **Rotation is MSAL's problem, not ours.** The executor uses MSAL Node's `ConfidentialClientApplication` with a partitioned `ICachePlugin` (`beforeCacheAccess` = decrypt-and-load, `afterCacheAccess` = encrypt-and-CAS-write), one partition per `connectionId`. `acquireTokenSilent` handles refresh-token redemption, rotation, and access-token reuse internally. Hand-rolling redemption — v1's plan — reimplements a subtle, security-critical protocol that a supported library already implements.
-- **Ciphertext-at-rest means the store is not a credential store to anyone but the executor.** AES-256-GCM under a KEK the executor's identity alone can `get`. The API's identity has no access to that KEK, and the KEK is emphatically **not** `APP_ENCRYPTION_KEY_ID`.
+- **Write is `UPDATE … WHERE connection_id = $1 AND cache_version = $2 AND fence <= $3 AND state = 'active'`.** Zero rows updated is **not** self-evidently "someone else redeemed" — v2 assumed it was. It must be disambiguated by re-reading: a bumped `cache_version` means concurrent redemption (retry silent); `state = 'tombstoned'` means revoked (fail closed, never re-initialize); a higher `fence` means this replica's lease was superseded (abandon the write).
+- **The lease is fenced.** A bare lease does not exclude a holder that paused (GC, VM freeze) past expiry and resumed believing it still holds the lease. Every lease acquisition increments and returns a monotonic `fence`; every write carries it and is rejected if a newer fence exists. Lease expiry alone is not mutual exclusion — this is the standard fencing-token result and v2 got it wrong.
+- **Rotation is MSAL's problem, not ours.** MSAL Node's `ConfidentialClientApplication` with a per-connection `ICachePlugin` (`beforeCacheAccess` = decrypt-and-load, `afterCacheAccess` = encrypt-and-CAS-write). `acquireTokenSilent` handles redemption, rotation, and access-token reuse. Hand-rolling redemption reimplements a subtle security protocol a supported library already implements.
+  ⚠️ **One CCA per connection (or per request), never one shared CCA with a swapped plugin.** A `ConfidentialClientApplication` holds an in-memory cache; reusing one instance across connections while varying only the plugin risks one user's tokens being served for another. If instances are pooled for performance, the pool key is `connectionId` and the pool must be proven by a test that interleaves two connections' acquisitions.
+- **Absent, corrupt, and revoked states are defined, because v2 left them undefined:**
+  - *Absent row:* only the consent path may create one, and only under an attempt fence. `acquireTokenSilent` **must never initialize** a missing row — a missing row during normal operation means revoked or superseded, and fails closed.
+  - *Corrupt ciphertext or invalid MSAL JSON:* fail closed to `delegated_reauth_required`, mark the connection `degraded`, and **preserve the row** for forensics. Never treat undecryptable as empty — that silently converts a tamper signal into a fresh-consent prompt.
+  - *Revoke writes a tombstone, it does not delete.* A delete races an in-flight refresh that could recreate the row; a tombstone is terminal and a later write cannot pass the `state = 'active'` predicate. Purge tombstones on a retention schedule, not inline.
+- **Ciphertext-at-rest means the store is not a credential store to anyone but the executor.** AES-256-GCM under a KEK the executor's identity alone can `get`. The API's identity has no access to it, and it is emphatically **not** `APP_ENCRYPTION_KEY_ID`.
+- **KEK rollover is a keyring, not a version number.** v2's "two-version read window" cannot be expressed by the single KEK ref its own §10 defined. The executor configures a **reader set** (every KEK version that may still appear in `kek_version`) and exactly **one writer version**. Rollover: deploy the new key to the reader set everywhere → verify every replica reads both → flip the writer → sweep-rewrap remaining rows → verify zero rows on the old version → only then remove it. Skipping the read-everywhere step breaks rolling deploys, because a replica on the old binary cannot decrypt what a new replica just rewrapped.
 
 **Where that store physically lives — an open infrastructure decision, with a recommendation.** Preference order:
 
@@ -182,7 +236,12 @@ ALTER TABLE m365_connections ADD CONSTRAINT m365_connections_credential_location
 );
 ```
 
-The relaxation is deliberately keyed on **both** `auth_mode = 'delegated'` **and** a non-terminal status, so it cannot be used to park a certificate profile without a credential, and cannot leave a delegated row credential-less once it reaches `active`. Existing rows all satisfy the first branch, so the migration is a no-op on live data — but it still reports counts per the CLAUDE.md cleanup-statement rule if any row is found in the relaxed state.
+The relaxation is deliberately keyed on **both** `auth_mode = 'delegated'` **and** a non-terminal status, so it cannot be used to park a certificate profile without a credential, and cannot leave a delegated row credential-less once it reaches `active`. Certificate profiles are structurally excluded a second time by `profile_binding_check` (foundation migration:112-119), which confines `auth_mode = 'delegated'` to `communications-delegated` — verified, not assumed. Existing rows all satisfy the first branch, so the migration is a no-op on live data, but it still reports counts per the CLAUDE.md cleanup-statement rule.
+
+**Two lifecycle invariants v2 left open:**
+
+1. **A never-promoted row is DELETEd, not revoked.** The shipped disconnect path sets `status = 'revoked'` (`connectionService.ts:715-758`), which for a `pending-consent` delegated row with null credentials would violate the constraint above — the relaxation only covers `pending-consent`/`verifying`. Abandoning a consent that never completed removes the row (there is no credential to retain and no audit value in a shell); only a row that reached `active` can be revoked.
+2. **Active communications rows must carry an identity.** The constraint above proves a credential exists but not that we know *whose*. Add: `status = 'active' AND profile = 'communications-delegated'` ⇒ `tenant_id IS NOT NULL AND delegated_user_object_id IS NOT NULL`. Without it an application bug can produce an active mailbox connection with no pinned identity, and §5.2's binding check has nothing to compare against.
 
 **Promotion is one atomic UPDATE**, never a multi-statement sequence:
 
@@ -195,7 +254,16 @@ UPDATE m365_connections
  WHERE id = $1 AND status = 'verifying' AND consent_attempt_id = $7;
 ```
 
-Zero rows updated ⇒ the attempt was superseded ⇒ the executor discards the credential material it just cached and returns `consent_superseded`. A partially-promoted row is unrepresentable.
+Zero rows updated ⇒ the attempt was superseded ⇒ nothing is committed and the op returns `consent_superseded`.
+
+**The UPDATE is atomic; the *promotion* is not, and v2 conflated the two.** The connection row lives in Breeze Postgres and the token cache lives in the executor's store (§3.2) — two stores, so no single transaction spans them. Ordering and reconciliation, not hope:
+
+1. Write the cache row **first**, in state `active`, stamped with the `consent_attempt_id` and the generation this attempt *will* claim.
+2. Run the promotion UPDATE. On success the two agree.
+3. On zero rows (superseded), **tombstone the cache row written in step 1** and return `consent_superseded`.
+4. A cache row whose `consent_attempt_id` does not match the connection's current attempt is **unusable** — the acquisition path checks this and fails closed. So a crash between steps 2 and 3 leaves an orphan that can never authorize a send, rather than a live credential nobody is tracking.
+
+A partially-promoted *row* is unrepresentable; a partially-promoted *pair* is detectable and inert.
 
 ### 4.2 Delegated consent needs its own phase (the shipped one needs a tenant first)
 
@@ -203,13 +271,19 @@ The shipped `identity_verification` phase takes a **`tenantHint` before authoriz
 
 **New phase `delegated_consent`**, sibling to the existing ones rather than a reuse of them:
 
-1. **Initiate.** Create the `pending-consent` row (now legal, §4.1) + a `m365_user_consent_sessions` row carrying `state`, `nonce`, `codeVerifier`, and browser binding (`browserBinding.ts` reused unchanged). Authorize against **`/common`**, `response_type=code`, `code_challenge`, `prompt=select_account`. No `tenantHintHash` — there is nothing to hash yet.
+1. **Initiate.** Create the `pending-consent` row (now legal, §4.1) + a `m365_user_consent_sessions` row carrying `state`, `nonce`, `codeVerifier`, and a browser binding. Authorize against **`/common`**, `response_type=code`, `code_challenge`, `prompt=select_account`. No `tenantHintHash` — there is nothing to hash yet.
+
+   ⚠️ **`browserBinding.ts` cannot be "reused unchanged"** — v2 claimed it could, wrongly. Its phase union is closed (`M365ConsentBindingPhase = 'admin_consent' | 'identity_verification'`, `browserBinding.ts:10`), `validBinding` enforces an exact key set, and `identity_verification` *requires* a GUID `tenantHint` (`browserBinding.ts:39-55`) — the very thing a first delegated sign-in does not have. It needs a third phase, `delegated_consent`, whose rule is `tenantHint === null` (like `admin_consent`) while still carrying nonce/PKCE. Small change, but it is a change to a security-critical validator and must be tested per-phase, not assumed.
 2. **Callback.** Bind browser, consume state single-use, move row to `verifying`.
-3. **Verify before persisting — the ordering v1 got backwards.** The executor exchanges the code, then, *in this order*:
+3. **Verify before persisting — and ordering alone is not enough to achieve it.** v2 said "verify, then persist," which is unimplementable once MSAL owns persistence: MSAL writes the token cache *during* `acquireTokenByCode`, before any of our checks run. So the redemption itself must be unable to persist.
+
+   **The mechanism:** run the consent redemption against a **throwaway in-memory cache plugin**. Verify against that ephemeral result. Only after every check passes is the serialized cache blob encrypted and committed to the durable store, in the same logical step as the row promotion (§4.1). If verification fails, the process exits with nothing written anywhere.
+
+   The checks, *in this order*:
    - validate the **ID token** (signature against the tenant's JWKS, `iss` matching the discovered issuer for the returned `tid`, `aud === clientId`, `nonce` equal to the session nonce, `exp`/`iat`);
    - read `tid` and `oid` from those validated claims and **pin** them;
    - acquire a Graph access token and probe `GET /me?$select=id,userPrincipalName,mail`, asserting `id === oid`;
-   - reconcile the granted **`scp`** against the profile's `delegatedPermissions` — string-set comparison, not `appRoleAssignment` enumeration (new `reconcileCommunicationsDelegated` beside `reconcile.ts`);
+   - reconcile the **granted scopes** against the profile's `delegatedPermissions` — string-set comparison, not `appRoleAssignment` enumeration (new `reconcileCommunicationsDelegated` beside `reconcile.ts`). Source them from MSAL's `AuthenticationResult.scopes`, **not** by reading an `scp` claim out of the access token — that would contradict the no-access-token-parsing rule below. v2 said "reconcile the `scp` claim", which was self-inconsistent;
    - **only then** write the token cache and return.
 
    v1 persisted the refresh token first and verified afterwards, which stores a live mailbox credential for an identity that has not yet been proven to be the expected one. If any check fails, nothing is persisted.
@@ -261,14 +335,69 @@ effectDigest = sha256(canonicalize(envelope))
 1. **The envelope *is* the intent's `arguments`.** Not a projection of them, not derived from them at release. `argumentDigest` is therefore literally the effect digest, and the immutability trigger already protects it.
 2. **The mapper stops mapping.** `m365CommsToolsHeadless` validates the stored envelope against the shared schema and passes it through **unchanged**. There is no rebuild step, so there is no rebuild bug. (Schema validation may *reject*; it may never *transform*.)
 3. **The signed internal JWT carries `effectDigest` as a claim**, set from the stored `intent.argumentDigest` — the value the approval bound — never from a fresh computation on the release path.
-4. **The executor recomputes** `sha256(canonicalize(receivedEnvelope))` and refuses unless it equals the `effectDigest` claim. This is the link v1 lacked: the process that talks to Graph independently verifies that the bytes it is about to send are the bytes a human approved.
+
+   ⚠️ **The JWT claim is the SOLE authority.** v2 also listed `effectDigest?` as a request-body field (its §9 step 2), which is worse than redundant: an implementer following that would compare the envelope against a digest computed from *that same envelope*, a self-consistency check that always passes while proving nothing. The body field is **removed**. `internalAuth.verify` currently returns only `{correlationId}` (`internalAuth.ts:95-107`) and must be extended to return the authenticated claim set, so operations code cannot accidentally read an unauthenticated copy. If a body field ever reappears, it must be asserted equal to the claim, not read instead of it.
+4. **The executor recomputes** and refuses on mismatch. This is the link v1 lacked: the process that talks to Graph independently verifies that what it is about to send is what a human approved. **What it recomputes over is the operation plan, not the envelope — see §5.3.**
 5. **`revalidateApprovedIntentForRelease` gains a recompute**, cheap defense-in-depth against any write that bypassed the trigger (superuser, disabled trigger, restore): recompute from `intent.arguments` and compare to `intent.argumentDigest`; mismatch ⇒ `digest_mismatch`, same error code, no new taxonomy.
 
 **The canonicalizer must be shared, not reimplemented.** `canonicalizeArguments`/`computeArgumentDigest` (`apps/api/src/services/actionIntents/canonicalize.ts`) are pure, dependency-free, and already correct (sorted keys, `undefined` dropped, cycle detection). Move them to `packages/shared` and have both the API and the executor import the same module. **A second implementation is a second canonicalization, and a digest scheme with two implementations has none.** Mail bodies carry arbitrary Unicode, so the shared test vectors must include non-BMP characters, lone-surrogate-adjacent sequences, CRLF, and long bodies.
 
 **Sender pinning (change 2).** The envelope carries `connectionId`, `tenantId`, `senderObjectId`, `consentGeneration`, and `action_intents.connection_id` / `tenant_id` — which already exist and are already trigger-protected (`2026-07-18-action-intents.sql:109-110`) but are never populated (`intentService.ts:65-75, 293-312`) — are set at creation from the same values. `CreateActionIntentInput` gains an optional `binding: { connectionId, tenantId }`.
 
-At release, the loaded connection must match on **all four**. `connectionId` alone is insufficient, and this is the subtlety v1 missed: **reconnect reuses the same row** (§3.3), so a revoked-and-reconnected mailbox — possibly a different mailbox, if the user signed in as someone else — keeps its id. `consent_generation` (new `integer NOT NULL DEFAULT 0` column, bumped in the §4.1 promotion UPDATE) is what actually detects it. Mismatch ⇒ `binding_stale` ⇒ the intent terminalizes and the user re-requests. Approved content is never released against a credential that was re-established after the approval.
+At release, the loaded connection must match on **all four**. `connectionId` alone is insufficient, and this is the subtlety v1 missed: **reconnect reuses the same row** — verified in the shipped generic path, which finds the existing owner/profile row and updates `existing.id` (`connectionService.ts:380-424`) — so a revoked-and-reconnected mailbox, possibly a *different* mailbox if the user signed in as someone else, keeps its id. `consent_generation` (new `integer NOT NULL DEFAULT 0`, bumped in the §4.1 promotion UPDATE) is what actually detects it. Mismatch ⇒ `binding_stale` ⇒ the intent terminalizes and the user re-requests.
+
+⚠️ **An API-side generation check is not sufficient — it has a TOCTOU.** v2 checked the binding when loading the connection and then called the executor. Reconnect can promote generation *n+1* in that window; the executor then acquires generation *n+1* credentials whose `tid`/`oid` still match the pinned values, and the generation-*n* intent sends from the re-established mailbox. Closing it:
+
+1. `consent_generation` is stamped into the **cache row metadata** (§3.2), so the credential itself carries its generation.
+2. The expected generation travels as a signed claim alongside `effectDigest`.
+3. The executor compares it against the cache metadata **after acquiring credentials and again immediately before the Graph call**, failing closed on mismatch. Checking only at acquisition reintroduces a smaller window of the same bug.
+
+### 5.3 The digest must bind the Graph operation, not just the envelope
+
+v2 bound the envelope and stopped there. But the executor still *builds* a Graph request from that envelope, and the shipped executors do exactly that — validate first, construct paths and bodies afterwards (`operations.ts:239-240`, `microsoft/writeActions.ts:67-90`). Everything decided during construction is outside v2's digest:
+
+- body emitted as HTML rather than text (or vice versa);
+- `bcc` silently dropped, or recipients written to the wrong Graph field;
+- `saveToSentItems` flipped — which decides whether the sender has any record of what was sent in their name;
+- an extra header, importance, or reply-to injected.
+
+Each of these changes the real-world effect while the envelope digest still verifies. So:
+
+**The digest covers a canonical `GraphOperationPlan`** — a pure, deterministic function of the envelope, computed by shared code and hashed the same way:
+
+```ts
+// packages/shared/src/m365/commsPlan.ts
+type GraphOperationPlan = {
+  planVersion: 1;
+  method: 'POST'; path: '/me/sendMail';
+  saveToSentItems: boolean;
+  message: {
+    subject: string;
+    body: { contentType: 'Text'; content: string };   // pinned, not inferred
+    toRecipients: string[]; ccRecipients: string[]; bccRecipients: string[];
+  };
+};
+buildSendPlan(envelope) -> GraphOperationPlan   // pure, total, no I/O
+```
+
+The API computes the plan from the envelope at intent creation and digests **that**; the executor recomputes `buildSendPlan(receivedEnvelope)` and compares. The executor is then **forbidden from constructing the Graph body any other way** — it serializes the verified plan directly. A mapper divergence becomes a digest mismatch instead of a silent content change.
+
+**`inReplyToMessageId` is removed from the v1 catalog.** It is the one field whose plan is not a pure function of the envelope: Graph's `createReply` builds a *mutable draft* partly from the original message and requires a subsequent send, which is precisely the draft-send shape §8 bans for breaking content binding. Threading returns with reply variants, designed properly.
+
+### 5.4 The approver must see the bound content
+
+The chain binds `intent.arguments` → digest → plan → Graph. **What the human looked at is not in that chain**, and v2 asserted the fix without designing it.
+
+Shipped today: `createActionIntent` copies the arguments into `approval_requests.action_arguments` (`intentService.ts:374-385`); the approval API serves that copy (`approvals.ts:980-1002`); the decide path compares `boundArgumentDigest` to `linkedIntent.argumentDigest` (`approvals.ts:500-505`) — digest to digest, never re-derived from the copy the approver read. The intent's arguments are trigger-protected; **the displayed copy is not.**
+
+No production code updates that column today, so this is **latent, not live** — but for mail the displayed content *is* the effect, and "no current writer" is not an invariant.
+
+v3 requires, as tasked work rather than an assertion:
+
+1. **Comms approvals render from `intent.arguments`**, through the org-scoped, RBAC-gated intent endpoint — never from `approval_requests.action_arguments`.
+2. **The approver sees the complete effect**: full recipient lists including BCC, subject, the entire body, and the **sender identity** (`Signed in as <UPN>`). v2's own §12 flag 3 split — summaries carry metadata, content lives once in the intent — is what makes this safe; a body preview in the *summary* (as §8 point 3 still says) contradicts it and is dropped in favour of the gated full read.
+3. **Rendering is hostile-text safe**: bidirectional-override and invisible control characters are neutralized for display, so the rendered text cannot differ from the sent text in reading order.
+4. **Defense-in-depth on the shipped side**: make `approval_requests.action_arguments` immutable by trigger, matching `action_intents`. Cheap, and it closes the latent divergence for every intent-backed approval, not just comms.
 
 ## 6. Principal kind — the blocking prerequisite
 
@@ -284,18 +413,31 @@ Composed: an API key minted by the mailbox owner satisfies a user allowlist, a c
 
 **The primitive:**
 
+**Status: SHIPPED — PR #2915**, as a standalone no-behaviour-change change. The union as built:
+
 ```ts
-// middleware/auth.ts — required, not optional, so every construction site must decide
-principal: {
-  kind: 'user_session' | 'api_key' | 'oauth_grant' | 'agent' | 'helper';
-  apiKeyId?: string;      // set iff kind === 'api_key'
-  grantId?: string;       // set iff kind === 'oauth_grant'
-}
+export type PrincipalKind =
+  | { kind: 'user_session' }                        // a Breeze tech, interactively
+  | { kind: 'client_user' }                         // an end-CUSTOMER human (AI for Office)
+  | { kind: 'api_key'; apiKeyId?: string }
+  | { kind: 'oauth_grant'; grantId?: string }
+  | { kind: 'agent'; deviceId?: string }
+  | { kind: 'helper'; deviceId?: string }
+  | { kind: 'system'; reason: string };             // jobs/workers with no external caller
+export function isInteractiveUserSession(auth: Pick<AuthContext, 'principal'>): boolean;
 ```
 
-Making it non-optional is the point: TypeScript then enumerates every place an `AuthContext` is built, which is the only reliable way to find them all. Introducing it as optional would let existing construction sites default to "looks like a human."
+Making it non-optional was the point: the compiler enumerated every construction site — **9 in production**, far fewer than the grep-estimate. Three things that enumeration surfaced, each of which would have defeated a naive gate:
 
-**Comms requires `kind === 'user_session'`** at tool registration, at intent creation, and again at release-time revalidation. Everything else is refused with `user_actor_required`. Belt and braces, because these are three different trust moments.
+1. **`requesting_api_key_id` is never written by any production path.** `intentService` writes `requested_by_user_id` for *every* intent, including MCP ones where it holds the key's creator. So `buildAuthContextForIntent`'s api-key branch is unreachable and the actor columns cannot distinguish chat from key. The shipped fix derives the kind from `intent.source`.
+2. **MCP-OAuth bearers ride the same `apiKey` context slot as real keys** (`bearerTokenAuth.ts`, id `oauth:<jti>`), so classifying on that slot alone labels every OAuth grant `api_key`. `oauthGrantId` is now threaded into `buildAuthFromApiKey`.
+3. **`client_user` did not exist as a concept.** The AI-for-Office end-user is interactive but an end-customer, not a Breeze operator; conflating it with `user_session` would let a customer's employee satisfy a gate meaning "an MSP tech."
+
+**Still required for comms — deriving from `intent.source` is an interim.** `source` is a proxy for the origin principal, not a record of it. v3 adds an immutable `origin_principal_kind` (plus `origin_principal_id`) column to `action_intents`, written at creation from `auth.principal` and covered by the existing immutability trigger. Then the release-time check proves *the same fact* the creation-time check proved, rather than re-deriving it from a correlated field. Until that column exists, comms must not ship: the third of §6's three checkpoints would be inspecting a reconstruction rather than a record.
+
+**Comms requires `kind === 'user_session'`** at tool registration, at intent creation, and again at release-time revalidation — the last of these reading the persisted `origin_principal_kind`, not a reconstruction. Everything else is refused with `user_actor_required`. Belt and braces, because these are three different trust moments.
+
+**And a fourth checkpoint that v2 did not know it needed: the release path itself.** §0.a — comms sends must be structurally unable to execute on the inline chat path, because that path runs the ordinary tool handler and never touches this design's transport. A principal check on a path that bypasses the transport is not worth much.
 
 **Comms tools are additionally suppressed from MCP entirely** — absent from `tools/list` *and* denied in `tools/call`. Absence from a listing is discoverability, not authorization; both are required.
 
@@ -313,7 +455,18 @@ New `packages/shared/src/m365/commsActions.ts`. Five actions. Mail only. **All T
 | `m365.comms.mail.send` | **3** | Full literal content inline: `to/cc/bcc`, `subject`, `bodyText`, optional `inReplyToMessageId`. Same caps as draft. **No draftId-send in v1** — see §8. |
 | (executor ops) `complete-consent`, `retest` | — | consent/verification ops, comms-specific result shapes (§4.2). |
 
-Failure codes: the read set (`readActions.ts:104-115`) plus `delegated_reauth_required`, `credential_rotation_failed`, `mailbox_not_found`, `message_not_found`, `recipient_rejected`.
+Failure codes: the read set (`readActions.ts:104-115`) plus `delegated_reauth_required`, `credential_rotation_failed`, `mailbox_not_found`, `message_not_found`, `recipient_rejected`, `effect_digest_mismatch`, `binding_stale`, `consent_superseded`.
+
+**The wire and text contract, stated once because three layers disagree by default:**
+
+| Layer | Limit / rule |
+|---|---|
+| `bodyText` | ≤ 32,000 **characters** (validated as code points, not UTF-16 units) |
+| Executor request body | ≤ **128 KiB**, not the sibling 16 KiB default (§2) |
+| Character set | **Reject `U+0000` and ill-formed surrogate pairs at intent creation.** Node accepts and `JSON.stringify` escapes both; PostgreSQL `jsonb` rejects them. Without this an intent that validates in the API fails on INSERT, or worse, round-trips differently than it was digested. |
+| Canonicalization | Shared module (§5.2), same code both sides |
+
+A round-trip test — API validation → `jsonb` INSERT → read back → HTTP → executor recomputation — is required, not a unit test per layer. The layers individually pass; it is the composition that breaks.
 
 Deferred, in rough priority order: reply/reply-all/forward as first-class send variants; draft-send with content re-verification; attachments (a DLP program of its own); mail move/categorize; **all** Teams chat/channel reads and posts; calendar.
 
@@ -333,7 +486,11 @@ The plumbing already exists and fits: Tier-3 tool → immutable intent with cano
 4. **Draft-send is banned in v1 precisely because it breaks this.** Graph drafts are mutable; approving "send draft X" binds an id, not content. If added later, the send action must carry the approved content hash and the executor must fetch the draft, canonicalize, compare, and fail closed on mismatch.
 5. The sender is pinned at creation and re-checked at release (§5.2), so an approved body cannot be released from a mailbox that was reconnected in the interim.
 
-**Duplicate-send safety.** `sendMail` is not idempotent at Graph. Defenses, in order: the single-use `approved→executing` CAS (`intentReleaseWorker.ts:251-259`) makes duplicate release effectively impossible; the executor never internally retries a send after an ambiguous outcome (a timeout mid-send maps to `graph_request_timeout` and terminalizes the intent — re-sending requires a fresh intent and fresh approval); `idempotencyKey = intent.id` is carried for audit and a future executor-side dedup store, same posture as `writeActions.ts:35-38`. Accepted residual: a crash between Graph's 202 and the `executing→completed` CAS yields `failed:execution_lost` for an email that did send — the same residual the siblings accept (`intentReleaseWorker.ts:461-475`), and for email the human-visible Sent Items folder is the recovery oracle.
+**Duplicate-send safety.** `sendMail` is not idempotent at Graph. Defenses, in order: the single-use `approved→executing` CAS (`intentReleaseWorker.ts:251-259`) makes duplicate release effectively impossible; the executor never internally retries a send after an ambiguous outcome (a timeout mid-send maps to `graph_request_timeout` and terminalizes the intent — re-sending requires a fresh intent and fresh approval); `idempotencyKey = intent.id` is carried for audit and a future executor-side dedup store, same posture as `writeActions.ts:35-38`.
+
+⚠️ **Replay is an accepted residual, recorded rather than solved.** The internal JWT's `jti` is UUID-shape-validated but never consumed and there is no replay cache (`internalAuth.ts:79-107`), so within the 60-second window the same signed POST can be replayed and Graph will send twice — `sendMail` is a side-effecting POST with no idempotency field in its contract. The durable CAS prevents duplicate *release*; it does not prevent duplicate *delivery* of an already-authorized request. This sits inside the private API↔executor boundary, so exploiting it requires a position from which worse is already possible. The proper fix is an executor-side one-time claim on `intent.id` before the Graph call, backed by the same store as §3.2 — cheap once that store exists. **Deferred, not dismissed**; if it is not done in v1 it goes in the runbook's known-limitations section, not a code comment.
+
+Accepted residual: a crash between Graph's 202 and the `executing→completed` CAS yields `failed:execution_lost` for an email that did send — the same residual the siblings accept (`intentReleaseWorker.ts:461-475`), and for email the human-visible Sent Items folder is the recovery oracle.
 
 **Drafts (Tier 2)** execute inline in the chat session like Tier-1 reads — no intent row — matching §9.1's "execute according to organization policy" with v1 policy = allowed for the allowlisted owner, fully audited via a `breeze_m365_comms_total{action,outcome}` counter + audit events (metrics pattern of runbook lines 162-168).
 
@@ -368,11 +525,11 @@ Mirrors `writeActionRuntimeConfig.ts:195-281` with the axis swapped to users:
 
 ## 11. First cut vs deferred
 
-**Prerequisite, shipped separately and first:** the principal-kind discriminator (§6).
+**Prerequisites, shipped separately and first:** the principal-kind discriminator (§6 — **done, PR #2915**), the single release funnel (§0.a), and the persisted origin principal (§6).
 
-**Ships:** the five §7 actions; the delegated consent phase + status-aware constraint (§4); the canonical effect envelope with executor-side digest recomputation and sender pinning (§5); MSAL confidential client + encrypted CAS token cache (§3.2); degraded-on-invalid_grant + reconnect UX; the release-worker user-axis dispatch; user-allowlist gating; the user-axis RLS behavioural tests (§3.4); deploy runbook.
+**Ships:** the five §7 actions, minus `inReplyToMessageId`; the delegated consent phase + status-aware constraint + lifecycle invariants (§4); the effect envelope, **operation-plan** digest recomputed in the executor, sender pinning with generation re-check (§5.2–§5.3); the approval projection (§5.4); MSAL confidential client + fenced-lease CAS token cache with KEK keyring (§3.2); degraded-on-invalid_grant + reconnect UX; the release-worker user-axis dispatch; user-allowlist gating; the user-axis RLS behavioural tests (§3.4); deploy runbook.
 
-**Deferred (recorded, not designed):** Teams entirely; reply/forward send variants; attachments; draft-send-with-verification; scheduled RT health probes (v1 discovers death lazily on next use + expiry alerting); manifest trim re-consent tooling beyond the ordinary version-bump path; any org-level policy over comms tools (v1 policy = the user allowlist).
+**Deferred (recorded, not designed):** Teams entirely; reply/forward send variants **and threading via `inReplyToMessageId`** (§5.3); attachments; draft-send-with-verification; scheduled RT health probes (v1 discovers death lazily on next use + expiry alerting); manifest trim re-consent tooling beyond the ordinary version-bump path; any org-level policy over comms tools (v1 policy = the user allowlist); **executor-side replay defence** (§8 — recorded as a known limitation, not a silent gap).
 
 **No longer deferred, because v2 removed the need:** multi-replica executor (§3.2 makes it the default rather than a future project) and automated credential purge on revoke (the cache store supports deletion, so revoke deletes the row instead of filing a runbook task).
 
@@ -388,7 +545,8 @@ Mirrors `writeActionRuntimeConfig.ts:195-281` with the axis swapped to users:
 
 ## 13. Risks (most likely failures first)
 
-1. **Correspondence leaking into logs/audit/approvals.** Now risk #1: it is the failure with the widest blast radius that no single gate prevents. Redaction tests must be first-class (master §12 verification bullet, line 467); the approval-summary split in §12 flag 3 is load-bearing.
+0. **A second release path bypassing the whole design.** Ranked above everything because it is not a weakness in a mechanism — it is a route around all of them, and it was invisible for two revisions (§0.a). The parity test between the inline-ineligible set and the comms Tier-3 set is the only thing that keeps it closed as the catalog grows.
+1. **Correspondence leaking into logs/audit/approvals.** Redaction tests must be first-class (master §12 verification bullet, line 467); the approval-summary split in §12 flag 3 is load-bearing.
 2. **Rotation loss → surprise reauth.** Mitigated by lease + CAS, `degraded` + reconnect UX, correlation logging. Demoted from v1's #1 because §3.2 makes it rare rather than structural — but never zero.
 3. **Duplicate or lost sends at the crash boundary.** §8; residual matches siblings; Sent Items is the oracle; never auto-retry a send.
 4. **A second canonicalizer.** If the executor ever reimplements canonicalization instead of importing the shared module, every digest check silently becomes a self-consistency check. Guard with shared test vectors executed by both packages (§5.2).
@@ -402,29 +560,34 @@ Mirrors `writeActionRuntimeConfig.ts:195-281` with the axis swapped to users:
 
 Format mirrors `docs/superpowers/plans/integrations/2026-07-22-m365-customer-graph-actions-consent.md`.
 
-**Task 0 ships as its own PR, before anything else here.** It is independently valuable, touches auth for the whole product, and must not be reviewed as part of a mail feature.
+0. ~~**Principal-kind discriminator** (§6)~~ — **SHIPPED, PR #2915.** Required `principal` field, 7-kind union, `isInteractiveUserSession`, 9 production sites set deliberately, no behaviour change. Full suite green; gate proven non-vacuous by injection.
 
-0. **Principal-kind discriminator** (§6) — add the required `principal` field to `AuthContext` (`middleware/auth.ts`); let the compiler enumerate every construction site and set each one deliberately (`buildAuthFromApiKey` → `api_key` with `apiKeyId`, session auth → `user_session`, helper → `helper`, agent → `agent`, MCP-OAuth → `oauth_grant`); tests asserting each builder's kind. **No behaviour change in this PR** beyond the field existing — gating lands with its consumers, so a regression here is isolable.
+**New in v3, and both are prerequisites to any comms code:**
 
-**Then, per the §0 changes, in dependency order:**
+0a. **Single release funnel** (§0.a) — add comms Tier-3 tools to an inline-ineligible set checked *before* the `approved → executing` CAS in `aiAgentSdk.ts`; introduce `releaseCommsSend(intentId)` as the only entry point to a comms send; parity test pinning the ineligible set to the comms Tier-3 set. Ships before the send tool exists, so the tool cannot be added to an unguarded path.
+
+0b. **Persisted origin principal** (§6) — immutable `origin_principal_kind` / `origin_principal_id` columns on `action_intents`, written from `auth.principal` at creation, added to the immutability trigger's column list; `actorContext` reads the column instead of deriving from `source`. Migration + tests.
+
+**Then, per the §0.b changes, in dependency order:**
 
 1. **Shared canonicalizer** — move `canonicalizeArguments`/`computeArgumentDigest` from `apps/api/src/services/actionIntents/canonicalize.ts` to `packages/shared`; re-export from the old path so no call site changes; shared test vectors (non-BMP, surrogate-adjacent, CRLF, 32 KiB bodies) executed by **both** the API and executor packages (§5.2). Pure move + vectors, no behaviour change.
-2. **Shared catalog + effect envelope** — `packages/shared/src/m365/commsActions.ts` and `commsEffect.ts` (+tests): 5-action union, recipient/size caps, projection allowlists, failure-code enum (incl. `effect_digest_mismatch`, `binding_stale`, `consent_superseded`), the `CommsSendEffect` envelope with recipient normalization (lowercase/dedupe/sort) and its digest helper; export from `@breeze/shared/m365`.
+2. **Shared catalog, effect envelope, and operation plan** — `commsActions.ts`, `commsEffect.ts`, `commsPlan.ts` (+tests): 5-action union **without `inReplyToMessageId`** (§5.3), recipient/size caps, projection allowlists, failure-code enum, the `CommsSendEffect` envelope with recipient normalization, and the pure `buildSendPlan` producing the `GraphOperationPlan` that the digest actually covers. Property test: same envelope ⇒ byte-identical plan, across both packages.
 3. **Profile trim** — `profiles.ts`: bump `communications-delegated` to version 2, mail-only delegated scopes, **retaining `offline_access`** (test asserts the exact scope set + version); confirm `connectionNeedsConsentReconciliation` flags stored-v1 rows.
 4. **Migration: constraint relaxation, consent sessions, delegated columns** — `apps/api/migrations/2026-07-28-a-m365-comms-delegated.sql`: status-aware `m365_connections_credential_location_check` (§4.1, with the ROW_COUNT reporting the cleanup rule requires); unique index `m365_connections (id, user_id, profile, consent_attempt_id)`; `m365_user_consent_sessions` (system-only forced RLS, composite user-axis FK, expiry index); `ADD COLUMN IF NOT EXISTS delegated_user_object_id UUID`, `consent_generation INTEGER NOT NULL DEFAULT 0`, `observed_delegated_scopes JSONB NOT NULL DEFAULT '[]'`. Idempotent; schema file + `pnpm db:check-drift`.
 5. **RLS contract + behavioural tests** — register `m365_user_consent_sessions` in the system-only allowlist and `m365_connections` in `USER_ID_SCOPED_TABLES` (`rls-coverage.integration.test.ts`); add `m365CommsUserRls.integration.test.ts`: cross-user forge (42501), **different-user denial and keyed/no-user-context denial** (§3.4 — *not* v1's incorrect "org token sees nothing" assertion), consent-session tenant-read refusal. Real-DB job. State in the PR that the coverage contracts cannot see user-owned rows.
 6. **Intent binding** — extend `CreateActionIntentInput` with optional `binding: {connectionId, tenantId}` and populate the existing immutable columns (`intentService.ts`); add the digest recompute to `revalidateApprovedIntentForRelease` (`revalidateRelease.ts`) (+tests: recompute mismatch ⇒ `digest_mismatch`, binding populated on create, trigger still rejects mutation).
 7. **Comms runtime config + boot validation** — `commsRuntimeConfig.ts` (+tests): user-ID allowlist parsing, the two version-pinned vault refs, token-cache DSN, JWK file perms (clone `writeActionRuntimeConfig.ts` tests); wire `validate.ts`.
 8. **Executor scaffold** — `apps/m365-communications-executor/`: config loader, `internalAuth` with new audience, Hono app for 4 operations + healthz; port sibling suites, then the deltas. **Wire CI in this same PR** — test, typecheck, image build, Trivy, Dependabot, release image, and the `check-supply-chain-hardening.sh` service-name pin. (#2893 exists because the actions executor shipped without any of it.)
-9. **Executor token cache** — `credentials/tokenCache.ts` (+tests): AES-256-GCM wrap/unwrap under the KEK, CAS write, lease acquire/release/expiry, KEK two-version read window, concurrent-redemption test proving one winner and no orphaned RT.
+9. **Executor token cache** — `credentials/tokenCache.ts` (+tests): AES-256-GCM wrap/unwrap under a KEK **keyring** (reader set + one writer), **fenced** lease acquire/release/expiry, CAS write, tombstone-on-revoke, and the defined absent/corrupt semantics (§3.2). Tests must include: a paused lease holder resuming after expiry is rejected by fence; a revoke racing a refresh cannot be undone; corrupt ciphertext fails closed and preserves the row; concurrent redemption yields one winner and no orphaned RT.
 10. **Executor MSAL client** — `microsoft/delegatedClient.ts` (+tests): confidential client with cert assertion, partitioned `ICachePlugin` over task 9, `acquireTokenSilent`, auth-code redemption with PKCE, `invalid_grant → delegated_reauth_required`. All HTTP mocked.
-11. **Executor operations** — `operations.ts` (+tests): **effect-digest recomputation before credential access**; identity gate from pinned `tid`/`oid` via MSAL account claims (no access-token parsing, no `appid`); consent op with the §4.2 verify-then-persist ordering and `scp` reconciliation; retest; execute-action dispatch across the 5 actions; projection enforcement; redaction of bodies/recipients/subjects from every error path (explicit leak tests).
+11. **Executor operations** — `operations.ts` (+tests): **plan-digest recomputation before credential access**, against the authenticated JWT claim only (§5.2); consent-generation re-check after acquisition **and** immediately before the Graph call (§5.2); identity gate from pinned `tid`/`oid` via MSAL account claims (no access-token parsing, no `appid`); consent op redeeming under an **ephemeral cache** then committing (§4.2), with scopes from `AuthenticationResult.scopes`; the Graph body serialized **from the verified plan only**; projection enforcement; redaction of bodies/recipients/subjects from every error path (explicit leak tests).
 12. **API executor client** — `commsExecutorClient.ts` (+tests): clone of `graphActionsExecutorClient.ts` against the comms schemas/audience, carrying the `effectDigest` claim from the **stored** `intent.argumentDigest`.
 13. **API comms action service** — `commsActionService.ts` (+tests): user-axis ladder — principal kind → user allowlist → connection by `userId` under ambient/caller RLS → owner check (fail closed) → binding match (all four fields, §5.2) → status (`active` only for send; `active|degraded` for reads, per `writeActionService.ts:20-25`) → budget → executor call → cache-generation writeback → `degraded` on `delegated_reauth_required`; metrics `breeze_m365_comms_total`.
 14. **Delegated consent phase + routes + UI** — the §4.2 phase (`/common` authorize, no tenant hint, verify-then-persist, atomic promotion, reconnect tenant-mismatch refusal); initiate/callback routes over `m365_user_consent_sessions`; browser binding reused; UI card (connect/reconnect/disconnect, "Signed in as <UPN>") behind the onboarding flag; i18n ×5 locales; `runAction` for all mutations.
 15. **AI tools (tier 1/2)** — `m365_list_mail`, `m365_get_mail`, `m365_draft_mail` (+ tier map + gating tests): registered only for allowlisted owning users with `principal.kind === 'user_session'`; site-scope refused; **suppressed from MCP `tools/list` and denied in `tools/call`** (§6), with a test per half.
+15b. **Approval projection** (§5.4) — comms approvals render from `intent.arguments` via the RBAC-gated intent endpoint, showing full recipients incl. BCC, subject, complete body, and sender UPN; bidi/invisible-control neutralization on display; immutability trigger added to `approval_requests.action_arguments` as defense-in-depth for every intent-backed approval.
 16. **Tier-3 send + headless release** — `m365_send_mail` creating intents whose `arguments` **are** the envelope, plus summaries; `m365CommsToolsHeadless.ts` that validates-and-forwards without mapping (+ tier-parity test); `intentReleaseWorker.ts` dispatch branch passing `intent.requestedByUserId` (+ `user_actor_required` for key-actor intents); worker tests for owner-mismatch, stale-binding, and connection-unavailable taxonomy.
-17. **Integration proof** — consent→active→list→draft→intent→approve→release→sent (executor HTTP mocked at the client seam); digest-drift refusal; **executor-side digest mismatch refusal**; reconnect-bumps-generation invalidates an approved intent; reauth-required degrade/reconnect; concurrent redemption.
+17. **Integration proof** — consent→active→list→draft→intent→approve→release→sent (executor HTTP mocked at the client seam); digest-drift refusal; executor-side plan-digest mismatch refusal; **a comms intent is never claimed inline** (§0.a); reconnect-bumps-generation invalidates an approved intent, including the executor-side TOCTOU window; reauth-required degrade/reconnect; concurrent redemption; the §7 Unicode/wire round-trip.
 18. **Deploy runbook + plumbing** — `docs/deploy/m365-communications-executor.md` (env tables, **read-only** vault scoping for two immutable secrets, token-cache store provisioning and its placement decision, callback byte-match gotcha, rollback = tools flag off, discarded-grant residual from §4.2); `.env.example` entries; no compose service block.
 
 **Watch item carried from the actions work:** the next release tag publishes the `m365-graph-actions-executor` image for the first time (#2893 added the job; `deploy/.env.example` has been telling operators to pin a digest that never existed). Verify that before adding a fourth executor image to the same pipeline.
