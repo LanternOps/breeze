@@ -1,11 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// A `where(...)` result that is BOTH awaitable directly (the site writer,
+// which never calls `.returning()`) AND carries a `.returning()` method (the
+// org writer's zero-row-write guard). Defaults to one row so a test that
+// doesn't care about the returning value still reads as "the write took
+// effect"; pass `[]` to model a 0-row UPDATE (RLS rejected it, or the row
+// vanished between the SELECT and the UPDATE).
+function updateWhereResult(returningRows: unknown[] = [{ id: 'stub-id' }]) {
+  const result: Promise<undefined> & { returning?: ReturnType<typeof vi.fn> } = Promise.resolve(undefined);
+  result.returning = vi.fn().mockResolvedValue(returningRows);
+  return result;
+}
+
 const dbMock = vi.hoisted(() => {
   const selectWhere = vi.fn();
   const selectFrom = vi.fn(() => ({ where: selectWhere }));
   const select = vi.fn(() => ({ from: selectFrom }));
 
-  const updateWhere = vi.fn(() => Promise.resolve(undefined));
+  const updateWhere = vi.fn(() => updateWhereResult());
   const updateSet = vi.fn((_values: Record<string, unknown>) => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set: updateSet }));
 
@@ -18,6 +30,35 @@ vi.mock('../db/schema', () => ({
   sites: { id: 'sites.id', orgId: 'sites.org_id', settings: 'sites.settings' },
 }));
 
+// Wrap drizzle's condition builders in spies (real implementation preserved)
+// so tests can assert the actual org/site-scoping WHERE predicates the
+// service builds, not just the mocked query's return value — matching the
+// pattern already used by routes/software.test.ts. Without this, deleting
+// `eq(sites.orgId, orgId)` from a query's WHERE clause leaves every test
+// green: the mocked `.where()` ignores its argument entirely and just
+// returns whatever `selectWhere`/`updateWhere` was scripted to return.
+vi.mock('drizzle-orm', async () => {
+  const actual = await vi.importActual<typeof import('drizzle-orm')>('drizzle-orm');
+  return { ...actual, eq: vi.fn(actual.eq), and: vi.fn(actual.and) };
+});
+
+// Real implementation preserved (it's a safe no-op pass-through for a
+// payload with no secret-shaped keys — see SECRET_JSON_KEYS), spied so
+// tests can assert BOTH writers actually route through it. organizations
+// .settings / sites.settings are registered encrypted-JSON columns
+// (encryptedColumnRegistry.ts); skipping this helper on a write silently
+// downgrades the column to plaintext for the next secret stored under an
+// unrelated settings key.
+vi.mock('./encryptedColumnRegistry', async () => {
+  const actual = await vi.importActual<typeof import('./encryptedColumnRegistry')>(
+    './encryptedColumnRegistry',
+  );
+  return { ...actual, encryptColumnValueForWrite: vi.fn(actual.encryptColumnValueForWrite) };
+});
+
+import { eq } from 'drizzle-orm';
+import { organizations, sites } from '../db/schema';
+import { encryptColumnValueForWrite } from './encryptedColumnRegistry';
 import {
   getOrganizationSoftwareDownloadPolicy,
   getSiteSoftwareDownloadPolicy,
@@ -25,6 +66,13 @@ import {
   setOrganizationSoftwareDownloadPolicy,
   setSiteSoftwareDownloadPolicy,
 } from './softwareDownloadPolicy';
+
+/** Count of `eq(column, value)` calls matching exactly — used to prove a
+ *  scoping predicate is present at EACH call site (e.g. both the SELECT and
+ *  the UPDATE), not just somewhere in the function. */
+function eqCallCount(column: unknown, value: unknown): number {
+  return vi.mocked(eq).mock.calls.filter(([c, v]) => c === column && v === value).length;
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -55,6 +103,9 @@ describe('getOrganizationSoftwareDownloadPolicy', () => {
       version: 1,
       approvedPrivateOrigins: ['https://a.corp.internal'],
     });
+    // The read is scoped to the requested org — proves the predicate exists,
+    // not just that SOME row was returned.
+    expect(eqCallCount(organizations.id, 'org-1')).toBe(1);
   });
 
   it('falls back to the empty policy when the stored value no longer validates', async () => {
@@ -86,6 +137,19 @@ describe('getSiteSoftwareDownloadPolicy', () => {
       policy: { version: 1, approvedPrivateOrigins: ['https://site.corp.internal'] },
     });
   });
+
+  it('scopes the read to BOTH the requested site id and the requested org id', async () => {
+    // Deleting either `eq(sites.id, siteId)` or `eq(sites.orgId, orgId)` from
+    // the WHERE clause would let a caller read (or, via the sibling "not
+    // found" test's mirror, be told "not found" for) a site belonging to a
+    // different organization. Assert both predicates are actually built,
+    // not just that the mocked query happens to return the scripted rows.
+    dbMock.selectWhere.mockResolvedValueOnce([{ settings: {} }]);
+    await getSiteSoftwareDownloadPolicy('org-1', 'site-1');
+
+    expect(eqCallCount(sites.id, 'site-1')).toBe(1);
+    expect(eqCallCount(sites.orgId, 'org-1')).toBe(1);
+  });
 });
 
 describe('setOrganizationSoftwareDownloadPolicy', () => {
@@ -97,10 +161,23 @@ describe('setOrganizationSoftwareDownloadPolicy', () => {
     const policy = { version: 1 as const, approvedPrivateOrigins: ['https://files.corp.internal'] };
     const result = await setOrganizationSoftwareDownloadPolicy('org-1', policy);
 
-    expect(result).toEqual(policy);
+    expect(result).toEqual({ ok: true, policy });
     expect(dbMock.updateSet).toHaveBeenCalledTimes(1);
     const setArg = dbMock.updateSet.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(setArg.settings).toEqual({
+      timezone: 'America/New_York',
+      defaults: { agentVersionPins: {} },
+      softwareDownloadPolicy: policy,
+    });
+    // Scoped to the requested org at BOTH the read (merge source) and the
+    // write (UPDATE ... WHERE) — 2 occurrences, one per call site. A missing
+    // predicate at either site would leave this at 1 (or 0) without any
+    // other assertion in this test catching it.
+    expect(eqCallCount(organizations.id, 'org-1')).toBe(2);
+    // The write routes through the encrypted-column helper — organizations
+    // .settings is a registered encrypted-JSON column — with the merged
+    // (unrelated-keys-preserved) settings object as the input.
+    expect(encryptColumnValueForWrite).toHaveBeenCalledWith('organizations', 'settings', {
       timezone: 'America/New_York',
       defaults: { agentVersionPins: {} },
       softwareDownloadPolicy: policy,
@@ -115,6 +192,35 @@ describe('setOrganizationSoftwareDownloadPolicy', () => {
 
     const setArg = dbMock.updateSet.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(setArg.settings).toEqual({ softwareDownloadPolicy: policy });
+  });
+
+  it('returns { ok: false } and never writes when the organization does not exist', async () => {
+    dbMock.selectWhere.mockResolvedValueOnce([]);
+
+    const result = await setOrganizationSoftwareDownloadPolicy('missing-org', {
+      version: 1,
+      approvedPrivateOrigins: [],
+    });
+
+    expect(result).toEqual({ ok: false, error: 'organization_not_found' });
+    expect(dbMock.update).not.toHaveBeenCalled();
+  });
+
+  it('returns { ok: false } instead of a phantom success when the UPDATE affects 0 rows', async () => {
+    // The SELECT found a row (so the merge/write proceeds), but the UPDATE's
+    // own RETURNING comes back empty — an RLS/app mismatch or a race where
+    // the row vanished between the two statements. This must not read as
+    // success: the caller (and the audit trail) would otherwise believe an
+    // allowlist is in force when nothing actually persisted.
+    dbMock.selectWhere.mockResolvedValueOnce([{ settings: {} }]);
+    dbMock.updateWhere.mockReturnValueOnce(updateWhereResult([]));
+
+    const result = await setOrganizationSoftwareDownloadPolicy('org-1', {
+      version: 1,
+      approvedPrivateOrigins: [],
+    });
+
+    expect(result).toEqual({ ok: false, error: 'organization_not_found' });
   });
 });
 
@@ -139,6 +245,18 @@ describe('setSiteSoftwareDownloadPolicy', () => {
       customLabel: 'Building A',
       softwareDownloadPolicy: policy,
     });
+    // Scoped to the requested site AND org at both the read (site lookup)
+    // and the write (UPDATE ... WHERE) — 2 occurrences each. Deleting
+    // `eq(sites.orgId, orgId)` from either the SELECT or the UPDATE would
+    // drop this to 1 without failing any other assertion in this test.
+    expect(eqCallCount(sites.id, 'site-1')).toBe(2);
+    expect(eqCallCount(sites.orgId, 'org-1')).toBe(2);
+    // The write routes through the encrypted-column helper — sites.settings
+    // is a registered encrypted-JSON column.
+    expect(encryptColumnValueForWrite).toHaveBeenCalledWith('sites', 'settings', {
+      customLabel: 'Building A',
+      softwareDownloadPolicy: policy,
+    });
   });
 
   it('returns { ok: false } and never writes when the site does not belong to the org', async () => {
@@ -151,6 +269,11 @@ describe('setSiteSoftwareDownloadPolicy', () => {
 
     expect(result).toEqual({ ok: false, error: 'site_not_found' });
     expect(dbMock.update).not.toHaveBeenCalled();
+    // The lookup that produced this "not found" was itself scoped to the
+    // requested org — proves the empty result came from the org predicate
+    // actually being applied, not merely from an unscoped miss.
+    expect(eqCallCount(sites.id, 'site-in-other-org')).toBe(1);
+    expect(eqCallCount(sites.orgId, 'org-1')).toBe(1);
   });
 
   it('returns the org∪site union as the effective policy, deduped', async () => {

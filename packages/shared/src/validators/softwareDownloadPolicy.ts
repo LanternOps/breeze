@@ -36,10 +36,16 @@ import { z } from 'zod';
 // means an obfuscated encoding of a forbidden address (e.g. the decimal
 // form of 127.0.0.1) still resolves to its canonical text and is still
 // correctly rejected by the forbidden-range check below — the parser's
-// leniency here is permissive-but-safe, not permissive-and-unsafe. It also
-// means the origin this module STORES is always already in the canonical
-// form the agent's own parser would produce, so Task 5's later hand-off to
-// the agent does not need any further normalization to round-trip cleanly.
+// leniency here is permissive-but-safe, not permissive-and-unsafe.
+//
+// This does NOT mean the origin stored here is the canonical form Go's own
+// `originFromURL` would produce: Go always renders an explicit port
+// (`https://files.corp.internal:443`), while this module omits the default
+// port. Do not string-compare a value stored here against a Go-normalized
+// origin — the agent's own `netpolicy.NewClient` -> `newOriginSet` path
+// re-normalizes every configured origin on ingest (Task 5), so the two
+// representations round-trip correctly through THAT path without matching
+// byte-for-byte.
 
 // Metadata endpoints that must never be approved as software-download
 // origins, mirroring agent/internal/netpolicy/address.go's
@@ -196,11 +202,26 @@ function embeddedTransitionIPv4(bytes: number[]): [number, number, number, numbe
 
 /**
  * Classifies parsed IPv6 bytes as universally unsafe: unspecified (::),
- * loopback (::1), link-local (fe80::/10), multicast (ff00::/8), any
- * IPv4-mapped address (::ffff:0:0/96), or any transition encoding (6to4,
- * Teredo, NAT64, IPv4-compatible, IPv4-translated) whose embedded IPv4 is
- * itself forbidden. ULA (fc00::/7) is deliberately NOT forbidden —
- * classPrivate on the Go side.
+ * loopback (::1), link-local (fe80::/10), multicast (ff00::/8), ANY
+ * IPv4-mapped address (::ffff:0:0/96, regardless of the embedded payload),
+ * or any transition encoding (6to4, Teredo, NAT64, IPv4-compatible,
+ * IPv4-translated) whose embedded IPv4 is itself forbidden. ULA (fc00::/7)
+ * is deliberately NOT forbidden — classPrivate on the Go side.
+ *
+ * IPv4-mapped is rejected UNCONDITIONALLY — not just when the embedded
+ * payload is itself forbidden — to match
+ * agent/internal/netpolicy/address.go's checkHostShape, which rejects EVERY
+ * IPv4-mapped literal via `a.Is4In6()` regardless of payload
+ * (ReasonAmbiguousIPEncoding), pinned by that package's own tests for both a
+ * forbidden payload (::ffff:127.0.0.1) and a benign one (::ffff:8.8.8.8).
+ * Go's own client construction (netpolicy.NewClient -> newOriginSet) returns
+ * an error on the FIRST unparseable configured origin, so accepting a
+ * validator-blessed IPv4-mapped origin here (e.g. https://[::ffff:10.0.0.5],
+ * which IS a legitimate RFC1918 destination) would not merely fail to work —
+ * it would fail agent policy-client construction outright for every device
+ * receiving that policy. There is no loss of coverage: an operator who wants
+ * to approve 10.0.0.5 writes https://10.0.0.5, not its IPv4-mapped IPv6
+ * spelling.
  */
 function isForbiddenIPv6(bytes: number[]): boolean {
   if (bytes.every((b) => b === 0)) return true; // ::
@@ -210,10 +231,7 @@ function isForbiddenIPv6(bytes: number[]): boolean {
 
   const isV4Mapped =
     bytes.slice(0, 10).every((b) => b === 0) && bytes[10] === 0xff && bytes[11] === 0xff;
-  if (isV4Mapped) {
-    const embedded: [number, number, number, number] = [bytes[12]!, bytes[13]!, bytes[14]!, bytes[15]!];
-    return isForbiddenIPv4(embedded);
-  }
+  if (isV4Mapped) return true;
 
   const transitionEmbedded = embeddedTransitionIPv4(bytes);
   if (transitionEmbedded && isForbiddenIPv4(transitionEmbedded)) return true;

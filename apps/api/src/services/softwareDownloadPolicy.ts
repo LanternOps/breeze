@@ -15,6 +15,7 @@
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations, sites } from '../db/schema';
+import { encryptColumnValueForWrite } from './encryptedColumnRegistry';
 import {
   softwareDownloadPolicySchema,
   type SoftwareDownloadPolicy,
@@ -105,28 +106,51 @@ export async function getEffectiveSoftwareDownloadPolicy(
   };
 }
 
+export type SetOrganizationSoftwareDownloadPolicyResult =
+  | { ok: true; policy: SoftwareDownloadPolicy }
+  | { ok: false; error: 'organization_not_found' };
+
 /**
  * Merges `policy` into the organization's settings JSONB at the
  * `softwareDownloadPolicy` key WITHOUT touching any other key — read current
  * settings, spread, overwrite just this one key, write back.
+ *
+ * Two existence checks, mirroring routes/orgs.ts's PATCH /sites/:id
+ * precedent: the initial SELECT missing a row is the ordinary "no such org"
+ * case, and a 0-row UPDATE (despite the SELECT having just found one) means
+ * the RLS UPDATE policy rejected the write anyway — an RLS/app mismatch or a
+ * race, not a normal not-found. Either way, a caller must never see success
+ * (and this must never write an audit row) for a write that did not
+ * actually persist.
  */
 export async function setOrganizationSoftwareDownloadPolicy(
   orgId: string,
   policy: SoftwareDownloadPolicy,
-): Promise<SoftwareDownloadPolicy> {
+): Promise<SetOrganizationSoftwareDownloadPolicyResult> {
   const [org] = await db
     .select({ settings: organizations.settings })
     .from(organizations)
     .where(eq(organizations.id, orgId));
+  if (!org) return { ok: false, error: 'organization_not_found' };
 
-  const mergedSettings = { ...asSettingsObject(org?.settings), [SETTINGS_KEY]: policy };
+  const mergedSettings = { ...asSettingsObject(org.settings), [SETTINGS_KEY]: policy };
 
-  await db
+  // Encrypt secret-bearing fields BEFORE writing — organizations.settings is
+  // a registered encrypted-JSON column (encryptedColumnRegistry.ts). Without
+  // this, this write would silently re-write the column as plaintext,
+  // undoing the at-rest guarantee for any secret already stored under an
+  // unrelated settings key (e.g. logForwarding.elasticsearchApiKey).
+  const [updated] = await db
     .update(organizations)
-    .set({ settings: mergedSettings, updatedAt: new Date() })
-    .where(eq(organizations.id, orgId));
+    .set({
+      settings: encryptColumnValueForWrite('organizations', 'settings', mergedSettings),
+      updatedAt: new Date(),
+    })
+    .where(eq(organizations.id, orgId))
+    .returning({ id: organizations.id });
+  if (!updated) return { ok: false, error: 'organization_not_found' };
 
-  return policy;
+  return { ok: true, policy };
 }
 
 export type SetSiteSoftwareDownloadPolicyResult =
@@ -153,9 +177,15 @@ export async function setSiteSoftwareDownloadPolicy(
 
   const mergedSettings = { ...asSettingsObject(site.settings), [SETTINGS_KEY]: policy };
 
+  // Encrypt secret-bearing fields BEFORE writing — sites.settings is a
+  // registered encrypted-JSON column (encryptedColumnRegistry.ts). Same
+  // rationale as the organization writer above.
   await db
     .update(sites)
-    .set({ settings: mergedSettings, updatedAt: new Date() })
+    .set({
+      settings: encryptColumnValueForWrite('sites', 'settings', mergedSettings),
+      updatedAt: new Date(),
+    })
     .where(and(eq(sites.id, siteId), eq(sites.orgId, orgId)));
 
   const orgPolicy = await getOrganizationSoftwareDownloadPolicy(orgId);

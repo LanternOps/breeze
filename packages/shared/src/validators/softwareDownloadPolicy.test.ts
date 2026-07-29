@@ -171,6 +171,22 @@ describe('normalizePrivateSoftwareOrigin', () => {
       it('rejects an IPv4-mapped IPv6 loopback', () => {
         expect(normalizePrivateSoftwareOrigin('https://[::ffff:127.0.0.1]')).toBeNull();
       });
+
+      it('rejects an IPv4-mapped IPv6 origin wrapping a benign private (RFC1918) payload', () => {
+        // agent/internal/netpolicy's checkHostShape rejects EVERY IPv4-mapped
+        // literal (a.Is4In6()) regardless of payload, not just a forbidden
+        // one — Go's own newOriginSet/NewClient fails client construction
+        // outright on the first unparseable configured origin, so a
+        // validator-blessed IPv4-mapped origin here would break agent policy
+        // handling for every device receiving the policy, even though
+        // 10.0.0.5 itself is a perfectly legitimate destination written the
+        // normal way (https://10.0.0.5).
+        expect(normalizePrivateSoftwareOrigin('https://[::ffff:10.0.0.5]')).toBeNull();
+      });
+
+      it('rejects an IPv4-mapped IPv6 origin wrapping a benign public payload', () => {
+        expect(normalizePrivateSoftwareOrigin('https://[::ffff:8.8.8.8]')).toBeNull();
+      });
     });
 
     describe('IPv6 transition encodings wrapping a forbidden IPv4 address', () => {

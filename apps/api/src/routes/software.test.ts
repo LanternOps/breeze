@@ -884,7 +884,10 @@ describe('software routes', () => {
 
     describe('PUT /software/download-policy', () => {
       it('updates the organization policy and audits without URL query data', async () => {
-        vi.mocked(setOrganizationSoftwareDownloadPolicy).mockResolvedValueOnce(VALID_POLICY);
+        vi.mocked(setOrganizationSoftwareDownloadPolicy).mockResolvedValueOnce({
+          ok: true,
+          policy: VALID_POLICY,
+        });
 
         const res = await app.request('/software/download-policy?orgId=org-123', {
           method: 'PUT',
@@ -955,6 +958,22 @@ describe('software routes', () => {
 
         expect(res.status).toBe(403);
         expect(setOrganizationSoftwareDownloadPolicy).not.toHaveBeenCalled();
+      });
+
+      it('404s and audits nothing when the organization is missing / the write affected 0 rows', async () => {
+        vi.mocked(setOrganizationSoftwareDownloadPolicy).mockResolvedValueOnce({
+          ok: false,
+          error: 'organization_not_found',
+        });
+
+        const res = await app.request('/software/download-policy', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify(VALID_POLICY),
+        });
+
+        expect(res.status).toBe(404);
+        expect(writeRouteAudit).not.toHaveBeenCalled();
       });
     });
 

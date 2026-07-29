@@ -1610,23 +1610,30 @@ softwareRoutes.put(
     const { orgId } = orgResult;
 
     const payload = c.req.valid('json');
-    const policy = await setOrganizationSoftwareDownloadPolicy(orgId, payload);
+    const result = await setOrganizationSoftwareDownloadPolicy(orgId, payload);
+    // A missing/RLS-invisible org (or a 0-row UPDATE despite the service's own
+    // prior SELECT finding a row) must not read as success — see the service's
+    // doc comment. Surfacing 404 here matches routes/orgs.ts's precedent for
+    // the same zero-row-write class of bug rather than returning 200 for a
+    // write that never persisted.
+    if (!result.ok) return c.json({ error: 'Organization not found' }, 404);
 
     // Audit metadata is a count + version only — never the raw request URL or
     // its query string (finding: policy-change audit rows must not carry URL
-    // query data).
+    // query data). Written only on confirmed success, never for a rejected
+    // write.
     writeRouteAudit(c, {
       orgId,
       action: 'software.downloadPolicy.update',
       resourceType: 'organization',
       resourceId: orgId,
       details: {
-        version: policy.version,
-        approvedOriginCount: policy.approvedPrivateOrigins.length,
+        version: result.policy.version,
+        approvedOriginCount: result.policy.approvedPrivateOrigins.length,
       },
     });
 
-    return c.json({ data: policy });
+    return c.json({ data: result.policy });
   }
 );
 
