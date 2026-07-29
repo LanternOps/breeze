@@ -150,6 +150,8 @@ export function buildClientAuthContext(params: {
 }): AuthContext {
   const { clientUserId, orgId, email, name } = params;
   return {
+    // An end-customer human in the Excel add-in, not a Breeze operator.
+    principal: { kind: 'client_user' },
     user: {
       id: clientUserId,
       email,

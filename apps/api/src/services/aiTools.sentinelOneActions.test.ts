@@ -28,6 +28,7 @@ import {
 
 function makeAuth(): AuthContext {
   return {
+    principal: { kind: 'user_session' },
     user: { id: 'user-1', email: 'test@example.com', name: 'Test User', isPlatformAdmin: false },
     token: { mfa: true } as any,
     partnerId: null,

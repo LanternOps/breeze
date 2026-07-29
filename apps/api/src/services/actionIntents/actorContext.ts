@@ -122,6 +122,19 @@ async function buildUserOwnedAuthContext(
     };
 
     return {
+      // Derived from intent.SOURCE, never from which actor column happens to
+      // be populated. `intentService` writes `requested_by_user_id` for EVERY
+      // intent — including MCP-created ones, where that id is the key's
+      // creator (`auth.user.id` at intentService.ts) and
+      // `requesting_api_key_id` is left null. So the actor columns cannot
+      // distinguish a chat intent from an API-key intent, and reconstructing
+      // `user_session` from `requestedByUserId` would launder an autonomous
+      // caller into an interactive one at release time. `source` is the only
+      // field that records the difference.
+      principal:
+        intent.source === 'mcp_api'
+          ? { kind: 'api_key', apiKeyId: intent.requestingApiKeyId ?? undefined }
+          : { kind: 'user_session' },
       user: {
         id: user.id,
         email: user.email,

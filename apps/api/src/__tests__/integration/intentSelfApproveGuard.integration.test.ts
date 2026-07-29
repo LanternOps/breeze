@@ -61,6 +61,7 @@ function requesterAuth(
 ): AuthContext {
   const { orgCondition, canAccessOrg } = buildOrgAccessClosures([orgId]);
   return {
+    principal: { kind: 'user_session' },
     user: { id: user.id, email: user.email, name: 'Requester', isPlatformAdmin: false },
     token: {
       sub: user.id,
