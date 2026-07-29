@@ -281,7 +281,11 @@ func (c *Client) authenticate() error {
 
 	if !authResp.Accepted {
 		if authResp.Permanent {
-			return &PermanentRejectError{Code: "auth_rejected", Reason: authResp.Reason}
+			code := authResp.Code
+			if code == "" {
+				code = "auth_rejected"
+			}
+			return &PermanentRejectError{Code: code, Reason: authResp.Reason}
 		}
 		return fmt.Errorf("auth rejected: %s", authResp.Reason)
 	}

@@ -37,6 +37,19 @@ var (
 	errBrokerClosed              = errors.New("session broker is closed")
 )
 
+// admissionRejectCode maps admission errors to the machine-readable Code sent
+// in the auth response, so helpers can distinguish "not currently needed"
+// (exit clean, no scheduled-task retry churn) from genuine permanent failures.
+func admissionRejectCode(err error) string {
+	switch {
+	case errors.Is(err, errHelperKeyNotDesired):
+		return "not_desired"
+	case errors.Is(err, errDuplicateHelperKey):
+		return "duplicate_key"
+	}
+	return ""
+}
+
 func admissionIdentityKey(base string, peerSession uint32, goos string) string {
 	if goos != "windows" {
 		return base

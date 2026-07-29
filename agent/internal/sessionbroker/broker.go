@@ -2111,6 +2111,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 				Accepted:  false,
 				Reason:    err.Error(),
 				Permanent: errors.Is(err, errDuplicateHelperKey) || errors.Is(err, errHelperKeyNotDesired),
+				Code:      admissionRejectCode(err),
 			})
 			conn.Close()
 			return

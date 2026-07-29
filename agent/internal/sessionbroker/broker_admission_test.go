@@ -556,6 +556,27 @@ func TestDesiredKeyRemovalInvalidatesReservation(t *testing.T) {
 	}
 }
 
+func TestAdmissionRejectCode(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"not desired", errHelperKeyNotDesired, "not_desired"},
+		{"wrapped not desired", fmt.Errorf("auth: %w", errHelperKeyNotDesired), "not_desired"},
+		{"duplicate key", errDuplicateHelperKey, "duplicate_key"},
+		{"other admission error", errMaxConnectionsPerIdentity, ""},
+		{"nil", nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := admissionRejectCode(tt.err); got != tt.want {
+				t.Errorf("admissionRejectCode(%v) = %q, want %q", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCommitAfterBrokerShutdownReleasesReservationWithoutPublishing(t *testing.T) {
 	b := New("test", nil)
 	b.goos = "windows"

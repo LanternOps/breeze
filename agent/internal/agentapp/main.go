@@ -1698,6 +1698,16 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 		// is permanent (binary hash mismatch, SID lookup failure, etc.).
 		var permErr *userhelper.PermanentRejectError
 		if errors.As(err, &permErr) {
+			if permErr.Code == "not_desired" {
+				// On-demand lifecycle: this helper's session/role is simply not
+				// leased right now. That is the normal state on an RDS host at
+				// rest — exit 0 so the logon scheduled task records success and
+				// does not retry-loop on every user logon.
+				log.Info("helper not currently desired by lifecycle; exiting clean",
+					"name", name, "reason", permErr.ReasonOr(err.Error()))
+				logging.StopShipper()
+				os.Exit(0)
+			}
 			log.Error("helper permanently rejected, exiting fatal",
 				"name", name,
 				"code", permErr.CodeOr("unknown"),
