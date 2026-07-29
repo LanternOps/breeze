@@ -58,9 +58,19 @@ in-memory setting, but the updater client itself is only constructed at
 update-check time and at helper-manager startup, so the observable effect
 differs by call site:
 
-- **Main/helper/watchdog update checks** re-read `h.config.RequireManifestSigningKeyID`
-  fresh at updater-construction time on every check, so a pushed change
-  takes effect on the **next update check** — no agent restart required.
+- **Update checks driven by the agent process** (main, helper, and the
+  agent's own watchdog-binary download) read the flag through
+  `h.requireManifestSigningKeyID()` fresh at updater-construction time on
+  every check, so a pushed change takes effect on the **next update check** —
+  no agent restart required.
+- **The standalone `breeze-watchdog` process** loads its config once at
+  `agent/cmd/breeze-watchdog/main.go:328` and threads that same
+  `*config.Config` into its own `doUpdateAgent` and `doUpdateWatchdog` paths.
+  Its later `config.Load("")` calls refresh only the failover server URL,
+  never this field. So the watchdog-driven agent-binary download — the path
+  that runs precisely when the agent is down — keeps the old value until the
+  **watchdog service** restarts. Same startup-capture category as the helper
+  manager below.
 - **The helper-manager's own manifest-signing-key-ID option**
   (`helper.WithRequireManifestSigningKeyID`, set once at `helper.New(...)`
   call sites around `heartbeat.go:610` and `heartbeat.go:640`) is captured

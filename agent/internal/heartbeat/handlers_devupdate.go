@@ -55,7 +55,7 @@ func devUpdaterConfig(h *Heartbeat) *updater.Config {
 		AuthToken:                   h.secureToken,
 		CurrentVersion:              h.agentVersion,
 		PinnedManifestPubKeys:       h.config.PinnedManifestPubKeys,
-		RequireManifestSigningKeyID: h.config.RequireManifestSigningKeyID,
+		RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
 	}
 }
 

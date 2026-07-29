@@ -1032,13 +1032,23 @@ if (latestHelper) {
     mergedConfigUpdate.patch_source_settings = patchSourceSettings;
   }
 
-  // Security remediation Wave 6, Task 9 — only sent when the operator has
-  // explicitly opted the API into requiring signingKeyId
-  // (AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID=true). Omitted entirely (not sent
-  // as false) when unset/false, matching backup_server_url's "absent = no
-  // change" contract for older agents that don't recognize the key, and
-  // keeping rolling-deploy/server-rollback compatible: a mixed fleet talking
-  // to old and new API instances never sees the flag flap.
+  // Security remediation Wave 6, Task 9 — ALWAYS sent, as true or false.
+  //
+  // An earlier revision omitted the key when unset/false, mirroring
+  // backup_server_url's "absent = no change" contract. That made the switch
+  // ONE-WAY: an agent that had already received `true` persisted it to
+  // agent.yaml, and setting AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID back to
+  // false never reverted it — the device stayed in require-ID mode until
+  // someone hand-edited agent.yaml on every machine. The runbook treats an
+  // unexpected `manifest signing key ID required` rejection as a canary STOP
+  // condition, and a stop condition whose failure mode is "the fleet can no
+  // longer auto-update" must have a rollback lever. Sending the explicit
+  // false is that lever: reverting the env var rolls capable agents back on
+  // their next heartbeat.
+  //
+  // Rolling-deploy and server-rollback safety is unaffected: agent builds
+  // older than this wave ignore the key entirely whether it arrives as true,
+  // as false, or not at all.
   //
   // NOTE: as of deviation D4, an agent build running this wave's Task 6/9
   // code reads this key from configUpdate (applyConfigUpdate in
@@ -1056,9 +1066,8 @@ if (latestHelper) {
   // value that needs normalizing. The boot-time validator is the real gate;
   // this line stays defensive only to match the read pattern used elsewhere
   // in this function.
-  if ((process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID ?? '').trim().toLowerCase() === 'true') {
-    mergedConfigUpdate.require_manifest_signing_key_id = true;
-  }
+  mergedConfigUpdate.require_manifest_signing_key_id =
+    (process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID ?? '').trim().toLowerCase() === 'true';
 
   const authenticatedWithPreviousToken = c.get('agentTokenRotationRequired') === true;
 

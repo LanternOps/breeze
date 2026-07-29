@@ -420,11 +420,12 @@ describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () 
   });
 
   // Security remediation Wave 6, Task 9 — configUpdate.require_manifest_signing_key_id
-  // is sent only when the operator has explicitly opted in via
-  // AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID=true. Default/false/unset must omit
-  // the key entirely (not send false) for rolling-deploy/server-rollback
-  // compatibility with agents that don't recognize it.
-  it('omits require_manifest_signing_key_id from configUpdate when the env var is unset', async () => {
+  // is ALWAYS sent, as true or false, mirroring AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID.
+  // Sending the explicit false is what makes the switch reversible: an agent that
+  // already persisted true must revert when the operator reverts the env var, and
+  // an omitted key is a no-op on the agent. Agents older than Wave 6 ignore the
+  // key whichever way it arrives, so rolling-deploy safety is unaffected.
+  it('sends require_manifest_signing_key_id=false in configUpdate when the env var is unset', async () => {
     delete process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID;
     getActiveTrustKeysetMock.mockResolvedValue([]);
 
@@ -437,10 +438,10 @@ describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () 
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as Record<string, unknown>;
     const configUpdate = body.configUpdate as Record<string, unknown>;
-    expect(configUpdate.require_manifest_signing_key_id).toBeUndefined();
+    expect(configUpdate.require_manifest_signing_key_id).toBe(false);
   });
 
-  it('omits require_manifest_signing_key_id from configUpdate when the env var is explicitly false', async () => {
+  it('sends require_manifest_signing_key_id=false in configUpdate when the env var is explicitly false', async () => {
     process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID = 'false';
     getActiveTrustKeysetMock.mockResolvedValue([]);
 
@@ -453,7 +454,7 @@ describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () 
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as Record<string, unknown>;
     const configUpdate = body.configUpdate as Record<string, unknown>;
-    expect(configUpdate.require_manifest_signing_key_id).toBeUndefined();
+    expect(configUpdate.require_manifest_signing_key_id).toBe(false);
   });
 
   it('sends require_manifest_signing_key_id=true in configUpdate when the env var is true', async () => {

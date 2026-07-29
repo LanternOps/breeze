@@ -3092,6 +3092,20 @@ func (h *Heartbeat) backupServerURL() string {
 	return h.config.BackupServerURL
 }
 
+// requireManifestSigningKeyID reads the manifest key-ID enforcement flag under
+// h.mu. Wave 6 deviation D4 made this field mutable at runtime — the control
+// plane can push require_manifest_signing_key_id through configUpdate, and
+// applyRequireManifestSigningKeyIDConfig writes it while holding h.mu. Every
+// reader therefore has to take the same lock: the updater-construction sites
+// run on update and command goroutines, so touching h.config directly there is
+// a data race under the Go memory model (and `go test -race` is the gate this
+// repo enforces). Same shape, same reason, as backupServerURL above.
+func (h *Heartbeat) requireManifestSigningKeyID() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.config.RequireManifestSigningKeyID
+}
+
 // BackupServerURL is the exported form of backupServerURL, passed to
 // long-lived callers (e.g. the helper.Manager) as a provider so they
 // re-resolve it on every download instead of pinning a startup snapshot.
@@ -5679,7 +5693,7 @@ func (h *Heartbeat) downloadWatchdogBinary(targetVersion string) (string, error)
 		CurrentVersion:              h.agentVersion,
 		Component:                   "watchdog",
 		PinnedManifestPubKeys:       h.config.PinnedManifestPubKeys,
-		RequireManifestSigningKeyID: h.config.RequireManifestSigningKeyID,
+		RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
 	})
 	return u.DownloadBinary(targetVersion)
 }
@@ -5751,7 +5765,7 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 			CurrentVersion:              h.agentVersion,
 			Component:                   "user-helper",
 			PinnedManifestPubKeys:       h.config.PinnedManifestPubKeys,
-			RequireManifestSigningKeyID: h.config.RequireManifestSigningKeyID,
+			RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
 		}
 		helperUpdater := updater.New(helperCfg)
 		download = helperUpdater.DownloadBinary
@@ -5847,7 +5861,7 @@ func (h *Heartbeat) reconcileUserHelper(binaryPath string) {
 			CurrentVersion:              h.agentVersion,
 			Component:                   "user-helper",
 			PinnedManifestPubKeys:       h.config.PinnedManifestPubKeys,
-			RequireManifestSigningKeyID: h.config.RequireManifestSigningKeyID,
+			RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
 		}
 		download = updater.New(helperCfg).DownloadBinary
 	}
@@ -5978,7 +5992,7 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 		BinaryPath:                  binaryPath,
 		BackupPath:                  backupPath,
 		PinnedManifestPubKeys:       h.config.PinnedManifestPubKeys,
-		RequireManifestSigningKeyID: h.config.RequireManifestSigningKeyID,
+		RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
 	}
 
 	// Pre-download breeze-user-helper.exe on Windows so the restart-helper

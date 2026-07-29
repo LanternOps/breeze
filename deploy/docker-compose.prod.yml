@@ -240,6 +240,8 @@ services:
       # helper-manager needs a restart to pick up the change, same limitation
       # as backup_server_url). An agent build older than this one ignores the
       # pushed value entirely and keeps accepting ID-less manifests.
+      # The key is always sent, as true or false, so reverting this variable
+      # rolls capable agents back on their next heartbeat.
       AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: ${AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID:-false}
       MANAGED_SOFTWARE_POLICY_MODE: ${MANAGED_SOFTWARE_POLICY_MODE:-compat}
       PARTNER_HOOKS_URL: http://billing:3002/hooks

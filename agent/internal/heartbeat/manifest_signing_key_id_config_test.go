@@ -137,3 +137,41 @@ func TestApplyConfigUpdateRequireManifestSigningKeyID_AbsentKeyIsNoOp(t *testing
 		t.Fatal("expected RequireManifestSigningKeyID to remain true when the update payload omits the key")
 	}
 }
+
+// TestRequireManifestSigningKeyIDAccessorIsRaceFree exercises the exact pair of
+// paths that Wave 6 deviation D4 made concurrent: the control plane pushing
+// require_manifest_signing_key_id (which writes h.config under h.mu) while an
+// update goroutine reads the flag to build an updater.Config.
+//
+// Before the guarded accessor existed, the five updater-construction sites read
+// h.config.RequireManifestSigningKeyID directly with no lock. Nothing in the
+// suite drove both paths at once, so `go test -race` stayed green over a genuine
+// data race. Revert any of those sites to the bare field read and this test
+// fails under -race with "WARNING: DATA RACE ... previous write by goroutine".
+func TestRequireManifestSigningKeyIDAccessorIsRaceFree(t *testing.T) {
+	h := &Heartbeat{config: &config.Config{}}
+
+	const iterations = 200
+	done := make(chan struct{}, 2)
+
+	// Writer: the configUpdate path, flipping the flag under h.mu.
+	go func() {
+		defer func() { done <- struct{}{} }()
+		for i := 0; i < iterations; i++ {
+			h.mu.Lock()
+			h.config.RequireManifestSigningKeyID = i%2 == 0
+			h.mu.Unlock()
+		}
+	}()
+
+	// Reader: what every updater-construction site now does.
+	go func() {
+		defer func() { done <- struct{}{} }()
+		for i := 0; i < iterations; i++ {
+			_ = h.requireManifestSigningKeyID()
+		}
+	}()
+
+	<-done
+	<-done
+}
