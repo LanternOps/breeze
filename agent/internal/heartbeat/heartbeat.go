@@ -165,10 +165,30 @@ type Command struct {
 	Payload map[string]any `json:"payload"`
 }
 
+// helperLifecycleController is the subset of *sessionbroker.HelperLifecycleManager
+// the heartbeat drives: shutdown, the resolved mode, and — for on-demand (RDS)
+// hosts — the lease + readiness API that replaces "a helper is always running"
+// with "a helper exists while an operation holds a lease on its session".
 type helperLifecycleController interface {
 	Stop()
 	Done() <-chan struct{}
 	Mode() string
+	AcquireLease(sessionID uint32, role ipc.HelperRole, opID string, ttl time.Duration) error
+	RenewLease(sessionID uint32, role ipc.HelperRole, opID string, ttl time.Duration) error
+	ReleaseLease(sessionID uint32, role ipc.HelperRole, opID string)
+	WaitForHelperReady(ctx context.Context, key sessionbroker.HelperKey) sessionbroker.HelperWaitResult
+}
+
+// lifecycleMode returns the resolved helper lifecycle mode, or "" when no
+// lifecycle manager runs (non-Windows, non-service). "on-demand" gates every
+// RDS-specific behavior in the command handlers.
+func (h *Heartbeat) lifecycleMode() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.helperLifecycle == nil {
+		return ""
+	}
+	return h.helperLifecycle.Mode()
 }
 
 type Heartbeat struct {
@@ -274,6 +294,16 @@ type Heartbeat struct {
 	// route the banner-hide and end-of-session notify to the same user who saw
 	// the consent prompt. Guarded by h.mu.
 	desktopTargets map[string]string
+
+	// desktopLeases maps remote desktop session id -> the on-demand helper
+	// leases held for it (see handlers_desktop_lease.go). Only populated in
+	// "on-demand" lifecycle mode. Guarded by h.mu.
+	desktopLeases map[string]*desktopLeaseHold
+
+	// desktopHelperPresent reports whether the helper for a key is still
+	// connected; the lease-renewal goroutine uses it to notice a stream that
+	// died without a stop_desktop. Test seam — nil means "ask the broker".
+	desktopHelperPresent func(sessionbroker.HelperKey) bool
 
 	// Resilience & observability
 	pool        *workerpool.Pool
@@ -942,6 +972,15 @@ func (h *Heartbeat) sendDesktopDisconnectNotification(sessionID string) {
 	// no-op for un-prompted sessions. Done before the wsClient guard so the
 	// local UX still tears down even if the WS link is gone.
 	h.handleConsentSessionEnd(sessionID)
+
+	// Symmetrical with the target release above: a peer disconnect ends the
+	// session for good, so the on-demand helper leases must go too. Without
+	// this the renewal goroutine would keep renewing a lease for a dead stream
+	// whenever the helper process itself outlives the peer connection (its
+	// broker session is still up, so the "helper vanished" self-stop never
+	// fires) and the helper would be pinned forever. leaseLinger still keeps
+	// the helper warm for a prompt viewer reconnect. No-op in always-on mode.
+	h.releaseDesktopLeases(sessionID)
 
 	if h.wsClient == nil {
 		return

@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -144,6 +145,14 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 		MaxSessionDurationHours: int(policy.MaxDuration / time.Hour),
 	}
 
+	// On-demand (RDS) hosts bypass find-or-spawn entirely: handleStartDesktop
+	// already leased the target session's helper, so the only thing left is to
+	// wait for the lifecycle manager to bring it up. Strict by design (#434) —
+	// no fallback to another session.
+	if h.lifecycleMode() == "on-demand" {
+		return h.startDesktopOnDemand(sessionID, targetSession, req)
+	}
+
 	// Retry up to 2 times: if the helper crashes during SendCommand, respawn
 	// and retry immediately instead of failing back to the API (which adds
 	// 20-30s of round-trip delay).
@@ -154,35 +163,88 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 			return tools.NewErrorResult(fmt.Errorf("no capable helper available after spawn attempt"), 0)
 		}
 
-		resp, err := session.SendCommand("desk-"+sessionID, ipc.TypeDesktopStart, req, 30*time.Second)
-		if err != nil {
+		result, helperDied := h.startDesktopOnSession(session, sessionID, req)
+		if helperDied {
 			log.Warn("IPC desktop start failed, will retry with new helper",
 				"attempt", attempt+1,
-				"error", err.Error(),
+				"error", result.Error,
 				"session", session.SessionID,
 			)
 			continue
 		}
-		if resp.Error != "" {
-			return tools.CommandResult{
-				Status: "failed",
-				Error:  resp.Error,
-			}
-		}
-
-		var dResp ipc.DesktopStartResponse
-		if err := json.Unmarshal(resp.Payload, &dResp); err != nil {
-			return tools.NewErrorResult(fmt.Errorf("failed to unmarshal desktop start response: %w", err), 0)
-		}
-		h.rememberDesktopOwner(sessionID, session.SessionID)
-
-		return tools.NewSuccessResult(map[string]any{
-			"sessionId": sessionID,
-			"answer":    dResp.Answer,
-		}, 0)
+		return result
 	}
 
 	return tools.NewErrorResult(fmt.Errorf("desktop start failed after %d attempts (helper keeps crashing)", maxAttempts), 0)
+}
+
+// startDesktopOnSession runs one desktop-start attempt against a specific
+// helper session. The second return value is true only when the helper died
+// mid-command (the IPC send itself failed) — the always-on path treats that as
+// worth retrying against a freshly spawned helper; every other failure is
+// terminal and must be surfaced verbatim.
+func (h *Heartbeat) startDesktopOnSession(session *sessionbroker.Session, sessionID string, req ipc.DesktopStartRequest) (tools.CommandResult, bool) {
+	resp, err := session.SendCommand("desk-"+sessionID, ipc.TypeDesktopStart, req, 30*time.Second)
+	if err != nil {
+		return tools.NewErrorResult(err, 0), true
+	}
+	if resp.Error != "" {
+		return tools.CommandResult{
+			Status: "failed",
+			Error:  resp.Error,
+		}, false
+	}
+
+	var dResp ipc.DesktopStartResponse
+	if err := json.Unmarshal(resp.Payload, &dResp); err != nil {
+		return tools.NewErrorResult(fmt.Errorf("failed to unmarshal desktop start response: %w", err), 0), false
+	}
+	h.rememberDesktopOwner(sessionID, session.SessionID)
+
+	return tools.NewSuccessResult(map[string]any{
+		"sessionId": sessionID,
+		"answer":    dResp.Answer,
+	}, 0), false
+}
+
+// startDesktopOnDemand is the on-demand (RDS) desktop start: wait for the
+// leased system-role helper in the pinned session, then drive the start
+// against exactly that helper. A non-ready wait surfaces the typed reason
+// rather than a bare timeout, and never substitutes another session (#434).
+func (h *Heartbeat) startDesktopOnDemand(sessionID, targetSession string, req ipc.DesktopStartRequest) tools.CommandResult {
+	lc := h.lifecycleController()
+	if lc == nil {
+		return tools.NewErrorResult(errors.New("helper lifecycle manager is not running"), 0)
+	}
+	winID, err := resolveDesktopTargetWinID(targetSession)
+	if err != nil {
+		h.releaseDesktopLeases(sessionID)
+		h.takeDesktopTarget(sessionID)
+		return tools.NewErrorResult(err, 0)
+	}
+
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), helperReadyBudget)
+	res := lc.WaitForHelperReady(waitCtx, sessionbroker.HelperKey{WindowsSessionID: winID, Role: ipc.HelperRoleSystem})
+	cancelWait()
+	if res.Status != sessionbroker.HelperWaitReady {
+		log.Warn("on-demand desktop helper never became ready",
+			"sessionId", sessionID, "winSession", winID, "status", string(res.Status))
+		h.releaseDesktopLeases(sessionID)
+		h.takeDesktopTarget(sessionID)
+		return tools.NewErrorResult(errors.New(helperWaitFailureMessage(res)), 0)
+	}
+
+	// No retry loop here: a helper that dies mid-start is respawned by the
+	// lifecycle reconciler under the lease we still hold, and retrying against
+	// a different session is exactly what strict targeting forbids.
+	result, _ := h.startDesktopOnSession(res.Session, sessionID, req)
+	if result.Status == "failed" {
+		h.releaseDesktopLeases(sessionID)
+		h.takeDesktopTarget(sessionID)
+		return result
+	}
+	h.startDesktopLeaseRenewal(sessionID)
+	return result
 }
 
 // findActiveHelper looks up a capable helper for the target session, applying
