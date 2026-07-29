@@ -755,6 +755,59 @@ describe('backup config routes', () => {
       expect(body.error).not.toBe('Invalid URL');
       expect(s3ClientCtorMock).not.toHaveBeenCalled();
     });
+
+    it('does not persist a blank endpoint string on create (web form initial state)', async () => {
+      // coerceS3EndpointUrl('') returns undefined for a blank endpoint, but
+      // `if (endpoint) details.endpoint = endpoint;` used to leave the raw ''
+      // from the payload sitting in `details` untouched, so blank rows kept
+      // accumulating in provider_config.
+      insertMock.mockReturnValueOnce(chainMock([makeConfig()]));
+
+      const res = await app.request('/backup/configs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Blank endpoint',
+          provider: 's3',
+          details: {
+            bucket: 'backups',
+            region: 'us-east-1',
+            accessKey: 'key',
+            secretKey: 'secret',
+            endpoint: '',
+          },
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const insertValues = insertMock.mock.results[0]?.value?.values;
+      const inserted = insertValues.mock.calls[0][0];
+      expect(inserted.providerConfig).not.toHaveProperty('endpoint');
+    });
+
+    it('does not persist a blank endpoint string on update (PATCH)', async () => {
+      selectMock.mockReturnValueOnce(chainMock([makeConfig()]));
+      updateMock.mockReturnValueOnce(chainMock([makeConfig()]));
+
+      const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          details: {
+            bucket: 'backups',
+            region: 'us-east-1',
+            accessKey: 'key',
+            secretKey: 'secret',
+            endpoint: '',
+          },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const updateValues = updateMock.mock.results[0]?.value?.set;
+      const updated = updateValues.mock.calls[0][0];
+      expect(updated.providerConfig).not.toHaveProperty('endpoint');
+    });
   });
 
   // The org DEFAULT destination is what every partner-wide and profile-linked

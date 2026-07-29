@@ -243,8 +243,18 @@ vi.mock('../services/backupResultPersistence', async (importOriginal) => {
   };
 });
 
+// BREEZE-X: only captureMessage is replaced — dbWriteExpectingRows calls it on
+// the 0-row CAS branch and this file drives the real helper. Everything else in
+// services/sentry (captureException, the request-scope helpers) stays real, so
+// this must be a partial mock.
+vi.mock('../services/sentry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/sentry')>();
+  return { ...actual, captureMessage: vi.fn() };
+});
+
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, deviceCommands } from '../db/schema';
+import { captureMessage } from '../services/sentry';
 import {
   createAgentWsHandlers,
   createAgentWsRoutes,
@@ -2439,6 +2449,117 @@ describe('device_commands access context on the WS result path (#1375)', () => {
     // context — in that exact order. Asserting the full stack (rather than
     // "both are non-zero") is what fails if the two wrappers are ever swapped.
     expect(write.stack).toEqual(['outside', 'system']);
+  });
+});
+
+// BREEZE-X: the terminal CAS above fires a Sentry warning when it moves 0 rows,
+// but the event carried no evidence of WHY the row was already terminal — the
+// REST twin, the stale-command reaper, and the cancellation paths all produce
+// the same anonymous warning. The 0-row branch now re-reads the row and tags
+// the prior status. The read MUST stay on that branch: the sibling suite above
+// pins the exact op sequence ['select','update'] on the happy path, and this
+// is the hot agent path under the #1105 pool pressure.
+describe('BREEZE-X: WS terminal CAS reports why it moved 0 rows', () => {
+  const commandRow = {
+    id: 'cmd-breeze-x',
+    type: 'run_script',
+    payload: {},
+    deviceId: 'device-cas',
+    status: 'sent',
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(runOutsideDbContext).mockImplementation(((fn: any) => fn()) as any);
+    vi.mocked(withSystemDbAccessContext).mockImplementation(((fn: any) => fn()) as any);
+  });
+
+  /**
+   * Drive one command_result frame. `updatedRows` is what the CAS returns
+   * (empty = the branch under test); `priorRow` is what a re-read of the row
+   * would find. Returns every db.select made against device_commands.
+   */
+  async function driveResult(updatedRows: unknown[], priorRow?: unknown) {
+    const { handlers, ws } = await connectedAgent('agent-cas', {
+      deviceId: 'device-cas',
+      orgId: 'org-cas',
+    });
+
+    const commandSelects: unknown[][] = [];
+    vi.mocked(db.select).mockImplementation(((...args: unknown[]) => ({
+      from: vi.fn((table: unknown) => {
+        const isCommandTable = table === deviceCommands;
+        if (isCommandTable) commandSelects.push(args);
+        // First device_commands read is the command lookup; a second one can
+        // only be the 0-row diagnostic re-read.
+        const rows = isCommandTable
+          ? commandSelects.length === 1
+            ? [commandRow]
+            : priorRow === undefined ? [] : [priorRow]
+          : [];
+        return {
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          }),
+        };
+      }),
+    })) as any);
+
+    vi.mocked(db.update).mockImplementation((() => {
+      const returning = vi.fn().mockResolvedValue(updatedRows);
+      return {
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ returning }),
+          returning,
+        }),
+      };
+    }) as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '44444444-4444-4444-8444-444444444444',
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'ok',
+      }),
+    } as any, ws as any);
+
+    return commandSelects;
+  }
+
+  it('tags prior_status + cas_label when the CAS moves 0 rows because the reaper timed the command out', async () => {
+    const commandSelects = await driveResult([], {
+      status: 'failed',
+      result: { status: 'timeout', error: 'no response', timedOutBy: 'server' },
+    });
+
+    // The diagnostic re-read happened exactly once.
+    expect(commandSelects).toHaveLength(2);
+    expect(captureMessage).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(captureMessage).mock.calls[0]![3]).toEqual({
+      cas_label: 'device_commands.ws_result_terminal_cas',
+      prior_status: 'failed:server-timeout',
+    });
+  });
+
+  it('distinguishes a cancellation from the reaper on the same 0-row branch', async () => {
+    await driveResult([], { status: 'cancelled', result: null });
+
+    expect(vi.mocked(captureMessage).mock.calls[0]![3]).toEqual({
+      cas_label: 'device_commands.ws_result_terminal_cas',
+      prior_status: 'cancelled',
+    });
+  });
+
+  it('does NOT re-read the row (or capture anything) when the CAS moves a row', async () => {
+    const commandSelects = await driveResult([{ id: commandRow.id }]);
+
+    // One select only: the command lookup. A second one would be an
+    // unconditional diagnostic read on the hot agent path (#1105).
+    expect(commandSelects).toHaveLength(1);
+    expect(captureMessage).not.toHaveBeenCalled();
   });
 });
 
