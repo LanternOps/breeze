@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   AGENT_NETWORK_POLICY_UPGRADE_REQUIRED,
+  APPROVED_ORIGIN_SCHEME_OR_PORT_MISMATCH,
+  approvedOriginSchemeOrPortMismatch,
   evaluateManagedSoftwareDispatch,
   getManagedSoftwarePolicyMode,
   isPrivateSoftwareDestination,
@@ -258,5 +260,92 @@ describe('evaluateManagedSoftwareDispatch', () => {
       }),
     ).toEqual({ allowed: false, reason: AGENT_NETWORK_POLICY_UPGRADE_REQUIRED });
     vi.unstubAllEnvs();
+  });
+});
+
+describe('approvedOriginSchemeOrPortMismatch', () => {
+  const APPROVED = ['https://files.corp.internal', 'https://10.20.30.40:8443'];
+
+  it.each([
+    ['https://files.corp.internal/pkg.exe', 'exact match, default port implied'],
+    ['https://files.corp.internal:443/pkg.exe', 'exact match, port written out'],
+    ['https://FILES.CORP.INTERNAL./pkg.exe', 'case + trailing dot normalize to a match'],
+    ['https://10.20.30.40:8443/pkg.exe', 'IP literal with the approved port'],
+  ])('reports no mismatch for %s (%s)', (url) => {
+    expect(approvedOriginSchemeOrPortMismatch(url, APPROVED)).toBe(false);
+  });
+
+  it.each([
+    ['https://files.corp.internal:8443/pkg.exe', 'wrong port'],
+    ['http://files.corp.internal/pkg.exe', 'wrong scheme'],
+    ['https://10.20.30.40/pkg.exe', 'IP literal missing the approved port'],
+    ['https://10.20.30.40:9443/pkg.exe', 'IP literal, wrong port'],
+  ])('reports a mismatch for %s (%s)', (url) => {
+    expect(approvedOriginSchemeOrPortMismatch(url, APPROVED)).toBe(true);
+  });
+
+  it.each([
+    ['https://cdn.example.com/pkg.exe', 'host not on the allowlist at all'],
+    ['https://10.0.0.5/pkg.exe', 'private IP that no entry names'],
+    ['not a url', 'unparseable'],
+  ])('reports no mismatch for %s (%s) — nothing to diagnose', (url) => {
+    expect(approvedOriginSchemeOrPortMismatch(url, APPROVED)).toBe(false);
+  });
+
+  it('defaults the allowlist to empty when omitted', () => {
+    expect(approvedOriginSchemeOrPortMismatch('https://files.corp.internal/pkg.exe')).toBe(false);
+  });
+});
+
+describe('evaluateManagedSoftwareDispatch origin-mismatch reason', () => {
+  const base = { approvedPrivateOrigins: ['https://files.corp.internal'] };
+
+  it('substitutes the mismatch reason for the upgrade reason in compat', () => {
+    // The host IS allowlisted, so the destination classifies private and a
+    // capability-0 device is denied either way. Reporting "upgrade required"
+    // would be actively misleading: no agent version accepts :8443 here.
+    expect(
+      evaluateManagedSoftwareDispatch({
+        ...base,
+        downloadUrl: 'https://files.corp.internal:8443/pkg.exe',
+        outboundNetworkPolicyVersion: 0,
+        mode: 'compat',
+      }),
+    ).toEqual({ allowed: false, reason: APPROVED_ORIGIN_SCHEME_OR_PORT_MISMATCH });
+  });
+
+  it('substitutes the mismatch reason in enforce too', () => {
+    expect(
+      evaluateManagedSoftwareDispatch({
+        ...base,
+        downloadUrl: 'http://files.corp.internal/pkg.exe',
+        outboundNetworkPolicyVersion: 0,
+        mode: 'enforce',
+      }),
+    ).toEqual({ allowed: false, reason: APPROVED_ORIGIN_SCHEME_OR_PORT_MISMATCH });
+  });
+
+  it('keeps the upgrade reason when the host is not allowlisted', () => {
+    expect(
+      evaluateManagedSoftwareDispatch({
+        ...base,
+        downloadUrl: 'https://10.0.0.5:8443/pkg.exe',
+        outboundNetworkPolicyVersion: 0,
+        mode: 'compat',
+      }),
+    ).toEqual({ allowed: false, reason: AGENT_NETWORK_POLICY_UPGRADE_REQUIRED });
+  });
+
+  it('never denies a capability-1 device on an origin mismatch', () => {
+    // The API cannot resolve DNS: an allowlisted host may answer public and
+    // download fine. Denying here would break working deployments.
+    expect(
+      evaluateManagedSoftwareDispatch({
+        ...base,
+        downloadUrl: 'https://files.corp.internal:8443/pkg.exe',
+        outboundNetworkPolicyVersion: 1,
+        mode: 'enforce',
+      }),
+    ).toEqual({ allowed: true });
   });
 });

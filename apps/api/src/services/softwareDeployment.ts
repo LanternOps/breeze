@@ -13,8 +13,8 @@ import { resolveEdrInstaller, type ResolvedInstaller } from './edrInstallerResol
 import { resolveInstallerVariables, type InstallerVariableContext } from './installerVariables';
 import { getPresignedUrl, isS3Configured, isS3NotFound } from './s3Storage';
 import {
-  AGENT_NETWORK_POLICY_UPGRADE_REQUIRED,
   evaluateManagedSoftwareDispatch,
+  type ManagedSoftwareDispatchDenialReason,
   getManagedSoftwarePolicyMode,
 } from './managedSoftwareDispatchPolicy';
 import { getEffectiveSoftwareDownloadPolicy } from './softwareDownloadPolicy';
@@ -279,6 +279,9 @@ export async function createSoftwareDeployment(
     const dispatchedDeviceIds: string[] = [];
     let variableFailureCount = 0;
     let policyDenialCount = 0;
+    // Bounded reasons only (see managedSoftwareDispatchPolicy) — safe to
+    // interpolate into the aggregate message, unlike a URL or host.
+    const policyDenialReasons = new Set<ManagedSoftwareDispatchDenialReason>();
     for (const device of targetDevices) {
       // Resolve `{{...}}` variables against this device's org/site/device context.
       // Skipped entirely unless `templatesUseVariables` (computed once above); the
@@ -341,6 +344,7 @@ export async function createSoftwareDeployment(
             ),
           );
         policyDenialCount++;
+        policyDenialReasons.add(decision.reason);
         continue;
       }
 
@@ -381,7 +385,8 @@ export async function createSoftwareDeployment(
         message:
           variableFailureCount > 0
             ? 'All target devices failed installer variable resolution'
-            : `All target devices denied by the managed software network policy: ${AGENT_NETWORK_POLICY_UPGRADE_REQUIRED}`,
+            : 'All target devices denied by the managed software network policy: ' +
+              [...policyDenialReasons].sort().join(', '),
         dispatchedDeviceIds: [],
       };
     }

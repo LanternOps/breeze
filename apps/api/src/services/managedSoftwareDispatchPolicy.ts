@@ -49,6 +49,21 @@ import {
  */
 export const AGENT_NETWORK_POLICY_UPGRADE_REQUIRED = 'agent_network_policy_upgrade_required';
 
+/**
+ * The second bounded failure reason: the destination's HOST is on the approved
+ * private-origin allowlist but its full origin (scheme and/or port) is not, so
+ * no agent — upgraded or not — will accept the dial. Distinct from the upgrade
+ * reason because the remedy is different (fix the allowlist entry or the
+ * package URL, not the agent version), and because the agent-side reason an
+ * operator would otherwise see, `private_address_not_allowed`, reads as "the
+ * allowlist is missing this host" when the host is in fact present.
+ */
+export const APPROVED_ORIGIN_SCHEME_OR_PORT_MISMATCH = 'approved_origin_scheme_or_port_mismatch';
+
+export type ManagedSoftwareDispatchDenialReason =
+  | typeof AGENT_NETWORK_POLICY_UPGRADE_REQUIRED
+  | typeof APPROVED_ORIGIN_SCHEME_OR_PORT_MISMATCH;
+
 export type ManagedSoftwarePolicyMode = 'compat' | 'enforce';
 
 /**
@@ -156,9 +171,33 @@ function policyHostKey(rawHostname: string): string | null {
   return host === '' ? null : host;
 }
 
+/**
+ * The full-origin comparison key for a parsed URL: `scheme://hostkey:port`
+ * with the scheme's default port filled in, mirroring the agent's
+ * `netpolicy.originFromURL`. Used ONLY by the origin-mismatch diagnostic
+ * below — never by the private/public classification, which is host-keyed on
+ * purpose (see policyHostKey).
+ */
+function policyOriginKey(url: URL): string | null {
+  const scheme = url.protocol.replace(/:$/, '').toLowerCase();
+  if (scheme !== 'http' && scheme !== 'https') return null;
+  const hostKey = policyHostKey(url.hostname);
+  if (hostKey === null) return null;
+  const port = url.port === '' ? (scheme === 'https' ? '443' : '80') : url.port;
+  return `${scheme}://${hostKey}:${port}`;
+}
+
+interface ApprovedKeys {
+  /** Host-only keys — what the private/public classification matches on. */
+  hosts: Set<string>;
+  /** Full `scheme://host:port` keys — what the AGENT actually matches on. */
+  origins: Set<string>;
+}
+
 /** The comparison keys of every allowlist entry that parses as a URL. */
-function approvedHostKeys(approvedPrivateOrigins: readonly string[]): Set<string> {
-  const keys = new Set<string>();
+function approvedKeys(approvedPrivateOrigins: readonly string[]): ApprovedKeys {
+  const hosts = new Set<string>();
+  const origins = new Set<string>();
   for (const raw of approvedPrivateOrigins) {
     if (typeof raw !== 'string' || raw.trim() === '') continue;
     let url: URL;
@@ -170,9 +209,47 @@ function approvedHostKeys(approvedPrivateOrigins: readonly string[]): Set<string
       continue;
     }
     const key = policyHostKey(url.hostname);
-    if (key !== null) keys.add(key);
+    if (key !== null) hosts.add(key);
+    const originKey = policyOriginKey(url);
+    if (originKey !== null) origins.add(originKey);
   }
-  return keys;
+  return { hosts, origins };
+}
+
+/**
+ * Whether the destination's HOST appears in the allowlist while its full
+ * ORIGIN does not — i.e. the operator approved `https://files.corp.internal`
+ * and the deployment points at `https://files.corp.internal:8443` (or
+ * `http://…`). The agent matches the exact origin, so such a download is
+ * refused at dial time with the bounded `private_address_not_allowed` while
+ * the allowlist looks correct in the UI. Reporting this distinctly is the
+ * whole point: the opaque agent-side reason sends operators looking for a
+ * missing allowlist entry that is in fact present.
+ *
+ * Returns false when the host is not in the allowlist at all (nothing to
+ * diagnose) and when the origin matches exactly (nothing wrong).
+ */
+export function approvedOriginSchemeOrPortMismatch(
+  downloadUrl: string,
+  approvedPrivateOrigins: readonly string[] = [],
+): boolean {
+  let url: URL;
+  try {
+    url = new URL(downloadUrl.trim());
+  } catch {
+    return false;
+  }
+  const hostKey = policyHostKey(url.hostname);
+  if (hostKey === null) return false;
+
+  const { hosts, origins } = approvedKeys(approvedPrivateOrigins);
+  if (!hosts.has(hostKey)) return false;
+
+  const originKey = policyOriginKey(url);
+  // A non-http(s) destination can never match an approved origin; it is a
+  // mismatch by construction, and saying so beats the opaque agent reason.
+  if (originKey === null) return true;
+  return !origins.has(originKey);
 }
 
 /**
@@ -185,10 +262,15 @@ function approvedHostKeys(approvedPrivateOrigins: readonly string[]): Set<string
  *   - its host is an IP literal outside the public global-unicast space,
  *     including every IPv6 transition spelling of such an address;
  *   - its host is a loopback-ish or metadata name; or
- *   - its ORIGIN is one the operator themselves listed as an approved private
- *     software origin. This is what catches `https://files.corp.internal` —
- *     a name the API cannot resolve, but which the tenant has already
- *     declared to be private.
+ *   - its HOST — not its full origin; the classifier is host-keyed, see
+ *     policyHostKey — matches the host of an entry the operator themselves
+ *     listed as an approved private software origin. This is what catches
+ *     `https://files.corp.internal` — a name the API cannot resolve, but
+ *     which the tenant has already declared to be private. Matching on the
+ *     host alone deliberately over-classifies: `http://files.corp.internal`
+ *     and `https://files.corp.internal:8080` are private here even though
+ *     the agent would not accept either as an approved ORIGIN (which is what
+ *     approvedOriginSchemeOrPortMismatch exists to report).
  *
  * Everything else is "apparently public". The API cannot resolve DNS or
  * follow redirects, so an apparently-public name that pivots private is
@@ -225,7 +307,7 @@ export function isPrivateSoftwareDestination(
   if (NON_PUBLIC_HOSTNAMES.has(host) || host.endsWith('.localhost')) return true;
 
   const key = policyHostKey(host);
-  return key !== null && approvedHostKeys(approvedPrivateOrigins).has(key);
+  return key !== null && approvedKeys(approvedPrivateOrigins).hosts.has(key);
 }
 
 export interface ManagedSoftwareDispatchInput {
@@ -241,12 +323,18 @@ export interface ManagedSoftwareDispatchInput {
 
 export type ManagedSoftwareDispatchDecision =
   | { allowed: true }
-  | { allowed: false; reason: typeof AGENT_NETWORK_POLICY_UPGRADE_REQUIRED };
+  | { allowed: false; reason: ManagedSoftwareDispatchDenialReason };
 
 /**
  * The dispatch decision for ONE device. Callers must apply it BEFORE
  * sendCommandToAgent: a denied device gets a failed deployment result carrying
  * `reason` and no enqueued command.
+ *
+ * A capability-1 device is always allowed through, origin mismatch included:
+ * the API cannot resolve DNS, so an allowlisted host may still answer with a
+ * public address and download fine. Denying it here would break working
+ * deployments. The mismatch reason is therefore only ever substituted for a
+ * denial that was already going to happen.
  */
 export function evaluateManagedSoftwareDispatch(
   input: ManagedSoftwareDispatchInput,
@@ -254,12 +342,20 @@ export function evaluateManagedSoftwareDispatch(
   const capable = (input.outboundNetworkPolicyVersion ?? 0) >= 1;
   if (capable) return { allowed: true };
 
+  // Preferred over the upgrade reason wherever both apply: upgrading the agent
+  // would not fix an origin mismatch, so reporting "upgrade required" sends
+  // the operator down the wrong path.
+  const denialReason = (): ManagedSoftwareDispatchDenialReason =>
+    approvedOriginSchemeOrPortMismatch(input.downloadUrl, input.approvedPrivateOrigins)
+      ? APPROVED_ORIGIN_SCHEME_OR_PORT_MISMATCH
+      : AGENT_NETWORK_POLICY_UPGRADE_REQUIRED;
+
   const mode = input.mode ?? getManagedSoftwarePolicyMode();
   if (mode === 'enforce') {
-    return { allowed: false, reason: AGENT_NETWORK_POLICY_UPGRADE_REQUIRED };
+    return { allowed: false, reason: denialReason() };
   }
 
   return isPrivateSoftwareDestination(input.downloadUrl, input.approvedPrivateOrigins)
-    ? { allowed: false, reason: AGENT_NETWORK_POLICY_UPGRADE_REQUIRED }
+    ? { allowed: false, reason: denialReason() }
     : { allowed: true };
 }
