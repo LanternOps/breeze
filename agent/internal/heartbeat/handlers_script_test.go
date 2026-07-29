@@ -575,6 +575,109 @@ func TestExecuteViaUserHelperTimeout(t *testing.T) {
 	}
 }
 
+// --- Explicit session targeting (RDS phase 1) ---
+
+func TestHandleScriptOnDemandRunAsUserWithoutTargetNamesEligibleSessions(t *testing.T) {
+	// On an RDS host at rest there is no console/console-equivalent helper to
+	// fall back to — the untargeted fail-fast must tell the caller to retry
+	// with targetSessionId instead of the generic workstation message.
+	f := &fakeLifecycle{mode: "on-demand"}
+	h := newTestHeartbeat(nil)
+	h.helperLifecycle = f
+
+	res := handleScript(h, Command{
+		ID:      "cmd-1",
+		Payload: map[string]any{"content": "whoami", "language": "powershell", "runAs": "user"},
+	})
+	if res.Status != "failed" {
+		t.Fatalf("expected failure, got %+v", res)
+	}
+	if !strings.Contains(res.Error, "targetSessionId") {
+		t.Errorf("on-demand error must direct the caller to session targeting, got %q", res.Error)
+	}
+}
+
+func TestHandleScriptTargetSessionNotFoundOnDemand(t *testing.T) {
+	broker := sessionbroker.New("/tmp/test-broker-script-target-notfound.sock", nil)
+	f := &fakeLifecycle{mode: "on-demand", acquireErr: sessionbroker.ErrLeaseSessionNotFound}
+	h := newTestHeartbeat(broker)
+	h.helperLifecycle = f
+
+	res := handleScript(h, Command{
+		ID:      "cmd-2",
+		Payload: map[string]any{"content": "whoami", "language": "powershell", "runAs": "user", "targetSessionId": float64(7)},
+	})
+	if res.Status != "failed" || !strings.Contains(res.Error, "no longer exists") {
+		t.Fatalf("expected session-gone failure, got %+v", res)
+	}
+	if len(f.released) != 0 {
+		t.Errorf("nothing to release when acquire failed, got %+v", f.released)
+	}
+}
+
+func TestHandleScriptTargetWaitFailureTyped(t *testing.T) {
+	broker := sessionbroker.New("/tmp/test-broker-script-target-wait.sock", nil)
+	key := sessionbroker.HelperKey{WindowsSessionID: 7, Role: ipc.HelperRoleUser}
+	f := &fakeLifecycle{
+		mode:        "on-demand",
+		waitResults: map[sessionbroker.HelperKey]sessionbroker.HelperWaitResult{key: {Status: sessionbroker.HelperWaitFatalCooldown, RetryAfter: 3 * time.Minute}},
+	}
+	h := newTestHeartbeat(broker)
+	h.helperLifecycle = f
+
+	res := handleScript(h, Command{
+		ID:      "cmd-3",
+		Payload: map[string]any{"content": "whoami", "language": "powershell", "runAs": "user", "targetSessionId": float64(7)},
+	})
+	if res.Status != "failed" || !strings.Contains(res.Error, "crash cooldown") {
+		t.Fatalf("expected typed cooldown failure, got %+v", res)
+	}
+	// lease must be released after the failed wait
+	if len(f.acquired) != 1 || len(f.released) != 1 {
+		t.Errorf("expected acquire+release, got acquired=%v released=%v", f.acquired, f.released)
+	}
+}
+
+func TestHandleScriptTargetSessionZeroRejected(t *testing.T) {
+	// Session 0 parses fine but can never host an interactive helper — reject
+	// it before any lease/wait, mirroring resolveDesktopTargetWinID (Task 6).
+	broker := sessionbroker.New("/tmp/test-broker-script-target-zero.sock", nil)
+	f := &fakeLifecycle{mode: "on-demand"}
+	h := newTestHeartbeat(broker)
+	h.helperLifecycle = f
+
+	res := handleScript(h, Command{
+		ID:      "cmd-5",
+		Payload: map[string]any{"content": "whoami", "language": "powershell", "runAs": "user", "targetSessionId": float64(0)},
+	})
+	if res.Status != "failed" {
+		t.Fatalf("expected failure, got %+v", res)
+	}
+	if res.Error != "invalid targetSessionId 0: session 0 is never an interactive session" {
+		t.Fatalf("unexpected error: %q", res.Error)
+	}
+	if len(f.acquired) != 0 || len(f.released) != 0 {
+		t.Errorf("session 0 must be rejected before any lease attempt, got acquired=%v released=%v", f.acquired, f.released)
+	}
+}
+
+func TestHandleScriptWorkstationBehaviorUnchanged(t *testing.T) {
+	// No lifecycle manager (workstation / non-service, or no broker at all):
+	// the pinned legacy message must stay byte-identical even when a stale
+	// caller sends a targetSessionId — there is nothing to route it to.
+	h := newTestHeartbeat(nil)
+	res := handleScript(h, Command{
+		ID:      "cmd-4",
+		Payload: map[string]any{"content": "whoami", "language": "powershell", "runAs": "user", "targetSessionId": float64(3)},
+	})
+	if res.Status != "failed" {
+		t.Fatalf("expected legacy failure, got %+v", res)
+	}
+	if !strings.Contains(res.Error, "no eligible session found") {
+		t.Fatalf("expected byte-identical legacy message, got %q", res.Error)
+	}
+}
+
 // --- DurationMs tracking ---
 
 func TestHandleScriptDurationMs(t *testing.T) {

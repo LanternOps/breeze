@@ -1,9 +1,11 @@
 package heartbeat
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,6 +51,23 @@ func handleScript(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
+	targetSessionID := -1
+	if ts, ok := cmd.Payload["targetSessionId"].(float64); ok && ts >= 0 && ts <= 65535 {
+		targetSessionID = int(ts)
+	}
+
+	// Explicit session targeting (RDS phase 1): route to exactly that
+	// session's user-role helper. Only meaningful for user-context runs — the
+	// API rejects targetSessionId with runAs!=user (Task 8). No runtime.GOOS
+	// gate: on non-Windows hosts h.sessionBroker/h.helperLifecycle are simply
+	// never wired up this way in production, so the check below is
+	// sufficient and keeps this path exercisable in cross-platform unit
+	// tests (matches the Task 6 desktop on-demand routing, which gates the
+	// same way on h.lifecycleMode()/h.sessionBroker alone).
+	if targetSessionID >= 0 && h.sessionBroker != nil && strings.EqualFold(script.RunAs, "user") {
+		return h.executeScriptInSession(cmd, script, uint32(targetSessionID), start)
+	}
+
 	// Phase 3: If runAs is specified and a user helper is connected, forward via IPC
 	if script.RunAs != "" && h.sessionBroker != nil {
 		if session := resolveRunAsSession(h.sessionBroker, script.RunAs); session != nil {
@@ -61,11 +80,18 @@ func handleScript(h *Heartbeat, cmd Command) tools.CommandResult {
 		// misleading "downgraded to SYSTEM" warning; on multi-user / RDS hosts
 		// the real cause is the console-session delivery binding (#1009).
 		// Fail fast, before any process spawn, with the actual reason.
+		msg := "runAs=user requires a connected user helper session; no eligible session found (script was not executed)"
+		if h.lifecycleMode() == "on-demand" {
+			// On an RDS host at rest there are no helpers to find — the
+			// caller must target a session. Name the candidates so the tech
+			// can retry without a round trip.
+			msg = "runAs=user on an RD Session Host requires targetSessionId; eligible sessions: " + eligibleSessionsSummary()
+		}
 		return tools.CommandResult{
 			Status: "failed",
 			// Synthetic exit code: no process ran (see tools.CommandResult.ExitCode).
 			ExitCode:   1,
-			Error:      "runAs=user requires a connected user helper session; no eligible session found (script was not executed)",
+			Error:      msg,
 			DurationMs: time.Since(start).Milliseconds(),
 		}
 	}
@@ -318,6 +344,90 @@ func helperCommandTimeout(timeoutSeconds int) time.Duration {
 		timeoutSeconds = executor.MaxTimeout
 	}
 	return time.Duration(timeoutSeconds)*time.Second + 5*time.Second
+}
+
+// executeScriptInSession delivers a user-context script to exactly the given
+// Windows session's user-role helper. In on-demand mode the helper is
+// lease-spawned and the wait failure is typed; in always-on mode the helper
+// must already be connected.
+func (h *Heartbeat) executeScriptInSession(cmd Command, script executor.ScriptExecution, winID uint32, start time.Time) tools.CommandResult {
+	fail := func(msg string) tools.CommandResult {
+		return tools.CommandResult{
+			Status: "failed",
+			// Synthetic exit code: no process ran (see tools.CommandResult.ExitCode).
+			ExitCode:   1,
+			Error:      msg,
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
+	// Session 0 parses fine and a lease on it can even be acquired, but it is
+	// never an interactive session (Session 0 isolation) — a helper will
+	// never spawn into it, so waiting would burn the full 95s helper budget
+	// only to report a misleading "helper did not become ready in time"
+	// instead of the real reason. Reject before any lease/wait, mirroring
+	// resolveDesktopTargetWinID (handlers_desktop_lease.go, Task 6).
+	if winID == 0 {
+		return fail("invalid targetSessionId 0: session 0 is never an interactive session")
+	}
+
+	// h.helperLifecycle is written once under h.mu at startup (heartbeat.go)
+	// and read from concurrent command-handler goroutines thereafter — go
+	// through the lock-guarded accessor (handlers_desktop_lease.go), not the
+	// raw field, to match every other lifecycle read in this package.
+	if lc := h.lifecycleController(); lc != nil && lc.Mode() == "on-demand" {
+		ttl := time.Duration(script.Timeout)*time.Second + time.Minute
+		if ttl < 5*time.Minute {
+			ttl = 5 * time.Minute
+		}
+		if ttl > 30*time.Minute {
+			ttl = 30 * time.Minute
+		}
+		if err := lc.AcquireLease(winID, ipc.HelperRoleUser, cmd.ID, ttl); err != nil {
+			if errors.Is(err, sessionbroker.ErrLeaseSessionNotFound) {
+				return fail(fmt.Sprintf("target session %d no longer exists; eligible sessions: %s", winID, eligibleSessionsSummary()))
+			}
+			return fail(fmt.Sprintf("failed to reserve helper for session %d: %v", winID, err))
+		}
+		defer lc.ReleaseLease(winID, ipc.HelperRoleUser, cmd.ID)
+
+		waitCtx, cancel := context.WithTimeout(context.Background(), helperReadyBudget)
+		res := lc.WaitForHelperReady(waitCtx, sessionbroker.HelperKey{WindowsSessionID: winID, Role: ipc.HelperRoleUser})
+		cancel()
+		if res.Status != sessionbroker.HelperWaitReady {
+			return fail(fmt.Sprintf("cannot run in session %d: %s", winID, helperWaitFailureMessage(res)))
+		}
+		return h.executeViaUserHelper(res.Session, cmd, script.Timeout)
+	}
+
+	// Always-on (workstation multi-user, or RDS forced always-on): the helper
+	// for the target session must already be connected.
+	session := h.sessionBroker.FindUserSession(strconv.FormatUint(uint64(winID), 10))
+	if session == nil {
+		return fail(fmt.Sprintf("no user helper connected in session %d; eligible sessions: %s", winID, eligibleSessionsSummary()))
+	}
+	return h.executeViaUserHelper(session, cmd, script.Timeout)
+}
+
+// eligibleSessionsSummary enumerates targetable interactive sessions for
+// error messages: "id:username(state), ...".
+func eligibleSessionsSummary() string {
+	detector := sessionbroker.NewSessionDetector()
+	detected, err := detector.ListSessions()
+	if err != nil {
+		return "unknown"
+	}
+	var parts []string
+	for _, ds := range detected {
+		if ds.Type == "services" || ds.Username == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s:%s(%s)", ds.Session, ds.Username, ds.State))
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ", ")
 }
 
 func decodeHelperRunningScripts(result *ipc.IPCCommandResult) ([]string, error) {
