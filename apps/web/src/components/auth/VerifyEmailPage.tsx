@@ -58,7 +58,12 @@ export default function VerifyEmailPage() {
         if (result.user && result.tokens) {
           login(result.user, result.tokens);
           setState({ phase: 'registered' });
-          await navigateTo('/');
+          // A hosted signup is created `pending` and cannot use the dashboard
+          // until it pays, so honour the hook's redirect (/billing/plans) when
+          // there is one. Hard-navigating to '/' instead meant a fresh signup
+          // took an immediate 403 PARTNER_INACTIVE and bounced to the
+          // "account is being set up" screen — with no way to pay.
+          await navigateTo(result.redirectUrl ?? '/');
           return;
         }
         setState({ phase: 'success', autoActivated: !!result.autoActivated });
