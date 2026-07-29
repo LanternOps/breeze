@@ -140,6 +140,13 @@ services:
       # compatibility controls whose defaults are the safe state. See
       # docs/operations/agent-network-and-manifest-rollout.md before setting
       # either to anything other than its default in production.
+      #
+      # AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: NOT a no-op and NOT fleet-wide.
+      # A capable agent (this build or newer) applies a pushed `true`/`false`
+      # on its next update check (re-read at updater-construction time; its
+      # helper-manager needs a restart to pick up the change, same limitation
+      # as backup_server_url). An agent build older than this one ignores the
+      # pushed value entirely and keeps accepting ID-less manifests.
       AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: ${AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID:-false}
       MANAGED_SOFTWARE_POLICY_MODE: ${MANAGED_SOFTWARE_POLICY_MODE:-compat}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}

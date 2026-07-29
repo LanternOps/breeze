@@ -1083,6 +1083,13 @@ describe('validateConfig', () => {
       });
     });
 
+    // Also guards the exact bug class named in the task: a variable declared
+    // in envSchema but missing from the safeParse pick list is always
+    // undefined at parse time, so the schema default silently wins and an
+    // invalid value is accepted at boot instead of refusing to start. A bare
+    // `.toThrow()` regression-guard variant of this test would add nothing
+    // beyond the message assertion below, since a thrown error already
+    // proves the pick-list omission didn't regress — so only one test.
     it('boot-refuses an invalid value instead of silently falling back to false', () => {
       withEnv({ ...validEnv, AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: 'yes' }, () => {
         expect(() => validateConfig()).toThrow('AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID');
@@ -1093,17 +1100,6 @@ describe('validateConfig', () => {
       withEnv({ ...validEnv, NODE_ENV: 'production', CORS_ALLOWED_ORIGINS: 'https://app.breeze.io', TRUST_PROXY_HEADERS: 'false' }, () => {
         const config = validateConfig();
         expect(config.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID).toBe('false');
-      });
-    });
-
-    // The exact bug class named in the task: a variable declared in
-    // envSchema but missing from the safeParse pick list is always
-    // undefined at parse time, so the schema default silently wins and an
-    // invalid value is accepted at boot instead of refusing to start. This
-    // test would pass falsely (no throw) if that regressed.
-    it('regression guard: an invalid value must not be silently accepted as the default', () => {
-      withEnv({ ...validEnv, AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: 'not-a-boolean' }, () => {
-        expect(() => validateConfig()).toThrow();
       });
     });
   });
@@ -1134,6 +1130,10 @@ describe('validateConfig', () => {
       });
     });
 
+    // Also guards the same pick-list-omission bug class as
+    // AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID above (see that describe block's
+    // comment) — a bare `.toThrow()` regression-guard variant would add
+    // nothing over the message assertion below, so only one test.
     it('boot-refuses an invalid value instead of silently falling back to compat', () => {
       withEnv({ ...validEnv, MANAGED_SOFTWARE_POLICY_MODE: 'strict' }, () => {
         expect(() => validateConfig()).toThrow('MANAGED_SOFTWARE_POLICY_MODE');
@@ -1144,14 +1144,6 @@ describe('validateConfig', () => {
       withEnv({ ...validEnv, NODE_ENV: 'production', CORS_ALLOWED_ORIGINS: 'https://app.breeze.io', TRUST_PROXY_HEADERS: 'false' }, () => {
         const config = validateConfig();
         expect(config.MANAGED_SOFTWARE_POLICY_MODE).toBe('compat');
-      });
-    });
-
-    // Same regression guard as above, pinned separately per variable since
-    // the pick-list omission is a per-key mistake, not an all-or-nothing one.
-    it('regression guard: an invalid value must not be silently accepted as the default', () => {
-      withEnv({ ...validEnv, MANAGED_SOFTWARE_POLICY_MODE: 'banana' }, () => {
-        expect(() => validateConfig()).toThrow();
       });
     });
   });

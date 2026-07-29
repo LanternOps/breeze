@@ -1040,13 +1040,22 @@ if (latestHelper) {
   // keeping rolling-deploy/server-rollback compatible: a mixed fleet talking
   // to old and new API instances never sees the flag flap.
   //
-  // NOTE: the agent build shipped alongside this wave (Task 6) does not yet
-  // read this key from configUpdate — RequireManifestSigningKeyID is still a
-  // local agent.yaml-only setting there. This wiring is the API-side half of
-  // the control (Task 6's disclosed gap); see
+  // NOTE: as of deviation D4, an agent build running this wave's Task 6/9
+  // code reads this key from configUpdate (applyConfigUpdate in
+  // agent/internal/heartbeat/heartbeat.go) and persists it via
+  // config.SetAndPersist — this is NOT a no-op. It is also NOT fleet-wide:
+  // any agent build older than this one still ignores the pushed key and
+  // keeps accepting ID-less manifests. See
   // docs/operations/agent-network-and-manifest-rollout.md before flipping
-  // AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID=true and assuming it changes agent
-  // behavior fleet-wide.
+  // AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID=true in production.
+  //
+  // The `.trim().toLowerCase()` normalization below is belt-and-suspenders
+  // only — apps/api/src/config/validate.ts's envSchema already constrains
+  // AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID to the exact strings 'true'/'false'
+  // and boot-refuses anything else, so this read can never actually see a
+  // value that needs normalizing. The boot-time validator is the real gate;
+  // this line stays defensive only to match the read pattern used elsewhere
+  // in this function.
   if ((process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID ?? '').trim().toLowerCase() === 'true') {
     mergedConfigUpdate.require_manifest_signing_key_id = true;
   }

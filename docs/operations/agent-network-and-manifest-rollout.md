@@ -40,19 +40,40 @@ default-bearing form (`${VAR:-default}`) in `docker-compose.yml` and
 the stack from starting.
 
 **Important asymmetry — read before flipping `AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID`:**
-the agent build shipped alongside this wave (Task 6) does **not** read
-`configUpdate.require_manifest_signing_key_id` from the heartbeat response.
-`RequireManifestSigningKeyID` is, today, only a local `agent.yaml` setting
-(`require_manifest_signing_key_id: true`, set by hand or via your own
-config-management tooling). Setting the API env var to `true` sends the
-field on every heartbeat, but **no currently-shipped agent acts on it** — it
-is the API-side half of the control, built ahead of the agent-side consumer
-so a future agent release can pick it up without another API change. Do not
-flip this env var and assume it changed fleet behavior; it changes nothing
-observable until an agent build that reads `configUpdate` for this key
-ships. Until then, the *actual* rollout lever for exact-key-ID enforcement
-is the missing-ID warning count described in [§4](#4-require-exact-manifest-signing-key-id) and — where you need per-fleet
-enforcement today — hand-editing `agent.yaml` on that fleet.
+this is **not** a no-op switch, and it is **not** fleet-wide. The agent build
+shipped in this wave now reads `configUpdate.require_manifest_signing_key_id`
+(both `snake_case` and `camelCase` accepted) in `applyConfigUpdate`
+(`agent/internal/heartbeat/heartbeat.go`), sets
+`h.config.RequireManifestSigningKeyID`, and persists it to `agent.yaml` via
+`config.SetAndPersist` — a pushed value survives a restart. Setting the API
+env var to `true` sends the field on every heartbeat, and **any agent
+running this build or newer acts on it**. **Any agent build older than this
+one still ignores the pushed value entirely** and keeps accepting
+ID-less manifests regardless of what the API sends — those agents are
+unaffected by this env var and are covered by the missing-ID warning count
+in [§4](#4-require-exact-manifest-signing-key-id) instead.
+
+Timing on a capable agent: the config write takes effect immediately for the
+in-memory setting, but the updater client itself is only constructed at
+update-check time and at helper-manager startup, so the observable effect
+differs by call site:
+
+- **Main/helper/watchdog update checks** re-read `h.config.RequireManifestSigningKeyID`
+  fresh at updater-construction time on every check, so a pushed change
+  takes effect on the **next update check** — no agent restart required.
+- **The helper-manager's own manifest-signing-key-ID option**
+  (`helper.WithRequireManifestSigningKeyID`, set once at `helper.New(...)`
+  call sites around `heartbeat.go:610` and `heartbeat.go:640`) is captured
+  once at process start. A pushed change does **not** reach an
+  already-running helper manager; it takes effect only after the agent
+  process restarts. This is the same startup-capture limitation
+  `backup_server_url` already has.
+
+Where you need per-fleet enforcement today independent of this rollout gate
+(e.g. a single self-hosted fleet you control directly), hand-editing
+`agent.yaml` remains an option, but for any fleet running this build or
+newer the API env var now does the same thing without touching individual
+config files.
 
 `MANAGED_SOFTWARE_POLICY_MODE` has no such gap: `getManagedSoftwarePolicyMode()`
 in `apps/api/src/services/managedSoftwareDispatchPolicy.ts` reads it directly
@@ -102,9 +123,11 @@ offline or on a long heartbeat interval. Treat a non-empty result as a
 minimum, not an exhaustive count.
 
 **Remediation.** Re-enroll the affected device (re-enrollment re-bootstraps
-`pinned_manifest_pub_keys`). There is no way to hand-repair the file in place
-that is safer than re-enrollment — hand-editing risks pinning the wrong
-bytes.
+`pinned_manifest_pub_keys`) — see the enrollment procedure in
+`docs/guides/AGENT_INSTALLATION.md#enrollment` and the flow reference in
+`apps/docs/src/content/docs/agents/enrollment.mdx`. There is no way to
+hand-repair the file in place that is safer than re-enrollment —
+hand-editing risks pinning the wrong bytes.
 
 ### (b) Agent pinned to a `keyId` that is not the server's current active `keyId`
 
@@ -276,11 +299,15 @@ something this rollout invokes as a step.
 
 ## 4. `AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID` rollout
 
-Recall from §1: this env var currently only controls what the API *sends* in
-`configUpdate`; no shipped agent build consumes it yet. The rollout gate
-below describes the state you need to reach before requiring exact key IDs
-matters — most of the actual work here is observational, not a switch you
-flip.
+Recall from §1: this build's agent *does* consume `configUpdate.require_manifest_signing_key_id`
+(a capable agent applies it on its next update check), but any agent build
+older than this one still ignores it. Because a mixed-version fleet is the
+normal case during a rollout, flipping the env var to `true` before you've
+confirmed the fleet is actually ready still only benefits agents new enough
+to read it — every older agent keeps its current (compatible) behavior
+either way. The rollout gate below describes the state you need to reach
+before requiring exact key IDs matters — most of the actual work here is
+observational, not a switch you flip blind.
 
 1. **Exact-ID preference ships by default already.** As of Task 6, any
    update response that *does* carry a `signingKeyId` is verified against
@@ -310,20 +337,38 @@ flip.
    WHERE is_latest = true AND signing_key_id IS NULL;
    ```
 
+   `is_latest = true` only flags the single current head of each
+   component's release line — an older version that is not `is_latest` but
+   is still being served to devices that haven't reached the target version
+   yet (a normal state mid-rollout) is excluded by this filter and can still
+   omit `signing_key_id` without being caught here. Add a clause covering
+   any version still actively served, not just the latest:
+
+   ```sql
+   SELECT version, signing_key_id
+   FROM agent_versions
+   WHERE signing_key_id IS NULL
+     AND (is_latest = true OR version IN (
+       SELECT DISTINCT agent_version FROM devices
+     ));
+   ```
+
    This should return zero rows before proceeding.
 3. **Require ID only after the missing-ID count stays at zero for 7
    consecutive days AND every active server version supplies
-   `signingKeyId`.** Until an agent build ships that reads
-   `configUpdate.require_manifest_signing_key_id`, "requiring" it fleet-wide
-   means hand-setting `require_manifest_signing_key_id: true` in
-   `agent.yaml` via your config-management tooling for the fleets you
-   control, not flipping the API env var alone.
-4. Once a future agent release consumes the pushed config, set
-   `AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID=true` on the API and re-run the
-   §3 canary rings for that agent release specifically — this is a new
-   behavior change from that agent's perspective and deserves its own
-   go/no-go cycle, not a silent inherit of wherever the rest of the fleet
-   already is.
+   `signingKeyId`.** For any agent running this build or newer, that means
+   setting `AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID=true` on the API — the
+   config now reaches those agents on their next update check. Any agent
+   older than this build still doesn't read the pushed config; for those,
+   "requiring" it fleet-wide still means hand-setting
+   `require_manifest_signing_key_id: true` in `agent.yaml` via your
+   config-management tooling.
+4. Setting `AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID=true` on the API is a new
+   behavior change for every capable agent in the fleet simultaneously (it
+   is a single API-wide env var, not a per-device rollout knob) — re-run the
+   §3 canary rings against a representative capable-agent population before
+   flipping it in production, and treat any unexpected
+   `manifest signing key ID required` rejection as a stop condition.
 
 ---
 
