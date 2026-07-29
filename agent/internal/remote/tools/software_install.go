@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/netpolicy"
@@ -97,8 +98,9 @@ func InstallSoftware(payload map[string]any) (result CommandResult) {
 	// destination is attacker-influenced and carries an executable payload, so
 	// every check below — scheme, host shape, address classification at dial
 	// time, on every redirect hop — belongs to netpolicy, not to this file.
-	// Construction failing means the install fails: there is no unenforced
-	// fallback client (mirrors updater.New's fail-closed posture).
+	// There is never an unenforced fallback client (mirrors updater.New's
+	// fail-closed posture); see managedSoftwareClient for the ONE narrow
+	// degradation, which removes permissions rather than granting any.
 	policy := managedSoftwarePolicy(parseDownloadPolicy(payload))
 	if err := netpolicy.ValidateURL(downloadUrl, policy); err != nil {
 		return NewErrorResult(
@@ -106,7 +108,7 @@ func InstallSoftware(payload map[string]any) (result CommandResult) {
 			time.Since(startTime).Milliseconds(),
 		)
 	}
-	client, err := netpolicy.NewClient(policy)
+	client, err := managedSoftwareClient(policy)
 	if err != nil {
 		return NewErrorResult(
 			fmt.Errorf("managed software network policy unavailable: %s", safeDownloadError(err)),
@@ -339,6 +341,59 @@ func managedSoftwarePolicy(approvedPrivateOrigins []string) netpolicy.Policy {
 	}
 }
 
+// degradedOriginSetLogged bounds the "allowlist unusable" warning to one line
+// per distinct reason for the life of the process. A hand-edited settings row
+// is delivered with EVERY managed-software command, so an unbounded warn would
+// ship one line per install attempt forever (log shipping defaults to warn).
+// Same latch shape as heartbeat's manifest-trust rejection latches.
+var degradedOriginSetLogged atomic.Pointer[string]
+
+// logDegradedOriginSet is a var so tests can observe the single line. Takes an
+// already-bounded reason string, never an error: an origin-set failure reason
+// must not be able to carry a URL into the shipped log.
+var logDegradedOriginSet = func(reason string) {
+	slog.Warn("managed software approved-origin allowlist unusable; continuing with an EMPTY approved set "+
+		"(public destinations still install, every private destination fails closed)",
+		"reason", reason)
+}
+
+// managedSoftwareClient builds the enforcing client for one managed-software
+// download, DEGRADING rather than dying when the delivered allowlist cannot be
+// turned into an origin set.
+//
+// netpolicy.newOriginSet aborts on the FIRST unparseable entry, so before this
+// existed a single bad row — `https://192.168.1.x`, which the server-side
+// validator used to accept (finding C1) — made netpolicy.NewClient error and
+// failed EVERY managed install carrying that org/site allowlist, including
+// public-CDN installs that need no allowlist entry at all. One hand-edited
+// settings row must not be able to deny an org all software deployment.
+//
+// The degradation only ever REMOVES permission: an empty approved-private set
+// is the same posture as "no policy delivered" (parseDownloadPolicy's own
+// reject path), so public destinations still work and every private
+// destination fails closed at dial time with private_address_not_allowed.
+// Nothing else about the policy is relaxed — purpose, redirect cap, timeout
+// and byte bound are carried over unchanged — and if construction fails even
+// with an empty set (a shape error this file controls, not the server) the
+// install still fails closed.
+func managedSoftwareClient(policy netpolicy.Policy) (*http.Client, error) {
+	client, err := netpolicy.NewClient(policy)
+	if err == nil {
+		return client, nil
+	}
+
+	reason := safeDownloadError(err)
+	if prev := degradedOriginSetLogged.Load(); prev == nil || *prev != reason {
+		if degradedOriginSetLogged.CompareAndSwap(prev, &reason) {
+			logDegradedOriginSet(reason)
+		}
+	}
+
+	degraded := policy
+	degraded.ApprovedPrivateOrigins = nil
+	return netpolicy.NewClient(degraded)
+}
+
 // parseDownloadPolicy strictly parses the server-supplied `downloadPolicy`
 // command field into the approved private origins it names.
 //
@@ -349,10 +404,13 @@ func managedSoftwarePolicy(approvedPrivateOrigins []string) netpolicy.Policy {
 // (which needs no allowlist entry at all), while every private answer fails
 // closed at dial time with private_address_not_allowed.
 //
-// Note the deliberate asymmetry with a well-formed policy naming an
-// unparseable origin: that is a real (if broken) instruction from the server,
-// so netpolicy.NewClient rejects it and the install fails closed rather than
-// running under a silently narrowed policy.
+// A well-formed policy naming an unparseable origin lands in the same place by
+// a different route: netpolicy.NewClient rejects the whole set, and
+// managedSoftwareClient then degrades to an EMPTY approved set. Both paths
+// converge on "no private destination is reachable", which is the only safe
+// reading of an allowlist the agent cannot understand. What neither path does
+// is fail the install outright — a hand-edited settings row must not be able
+// to deny an org every managed-software deployment (finding C1).
 func parseDownloadPolicy(payload map[string]any) []string {
 	raw, present := payload["downloadPolicy"]
 	if !present || raw == nil {

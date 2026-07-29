@@ -274,21 +274,124 @@ func tooManyOrigins() []any {
 	return origins
 }
 
-// A well-formed policy carrying an unparseable origin must fail the install
-// closed at client construction — never fall back to an unenforced client.
-func TestInstallSoftware_MalformedApprovedOriginFailsClosed(t *testing.T) {
-	t.Parallel()
+// ---------------------------------------------------------------------------
+// Unusable allowlist: DEGRADE, never die (finding C1 of the whole-branch review)
+//
+// netpolicy.newOriginSet aborts on the FIRST unparseable entry, so before the
+// degradation existed one bad allowlist row failed EVERY managed install
+// carrying that org/site policy — public-CDN installs that need no allowlist
+// entry at all included. A hand-edited settings row must not be able to deny an
+// org all software deployment.
+//
+// These tests are deliberately NOT t.Parallel(): they swap the package-level
+// log hook and reset the package-level latch. Go resumes parallel tests only
+// after the sequential ones finish, so this keeps them off each other.
+// ---------------------------------------------------------------------------
 
-	result := InstallSoftware(installPayload("https://cdn.example.com/pkg.exe", map[string]any{
+// swDegradedClient builds a managed-software client from a policy carrying the
+// given origins, with a stub resolver and a short dialer so every assertion
+// below is hermetic (203.0.113.0/24 is TEST-NET-3: unroutable, so an ALLOWED
+// destination fails on connect rather than reaching anything).
+func swDegradedClient(t *testing.T, origins []string) *http.Client {
+	t.Helper()
+	policy := managedSoftwarePolicy(origins)
+	policy.Resolver = swStubResolver{"cdn.example.com": {netip.MustParseAddr("203.0.113.10")}}
+	policy.Dialer = swShortDialer()
+	client, err := managedSoftwareClient(policy)
+	if err != nil {
+		t.Fatalf("managedSoftwareClient: %v", err)
+	}
+	return client
+}
+
+func TestManagedSoftwareClient_UnusableAllowlistStillAllowsPublicDownloads(t *testing.T) {
+	degradedOriginSetLogged.Store(nil)
+
+	client := swDegradedClient(t, []string{"nonsense", "https://10.0.0.5"})
+
+	// The public destination must not be refused by POLICY. It still fails —
+	// TEST-NET-3 does not answer — but not with a *netpolicy.PolicyError.
+	err := downloadFile(client, "https://cdn.example.com/pkg.exe", swTempFile(t))
+	if err == nil {
+		t.Fatal("expected a connect failure against TEST-NET-3, got nil")
+	}
+	var pe *netpolicy.PolicyError
+	if errors.As(err, &pe) {
+		t.Fatalf("public destination refused by policy after degradation: %s", pe.Reason)
+	}
+}
+
+func TestManagedSoftwareClient_UnusableAllowlistFailsPrivateClosed(t *testing.T) {
+	degradedOriginSetLogged.Store(nil)
+
+	// "https://10.0.0.5" IS in the list, but the list as a whole is unusable, so
+	// the approved set degrades to EMPTY — it must not be partially honoured.
+	client := swDegradedClient(t, []string{"nonsense", "https://10.0.0.5"})
+
+	err := downloadFile(client, "https://10.0.0.5/pkg.exe", swTempFile(t))
+	swPolicyReason(t, err, netpolicy.ReasonPrivateAddressNotAllowed)
+}
+
+// Contrast: without the bad entry the SAME private destination is approved.
+// Without this, the test above would pass even if degradation dropped nothing
+// and 10.0.0.5 had simply never been reachable.
+func TestManagedSoftwareClient_ParseableAllowlistStillApprovesPrivate(t *testing.T) {
+	degradedOriginSetLogged.Store(nil)
+
+	client := swDegradedClient(t, []string{"https://10.0.0.5"})
+
+	err := downloadFile(client, "https://10.0.0.5/pkg.exe", swTempFile(t))
+	var pe *netpolicy.PolicyError
+	if errors.As(err, &pe) && pe.Reason == netpolicy.ReasonPrivateAddressNotAllowed {
+		t.Fatalf("an approved private origin was refused: %v", err)
+	}
+}
+
+// The warning is bounded: the same broken row arrives with EVERY command, and
+// log shipping defaults to warn.
+func TestManagedSoftwareClient_DegradationWarningIsBounded(t *testing.T) {
+	degradedOriginSetLogged.Store(nil)
+	original := logDegradedOriginSet
+	t.Cleanup(func() { logDegradedOriginSet = original })
+
+	var reasons []string
+	logDegradedOriginSet = func(reason string) { reasons = append(reasons, reason) }
+
+	for i := 0; i < 5; i++ {
+		if _, err := managedSoftwareClient(managedSoftwarePolicy([]string{"nonsense"})); err != nil {
+			t.Fatalf("managedSoftwareClient: %v", err)
+		}
+	}
+
+	if len(reasons) != 1 {
+		t.Fatalf("logged %d lines for one repeated reason, want 1: %v", len(reasons), reasons)
+	}
+	if reasons[0] != netpolicy.ReasonInvalidOrigin {
+		t.Fatalf("logged reason = %q, want the bounded %q", reasons[0], netpolicy.ReasonInvalidOrigin)
+	}
+}
+
+// End to end through the real entry point: a malformed allowlist must NOT
+// surface as "network policy unavailable" any more, and the private
+// destination it named must still be refused.
+func TestInstallSoftware_MalformedApprovedOriginDegradesInsteadOfFailingConstruction(t *testing.T) {
+	degradedOriginSetLogged.Store(nil)
+
+	result := InstallSoftware(installPayload("https://10.0.0.5/pkg.exe", map[string]any{
 		"version":                float64(1),
-		"approvedPrivateOrigins": []any{"nonsense"},
+		"approvedPrivateOrigins": []any{"nonsense", "https://10.0.0.5"},
 	}))
 
 	if result.Status != "failed" {
 		t.Fatalf("expected failed status, got %q", result.Status)
 	}
-	if !strings.Contains(result.Error, netpolicy.ReasonInvalidOrigin) {
-		t.Fatalf("expected %q in error, got %q", netpolicy.ReasonInvalidOrigin, result.Error)
+	if strings.Contains(result.Error, "network policy unavailable") ||
+		strings.Contains(result.Error, netpolicy.ReasonInvalidOrigin) {
+		t.Fatalf("client construction still failed on a bad allowlist row: %q", result.Error)
+	}
+	if !strings.Contains(result.Error, netpolicy.ReasonPrivateAddressNotAllowed) {
+		t.Fatalf("expected %q (degraded to an empty approved set), got %q",
+			netpolicy.ReasonPrivateAddressNotAllowed, result.Error)
 	}
 }
 
