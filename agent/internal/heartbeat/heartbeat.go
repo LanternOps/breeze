@@ -2046,6 +2046,63 @@ func (h *Heartbeat) applyBackupServerURLConfig(raw any) {
 	}
 }
 
+// decideRequireManifestSigningKeyIDUpdate is the pure decision core for a
+// pushed require_manifest_signing_key_id value (Wave 6 Task 6/9, approved
+// deviation D4). Only a JSON boolean is accepted — a string, number, or any
+// other type is ignored rather than coerced, because misreading the payload
+// directly controls whether an ID-less update manifest is still accepted
+// (false) or rejected outright (true). No-op if the value already matches
+// the current setting.
+func decideRequireManifestSigningKeyIDUpdate(raw any, current bool) (bool, bool) {
+	b, ok := raw.(bool)
+	if !ok {
+		log.Warn("ignoring non-boolean require_manifest_signing_key_id config update payload")
+		return false, false
+	}
+	if b == current {
+		return false, false
+	}
+	return b, true
+}
+
+// applyRequireManifestSigningKeyIDConfig applies and persists a pushed
+// require_manifest_signing_key_id value. This is the agent-side half of the
+// control Task 9 wires on the API: without this, the server's instruction
+// was silently discarded and the field could only ever be set by hand-
+// editing agent.yaml (deviation D4).
+//
+// Consumers re-read h.config.RequireManifestSigningKeyID at
+// updater-construction time — handlers_devupdate.go's ManifestPolicy, and
+// the main/helper/watchdog update-check call sites in this file — so a
+// pushed change takes effect on the NEXT update check, no restart required.
+// The helper-manager options threaded via helper.WithRequireManifestSigningKeyID
+// (below, at watchdog-launch time) are captured once at process start and
+// DO need a restart to pick up a change; that is the same limitation
+// backup_server_url already has and is accepted for the same reason (see
+// docs/operations/agent-network-and-manifest-rollout.md).
+func (h *Heartbeat) applyRequireManifestSigningKeyIDConfig(raw any) {
+	h.mu.Lock()
+	current := h.config.RequireManifestSigningKeyID
+	h.mu.Unlock()
+
+	val, apply := decideRequireManifestSigningKeyIDUpdate(raw, current)
+	if !apply {
+		return
+	}
+	h.mu.Lock()
+	h.config.RequireManifestSigningKeyID = val
+	h.mu.Unlock()
+	if err := config.SetAndPersist("require_manifest_signing_key_id", val); err != nil {
+		log.Warn("failed to persist require_manifest_signing_key_id", "error", err.Error())
+		return
+	}
+	if val {
+		log.Info("require_manifest_signing_key_id enabled by control plane — update responses that omit signingKeyId will now be rejected on the next update check")
+	} else {
+		log.Info("require_manifest_signing_key_id disabled by control plane")
+	}
+}
+
 func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	if len(update) == 0 {
 		return
@@ -2090,6 +2147,18 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	}
 	if hasBS {
 		h.applyBackupServerURLConfig(bsRaw)
+	}
+
+	// Manifest signing key ID requirement (Wave 6 Task 6/9, deviation D4).
+	// Key absent = no change — compatible with servers/heartbeats that
+	// predate this control. Snake_case and camelCase both accepted, same as
+	// every other key in this function.
+	rmskRaw, hasRMSK := update["require_manifest_signing_key_id"]
+	if !hasRMSK {
+		rmskRaw, hasRMSK = update["requireManifestSigningKeyId"]
+	}
+	if hasRMSK {
+		h.applyRequireManifestSigningKeyIDConfig(rmskRaw)
 	}
 
 	// Apply onedrive_helper_settings if present (Phase 2). No-op on non-Windows.
