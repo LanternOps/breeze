@@ -43,7 +43,7 @@ API connects to Postgres as unprivileged `breeze_app`. Every tenant-scoped table
 1. Pick a shape; add policies in the same migration that creates the table — never defer.
 2. Migration must be idempotent (`IF NOT EXISTS` / `DO $$`). Never edit a shipped migration.
 3. Add to the relevant allowlist in `rls-coverage.integration.test.ts` in the same PR (shapes 2-6).
-4. **Register the table in every cascade list that applies (see below). RLS coverage does NOT imply cascade coverage — they are separate contracts, and this step is the one that gets missed.**
+4. **Register the table in every cascade list that applies (see below). RLS coverage does NOT imply cascade coverage — they are separate contracts, and this step is the one that gets missed.** Adding a **column** to an already-registered table is not exempt: see the export-policy row.
 5. Run the contract tests locally (needs real DB).
 6. Verify as `breeze_app`: `docker exec -it breeze-postgres psql -U breeze_app -d breeze` and forge a cross-tenant insert — must fail with `new row violates row-level security policy`.
 
@@ -55,12 +55,22 @@ API connects to Postgres as unprivileged `breeze_app`. Every tenant-scoped table
 | has a `device_id` column | `CORE_DEVICE_CASCADE_DELETE_TABLES` in `routes/devices/core.ts` | `cascadeDelete.test.ts` (**Test API**) |
 | has `device_id` **and** a denormalized `org_id` | also `CORE_DEVICE_ORG_DENORMALIZED_TABLES` (same file) | `moveOrg.coverage.test.ts` (**Test API**) |
 | is append-only (REVOKE DELETE + immutability trigger) | also `AUDIT_ADMIN_REQUIRED_TABLES` in `tenantCascade.ts` | runtime `permission denied` during erasure |
+| is in `CORE_ORG_CASCADE_DELETE_ORDER` — **including when you only add a COLUMN to one** | `CORE_TENANT_EXPORT_POLICY` in `services/tenantExportPolicyRegistry.ts` | `tenant-export-policy.integration.test.ts` + `tenantExportErasureRoundtrip.integration.test.ts` (**Integration Tests**) |
+
+**The export-policy row is the only one that fires on a new column, not just a new table.** Every column of every org-cascade table must be classified, so `ADD COLUMN` on a long-registered table breaks it. Buckets, via `tablePolicy(orgKey, groups)`:
+
+- `included` — ordinary customer data and tenant identifiers (`tenant_id`, `user_id`, monotonic counters).
+- `reviewedIncluded` — the name matches `SUSPICIOUS_NAME_PARTS` (password, hash, token, secret, credential, refresh, …) but is reviewed non-secret.
+- `excludedSensitive` — credential, private-key, or verifier material.
+- `excludedOpen` — **any `json`/`jsonb`/`bytea` column.** Open containers may embed credentials or capabilities, so a jsonb column cannot go in `included` even when its contents look harmless. A scope or grant list *is* a capability list (`m365_connections.observed_grants`, `observed_delegated_scopes`).
+
+A table with no `org_id` needs no entry. Both suites need a live database, so neither can fail in **Test API** — same blind spot as the org cascade list below.
 
 Why this list exists: missing a cascade list is a **latent GDPR org-erasure bug** — the org delete either strands rows under a dead tenant or aborts on an FK violation. It has shipped or blocked CI five times (#1359, #1351, #1365, #2179, #2514). Code review has caught it **0/5**; the contract tests caught it **5/5**. Treat it as a mechanical grep (`grep -rn '<table>' apps/api/src/services/tenantCascade.ts`), not a judgement call.
 
 **Check the FK direction, not just membership.** Ordering is children-before-parents. An FK declared without an explicit `ON DELETE` defaults to `NO ACTION`, so a referencing table must be deleted *first* or the cascade raises an FK violation. Alphabetical order often satisfies this by luck (`api_keys` < `service_principals`) — verify, don't assume. `tenantCascade.integration.test.ts` asserts five properties: alphabetised by `localeCompare` with `organizations` last; every `org_id` table present; no entry naming a non-existent table; every cascade table exactly once; FK children before parents.
 
-Only the device-side lists fail in the **Test API** unit job (they read the Drizzle schema statically). The org cascade list only fails under **Integration Tests**, so a PR on a stale base can go green and then red main after merge.
+Only the device-side lists fail in the **Test API** unit job (they read the Drizzle schema statically). The org cascade list and both export-policy suites only fail under **Integration Tests**, so a PR on a stale base can go green and then red main after merge. Worse for a **stacked** PR: `ci.yml` triggers on `pull_request: branches: [main]`, so a PR based on a sibling branch runs *no* CI at all — only the two `smoke-binary-source-*` workflows, which makes `gh pr checks` read as green. Dispatch it per branch before merging: `gh workflow run CI --ref <branch>`.
 
 For production backfills of `org_id` on hot tables (>1M rows), batch via `UPDATE ... WHERE ctid IN (... LIMIT N)` loops before `SET NOT NULL`. Full narrative and rationale: `docs/superpowers/plans/tenancy-rls/2026-04-11-rls-coverage-gaps.md`.
 
