@@ -528,6 +528,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   if (data.osBuild !== undefined && data.osBuild !== device.osBuild) {
     deviceUpdates.osBuild = data.osBuild;
   }
+  // NOTE: truthy guard — a device that STOPS reporting a mode (agent
+  // downgrade, host no longer RDS) keeps its last stored value forever.
+  // devices.helper_lifecycle_mode is therefore a HINT for the web UI's
+  // session pickers, never an authorization gate: a stale 'on-demand' just
+  // shows a picker whose live session fetch still returns the truth.
   if (data.helperLifecycleMode && data.helperLifecycleMode !== device.helperLifecycleMode) {
     deviceUpdates.helperLifecycleMode = data.helperLifecycleMode;
   }

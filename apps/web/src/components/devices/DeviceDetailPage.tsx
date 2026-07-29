@@ -111,6 +111,10 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         // columns (neither is in SENSITIVE_DEVICE_FIELDS).
         linkGroupId: data.linkGroupId ?? null,
         linkGroupRole: data.linkGroupRole ?? null,
+        // RDS per-session helper mode (Task 12) — gates the session pickers
+        // added in Tasks 13/14. Not in SENSITIVE_DEVICE_FIELDS, so the
+        // detail endpoint's full-row spread already includes it.
+        helperLifecycleMode: data.helperLifecycleMode ?? null,
       };
 
       setDevice(transformedDevice);

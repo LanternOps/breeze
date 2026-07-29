@@ -626,7 +626,11 @@ coreRoutes.get(
         // column. device_reliability is org-scoped (RLS shape #1), so the
         // leftJoin stays tenant-safe; null when no score computed yet.
         reliabilityScore: deviceReliability.reliabilityScore,
-        reliabilityTrend: deviceReliability.trendDirection
+        reliabilityTrend: deviceReliability.trendDirection,
+        // RDS per-session helpers (plan 2 heartbeat ingest) — UI hint only,
+        // see the truthy-guard comment in heartbeat.ts. Tasks 13/14 gate the
+        // session picker on this being 'on-demand' at the list-row level.
+        helperLifecycleMode: devices.helperLifecycleMode
       })
       .from(devices)
       .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
@@ -750,6 +754,7 @@ coreRoutes.get(
         // score yet (no device_reliability row) — the list renders a dash.
         reliabilityScore: d.reliabilityScore ?? null,
         reliabilityTrend: d.reliabilityTrend ?? null,
+        helperLifecycleMode: d.helperLifecycleMode ?? null,
         metrics: latestMetrics
           ? {
             cpuPercent: latestMetrics.cpuPercent,
