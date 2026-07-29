@@ -160,7 +160,15 @@ type HelperLifecycleManager struct {
 	disconnectedSince map[uint32]time.Time
 	now               func() time.Time
 
-	mode LifecycleMode
+	// mode is the resolved lifecycle mode. It is mutable: SetModeOverride can
+	// flip it live from a heartbeat while the run loop reads it concurrently, so
+	// every read/write of mode MUST hold m.mu (use currentMode() off the hot
+	// setter path). rdsHost is the cached host-detection result and localOverride
+	// is the operator's explicit local config; both are set once at construction
+	// and thereafter read-only, so SetModeOverride can re-resolve against them.
+	mode          LifecycleMode
+	rdsHost       bool
+	localOverride string
 
 	leases map[HelperKey]*helperLease
 	kickCh chan struct{}
@@ -196,8 +204,47 @@ func newHelperLifecycleManager(broker *Broker, detector SessionDetector, scmCh <
 func (m *HelperLifecycleManager) Done() <-chan struct{} { return m.done }
 
 // Mode reports the resolved lifecycle mode ("always-on" | "on-demand") for
-// heartbeat reporting and diagnostics.
-func (m *HelperLifecycleManager) Mode() string { return string(m.mode) }
+// heartbeat reporting and diagnostics. Reads under m.mu — the mode is mutable
+// via SetModeOverride.
+func (m *HelperLifecycleManager) Mode() string { return string(m.currentMode()) }
+
+// currentMode returns the resolved lifecycle mode under lock. Every read of
+// m.mode outside the setter must go through here (or an inline lock) because
+// SetModeOverride mutates m.mode from the heartbeat goroutine.
+func (m *HelperLifecycleManager) currentMode() LifecycleMode {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.mode
+}
+
+// SetModeOverride applies the server-delivered lifecycle override
+// ("auto" | "always-on" | "on-demand" | ""). Precedence: an explicit local
+// config override (helper_lifecycle_mode / BREEZE_HELPER_LIFECYCLE_MODE) is
+// the operator's break-glass and always wins; otherwise the server value is
+// resolved against RDS detection. A live switch to always-on strands no
+// state: leases are cleared and the reconcile respawns per-session helpers.
+// A switch to on-demand leaves the lease table empty, so the next reconcile
+// reaps every unleased helper. Called every heartbeat — must be idempotent.
+func (m *HelperLifecycleManager) SetModeOverride(override string) {
+	m.mu.Lock()
+	if m.localOverride != "" && m.localOverride != "auto" {
+		m.mu.Unlock()
+		return
+	}
+	newMode := resolveLifecycleMode(override, m.rdsHost)
+	if newMode == m.mode {
+		m.mu.Unlock()
+		return
+	}
+	log.Info("helper lifecycle mode changed by server override",
+		"from", string(m.mode), "to", string(newMode), "override", override)
+	m.mode = newMode
+	if newMode == LifecycleModeAlwaysOn {
+		m.leases = make(map[HelperKey]*helperLease)
+	}
+	m.mu.Unlock()
+	m.kickReconcile()
+}
 
 func (m *HelperLifecycleManager) finishStart() {
 	m.doneOnce.Do(func() { close(m.done) })
@@ -229,7 +276,7 @@ func (m *HelperLifecycleManager) detectedDesired() (map[HelperKey]bool, error) {
 // computeDesired is the single desired-set entry point: detector-driven in
 // always-on mode (the historical behavior), lease-driven in on-demand mode.
 func (m *HelperLifecycleManager) computeDesired() (map[HelperKey]bool, error) {
-	if m.mode != LifecycleModeOnDemand {
+	if m.currentMode() != LifecycleModeOnDemand {
 		return m.detectedDesired()
 	}
 	if m.detector == nil {

@@ -157,6 +157,10 @@ type HelperSettings struct {
 	ShowDeviceInfo     bool   `json:"showDeviceInfo"`
 	ShowRequestSupport bool   `json:"showRequestSupport"`
 	PortalUrl          string `json:"portalUrl,omitempty"`
+	// LifecycleMode is the server-side helper lifecycle override
+	// ("auto" | "always-on" | "on-demand"); empty means auto. Applied to the
+	// sessionbroker lifecycle, NOT to the Tauri Assist manager.
+	LifecycleMode string `json:"lifecycleMode,omitempty"`
 }
 
 type Command struct {
@@ -173,6 +177,7 @@ type helperLifecycleController interface {
 	Stop()
 	Done() <-chan struct{}
 	Mode() string
+	SetModeOverride(override string)
 	AcquireLease(sessionID uint32, role ipc.HelperRole, opID string, ttl time.Duration) error
 	RenewLease(sessionID uint32, role ipc.HelperRole, opID string, ttl time.Duration) error
 	ReleaseLease(sessionID uint32, role ipc.HelperRole, opID string)
@@ -3629,6 +3634,15 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 			ShowRequestSupport: response.HelperSettings.ShowRequestSupport,
 			PortalUrl:          response.HelperSettings.PortalUrl,
 		})
+		// LifecycleMode is a sessionbroker concern, not an Assist setting, so it
+		// bypasses helperMgr and drives the lifecycle manager directly. Idempotent
+		// and cheap — the manager no-ops when the resolved mode is unchanged.
+		h.mu.Lock()
+		lc := h.helperLifecycle
+		h.mu.Unlock()
+		if lc != nil {
+			lc.SetModeOverride(response.HelperSettings.LifecycleMode)
+		}
 	}
 }
 

@@ -2406,6 +2406,13 @@ export interface HelperSettings {
   showDeviceInfo: boolean;
   showRequestSupport: boolean;
   portalUrl?: string;
+  /**
+   * Helper lifecycle override for RDS hosts ('auto' | 'always-on' |
+   * 'on-demand'). Undefined = auto. Precedence on the agent: explicit local
+   * agent config > this value > RDS auto-detection. Cached with the rest of
+   * the helper settings (120s) — mode changes land within TTL + heartbeat.
+   */
+  lifecycleMode?: 'auto' | 'always-on' | 'on-demand';
 }
 
 const HELPER_DEFAULTS: HelperSettings = {
@@ -2503,6 +2510,9 @@ export async function resolveDeviceHelperSettings(deviceId: string): Promise<Hel
     showDeviceInfo: typeof s.showDeviceInfo === 'boolean' ? s.showDeviceInfo : HELPER_DEFAULTS.showDeviceInfo,
     showRequestSupport: typeof s.showRequestSupport === 'boolean' ? s.showRequestSupport : HELPER_DEFAULTS.showRequestSupport,
     portalUrl: typeof s.portalUrl === 'string' && s.portalUrl ? s.portalUrl : undefined,
+    lifecycleMode: s.lifecycleMode === 'auto' || s.lifecycleMode === 'always-on' || s.lifecycleMode === 'on-demand'
+      ? s.lifecycleMode
+      : undefined,
   };
 }
 

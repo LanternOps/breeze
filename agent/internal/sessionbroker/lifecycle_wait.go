@@ -51,7 +51,7 @@ func (m *HelperLifecycleManager) WaitForHelperReady(ctx context.Context, key Hel
 }
 
 func (m *HelperLifecycleManager) helperReadyCheck(key HelperKey) (HelperWaitResult, bool) {
-	if m.mode == LifecycleModeOnDemand {
+	if m.currentMode() == LifecycleModeOnDemand {
 		m.mu.Lock()
 		_, leased := m.leases[key]
 		m.mu.Unlock()

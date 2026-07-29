@@ -17,20 +17,27 @@ import (
 // heartbeat unit test should reuse this rather than declaring another one —
 // everything here lives in one Go package, so a second declaration collides.
 type fakeLifecycle struct {
-	mu          sync.Mutex
-	mode        string
-	acquired    []sessionbroker.HelperKey
-	released    []sessionbroker.HelperKey
-	renewed     int
-	waited      []sessionbroker.HelperKey
-	waitResults map[sessionbroker.HelperKey]sessionbroker.HelperWaitResult
-	acquireErr  error
-	renewErr    error
+	mu            sync.Mutex
+	mode          string
+	acquired      []sessionbroker.HelperKey
+	released      []sessionbroker.HelperKey
+	renewed       int
+	waited        []sessionbroker.HelperKey
+	waitResults   map[sessionbroker.HelperKey]sessionbroker.HelperWaitResult
+	acquireErr    error
+	renewErr      error
+	modeOverrides []string
 }
 
 func (f *fakeLifecycle) Stop()                 {}
 func (f *fakeLifecycle) Done() <-chan struct{} { return nil }
 func (f *fakeLifecycle) Mode() string          { return f.mode }
+
+func (f *fakeLifecycle) SetModeOverride(override string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.modeOverrides = append(f.modeOverrides, override)
+}
 
 func (f *fakeLifecycle) AcquireLease(id uint32, role ipc.HelperRole, opID string, ttl time.Duration) error {
 	f.mu.Lock()

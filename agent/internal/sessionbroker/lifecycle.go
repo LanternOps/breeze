@@ -49,6 +49,8 @@ func NewHelperLifecycleManager(broker *Broker, scmCh <-chan SCMSessionEvent, mod
 		manager = newHelperLifecycleManager(broker, NewSessionDetector(), scmCh, nil)
 	}
 	manager.mode = mode
+	manager.rdsHost = rdsHost
+	manager.localOverride = modeOverride
 	return manager
 }
 
@@ -119,7 +121,7 @@ func (m *HelperLifecycleManager) handleSCMEvent(event SCMSessionEvent) {
 	// on-demand mode a disconnected session is no longer shadowable, so its
 	// SYSTEM lease dies with the connection.
 	case wtsRemoteDisconnect, wtsConsoleDisconnect:
-		if m.mode == LifecycleModeOnDemand {
+		if m.currentMode() == LifecycleModeOnDemand {
 			m.dropLeases(event.SessionID, ipc.HelperRoleSystem)
 			m.removeDesired(systemKey)
 			m.stopKey(systemKey)
@@ -128,7 +130,7 @@ func (m *HelperLifecycleManager) handleSCMEvent(event SCMSessionEvent) {
 		m.stopKey(userKey)
 		m.reconcile()
 	case wtsSessionLogoff, wtsSessionTerminate:
-		if m.mode == LifecycleModeOnDemand {
+		if m.currentMode() == LifecycleModeOnDemand {
 			m.dropLeases(event.SessionID, ipc.HelperRoleSystem, ipc.HelperRoleUser)
 		}
 		m.removeDesired(systemKey, userKey)

@@ -12,6 +12,7 @@ type HelperSettings = {
   showDeviceInfo: boolean;
   showRequestSupport: boolean;
   portalUrl?: string;
+  lifecycleMode?: "auto" | "always-on" | "on-demand";
 };
 const defaults: HelperSettings = {
   enabled: false,
@@ -19,6 +20,7 @@ const defaults: HelperSettings = {
   showDeviceInfo: true,
   showRequestSupport: true,
   portalUrl: "",
+  lifecycleMode: "auto",
 };
 export default function HelperTab({
   policyId,
@@ -52,6 +54,7 @@ export default function HelperTab({
     clearError();
     const payload: HelperSettings = { ...settings };
     if (!payload.portalUrl) delete payload.portalUrl;
+    if (payload.lifecycleMode === "auto") delete payload.lifecycleMode;
     const result = await save(existingLink?.id ?? null, {
       featureType: "helper",
       featurePolicyId: linkedPolicyId,
@@ -68,6 +71,7 @@ export default function HelperTab({
     clearError();
     const payload: HelperSettings = { ...settings };
     if (!payload.portalUrl) delete payload.portalUrl;
+    if (payload.lifecycleMode === "auto") delete payload.lifecycleMode;
     const result = await save(null, {
       featureType: "helper",
       featurePolicyId: linkedPolicyId,
@@ -247,6 +251,48 @@ export default function HelperTab({
               <p className="mt-1 text-xs text-muted-foreground">
                 {i18n.t(
                   "policies:configurationPolicies.featureTabs.helperTab.leaveBlankToUseTheDefaultBreeze",
+                )}
+              </p>
+            </div>
+
+            {/* Helper lifecycle mode (RD Session Hosts) */}
+            <div>
+              <label className="text-sm font-medium">
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.helperTab.lifecycleMode",
+                )}
+              </label>
+              <select
+                value={settings.lifecycleMode ?? "auto"}
+                disabled={!settings.enabled}
+                onChange={(e) =>
+                  update(
+                    "lifecycleMode",
+                    e.target.value as HelperSettings["lifecycleMode"],
+                  )
+                }
+                data-testid="helper-lifecycle-mode"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm"
+              >
+                <option value="auto">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.helperTab.lifecycleModeAuto",
+                  )}
+                </option>
+                <option value="always-on">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.helperTab.lifecycleModeAlwaysOn",
+                  )}
+                </option>
+                <option value="on-demand">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.helperTab.lifecycleModeOnDemand",
+                  )}
+                </option>
+              </select>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.helperTab.lifecycleModeHelp",
                 )}
               </p>
             </div>
