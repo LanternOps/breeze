@@ -335,7 +335,7 @@ effectDigest = sha256(canonicalize(envelope))
 
 1. **The envelope *is* the intent's `arguments`.** Not a projection of them, not derived from them at release. `argumentDigest` is therefore literally the effect digest, and the immutability trigger already protects it.
 2. **The mapper stops mapping.** `m365CommsToolsHeadless` validates the stored envelope against the shared schema and passes it through **unchanged**. There is no rebuild step, so there is no rebuild bug. (Schema validation may *reject*; it may never *transform*.)
-3. **The signed internal JWT carries `effectDigest` as a claim**, set from the stored `intent.argumentDigest` — the value the approval bound — never from a fresh computation on the release path.
+3. **The signed internal JWT carries `effectDigest` as a claim**, set from the stored `intent.argumentDigest` — the value the approval bound — never from a fresh computation on the release path. **(Revised 2026-07-29: it carries a second `planDigest` claim alongside it, also read from a value persisted at creation. See §5.3(b) for why one digest cannot do both jobs. The release-path rule is unchanged and applies to both: a claim recomputed while releasing, from the same envelope it is about to authorize, is a self-consistency check that always passes.)**
 
    ⚠️ **The JWT claim is the SOLE authority.** v2 also listed `effectDigest?` as a request-body field (its §9 step 2), which is worse than redundant: an implementer following that would compare the envelope against a digest computed from *that same envelope*, a self-consistency check that always passes while proving nothing. The body field is **removed**. `internalAuth.verify` currently returns only `{correlationId}` (`internalAuth.ts:95-107`) and must be extended to return the authenticated claim set, so operations code cannot accidentally read an unauthenticated copy. If a body field ever reappears, it must be asserted equal to the claim, not read instead of it.
 4. **The executor recomputes** and refuses on mismatch. This is the link v1 lacked: the process that talks to Graph independently verifies that what it is about to send is what a human approved. **What it recomputes over is the operation plan, not the envelope — see §5.3.**
@@ -364,24 +364,43 @@ v2 bound the envelope and stopped there. But the executor still *builds* a Graph
 
 Each of these changes the real-world effect while the envelope digest still verifies. So:
 
-**The digest covers a canonical `GraphOperationPlan`** — a pure, deterministic function of the envelope, computed by shared code and hashed the same way:
+**A second digest covers a canonical `GraphOperationPlan`** — a pure, deterministic function of the envelope, computed by shared code and hashed the same way:
 
 ```ts
-// packages/shared/src/m365/commsPlan.ts
+// packages/shared/src/m365/commsPlan.ts   (as built, task 2)
 type GraphOperationPlan = {
   planVersion: 1;
   method: 'POST'; path: '/me/sendMail';
-  saveToSentItems: boolean;
-  message: {
-    subject: string;
-    body: { contentType: 'Text'; content: string };   // pinned, not inferred
-    toRecipients: string[]; ccRecipients: string[]; bccRecipients: string[];
+  body: {                                             // literally the wire payload
+    message: {
+      subject: string;
+      body: { contentType: 'Text'; content: string }; // pinned, not inferred
+      toRecipients: { emailAddress: { address: string } }[];
+      ccRecipients: { emailAddress: { address: string } }[];
+      bccRecipients: { emailAddress: { address: string } }[];
+    };
+    saveToSentItems: boolean;                          // pinned true, not settable
   };
 };
 buildSendPlan(envelope) -> GraphOperationPlan   // pure, total, no I/O
 ```
 
-The API computes the plan from the envelope at intent creation and digests **that**; the executor recomputes `buildSendPlan(receivedEnvelope)` and compares. The executor is then **forbidden from constructing the Graph body any other way** — it serializes the verified plan directly. A mapper divergence becomes a digest mismatch instead of a silent content change.
+> **Revised 2026-07-29 (Todd), on two points this section originally got wrong.**
+>
+> **(a) The plan carries the literal Graph body.** The original sketch typed recipients as `string[]`, which leaves a `string[] → [{emailAddress:{address}}]` reshaping step *after* digest verification — and a transposition in that step (`bcc` written into `ccRecipients`) survives verification intact, is invisible to the sender, and is invisible to every recipient. That is the same class of gap this section was written to close, moved one layer down. `plan.body` is now exactly what goes on the wire, so the executor's send path is `JSON.stringify(plan.body)` and there is no construction left to get wrong. The cost, stated plainly: the plan is coupled to Graph's wire format, so a Microsoft-side shape change becomes a `planVersion` bump — which changes every digest and invalidates approved-but-unreleased intents. That is the correct failure (re-approve under the new shape), not a free win.
+>
+> **(b) There are TWO digests, not one.** As originally written, §5.2 said the signed claim is set from the stored `intent.argumentDigest` — the *envelope* digest — while this section said the executor recomputes the plan and compares. Those are different values, so only one could ever have been true. Resolved by carrying both, because neither subsumes the other:
+>
+> | Digest | Covers | Stored as | Catches |
+> |---|---|---|---|
+> | envelope | sender binding, consent generation, recipients, subject, body | `action_intents.argument_digest` — literally `sha256(canonicalize(arguments))`, unchanged | the approved effect being altered between approval and release |
+> | plan | the exact Graph request bytes | persisted at creation, second signed claim | the *same* envelope becoming a *different* HTTP request |
+>
+> The plan digest cannot replace the envelope digest, because the plan deliberately carries **none** of the binding fields: two sends differing only in `consentGeneration` produce a byte-identical plan. That is pinned by the `consent-generation-changes-envelope-digest-only` vector rather than left as a comment.
+>
+> Nor is the plan digest redundant with "the executor imports the shared builder" — that is a *build-time* guarantee. The executor ships as a separately-released image, so one running a stale `@breeze/shared` computes a different plan from the same envelope, and only a digest comparison notices.
+
+The API computes both digests from the envelope at intent creation and persists them; the executor recomputes both from what it received and refuses on either mismatch, before touching a credential. The executor is **forbidden from constructing the Graph body any other way** — it serializes the verified plan directly. A mapper divergence becomes a digest mismatch instead of a silent content change.
 
 **`inReplyToMessageId` is removed from the v1 catalog.** It is the one field whose plan is not a pure function of the envelope: Graph's `createReply` builds a *mutable draft* partly from the original message and requires a subsequent send, which is precisely the draft-send shape §8 bans for breaking content binding. Threading returns with reply variants, designed properly.
 
