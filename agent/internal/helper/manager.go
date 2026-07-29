@@ -68,10 +68,22 @@ func WithAgentVersion(v string) Option {
 	return func(m *Manager) { m.agentVersion = v }
 }
 
-// WithManifestKeys sets deployment-pinned Ed25519 release-manifest public keys
-// (merged with the embedded trust root in the updater) so self-host
-// deployments can verify locally-signed helper manifests.
-func WithManifestKeys(keys []string) Option {
+// WithManifestKeys sets a PROVIDER for the deployment-pinned Ed25519
+// release-manifest public keys (merged with the embedded trust root in the
+// updater) so self-host deployments can verify locally-signed helper manifests.
+//
+// A provider, not a slice, for the same reason WithBackupServerURL takes one:
+// the pinned set is replaced at RUNTIME — the manifest-trust-pin path and
+// applyManifestKeyDelegations both rewrite it after a config.Reload(), and the
+// main/watchdog updaters re-read it through the heartbeat's guarded accessor.
+// Baking a startup snapshot into downloadFunc meant that once the delegated key
+// was activated the server signed helper manifests with the new key ID while
+// this Manager still verified against the frozen old set, so Breeze Assist
+// install/update failed closed until the agent process restarted, with no
+// server-side signal.
+//
+// Nil is treated as "no deployment-pinned keys" (embedded trust root only).
+func WithManifestKeys(keys func() []string) Option {
 	return func(m *Manager) { m.manifestKeys = keys }
 }
 
@@ -81,7 +93,14 @@ func WithManifestKeys(keys []string) Option {
 // self-update does. Without it the helper path would stay in compatibility
 // mode after the fleet was switched over — a manifest could still be verified
 // by a key other than the one it names.
-func WithRequireManifestSigningKeyID(require bool) Option {
+//
+// Also a provider: the control plane can push require_manifest_signing_key_id
+// through configUpdate at runtime (wave-6 deviation D4), and a frozen `false`
+// here would leave the helper path permanently in compatibility mode on an
+// agent whose own self-update had already been switched to strict.
+//
+// Nil is treated as false (compatibility mode).
+func WithRequireManifestSigningKeyID(require func() bool) Option {
 	return func(m *Manager) { m.requireManifestSigningKeyID = require }
 }
 
@@ -132,9 +151,13 @@ type Manager struct {
 	// origin. Tests inject a stub. It is NEVER the old unverified fetch.
 	downloadFunc func(version string) (string, error)
 	agentVersion string
-	manifestKeys []string
+	// manifestKeys and requireManifestSigningKeyID are PROVIDERS, not values:
+	// both underlying config fields are mutable at runtime and the verified
+	// downloader must re-read them on every download. See WithManifestKeys.
+	// Nil means "unset" and is handled by helperUpdaterConfig, not here.
+	manifestKeys func() []string
 
-	requireManifestSigningKeyID bool
+	requireManifestSigningKeyID func() bool
 
 	pendingHelperVersion string
 	updateFailures       int

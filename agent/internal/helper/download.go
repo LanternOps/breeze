@@ -33,7 +33,7 @@ import (
 // Both providers are resolved fresh inside the returned closure (which builds
 // a new *updater.Updater per download) so BackupServerURL — a plain string on
 // updater.Config, unlike ServerURL — never goes stale across a promotion.
-func defaultHelperDownloader(serverURL, backupServerURL func() string, authToken *secmem.SecureString, agentVersion string, manifestKeys []string, requireSigningKeyID bool) func(version string) (string, error) {
+func defaultHelperDownloader(serverURL, backupServerURL func() string, authToken *secmem.SecureString, agentVersion string, manifestKeys func() []string, requireSigningKeyID func() bool) func(version string) (string, error) {
 	return func(version string) (string, error) {
 		cfg := helperUpdaterConfig(serverURL, backupServerURL, authToken, agentVersion, manifestKeys, requireSigningKeyID)
 		return updater.New(cfg).DownloadBinary(version)
@@ -46,10 +46,25 @@ func defaultHelperDownloader(serverURL, backupServerURL func() string, authToken
 // which, since the wave-06 network-policy hardening, is not something a test
 // can do against a local httptest server at all (netpolicy rejects loopback
 // destinations outright and unconditionally; see agent/internal/netpolicy).
-func helperUpdaterConfig(serverURL, backupServerURL func() string, authToken *secmem.SecureString, agentVersion string, manifestKeys []string, requireSigningKeyID bool) *updater.Config {
+func helperUpdaterConfig(serverURL, backupServerURL func() string, authToken *secmem.SecureString, agentVersion string, manifestKeys func() []string, requireSigningKeyID func() bool) *updater.Config {
 	var backup string
 	if backupServerURL != nil {
 		backup = backupServerURL()
+	}
+	// The trust providers are resolved HERE, per download — not captured at
+	// Manager construction. Once a delegated manifest signing key is activated
+	// the server signs helper manifests with the new key ID, and a snapshot
+	// taken at startup would verify against the superseded set until the agent
+	// process restarted. Nil providers mean unset (no deployment-pinned keys /
+	// compatibility mode), which is what a directly-constructed Manager in a
+	// test has.
+	var keys []string
+	if manifestKeys != nil {
+		keys = manifestKeys()
+	}
+	var requireKeyID bool
+	if requireSigningKeyID != nil {
+		requireKeyID = requireSigningKeyID()
 	}
 	return &updater.Config{
 		ServerURL:                   serverURL,
@@ -57,7 +72,7 @@ func helperUpdaterConfig(serverURL, backupServerURL func() string, authToken *se
 		AuthToken:                   authToken,
 		CurrentVersion:              agentVersion,
 		Component:                   "helper",
-		PinnedManifestPubKeys:       manifestKeys,
-		RequireManifestSigningKeyID: requireSigningKeyID,
+		PinnedManifestPubKeys:       keys,
+		RequireManifestSigningKeyID: requireKeyID,
 	}
 }

@@ -1,6 +1,7 @@
 package helper
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -59,7 +60,7 @@ import (
 // against a local httptest server at all (see the deleted-test comment
 // above).
 func TestHelperUpdaterConfig_UsesHelperComponent(t *testing.T) {
-	cfg := helperUpdaterConfig(func() string { return "https://control.example" }, nil, secmem.NewSecureString("tok"), "9.9.9", nil, false)
+	cfg := helperUpdaterConfig(func() string { return "https://control.example" }, nil, secmem.NewSecureString("tok"), "9.9.9", nil, nil)
 	if cfg.Component != "helper" {
 		t.Fatalf("helper updater config Component = %q, want %q", cfg.Component, "helper")
 	}
@@ -74,7 +75,7 @@ func TestHelperUpdaterConfig_ThreadsBackupServerURL(t *testing.T) {
 	cfg := helperUpdaterConfig(
 		func() string { return "https://primary.example" },
 		func() string { return "https://backup.example" },
-		secmem.NewSecureString("tok"), "9.9.9", nil, false,
+		secmem.NewSecureString("tok"), "9.9.9", nil, nil,
 	)
 	if cfg.BackupServerURL != "https://backup.example" {
 		t.Fatalf("BackupServerURL = %q, want %q", cfg.BackupServerURL, "https://backup.example")
@@ -86,7 +87,7 @@ func TestHelperUpdaterConfig_ThreadsBackupServerURL(t *testing.T) {
 // build predating failover awareness) produces an empty BackupServerURL
 // rather than panicking.
 func TestHelperUpdaterConfig_NilBackupServerURLIsNoOp(t *testing.T) {
-	cfg := helperUpdaterConfig(func() string { return "https://primary.example" }, nil, secmem.NewSecureString("tok"), "9.9.9", nil, false)
+	cfg := helperUpdaterConfig(func() string { return "https://primary.example" }, nil, secmem.NewSecureString("tok"), "9.9.9", nil, nil)
 	if cfg.BackupServerURL != "" {
 		t.Fatalf("BackupServerURL = %q, want empty for a nil provider", cfg.BackupServerURL)
 	}
@@ -123,7 +124,7 @@ func TestDefaultHelperDownloaderResolvesServerURLAtCallTime(t *testing.T) {
 	// The provider starts on the dead primary, then is promoted to the backup
 	// AFTER the downloader closure is built — exactly the failover ordering.
 	current := deadPrimary.URL
-	dl := defaultHelperDownloader(func() string { return current }, nil, secmem.NewSecureString("tok"), "1.2.3", nil, false)
+	dl := defaultHelperDownloader(func() string { return current }, nil, secmem.NewSecureString("tok"), "1.2.3", nil, nil)
 	current = promotedBackup.URL
 
 	_, err := dl("1.2.3")
@@ -150,13 +151,81 @@ var _ func(string) (string, error) = (&updater.Updater{}).DownloadBinary
 // would leave the helper package on the compatibility path (verify against the
 // whole key set) even on an agent whose own self-update is fail-closed.
 func TestHelperUpdaterConfig_ThreadsRequireManifestSigningKeyID(t *testing.T) {
-	cfg := helperUpdaterConfig(func() string { return "https://control.example" }, nil, secmem.NewSecureString("tok"), "9.9.9", nil, true)
+	cfg := helperUpdaterConfig(func() string { return "https://control.example" }, nil, secmem.NewSecureString("tok"), "9.9.9", nil, func() bool { return true })
 	if !cfg.RequireManifestSigningKeyID {
 		t.Fatal("RequireManifestSigningKeyID did not reach the helper updater config")
 	}
 
-	relaxed := helperUpdaterConfig(func() string { return "https://control.example" }, nil, secmem.NewSecureString("tok"), "9.9.9", nil, false)
+	relaxed := helperUpdaterConfig(func() string { return "https://control.example" }, nil, secmem.NewSecureString("tok"), "9.9.9", nil, nil)
 	if relaxed.RequireManifestSigningKeyID {
 		t.Fatal("RequireManifestSigningKeyID must stay false when not requested")
+	}
+}
+
+// Finding I4 of the wave-06 whole-branch review: the Manager took the pinned
+// manifest key set and the key-ID requirement BY VALUE and baked them into
+// downloadFunc at construction, while h.config.PinnedManifestPubKeys is replaced
+// at runtime (the manifest-trust-pin path and applyManifestKeyDelegations both
+// rewrite it after a config.Reload()) and the main/watchdog updaters re-read it.
+// Once the delegated key was activated — this wave's own stated end state — the
+// server signed helper manifests with the new key ID while the Manager still
+// verified against the frozen old set, so Breeze Assist install/update failed
+// closed until the agent process restarted, with no server-side signal.
+//
+// Both options now take providers, exactly as WithBackupServerURL already did.
+// This asserts LATE resolution through the real seams: options → Manager fields
+// → the per-download config builder. Reverting either option to a by-value
+// parameter does not compile against this test.
+func TestHelperUpdaterConfig_ResolvesManifestTrustPerDownload(t *testing.T) {
+	keys := []string{"key-old:AAAA"}
+	requireKeyID := false
+
+	m := New(
+		context.Background(),
+		func() string { return "https://control.example" },
+		secmem.NewSecureString("tok"),
+		"agent-1",
+		WithAgentVersion("9.9.9"),
+		WithManifestKeys(func() []string { return keys }),
+		WithRequireManifestSigningKeyID(func() bool { return requireKeyID }),
+	)
+
+	build := func() *updater.Config {
+		return helperUpdaterConfig(m.serverURL, m.backupServerURL, m.authToken,
+			m.agentVersion, m.manifestKeys, m.requireManifestSigningKeyID)
+	}
+
+	before := build()
+	if len(before.PinnedManifestPubKeys) != 1 || before.PinnedManifestPubKeys[0] != "key-old:AAAA" {
+		t.Fatalf("initial PinnedManifestPubKeys = %v, want [key-old:AAAA]", before.PinnedManifestPubKeys)
+	}
+	if before.RequireManifestSigningKeyID {
+		t.Fatal("initial RequireManifestSigningKeyID = true, want false")
+	}
+
+	// The runtime change: a delegation is adopted and the key-ID requirement is
+	// pushed on. Neither goes through the Manager.
+	keys = []string{"key-old:AAAA", "key-new:BBBB"}
+	requireKeyID = true
+
+	after := build()
+	if len(after.PinnedManifestPubKeys) != 2 || after.PinnedManifestPubKeys[1] != "key-new:BBBB" {
+		t.Fatalf("PinnedManifestPubKeys froze at construction: %v", after.PinnedManifestPubKeys)
+	}
+	if !after.RequireManifestSigningKeyID {
+		t.Fatal("RequireManifestSigningKeyID froze at construction")
+	}
+}
+
+// A directly-constructed Manager (what most tests in this package use) has nil
+// providers; that must mean "unset", not a panic on the first download.
+func TestHelperUpdaterConfig_NilManifestTrustProvidersAreUnset(t *testing.T) {
+	cfg := helperUpdaterConfig(func() string { return "https://control.example" },
+		nil, secmem.NewSecureString("tok"), "9.9.9", nil, nil)
+	if cfg.PinnedManifestPubKeys != nil {
+		t.Fatalf("PinnedManifestPubKeys = %v, want nil for a nil provider", cfg.PinnedManifestPubKeys)
+	}
+	if cfg.RequireManifestSigningKeyID {
+		t.Fatal("RequireManifestSigningKeyID = true, want false for a nil provider")
 	}
 }

@@ -72,15 +72,17 @@ differs by call site:
   Its later `config.Load("")` calls refresh only the failover server URL,
   never this field. So the watchdog-driven agent-binary download — the path
   that runs precisely when the agent is down — keeps the old value until the
-  **watchdog service** restarts. Same startup-capture category as the helper
-  manager below.
-- **The helper-manager's own manifest-signing-key-ID option**
-  (`helper.WithRequireManifestSigningKeyID`, set once at `helper.New(...)`
-  call sites around `heartbeat.go:610` and `heartbeat.go:640`) is captured
-  once at process start. A pushed change does **not** reach an
-  already-running helper manager; it takes effect only after the agent
-  process restarts. This is the same startup-capture limitation
-  `backup_server_url` already has.
+  **watchdog service** restarts. This is now the ONLY startup-capture case.
+- **The helper manager follows a pushed change too.**
+  `helper.WithRequireManifestSigningKeyID` and `helper.WithManifestKeys` take
+  **providers** (`func() bool` / `func() []string`) wired to
+  `h.requireManifestSigningKeyID` and `h.pinnedManifestPubKeys`, so the
+  verified helper downloader resolves both on every download rather than at
+  `helper.New(...)`. Passing them by value was a real defect: once a delegated
+  manifest signing key is **activated**, the server signs helper manifests with
+  the new key ID, and a Manager holding a process-start snapshot of the pinned
+  set would fail Breeze Assist install/update closed — with no server-side
+  signal — until the agent process restarted.
 
 **The API is authoritative for any fleet running this build or newer —
 hand-editing `agent.yaml` does not stick.** This is the intended design: a

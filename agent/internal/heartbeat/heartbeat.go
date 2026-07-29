@@ -606,8 +606,14 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		h.helperMgr = helper.New(helperCtx, h.ServerURL, secToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
 			helper.WithAgentVersion(version),
-			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
-			helper.WithRequireManifestSigningKeyID(cfg.RequireManifestSigningKeyID),
+			// Providers, not values: both fields are replaced at runtime (the
+			// manifest-trust-pin path and applyManifestKeyDelegations rewrite
+			// the pinned set; configUpdate can flip the key-ID requirement), so
+			// a by-value snapshot would freeze the helper's trust while the
+			// main/watchdog updaters follow the change. Same asymmetry
+			// WithBackupServerURL already avoided on the next line.
+			helper.WithManifestKeys(h.pinnedManifestPubKeys),
+			helper.WithRequireManifestSigningKeyID(h.requireManifestSigningKeyID),
 			helper.WithBackupServerURL(h.BackupServerURL),
 			helper.WithSpawnFunc(func(sessionKey, binaryPath string, args ...string) (int, error) {
 				// Try launching via connected user-role helper first (runs as
@@ -636,8 +642,14 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		h.helperMgr = helper.New(helperCtx, h.ServerURL, secToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
 			helper.WithAgentVersion(version),
-			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
-			helper.WithRequireManifestSigningKeyID(cfg.RequireManifestSigningKeyID),
+			// Providers, not values: both fields are replaced at runtime (the
+			// manifest-trust-pin path and applyManifestKeyDelegations rewrite
+			// the pinned set; configUpdate can flip the key-ID requirement), so
+			// a by-value snapshot would freeze the helper's trust while the
+			// main/watchdog updaters follow the change. Same asymmetry
+			// WithBackupServerURL already avoided on the next line.
+			helper.WithManifestKeys(h.pinnedManifestPubKeys),
+			helper.WithRequireManifestSigningKeyID(h.requireManifestSigningKeyID),
 			helper.WithBackupServerURL(h.BackupServerURL),
 		)
 	}
@@ -2071,15 +2083,18 @@ func decideRequireManifestSigningKeyIDUpdate(raw any, current bool) (bool, bool)
 // was silently discarded and the field could only ever be set by hand-
 // editing agent.yaml (deviation D4).
 //
-// Consumers re-read h.config.RequireManifestSigningKeyID at
+// Consumers re-read the value through h.requireManifestSigningKeyID() at
 // updater-construction time — handlers_devupdate.go's ManifestPolicy, and
 // the main/helper/watchdog update-check call sites in this file — so a
 // pushed change takes effect on the NEXT update check, no restart required.
-// The helper-manager options threaded via helper.WithRequireManifestSigningKeyID
-// (below, at watchdog-launch time) are captured once at process start and
-// DO need a restart to pick up a change; that is the same limitation
-// backup_server_url already has and is accepted for the same reason (see
-// docs/operations/agent-network-and-manifest-rollout.md).
+// The helper Manager is included: helper.WithRequireManifestSigningKeyID and
+// helper.WithManifestKeys take PROVIDERS wired to these accessors, so the
+// helper's verified downloader resolves them per download rather than freezing
+// a process-start snapshot. Passing them by value was the I4 defect: once a
+// delegated key was activated the server signed helper manifests with the new
+// key ID while the Manager still verified against the superseded set, failing
+// Breeze Assist install/update closed until a restart with no server-side
+// signal (see docs/operations/agent-network-and-manifest-rollout.md).
 func (h *Heartbeat) applyRequireManifestSigningKeyIDConfig(raw any) {
 	h.mu.Lock()
 	current := h.config.RequireManifestSigningKeyID
