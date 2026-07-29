@@ -787,4 +787,26 @@ func TestSafeDownloadError(t *testing.T) {
 			t.Fatalf("safeDownloadError = %q", got)
 		}
 	})
+
+	t.Run("nil error is empty", func(t *testing.T) {
+		if got := safeDownloadError(nil); got != "" {
+			t.Fatalf("safeDownloadError(nil) = %q, want empty", got)
+		}
+	})
+
+	t.Run("url.Error with a nil inner error does not panic", func(t *testing.T) {
+		// This function used to be a FORK of updater.SafeDownloadErrorFields and
+		// dereferenced urlErr.Err unconditionally. It now delegates, so the nil
+		// guard added there covers this call site too — which matters because
+		// every caller is on a failure path inside a command-worker goroutine,
+		// where a nil dereference is a process crash rather than a failed
+		// install.
+		got := safeDownloadError(&url.Error{Op: "Get", URL: secretURL})
+		if got == "" {
+			t.Fatal("safeDownloadError returned empty for a nil-Err url.Error")
+		}
+		if strings.Contains(got, "X-Amz-Signature") || strings.Contains(got, "cdn.example.com") {
+			t.Fatalf("nil-Err fallback leaked the URL: %q", got)
+		}
+	})
 }

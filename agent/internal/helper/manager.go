@@ -15,6 +15,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/secmem"
+	"github.com/breeze-rmm/agent/internal/updater"
 	"gopkg.in/yaml.v3"
 )
 
@@ -290,7 +291,11 @@ func (m *Manager) Apply(settings *Settings) {
 		if m.pendingHelperVersion == "" {
 			log.Debug("breeze assist enabled but no signed target version yet; deferring install")
 		} else if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
-			log.Error("failed to install breeze assist", "error", err.Error())
+			// downloadAndInstall wraps the verified downloader's error, which for
+			// any transport failure is a *url.Error carrying the presigned
+			// helper-asset URL. This log line ships, so it must be redacted.
+			key, value := updater.SafeDownloadErrorFields(err)
+			log.Error("failed to install breeze assist", key, value)
 			return
 		}
 	}
@@ -740,7 +745,9 @@ func (m *Manager) applyPendingUpdate() {
 
 	if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
 		m.updateFailures++
-		log.Error("failed to install helper update", "error", err.Error(), "failures", m.updateFailures)
+		// Same presigned-URL hazard as the install path above.
+		key, value := updater.SafeDownloadErrorFields(err)
+		log.Error("failed to install helper update", key, value, "failures", m.updateFailures)
 		if restoreErr := restoreBackup(backupPath, m.binaryPath); restoreErr != nil {
 			log.Error("failed to rollback helper", "error", restoreErr.Error())
 		}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,10 +99,14 @@ func handleDevUpdate(h *Heartbeat, cmd Command) tools.CommandResult {
 	// affected device's update timeline without parsing payloads.
 	reason := tools.GetPayloadString(cmd.Payload, "reason", "")
 
+	// The ORIGIN only, never the full URL: a dev_update downloadUrl is routinely
+	// a presigned S3/CDN link whose query string IS the capability, and this
+	// line is unconditional at Info — i.e. it ships. The origin is what an
+	// operator actually needs to see (which host the binary came from).
 	log.Info("dev_update received",
 		"version", version,
 		"component", component,
-		"downloadUrl", downloadURL,
+		"downloadOrigin", downloadOrigin(downloadURL),
 		"preserveAutoUpdate", preserveAutoUpdate,
 		"reason", reason,
 	)
@@ -135,7 +140,13 @@ func handleDevUpdateUserHelper(h *Heartbeat, start time.Time, downloadURL, check
 
 	tempPath, err := u.DownloadAndVerify(downloadURL, checksum)
 	if err != nil {
-		return tools.NewErrorResult(fmt.Errorf("failed to download user helper: %w", err), time.Since(start).Milliseconds())
+		// %s + SafeDownloadErrorMessage, never %w: this result is POSTed back as
+		// a command result and rendered in the UI, and net/http wraps every
+		// transport failure in *url.Error whose message repeats the full
+		// (presigned) download URL.
+		return tools.NewErrorResult(
+			fmt.Errorf("failed to download user helper: %s", updater.SafeDownloadErrorMessage(err)),
+			time.Since(start).Milliseconds())
 	}
 	defer os.Remove(tempPath)
 
@@ -354,7 +365,10 @@ func handleDevUpdateDesktopHelper(h *Heartbeat, start time.Time, downloadURL, ch
 	// moving it into place and cleaning up.
 	tempPath, err := u.DownloadAndVerify(downloadURL, checksum)
 	if err != nil {
-		return tools.NewErrorResult(fmt.Errorf("failed to download desktop helper: %w", err), time.Since(start).Milliseconds())
+		// See handleDevUpdateUserHelper: redacted, off-box command result.
+		return tools.NewErrorResult(
+			fmt.Errorf("failed to download desktop helper: %s", updater.SafeDownloadErrorMessage(err)),
+			time.Since(start).Milliseconds())
 	}
 	defer os.Remove(tempPath)
 
@@ -476,4 +490,20 @@ func copyFile(src, dst string) error {
 		return fmt.Errorf("sync dst: %w", err)
 	}
 	return out.Close()
+}
+
+// downloadOrigin renders "scheme://host[:port]" for a download URL, dropping the
+// path, query and any userinfo. A dev_update / managed-software URL is routinely
+// presigned, so the query string is a bearer capability and must never reach a
+// log line — while the origin is the part an operator needs in order to tell
+// where a binary came from.
+//
+// Unparseable input collapses to a fixed token rather than echoing the raw
+// string back, which would defeat the whole point.
+func downloadOrigin(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "unparseable"
+	}
+	return u.Scheme + "://" + u.Host
 }

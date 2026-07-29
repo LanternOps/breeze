@@ -363,6 +363,14 @@ type Heartbeat struct {
 	// adoption so a later attempt is reported again.
 	manifestDelegationRejectionLogged atomic.Pointer[string]
 
+	// Same bounding for the catch-all (non-rotation, non-expansion) pin
+	// failure. Log shipping defaults to warn (config.go's log_shipping_level),
+	// so a control plane emitting persistently malformed trust material —
+	// a bad base64 pubkey, an unreadable pinned set — wrote one SHIPPED line
+	// per device per heartbeat, forever. Latched on the reason; cleared on a
+	// successful pin, exactly like the two siblings above.
+	manifestTrustPinFailureLogged atomic.Pointer[string]
+
 	// Helper chat enabled flag from org settings
 	helperEnabled atomic.Bool
 	helperMgr     *helper.Manager
@@ -3660,6 +3668,28 @@ func (h *Heartbeat) logManifestDelegationRejected(err error) {
 	}
 }
 
+// logManifestTrustPinFailureLogger is the log seam for the bounded catch-all
+// pin-failure line, matching the two seams above so a test can count the lines
+// a long-lived agent would actually emit.
+var logManifestTrustPinFailureLogger = func(err error) {
+	log.Warn("manifest trust key pin failed (non-rotation)", "error", err.Error())
+}
+
+// logManifestTrustPinFailed emits the catch-all pin-failure warning at most once
+// per distinct reason. Its two siblings in processHeartbeatResponse already had
+// this bound; this branch did not, and it is the one a control plane emitting
+// persistently malformed trust material lands in. Cleared on a successful pin.
+func (h *Heartbeat) logManifestTrustPinFailed(err error) {
+	reason := err.Error()
+	prev := h.manifestTrustPinFailureLogged.Load()
+	if prev != nil && *prev == reason {
+		return
+	}
+	if h.manifestTrustPinFailureLogged.CompareAndSwap(prev, &reason) {
+		logManifestTrustPinFailureLogger(err)
+	}
+}
+
 // applyManifestKeyDelegations adopts any delivered delegation records.
 //
 // This is the ONLY path by which a previously unseen manifest signing key
@@ -3799,7 +3829,11 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 				// would flood the shipped log stream.
 				h.logManifestTrustExpansionRejected(err)
 			} else {
-				log.Warn("manifest trust key pin failed (non-rotation)", "error", err.Error())
+				// Bounded per distinct reason, like the two branches above:
+				// this is the branch a control plane emitting persistently
+				// malformed trust material lands in, and warn is a SHIPPED
+				// level by default.
+				h.logManifestTrustPinFailed(err)
 			}
 		} else {
 			// Successful pin (idempotent, or a first-key bootstrap) means the
@@ -3808,6 +3842,7 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 			// expansion latch so a later attempt is reported again.
 			h.manifestTrustRotationRejected.Store(false)
 			h.manifestTrustExpansionLogged.Store(nil)
+			h.manifestTrustPinFailureLogged.Store(nil)
 			if reloaded, rerr := config.Reload(); rerr != nil {
 				log.Warn("failed to reload config after pinning manifest trust keys; in-memory pinned set stale until next restart", "error", rerr.Error())
 			} else if reloaded != nil {

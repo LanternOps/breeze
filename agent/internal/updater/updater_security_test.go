@@ -215,6 +215,65 @@ func TestSafeDownloadErrorFields(t *testing.T) {
 			t.Fatalf("key=%q value=%q, want \"error\", %q", key, value, err.Error())
 		}
 	})
+
+	t.Run("url.Error with a nil inner error does not panic", func(t *testing.T) {
+		// Nothing in net/http's contract forbids a nil Err, and this is an
+		// exported helper on failure paths that run inside goroutines — where a
+		// nil dereference is a process crash, not a failed download. The
+		// fallback must still carry no URL.
+		wrapped := &url.Error{Op: "Get", URL: secretURL}
+		key, value := SafeDownloadErrorFields(wrapped)
+		if key != "error" {
+			t.Fatalf("key=%q, want \"error\"", key)
+		}
+		if value == "" {
+			t.Fatal("value is empty; want something naming the operation")
+		}
+		if strings.Contains(value, "cdn.example") || strings.Contains(value, "CAPABILITY-SECRET") {
+			t.Fatalf("nil-Err fallback leaked the request URL: %q", value)
+		}
+	})
+}
+
+// SafeDownloadErrorMessage is the single-string form used by the paths that ship
+// a download error OFF THE BOX: the watchdog's failover command result (which
+// lands in device_commands and the UI) and the dev_update helper handlers'
+// command results. Those call sites previously used err.Error() directly.
+func TestSafeDownloadErrorMessage(t *testing.T) {
+	const secretURL = "https://cdn.example/asset.bin?X-Amz-Signature=CAPABILITY-SECRET"
+
+	t.Run("strips the URL from an ordinary transport failure", func(t *testing.T) {
+		wrapped := &url.Error{Op: "Get", URL: secretURL, Err: errors.New("connection reset by peer")}
+		msg := SafeDownloadErrorMessage(wrapped)
+		if msg != "connection reset by peer" {
+			t.Fatalf("message = %q, want the underlying error only", msg)
+		}
+		if strings.Contains(msg, "cdn.example") || strings.Contains(msg, "CAPABILITY-SECRET") {
+			t.Fatalf("message leaked the request URL: %q", msg)
+		}
+	})
+
+	t.Run("names the policy reason and still carries no URL", func(t *testing.T) {
+		wrapped := &url.Error{Op: "Get", URL: secretURL,
+			Err: &netpolicy.PolicyError{Reason: netpolicy.ReasonPrivateAddressNotAllowed}}
+		msg := SafeDownloadErrorMessage(wrapped)
+		if !strings.Contains(msg, netpolicy.ReasonPrivateAddressNotAllowed) {
+			t.Fatalf("message = %q, want it to name %q", msg, netpolicy.ReasonPrivateAddressNotAllowed)
+		}
+		if strings.Contains(msg, "cdn.example") || strings.Contains(msg, "CAPABILITY-SECRET") {
+			t.Fatalf("message leaked the request URL: %q", msg)
+		}
+	})
+
+	t.Run("nil is empty and a plain error passes through", func(t *testing.T) {
+		if msg := SafeDownloadErrorMessage(nil); msg != "" {
+			t.Fatalf("message for nil = %q, want empty", msg)
+		}
+		plain := errors.New("checksum mismatch")
+		if msg := SafeDownloadErrorMessage(plain); msg != plain.Error() {
+			t.Fatalf("message = %q, want %q", msg, plain.Error())
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

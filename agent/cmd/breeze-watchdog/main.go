@@ -1016,6 +1016,20 @@ func processHeartbeatResponse(
 // handleFailoverCommand executes a single command from the API. ctx is the
 // watchdog run context, so a recovery a command dispatches is cancelled by an
 // SCM stop just like one the main loop started.
+// failoverUpdateErrMsg renders an update_agent / update_watchdog failure for the
+// command RESULT, which is POSTed to the control plane
+// (FailoverClient.SubmitCommandResult -> body["error"] -> device_commands -> the
+// UI). This is the ONE download-error consumer in the watchdog that leaves the
+// box, and it must never be err.Error(): net/http wraps every transport failure
+// in *url.Error, whose message repeats the URL of the failed hop — i.e. the
+// presigned CDN URL after a redirect, capability query string included.
+//
+// A named function rather than an inline call so the property is testable
+// without standing up a FailoverClient, Watchdog and RecoveryManager.
+func failoverUpdateErrMsg(err error) string {
+	return updater.SafeDownloadErrorMessage(err)
+}
+
 func handleFailoverCommand(
 	ctx context.Context,
 	fc *watchdog.FailoverClient,
@@ -1112,7 +1126,7 @@ func handleFailoverCommand(
 			err := doUpdateAgent(targetVersion, fc.BaseURL, cfg, tokens, journal)
 			if err != nil {
 				resultStatus = "failed"
-				errMsg = err.Error()
+				errMsg = failoverUpdateErrMsg(err)
 			} else {
 				resultStatus = "completed"
 				result = map[string]string{"updated_to": targetVersion}
@@ -1128,7 +1142,7 @@ func handleFailoverCommand(
 			err := doUpdateWatchdog(targetVersion, fc.BaseURL, cfg, tokens, journal)
 			if err != nil {
 				resultStatus = "failed"
-				errMsg = err.Error()
+				errMsg = failoverUpdateErrMsg(err)
 			} else {
 				resultStatus = "completed"
 				result = map[string]string{"updated_to": targetVersion}
@@ -1179,6 +1193,11 @@ func doUpdateAgent(targetVersion string, serverURL func() string, cfg *config.Co
 		// the key/value that never leaks it.
 		key, value := updater.SafeDownloadErrorFields(err)
 		journal.Log(watchdog.LevelError, "update.agent_failed", map[string]any{"version": targetVersion, key: value})
+		// The RAW error is returned deliberately: it stays local (the caller
+		// needs the chain for errors.Is) and the single place it could leave the
+		// box — the command-result errMsg in handleFailoverCommand — redacts it
+		// with SafeDownloadErrorMessage. Do not add a second consumer of this
+		// return value without redacting there too.
 		return err
 	}
 	journal.Log(watchdog.LevelInfo, "update.agent_success", map[string]any{
@@ -1216,6 +1235,7 @@ func doUpdateWatchdog(targetVersion string, serverURL func() string, cfg *config
 		// directly.
 		key, value := updater.SafeDownloadErrorFields(err)
 		journal.Log(watchdog.LevelError, "update.watchdog_failed", map[string]any{"version": targetVersion, key: value})
+		// See doUpdateAgent above: raw return, redacted at the off-box boundary.
 		return err
 	}
 	journal.Log(watchdog.LevelInfo, "update.watchdog_success", map[string]any{

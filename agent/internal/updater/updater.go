@@ -188,9 +188,36 @@ func SafeDownloadErrorFields(err error) (key, value string) {
 	}
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
+		// urlErr.Err is nil in principle (nothing in net/http's contract
+		// forbids it, and a caller can construct one). This is an exported
+		// helper on a failure path that runs inside goroutines, where a nil
+		// dereference is a process crash, not a failed download — so fall back
+		// to the operation name, which carries no URL.
+		if urlErr.Err == nil {
+			return "error", "url error during " + urlErr.Op
+		}
 		return "error", urlErr.Err.Error()
 	}
 	return "error", err.Error()
+}
+
+// SafeDownloadErrorMessage is SafeDownloadErrorFields collapsed into ONE
+// redacted string, for the paths that ship a download failure OFF THE BOX (a
+// command result POSTed to the control plane, or a log line at a shipped level)
+// rather than into a structured local journal. Use SafeDownloadErrorFields
+// where a key/value pair is what the sink wants.
+//
+// This exists because the previous pattern at those call sites was
+// `errMsg = err.Error()`, which is exactly the unsafe branch: net/http wraps
+// every transport failure in *url.Error, whose message repeats the full request
+// URL — the presigned CDN URL, capability query string included, after a
+// redirect.
+func SafeDownloadErrorMessage(err error) string {
+	key, value := SafeDownloadErrorFields(err)
+	if key == "policyReason" {
+		return "network policy rejected the download: " + value
+	}
+	return value
 }
 
 // serverURL resolves the control-plane base URL from the ServerURL provider.
@@ -809,7 +836,10 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 		if pkgErr != nil {
 			log.Warn("signed .pkg checksum unavailable, falling back to verified-binary replacement", "error", pkgErr.Error())
 		} else if installErr := u.installViaPkg(version, pkgChecksum); installErr != nil {
-			log.Warn("pkg install failed, falling back to binary replacement", "error", installErr.Error())
+			// installViaPkg downloads the signed .pkg (pkg_darwin.go), so this
+			// error chain can be a *url.Error carrying the presigned asset URL.
+			key, value := SafeDownloadErrorFields(installErr)
+			log.Warn("pkg install failed, falling back to binary replacement", key, value)
 		} else {
 			return nil // .pkg install handles binary replacement + restart
 		}

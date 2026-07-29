@@ -5,12 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +20,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/netpolicy"
 	"github.com/breeze-rmm/agent/internal/procoutput"
+	"github.com/breeze-rmm/agent/internal/updater"
 )
 
 const (
@@ -473,25 +472,23 @@ func downloadPolicyVersionIsOne(v any) bool {
 	}
 }
 
-// safeDownloadError renders a download failure without leaking the request
-// URL. Mirrors updater.SafeDownloadErrorFields: a *netpolicy.PolicyError
-// anywhere in the chain becomes its bounded reason; a *url.Error (which
-// net/http produces for EVERY transport failure, not just policy rejections,
-// and whose Error() repeats the full URL) is reduced to the underlying error's
-// own text; anything else passes through unchanged.
+// safeDownloadError renders a download failure without leaking the request URL.
+//
+// It DELEGATES to updater.SafeDownloadErrorFields rather than re-implementing
+// the errors.As dance. It used to be a fork of it, and the fork had already
+// drifted: it dereferenced urlErr.Err without a nil check, and a future fix to
+// one copy would silently not reach the other. There is exactly one
+// implementation of this redaction in the agent now.
+//
+// The bounded reason is returned bare (not prefixed) because every caller here
+// interpolates it into its own "download failed: %s" message and the existing
+// tests match on the reason token itself.
 func safeDownloadError(err error) string {
 	if err == nil {
 		return ""
 	}
-	var pe *netpolicy.PolicyError
-	if errors.As(err, &pe) {
-		return pe.Reason
-	}
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) {
-		return urlErr.Err.Error()
-	}
-	return err.Error()
+	_, value := updater.SafeDownloadErrorFields(err)
+	return value
 }
 
 // downloadFile fetches the package with the caller-supplied policy client.
