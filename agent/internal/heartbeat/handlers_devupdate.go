@@ -266,7 +266,7 @@ func (h *Heartbeat) installUserHelperBinary(tempPath, installPath, version strin
 // auto_update on or pin the agent to the pushed binary.
 //
 //   - preserveAutoUpdate=false (default, classic dev push): set
-//     h.config.AutoUpdate=false and persist to disk so the next heartbeat
+//     auto-update off (via h.setAutoUpdate) and persist to disk so the next heartbeat
 //     doesn't immediately re-upgrade off the dev binary.
 //   - preserveAutoUpdate=true (server-orchestrated recovery push): leave
 //     auto_update untouched so the recovered agent rejoins the normal
@@ -282,7 +282,7 @@ func applyDevUpdateAutoUpdatePolicy(h *Heartbeat, preserveAutoUpdate bool) {
 		log.Info("dev_update preserving auto_update — likely a server-orchestrated recovery push")
 		return
 	}
-	h.config.AutoUpdate = false
+	h.setAutoUpdate(false)
 	if err := config.SetAndPersist("auto_update", false); err != nil {
 		log.Warn("failed to persist auto_update=false — dev build may revert after restart", "error", err.Error())
 	}

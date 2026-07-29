@@ -89,8 +89,8 @@ func TestApplyDevUpdateAutoUpdatePolicy_DefaultDisablesAutoUpdate(t *testing.T) 
 
 	applyDevUpdateAutoUpdatePolicy(h, false)
 
-	if h.config.AutoUpdate {
-		t.Fatal("expected h.config.AutoUpdate=false after default dev push")
+	if h.autoUpdate() {
+		t.Fatal("expected autoUpdate()=false after default dev push")
 	}
 	if got := viper.GetBool("auto_update"); got {
 		t.Fatal("expected viper auto_update=false (persisted)")
@@ -104,8 +104,8 @@ func TestApplyDevUpdateAutoUpdatePolicy_PreserveLeavesAutoUpdateUntouched(t *tes
 
 	applyDevUpdateAutoUpdatePolicy(h, true)
 
-	if !h.config.AutoUpdate {
-		t.Fatal("expected h.config.AutoUpdate to stay true when preserveAutoUpdate=true (recovery push)")
+	if !h.autoUpdate() {
+		t.Fatal("expected autoUpdate() to stay true when preserveAutoUpdate=true (recovery push)")
 	}
 	if got := viper.GetBool("auto_update"); !got {
 		t.Fatal("expected viper auto_update to stay true (no persist call)")

@@ -3121,6 +3121,34 @@ func (h *Heartbeat) pinnedManifestPubKeys() []string {
 	return h.config.PinnedManifestPubKeys
 }
 
+// autoUpdate reads the auto-update gate under h.mu. This is the FOURTH
+// runtime-mutable field on h.config (after backupServerURL,
+// requireManifestSigningKeyID and pinnedManifestPubKeys) and it gates every
+// server-directed binary swap, so an unsynchronized read is both a data race
+// and a security-relevant one.
+//
+// The writers are all off the heartbeat goroutine: handleSetAutoUpdate (command
+// worker pool), applyDevUpdateAutoUpdatePolicy (same pool) and doUpgrade's
+// read-only-filesystem branch (the upgrade goroutine). The readers are
+// processHeartbeatResponse's upgrade branch and handleWatchdogUpgrade — and
+// processHeartbeatResponse SPAWNS the watchdog-upgrade goroutine and SUBMITS
+// pool commands from the same response, so the interleaving is one heartbeat
+// wide, not a rare startup window.
+func (h *Heartbeat) autoUpdate() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.config.AutoUpdate
+}
+
+// setAutoUpdate writes the auto-update gate under h.mu. In-memory only: every
+// caller that wants the change to survive a restart also calls
+// config.SetAndPersist (which has its own lock — see config.persistMu).
+func (h *Heartbeat) setAutoUpdate(enabled bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.config.AutoUpdate = enabled
+}
+
 // manifestDelegationEpoch reads the highest-adopted signed-key-delegation
 // epoch under h.mu, mirroring pinnedManifestPubKeys above.
 // applyManifestKeyDelegations writes it on the heartbeat-response goroutine
@@ -3810,7 +3838,7 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 		} else if h.manifestTrustRotationRejected.Load() {
 			log.Error("SECURITY: skipping auto-update — manifest trust rotation rejection unresolved",
 				"targetVersion", response.UpgradeTo)
-		} else if h.config.AutoUpdate {
+		} else if h.autoUpdate() {
 			if h.upgradeInProgress.CompareAndSwap(false, true) {
 				go h.handleUpgrade(response.UpgradeTo)
 			} else {
@@ -5630,7 +5658,7 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 		return
 	}
 
-	if !h.config.AutoUpdate {
+	if !h.autoUpdate() {
 		log.Info("watchdog upgrade available but auto_update is disabled",
 			"targetVersion", targetVersion)
 		return
@@ -6043,7 +6071,7 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 				log.Error("auto-update disabled: binary path is read-only — update the systemd unit to add the binary path to ReadWritePaths, then restart the service", "targetVersion", targetVersion, "error", err.Error())
 				h.updateReadOnlyLogged = true
 			}
-			h.config.AutoUpdate = false
+			h.setAutoUpdate(false)
 			return
 		}
 		// File locked by another process is transient — log and retry next heartbeat.
