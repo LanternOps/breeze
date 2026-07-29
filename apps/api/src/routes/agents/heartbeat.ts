@@ -39,7 +39,12 @@ import { isAgentTokenRotationDue } from '../../middleware/agentAuth';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { captureException } from '../../services/sentry';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
-import { getActiveTrustKeyset, type ManifestTrustKey } from '../../services/manifestSigning';
+import {
+  getActiveTrustKeyset,
+  getActiveManifestKeyDelegations,
+  type ManifestTrustKey,
+  type ManifestKeyDelegation,
+} from '../../services/manifestSigning';
 import { decryptClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { redactSecretsDeep } from '../../services/secretRedaction';
 
@@ -1136,6 +1141,27 @@ if (latestHelper) {
     captureException(err);
   }
 
+  // Signed manifest key delegations (Wave 6 Task 7). This is the path that
+  // actually drives fleet adoption of a rotation: enrollment happens once,
+  // but every agent heartbeats.
+  //
+  // #1105 — fetched OUTSIDE the org transaction for the same reason as the
+  // trust keyset directly above: getActiveManifestKeyDelegations opens its
+  // own system-scoped context/connection, and acquiring that while still
+  // holding the org connection self-deadlocks the pool under a mass agent
+  // reconnect.
+  //
+  // A failure is non-fatal — commands, upgrades and token rotation all ride
+  // on this response, and a rotation record is not worth failing them for.
+  // The agent simply adopts on a later heartbeat.
+  let manifestKeyDelegations: ManifestKeyDelegation[] = [];
+  try {
+    manifestKeyDelegations = await getActiveManifestKeyDelegations();
+  } catch (err) {
+    console.error(`[heartbeat] Failed to load manifest key delegations for agentId=${agentId}:`, err);
+    captureException(err);
+  }
+
   // Policy probe config also runs OUTSIDE the org context (#1105 pattern
   // above) — and MUST: partner-wide compliance policies (org_id NULL, #2129)
   // are invisible to the org-scoped RLS context, and the agent has to collect
@@ -1179,7 +1205,7 @@ if (latestHelper) {
     ? { ...(policyProbeConfig ?? {}), ...(scopedConfigUpdate ?? {}), ...(onedriveConfigUpdate ?? {}) }
     : null;
 
-  return c.json({ ...scoped.mainResponse, configUpdate, manifestTrustKeys });
+  return c.json({ ...scoped.mainResponse, configUpdate, manifestTrustKeys, manifestKeyDelegations });
 });
 
 // Receive service/process monitoring check results from agent

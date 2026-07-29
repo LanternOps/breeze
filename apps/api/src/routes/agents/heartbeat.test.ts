@@ -182,11 +182,16 @@ vi.mock('../../services/remoteAccessPolicy', () => ({
 }));
 
 const getActiveTrustKeysetMock = vi.fn();
+const getActiveManifestKeyDelegationsMock = vi.fn();
 
 vi.mock('../../services/manifestSigning', () => ({
   getActiveTrustKeyset: (...args: unknown[]) => {
     callOrder.push('trustKeyset:fetched');
     return getActiveTrustKeysetMock(...(args as []));
+  },
+  getActiveManifestKeyDelegations: (...args: unknown[]) => {
+    callOrder.push('delegations:fetched');
+    return getActiveManifestKeyDelegationsMock(...(args as []));
   },
 }));
 
@@ -295,8 +300,14 @@ afterEach(() => {
 });
 
 describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    getActiveManifestKeyDelegationsMock.mockResolvedValue([]);
+    // Module-global watchdog restart-log dedupe cache: without this reset a
+    // suite inherits whatever earlier suites logged, so assertions here
+    // could pass or fail depending on file execution order.
+    const { resetWatchdogRestartLogCacheForTests } = await import('./heartbeat');
+    resetWatchdogRestartLogCacheForTests();
 
     // Device lookup → returns a row
     selectMock.mockReturnValueOnce(
@@ -438,6 +449,128 @@ describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () 
     // the REST path so agents don't choke parsing the field. The empty
     // array is also what hosted-SaaS returns when no key is provisioned.
     expect(body.manifestTrustKeys).toEqual([]);
+  });
+});
+
+// =====================================================================
+// Wave 6 Task 7 — signed manifest key delegation delivery.
+//
+// Heartbeat is the path that actually matters for adoption: enrollment
+// happens once, but every agent in the fleet heartbeats, so this is how a
+// prepared rotation reaches devices that were already enrolled.
+// =====================================================================
+describe('POST /agents/:id/heartbeat — manifestKeyDelegations delivery (Wave 6 Task 7)', () => {
+  const delegation = {
+    schemaVersion: 1 as const,
+    oldKeyId: 'deploy-2026-05-09-aaaaaaaa',
+    newKeyId: 'deploy-2026-08-06-bbbbbbbb',
+    newPublicKeyB64: 'AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=',
+    epoch: 7,
+    notBefore: '2026-08-06T00:00:00Z',
+    notAfter: '2026-09-05T00:00:00Z',
+    signatureBase64: 'c2ln',
+  };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    getActiveManifestKeyDelegationsMock.mockResolvedValue([]);
+    // See the note in the #639 suite: the watchdog restart-log cache is
+    // module-global, so it must be reset or these assertions inherit
+    // dedupe state from whichever suites ran first.
+    const { resetWatchdogRestartLogCacheForTests } = await import('./heartbeat');
+    resetWatchdogRestartLogCacheForTests();
+
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          siteId: 'site-1',
+          hostname: 'host-1',
+          osType: 'linux',
+          osVersion: 'Ubuntu 22.04',
+          osBuild: null,
+          architecture: 'amd64',
+          agentVersion: '0.65.10',
+          deviceRole: 'server',
+          deviceRoleSource: 'auto',
+          agentTokenHash: 'hash',
+          tokenIssuedAt: new Date(),
+        },
+      ]),
+    );
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({
+        where: vi.fn(() => whereResultWithReturning()),
+      })),
+    });
+    insertMock.mockReturnValue({
+      values: vi.fn().mockResolvedValue(undefined),
+    });
+    selectMock.mockReturnValue(selectChainResolving([]));
+  });
+
+  async function heartbeat() {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+  }
+
+  it('includes manifestKeyDelegations from getActiveManifestKeyDelegations()', async () => {
+    getActiveManifestKeyDelegationsMock.mockResolvedValue([delegation]);
+
+    const resp = await heartbeat();
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.manifestKeyDelegations).toEqual([delegation]);
+  });
+
+  it('returns manifestKeyDelegations=[] when nothing is prepared', async () => {
+    const resp = await heartbeat();
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.manifestKeyDelegations).toEqual([]);
+  });
+
+  it('still returns 200 with an empty list when the delegation lookup throws', async () => {
+    // A rotation-record failure must not take down heartbeat: commands,
+    // upgrades and token rotation all ride on this response.
+    getActiveManifestKeyDelegationsMock.mockRejectedValue(new Error('boom'));
+
+    const resp = await heartbeat();
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.manifestKeyDelegations).toEqual([]);
+  });
+
+  it('#1105: fetches delegations AFTER the org DB context is released', async () => {
+    callOrder.length = 0;
+    getActiveManifestKeyDelegationsMock.mockResolvedValue([delegation]);
+
+    await heartbeat();
+
+    const released = callOrder.indexOf('dbContext:released');
+    const fetched = callOrder.indexOf('delegations:fetched');
+    expect(released).toBeGreaterThanOrEqual(0);
+    expect(fetched).toBeGreaterThanOrEqual(0);
+    // Same rule as the trust keyset: the org transaction must close before
+    // this acquires a second pooled connection, or a mass reconnect
+    // self-deadlocks the pool.
+    expect(released).toBeLessThan(fetched);
+  });
+
+  it('preserves detectWatchdogStateCollapse and the restart-log cache reset export', async () => {
+    // Wave 6 Task 7 must not regress the #1121 watchdog surface that other
+    // suites in this file depend on.
+    const mod = await import('./heartbeat');
+    expect(typeof mod.detectWatchdogStateCollapse).toBe('function');
+    expect(typeof mod.resetWatchdogRestartLogCacheForTests).toBe('function');
+    expect(
+      mod.detectWatchdogStateCollapse({ watchdogState: 42 }, undefined),
+    ).not.toBeNull();
   });
 });
 
