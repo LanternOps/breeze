@@ -15,6 +15,36 @@ const tenantC = '33333333-3333-3333-3333-333333333333';
 const credentialVersion = '0123456789abcdef0123456789abcdef';
 const attemptA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const attemptB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+// m365_connections_delegated_identity_check (2026-08-06-f) requires an ACTIVE
+// communications-delegated row to carry both tenant_id and delegated_user_object_id.
+// Every active delegated row below therefore pins an Entra object id — including the ones
+// whose inserts are expected to be refused, so that RLS stays the only reason they fail.
+const delegatedOidA2 = 'a2a2a2a2-a2a2-4a2a-8a2a-a2a2a2a2a2a2';
+const delegatedOidAPeer = 'a9a9a9a9-a9a9-4a9a-8a9a-a9a9a9a9a9a9';
+const delegatedOidA = 'a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1';
+const delegatedOidB = 'b1b1b1b1-b1b1-4b1b-8b1b-b1b1b1b1b1b1';
+
+function migrationText(filename: string): string {
+  return readFileSync(join(__dirname, '../../../migrations', filename), 'utf8');
+}
+
+/**
+ * Replays the graph-read consent migration, then restores what replaying it undoes.
+ *
+ * `2026-07-14-…` unconditionally drops and re-adds `m365_consent_sessions_profile_check`
+ * narrowed to `customer-graph-read`, so replaying it out of order silently reverts
+ * `2026-07-22-m365-consent-sessions-actions-profile.sql` — which widened that constraint to
+ * accept `customer-graph-actions`. The migration ledger still lists both as applied, so
+ * nothing re-applies them, and the next suite to open an actions consent session in this
+ * shared database dies on a 23514 that surfaces as an opaque 409.
+ *
+ * Suites must leave the schema as the ledger describes it. Re-applying the later migration
+ * here does that; it is idempotent by construction.
+ */
+async function replayGraphReadConsentMigration(): Promise<void> {
+  await getTestDb().execute(sql.raw(migrationText('2026-07-14-m365-customer-graph-read-consent.sql')));
+  await getTestDb().execute(sql.raw(migrationText('2026-07-22-m365-consent-sessions-actions-profile.sql')));
+}
 
 async function seedFixture() {
   return withSystemDbAccessContext(async () => {
@@ -65,6 +95,7 @@ async function seedFixture() {
       orgId: null,
       userId: userA2.id,
       tenantId: tenantC,
+      delegatedUserObjectId: delegatedOidA2,
       clientId: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
       clientSecret: null,
       profile: 'communications-delegated',
@@ -81,6 +112,7 @@ async function seedFixture() {
       orgId: null,
       userId: userAPeer.id,
       tenantId: tenantC,
+      delegatedUserObjectId: delegatedOidAPeer,
       clientId: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
       clientSecret: null,
       profile: 'communications-delegated',
@@ -181,6 +213,7 @@ describe('m365_connections dual-axis RLS', () => {
       orgId: null,
       userId: fx.userA.id,
       tenantId: tenantA,
+      delegatedUserObjectId: delegatedOidA,
       clientId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
       clientSecret: null,
       profile: 'communications-delegated',
@@ -222,6 +255,7 @@ describe('m365_connections dual-axis RLS', () => {
       orgId: null,
       userId: fx.userB.id,
       tenantId: tenantB,
+      delegatedUserObjectId: delegatedOidB,
       clientId: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
       clientSecret: null,
       profile: 'communications-delegated',
@@ -252,12 +286,8 @@ describe('m365_connections dual-axis RLS', () => {
       status: 'active',
     }).returning());
 
-    const migrationSql = readFileSync(join(
-      __dirname,
-      '../../../migrations/2026-07-14-m365-customer-graph-read-consent.sql',
-    ), 'utf8');
-    await getTestDb().execute(sql.raw(migrationSql));
-    await getTestDb().execute(sql.raw(migrationSql));
+    await replayGraphReadConsentMigration();
+    await replayGraphReadConsentMigration();
 
     const [after] = await withSystemDbAccessContext(() => db.select()
       .from(m365Connections)
@@ -414,10 +444,10 @@ describe('m365_connections dual-axis RLS', () => {
 
   runDb('preflight rejects invalid existing graph-read rows without rewriting them', async () => {
     const fx = await seedFixture();
-    const migrationSql = readFileSync(join(
-      __dirname,
-      '../../../migrations/2026-07-14-m365-customer-graph-read-consent.sql',
-    ), 'utf8');
+    // Applied directly here rather than via replayGraphReadConsentMigration: this call is
+    // expected to RAISE, which rolls the whole file back, so it clobbers nothing. Only the
+    // successful replay in `finally` needs the restore.
+    const migrationSql = migrationText('2026-07-14-m365-customer-graph-read-consent.sql');
     const adminDb = getTestDb();
     let invalidId: string | undefined;
     try {
@@ -458,7 +488,7 @@ describe('m365_connections dual-axis RLS', () => {
         await withSystemDbAccessContext(() => db.delete(m365Connections)
           .where(eq(m365Connections.id, invalidId!)));
       }
-      await adminDb.execute(sql.raw(migrationSql));
+      await replayGraphReadConsentMigration();
     }
   });
 });
