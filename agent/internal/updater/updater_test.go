@@ -1575,3 +1575,316 @@ func TestVerifyUpdateManifest_FailsWithNoTrustedKeys(t *testing.T) {
 		t.Fatal("expected failure with no trusted keys (exact-ID path)")
 	}
 }
+
+// --- diagnosability of a fail-closed trust set ------------------------------
+
+// captureUnusableTrustSetLog swaps the trust-set log seam for a recorder and
+// clears the latch, so a test can assert both the content and the boundedness
+// of the line an operator would actually see.
+func captureUnusableTrustSetLog(t *testing.T) *[]string {
+	t.Helper()
+	var got []string
+	old := unusableTrustSetLogger
+	unusableTrustSetLogger = func(reason string) { got = append(got, reason) }
+	resetUnusableTrustSetLogForTests()
+	t.Cleanup(func() {
+		unusableTrustSetLogger = old
+		resetUnusableTrustSetLogForTests()
+	})
+	return &got
+}
+
+// A malformed pin disables auto-update entirely. That is deliberate, but it
+// must be diagnosable: the operator gets one line naming the offending entry
+// and the remediation, not silence and not one line per heartbeat.
+func TestManifestTrustKeys_UnusableTrustSetLogsOnceWithRemediation(t *testing.T) {
+	logged := captureUnusableTrustSetLog(t)
+
+	u := &Updater{config: &Config{
+		PinnedManifestPubKeys: []string{"deploy-broken:not-base64!!!"},
+	}}
+	for i := 0; i < 5; i++ {
+		if _, _, err := u.manifestTrustKeys(); err == nil {
+			t.Fatalf("iteration %d: expected the malformed pin to fail closed", i)
+		}
+	}
+
+	if len(*logged) != 1 {
+		t.Fatalf("expected exactly 1 log line for a persistently broken trust set, got %d: %v", len(*logged), *logged)
+	}
+	line := (*logged)[0]
+	for _, want := range []string{"deploy-broken", "entry #1"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("log line does not identify the offending entry (missing %q): %s", want, line)
+		}
+	}
+	if strings.Contains(line, "not-base64") {
+		t.Errorf("log line echoed the entry's key material: %s", line)
+	}
+}
+
+// A different failure is a different operator problem, so it logs again; and a
+// trust set that becomes usable re-arms the latch.
+func TestManifestTrustKeys_UnusableTrustSetLogRearms(t *testing.T) {
+	logged := captureUnusableTrustSetLog(t)
+
+	broken := &Updater{config: &Config{PinnedManifestPubKeys: []string{"deploy-a:not-base64!!!"}}}
+	if _, _, err := broken.manifestTrustKeys(); err == nil {
+		t.Fatal("expected failure")
+	}
+	otherBroken := &Updater{config: &Config{PinnedManifestPubKeys: []string{"no-colon-at-all"}}}
+	if _, _, err := otherBroken.manifestTrustKeys(); err == nil {
+		t.Fatal("expected failure")
+	}
+	if len(*logged) != 2 {
+		t.Fatalf("expected a distinct failure to log again, got %d lines: %v", len(*logged), *logged)
+	}
+
+	// Recovery (e.g. re-enrollment rewrote the pin) clears the latch...
+	healthy := &Updater{config: &Config{}}
+	if _, _, err := healthy.manifestTrustKeys(); err != nil {
+		t.Fatalf("healthy trust set: %v", err)
+	}
+	// ...so the same failure recurring afterwards is reported again.
+	if _, _, err := otherBroken.manifestTrustKeys(); err == nil {
+		t.Fatal("expected failure")
+	}
+	if len(*logged) != 3 {
+		t.Fatalf("expected the latch to re-arm after recovery, got %d lines: %v", len(*logged), *logged)
+	}
+}
+
+// --- BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS ------------------------------------
+//
+// The env var is the self-hoster's escape hatch. Its parser is new (keyed vs
+// legacy bare form, and hard errors where the old code silently skipped), and
+// getting it wrong means "no updates at all" on a self-hosted fleet.
+
+func TestManifestTrustKeys_EnvKeyedEntryVerifiesByExactID(t *testing.T) {
+	embeddedPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installEmbeddedManifestKey(t, testEmbeddedKeyID, embeddedPub)
+	captureUnusableTrustSetLog(t)
+	countingWarner(t)
+
+	envPub, envPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS", "selfhost-2026:"+base64.StdEncoding.EncodeToString(envPub))
+
+	payload, sig, checksum := signManifestFor(t, "1.2.3", envPriv)
+	u := &Updater{config: &Config{Component: "agent"}}
+	if _, err := u.verifyUpdateManifest(downloadInfo{
+		URL:               "https://updates.example.invalid/agent",
+		Checksum:          checksum,
+		Manifest:          payload,
+		ManifestSignature: sig,
+		SigningKeyID:      "selfhost-2026",
+	}, "1.2.3"); err != nil {
+		t.Fatalf("keyed env entry should verify under its own id: %v", err)
+	}
+}
+
+func TestManifestTrustKeys_EnvBareEntryOnlyReachableWithoutID(t *testing.T) {
+	embeddedPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installEmbeddedManifestKey(t, testEmbeddedKeyID, embeddedPub)
+	captureUnusableTrustSetLog(t)
+	warnings := countingWarner(t)
+
+	envPub, envPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS", base64.StdEncoding.EncodeToString(envPub))
+
+	payload, sig, checksum := signManifestFor(t, "1.2.3", envPriv)
+	info := downloadInfo{
+		URL:               "https://updates.example.invalid/agent",
+		Checksum:          checksum,
+		Manifest:          payload,
+		ManifestSignature: sig,
+	}
+	u := &Updater{config: &Config{Component: "agent"}}
+
+	// A legacy bare entry has no ID, so it can only ever be reached on the
+	// missing-ID compatibility path.
+	if _, err := u.verifyUpdateManifest(info, "1.2.3"); err != nil {
+		t.Fatalf("bare env key should verify on the missing-ID path: %v", err)
+	}
+	if *warnings != 1 {
+		t.Fatalf("expected the compatibility warning, got %d", *warnings)
+	}
+
+	// Naming any ID must not reach it — there is no ID it could be named by.
+	info.SigningKeyID = testEmbeddedKeyID
+	if _, err := u.verifyUpdateManifest(info, "1.2.3"); err == nil {
+		t.Fatal("a bare env key must not satisfy an ID-bound manifest")
+	}
+}
+
+// The exact-ID branch must not fall through to the legacy unkeyed slice on an
+// unknown ID — that would reintroduce the substitution this task closed, just
+// via the env var instead of the pin file.
+func TestVerifyUpdateManifest_UnknownIDDoesNotFallBackToLegacyEnvKeys(t *testing.T) {
+	embeddedPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installEmbeddedManifestKey(t, testEmbeddedKeyID, embeddedPub)
+	captureUnusableTrustSetLog(t)
+	warnings := countingWarner(t)
+
+	envPub, envPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS", base64.StdEncoding.EncodeToString(envPub))
+
+	payload, sig, checksum := signManifestFor(t, "1.2.3", envPriv)
+	u := &Updater{config: &Config{Component: "agent"}}
+	_, err = u.verifyUpdateManifest(downloadInfo{
+		URL:               "https://updates.example.invalid/agent",
+		Checksum:          checksum,
+		Manifest:          payload,
+		ManifestSignature: sig,
+		SigningKeyID:      "an-id-nobody-has",
+	}, "1.2.3")
+	if err == nil {
+		t.Fatal("expected an unknown id to fail closed even though a legacy env key would verify the bytes")
+	}
+	if !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("expected an unknown-key-id error, got: %v", err)
+	}
+	if *warnings != 0 {
+		t.Fatalf("unknown id must not take the compatibility path (warnings=%d)", *warnings)
+	}
+}
+
+func TestManifestTrustKeys_RejectsMalformedEnvEntries(t *testing.T) {
+	valid := base64.StdEncoding.EncodeToString(make([]byte, ed25519.PublicKeySize))
+	cases := []struct {
+		name string
+		env  string
+	}{
+		{"keyed entry with an invalid id", "bad id!:" + valid},
+		{"keyed entry with a non-base64 key", "selfhost:not-base64!!!"},
+		{"keyed entry with a wrong-length key", "selfhost:" + base64.StdEncoding.EncodeToString([]byte("short"))},
+		{"bare entry that is not base64", "not-base64!!!"},
+		{"bare entry of the wrong length", base64.StdEncoding.EncodeToString([]byte("short"))},
+		{"one good entry and one broken one", valid + ",not-base64!!!"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			captureUnusableTrustSetLog(t)
+			t.Setenv("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS", tc.env)
+			u := &Updater{config: &Config{}}
+			if _, _, err := u.manifestTrustKeys(); err == nil {
+				t.Fatalf("expected env value %q to fail closed", tc.env)
+			}
+		})
+	}
+}
+
+// An operator must not be able to displace the vendor root via the env var
+// any more than via a pinned key.
+func TestManifestTrustKeys_RejectsEnvKeyShadowingEmbeddedID(t *testing.T) {
+	embeddedPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installEmbeddedManifestKey(t, testEmbeddedKeyID, embeddedPub)
+	captureUnusableTrustSetLog(t)
+
+	otherPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS", testEmbeddedKeyID+":"+base64.StdEncoding.EncodeToString(otherPub))
+
+	u := &Updater{config: &Config{}}
+	if _, _, err := u.manifestTrustKeys(); err == nil {
+		t.Fatal("expected an env key shadowing the embedded id to fail closed")
+	}
+}
+
+// Only the fail-closed direction of RequireManifestSigningKeyID was covered;
+// this pins that the flag does not break the normal path it is meant to enforce.
+func TestVerifyUpdateManifest_RequiredModeAcceptsValidSigningKeyID(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installEmbeddedManifestKey(t, testEmbeddedKeyID, pub)
+	captureUnusableTrustSetLog(t)
+	warnings := countingWarner(t)
+
+	payload, sig, checksum := signManifestFor(t, "1.2.3", priv)
+	u := &Updater{config: &Config{Component: "agent", RequireManifestSigningKeyID: true}}
+	got, err := u.verifyUpdateManifest(downloadInfo{
+		URL:               "https://updates.example.invalid/agent",
+		Checksum:          checksum,
+		Manifest:          payload,
+		ManifestSignature: sig,
+		SigningKeyID:      testEmbeddedKeyID,
+	}, "1.2.3")
+	if err != nil {
+		t.Fatalf("fail-closed mode must still accept a manifest that names a known key: %v", err)
+	}
+	if got.Version != "1.2.3" {
+		t.Fatalf("version = %q, want 1.2.3", got.Version)
+	}
+	if *warnings != 0 {
+		t.Fatalf("an ID-bearing manifest must not warn (warnings=%d)", *warnings)
+	}
+}
+
+// The bounded warning is a signal that a manifest was ACCEPTED without an id.
+// A response that fails verification anyway must not consume it.
+func TestVerifyUpdateManifest_MissingIDWarnsOnlyOnAcceptance(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installEmbeddedManifestKey(t, testEmbeddedKeyID, pub)
+	captureUnusableTrustSetLog(t)
+	warnings := countingWarner(t)
+
+	// Signed by an untrusted key, no id supplied: verification fails.
+	_, strangerPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badPayload, badSig, badChecksum := signManifestFor(t, "1.2.3", strangerPriv)
+	u := &Updater{config: &Config{Component: "agent"}}
+	if _, err := u.verifyUpdateManifest(downloadInfo{
+		URL:               "https://updates.example.invalid/agent",
+		Checksum:          badChecksum,
+		Manifest:          badPayload,
+		ManifestSignature: badSig,
+	}, "1.2.3"); err == nil {
+		t.Fatal("expected an untrusted signature to fail")
+	}
+	if *warnings != 0 {
+		t.Fatalf("a rejected manifest must not consume the one-per-process warning (warnings=%d)", *warnings)
+	}
+
+	// The next genuinely-accepted ID-less manifest still gets its warning.
+	goodPayload, goodSig, goodChecksum := signManifestFor(t, "1.2.3", priv)
+	if _, err := u.verifyUpdateManifest(downloadInfo{
+		URL:               "https://updates.example.invalid/agent",
+		Checksum:          goodChecksum,
+		Manifest:          goodPayload,
+		ManifestSignature: goodSig,
+	}, "1.2.3"); err != nil {
+		t.Fatalf("verifyUpdateManifest: %v", err)
+	}
+	if *warnings != 1 {
+		t.Fatalf("expected the warning on acceptance, got %d", *warnings)
+	}
+}

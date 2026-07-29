@@ -282,6 +282,43 @@ func warnMissingSigningKeyIDOnce() {
 	}
 }
 
+// unusableTrustSetLogger is the log seam for the one condition in this file
+// that stops the agent updating entirely: trust material that cannot be
+// assembled (a malformed pinned entry, a malformed BREEZE_UPDATE_MANIFEST_
+// PUBLIC_KEYS entry, or a key trying to occupy an embedded key's ID).
+//
+// Failing closed there is deliberate — a silently skipped entry is how a
+// deployment loses its pin without noticing — but "no updates, ever" must not
+// also be silent or unreadable. The line names the offending entry (position
+// and, once validated, key ID; never key bytes) and states the remediation, so
+// an operator can act on it without reading source.
+var unusableTrustSetLogger = func(reason string) {
+	log.Error("SECURITY: manifest trust set is unusable — this agent will not accept ANY update until it is fixed. "+
+		"Remediation: re-enroll the agent (re-enrollment re-bootstraps pinned_manifest_pub_keys in agent.yaml), "+
+		"or correct the offending entry by hand",
+		"reason", reason)
+}
+
+// unusableTrustSetReason latches the last reason logged so a permanently
+// broken config produces one line, not one per update check (the agent polls
+// on every heartbeat). A different reason logs again, and recovery re-arms the
+// latch so a recurrence is not swallowed.
+var unusableTrustSetReason atomic.Pointer[string]
+
+func resetUnusableTrustSetLogForTests() {
+	unusableTrustSetReason.Store(nil)
+}
+
+func logUnusableTrustSet(reason string) {
+	prev := unusableTrustSetReason.Load()
+	if prev != nil && *prev == reason {
+		return
+	}
+	if unusableTrustSetReason.CompareAndSwap(prev, &reason) {
+		unusableTrustSetLogger(reason)
+	}
+}
+
 type updateManifest struct {
 	Version   string `json:"version"`
 	Component string `json:"component"`
@@ -460,7 +497,23 @@ func pkgAssetChecksum(verifiedManifest []byte, version string) (string, error) {
 //   - a pinned or env key that tries to occupy an embedded key's ID with
 //     different bytes is an error — a deployment must never be able to
 //     substitute its own key for the LanternOps root by reusing its ID.
+//
+// Any such failure disables updates entirely, so it is reported through
+// logUnusableTrustSet: one bounded, remediation-bearing line per distinct
+// cause rather than silence or one line per heartbeat.
 func (u *Updater) manifestTrustKeys() (ManifestPublicKeys, []ed25519.PublicKey, error) {
+	keyed, unkeyed, err := u.assembleManifestTrustKeys()
+	if err != nil {
+		logUnusableTrustSet(err.Error())
+		return nil, nil, err
+	}
+	// A usable trust set re-arms the latch, so a fault that recurs after a
+	// re-enrollment is reported again rather than swallowed.
+	unusableTrustSetReason.Store(nil)
+	return keyed, unkeyed, nil
+}
+
+func (u *Updater) assembleManifestTrustKeys() (ManifestPublicKeys, []ed25519.PublicKey, error) {
 	keyed := make(ManifestPublicKeys, len(embeddedManifestPublicKeys)+4)
 	embeddedIDs := make(map[string]struct{}, len(embeddedManifestPublicKeys))
 	for id, key := range embeddedManifestPublicKeys {
@@ -485,18 +538,23 @@ func (u *Updater) manifestTrustKeys() (ManifestPublicKeys, []ed25519.PublicKey, 
 	}
 
 	var unkeyed []ed25519.PublicKey
-	for _, raw := range strings.Split(os.Getenv("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS"), ",") {
+	for i, raw := range strings.Split(os.Getenv("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS"), ",") {
+		pos := i + 1
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
 			continue
 		}
 		// Base64 never contains ':', so a colon unambiguously marks the
 		// keyed "<keyId>:<base64>" form. The bare form predates key IDs and
-		// stays supported, but only for ID-less manifests.
+		// stays supported, but only for ID-less manifests — there is no ID an
+		// ID-bound manifest could name it by.
 		if id, b64, ok := strings.Cut(raw, ":"); ok {
+			if !config.ValidManifestKeyID(id) {
+				return nil, nil, fmt.Errorf("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS entry #%d is malformed: key id is empty, too long, or contains characters outside [A-Za-z0-9._-]", pos)
+			}
 			key, err := decodeManifestPubKey(b64)
-			if err != nil || !config.ValidManifestKeyID(id) {
-				return nil, nil, fmt.Errorf("malformed keyed entry in BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS")
+			if err != nil {
+				return nil, nil, fmt.Errorf("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS entry #%d (keyId=%s) is malformed: value is not a base64-encoded 32-byte Ed25519 public key", pos, id)
 			}
 			if err := add(id, key, "environment"); err != nil {
 				return nil, nil, err
@@ -505,7 +563,7 @@ func (u *Updater) manifestTrustKeys() (ManifestPublicKeys, []ed25519.PublicKey, 
 		}
 		key, err := decodeManifestPubKey(raw)
 		if err != nil {
-			return nil, nil, fmt.Errorf("malformed entry in BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS")
+			return nil, nil, fmt.Errorf("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS entry #%d is malformed: expected a base64-encoded 32-byte Ed25519 public key, or \"<keyId>:<base64>\"", pos)
 		}
 		unkeyed = append(unkeyed, key)
 	}
@@ -591,15 +649,20 @@ func (u *Updater) verifyManifestSignature(payload, signature []byte, signingKeyI
 	if len(keyed) == 0 && len(unkeyed) == 0 {
 		return fmt.Errorf("no trusted update manifest public keys configured")
 	}
-	warnMissingSigningKeyIDOnce()
 
 	for _, key := range keyed {
 		if ed25519.Verify(key, payload, signature) {
+			// Warn only on ACCEPTANCE: the warning means "this agent took an
+			// update whose manifest named no key". A response that fails
+			// verification anyway must not consume the one-per-process budget
+			// and hide a later, genuinely accepted ID-less manifest.
+			warnMissingSigningKeyIDOnce()
 			return nil
 		}
 	}
 	for _, key := range unkeyed {
 		if ed25519.Verify(key, payload, signature) {
+			warnMissingSigningKeyIDOnce()
 			return nil
 		}
 	}

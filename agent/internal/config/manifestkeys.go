@@ -90,21 +90,27 @@ func validManifestPubKeyB64(b64 string) bool {
 // verification would quietly fall back to whatever other key is trusted (the
 // embedded vendor root), which is exactly the substitution this package now
 // forbids.
+// Error messages identify the offending entry precisely enough for an operator
+// to fix it without reading source: the 1-based position in
+// pinned_manifest_pub_keys always, plus the keyId once the id itself has been
+// validated (an unvalidated id is never echoed — it is control-plane supplied
+// and reaches log lines). Key BYTES are never included.
 func ParsePinnedManifestKeys(pinned []string) (map[string]string, error) {
 	out := make(map[string]string, len(pinned))
-	for _, entry := range pinned {
+	for i, entry := range pinned {
+		pos := i + 1
 		id, pub, ok := strings.Cut(entry, ":")
 		if !ok {
-			return nil, fmt.Errorf("malformed pinned manifest key entry: expected \"<keyId>:<base64>\"")
+			return nil, fmt.Errorf("pinned_manifest_pub_keys entry #%d is malformed: expected \"<keyId>:<base64>\"", pos)
 		}
 		if !ValidManifestKeyID(id) {
-			return nil, fmt.Errorf("malformed pinned manifest key entry: invalid key id")
+			return nil, fmt.Errorf("pinned_manifest_pub_keys entry #%d is malformed: key id is empty, over %d characters, or contains characters outside [A-Za-z0-9._-]", pos, maxManifestKeyIDLen)
 		}
 		if !validManifestPubKeyB64(pub) {
-			return nil, fmt.Errorf("malformed pinned manifest key entry for keyId=%s: not a base64 Ed25519 public key", id)
+			return nil, fmt.Errorf("pinned_manifest_pub_keys entry #%d (keyId=%s) is malformed: value is not a base64-encoded 32-byte Ed25519 public key", pos, id)
 		}
 		if _, dup := out[id]; dup {
-			return nil, fmt.Errorf("duplicate pinned manifest key entry for keyId=%s", id)
+			return nil, fmt.Errorf("pinned_manifest_pub_keys entry #%d duplicates keyId=%s", pos, id)
 		}
 		out[id] = pub
 	}

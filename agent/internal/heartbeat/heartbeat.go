@@ -342,6 +342,15 @@ type Heartbeat struct {
 	// the rejection from the operator.
 	manifestTrustRotationRejected atomic.Bool
 
+	// Latches the last expansion-rejection reason logged, so a control plane
+	// that keeps offering a key this agent has never seen produces one
+	// SECURITY line per distinct key set rather than one per heartbeat
+	// forever. Expansion rejection is now routine for any deployment that
+	// followed the old "rotate by adding a new key_id" recipe, so unlike the
+	// (rare) rotation rejection it genuinely needs the bound. Mirrors the
+	// updater's missingSigningKeyIDWarned latch.
+	manifestTrustExpansionLogged atomic.Pointer[string]
+
 	// Helper chat enabled flag from org settings
 	helperEnabled atomic.Bool
 	helperMgr     *helper.Manager
@@ -3445,6 +3454,29 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 	return &response, true
 }
 
+// logManifestTrustExpansionLogger is the log seam for the bounded expansion
+// rejection line, so tests can count the lines a long-lived agent would
+// actually emit.
+var logManifestTrustExpansionLogger = func(err error) {
+	log.Error("SECURITY: manifest trust key expansion rejected — the control plane offered a key this agent has never seen. "+
+		"Auto-update continues against the already-pinned key; adopting a new key requires re-enrolling this agent",
+		"error", err.Error())
+}
+
+// logManifestTrustExpansionRejected emits the SECURITY line at most once per
+// distinct rejection reason (the reason names the offered key IDs). Cleared on
+// a successful pin so a later attempt is reported again.
+func (h *Heartbeat) logManifestTrustExpansionRejected(err error) {
+	reason := err.Error()
+	prev := h.manifestTrustExpansionLogged.Load()
+	if prev != nil && *prev == reason {
+		return
+	}
+	if h.manifestTrustExpansionLogged.CompareAndSwap(prev, &reason) {
+		logManifestTrustExpansionLogger(err)
+	}
+}
+
 // processHeartbeatResponse executes the directives carried by a validated
 // heartbeat response: configUpdate, manifest trust keys, commands, upgrades,
 // cert/token rotation, tunnel policy, and helper settings. Callers must have
@@ -3464,41 +3496,49 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	// live there. See docs/deploy/agent-update-trust-bootstrap.md for the
 	// threat model.
 	if len(response.ManifestTrustKeys) > 0 {
+		// Every delivered entry is forwarded as-is, including blank ones:
+		// config.PinManifestKeys validates the whole delivery and rejects it
+		// atomically. Silently dropping blanks here would make this path more
+		// permissive than the enrollment path (which rejects the delivery via
+		// config.BootstrapPinnedManifestKeys) and would hide a control plane
+		// emitting malformed trust material.
 		keys := make([]config.ManifestTrustKey, 0, len(response.ManifestTrustKeys))
 		for _, k := range response.ManifestTrustKeys {
-			if k.KeyID == "" || k.PublicKeyB64 == "" {
-				continue
-			}
 			keys = append(keys, config.ManifestTrustKey{KeyID: k.KeyID, PublicKeyB64: k.PublicKeyB64})
 		}
-		if len(keys) > 0 {
-			cfgPath := config.ActiveConfigFile()
-			if err := config.PinManifestKeys(cfgPath, keys); err != nil {
-				if errors.Is(err, config.ErrManifestTrustRotationRejected) {
-					h.manifestTrustRotationRejected.Store(true)
-					log.Error("SECURITY: manifest trust key rotation rejected — auto-update suspended until rotation resolved or agent restart",
-						"error", err.Error())
-				} else if errors.Is(err, config.ErrManifestTrustExpansionRejected) {
-					// Trust expansion is frozen: the agent accepts exactly one
-					// first deployment key and never grows the set afterwards.
-					// Unlike a rotation this does not suspend auto-update (the
-					// already-pinned key is untouched and still valid), but it
-					// is a security-relevant signal, not routine noise.
-					log.Error("SECURITY: manifest trust key expansion rejected — the control plane offered a key this agent has never seen",
-						"error", err.Error())
-				} else {
-					log.Warn("manifest trust key pin failed (non-rotation)", "error", err.Error())
-				}
+		cfgPath := config.ActiveConfigFile()
+		if err := config.PinManifestKeys(cfgPath, keys); err != nil {
+			if errors.Is(err, config.ErrManifestTrustRotationRejected) {
+				h.manifestTrustRotationRejected.Store(true)
+				log.Error("SECURITY: manifest trust key rotation rejected — auto-update suspended until rotation resolved or agent restart",
+					"error", err.Error())
+			} else if errors.Is(err, config.ErrManifestTrustExpansionRejected) {
+				// Trust expansion is frozen: the agent accepts exactly one
+				// first deployment key and never grows the set afterwards.
+				// Unlike a rotation this does not suspend auto-update (the
+				// already-pinned key is untouched and still valid), but it
+				// is a security-relevant signal, not routine noise.
+				//
+				// Bounded per distinct reason (the reason names the offered
+				// key IDs): a deployment that rotated server-side under the
+				// old additive rules will hit this on EVERY heartbeat for the
+				// rest of the agent's life, and an unbounded SECURITY line
+				// would flood the shipped log stream.
+				h.logManifestTrustExpansionRejected(err)
 			} else {
-				// Successful pin (idempotent or genuine new keyId append) means
-				// the conflict — if any — is no longer present. Clear the
-				// rotation-rejected gate so auto-update can resume.
-				h.manifestTrustRotationRejected.Store(false)
-				if reloaded, rerr := config.Reload(); rerr != nil {
-					log.Warn("failed to reload config after pinning manifest trust keys; in-memory pinned set stale until next restart", "error", rerr.Error())
-				} else if reloaded != nil {
-					h.config.PinnedManifestPubKeys = reloaded.PinnedManifestPubKeys
-				}
+				log.Warn("manifest trust key pin failed (non-rotation)", "error", err.Error())
+			}
+		} else {
+			// Successful pin (idempotent, or a first-key bootstrap) means the
+			// conflict — if any — is no longer present. Clear the
+			// rotation-rejected gate so auto-update can resume, and re-arm the
+			// expansion latch so a later attempt is reported again.
+			h.manifestTrustRotationRejected.Store(false)
+			h.manifestTrustExpansionLogged.Store(nil)
+			if reloaded, rerr := config.Reload(); rerr != nil {
+				log.Warn("failed to reload config after pinning manifest trust keys; in-memory pinned set stale until next restart", "error", rerr.Error())
+			} else if reloaded != nil {
+				h.config.PinnedManifestPubKeys = reloaded.PinnedManifestPubKeys
 			}
 		}
 	}
