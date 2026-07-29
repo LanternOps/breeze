@@ -35,6 +35,13 @@
  * it, and reads it in exactly one place.
  */
 
+import {
+  embeddedTransitionIPv4,
+  parseIPv4Host,
+  parseIPv6Host,
+  stripTrailingHostDots,
+} from '@breeze/shared/validators';
+
 /**
  * The single bounded failure reason recorded on a denied device's deployment
  * result. Bounded (a fixed token, never interpolated with a URL/host) because
@@ -59,28 +66,20 @@ export function getManagedSoftwarePolicyMode(): ManagedSoftwarePolicyMode {
 // ---------------------------------------------------------------------------
 // Destination classification
 //
-// Mirrors the private/forbidden split in agent/internal/netpolicy/address.go
-// and packages/shared/src/validators/softwareDownloadPolicy.ts, kept local
-// (rather than imported) because neither exposes the "is this destination
-// private?" question this gate asks: the shared validator classifies what an
-// operator may APPROVE (forbidden vs. approvable), while this classifies what
-// a URL is AIMED at (public vs. everything else).
+// The host/IP PARSING primitives are imported from the shared policy validator
+// (packages/shared/src/validators/softwareDownloadPolicy.ts) so there is one
+// copy: a third re-implementation is how the trailing-dot bypass shipped in
+// the first place. What stays local is the CLASSIFICATION, because the two
+// modules ask different questions — the shared validator decides what an
+// operator may APPROVE (forbidden vs. approvable, where RFC1918/ULA/CGNAT are
+// approvable), while this decides what a URL is AIMED at (public vs.
+// everything else, where those same ranges are private).
 // ---------------------------------------------------------------------------
 
 const NON_PUBLIC_HOSTNAMES: ReadonlySet<string> = new Set([
   'localhost',
   'metadata.google.internal',
 ]);
-
-const IPV4_PATTERN = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
-
-function parseIPv4(host: string): [number, number, number, number] | null {
-  const m = IPV4_PATTERN.exec(host);
-  if (!m) return null;
-  const octets = [m[1]!, m[2]!, m[3]!, m[4]!].map(Number);
-  if (octets.some((o) => !Number.isInteger(o) || o < 0 || o > 255)) return null;
-  return octets as [number, number, number, number];
-}
 
 /**
  * True only for addresses that are global-unicast and not private/reserved —
@@ -102,85 +101,6 @@ function isPublicIPv4([a, b, c]: [number, number, number, number]): boolean {
   return true;
 }
 
-/** Parses IPv6 host text (brackets already stripped) into 16 bytes. */
-function parseIPv6(host: string): number[] | null {
-  if (host === '' || host.includes('%')) return null;
-
-  // A trailing dotted-quad (::ffff:10.0.0.1) is expanded into two groups first.
-  let text = host;
-  const lastColon = text.lastIndexOf(':');
-  const tailText = lastColon === -1 ? '' : text.slice(lastColon + 1);
-  if (tailText.includes('.')) {
-    const v4 = parseIPv4(tailText);
-    if (!v4) return null;
-    const hi = ((v4[0] << 8) | v4[1]).toString(16);
-    const lo = ((v4[2] << 8) | v4[3]).toString(16);
-    text = `${text.slice(0, lastColon + 1)}${hi}:${lo}`;
-  }
-
-  let head = text;
-  let tail = '';
-  let hasDoubleColon = false;
-  const dc = text.indexOf('::');
-  if (dc !== -1) {
-    if (text.indexOf('::', dc + 1) !== -1) return null;
-    hasDoubleColon = true;
-    head = text.slice(0, dc);
-    tail = text.slice(dc + 2);
-  }
-  const headParts = head === '' ? [] : head.split(':');
-  const tailParts = tail === '' ? [] : tail.split(':');
-  const total = headParts.length + tailParts.length;
-  if (hasDoubleColon ? total > 8 : total !== 8) return null;
-  const groups = [
-    ...headParts,
-    ...Array<string>(hasDoubleColon ? 8 - total : 0).fill('0'),
-    ...tailParts,
-  ];
-  if (groups.length !== 8) return null;
-
-  const bytes: number[] = [];
-  for (const g of groups) {
-    if (!/^[0-9a-fA-F]{1,4}$/.test(g)) return null;
-    const v = parseInt(g, 16);
-    bytes.push((v >> 8) & 0xff, v & 0xff);
-  }
-  return bytes;
-}
-
-/**
- * Extracts the IPv4 address carried inside an IPv6 transition encoding —
- * IPv4-mapped/compatible/translated, 6to4, Teredo and NAT64 — so a private
- * destination cannot be smuggled past this gate in its IPv6 spelling. Mirrors
- * embeddedIPv4 in agent/internal/netpolicy/address.go.
- */
-function embeddedIPv4(bytes: number[]): [number, number, number, number] | null {
-  const quad = (): [number, number, number, number] => [
-    bytes[12]!,
-    bytes[13]!,
-    bytes[14]!,
-    bytes[15]!,
-  ];
-  // ::ffff:a.b.c.d (mapped) and ::/96 (compatible) and ::ffff:0:a.b.c.d (translated)
-  if (bytes.slice(0, 10).every((b) => b === 0) && bytes[10] === 0xff && bytes[11] === 0xff) return quad();
-  if (bytes.slice(0, 8).every((b) => b === 0) && bytes[8] === 0xff && bytes[9] === 0xff && bytes[10] === 0 && bytes[11] === 0) return quad();
-  if (bytes.slice(0, 12).every((b) => b === 0)) return quad();
-  // 2002::/16 (6to4)
-  if (bytes[0] === 0x20 && bytes[1] === 0x02) return [bytes[2]!, bytes[3]!, bytes[4]!, bytes[5]!];
-  // 2001::/32 (Teredo) — embedded v4 is the bitwise NOT of the last two groups
-  if (bytes[0] === 0x20 && bytes[1] === 0x01 && bytes[2] === 0 && bytes[3] === 0) {
-    return [~bytes[12]! & 0xff, ~bytes[13]! & 0xff, ~bytes[14]! & 0xff, ~bytes[15]! & 0xff];
-  }
-  // 64:ff9b::/96 (NAT64 well-known prefix)
-  if (
-    bytes[0] === 0 && bytes[1] === 0x64 && bytes[2] === 0xff && bytes[3] === 0x9b &&
-    bytes.slice(4, 12).every((b) => b === 0)
-  ) {
-    return quad();
-  }
-  return null;
-}
-
 function isPublicIPv6(bytes: number[]): boolean {
   if (bytes.every((b) => b === 0)) return false; // ::
   if (bytes.slice(0, 15).every((b) => b === 0) && bytes[15] === 1) return false; // ::1
@@ -188,27 +108,71 @@ function isPublicIPv6(bytes: number[]): boolean {
   if ((bytes[0]! & 0xfe) === 0xfc) return false; // fc00::/7 ULA
   if (bytes[0] === 0xff) return false; // ff00::/8 multicast
 
-  const embedded = embeddedIPv4(bytes);
+  // IPv4-mapped (::ffff:0:0/96) is checked here rather than in the shared
+  // embeddedTransitionIPv4, which deliberately omits it because its caller
+  // rejects every mapped literal outright. This gate cannot: a mapped PUBLIC
+  // payload is a genuinely public destination, so it is classified by its
+  // payload like every other transition encoding.
+  const isV4Mapped =
+    bytes.slice(0, 10).every((b) => b === 0) && bytes[10] === 0xff && bytes[11] === 0xff;
+  if (isV4Mapped) {
+    return isPublicIPv4([bytes[12]!, bytes[13]!, bytes[14]!, bytes[15]!]);
+  }
+
+  const embedded = embeddedTransitionIPv4(bytes);
   if (embedded) return isPublicIPv4(embedded);
   return true;
 }
 
-function stripTrailingDots(host: string): string {
-  let end = host.length;
-  while (end > 0 && host[end - 1] === '.') end--;
-  return host.slice(0, end);
+/**
+ * The canonical comparison key for a host, used for BOTH sides of the
+ * approved-origin check so no spelling difference can separate them:
+ * lowercased, trailing dots stripped (a trailing dot names the same host to
+ * every resolver, and the agent trims it too), and an IPv6 literal reduced to
+ * its parsed bytes so two spellings of one address compare equal.
+ *
+ * Takes host text as produced by the WHATWG URL parser (`url.hostname`),
+ * which has already canonicalized obfuscated IPv4 (decimal/octal/hex/short
+ * form) and IPv6 (including dotted-quad tails) before this sees it.
+ *
+ * Deliberately keyed on the HOST only, not scheme+port: a host the operator
+ * declared to be a private software source is private however it is reached.
+ * Matching the full origin instead would let `http://files.corp.internal` or
+ * `https://files.corp.internal:8080` slip past as "public" and be handed to a
+ * capability-0 agent in compat mode. This can only ever over-classify a
+ * destination as private, which costs a not-yet-upgraded device one dispatch
+ * and never grants reachability to anything.
+ */
+function policyHostKey(rawHostname: string): string | null {
+  const lowered = rawHostname.trim().toLowerCase();
+  if (lowered === '') return null;
+
+  if (lowered.startsWith('[') && lowered.endsWith(']')) {
+    const bytes = parseIPv6Host(lowered.slice(1, -1));
+    return bytes === null ? null : `[${bytes.join('.')}]`;
+  }
+
+  const host = stripTrailingHostDots(lowered);
+  return host === '' ? null : host;
 }
 
-/**
- * The origin of `url` in the same spelling the shared policy validator
- * produces (lowercase host, default port omitted, no trailing slash), so a
- * destination can be compared against the stored allowlist entries.
- */
-function originOf(url: URL): string {
-  const host = url.hostname.toLowerCase();
-  return url.port === ''
-    ? `${url.protocol}//${host}`
-    : `${url.protocol}//${host}:${url.port}`;
+/** The comparison keys of every allowlist entry that parses as a URL. */
+function approvedHostKeys(approvedPrivateOrigins: readonly string[]): Set<string> {
+  const keys = new Set<string>();
+  for (const raw of approvedPrivateOrigins) {
+    if (typeof raw !== 'string' || raw.trim() === '') continue;
+    let url: URL;
+    try {
+      url = new URL(raw.trim());
+    } catch {
+      // Unstorable through the Zod schema; ignored rather than throwing so one
+      // hand-edited settings row cannot 500 every deployment in the org.
+      continue;
+    }
+    const key = policyHostKey(url.hostname);
+    if (key !== null) keys.add(key);
+  }
+  return keys;
 }
 
 /**
@@ -245,24 +209,23 @@ export function isPrivateSoftwareDestination(
   const rawHost = url.hostname.toLowerCase();
   if (rawHost === '') return true;
 
-  const isBracketedV6 = rawHost.startsWith('[') && rawHost.endsWith(']');
-  const host = isBracketedV6 ? rawHost.slice(1, -1) : stripTrailingDots(rawHost);
-  if (host === '') return true;
-
-  if (isBracketedV6) {
-    const bytes = parseIPv6(host);
+  if (rawHost.startsWith('[') && rawHost.endsWith(']')) {
+    const bytes = parseIPv6Host(rawHost.slice(1, -1));
     // Unparseable literal: fail closed rather than fall through to the
     // hostname branch, where it would classify "public".
     return bytes === null ? true : !isPublicIPv6(bytes);
   }
 
-  const v4 = parseIPv4(host);
+  const host = stripTrailingHostDots(rawHost);
+  if (host === '') return true;
+
+  const v4 = parseIPv4Host(host);
   if (v4) return !isPublicIPv4(v4);
 
   if (NON_PUBLIC_HOSTNAMES.has(host) || host.endsWith('.localhost')) return true;
 
-  const origin = originOf(url);
-  return approvedPrivateOrigins.some((approved) => approved.trim().toLowerCase() === origin);
+  const key = policyHostKey(host);
+  return key !== null && approvedHostKeys(approvedPrivateOrigins).has(key);
 }
 
 export interface ManagedSoftwareDispatchInput {

@@ -66,7 +66,14 @@ const FORBIDDEN_HOSTNAMES: ReadonlySet<string> = new Set(['metadata.google.inter
 
 const MAX_ORIGIN_LENGTH = 2048;
 
-function stripTrailingDots(host: string): string {
+/**
+ * Strips the trailing dot(s) of a fully-qualified host. A trailing dot names
+ * the same host to every resolver, and the Go classifier trims it too
+ * (agent/internal/netpolicy/address.go's normalizeHostname), so any policy
+ * decision keyed on host text MUST normalize it away first — comparing raw
+ * host text against a normalized allowlist is a bypass.
+ */
+export function stripTrailingHostDots(host: string): string {
   let end = host.length;
   while (end > 0 && host[end - 1] === '.') end--;
   return host.slice(0, end);
@@ -82,7 +89,7 @@ const IPV4_PATTERN = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
  * here (unlike agent/internal/netpolicy's checkHostShape, which sees raw
  * operator-typed text and must reject those forms outright).
  */
-function parseIPv4(host: string): [number, number, number, number] | null {
+export function parseIPv4Host(host: string): [number, number, number, number] | null {
   const m = IPV4_PATTERN.exec(host);
   if (!m) return null;
   const octets = [m[1]!, m[2]!, m[3]!, m[4]!].map((part) => Number(part));
@@ -117,7 +124,7 @@ function isForbiddenIPv4([a, b, c, d]: [number, number, number, number]): boolea
  * being forgiving here costs nothing since forbidden-range classification
  * runs on the parsed BYTES, not the text form.
  */
-function parseIPv6(host: string): number[] | null {
+export function parseIPv6Host(host: string): number[] | null {
   if (host === '' || host.includes('%')) return null;
   let head = host;
   let tail = '';
@@ -155,7 +162,7 @@ function parseIPv6(host: string): number[] | null {
  * historical forms. IPv4-mapped (::ffff:a.b.c.d) is handled by the caller
  * (isV4Mapped in isForbiddenIPv6) and deliberately not repeated here.
  */
-function embeddedTransitionIPv4(bytes: number[]): [number, number, number, number] | null {
+export function embeddedTransitionIPv4(bytes: number[]): [number, number, number, number] | null {
   // 6to4 (RFC 3056): 2002::/16 — embedded v4 is the next two groups.
   if (bytes[0] === 0x20 && bytes[1] === 0x02) {
     return [bytes[2]!, bytes[3]!, bytes[4]!, bytes[5]!];
@@ -269,15 +276,15 @@ export function normalizePrivateSoftwareOrigin(raw: string): string | null {
   const isBracketedV6 = rawHost.startsWith('[') && rawHost.endsWith(']');
   const hostText = isBracketedV6
     ? rawHost.slice(1, -1)
-    : stripTrailingDots(rawHost);
+    : stripTrailingHostDots(rawHost);
   if (hostText === '') return null;
 
   if (isBracketedV6) {
-    const bytes = parseIPv6(hostText);
+    const bytes = parseIPv6Host(hostText);
     if (!bytes) return null;
     if (isForbiddenIPv6(bytes)) return null;
   } else {
-    const v4 = parseIPv4(hostText);
+    const v4 = parseIPv4Host(hostText);
     if (v4) {
       if (isForbiddenIPv4(v4)) return null;
     } else {
