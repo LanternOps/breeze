@@ -4,8 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,14 +19,26 @@ import (
 	"strings"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/netpolicy"
 	"github.com/breeze-rmm/agent/internal/procoutput"
 )
 
 const (
-	installTimeout     = 30 * time.Minute
-	downloadTimeout    = 15 * time.Minute
-	maxInstallFileSize = 500 * 1024 * 1024 // 500 MB
+	installTimeout  = 30 * time.Minute
+	downloadTimeout = 15 * time.Minute
+
+	// maxManagedSoftwareOrigins mirrors the server-side bound on
+	// softwareDownloadPolicy.approvedPrivateOrigins (32). A longer list is not
+	// something the API can produce, so it is treated as a malformed policy.
+	maxManagedSoftwareOrigins = 32
 )
+
+// maxInstallFileSize bounds both the netpolicy transport (Policy.
+// MaxResponseBytes) and the explicit CopyBounded call in downloadFile. A var
+// (not a const), matching updater.maxUpdateBinaryBytes, solely so tests can
+// shrink it — moving the real 500 MiB through a unit test is impractical.
+// Production behavior is unchanged.
+var maxInstallFileSize int64 = 500 * 1024 * 1024 // 500 MB
 
 var checksumHexPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 
@@ -78,8 +93,25 @@ func InstallSoftware(payload map[string]any) (result CommandResult) {
 		}
 	}
 
-	if err := validateDownloadURL(downloadUrl); err != nil {
-		return NewErrorResult(err, time.Since(startTime).Milliseconds())
+	// Outbound network policy (Wave 6 Task 5, security remediation). The
+	// destination is attacker-influenced and carries an executable payload, so
+	// every check below — scheme, host shape, address classification at dial
+	// time, on every redirect hop — belongs to netpolicy, not to this file.
+	// Construction failing means the install fails: there is no unenforced
+	// fallback client (mirrors updater.New's fail-closed posture).
+	policy := managedSoftwarePolicy(parseDownloadPolicy(payload))
+	if err := netpolicy.ValidateURL(downloadUrl, policy); err != nil {
+		return NewErrorResult(
+			fmt.Errorf("downloadUrl rejected by network policy: %s", safeDownloadError(err)),
+			time.Since(startTime).Milliseconds(),
+		)
+	}
+	client, err := netpolicy.NewClient(policy)
+	if err != nil {
+		return NewErrorResult(
+			fmt.Errorf("managed software network policy unavailable: %s", safeDownloadError(err)),
+			time.Since(startTime).Milliseconds(),
+		)
 	}
 
 	// Download to temp directory
@@ -91,8 +123,15 @@ func InstallSoftware(payload map[string]any) (result CommandResult) {
 
 	localPath := filepath.Join(tempDir, filepath.Base(fileName))
 
-	if err := downloadFile(downloadUrl, localPath); err != nil {
-		return NewErrorResult(fmt.Errorf("download failed: %w", err), time.Since(startTime).Milliseconds())
+	if err := downloadFile(client, downloadUrl, localPath); err != nil {
+		// safeDownloadError, never %w: net/http wraps every transport failure
+		// in *url.Error, whose message repeats the full request URL — and a
+		// managed software URL is typically presigned, carrying a capability
+		// query string that must never reach a log or a command result.
+		return NewErrorResult(
+			fmt.Errorf("download failed: %s", safeDownloadError(err)),
+			time.Since(startTime).Milliseconds(),
+		)
 	}
 
 	// Verify checksum if provided
@@ -274,49 +313,144 @@ func validateMSIInstallArgs(args string) error {
 	return nil
 }
 
-func validateDownloadURL(raw string) error {
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("downloadUrl is invalid: %w", err)
-	}
-	if !strings.EqualFold(parsed.Scheme, "https") {
-		return fmt.Errorf("downloadUrl must use HTTPS")
-	}
-	if parsed.Host == "" {
-		return fmt.Errorf("downloadUrl must include a host")
-	}
-	if parsed.User != nil {
-		return fmt.Errorf("downloadUrl must not include userinfo")
-	}
-	return nil
-}
-
-func newInstallerHTTPClient() *http.Client {
-	return &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return fmt.Errorf("stopped after too many redirects")
-			}
-			if err := validateDownloadURL(req.URL.String()); err != nil {
-				return fmt.Errorf("redirect blocked: %w", err)
-			}
-			return nil
-		},
+// managedSoftwarePolicy is the outbound network policy for every managed
+// software download. Managed software URLs are vendor CDNs or customer-hosted
+// repositories delivering executable payloads, so:
+//
+//   - Purpose ManagedSoftwareDownload requires HTTPS unconditionally — the
+//     cleartext exception exists only for a configured control-plane origin,
+//     which this purpose never has;
+//   - ApprovedPrivateOrigins is the tenant's org ∪ site allowlist as delivered
+//     with the command. It grants reachability to an RFC1918/ULA/CGNAT address
+//     at that EXACT origin, and nothing else: no loopback, link-local,
+//     metadata or reserved destination is reachable however it is spelled or
+//     whatever the allowlist says;
+//   - the redirect chain is capped at 10 hops and re-validated (and stripped
+//     of credentials on any origin change) on every one of them;
+//   - the whole exchange, body included, is bounded by 15 minutes and
+//     maxInstallFileSize.
+func managedSoftwarePolicy(approvedPrivateOrigins []string) netpolicy.Policy {
+	return netpolicy.Policy{
+		Purpose:                netpolicy.ManagedSoftwareDownload,
+		ApprovedPrivateOrigins: approvedPrivateOrigins,
+		MaxRedirects:           10,
+		RequestTimeout:         downloadTimeout,
+		MaxResponseBytes:       maxInstallFileSize,
 	}
 }
 
-func downloadFile(url, destPath string) error {
+// parseDownloadPolicy strictly parses the server-supplied `downloadPolicy`
+// command field into the approved private origins it names.
+//
+// Strict means all-or-nothing: any deviation from the exact expected shape
+// yields NO approved origins rather than a partially-trusted list. The
+// resulting posture is the one the brief requires — a MISSING or malformed
+// policy stays compatible for a destination that resolves entirely public
+// (which needs no allowlist entry at all), while every private answer fails
+// closed at dial time with private_address_not_allowed.
+//
+// Note the deliberate asymmetry with a well-formed policy naming an
+// unparseable origin: that is a real (if broken) instruction from the server,
+// so netpolicy.NewClient rejects it and the install fails closed rather than
+// running under a silently narrowed policy.
+func parseDownloadPolicy(payload map[string]any) []string {
+	raw, present := payload["downloadPolicy"]
+	if !present || raw == nil {
+		return nil
+	}
+
+	reject := func(reason string) []string {
+		// No URL, no origin text, no payload echo — a bounded reason only.
+		slog.Warn("managed software downloadPolicy rejected; private destinations will be refused",
+			"reason", reason)
+		return nil
+	}
+
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return reject("not_an_object")
+	}
+	if !downloadPolicyVersionIsOne(obj["version"]) {
+		return reject("unsupported_version")
+	}
+	list, ok := obj["approvedPrivateOrigins"].([]any)
+	if !ok {
+		return reject("origins_not_a_list")
+	}
+	if len(list) > maxManagedSoftwareOrigins {
+		return reject("too_many_origins")
+	}
+
+	origins := make([]string, 0, len(list))
+	for _, entry := range list {
+		s, ok := entry.(string)
+		if !ok {
+			return reject("origin_not_a_string")
+		}
+		if strings.TrimSpace(s) == "" {
+			return reject("empty_origin")
+		}
+		origins = append(origins, strings.TrimSpace(s))
+	}
+	return origins
+}
+
+// downloadPolicyVersionIsOne accepts only version 1, in whichever numeric
+// shape the JSON decoder produced (float64 over the wire; int/json.Number are
+// accepted defensively so an in-process caller cannot accidentally downgrade
+// itself to "no policy").
+func downloadPolicyVersionIsOne(v any) bool {
+	switch n := v.(type) {
+	case float64:
+		return n == 1
+	case int:
+		return n == 1
+	case int64:
+		return n == 1
+	case json.Number:
+		i, err := n.Int64()
+		return err == nil && i == 1
+	default:
+		return false
+	}
+}
+
+// safeDownloadError renders a download failure without leaking the request
+// URL. Mirrors updater.SafeDownloadErrorFields: a *netpolicy.PolicyError
+// anywhere in the chain becomes its bounded reason; a *url.Error (which
+// net/http produces for EVERY transport failure, not just policy rejections,
+// and whose Error() repeats the full URL) is reduced to the underlying error's
+// own text; anything else passes through unchanged.
+func safeDownloadError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var pe *netpolicy.PolicyError
+	if errors.As(err, &pe) {
+		return pe.Reason
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return urlErr.Err.Error()
+	}
+	return err.Error()
+}
+
+// downloadFile fetches the package with the caller-supplied policy client.
+// The client is a required parameter (never constructed here) so no code path
+// can accidentally download managed software on an unenforced transport.
+func downloadFile(client *http.Client, rawURL, destPath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), downloadTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
 
-	resp, err := newInstallerHTTPClient().Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("HTTP request: %w", err)
+		return err
 	}
 	defer resp.Body.Close()
 
@@ -330,14 +464,12 @@ func downloadFile(url, destPath string) error {
 	}
 	defer f.Close()
 
-	// Limit to max file size to prevent disk exhaustion
-	limited := io.LimitReader(resp.Body, maxInstallFileSize+1)
-	n, err := io.Copy(f, limited)
-	if err != nil {
+	// CopyBounded, not io.Copy: the transport already caps the response body
+	// via Policy.MaxResponseBytes, but a caller passing a non-netpolicy client
+	// (or a future policy change) must not be able to reintroduce an unbounded
+	// write to disk.
+	if _, err := netpolicy.CopyBounded(f, resp.Body, maxInstallFileSize); err != nil {
 		return fmt.Errorf("write file: %w", err)
-	}
-	if n > maxInstallFileSize {
-		return fmt.Errorf("file exceeds maximum size of %d bytes", maxInstallFileSize)
 	}
 
 	return nil

@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/breeze-rmm/agent/internal/netpolicy"
 )
 
 func TestValidateSoftwareName(t *testing.T) {
@@ -218,19 +220,30 @@ func TestValidateInstallInputsRejectsMismatchedFileNameAndArgsFormat(t *testing.
 	}
 }
 
+// The URL-shape and redirect rules moved onto the shared outbound network
+// policy in Wave 6 Task 5 — validateDownloadURL/newInstallerHTTPClient are
+// gone, and netpolicy owns both (with the bounded reasons asserted here).
+// software_network_test.go covers the policy integration in depth.
 func TestValidateDownloadURLAndRedirectPolicy(t *testing.T) {
 	t.Parallel()
 
-	if err := validateDownloadURL("https://example.com/file.exe"); err != nil {
+	policy := managedSoftwarePolicy(nil)
+	if err := netpolicy.ValidateURL("https://example.com/file.exe", policy); err != nil {
 		t.Fatalf("expected https URL to pass, got %v", err)
 	}
-	if err := validateDownloadURL("https://user:pass@example.com/file.exe"); err == nil {
+	if err := netpolicy.ValidateURL("https://user:pass@example.com/file.exe", policy); err == nil {
 		t.Fatal("expected userinfo URL to fail")
 	}
 
+	client, err := netpolicy.NewClient(policy)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
 	req := &http.Request{URL: &url.URL{Scheme: "http", Host: "example.com", Path: "/file.exe"}}
-	err := newInstallerHTTPClient().CheckRedirect(req, []*http.Request{{URL: &url.URL{Scheme: "https", Host: "example.com"}}})
-	if err == nil || !strings.Contains(err.Error(), "redirect blocked") {
+	// Cleartext is never a valid managed-software target, so the hop is refused
+	// as scheme_not_allowed before the downgrade rule is even reached.
+	err = client.CheckRedirect(req, []*http.Request{{URL: &url.URL{Scheme: "https", Host: "example.com"}}})
+	if err == nil || !strings.Contains(err.Error(), netpolicy.ReasonSchemeNotAllowed) {
 		t.Fatalf("expected insecure redirect to be blocked, got %v", err)
 	}
 }
@@ -246,7 +259,7 @@ func TestInstallSoftwareRejectsNonHTTPSDownloadURL(t *testing.T) {
 	if result.Status != "failed" {
 		t.Fatalf("expected failed status, got %q", result.Status)
 	}
-	if !strings.Contains(result.Error, "downloadUrl must use HTTPS") {
+	if !strings.Contains(result.Error, netpolicy.ReasonSchemeNotAllowed) {
 		t.Fatalf("unexpected error: %q", result.Error)
 	}
 }

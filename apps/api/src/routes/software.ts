@@ -16,10 +16,15 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { resolveDeploymentTargets } from '../services/deploymentTargetResolver';
 import { resolveEdrInstaller, type ResolvedInstaller } from '../services/edrInstallerResolver';
 import {
+  getEffectiveSoftwareDownloadPolicy,
   getOrganizationSoftwareDownloadPolicy,
   setOrganizationSoftwareDownloadPolicy,
   setSiteSoftwareDownloadPolicy,
 } from '../services/softwareDownloadPolicy';
+import {
+  evaluateManagedSoftwareDispatch,
+  getManagedSoftwarePolicyMode,
+} from '../services/managedSoftwareDispatchPolicy';
 import {
   uploadBinary,
   getPresignedUrl,
@@ -1331,7 +1336,14 @@ softwareRoutes.post(
           return c.json({ data: { id: deployment!.id, status: 'failed', message: 'No installer available for this version' } }, 200);
         }
 
-        const targetDevices = await db.select({ id: devices.id, agentId: devices.agentId })
+        const targetDevices = await db.select({
+          id: devices.id,
+          agentId: devices.agentId,
+          // Wave 6 Task 5: site drives the effective org ∪ site download
+          // allowlist; the capability version is the dispatch gate's input.
+          siteId: devices.siteId,
+          outboundNetworkPolicyVersion: devices.outboundNetworkPolicyVersion,
+        })
           .from(devices)
           .where(and(
             eq(devices.orgId, orgId),
@@ -1346,13 +1358,54 @@ softwareRoutes.post(
           ? versionRecord.detectionRules
           : undefined;
 
+        // Managed software destination policy (Wave 6 Task 5) — same gate the
+        // canonical services/softwareDeployment.ts path applies. The mode is
+        // read once per batch; the effective allowlist is fetched once per
+        // distinct site.
+        const policyMode = getManagedSoftwarePolicyMode();
+        const policyBySite = new Map<string, Promise<{ approvedPrivateOrigins: string[] }>>();
+        const effectivePolicyFor = (siteId: string | null | undefined) => {
+          const key = siteId ?? '';
+          let pending = policyBySite.get(key);
+          if (!pending) {
+            pending = getEffectiveSoftwareDownloadPolicy(orgId, siteId ?? undefined).then((policy) => ({
+              approvedPrivateOrigins: [...policy.approvedPrivateOrigins],
+            }));
+            policyBySite.set(key, pending);
+          }
+          return pending;
+        };
+
         for (const device of targetDevices) {
+          // Gate BEFORE sendCommandToAgent: a denied device gets a failed
+          // result carrying the bounded reason and no enqueued command.
+          const { approvedPrivateOrigins } = await effectivePolicyFor(device.siteId);
+          const decision = evaluateManagedSoftwareDispatch({
+            downloadUrl: finalDownloadUrl,
+            approvedPrivateOrigins,
+            outboundNetworkPolicyVersion: device.outboundNetworkPolicyVersion,
+            mode: policyMode,
+          });
+          if (!decision.allowed) {
+            await db.update(deploymentResults)
+              .set({ status: 'failed', errorMessage: decision.reason, completedAt: new Date() })
+              .where(and(
+                eq(deploymentResults.deploymentId, deployment!.id),
+                eq(deploymentResults.deviceId, device.id),
+              ));
+            continue;
+          }
+
           const command: AgentCommand = {
             id: `sw-install-${deployment!.id}-${device.id}`,
             type: 'software_install',
             payload: {
               deploymentId: deployment!.id,
               downloadUrl: finalDownloadUrl,
+              downloadPolicy: {
+                version: 1,
+                approvedPrivateOrigins,
+              },
               checksum: versionRecord.checksum,
               fileName: versionRecord.originalFileName ?? `package.${versionRecord.fileType ?? 'exe'}`,
               fileType: versionRecord.fileType ?? 'exe',
