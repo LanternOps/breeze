@@ -116,6 +116,8 @@ describe('action_intents schema', () => {
         'orgId',
         'partnerId',
         'requestedByUserId',
+        'originPrincipalKind',
+        'originPrincipalId',
         'requestingApiKeyId',
         'source',
         'requestingClientLabel',

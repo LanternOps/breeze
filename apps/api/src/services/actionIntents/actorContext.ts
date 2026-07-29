@@ -41,6 +41,35 @@ export async function buildAuthContextForIntent(intent: ActionIntent): Promise<A
   return null;
 }
 
+/**
+ * Maps the intent's recorded origin principal onto an AuthContext principal.
+ *
+ * 'unknown' rows predate the discriminator and their true origin is not
+ * recoverable, so they become a `system` principal with an explicit reason:
+ * that kind fails every interactive gate, which is the correct outcome for an
+ * origin nobody can vouch for.
+ */
+function originPrincipalFor(intent: ActionIntent): AuthContext['principal'] {
+  switch (intent.originPrincipalKind) {
+    case 'user_session':
+      return { kind: 'user_session' };
+    case 'client_user':
+      return { kind: 'client_user' };
+    case 'api_key':
+      return { kind: 'api_key', apiKeyId: intent.originPrincipalId ?? undefined };
+    case 'oauth_grant':
+      return { kind: 'oauth_grant', grantId: intent.originPrincipalId ?? undefined };
+    case 'agent':
+      return { kind: 'agent' };
+    case 'helper':
+      return { kind: 'helper' };
+    case 'system':
+      return { kind: 'system', reason: 'intent-origin-system' };
+    default:
+      return { kind: 'system', reason: 'intent-origin-unknown' };
+  }
+}
+
 async function buildUserOwnedAuthContext(
   intent: ActionIntent,
   userId: string,
@@ -122,19 +151,19 @@ async function buildUserOwnedAuthContext(
     };
 
     return {
-      // Derived from intent.SOURCE, never from which actor column happens to
-      // be populated. `intentService` writes `requested_by_user_id` for EVERY
-      // intent — including MCP-created ones, where that id is the key's
-      // creator (`auth.user.id` at intentService.ts) and
-      // `requesting_api_key_id` is left null. So the actor columns cannot
-      // distinguish a chat intent from an API-key intent, and reconstructing
-      // `user_session` from `requestedByUserId` would launder an autonomous
-      // caller into an interactive one at release time. `source` is the only
-      // field that records the difference.
-      principal:
-        intent.source === 'mcp_api'
-          ? { kind: 'api_key', apiKeyId: intent.requestingApiKeyId ?? undefined }
-          : { kind: 'user_session' },
+      // Read the RECORDED origin, never a derivation. The actor columns
+      // cannot stand in for it (`requested_by_user_id` is written for every
+      // intent, holding the key's CREATOR for API-key callers; and
+      // `requesting_api_key_id` is never written at all), and `source` is a
+      // lossy proxy with only two values. Reconstructing `user_session` from
+      // `requestedByUserId` would launder an autonomous caller into an
+      // interactive one at release time.
+      //
+      // 'unknown' (pre-discriminator rows) is preserved as-is rather than
+      // being softened to user_session — a human-required gate must fail on
+      // it. It is NOT a valid AuthContext principal, so it maps to the
+      // closest fail-closed kind and is refused by any interactive gate.
+      principal: originPrincipalFor(intent),
       user: {
         id: user.id,
         email: user.email,

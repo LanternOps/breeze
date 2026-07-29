@@ -201,8 +201,9 @@ const APPROVER_1 = '33333333-3333-4333-8333-333333333333';
 const APPROVER_2 = '44444444-4444-4444-8444-444444444444';
 const PARTNER_ID = '55555555-5555-4555-8555-555555555555';
 
-function makeAuth(overrides?: { partnerId?: string | null }) {
+function makeAuth(overrides?: { partnerId?: string | null; principal?: unknown }) {
   return {
+    principal: overrides?.principal ?? { kind: 'user_session' },
     user: { id: REQUESTER_ID, email: 'req@example.com', name: 'Requester' },
     orgId: ORG_ID,
     partnerId: overrides?.partnerId ?? null,
@@ -321,6 +322,40 @@ describe('createActionIntent — tier gating', () => {
 // ---------------------------------------------------------------------------
 
 describe('createActionIntent — digest stability', () => {
+  it('records the ORIGIN principal kind on the intent, not a derivation of it', async () => {
+    // The release path must be able to prove what KIND of caller created this
+    // intent. It cannot re-derive that later: requestedByUserId is written for
+    // every intent (holding the key's CREATOR for API-key callers) and
+    // requestingApiKeyId is never written at all.
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
+    dbState.insertActionIntentsResults.push([makeIntentRow({ id: 'intent-h', status: 'cancelled', errorCode: 'no_eligible_approvers' })]);
+    dbState.updateActionIntentsResults.push([makeIntentRow({ id: 'intent-h', status: 'cancelled', errorCode: 'no_eligible_approvers' })]);
+    await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'key-human' }));
+
+    expect(dbState.insertedActionIntentValues[0]?.originPrincipalKind).toBe('user_session');
+    expect(dbState.insertedActionIntentValues[0]?.originPrincipalId).toBeNull();
+  });
+
+  it('records an api_key origin distinctly from a human, despite identical user.id', async () => {
+    // The exact confusion this column exists to prevent: an API key carries
+    // its creator's user id, so requestedByUserId is the SAME value in both
+    // cases. Only the recorded origin distinguishes them.
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
+    dbState.insertActionIntentsResults.push([makeIntentRow({ id: 'intent-k', status: 'cancelled', errorCode: 'no_eligible_approvers' })]);
+    dbState.updateActionIntentsResults.push([makeIntentRow({ id: 'intent-k', status: 'cancelled', errorCode: 'no_eligible_approvers' })]);
+    await createActionIntent(
+      makeAuth({ principal: { kind: 'api_key', apiKeyId: 'key-77' } }),
+      baseInput({ idempotencyKey: 'key-machine' }),
+    );
+
+    const row = dbState.insertedActionIntentValues[0];
+    expect(row?.originPrincipalKind).toBe('api_key');
+    expect(row?.originPrincipalId).toBe('key-77');
+    // Same human id as the user_session case above — proving identity alone
+    // cannot tell them apart.
+    expect(row?.requestedByUserId).toBe(REQUESTER_ID);
+  });
+
   it('computes the same argument_digest for canonically-equivalent input regardless of key order', async () => {
     const inputA = { b: 1, a: { z: 2, y: 3 } };
     const inputB = { a: { y: 3, z: 2 }, b: 1 };
