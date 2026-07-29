@@ -603,7 +603,7 @@ export default function DevicesPage() {
     setScriptTargetDevices([]);
   };
 
-  const handleScriptSelect = (script: Script, runAs: ScriptRunAsSelection, parameters?: Record<string, unknown>) => {
+  const handleScriptSelect = (script: Script, runAs: ScriptRunAsSelection, parameters?: Record<string, unknown>, _targetSessionId?: number) => {
     // Gate script execution behind a scope-naming confirm dialog. Capture the
     // target devices now: ScriptPickerModal calls onClose() right after
     // onSelect(), and closeScriptPicker() resets scriptTargetDevices to [] —

@@ -433,12 +433,13 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
     script: Script,
     runAs: ScriptRunAsSelection,
     parameters?: Record<string, unknown>,
+    targetSessionId?: number,
   ) => {
     if (actionInProgress || !device) return;
 
     try {
       setActionInProgress(true);
-      await executeScript(script.id, [device.id], parameters, runAs);
+      await executeScript(script.id, [device.id], parameters, runAs, targetSessionId);
       showToast({
         type: "success",
         message: `Script "${script.name}" queued for ${device.hostname}`,
@@ -534,6 +535,8 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         onSelect={handleScriptSelect}
         deviceHostname={device.hostname}
         deviceOs={device.os}
+        deviceId={device.id}
+        helperLifecycleMode={device.helperLifecycleMode ?? null}
       />
     </div>
   );

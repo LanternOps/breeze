@@ -2207,6 +2207,7 @@
     "runOnDevice": "Run script on {{hostname}}",
     "runScript": "Run Script",
     "searchPlaceholder": "Search scripts...",
+    "sessionAny": "Any session (console)",
     "title": "Select Script",
     "unnamedScript": "Unnamed Script"
   },
