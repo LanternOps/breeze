@@ -59,7 +59,7 @@ import (
 // against a local httptest server at all (see the deleted-test comment
 // above).
 func TestHelperUpdaterConfig_UsesHelperComponent(t *testing.T) {
-	cfg := helperUpdaterConfig(func() string { return "https://control.example" }, nil, secmem.NewSecureString("tok"), "9.9.9", nil)
+	cfg := helperUpdaterConfig(func() string { return "https://control.example" }, nil, secmem.NewSecureString("tok"), "9.9.9", nil, false)
 	if cfg.Component != "helper" {
 		t.Fatalf("helper updater config Component = %q, want %q", cfg.Component, "helper")
 	}
@@ -74,7 +74,7 @@ func TestHelperUpdaterConfig_ThreadsBackupServerURL(t *testing.T) {
 	cfg := helperUpdaterConfig(
 		func() string { return "https://primary.example" },
 		func() string { return "https://backup.example" },
-		secmem.NewSecureString("tok"), "9.9.9", nil,
+		secmem.NewSecureString("tok"), "9.9.9", nil, false,
 	)
 	if cfg.BackupServerURL != "https://backup.example" {
 		t.Fatalf("BackupServerURL = %q, want %q", cfg.BackupServerURL, "https://backup.example")
@@ -86,7 +86,7 @@ func TestHelperUpdaterConfig_ThreadsBackupServerURL(t *testing.T) {
 // build predating failover awareness) produces an empty BackupServerURL
 // rather than panicking.
 func TestHelperUpdaterConfig_NilBackupServerURLIsNoOp(t *testing.T) {
-	cfg := helperUpdaterConfig(func() string { return "https://primary.example" }, nil, secmem.NewSecureString("tok"), "9.9.9", nil)
+	cfg := helperUpdaterConfig(func() string { return "https://primary.example" }, nil, secmem.NewSecureString("tok"), "9.9.9", nil, false)
 	if cfg.BackupServerURL != "" {
 		t.Fatalf("BackupServerURL = %q, want empty for a nil provider", cfg.BackupServerURL)
 	}
@@ -123,7 +123,7 @@ func TestDefaultHelperDownloaderResolvesServerURLAtCallTime(t *testing.T) {
 	// The provider starts on the dead primary, then is promoted to the backup
 	// AFTER the downloader closure is built — exactly the failover ordering.
 	current := deadPrimary.URL
-	dl := defaultHelperDownloader(func() string { return current }, nil, secmem.NewSecureString("tok"), "1.2.3", nil)
+	dl := defaultHelperDownloader(func() string { return current }, nil, secmem.NewSecureString("tok"), "1.2.3", nil, false)
 	current = promotedBackup.URL
 
 	_, err := dl("1.2.3")
@@ -143,3 +143,20 @@ func TestDefaultHelperDownloaderResolvesServerURLAtCallTime(t *testing.T) {
 // compatible with updater.Updater.DownloadBinary so the production shim is a
 // one-liner and the seam stays honest.
 var _ func(string) (string, error) = (&updater.Updater{}).DownloadBinary
+
+// TestHelperUpdaterConfig_ThreadsRequireManifestSigningKeyID proves the
+// fail-closed rollout control reaches the helper's verified downloader. A
+// Manager construction site that forgot helper.WithRequireManifestSigningKeyID
+// would leave the helper package on the compatibility path (verify against the
+// whole key set) even on an agent whose own self-update is fail-closed.
+func TestHelperUpdaterConfig_ThreadsRequireManifestSigningKeyID(t *testing.T) {
+	cfg := helperUpdaterConfig(func() string { return "https://control.example" }, nil, secmem.NewSecureString("tok"), "9.9.9", nil, true)
+	if !cfg.RequireManifestSigningKeyID {
+		t.Fatal("RequireManifestSigningKeyID did not reach the helper updater config")
+	}
+
+	relaxed := helperUpdaterConfig(func() string { return "https://control.example" }, nil, secmem.NewSecureString("tok"), "9.9.9", nil, false)
+	if relaxed.RequireManifestSigningKeyID {
+		t.Fatal("RequireManifestSigningKeyID must stay false when not requested")
+	}
+}

@@ -1161,13 +1161,14 @@ func doUpdateAgent(targetVersion string, serverURL func() string, cfg *config.Co
 	}
 	binaryPath := agentBinaryPath()
 	u := updater.New(&updater.Config{
-		ServerURL:             serverURL,
-		BackupServerURL:       cfg.BackupServerURL,
-		AuthToken:             tok,
-		CurrentVersion:        "", // Not tracking agent version from watchdog.
-		BinaryPath:            binaryPath,
-		BackupPath:            binaryPath + ".bak",
-		PinnedManifestPubKeys: cfg.PinnedManifestPubKeys,
+		ServerURL:                   serverURL,
+		BackupServerURL:             cfg.BackupServerURL,
+		AuthToken:                   tok,
+		CurrentVersion:              "", // Not tracking agent version from watchdog.
+		BinaryPath:                  binaryPath,
+		BackupPath:                  binaryPath + ".bak",
+		PinnedManifestPubKeys:       cfg.PinnedManifestPubKeys,
+		RequireManifestSigningKeyID: cfg.RequireManifestSigningKeyID,
 	})
 	if err := u.UpdateTo(targetVersion); err != nil {
 		// A download failure may carry a *netpolicy.PolicyError, or be a
@@ -1200,14 +1201,15 @@ func doUpdateWatchdog(targetVersion string, serverURL func() string, cfg *config
 		return fmt.Errorf("failed to determine executable path: %w", err)
 	}
 	u := updater.New(&updater.Config{
-		ServerURL:             serverURL,
-		BackupServerURL:       cfg.BackupServerURL,
-		AuthToken:             tok,
-		CurrentVersion:        version,
-		Component:             "watchdog",
-		BinaryPath:            exePath,
-		BackupPath:            exePath + ".bak",
-		PinnedManifestPubKeys: cfg.PinnedManifestPubKeys,
+		ServerURL:                   serverURL,
+		BackupServerURL:             cfg.BackupServerURL,
+		AuthToken:                   tok,
+		CurrentVersion:              version,
+		Component:                   "watchdog",
+		BinaryPath:                  exePath,
+		BackupPath:                  exePath + ".bak",
+		PinnedManifestPubKeys:       cfg.PinnedManifestPubKeys,
+		RequireManifestSigningKeyID: cfg.RequireManifestSigningKeyID,
 	})
 	if err := u.UpdateTo(targetVersion); err != nil {
 		// See doUpdateAgent above for why err.Error() must not be logged

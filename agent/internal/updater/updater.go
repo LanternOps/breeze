@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -58,9 +59,16 @@ type Config struct {
 	// PinnedManifestPubKeys are deployment-specific Ed25519 pubkeys delivered
 	// by the API via enrollment/heartbeat and pinned TOFU-style. Format
 	// matches agent config: "<keyId>:<base64-raw-pubkey>". Merged with the
-	// embedded LanternOps trust root in trustedManifestKeys() so self-host
+	// embedded LanternOps trust root in manifestTrustKeys() so self-host
 	// (BINARY_SOURCE=local) deployments can verify locally-signed manifests.
 	PinnedManifestPubKeys []string
+
+	// RequireManifestSigningKeyID mirrors the agent config field of the same
+	// name: when true, a download response that omits signingKeyId fails
+	// closed instead of falling back to verifying against the whole trusted
+	// key set. Construction sites copy it from config.Config alongside
+	// PinnedManifestPubKeys.
+	RequireManifestSigningKeyID bool
 }
 
 // Updater handles agent auto-updates
@@ -211,17 +219,67 @@ var ErrTextBusy = fmt.Errorf("binary is currently executing")
 // bound in a unit test is impractical. Production behavior is unchanged.
 var maxUpdateBinaryBytes int64 = 500 * 1024 * 1024
 
-// trustedUpdateManifestPublicKeys is the embedded trust root for release
-// manifest signatures. It MUST match the raw Ed25519 public key in
-// internal/release-keys/release-manifest.ed25519.pub (the SPKI suffix); the
-// release.yml workflow signs every manifest with the corresponding private
-// key. TestEmbeddedTrustRootMatchesRepoPubKey enforces that match at build
-// time so the agent never ships with a mismatched trust root again.
+// ManifestPublicKeys maps a manifest signing key ID to the raw Ed25519 public
+// key it names. Trust is keyed, not a bag: verification looks up the ONE key
+// whose ID the download response supplied and uses only that key.
+type ManifestPublicKeys map[string]ed25519.PublicKey
+
+// mustDecodeKey decodes a compile-time-constant base64 Ed25519 public key.
+// Panicking is correct here: the only inputs are literals in this file, so a
+// failure means the binary was built with a malformed trust root and must not
+// run at all.
+func mustDecodeKey(b64 string) ed25519.PublicKey {
+	decoded, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil || len(decoded) != ed25519.PublicKeySize {
+		panic("updater: embedded manifest public key is not a base64 Ed25519 public key")
+	}
+	return ed25519.PublicKey(decoded)
+}
+
+// embeddedManifestPublicKeys is the embedded trust root for release manifest
+// signatures. The value MUST match the raw Ed25519 public key in
+// internal/release-keys/release-manifest.ed25519.pub (the SPKI suffix), and
+// the ID MUST match the signingKeyId the API stamps onto GitHub-sourced
+// download responses (apps/api/src/services/binarySync.ts); the release.yml
+// workflow signs every manifest with the corresponding private key.
+// TestEmbeddedTrustRootMatchesRepoPubKey enforces both halves at build time so
+// the agent never ships with a mismatched trust root again.
 //
-// Self-hosters can append additional base64 raw Ed25519 public keys via the
-// BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS env var (read in trustedManifestKeys).
-var trustedUpdateManifestPublicKeys = []string{
-	"yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=",
+// These entries are the LanternOps root and are NOT deployment-pinned keys:
+// their presence never consumes a deployment's one TOFU bootstrap, and a
+// pinned entry may not shadow one of these IDs (manifestTrustKeys rejects it).
+//
+// Self-hosters can add keys via the BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS env var
+// (read in manifestTrustKeys), preferably in "<keyId>:<base64>" form so they
+// participate in exact-ID verification.
+var embeddedManifestPublicKeys = ManifestPublicKeys{
+	"release-artifact-manifest-ed25519": mustDecodeKey("yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso="),
+}
+
+// missingSigningKeyIDWarned bounds the compatibility warning to once per
+// process: the agent re-checks for updates on every heartbeat, so an unbounded
+// warning would fill the log (and the shipped log stream) with one line per
+// poll for every agent talking to a control plane that predates signingKeyId.
+var missingSigningKeyIDWarned atomic.Bool
+
+// missingSigningKeyIDWarner is the log seam for that warning, following the
+// package-level *ForTests var pattern used elsewhere in the agent
+// (config.atomicWriteFileForTests). Tests swap it for a counter and call
+// resetMissingSigningKeyIDWarningForTests so warning-count assertions never
+// inherit state from an earlier test in the same process.
+var missingSigningKeyIDWarner = func() {
+	log.Warn("update manifest response omitted signingKeyId; verifying against the full trusted key set. " +
+		"Set require_manifest_signing_key_id: true once every control plane in the fleet supplies it")
+}
+
+func resetMissingSigningKeyIDWarningForTests() {
+	missingSigningKeyIDWarned.Store(false)
+}
+
+func warnMissingSigningKeyIDOnce() {
+	if missingSigningKeyIDWarned.CompareAndSwap(false, true) {
+		missingSigningKeyIDWarner()
+	}
 }
 
 type updateManifest struct {
@@ -385,32 +443,167 @@ func pkgAssetChecksum(verifiedManifest []byte, version string) (string, error) {
 	return "", fmt.Errorf("release artifact manifest does not include %s", name)
 }
 
-func (u *Updater) trustedManifestKeys() []ed25519.PublicKey {
-	configured := strings.TrimSpace(os.Getenv("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS"))
-	rawKeys := append([]string{}, trustedUpdateManifestPublicKeys...)
-	if configured != "" {
-		rawKeys = append(rawKeys, strings.Split(configured, ",")...)
+// manifestTrustKeys assembles this updater's trust material:
+//
+//   - keyed: keyId → public key, from the embedded root, from any
+//     "<keyId>:<base64>" entries in BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS, and
+//     from the deployment-pinned config entries. This is the ONLY material
+//     consulted when the download response carries a signingKeyId.
+//   - unkeyed: legacy bare-base64 env entries, which have no ID and are
+//     therefore usable only on the missing-ID compatibility path.
+//
+// It fails closed rather than skipping bad material:
+//
+//   - a malformed pinned entry is an error, not a silent drop — dropping it
+//     quietly demotes the deployment back to the embedded vendor root, which
+//     is precisely the substitution this change forbids;
+//   - a pinned or env key that tries to occupy an embedded key's ID with
+//     different bytes is an error — a deployment must never be able to
+//     substitute its own key for the LanternOps root by reusing its ID.
+func (u *Updater) manifestTrustKeys() (ManifestPublicKeys, []ed25519.PublicKey, error) {
+	keyed := make(ManifestPublicKeys, len(embeddedManifestPublicKeys)+4)
+	embeddedIDs := make(map[string]struct{}, len(embeddedManifestPublicKeys))
+	for id, key := range embeddedManifestPublicKeys {
+		keyed[id] = key
+		embeddedIDs[id] = struct{}{}
 	}
+
+	// add installs one keyId → key binding, refusing to overwrite an embedded
+	// entry (or to conflict with an equally-named key already added).
+	add := func(id string, key ed25519.PublicKey, source string) error {
+		if existing, ok := keyed[id]; ok {
+			if existing.Equal(key) {
+				return nil
+			}
+			if _, embedded := embeddedIDs[id]; embedded {
+				return fmt.Errorf("%s manifest key may not replace the embedded trust root under keyId=%s", source, id)
+			}
+			return fmt.Errorf("conflicting %s manifest keys for keyId=%s", source, id)
+		}
+		keyed[id] = key
+		return nil
+	}
+
+	var unkeyed []ed25519.PublicKey
+	for _, raw := range strings.Split(os.Getenv("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS"), ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		// Base64 never contains ':', so a colon unambiguously marks the
+		// keyed "<keyId>:<base64>" form. The bare form predates key IDs and
+		// stays supported, but only for ID-less manifests.
+		if id, b64, ok := strings.Cut(raw, ":"); ok {
+			key, err := decodeManifestPubKey(b64)
+			if err != nil || !config.ValidManifestKeyID(id) {
+				return nil, nil, fmt.Errorf("malformed keyed entry in BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS")
+			}
+			if err := add(id, key, "environment"); err != nil {
+				return nil, nil, err
+			}
+			continue
+		}
+		key, err := decodeManifestPubKey(raw)
+		if err != nil {
+			return nil, nil, fmt.Errorf("malformed entry in BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS")
+		}
+		unkeyed = append(unkeyed, key)
+	}
+
 	// Per-deployment pinned keys delivered by the API via enrollment/heartbeat
 	// (see #625). Format on disk: "<keyId>:<base64-pubkey>".
 	if u != nil && u.config != nil {
-		for _, entry := range u.config.PinnedManifestPubKeys {
-			parts := strings.SplitN(entry, ":", 2)
-			if len(parts) == 2 && parts[1] != "" {
-				rawKeys = append(rawKeys, parts[1])
+		pinned, err := config.ParsePinnedManifestKeys(u.config.PinnedManifestPubKeys)
+		if err != nil {
+			return nil, nil, fmt.Errorf("pinned manifest trust set is unusable: %w", err)
+		}
+		for id, b64 := range pinned {
+			key, err := decodeManifestPubKey(b64)
+			if err != nil {
+				return nil, nil, fmt.Errorf("pinned manifest trust set is unusable: malformed key for keyId=%s", id)
+			}
+			if err := add(id, key, "pinned"); err != nil {
+				return nil, nil, err
 			}
 		}
 	}
 
-	keys := make([]ed25519.PublicKey, 0, len(rawKeys))
-	for _, raw := range rawKeys {
-		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(raw))
-		if err != nil || len(decoded) != ed25519.PublicKeySize {
-			continue
-		}
-		keys = append(keys, ed25519.PublicKey(decoded))
+	return keyed, unkeyed, nil
+}
+
+func decodeManifestPubKey(b64 string) (ed25519.PublicKey, error) {
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(b64))
+	if err != nil {
+		return nil, fmt.Errorf("manifest public key is not valid base64")
 	}
-	return keys
+	if len(decoded) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("manifest public key has wrong length")
+	}
+	return ed25519.PublicKey(decoded), nil
+}
+
+// requireSigningKeyID reports whether an ID-less manifest response must fail
+// closed. Nil-safe so a directly-constructed Updater in a test behaves like
+// the compatibility default.
+func (u *Updater) requireSigningKeyID() bool {
+	return u != nil && u.config != nil && u.config.RequireManifestSigningKeyID
+}
+
+// verifyManifestSignature is the trust decision for a release manifest.
+//
+// When signingKeyID is present it binds verification to that ONE key: the ID
+// is validated, looked up in the keyed trust set, and the signature is checked
+// against that key alone. A malformed ID, an unknown ID, or a signature made
+// by any other key — including another key this agent legitimately trusts —
+// fails closed. There is deliberately no fallback loop after an ID mismatch:
+// trying the remaining keys is what made possession of ANY trusted key
+// sufficient to sign an update for any agent (P1-UPD-001).
+//
+// When signingKeyID is absent, RequireManifestSigningKeyID decides: true fails
+// closed, false verifies against the whole key set and emits one bounded
+// warning per process.
+func (u *Updater) verifyManifestSignature(payload, signature []byte, signingKeyID string) error {
+	keyed, unkeyed, err := u.manifestTrustKeys()
+	if err != nil {
+		return err
+	}
+
+	if id := strings.TrimSpace(signingKeyID); id != "" {
+		// Never echo an unvalidated ID: it is control-plane supplied and
+		// reaches log lines through the caller's error reporting.
+		if !config.ValidManifestKeyID(id) {
+			return fmt.Errorf("update manifest signing key id is malformed")
+		}
+		key, ok := keyed[id]
+		if !ok {
+			return fmt.Errorf("unknown update manifest signing key id %q", id)
+		}
+		if !ed25519.Verify(key, payload, signature) {
+			return fmt.Errorf("update manifest signature verification failed for signing key id %q", id)
+		}
+		return nil
+	}
+
+	if u.requireSigningKeyID() {
+		return fmt.Errorf("manifest signing key ID required")
+	}
+
+	if len(keyed) == 0 && len(unkeyed) == 0 {
+		return fmt.Errorf("no trusted update manifest public keys configured")
+	}
+	warnMissingSigningKeyIDOnce()
+
+	for _, key := range keyed {
+		if ed25519.Verify(key, payload, signature) {
+			return nil
+		}
+	}
+	for _, key := range unkeyed {
+		if ed25519.Verify(key, payload, signature) {
+			return nil
+		}
+	}
+	return fmt.Errorf("update manifest signature verification failed")
 }
 
 func normalizePreflightErr(err error) error {
@@ -586,12 +779,18 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 	return nil
 }
 
-// downloadInfo holds the JSON response from the download endpoint
+// downloadInfo holds the JSON response from the download endpoint.
+//
+// SigningKeyID names the ONE key the manifest signature must verify against
+// (see verifyManifestSignature). It is empty for control planes that predate
+// the field and for locally-sourced binaries; RequireManifestSigningKeyID
+// decides whether that is tolerated.
 type downloadInfo struct {
 	URL               string `json:"url"`
 	Checksum          string `json:"checksum"`
 	Manifest          string `json:"manifest"`
 	ManifestSignature string `json:"manifestSignature"`
+	SigningKeyID      string `json:"signingKeyId"`
 }
 
 func (u *Updater) requestWithoutRedirect(req *http.Request) (*http.Response, error) {
@@ -639,21 +838,9 @@ func (u *Updater) verifyUpdateManifest(info downloadInfo, version string) (updat
 		return updateManifest{}, fmt.Errorf("invalid update manifest signature encoding")
 	}
 
-	keys := u.trustedManifestKeys()
-	if len(keys) == 0 {
-		return updateManifest{}, fmt.Errorf("no trusted update manifest public keys configured")
-	}
-
 	payload := []byte(info.Manifest)
-	verified := false
-	for _, key := range keys {
-		if ed25519.Verify(key, payload, signature) {
-			verified = true
-			break
-		}
-	}
-	if !verified {
-		return updateManifest{}, fmt.Errorf("update manifest signature verification failed")
+	if err := u.verifyManifestSignature(payload, signature, info.SigningKeyID); err != nil {
+		return updateManifest{}, err
 	}
 
 	var manifest updateManifest

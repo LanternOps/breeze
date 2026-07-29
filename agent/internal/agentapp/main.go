@@ -1337,24 +1337,27 @@ func enrollDevice(enrollmentKey string) {
 	// Enrollment is fresh-trust: no existing pin to defend against rotation, so
 	// we set the pinned set directly. Subsequent updates flow through
 	// config.PinManifestKeys (TOFU). See #625.
+	//
+	// It goes through config.BootstrapPinnedManifestKeys rather than
+	// hand-serializing the response so the same rules apply as on the
+	// heartbeat path: every entry must be a well-formed "<keyId>:<base64
+	// Ed25519 key>", and the delivery establishes exactly ONE deployment key.
+	// Writing the response through unvalidated made enrollment a TOFU bypass
+	// (several keys could be seeded at once) and could persist bytes that are
+	// not a usable key, which the updater now treats as an unusable trust set.
 	if len(enrollResp.ManifestTrustKeys) > 0 {
-		pinned := make([]string, 0, len(enrollResp.ManifestTrustKeys))
+		delivered := make([]config.ManifestTrustKey, 0, len(enrollResp.ManifestTrustKeys))
 		for _, k := range enrollResp.ManifestTrustKeys {
-			if k.KeyID == "" || k.PublicKeyB64 == "" {
-				continue
-			}
-			pinned = append(pinned, k.KeyID+":"+k.PublicKeyB64)
+			delivered = append(delivered, config.ManifestTrustKey{KeyID: k.KeyID, PublicKeyB64: k.PublicKeyB64})
 		}
-		if len(pinned) == 0 {
-			// All entries malformed — preserve any pre-existing pinned set rather
-			// than silently destroying trust state.
-			enrollLog.Warn("enrollment response delivered manifest trust keys but all entries were malformed; not overwriting existing pinned set",
-				"received", len(enrollResp.ManifestTrustKeys))
+		pinned, err := config.BootstrapPinnedManifestKeys(delivered)
+		if err != nil {
+			// Preserve any pre-existing pinned set rather than silently
+			// destroying trust state. err carries a bounded reason and key
+			// IDs only — never key material.
+			enrollLog.Warn("rejected manifest trust keys delivered at enrollment; not overwriting existing pinned set",
+				"received", len(enrollResp.ManifestTrustKeys), "error", err.Error())
 		} else {
-			if dropped := len(enrollResp.ManifestTrustKeys) - len(pinned); dropped > 0 {
-				enrollLog.Warn("dropped malformed manifest trust keys from enrollment",
-					"received", len(enrollResp.ManifestTrustKeys), "kept", len(pinned), "dropped", dropped)
-			}
 			cfg.PinnedManifestPubKeys = pinned
 			enrollLog.Info("pinned manifest trust keys from enrollment", "count", len(pinned))
 		}

@@ -50,11 +50,12 @@ func init() {
 // handleDevUpdateAgent's background goroutine.
 func devUpdaterConfig(h *Heartbeat) *updater.Config {
 	return &updater.Config{
-		ServerURL:             h.serverURL,
-		BackupServerURL:       h.backupServerURL(),
-		AuthToken:             h.secureToken,
-		CurrentVersion:        h.agentVersion,
-		PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
+		ServerURL:                   h.serverURL,
+		BackupServerURL:             h.backupServerURL(),
+		AuthToken:                   h.secureToken,
+		CurrentVersion:              h.agentVersion,
+		PinnedManifestPubKeys:       h.config.PinnedManifestPubKeys,
+		RequireManifestSigningKeyID: h.config.RequireManifestSigningKeyID,
 	}
 }
 

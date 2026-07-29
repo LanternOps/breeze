@@ -33,9 +33,9 @@ import (
 // Both providers are resolved fresh inside the returned closure (which builds
 // a new *updater.Updater per download) so BackupServerURL — a plain string on
 // updater.Config, unlike ServerURL — never goes stale across a promotion.
-func defaultHelperDownloader(serverURL, backupServerURL func() string, authToken *secmem.SecureString, agentVersion string, manifestKeys []string) func(version string) (string, error) {
+func defaultHelperDownloader(serverURL, backupServerURL func() string, authToken *secmem.SecureString, agentVersion string, manifestKeys []string, requireSigningKeyID bool) func(version string) (string, error) {
 	return func(version string) (string, error) {
-		cfg := helperUpdaterConfig(serverURL, backupServerURL, authToken, agentVersion, manifestKeys)
+		cfg := helperUpdaterConfig(serverURL, backupServerURL, authToken, agentVersion, manifestKeys, requireSigningKeyID)
 		return updater.New(cfg).DownloadBinary(version)
 	}
 }
@@ -46,17 +46,18 @@ func defaultHelperDownloader(serverURL, backupServerURL func() string, authToken
 // which, since the wave-06 network-policy hardening, is not something a test
 // can do against a local httptest server at all (netpolicy rejects loopback
 // destinations outright and unconditionally; see agent/internal/netpolicy).
-func helperUpdaterConfig(serverURL, backupServerURL func() string, authToken *secmem.SecureString, agentVersion string, manifestKeys []string) *updater.Config {
+func helperUpdaterConfig(serverURL, backupServerURL func() string, authToken *secmem.SecureString, agentVersion string, manifestKeys []string, requireSigningKeyID bool) *updater.Config {
 	var backup string
 	if backupServerURL != nil {
 		backup = backupServerURL()
 	}
 	return &updater.Config{
-		ServerURL:             serverURL,
-		BackupServerURL:       backup,
-		AuthToken:             authToken,
-		CurrentVersion:        agentVersion,
-		Component:             "helper",
-		PinnedManifestPubKeys: manifestKeys,
+		ServerURL:                   serverURL,
+		BackupServerURL:             backup,
+		AuthToken:                   authToken,
+		CurrentVersion:              agentVersion,
+		Component:                   "helper",
+		PinnedManifestPubKeys:       manifestKeys,
+		RequireManifestSigningKeyID: requireSigningKeyID,
 	}
 }

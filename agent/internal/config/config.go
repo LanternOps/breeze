@@ -181,6 +181,17 @@ type Config struct {
 	// so self-host (BINARY_SOURCE=local) deployments can sign their own manifests.
 	PinnedManifestPubKeys []string `mapstructure:"pinned_manifest_pub_keys" yaml:"pinned_manifest_pub_keys"`
 
+	// RequireManifestSigningKeyID makes a release-manifest response that omits
+	// signingKeyId a hard failure ("manifest signing key ID required") instead
+	// of falling back to verifying against the whole trusted key set.
+	//
+	// Default false is the compatibility position for the rollout: an agent
+	// talking to a control plane that predates signingKeyId still updates, but
+	// logs one bounded warning per process. Once every control plane in the
+	// fleet emits the ID, flipping this to true removes the last path on which
+	// a manifest can be verified by a key other than the one it names.
+	RequireManifestSigningKeyID bool `mapstructure:"require_manifest_signing_key_id" yaml:"require_manifest_signing_key_id"`
+
 	// mTLS client certificate (Cloudflare API Shield)
 	MtlsCertPEM     string `mapstructure:"mtls_cert_pem"`
 	MtlsKeyPEM      string `mapstructure:"mtls_key_pem"`
@@ -612,6 +623,7 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	viper.Set("auto_update", cfg.AutoUpdate)
 	viper.Set("allow_dev_update", cfg.AllowDevUpdate)
 	viper.Set("pinned_manifest_pub_keys", cfg.PinnedManifestPubKeys)
+	viper.Set("require_manifest_signing_key_id", cfg.RequireManifestSigningKeyID)
 	// Write only the helper-scoped token to agent.yaml. Full agent and watchdog
 	// bearer tokens are persisted below in root-only secrets.yaml.
 	if cfg.HelperAuthToken != "" {

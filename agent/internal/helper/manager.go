@@ -75,6 +75,16 @@ func WithManifestKeys(keys []string) Option {
 	return func(m *Manager) { m.manifestKeys = keys }
 }
 
+// WithRequireManifestSigningKeyID mirrors the agent config field of the same
+// name onto the verified helper downloader, so a helper download response that
+// omits signingKeyId fails closed on exactly the agents where the agent's own
+// self-update does. Without it the helper path would stay in compatibility
+// mode after the fleet was switched over — a manifest could still be verified
+// by a key other than the one it names.
+func WithRequireManifestSigningKeyID(require bool) Option {
+	return func(m *Manager) { m.requireManifestSigningKeyID = require }
+}
+
 // WithBackupServerURL sets a provider for the configured backup control-plane
 // URL, threaded into the verified downloader's netpolicy.Policy so the backup
 // origin (not just serverURL's primary) is reachable for helper downloads
@@ -124,6 +134,8 @@ type Manager struct {
 	agentVersion string
 	manifestKeys []string
 
+	requireManifestSigningKeyID bool
+
 	pendingHelperVersion string
 	updateFailures       int
 	abandonedVersion     string // version we gave up updating to
@@ -152,7 +164,7 @@ func New(ctx context.Context, serverURL func() string, authToken *secmem.SecureS
 		m.spawnFunc = defaultSpawnFunc
 	}
 	if m.downloadFunc == nil {
-		m.downloadFunc = defaultHelperDownloader(m.serverURL, m.backupServerURL, m.authToken, m.agentVersion, m.manifestKeys)
+		m.downloadFunc = defaultHelperDownloader(m.serverURL, m.backupServerURL, m.authToken, m.agentVersion, m.manifestKeys, m.requireManifestSigningKeyID)
 	}
 	return m
 }

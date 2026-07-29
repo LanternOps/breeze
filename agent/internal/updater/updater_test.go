@@ -34,11 +34,7 @@ func signedDownloadInfo(t *testing.T, version, component, rawURL string, content
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldKeys := trustedUpdateManifestPublicKeys
-	trustedUpdateManifestPublicKeys = []string{base64.StdEncoding.EncodeToString(publicKey)}
-	t.Cleanup(func() {
-		trustedUpdateManifestPublicKeys = oldKeys
-	})
+	installEmbeddedManifestKey(t, testEmbeddedKeyID, publicKey)
 
 	sum := sha256.Sum256(content)
 	manifest := updateManifest{
@@ -60,6 +56,7 @@ func signedDownloadInfo(t *testing.T, version, component, rawURL string, content
 		Checksum:          manifest.Checksum,
 		Manifest:          string(payload),
 		ManifestSignature: base64.StdEncoding.EncodeToString(signature),
+		SigningKeyID:      testEmbeddedKeyID,
 	}
 }
 
@@ -69,11 +66,7 @@ func signedReleaseArtifactDownloadInfo(t *testing.T, version, assetName, rawURL 
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldKeys := trustedUpdateManifestPublicKeys
-	trustedUpdateManifestPublicKeys = []string{base64.StdEncoding.EncodeToString(publicKey)}
-	t.Cleanup(func() {
-		trustedUpdateManifestPublicKeys = oldKeys
-	})
+	installEmbeddedManifestKey(t, testEmbeddedKeyID, publicKey)
 
 	sum := sha256.Sum256(content)
 	checksum := hex.EncodeToString(sum[:])
@@ -113,6 +106,7 @@ func signedReleaseArtifactDownloadInfo(t *testing.T, version, assetName, rawURL 
 		Checksum:          checksum,
 		Manifest:          string(payload),
 		ManifestSignature: base64.StdEncoding.EncodeToString(signature),
+		SigningKeyID:      testEmbeddedKeyID,
 	}
 }
 
@@ -153,18 +147,33 @@ func TestEmbeddedTrustRootMatchesRepoPubKey(t *testing.T) {
 	}
 	expected := base64.StdEncoding.EncodeToString(edKey)
 
-	for _, k := range trustedUpdateManifestPublicKeys {
-		if k == expected {
-			return
+	// The key must be present under the exact ID the API stamps onto
+	// signingKeyId for GitHub-sourced releases (binarySync.ts). Matching bytes
+	// under a different ID is now a hard failure too: every hosted manifest
+	// names this ID, and an ID mismatch no longer falls back to trying other
+	// keys, so a renamed embedded entry would break auto-update fleet-wide.
+	const canonicalID = "release-artifact-manifest-ed25519"
+	got, ok := embeddedManifestPublicKeys[canonicalID]
+	if !ok {
+		ids := make([]string, 0, len(embeddedManifestPublicKeys))
+		for id := range embeddedManifestPublicKeys {
+			ids = append(ids, id)
 		}
+		t.Fatalf(
+			"embeddedManifestPublicKeys has no entry for %q (has: %v).\n"+
+				"The API stamps this key id onto every GitHub-sourced download response;\n"+
+				"without a matching entry, exact-ID verification fails for the whole fleet.",
+			canonicalID, ids,
+		)
 	}
-	t.Fatalf(
-		"trustedUpdateManifestPublicKeys does not contain the repo manifest pub key.\n"+
-			"  expected (raw base64 of %s): %s\n"+
-			"  embedded: %v\n"+
-			"If you rotated the manifest signing key, update agent/internal/updater/updater.go to match.",
-		pubPath, expected, trustedUpdateManifestPublicKeys,
-	)
+	if base64.StdEncoding.EncodeToString(got) != expected {
+		t.Fatalf(
+			"embeddedManifestPublicKeys[%q] does not match the repo manifest pub key.\n"+
+				"  expected (raw base64 of %s): %s\n"+
+				"If you rotated the manifest signing key, update agent/internal/updater/updater.go to match.",
+			canonicalID, pubPath, expected,
+		)
+	}
 }
 
 func TestNewCreatesUpdater(t *testing.T) {
@@ -456,11 +465,7 @@ func TestDownloadBinaryRejectsTamperedSignedMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldKeys := trustedUpdateManifestPublicKeys
-	trustedUpdateManifestPublicKeys = []string{base64.StdEncoding.EncodeToString(publicKey)}
-	t.Cleanup(func() {
-		trustedUpdateManifestPublicKeys = oldKeys
-	})
+	installEmbeddedManifestKey(t, testEmbeddedKeyID, publicKey)
 
 	sum := sha256.Sum256(binaryContent)
 	manifest := updateManifest{
@@ -496,6 +501,7 @@ func TestDownloadBinaryRejectsTamperedSignedMetadata(t *testing.T) {
 				Checksum:          tampered.Checksum,
 				Manifest:          string(tamperedPayload),
 				ManifestSignature: base64.StdEncoding.EncodeToString(signature),
+				SigningKeyID:      testEmbeddedKeyID,
 			})
 		case r.URL.Path == "/binary/breeze-agent":
 			w.Write(binaryContent)
@@ -880,7 +886,7 @@ func TestNormalizePreflightErr_PreservesTextBusy(t *testing.T) {
 
 // TestTrustedManifestKeys_IncludesPinnedKeys verifies that per-deployment
 // pinned pubkeys delivered via heartbeat/enrollment (#625) are included in
-// the trust set alongside the embedded LanternOps key.
+// the trust set alongside the embedded LanternOps key — now keyed by their ID.
 func TestTrustedManifestKeys_IncludesPinnedKeys(t *testing.T) {
 	pinnedRaw := make([]byte, ed25519.PublicKeySize)
 	for i := range pinnedRaw {
@@ -893,23 +899,21 @@ func TestTrustedManifestKeys_IncludesPinnedKeys(t *testing.T) {
 			PinnedManifestPubKeys: []string{"deploy-test:" + pinned},
 		},
 	}
-	keys := u.trustedManifestKeys()
+	keyed, _, err := u.manifestTrustKeys()
+	if err != nil {
+		t.Fatalf("manifestTrustKeys: %v", err)
+	}
 
 	// Embedded LanternOps key + the pinned key.
-	if len(keys) < 2 {
-		t.Fatalf("expected >= 2 trusted keys (embedded + pinned), got %d", len(keys))
+	if len(keyed) < 2 {
+		t.Fatalf("expected >= 2 trusted keys (embedded + pinned), got %d", len(keyed))
 	}
-
-	// Verify the pinned bytes appear in the result.
-	found := false
-	for _, k := range keys {
-		if string(k) == string(pinnedRaw) {
-			found = true
-			break
-		}
+	got, ok := keyed["deploy-test"]
+	if !ok {
+		t.Fatal("pinned pubkey was not present under its key id")
 	}
-	if !found {
-		t.Fatal("pinned pubkey was not present in trustedManifestKeys output")
+	if string(got) != string(pinnedRaw) {
+		t.Fatal("pinned pubkey bytes do not match the pinned entry")
 	}
 }
 
@@ -954,6 +958,7 @@ func TestVerifyUpdateManifest_AcceptsManifestSignedByPinnedKey(t *testing.T) {
 		Checksum:          manifest.Checksum,
 		Manifest:          string(manifestJSON),
 		ManifestSignature: sigB64,
+		SigningKeyID:      "deploy-test",
 	}
 	got, err := u.verifyUpdateManifest(info, "0.65.9")
 	if err != nil {
@@ -964,26 +969,9 @@ func TestVerifyUpdateManifest_AcceptsManifestSignedByPinnedKey(t *testing.T) {
 	}
 }
 
-// TestTrustedManifestKeys_SkipsMalformedPinnedEntries ensures that bad entries
-// in the pinned list (no colon, blank pubkey, wrong base64) don't crash or
-// poison the trust set — they're just dropped.
-func TestTrustedManifestKeys_SkipsMalformedPinnedEntries(t *testing.T) {
-	u := &Updater{
-		config: &Config{
-			PinnedManifestPubKeys: []string{
-				"missing-colon",
-				"key-id:",
-				"key-id:not-valid-base64-!!!",
-				":",
-			},
-		},
-	}
-	keys := u.trustedManifestKeys()
-	// Just the embedded LanternOps key — all malformed entries dropped.
-	if len(keys) < 1 {
-		t.Fatalf("expected at least 1 (embedded) key, got %d", len(keys))
-	}
-}
+// Malformed pinned entries used to be silently dropped, which quietly demoted
+// a deployment back to the embedded vendor root. They now fail the whole trust
+// assembly — see TestManifestTrustKeys_RejectsMalformedPinnedEntries below.
 
 // TestExpectedReleaseAssetNames_UserHelper covers the component=user-helper
 // branch added by #816. The breeze-user-helper exists only on Windows; other
@@ -1174,5 +1162,416 @@ func TestUpdateTo_DelegatesToUpdateToWithOptions(t *testing.T) {
 	// flows reach the same downloadBinary "auth token not available" branch.
 	if shimErr.Error() != explicitErr.Error() {
 		t.Fatalf("shim and explicit calls produced different errors:\n  shim:     %v\n  explicit: %v", shimErr, explicitErr)
+	}
+}
+
+// --- exact signing-key-ID verification (P1-UPD-001) -------------------------
+//
+// The rule these tests pin: when the download response carries a signingKeyId,
+// the manifest is verified against THAT key and nothing else. Possession of any
+// other trusted key — including a legitimately pinned deployment key, or the
+// embedded vendor root — must not be enough to sign a manifest that names a
+// different key.
+
+const testEmbeddedKeyID = "test-embedded-root"
+
+// installEmbeddedManifestKey replaces the embedded trust map for the duration
+// of a test. It replaces the map wholesale (rather than mutating the real one)
+// so a test can never leak a key into the production trust root, and restores
+// the original in cleanup.
+func installEmbeddedManifestKey(t *testing.T, id string, pub ed25519.PublicKey) {
+	t.Helper()
+	old := embeddedManifestPublicKeys
+	embeddedManifestPublicKeys = ManifestPublicKeys{id: pub}
+	t.Cleanup(func() { embeddedManifestPublicKeys = old })
+}
+
+// signManifestFor builds a valid agent manifest for version and signs it with
+// priv, returning the JSON payload and base64 signature.
+func signManifestFor(t *testing.T, version string, priv ed25519.PrivateKey) (string, string, string) {
+	t.Helper()
+	checksum := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	manifest := updateManifest{
+		Version:   version,
+		Component: "agent",
+		Platform:  manifestPlatform(),
+		Arch:      runtime.GOARCH,
+		URL:       "https://updates.example.invalid/agent",
+		Checksum:  checksum,
+		Size:      4096,
+	}
+	payload, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(payload), base64.StdEncoding.EncodeToString(ed25519.Sign(priv, payload)), checksum
+}
+
+// countingWarner swaps the bounded-warning log seam for a counter and resets
+// the once-guard, so warning assertions can never inherit state from an
+// earlier test in the same process.
+func countingWarner(t *testing.T) *int {
+	t.Helper()
+	var count int
+	old := missingSigningKeyIDWarner
+	missingSigningKeyIDWarner = func() { count++ }
+	resetMissingSigningKeyIDWarningForTests()
+	t.Cleanup(func() {
+		missingSigningKeyIDWarner = old
+		resetMissingSigningKeyIDWarningForTests()
+	})
+	return &count
+}
+
+func TestVerifyUpdateManifest_AcceptsExactEmbeddedKeyID(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installEmbeddedManifestKey(t, testEmbeddedKeyID, pub)
+	countingWarner(t)
+
+	payload, sig, checksum := signManifestFor(t, "1.2.3", priv)
+	u := &Updater{config: &Config{Component: "agent"}}
+	got, err := u.verifyUpdateManifest(downloadInfo{
+		URL:               "https://updates.example.invalid/agent",
+		Checksum:          checksum,
+		Manifest:          payload,
+		ManifestSignature: sig,
+		SigningKeyID:      testEmbeddedKeyID,
+	}, "1.2.3")
+	if err != nil {
+		t.Fatalf("verifyUpdateManifest: %v", err)
+	}
+	if got.Version != "1.2.3" {
+		t.Fatalf("version = %q, want 1.2.3", got.Version)
+	}
+}
+
+func TestVerifyUpdateManifest_AcceptsExactDeploymentKeyID(t *testing.T) {
+	embeddedPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installEmbeddedManifestKey(t, testEmbeddedKeyID, embeddedPub)
+	countingWarner(t)
+
+	deployPub, deployPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, sig, checksum := signManifestFor(t, "1.2.3", deployPriv)
+
+	u := &Updater{config: &Config{
+		Component:             "agent",
+		PinnedManifestPubKeys: []string{"deploy-x:" + base64.StdEncoding.EncodeToString(deployPub)},
+	}}
+	if _, err := u.verifyUpdateManifest(downloadInfo{
+		URL:               "https://updates.example.invalid/agent",
+		Checksum:          checksum,
+		Manifest:          payload,
+		ManifestSignature: sig,
+		SigningKeyID:      "deploy-x",
+	}, "1.2.3"); err != nil {
+		t.Fatalf("verifyUpdateManifest with pinned key: %v", err)
+	}
+}
+
+func TestVerifyUpdateManifest_RejectsUnknownSigningKeyID(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installEmbeddedManifestKey(t, testEmbeddedKeyID, pub)
+	warnings := countingWarner(t)
+
+	payload, sig, checksum := signManifestFor(t, "1.2.3", priv)
+	u := &Updater{config: &Config{Component: "agent"}}
+	_, err = u.verifyUpdateManifest(downloadInfo{
+		URL:               "https://updates.example.invalid/agent",
+		Checksum:          checksum,
+		Manifest:          payload,
+		ManifestSignature: sig,
+		SigningKeyID:      "some-other-key",
+	}, "1.2.3")
+	if err == nil {
+		t.Fatal("expected an unknown signing key id to fail closed, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("expected an 'unknown signing key id' error, got: %v", err)
+	}
+	// An unknown ID must not silently degrade into the compatibility path.
+	if *warnings != 0 {
+		t.Fatalf("unknown key id took the missing-ID compatibility path (warnings=%d)", *warnings)
+	}
+}
+
+// THE vulnerability being closed: a manifest signed by a key the agent trusts
+// for OTHER manifests must still fail when the response names a different key.
+func TestVerifyUpdateManifest_RejectsSignatureFromDifferentTrustedKey(t *testing.T) {
+	embeddedPub, embeddedPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installEmbeddedManifestKey(t, testEmbeddedKeyID, embeddedPub)
+
+	deployPub, deployPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := []string{"deploy-x:" + base64.StdEncoding.EncodeToString(deployPub)}
+
+	cases := []struct {
+		name    string
+		signer  ed25519.PrivateKey
+		claimed string
+	}{
+		{"deployment key signs, response claims the embedded root", deployPriv, testEmbeddedKeyID},
+		{"embedded root signs, response claims the deployment key", embeddedPriv, "deploy-x"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			warnings := countingWarner(t)
+			payload, sig, checksum := signManifestFor(t, "1.2.3", tc.signer)
+			u := &Updater{config: &Config{Component: "agent", PinnedManifestPubKeys: pinned}}
+			_, err := u.verifyUpdateManifest(downloadInfo{
+				URL:               "https://updates.example.invalid/agent",
+				Checksum:          checksum,
+				Manifest:          payload,
+				ManifestSignature: sig,
+				SigningKeyID:      tc.claimed,
+			}, "1.2.3")
+			if err == nil {
+				t.Fatal("expected verification against a key other than the named one to fail")
+			}
+			if !strings.Contains(err.Error(), "signature verification failed") {
+				t.Fatalf("expected a signature verification failure, got: %v", err)
+			}
+			if *warnings != 0 {
+				t.Fatalf("key-substitution attempt took the compatibility path (warnings=%d)", *warnings)
+			}
+		})
+	}
+}
+
+func TestVerifyUpdateManifest_RejectsMalformedSigningKeyID(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	long := strings.Repeat("a", 129)
+	for _, badID := range []string{"has space", "has:colon", "has/slash", "has\nnewline", long} {
+		t.Run(strings.ReplaceAll(badID[:min(len(badID), 12)], "\n", "_"), func(t *testing.T) {
+			// Install the signing key under the malformed ID so the ONLY thing
+			// rejecting the manifest can be the ID validation itself — the
+			// signature and the key lookup would otherwise both succeed.
+			installEmbeddedManifestKey(t, badID, pub)
+			warnings := countingWarner(t)
+
+			payload, sig, checksum := signManifestFor(t, "1.2.3", priv)
+			u := &Updater{config: &Config{Component: "agent"}}
+			_, err := u.verifyUpdateManifest(downloadInfo{
+				URL:               "https://updates.example.invalid/agent",
+				Checksum:          checksum,
+				Manifest:          payload,
+				ManifestSignature: sig,
+				SigningKeyID:      badID,
+			}, "1.2.3")
+			if err == nil {
+				t.Fatalf("expected malformed signing key id %q to fail closed", badID)
+			}
+			if strings.Contains(err.Error(), badID) {
+				t.Fatalf("error echoed the unvalidated key id: %v", err)
+			}
+			if *warnings != 0 {
+				t.Fatalf("malformed key id took the compatibility path (warnings=%d)", *warnings)
+			}
+		})
+	}
+}
+
+func TestVerifyUpdateManifest_MissingIDCompatibilityVerifiesAgainstKeySet(t *testing.T) {
+	embeddedPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installEmbeddedManifestKey(t, testEmbeddedKeyID, embeddedPub)
+	warnings := countingWarner(t)
+
+	deployPub, deployPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, sig, checksum := signManifestFor(t, "1.2.3", deployPriv)
+
+	u := &Updater{config: &Config{
+		Component:             "agent",
+		PinnedManifestPubKeys: []string{"deploy-x:" + base64.StdEncoding.EncodeToString(deployPub)},
+	}}
+	if _, err := u.verifyUpdateManifest(downloadInfo{
+		URL:               "https://updates.example.invalid/agent",
+		Checksum:          checksum,
+		Manifest:          payload,
+		ManifestSignature: sig,
+	}, "1.2.3"); err != nil {
+		t.Fatalf("compatibility mode should still verify against the key set: %v", err)
+	}
+	if *warnings != 1 {
+		t.Fatalf("expected exactly 1 compatibility warning, got %d", *warnings)
+	}
+}
+
+func TestVerifyUpdateManifest_MissingIDFailsClosedWhenRequired(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installEmbeddedManifestKey(t, testEmbeddedKeyID, pub)
+	warnings := countingWarner(t)
+
+	payload, sig, checksum := signManifestFor(t, "1.2.3", priv)
+	u := &Updater{config: &Config{Component: "agent", RequireManifestSigningKeyID: true}}
+	_, err = u.verifyUpdateManifest(downloadInfo{
+		URL:               "https://updates.example.invalid/agent",
+		Checksum:          checksum,
+		Manifest:          payload,
+		ManifestSignature: sig,
+	}, "1.2.3")
+	if err == nil {
+		t.Fatal("expected a missing signing key id to fail closed when required")
+	}
+	if !strings.Contains(err.Error(), "manifest signing key ID required") {
+		t.Fatalf("expected 'manifest signing key ID required', got: %v", err)
+	}
+	if *warnings != 0 {
+		t.Fatalf("fail-closed mode must not emit the compatibility warning (warnings=%d)", *warnings)
+	}
+}
+
+func TestVerifyUpdateManifest_MissingIDWarnsOncePerProcess(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installEmbeddedManifestKey(t, testEmbeddedKeyID, pub)
+	warnings := countingWarner(t)
+
+	payload, sig, checksum := signManifestFor(t, "1.2.3", priv)
+	u := &Updater{config: &Config{Component: "agent"}}
+	info := downloadInfo{
+		URL:               "https://updates.example.invalid/agent",
+		Checksum:          checksum,
+		Manifest:          payload,
+		ManifestSignature: sig,
+	}
+	for i := 0; i < 5; i++ {
+		if _, err := u.verifyUpdateManifest(info, "1.2.3"); err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+	}
+	// A separate Updater instance shares the process-wide guard.
+	other := &Updater{config: &Config{Component: "agent"}}
+	if _, err := other.verifyUpdateManifest(info, "1.2.3"); err != nil {
+		t.Fatalf("second updater: %v", err)
+	}
+	if *warnings != 1 {
+		t.Fatalf("expected the warning to be bounded to once per process, got %d", *warnings)
+	}
+}
+
+// A malformed pinned entry fails the whole trust assembly. Dropping it would
+// silently strand the deployment on the embedded vendor root without anyone
+// noticing that the pin was lost.
+func TestManifestTrustKeys_RejectsMalformedPinnedEntries(t *testing.T) {
+	for _, entry := range []string{
+		"missing-colon",
+		"key-id:",
+		"key-id:not-valid-base64-!!!",
+		":",
+		"key-id:" + base64.StdEncoding.EncodeToString([]byte("too short")),
+	} {
+		t.Run(entry, func(t *testing.T) {
+			u := &Updater{config: &Config{PinnedManifestPubKeys: []string{entry}}}
+			if _, _, err := u.manifestTrustKeys(); err == nil {
+				t.Fatalf("expected malformed pinned entry %q to fail closed", entry)
+			}
+		})
+	}
+}
+
+func TestManifestTrustKeys_IncludesEmbeddedAndPinnedByID(t *testing.T) {
+	embeddedPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installEmbeddedManifestKey(t, testEmbeddedKeyID, embeddedPub)
+
+	deployPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := &Updater{config: &Config{
+		PinnedManifestPubKeys: []string{"deploy-x:" + base64.StdEncoding.EncodeToString(deployPub)},
+	}}
+	keyed, _, err := u.manifestTrustKeys()
+	if err != nil {
+		t.Fatalf("manifestTrustKeys: %v", err)
+	}
+	if got, ok := keyed[testEmbeddedKeyID]; !ok || !got.Equal(embeddedPub) {
+		t.Fatalf("embedded key missing or wrong under its id: %v", keyed)
+	}
+	if got, ok := keyed["deploy-x"]; !ok || !got.Equal(deployPub) {
+		t.Fatalf("pinned key missing or wrong under its id: %v", keyed)
+	}
+}
+
+// A deployment must not be able to substitute its own key for the vendor root
+// by pinning it under the embedded key's ID.
+func TestManifestTrustKeys_RejectsDeploymentKeyShadowingEmbeddedID(t *testing.T) {
+	embeddedPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installEmbeddedManifestKey(t, testEmbeddedKeyID, embeddedPub)
+
+	attackerPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := &Updater{config: &Config{
+		PinnedManifestPubKeys: []string{testEmbeddedKeyID + ":" + base64.StdEncoding.EncodeToString(attackerPub)},
+	}}
+	if _, _, err := u.manifestTrustKeys(); err == nil {
+		t.Fatal("expected a pinned key shadowing the embedded key id to fail closed")
+	}
+}
+
+// Verification must fail closed when there is no trust material at all rather
+// than treating "no keys" as "nothing to check".
+func TestVerifyUpdateManifest_FailsWithNoTrustedKeys(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := embeddedManifestPublicKeys
+	embeddedManifestPublicKeys = ManifestPublicKeys{}
+	t.Cleanup(func() { embeddedManifestPublicKeys = old })
+	countingWarner(t)
+
+	payload, sig, checksum := signManifestFor(t, "1.2.3", priv)
+	u := &Updater{config: &Config{Component: "agent"}}
+	info := downloadInfo{
+		URL:               "https://updates.example.invalid/agent",
+		Checksum:          checksum,
+		Manifest:          payload,
+		ManifestSignature: sig,
+	}
+	if _, err := u.verifyUpdateManifest(info, "1.2.3"); err == nil {
+		t.Fatal("expected failure with no trusted keys (missing-ID path)")
+	}
+	info.SigningKeyID = testEmbeddedKeyID
+	if _, err := u.verifyUpdateManifest(info, "1.2.3"); err == nil {
+		t.Fatal("expected failure with no trusted keys (exact-ID path)")
 	}
 }

@@ -586,6 +586,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
 			helper.WithAgentVersion(version),
 			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
+			helper.WithRequireManifestSigningKeyID(cfg.RequireManifestSigningKeyID),
 			helper.WithBackupServerURL(h.BackupServerURL),
 			helper.WithSpawnFunc(func(sessionKey, binaryPath string, args ...string) (int, error) {
 				// Try launching via connected user-role helper first (runs as
@@ -615,6 +616,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
 			helper.WithAgentVersion(version),
 			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
+			helper.WithRequireManifestSigningKeyID(cfg.RequireManifestSigningKeyID),
 			helper.WithBackupServerURL(h.BackupServerURL),
 		)
 	}
@@ -3476,6 +3478,14 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 					h.manifestTrustRotationRejected.Store(true)
 					log.Error("SECURITY: manifest trust key rotation rejected — auto-update suspended until rotation resolved or agent restart",
 						"error", err.Error())
+				} else if errors.Is(err, config.ErrManifestTrustExpansionRejected) {
+					// Trust expansion is frozen: the agent accepts exactly one
+					// first deployment key and never grows the set afterwards.
+					// Unlike a rotation this does not suspend auto-update (the
+					// already-pinned key is untouched and still valid), but it
+					// is a security-relevant signal, not routine noise.
+					log.Error("SECURITY: manifest trust key expansion rejected — the control plane offered a key this agent has never seen",
+						"error", err.Error())
 				} else {
 					log.Warn("manifest trust key pin failed (non-rotation)", "error", err.Error())
 				}
@@ -5429,12 +5439,13 @@ const watchdogUpgradeRetryCooldown = 30 * time.Minute
 // download lives in one place.
 func (h *Heartbeat) downloadWatchdogBinary(targetVersion string) (string, error) {
 	u := updater.New(&updater.Config{
-		ServerURL:             h.serverURL,
-		BackupServerURL:       h.backupServerURL(),
-		AuthToken:             h.secureToken,
-		CurrentVersion:        h.agentVersion,
-		Component:             "watchdog",
-		PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
+		ServerURL:                   h.serverURL,
+		BackupServerURL:             h.backupServerURL(),
+		AuthToken:                   h.secureToken,
+		CurrentVersion:              h.agentVersion,
+		Component:                   "watchdog",
+		PinnedManifestPubKeys:       h.config.PinnedManifestPubKeys,
+		RequireManifestSigningKeyID: h.config.RequireManifestSigningKeyID,
 	})
 	return u.DownloadBinary(targetVersion)
 }
@@ -5500,12 +5511,13 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 	download := h.userHelperDownloader
 	if download == nil {
 		helperCfg := &updater.Config{
-			ServerURL:             h.serverURL,
-			BackupServerURL:       h.backupServerURL(),
-			AuthToken:             h.secureToken,
-			CurrentVersion:        h.agentVersion,
-			Component:             "user-helper",
-			PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
+			ServerURL:                   h.serverURL,
+			BackupServerURL:             h.backupServerURL(),
+			AuthToken:                   h.secureToken,
+			CurrentVersion:              h.agentVersion,
+			Component:                   "user-helper",
+			PinnedManifestPubKeys:       h.config.PinnedManifestPubKeys,
+			RequireManifestSigningKeyID: h.config.RequireManifestSigningKeyID,
 		}
 		helperUpdater := updater.New(helperCfg)
 		download = helperUpdater.DownloadBinary
@@ -5595,12 +5607,13 @@ func (h *Heartbeat) reconcileUserHelper(binaryPath string) {
 	download := h.userHelperDownloader
 	if download == nil {
 		helperCfg := &updater.Config{
-			ServerURL:             h.serverURL,
-			BackupServerURL:       h.backupServerURL(),
-			AuthToken:             h.secureToken,
-			CurrentVersion:        h.agentVersion,
-			Component:             "user-helper",
-			PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
+			ServerURL:                   h.serverURL,
+			BackupServerURL:             h.backupServerURL(),
+			AuthToken:                   h.secureToken,
+			CurrentVersion:              h.agentVersion,
+			Component:                   "user-helper",
+			PinnedManifestPubKeys:       h.config.PinnedManifestPubKeys,
+			RequireManifestSigningKeyID: h.config.RequireManifestSigningKeyID,
 		}
 		download = updater.New(helperCfg).DownloadBinary
 	}
@@ -5724,13 +5737,14 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	backupPath := filepath.Join(backupDir, "breeze-agent.backup")
 
 	updaterCfg := &updater.Config{
-		ServerURL:             h.serverURL,
-		BackupServerURL:       h.backupServerURL(),
-		AuthToken:             h.secureToken,
-		CurrentVersion:        h.agentVersion,
-		BinaryPath:            binaryPath,
-		BackupPath:            backupPath,
-		PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
+		ServerURL:                   h.serverURL,
+		BackupServerURL:             h.backupServerURL(),
+		AuthToken:                   h.secureToken,
+		CurrentVersion:              h.agentVersion,
+		BinaryPath:                  binaryPath,
+		BackupPath:                  backupPath,
+		PinnedManifestPubKeys:       h.config.PinnedManifestPubKeys,
+		RequireManifestSigningKeyID: h.config.RequireManifestSigningKeyID,
 	}
 
 	// Pre-download breeze-user-helper.exe on Windows so the restart-helper
