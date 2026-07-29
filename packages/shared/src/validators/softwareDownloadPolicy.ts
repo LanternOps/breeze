@@ -247,6 +247,48 @@ function isForbiddenIPv6(bytes: number[]): boolean {
 }
 
 /**
+ * Whether a host that is NOT a parseable IP literal is nonetheless an attempt
+ * at writing an IPv4 address — a partially-typed subnet (`192.168.1.x`,
+ * `172.16.x.x`), or hex shorthand whose last label kept the WHATWG parser from
+ * treating the whole thing as an address (`0xdead.beef`, `0x1.0x2.ba.be`).
+ *
+ * Byte-for-byte mirror of `isNumericLookingHost` in
+ * agent/internal/netpolicy/address.go, INCLUDING the "hex letters only count
+ * when a 0x marker is present" rule that keeps real names like `beef.cafe`
+ * from being mistaken for shorthand.
+ *
+ * This is the load-bearing half of the accept-set parity contract. Without it
+ * `https://192.168.1.x` — exactly how a tech writes a subnet — validates and
+ * persists, and then every managed-software install for that org/site fails:
+ * the agent's `netpolicy.NewClient` aborts on the FIRST unparseable origin,
+ * so one bad allowlist row takes down public-CDN installs that needed no
+ * allowlist entry at all. Pinned by the shared Go/TS fixture list in
+ * `agent/internal/netpolicy/testdata/origin_accept_parity.json`.
+ */
+export function isNumericLookingHost(host: string): boolean {
+  // Hex letters are only treated as part of a numeric host when the string
+  // actually carries a "0x" marker, so real names like "beef.cafe" are not
+  // mistaken for IPv4 shorthand.
+  const hexMarker = host.includes('0x') || host.includes('0X');
+  let hasDigit = false;
+  for (const ch of host) {
+    if (ch >= '0' && ch <= '9') {
+      hasDigit = true;
+    } else if (ch === '.' || ch === 'x' || ch === 'X') {
+      // separator or the hex marker itself
+    } else if (
+      hexMarker &&
+      ((ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F'))
+    ) {
+      // hex digit
+    } else {
+      return false;
+    }
+  }
+  return hasDigit;
+}
+
+/**
  * Normalizes and validates a single approved-private-software-origin string.
  * Returns the canonical origin (no trailing slash, lowercase host, default
  * port omitted) or null when the input fails any rule.
@@ -293,6 +335,13 @@ export function normalizePrivateSoftwareOrigin(raw: string): string | null {
       // names and would otherwise be a trivial forbidden-hostname bypass
       // spelling (mirrors Go's checkHostShape).
       if (hostText.startsWith('.') || hostText.includes('..')) return null;
+      // A host that failed IP parsing but is still an attempt at writing an
+      // IPv4 address must be refused HERE, at the write, because the agent
+      // refuses it at read: Go's checkHostShape returns
+      // ambiguous_ip_encoding, parseOrigin collapses that to invalid_origin,
+      // and netpolicy.NewClient fails on the FIRST such entry. See
+      // isNumericLookingHost below for why this is not optional.
+      if (isNumericLookingHost(hostText)) return null;
     }
   }
 
@@ -313,7 +362,8 @@ export const privateSoftwareOriginSchema = z.string().transform((value, ctx) => 
       code: 'custom',
       message:
         'Must be an exact HTTPS origin (hostname or IP literal, optional port) with no path other than "/", ' +
-        'no query, fragment, userinfo, or wildcard, and no loopback/link-local/unspecified/multicast/metadata/' +
+        'no query, fragment, userinfo, or wildcard, no partially-written or shorthand IP form ' +
+        '(e.g. "192.168.1.x", "0x7f.0.0.1"), and no loopback/link-local/unspecified/multicast/metadata/' +
         'reserved IP literal.',
     });
     return z.NEVER;
