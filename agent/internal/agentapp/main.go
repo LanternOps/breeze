@@ -111,6 +111,21 @@ var (
 	reconcileServiceUnitIfNeededFn                                                = reconcileServiceUnitIfNeeded
 )
 
+// describeLogFileError returns a bounded, secret-free description of a log
+// file setup failure — only the path and a short reason ever appear, never
+// file contents. When err wraps *logging.ErrUnsafeLogPath (P1-AGENT-LOG-001:
+// a symlink was found at the log path, its directory, or a rotation
+// backup), the description calls out the security-relevant condition
+// explicitly so it stands out from an ordinary I/O failure in stdout/stderr
+// fallback logs.
+func describeLogFileError(err error) string {
+	var unsafePath *logging.ErrUnsafeLogPath
+	if errors.As(err, &unsafePath) {
+		return fmt.Sprintf("unsafe log path, refusing to open it (%s)", unsafePath.Reason)
+	}
+	return err.Error()
+}
+
 // initBootstrapLogging initializes the logging package with stderr +
 // the configured log file so waitForEnrollment can emit Warn/Info
 // lines before full startAgent runs. Does NOT start the log shipper,
@@ -122,16 +137,18 @@ func initBootstrapLogging(cfg *config.Config) {
 	if logFile == "" {
 		logFile = filepath.Join(config.LogDir(), "agent.log")
 	}
-	// Best effort: if the log file can't be opened (permissions, missing
-	// dir), fall back to stderr only. Bootstrap logging must never fail
-	// the agent start.
-	if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
-		logging.Init(cfg.LogFormat, cfg.LogLevel, os.Stderr)
-		return
-	}
+	// Best effort: if the log file can't be opened securely (permissions,
+	// missing dir, or an unsafe path such as a symlink — see
+	// logging.NewRotatingWriter, which now owns directory creation and
+	// symlink rejection itself), fall back to stderr only. Bootstrap
+	// logging must never fail the agent start, and file logging being
+	// disabled must never mean logging is silent: this always emits one
+	// warning through the stderr-only logger so the condition is visible.
 	rw, err := logging.NewRotatingWriter(logFile, cfg.LogMaxSizeMB, cfg.LogMaxBackups)
 	if err != nil {
 		logging.Init(cfg.LogFormat, cfg.LogLevel, os.Stderr)
+		log.Warn("log file unavailable during bootstrap, using stderr only",
+			"logFile", logFile, "reason", describeLogFileError(err))
 		return
 	}
 	logging.Init(cfg.LogFormat, cfg.LogLevel, logging.TeeWriter(os.Stderr, rw))
@@ -340,11 +357,13 @@ func Main(v string) {
 func initLogging(cfg *config.Config) {
 	var output io.Writer = os.Stdout
 	logFileFallback := false
+	var logFileFallbackReason string
 
 	if cfg.LogFile != "" {
 		rw, err := logging.NewRotatingWriter(cfg.LogFile, cfg.LogMaxSizeMB, cfg.LogMaxBackups)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to open log file %s: %v (logging to stdout)\n", cfg.LogFile, err)
+			logFileFallbackReason = describeLogFileError(err)
+			fmt.Fprintf(os.Stderr, "Failed to open log file %s: %s (logging to stdout)\n", cfg.LogFile, logFileFallbackReason)
 			logFileFallback = true
 		} else if !hasConsole() {
 			// No console attached (Windows service, launchd daemon, or systemd
@@ -364,7 +383,7 @@ func initLogging(cfg *config.Config) {
 
 	// Re-log fallback via structured logger so it appears in journalctl/Event Viewer
 	if logFileFallback {
-		log.Warn("log file fallback active, logging to stdout only", "requestedFile", cfg.LogFile)
+		log.Warn("log file fallback active, logging to stdout only", "requestedFile", cfg.LogFile, "reason", logFileFallbackReason)
 	}
 }
 
@@ -1409,7 +1428,10 @@ func initEnrollLogging(cfg *config.Config, quiet bool) {
 		cfg.LogFile = filepath.Join(config.LogDir(), "agent.log")
 	}
 
-	if err := os.MkdirAll(filepath.Dir(cfg.LogFile), 0o755); err != nil {
+	// 0700, not 0755: even this best-effort pre-create (NewRotatingWriter
+	// below secures/repairs the directory itself regardless) should never
+	// leave the log directory group/world-readable, even momentarily.
+	if err := os.MkdirAll(filepath.Dir(cfg.LogFile), 0o700); err != nil {
 		// Rare in production (MSI CA runs as SYSTEM), but if it happens
 		// the admin needs to see it in install.log — write to stderr
 		// unconditionally so the MSI verbose log captures it.
@@ -1421,7 +1443,7 @@ func initEnrollLogging(cfg *config.Config, quiet bool) {
 
 	rw, err := logging.NewRotatingWriter(cfg.LogFile, cfg.LogMaxSizeMB, cfg.LogMaxBackups)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not open log file %s: %v — structured logs will go to stdout\n", cfg.LogFile, err)
+		fmt.Fprintf(os.Stderr, "Warning: could not open log file %s: %s — structured logs will go to stdout\n", cfg.LogFile, describeLogFileError(err))
 		logging.Init(cfg.LogFormat, cfg.LogLevel, os.Stdout)
 		log = logging.L("main")
 		return
