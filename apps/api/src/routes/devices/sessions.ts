@@ -4,7 +4,7 @@ import { zValidator } from '../../lib/validation';
 import { and, desc, eq, gte, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../../db';
-import { deviceSessions, devices } from '../../db/schema';
+import { deviceSessions } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { sendCommandToAgentAwaitResult } from '../../services/agentCommandAwait';
 import { PERMISSIONS } from '../../services/permissions';
@@ -126,15 +126,16 @@ sessionsRoutes.get(
   requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('param', deviceIdParamSchema),
   async (c) => {
-    const deviceId = c.req.param('id');
+    const auth = c.get('auth');
+    const { id: deviceId } = c.req.valid('param');
 
-    const [device] = await db
-      .select({ id: devices.id, agentId: devices.agentId })
-      .from(devices)
-      .where(eq(devices.id, deviceId))
-      .limit(1);
-
-    if (!device) return c.json({ error: 'Device not found' }, 404);
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
     if (!device.agentId) return c.json({ error: 'Device has no enrolled agent' }, 409);
 
     const awaitResult = await sendCommandToAgentAwaitResult(
