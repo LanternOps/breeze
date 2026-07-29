@@ -596,6 +596,14 @@ func (b *Broker) HasHelperKeyOwner(key HelperKey) bool {
 	return b.helperByKey[key] != nil
 }
 
+// HelperSessionByKey returns the authenticated helper session owning key, or
+// nil. Used by the lifecycle's spawn-wait to detect readiness.
+func (b *Broker) HelperSessionByKey(key HelperKey) *Session {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.helperByKey[key]
+}
+
 func (b *Broker) helperKeyOwnerPID(key HelperKey) (uint32, bool) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
