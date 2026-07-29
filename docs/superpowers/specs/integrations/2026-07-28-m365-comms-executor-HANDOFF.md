@@ -1,7 +1,7 @@
 # Handoff — M365 communications-delegated executor & session state
 
 **Date:** 2026-07-28 (updated same day)
-**Status:** Design at **v3**, after two review rounds. **Task 0 (principal kind) is SHIPPED — PR #2915.** Two new prerequisites now block comms code; see §6.
+**Status:** Design at **v3**, approved for implementation. All three prerequisites shipped (#2915 principal kind; #2917 release funnel + persisted origin principal). All three blocking decisions made 2026-07-29 (§6). **Nothing blocks task 1.**
 
 > ## Latest state (read this first)
 >
@@ -23,9 +23,7 @@
 > | 5 bootstrap constraint | §4.1 — status-aware `credential_location_check` + single atomic promotion UPDATE |
 > | 6 Key Vault as token store | §3.1/§3.2 — **replaced**. MSAL confidential client + encrypted CAS token cache; Key Vault reverts to `get`-only on two immutable secrets; the single-replica constraint is gone (no rolling deploy can honour it) |
 >
-> Two things a re-reviewer should push on hardest, because they are the least settled:
-> - **Where the token-cache store lives** (§3.2). Recommended: a store the executor owns. Fallback: Breeze Postgres, which widens executor egress toward the tenant DB and needs an explicit master-spec §6.1 amendment first. This is Todd's call, not the reviewer's.
-> - **The §6 open question** on Tier-3 auto-execute over MCP, which is bigger than this design.
+> **Both prerequisites are merged** — #2915 (`9e346eee9`) and #2917 (`fd32f8e73`) — and **all three open decisions were made 2026-07-29**; see §6 for what was decided and why. Nothing in this design is waiting on Todd. What is still waiting on him is unchanged and unrelated: §5 (release, Azure provisioning, executor runtime, real-tenant acceptance run).
 
 ---
 
@@ -107,7 +105,7 @@ Spot-checked directly, not taken from the reviewer:
 
 (1)+(2) together are the blocking objection to the comms executor: an API key minted by the mailbox owner would satisfy a user allowlist, a connection-owner check, and user-axis RLS — then auto-execute a Tier-3 **send as that human** with no approval. Fix is an explicit principal kind (`user_session | api_key | oauth_grant | helper`), required to be `user_session`, plus suppression from MCP `tools/list` **and** denial in `tools/call`.
 
-**Open question for Todd:** is Tier-3 auto-execute over MCP intended for *mutation* tools? It is documented as deliberate, but it means account-disable and password-reset need no approval over an API key.
+**Decided 2026-07-29 — auto-execute stays; see §6 for the reasoning and the general rule it produced.** In short: "mutation" is the wrong line, because unattended mutation is what MCP is *for*. The line is whether the effect carries an individual human's authority. Comms sends do and are `user_session`-only; `m365_disable_user`/`m365_reset_password` carry org authority and are unchanged, with the password-reset exposure recorded as its own control-plane question.
 
 ## 5. Open items needing Todd (no code unblocks these)
 
@@ -118,16 +116,22 @@ Spot-checked directly, not taken from the reviewer:
 
 ## 6. Recommended next step
 
-**Done:** v2 revision → re-review → v3 revision. Task 0 shipped as PR #2915.
+**Done:** v2 revision → re-review → v3 revision. Task 0 shipped (#2915). Tasks 0a + 0b shipped (#2917, squash `fd32f8e73`). **All three of Todd's decisions made 2026-07-29.**
+
+**The three decisions, as recorded in the design doc:**
+
+| Question | Decision | Where |
+|---|---|---|
+| Token-cache store placement | **Executor-owned dedicated store.** Breeze Postgres fallback is *closed*, not deprioritized — reversing it requires re-deciding, not improvising under deploy pressure. | design §3.2, risk #9 retired |
+| Master-spec §6.1 amendment | **Applied.** Restated as *no component may hold credential material it can decrypt outside its own credential domain*; plaintext forbidden everywhere; per-domain cardinality named. Note the ordering — the amendment was not needed to unblock the design, since the cache never enters Breeze Postgres. | master §6.1; design §12 flags 5+6 resolved |
+| Tier-3 auto-execute over MCP | **Stays.** A blanket "mutations need approval" rule would block `execute_command`, patch install, invoicing and org lifecycle — the automation MSPs buy MCP for. The line is *whose authority the effect carries*: **effects attributable to an individual human identity require `user_session`, regardless of transport.** Comms is the first instance of a general rule, not an exception. | design §6 |
+
+**Carried out of that third decision, deliberately not bundled:** `m365_disable_user`/`m365_reset_password` act *on* a human but with org authority, so they keep auto-executing over an API key. Password reset is the classic account-takeover primitive and deserves its own decision — likely an opt-in grant on the key. Control-plane scope, not comms; both tools are dark today.
 
 **Now, in order:**
 
-1. **Merge PR #2915** once CI is green. It stands alone regardless of where the comms design lands.
-2. **Ship the two new prerequisites** (design tasks 0a and 0b), both of which are self-contained and valuable independently of comms:
-   - **0a — single release funnel.** Comms Tier-3 tools inline-ineligible before the CAS + `releaseCommsSend(intentId)` + a parity test. This is the §0.a fix and should land *before* any send tool exists, so the tool cannot be added to an unguarded path.
-   - **0b — persisted origin principal.** Immutable `origin_principal_kind`/`origin_principal_id` on `action_intents`. #2915 derives the kind from `intent.source` as an interim; a persisted column makes the release-time check prove the same fact the creation-time check proved.
-3. **Third review of v3, or start implementing.** My read: v3's remaining risk is concentrated in §3.2 (the token cache's fencing/keyring/tombstone semantics) and §5.3 (the operation-plan digest). Those are the two worth another adversarial pass; the rest of v3 is mechanical enough to review in the PRs. A third full-design round has diminishing returns — the last one earned its keep almost entirely on §0.a, which is now closed.
-4. **Todd's calls, which no amount of review resolves:** where the token-cache store lives (§3.2), whether master-spec §6.1 gets the proposed amendment, and the Tier-3-over-MCP question in §4 below.
+1. **Implement tasks 1 → 18** (design §14). Task 1 (shared canonicalizer) is a pure move plus test vectors and unblocks task 2.
+2. **Optional third adversarial review, scoped.** If one is run, the remaining risk is concentrated in §3.2 (the token cache's fencing/keyring/tombstone semantics) and §5.3 (the operation-plan digest). The rest of v3 is mechanical enough to review in the PRs. A third *full*-design round has diminishing returns — the last one earned its keep almost entirely on §0.a, which is now closed.
 
 Everything in §5 (release, Azure provisioning, executor runtime, acceptance run) is unchanged and still blocking production, independent of this design.
 
