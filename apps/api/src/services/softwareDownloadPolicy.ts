@@ -17,6 +17,7 @@ import { db } from '../db';
 import { organizations, sites } from '../db/schema';
 import { encryptColumnValueForWrite } from './encryptedColumnRegistry';
 import {
+  privateSoftwareOriginSchema,
   softwareDownloadPolicySchema,
   type SoftwareDownloadPolicy,
 } from '@breeze/shared/validators';
@@ -34,15 +35,52 @@ function asSettingsObject(settings: unknown): Record<string, unknown> {
 /**
  * Extracts and validates the policy embedded at `settings.softwareDownloadPolicy`.
  * A row holding a value that no longer parses (e.g. hand-edited, or written by
- * a future schema version) falls back to the safe empty policy rather than
- * throwing — a read must never 500 because of a stored value it doesn't own
- * exclusively (the settings blob is a general-purpose JSONB column).
+ * a future schema version) degrades rather than throwing — a read must never
+ * 500 because of a stored value it doesn't own exclusively (the settings blob
+ * is a general-purpose JSONB column).
+ *
+ * Degradation salvages the VALID entries instead of discarding the whole list,
+ * because the two consumers of this policy fail in opposite directions and an
+ * all-or-nothing empty result is fail-OPEN for one of them:
+ *
+ *  - The agent payload treats an absent origin as "not approved", so dropping
+ *    entries only ever refuses more private downloads. Fail-closed.
+ *  - `isPrivateSoftwareDestination` uses the list to decide whether a
+ *    destination is an operator-DECLARED private origin. With an empty list a
+ *    LAN destination stops being recognised as private, so the compat-mode
+ *    capability gate stops applying and the install is dispatched to a
+ *    capability-0 agent — which has no dial-time policy of its own. Fail-OPEN.
+ *
+ * A single legacy row that a later validator tightening made invalid (Wave 6
+ * added the numeric-looking-host rejection, e.g. `https://192.168.1.x`) must
+ * therefore not be able to silently switch that gate off for the whole org.
+ * Keeping the parseable entries preserves the gate for every origin the
+ * operator declared correctly.
  */
 function extractPolicy(settings: unknown): SoftwareDownloadPolicy {
   const raw = asSettingsObject(settings)[SETTINGS_KEY];
   if (raw === undefined) return EMPTY_POLICY;
   const parsed = softwareDownloadPolicySchema.safeParse(raw);
-  return parsed.success ? parsed.data : EMPTY_POLICY;
+  if (parsed.success) return parsed.data;
+
+  // Salvage per-entry. Anything that is not an object carrying an array of
+  // origins has no entries to salvage and degrades to empty.
+  const rawOrigins = asSettingsObject(raw).approvedPrivateOrigins;
+  if (!Array.isArray(rawOrigins)) return EMPTY_POLICY;
+
+  const salvaged: string[] = [];
+  for (const entry of rawOrigins) {
+    const one = privateSoftwareOriginSchema.safeParse(entry);
+    if (one.success) salvaged.push(one.data);
+  }
+  const dropped = rawOrigins.length - salvaged.length;
+  if (dropped > 0) {
+    console.warn(
+      `[softwareDownloadPolicy] dropped ${dropped} unparseable approved origin(s) from a stored policy; ` +
+        'the remaining entries still gate dispatch. Re-save the policy to clear the invalid rows.',
+    );
+  }
+  return { version: 1, approvedPrivateOrigins: Array.from(new Set(salvaged)) };
 }
 
 function dedupeOrigins(a: readonly string[], b: readonly string[]): string[] {

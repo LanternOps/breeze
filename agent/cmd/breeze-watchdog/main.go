@@ -1013,9 +1013,6 @@ func processHeartbeatResponse(
 	return resp.Commands
 }
 
-// handleFailoverCommand executes a single command from the API. ctx is the
-// watchdog run context, so a recovery a command dispatches is cancelled by an
-// SCM stop just like one the main loop started.
 // failoverUpdateErrMsg renders an update_agent / update_watchdog failure for the
 // command RESULT, which is POSTed to the control plane
 // (FailoverClient.SubmitCommandResult -> body["error"] -> device_commands -> the
@@ -1030,6 +1027,9 @@ func failoverUpdateErrMsg(err error) string {
 	return updater.SafeDownloadErrorMessage(err)
 }
 
+// handleFailoverCommand executes a single command from the API. ctx is the
+// watchdog run context, so a recovery a command dispatches is cancelled by an
+// SCM stop just like one the main loop started.
 func handleFailoverCommand(
 	ctx context.Context,
 	fc *watchdog.FailoverClient,

@@ -354,3 +354,51 @@ describe('getEffectiveSoftwareDownloadPolicy', () => {
     expect(result).toEqual({ version: 1, approvedPrivateOrigins: ['https://org.corp.internal'] });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Whole-branch review, Low #2 — a stored policy holding an entry that a LATER
+// validator tightening invalidated must not switch the dispatch gate off for
+// the whole org.
+//
+// Wave 6 added the numeric-looking-host rejection (`https://192.168.1.x`).
+// Before this fix, extractPolicy discarded the ENTIRE list when any element
+// failed, which is fail-closed on the agent (fewer approved origins) but
+// fail-OPEN on the API gate: with an empty list a LAN destination stops being
+// recognised as private, so compat mode dispatches the install to a
+// capability-0 agent that has no dial-time policy of its own.
+// ---------------------------------------------------------------------------
+describe('extractPolicy salvage on a partially-invalid stored policy', () => {
+  it('keeps the valid approved origins and drops only the invalid ones', async () => {
+    dbMock.selectWhere.mockResolvedValueOnce([
+      {
+        settings: {
+          softwareDownloadPolicy: {
+            version: 1,
+            approvedPrivateOrigins: [
+              'https://192.168.1.x', // invalid: numeric-looking host
+              'https://files.corp.internal',
+              'https://10.0.0.5',
+            ],
+          },
+        },
+      },
+    ]);
+
+    const policy = await getOrganizationSoftwareDownloadPolicy('org-1');
+
+    expect(policy.approvedPrivateOrigins).toEqual([
+      'https://files.corp.internal',
+      'https://10.0.0.5',
+    ]);
+  });
+
+  it('degrades to empty when there is no origins array to salvage', async () => {
+    dbMock.selectWhere.mockResolvedValueOnce([
+      { settings: { softwareDownloadPolicy: { version: 9, nope: true } } },
+    ]);
+
+    const policy = await getOrganizationSoftwareDownloadPolicy('org-1');
+
+    expect(policy.approvedPrivateOrigins).toEqual([]);
+  });
+});
