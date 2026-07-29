@@ -460,6 +460,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // conservative default — and writing unconditionally lets the flag
     // self-clear on the first post-reboot heartbeat.
     pendingReboot: data.pendingReboot ?? false,
+    // Wave 6 Task 4 (security remediation) — outbound-network-policy
+    // capability handshake. Written UNCONDITIONALLY every heartbeat (not
+    // sticky): only the recognized integer version 1 is ever recorded as
+    // anything other than 0, so an old agent (object omitted entirely) — or
+    // a downgrade FROM a capable build back to an old one — correctly
+    // reports back down to 0 rather than leaving a stale capability claim
+    // that Task 5's dispatch gate would wrongly trust.
+    outboundNetworkPolicyVersion: data.securityCapabilities?.outboundNetworkPolicyVersion === 1 ? 1 : 0,
     updatedAt: new Date()
   };
 

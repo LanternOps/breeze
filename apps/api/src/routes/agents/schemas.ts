@@ -243,6 +243,14 @@ export const heartbeatSchema = z.object({
     signedInUpns: z.array(z.string().max(320)).max(16).default([]).catch([]),
     driftEntries: z.array(z.record(z.string(), z.unknown())).default([]),
   }).optional().catch(undefined),
+  // Wave 6 Task 4 (security remediation) — outbound-network-policy capability
+  // handshake. Old agents omit this object entirely; a capable agent sends
+  // `{"outboundNetworkPolicyVersion":1}`. Informational — a bad value drops
+  // the whole object (.catch) rather than 400-ing the heartbeat, since the
+  // route treats anything other than exactly 1 as "not enforcing" anyway.
+  securityCapabilities: z.object({
+    outboundNetworkPolicyVersion: z.number().int().optional().catch(undefined),
+  }).optional().catch(undefined),
 });
 
 // ============================================

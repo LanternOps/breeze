@@ -1335,6 +1335,144 @@ describe('pendingReboot persistence', () => {
 });
 
 // ---------------------------------------------------------------------
+// outboundNetworkPolicyVersion capability handshake (Wave 6 Task 4, security
+// remediation)
+// ---------------------------------------------------------------------
+describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
+  const deviceRow = {
+    id: 'device-1',
+    orgId: 'org-1',
+    siteId: 'site-1',
+    hostname: 'host-1',
+    osType: 'linux',
+    osVersion: 'Ubuntu 22.04',
+    osBuild: null,
+    architecture: 'amd64',
+    agentVersion: '0.65.10',
+    deviceRole: 'server',
+    deviceRoleSource: 'auto',
+    agentTokenHash: 'hash',
+    tokenIssuedAt: new Date(),
+    mainAgentSilentSince: null,
+  };
+
+  async function setupMocks(setSpy: ReturnType<typeof vi.fn>) {
+    vi.clearAllMocks();
+    // Dedupe cache is a module-global — reset it so a capability assertion in
+    // one test can never inherit state left behind by another.
+    const { resetWatchdogRestartLogCacheForTests } = await import('./heartbeat');
+    resetWatchdogRestartLogCacheForTests();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    selectMock.mockReturnValue(selectChainResolving([]));
+  }
+
+  it('records version 1 from a capable heartbeat', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...minimalHeartbeatBody,
+        securityCapabilities: { outboundNetworkPolicyVersion: 1 },
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.outboundNetworkPolicyVersion).toBe(1);
+  });
+
+  it('leaves version 0 when an old heartbeat omits securityCapabilities entirely', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    // minimalHeartbeatBody has no securityCapabilities key — simulates an
+    // agent build that predates Wave 6 Task 4.
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.outboundNetworkPolicyVersion).toBe(0);
+  });
+
+  it('records version 0 for an unrecognized capability version rather than trusting it', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...minimalHeartbeatBody,
+        securityCapabilities: { outboundNetworkPolicyVersion: 2 },
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.outboundNetworkPolicyVersion).toBe(0);
+  });
+
+  it('resets a previously-capable device back to 0 on a downgraded (old) heartbeat', async () => {
+    // Same device row shape regardless of its PRIOR stored capability value —
+    // the write is unconditional every heartbeat, not a merge against the
+    // existing row, so what matters is what THIS heartbeat declares.
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.outboundNetworkPolicyVersion).toBe(0);
+  });
+
+  it('watchdog heartbeats never touch outboundNetworkPolicyVersion', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    vi.clearAllMocks();
+    const { resetWatchdogRestartLogCacheForTests } = await import('./heartbeat');
+    resetWatchdogRestartLogCacheForTests();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([{ ...deviceRow, lastSeenAt: new Date() }]),
+    );
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    selectMock.mockReturnValue(selectChainResolving([]));
+
+    const resp = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        role: 'watchdog',
+        agentVersion: '0.65.10',
+        watchdogState: 'MONITORING',
+        securityCapabilities: { outboundNetworkPolicyVersion: 1 },
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    expect(setSpy).toHaveBeenCalled();
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg).toHaveProperty('watchdogStatus');
+    expect(updateArg).not.toHaveProperty('outboundNetworkPolicyVersion');
+  });
+});
+
+// ---------------------------------------------------------------------
 // batteryStatus persistence (#2142)
 // ---------------------------------------------------------------------
 

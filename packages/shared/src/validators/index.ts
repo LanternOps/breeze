@@ -27,6 +27,7 @@ export * from './maintenanceWindow';
 export * from './agentVersionPins';
 export * from './enrollmentDefaults';
 export * from './softwareDetection';
+export * from './softwareDownloadPolicy';
 
 // ============================================
 // Device Roles

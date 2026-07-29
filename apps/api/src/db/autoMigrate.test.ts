@@ -17,6 +17,7 @@ import { users } from './schema/users';
 import * as oauthSchema from './schema/oauth';
 import { quotes } from './schema/quotes';
 import { deviceMtlsCertificates } from './schema/deviceMtlsCertificates';
+import { devices } from './schema/devices';
 
 describe('autoMigrate', () => {
   describe('detectState', () => {
@@ -449,6 +450,49 @@ describe('Wave 5 device mTLS certificate history', () => {
     expect(migrationSql).toMatch(
       /GRANT SELECT, INSERT, UPDATE, DELETE ON device_mtls_certificates TO breeze_app/,
     );
+  });
+});
+
+describe('Wave 6 agent outbound-network-policy capability handshake', () => {
+  const migrationsDir = path.resolve(__dirname, '../../migrations');
+  const capabilityMigration = '2026-08-06-e-agent-outbound-network-capability.sql';
+  const certificateHistory = '2026-08-06-d-device-mtls-certificate-history.sql';
+
+  it('orders the capability migration immediately after the reserved Wave 5 certificate-history migration', () => {
+    const files = readdirSync(migrationsDir)
+      .filter((file) => /^\d{4}-.*\.sql$/.test(file))
+      .sort((a, b) => a.localeCompare(b));
+
+    expect(files).toContain(capabilityMigration);
+    // -f is still reserved for a later task, so assert adjacency within the
+    // block and that the block remains the contiguous lexical tail, rather
+    // than pinning this file as the single last migration.
+    const reservedBlock = files.filter((file) => file.startsWith('2026-08-06-'));
+    expect(files.slice(-reservedBlock.length)).toEqual(reservedBlock);
+    expect(reservedBlock.indexOf(capabilityMigration)).toBe(
+      reservedBlock.indexOf(certificateHistory) + 1,
+    );
+  });
+
+  it('maps outbound_network_policy_version as a non-null integer defaulting to zero', () => {
+    const column = getTableConfig(devices).columns.find(
+      (candidate) => candidate.name === 'outbound_network_policy_version',
+    );
+
+    expect(column).toBeDefined();
+    expect(column?.getSQLType()).toBe('integer');
+    expect(column?.notNull).toBe(true);
+    expect(column?.default).toBe(0);
+  });
+
+  it('is an idempotent expand-only ADD COLUMN with no inner transaction directives', () => {
+    const migrationSql = readFileSync(path.join(migrationsDir, capabilityMigration), 'utf8');
+
+    expect(migrationSql).toMatch(
+      /ADD COLUMN IF NOT EXISTS outbound_network_policy_version integer NOT NULL DEFAULT 0/,
+    );
+    expect(migrationSql).not.toMatch(/\bBEGIN;/);
+    expect(migrationSql).not.toMatch(/\bCOMMIT;/);
   });
 });
 

@@ -117,6 +117,25 @@ type HeartbeatPayload struct {
 	// (runtime.ReadMemStats is microseconds) so fleet-wide agent memory leaks
 	// are visible from the server without shell access to the device.
 	AgentRuntime *collectors.RuntimeStats `json:"agentRuntime,omitempty"`
+	// SecurityCapabilities declares the outbound-network-policy capability
+	// handshake (Wave 6 Task 4, security remediation). Sent unconditionally
+	// (no omitempty) so the server can tell an old agent (the whole object
+	// absent from the JSON body) from a capable one that declares version 0
+	// — which this build never does, but the server must not assume "object
+	// present" implies "version 1" either. See SecurityCapabilities below.
+	SecurityCapabilities SecurityCapabilities `json:"securityCapabilities"`
+}
+
+// SecurityCapabilities is the agent's outbound-network-policy capability
+// handshake (Wave 6 Task 4, security remediation). The API records
+// devices.outbound_network_policy_version from OutboundNetworkPolicyVersion
+// on every heartbeat and only ever trusts the recognized integer version 1;
+// any other value (including 0, or the field's absence on a pre-Task-4
+// agent) is treated as "not enforcing". Task 5's dispatch gate depends on
+// this being accurate: internal/netpolicy (Tasks 1-3) is what actually
+// enforces the policy this version number claims to be honoring.
+type SecurityCapabilities struct {
+	OutboundNetworkPolicyVersion int `json:"outboundNetworkPolicyVersion"`
 }
 
 type DesktopAccessState struct {
@@ -3210,6 +3229,11 @@ func (h *Heartbeat) sendHeartbeat() {
 		HealthStatus:    h.healthMon.Summary(),
 		DeviceRole:      deviceRole,
 		IsHeadless:      h.currentHeadless(),
+		// Wave 6 Task 4 — this build enforces internal/netpolicy (Tasks 1-3),
+		// so it always declares version 1. Unconditional (not gated on any
+		// runtime check): the enforcement is compiled in, not a runtime
+		// toggle.
+		SecurityCapabilities: SecurityCapabilities{OutboundNetworkPolicyVersion: 1},
 	}
 
 	// Only report virtualization once background hardware collection has
