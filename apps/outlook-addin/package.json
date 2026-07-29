@@ -26,7 +26,7 @@
     "@types/react-dom": "^19.2.3",
     "@tailwindcss/vite": "^4.3.3",
     "@vitejs/plugin-react": "^6.0.2",
-    "jsdom": "^29.1.1",
+    "jsdom": "^30.0.1",
     "office-addin-dev-certs": "^2.0.10",
     "office-addin-manifest": "^2.0.0",
     "tailwindcss": "^4.3.1",
