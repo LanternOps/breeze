@@ -18,6 +18,7 @@ import { revokeAllPartnerOauthArtifacts } from '../../oauth/grantRevocation';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../../services/authLifecycle';
 import { restorePartnerTenantAccess } from '../../services/tenantLifecycle';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
+import { getBreezeBillingClient } from '../../services/breezeBillingClient';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { captureException } from '../../services/sentry';
 import { requireMfa } from '../../middleware/auth';
@@ -290,6 +291,28 @@ abuseRoutes.post(
       }
     }
 
+    // Cancel the partner's billing subscription so a suspended-for-abuse account
+    // stops billing (a stolen card keeps getting charged otherwise) instead of
+    // waiting for a manual cancel in Stripe. Best-effort like the teardown steps
+    // above — a billing-service hiccup must NOT abort a suspension already
+    // committed to the DB. Never refunds (that stays a manual operator decision).
+    // Skipped entirely on installs with no billing service configured
+    // (self-hosted). Outcome is recorded in the audit trail either way.
+    let billingSubscriptionCanceled: boolean | null = null;
+    let billingCancelError: string | null = null;
+    if (process.env.BREEZE_BILLING_URL) {
+      try {
+        const cancelResult = await getBreezeBillingClient().cancelSubscription({
+          partnerId,
+          immediate: true,
+        });
+        billingSubscriptionCanceled = cancelResult.canceled;
+      } catch (err) {
+        billingCancelError = err instanceof Error ? err.message : String(err);
+        captureException(err, c);
+      }
+    }
+
     const auditResult: 'success' | 'failure' =
       tokenRevocationFailures.length === 0 && oauthRevocationError === null
         ? 'success'
@@ -313,6 +336,8 @@ abuseRoutes.post(
           remoteSessionTeardownFailures,
           oauthGrantsRevoked: oauthRevocationResult?.grantsRevoked ?? 0,
           oauthRefreshTokensRevoked: oauthRevocationResult?.refreshTokensRevoked ?? 0,
+          billingSubscriptionCanceled,
+          ...(billingCancelError !== null ? { billingCancelError } : {}),
           ...(tokenRevocationFailures.length > 0
             ? { tokenRevocationFailures }
             : {}),

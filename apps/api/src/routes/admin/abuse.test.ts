@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // We test the platform-admin gate, Zod validation, audit-log shape, and
 // not-found path. The full suspend transaction (multi-statement Drizzle calls
@@ -200,6 +200,13 @@ vi.mock('../../oauth/grantRevocation', () => ({
     refreshTokensRevoked: 0,
     jtisRevoked: 0,
   })),
+}));
+
+// Billing subscription cancel on suspend. vi.hoisted so the stable mock fn is
+// referenceable inside the (hoisted) factory and assertable across calls.
+const billingCancelMock = vi.hoisted(() => vi.fn());
+vi.mock('../../services/breezeBillingClient', () => ({
+  getBreezeBillingClient: () => ({ cancelSubscription: billingCancelMock }),
 }));
 
 // /unsuspend now restores the agent fleet that an orgs.ts-initiated suspend
@@ -899,5 +906,71 @@ describe('admin/abuse — unsuspend agent-fleet restore', () => {
     expect(body.agentRestoreFailed).toBe(true);
     const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
     expect(auditCall.result).toBe('failure');
+  });
+});
+
+describe('admin/abuse — billing subscription cancel on suspend', () => {
+  const originalBillingUrl = process.env.BREEZE_BILLING_URL;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetState();
+    process.env.NODE_ENV = 'test';
+    billingCancelMock.mockResolvedValue({ canceled: true, immediate: true });
+  });
+
+  afterEach(() => {
+    if (originalBillingUrl === undefined) delete process.env.BREEZE_BILLING_URL;
+    else process.env.BREEZE_BILLING_URL = originalBillingUrl;
+  });
+
+  it('cancels the partner subscription immediately and records it in the audit', async () => {
+    process.env.BREEZE_BILLING_URL = 'http://billing.test';
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'stolen-card mass enrollment ring' }),
+    });
+    expect(res.status).toBe(200);
+    // immediate cancellation — the account is terminated for abuse, not downgraded.
+    expect(billingCancelMock).toHaveBeenCalledWith({ partnerId: 'partner-1', immediate: true });
+    const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
+    expect(auditCall.result).toBe('success');
+    expect(auditCall.details).toMatchObject({ billingSubscriptionCanceled: true });
+  });
+
+  it('does NOT abort the suspend when billing cancel fails (best-effort) and records the error', async () => {
+    process.env.BREEZE_BILLING_URL = 'http://billing.test';
+    billingCancelMock.mockRejectedValue(new Error('billing 503'));
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'stolen-card mass enrollment ring' }),
+    });
+    // The DB suspend already committed; a billing hiccup must not turn it into a failure.
+    expect(res.status).toBe(200);
+    expect(billingCancelMock).toHaveBeenCalledTimes(1);
+    const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
+    expect(auditCall.result).toBe('success');
+    expect(auditCall.details).toMatchObject({
+      billingSubscriptionCanceled: null,
+      billingCancelError: 'billing 503',
+    });
+  });
+
+  it('skips billing entirely when no billing service is configured (self-hosted)', async () => {
+    delete process.env.BREEZE_BILLING_URL;
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'stolen-card mass enrollment ring' }),
+    });
+    expect(res.status).toBe(200);
+    expect(billingCancelMock).not.toHaveBeenCalled();
+    const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
+    expect(auditCall.details).toMatchObject({ billingSubscriptionCanceled: null });
   });
 });
