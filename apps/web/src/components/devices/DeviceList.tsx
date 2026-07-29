@@ -2230,6 +2230,7 @@ export default function DeviceList({
                             isHeadless={device.isHeadless}
                             desktopAccess={device.desktopAccess}
                             remoteAccessPolicy={device.remoteAccessPolicy}
+                            helperLifecycleMode={device.helperLifecycleMode}
                           />
                           <div className="relative">
                             <button
