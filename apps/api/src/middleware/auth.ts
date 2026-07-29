@@ -31,7 +31,14 @@ import { isSelfManagedDbContextRoute } from './selfManagedDbContextRoutes';
  * - `agent`         a device agent.
  * - `helper`        a Breeze Helper desktop session.
  * - `system`        synthetic contexts built by background jobs, workers, and
- *                   schedulers that have no external caller at all.
+ *                   schedulers that have no external caller at all. TRUSTED
+ *                   internal origin — not a dumping ground for "don't know".
+ * - `unknown`       provenance is genuinely unrecoverable. Only produced when
+ *                   reconstructing a principal for a record written before
+ *                   this discriminator existed. Trusted by nothing, and
+ *                   deliberately NOT folded into `system`: a future gate that
+ *                   trusts internal system callers must not thereby trust
+ *                   records whose origin nobody can vouch for.
  */
 export type PrincipalKind =
   | { kind: 'user_session' }
@@ -40,7 +47,8 @@ export type PrincipalKind =
   | { kind: 'oauth_grant'; grantId?: string }
   | { kind: 'agent'; deviceId?: string }
   | { kind: 'helper'; deviceId?: string }
-  | { kind: 'system'; reason: string };
+  | { kind: 'system'; reason: string }
+  | { kind: 'unknown' };
 
 /**
  * Gate for "a human must be doing this". Use instead of hand-written

@@ -3,7 +3,7 @@ import {
   actionIntentOriginPrincipalKindEnum,
   type ActionIntentOriginPrincipalKind,
 } from '../../db/schema/actionIntents';
-import type { PrincipalKind } from '../../middleware/auth';
+import { isInteractiveUserSession, type PrincipalKind } from '../../middleware/auth';
 
 /**
  * The intent's recorded origin principal is the durable answer to "what kind
@@ -26,6 +26,7 @@ describe('action_intents origin principal', () => {
       'agent',
       'helper',
       'system',
+      'unknown',
     ];
 
     for (const kind of everyRuntimeKind) {
@@ -33,10 +34,7 @@ describe('action_intents origin principal', () => {
       expect(actionIntentOriginPrincipalKindEnum).toContain(asStored);
     }
 
-    // 'unknown' exists only as the backfill value for pre-discriminator rows;
-    // it is deliberately NOT a runtime principal kind.
     expect(actionIntentOriginPrincipalKindEnum).toContain('unknown');
-    expect(everyRuntimeKind).not.toContain('unknown' as never);
   });
 
   it('enumerates exactly the runtime kinds plus unknown — no extras', () => {
@@ -55,10 +53,22 @@ describe('action_intents origin principal', () => {
   });
 
   it('does not default to a human-looking origin', () => {
-    // The single most important property: a row whose origin is unknown must
-    // not be indistinguishable from one created by a person at a keyboard.
-    // The column default and the backfill are both 'unknown' for this reason.
+    // A row whose origin is unknown must not be indistinguishable from one
+    // created by a person at a keyboard.
     const backfillValue: ActionIntentOriginPrincipalKind = 'unknown';
     expect(backfillValue).not.toBe('user_session');
+  });
+
+  it('keeps unknown distinct from system, so trusting system cannot trust it', () => {
+    // These mean opposite things: `system` is a TRUSTED internal origin (a job
+    // or worker with no external caller); `unknown` means provenance is
+    // unrecoverable. Folding unknown into system would mean any future gate
+    // that trusts internal callers silently trusts every pre-discriminator
+    // record — a fail-closed marker turned into an escalation.
+    const unknownPrincipal: PrincipalKind = { kind: 'unknown' };
+    const systemPrincipal: PrincipalKind = { kind: 'system', reason: 'worker' };
+    expect(unknownPrincipal.kind).not.toBe(systemPrincipal.kind);
+    expect(isInteractiveUserSession({ principal: unknownPrincipal })).toBe(false);
+    expect(isInteractiveUserSession({ principal: systemPrincipal })).toBe(false);
   });
 });

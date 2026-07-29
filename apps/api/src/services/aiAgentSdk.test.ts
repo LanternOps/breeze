@@ -132,6 +132,12 @@ vi.mock('./actionIntents/intentService', () => ({
 const mockRevalidateApprovedIntentForRelease = vi.fn((..._args: unknown[]) =>
   Promise.resolve({ ok: true, auth: {} } as IntentReleaseRevalidation),
 );
+const mockRequiresDurableRelease = vi.fn((_name: string) => false);
+vi.mock('./actionIntents/durableRelease', () => ({
+  requiresDurableRelease: (name: string) => mockRequiresDurableRelease(name),
+  DURABLE_RELEASE_ONLY_TOOLS: new Set<string>(),
+}));
+
 vi.mock('./actionIntents/revalidateRelease', () => ({
   revalidateApprovedIntentForRelease: (...args: unknown[]) =>
     mockRevalidateApprovedIntentForRelease(...args),
@@ -2048,6 +2054,47 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
       stepIndex: 0,
       toolName: 'execute_command',
     }));
+  });
+
+  it('a durable-release-only tool never attempts the inline approved->executing CAS', async () => {
+    // The guard's whole purpose: an approved intent for a tool whose safety
+    // depends on the worker-only transport must be left for the durable
+    // worker. Asserting on transitionIntent is what makes this real — a
+    // source-order check would still pass if the early return were deleted
+    // while the call text remained.
+    // Once, not permanently: a leaked `true` silently diverts every later
+    // tier-3 test in this file away from the release path.
+    mockRequiresDurableRelease.mockReturnValueOnce(true);
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Send mail',
+    } as any);
+    mockInsertReturning({ id: 'exec-durable-only' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-durable-only', approvalRequestIds: ['appr-durable-only'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(true);
+    const session = makeActiveSession({});
+
+    // A REGISTERED tier-3 tool: an unknown tool name short-circuits with
+    // "Unknown tool" long before the release path, which would make this test
+    // pass for entirely the wrong reason.
+    const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+    // Not executed inline...
+    expect(result).toEqual(expect.objectContaining({ allowed: false }));
+    // ...and critically, the CAS was never even attempted, so the worker's
+    // claim is still available and the intent is not stranded in `executing`.
+    expect(mockTransitionIntent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'approved',
+      'executing',
+      expect.anything(),
+      expect.anything(),
+    );
   });
 
   it('does NOT advance when the approval is denied', async () => {

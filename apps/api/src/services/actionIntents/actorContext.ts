@@ -45,9 +45,10 @@ export async function buildAuthContextForIntent(intent: ActionIntent): Promise<A
  * Maps the intent's recorded origin principal onto an AuthContext principal.
  *
  * 'unknown' rows predate the discriminator and their true origin is not
- * recoverable, so they become a `system` principal with an explicit reason:
- * that kind fails every interactive gate, which is the correct outcome for an
- * origin nobody can vouch for.
+ * recoverable. They map to the `unknown` kind — NOT to `system`. Conflating
+ * the two would mean a future gate trusting internal system callers would also
+ * trust every historical record, turning a fail-closed marker into an
+ * escalation. `unknown` is trusted by nothing.
  */
 function originPrincipalFor(intent: ActionIntent): AuthContext['principal'] {
   switch (intent.originPrincipalKind) {
@@ -66,7 +67,7 @@ function originPrincipalFor(intent: ActionIntent): AuthContext['principal'] {
     case 'system':
       return { kind: 'system', reason: 'intent-origin-system' };
     default:
-      return { kind: 'system', reason: 'intent-origin-unknown' };
+      return { kind: 'unknown' };
   }
 }
 

@@ -19,31 +19,32 @@
 -- 'unknown' rather than guessed as 'user_session' — a gate requiring a human
 -- must FAIL on an unknown origin, not pass.
 
+-- Added as NOT NULL DEFAULT in a SINGLE statement, deliberately.
+--
+-- The obvious alternative — add nullable, UPDATE every row, then SET NOT NULL —
+-- rewrites the whole table and then rescans it under ACCESS EXCLUSIVE, all
+-- inside the one transaction autoMigrate wraps each file in. PostgreSQL 11+
+-- stores a non-volatile DEFAULT in the catalog instead of rewriting rows, so
+-- this form is O(1) regardless of table size and existing rows read back as
+-- 'unknown' without ever being touched. See the batched-backfill guidance in
+-- CLAUDE.md for why the rewrite form is avoided on tables that can grow.
 ALTER TABLE action_intents
-  ADD COLUMN IF NOT EXISTS origin_principal_kind TEXT;
+  ADD COLUMN IF NOT EXISTS origin_principal_kind TEXT NOT NULL DEFAULT 'unknown';
 
 ALTER TABLE action_intents
   ADD COLUMN IF NOT EXISTS origin_principal_id TEXT;
 
--- Backfill historical rows explicitly, and report the count: these rows can
--- never satisfy a human-required gate, so operators should know how many exist.
+-- Report how many rows carry the unrecoverable origin. These can never satisfy
+-- a human-required gate, so the count is operationally meaningful; it is a
+-- read, not a write, so it costs nothing beyond the scan.
 DO $$
 DECLARE n INTEGER;
 BEGIN
-  UPDATE action_intents
-     SET origin_principal_kind = 'unknown'
-   WHERE origin_principal_kind IS NULL;
-  GET DIAGNOSTICS n = ROW_COUNT;
+  SELECT count(*) INTO n FROM action_intents WHERE origin_principal_kind = 'unknown';
   IF n > 0 THEN
-    RAISE WARNING 'backfilled % action_intents rows to origin_principal_kind=unknown (pre-discriminator)', n;
+    RAISE WARNING 'action_intents: % row(s) carry origin_principal_kind=unknown (pre-discriminator)', n;
   END IF;
 END $$;
-
-ALTER TABLE action_intents
-  ALTER COLUMN origin_principal_kind SET NOT NULL;
-
-ALTER TABLE action_intents
-  ALTER COLUMN origin_principal_kind SET DEFAULT 'unknown';
 
 ALTER TABLE action_intents DROP CONSTRAINT IF EXISTS action_intents_origin_principal_kind_chk;
 ALTER TABLE action_intents ADD CONSTRAINT action_intents_origin_principal_kind_chk
