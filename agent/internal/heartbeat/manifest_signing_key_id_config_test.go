@@ -147,10 +147,17 @@ func TestApplyConfigUpdateRequireManifestSigningKeyID_AbsentKeyIsNoOp(t *testing
 // processHeartbeatResponse) while an update goroutine reads them to build an
 // updater.Config.
 //
-// The reader calls devUpdaterConfig(h) — the real, shared construction seam
-// used by every dev_update handler and doUpgrade (see its godoc at
-// handlers_devupdate.go:38-50) — not a hand-rolled read, so this test is a
-// genuine regression guard on the actual call sites, not just the accessors.
+// The reader calls devUpdaterConfig(h) — a real production construction seam
+// (the dev_update handlers' shared config builder), not a hand-rolled read —
+// so this test guards an actual call site rather than only the accessors.
+//
+// Coverage is exactly ONE of the five converted sites: devUpdaterConfig's
+// reads, i.e. handlers_devupdate.go:57. doUpgrade and the three
+// helper/watchdog paths build their own inline updater.Config, so reverting
+// their reads to bare field access would NOT fail this test. Guarding those
+// would mean driving each of those functions concurrently, which needs far
+// more scaffolding than the property is worth; the accessor conversion is
+// mechanical and grep-verifiable instead.
 //
 // Before the guarded accessors existed, the five updater-construction sites
 // read h.config.RequireManifestSigningKeyID / h.config.PinnedManifestPubKeys
