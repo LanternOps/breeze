@@ -459,20 +459,26 @@ describe('Wave 6 agent outbound-network-policy capability handshake', () => {
   const capabilityMigration = '2026-08-06-e-agent-outbound-network-capability.sql';
   const certificateHistory = '2026-08-06-d-device-mtls-certificate-history.sql';
 
-  it('orders the capability migration immediately after the reserved Wave 5 certificate-history migration', () => {
+  it('orders the capability migration after the reserved Wave 5 certificate-history migration and before the delegation migration', () => {
     const files = readdirSync(migrationsDir)
       .filter((file) => /^\d{4}-.*\.sql$/.test(file))
       .sort((a, b) => a.localeCompare(b));
 
     expect(files).toContain(capabilityMigration);
-    // -f is still reserved for a later task, so assert adjacency within the
-    // block and that the block remains the contiguous lexical tail, rather
-    // than pinning this file as the single last migration.
-    const reservedBlock = files.filter((file) => file.startsWith('2026-08-06-'));
-    expect(files.slice(-reservedBlock.length)).toEqual(reservedBlock);
-    expect(reservedBlock.indexOf(capabilityMigration)).toBe(
-      reservedBlock.indexOf(certificateHistory) + 1,
-    );
+
+    // Assert RELATIVE order, not adjacency. An earlier revision asserted this
+    // file sorted *immediately* after Wave 5's, which is not an invariant this
+    // wave owns: a sibling branch is free to land its own migration in the
+    // same date block, and one did (2026-08-06-e-action-intents-origin-
+    // principal.sql, from the action-intents work). Adjacency assertions turn
+    // any concurrent migration into a red main that points at the wrong wave.
+    //
+    // What actually matters is the dependency order this wave relies on:
+    // Wave 5's certificate-history migration first, then this wave's capability
+    // column, then the delegation table.
+    const delegationTable = '2026-08-06-f-manifest-key-delegations.sql';
+    expect(files.indexOf(capabilityMigration)).toBeGreaterThan(files.indexOf(certificateHistory));
+    expect(files.indexOf(delegationTable)).toBeGreaterThan(files.indexOf(capabilityMigration));
   });
 
   it('maps outbound_network_policy_version as a non-null integer defaulting to zero', () => {
