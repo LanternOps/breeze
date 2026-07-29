@@ -661,6 +661,37 @@ func TestHandleScriptTargetSessionZeroRejected(t *testing.T) {
 	}
 }
 
+func TestHandleScriptTargetAlwaysOnNonWindowsRejected(t *testing.T) {
+	// Always-on mode (a lifecycle manager is present but not "on-demand" —
+	// e.g. a workstation forced always-on): executeScriptInSession's
+	// always-on branch calls Broker.FindUserSession, which matches on
+	// Session.WinSessionID — on Unix that field is actually the UID/identity
+	// key, not a Windows session number (see FindUserSession's doc comment
+	// in broker.go). A numeric targetSessionId could therefore collide with
+	// a real Unix UID and silently attach to the wrong user's helper. This
+	// test's env is never Windows (CI never runs internal/heartbeat tests
+	// under windows-latest — see .github/workflows/ci.yml), so the platform
+	// guard must fire here and FindUserSession must never be reached.
+	broker := sessionbroker.New("/tmp/test-broker-script-target-alwayson.sock", nil)
+	f := &fakeLifecycle{mode: "always-on"}
+	h := newTestHeartbeat(broker)
+	h.helperLifecycle = f
+
+	res := handleScript(h, Command{
+		ID:      "cmd-6",
+		Payload: map[string]any{"content": "whoami", "language": "powershell", "runAs": "user", "targetSessionId": float64(7)},
+	})
+	if res.Status != "failed" {
+		t.Fatalf("expected failure, got %+v", res)
+	}
+	if !strings.Contains(res.Error, "not supported on this platform") {
+		t.Fatalf("expected platform-not-supported error, got %q", res.Error)
+	}
+	if len(f.acquired) != 0 || len(f.released) != 0 {
+		t.Errorf("always-on non-Windows path must never touch leases, got acquired=%v released=%v", f.acquired, f.released)
+	}
+}
+
 func TestHandleScriptWorkstationBehaviorUnchanged(t *testing.T) {
 	// No lifecycle manager (workstation / non-service, or no broker at all):
 	// the pinned legacy message must stay byte-identical even when a stale

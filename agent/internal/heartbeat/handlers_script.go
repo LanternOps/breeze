@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -58,12 +59,19 @@ func handleScript(h *Heartbeat, cmd Command) tools.CommandResult {
 
 	// Explicit session targeting (RDS phase 1): route to exactly that
 	// session's user-role helper. Only meaningful for user-context runs — the
-	// API rejects targetSessionId with runAs!=user (Task 8). No runtime.GOOS
-	// gate: on non-Windows hosts h.sessionBroker/h.helperLifecycle are simply
-	// never wired up this way in production, so the check below is
-	// sufficient and keeps this path exercisable in cross-platform unit
-	// tests (matches the Task 6 desktop on-demand routing, which gates the
-	// same way on h.lifecycleMode()/h.sessionBroker alone).
+	// API rejects targetSessionId with runAs!=user (Task 8).
+	//
+	// No runtime.GOOS gate here: h.helperLifecycle (the on-demand/RDS lease
+	// manager) IS Windows+service-gated in production (heartbeat.go), so the
+	// on-demand branch inside executeScriptInSession is safe to leave
+	// platform-agnostic and stays exercisable in cross-platform unit tests
+	// via the fake lifecycle. h.sessionBroker is NOT Windows-gated — it is
+	// also constructed for macOS/Linux daemons (UserHelperEnabled ||
+	// IsService || IsHeadless) — so executeScriptInSession's *always-on*
+	// branch (FindUserSession) carries its own Windows check instead: on
+	// Unix, Session.WinSessionID is actually the UID/identity key, and
+	// matching a numeric targetSessionId against it would risk silently
+	// hitting an unrelated user's helper.
 	if targetSessionID >= 0 && h.sessionBroker != nil && strings.EqualFold(script.RunAs, "user") {
 		return h.executeScriptInSession(cmd, script, uint32(targetSessionID), start)
 	}
@@ -402,6 +410,16 @@ func (h *Heartbeat) executeScriptInSession(cmd Command, script executor.ScriptEx
 
 	// Always-on (workstation multi-user, or RDS forced always-on): the helper
 	// for the target session must already be connected.
+	//
+	// Windows-only: FindUserSession matches on Session.WinSessionID, which on
+	// Unix is actually the UID/identity key, not a Windows session number
+	// (see FindUserSession's doc comment, broker.go). A numeric
+	// targetSessionId from a client that only knows about WTS sessions could
+	// collide with a real Unix UID and silently attach to the wrong user's
+	// helper — refuse instead of risking that.
+	if runtime.GOOS != "windows" {
+		return fail(fmt.Sprintf("session targeting is not supported on this platform; no user helper eligible for session %d", winID))
+	}
 	session := h.sessionBroker.FindUserSession(strconv.FormatUint(uint64(winID), 10))
 	if session == nil {
 		return fail(fmt.Sprintf("no user helper connected in session %d; eligible sessions: %s", winID, eligibleSessionsSummary()))
