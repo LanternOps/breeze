@@ -149,6 +149,26 @@ func (m *HelperLifecycleManager) kickReconcile() {
 	}
 }
 
+// leaseRoleEligible is the on-demand analogue of helperRoleDesired. It is
+// deliberately stricter for the system role: on-demand SYSTEM helpers exist
+// to shadow a session, and a disconnected session has no input desktop to
+// capture — the SCM disconnect handler drops SYSTEM leases for the same
+// reason. (Always-on retention of disconnected-RDP SYSTEM helpers is a
+// helperRoleDesired concern and unchanged.)
+func leaseRoleEligible(s DetectedSession, role ipc.HelperRole) bool {
+	if s.Session == "0" || s.Type == "services" {
+		return false
+	}
+	switch role {
+	case ipc.HelperRoleSystem:
+		return s.State == "active" || s.State == "connected"
+	case ipc.HelperRoleUser:
+		return s.State == "active"
+	default:
+		return false
+	}
+}
+
 // leasedDesired is the on-demand desired-set: leases intersected with a fresh
 // WTS snapshot. Mutates lease.idleSince (stamping when owners empty out) and
 // returns keys whose lease is dead (session gone, session-ID reused by a
@@ -186,7 +206,7 @@ func leasedDesired(leases map[HelperKey]*helperLease, sessions []DetectedSession
 				continue
 			}
 		}
-		if helperRoleDesired(sess, key.Role) {
+		if leaseRoleEligible(sess, key.Role) {
 			desired[key] = true
 		}
 	}

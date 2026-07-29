@@ -95,6 +95,18 @@ func TestLeasedDesired(t *testing.T) {
 			t.Fatal("ineligible-but-live session must not expire the lease (it may reconnect)")
 		}
 	})
+
+	t.Run("system role lease on disconnected rdp session is not desired but not expired", func(t *testing.T) {
+		lease := &helperLease{key: sysKey, username: "bob", owners: map[string]time.Time{"op1": base.Add(time.Minute)}}
+		disconnected := DetectedSession{Session: "3", Username: "bob", State: "disconnected", Type: "rdp"}
+		desired, expired := leasedDesired(map[HelperKey]*helperLease{sysKey: lease}, []DetectedSession{disconnected}, base)
+		if desired[sysKey] {
+			t.Fatal("on-demand system-role helper must not be desired in a disconnected session — disconnected sessions aren't shadowable")
+		}
+		if len(expired) != 0 {
+			t.Fatal("disconnected-but-live session must not expire the lease (it may reconnect)")
+		}
+	})
 }
 
 func TestAcquireRenewReleaseLease(t *testing.T) {
