@@ -388,6 +388,87 @@ describe('runActivate', () => {
     expect(state.writes.filter((w) => w === 'activate:txn')).toHaveLength(1);
   });
 
+  it('activates the LIVE prepared record even when an abandoned expired one is still unactivated', async () => {
+    // Regression: runActivate used to take pending[0] from a list loaded with
+    // no ORDER BY. With a stale expired prepare sitting alongside a live one,
+    // it could pick the expired row — and then --epoch <live> failed with
+    // "does not match the prepared epoch <expired>", while --epoch <expired>
+    // failed with "expired". Rotation was unactivatable until someone deleted
+    // the stale row by hand, and DELETE is not part of the granted lifecycle.
+    const { store, state } = makeStore({
+      delegations: [
+        {
+          epoch: 9,
+          oldKeyId: 'deploy-2026-05-09-aaaaaaaa',
+          newKeyId: 'deploy-abandoned',
+          newPublicKeyB64: 'AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=',
+          notBefore: '2026-01-01T00:00:00Z',
+          notAfter: '2026-02-01T00:00:00Z',
+          signatureB64: 'c2ln',
+          activatedAt: null,
+        },
+      ],
+    });
+
+    // A new prepare is allowed (the stale one is expired, so not "pending").
+    await runPrepare(store, { command: 'prepare', validDays: 30 }, NOW);
+    expect(state.delegations.map((d) => d.epoch)).toEqual([9, 10]);
+    const newKeyId = state.keys[1]!.keyId;
+
+    // The live epoch must activate, regardless of the stale row's position.
+    await runActivate(
+      store,
+      { command: 'activate', epoch: 10, confirmAdoption: true },
+      NOW,
+    );
+
+    const active = state.keys.filter((k) => k.status === 'active');
+    expect(active).toHaveLength(1);
+    expect(active[0]!.keyId).toBe(newKeyId);
+    expect(state.delegations.find((d) => d.epoch === 10)!.activatedAt).toEqual(NOW);
+    // The abandoned record is untouched.
+    expect(state.delegations.find((d) => d.epoch === 9)!.activatedAt).toBeNull();
+  });
+
+  it('refuses --epoch naming an expired unactivated record, and says so', async () => {
+    // Selecting by identity must not make an expired record activatable.
+    const { store, state } = makeStore({
+      delegations: [
+        {
+          epoch: 9,
+          oldKeyId: 'deploy-2026-05-09-aaaaaaaa',
+          newKeyId: 'deploy-abandoned',
+          newPublicKeyB64: 'AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=',
+          notBefore: '2026-01-01T00:00:00Z',
+          notAfter: '2026-02-01T00:00:00Z',
+          signatureB64: 'c2ln',
+          activatedAt: null,
+        },
+      ],
+    });
+
+    await expect(
+      runActivate(
+        store,
+        { command: 'activate', epoch: 9, confirmAdoption: true },
+        NOW,
+      ),
+    ).rejects.toThrow(/expired/i);
+    expect(state.writes).toEqual([]);
+  });
+
+  it('refuses an --epoch that matches no prepared record', async () => {
+    const { store, state } = await prepared();
+    await expect(
+      runActivate(
+        store,
+        { command: 'activate', epoch: 77, confirmAdoption: true },
+        NOW,
+      ),
+    ).rejects.toThrow(/no prepared delegation with epoch 77/i);
+    expect(state.delegations[0]!.activatedAt).toBeNull();
+  });
+
   it('leaves everything unchanged when the activation transaction fails', async () => {
     const { store, state } = await prepared();
     state.failNextWrite = true;

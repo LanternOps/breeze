@@ -513,4 +513,25 @@ describe('signManifestKeyDelegation / verifyManifestKeyDelegation', () => {
       false,
     );
   });
+
+  it('returns false (never throws) for a right-length key that is not a valid Ed25519 point', async () => {
+    // The length guard passes — this IS 32 bytes — but SPKI import can still
+    // reject it. The function is documented to return a boolean, so this must
+    // not escape as an exception to the rotation CLI's self-check.
+    const { seedB64 } = await freshKeypair();
+    const sig = signManifestKeyDelegation(FIELDS, seedB64);
+
+    const candidates = [
+      Buffer.alloc(32, 0x00).toString('base64'),
+      Buffer.alloc(32, 0xff).toString('base64'),
+      Buffer.from(Array.from({ length: 32 }, (_, i) => (i * 7 + 3) & 0xff)).toString('base64'),
+    ];
+    for (const publicKeyB64 of candidates) {
+      expect(
+        () => verifyManifestKeyDelegation(FIELDS, sig, publicKeyB64),
+        `verify threw for ${publicKeyB64}`,
+      ).not.toThrow();
+      expect(verifyManifestKeyDelegation(FIELDS, sig, publicKeyB64)).toBe(false);
+    }
+  });
 });

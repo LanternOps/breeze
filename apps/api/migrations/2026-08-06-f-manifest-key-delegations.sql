@@ -17,7 +17,7 @@
 -- new public key, a monotonic epoch, and a validity window. Database write
 -- access alone cannot forge one, because the attacker cannot produce that
 -- signature. See services/manifestSigning.ts (manifestDelegationCanonicalBytes)
--- and agent/internal/config/manifestkeys.go (ManifestDelegationCanonicalBytes)
+-- and agent/internal/config/manifestdelegation.go (ManifestDelegationCanonicalBytes)
 -- for the byte-exact layout, which both sides define independently and pin
 -- with the same golden digest in their tests.
 --

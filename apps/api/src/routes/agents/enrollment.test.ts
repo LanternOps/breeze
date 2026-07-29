@@ -102,13 +102,12 @@ vi.mock('../../services/tenantStatus', () => ({
 
 // ---------- imports after mocks ----------
 
-import { db } from '../../db';
+import { db, withSystemDbAccessContext } from '../../db';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { recordAgentEnrollment } from '../../services/anomalyMetrics';
 import { getActiveOrgTenant } from '../../services/tenantStatus';
 import * as manifestSigning from '../../services/manifestSigning';
 import { getTrustedClientIp } from '../../services/clientIp';
-import { withSystemDbAccessContext } from '../../db';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
 import { enrollmentRoutes } from './enrollment';
 

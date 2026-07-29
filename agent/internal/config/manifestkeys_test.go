@@ -918,16 +918,56 @@ func TestApplyManifestKeyDelegation_RejectsReplayOfAnAdoptedRecord(t *testing.T)
 	}
 	before := readFileBytes(t, h.cfgPath)
 
-	// Byte-identical replay of a record that was already adopted.
+	// Byte-identical replay of a record that was already adopted. This is
+	// classified ALREADY-ADOPTED rather than REJECTED: it is what the server
+	// legitimately re-delivers for the rest of the validity window, so it must
+	// not be reported as a security event (see
+	// ErrManifestDelegationAlreadyAdopted). The security property that matters
+	// — nothing is re-applied and nothing advances — is asserted below and is
+	// unchanged.
 	err := ApplyManifestKeyDelegation(h.cfgPath, d, delegationNow())
 	if err == nil {
-		t.Fatal("expected a replayed delegation to be rejected")
+		t.Fatal("expected a replayed delegation to be a no-op error, not a success")
 	}
-	if !errors.Is(err, ErrManifestDelegationRejected) {
-		t.Fatalf("error %v is not ErrManifestDelegationRejected", err)
+	if !errors.Is(err, ErrManifestDelegationAlreadyAdopted) {
+		t.Fatalf("error %v is not ErrManifestDelegationAlreadyAdopted", err)
+	}
+	if errors.Is(err, ErrManifestDelegationRejected) {
+		t.Fatalf("routine re-delivery must not also be an ErrManifestDelegationRejected: %v", err)
 	}
 	if after := readFileBytes(t, h.cfgPath); !bytes.Equal(before, after) {
 		t.Fatal("config changed on a replayed delegation")
+	}
+}
+
+// The already-adopted short-circuit must be exact. Reusing an ALREADY-PINNED
+// key id while supplying DIFFERENT bytes is an attempt to swap the key behind
+// an established id — a real attack, and it must stay a hard rejection with
+// the SECURITY line intact.
+func TestApplyManifestKeyDelegation_SameNewKeyIDWithDifferentBytesIsStillRejected(t *testing.T) {
+	h := newDelegationHarness(t)
+	d, _ := h.validDelegation(t, 3)
+	if err := ApplyManifestKeyDelegation(h.cfgPath, d, delegationNow()); err != nil {
+		t.Fatalf("first adoption: %v", err)
+	}
+	before := readFileBytes(t, h.cfgPath)
+
+	// Same new key id, attacker-substituted bytes, correctly signed by the
+	// still-trusted old key, at a higher epoch.
+	swapped := d
+	swapped.NewPublicKeyB64 = testPubKey(123)
+	swapped.Epoch = 4
+	swapped = h.signWith(t, h.oldPriv, swapped)
+
+	err := ApplyManifestKeyDelegation(h.cfgPath, swapped, delegationNow())
+	if !errors.Is(err, ErrManifestDelegationRejected) {
+		t.Fatalf("expected ErrManifestDelegationRejected, got %v", err)
+	}
+	if errors.Is(err, ErrManifestDelegationAlreadyAdopted) {
+		t.Fatalf("a key-substitution attempt must NOT be classified already-adopted: %v", err)
+	}
+	if after := readFileBytes(t, h.cfgPath); !bytes.Equal(before, after) {
+		t.Fatal("config changed on a key-substitution attempt")
 	}
 }
 

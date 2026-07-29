@@ -259,7 +259,7 @@ export interface ManifestDelegationSignedFields {
  *   line 7  <UTC RFC3339 not-after>
  *
  * UTF-8, LF-separated, and with NO trailing newline. This is a wire
- * contract with agent/internal/config/manifestkeys.go's
+ * contract with agent/internal/config/manifestdelegation.go's
  * ManifestDelegationCanonicalBytes — a one-byte difference (a trailing
  * newline included) makes every delegation unverifiable fleet-wide while
  * both sides look correct in isolation. Both sides pin the same SHA-256
@@ -361,15 +361,18 @@ export function verifyManifestKeyDelegation(
 ): boolean {
   const raw = Buffer.from(publicKeyB64, 'base64');
   if (raw.length !== RAW_KEY_LEN) return false;
-  const spki = createPublicKey({
-    key: Buffer.concat([
-      Buffer.from('302a300506032b6570032100', 'hex'),
-      raw,
-    ]),
-    format: 'der',
-    type: 'spki',
-  });
+  // createPublicKey belongs INSIDE the try: 32 bytes of the right length can
+  // still fail SPKI import (e.g. not a valid curve point), and this function
+  // is documented to return a boolean, not to throw.
   try {
+    const spki = createPublicKey({
+      key: Buffer.concat([
+        Buffer.from('302a300506032b6570032100', 'hex'),
+        raw,
+      ]),
+      format: 'der',
+      type: 'spki',
+    });
     return verify(
       null,
       manifestDelegationCanonicalBytes(fields),

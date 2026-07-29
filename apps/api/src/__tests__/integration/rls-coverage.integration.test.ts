@@ -2055,8 +2055,28 @@ describe('manifest_signing_key_delegations RLS — system-only enforcement (Wave
     },
   );
 
+  // Drizzle wraps pg errors: the thrown error's own `.message` is only
+  // "Failed query: insert into ...". The constraint name lives on `.cause`.
+  // Same unwrapping every other forge block in this file uses.
+  async function captureDbError(run: () => Promise<unknown>): Promise<string> {
+    let caught: unknown;
+    try {
+      await run();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeDefined();
+    const cause = caught as
+      | { cause?: { message?: string }; message?: string }
+      | undefined;
+    return cause?.cause?.message ?? cause?.message ?? '';
+  }
+
+  // Split from the inverted-window case deliberately: as one test, the first
+  // rejection short-circuits the rest of the body and the second constraint
+  // is never actually exercised.
   it.runIf(!!process.env.DATABASE_URL)(
-    'rejects a duplicate epoch (storage-layer replay guard) and an inverted window',
+    'rejects a duplicate epoch (storage-layer replay guard)',
     async () => {
       const epoch = epochBase + 5;
       await withSystemDbAccessContext(async () =>
@@ -2066,15 +2086,22 @@ describe('manifest_signing_key_delegations RLS — system-only enforcement (Wave
       );
       insertedEpochs.push(epoch);
 
-      await expect(
+      const message = await captureDbError(() =>
         withSystemDbAccessContext(async () =>
           db
             .insert(manifestSigningKeyDelegations)
             .values(delegationValues(epoch)),
         ),
-      ).rejects.toThrow(/duplicate key|unique/i);
+      );
+      expect(message).toMatch(/duplicate key|unique/i);
+      expect(message).toMatch(/manifest_signing_key_delegations_epoch/i);
+    },
+  );
 
-      await expect(
+  it.runIf(!!process.env.DATABASE_URL)(
+    'rejects an inverted validity window (window_chk)',
+    async () => {
+      const message = await captureDbError(() =>
         withSystemDbAccessContext(async () =>
           db.insert(manifestSigningKeyDelegations).values({
             ...delegationValues(epochBase + 6),
@@ -2082,7 +2109,10 @@ describe('manifest_signing_key_delegations RLS — system-only enforcement (Wave
             notAfter: new Date('2026-08-06T00:00:00Z'),
           }),
         ),
-      ).rejects.toThrow(/manifest_signing_key_delegations_window_chk|check constraint/i);
+      );
+      expect(message).toMatch(
+        /manifest_signing_key_delegations_window_chk|check constraint/i,
+      );
     },
   );
 });

@@ -295,3 +295,143 @@ func TestApplyManifestKeyDelegations_EmptyDeliveryIsANoOp(t *testing.T) {
 		t.Fatalf("empty delivery logged %d lines", len(*logged))
 	}
 }
+
+// The server keeps delivering an in-window delegation for the WHOLE window so
+// stragglers can still adopt. That means every agent that already adopted gets
+// the same record re-delivered on its very next heartbeat. Routine
+// re-delivery must NOT be reported as a security event: these SECURITY lines
+// exist to surface a hostile control plane, and a guaranteed fleet-wide false
+// positive on every rotation is exactly what makes such an alert unusable.
+func TestApplyManifestKeyDelegations_ReDeliveryAfterAdoptionIsNotASecurityEvent(t *testing.T) {
+	logged := captureDelegationLog(t)
+	h := newPinnedHarness(t)
+	hb := &Heartbeat{config: config.Default()}
+
+	wire, _ := h.wireDelegation(t, "deploy-2026-08-06-bbbbbbbb", 1, h.oldPriv)
+
+	// First heartbeat: adopted.
+	hb.applyManifestKeyDelegations([]api.ManifestKeyDelegation{wire})
+	loaded, err := config.Load(h.cfgPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.ManifestDelegationEpoch != 1 {
+		t.Fatalf("first delivery did not adopt (epoch=%d)", loaded.ManifestDelegationEpoch)
+	}
+
+	// Every subsequent heartbeat for the rest of the window re-delivers it.
+	for i := 0; i < 20; i++ {
+		hb.applyManifestKeyDelegations([]api.ManifestKeyDelegation{wire})
+	}
+
+	if len(*logged) != 0 {
+		t.Fatalf("routine re-delivery of an adopted delegation emitted %d SECURITY line(s): %v",
+			len(*logged), *logged)
+	}
+}
+
+// A device enrolled AFTER activation pins only the new key, so the delegation's
+// oldKeyId is no longer trusted. That is also routine, not an attack — but it
+// is a DIFFERENT shape (unknown old key) from "already adopted", so it is
+// covered separately.
+func TestApplyManifestKeyDelegations_PostActivationEnrolleeIsNotASecurityEvent(t *testing.T) {
+	logged := captureDelegationLog(t)
+
+	// Pin ONLY the new key, as a post-activation enrollee would.
+	cfgPath := filepath.Join(t.TempDir(), "agent.yaml")
+	cfg := config.Default()
+	cfg.AgentID = "00000000-0000-4000-8000-000000000002"
+	cfg.ServerURL = "http://localhost"
+	if err := config.SaveTo(cfg, cfgPath); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	newPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if err := config.PinManifestKeys(cfgPath, []config.ManifestTrustKey{
+		{KeyID: "deploy-2026-08-06-bbbbbbbb", PublicKeyB64: base64.StdEncoding.EncodeToString(newPub)},
+	}); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+	if _, err := config.Load(cfgPath); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// The still-in-window delegation names an old key this device never had.
+	oldPub, oldPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	_ = oldPub
+	record := config.ManifestKeyDelegation{
+		SchemaVersion:   1,
+		OldKeyID:        "deploy-2026-05-09-aaaaaaaa",
+		NewKeyID:        "deploy-2026-08-06-bbbbbbbb",
+		NewPublicKeyB64: base64.StdEncoding.EncodeToString(newPub),
+		Epoch:           1,
+		NotBefore:       "2000-01-01T00:00:00Z",
+		NotAfter:        "2099-01-01T00:00:00Z",
+	}
+	payload, err := config.ManifestDelegationCanonicalBytes(record)
+	if err != nil {
+		t.Fatalf("canonical: %v", err)
+	}
+	wire := api.ManifestKeyDelegation{
+		SchemaVersion:   1,
+		OldKeyID:        record.OldKeyID,
+		NewKeyID:        record.NewKeyID,
+		NewPublicKeyB64: record.NewPublicKeyB64,
+		Epoch:           json.Number("1"),
+		NotBefore:       record.NotBefore,
+		NotAfter:        record.NotAfter,
+		SignatureBase64: base64.StdEncoding.EncodeToString(ed25519.Sign(oldPriv, payload)),
+	}
+
+	hb := &Heartbeat{config: config.Default()}
+	for i := 0; i < 5; i++ {
+		hb.applyManifestKeyDelegations([]api.ManifestKeyDelegation{wire})
+	}
+
+	if len(*logged) != 0 {
+		t.Fatalf("a post-activation enrollee emitted %d SECURITY line(s): %v", len(*logged), *logged)
+	}
+}
+
+// The alert must still fire for genuinely hostile input.
+func TestApplyManifestKeyDelegations_RealAttacksStillLogSecurity(t *testing.T) {
+	cases := map[string]func(t *testing.T, h *pinnedHarness) api.ManifestKeyDelegation{
+		"forged signature": func(t *testing.T, h *pinnedHarness) api.ManifestKeyDelegation {
+			_, impostor, err := ed25519.GenerateKey(nil)
+			if err != nil {
+				t.Fatalf("generate: %v", err)
+			}
+			w, _ := h.wireDelegation(t, "deploy-attacker", 1, impostor)
+			return w
+		},
+		"tampered new key id": func(t *testing.T, h *pinnedHarness) api.ManifestKeyDelegation {
+			w, _ := h.wireDelegation(t, "deploy-legit", 1, h.oldPriv)
+			w.NewKeyID = "deploy-swapped"
+			return w
+		},
+		"expired window": func(t *testing.T, h *pinnedHarness) api.ManifestKeyDelegation {
+			w, _ := h.wireDelegation(t, "deploy-stale", 1, h.oldPriv)
+			w.NotAfter = "2001-01-01T00:00:00Z"
+			return w
+		},
+	}
+
+	for name, build := range cases {
+		t.Run(name, func(t *testing.T) {
+			logged := captureDelegationLog(t)
+			h := newPinnedHarness(t)
+			hb := &Heartbeat{config: config.Default()}
+
+			hb.applyManifestKeyDelegations([]api.ManifestKeyDelegation{build(t, h)})
+
+			if len(*logged) != 1 {
+				t.Fatalf("expected 1 SECURITY line for %s, got %d: %v", name, len(*logged), *logged)
+			}
+		})
+	}
+}

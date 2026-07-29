@@ -20,6 +20,21 @@ import (
 // agent.yaml byte-for-byte unchanged and never advances the epoch.
 var ErrManifestDelegationRejected = errors.New("manifest key delegation rejected")
 
+// ErrManifestDelegationAlreadyAdopted means the delegation asks for a trust
+// state this agent is ALREADY in: the exact key id it delegates to is pinned
+// with the exact bytes it names. Applying it would change nothing.
+//
+// This is deliberately NOT an ErrManifestDelegationRejected. The server keeps
+// delivering an in-window record for the whole window so stragglers can still
+// adopt, which means every agent that has already adopted receives the same
+// record again on its very next heartbeat — and every device enrolled after
+// `activate` receives one whose oldKeyId it never had. Both are completely
+// routine. Reporting them as security events would emit one SECURITY-level
+// error per agent per rotation across the entire fleet, which is exactly the
+// signal degradation that makes such an alert worthless when a genuinely
+// hostile control plane does show up. Callers log this at debug.
+var ErrManifestDelegationAlreadyAdopted = errors.New("manifest key delegation already adopted")
+
 // manifestDelegationDomain is line 1 of the canonical signing payload.
 //
 // It is a domain separator: without it, a signature over a delegation could
@@ -152,6 +167,33 @@ func ApplyManifestKeyDelegation(cfgPath string, d ManifestKeyDelegation, now tim
 			ErrManifestDelegationRejected, d.NewKeyID, ed25519.SignatureSize)
 	}
 
+	// --- Trust state, read BEFORE any rejection branch ---
+	//
+	// The already-adopted short-circuit below has to come before the window
+	// and trust checks: an agent can legitimately receive a re-delivered
+	// record that has just expired (the window closes between the server's
+	// query and the agent's clock), and a post-activation enrollee's copy
+	// names an oldKeyId it never had. Neither is an attack.
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("%w: load config: %v", ErrManifestDelegationRejected, err)
+	}
+
+	pinned, err := ParsePinnedManifestKeys(cfg.PinnedManifestPubKeys)
+	if err != nil {
+		return fmt.Errorf("%w: pinned manifest trust set is unreadable: %v",
+			ErrManifestDelegationRejected, err)
+	}
+
+	// Already in the requested state? Only when the id AND the bytes match
+	// what is pinned. A record naming an ALREADY-PINNED id with DIFFERENT
+	// bytes is an attempt to swap the key behind an established id — that
+	// stays a hard rejection and a SECURITY line.
+	if current, seen := pinned[d.NewKeyID]; seen && current == d.NewPublicKeyB64 {
+		return fmt.Errorf("%w: newKeyId=%s is already pinned with these bytes (epoch %d, adopted epoch %d)",
+			ErrManifestDelegationAlreadyAdopted, d.NewKeyID, d.Epoch, cfg.ManifestDelegationEpoch)
+	}
+
 	notBefore, err := parseDelegationTime(d.NotBefore)
 	if err != nil {
 		return fmt.Errorf("%w for newKeyId=%s: notBefore is invalid: %v",
@@ -175,18 +217,6 @@ func ApplyManifestKeyDelegation(cfgPath string, d ManifestKeyDelegation, now tim
 	if now.After(notAfter.Add(manifestDelegationClockSkew)) {
 		return fmt.Errorf("%w for newKeyId=%s: expired (notAfter=%s, local time is later by more than the %s skew allowance)",
 			ErrManifestDelegationRejected, d.NewKeyID, d.NotAfter, manifestDelegationClockSkew)
-	}
-
-	// --- Trust state ---
-	cfg, err := Load(cfgPath)
-	if err != nil {
-		return fmt.Errorf("%w: load config: %v", ErrManifestDelegationRejected, err)
-	}
-
-	pinned, err := ParsePinnedManifestKeys(cfg.PinnedManifestPubKeys)
-	if err != nil {
-		return fmt.Errorf("%w: pinned manifest trust set is unreadable: %v",
-			ErrManifestDelegationRejected, err)
 	}
 
 	// Condition 1. Note this also means a delegation can NEVER bootstrap

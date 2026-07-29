@@ -3530,17 +3530,14 @@ func (h *Heartbeat) applyManifestKeyDelegations(delivered []api.ManifestKeyDeleg
 		return
 	}
 
-	type parsed struct {
-		record config.ManifestKeyDelegation
-	}
-	records := make([]parsed, 0, len(delivered))
+	records := make([]config.ManifestKeyDelegation, 0, len(delivered))
 	for _, d := range delivered {
 		epoch, err := d.ParseEpoch()
 		if err != nil {
 			h.logManifestDelegationRejected(err)
 			continue
 		}
-		records = append(records, parsed{record: config.ManifestKeyDelegation{
+		records = append(records, config.ManifestKeyDelegation{
 			SchemaVersion:   d.SchemaVersion,
 			OldKeyID:        d.OldKeyID,
 			NewKeyID:        d.NewKeyID,
@@ -3549,25 +3546,38 @@ func (h *Heartbeat) applyManifestKeyDelegations(delivered []api.ManifestKeyDeleg
 			NotBefore:       d.NotBefore,
 			NotAfter:        d.NotAfter,
 			SignatureBase64: d.SignatureBase64,
-		}})
+		})
 	}
 
-	slices.SortFunc(records, func(a, b parsed) int {
-		return cmp.Compare(a.record.Epoch, b.record.Epoch)
+	slices.SortFunc(records, func(a, b config.ManifestKeyDelegation) int {
+		return cmp.Compare(a.Epoch, b.Epoch)
 	})
 
 	cfgPath := config.ActiveConfigFile()
 	adopted := false
 	for _, r := range records {
-		if err := config.ApplyManifestKeyDelegation(cfgPath, r.record, time.Now()); err != nil {
+		if err := config.ApplyManifestKeyDelegation(cfgPath, r, time.Now()); err != nil {
+			// Routine re-delivery of a record this agent is already in the
+			// state of. The server keeps serving an in-window delegation for
+			// the whole window so stragglers can adopt, so EVERY agent that
+			// has already adopted sees the same record again on its next
+			// heartbeat, and every device enrolled after `activate` sees one
+			// whose oldKeyId it never had. Logging those as SECURITY would
+			// mean one security-level error per agent per rotation across the
+			// fleet — the alert would be useless by the time it mattered.
+			if errors.Is(err, config.ErrManifestDelegationAlreadyAdopted) {
+				log.Debug("manifest key delegation already adopted; nothing to do",
+					"newKeyId", r.NewKeyID, "epoch", r.Epoch)
+				continue
+			}
 			h.logManifestDelegationRejected(err)
 			continue
 		}
 		adopted = true
 		log.Info("adopted signed manifest key delegation",
-			"oldKeyId", r.record.OldKeyID,
-			"newKeyId", r.record.NewKeyID,
-			"epoch", r.record.Epoch)
+			"oldKeyId", r.OldKeyID,
+			"newKeyId", r.NewKeyID,
+			"epoch", r.Epoch)
 	}
 
 	if !adopted {

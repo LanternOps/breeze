@@ -324,10 +324,26 @@ export async function runActivate(
     );
   }
 
-  const prepared = pending[0]!;
-  if (prepared.epoch !== args.epoch) {
+  // Select by IDENTITY, never by position. `loadDelegations` has no ORDER BY,
+  // and an abandoned expired prepare stays unactivated forever (nothing in the
+  // lifecycle deletes rows, and DELETE is not even granted). Taking pending[0]
+  // could therefore land on the stale row: `--epoch <live>` would fail with
+  // "does not match the prepared epoch <expired>", and taking that error's
+  // advice and passing the expired epoch would fail with "expired" — leaving
+  // rotation unactivatable until someone hand-deleted the row. It fails
+  // closed, so no wrong key was ever activated, but it wedged the one
+  // operation this whole task exists to enable.
+  //
+  // Selecting by epoch also makes --epoch mean exactly what the brief says it
+  // means, independent of row order.
+  const prepared = pending.find((d) => d.epoch === args.epoch);
+  if (!prepared) {
+    const available = pending
+      .map((d) => d.epoch)
+      .sort((a, b) => a - b)
+      .join(', ');
     throw new Error(
-      `--epoch ${args.epoch} does not match the prepared epoch ${prepared.epoch}. Re-run with --epoch ${prepared.epoch} once you have confirmed the fleet has adopted THAT epoch.`,
+      `no prepared delegation with epoch ${args.epoch}. Unactivated epochs on record: ${available}. Re-run with the epoch you have confirmed the fleet has adopted (note an expired record can no longer be activated — prepare a new one).`,
     );
   }
 
