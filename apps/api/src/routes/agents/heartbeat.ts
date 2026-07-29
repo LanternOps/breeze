@@ -527,6 +527,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   if (data.osBuild !== undefined && data.osBuild !== device.osBuild) {
     deviceUpdates.osBuild = data.osBuild;
   }
+  if (data.helperLifecycleMode && data.helperLifecycleMode !== device.helperLifecycleMode) {
+    deviceUpdates.helperLifecycleMode = data.helperLifecycleMode;
+  }
   if (data.tccPermissions) {
     deviceUpdates.tccPermissions = data.tccPermissions;
   }

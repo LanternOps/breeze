@@ -106,6 +106,11 @@ type HeartbeatPayload struct {
 	OSVersion      string              `json:"osVersion,omitempty"`
 	OSBuild        string              `json:"osBuild,omitempty"`
 	IsHeadless     bool                `json:"isHeadless"`
+	// HelperLifecycleMode is the resolved helper spawn mode ("always-on" |
+	// "on-demand"); on-demand means the host was detected (or configured) as
+	// an RD Session Host and the UI should offer session targeting. Empty
+	// when no lifecycle manager runs (non-Windows, non-service).
+	HelperLifecycleMode string `json:"helperLifecycleMode,omitempty"`
 	// Current-state power/battery telemetry (#2142). Pointer + omitempty so an
 	// old agent (or a platform that can't report power state) omits the field
 	// and the server keeps whatever it last knew rather than clobbering it.
@@ -3191,6 +3196,12 @@ func (h *Heartbeat) sendHeartbeat() {
 		DeviceRole:      deviceRole,
 		IsHeadless:      h.currentHeadless(),
 	}
+
+	h.mu.Lock()
+	if h.helperLifecycle != nil {
+		payload.HelperLifecycleMode = h.helperLifecycle.Mode()
+	}
+	h.mu.Unlock()
 
 	// Only report virtualization once background hardware collection has
 	// actually classified it (#1387). Before then — or if hardware collection

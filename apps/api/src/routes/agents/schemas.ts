@@ -192,6 +192,11 @@ export const heartbeatSchema = z.object({
     checkedAt: z.string().datetime({ offset: true }),
   }).optional().catch(undefined),
   isHeadless: z.boolean().optional().catch(undefined),
+  // Resolved helper spawn mode ("always-on" | "on-demand"), reported once the
+  // agent's lifecycle manager has classified the host as an RD Session Host or
+  // not. An unrecognized value degrades to undefined (.catch) rather than
+  // 400-ing the heartbeat — old/new agent skew must never break check-ins.
+  helperLifecycleMode: z.enum(['always-on', 'on-demand']).optional().catch(undefined),
   // Current-state power/battery telemetry (#2142). Informational — a bad value
   // drops the whole battery object (.catch) rather than 400-ing the heartbeat.
   battery: z.object({

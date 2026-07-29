@@ -193,6 +193,26 @@ describe('virtualization attribute — heartbeatSchema (tolerant)', () => {
   });
 });
 
+describe('helperLifecycleMode — heartbeatSchema (tolerant)', () => {
+  const base = { status: 'ok' as const, agentVersion: '0.65.0' };
+
+  it('accepts and passes through helperLifecycleMode', () => {
+    const parsed = heartbeatSchema.safeParse({ ...base, helperLifecycleMode: 'on-demand' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.helperLifecycleMode).toBe('on-demand');
+    }
+  });
+
+  it('drops an invalid helperLifecycleMode instead of failing the heartbeat', () => {
+    const parsed = heartbeatSchema.safeParse({ ...base, helperLifecycleMode: 'bogus' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.helperLifecycleMode).toBeUndefined();
+    }
+  });
+});
+
 describe('submitEventLogsSchema — server-side message length cap (#2642)', () => {
   const MAX = 2000;
 
