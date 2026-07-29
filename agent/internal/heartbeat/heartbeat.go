@@ -3106,6 +3106,32 @@ func (h *Heartbeat) requireManifestSigningKeyID() bool {
 	return h.config.RequireManifestSigningKeyID
 }
 
+// pinnedManifestPubKeys reads the pinned manifest trust-key set under h.mu.
+// Wave 6 also made this field mutable at runtime: applyManifestKeyDelegations
+// and the manifest-trust-pin path in processHeartbeatResponse both replace it
+// in-memory (after config.Reload()) on the heartbeat-response goroutine, while
+// the same five updater-construction sites as requireManifestSigningKeyID
+// read it to build an updater.Config. Unlike a bool, a slice header read
+// without synchronization can observe a torn (len, cap, ptr) triple against a
+// concurrent write — a genuine data race, not just a stale-value nuisance.
+// Same shape, same reason, as requireManifestSigningKeyID above.
+func (h *Heartbeat) pinnedManifestPubKeys() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.config.PinnedManifestPubKeys
+}
+
+// manifestDelegationEpoch reads the highest-adopted signed-key-delegation
+// epoch under h.mu, mirroring pinnedManifestPubKeys above.
+// applyManifestKeyDelegations writes it on the heartbeat-response goroutine
+// after config.Reload(); any future reader must take the same lock rather
+// than touching h.config directly.
+func (h *Heartbeat) manifestDelegationEpoch() uint64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.config.ManifestDelegationEpoch
+}
+
 // BackupServerURL is the exported form of backupServerURL, passed to
 // long-lived callers (e.g. the helper.Manager) as a provider so they
 // re-resolve it on every download instead of pinning a startup snapshot.
@@ -3674,8 +3700,10 @@ func (h *Heartbeat) applyManifestKeyDelegations(delivered []api.ManifestKeyDeleg
 		log.Warn("failed to reload config after adopting a manifest key delegation; in-memory pinned set stale until next restart",
 			"error", rerr.Error())
 	} else if reloaded != nil {
+		h.mu.Lock()
 		h.config.PinnedManifestPubKeys = reloaded.PinnedManifestPubKeys
 		h.config.ManifestDelegationEpoch = reloaded.ManifestDelegationEpoch
+		h.mu.Unlock()
 	}
 }
 
@@ -3740,7 +3768,9 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 			if reloaded, rerr := config.Reload(); rerr != nil {
 				log.Warn("failed to reload config after pinning manifest trust keys; in-memory pinned set stale until next restart", "error", rerr.Error())
 			} else if reloaded != nil {
+				h.mu.Lock()
 				h.config.PinnedManifestPubKeys = reloaded.PinnedManifestPubKeys
+				h.mu.Unlock()
 			}
 		}
 	}
@@ -5692,7 +5722,7 @@ func (h *Heartbeat) downloadWatchdogBinary(targetVersion string) (string, error)
 		AuthToken:                   h.secureToken,
 		CurrentVersion:              h.agentVersion,
 		Component:                   "watchdog",
-		PinnedManifestPubKeys:       h.config.PinnedManifestPubKeys,
+		PinnedManifestPubKeys:       h.pinnedManifestPubKeys(),
 		RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
 	})
 	return u.DownloadBinary(targetVersion)
@@ -5764,7 +5794,7 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 			AuthToken:                   h.secureToken,
 			CurrentVersion:              h.agentVersion,
 			Component:                   "user-helper",
-			PinnedManifestPubKeys:       h.config.PinnedManifestPubKeys,
+			PinnedManifestPubKeys:       h.pinnedManifestPubKeys(),
 			RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
 		}
 		helperUpdater := updater.New(helperCfg)
@@ -5860,7 +5890,7 @@ func (h *Heartbeat) reconcileUserHelper(binaryPath string) {
 			AuthToken:                   h.secureToken,
 			CurrentVersion:              h.agentVersion,
 			Component:                   "user-helper",
-			PinnedManifestPubKeys:       h.config.PinnedManifestPubKeys,
+			PinnedManifestPubKeys:       h.pinnedManifestPubKeys(),
 			RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
 		}
 		download = updater.New(helperCfg).DownloadBinary
@@ -5991,7 +6021,7 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 		CurrentVersion:              h.agentVersion,
 		BinaryPath:                  binaryPath,
 		BackupPath:                  backupPath,
-		PinnedManifestPubKeys:       h.config.PinnedManifestPubKeys,
+		PinnedManifestPubKeys:       h.pinnedManifestPubKeys(),
 		RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
 	}
 

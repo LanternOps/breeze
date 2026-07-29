@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/config"
@@ -140,35 +141,51 @@ func TestApplyConfigUpdateRequireManifestSigningKeyID_AbsentKeyIsNoOp(t *testing
 
 // TestRequireManifestSigningKeyIDAccessorIsRaceFree exercises the exact pair of
 // paths that Wave 6 deviation D4 made concurrent: the control plane pushing
-// require_manifest_signing_key_id (which writes h.config under h.mu) while an
-// update goroutine reads the flag to build an updater.Config.
+// require_manifest_signing_key_id, PinnedManifestPubKeys, and
+// ManifestDelegationEpoch (which write h.config under h.mu, mirroring
+// applyManifestKeyDelegations and the manifest-trust-pin path in
+// processHeartbeatResponse) while an update goroutine reads them to build an
+// updater.Config.
 //
-// Before the guarded accessor existed, the five updater-construction sites read
-// h.config.RequireManifestSigningKeyID directly with no lock. Nothing in the
-// suite drove both paths at once, so `go test -race` stayed green over a genuine
-// data race. Revert any of those sites to the bare field read and this test
-// fails under -race with "WARNING: DATA RACE ... previous write by goroutine".
+// The reader calls devUpdaterConfig(h) — the real, shared construction seam
+// used by every dev_update handler and doUpgrade (see its godoc at
+// handlers_devupdate.go:38-50) — not a hand-rolled read, so this test is a
+// genuine regression guard on the actual call sites, not just the accessors.
+//
+// Before the guarded accessors existed, the five updater-construction sites
+// read h.config.RequireManifestSigningKeyID / h.config.PinnedManifestPubKeys
+// directly with no lock. Nothing in the suite drove both paths at once, so
+// `go test -race` stayed green over a genuine data race. Revert any of
+// devUpdaterConfig's field reads to the bare field access and this test fails
+// under -race with "WARNING: DATA RACE ... previous write by goroutine".
 func TestRequireManifestSigningKeyIDAccessorIsRaceFree(t *testing.T) {
 	h := &Heartbeat{config: &config.Config{}}
 
 	const iterations = 200
 	done := make(chan struct{}, 2)
 
-	// Writer: the configUpdate path, flipping the flag under h.mu.
+	// Writer: the configUpdate / manifest-trust-pin / delegation paths,
+	// mutating all three fields under h.mu.
 	go func() {
 		defer func() { done <- struct{}{} }()
 		for i := 0; i < iterations; i++ {
 			h.mu.Lock()
 			h.config.RequireManifestSigningKeyID = i%2 == 0
+			h.config.PinnedManifestPubKeys = []string{fmt.Sprintf("key-%d:aGVsbG8=", i)}
+			h.config.ManifestDelegationEpoch = uint64(i)
 			h.mu.Unlock()
 		}
 	}()
 
-	// Reader: what every updater-construction site now does.
+	// Reader: what every updater-construction site now does, via the real
+	// shared seam.
 	go func() {
 		defer func() { done <- struct{}{} }()
 		for i := 0; i < iterations; i++ {
-			_ = h.requireManifestSigningKeyID()
+			cfg := devUpdaterConfig(h)
+			_ = cfg.PinnedManifestPubKeys
+			_ = cfg.RequireManifestSigningKeyID
+			_ = h.manifestDelegationEpoch()
 		}
 	}()
 

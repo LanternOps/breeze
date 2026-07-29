@@ -54,7 +54,7 @@ func devUpdaterConfig(h *Heartbeat) *updater.Config {
 		BackupServerURL:             h.backupServerURL(),
 		AuthToken:                   h.secureToken,
 		CurrentVersion:              h.agentVersion,
-		PinnedManifestPubKeys:       h.config.PinnedManifestPubKeys,
+		PinnedManifestPubKeys:       h.pinnedManifestPubKeys(),
 		RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
 	}
 }

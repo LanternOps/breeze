@@ -29,7 +29,7 @@ Related reading:
 
 | Variable | Values | Default | Effect |
 |---|---|---|---|
-| `AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID` | `true` / `false` | `false` | When `true`, the API pushes `configUpdate.require_manifest_signing_key_id=true` on every heartbeat response. |
+| `AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID` | `true` / `false` | `false` | The API pushes `configUpdate.require_manifest_signing_key_id=<true or false>` on **every** heartbeat response, mirroring the current env var value — not just when it's `true`. This makes the switch reversible: flipping the env var back to `false` reverts a capable agent on its next heartbeat. |
 | `MANAGED_SOFTWARE_POLICY_MODE` | `compat` / `enforce` | `compat` | Gates every managed-software (`software_install`) command dispatch. `compat` still fails closed on a private destination for a capability-0 device; `enforce` additionally requires capability ≥ 1 for apparently-public destinations. |
 
 Both boot-refuse on any value other than the two listed (a typo is a hard
@@ -45,9 +45,12 @@ shipped in this wave now reads `configUpdate.require_manifest_signing_key_id`
 (both `snake_case` and `camelCase` accepted) in `applyConfigUpdate`
 (`agent/internal/heartbeat/heartbeat.go`), sets
 `h.config.RequireManifestSigningKeyID`, and persists it to `agent.yaml` via
-`config.SetAndPersist` — a pushed value survives a restart. Setting the API
-env var to `true` sends the field on every heartbeat, and **any agent
-running this build or newer acts on it**. **Any agent build older than this
+`config.SetAndPersist` — a pushed value survives a restart. The API sends
+`require_manifest_signing_key_id` (as `true` or `false`, tracking the env
+var) on **every** heartbeat response, and **any agent running this build or
+newer acts on it** — including reverting a previously-persisted `true` back
+to `false` when the env var is flipped back, so the switch is reversible
+without touching individual devices. **Any agent build older than this
 one still ignores the pushed value entirely** and keeps accepting
 ID-less manifests regardless of what the API sends — those agents are
 unaffected by this env var and are covered by the missing-ID warning count
@@ -79,11 +82,20 @@ differs by call site:
   process restarts. This is the same startup-capture limitation
   `backup_server_url` already has.
 
-Where you need per-fleet enforcement today independent of this rollout gate
-(e.g. a single self-hosted fleet you control directly), hand-editing
-`agent.yaml` remains an option, but for any fleet running this build or
-newer the API env var now does the same thing without touching individual
-config files.
+**The API is authoritative for any fleet running this build or newer —
+hand-editing `agent.yaml` does not stick.** This is the intended design: a
+capable agent persists whatever `require_manifest_signing_key_id` value the
+API sent on its most recent heartbeat, so with the API default
+(`AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID` unset, i.e. `false`) the server
+pushes `false` on every heartbeat and the agent writes that back to
+`agent.yaml` on its next check-in — silently reverting an operator's
+hand-set `true`. This is fail-open from the server's perspective (the agent
+falls back to accepting ID-less manifests), and the only signal is an
+agent-side `Info` log, not an error. A hand-edit only sticks in two cases:
+the device is offline (never receives a heartbeat to be overwritten by), or
+the API is *also* set to `true` — in which case the hand-edit was redundant.
+For per-fleet enforcement independent of this rollout gate, set the API env
+var; do not rely on `agent.yaml` alone.
 
 `MANAGED_SOFTWARE_POLICY_MODE` has no such gap: `getManagedSoftwarePolicyMode()`
 in `apps/api/src/services/managedSoftwareDispatchPolicy.ts` reads it directly
@@ -379,6 +391,14 @@ observational, not a switch you flip blind.
    §3 canary rings against a representative capable-agent population before
    flipping it in production, and treat any unexpected
    `manifest signing key ID required` rejection as a stop condition.
+
+   **Rollback lever:** because the API always sends
+   `require_manifest_signing_key_id` (see §1), this is reversible — set
+   `AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID=false` and every capable agent
+   reverts on its next heartbeat, no per-device action needed. This only
+   covers agents on this build or newer; for anything older, "requiring"
+   or rolling back is still the hand-edited `agent.yaml` path described in
+   step 3.
 
 ---
 
