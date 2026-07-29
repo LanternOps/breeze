@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -91,6 +92,13 @@ type EnrollResponse struct {
 	Config            AgentConfig        `json:"config"`
 	Mtls              *MtlsCertData      `json:"mtls"`
 	ManifestTrustKeys []ManifestTrustKey `json:"manifestTrustKeys,omitempty"`
+	// Wave 6 Task 7. Present so the wire contract is complete and a device
+	// enrolling mid-rotation is told about the pending key change on first
+	// contact. Trust bootstrap itself still happens through
+	// config.BootstrapPinnedManifestKeys; a delegation cannot bootstrap trust
+	// (its old key ID would not be pinned yet), so these are adopted on the
+	// first heartbeat after enrollment rather than during it.
+	ManifestKeyDelegations []ManifestKeyDelegation `json:"manifestKeyDelegations,omitempty"`
 }
 
 // ManifestTrustKey is a per-deployment Ed25519 pubkey delivered at enrollment
@@ -100,6 +108,44 @@ type ManifestTrustKey struct {
 	KeyID        string `json:"keyId"`
 	PublicKeyB64 string `json:"publicKeyB64"`
 	ValidFrom    string `json:"validFrom,omitempty"`
+}
+
+// ManifestKeyDelegation is a signed, monotonic, time-bounded authorisation to
+// add ONE previously unseen manifest signing key to the agent's frozen trust
+// set (Wave 6 Task 7). It is validated by config.ApplyManifestKeyDelegation,
+// which verifies the signature against the currently-trusted key named by
+// OldKeyID; nothing here is trusted on receipt.
+type ManifestKeyDelegation struct {
+	SchemaVersion   int    `json:"schemaVersion"`
+	OldKeyID        string `json:"oldKeyId"`
+	NewKeyID        string `json:"newKeyId"`
+	NewPublicKeyB64 string `json:"newPublicKeyB64"`
+	// Deliberately json.Number rather than uint64. A malformed epoch (a
+	// negative, a fraction, an exponent) would make encoding/json fail the
+	// WHOLE response decode if this were uint64 — costing the agent its
+	// commands, upgrades and token rotation over a field it may not even
+	// need. As json.Number the bad value is confined to this record, which
+	// then fails closed in ParseEpoch.
+	Epoch           json.Number `json:"epoch"`
+	NotBefore       string      `json:"notBefore"`
+	NotAfter        string      `json:"notAfter"`
+	SignatureBase64 string      `json:"signatureBase64"`
+}
+
+// ParseEpoch converts the wire epoch to the unsigned integer the canonical
+// signing payload uses. It accepts ONLY a plain non-negative decimal, matching
+// the API's formatDelegationEpoch — "1e3" or "1.0" denote a value that could
+// not have been signed in that spelling, so they fail closed.
+func (d ManifestKeyDelegation) ParseEpoch() (uint64, error) {
+	raw := d.Epoch.String()
+	if raw == "" {
+		return 0, fmt.Errorf("manifest key delegation epoch is missing")
+	}
+	epoch, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("manifest key delegation epoch is not an unsigned decimal integer")
+	}
+	return epoch, nil
 }
 
 type RenewCertResponse struct {

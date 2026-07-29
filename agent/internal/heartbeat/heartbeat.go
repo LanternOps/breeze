@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -163,6 +164,10 @@ type HeartbeatResponse struct {
 	WatchdogUpgradeTo      string                 `json:"watchdogUpgradeTo,omitempty"`
 	ManageRemoteManagement bool                   `json:"manageRemoteManagement,omitempty"`
 	ManifestTrustKeys      []api.ManifestTrustKey `json:"manifestTrustKeys,omitempty"`
+	// Wave 6 Task 7 — signed authorisations to add an unseen manifest signing
+	// key. Nothing here is trusted on receipt; every record is verified
+	// against the currently-pinned key it names.
+	ManifestKeyDelegations []api.ManifestKeyDelegation `json:"manifestKeyDelegations,omitempty"`
 }
 
 type HelperSettings struct {
@@ -350,6 +355,13 @@ type Heartbeat struct {
 	// (rare) rotation rejection it genuinely needs the bound. Mirrors the
 	// updater's missingSigningKeyIDWarned latch.
 	manifestTrustExpansionLogged atomic.Pointer[string]
+
+	// Same bounding for delegation rejections. A control plane (or an
+	// attacker) that keeps re-offering one bad record would otherwise emit a
+	// SECURITY line on every heartbeat for the life of the agent, flooding
+	// the shipped log stream. Latched on the reason; cleared on a successful
+	// adoption so a later attempt is reported again.
+	manifestDelegationRejectionLogged atomic.Pointer[string]
 
 	// Helper chat enabled flag from org settings
 	helperEnabled atomic.Bool
@@ -3477,6 +3489,103 @@ func (h *Heartbeat) logManifestTrustExpansionRejected(err error) {
 	}
 }
 
+var logManifestDelegationRejectedLogger = func(err error) {
+	log.Error("SECURITY: signed manifest key delegation rejected — the control plane offered an authorisation this agent will not accept. "+
+		"The pinned trust set is unchanged and auto-update continues against the already-trusted key",
+		"error", err.Error())
+}
+
+// logManifestDelegationRejected emits the SECURITY line at most once per
+// distinct rejection reason. Cleared on a successful adoption.
+func (h *Heartbeat) logManifestDelegationRejected(err error) {
+	reason := err.Error()
+	prev := h.manifestDelegationRejectionLogged.Load()
+	if prev != nil && *prev == reason {
+		return
+	}
+	if h.manifestDelegationRejectionLogged.CompareAndSwap(prev, &reason) {
+		logManifestDelegationRejectedLogger(err)
+	}
+}
+
+// applyManifestKeyDelegations adopts any delivered delegation records.
+//
+// This is the ONLY path by which a previously unseen manifest signing key
+// enters the trust set. config.ApplyManifestKeyDelegation performs every
+// check (old key currently trusted, signature verifies with exactly that key,
+// new key unseen, epoch strictly greater than the adopted epoch, inside the
+// validity window ±5m skew, public key exactly 32 bytes once decoded) and
+// leaves agent.yaml byte-for-byte unchanged on any rejection.
+//
+// Records are applied in ASCENDING EPOCH order so that a chain (key A
+// delegates to B, B delegates to C) is applied in the order it was issued.
+// Out-of-order application would reject the later link for naming an
+// untrusted old key.
+//
+// A rejection is NOT fatal: the remaining records are still attempted, and
+// the already-pinned key continues to work. Key material, signatures and
+// manifests are never logged — key IDs and epochs are not secret.
+func (h *Heartbeat) applyManifestKeyDelegations(delivered []api.ManifestKeyDelegation) {
+	if len(delivered) == 0 {
+		return
+	}
+
+	type parsed struct {
+		record config.ManifestKeyDelegation
+	}
+	records := make([]parsed, 0, len(delivered))
+	for _, d := range delivered {
+		epoch, err := d.ParseEpoch()
+		if err != nil {
+			h.logManifestDelegationRejected(err)
+			continue
+		}
+		records = append(records, parsed{record: config.ManifestKeyDelegation{
+			SchemaVersion:   d.SchemaVersion,
+			OldKeyID:        d.OldKeyID,
+			NewKeyID:        d.NewKeyID,
+			NewPublicKeyB64: d.NewPublicKeyB64,
+			Epoch:           epoch,
+			NotBefore:       d.NotBefore,
+			NotAfter:        d.NotAfter,
+			SignatureBase64: d.SignatureBase64,
+		}})
+	}
+
+	slices.SortFunc(records, func(a, b parsed) int {
+		return cmp.Compare(a.record.Epoch, b.record.Epoch)
+	})
+
+	cfgPath := config.ActiveConfigFile()
+	adopted := false
+	for _, r := range records {
+		if err := config.ApplyManifestKeyDelegation(cfgPath, r.record, time.Now()); err != nil {
+			h.logManifestDelegationRejected(err)
+			continue
+		}
+		adopted = true
+		log.Info("adopted signed manifest key delegation",
+			"oldKeyId", r.record.OldKeyID,
+			"newKeyId", r.record.NewKeyID,
+			"epoch", r.record.Epoch)
+	}
+
+	if !adopted {
+		return
+	}
+
+	// Re-arm the rejection latch and refresh the in-memory trust set so the
+	// updater sees the newly-delegated key without waiting for a restart.
+	h.manifestDelegationRejectionLogged.Store(nil)
+	if reloaded, rerr := config.Reload(); rerr != nil {
+		log.Warn("failed to reload config after adopting a manifest key delegation; in-memory pinned set stale until next restart",
+			"error", rerr.Error())
+	} else if reloaded != nil {
+		h.config.PinnedManifestPubKeys = reloaded.PinnedManifestPubKeys
+		h.config.ManifestDelegationEpoch = reloaded.ManifestDelegationEpoch
+	}
+}
+
 // processHeartbeatResponse executes the directives carried by a validated
 // heartbeat response: configUpdate, manifest trust keys, commands, upgrades,
 // cert/token rotation, tunnel policy, and helper settings. Callers must have
@@ -3542,6 +3651,12 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 			}
 		}
 	}
+
+	// Signed key delegations are applied AFTER the plain trust-key pin above.
+	// Ordering matters on a first-ever contact: the pin establishes the one
+	// TOFU key, and only then can a delegation naming that key as its old key
+	// be verified.
+	h.applyManifestKeyDelegations(response.ManifestKeyDelegations)
 
 	// Process any commands via worker pool
 	for _, cmd := range response.Commands {

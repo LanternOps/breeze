@@ -192,6 +192,16 @@ type Config struct {
 	// a manifest can be verified by a key other than the one it names.
 	RequireManifestSigningKeyID bool `mapstructure:"require_manifest_signing_key_id" yaml:"require_manifest_signing_key_id"`
 
+	// ManifestDelegationEpoch is the highest signed-key-delegation epoch this
+	// agent has ADOPTED (0 = none). It is the monotonic replay counter: a
+	// delegation is only accepted when its epoch is STRICTLY greater than this
+	// value, so a record that has already been adopted — or an older one
+	// resurrected by an attacker — can never be applied again.
+	//
+	// Persisted in the same SaveTo that adds the delegated key, so the two
+	// facts can never disagree. See manifestdelegation.go.
+	ManifestDelegationEpoch uint64 `mapstructure:"manifest_delegation_epoch" yaml:"manifest_delegation_epoch"`
+
 	// mTLS client certificate (Cloudflare API Shield)
 	MtlsCertPEM     string `mapstructure:"mtls_cert_pem"`
 	MtlsKeyPEM      string `mapstructure:"mtls_key_pem"`
@@ -624,6 +634,7 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	viper.Set("allow_dev_update", cfg.AllowDevUpdate)
 	viper.Set("pinned_manifest_pub_keys", cfg.PinnedManifestPubKeys)
 	viper.Set("require_manifest_signing_key_id", cfg.RequireManifestSigningKeyID)
+	viper.Set("manifest_delegation_epoch", cfg.ManifestDelegationEpoch)
 	// Write only the helper-scoped token to agent.yaml. Full agent and watchdog
 	// bearer tokens are persisted below in root-only secrets.yaml.
 	if cfg.HelperAuthToken != "" {
