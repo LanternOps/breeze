@@ -193,6 +193,58 @@ func TestResolveDesktopTargetWinID(t *testing.T) {
 	if _, err := resolveDesktopTargetWinID("console"); err == nil {
 		t.Fatal("expected an error for a non-numeric target")
 	}
+	// Session 0 parses fine but can never host a helper — it must be rejected
+	// here, not 95s later as a bogus readiness timeout.
+	_, err := resolveDesktopTargetWinID("0")
+	if err == nil {
+		t.Fatal("expected session 0 to be rejected")
+	}
+	if err.Error() != "invalid targetSessionId 0: session 0 is never an interactive session" {
+		t.Fatalf("unexpected message for session 0: %q", err.Error())
+	}
+}
+
+// A start_desktop pinned to session 0 (stale picker / older API / hand-built
+// command) must fail fast with the typed reason before any lease is taken —
+// otherwise the connect burns the 30s consent wait plus the 95s helper budget
+// and reports "helper did not become ready in time".
+func TestHandleStartDesktopOnDemandRejectsSessionZero(t *testing.T) {
+	f := &fakeLifecycle{mode: "on-demand"}
+	h := &Heartbeat{
+		helperLifecycle: f,
+		sessionBroker:   newTestBrokerWithSessions(t),
+		desktopMgr:      desktop.NewSessionManager(),
+	}
+
+	cmd := startDesktopCmd("sess-zero", consentModePrompt("block", 10))
+	cmd.Payload["targetSessionId"] = float64(0)
+
+	done := make(chan tools.CommandResult, 1)
+	go func() { done <- handleStartDesktop(h, cmd) }()
+	var result tools.CommandResult
+	select {
+	case result = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("start_desktop with target 0 did not fail fast")
+	}
+
+	if result.Status != "failed" {
+		t.Fatalf("expected a failed result, got %+v", result)
+	}
+	if result.Error != "invalid targetSessionId 0: session 0 is never an interactive session" {
+		t.Fatalf("unexpected error: %q", result.Error)
+	}
+	acquired, released, waited, _ := f.snapshot()
+	if len(acquired) != 0 || len(released) != 0 || len(waited) != 0 {
+		t.Fatalf("session 0 must be rejected before any lease/wait: acquired=%v released=%v waited=%v",
+			acquired, released, waited)
+	}
+	h.mu.Lock()
+	nLeases, nTargets := len(h.desktopLeases), len(h.desktopTargets)
+	h.mu.Unlock()
+	if nLeases != 0 || nTargets != 0 {
+		t.Fatalf("leftover state: %d leases, %d targets", nLeases, nTargets)
+	}
 }
 
 // The renewal goroutine keeps every held role alive while the helper session

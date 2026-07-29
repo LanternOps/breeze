@@ -210,10 +210,23 @@ func (h *Heartbeat) startDesktopLeaseRenewal(sessionID string) {
 
 // resolveDesktopTargetWinID parses the target session string ("" already
 // defaulted to console by the caller) into the lease key form.
+//
+// Session 0 is rejected explicitly. It parses fine and a lease on it can even
+// be acquired, but leaseRoleEligible refuses to spawn a helper for session 0
+// (Session 0 isolation — it is the services session, never interactive), and
+// WaitForHelperReady cannot report session-gone while the lease exists. The
+// connect would therefore burn the full 95s helper budget and end with the
+// misleading "helper did not become ready in time" instead of a typed reason.
+// Broker.ConsoleSessionID() normalizes 0 to "" for the same reason; a stale
+// picker, an older API, or a hand-built command can still put it in the
+// payload.
 func resolveDesktopTargetWinID(targetSession string) (uint32, error) {
 	winID, err := sessionbroker.ParseWindowsSessionIDForHeartbeat(targetSession)
 	if err != nil {
 		return 0, fmt.Errorf("invalid targetSessionId %q: %w", targetSession, err)
+	}
+	if winID == 0 {
+		return 0, errors.New("invalid targetSessionId 0: session 0 is never an interactive session")
 	}
 	return winID, nil
 }
