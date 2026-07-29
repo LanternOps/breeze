@@ -5,9 +5,10 @@ package logging
 import (
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
+	"sync/atomic"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -31,6 +32,13 @@ var chmodFile = func(f *os.File, mode os.FileMode) error {
 // existing ancestor path component, is not itself a symlink, and is mode
 // 0700. Path components that don't exist yet are fine — MkdirAll creates
 // them. Called before every open/reopen and before rotation.
+//
+// The final check-and-repair step opens dir itself with O_NOFOLLOW and
+// chmods via that file descriptor (fchmod), never by path — an earlier
+// version here did os.Lstat(dir) followed by a separate, path-based
+// os.Chmod(dir, ...), which is exactly the TOCTOU gap this task exists to
+// close: an attacker who wins the window between the Lstat and the Chmod
+// swaps dir for a symlink and gets an arbitrary directory chmod'd 0700.
 func secureLogDirectory(dir string) error {
 	if err := rejectSymlinkAncestors(dir); err != nil {
 		return err
@@ -40,19 +48,34 @@ func secureLogDirectory(dir string) error {
 		return fmt.Errorf("create log directory %s: %w", dir, err)
 	}
 
-	info, err := os.Lstat(dir)
+	fd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return fmt.Errorf("lstat log directory %s: %w", dir, err)
+		if errors.Is(err, unix.ELOOP) {
+			return &ErrUnsafeLogPath{Path: dir, Reason: "log directory path is a symlink"}
+		}
+		if errors.Is(err, unix.ENOTDIR) {
+			return &ErrUnsafeLogPath{Path: dir, Reason: "log directory path is not a directory"}
+		}
+		return fmt.Errorf("open log directory %s: %w", dir, err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return &ErrUnsafeLogPath{Path: dir, Reason: "log directory path is a symlink"}
+
+	f := os.NewFile(uintptr(fd), dir)
+	if f == nil {
+		unix.Close(fd)
+		return fmt.Errorf("open log directory %s: os.NewFile failed", dir)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat log directory %s: %w", dir, err)
 	}
 	if !info.IsDir() {
 		return &ErrUnsafeLogPath{Path: dir, Reason: "log directory path is not a directory"}
 	}
 
 	if info.Mode().Perm() != secureLogDirMode {
-		if err := os.Chmod(dir, secureLogDirMode); err != nil {
+		if err := f.Chmod(secureLogDirMode); err != nil {
 			return fmt.Errorf("repair log directory mode %s: %w", dir, err)
 		}
 	}
@@ -68,21 +91,45 @@ func secureLogDirectory(dir string) error {
 // symlink there is rejected; a real directory is treated as the trust
 // boundary and the walk stops without climbing further.
 //
+// Narrowed guarantee, stated precisely: in steady state — the log
+// directory already exists, which is true on every run after the first —
+// this walk finds `dir` itself as the first pre-existing component and
+// returns immediately. It then contributes nothing beyond the direct
+// Lstat/open that secureLogDirectory already performs on dir. Its entire
+// incremental value is the first-run case, where the log directory doesn't
+// exist yet: it verifies the nearest existing ancestor (the directory
+// MkdirAll is about to create into) isn't a symlink before creating
+// anything under it.
+//
 // Stopping at the first pre-existing component (rather than continuing to
-// the filesystem root) is deliberate: several hosts legitimately symlink
-// well above anywhere Breeze manages (macOS symlinks /var -> private/var
-// and /tmp -> private/tmp as part of the base OS layout), and treating
-// those as an attack would break logging on stock installs. The realistic
-// attack this defends against is a symlink planted at or immediately above
-// the log directory this process actually creates/manages — not the host's
-// own pre-existing filesystem layout.
+// the filesystem root) is deliberate, but the original justification for
+// this repo overstated the production risk: Breeze's actual configured log
+// directories (/var/log/breeze on Linux, /Library/Application
+// Support/Breeze/logs on macOS) don't have a symlinked ancestor in normal
+// deployments — /Library is a genuine top-level directory. What a
+// root-to-leaf walk actually breaks is test infrastructure: t.TempDir()
+// resolves under /var/folders on macOS, and macOS symlinks /var ->
+// private/var as part of its base OS layout, which a full walk would flag
+// as a false positive. Some minimal/immutable-root Linux distributions and
+// containers do symlink ancestors above wherever an application manages
+// its own directories, so bounding the walk is still the right general
+// policy — it just isn't defending a specific known Breeze production
+// path today.
+//
+// Residual exposure: an attacker able to replace or symlink an ancestor
+// directory of the log directory already needs write access to that
+// ancestor's parent, which on stock deployments (0755 root-owned
+// /var/log, /Library) requires root or an existing privilege-equivalent
+// misconfiguration — this check is defense-in-depth layered on top of
+// already-required elevated access, not an independently exploitable gap
+// on its own. The load-bearing, race-proof guarantee remains the
+// O_NOFOLLOW open of the leaf directory/file itself (see
+// secureLogDirectory's final open and openSecureLogFile below), which
+// holds regardless of what sits above it.
 //
 // This is a check-then-create step: it narrows the window before
 // os.MkdirAll, but cannot itself be atomic (MkdirAll dereferences
-// intermediate components). The authoritative, race-proof guarantee comes
-// from the O_NOFOLLOW open of the final log file and the no-follow reopen
-// of every rotation backup — this check is defense-in-depth against a
-// symlink already sitting in the path before we ever touch it.
+// intermediate components).
 func rejectSymlinkAncestors(dir string) error {
 	cur := filepath.Clean(dir)
 	for {
@@ -107,13 +154,20 @@ func rejectSymlinkAncestors(dir string) error {
 
 // openSecureLogFile opens path for append-only writing without following a
 // symlink at the final path component, verifies the result is a regular
-// file, and repairs its mode to 0600. The caller is responsible for having
-// already secured the containing directory (secureLogDirectory).
+// file with exactly one hard link, and repairs its mode to 0600. The caller
+// is responsible for having already secured the containing directory
+// (secureLogDirectory).
 func openSecureLogFile(path string) (*os.File, error) {
 	fd, err := unix.Open(path, unix.O_WRONLY|unix.O_APPEND|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(secureLogFileMode))
 	if err != nil {
 		if errors.Is(err, unix.ELOOP) {
-			return nil, &ErrUnsafeLogPath{Path: path, Reason: "log file is a symlink"}
+			// ELOOP means O_NOFOLLOW refused to dereference a symlink
+			// somewhere in path resolution — usually the final component,
+			// but it can also be an ancestor directory (e.g. a symlink
+			// loop) that secureLogDirectory didn't independently catch for
+			// this exact call site (repairRotatedFile calls this directly
+			// for backup paths without re-running the directory check).
+			return nil, &ErrUnsafeLogPath{Path: path, Reason: "path is a symlink, or resolves through a symlinked ancestor, and was refused by O_NOFOLLOW"}
 		}
 		return nil, fmt.Errorf("open log file %s: %w", path, err)
 	}
@@ -133,6 +187,14 @@ func openSecureLogFile(path string) (*os.File, error) {
 		f.Close()
 		return nil, &ErrUnsafeLogPath{Path: path, Reason: "log file is not a regular file"}
 	}
+	// O_NOFOLLOW stops a symlink at this path, but not a hardlink planted
+	// here that points at a different, attacker-chosen inode (e.g. a link
+	// to /etc/shadow named agent.log). A regular file we manage should
+	// always have exactly one link.
+	if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Nlink != 1 {
+		f.Close()
+		return nil, &ErrUnsafeLogPath{Path: path, Reason: "log file has multiple hard links"}
+	}
 
 	if err := repairLogFileMode(f); err != nil {
 		f.Close()
@@ -142,12 +204,33 @@ func openSecureLogFile(path string) (*os.File, error) {
 	return f, nil
 }
 
+// chmodWarnFired guards the tolerable-chmod-errno warning (see
+// repairLogFileMode) so it fires at most once per process. This is a plain
+// atomic (not sync.Once) specifically so tests can reset it between cases;
+// production code only ever transitions it false->true.
+var chmodWarnFired atomic.Bool
+
 // repairLogFileMode chmods an already-open, already-verified-regular file
 // to 0600 via its file descriptor (never the path). A permission-repair
 // error equal to EPERM, EROFS, ENOTSUP, or EOPNOTSUPP is tolerated with
-// exactly one prominent, bounded warning IF the file is confirmed regular
-// and non-symlink (which the caller — openSecureLogFile — guarantees before
-// calling this). Any other error fails the caller.
+// exactly one prominent, process-lifetime-bounded warning IF the file is
+// confirmed regular and non-symlink (which the caller — openSecureLogFile —
+// guarantees before calling this). Any other error fails the caller.
+//
+// The warning is written directly to os.Stderr with fmt.Fprintf, never
+// through the logging package's slog handlers. This function can run while
+// RotatingWriter.mu is held (openFile/rotate call it via
+// openSecureLogFile), and logging.Init may have installed this very
+// RotatingWriter as the global slog sink (agentapp does this for every log
+// file it opens). Routing this warning through slog would call back into
+// rw.Write on the same goroutine that already holds rw.mu — sync.Mutex is
+// not reentrant, so that call would block forever, hanging every other
+// goroutine in the agent that tries to log. Writing straight to os.Stderr
+// cannot recurse into any RotatingWriter, by construction. It is also
+// bounded to fire once per process (not once per call) — on a filesystem
+// that persistently returns a tolerable errno, this function runs on every
+// open plus every backup on every rotation, and logging the same warning
+// each time would itself grow the log file and trigger more rotations.
 func repairLogFileMode(file *os.File) error {
 	err := chmodFile(file, secureLogFileMode)
 	if err == nil {
@@ -155,8 +238,11 @@ func repairLogFileMode(file *os.File) error {
 	}
 
 	if isTolerableChmodErrno(err) {
-		slog.Warn("log file permission repair unsupported on this filesystem, continuing without chmod 0600",
-			"path", file.Name(), "reason", err.Error())
+		if chmodWarnFired.CompareAndSwap(false, true) {
+			fmt.Fprintf(os.Stderr,
+				"breeze-agent: WARNING log file permission repair unsupported on this filesystem (path=%s reason=%s); continuing without chmod 0600\n",
+				file.Name(), err)
+		}
 		return nil
 	}
 
@@ -194,4 +280,20 @@ func validateRotationPath(path string) error {
 	}
 
 	return nil
+}
+
+// rotationStepFatal reports whether an error from a single rotate() step —
+// renaming one backup slot, or the post-rename repair-open of that slot —
+// should abort the whole rotation (and, for an unsafe path, disable the
+// writer) or be silently skipped so rotation continues with the next slot.
+//
+// Unix treats every such error as fatal: the entire point of this file's
+// hardening is to never silently continue past an unverified path. See
+// rotation_windows.go's counterpart, which restores the pre-hardening
+// Windows behavior of ignoring a single slot's rename/open failure (e.g. a
+// sharing violation because the log shipper or an AV/tail viewer has the
+// file open) instead of aborting rotation for the whole file. Called from
+// the shared, platform-agnostic rotate() in rotation.go.
+func rotationStepFatal(err error) bool {
+	return err != nil
 }

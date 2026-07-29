@@ -39,3 +39,23 @@ func repairLogFileMode(file *os.File) error {
 func validateRotationPath(path string) error {
 	return nil
 }
+
+// rotationStepFatal restores the pre-hardening Windows behavior for a
+// single rotate() step (renaming one backup slot, or the post-rename
+// repair-open of that slot): never abort the whole rotation over it.
+//
+// Before this task, rotate() called os.Rename for each backup slot and
+// discarded the error entirely, then unconditionally proceeded to reopen
+// the current log — a sharing violation on one locked backup (routine on
+// Windows: the log shipper, an AV scanner, or a tail viewer can have any of
+// these files open) just meant that slot silently didn't rotate this time.
+// The shared, platform-agnostic rotate() in rotation.go now checks
+// rotationStepFatal for every such error; returning false here for any
+// error preserves that original "skip and continue" semantics — it must
+// not become "abort rotation and start failing every subsequent Write,"
+// which rw.written never resetting would otherwise cause. See
+// rotation_unix.go's counterpart, which is fatal for every error, matching
+// this task's Unix-specific hardening intent.
+func rotationStepFatal(err error) bool {
+	return false
+}

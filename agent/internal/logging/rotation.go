@@ -50,6 +50,10 @@ type RotatingWriter struct {
 	// underlying condition.
 	disabled    bool
 	disabledErr error
+	// disabledWarned tracks whether the one-time "file logging disabled"
+	// warning has already been written to os.Stderr for this writer (see
+	// writeDisabledFallback).
+	disabledWarned bool
 }
 
 // NewRotatingWriter creates a writer that rotates when maxSizeMB is exceeded.
@@ -76,26 +80,54 @@ func NewRotatingWriter(filePath string, maxSizeMB int, maxBackups int) (*Rotatin
 }
 
 // Write implements io.Writer. Rotates the file if maxSize is exceeded.
+//
+// Once the writer is disabled (an unsafe log path was detected), Write
+// never returns an error for "the file is unavailable" — it transparently
+// redirects every write to os.Stderr instead. Losing all logging is a
+// worse failure than losing file logging: in the common no-console
+// deployment shape (systemd/launchd/Windows service — see
+// agentapp.initLogging), this RotatingWriter is the *only* configured slog
+// sink, with no os.Stderr tee. Before this fallback existed, a disable
+// triggered at runtime (e.g. an attacker planting a symlink at a rotation
+// backup slot mid-run, which is only possible because of the very
+// hardening this task adds) would make every subsequent log line vanish
+// silently system-wide — slog discards handler errors, so nothing would
+// ever surface the condition.
 func (rw *RotatingWriter) Write(p []byte) (int, error) {
 	rw.mu.Lock()
 	defer rw.mu.Unlock()
 
 	if rw.disabled {
-		return 0, rw.disabledErr
+		return rw.writeDisabledFallback(p)
 	}
 
 	if rw.written+int64(len(p)) > rw.maxSize {
 		if err := rw.rotate(); err != nil {
+			if rw.disabled {
+				return rw.writeDisabledFallback(p)
+			}
 			return 0, fmt.Errorf("log rotation: %w", err)
-		}
-		if rw.disabled {
-			return 0, rw.disabledErr
 		}
 	}
 
 	n, err := rw.file.Write(p)
 	rw.written += int64(n)
 	return n, err
+}
+
+// writeDisabledFallback is used once the writer has been permanently
+// disabled. It never touches filePath again, but writes p to os.Stderr
+// instead of dropping it, preceded by exactly one bounded warning
+// explaining why. Callers using TeeWriter(os.Stderr, rw) will see each line
+// duplicated on stderr once disabled (the tee's first leg already wrote it
+// before reaching rw) — an accepted, purely cosmetic tradeoff against the
+// alternative of silent log loss in the no-tee configuration.
+func (rw *RotatingWriter) writeDisabledFallback(p []byte) (int, error) {
+	if !rw.disabledWarned {
+		rw.disabledWarned = true
+		fmt.Fprintf(os.Stderr, "breeze-agent: WARNING file logging disabled (%s); falling back to stderr for all further log output\n", rw.disabledErr)
+	}
+	return os.Stderr.Write(p)
 }
 
 // Reopen closes and reopens the log file (for SIGHUP handling). If the log
@@ -213,19 +245,29 @@ func (rw *RotatingWriter) rotate() error {
 	}
 
 	// Shift existing backups: .maxBackups -> removed, ..., .1 -> .2
+	//
+	// A rotateOne error is only fatal to the whole rotation per
+	// rotationStepFatal, which is platform-specific: Unix aborts on any
+	// error (never silently continue past an unverified path); Windows
+	// preserves its pre-hardening behavior of skipping a single slot whose
+	// rename or post-rename repair-open hit a sharing violation (routine
+	// there — the log shipper, an AV scanner, or a tail viewer can have
+	// any of these files open) rather than aborting rotation for the
+	// whole file and then failing every subsequent Write forever (rw.written
+	// is never reset by a failed rotate).
 	for i := rw.maxBackups; i >= 2; i-- {
 		src := rw.backupName(i - 1)
 		dst := rw.backupName(i)
 		if i == rw.maxBackups {
 			os.Remove(dst)
 		}
-		if err := rotateOne(src, dst); err != nil {
+		if err := rotateOne(src, dst); err != nil && rotationStepFatal(err) {
 			return rw.fail(err)
 		}
 	}
 
 	// Move current log to .1
-	if err := rotateOne(rw.filePath, rw.backupName(1)); err != nil {
+	if err := rotateOne(rw.filePath, rw.backupName(1)); err != nil && rotationStepFatal(err) {
 		return rw.fail(err)
 	}
 
@@ -279,7 +321,20 @@ func rotateOne(src, dst string) error {
 // regular-file-only checks as the live log file, repairing its mode to
 // 0600. It never writes to the file — only opens (to obtain a safe fd) and
 // closes it.
+//
+// openSecureLogFile's O_CREAT means it would happily create a fresh empty
+// file if path no longer exists (e.g. something removed it in the instant
+// between the rename that just placed it there and this call) — an
+// Lstat check first turns that into "nothing to repair" instead of a
+// stray empty backup silently appearing.
 func repairRotatedFile(path string) error {
+	if _, err := os.Lstat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("lstat %s: %w", path, err)
+	}
+
 	f, err := openSecureLogFile(path)
 	if err != nil {
 		return err
