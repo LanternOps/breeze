@@ -14,6 +14,12 @@ Breeze is a fast, modern Remote Monitoring and Management (RMM) platform for MSP
 - **Real-time**: HTTP polling + WebSocket
 - **Remote Access**: WebRTC
 
+## Monorepo Layout
+
+- `apps/`: api, web, portal, mobile, viewer, helper, docs, excel/outlook/powerpoint/word add-ins, m365-graph-{read,actions}-executor
+- `packages/`: shared, office-addin-core, extension-{api,cli,sdk,web-sdk,testkit}
+- `agent/`: Go agent (own Makefile; `make run`)
+
 ## Key Patterns
 
 ### Multi-Tenant Hierarchy
@@ -92,11 +98,6 @@ The playbook (copy a `2026-07-01-*-partner-ownership.sql` migration as the refer
 - For route files, split by resource. For service files, split by domain. Helpers used by multiple files can be duplicated locally or extracted to a shared utils file.
 - **Do not proactively split files** that are working well just to meet a line count target. Only split when it improves clarity or maintainability.
 
-### Context Preservation
-- **Prefer subagents (Agent tool) for research, exploration, and isolated tasks** to keep the main conversation context lean and avoid hitting context limits during long sessions.
-- Use subagents for: codebase searches, file reading/analysis, PR reviews, build log inspection, and any work that produces large output.
-- Keep the main context for: decision-making, coordinating work, and user interaction.
-
 ### URL State in Components
 - Use `window.location.hash` (`#value`) for client-side UI state like selected tabs, selected items in lists, etc. See `DeviceDetails.tsx` and `OrganizationsPage.tsx` for examples.
 - Do **not** use query params (`?key=value`) for transient UI state — keep the pattern consistent.
@@ -126,6 +127,82 @@ The `no-silent-mutations` test (`apps/web/src/lib/__tests__/no-silent-mutations.
 
 ---
 
+## Working Style (discretion, verbosity, delegation)
+
+### Design decisions — optimize for the long term
+- When multiple viable designs exist, choose the one that is best long-term
+  (maintainability, extensibility, consistency with existing repo contracts) —
+  never the one that is merely fastest to implement. "Works now, retrofit later"
+  has repeatedly cost more than doing it right (org-first config tables, #1724,
+  #2126–#2129).
+- **For consequential design choices, convene an advisor quorum before
+  implementing**: form your own position (Fable), then get an independent opinion
+  from Codex (`codex exec`, read-only, `xhigh` — see Codex Delegation). If the two
+  agree, proceed. If they disagree, weigh the arguments on the merits and either
+  resolve it with a tie-breaking analysis or surface the disagreement to the user
+  with a recommendation — don't silently pick one.
+- "Consequential" means: new tables/tenancy shapes, cross-module contracts, public
+  API surface, anything hard to reverse once shipped. Local naming/structure
+  choices don't need a quorum.
+
+### When to ask vs. proceed
+- **Proceed without asking**: any reversible decision inside the task's stated
+  scope — naming, file layout, test structure, refactor mechanics, choosing among
+  established repo patterns. Pick the sensible default and note it in one line.
+- **Ask first**: destructive or hard-to-reverse actions (data deletion, force-push,
+  prod changes, closing issues/PRs, external comms), genuine scope changes, and
+  product/UX decisions with no repo precedent. Design *quality* questions go to the
+  advisor quorum above, not to the user.
+- **Never block long-running work on a question.** If a decision point appears
+  mid-task, take the conservative default, keep going, and flag it in the final
+  summary. Batch open questions into one message at the end — don't serialize them.
+- **When you do ask, ask directly — make it scannable.** Lead with the question
+  itself in one sentence (bolded), not buried after background. Present the options
+  as short labeled bullets with direct pros/cons — no hedging prose. End with your
+  recommendation and the one-line reason. Format:
+
+  **Question: Should X use approach A or B?**
+  - **A — <name>**: pro …; con …
+  - **B — <name>**: pro …; con …
+
+  **Recommend A** — <one-line why>.
+
+### Verbosity
+- Decide, don't report. Lead with the outcome ("Fixed X — root cause was Y"), not
+  a narrative of steps taken.
+- Detail belongs in the PR description and commit messages, not chat. Chat gets:
+  what changed, what's risky, what needs user input.
+- No plan recitals before small tasks; no "Shall I proceed?" after a plan the user
+  asked for.
+- During long work: one status line per milestone or direction change, not per file.
+
+### Efficient coding & review
+- Match rigor to blast radius. Low-risk mechanical work (CRUD, copy, renames,
+  config): implement, typecheck, run the affected tests — done. Full ceremony is
+  reserved for tenancy/RLS, auth, migrations, billing, and agent-shipped code.
+- Run targeted tests while developing; the full suite and the separate contract
+  suites (RLS/integration) only before PR — and always then if tenancy/cascade
+  code was touched.
+- At most one independent review round per change. Act only on confirmed,
+  consequential findings; don't loop on nitpicks, and only re-review a fix if the
+  fix itself touched a high-blast-radius surface.
+
+### Subagents & main-context preservation
+- Delegate to subagents: codebase exploration, file reading/analysis, build-log and
+  test-output inspection, PR reviews, doc sweeps — anything whose raw output is
+  large. Keep the main context for decisions, coordination, and user interaction.
+- Subagent prompts must be self-contained: exact file paths, the specific question
+  or change, and the expected return shape (conclusions, not file dumps).
+- **Never take a subagent's "done" at face value.** Verify the commit exists, the
+  tests actually ran, and the change is on the right branch — subagents have
+  reported success with uncommitted, off-branch, or vacuous work.
+- Don't paste large files or logs into the main conversation; summarize or delegate
+  the read.
+- On long autonomous runs, make checkpoint commits at each working state so context
+  loss is cheap to recover from.
+
+---
+
 ## Testing Standards
 
 ### Frameworks & Configuration
@@ -149,7 +226,7 @@ For test-writing conventions (Drizzle mock patterns, table-driven Go tests, vali
 - `test-api`, `test-web`, `test-agent` are **required** jobs on PRs
 - New test files are auto-discovered — no CI config changes needed
 - Go coverage is uploaded as artifact; no threshold enforced yet
-- Integration tests run in `smoke-test` job with `continue-on-error: true`
+- Integration tests run in the `smoke-test`/`integration-test` jobs — non-blocking on PRs (`continue-on-error` on pull_request only) but REQUIRED on main, so a green PR can still turn main red
 
 ### Running Tests Locally
 ```bash
@@ -157,7 +234,11 @@ For test-writing conventions (Drizzle mock patterns, table-driven Go tests, vali
 pnpm test
 
 # API only
-pnpm test --filter=@breeze/api
+pnpm --filter @breeze/api test
+
+# NOTE: `pnpm test` does NOT run the RLS/integration contract suites
+# (separate vitest configs: vitest.config.rls.ts, vitest.integration.config.ts).
+# Local green ≠ CI green — run those explicitly when touching tenancy/cascade code.
 
 # Go agent (with race detection)
 cd agent && go test -race ./...
@@ -188,8 +269,13 @@ pnpm dev
 
 # Database operations
 export DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze"
+pnpm db:migrate      # Apply migrations
+pnpm db:seed         # Seed dev data
 pnpm db:check-drift  # Verify schema matches migrations (no drift)
 pnpm db:studio       # Open Drizzle Studio
+
+# Node is pinned to 22.20.0 (.nvmrc). Other root scripts: pnpm lint, pnpm build, pnpm wt-stack
+# (no root typecheck script — typecheck runs via turbo/CI only)
 
 # Agent development
 cd agent && make run
