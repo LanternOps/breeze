@@ -363,11 +363,13 @@ export async function executeScript(
   scriptId: string,
   deviceIds: string[],
   parameters?: Record<string, unknown>,
-  runAs?: ScriptRunAsOverride
+  runAs?: ScriptRunAsOverride,
+  targetSessionId?: number
 ): Promise<ScriptExecuteResult> {
   const body: Record<string, unknown> = { deviceIds };
   if (parameters) body.parameters = parameters;
   if (runAs) body.runAs = runAs;
+  if (targetSessionId != null) body.targetSessionId = targetSessionId;
 
   const response = await fetchWithAuth(`/scripts/${scriptId}/execute`, {
     method: 'POST',

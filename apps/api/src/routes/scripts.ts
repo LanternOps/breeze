@@ -197,15 +197,30 @@ const updateScriptSchema = z.object({
   orgId: z.string().guid().nullable().optional()
 });
 
-const executeScriptSchema = z.object({
-  deviceIds: z.array(z.string().guid()).min(1),
-  parameters: z.record(z.string(), z.any()).refine(
-    (val) => JSON.stringify(val).length <= 65536,
-    { message: 'Object too large (max 64KB)' }
-  ).optional(),
-  triggerType: z.enum(['manual', 'scheduled', 'alert', 'policy']).optional(),
-  runAs: z.enum(['system', 'user']).optional()
-});
+export const executeScriptSchema = z
+  .object({
+    deviceIds: z.array(z.string().guid()).min(1),
+    parameters: z.record(z.string(), z.any()).refine(
+      (val) => JSON.stringify(val).length <= 65536,
+      { message: 'Object too large (max 64KB)' }
+    ).optional(),
+    triggerType: z.enum(['manual', 'scheduled', 'alert', 'policy']).optional(),
+    runAs: z.enum(['system', 'user']).optional(),
+    // Windows session to run the user-context script in (RDS session
+    // targeting). Session ids are per-device, hence single-device only.
+    // min(1): session 0 is never an interactive session — the agent rejects
+    // it with a typed error, but rejecting here saves the round trip
+    // (amended during execution after the Task 6 session-0 finding).
+    targetSessionId: z.number().int().min(1).max(65535).optional(),
+  })
+  .refine((d) => d.targetSessionId == null || d.runAs === 'user', {
+    message: 'targetSessionId requires runAs=user',
+    path: ['targetSessionId'],
+  })
+  .refine((d) => d.targetSessionId == null || d.deviceIds.length === 1, {
+    message: 'targetSessionId requires exactly one device',
+    path: ['targetSessionId'],
+  });
 
 const listExecutionsSchema = z.object({
   page: z.string().optional(),
@@ -814,6 +829,7 @@ scriptRoutes.post(
       parameters: data.parameters,
       triggerType: data.triggerType,
       runAs: data.runAs,
+      targetSessionId: data.targetSessionId,
       auth,
       permissions: c.get('permissions') as UserPermissions | undefined,
     });
