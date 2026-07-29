@@ -189,12 +189,20 @@ func BootstrapPinnedManifestKeys(keys []ManifestTrustKey) ([]string, error) {
 // Rejection is atomic with respect to the file: every validation happens
 // before SaveTo is reached, so a rejected update leaves agent.yaml
 // byte-for-byte unchanged (there is a test for exactly this).
+// The whole read-modify-write runs under persistMu (loadLocked + saveToLocked
+// rather than Load + SaveTo). Dropping the lock between the two halves would
+// let the cert-renewal goroutine's SaveTo land in between and be overwritten by
+// the stale snapshot read here — and would leave Load racing viper's maps,
+// which is a process-killing throw rather than a lost value.
 func PinManifestKeys(cfgPath string, keys []ManifestTrustKey) error {
 	if len(keys) == 0 {
 		return nil
 	}
 
-	cfg, err := Load(cfgPath)
+	persistMu.Lock()
+	defer persistMu.Unlock()
+
+	cfg, err := loadLocked(cfgPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
@@ -239,5 +247,5 @@ func PinManifestKeys(cfgPath string, keys []ManifestTrustKey) error {
 	id := unseen[0]
 	cfg.PinnedManifestPubKeys = []string{id + ":" + incoming[id]}
 
-	return SaveTo(cfg, cfgPath)
+	return saveToLocked(cfg, cfgPath)
 }

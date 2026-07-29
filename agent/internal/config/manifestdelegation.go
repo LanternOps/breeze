@@ -139,6 +139,10 @@ func ManifestDelegationCanonicalBytes(d ManifestKeyDelegation) ([]byte, error) {
 // not begin signing with the new key until an operator runs `activate`, which
 // happens only after the fleet has adopted — dropping the old key on adoption
 // would break manifest verification for the entire adoption window.
+// Like PinManifestKeys, the config read-modify-write runs under persistMu
+// (loadLocked + saveToLocked). The epoch monotonicity check in particular is
+// only meaningful if nothing can write the config between reading the adopted
+// epoch and persisting the new one.
 func ApplyManifestKeyDelegation(cfgPath string, d ManifestKeyDelegation, now time.Time) error {
 	if d.SchemaVersion != manifestDelegationSchemaVersion {
 		return fmt.Errorf("%w: unsupported schemaVersion %d (this agent understands %d)",
@@ -174,7 +178,13 @@ func ApplyManifestKeyDelegation(cfgPath string, d ManifestKeyDelegation, now tim
 	// record that has just expired (the window closes between the server's
 	// query and the agent's clock), and a post-activation enrollee's copy
 	// names an oldKeyId it never had. Neither is an attack.
-	cfg, err := Load(cfgPath)
+	// Locked here, not earlier: every check above is pure structural
+	// validation on the record itself and touches no shared state, so the lock
+	// is held only for the config read-modify-write.
+	persistMu.Lock()
+	defer persistMu.Unlock()
+
+	cfg, err := loadLocked(cfgPath)
 	if err != nil {
 		return fmt.Errorf("%w: load config: %v", ErrManifestDelegationRejected, err)
 	}
@@ -268,7 +278,7 @@ func ApplyManifestKeyDelegation(cfgPath string, d ManifestKeyDelegation, now tim
 	cfg.PinnedManifestPubKeys = serializePinnedManifestKeys(pinned)
 	cfg.ManifestDelegationEpoch = d.Epoch
 
-	return SaveTo(cfg, cfgPath)
+	return saveToLocked(cfg, cfgPath)
 }
 
 // serializePinnedManifestKeys renders the trust set as sorted
