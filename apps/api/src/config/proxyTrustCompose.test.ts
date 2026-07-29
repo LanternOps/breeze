@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import yaml from 'js-yaml';
+import { load } from 'js-yaml';
 import { describe, expect, it } from 'vitest';
 
 // apps/api/src/config -> repo root is 4 levels up.
@@ -29,7 +29,7 @@ interface ComposeFile {
 
 function loadCompose(): ComposeFile {
   const raw = readFileSync(COMPOSE_PATH, 'utf8');
-  return yaml.load(raw) as ComposeFile;
+  return load(raw) as ComposeFile;
 }
 
 /**

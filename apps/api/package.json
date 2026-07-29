@@ -70,7 +70,7 @@
     "hono": "^4.12.32",
     "ioredis": "^5.11.1",
     "jose": "^6.2.3",
-    "js-yaml": "^4.3.0",
+    "js-yaml": "^5.2.2",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.8",
     "nanoid": "^5.1.15",
