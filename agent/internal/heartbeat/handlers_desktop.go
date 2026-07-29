@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -163,6 +164,19 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 
 	policy := parseDesktopSessionPolicy(cmd.Payload)
 
+	// Explicit per-session target (multi-session hosts): the Windows session
+	// this connect is shadowing, if any. Recorded before the consent gate so
+	// the consent prompt lands in the right session, and remembered under
+	// sessionID so the stop path (handleConsentSessionEnd, via
+	// h.takeDesktopTarget) routes the banner-hide/end-notify to the same user.
+	// "" means untargeted/legacy — every helper below keeps the pre-existing
+	// machine-global selection in that case.
+	targetSession := ""
+	if ts, ok := cmd.Payload["targetSessionId"].(float64); ok {
+		targetSession = strconv.Itoa(int(ts))
+	}
+	h.setDesktopTarget(sessionID, targetSession)
+
 	// Consent gate (Task 9): when the API attached a `prompt` block in mode
 	// "consent", ask the end user BEFORE starting any capture. A denial (or a
 	// policy-driven block when no user can answer) short-circuits with a
@@ -170,11 +184,14 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// `denied`. An older API that sends no prompt leaves this path untouched.
 	prompt := parseDesktopPrompt(cmd.Payload)
 	if prompt != nil && prompt.Mode == "consent" {
-		verdict, helperPresent, timedOut := h.requestConsent(sessionID, prompt)
+		verdict, helperPresent, timedOut := h.requestConsent(sessionID, prompt, targetSession)
 		proceed, reason := decideConsent(verdict, helperPresent, timedOut, prompt.ConsentUnavailableBehavior)
 		if !proceed {
 			log.Info("remote session denied by consent gate",
 				"sessionId", sessionID, "reason", reason)
+			// The session never started — no disconnect event will ever arrive
+			// to release this via handleConsentSessionEnd, so clear it here.
+			h.takeDesktopTarget(sessionID)
 			return consentDeniedResult(sessionID, reason, time.Since(start).Milliseconds())
 		}
 	}
@@ -188,8 +205,12 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	if (h.isService || h.isHeadless) && h.sessionBroker != nil && runtime.GOOS != "linux" {
 		result := h.startDesktopViaHelper(sessionID, offer, iceServers, displayIndex, policy, cmd.Payload)
 		if result.Status == "completed" && prompt != nil {
-			h.afterDesktopStart(sessionID, prompt)
+			h.afterDesktopStart(sessionID, prompt, targetSession)
 			result = withConsentGranted(result, prompt)
+		} else if result.Status != "completed" {
+			// Helper start failed — no live session, so no disconnect event
+			// will come to release the target. Clear it now.
+			h.takeDesktopTarget(sessionID)
 		}
 		result.DurationMs = time.Since(start).Milliseconds()
 		return result
@@ -202,6 +223,9 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// proceed or block — the console user is NOT interactively prompted here.
 	answer, err := h.desktopMgr.StartSession(sessionID, offer, iceServers, displayIndex, policy)
 	if err != nil {
+		// Direct start failed — same reasoning as the helper-start-failed case
+		// above: nothing will disconnect to release the target.
+		h.takeDesktopTarget(sessionID)
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 	resultData := map[string]any{
@@ -209,7 +233,7 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		"answer":    answer,
 	}
 	if prompt != nil {
-		h.afterDesktopStart(sessionID, prompt)
+		h.afterDesktopStart(sessionID, prompt, targetSession)
 		if prompt.Mode == "consent" {
 			resultData["consentReason"] = "user"
 		}

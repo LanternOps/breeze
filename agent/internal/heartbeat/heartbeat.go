@@ -269,6 +269,12 @@ type Heartbeat struct {
 	wsDesktopStart               func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
 	desktopOwners                sync.Map // desktop session ID -> helper session ID
 
+	// desktopTargets maps remote desktop session id -> explicitly targeted
+	// Windows session ("" for untargeted/legacy connects) so the stop path can
+	// route the banner-hide and end-of-session notify to the same user who saw
+	// the consent prompt. Guarded by h.mu.
+	desktopTargets map[string]string
+
 	// Resilience & observability
 	pool        *workerpool.Pool
 	healthMon   *health.Monitor
@@ -524,6 +530,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		retryCfg:        httputil.DefaultRetryConfig(),
 		seenCommands:    make(map[string]time.Time),
 		backupOutbox:    newBackupResultOutbox(backupResultOutboxDir()),
+		desktopTargets:  make(map[string]string),
 	}
 	h.accepting.Store(true)
 	h.isService = cfg.IsService
@@ -901,6 +908,28 @@ func (h *Heartbeat) sendUpdateStatus(targetVersion string) {
 		log.Error("failed to send update_status, device will not show 'updating' in dashboard",
 			"targetVersion", targetVersion, "error", err.Error())
 	}
+}
+
+// setDesktopTarget records the explicitly targeted Windows session ("" for
+// untargeted/legacy connects) for a remote desktop session id, so the stop
+// path can later route the banner-hide/end-of-session notify to the same
+// user who saw the consent prompt (see takeDesktopTarget).
+func (h *Heartbeat) setDesktopTarget(sessionID, targetWinSession string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.desktopTargets == nil {
+		h.desktopTargets = make(map[string]string)
+	}
+	h.desktopTargets[sessionID] = targetWinSession
+}
+
+// takeDesktopTarget returns and clears the recorded target for a session.
+func (h *Heartbeat) takeDesktopTarget(sessionID string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	t := h.desktopTargets[sessionID]
+	delete(h.desktopTargets, sessionID)
+	return t
 }
 
 // sendDesktopDisconnectNotification tells the API that a WebRTC peer
