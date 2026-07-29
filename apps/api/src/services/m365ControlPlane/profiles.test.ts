@@ -11,7 +11,8 @@ import {
 const PROFILE_CONTRACTS = [
   {
     id: 'communications-delegated',
-    version: 1,
+    // v2 (2026-07-29): mail-only; the unexercised Teams scopes were dropped.
+    version: 2,
     ownerAxis: 'user',
     authMode: 'delegated',
     credentialDomain: 'communications-delegated',
