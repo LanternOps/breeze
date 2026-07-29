@@ -17,6 +17,7 @@ import { users } from './schema/users';
 import * as oauthSchema from './schema/oauth';
 import { quotes } from './schema/quotes';
 import { deviceMtlsCertificates } from './schema/deviceMtlsCertificates';
+import { manifestSigningKeyDelegations } from './schema/manifestSigningKeys';
 import { devices } from './schema/devices';
 
 describe('autoMigrate', () => {
@@ -493,6 +494,117 @@ describe('Wave 6 agent outbound-network-policy capability handshake', () => {
     );
     expect(migrationSql).not.toMatch(/\bBEGIN;/);
     expect(migrationSql).not.toMatch(/\bCOMMIT;/);
+  });
+});
+
+describe('Wave 6 signed manifest key delegation', () => {
+  const migrationsDir = path.resolve(__dirname, '../../migrations');
+  const delegationMigration = '2026-08-06-f-manifest-key-delegations.sql';
+  const capabilityMigration = '2026-08-06-e-agent-outbound-network-capability.sql';
+
+  it('orders the delegation migration immediately after the Wave 6 capability migration', () => {
+    const files = readdirSync(migrationsDir)
+      .filter((file) => /^\d{4}-.*\.sql$/.test(file))
+      .sort((a, b) => a.localeCompare(b));
+
+    expect(files).toContain(delegationMigration);
+    const reservedBlock = files.filter((file) => file.startsWith('2026-08-06-'));
+    expect(files.slice(-reservedBlock.length)).toEqual(reservedBlock);
+    expect(reservedBlock.indexOf(delegationMigration)).toBe(
+      reservedBlock.indexOf(capabilityMigration) + 1,
+    );
+  });
+
+  it('declares the delegation table column shape, unique epoch, and window check', () => {
+    const cfg = getTableConfig(manifestSigningKeyDelegations);
+
+    expect(cfg.name).toBe('manifest_signing_key_delegations');
+    expect(cfg.columns.map((c) => c.name).sort()).toEqual(
+      [
+        'activated_at',
+        'created_at',
+        'epoch',
+        'id',
+        'new_key_id',
+        'new_public_key_b64',
+        'not_after',
+        'not_before',
+        'old_key_id',
+        'signature_b64',
+      ].sort(),
+    );
+
+    // The epoch is the monotonic replay counter the agent compares against.
+    // UNIQUE is what makes epoch reuse impossible at the storage layer rather
+    // than only in the CLI's pre-checks.
+    const epoch = cfg.columns.find((c) => c.name === 'epoch');
+    expect(epoch?.notNull).toBe(true);
+    expect(epoch?.isUnique).toBe(true);
+    expect(epoch?.getSQLType()).toBe('bigint');
+
+    expect(cfg.checks.map((check) => check.name).sort()).toEqual(
+      ['manifest_signing_key_delegations_window_chk'].sort(),
+    );
+  });
+
+  it('is idempotent, has no inner transaction directives, and forces system-only RLS', () => {
+    const migrationSql = readFileSync(path.join(migrationsDir, delegationMigration), 'utf8');
+
+    expect(migrationSql).toMatch(
+      /CREATE TABLE IF NOT EXISTS manifest_signing_key_delegations/,
+    );
+    // autoMigrate wraps each file in client.begin(...) — an inner BEGIN;/COMMIT;
+    // only emits "there is already a transaction in progress".
+    expect(migrationSql).not.toMatch(/\bBEGIN;/);
+    expect(migrationSql).not.toMatch(/\bCOMMIT;/);
+
+    expect(migrationSql).toMatch(
+      /ALTER TABLE manifest_signing_key_delegations ENABLE ROW LEVEL SECURITY/,
+    );
+    expect(migrationSql).toMatch(
+      /ALTER TABLE manifest_signing_key_delegations FORCE ROW LEVEL SECURITY/,
+    );
+
+    // Exact system-only policy shape, copied from manifest_signing_keys: BOTH
+    // USING and WITH CHECK must require the system scope. A USING-only policy
+    // would let a tenant context INSERT rows it cannot read.
+    expect(migrationSql).toMatch(
+      /CREATE POLICY manifest_signing_key_delegations_system_only[\s\S]*?USING \(current_setting\('breeze\.scope', true\) = 'system'\)[\s\S]*?WITH CHECK \(current_setting\('breeze\.scope', true\) = 'system'\)/,
+    );
+    // Policy creation guarded on pg_policies so re-applying is a no-op.
+    expect(migrationSql).toMatch(/FROM pg_policies/);
+
+    // Only what the system-context service role needs. DELETE is deliberately
+    // absent: nothing in the delegation lifecycle removes a record.
+    //
+    // Assert against EXECUTABLE sql — `--` comment text in this file discusses
+    // grants in prose, and a naive whole-file regex matches the prose instead
+    // of the statement (it did, on the first run).
+    const executableSql = migrationSql
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('--'))
+      .join('\n');
+
+    expect(executableSql).toMatch(
+      /GRANT SELECT, INSERT, UPDATE ON manifest_signing_key_delegations TO breeze_app;/,
+    );
+    const grantStatements = executableSql.match(/GRANT[\s\S]*?;/g) ?? [];
+    expect(grantStatements).toHaveLength(1);
+    expect(grantStatements[0]).not.toMatch(/DELETE/);
+  });
+
+  it('has the same system-only policy shape as manifest_signing_keys (no drift between the two)', () => {
+    const delegationSql = readFileSync(path.join(migrationsDir, delegationMigration), 'utf8');
+    const signingKeySql = readFileSync(
+      path.join(migrationsDir, '2026-05-09-manifest-signing-keys.sql'),
+      'utf8',
+    );
+
+    const predicate = /current_setting\('breeze\.scope', true\) = 'system'/g;
+    // Two occurrences each (USING + WITH CHECK) — the delegation table must
+    // not be laxer than the key table it derives its trust from.
+    expect(signingKeySql.match(predicate)).toHaveLength(2);
+    expect(delegationSql.match(predicate)).toHaveLength(2);
   });
 });
 
