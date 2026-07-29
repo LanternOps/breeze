@@ -317,14 +317,6 @@ func (s *Session) SetCapabilities(caps *ipc.Capabilities) {
 	s.mu.Unlock()
 }
 
-// CapabilitiesSnapshot returns the last-reported capabilities (nil until the
-// helper's post-auth capabilities message arrives).
-func (s *Session) CapabilitiesSnapshot() *ipc.Capabilities {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.Capabilities
-}
-
 // GetCapabilities returns a copy of the session's reported capabilities, or
 // nil if none have been received yet. Safe to call from any goroutine; takes
 // s.mu to serialise with SetCapabilities.

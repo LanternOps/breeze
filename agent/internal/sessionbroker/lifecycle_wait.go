@@ -60,7 +60,7 @@ func (m *HelperLifecycleManager) helperReadyCheck(key HelperKey) (HelperWaitResu
 		}
 	}
 	if m.broker != nil {
-		if sess := m.broker.HelperSessionByKey(key); sess != nil && sess.CapabilitiesSnapshot() != nil {
+		if sess := m.broker.HelperSessionByKey(key); sess != nil && sess.GetCapabilities() != nil {
 			return HelperWaitResult{Status: HelperWaitReady, Session: sess}, true
 		}
 	}
