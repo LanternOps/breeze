@@ -78,6 +78,25 @@ onto arbitrary tailnet peers. Classification is therefore inverted to a positive
 The named classes stay unallowlistable exactly as the constraint requires; this widens what is
 caught, never narrows it.
 
+**D4 — the agent must actually consume `require_manifest_signing_key_id` (Tasks 6 and 9).**
+The plan splits this control across two tasks and wires neither end to the other: Task 6 gave the
+agent a `RequireManifestSigningKeyID` config field and plumbed it to all eight updater construction
+sites, and Task 9 made the API send `configUpdate.require_manifest_signing_key_id=true` when the
+operator opts in — but no task taught `applyConfigUpdate` to read that key. The server's instruction
+is silently discarded, so the flag can only ever be set by hand-editing `agent.yaml`, and the
+wave's own end-state gates ("require ID only after the missing-ID count stays zero for seven
+consecutive days"; "missing-ID compatibility has been disabled" as a rotation precondition) are
+unreachable through the config surface this wave ships.
+
+Task 9 therefore also wires the agent side: `applyConfigUpdate` reads
+`require_manifest_signing_key_id` (accepting snake_case and camelCase, like its neighbours), sets
+the config field, and persists via `SaveTo`, with a Go test proving a pushed `true` survives a
+reload. Consumers re-read `h.config.RequireManifestSigningKeyID` at updater-construction time, so a
+pushed change takes effect on the next update check; the helper-manager options captured at startup
+(`heartbeat.go:610/640`) need a restart, which is the same limitation `backup_server_url` already
+has and is acceptable. Agents older than this build still ignore the key — the operator-facing
+surfaces must say so rather than implying fleet-wide effect.
+
 ## Finding Coverage
 
 | Finding | Owning tasks | Red-green regression | Enforcement acceptance |
