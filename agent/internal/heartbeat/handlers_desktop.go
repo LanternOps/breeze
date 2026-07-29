@@ -303,20 +303,7 @@ func handleListSessions(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
-	items := make([]ipc.SessionInfoItem, 0, len(detected))
-	for _, ds := range detected {
-		sessionNum, err := sessionbroker.ParseWindowsSessionIDForHeartbeat(ds.Session)
-		if err != nil {
-			continue
-		}
-		items = append(items, ipc.SessionInfoItem{
-			SessionID:       sessionNum,
-			Username:        ds.Username,
-			State:           ds.State,
-			Type:            ds.Type,
-			HelperConnected: helperByWinSession[ds.Session],
-		})
-	}
+	items := sessionbroker.BuildSessionInfoItems(detected, helperByWinSession)
 
 	return tools.NewSuccessResult(map[string]any{
 		"sessions": items,

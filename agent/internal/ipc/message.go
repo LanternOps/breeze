@@ -395,6 +395,9 @@ type SessionInfoItem struct {
 	State           string `json:"state"`
 	Type            string `json:"type"`
 	HelperConnected bool   `json:"helperConnected"`
+	// IdleMinutes is minutes since last user input in the session, capped at
+	// one week. Nil when the platform could not measure input idle.
+	IdleMinutes *int `json:"idleMinutes,omitempty"`
 }
 
 // WatchdogPing is sent by the watchdog to the agent to request a liveness check.
