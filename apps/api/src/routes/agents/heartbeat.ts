@@ -30,6 +30,7 @@ import {
   resolvePinnedUpgradeTarget,
   type AgentVersionPins,
   type OnedriveConfigUpdate,
+  type HelperSettings,
 } from './helpers';
 import { shouldSendAgentUpgrade } from './agentUpdatePolicy';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
@@ -948,12 +949,11 @@ if (latestHelper) {
     }
   }
 
-  let helperSettings: { enabled: boolean; showOpenPortal: boolean; showDeviceInfo: boolean; showRequestSupport: boolean; portalUrl?: string } | null = null;
-  try {
-    helperSettings = await buildHelperConfigUpdate(device.id, device.orgId);
-  } catch (err) {
-    console.error(`[agents] failed to read helper settings for ${agentId}:`, err);
-  }
+  // Helper settings are resolved AFTER this org-scoped block closes (#1105
+  // pattern — see below): a partner-wide helper policy (org_id NULL) is
+  // invisible under this context's RLS (accessiblePartnerIds: [] above), so
+  // resolving it here would silently miss it regardless of the resolver's own
+  // query condition.
 
   let eventLogSettings: Record<string, unknown> | null = null;
   try {
@@ -1102,8 +1102,8 @@ if (latestHelper) {
       // confirmed. Tells the agent to call /rotate-token/confirm and finish.
       confirmTokenRotation:
         (pendingRotationLive && c.get('agentPendingTokenPresented') === true) || undefined,
-      helperEnabled: helperSettings?.enabled ?? false,
-      helperSettings: helperSettings ?? undefined,
+      // helperEnabled/helperSettings are merged in AFTER this org-scoped block
+      // closes — see the #1105 comment below.
       // Opt-in default: a null pamSettings (resolver error, logged above) sends
       // false so we never prompt users on a device that opted into nothing.
       uacInterceptionEnabled: pamSettings?.uacInterceptionEnabled ?? false,
@@ -1174,7 +1174,30 @@ if (latestHelper) {
     ? { ...(policyProbeConfig ?? {}), ...(scopedConfigUpdate ?? {}), ...(onedriveConfigUpdate ?? {}) }
     : null;
 
-  return c.json({ ...scoped.mainResponse, configUpdate, manifestTrustKeys });
+  // #1105 — helper settings resolved OUTSIDE the org context too (same
+  // guarantee as policyProbeConfig/onedriveSettings above): a partner-wide
+  // helper policy (org_id NULL) is invisible under the org-scoped RLS context
+  // (accessiblePartnerIds: [] there), so it must resolve under a system
+  // context anchored to this authenticated device's own org — cannot pivot
+  // tenants since both ids come from `scoped`, derived from the device the
+  // agent already authenticated as.
+  let helperSettings: HelperSettings | null = null;
+  try {
+    helperSettings = await withSystemDbAccessContext(() =>
+      buildHelperConfigUpdate(scoped.deviceId, scoped.deviceOrgId)
+    );
+  } catch (err) {
+    console.error(`[agents] failed to read helper settings for ${agentId}:`, err);
+    captureException(err);
+  }
+
+  return c.json({
+    ...scoped.mainResponse,
+    configUpdate,
+    manifestTrustKeys,
+    helperEnabled: helperSettings?.enabled ?? false,
+    helperSettings: helperSettings ?? undefined,
+  });
 });
 
 // Receive service/process monitoring check results from agent

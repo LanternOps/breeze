@@ -2415,7 +2415,11 @@ const HELPER_DEFAULTS: HelperSettings = {
   showRequestSupport: true,
 };
 
-async function resolveDeviceHelperSettings(deviceId: string): Promise<HelperSettings> {
+// Resolves the helper feature settings for a device from configuration
+// policies. Returns null when NO helper feature link matched — callers
+// distinguish "no policy" (legacy org fallback applies) from an explicit
+// enabled:false (which must win; see buildHelperConfigUpdate).
+export async function resolveDeviceHelperSettings(deviceId: string): Promise<HelperSettings | null> {
   // 1. Load device
   const [device] = await db
     .select({ orgId: devices.orgId, siteId: devices.siteId })
@@ -2423,7 +2427,7 @@ async function resolveDeviceHelperSettings(deviceId: string): Promise<HelperSett
     .where(eq(devices.id, deviceId))
     .limit(1);
 
-  if (!device) return HELPER_DEFAULTS;
+  if (!device) return null;
 
   // 2. Load org (for partnerId)
   const [org] = await db
@@ -2471,11 +2475,16 @@ async function resolveDeviceHelperSettings(deviceId: string): Promise<HelperSett
     ))
     .where(and(
       eq(configurationPolicies.status, 'active'),
-      eq(configurationPolicies.orgId, device.orgId),
+      // Org-owned policies for this device's org, OR partner-owned policies
+      // (org_id NULL) for this device's partner — same dual-axis shape as
+      // resolveEffectiveConfigWithExecutor (services/configurationPolicy.ts).
+      org?.partnerId
+        ? sql`(${configurationPolicies.orgId} = ${device.orgId} OR (${configurationPolicies.orgId} IS NULL AND ${configurationPolicies.partnerId} = ${org.partnerId}))`
+        : eq(configurationPolicies.orgId, device.orgId),
       or(...targetConditions),
     ));
 
-  if (rows.length === 0) return HELPER_DEFAULTS;
+  if (rows.length === 0) return null;
 
   // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
   rows.sort((a, b) => {
@@ -2485,7 +2494,7 @@ async function resolveDeviceHelperSettings(deviceId: string): Promise<HelperSett
   });
 
   const winner = rows[0];
-  if (!winner?.inlineSettings) return HELPER_DEFAULTS;
+  if (!winner?.inlineSettings) return null;
 
   const s = winner.inlineSettings as Record<string, unknown>;
   return {
@@ -2521,16 +2530,18 @@ export async function buildHelperConfigUpdate(deviceId: string, orgId: string): 
   // Try config policy resolution first
   let settings = await resolveDeviceHelperSettings(deviceId);
 
-  // Fallback: if no policy found, check org-level settings for backward compat
-  if (!settings.enabled) {
+  // Legacy org-level fallback applies ONLY when no policy matched at all. An
+  // explicit enabled:false policy must win over organizations.settings.helper
+  // (previously `!settings.enabled` fell through, and the fallback also
+  // discarded the four resolved UI fields).
+  if (settings === null) {
+    let orgEnabled = false;
     try {
-      const orgSettings = await getOrgHelperSettings(orgId);
-      if (orgSettings.enabled) {
-        settings = { ...HELPER_DEFAULTS, enabled: true };
-      }
+      orgEnabled = (await getOrgHelperSettings(orgId)).enabled;
     } catch {
-      // ignore — defaults are fine
+      // defaults are fine
     }
+    settings = { ...HELPER_DEFAULTS, enabled: orgEnabled };
   }
 
   if (redis) {
