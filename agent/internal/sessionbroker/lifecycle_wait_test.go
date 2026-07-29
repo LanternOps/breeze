@@ -11,7 +11,7 @@ import (
 func waitTestManager(t *testing.T, sessions []DetectedSession) *HelperLifecycleManager {
 	t.Helper()
 	broker := New("wait-"+t.Name(), nil)
-	m := newHelperLifecycleManager(broker, &stubLeaseDetector{sessions: sessions}, nil, nil)
+	m := newHelperLifecycleManager(broker, &stubLeaseDetector{sessions: sessions}, nil, &fakeHelperSpawner{})
 	m.mode = LifecycleModeOnDemand
 	return m
 }
@@ -75,6 +75,19 @@ func TestWaitForHelperReady(t *testing.T) {
 		res := m.WaitForHelperReady(context.Background(), sysKey)
 		if res.Status != HelperWaitRetriesExhausted {
 			t.Fatalf("got %+v, want retries-exhausted", res)
+		}
+	})
+
+	t.Run("nil spawner surfaces spawner-unavailable instead of an opaque timeout", func(t *testing.T) {
+		m := waitTestManager(t, []DetectedSession{activeRDP("3", "bob")})
+		if err := m.AcquireLease(3, ipc.HelperRoleSystem, "op1", 0); err != nil {
+			t.Fatal(err)
+		}
+		m.spawner = nil
+
+		res := m.WaitForHelperReady(context.Background(), sysKey)
+		if res.Status != HelperWaitSpawnerUnavailable {
+			t.Fatalf("got %+v, want spawner-unavailable", res)
 		}
 	})
 
