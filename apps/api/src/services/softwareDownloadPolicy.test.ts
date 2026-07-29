@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// A `where(...)` result that is BOTH awaitable directly (the site writer,
-// which never calls `.returning()`) AND carries a `.returning()` method (the
-// org writer's zero-row-write guard). Defaults to one row so a test that
-// doesn't care about the returning value still reads as "the write took
-// effect"; pass `[]` to model a 0-row UPDATE (RLS rejected it, or the row
-// vanished between the SELECT and the UPDATE).
+// A `where(...)` result that is BOTH awaitable directly AND carries a
+// `.returning()` method — both writers use the zero-row-write guard, and the
+// direct-await shape is kept so the mock stays valid if a future caller drops
+// it. Defaults to one row so a test that doesn't care about the returning
+// value still reads as "the write took effect"; pass `[]` to model a 0-row
+// UPDATE (RLS rejected it, or the row vanished between the SELECT and the
+// UPDATE).
 function updateWhereResult(returningRows: unknown[] = [{ id: 'stub-id' }]) {
   const result: Promise<undefined> & { returning?: ReturnType<typeof vi.fn> } = Promise.resolve(undefined);
   result.returning = vi.fn().mockResolvedValue(returningRows);
@@ -274,6 +275,33 @@ describe('setSiteSoftwareDownloadPolicy', () => {
     // actually being applied, not merely from an unscoped miss.
     expect(eqCallCount(sites.id, 'site-in-other-org')).toBe(1);
     expect(eqCallCount(sites.orgId, 'org-1')).toBe(1);
+  });
+
+  it('returns { ok: false } instead of a phantom success when the site UPDATE affects 0 rows', async () => {
+    // Mirror of the organization writer's guard. The site SELECT found a row,
+    // but the UPDATE's RETURNING is empty (RLS refused the write, or the row
+    // vanished between the two statements). Reporting ok:true here makes the
+    // route answer 200 and emit a `software.downloadPolicy.site.update` audit
+    // row for a policy change that never persisted.
+    // Only the site lookup is scripted — deliberately. With the guard in
+    // place the org lookup for the effective union is never reached; delete
+    // the guard and this test fails on that unscripted second SELECT, which
+    // is itself the proof that a guarded implementation short-circuits first.
+    // (A second `mockResolvedValueOnce` cannot be added here: `clearAllMocks`
+    // does not drain an unconsumed once-queue, so it would leak into the
+    // following tests.)
+    dbMock.selectWhere.mockResolvedValueOnce([{ settings: {} }]);
+    dbMock.updateWhere.mockReturnValueOnce(updateWhereResult([]));
+
+    const result = await setSiteSoftwareDownloadPolicy('org-1', 'site-1', {
+      version: 1,
+      approvedPrivateOrigins: ['https://site.corp.internal'],
+    });
+
+    expect(result).toEqual({ ok: false, error: 'site_not_found' });
+    // No effective-union lookup either: a failed write must not be followed by
+    // a read that makes the response look like a real post-write state.
+    expect(dbMock.select).toHaveBeenCalledTimes(1);
   });
 
   it('returns the org∪site union as the effective policy, deduped', async () => {

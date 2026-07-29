@@ -180,13 +180,23 @@ export async function setSiteSoftwareDownloadPolicy(
   // Encrypt secret-bearing fields BEFORE writing — sites.settings is a
   // registered encrypted-JSON column (encryptedColumnRegistry.ts). Same
   // rationale as the organization writer above.
-  await db
+  //
+  // `.returning()` is the zero-row-write guard, same as the organization
+  // writer: the SELECT above passing does NOT mean the UPDATE persisted. RLS
+  // is evaluated per statement, so a row the SELECT policy exposes can still
+  // be refused by the UPDATE policy (or vanish between the two statements).
+  // Without this guard the route answers 200 and writes a
+  // `software.downloadPolicy.site.update` audit row for a change that never
+  // landed — a false audit record on a security-policy surface.
+  const [updated] = await db
     .update(sites)
     .set({
       settings: encryptColumnValueForWrite('sites', 'settings', mergedSettings),
       updatedAt: new Date(),
     })
-    .where(and(eq(sites.id, siteId), eq(sites.orgId, orgId)));
+    .where(and(eq(sites.id, siteId), eq(sites.orgId, orgId)))
+    .returning({ id: sites.id });
+  if (!updated) return { ok: false, error: 'site_not_found' };
 
   const orgPolicy = await getOrganizationSoftwareDownloadPolicy(orgId);
   const effective: SoftwareDownloadPolicy = {
