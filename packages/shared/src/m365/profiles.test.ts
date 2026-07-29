@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   M365_PERMISSION_PROFILES,
   canonicalGrantKey,
+  connectionNeedsConsentReconciliation,
 } from './profiles';
 
 const MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID = '00000003-0000-0000-c000-000000000000';
@@ -63,6 +64,55 @@ describe('shared M365 permission profiles', () => {
     expect(profile.applicationPermissions).toEqual(
       CUSTOMER_GRAPH_READ_ASSIGNMENTS.map(({ value }) => value),
     );
+  });
+
+  describe('communications-delegated is mail-only at version 2', () => {
+    const profile = M365_PERMISSION_PROFILES['communications-delegated'];
+
+    it('requests exactly this scope set and no more', () => {
+      // Asserted as an exact set rather than with `toContain`, so ADDING a scope fails too.
+      // A delegated grant is a live credential for a named person's mailbox; every extra
+      // scope widens what a compromised executor could do with it.
+      expect([...profile.delegatedPermissions]).toEqual([
+        'openid',
+        'profile',
+        'offline_access',
+        'User.Read',
+        'Mail.ReadWrite',
+        'Mail.Send',
+      ]);
+    });
+
+    it('is at version 2', () => {
+      expect(profile.version).toBe(2);
+    });
+
+    it('drops the unexercised Teams scopes', () => {
+      for (const scope of ['Chat.ReadWrite', 'ChannelMessage.Read.All', 'ChannelMessage.Send']) {
+        expect(profile.delegatedPermissions).not.toContain(scope);
+      }
+    });
+
+    it('retains offline_access', () => {
+      // Without it there is no refresh token, so no send can ever run headless — the
+      // single most consequential scope in the set, and the easiest to drop while
+      // "trimming to mail-only".
+      expect(profile.delegatedPermissions).toContain('offline_access');
+    });
+
+    it('grants no application permissions at all', () => {
+      // The whole point of the user axis: this profile acts as a person, never as the app.
+      expect(profile.applicationPermissions).toEqual([]);
+      expect('applicationPermissionAssignments' in profile).toBe(false);
+    });
+
+    it('flags every stored v1 row for consent reconciliation', () => {
+      // Existing connections consented under the v1 scope set must be re-consented rather
+      // than silently treated as current.
+      expect(connectionNeedsConsentReconciliation('communications-delegated', 1)).toBe(true);
+      expect(connectionNeedsConsentReconciliation('communications-delegated', 2)).toBe(false);
+      expect(connectionNeedsConsentReconciliation('communications-delegated', 3)).toBe(true);
+    });
   });
 
   it('keeps future application profiles name-only at version 1', () => {
