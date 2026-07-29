@@ -26,6 +26,7 @@ import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/pe
 import { dispatchWake } from '../services/wakeOnLan';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { emitAlertStateFeedback } from '../services/mlFeedbackEmitters';
+import { UUID_REGEX } from '../utils/uuid';
 
 export const mobileRoutes = new Hono();
 const requireMobileAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
@@ -64,7 +65,7 @@ export function decodeCursor(raw: string | undefined): CursorTuple | null {
   try {
     const json = Buffer.from(raw, 'base64url').toString('utf8');
     const parsed = JSON.parse(json) as { ts?: unknown; id?: unknown };
-    if (typeof parsed.ts !== 'string' || typeof parsed.id !== 'string') return null;
+    if (typeof parsed.ts !== 'string' || typeof parsed.id !== 'string' || !UUID_REGEX.test(parsed.id)) return null;
     const ts = new Date(parsed.ts);
     if (Number.isNaN(ts.getTime())) return null;
     return { ts, id: parsed.id };

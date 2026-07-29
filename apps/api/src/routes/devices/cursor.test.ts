@@ -113,6 +113,10 @@ describe('decodeCursor — null/empty/garbage rejections', () => {
     const bad = Buffer.from(JSON.stringify({ v: 1, sort: 'hostname', sortDir: 'asc', k: 'x' })).toString('base64url');
     expect(decodeCursor(bad)).toBeNull();
   });
+  it('returns null when id is not a UUID', () => {
+    const bad = Buffer.from(JSON.stringify({ v: 1, sort: 'hostname', sortDir: 'asc', k: 'x', id: 'not-a-uuid' })).toString('base64url');
+    expect(decodeCursor(bad)).toBeNull();
+  });
   it('returns null when k is wrong type (object)', () => {
     const bad = Buffer.from(JSON.stringify({ v: 1, sort: 'hostname', sortDir: 'asc', k: { not: 'a string' }, id: 'x' })).toString('base64url');
     expect(decodeCursor(bad)).toBeNull();

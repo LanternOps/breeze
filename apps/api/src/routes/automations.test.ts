@@ -16,7 +16,7 @@ vi.mock('../services/automationRuntime', () => ({
   createAutomationRunRecord: vi.fn(async () => ({
     run: {
       id: 'run-1',
-      automationId: 'auto-1',
+      automationId: '11111111-1111-4111-8111-111111111111',
       triggeredBy: 'manual:user-123',
       status: 'running',
       devicesTargeted: 2,
@@ -161,7 +161,7 @@ describe('automations routes', () => {
             orderBy: vi.fn().mockReturnValue({
               limit: vi.fn().mockReturnValue({
                 offset: vi.fn().mockResolvedValue([
-                  { id: 'auto-1', name: 'Automation One' },
+                  { id: '11111111-1111-4111-8111-111111111111', name: 'Automation One' },
                   { id: 'auto-2', name: 'Automation Two' }
                 ])
               })
@@ -187,7 +187,7 @@ describe('automations routes', () => {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([{
-              id: 'auto-1',
+              id: '11111111-1111-4111-8111-111111111111',
               name: 'Automation One',
               orgId: 'org-123',
               trigger: { type: 'manual' },
@@ -218,23 +218,45 @@ describe('automations routes', () => {
         })
       } as any);
 
-    const res = await app.request('/automations/auto-1', {
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111', {
       method: 'GET',
       headers: { Authorization: 'Bearer valid-token' }
     });
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.id).toBe('auto-1');
+    expect(body.id).toBe('11111111-1111-4111-8111-111111111111');
     expect(body.recentRuns).toHaveLength(1);
     expect(body.statistics.totalRuns).toBe(3);
+  });
+
+  it('returns 404 without querying the database for a malformed automation id', async () => {
+    const res = await app.request('/automations/not-a-uuid', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Automation not found' });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 without querying the database for a malformed run id', async () => {
+    const res = await app.request('/automations/runs/not-a-uuid', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Automation run not found' });
+    expect(db.select).not.toHaveBeenCalled();
   });
 
   it('should create an automation with trigger configuration', async () => {
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([{
-          id: 'auto-1',
+          id: '11111111-1111-4111-8111-111111111111',
           name: 'Reboot Devices',
           orgId: 'org-123',
           trigger: { type: 'manual' },
@@ -260,7 +282,7 @@ describe('automations routes', () => {
 
     expect(res.status).toBe(201);
     const body = await res.json();
-    expect(body.id).toBe('auto-1');
+    expect(body.id).toBe('11111111-1111-4111-8111-111111111111');
     expect(body.trigger.type).toBe('manual');
   });
 
@@ -308,7 +330,7 @@ describe('automations routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'auto-1',
+            id: '11111111-1111-4111-8111-111111111111',
             name: 'Automation One',
             orgId: 'org-123',
             enabled: true,
@@ -321,7 +343,7 @@ describe('automations routes', () => {
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           returning: vi.fn().mockResolvedValue([{
-            id: 'auto-1',
+            id: '11111111-1111-4111-8111-111111111111',
             enabled: false,
             trigger: { type: 'manual' }
           }])
@@ -329,7 +351,7 @@ describe('automations routes', () => {
       })
     } as any);
 
-    const res = await app.request('/automations/auto-1', {
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
       body: JSON.stringify({
@@ -348,7 +370,7 @@ describe('automations routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'auto-1', name: 'Automation One', orgId: 'org-123',
+            id: '11111111-1111-4111-8111-111111111111', name: 'Automation One', orgId: 'org-123',
             enabled: true, conditions: [], trigger: { type: 'manual' },
           }]),
         }),
@@ -359,7 +381,7 @@ describe('automations routes', () => {
       ok: false, outOfScopeDeviceIds: ['dev-out-of-site'], unbounded: false,
     } as any);
 
-    const res = await app.request('/automations/auto-1', {
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
       body: JSON.stringify({ trigger: { type: 'all' } }),
@@ -376,7 +398,7 @@ describe('automations routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'auto-1', name: 'Automation One', orgId: 'org-123',
+            id: '11111111-1111-4111-8111-111111111111', name: 'Automation One', orgId: 'org-123',
             enabled: true, conditions: [], trigger: { type: 'manual' },
           }]),
         }),
@@ -385,7 +407,7 @@ describe('automations routes', () => {
     vi.mocked(db.update).mockReturnValue({
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{ id: 'auto-1', enabled: false, trigger: { type: 'manual' } }]),
+          returning: vi.fn().mockResolvedValue([{ id: '11111111-1111-4111-8111-111111111111', enabled: false, trigger: { type: 'manual' } }]),
         }),
       }),
     } as any);
@@ -394,7 +416,7 @@ describe('automations routes', () => {
       ok: true, outOfScopeDeviceIds: [], unbounded: false,
     } as any);
 
-    const res = await app.request('/automations/auto-1', {
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
       body: JSON.stringify({ enabled: false }),
@@ -410,7 +432,7 @@ describe('automations routes', () => {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([{
-              id: 'auto-1',
+              id: '11111111-1111-4111-8111-111111111111',
               name: 'Automation One',
               orgId: 'org-123'
             }])
@@ -426,7 +448,7 @@ describe('automations routes', () => {
       where: vi.fn().mockResolvedValue(undefined)
     } as any);
 
-    const res = await app.request('/automations/auto-1', {
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111', {
       method: 'DELETE',
       headers: { Authorization: 'Bearer valid-token' }
     });
@@ -441,7 +463,7 @@ describe('automations routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'auto-1',
+            id: '11111111-1111-4111-8111-111111111111',
             name: 'Automation One',
             orgId: 'org-123',
             enabled: true,
@@ -452,7 +474,7 @@ describe('automations routes', () => {
       })
     } as any);
 
-    const res = await app.request('/automations/auto-1/trigger', {
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111/trigger', {
       method: 'POST',
       headers: { Authorization: 'Bearer valid-token' }
     });
@@ -468,7 +490,7 @@ describe('automations routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'auto-1',
+            id: '11111111-1111-4111-8111-111111111111',
             name: 'Automation One',
             orgId: 'org-123',
             enabled: false,
@@ -478,7 +500,7 @@ describe('automations routes', () => {
       })
     } as any);
 
-    const res = await app.request('/automations/auto-1/trigger', {
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111/trigger', {
       method: 'POST',
       headers: { Authorization: 'Bearer valid-token' }
     });
@@ -565,7 +587,7 @@ describe('automations routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'auto-1',
+            id: '11111111-1111-4111-8111-111111111111',
             name: 'Automation One',
             orgId: 'org-123',
             enabled: true,
@@ -576,7 +598,7 @@ describe('automations routes', () => {
       })
     } as any);
 
-    const res = await app.request('/automations/auto-1/trigger', {
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111/trigger', {
       method: 'POST',
       headers: { Authorization: 'Bearer valid-token' }
     });
@@ -596,7 +618,7 @@ describe('automations routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'auto-1',
+            id: '11111111-1111-4111-8111-111111111111',
             name: 'Automation One',
             orgId: 'org-123',
             enabled: true,
@@ -607,7 +629,7 @@ describe('automations routes', () => {
       })
     } as any);
 
-    const res = await app.request('/automations/auto-1/run', {
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111/run', {
       method: 'POST',
       headers: { Authorization: 'Bearer valid-token' }
     });
@@ -622,7 +644,7 @@ describe('automations routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'auto-1',
+            id: '11111111-1111-4111-8111-111111111111',
             name: 'Automation One',
             orgId: 'org-123',
             enabled: true,
@@ -633,7 +655,7 @@ describe('automations routes', () => {
       })
     } as any);
 
-    const res = await app.request('/automations/auto-1/trigger', {
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111/trigger', {
       method: 'POST',
       headers: { Authorization: 'Bearer valid-token' }
     });
@@ -648,7 +670,7 @@ describe('automations routes', () => {
 	      from: vi.fn().mockReturnValue({
 	        where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'auto-1',
+            id: '11111111-1111-4111-8111-111111111111',
             name: 'Webhook Automation',
             orgId: 'org-123',
             enabled: true,
@@ -662,7 +684,7 @@ describe('automations routes', () => {
 	    const timestamp = String(Math.floor(Date.now() / 1000));
 	    const signature = `sha256=${createHmac('sha256', 'secret-123').update(`${timestamp}.${rawBody}`).digest('hex')}`;
 
-	    const res = await app.request('/automations/webhooks/auto-1', {
+	    const res = await app.request('/automations/webhooks/11111111-1111-4111-8111-111111111111', {
 	      method: 'POST',
 	      headers: {
 	        'Content-Type': 'application/json',
@@ -684,7 +706,7 @@ describe('automations routes', () => {
 	      from: vi.fn().mockReturnValue({
 	        where: vi.fn().mockReturnValue({
 	          limit: vi.fn().mockResolvedValue([{
-	            id: 'auto-1',
+	            id: '11111111-1111-4111-8111-111111111111',
 	            name: 'Webhook Automation',
 	            orgId: 'org-123',
 	            enabled: true,
@@ -698,7 +720,7 @@ describe('automations routes', () => {
 	    const timestamp = String(Math.floor(Date.now() / 1000));
 	    const signature = `sha256=${createHmac('sha256', 'secret-123').update(`${timestamp}.${signedBody}`).digest('hex')}`;
 
-	    const res = await app.request('/automations/webhooks/auto-1', {
+	    const res = await app.request('/automations/webhooks/11111111-1111-4111-8111-111111111111', {
 	      method: 'POST',
 	      headers: {
 	        'Content-Type': 'application/json',
@@ -717,7 +739,7 @@ describe('automations routes', () => {
 	      from: vi.fn().mockReturnValue({
 	        where: vi.fn().mockReturnValue({
 	          limit: vi.fn().mockResolvedValue([{
-	            id: 'auto-1',
+	            id: '11111111-1111-4111-8111-111111111111',
 	            name: 'Webhook Automation',
 	            orgId: 'org-123',
 	            enabled: true,
@@ -727,7 +749,7 @@ describe('automations routes', () => {
 	      })
 	    } as any);
 
-	    const res = await app.request('/automations/webhooks/auto-1', {
+	    const res = await app.request('/automations/webhooks/11111111-1111-4111-8111-111111111111', {
 	      method: 'POST',
 	      headers: {
 	        'Content-Type': 'application/json',
@@ -748,7 +770,7 @@ describe('automations routes', () => {
 	      from: vi.fn().mockReturnValue({
 	        where: vi.fn().mockReturnValue({
 	          limit: vi.fn().mockResolvedValue([{
-	            id: 'auto-1',
+	            id: '11111111-1111-4111-8111-111111111111',
 	            name: 'Webhook Automation',
 	            orgId: 'org-123',
 	            enabled: true,
@@ -761,7 +783,7 @@ describe('automations routes', () => {
 	    const timestamp = String(Math.floor((Date.now() - 10 * 60 * 1000) / 1000));
 	    const signature = `sha256=${createHmac('sha256', 'secret-123').update(`${timestamp}.${rawBody}`).digest('hex')}`;
 
-	    const res = await app.request('/automations/webhooks/auto-1', {
+	    const res = await app.request('/automations/webhooks/11111111-1111-4111-8111-111111111111', {
 	      method: 'POST',
 	      headers: {
 	        'Content-Type': 'application/json',
@@ -780,7 +802,7 @@ describe('automations routes', () => {
 	      from: vi.fn().mockReturnValue({
 	        where: vi.fn().mockReturnValue({
 	          limit: vi.fn().mockResolvedValue([{
-	            id: 'auto-1',
+	            id: '11111111-1111-4111-8111-111111111111',
 	            name: 'Webhook Automation',
 	            orgId: 'org-123',
 	            enabled: true,
@@ -792,7 +814,7 @@ describe('automations routes', () => {
 	    const rawBody = JSON.stringify({ ping: true, id: 'dup' });
 	    const timestamp = String(Math.floor(Date.now() / 1000));
 	    const signature = `sha256=${createHmac('sha256', 'secret-123').update(`${timestamp}.${rawBody}`).digest('hex')}`;
-	    const request = () => app.request('/automations/webhooks/auto-1', {
+	    const request = () => app.request('/automations/webhooks/11111111-1111-4111-8111-111111111111', {
 	      method: 'POST',
 	      headers: {
 	        'Content-Type': 'application/json',
@@ -807,12 +829,24 @@ describe('automations routes', () => {
 	    expect((await request()).status).toBe(409);
 	  });
 
+	  it('returns 404 without querying the database for a malformed webhook automation id', async () => {
+	    const res = await app.request('/automations/webhooks/not-a-uuid', {
+	      method: 'POST',
+	      headers: { 'Content-Type': 'application/json' },
+	      body: JSON.stringify({ ping: true })
+	    });
+
+	    expect(res.status).toBe(404);
+	    expect(await res.json()).toEqual({ error: 'Automation not found' });
+	    expect(db.select).not.toHaveBeenCalled();
+	  });
+
 	  it('rejects webhook automations without a configured signing secret', async () => {
 	    vi.mocked(db.select).mockReturnValue({
 	      from: vi.fn().mockReturnValue({
 	        where: vi.fn().mockReturnValue({
 	          limit: vi.fn().mockResolvedValue([{
-	            id: 'auto-1',
+	            id: '11111111-1111-4111-8111-111111111111',
 	            name: 'Webhook Automation',
 	            orgId: 'org-123',
 	            enabled: true,
@@ -822,7 +856,7 @@ describe('automations routes', () => {
 	      })
 	    } as any);
 
-	    const res = await app.request('/automations/webhooks/auto-1', {
+	    const res = await app.request('/automations/webhooks/11111111-1111-4111-8111-111111111111', {
 	      method: 'POST',
 	      headers: {
 	        'Content-Type': 'application/json',
@@ -844,7 +878,7 @@ describe('automations routes', () => {
 	      from: vi.fn().mockReturnValue({
 	        where: vi.fn().mockReturnValue({
 	          limit: vi.fn().mockResolvedValue([{
-	            id: 'auto-1',
+	            id: '11111111-1111-4111-8111-111111111111',
 	            name: 'Webhook Automation',
 	            orgId: 'org-123',
 	            enabled: true,
@@ -856,7 +890,7 @@ describe('automations routes', () => {
 	    const rawBody = JSON.stringify({ ping: true, id: 'redis-dup' });
 	    const timestamp = String(Math.floor(Date.now() / 1000));
 	    const signature = `sha256=${createHmac('sha256', 'secret-123').update(`${timestamp}.${rawBody}`).digest('hex')}`;
-	    const request = () => app.request('/automations/webhooks/auto-1', {
+	    const request = () => app.request('/automations/webhooks/11111111-1111-4111-8111-111111111111', {
 	      method: 'POST',
 	      headers: {
 	        'Content-Type': 'application/json',
@@ -870,7 +904,7 @@ describe('automations routes', () => {
 	    expect((await request()).status).toBe(202);
 	    expect((await request()).status).toBe(409);
 	    expect(redis.set).toHaveBeenCalledWith(
-	      expect.stringMatching(/^automation-webhook-replay:auto-1:/),
+	      expect.stringMatching(/^automation-webhook-replay:11111111-1111-4111-8111-111111111111:/),
 	      '1',
 	      'PX',
 	      5 * 60 * 1000,
@@ -884,7 +918,7 @@ describe('automations routes', () => {
 	      from: vi.fn().mockReturnValue({
 	        where: vi.fn().mockReturnValue({
 	          limit: vi.fn().mockResolvedValue([{
-	            id: 'auto-1',
+	            id: '11111111-1111-4111-8111-111111111111',
 	            name: 'Webhook Automation',
 	            orgId: 'org-123',
 	            enabled: true,
@@ -895,7 +929,7 @@ describe('automations routes', () => {
 	      })
 	    } as any);
 
-	    const res = await app.request('/automations/webhooks/auto-1', {
+	    const res = await app.request('/automations/webhooks/11111111-1111-4111-8111-111111111111', {
 	      method: 'POST',
 	      headers: {
 	        'Content-Type': 'application/json',
@@ -913,7 +947,7 @@ describe('automations routes', () => {
 	      from: vi.fn().mockReturnValue({
 	        where: vi.fn().mockReturnValue({
 	          limit: vi.fn().mockResolvedValue([{
-	            id: 'auto-1',
+	            id: '11111111-1111-4111-8111-111111111111',
 	            name: 'Webhook Automation',
 	            orgId: 'org-123',
 	            enabled: true,
@@ -924,7 +958,7 @@ describe('automations routes', () => {
 	      })
 	    } as any);
 
-	    const res = await app.request('/automations/webhooks/auto-1', {
+	    const res = await app.request('/automations/webhooks/11111111-1111-4111-8111-111111111111', {
 	      method: 'POST',
 	      headers: {
 	        'Content-Type': 'application/json',
@@ -942,7 +976,7 @@ describe('automations routes', () => {
 	      from: vi.fn().mockReturnValue({
 	        where: vi.fn().mockReturnValue({
 	          limit: vi.fn().mockResolvedValue([{
-	            id: 'auto-1',
+	            id: '11111111-1111-4111-8111-111111111111',
 	            name: 'Webhook Automation',
 	            orgId: 'org-123',
 	            enabled: true,
@@ -952,7 +986,7 @@ describe('automations routes', () => {
 	      })
 	    } as any);
 
-	    const res = await app.request('/automations/webhooks/auto-1?secret=secret-123', {
+	    const res = await app.request('/automations/webhooks/11111111-1111-4111-8111-111111111111?secret=secret-123', {
 	      method: 'POST',
 	      headers: { 'Content-Type': 'application/json' },
 	      body: JSON.stringify({ ping: true })
@@ -967,7 +1001,7 @@ describe('automations routes', () => {
 	      from: vi.fn().mockReturnValue({
 	        where: vi.fn().mockReturnValue({
 	          limit: vi.fn().mockResolvedValue([{
-	            id: 'auto-1',
+	            id: '11111111-1111-4111-8111-111111111111',
 	            name: 'Webhook Automation',
 	            orgId: 'org-123',
 	            enabled: true,
@@ -977,7 +1011,7 @@ describe('automations routes', () => {
 	      })
 	    } as any);
 
-	    const res = await app.request('/automations/webhooks/auto-1?secret=secret-123', {
+	    const res = await app.request('/automations/webhooks/11111111-1111-4111-8111-111111111111?secret=secret-123', {
 	      method: 'POST',
 	      headers: { 'Content-Type': 'application/json' },
 	      body: JSON.stringify({ ping: true })
@@ -992,7 +1026,7 @@ describe('automations routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'auto-1',
+            id: '11111111-1111-4111-8111-111111111111',
             name: 'Webhook Automation',
             orgId: 'org-123',
             enabled: true,
@@ -1002,7 +1036,7 @@ describe('automations routes', () => {
       })
     } as any);
 
-    const res = await app.request('/automations/webhooks/auto-1', {
+    const res = await app.request('/automations/webhooks/11111111-1111-4111-8111-111111111111', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1025,7 +1059,7 @@ describe('automations routes', () => {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([{
-              id: 'run-cp-1',
+              id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
               automationId: null,
               configPolicyId: 'policy-1',
               configItemName: 'Patch Policy',
@@ -1044,7 +1078,7 @@ describe('automations routes', () => {
         })
       } as any);
 
-    const res = await app.request('/automations/runs/run-cp-1', {
+    const res = await app.request('/automations/runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', {
       method: 'GET',
       headers: { Authorization: 'Bearer valid-token' }
     });
@@ -1063,7 +1097,7 @@ describe('automations routes', () => {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([{
-              id: 'run-cp-1',
+              id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
               automationId: null,
               configPolicyId: 'policy-1',
               configItemName: 'Patch Policy',
@@ -1083,14 +1117,14 @@ describe('automations routes', () => {
       // Third select: per-device results (#2023).
       .mockReturnValueOnce(deviceResultsSelectMock([]));
 
-    const res = await app.request('/automations/runs/run-cp-1', {
+    const res = await app.request('/automations/runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', {
       method: 'GET',
       headers: { Authorization: 'Bearer valid-token' }
     });
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.id).toBe('run-cp-1');
+    expect(body.id).toBe('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
     expect(body.configPolicyId).toBe('policy-1');
     expect(body.configItemName).toBe('Patch Policy');
     expect(body.automation).toBeNull();
@@ -1104,7 +1138,7 @@ describe('automations routes', () => {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([{
-              id: 'run-ab-1',
+              id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
               automationId: 'auto-OTHER',
               configPolicyId: null,
               status: 'running',
@@ -1126,7 +1160,7 @@ describe('automations routes', () => {
         })
       } as any);
 
-    const res = await app.request('/automations/runs/run-ab-1', {
+    const res = await app.request('/automations/runs/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', {
       method: 'GET',
       headers: { Authorization: 'Bearer valid-token' }
     });
@@ -1145,8 +1179,8 @@ describe('automations routes', () => {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([{
-              id: 'run-ab-1',
-              automationId: 'auto-1',
+              id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+              automationId: '11111111-1111-4111-8111-111111111111',
               configPolicyId: null,
               status: 'completed',
               logs: [],
@@ -1158,7 +1192,7 @@ describe('automations routes', () => {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([{
-              id: 'auto-1',
+              id: '11111111-1111-4111-8111-111111111111',
               name: 'Automation One',
               orgId: 'org-123',
             }])
@@ -1189,17 +1223,17 @@ describe('automations routes', () => {
         },
       ]));
 
-    const res = await app.request('/automations/runs/run-ab-1', {
+    const res = await app.request('/automations/runs/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', {
       method: 'GET',
       headers: { Authorization: 'Bearer valid-token' }
     });
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.id).toBe('run-ab-1');
+    expect(body.id).toBe('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
     expect(body.status).toBe('success');
     expect(body.automation).toEqual({
-      id: 'auto-1',
+      id: '11111111-1111-4111-8111-111111111111',
       name: 'Automation One',
       orgId: 'org-123',
     });
@@ -1231,7 +1265,7 @@ describe('automations routes', () => {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([{
-            id: 'auto-1',
+            id: '11111111-1111-4111-8111-111111111111',
             name: 'Webhook Automation',
             orgId: 'org-123',
             enabled: true,
@@ -1245,7 +1279,7 @@ describe('automations routes', () => {
     const timestamp = String(Math.floor(Date.now() / 1000));
     const signature = `sha256=${createHmac('sha256', 'secret-123').update(`${timestamp}.${rawBody}`).digest('hex')}`;
 
-    const res = await app.request('/automations/webhooks/auto-1', {
+    const res = await app.request('/automations/webhooks/11111111-1111-4111-8111-111111111111', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1264,7 +1298,7 @@ describe('automations routes', () => {
         orgId: 'org-123',
         action: 'automation.trigger.webhook',
         resourceType: 'automation',
-        resourceId: 'auto-1',
+        resourceId: '11111111-1111-4111-8111-111111111111',
         resourceName: 'Webhook Automation',
         actorType: 'system',
         details: expect.objectContaining({
@@ -1303,7 +1337,7 @@ describe('automations routes — partner-wide dual-ownership (#2133)', () => {
   };
 
   const partnerWideAutomation = {
-    id: 'auto-pw',
+    id: '22222222-2222-4222-8222-222222222222',
     name: 'Partner-wide automation',
     orgId: null,
     partnerId: 'partner-1',
@@ -1397,7 +1431,7 @@ describe('automations routes — partner-wide dual-ownership (#2133)', () => {
   it('an org-scope caller gets 404 for a partner-wide automation (no existence oracle)', async () => {
     mockSelectAutomationOnce(partnerWideAutomation);
 
-    const res = await app.request('/automations/auto-pw', {
+    const res = await app.request('/automations/22222222-2222-4222-8222-222222222222', {
       method: 'GET',
       headers: { Authorization: 'Bearer valid-token' },
     });
@@ -1423,14 +1457,14 @@ describe('automations routes — partner-wide dual-ownership (#2133)', () => {
         }),
       } as any);
 
-    const res = await app.request('/automations/auto-pw', {
+    const res = await app.request('/automations/22222222-2222-4222-8222-222222222222', {
       method: 'GET',
       headers: { Authorization: 'Bearer valid-token' },
     });
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.id).toBe('auto-pw');
+    expect(body.id).toBe('22222222-2222-4222-8222-222222222222');
     expect(body.orgId).toBeNull();
   });
 
@@ -1438,7 +1472,7 @@ describe('automations routes — partner-wide dual-ownership (#2133)', () => {
     mockState.auth = { ...partnerAdminAuth, partnerId: 'partner-2' };
     mockSelectAutomationOnce(partnerWideAutomation);
 
-    const res = await app.request('/automations/auto-pw', {
+    const res = await app.request('/automations/22222222-2222-4222-8222-222222222222', {
       method: 'GET',
       headers: { Authorization: 'Bearer valid-token' },
     });
@@ -1450,7 +1484,7 @@ describe('automations routes — partner-wide dual-ownership (#2133)', () => {
     mockState.auth = partnerSelectedAuth;
     mockSelectAutomationOnce(partnerWideAutomation);
 
-    const res = await app.request('/automations/auto-pw', {
+    const res = await app.request('/automations/22222222-2222-4222-8222-222222222222', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
       body: JSON.stringify({ name: 'Renamed' }),
@@ -1464,7 +1498,7 @@ describe('automations routes — partner-wide dual-ownership (#2133)', () => {
     mockState.auth = partnerSelectedAuth;
     mockSelectAutomationOnce(partnerWideAutomation);
 
-    const res = await app.request('/automations/auto-pw', {
+    const res = await app.request('/automations/22222222-2222-4222-8222-222222222222', {
       method: 'DELETE',
       headers: { Authorization: 'Bearer valid-token' },
     });
@@ -1477,7 +1511,7 @@ describe('automations routes — partner-wide dual-ownership (#2133)', () => {
     mockState.auth = partnerSelectedAuth;
     mockSelectAutomationOnce(partnerWideAutomation);
 
-    const res = await app.request('/automations/auto-pw/trigger', {
+    const res = await app.request('/automations/22222222-2222-4222-8222-222222222222/trigger', {
       method: 'POST',
       headers: { Authorization: 'Bearer valid-token' },
     });
@@ -1497,7 +1531,7 @@ describe('automations routes — partner-wide dual-ownership (#2133)', () => {
       }),
     } as any);
 
-    const res = await app.request('/automations/auto-pw', {
+    const res = await app.request('/automations/22222222-2222-4222-8222-222222222222', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
       body: JSON.stringify({ name: 'Renamed' }),

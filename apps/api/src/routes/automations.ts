@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'crypto';
-import { Hono, type Context } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
@@ -31,6 +31,7 @@ import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../services/partnerWideAccess';
+import { UUID_REGEX } from '../utils/uuid';
 
 export const automationRoutes = new Hono();
 export const automationWebhookRoutes = new Hono();
@@ -211,6 +212,19 @@ function getPagination(query: { page?: string; limit?: string }) {
 function ensureOrgAccess(orgId: string, auth: AuthContext) {
   return auth.canAccessOrg(orgId);
 }
+
+function requireUuidParam(name: string, notFoundMessage: string) {
+  return async (c: Context, next: Next) => {
+    const value = c.req.param(name);
+    if (!value || !UUID_REGEX.test(value)) {
+      return c.json({ error: notFoundMessage }, 404);
+    }
+    await next();
+  };
+}
+
+const requireValidAutomationId = requireUuidParam('id', 'Automation not found');
+const requireValidRunId = requireUuidParam('runId', 'Automation run not found');
 
 /**
  * Site-scope gate for automations. Site is an app-layer authz axis RLS does not
@@ -559,6 +573,7 @@ automationRoutes.get(
   '/runs/:runId',
   requireScope('organization', 'partner', 'system'),
   requireAutomationRead,
+  requireValidRunId,
   async (c) => {
     const auth = c.get('auth');
     const runId = c.req.param('runId')!;
@@ -627,6 +642,7 @@ automationRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
   requireAutomationRead,
+  requireValidAutomationId,
   async (c) => {
     const auth = c.get('auth');
     const automationId = c.req.param('id')!;
@@ -678,6 +694,7 @@ automationRoutes.get(
   '/:id/runs',
   requireScope('organization', 'partner', 'system'),
   requireAutomationRead,
+  requireValidAutomationId,
   zValidator('query', listRunsSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -988,6 +1005,7 @@ automationRoutes.put(
   requireScope('organization', 'partner', 'system'),
   requireAutomationWrite,
   requireMfa(),
+  requireValidAutomationId,
   zValidator('json', updateAutomationSchema),
   handleUpdateAutomation,
 );
@@ -998,6 +1016,7 @@ automationRoutes.patch(
   requireScope('organization', 'partner', 'system'),
   requireAutomationWrite,
   requireMfa(),
+  requireValidAutomationId,
   zValidator('json', updateAutomationSchema),
   handleUpdateAutomation,
 );
@@ -1008,6 +1027,7 @@ automationRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   requireAutomationWrite,
   requireMfa(),
+  requireValidAutomationId,
   async (c) => {
     const auth = c.get('auth');
     const automationId = c.req.param('id')!;
@@ -1128,6 +1148,7 @@ automationRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requireAutomationWrite,
   requireMfa(),
+  requireValidAutomationId,
   async (c) => {
     const auth = c.get('auth');
     const automationId = c.req.param('id')!;
@@ -1140,6 +1161,7 @@ automationRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requireAutomationWrite,
   requireMfa(),
+  requireValidAutomationId,
   async (c) => {
     const auth = c.get('auth');
     const automationId = c.req.param('id')!;
@@ -1153,6 +1175,10 @@ automationRoutes.post(
 
 automationWebhookRoutes.post('/:id', async (c) => {
   const automationId = c.req.param('id')!;
+
+  if (!UUID_REGEX.test(automationId)) {
+    return c.json({ error: 'Automation not found' }, 404);
+  }
 
   const [automation] = await db
     .select()
