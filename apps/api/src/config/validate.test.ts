@@ -1055,6 +1055,107 @@ describe('validateConfig', () => {
     });
   });
 
+  // ---- Security remediation Wave 6, Task 9 — agent manifest-signing-key-ID
+  // compatibility control. Explicit boolean: only 'true'/'false' are valid,
+  // default 'false'. This is one of the two variables Task 9 owns; both
+  // MUST be validated (declared in envSchema AND read in the safeParse pick
+  // list in validateConfig()) or the value silently never reaches the parser
+  // (issue #2896's exact shape).
+  describe('AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID', () => {
+    it('defaults to false when unset', () => {
+      withEnv(validEnv, () => {
+        const config = validateConfig();
+        expect(config.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID).toBe('false');
+      });
+    });
+
+    it('accepts an explicit false', () => {
+      withEnv({ ...validEnv, AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: 'false' }, () => {
+        const config = validateConfig();
+        expect(config.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID).toBe('false');
+      });
+    });
+
+    it('accepts an explicit true', () => {
+      withEnv({ ...validEnv, AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: 'true' }, () => {
+        const config = validateConfig();
+        expect(config.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID).toBe('true');
+      });
+    });
+
+    it('boot-refuses an invalid value instead of silently falling back to false', () => {
+      withEnv({ ...validEnv, AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: 'yes' }, () => {
+        expect(() => validateConfig()).toThrow('AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID');
+      });
+    });
+
+    it('an absent value keeps production booting (default stays false)', () => {
+      withEnv({ ...validEnv, NODE_ENV: 'production', CORS_ALLOWED_ORIGINS: 'https://app.breeze.io', TRUST_PROXY_HEADERS: 'false' }, () => {
+        const config = validateConfig();
+        expect(config.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID).toBe('false');
+      });
+    });
+
+    // The exact bug class named in the task: a variable declared in
+    // envSchema but missing from the safeParse pick list is always
+    // undefined at parse time, so the schema default silently wins and an
+    // invalid value is accepted at boot instead of refusing to start. This
+    // test would pass falsely (no throw) if that regressed.
+    it('regression guard: an invalid value must not be silently accepted as the default', () => {
+      withEnv({ ...validEnv, AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: 'not-a-boolean' }, () => {
+        expect(() => validateConfig()).toThrow();
+      });
+    });
+  });
+
+  // ---- Security remediation Wave 6, Task 9 (approved deviation D1) —
+  // managed-software destination policy mode. compat is the default and the
+  // safe state (Task 5 always fails closed on a private destination for a
+  // capability-0 device); enforce is the fleet-upgraded end state.
+  describe('MANAGED_SOFTWARE_POLICY_MODE', () => {
+    it('defaults to compat when unset', () => {
+      withEnv(validEnv, () => {
+        const config = validateConfig();
+        expect(config.MANAGED_SOFTWARE_POLICY_MODE).toBe('compat');
+      });
+    });
+
+    it('accepts an explicit compat', () => {
+      withEnv({ ...validEnv, MANAGED_SOFTWARE_POLICY_MODE: 'compat' }, () => {
+        const config = validateConfig();
+        expect(config.MANAGED_SOFTWARE_POLICY_MODE).toBe('compat');
+      });
+    });
+
+    it('accepts enforce', () => {
+      withEnv({ ...validEnv, MANAGED_SOFTWARE_POLICY_MODE: 'enforce' }, () => {
+        const config = validateConfig();
+        expect(config.MANAGED_SOFTWARE_POLICY_MODE).toBe('enforce');
+      });
+    });
+
+    it('boot-refuses an invalid value instead of silently falling back to compat', () => {
+      withEnv({ ...validEnv, MANAGED_SOFTWARE_POLICY_MODE: 'strict' }, () => {
+        expect(() => validateConfig()).toThrow('MANAGED_SOFTWARE_POLICY_MODE');
+      });
+    });
+
+    it('an absent value keeps production booting (default stays compat)', () => {
+      withEnv({ ...validEnv, NODE_ENV: 'production', CORS_ALLOWED_ORIGINS: 'https://app.breeze.io', TRUST_PROXY_HEADERS: 'false' }, () => {
+        const config = validateConfig();
+        expect(config.MANAGED_SOFTWARE_POLICY_MODE).toBe('compat');
+      });
+    });
+
+    // Same regression guard as above, pinned separately per variable since
+    // the pick-list omission is a per-key mistake, not an all-or-nothing one.
+    it('regression guard: an invalid value must not be silently accepted as the default', () => {
+      withEnv({ ...validEnv, MANAGED_SOFTWARE_POLICY_MODE: 'banana' }, () => {
+        expect(() => validateConfig()).toThrow();
+      });
+    });
+  });
+
   // ---- Security remediation Wave 5, Task 8 (TRANSPORT-001) — canonical
   // PUBLIC_API_URL form, required only when FORCE_HTTPS=true --------------
   describe('PUBLIC_API_URL canonical form (gated on FORCE_HTTPS)', () => {

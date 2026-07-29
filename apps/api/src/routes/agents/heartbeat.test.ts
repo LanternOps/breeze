@@ -290,12 +290,18 @@ const minimalHeartbeatBody = {
 };
 
 const originalAgentBackupServerUrl = process.env.AGENT_BACKUP_SERVER_URL;
+const originalAgentRequireManifestSigningKeyId = process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID;
 
 afterEach(() => {
   if (originalAgentBackupServerUrl === undefined) {
     delete process.env.AGENT_BACKUP_SERVER_URL;
   } else {
     process.env.AGENT_BACKUP_SERVER_URL = originalAgentBackupServerUrl;
+  }
+  if (originalAgentRequireManifestSigningKeyId === undefined) {
+    delete process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID;
+  } else {
+    process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID = originalAgentRequireManifestSigningKeyId;
   }
 });
 
@@ -411,6 +417,59 @@ describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () 
     const body = (await resp.json()) as Record<string, unknown>;
     const configUpdate = body.configUpdate as Record<string, unknown>;
     expect(configUpdate.backup_server_url).toBe('');
+  });
+
+  // Security remediation Wave 6, Task 9 — configUpdate.require_manifest_signing_key_id
+  // is sent only when the operator has explicitly opted in via
+  // AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID=true. Default/false/unset must omit
+  // the key entirely (not send false) for rolling-deploy/server-rollback
+  // compatibility with agents that don't recognize it.
+  it('omits require_manifest_signing_key_id from configUpdate when the env var is unset', async () => {
+    delete process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID;
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown>;
+    expect(configUpdate.require_manifest_signing_key_id).toBeUndefined();
+  });
+
+  it('omits require_manifest_signing_key_id from configUpdate when the env var is explicitly false', async () => {
+    process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID = 'false';
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown>;
+    expect(configUpdate.require_manifest_signing_key_id).toBeUndefined();
+  });
+
+  it('sends require_manifest_signing_key_id=true in configUpdate when the env var is true', async () => {
+    process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID = 'true';
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown>;
+    expect(configUpdate.require_manifest_signing_key_id).toBe(true);
   });
 
   it('#1105: fetches the trust keyset AFTER the org DB context is released (not while holding the tx)', async () => {

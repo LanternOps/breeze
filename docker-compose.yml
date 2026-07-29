@@ -135,6 +135,13 @@ services:
       # no-op. Never inferred from NODE_ENV/IS_HOSTED/CF_MTLS_* — the operator
       # must opt in explicitly. See docs/operations/cloudflare-mtls-setup.md.
       AGENT_MTLS_BINDING_MODE: ${AGENT_MTLS_BINDING_MODE:-off}
+      # Wave 6 security remediation rollout controls. Default-bearing form so
+      # a missing value cannot make the stack refuse to start — both are
+      # compatibility controls whose defaults are the safe state. See
+      # docs/operations/agent-network-and-manifest-rollout.md before setting
+      # either to anything other than its default in production.
+      AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: ${AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID:-false}
+      MANAGED_SOFTWARE_POLICY_MODE: ${MANAGED_SOFTWARE_POLICY_MODE:-compat}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
       # Optional, but required once M365_GRAPH_ACTIONS_TOOLS_ENABLED=true below —
       # boot refuses to start without it (see that var's comment). Must be set

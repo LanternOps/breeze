@@ -1032,6 +1032,25 @@ if (latestHelper) {
     mergedConfigUpdate.patch_source_settings = patchSourceSettings;
   }
 
+  // Security remediation Wave 6, Task 9 — only sent when the operator has
+  // explicitly opted the API into requiring signingKeyId
+  // (AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID=true). Omitted entirely (not sent
+  // as false) when unset/false, matching backup_server_url's "absent = no
+  // change" contract for older agents that don't recognize the key, and
+  // keeping rolling-deploy/server-rollback compatible: a mixed fleet talking
+  // to old and new API instances never sees the flag flap.
+  //
+  // NOTE: the agent build shipped alongside this wave (Task 6) does not yet
+  // read this key from configUpdate — RequireManifestSigningKeyID is still a
+  // local agent.yaml-only setting there. This wiring is the API-side half of
+  // the control (Task 6's disclosed gap); see
+  // docs/operations/agent-network-and-manifest-rollout.md before flipping
+  // AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID=true and assuming it changes agent
+  // behavior fleet-wide.
+  if ((process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID ?? '').trim().toLowerCase() === 'true') {
+    mergedConfigUpdate.require_manifest_signing_key_id = true;
+  }
+
   const authenticatedWithPreviousToken = c.get('agentTokenRotationRequired') === true;
 
   // Issue #2621 — a staged rotation is still outstanding. Don't ask for another

@@ -228,6 +228,13 @@ services:
       # inferred from NODE_ENV/IS_HOSTED/CF_MTLS_*. See
       # docs/operations/cloudflare-mtls-setup.md for the rollout sequence.
       AGENT_MTLS_BINDING_MODE: ${AGENT_MTLS_BINDING_MODE:-off}
+      # Wave 6 security remediation rollout controls. Default-bearing form so
+      # a missing value cannot make the stack refuse to start — both are
+      # compatibility controls whose defaults are the safe state. See
+      # docs/operations/agent-network-and-manifest-rollout.md before setting
+      # either to anything other than its default in production.
+      AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: ${AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID:-false}
+      MANAGED_SOFTWARE_POLICY_MODE: ${MANAGED_SOFTWARE_POLICY_MODE:-compat}
       PARTNER_HOOKS_URL: http://billing:3002/hooks
       BILLING_SERVICE_URL: http://billing:3002
       BILLING_SERVICE_API_KEY: ${BILLING_SERVICE_API_KEY:-}
