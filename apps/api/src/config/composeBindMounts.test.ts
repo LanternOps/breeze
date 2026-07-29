@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import yaml from 'js-yaml';
+import { CORE_SCHEMA, defineMappingTag, defineScalarTag, defineSequenceTag, load } from 'js-yaml';
 import { describe, expect, it } from 'vitest';
 
 // apps/api/src/config -> repo root is 4 levels up (same as envComposeParity.test.ts).
@@ -31,12 +31,27 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 
 // Compose's own merge tags. js-yaml throws on unknown tags, so declare them as
 // pass-throughs — we never inspect their values, we just need the file to parse.
-const passthroughTag = (tag: string) =>
-  (['scalar', 'sequence', 'mapping'] as const).map(
-    (kind) => new yaml.Type(tag, { kind, construct: (data: unknown) => data }),
-  );
+const passthroughTag = (tag: string) => [
+  defineScalarTag(tag, { resolve: (source: string) => source }),
+  defineSequenceTag<unknown[]>(tag, {
+    create: () => [],
+    addItem: (items, value) => {
+      items.push(value);
+    },
+  }),
+  defineMappingTag<Map<unknown, unknown>>(tag, {
+    create: () => new Map(),
+    addPair: (map, key, value) => {
+      map.set(key, value);
+      return '';
+    },
+    has: (map, key) => map.has(key),
+    keys: (map) => map.keys(),
+    get: (map, key) => map.get(key),
+  }),
+];
 
-const COMPOSE_SCHEMA = yaml.DEFAULT_SCHEMA.extend([
+const COMPOSE_SCHEMA = CORE_SCHEMA.withTags([
   ...passthroughTag('!reset'),
   ...passthroughTag('!override'),
 ]);
@@ -85,7 +100,7 @@ function shortSyntaxSource(entry: string): string | null {
 function collectMounts(composeFile: string): Mount[] {
   const abs = path.join(REPO_ROOT, composeFile);
   const composeDir = path.dirname(abs);
-  const doc = yaml.load(readFileSync(abs, 'utf8'), { schema: COMPOSE_SCHEMA }) as {
+  const doc = load(readFileSync(abs, 'utf8'), { schema: COMPOSE_SCHEMA }) as {
     services?: Record<string, { volumes?: unknown }>;
   } | null;
 
