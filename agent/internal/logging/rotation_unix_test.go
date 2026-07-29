@@ -132,25 +132,26 @@ func resetDisabled(rw *RotatingWriter) {
 	rw.mu.Unlock()
 }
 
-// rootedTempDir creates a temp directory under this package's own source
-// directory rather than the OS temp directory. On macOS, t.TempDir()
-// resolves under /var/folders, and macOS symlinks /var -> private/var as
-// part of its base OS layout — tests that specifically want to exercise
+// rootedTempDir returns a temp directory with no symlinked ancestor
+// component, for tests that specifically want to exercise
 // rejectSymlinkAncestors climbing multiple non-existent levels to a real,
-// non-symlinked ancestor need a root that isn't itself under a legitimate
-// OS-level symlink, so the test is unambiguous about what it's proving.
+// unambiguous root. On macOS, t.TempDir() itself resolves under
+// /var/folders, and macOS symlinks /var -> private/var as part of its base
+// OS layout — using the lexical path as-is would leave the test unable to
+// tell "found a real ancestor" apart from "walked into an OS symlink we
+// don't care about". Resolving through filepath.EvalSymlinks fixes that
+// without writing anywhere outside the normal t.TempDir() sandbox: it
+// returns the canonical path with every symlink component (including
+// /var -> private/var) already followed, so nothing above the returned
+// directory is a symlink at all.
 func rootedTempDir(t *testing.T) string {
 	t.Helper()
-	wd, err := os.Getwd()
+	dir := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
-		t.Fatalf("getwd: %v", err)
+		t.Fatalf("resolve temp dir symlinks: %v", err)
 	}
-	dir, err := os.MkdirTemp(wd, "rotation-test-")
-	if err != nil {
-		t.Fatalf("mkdir temp: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	return dir
+	return resolved
 }
 
 // --- secureLogDirectory ---
@@ -441,11 +442,28 @@ func captureStderr(t *testing.T, fn func()) string {
 		captured <- buf.String()
 	}()
 
+	// fn may call t.Fatalf, which invokes runtime.Goexit — anything after
+	// fn() that isn't deferred would then never run, leaving os.Stderr
+	// pointed at this pipe (with nothing draining it) and its copier
+	// goroutine leaked for the rest of the test binary. Every later test
+	// that writes to stderr would then fill the pipe's small kernel buffer
+	// and block forever. Both are deferred so they run on Goexit too.
+	//
+	// The explicit w.Close() below (not deferred) is what actually
+	// unblocks the copier goroutine on the normal path: io.Copy only
+	// returns once it sees EOF on r, which only happens once w is closed,
+	// and `return <-captured` blocks until the copier sends. Deferred
+	// statements run *after* the return expression is evaluated, so
+	// relying on the deferred w.Close() alone to unblock that read would
+	// deadlock. Calling Close twice (once explicitly, once via the
+	// deferred Goexit safety net) is harmless — the second call just
+	// returns an already-closed error, which nothing here inspects.
+	defer func() { os.Stderr = orig }()
+	defer w.Close()
+
 	fn()
 
-	os.Stderr = orig
 	w.Close()
-
 	return <-captured
 }
 
