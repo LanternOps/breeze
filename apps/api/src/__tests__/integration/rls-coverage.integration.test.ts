@@ -50,6 +50,7 @@ const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
   // operator-only by design, not tenant-column-less).
   'manifest_signing_keys',
   'm365_consent_sessions',
+  'm365_user_consent_sessions',
   'partner_abuse_signals',
   'abuse_script_hosts',
   'abuse_sweep_state',
@@ -74,6 +75,7 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'intent_outbox', // Action intents transactional outbox (spec 2026-07-18): system-scoped, workers-only queue, no tenant isolation needed. FK-cascades from action_intents (org-scoped, RLS shape 1). Mirrors device_commands.
   'manifest_signing_keys', // System-scoped: per-deployment agent-update signing key. Forced RLS, no policies → only system context.
   'm365_consent_sessions', // OAuth consent state: forced RLS, system-only policies; tenant scopes must never read verifier/nonce material.
+  'm365_user_consent_sessions', // Delegated (user-axis) OAuth consent state. System-only for the same reason as its org-axis sibling: the rows hold a live PKCE code_verifier and nonce. Deliberately NOT user-axis readable — the owning user's own session is still not something their session token should select.
   'vulnerability_sources', // Global vulnerability-source sync metadata. Forced RLS, no tenant policies → only system context.
   'vulnerabilities', // Global vulnerability catalog. Forced RLS, no tenant policies → only system context.
   'software_products', // Global normalized software dimension. Forced RLS, no tenant policies → only system context.
@@ -508,6 +510,18 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
 // Policies must reference `breeze_current_user_id` in the predicate
 // (Phase 6 migration).
 const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
+  // m365_connections: dual-owned by construction — org_id XOR user_id, enforced by
+  // m365_connections_owner_check. The org-axis half is auto-discovered via org_id; this
+  // entry pins the user-axis half, which is the shape the communications-delegated profile
+  // uses and which nothing else in this file would otherwise assert.
+  //
+  // Worth stating plainly: neither this contract nor the cascade suite can SEE a
+  // user-owned row here — auto-discovery keys on org_id, and a user-axis row has none. So
+  // this registration proves the policy mentions breeze_current_user_id and nothing more.
+  // The actual cross-user isolation proof is behavioural, in
+  // m365ConnectionsRls.integration.test.ts. Do not read a green run here as coverage of
+  // the user axis.
+  'm365_connections',
   'user_sso_identities',
   'push_notifications',
   'mobile_devices',
@@ -3406,4 +3420,124 @@ describe('device_mtls_certificates RLS — direct-org auto-discovery (Shape 1)',
     expect(rows[0]?.rls_forced).toBe(true);
     expect(rows[0]?.covered_cmds.slice().sort()).toEqual(['DELETE', 'INSERT', 'SELECT', 'UPDATE']);
   });
+});
+
+/**
+ * m365 communications-delegated (user axis) — structural enforcement.
+ *
+ * These assertions exist because the allowlist registrations above are DOCUMENTATION, not
+ * coverage. Verified by removing each entry and re-running: the suite still passes.
+ * `m365_user_consent_sessions` has no `org_id`, so auto-discovery never surfaces it, and
+ * `m365_connections`' user-axis rows are equally invisible to a contract that keys on
+ * `org_id`. The design says as much (§3.4) — "those contracts cannot serve as the proof the
+ * design claims".
+ *
+ * So rather than leave an inert entry that reads like a guarantee, the properties are
+ * asserted directly against pg_catalog here. Behavioural cross-user proof is separate and
+ * lives in m365ConnectionsRls.integration.test.ts.
+ */
+describe('m365 communications-delegated RLS — structural enforcement', () => {
+  it.runIf(!!process.env.DATABASE_URL)(
+    'm365_user_consent_sessions has RLS enabled AND forced',
+    async () => {
+      // FORCE matters specifically: without it the table owner bypasses every policy, and
+      // migrations run as the owner.
+      const rows = (await db.execute(sql`
+        SELECT c.relrowsecurity AS rls_on, c.relforcerowsecurity AS force_on
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relname = 'm365_user_consent_sessions';
+      `)) as unknown as Array<{ rls_on: boolean; force_on: boolean }>;
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.rls_on).toBe(true);
+      expect(rows[0]?.force_on).toBe(true);
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'every m365_user_consent_sessions policy is system-only, for all four commands',
+    async () => {
+      // The rows hold a live PKCE code_verifier and nonce — material for completing
+      // someone's sign-in. No tenant scope has any business reading them, including the
+      // owning user's own session token.
+      const rows = (await db.execute(sql`
+        SELECT policyname, cmd, COALESCE(qual, '') AS qual, COALESCE(with_check, '') AS with_check
+        FROM pg_policies
+        WHERE schemaname = 'public' AND tablename = 'm365_user_consent_sessions'
+        ORDER BY policyname;
+      `)) as unknown as Array<{ policyname: string; cmd: string; qual: string; with_check: string }>;
+
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.map((r) => r.cmd).sort()).toEqual(['DELETE', 'INSERT', 'SELECT', 'UPDATE']);
+
+      for (const row of rows) {
+        const predicate = `${row.qual} ${row.with_check}`;
+        expect(predicate).toMatch(/breeze_current_scope\(\)\s*=\s*'system'/);
+        // No tenant escape hatch may be ORed in later without this failing.
+        expect(predicate).not.toMatch(/breeze_has_org_access|breeze_has_partner_access|breeze_current_user_id/);
+      }
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'm365_connections policies carry the user-axis branch on all four commands',
+    async () => {
+      // The user axis is how a delegated (communications) connection is owned: org_id is
+      // NULL and user_id is set. If this branch is ever dropped, every delegated connection
+      // becomes invisible to its own owner and the org branch alone would not restore it.
+      const rows = (await db.execute(sql`
+        SELECT policyname, cmd, COALESCE(qual, '') AS qual, COALESCE(with_check, '') AS with_check
+        FROM pg_policies
+        WHERE schemaname = 'public' AND tablename = 'm365_connections'
+        ORDER BY policyname;
+      `)) as unknown as Array<{ policyname: string; cmd: string; qual: string; with_check: string }>;
+
+      expect(rows.map((r) => r.cmd).sort()).toEqual(['DELETE', 'INSERT', 'SELECT', 'UPDATE']);
+      for (const row of rows) {
+        expect(`${row.qual} ${row.with_check}`).toMatch(/breeze_current_user_id\(\)/);
+      }
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'a delegated connection cannot be active without a pinned identity',
+    async () => {
+      // The credential-location constraint proves a credential exists; this one proves we
+      // know whose mailbox it opens. Without it §5.2's binding check compares against NULL
+      // and passes vacuously.
+      const rows = (await db.execute(sql`
+        SELECT pg_get_constraintdef(oid) AS def
+        FROM pg_constraint
+        WHERE conrelid = 'm365_connections'::regclass
+          AND conname = 'm365_connections_delegated_identity_check';
+      `)) as unknown as Array<{ def: string }>;
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.def).toMatch(/delegated_user_object_id IS NOT NULL/);
+      expect(rows[0]?.def).toMatch(/tenant_id IS NOT NULL/);
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'the credential-location relaxation is confined to delegated, non-terminal rows',
+    async () => {
+      // The relaxation must not become a way to park a certificate profile with no
+      // credential, nor to leave a delegated row credential-less once it is active.
+      const rows = (await db.execute(sql`
+        SELECT pg_get_constraintdef(oid) AS def
+        FROM pg_constraint
+        WHERE conrelid = 'm365_connections'::regclass
+          AND conname = 'm365_connections_credential_location_check';
+      `)) as unknown as Array<{ def: string }>;
+
+      expect(rows).toHaveLength(1);
+      const def = rows[0]?.def ?? '';
+      expect(def).toMatch(/auth_mode\)?::text = 'delegated'::text/);
+      expect(def).toMatch(/pending-consent/);
+      expect(def).toMatch(/verifying/);
+      // Terminal states must NOT appear in the relaxed branch.
+      expect(def).not.toMatch(/'active'::text\s*\]?\)?\s*\)?\s*AND vault_ref IS NULL/);
+    },
+  );
 });
