@@ -92,6 +92,19 @@ func (h *Heartbeat) requestConsent(sessionID string, prompt *ipc.DesktopPrompt, 
 		return "", false, false
 	}
 
+	// Record which helper the prompt is routed to. On the success path the
+	// broker's send/reply is otherwise silent, so this is the only line that
+	// attributes a ConsentRequest to a specific Windows session — the invariant
+	// that matters when a shadow targets one RDS session among several.
+	log.Info("routing consent prompt to helper",
+		"sessionId", sessionID,
+		"targeted", targetWinSession != "",
+		"winSession", session.WinSessionID,
+		"identity", session.IdentityKey,
+		"role", session.HelperRole,
+		"pid", session.PID,
+	)
+
 	req := ipc.ConsentRequest{
 		SessionID:       sessionID,
 		TechnicianName:  derefString(prompt.TechnicianName),
