@@ -190,6 +190,22 @@ require_grep '\[\[ "\$\{TEST_M365_GRAPH_ACTIONS_EXECUTOR_RESULT\}" != "success" 
 require_grep '\[\[ "\$\{BUILD_M365_GRAPH_ACTIONS_EXECUTOR_RESULT\}" != "success" \]\]' "$ci_success_block" \
   "ci-success must fail unless the actions-executor build succeeds"
 
+# Same gating for the COMMUNICATIONS executor. It holds per-user delegated
+# refresh tokens — the most personal credential in the system — so its jobs
+# must be as tamper-evident as both Graph siblings'.
+require_grep 'needs: .*test-m365-communications-executor' "$ci_success_block" \
+  "ci-success must depend on communications-executor tests"
+require_grep 'needs: .*build-m365-communications-executor' "$ci_success_block" \
+  "ci-success must depend on the communications-executor build"
+require_grep 'TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT:.*needs\.test-m365-communications-executor\.result' "$ci_success_block" \
+  "ci-success must read the communications-executor test result"
+require_grep 'BUILD_M365_COMMUNICATIONS_EXECUTOR_RESULT:.*needs\.build-m365-communications-executor\.result' "$ci_success_block" \
+  "ci-success must read the communications-executor build result"
+require_grep '\[\[ "\$\{TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT\}" != "success" \]\]' "$ci_success_block" \
+  "ci-success must fail unless communications-executor tests succeed"
+require_grep '\[\[ "\$\{BUILD_M365_COMMUNICATIONS_EXECUTOR_RESULT\}" != "success" \]\]' "$ci_success_block" \
+  "ci-success must fail unless the communications-executor build succeeds"
+
 security_audit_block="$GUARD_TMP_DIR/security-audit.yml"
 extract_yaml_job security-audit .github/workflows/ci.yml "$security_audit_block"
 require_grep 'run: bash scripts/security/check-m365-graph-read-runtime\.sh' "$security_audit_block" \
@@ -258,6 +274,69 @@ require_order 'id: push-executor-digest' 'name: Scan exact executor digest' "$ac
   "actions-executor release must build before scanning"
 require_order 'name: Scan exact executor digest' 'name: Promote scanned executor digest' "$actions_release_block" \
   "actions-executor release promotion must occur only after its exact digest passes scanning"
+
+# The COMMUNICATIONS executor's release image gets the same digest-first shape.
+comms_release_block="$GUARD_TMP_DIR/communications-executor-release.yml"
+extract_yaml_job build-docker-m365-communications-executor .github/workflows/release.yml "$comms_release_block"
+require_grep 'outputs: type=image,name=.*m365-communications-executor,push-by-digest=true,name-canonical=true,push=true' "$comms_release_block" \
+  "release must push an unadvertised communications-executor digest before tagging"
+require_grep 'image-ref:.*m365-communications-executor@\$\{\{ steps\.push-executor-digest\.outputs\.digest \}\}' "$comms_release_block" \
+  "release Trivy scan must target the exact pushed communications-executor digest"
+require_grep "severity: 'HIGH,CRITICAL'" "$comms_release_block" \
+  "release communications-executor scan must block HIGH and CRITICAL findings"
+require_grep "exit-code: '1'" "$comms_release_block" \
+  "release communications-executor scan must be blocking"
+require_grep 'docker buildx imagetools create' "$comms_release_block" \
+  "release must promote the scanned communications-executor digest without rebuilding"
+require_grep '--tag "\$\{EXECUTOR_REPOSITORY\}:\$\{VERSION\}"' "$comms_release_block" \
+  "release must publish the exact semver communications-executor tag"
+require_grep '--tag "\$\{EXECUTOR_REPOSITORY\}:sha-\$\{SHORT_SHA\}"' "$comms_release_block" \
+  "release must publish the communications-executor commit-SHA tag"
+[[ "$(grep -o -- '--tag' "$comms_release_block" | wc -l | tr -d ' ')" == 2 ]] || \
+  fail "communications-executor release must publish only exact semver and commit-SHA tags"
+reject_grep 'type=raw,value=latest|pattern=\{\{major\}\}|pattern=\{\{major\}\}\.\{\{minor\}\}' "$comms_release_block" \
+  "communications-executor release must not publish latest, major, or minor mutable tags"
+[[ "$(grep -c 'docker/build-push-action@' "$comms_release_block")" == 1 ]] || \
+  fail "communications-executor release must build the image exactly once"
+require_order 'id: push-executor-digest' 'name: Scan exact executor digest' "$comms_release_block" \
+  "communications-executor release must build before scanning"
+require_order 'name: Scan exact executor digest' 'name: Promote scanned executor digest' "$comms_release_block" \
+  "communications-executor release promotion must occur only after its exact digest passes scanning"
+require_order 'name: Promote scanned executor digest' 'name: Upload executor digest' "$comms_release_block" \
+  "communications-executor digest artifact must describe the promoted image"
+require_grep 'breeze-m365-communications-executor:security-scan' .github/workflows/security.yml \
+  "security workflow must build and scan the communications-executor image"
+require_grep 'directory: "/apps/m365-communications-executor"' .github/dependabot.yml \
+  "Dependabot must maintain the communications-executor Dockerfile's digest-pinned base image"
+
+# The communications executor's Dockerfile gets the same shape block as the
+# read executor's. (The actions executor never got one — an acknowledged
+# inconsistency; the comms clone starts consistent.)
+COMMS_EXECUTOR_DOCKERFILE=apps/m365-communications-executor/Dockerfile
+[[ -f "$COMMS_EXECUTOR_DOCKERFILE" ]] || fail "$COMMS_EXECUTOR_DOCKERFILE must package the isolated communications executor"
+require_grep '^FROM[[:space:]]+node:24-alpine@sha256:[0-9a-f]{64}[[:space:]]+AS[[:space:]]+build' "$COMMS_EXECUTOR_DOCKERFILE" \
+  "communications-executor build stage must digest-pin Node while retaining the tag"
+require_grep '^FROM[[:space:]]+node:24-alpine@sha256:[0-9a-f]{64}[[:space:]]+AS[[:space:]]+runner' "$COMMS_EXECUTOR_DOCKERFILE" \
+  "communications-executor runtime stage must digest-pin Node while retaining the tag"
+require_grep '^USER[[:space:]]+node$' "$COMMS_EXECUTOR_DOCKERFILE" \
+  "communications-executor runtime must run as the non-root node user"
+require_grep '^HEALTHCHECK .*\/healthz' "$COMMS_EXECUTOR_DOCKERFILE" \
+  "communications-executor image must declare its bounded health endpoint"
+require_grep '^CMD[[:space:]]+\["node",[[:space:]]*"dist/index\.cjs"\]' "$COMMS_EXECUTOR_DOCKERFILE" \
+  "communications-executor image must start only its compiled bounded runtime"
+reject_grep '^RUN[[:space:]].*apk[[:space:]]+(upgrade|add)' "$COMMS_EXECUTOR_DOCKERFILE" \
+  "communications-executor runtime must not resolve mutable Alpine packages during the image build"
+reject_grep '^(COPY|ADD)[[:space:]].*(\.env|\.pem|\.key|secret)' "$COMMS_EXECUTOR_DOCKERFILE" \
+  "communications-executor image must not copy env, certificate, key, or secret files"
+reject_grep '^COPY[[:space:]]+\.[[:space:]]+\.' "$COMMS_EXECUTOR_DOCKERFILE" \
+  "communications-executor image must use an explicit deterministic build context allowlist"
+
+# Deliberately absent until Plan 3 task 18 (dated 2026-07-30): the comms
+# compose assertions (signing-secret mount, onboarding-off default, service
+# rejection), the comms env-template digest-pin grep, and the
+# check-m365-comms-runtime.sh smoke + its executable check. Each of those
+# greps deploy artifacts task 18 creates — adding them now would fail this
+# guard against files that do not exist yet.
 
 for compose in docker-compose.yml deploy/docker-compose.prod.yml; do
   reject_grep '^  m365-graph-read-executor:' "$compose" \
