@@ -15,7 +15,7 @@ describe('mobile route cursor helpers', () => {
 
   it('accepts an ISO string for ts and re-emits the same timestamp', () => {
     const iso = '2026-05-17T23:45:00.000Z';
-    const id = 'a-id';
+    const id = 'd1f8e0c4-9c5d-4f8e-9c5d-4f8e9c5d4f8e';
     const encoded = encodeCursor(iso, id);
     const decoded = decodeCursor(encoded ?? undefined);
     expect(decoded?.ts.toISOString()).toBe(iso);
@@ -38,6 +38,11 @@ describe('mobile route cursor helpers', () => {
     expect(decodeCursor(Buffer.from('{"ts":"not-a-date","id":"x"}', 'utf8').toString('base64url'))).toBeNull();
     expect(decodeCursor(Buffer.from('{"ts":1234,"id":"x"}', 'utf8').toString('base64url'))).toBeNull();
     expect(decodeCursor(Buffer.from('{"ts":"2026-05-17T00:00:00Z"}', 'utf8').toString('base64url'))).toBeNull();
+  });
+
+  it('rejects a non-uuid id rather than letting it reach a uuid column', () => {
+    const encoded = encodeCursor(new Date('2026-05-17T23:45:00.000Z'), 'not-a-uuid');
+    expect(decodeCursor(encoded ?? undefined)).toBeNull();
   });
 
   it('uses base64url (no + or /) so cursors are URL-safe', () => {
