@@ -37,6 +37,7 @@ import { and, eq, desc, or, sql, inArray, asc, getTableColumns, SQL } from 'driz
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { z } from 'zod';
 import {
+  alertRuleInlineSettingsSchema,
   backupExcludePatternsSchema,
   configFeatureInlineSettingsSchema,
   eventLogInlineSettingsSchema,
@@ -394,22 +395,20 @@ async function decomposeInlineSettings(
 
   switch (featureType) {
     case 'alert_rule': {
-      const items = Array.isArray(s.items) ? s.items : [];
-      if (items.length > 0) {
-        const VALID_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
-        type AlertSeverity = (typeof VALID_SEVERITIES)[number];
+      const parsed = alertRuleInlineSettingsSchema.parse(s);
+      if (parsed.items.length > 0) {
         await tx.insert(configPolicyAlertRules).values(
-          items.map((item: Record<string, unknown>, idx: number) => ({
+          parsed.items.map((item, idx) => ({
             featureLinkId: linkId,
-            name: String(item.name ?? `Rule ${idx + 1}`),
-            severity: (VALID_SEVERITIES.includes(item.severity as AlertSeverity) ? item.severity : 'medium') as AlertSeverity,
-            conditions: item.conditions ?? {},
-            cooldownMinutes: typeof item.cooldownMinutes === 'number' ? item.cooldownMinutes : 5,
-            autoResolve: typeof item.autoResolve === 'boolean' ? item.autoResolve : false,
+            name: item.name,
+            severity: item.severity,
+            conditions: item.conditions,
+            cooldownMinutes: item.cooldownMinutes,
+            autoResolve: item.autoResolve,
             autoResolveConditions: item.autoResolveConditions ?? null,
-            titleTemplate: typeof item.titleTemplate === 'string' ? item.titleTemplate : '{{ruleName}} triggered on {{deviceName}}',
-            messageTemplate: typeof item.messageTemplate === 'string' ? item.messageTemplate : '{{ruleName}} condition met',
-            sortOrder: typeof item.sortOrder === 'number' ? item.sortOrder : idx,
+            titleTemplate: item.titleTemplate ?? '{{ruleName}} triggered on {{deviceName}}',
+            messageTemplate: item.messageTemplate ?? '{{ruleName}} condition met',
+            sortOrder: item.sortOrder ?? idx,
           }))
         );
       }

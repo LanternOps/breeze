@@ -374,6 +374,149 @@ describe('patch feature link round-trip (apps + autoApproveDeferralDays)', () =>
 });
 
 // ============================================================
+// alert_rule decompose — service-layer validation via alertRuleInlineSettingsSchema
+// ============================================================
+describe('addFeatureLink — alert_rule inlineSettings service-layer validation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // tx mock that only satisfies the first (feature link) insert — decompose's
+  // schema.parse() throws before a second insert is ever attempted for invalid input.
+  function txForFeatureLinkInsertOnly() {
+    return {
+      insert: vi.fn(() => ({
+        values: vi.fn((v: any) => ({
+          onConflictDoNothing: vi.fn(() => ({
+            returning: vi.fn(() =>
+              Promise.resolve([
+                {
+                  id: 'link-ar',
+                  configPolicyId: 'policy-1',
+                  featureType: 'alert_rule',
+                  featurePolicyId: null,
+                  inlineSettings: v.inlineSettings,
+                },
+              ])
+            ),
+          })),
+        })),
+      })),
+    };
+  }
+
+  it('rejects alert_rule inlineSettings with an unknown condition type', async () => {
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(txForFeatureLinkInsertOnly()));
+
+    await expect(
+      addFeatureLink('policy-1', 'alert_rule', null, {
+        items: [{ name: 'bad', conditions: [{ type: 'custom', customCondition: 'x' }] }],
+      })
+    ).rejects.toThrow();
+  });
+
+  it('applies schema defaults when storing alert_rule rows', async () => {
+    let normalizedRowValues: any;
+    let insertCall = 0;
+    const tx = {
+      insert: vi.fn(() => ({
+        values: vi.fn((v: any) => {
+          insertCall += 1;
+          if (insertCall === 1) {
+            return {
+              onConflictDoNothing: vi.fn(() => ({
+                returning: vi.fn(() =>
+                  Promise.resolve([
+                    {
+                      id: 'link-ar',
+                      configPolicyId: 'policy-1',
+                      featureType: 'alert_rule',
+                      featurePolicyId: null,
+                      inlineSettings: v.inlineSettings,
+                    },
+                  ])
+                ),
+              })),
+            };
+          }
+          // config_policy_alert_rules insert (decomposeInlineSettings) — an
+          // array of row values, one per item.
+          normalizedRowValues = v;
+          return Promise.resolve([]);
+        }),
+      })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    const link = await addFeatureLink('policy-1', 'alert_rule', null, {
+      items: [
+        {
+          name: 'High CPU',
+          conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 85 }],
+        },
+      ],
+    });
+
+    expect(link).not.toBeNull();
+    expect(normalizedRowValues).toHaveLength(1);
+    expect(normalizedRowValues[0].name).toBe('High CPU');
+    expect(normalizedRowValues[0].severity).toBe('medium');
+    expect(normalizedRowValues[0].cooldownMinutes).toBe(5);
+    expect(normalizedRowValues[0].conditions).toEqual([
+      { type: 'metric', metric: 'cpu', operator: 'gt', value: 85 },
+    ]);
+  });
+
+  it('rejects the legacy custom condition type', async () => {
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(txForFeatureLinkInsertOnly()));
+
+    await expect(
+      addFeatureLink('policy-1', 'alert_rule', null, {
+        items: [{ name: 'bad', conditions: [{ type: 'custom', customCondition: 'x' }] }],
+      })
+    ).rejects.toThrow(/custom|invalid/i);
+  });
+
+  it('canonicalizes legacy {type: "status"} conditions to offline in the stored row', async () => {
+    let normalizedRowValues: any;
+    let insertCall = 0;
+    const tx = {
+      insert: vi.fn(() => ({
+        values: vi.fn((v: any) => {
+          insertCall += 1;
+          if (insertCall === 1) {
+            return {
+              onConflictDoNothing: vi.fn(() => ({
+                returning: vi.fn(() =>
+                  Promise.resolve([
+                    {
+                      id: 'link-ar',
+                      configPolicyId: 'policy-1',
+                      featureType: 'alert_rule',
+                      featurePolicyId: null,
+                      inlineSettings: v.inlineSettings,
+                    },
+                  ])
+                ),
+              })),
+            };
+          }
+          normalizedRowValues = v;
+          return Promise.resolve([]);
+        }),
+      })),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await addFeatureLink('policy-1', 'alert_rule', null, {
+      items: [{ name: 'Offline', conditions: [{ type: 'status', durationMinutes: 10 }] }],
+    });
+
+    expect(normalizedRowValues[0].conditions).toEqual([{ type: 'offline', durationMinutes: 10 }]);
+  });
+});
+
+// ============================================================
 // pamInlineSettingsSchema — unit tests for the exported schema
 // ============================================================
 
