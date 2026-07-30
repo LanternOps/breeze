@@ -752,6 +752,56 @@ export const onedriveHelperInlineSettingsSchema = z.object({
   libraries: z.array(onedriveLibraryMappingSchema).max(100).default([]),
 });
 
+// Canonical write-path schema for server-evaluated alert rule conditions.
+// Extended types (bandwidth_high, disk_io_high, network_errors, patch_compliance,
+// cert_expiry) have evaluator handlers but known payload/unit bugs — they are
+// write-blocked until fixed (see plans/monitoring/2026-07-30 follow-ups). `custom`
+// has no handler at all. Reads of existing rows remain tolerant (no parse on read).
+const metricConditionSchema = z.object({
+  type: z.literal('metric'),
+  metric: z.enum(['cpu', 'ram', 'memory', 'disk']),
+  operator: z.enum(['gt', 'gte', 'lt', 'lte', 'eq']),
+  value: z.number(),
+  duration: z.number().int().min(0).max(86400).optional(), // seconds the condition must hold
+});
+
+const offlineConditionSchema = z.object({
+  type: z.enum(['offline', 'status']).transform(() => 'offline' as const),
+  durationMinutes: z.number().int().min(1).max(10080).optional(),
+});
+
+const eventLogConditionSchema = z.object({
+  type: z.literal('event_log'),
+  category: z.enum(['security', 'hardware', 'application', 'system']),
+  level: z.enum(['warning', 'error', 'critical']),
+  sourcePattern: z.string().max(500).optional(),
+  messagePattern: z.string().max(500).optional(),
+  countThreshold: z.number().int().min(1).max(10000).default(1),
+  windowMinutes: z.number().int().min(1).max(1440).default(15),
+});
+
+export const alertRuleConditionSchema = z.union([
+  metricConditionSchema,
+  offlineConditionSchema,
+  eventLogConditionSchema,
+]);
+
+export const alertRuleItemSchema = z.object({
+  name: z.string().min(1).max(200),
+  severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).default('medium'),
+  conditions: z.array(alertRuleConditionSchema).min(1).max(10),
+  cooldownMinutes: z.number().int().min(1).max(1440).default(5),
+  autoResolve: z.boolean().default(false),
+  autoResolveConditions: z.array(alertRuleConditionSchema).nullable().optional(),
+  titleTemplate: z.string().max(500).optional(),
+  messageTemplate: z.string().max(2000).optional(),
+  sortOrder: z.number().int().min(0).optional(),
+});
+
+export const alertRuleInlineSettingsSchema = z.object({
+  items: z.array(alertRuleItemSchema).max(100).default([]),
+});
+
 export const monitoringInlineSettingsSchema = z.object({
   checkIntervalSeconds: z.number().int().min(10).max(3600).default(60),
   watches: z.array(z.object({
@@ -769,32 +819,15 @@ export const monitoringInlineSettingsSchema = z.object({
     maxRestartAttempts: z.number().int().min(0).max(50).default(3),
     restartCooldownSeconds: z.number().int().min(30).max(86400).default(300),
   })).max(200).default([]),
-  eventLogAlerts: z.array(z.object({
-    name: z.string().min(1).max(255),
-    category: z.enum(['security', 'hardware', 'application', 'system']),
-    level: z.enum(['warning', 'error', 'critical']),
-    sourcePattern: z.string().max(500).optional(),
-    messagePattern: z.string().max(500).optional(),
-    countThreshold: z.number().int().min(1).max(10000).default(1),
-    windowMinutes: z.number().int().min(1).max(1440).default(15),
-    severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).default('high'),
-    enabled: z.boolean().default(true),
-  })).max(50).default([]),
-  alertRules: z.array(z.object({
-    name: z.string().min(1).max(255),
-    severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).default('medium'),
-    conditions: z.array(z.object({
-      type: z.enum(['metric', 'status', 'custom']),
-      metric: z.string().optional(),
-      operator: z.string().optional(),
-      value: z.number().optional(),
-      duration: z.number().optional(),
-      field: z.string().optional(),
-      customCondition: z.string().optional(),
-    })).min(1),
-    cooldownMinutes: z.number().int().min(1).max(1440).default(15),
-    autoResolve: z.boolean().default(false),
-  })).max(100).default([]),
+  // Write barrier (2026-07-30 consolidation): server-evaluated rules moved to the
+  // alert_rule feature. Empty arrays from stale clients are tolerated; non-empty
+  // payloads are rejected so stale editor sessions can't resurrect ghost rules.
+  eventLogAlerts: z.array(z.never(), {
+    message: 'Event log alert rules have moved to the Alerts feature of this policy',
+  }).max(0, 'Event log alert rules have moved to the Alerts feature of this policy').default([]),
+  alertRules: z.array(z.never(), {
+    message: 'Metric alert rules have moved to the Alerts feature of this policy',
+  }).max(0, 'Metric alert rules have moved to the Alerts feature of this policy').default([]),
 });
 
 export const updateFeatureLinkSchema = z.object({
