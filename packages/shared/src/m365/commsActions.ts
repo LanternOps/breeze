@@ -35,8 +35,6 @@ export const M365_COMMS_MAX_REQUEST_BODY_BYTES = 128 * 1024;
 // Primitive schemas
 // ---------------------------------------------------------------------------
 
-const guidSchema = z.string().guid();
-
 /**
  * Rejects text that validates in Node but cannot survive the round trip to storage
  * and back (design §7, "the wire and text contract"):
@@ -184,33 +182,51 @@ export const M365_COMMS_ATTACHMENT_FIELDS: readonly string[] = [
  * it, which is exactly the draft-send shape §8 bans for breaking content binding.
  * Threading returns with properly-designed reply variants.
  */
+const mailListActionSchema = z.object({
+  type: z.literal('m365.comms.mail.list'),
+  folder: z.enum(M365_COMMS_MAIL_FOLDERS),
+  search: searchTermSchema.optional(),
+  sinceHours: z.number().int().min(1).max(M365_COMMS_MAX_SINCE_HOURS).optional(),
+  pageSize: z.number().int().min(1).max(M365_COMMS_MAX_LIST_PAGE_SIZE).optional(),
+}).strict().refine(
+  (a) => a.search === undefined || a.sinceHours === undefined,
+  { message: 'search and sinceHours are mutually exclusive: Graph rejects $search combined with $filter' },
+);
+
+const mailGetActionSchema = z.object({
+  type: z.literal('m365.comms.mail.get'),
+  messageId: messageIdSchema,
+}).strict();
+
+const mailDraftCreateActionSchema = z.object({
+  type: z.literal('m365.comms.mail.draft.create'),
+  to: z.array(m365CommsEmailSchema),
+  cc: z.array(m365CommsEmailSchema).optional(),
+  subject: boundedText(M365_COMMS_MAX_SUBJECT_CHARS, 'subject'),
+  bodyText: boundedText(M365_COMMS_MAX_BODY_TEXT_CHARS, 'bodyText'),
+}).strict();
+
+const mailSendActionSchema = z.object({
+  type: z.literal('m365.comms.mail.send'),
+  to: z.array(m365CommsEmailSchema),
+  cc: z.array(m365CommsEmailSchema).optional(),
+  bcc: z.array(m365CommsEmailSchema).optional(),
+  subject: boundedText(M365_COMMS_MAX_SUBJECT_CHARS, 'subject'),
+  bodyText: boundedText(M365_COMMS_MAX_BODY_TEXT_CHARS, 'bodyText'),
+}).strict();
+
+/**
+ * The Tier-1/2 actions that execute inline without an intent. The send variant is
+ * deliberately excluded: a send reaches the executor only as the stored effect
+ * envelope (commsExecutorContracts.ts), never as tool-input shape.
+ */
+export const m365CommsInlineActionSchema = z.discriminatedUnion('type', [
+  mailListActionSchema, mailGetActionSchema, mailDraftCreateActionSchema,
+]);
+export type M365CommsInlineAction = z.infer<typeof m365CommsInlineActionSchema>;
+
 export const m365CommsActionSchema = z.discriminatedUnion('type', [
-  z.object({
-    type: z.literal('m365.comms.mail.list'),
-    folder: z.enum(M365_COMMS_MAIL_FOLDERS),
-    search: searchTermSchema.optional(),
-    sinceHours: z.number().int().min(1).max(M365_COMMS_MAX_SINCE_HOURS).optional(),
-    pageSize: z.number().int().min(1).max(M365_COMMS_MAX_LIST_PAGE_SIZE).optional(),
-  }).strict(),
-  z.object({
-    type: z.literal('m365.comms.mail.get'),
-    messageId: messageIdSchema,
-  }).strict(),
-  z.object({
-    type: z.literal('m365.comms.mail.draft.create'),
-    to: z.array(m365CommsEmailSchema),
-    cc: z.array(m365CommsEmailSchema).optional(),
-    subject: boundedText(M365_COMMS_MAX_SUBJECT_CHARS, 'subject'),
-    bodyText: boundedText(M365_COMMS_MAX_BODY_TEXT_CHARS, 'bodyText'),
-  }).strict(),
-  z.object({
-    type: z.literal('m365.comms.mail.send'),
-    to: z.array(m365CommsEmailSchema),
-    cc: z.array(m365CommsEmailSchema).optional(),
-    bcc: z.array(m365CommsEmailSchema).optional(),
-    subject: boundedText(M365_COMMS_MAX_SUBJECT_CHARS, 'subject'),
-    bodyText: boundedText(M365_COMMS_MAX_BODY_TEXT_CHARS, 'bodyText'),
-  }).strict(),
+  mailListActionSchema, mailGetActionSchema, mailDraftCreateActionSchema, mailSendActionSchema,
 ]);
 
 export type M365CommsAction = z.infer<typeof m365CommsActionSchema>;
@@ -256,59 +272,3 @@ export const m365CommsFailureCodeSchema = z.enum([
 ]);
 
 export type M365CommsFailureCode = z.infer<typeof m365CommsFailureCodeSchema>;
-
-// ---------------------------------------------------------------------------
-// Request / result envelopes
-// ---------------------------------------------------------------------------
-
-export const m365CommsRequestSchema = z.object({
-  correlationId: guidSchema,
-  connectionId: guidSchema,
-  tenantId: guidSchema,
-  /** Pinned at consent; the executor asserts MSAL's account `oid` against it. */
-  expectedUserObjectId: guidSchema,
-  /** Must match the token-cache row's stamped generation, checked twice (design §5.2). */
-  consentGeneration: z.number().int().min(0),
-  cacheGeneration: z.number().int().min(0).optional(),
-  /** = the immutable `action_intents.id`, for audit correlation and future dedup. */
-  idempotencyKey: z.string().min(1).max(200).optional(),
-  action: m365CommsActionSchema,
-}).strict();
-
-export type M365CommsRequest = z.infer<typeof m365CommsRequestSchema>;
-
-/**
- * NOTE: there is deliberately **no `effectDigest` field here**. The digest the executor
- * verifies against arrives as a signed JWT claim and nowhere else. A body field would let
- * an implementer compare the envelope against a digest computed from that same envelope —
- * a self-consistency check that always passes while proving nothing (design §5.2). If one
- * is ever added it must be asserted *equal to* the claim, never read instead of it.
- */
-
-export const m365CommsResultSchema = z.union([
-  z.object({
-    success: z.literal(true),
-    kind: z.literal('collection'),
-    items: z.array(z.record(z.string(), z.unknown())),
-    truncated: z.boolean(),
-  }).strict(),
-  z.object({
-    success: z.literal(true),
-    kind: z.literal('resource'),
-    resource: z.record(z.string(), z.unknown()),
-    truncated: z.boolean().optional(),
-  }).strict(),
-  z.object({
-    success: z.literal(true),
-    kind: z.literal('sent'),
-    /** Graph's sendMail returns 202 with no body; there is nothing to project. */
-    sentAt: z.string().min(1).max(64),
-  }).strict(),
-  z.object({
-    success: z.literal(false),
-    errorCode: m365CommsFailureCodeSchema,
-    retryAfterSeconds: z.number().int().min(1).max(300).optional(),
-  }).strict(),
-]);
-
-export type M365CommsResult = z.infer<typeof m365CommsResultSchema>;

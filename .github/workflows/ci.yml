@@ -246,6 +246,50 @@ jobs:
       - name: Run executor tests
         run: pnpm --filter=@breeze/m365-graph-actions-executor test:run
 
+  test-m365-communications-executor:
+    name: Test M365 Communications Executor
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: comms_cache
+          POSTGRES_PASSWORD: comms_cache
+          POSTGRES_DB: comms_cache_test
+        ports:
+          - 5439:5432
+        options: >-
+          --health-cmd "pg_isready -U comms_cache"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run executor tests
+        env:
+          # Runs the Postgres half of the token-cache store contract suite.
+          # Without this the fenced-lease/CAS SQL is only proven in-memory.
+          M365_COMMS_TOKEN_CACHE_TEST_DSN: postgresql://comms_cache:comms_cache@localhost:5439/comms_cache_test
+        run: pnpm --filter=@breeze/m365-communications-executor test:run
+
   # Real-Postgres apply of every migration against an empty database.
   # Catches ordering bugs (issue #506) and any SQL error the static
   # autoMigrate.test.ts cannot see. Cheap (~1 min) and blocking on PRs.
@@ -746,6 +790,41 @@ jobs:
 
       - name: Verify executor entrypoint exists
         run: test -s apps/m365-graph-actions-executor/dist/index.cjs
+
+  build-m365-communications-executor:
+    name: Build M365 Communications Executor
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The root `typecheck` job only covers apps/api and apps/web, so this is
+      # the only tsc pass over the executor sources.
+      - name: Typecheck executor
+        run: pnpm --filter=@breeze/m365-communications-executor exec tsc --noEmit
+
+      - name: Build executor
+        run: pnpm --filter=@breeze/m365-communications-executor build
+
+      - name: Verify executor entrypoint exists
+        run: test -s apps/m365-communications-executor/dist/index.cjs
 
   build-web:
     name: Build Web
@@ -1833,7 +1912,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-web, test-portal, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test]
+    needs: [lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-portal, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -1843,6 +1922,7 @@ jobs:
           TEST_API_RESULT: ${{ needs.test-api.result }}
           TEST_M365_GRAPH_READ_EXECUTOR_RESULT: ${{ needs.test-m365-graph-read-executor.result }}
           TEST_M365_GRAPH_ACTIONS_EXECUTOR_RESULT: ${{ needs.test-m365-graph-actions-executor.result }}
+          TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT: ${{ needs.test-m365-communications-executor.result }}
           TEST_WEB_RESULT: ${{ needs.test-web.result }}
           TEST_PORTAL_RESULT: ${{ needs.test-portal.result }}
           TEST_OFFICE_ADDIN_CORE_RESULT: ${{ needs.test-office-addin-core.result }}
@@ -1854,6 +1934,7 @@ jobs:
           BUILD_API_RESULT: ${{ needs.build-api.result }}
           BUILD_M365_GRAPH_READ_EXECUTOR_RESULT: ${{ needs.build-m365-graph-read-executor.result }}
           BUILD_M365_GRAPH_ACTIONS_EXECUTOR_RESULT: ${{ needs.build-m365-graph-actions-executor.result }}
+          BUILD_M365_COMMUNICATIONS_EXECUTOR_RESULT: ${{ needs.build-m365-communications-executor.result }}
           BUILD_WEB_RESULT: ${{ needs.build-web.result }}
           BUILD_PORTAL_RESULT: ${{ needs.build-portal.result }}
           BUILD_AGENT_RESULT: ${{ needs.build-agent.result }}
@@ -1871,6 +1952,7 @@ jobs:
              [[ "${TEST_API_RESULT}" != "success" ]] || \
              [[ "${TEST_M365_GRAPH_READ_EXECUTOR_RESULT}" != "success" ]] || \
              [[ "${TEST_M365_GRAPH_ACTIONS_EXECUTOR_RESULT}" != "success" ]] || \
+             [[ "${TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT}" != "success" ]] || \
              [[ "${TEST_WEB_RESULT}" != "success" ]] || \
              [[ "${TEST_PORTAL_RESULT}" != "success" ]] || \
              [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "success" ]] || \
@@ -1882,6 +1964,7 @@ jobs:
              [[ "${BUILD_API_RESULT}" != "success" ]] || \
              [[ "${BUILD_M365_GRAPH_READ_EXECUTOR_RESULT}" != "success" ]] || \
              [[ "${BUILD_M365_GRAPH_ACTIONS_EXECUTOR_RESULT}" != "success" ]] || \
+             [[ "${BUILD_M365_COMMUNICATIONS_EXECUTOR_RESULT}" != "success" ]] || \
              [[ "${BUILD_WEB_RESULT}" != "success" ]] || \
              [[ "${BUILD_PORTAL_RESULT}" != "success" ]] || \
              [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \
