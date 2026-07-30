@@ -822,7 +822,8 @@
         "checkResults": "check_results",
         "monitored": "Surveillé",
         "inventory": "Inventaire",
-        "deviceThresholdsAndEventLogAlertsPointer": "Les seuils d’appareil et les alertes du journal d’événements se configurent dans la fonctionnalité Alertes de cette politique."
+        "deviceThresholdsAndEventLogAlertsPointer": "Les seuils d’appareil et les alertes du journal d’événements se configurent dans la fonctionnalité Alertes de cette politique.",
+        "openAlertsFeature": "Ouvrir Alertes"
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Capture Windows Prompts d’élévation UAC",

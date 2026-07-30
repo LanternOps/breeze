@@ -822,7 +822,8 @@
         "checkResults": "check_results",
         "monitored": "monitoreado",
         "inventory": "inventario",
-        "deviceThresholdsAndEventLogAlertsPointer": "Los umbrales de dispositivo y las alertas del registro de eventos se configuran en la función Alertas de esta política."
+        "deviceThresholdsAndEventLogAlertsPointer": "Los umbrales de dispositivo y las alertas del registro de eventos se configuran en la función Alertas de esta política.",
+        "openAlertsFeature": "Abrir Alertas"
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Capture indicaciones de elevación Windows UAC",

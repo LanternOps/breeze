@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useId } from "react";
 import {
   Bell,
   Plus,
@@ -10,6 +10,7 @@ import {
 import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
+import { handleToggleKeyDown } from "./disclosureKeyboard";
 import FeatureTabShell from "./FeatureTabShell";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
@@ -352,6 +353,9 @@ export default function AlertRuleTab({
   );
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
+  // Stable per-instance prefix for the expanded-panel ids each card header
+  // points at via aria-controls.
+  const cardIdPrefix = useId();
   useEffect(() => {
     setItems(loadItems(existingLink ?? parentLink));
   }, [existingLink, parentLink]);
@@ -539,10 +543,24 @@ export default function AlertRuleTab({
           const unsupportedTypes = unsupportedConditionTypes(item);
           return (
             <div key={index} className="rounded-md border bg-muted/10">
-              {/* Collapsed header */}
-              <button
-                type="button"
+              {/* Collapsed header.
+                  role="button" rather than a native <button>: the delete
+                  control lives inside the header, and a <button> inside a
+                  <button> is invalid HTML that React reports as a hydration
+                  error on every expand. Same pattern as MonitoringTab's
+                  WatchCard — see disclosureKeyboard.ts. */}
+              <div
+                role="button"
+                tabIndex={0}
+                aria-expanded={isExpanded}
+                aria-controls={`${cardIdPrefix}-${index}`}
+                data-testid={`alert-rule-card-header-${index}`}
                 onClick={() => setExpandedIndex(isExpanded ? null : index)}
+                onKeyDown={(event) =>
+                  handleToggleKeyDown(event, () =>
+                    setExpandedIndex(isExpanded ? null : index),
+                  )
+                }
                 className="flex w-full items-center justify-between px-4 py-3 text-left"
               >
                 <div className="flex items-center gap-3">
@@ -586,11 +604,14 @@ export default function AlertRuleTab({
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
-              </button>
+              </div>
 
               {/* Expanded form */}
               {isExpanded && (
-                <div className="border-t px-4 pb-4 pt-3 space-y-4">
+                <div
+                  id={`${cardIdPrefix}-${index}`}
+                  className="border-t px-4 pb-4 pt-3 space-y-4"
+                >
                   {/* Legacy condition warning */}
                   {unsupportedTypes.length > 0 && (
                     <div

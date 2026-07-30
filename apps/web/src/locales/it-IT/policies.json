@@ -822,7 +822,8 @@
         "checkResults": "check_results",
         "monitored": "monitored",
         "inventory": "inventory",
-        "deviceThresholdsAndEventLogAlertsPointer": "Le soglie dei dispositivi e gli avvisi del log eventi si configurano nella funzione Avvisi di questo criterio."
+        "deviceThresholdsAndEventLogAlertsPointer": "Le soglie dei dispositivi e gli avvisi del log eventi si configurano nella funzione Avvisi di questo criterio.",
+        "openAlertsFeature": "Apri Avvisi"
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Acquisisci prompt di elevazione UAC di Windows",

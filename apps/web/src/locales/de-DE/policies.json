@@ -822,7 +822,8 @@
         "checkResults": "check_results",
         "monitored": "überwacht",
         "inventory": "Inventar",
-        "deviceThresholdsAndEventLogAlertsPointer": "Geräteschwellenwerte und Ereignisprotokollwarnungen werden in der Funktion „Alarme“ dieser Richtlinie konfiguriert."
+        "deviceThresholdsAndEventLogAlertsPointer": "Geräteschwellenwerte und Ereignisprotokollwarnungen werden in der Funktion „Alarme“ dieser Richtlinie konfiguriert.",
+        "openAlertsFeature": "Alarme öffnen"
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Windows-UAC-Aufforderungen zur Rechteerhöhung erfassen",

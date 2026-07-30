@@ -822,7 +822,8 @@
         "checkResults": "check_results",
         "monitored": "monitored",
         "inventory": "inventory",
-        "deviceThresholdsAndEventLogAlertsPointer": "Os limites de dispositivo e os alertas de log de eventos são configurados no recurso Alertas desta política."
+        "deviceThresholdsAndEventLogAlertsPointer": "Os limites de dispositivo e os alertas de log de eventos são configurados no recurso Alertas desta política.",
+        "openAlertsFeature": "Abrir Alertas"
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Capturar solicitações de elevação do UAC do Windows",

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import MonitoringTab from './MonitoringTab';
@@ -236,5 +236,37 @@ describe('MonitoringTab disclosure keyboard toggle (issue #1932)', () => {
     fireEvent.keyDown(header, { key: 'ArrowDown' });
 
     expect(header.getAttribute('aria-expanded')).toBe('false');
+  });
+});
+
+// The feature-tab strip in ConfigPolicyDetailPage is hash-driven (useHashTab),
+// so the pointer switches tabs by writing `#alert_rule` — exactly what the
+// strip's own buttons do.
+describe('MonitoringTab pointer to the Alerts feature', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    window.location.hash = '#monitoring';
+  });
+
+  it('navigates to the alert_rule tab when the pointer link is clicked', () => {
+    renderTab();
+
+    const link = screen.getByTestId('monitoring-alerts-pointer-link');
+    expect(within(screen.getByTestId('monitoring-alerts-pointer')).getByTestId(
+      'monitoring-alerts-pointer-link',
+    )).toBe(link);
+
+    fireEvent.click(link);
+
+    expect(window.location.hash).toBe('#alert_rule');
+  });
+
+  it('keeps the explanatory sentence alongside the link', () => {
+    renderTab();
+
+    const pointer = screen.getByTestId('monitoring-alerts-pointer');
+    expect(pointer.textContent).toContain('configured in the Alerts feature');
+    expect(pointer.textContent).toContain('Open Alerts');
   });
 });

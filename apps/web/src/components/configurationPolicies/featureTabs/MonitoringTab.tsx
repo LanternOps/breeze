@@ -4,7 +4,6 @@ import {
   useRef,
   useCallback,
   useId,
-  type KeyboardEvent,
   type ReactNode,
 } from "react";
 import {
@@ -18,9 +17,10 @@ import {
   ChevronRight,
   Settings2,
 } from "lucide-react";
-import type { FeatureTabProps } from "./types";
+import type { FeatureTabProps, FeatureType } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
+import { handleToggleKeyDown } from "./disclosureKeyboard";
 import FeatureTabShell from "./FeatureTabShell";
 import { fetchWithAuth } from "../../../stores/auth";
 import { useTranslation } from "react-i18next";
@@ -30,15 +30,6 @@ import { i18n } from "@/lib/i18n";
 // ============================================
 type WatchType = "service" | "process";
 type AlertSeverity = "critical" | "high" | "medium" | "low" | "info";
-function handleToggleKeyDown(
-  event: KeyboardEvent<HTMLElement>,
-  onToggle: () => void,
-) {
-  if (event.target !== event.currentTarget) return;
-  if (event.key !== "Enter" && event.key !== " ") return;
-  event.preventDefault();
-  onToggle();
-}
 type WatchEntry = {
   watchType: WatchType;
   name: string;
@@ -87,6 +78,16 @@ const defaultWatch: WatchEntry = {
   maxRestartAttempts: 3,
   restartCooldownSeconds: 300,
 };
+// The feature tab strip in ConfigPolicyDetailPage is hash-driven (useHashTab
+// over VALID_TABS, whose feature ids are the raw FeatureType keys), so the
+// pointer below switches tabs by writing the hash — the same thing the strip's
+// own buttons do. Typed as FeatureType so a renamed feature key fails to
+// compile instead of silently producing a dead link.
+const ALERTS_TAB: FeatureType = "alert_rule";
+function goToAlertsTab() {
+  if (typeof window === "undefined") return;
+  window.location.hash = ALERTS_TAB;
+}
 const createSeverityOptions = (): {
   value: AlertSeverity;
   label: string;
@@ -515,7 +516,18 @@ export default function MonitoringTab({
           <p className="text-sm text-muted-foreground">
             {i18n.t(
               "policies:configurationPolicies.featureTabs.monitoringTab.deviceThresholdsAndEventLogAlertsPointer",
-            )}
+            )}{" "}
+            <button
+              type="button"
+              data-testid="monitoring-alerts-pointer-link"
+              onClick={goToAlertsTab}
+              className="font-medium text-primary underline underline-offset-2 hover:no-underline"
+            >
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.monitoringTab.openAlertsFeature",
+              )}{" "}
+              →
+            </button>
           </p>
         </div>
       </div>

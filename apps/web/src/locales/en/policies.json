@@ -822,7 +822,8 @@
         "checkResults": "check_results",
         "monitored": "monitored",
         "inventory": "inventory",
-        "deviceThresholdsAndEventLogAlertsPointer": "Device thresholds and event log alerts are configured in the Alerts feature of this policy."
+        "deviceThresholdsAndEventLogAlertsPointer": "Device thresholds and event log alerts are configured in the Alerts feature of this policy.",
+        "openAlertsFeature": "Open Alerts"
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Capture Windows UAC elevation prompts",

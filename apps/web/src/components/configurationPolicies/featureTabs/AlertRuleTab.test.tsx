@@ -485,3 +485,108 @@ describe('AlertRuleTab legacy condition types the editor no longer offers', () =
     });
   });
 });
+
+// The rule-card header wraps a delete button, so it cannot itself be a native
+// <button>: React logs "In HTML, <button> cannot be a descendant of <button>.
+// This will cause a hydration error." on every expand. It is a role="button"
+// disclosure with an explicit keydown handler instead — the pattern
+// MonitoringTab's WatchCard already uses (disclosureKeyboard.ts).
+describe('AlertRuleTab rule-card header is a non-nesting disclosure', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    saveMock.mockResolvedValue({
+      id: 'link-1',
+      featureType: 'alert_rule',
+      featurePolicyId: null,
+      inlineSettings: {},
+    });
+  });
+
+  function renderOneRule() {
+    render(
+      <AlertRuleTab
+        policyId="policy-1"
+        existingLink={{
+          id: 'link-1',
+          featureType: 'alert_rule',
+          featurePolicyId: null,
+          inlineSettings: {
+            items: [
+              {
+                name: 'CPU rule',
+                severity: 'high',
+                conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80 }],
+                cooldownMinutes: 15,
+                autoResolve: false,
+              },
+            ],
+          },
+        }}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+    return screen.getByTestId('alert-rule-card-header-0');
+  }
+
+  it('renders no nested native button inside the header', () => {
+    const header = renderOneRule();
+
+    expect(header.tagName).toBe('DIV');
+    expect(header.getAttribute('role')).toBe('button');
+    expect(header.getAttribute('tabindex')).toBe('0');
+    // The delete control is a real <button> and must not sit inside another one.
+    expect(header.querySelectorAll('button').length).toBeGreaterThan(0);
+    expect(header.closest('button')).toBeNull();
+  });
+
+  it('toggles the rule open and closed on click', () => {
+    const header = renderOneRule();
+
+    expect(header.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(header);
+    expect(header.getAttribute('aria-expanded')).toBe('true');
+
+    const panelId = header.getAttribute('aria-controls');
+    expect(panelId).toBeTruthy();
+    expect(document.getElementById(panelId!)).not.toBeNull();
+
+    fireEvent.click(header);
+    expect(header.getAttribute('aria-expanded')).toBe('false');
+    expect(document.getElementById(panelId!)).toBeNull();
+  });
+
+  it('toggles on Enter and on Space, preventing the Space page-scroll', () => {
+    const header = renderOneRule();
+
+    fireEvent.keyDown(header, { key: 'Enter' });
+    expect(header.getAttribute('aria-expanded')).toBe('true');
+
+    const spaceEvent = new KeyboardEvent('keydown', {
+      key: ' ',
+      bubbles: true,
+      cancelable: true,
+    });
+    fireEvent(header, spaceEvent);
+    expect(spaceEvent.defaultPrevented).toBe(true);
+    expect(header.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('ignores keys other than Enter and Space', () => {
+    const header = renderOneRule();
+
+    fireEvent.keyDown(header, { key: 'a' });
+    fireEvent.keyDown(header, { key: 'ArrowDown' });
+
+    expect(header.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('does not toggle when a keydown originates from the nested delete button', () => {
+    const header = renderOneRule();
+    const deleteButton = header.querySelector('button')!;
+
+    fireEvent.keyDown(deleteButton, { key: 'Enter' });
+
+    expect(header.getAttribute('aria-expanded')).toBe('false');
+  });
+});
