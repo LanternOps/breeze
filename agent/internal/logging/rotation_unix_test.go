@@ -342,7 +342,7 @@ func TestOpenSecureLogFileRepairsMode0600(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openSecureLogFile: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	info, err := f.Stat()
 	if err != nil {
@@ -392,7 +392,7 @@ func TestOpenSecureLogFileSetsCloseOnExec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openSecureLogFile: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	flags, err := unix.FcntlInt(f.Fd(), unix.F_GETFD, 0)
 	if err != nil {
@@ -479,7 +479,7 @@ func TestRepairLogFileModeToleratesPermissionErrnosOnRegularFile(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 
 			orig := chmodFile
 			chmodFile = func(*os.File, os.FileMode) error { return errno }
@@ -498,7 +498,7 @@ func TestRepairLogFileModeFailsOnNonTolerableErrno(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	orig := chmodFile
 	chmodFile = func(*os.File, os.FileMode) error { return unix.EACCES }
@@ -526,7 +526,7 @@ func TestRepairLogFileModeWarnsExactlyOnceOnTolerableErrno(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	orig := chmodFile
 	chmodFile = func(*os.File, os.FileMode) error { return unix.EROFS }

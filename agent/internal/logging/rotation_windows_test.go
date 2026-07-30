@@ -53,10 +53,10 @@ func TestOpenSecureLogFileCreatesAndAppends(t *testing.T) {
 		t.Fatalf("openSecureLogFile (reopen): %v", err)
 	}
 	if _, err := f2.WriteString("second\n"); err != nil {
-		f2.Close()
+		_ = f2.Close()
 		t.Fatalf("write: %v", err)
 	}
-	f2.Close()
+	_ = f2.Close()
 
 	got, err := os.ReadFile(logPath)
 	if err != nil {
@@ -76,7 +76,7 @@ func TestRepairLogFileModeIsNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openSecureLogFile: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if err := repairLogFileMode(f); err != nil {
 		t.Fatalf("expected repairLogFileMode to be a no-op on Windows, got %v", err)
@@ -113,7 +113,7 @@ func TestRotatingWriterRotatesAndKeepsBackups(t *testing.T) {
 	if err := rw.openFile(); err != nil {
 		t.Fatalf("openFile: %v", err)
 	}
-	defer rw.Close()
+	defer func() { _ = rw.Close() }()
 
 	if _, err := rw.Write([]byte("12345")); err != nil { // > maxSize(4), triggers rotate
 		t.Fatalf("write: %v", err)
