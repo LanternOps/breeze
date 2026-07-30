@@ -270,6 +270,21 @@ const conditionDefaults: Record<ConditionType, Condition> = {
 // here so the field can't be set out of range. Matches the default
 // OFFLINE_DETECTOR_REEVAL_HORIZON_MINUTES on the API.
 const OFFLINE_DURATION_MAX_MINUTES = 1440;
+// Metric aliases the API accepts (METRIC_NAME_MAP in the evaluator, mirrored by
+// ALERT_METRIC_NAMES in @breeze/shared) mapped onto the short name this dropdown
+// offers. Normalizing on LOAD — rather than adding hidden dropdown options — is
+// the pattern chosen here: it keeps exactly one canonical spelling in the editor
+// and in anything the editor saves, and every alias below is a pure synonym
+// (`cpuPercent` and `cpu` both resolve to device_metrics.cpu_percent), so the
+// rewrite is lossless. Metrics with no dropdown entry (processCount/processes)
+// are NOT rewritten; they get a fallback <option> instead so the select shows
+// what is really stored rather than silently displaying "CPU Usage".
+const METRIC_ALIAS_TO_OPTION: Record<string, string> = {
+  cpuPercent: "cpu",
+  ramPercent: "ram",
+  memory: "ram",
+  diskPercent: "disk",
+};
 // Migrate a single condition from the legacy `{type:'status', duration}` shape
 // to the canonical `{type:'offline', durationMinutes}` shape the evaluator reads.
 // Legacy persisted shape, before the `status`→`offline` / `duration`→`durationMinutes` rename.
@@ -283,6 +298,15 @@ function normalizeCondition(condition: Condition): Condition {
       type: "offline",
       durationMinutes: durationMinutes ?? duration ?? 5,
     };
+  }
+  if (raw.type === "metric") {
+    const canonical = raw.metric ? METRIC_ALIAS_TO_OPTION[raw.metric] : undefined;
+    // `duration` (seconds) was never read by the metric evaluator; drop it so it
+    // can't be mistaken for a sustained window. `durationMinutes` IS honoured
+    // and is round-tripped untouched.
+    const { duration, ...rest } = raw;
+    if (duration === undefined && !canonical) return condition;
+    return canonical ? { ...rest, metric: canonical } : rest;
   }
   // Every other type — including types this editor no longer offers — is
   // returned untouched so an unrelated edit elsewhere in the rule can't strip
@@ -767,6 +791,22 @@ export default function AlertRuleTab({
                                             {o.label}
                                           </option>
                                         ))}
+                                        {/* A stored metric this dropdown does
+                                            not offer (processCount, written by
+                                            the AI tool) still needs an option,
+                                            or the select would display the
+                                            first entry while holding a
+                                            different value — and one unrelated
+                                            edit elsewhere would silently
+                                            rewrite the rule to CPU. */}
+                                        {condition.metric &&
+                                          !metricOptions.some(
+                                            (o) => o.value === condition.metric,
+                                          ) && (
+                                            <option value={condition.metric}>
+                                              {condition.metric}
+                                            </option>
+                                          )}
                                       </select>
                                     </div>
                                     <div>

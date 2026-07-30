@@ -3,8 +3,33 @@ import { alertRuleConditionSchema, alertRuleInlineSettingsSchema, monitoringInli
 
 describe('alertRuleConditionSchema', () => {
   it('accepts a metric condition', () => {
+    const r = alertRuleConditionSchema.safeParse({ type: 'metric', metric: 'cpu', operator: 'gt', value: 85 });
+    expect(r.success).toBe(true);
+  });
+
+  it('accepts every metric name the evaluator resolves, including the aliases', () => {
+    // apps/api/src/services/alertConditions/utils.ts METRIC_NAME_MAP. AI-written
+    // and pre-consolidation rows use the *Percent aliases; a narrower enum here
+    // hard-400s a save of an Alerts tab that merely CONTAINS such a row.
+    const names = ['cpu', 'cpuPercent', 'ram', 'ramPercent', 'memory', 'disk', 'diskPercent', 'processCount', 'processes'];
+    for (const metric of names) {
+      const r = alertRuleConditionSchema.safeParse({ type: 'metric', metric, operator: 'gt', value: 85 });
+      expect(r.success, `metric ${metric}`).toBe(true);
+    }
+    expect(alertRuleConditionSchema.safeParse({ type: 'metric', metric: 'network', operator: 'gt', value: 85 }).success).toBe(false);
+  });
+
+  it('round-trips durationMinutes on a metric condition (the evaluator honours it)', () => {
+    const r = alertRuleConditionSchema.safeParse({ type: 'metric', metric: 'cpuPercent', operator: 'gt', value: 85, durationMinutes: 15 });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data).toMatchObject({ metric: 'cpuPercent', durationMinutes: 15 });
+  });
+
+  it('no longer carries a `duration` (seconds) field on metric conditions', () => {
+    // Nothing in the metric evaluator ever read it; it is stripped, not stored.
     const r = alertRuleConditionSchema.safeParse({ type: 'metric', metric: 'cpu', operator: 'gt', value: 85, duration: 300 });
     expect(r.success).toBe(true);
+    if (r.success) expect(r.data).not.toHaveProperty('duration');
   });
 
   it('accepts an offline condition and canonicalizes legacy status', () => {
@@ -12,6 +37,17 @@ describe('alertRuleConditionSchema', () => {
     const legacy = alertRuleConditionSchema.safeParse({ type: 'status', durationMinutes: 10 });
     expect(legacy.success).toBe(true);
     if (legacy.success) expect(legacy.data.type).toBe('offline');
+  });
+
+  it('folds a legacy offline `duration` into durationMinutes instead of dropping it', () => {
+    // handlers/offline.ts reads `duration` for rows the old editor saved as
+    // {type:'status', duration:N}; stripping it would reset them to the 5-min default.
+    const r = alertRuleConditionSchema.safeParse({ type: 'status', duration: 30 });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data).toMatchObject({ type: 'offline', durationMinutes: 30 });
+      expect(r.data).not.toHaveProperty('duration');
+    }
   });
 
   it('accepts an event_log condition', () => {

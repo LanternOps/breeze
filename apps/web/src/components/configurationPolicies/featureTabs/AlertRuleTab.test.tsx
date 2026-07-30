@@ -33,6 +33,15 @@ function controlForLabel(labelText: string): HTMLElement {
   return control as HTMLElement;
 }
 
+// The metric <select> is the one carrying the "CPU Usage" option — "Metric" as
+// a label string is ambiguous (the condition-type dropdown has a "Metric" option).
+function metricSelect(): HTMLSelectElement {
+  const cpuOption = screen.getByRole('option', { name: 'CPU Usage' });
+  const select = cpuOption.closest('select');
+  if (!select) throw new Error('No metric select found');
+  return select as HTMLSelectElement;
+}
+
 function addFirstRule(): void {
   // Both the header and empty-state render an "Add Alert Rule" button; the
   // empty-state one only exists before any rule is added — click it.
@@ -81,6 +90,114 @@ describe('AlertRuleTab (issue #1857)', () => {
 
     expect(screen.queryByRole('option', { name: 'Network Usage' })).toBeNull();
     expect(screen.getByRole('option', { name: 'CPU Usage' })).toBeTruthy();
+  });
+
+  it('normalizes an aliased metric name onto the dropdown option and keeps durationMinutes', async () => {
+    // AI-authored rows use METRIC_NAME_MAP aliases ("cpuPercent"). The dropdown
+    // only offers cpu/ram/disk, so an un-normalized alias would leave the select
+    // showing "CPU Usage" while holding a value with no matching option.
+    render(
+      <AlertRuleTab
+        policyId="policy-1"
+        existingLink={{
+          id: 'link-1',
+          featureType: 'alert_rule',
+          featurePolicyId: null,
+          inlineSettings: {
+            items: [
+              {
+                name: 'Sustained CPU',
+                severity: 'high',
+                conditions: [
+                  { type: 'metric', metric: 'cpuPercent', operator: 'gt', value: 90, durationMinutes: 15 },
+                ],
+                cooldownMinutes: 15,
+                autoResolve: false,
+              },
+            ],
+          },
+        }}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByText('Sustained CPU'));
+    expect(metricSelect().value).toBe('cpu');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+
+    const conditions = lastSavedItems()[0]!.conditions as Array<Record<string, unknown>>;
+    // durationMinutes is honoured by the threshold evaluator — it must survive.
+    expect(conditions[0]).toMatchObject({ type: 'metric', metric: 'cpu', durationMinutes: 15 });
+  });
+
+  it('renders a metric with no dropdown entry (processCount) without silently rewriting it', async () => {
+    render(
+      <AlertRuleTab
+        policyId="policy-1"
+        existingLink={{
+          id: 'link-1',
+          featureType: 'alert_rule',
+          featurePolicyId: null,
+          inlineSettings: {
+            items: [
+              {
+                name: 'Too many processes',
+                severity: 'medium',
+                conditions: [{ type: 'metric', metric: 'processCount', operator: 'gt', value: 400 }],
+                cooldownMinutes: 15,
+                autoResolve: false,
+              },
+            ],
+          },
+        }}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByText('Too many processes'));
+    expect(metricSelect().value).toBe('processCount');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+
+    const conditions = lastSavedItems()[0]!.conditions as Array<Record<string, unknown>>;
+    expect(conditions[0]).toMatchObject({ metric: 'processCount' });
+  });
+
+  it('drops the dead `duration` (seconds) field from a metric condition on load', async () => {
+    render(
+      <AlertRuleTab
+        policyId="policy-1"
+        existingLink={{
+          id: 'link-1',
+          featureType: 'alert_rule',
+          featurePolicyId: null,
+          inlineSettings: {
+            items: [
+              {
+                name: 'Legacy duration',
+                severity: 'high',
+                conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80, duration: 300 }],
+                cooldownMinutes: 15,
+                autoResolve: false,
+              },
+            ],
+          },
+        }}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+
+    const conditions = lastSavedItems()[0]!.conditions as Array<Record<string, unknown>>;
+    expect(conditions[0]).not.toHaveProperty('duration');
   });
 
   it('migrates a legacy {type:"status", duration} rule to {type:"offline", durationMinutes} on save', async () => {

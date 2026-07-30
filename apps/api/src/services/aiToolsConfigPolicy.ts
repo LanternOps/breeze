@@ -4,7 +4,11 @@ import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignment
 import { eq, and, desc, isNull, isNotNull, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { onedriveHelperInlineSettingsSchema } from '@breeze/shared/validators';
+import {
+  alertRuleInlineSettingsSchema,
+  monitoringInlineSettingsSchema,
+  onedriveHelperInlineSettingsSchema,
+} from '@breeze/shared/validators';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import {
   resolveEffectiveConfig,
@@ -37,25 +41,53 @@ function getOrgId(auth: AuthContext): string | null {
 }
 
 /**
- * addFeatureLink/updateFeatureLink keep the feature link's inlineSettings JSONB
- * as a compatibility/UI mirror alongside the normalized settings tables. For
- * onedrive_helper, decomposeInlineSettings runs the raw input back through
- * onedriveHelperInlineSettingsSchema.parse when writing the normalized row, so
- * that row always carries schema defaults — but the JSONB mirror gets whatever
- * was passed in. Without pre-normalizing here, the AI path would leave the
- * mirror storing un-defaulted raw input while the normalized row (and every
- * other write path) gets defaults filled in. Mirrors validateRingAutoApprove's
- * shape (aiToolsPolicyPrereqs.ts).
+ * Feature types whose inline settings are validated here, in the handler, rather
+ * than left to throw out of decomposeInlineSettings.
+ *
+ * Two reasons, one per flag:
+ *
+ * - `normalize: true` — addFeatureLink/updateFeatureLink keep the feature link's
+ *   inlineSettings JSONB as a compatibility/UI mirror alongside the normalized
+ *   settings tables. decomposeInlineSettings runs the raw input back through the
+ *   same schema when writing the normalized row, so that row always carries
+ *   schema defaults — but the JSONB mirror gets whatever was passed in. Without
+ *   pre-normalizing, the AI path leaves the mirror storing un-defaulted raw input
+ *   while every other write path gets defaults filled in. (Mirrors
+ *   validateRingAutoApprove's shape, aiToolsPolicyPrereqs.ts.)
+ * - validating at all — decomposeInlineSettings uses `.parse()`, so a bad payload
+ *   throws a ZodError that `safeHandler` hands to `sanitizeThrownToolError`,
+ *   which is fail-closed and replaces it with GENERIC_TOOL_ERROR_MESSAGE. The
+ *   model then has no idea what to fix: the monitoring write barrier's
+ *   "moved to the Alerts feature" pointer never reached the chat at all.
+ *
+ * `monitoring` is validate-only: its schema defaults the deprecated
+ * `alertRules`/`eventLogAlerts` barrier keys to `[]`, and normalizing would write
+ * those dead keys back into the stored JSONB mirror. Same call made in the HTTP
+ * route (routes/configurationPolicies/featureLinks.ts).
  */
-function validateOnedriveHelperInlineSettings(
+const VALIDATED_INLINE_SETTINGS: Record<string, { schema: { safeParse: (raw: unknown) => any }; normalize: boolean }> = {
+  onedrive_helper: { schema: onedriveHelperInlineSettingsSchema, normalize: true },
+  alert_rule: { schema: alertRuleInlineSettingsSchema, normalize: true },
+  monitoring: { schema: monitoringInlineSettingsSchema, normalize: false },
+};
+
+function validateInlineSettingsForFeature(
+  featureType: string | undefined,
   raw: unknown
 ): { value: unknown } | { error: string } {
-  const parsed = onedriveHelperInlineSettingsSchema.safeParse(raw);
+  const entry = featureType ? VALIDATED_INLINE_SETTINGS[featureType] : undefined;
+  if (!entry || raw === undefined || raw === null) return { value: raw };
+
+  const parsed = entry.schema.safeParse(raw);
   if (!parsed.success) {
-    const message = parsed.error.issues[0]?.message ?? 'Invalid onedrive_helper inline settings.';
-    return { error: message };
+    const first = parsed.error.issues[0];
+    if (!first) return { error: `Invalid ${featureType} inline settings.` };
+    // Prefix the field path: alert-rule conditions nest several levels deep, and
+    // a bare "Invalid input" tells the model nothing about which one to fix.
+    const path = Array.isArray(first.path) && first.path.length > 0 ? `${first.path.join('.')}: ` : '';
+    return { error: `Invalid ${featureType} inline settings — ${path}${first.message}` };
   }
-  return { value: parsed.data };
+  return { value: entry.normalize ? parsed.data : raw };
 }
 
 function safeHandler(
@@ -671,7 +703,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
 
 Inline settings shapes by feature type:
 - patch: { sources: ["os","third_party"], autoApprove: true, autoApproveSeverities: ["critical","important"], scheduleFrequency: "daily"|"weekly"|"monthly", scheduleTime: "02:00", scheduleDayOfWeek?: "tue", scheduleDayOfMonth?: 1, rebootPolicy: "never"|"if_required"|"always"|"maintenance_window" }
-- alert_rule: server-evaluated rules — CPU/RAM/disk thresholds, offline detection, and event log alerts. { items: [{ name, severity: "critical"|"high"|"medium"|"low"|"info" (default "medium"), conditions: 1-10 of [ { type: "metric", metric: "cpu"|"ram"|"memory"|"disk", operator: "gt"|"gte"|"lt"|"lte"|"eq"|"neq", value: number, duration?: number (seconds the condition must hold) } | { type: "offline", durationMinutes?: number } | { type: "event_log", category: "security"|"hardware"|"application"|"system", level: "warning"|"error"|"critical", sourcePattern?: string (case-insensitive substring match, NOT a regex), messagePattern?: string, countThreshold?: number (1-10000, default 1), windowMinutes?: number (1-1440, default 15) } ], cooldownMinutes?: number (default 5), autoResolve?: boolean (default false), autoResolveConditions?: same condition shapes or null, titleTemplate?: string, messageTemplate?: string, sortOrder?: number }] } — 'custom' conditions and the extended types (bandwidth_high, disk_io_high, network_errors, patch_compliance, cert_expiry) are rejected on write. When the same threshold is configured in policies at different levels (e.g. org and site), the CLOSEST level to the device wins.
+- alert_rule: server-evaluated rules — CPU/RAM/disk thresholds, offline detection, and event log alerts. { items: [{ name, severity: "critical"|"high"|"medium"|"low"|"info" (default "medium"), conditions: 1-10 of [ { type: "metric", metric: "cpu"|"ram"|"memory"|"disk" (aliases "cpuPercent"/"ramPercent"/"diskPercent" and "processCount"/"processes" are also accepted; prefer the short names), operator: "gt"|"gte"|"lt"|"lte"|"eq"|"neq", value: number, durationMinutes?: number (1-10080; sustained window the samples are averaged over, default 1 minute) } | { type: "offline", durationMinutes?: number } | { type: "event_log", category: "security"|"hardware"|"application"|"system", level: "warning"|"error"|"critical", sourcePattern?: string (case-insensitive substring match, NOT a regex), messagePattern?: string, countThreshold?: number (1-10000, default 1), windowMinutes?: number (1-1440, default 15) } ], cooldownMinutes?: number (default 5), autoResolve?: boolean (default false), autoResolveConditions?: same condition shapes or null, titleTemplate?: string, messageTemplate?: string, sortOrder?: number }] } — 'custom' conditions and the extended types (bandwidth_high, disk_io_high, network_errors, patch_compliance, cert_expiry) are rejected on write. When the same threshold is configured in policies at different levels (e.g. org and site), the CLOSEST level to the device wins.
 - monitoring: agent-side service/process watches with auto-restart, delivered via heartbeat — NOT alerting. { checkIntervalSeconds: 60, watches: [{ watchType: "service"|"process", name: "wuauserv", displayName?: "Windows Update", enabled: true, alertOnStop: true, alertAfterConsecutiveFailures: 2, alertSeverity: "critical"|"high"|"medium"|"low"|"info", cpuThresholdPercent?: 90, memoryThresholdMb?: 500, thresholdDurationSeconds: 300, autoRestart: false, maxRestartAttempts: 3, restartCooldownSeconds: 300 }] } — inline settings carry ONLY checkIntervalSeconds/watches now; metric alert rules and event log alerts moved to the alert_rule feature. Sending a non-empty 'alertRules' or 'eventLogAlerts' array is rejected with an error directing you to the alert_rule feature type instead.
 - maintenance: { recurrence: "once"|"daily"|"weekly"|"monthly", windowStart?: "ISO-8601 (for once)", durationHours: 1-72, timezone: "America/New_York", suppressAlerts: true, suppressPatching: true, suppressAutomations: false, suppressScripts: false, notifyBeforeMinutes?: 15, notifyOnStart: true, notifyOnEnd: true }
 - automation: { items: [{ name, enabled: true, triggerType: "schedule"|"event"|"manual", cronExpression?: "0 2 * * *", timezone?: "America/New_York", eventType?: "device.offline"|"alert.triggered"|"compliance.failed"|"patch.available", actions: [{ type: "run_script"|"send_notification"|"create_alert"|"execute_command", scriptId?|channelId?|severity?|message?|command? }], onFailure: "stop"|"continue"|"notify" }] }
@@ -750,11 +782,9 @@ For link-only types, set featurePolicyId instead of inlineSettings:
         }
 
         let inlineSettings: unknown = input.inlineSettings;
-        if (featureType === 'onedrive_helper' && inlineSettings !== undefined && inlineSettings !== null) {
-          const validated = validateOnedriveHelperInlineSettings(inlineSettings);
-          if ('error' in validated) return JSON.stringify({ error: validated.error });
-          inlineSettings = validated.value;
-        }
+        const validated = validateInlineSettingsForFeature(featureType, inlineSettings);
+        if ('error' in validated) return JSON.stringify({ error: validated.error });
+        inlineSettings = validated.value;
 
         // addFeatureLink returns null (instead of throwing) on a duplicate —
         // see the comment on its onConflictDoNothing insert in
@@ -781,18 +811,16 @@ For link-only types, set featurePolicyId instead of inlineSettings:
         if (input.inlineSettings !== undefined) {
           let inlineSettings: unknown = input.inlineSettings;
           // update doesn't take featureType, so look up the existing link's
-          // type to know whether onedrive_helper's normalize-via-schema
-          // applies (same reasoning as the 'add' branch above).
+          // type to know which validate-via-schema rule applies (same reasoning
+          // as the 'add' branch above).
           const [existingLink] = await db
             .select({ featureType: configPolicyFeatureLinks.featureType })
             .from(configPolicyFeatureLinks)
             .where(and(eq(configPolicyFeatureLinks.id, featureLinkId), eq(configPolicyFeatureLinks.configPolicyId, configPolicyId)))
             .limit(1);
-          if (existingLink?.featureType === 'onedrive_helper' && inlineSettings !== null) {
-            const validated = validateOnedriveHelperInlineSettings(inlineSettings);
-            if ('error' in validated) return JSON.stringify({ error: validated.error });
-            inlineSettings = validated.value;
-          }
+          const validated = validateInlineSettingsForFeature(existingLink?.featureType, inlineSettings);
+          if ('error' in validated) return JSON.stringify({ error: validated.error });
+          inlineSettings = validated.value;
           updates.inlineSettings = inlineSettings;
         }
 
