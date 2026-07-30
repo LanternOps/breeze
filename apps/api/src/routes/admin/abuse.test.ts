@@ -11,6 +11,7 @@ const txMockState = vi.hoisted(() => ({
     status: string;
     paymentMethodAttachedAt: Date | null;
     emailVerifiedAt: Date | null;
+    billingSubscriptionStatus?: string | null;
   },
   partnerDevices: [] as Array<{ id: string }>,
   partnerOrgs: [] as Array<{ id: string }>,
