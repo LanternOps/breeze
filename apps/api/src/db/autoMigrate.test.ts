@@ -350,10 +350,18 @@ describe('Wave 3 durable live authorization expansion', () => {
     expect(files).toContain(liveAuthorization);
     expect(files).toContain(quoteCapability);
     // Later waves append -d..-f to the reserved 2026-08-06 block, so assert
-    // adjacency within the block instead of pinning the global tail.
+    // the block is the contiguous lexical tail rather than pinning the
+    // global tail.
     const reservedBlock = files.filter((file) => file.startsWith('2026-08-06-'));
     expect(files.slice(-reservedBlock.length)).toEqual(reservedBlock);
-    expect(reservedBlock.indexOf(quoteCapability)).toBe(reservedBlock.indexOf(liveAuthorization) + 1);
+    // Assert RELATIVE order, not adjacency (see the Wave 6 capability and
+    // delegation migration tests below for the full rationale): a sibling
+    // branch is free to land its own migration between -b- and -c- in the
+    // same date block, and adjacency would turn that into a red main
+    // pointing at the wrong wave.
+    expect(reservedBlock.indexOf(quoteCapability)).toBeGreaterThan(
+      reservedBlock.indexOf(liveAuthorization),
+    );
   });
 
   it('registers oauth_revocation_retries as a user-id-scoped RLS table', () => {
@@ -373,19 +381,26 @@ describe('Wave 5 device mTLS certificate history', () => {
   const migrationsDir = path.resolve(__dirname, '../../migrations');
   const certificateHistory = '2026-08-06-d-device-mtls-certificate-history.sql';
 
-  it('orders the certificate-history migration immediately after the reserved Wave 3 quote-capability migration', () => {
+  it('orders the certificate-history migration after the reserved Wave 3 quote-capability migration', () => {
     const files = readdirSync(migrationsDir)
       .filter((file) => /^\d{4}-.*\.sql$/.test(file))
       .sort((a, b) => a.localeCompare(b));
     const quoteCapability = '2026-08-06-c-quote-response-capability.sql';
 
     expect(files).toContain(certificateHistory);
-    // -d..-f is still reserved for later waves, so assert adjacency within
-    // the block and that the block remains the contiguous lexical tail,
-    // rather than pinning this file as the single last migration.
+    // -d..-f is still reserved for later waves, so assert the block remains
+    // the contiguous lexical tail, rather than pinning this file as the
+    // single last migration.
     const reservedBlock = files.filter((file) => file.startsWith('2026-08-06-'));
     expect(files.slice(-reservedBlock.length)).toEqual(reservedBlock);
-    expect(reservedBlock.indexOf(certificateHistory)).toBe(reservedBlock.indexOf(quoteCapability) + 1);
+    // Assert RELATIVE order, not adjacency (see the Wave 6 capability and
+    // delegation migration tests below for the full rationale): a sibling
+    // branch is free to land its own migration between -c- and -d- in the
+    // same date block, and adjacency would turn that into a red main
+    // pointing at the wrong wave.
+    expect(reservedBlock.indexOf(certificateHistory)).toBeGreaterThan(
+      reservedBlock.indexOf(quoteCapability),
+    );
   });
 
   it('defines the composite FK, state checks, indexes, and column shape for device_mtls_certificates', () => {
@@ -508,16 +523,27 @@ describe('Wave 6 signed manifest key delegation', () => {
   const delegationMigration = '2026-08-06-f-manifest-key-delegations.sql';
   const capabilityMigration = '2026-08-06-e-agent-outbound-network-capability.sql';
 
-  it('orders the delegation migration immediately after the Wave 6 capability migration', () => {
+  it('orders the delegation migration after the Wave 6 capability migration', () => {
     const files = readdirSync(migrationsDir)
       .filter((file) => /^\d{4}-.*\.sql$/.test(file))
       .sort((a, b) => a.localeCompare(b));
 
     expect(files).toContain(delegationMigration);
-    const reservedBlock = files.filter((file) => file.startsWith('2026-08-06-'));
-    expect(files.slice(-reservedBlock.length)).toEqual(reservedBlock);
-    expect(reservedBlock.indexOf(delegationMigration)).toBe(
-      reservedBlock.indexOf(capabilityMigration) + 1,
+    expect(files).toContain(capabilityMigration);
+
+    // Assert RELATIVE order, not adjacency. An earlier revision asserted this
+    // file sorted *immediately* after the capability migration, which is not
+    // an invariant this wave owns: a sibling branch is free to land its own
+    // migration in the same 2026-08-06 date block, and one did
+    // (2026-08-06-f-m365-comms-delegated.sql, from the delegated-comms work),
+    // landing lexically between the two. Adjacency assertions turn any
+    // concurrent migration into a red main that points at the wrong wave.
+    //
+    // What actually matters is the sequencing this wave relies on: its own
+    // capability-column migration lands before its own delegation-table
+    // migration, matching the design order in the Wave 6 plan.
+    expect(files.indexOf(delegationMigration)).toBeGreaterThan(
+      files.indexOf(capabilityMigration),
     );
   });
 
