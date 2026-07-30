@@ -6,6 +6,7 @@ import {
   Link2,
   HardDriveUpload,
 } from "lucide-react";
+import { asList } from '@/lib/asList';
 import type { DetectionRule } from "@breeze/shared";
 import { cn } from "@/lib/utils";
 import { Dialog } from "../shared/Dialog";
@@ -89,7 +90,7 @@ export default function AddPackageModal({
         const res = await fetchWithAuth("/custom-fields?limit=100");
         if (!res.ok || cancelled) return;
         const payload = await res.json();
-        const rows = payload.data ?? payload ?? [];
+        const rows = asList(payload);
         if (Array.isArray(rows)) {
           setCustomFields(
             rows

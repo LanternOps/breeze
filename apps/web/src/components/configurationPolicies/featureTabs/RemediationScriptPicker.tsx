@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { fetchWithAuth } from "../../../stores/auth";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { asList } from '@/lib/asList';
 export type ScriptLanguage = "powershell" | "bash" | "python" | "cmd";
 export type OSType = "windows" | "macos" | "linux";
 export type SelectedScript = {
@@ -78,7 +79,7 @@ export default function RemediationScriptPicker({
         );
       }
       const data = await response.json();
-      const scriptList = data.data ?? data.scripts ?? data ?? [];
+      const scriptList = asList(data, 'scripts');
       const transformedScripts: ScriptRow[] = scriptList.map(
         (s: Record<string, unknown>) => ({
           id: s.id as string,

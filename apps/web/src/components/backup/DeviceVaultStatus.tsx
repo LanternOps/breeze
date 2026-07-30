@@ -5,6 +5,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { formatTime } from './backupDashboardHelpers';
 import AlphaBadge from '../shared/AlphaBadge';
 import { useTranslation } from 'react-i18next';
+import { asList } from '@/lib/asList';
 import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -40,7 +41,7 @@ export default function DeviceVaultStatus({ deviceId }: { deviceId: string }) {
       const response = await fetchWithAuth(`/backup/vault?deviceId=${deviceId}`);
       if (response.ok) {
         const payload = await response.json();
-        const data = payload?.data ?? payload ?? [];
+        const data = asList(payload);
         const list = Array.isArray(data) ? data : [];
         setVault(list[0] ?? null);
       }

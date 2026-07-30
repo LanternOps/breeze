@@ -12,6 +12,7 @@ import {
 import { cn, leftPxClass, paddingLeftPxClass, topPxClass } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { asList } from '@/lib/asList';
 
 type ScriptCategory = {
   id: string;
@@ -187,7 +188,7 @@ export default function ScriptCategoryTree({
       }
 
       const data = await response.json();
-      const scriptList = data.data ?? data.scripts ?? (Array.isArray(data) ? data : []);
+      const scriptList = asList(data, 'scripts');
 
       // Build categories from script data
       const categoryTree = buildCategoryTree(scriptList);

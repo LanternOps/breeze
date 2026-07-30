@@ -20,6 +20,7 @@ import { formatTime } from './backupDashboardHelpers';
 import HypervVMActions from './HypervVMActions';
 import AlphaBadge from '../shared/AlphaBadge';
 import { useTranslation } from 'react-i18next';
+import { asList } from '@/lib/asList';
 import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -118,7 +119,7 @@ export default function HypervDashboard() {
 
       if (deviceResponse.ok) {
         const devicePayload = await deviceResponse.json();
-        const rawTargets = devicePayload?.data ?? devicePayload ?? [];
+        const rawTargets = asList(devicePayload);
         const targets = Array.isArray(rawTargets) ? rawTargets as DeviceSummary[] : [];
         setDiscoveryTargets(targets);
         setDiscoverTargetDeviceId((current) => {

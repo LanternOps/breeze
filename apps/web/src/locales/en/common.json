@@ -32,6 +32,7 @@
     "productCatalog": "Product Catalog",
     "softwareLibrary": "Software Library",
     "softwarePolicies": "Software Policies",
+    "deviceGroups": "Device Groups",
     "configPolicies": "Config Policies",
     "integrations": "Integrations",
     "backup": "Backup",

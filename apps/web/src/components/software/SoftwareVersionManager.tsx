@@ -9,6 +9,7 @@ import {
   CheckCircle,
   Upload,
 } from "lucide-react";
+import { asList } from '@/lib/asList';
 import type { DetectionRule } from "@breeze/shared";
 import { cn } from "@/lib/utils";
 import { fetchWithAuth } from "../../stores/auth";
@@ -118,7 +119,7 @@ export default function SoftwareVersionManager({
             ),
           );
         const payload = await response.json();
-        const catalogData = payload.data ?? payload ?? [];
+        const catalogData = asList(payload);
         if (Array.isArray(catalogData) && catalogData.length > 0) {
           resolvedCatalogId = String(
             (catalogData[0] as Record<string, unknown>).id,
@@ -136,10 +137,7 @@ export default function SoftwareVersionManager({
       if (versionsResponse.ok) {
         const versionsPayload = await versionsResponse.json();
         const versionsList =
-          versionsPayload.data ??
-          versionsPayload.versions ??
-          versionsPayload ??
-          [];
+          asList(versionsPayload, 'versions');
         const normalizedVersions = Array.isArray(versionsList)
           ? versionsList.map((v: Record<string, unknown>, i: number) =>
               normalizeVersion(v, i),
@@ -170,7 +168,7 @@ export default function SoftwareVersionManager({
         const res = await fetchWithAuth("/custom-fields?limit=100");
         if (!res.ok || cancelled) return;
         const payload = await res.json();
-        const rows = payload.data ?? payload ?? [];
+        const rows = asList(payload);
         if (Array.isArray(rows)) {
           setCustomFields(
             rows
