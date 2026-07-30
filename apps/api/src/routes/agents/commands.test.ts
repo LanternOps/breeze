@@ -38,9 +38,11 @@ vi.mock('../../db/schema', () => ({
     agentId: 'devices.agent_id',
   },
   deploymentResults: {
+    id: 'deployment_results.id',
     deploymentId: 'deployment_results.deployment_id',
     deviceId: 'deployment_results.device_id',
     status: 'deployment_results.status',
+    retryCount: 'deployment_results.retry_count',
   },
 }));
 
@@ -82,6 +84,8 @@ vi.mock('../../services/sentry', () => ({
 }));
 
 import { commandsRoutes } from './commands';
+import { and, eq } from 'drizzle-orm';
+import { deploymentResults } from '../../db/schema';
 
 describe('agent commands routes', () => {
   let app: Hono;
@@ -360,6 +364,102 @@ describe('agent commands routes', () => {
     expect(serialized).not.toContain('BODYb64lineTwo');
   });
 
+  // Retry race guard (this fix): a sw-install commandId's optional
+  // `-<attempt>` suffix must gate the deployment_results UPDATE on
+  // retryCount, so a late result from an attempt a retry already superseded
+  // is dropped instead of landing on the new attempt's fresh 'pending' row.
+  describe('sw-install attempt-suffix retry guard', () => {
+    const deploymentUuid = '11111111-1111-4111-8111-111111111111';
+    const deviceUuid = '33333333-3333-4333-8333-333333333333';
+
+    function makeSwApp() {
+      const swApp = new Hono();
+      swApp.use('*', async (c, next) => {
+        c.set('agent', {
+          deviceId: deviceUuid,
+          agentId: 'agent-1',
+          orgId: 'org-1',
+          siteId: 'site-1',
+          role: 'agent',
+        });
+        await next();
+      });
+      swApp.route('/agents', commandsRoutes);
+      return swApp;
+    }
+
+    it('parses the attempt suffix and guards the UPDATE on retryCount', async () => {
+      const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}-2`;
+      const updateChain = chainMock([{ id: 'dr-1' }]);
+      updateMock.mockReturnValueOnce(updateChain);
+
+      const res = await makeSwApp().request(`/agents/${agentId}/commands/${swCommandId}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commandId: swCommandId, status: 'completed', exitCode: 0 }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateChain.where).toHaveBeenCalledWith(
+        and(
+          eq(deploymentResults.deploymentId, deploymentUuid),
+          eq(deploymentResults.deviceId, deviceUuid),
+          eq(deploymentResults.status, 'pending'),
+          eq(deploymentResults.retryCount, 2),
+        ),
+      );
+    });
+
+    it('drops (and logs) a late result whose attempt suffix no longer matches the row current retryCount', async () => {
+      // Attempt 1's command id delivers late after a retry bumped retryCount
+      // to 2 — the UPDATE's retryCount=1 condition matches zero real rows.
+      const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}-1`;
+      const updateChain = chainMock([]);
+      updateMock.mockReturnValueOnce(updateChain);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const res = await makeSwApp().request(`/agents/${agentId}/commands/${swCommandId}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commandId: swCommandId, status: 'completed', exitCode: 0 }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateChain.where).toHaveBeenCalledWith(
+        and(
+          eq(deploymentResults.deploymentId, deploymentUuid),
+          eq(deploymentResults.deviceId, deviceUuid),
+          eq(deploymentResults.status, 'pending'),
+          eq(deploymentResults.retryCount, 1),
+        ),
+      );
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('attempt=1'));
+      warnSpy.mockRestore();
+    });
+
+    it('defaults to attempt 0 for a legacy commandId with no attempt suffix', async () => {
+      const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
+      const updateChain = chainMock([{ id: 'dr-1' }]);
+      updateMock.mockReturnValueOnce(updateChain);
+
+      const res = await makeSwApp().request(`/agents/${agentId}/commands/${swCommandId}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commandId: swCommandId, status: 'completed', exitCode: 0 }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateChain.where).toHaveBeenCalledWith(
+        and(
+          eq(deploymentResults.deploymentId, deploymentUuid),
+          eq(deploymentResults.deviceId, deviceUuid),
+          eq(deploymentResults.status, 'pending'),
+          eq(deploymentResults.retryCount, 0),
+        ),
+      );
+    });
+  });
+
   // Offline-fallback path: the install command was queued as a device_commands
   // row (UUID id), so the result flows through the UUID branch and must ALSO
   // reconcile the matching deployment_results row via the payload deploymentId.
@@ -377,6 +477,37 @@ describe('agent commands routes', () => {
         ...overrides,
       };
     }
+
+    // Queued (offline-fallback) commands don't use the sw-install-<dep>-<device>-<attempt>
+    // id shape — the device_commands row carries a plain UUID — so the attempt
+    // number for the retry guard travels in the payload instead (written by
+    // buildAndDispatchSoftwareInstalls). This proves it threads through here too.
+    it('guards the deployment_results UPDATE on the payload retryCount for a queued result', async () => {
+      selectMock.mockReturnValueOnce(chainMock([swInstallCommandRow({
+        payload: { deploymentId: deploymentUuid, downloadUrl: 'https://dl/pkg.exe', retryCount: 1 },
+      })]));
+      const deviceCommandsChain = chainMock([{ id: commandId }]);
+      const deploymentResultsChain = chainMock([{ id: 'dr-1' }]);
+      updateMock
+        .mockReturnValueOnce(deviceCommandsChain)
+        .mockReturnValueOnce(deploymentResultsChain);
+
+      const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commandId, status: 'completed', exitCode: 0 }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(deploymentResultsChain.where).toHaveBeenCalledWith(
+        and(
+          eq(deploymentResults.deploymentId, deploymentUuid),
+          eq(deploymentResults.deviceId, 'device-1'),
+          eq(deploymentResults.status, 'pending'),
+          eq(deploymentResults.retryCount, 1),
+        ),
+      );
+    });
 
     it('updates both device_commands and deployment_results for a queued install result', async () => {
       selectMock.mockReturnValueOnce(chainMock([swInstallCommandRow()]));

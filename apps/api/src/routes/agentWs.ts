@@ -1158,15 +1158,17 @@ export async function processOrphanedCommandResult(
   }
 
   // Software install results dispatched over WS carry their tracking IDs in
-  // the commandId itself: `sw-install-<deploymentUuid>-<deviceUuid>`. The
-  // agent normally POSTs these to the HTTP result route
+  // the commandId itself: `sw-install-<deploymentUuid>-<deviceUuid>-<attempt>`.
+  // The agent normally POSTs these to the HTTP result route
   // (routes/agents/commands.ts), but if that goroutine fails the result can
   // still arrive here — without this branch the deployment_results row
-  // strands as 'pending' forever. The helper's status='pending' guard makes
-  // double delivery (HTTP + WS) a no-op.
+  // strands as 'pending' forever. The helper's status='pending' +
+  // retryCount=attempt guard makes double delivery (HTTP + WS) AND a stale
+  // result from a retry-superseded attempt a no-op. The attempt suffix is
+  // optional (legacy in-flight ids default to 0).
   const swInstallMatch = result.commandId.match(SW_INSTALL_COMMAND_ID_REGEX);
   if (swInstallMatch) {
-    const [, swDeploymentId, swDeviceId] = swInstallMatch;
+    const [, swDeploymentId, swDeviceId, swAttempt] = swInstallMatch;
     // Bind to the socket's authenticated device identity, like the other
     // branches: a compromised agent must not write another device's row.
     if (!swDeploymentId || !swDeviceId || swDeviceId !== authenticatedDeviceId) {
@@ -1187,6 +1189,7 @@ export async function processOrphanedCommandResult(
         error: result.error,
         startedAt: result.startedAt,
         durationMs: result.durationMs,
+        attemptNumber: swAttempt ? parseInt(swAttempt, 10) : 0,
       });
     } catch (err) {
       console.error(`[AgentWs] Failed to apply software-install result ${result.commandId}:`, err);

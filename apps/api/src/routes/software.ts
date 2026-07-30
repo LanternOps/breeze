@@ -1680,8 +1680,10 @@ async function redispatchSoftwareInstall(opts: {
   orgId: string;
   deviceIds: string[];
   createdBy: string | null;
+  /** Post-bump retryCount per device, keyed by deviceId — see the caller. */
+  deviceRetryCounts: Record<string, number>;
 }): Promise<{ dispatchedDeviceIds: string[]; error?: string }> {
-  const { deployment, orgId, deviceIds, createdBy } = opts;
+  const { deployment, orgId, deviceIds, createdBy, deviceRetryCounts } = opts;
 
   const failTargets = async (errorMessage: string) => {
     await db.update(deploymentResults)
@@ -1725,6 +1727,7 @@ async function redispatchSoftwareInstall(opts: {
     options: (deployment.options ?? null) as Record<string, unknown> | null,
     createdBy,
     markDispatched: false,
+    deviceRetryCounts,
   });
 
   return {
@@ -1797,6 +1800,14 @@ softwareRoutes.post(
       conditions.push(inArray(deploymentResults.deviceId, siteAllowedDeviceIds));
     }
 
+    // .returning() also carries the post-increment retryCount per device
+    // (not just deviceId) — the re-dispatch below MUST bake this NEW attempt
+    // number into the WS command id it builds so a late result from the
+    // attempt being retried can never be misattributed to this one (see
+    // dispatchSoftwareInstallToDevice / applySoftwareInstallResult). This
+    // UPDATE...RETURNING is the ordering guarantee: retryCount is bumped in
+    // the DB before redispatchSoftwareInstall (and therefore the new command
+    // id) is ever constructed.
     const flipped = await db.update(deploymentResults)
       .set({
         status: 'pending',
@@ -1809,11 +1820,14 @@ softwareRoutes.post(
         deviceCommandId: null,
       })
       .where(and(...conditions))
-      .returning({ deviceId: deploymentResults.deviceId });
+      .returning({ deviceId: deploymentResults.deviceId, retryCount: deploymentResults.retryCount });
 
     const retriedDeviceIds = flipped.map((row) => row.deviceId);
     const retriedSet = new Set(retriedDeviceIds);
     const skippedDeviceIds = (deviceIds ?? []).filter((deviceId) => !retriedSet.has(deviceId));
+    const deviceRetryCounts = Object.fromEntries(
+      flipped.map((row) => [row.deviceId, row.retryCount]),
+    );
 
     let dispatchError: string | undefined;
     if (retriedDeviceIds.length > 0) {
@@ -1822,6 +1836,7 @@ softwareRoutes.post(
         orgId,
         deviceIds: retriedDeviceIds,
         createdBy: auth.user?.id ?? null,
+        deviceRetryCounts,
       });
       dispatchError = dispatchResult.error;
     }

@@ -77,15 +77,25 @@ export interface SoftwareInstallDispatchOutcome {
  * it up on its next poll/reconnect, and link the queued device_commands row
  * id into deployment_results.device_command_id for reconciliation, cancel
  * purge, and "queued — device offline" display.
+ *
+ * `retryCount` is the CURRENT attempt number at dispatch time (0 for the
+ * first attempt) and is baked into the WS command id
+ * (`sw-install-<deployment>-<device>-<retryCount>`) so a late result from a
+ * superseded attempt — the id the FIRST dispatch used — can never be
+ * misattributed to a later retry: applySoftwareInstallResult rejects any
+ * result whose attempt doesn't match the row's current retryCount. The
+ * caller (routes/software.ts retry endpoint) MUST bump retryCount in the DB
+ * before calling this, and pass that same post-bump value here.
  */
 export async function dispatchSoftwareInstallToDevice(
   deploymentId: string,
   device: { id: string; agentId: string },
   payload: AgentCommand['payload'],
   createdBy?: string | null,
+  retryCount = 0,
 ): Promise<SoftwareInstallDispatchOutcome> {
   const command: AgentCommand = {
-    id: `sw-install-${deploymentId}-${device.id}`,
+    id: `sw-install-${deploymentId}-${device.id}-${retryCount}`,
     type: 'software_install',
     payload,
   };
@@ -157,6 +167,16 @@ export interface BuildAndDispatchSoftwareInstallsInput {
    * paths where every result row is still pending.
    */
   scopeToDeviceIds?: string[];
+  /**
+   * Per-device retryCount at dispatch time, keyed by deviceId. The retry
+   * endpoint (routes/software.ts) bumps deployment_results.retryCount BEFORE
+   * calling this function and passes the post-bump values here so the WS
+   * command id / payload this fan-out builds carry the NEW attempt number —
+   * see dispatchSoftwareInstallToDevice. Devices absent from the map (the
+   * create and scheduler paths, which are always a device's first attempt)
+   * default to 0.
+   */
+  deviceRetryCounts?: Record<string, number>;
 }
 
 export interface SoftwareInstallFanoutResult {
@@ -180,7 +200,7 @@ export interface SoftwareInstallFanoutResult {
 export async function buildAndDispatchSoftwareInstalls(
   input: BuildAndDispatchSoftwareInstallsInput,
 ): Promise<SoftwareInstallFanoutResult> {
-  const { deploymentId, orgId, versionRecord, catalogItem, deviceIds, options, createdBy, markDispatched, scopeToDeviceIds } = input;
+  const { deploymentId, orgId, versionRecord, catalogItem, deviceIds, options, createdBy, markDispatched, scopeToDeviceIds, deviceRetryCounts } = input;
 
   // WHERE clause for the deployment-wide failure pre-writes below. Scoped to
   // the retried subset when scopeToDeviceIds is set (retry path); otherwise
@@ -365,12 +385,19 @@ export async function buildAndDispatchSoftwareInstalls(
       deviceSilentInstallArgs = resolved.silentInstallArgs;
     }
 
+    // Attempt number for THIS dispatch — 0 unless the caller (the retry
+    // endpoint) already bumped retryCount for this device and passed it
+    // through. Threaded into both the payload (queued-transport result
+    // reconciliation keys on it) and the WS command id.
+    const retryCount = deviceRetryCounts?.[device.id] ?? 0;
+
     // deploymentId MUST be in the payload: the WS transport tracks it via
-    // the sw-install-<deployment>-<device> command id, but the queued
-    // fallback's device_commands row only has the payload to key result
-    // reconciliation on.
+    // the sw-install-<deployment>-<device>-<attempt> command id, but the
+    // queued fallback's device_commands row only has the payload to key
+    // result reconciliation on (deploymentId AND retryCount).
     const payload: AgentCommand['payload'] = {
       deploymentId,
+      retryCount,
       downloadUrl: deviceDownloadUrl,
       checksum: versionRecord.checksum,
       fileName:
@@ -382,7 +409,7 @@ export async function buildAndDispatchSoftwareInstalls(
       ...(detectionRules ? { detectionRules } : {}),
       forceReinstall,
     };
-    await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy);
+    await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy, retryCount);
     dispatchedDeviceIds.push(device.id);
   }
 

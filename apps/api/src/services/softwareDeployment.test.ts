@@ -866,6 +866,56 @@ describe('buildAndDispatchSoftwareInstalls scopeToDeviceIds (retry path)', () =>
     // row of the deployment fails, byte-for-byte the pre-existing behavior.
     expect(inArray).not.toHaveBeenCalledWith('dr.deviceId', expect.anything());
   });
+
+  // Retry race guard (this fix): the retry endpoint bumps retryCount before
+  // calling this fan-out and passes the post-bump value via
+  // deviceRetryCounts — it must land in both the WS command id AND the
+  // payload (the offline-queue transport keys result reconciliation on the
+  // payload, since queued commands don't use the sw-install-* id shape).
+  it('bakes deviceRetryCounts into the dispatched command id and payload', async () => {
+    selectMock.mockReturnValueOnce(
+      sel([{ id: 'dev-a', agentId: 'agent-a' }]),
+    );
+
+    await buildAndDispatchSoftwareInstalls({
+      deploymentId: 'dep-retry',
+      orgId: 'org-1',
+      versionRecord,
+      catalogItem,
+      deviceIds: ['dev-a'],
+      scopeToDeviceIds: ['dev-a'],
+      options: null,
+      createdBy: null,
+      markDispatched: false,
+      deviceRetryCounts: { 'dev-a': 1 },
+    });
+
+    expect(sendCommandMock).toHaveBeenCalledTimes(1);
+    const [, dispatchedCommand] = sendCommandMock.mock.calls[0]!;
+    expect(dispatchedCommand.id).toBe('sw-install-dep-retry-dev-a-1');
+    expect(dispatchedCommand.payload.retryCount).toBe(1);
+  });
+
+  it('defaults retryCount to 0 for devices absent from deviceRetryCounts', async () => {
+    selectMock.mockReturnValueOnce(
+      sel([{ id: 'dev-a', agentId: 'agent-a' }]),
+    );
+
+    await buildAndDispatchSoftwareInstalls({
+      deploymentId: 'dep-first',
+      orgId: 'org-1',
+      versionRecord,
+      catalogItem,
+      deviceIds: ['dev-a'],
+      options: null,
+      createdBy: null,
+      markDispatched: false,
+    });
+
+    const [, dispatchedCommand] = sendCommandMock.mock.calls[0]!;
+    expect(dispatchedCommand.id).toBe('sw-install-dep-first-dev-a-0');
+    expect(dispatchedCommand.payload.retryCount).toBe(0);
+  });
 });
 
 describe('dispatchSoftwareInstallToDevice', () => {
@@ -906,12 +956,30 @@ describe('dispatchSoftwareInstallToDevice', () => {
 
     expect(outcome).toEqual({ transport: 'ws', deviceCommandId: null });
     expect(sendCommandMock).toHaveBeenCalledWith('agent-1', {
-      id: 'sw-install-dep-1-dev-1',
+      id: 'sw-install-dep-1-dev-1-0',
       type: 'software_install',
       payload,
     });
     expect(queueCommandMock).not.toHaveBeenCalled();
     expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('bakes a non-zero retryCount into the WS command id (retry race guard)', async () => {
+    sendCommandMock.mockReturnValue(true);
+
+    await dispatchSoftwareInstallToDevice(
+      'dep-1',
+      { id: 'dev-1', agentId: 'agent-1' },
+      payload,
+      null,
+      3,
+    );
+
+    expect(sendCommandMock).toHaveBeenCalledWith('agent-1', {
+      id: 'sw-install-dep-1-dev-1-3',
+      type: 'software_install',
+      payload,
+    });
   });
 
   it('queues via queueCommand and links deviceCommandId when WS delivery fails', async () => {

@@ -962,7 +962,9 @@ describe('software routes', () => {
         .mockReturnValueOnce(selectResult([deploymentRow]))  // deployment lookup
         .mockReturnValueOnce(selectResult([versionRow]))     // version lookup
         .mockReturnValueOnce(selectResult([catalogRow]));    // catalog lookup
-      const flip = updateChain([{ deviceId: DEVICE_A }]);
+      // retryCount:1 — the row's SQL-incremented value the UPDATE's
+      // .returning() reports back after this retry bumped it from 0.
+      const flip = updateChain([{ deviceId: DEVICE_A, retryCount: 1 }]);
       vi.mocked(db.update).mockReturnValueOnce({ set: flip.set } as any);
 
       const res = await retry(); // no JSON body at all — defaults to all failed rows
@@ -988,7 +990,10 @@ describe('software routes', () => {
 
       // Re-dispatch goes through the shared fan-out, scoped to the flipped
       // rows so its failure pre-writes can never clobber completed rows, and
-      // without re-stamping the deployment's dispatched_at claim.
+      // without re-stamping the deployment's dispatched_at claim. The
+      // post-bump retryCount (from .returning()) rides along keyed by
+      // deviceId (retry race guard — this fix) so the fan-out bakes the NEW
+      // attempt number into the re-dispatched WS command id.
       expect(buildDispatchMock).toHaveBeenCalledTimes(1);
       expect(buildDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
         deploymentId: DEP_ID,
@@ -1003,6 +1008,7 @@ describe('software routes', () => {
         scopeToDeviceIds: [DEVICE_A],
         createdBy: 'user-123',
         markDispatched: false,
+        deviceRetryCounts: { [DEVICE_A]: 1 },
       }));
     });
 

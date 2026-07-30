@@ -2744,7 +2744,22 @@ describe('sw-install WS orphan-result branch', () => {
       error: undefined,
       startedAt: undefined,
       durationMs: 9_000,
+      attemptNumber: 0,
     });
+  });
+
+  it('parses the attempt suffix off a retried sw-install commandId and passes it through', async () => {
+    const retriedCommandId = `sw-install-${deploymentUuid}-${deviceUuid}-2`;
+
+    await processOrphanedCommandResult('agent-sw', deviceUuid, swResult({ commandId: retriedCommandId }));
+
+    expect(applySoftwareInstallResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deploymentId: deploymentUuid,
+        deviceId: deviceUuid,
+        attemptNumber: 2,
+      })
+    );
   });
 
   it('rejects a sw-install result whose embedded device id does not match the authenticated device', async () => {

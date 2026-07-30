@@ -177,11 +177,14 @@ commandsRoutes.post(
     // intentionally have no device_commands row.
     if (!uuidRegex.test(commandId)) {
       // Software install commands carry their tracking IDs in the commandId
-      // itself: `sw-install-<deploymentUuid>-<deviceUuid>`. Persist the
-      // outcome to deployment_results so the dashboard reflects reality.
+      // itself: `sw-install-<deploymentUuid>-<deviceUuid>-<attemptNumber>`.
+      // Persist the outcome to deployment_results so the dashboard reflects
+      // reality. The attempt suffix is optional (legacy ids default to 0);
+      // applySoftwareInstallResult rejects results whose attempt no longer
+      // matches the row's current retryCount (superseded by a retry).
       const swInstallMatch = commandId.match(SW_INSTALL_COMMAND_ID_REGEX);
       if (swInstallMatch) {
-        const [, deploymentIdFromCmd, deviceIdFromCmd] = swInstallMatch;
+        const [, deploymentIdFromCmd, deviceIdFromCmd, attemptFromCmd] = swInstallMatch;
         if (deploymentIdFromCmd && deviceIdFromCmd && deviceIdFromCmd === deviceId) {
           await applySoftwareInstallResult({
             deploymentId: deploymentIdFromCmd,
@@ -193,6 +196,7 @@ commandsRoutes.post(
             error: data.error,
             startedAt: data.startedAt,
             durationMs: data.durationMs,
+            attemptNumber: attemptFromCmd ? parseInt(attemptFromCmd, 10) : 0,
           });
         }
       }
@@ -344,10 +348,12 @@ commandsRoutes.post(
 
     // Offline-queued software installs (dispatchSoftwareInstallToDevice
     // fallback): the result arrives with the device_commands UUID instead of
-    // the sw-install-<deployment>-<device> id, so reconcile the matching
-    // deployment_results row here. deviceId comes from the authenticated agent
-    // context; the payload's deploymentId was written server-side at queue
-    // time. The status='pending' guard in the helper makes replays a no-op.
+    // the sw-install-<deployment>-<device>-<attempt> id, so reconcile the
+    // matching deployment_results row here. deviceId comes from the
+    // authenticated agent context; the payload's deploymentId/retryCount were
+    // written server-side at queue time (see buildAndDispatchSoftwareInstalls).
+    // The status='pending' + retryCount=attempt guard in the helper makes
+    // replays AND results from a retry-superseded queued command a no-op.
     if (command.type === 'software_install') {
       try {
         const payload =
@@ -365,6 +371,7 @@ commandsRoutes.post(
             error: normalizedData.error,
             startedAt: normalizedData.startedAt,
             durationMs: normalizedData.durationMs,
+            attemptNumber: typeof payload.retryCount === 'number' ? payload.retryCount : 0,
           });
         }
       } catch (err) {
