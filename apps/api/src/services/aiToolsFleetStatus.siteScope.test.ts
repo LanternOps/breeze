@@ -30,6 +30,7 @@ function makeAuth(
     accessibleOrgIds: null, orgCondition: () => undefined, canAccessOrg: () => true,
     allowedSiteIds, canAccessSite: (s) => (!allowedSiteIds ? true : !!s && allowedSiteIds.includes(s)),
     ...overrides,
+    principal: overrides?.principal ?? { kind: 'user_session' },
   };
 }
 

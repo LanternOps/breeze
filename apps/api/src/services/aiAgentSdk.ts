@@ -29,6 +29,7 @@ import { loadSession, loadConnection } from './m365Helpers';
 import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
 import { createActionIntent, waitForIntentDecision, transitionIntent } from './actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
+import { requiresDurableRelease } from './actionIntents/durableRelease';
 import {
   assertNoPlaintextSecret,
   isSecretBearingTool,
@@ -743,6 +744,20 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           }
 
           // decisionStatus is one of approved/executing/completed/failed here.
+
+          // BEFORE the CAS, not after: some tools must be released only by the
+          // durable worker, because their safety guarantees live in the
+          // headless/executor transport that this inline path does not use
+          // (see DURABLE_RELEASE_ONLY_TOOLS). Winning the CAS here and then
+          // discovering that would leave the intent claimed by a releaser that
+          // must not run it, and the inline path cannot safely un-claim.
+          if (requiresDurableRelease(toolName)) {
+            return await failMatchedPlanStep({
+              allowed: false,
+              error: 'This action was approved and is being completed by the approval worker.',
+            });
+          }
+
           // COORDINATION INVARIANT (CRITICAL — prevents double execution): the
           // durable release worker also consumes the intent_approved outbox and
           // may already be executing (or have executed/failed) this same intent.

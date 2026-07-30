@@ -110,7 +110,13 @@ Breeze Postgres stores:
 - Consent/grant version and verification state
 - Health, expiry, revocation, and last-check timestamps
 
-It does not store reusable access tokens, refresh tokens, client secrets, or private keys.
+**No component may hold credential material it can decrypt outside its own credential domain.** Concretely, for Breeze Postgres: it does not store reusable access tokens, refresh tokens, client secrets, or private keys *that the API process or its encryption key can read*. Plaintext credential material in Breeze Postgres remains forbidden without exception.
+
+> **Amendment (2026-07-29).** This clause previously read as a flat prohibition on storing refresh tokens in Breeze Postgres. That wording assumed every credential is immutable and version-pinned, which is true of the certificate-based app-only executors and false of delegated per-user refresh tokens, which Microsoft rotates on redemption. The prohibition has been restated as the property it was actually protecting — a decryption-capability boundary, not a table-location rule — so that an opaque ciphertext blob wrapped under a KEK that only a *different* component's identity can `get` is compliant wherever it is stored, while plaintext is forbidden everywhere.
+>
+> Restating it does **not** relocate anything. The communications executor's token cache lives in a **dedicated store the executor owns**, not in Breeze Postgres (comms design §3.2). The amendment exists so the boundary is stated as a testable property rather than as a proxy for one, and so a future component cannot argue its way across the line by observing that the old wording only named one database.
+
+Cardinality is part of the contract, not an implementation detail. A credential domain may hold **one** credential (the app-only executors: one certificate, version-pinned at boot) or **N keyed by connection** with a lifecycle Breeze does not control (the communications domain: one rotating delegated grant per user). §6.3's access-shape model assumes the former; a domain of the latter shape must additionally define its concurrency-control, revocation, and re-consent semantics.
 
 Production credentials live behind a provider-neutral `CredentialProvider`, with Azure Key Vault as the production provider. A self-hosted deployment may implement a separately encrypted provider, but the API and database contract remains the same.
 

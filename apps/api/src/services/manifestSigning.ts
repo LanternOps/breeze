@@ -14,12 +14,17 @@
 import {
   generateKeyPairSync,
   createPrivateKey,
+  createPublicKey,
   sign,
+  verify,
   randomBytes,
 } from 'node:crypto';
-import { eq, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, lte, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
-import { manifestSigningKeys } from '../db/schema/manifestSigningKeys';
+import {
+  manifestSigningKeys,
+  manifestSigningKeyDelegations,
+} from '../db/schema/manifestSigningKeys';
 import { encryptSecret, decryptForColumn } from './secretCrypto';
 
 export interface ActiveSigningKey {
@@ -192,5 +197,244 @@ export async function getActiveTrustKeyset(): Promise<ManifestTrustKey[]> {
     keyId: r.keyId,
     publicKeyB64: r.publicKeyB64,
     validFrom: r.createdAt.toISOString(),
+  }));
+}
+
+// =====================================================================
+// Signed manifest key delegation (security remediation Wave 6, Task 7)
+//
+// Wave 6 Task 6 froze trust-on-first-use in the agent: once an agent has
+// pinned its one deployment signing key, ANY previously unseen key offered
+// over enrollment/heartbeat is rejected. That deliberately removed the
+// ability of a control plane with API/DB write access — but WITHOUT the
+// signing private key — to introduce a key of its own and sign agent
+// updates with it (SYSTEM/root remote code execution).
+//
+// A ManifestKeyDelegation is the ONLY thing that lifts that freeze, and it
+// only does so for exactly one named new key. It is signed by the key that
+// is ALREADY trusted, so database write access alone cannot forge one.
+// =====================================================================
+
+/**
+ * Domain separator, and line 1 of the canonical signing payload.
+ *
+ * It exists so a signature over a delegation can never be replayed as a
+ * signature over an update manifest (or any future signed structure) made
+ * by the same key: the payloads cannot collide because manifests are JSON
+ * objects starting with '{'.
+ */
+export const MANIFEST_DELEGATION_DOMAIN = 'breeze-manifest-key-delegation-v1';
+
+/** Wire record delivered to agents by enrollment and heartbeat. */
+export interface ManifestKeyDelegation {
+  schemaVersion: 1;
+  oldKeyId: string;
+  newKeyId: string;
+  newPublicKeyB64: string;
+  epoch: number;
+  notBefore: string;
+  notAfter: string;
+  signatureBase64: string;
+}
+
+/** The fields the signature actually covers. */
+export interface ManifestDelegationSignedFields {
+  oldKeyId: string;
+  newKeyId: string;
+  newPublicKeyB64: string;
+  epoch: number;
+  notBefore: string;
+  notAfter: string;
+}
+
+/**
+ * Builds the EXACT bytes that are signed and verified.
+ *
+ *   line 1  breeze-manifest-key-delegation-v1
+ *   line 2  <old key ID>
+ *   line 3  <new key ID>
+ *   line 4  <new public key base64>
+ *   line 5  <unsigned decimal epoch>
+ *   line 6  <UTC RFC3339 not-before>
+ *   line 7  <UTC RFC3339 not-after>
+ *
+ * UTF-8, LF-separated, and with NO trailing newline. This is a wire
+ * contract with agent/internal/config/manifestdelegation.go's
+ * ManifestDelegationCanonicalBytes — a one-byte difference (a trailing
+ * newline included) makes every delegation unverifiable fleet-wide while
+ * both sides look correct in isolation. Both sides pin the same SHA-256
+ * over the same golden fixture in their tests.
+ *
+ * `notBefore`/`notAfter` are passed through VERBATIM rather than
+ * re-formatted, because the agent rebuilds these bytes from the strings it
+ * received on the wire. Normalisation must therefore happen once, at
+ * write time (see delegationTimestamp), never here.
+ */
+export function manifestDelegationCanonicalBytes(
+  fields: ManifestDelegationSignedFields,
+): Buffer {
+  const lines = [
+    MANIFEST_DELEGATION_DOMAIN,
+    fields.oldKeyId,
+    fields.newKeyId,
+    fields.newPublicKeyB64,
+    formatDelegationEpoch(fields.epoch),
+    fields.notBefore,
+    fields.notAfter,
+  ];
+
+  // A field containing the line separator could shift the meaning of every
+  // later line while producing bytes that still verify — e.g. a key id of
+  // "x\n<other key>" would let one signature stand for two different
+  // delegations. Reject rather than escape: no legitimate value contains a
+  // newline (key ids are [A-Za-z0-9._-], the rest are base64 or RFC3339).
+  for (const [index, line] of lines.entries()) {
+    if (/[\r\n]/.test(line)) {
+      throw new Error(
+        `manifest delegation field #${index + 1} is malformed: contains a newline`,
+      );
+    }
+  }
+
+  return Buffer.from(lines.join('\n'), 'utf8');
+}
+
+/**
+ * Renders the epoch as an unsigned decimal integer.
+ *
+ * Rejects anything that would not round-trip identically on the Go side's
+ * strconv.ParseUint: negatives, fractions, and values beyond the safe
+ * integer range (which would silently lose precision in JSON).
+ */
+function formatDelegationEpoch(epoch: number): string {
+  if (!Number.isSafeInteger(epoch) || epoch < 0) {
+    throw new Error(
+      'manifest delegation epoch must be a non-negative safe integer',
+    );
+  }
+  return String(epoch);
+}
+
+/**
+ * Canonical second-precision RFC3339 UTC rendering, e.g.
+ * `2026-08-06T00:00:00Z`.
+ *
+ * Deliberately NOT `Date#toISOString()`, which emits `.000Z`. Milliseconds
+ * are meaningless for a multi-day trust window, and — far more importantly
+ * — the stored timestamp is re-serialised on every delivery, so the string
+ * the agent receives must be reproducible from the stored value forever.
+ * Any format the signer did not use makes the signature fail to verify.
+ */
+export function delegationTimestamp(value: Date): string {
+  return `${value.toISOString().slice(0, 19)}Z`;
+}
+
+/**
+ * Signs a delegation with an ALREADY-ACTIVE signing key.
+ *
+ * `seedB64` is the decrypted raw Ed25519 seed of the OLD key — the key the
+ * fleet already trusts. Signing with anything else produces a record every
+ * agent will reject, which is the property that makes DB write access
+ * insufficient to forge one.
+ */
+export function signManifestKeyDelegation(
+  fields: ManifestDelegationSignedFields,
+  seedB64: string,
+): string {
+  const key = privateKeyFromRawSeed(seedB64);
+  return sign(null, manifestDelegationCanonicalBytes(fields), key).toString(
+    'base64',
+  );
+}
+
+/**
+ * Verifies a delegation signature against a raw base64 Ed25519 public key.
+ *
+ * Used by the rotation CLI to self-check what it just produced before
+ * committing it — a delegation that does not verify on the server would
+ * strand the rotation with an epoch already consumed.
+ */
+export function verifyManifestKeyDelegation(
+  fields: ManifestDelegationSignedFields,
+  signatureBase64: string,
+  publicKeyB64: string,
+): boolean {
+  const raw = Buffer.from(publicKeyB64, 'base64');
+  if (raw.length !== RAW_KEY_LEN) return false;
+  // createPublicKey belongs INSIDE the try: 32 bytes of the right length can
+  // still fail SPKI import (e.g. not a valid curve point), and this function
+  // is documented to return a boolean, not to throw.
+  try {
+    const spki = createPublicKey({
+      key: Buffer.concat([
+        Buffer.from('302a300506032b6570032100', 'hex'),
+        raw,
+      ]),
+      format: 'der',
+      type: 'spki',
+    });
+    return verify(
+      null,
+      manifestDelegationCanonicalBytes(fields),
+      spki,
+      Buffer.from(signatureBase64, 'base64'),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Returns the delegation records currently inside their validity window,
+ * oldest epoch first, for delivery to agents via enrollment and heartbeat.
+ *
+ * ACTIVATED RECORDS ARE STILL RETURNED. Activation is a server-side event
+ * (the new key starts signing); adoption is a per-agent event. An agent
+ * that was offline when the window opened must still be able to adopt
+ * after activation, otherwise it is permanently stranded on a key that no
+ * longer signs anything.
+ *
+ * Ordering is ascending by epoch so that, in the (CLI-prevented) event of
+ * more than one in-window record, an agent applies them as a chain rather
+ * than out of order.
+ *
+ * This performs DATABASE WORK ONLY. It makes no network or queue call, so
+ * enrollment may call it inside its system DB context (#1105) — the rule
+ * that boundary enforces is "no external handoff while holding a pooled
+ * connection", not "no queries".
+ */
+export async function getActiveManifestKeyDelegations(
+  now: Date = new Date(),
+): Promise<ManifestKeyDelegation[]> {
+  const rows = await withSystemDbAccessContext(async () => {
+    return db
+      .select({
+        epoch: manifestSigningKeyDelegations.epoch,
+        oldKeyId: manifestSigningKeyDelegations.oldKeyId,
+        newKeyId: manifestSigningKeyDelegations.newKeyId,
+        newPublicKeyB64: manifestSigningKeyDelegations.newPublicKeyB64,
+        notBefore: manifestSigningKeyDelegations.notBefore,
+        notAfter: manifestSigningKeyDelegations.notAfter,
+        signatureB64: manifestSigningKeyDelegations.signatureB64,
+      })
+      .from(manifestSigningKeyDelegations)
+      .where(
+        and(
+          lte(manifestSigningKeyDelegations.notBefore, now),
+          gt(manifestSigningKeyDelegations.notAfter, now),
+        ),
+      )
+      .orderBy(asc(manifestSigningKeyDelegations.epoch));
+  });
+
+  return rows.map((row) => ({
+    schemaVersion: 1 as const,
+    oldKeyId: row.oldKeyId,
+    newKeyId: row.newKeyId,
+    newPublicKeyB64: row.newPublicKeyB64,
+    epoch: Number(row.epoch),
+    notBefore: delegationTimestamp(row.notBefore),
+    notAfter: delegationTimestamp(row.notAfter),
+    signatureBase64: row.signatureB64,
   }));
 }

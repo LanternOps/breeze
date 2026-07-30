@@ -95,6 +95,19 @@ function terminalStartCommandId(sessionId: string, generation: number): string {
   return `term-start-${sessionId}-${generation}`;
 }
 
+// Monotonic suffix for per-message terminal command ids. `Date.now()` alone is
+// NOT unique: two keystrokes relayed in the same millisecond used to get the
+// SAME command id, and the agent's command dedupe (markCommandSeen) silently
+// dropped the second one — lost input — while its duplicate WS result produced
+// the `ws_result_terminal_cas` 0-row warnings (#2870). The counter makes every
+// id unique within this process; the Date.now() prefix keeps ids unique across
+// process restarts and readable in logs.
+let terminalCommandSeq = 0;
+function nextTerminalCommandId(kind: 'data' | 'resize'): string {
+  terminalCommandSeq = (terminalCommandSeq + 1) % Number.MAX_SAFE_INTEGER;
+  return `term-${kind}-${Date.now()}-${terminalCommandSeq}`;
+}
+
 // Server-side ping/pong constants for stale connection detection
 const PING_INTERVAL_MS = 30_000; // Send ping every 30 seconds
 const PONG_TIMEOUT_MS = 10_000; // Close if no pong within 10 seconds
@@ -1018,7 +1031,7 @@ function createTerminalWsHandlers(
 
             // Send terminal input to agent
             sendCommandToAgent(termSession.agentId, {
-              id: `term-data-${Date.now()}`,
+              id: nextTerminalCommandId('data'),
               type: 'terminal_data',
               payload: {
                 sessionId,
@@ -1031,7 +1044,7 @@ function createTerminalWsHandlers(
           case 'resize':
             // Send resize command to agent
             sendCommandToAgent(termSession.agentId, {
-              id: `term-resize-${Date.now()}`,
+              id: nextTerminalCommandId('resize'),
               type: 'terminal_resize',
               payload: {
                 sessionId,

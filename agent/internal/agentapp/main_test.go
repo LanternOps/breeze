@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -222,7 +223,7 @@ func TestHelperWarnLimiterSuppressedNoInfoYet(t *testing.T) {
 
 	// Exhaust warn budget (3 warns + 1 INFO-emitting call).
 	for i := 0; i < 3; i++ {
-		lim.shouldLog(msg, now) //nolint: calls 1-3
+		_, _ = lim.shouldLog(msg, now) // calls 1-3
 		now = now.Add(time.Second)
 	}
 	lim.shouldLog(msg, now) // call 4: first INFO fires, resets suppressedSinceInfo
@@ -973,5 +974,89 @@ func TestLogPAMActuatorStrategy(t *testing.T) {
 				t.Fatalf("configured=%q: WARN log %q should mention the bad configured value", tc.configured, out)
 			}
 		})
+	}
+}
+
+// TestInitBootstrapLoggingUnsafeLogPathDisablesFileOutputOnly proves the
+// P1-AGENT-LOG-001 contract at the agentapp boundary: when the configured
+// log path is a symlink (logging.NewRotatingWriter returns
+// *logging.ErrUnsafeLogPath), initBootstrapLogging must disable file
+// logging only — the system/stderr logger must remain fully usable — and
+// must never write, truncate, chmod, or rename through the symlink.
+func TestInitBootstrapLoggingUnsafeLogPathDisablesFileOutputOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink-based log path rejection is Unix-specific; Windows retains pre-existing os.OpenFile behavior")
+	}
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "outside-target")
+	const sentinel = "SENTINEL-DO-NOT-TOUCH"
+	if err := os.WriteFile(target, []byte(sentinel), 0600); err != nil {
+		t.Fatalf("write attack target: %v", err)
+	}
+	logFile := filepath.Join(dir, "agent.log")
+	if err := os.Symlink(target, logFile); err != nil {
+		t.Fatalf("symlink log file: %v", err)
+	}
+
+	cfg := &config.Config{
+		LogFile:       logFile,
+		LogFormat:     "text",
+		LogLevel:      "info",
+		LogMaxSizeMB:  1,
+		LogMaxBackups: 1,
+	}
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	origStderr := os.Stderr
+	os.Stderr = w
+	t.Cleanup(func() {
+		os.Stderr = origStderr
+		logging.Init("text", "info", nil)
+	})
+
+	initBootstrapLogging(cfg)
+
+	// The system/stderr logger must still work after file logging was
+	// disabled — losing all logging is a worse failure than losing file
+	// logging.
+	log.Warn("probe-message-after-unsafe-log-path")
+
+	_ = w.Close()
+	os.Stderr = origStderr
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatalf("read captured stderr: %v", err)
+	}
+	captured := buf.String()
+
+	if !strings.Contains(captured, "probe-message-after-unsafe-log-path") {
+		t.Fatalf("expected stderr logger to remain usable after an unsafe log path, got: %s", captured)
+	}
+	if !strings.Contains(captured, "log file unavailable during bootstrap") {
+		t.Fatalf("expected a bootstrap fallback warning in stderr output, got: %s", captured)
+	}
+	if !strings.Contains(captured, "symlink") {
+		t.Fatalf("expected the fallback warning to call out the symlink condition, got: %s", captured)
+	}
+
+	// Zero bytes must have reached the symlink target, and the log path
+	// itself must never have been renamed, truncated, or replaced.
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read attack target: %v", err)
+	}
+	if string(got) != sentinel {
+		t.Fatalf("symlink target was modified: got %q, want %q", got, sentinel)
+	}
+	info, err := os.Lstat(logFile)
+	if err != nil {
+		t.Fatalf("lstat log file: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected log path to remain a symlink (never renamed away), got mode %v", info.Mode())
 	}
 }

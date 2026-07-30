@@ -31,6 +31,16 @@ const ALLOWED_TAG_NAMES = new Set([
   'scope',
   'org_id',
   'partner_id',
+  // BREEZE-X: a `dbWriteExpectingRows` 0-row warning is only triageable if the
+  // call site (`cas_label`) and the state the row was already in
+  // (`prior_status`) survive the scrubber. Both are enum-ish and bounded by
+  // construction — `cas_label` is a hardcoded string literal at each call
+  // site, `prior_status` comes from a closed status set folded with the
+  // stale-command reaper's `timedOutBy` marker (services/commandCasDiagnostics.ts)
+  // and falls back to a sentinel for anything unrecognised. Neither carries a
+  // tenant, device, or command identifier.
+  'prior_status',
+  'cas_label',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;

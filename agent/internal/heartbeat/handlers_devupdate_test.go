@@ -9,6 +9,9 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/netpolicy"
+	"github.com/breeze-rmm/agent/internal/secmem"
+	"github.com/breeze-rmm/agent/internal/updater"
 )
 
 // loadEphemeralConfigForPersist sets up a real (but throwaway) agent.yaml
@@ -86,8 +89,8 @@ func TestApplyDevUpdateAutoUpdatePolicy_DefaultDisablesAutoUpdate(t *testing.T) 
 
 	applyDevUpdateAutoUpdatePolicy(h, false)
 
-	if h.config.AutoUpdate {
-		t.Fatal("expected h.config.AutoUpdate=false after default dev push")
+	if h.autoUpdate() {
+		t.Fatal("expected autoUpdate()=false after default dev push")
 	}
 	if got := viper.GetBool("auto_update"); got {
 		t.Fatal("expected viper auto_update=false (persisted)")
@@ -101,10 +104,84 @@ func TestApplyDevUpdateAutoUpdatePolicy_PreserveLeavesAutoUpdateUntouched(t *tes
 
 	applyDevUpdateAutoUpdatePolicy(h, true)
 
-	if !h.config.AutoUpdate {
-		t.Fatal("expected h.config.AutoUpdate to stay true when preserveAutoUpdate=true (recovery push)")
+	if !h.autoUpdate() {
+		t.Fatal("expected autoUpdate() to stay true when preserveAutoUpdate=true (recovery push)")
 	}
 	if got := viper.GetBool("auto_update"); !got {
 		t.Fatal("expected viper auto_update to stay true (no persist call)")
+	}
+}
+
+// TestDevUpdaterConfig_MatchesLiveServerURLProviders proves dev_update's
+// updater.Config is wired identically to the ordinary auto-update path
+// (doUpgrade in heartbeat.go): a live-resolving ServerURL provider (so a
+// backup-server-URL promotion mid-flight is honored, not a captured
+// snapshot) plus the resolved BackupServerURL. A dev_update path that built
+// its own Config independently — or forgot BackupServerURL — would diverge
+// silently here.
+func TestDevUpdaterConfig_MatchesLiveServerURLProviders(t *testing.T) {
+	cfg := &config.Config{
+		ServerURL:       "https://primary.example",
+		BackupServerURL: "https://backup.example",
+	}
+	h := &Heartbeat{config: cfg, agentVersion: "1.2.3"}
+
+	updaterCfg := devUpdaterConfig(h)
+
+	if updaterCfg.ServerURL == nil {
+		t.Fatal("ServerURL provider must not be nil")
+	}
+	if got := updaterCfg.ServerURL(); got != "https://primary.example" {
+		t.Fatalf("ServerURL() = %q, want %q", got, "https://primary.example")
+	}
+	if updaterCfg.BackupServerURL != "https://backup.example" {
+		t.Fatalf("BackupServerURL = %q, want %q", updaterCfg.BackupServerURL, "https://backup.example")
+	}
+
+	// The provider must be LIVE (h.serverURL), not a value captured once —
+	// promoting the backup after devUpdaterConfig was built must be visible
+	// through the same provider, exactly like doUpgrade's updaterCfg.
+	h.mu.Lock()
+	h.config.ServerURL = "https://promoted.example"
+	h.mu.Unlock()
+	if got := updaterCfg.ServerURL(); got != "https://promoted.example" {
+		t.Fatalf("ServerURL() after promotion = %q, want %q (provider went stale)", got, "https://promoted.example")
+	}
+}
+
+// TestDevUpdaterConfig_RejectsSSRFTarget proves dev_update's downloader is
+// the same netpolicy-enforced client as the ordinary auto-update path, not a
+// separate unaudited one: a downloadUrl pointed at a loopback/private/
+// metadata address is rejected regardless of the AllowDevUpdate gate being
+// enabled and regardless of dev_update's checksum-only (not signed-manifest)
+// trust model, because destination safety and payload trust are enforced
+// independently. This exercises the exact updater.Config devUpdaterConfig
+// builds and handleDevUpdateUserHelper/handleDevUpdateDesktopHelper use,
+// without needing to trip their windows/darwin platform gates (this suite
+// runs on ubuntu-latest in CI) or wait on handleDevUpdateAgent's background
+// goroutine.
+func TestDevUpdaterConfig_RejectsSSRFTarget(t *testing.T) {
+	cfg := &config.Config{
+		AllowDevUpdate: true,
+		ServerURL:      "https://control.example",
+	}
+	h := &Heartbeat{
+		config:       cfg,
+		secureToken:  secmem.NewSecureString("brz_test"),
+		agentVersion: "1.2.3",
+	}
+
+	u := updater.New(devUpdaterConfig(h))
+
+	_, err := u.DownloadAndVerify("https://169.254.169.254/latest/meta-data/", "deadbeef")
+	if err == nil {
+		t.Fatal("expected the dev_update downloader to reject a cloud-metadata target")
+	}
+	reason, ok := updater.PolicyRejectionReason(err)
+	if !ok {
+		t.Fatalf("expected a *netpolicy.PolicyError in the chain, got %v", err)
+	}
+	if reason != netpolicy.ReasonForbiddenAddress {
+		t.Fatalf("policy rejection reason = %q, want %q", reason, netpolicy.ReasonForbiddenAddress)
 	}
 }

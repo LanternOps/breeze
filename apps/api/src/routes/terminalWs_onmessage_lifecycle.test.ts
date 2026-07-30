@@ -279,6 +279,51 @@ describe('terminalWs', () => {
       );
     });
 
+    it('assigns a unique command id to every data message, even within the same millisecond (#2870)', async () => {
+      // Two keystrokes relayed in the same millisecond used to share a
+      // `term-data-${Date.now()}` id; the agent dedupes on command id and
+      // silently dropped the second keystroke. Freeze Date.now to force the
+      // worst case and require distinct ids anyway.
+      vi.mocked(sendCommandToAgent).mockClear();
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_785_210_843_666);
+      try {
+        await handlers.onMessage(
+          { data: JSON.stringify({ type: 'data', data: 'h' }) },
+          ws
+        );
+        await handlers.onMessage(
+          { data: JSON.stringify({ type: 'data', data: 'o' }) },
+          ws
+        );
+        await handlers.onMessage(
+          { data: JSON.stringify({ type: 'resize', cols: 80, rows: 24 }) },
+          ws
+        );
+
+        const ids = vi.mocked(sendCommandToAgent).mock.calls.map(
+          ([, command]) => (command as { id: string }).id
+        );
+        expect(ids).toHaveLength(3);
+        expect(new Set(ids).size).toBe(3);
+        expect(ids[0]).toMatch(/^term-data-1785210843666-\d+$/);
+        expect(ids[1]).toMatch(/^term-data-1785210843666-\d+$/);
+        expect(ids[2]).toMatch(/^term-resize-1785210843666-\d+$/);
+
+        // Exactly one agent delivery per user input message — terminal
+        // commands are relayed straight over the agent WS and are never
+        // persisted to device_commands, so there is no second (heartbeat
+        // claim) delivery path for them.
+        const dataCalls = vi.mocked(sendCommandToAgent).mock.calls.filter(
+          ([, command]) => (command as { type: string }).type === 'terminal_data'
+        );
+        expect(dataCalls).toHaveLength(2);
+        expect(dataCalls[0]![1].payload).toMatchObject({ data: 'h' });
+        expect(dataCalls[1]![1].payload).toMatchObject({ data: 'o' });
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
     it('relays resize messages to the agent', async () => {
       vi.mocked(sendCommandToAgent).mockClear();
 

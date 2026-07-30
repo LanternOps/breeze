@@ -297,6 +297,16 @@ export async function createActionIntent(
           orgId,
           partnerId: auth.partnerId ?? null,
           requestedByUserId: requesterId,
+          // Record the ORIGIN principal as a fact, at the one moment it is
+          // known for certain. Do NOT derive this later from `source` or from
+          // which actor column is populated — see the column's doc comment.
+          originPrincipalKind: auth.principal.kind,
+          originPrincipalId:
+            auth.principal.kind === 'api_key'
+              ? auth.principal.apiKeyId ?? null
+              : auth.principal.kind === 'oauth_grant'
+                ? auth.principal.grantId ?? null
+                : null,
           source: input.source,
           requestingClientLabel,
           actionName: input.toolName,

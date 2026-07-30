@@ -174,10 +174,28 @@ require_grep '\[\[ "\$\{TEST_M365_GRAPH_READ_EXECUTOR_RESULT\}" != "success" \]\
 require_grep '\[\[ "\$\{BUILD_M365_GRAPH_READ_EXECUTOR_RESULT\}" != "success" \]\]' "$ci_success_block" \
   "ci-success must fail unless the executor build succeeds"
 
+# Same gating for the customer-graph-ACTIONS executor. It holds mutation
+# credentials, so its jobs must be as tamper-evident as the read sibling's.
+# The env var alone is decorative: the `[[ ]]` clause is what actually blocks.
+require_grep 'needs: .*test-m365-graph-actions-executor' "$ci_success_block" \
+  "ci-success must depend on actions-executor tests"
+require_grep 'needs: .*build-m365-graph-actions-executor' "$ci_success_block" \
+  "ci-success must depend on the actions-executor build"
+require_grep 'TEST_M365_GRAPH_ACTIONS_EXECUTOR_RESULT:.*needs\.test-m365-graph-actions-executor\.result' "$ci_success_block" \
+  "ci-success must read the actions-executor test result"
+require_grep 'BUILD_M365_GRAPH_ACTIONS_EXECUTOR_RESULT:.*needs\.build-m365-graph-actions-executor\.result' "$ci_success_block" \
+  "ci-success must read the actions-executor build result"
+require_grep '\[\[ "\$\{TEST_M365_GRAPH_ACTIONS_EXECUTOR_RESULT\}" != "success" \]\]' "$ci_success_block" \
+  "ci-success must fail unless actions-executor tests succeed"
+require_grep '\[\[ "\$\{BUILD_M365_GRAPH_ACTIONS_EXECUTOR_RESULT\}" != "success" \]\]' "$ci_success_block" \
+  "ci-success must fail unless the actions-executor build succeeds"
+
 security_audit_block="$GUARD_TMP_DIR/security-audit.yml"
 extract_yaml_job security-audit .github/workflows/ci.yml "$security_audit_block"
 require_grep 'run: bash scripts/security/check-m365-graph-read-runtime\.sh' "$security_audit_block" \
   "blocking CI must run the real Compose signing-secret runtime smoke"
+require_grep 'run: bash scripts/security/check-m365-graph-actions-runtime\.sh' "$security_audit_block" \
+  "blocking CI must run the real Compose actions signing-secret runtime smoke"
 
 executor_release_block="$GUARD_TMP_DIR/executor-release.yml"
 extract_yaml_job build-docker-m365-graph-read-executor .github/workflows/release.yml "$executor_release_block"
@@ -213,6 +231,33 @@ require_grep 'breeze-m365-graph-read-executor:security-scan' .github/workflows/s
   "security workflow must build and scan the executor image"
 [[ -x scripts/security/check-m365-graph-read-runtime.sh ]] || \
   fail "scripts/security/check-m365-graph-read-runtime.sh must be executable"
+require_grep 'breeze-m365-graph-actions-executor:security-scan' .github/workflows/security.yml \
+  "security workflow must build and scan the actions-executor image"
+[[ -x scripts/security/check-m365-graph-actions-runtime.sh ]] || \
+  fail "scripts/security/check-m365-graph-actions-runtime.sh must be executable"
+
+actions_release_block="$GUARD_TMP_DIR/actions-executor-release.yml"
+extract_yaml_job build-docker-m365-graph-actions-executor .github/workflows/release.yml "$actions_release_block"
+require_grep 'outputs: type=image,name=.*m365-graph-actions-executor,push-by-digest=true,name-canonical=true,push=true' "$actions_release_block" \
+  "release must push an unadvertised actions-executor digest before tagging"
+require_grep 'image-ref:.*m365-graph-actions-executor@\$\{\{ steps\.push-executor-digest\.outputs\.digest \}\}' "$actions_release_block" \
+  "release Trivy scan must target the exact pushed actions-executor digest"
+require_grep "severity: 'HIGH,CRITICAL'" "$actions_release_block" \
+  "release actions-executor scan must block HIGH and CRITICAL findings"
+require_grep "exit-code: '1'" "$actions_release_block" \
+  "release actions-executor scan must be blocking"
+require_grep 'docker buildx imagetools create' "$actions_release_block" \
+  "release must promote the scanned actions-executor digest without rebuilding"
+[[ "$(grep -o -- '--tag' "$actions_release_block" | wc -l | tr -d ' ')" == 2 ]] || \
+  fail "actions-executor release must publish only exact semver and commit-SHA tags"
+reject_grep 'type=raw,value=latest|pattern=\{\{major\}\}|pattern=\{\{major\}\}\.\{\{minor\}\}' "$actions_release_block" \
+  "actions-executor release must not publish latest, major, or minor mutable tags"
+[[ "$(grep -c 'docker/build-push-action@' "$actions_release_block")" == 1 ]] || \
+  fail "actions-executor release must build the image exactly once"
+require_order 'id: push-executor-digest' 'name: Scan exact executor digest' "$actions_release_block" \
+  "actions-executor release must build before scanning"
+require_order 'name: Scan exact executor digest' 'name: Promote scanned executor digest' "$actions_release_block" \
+  "actions-executor release promotion must occur only after its exact digest passes scanning"
 
 for compose in docker-compose.yml deploy/docker-compose.prod.yml; do
   reject_grep '^  m365-graph-read-executor:' "$compose" \
@@ -223,6 +268,14 @@ for compose in docker-compose.yml deploy/docker-compose.prod.yml; do
     "$compose must load the API executor-signing private JWK from a Docker secret"
   require_grep '^  m365_graph_read_executor_signing_private_jwk:' "$compose" \
     "$compose must define the API executor-signing private-JWK secret"
+  reject_grep '^  m365-graph-actions-executor:' "$compose" \
+    "$compose must not deploy the actions executor without an identity-capable private environment"
+  require_grep 'M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED:[[:space:]]+\$\{M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED:-false\}' "$compose" \
+    "$compose must keep customer Graph-actions onboarding disabled by default"
+  require_grep 'M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE:[[:space:]]+/run/secrets/m365_graph_actions_executor_signing_private_jwk' "$compose" \
+    "$compose must load the API actions-executor-signing private JWK from a Docker secret"
+  require_grep '^  m365_graph_actions_executor_signing_private_jwk:' "$compose" \
+    "$compose must define the API actions-executor-signing private-JWK secret"
 
   api_block="$GUARD_TMP_DIR/$(basename "$compose").api.yml"
   awk '
@@ -251,6 +304,8 @@ for deployment_template in .env.example deploy/.env.example; do
     "$deployment_template must document the executor tmpfs requirement"
   require_grep 'm365-graph-read-executor@sha256:<digest>' "$deployment_template" \
     "$deployment_template must require a digest-addressed executor image"
+  require_grep 'm365-graph-actions-executor@sha256:<digest>' "$deployment_template" \
+    "$deployment_template must require a digest-addressed actions-executor image"
   require_grep 'numeric owner 1001:1001 and mode 0400' "$deployment_template" \
     "$deployment_template must document standalone Compose file-secret ownership requirements"
 done

@@ -1091,6 +1091,20 @@ async function executeSoftwarePayload(
 ): Promise<ExecutionResult> {
   const prep = await withSystemDbAccessContext(async () => {
     // Create command for the device
+    // NOTE (Wave 6 Task 5, managed software destination policy): this
+    // interpolation produces `software_install` for action 'install', so this
+    // is a THIRD device_command producer that a literal grep for
+    // "software_install" does not find — and it does NOT pass the dispatch
+    // gate in services/softwareDeployment.ts / routes/software.ts (no
+    // downloadPolicy attached, no outbound_network_policy_version check).
+    //
+    // That is safe today only because the payload carries a packageId and no
+    // downloadUrl at all, so tools.InstallSoftware rejects the command
+    // outright (RequirePayloadString "downloadUrl"). If this path is ever
+    // given a real download URL, it MUST route through
+    // evaluateManagedSoftwareDispatch and send the effective
+    // downloadPolicy first, or it becomes an ungated managed-software
+    // dispatch. See services/managedSoftwareDispatchPolicy.ts.
     const [command] = await db
       .insert(deviceCommands)
       .values({

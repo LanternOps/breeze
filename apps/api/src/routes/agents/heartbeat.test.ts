@@ -182,11 +182,16 @@ vi.mock('../../services/remoteAccessPolicy', () => ({
 }));
 
 const getActiveTrustKeysetMock = vi.fn();
+const getActiveManifestKeyDelegationsMock = vi.fn();
 
 vi.mock('../../services/manifestSigning', () => ({
   getActiveTrustKeyset: (...args: unknown[]) => {
     callOrder.push('trustKeyset:fetched');
     return getActiveTrustKeysetMock(...(args as []));
+  },
+  getActiveManifestKeyDelegations: (...args: unknown[]) => {
+    callOrder.push('delegations:fetched');
+    return getActiveManifestKeyDelegationsMock(...(args as []));
   },
 }));
 
@@ -285,6 +290,7 @@ const minimalHeartbeatBody = {
 };
 
 const originalAgentBackupServerUrl = process.env.AGENT_BACKUP_SERVER_URL;
+const originalAgentRequireManifestSigningKeyId = process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID;
 
 afterEach(() => {
   if (originalAgentBackupServerUrl === undefined) {
@@ -292,11 +298,22 @@ afterEach(() => {
   } else {
     process.env.AGENT_BACKUP_SERVER_URL = originalAgentBackupServerUrl;
   }
+  if (originalAgentRequireManifestSigningKeyId === undefined) {
+    delete process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID;
+  } else {
+    process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID = originalAgentRequireManifestSigningKeyId;
+  }
 });
 
 describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    getActiveManifestKeyDelegationsMock.mockResolvedValue([]);
+    // Module-global watchdog restart-log dedupe cache: without this reset a
+    // suite inherits whatever earlier suites logged, so assertions here
+    // could pass or fail depending on file execution order.
+    const { resetWatchdogRestartLogCacheForTests } = await import('./heartbeat');
+    resetWatchdogRestartLogCacheForTests();
 
     // Device lookup → returns a row
     selectMock.mockReturnValueOnce(
@@ -402,6 +419,60 @@ describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () 
     expect(configUpdate.backup_server_url).toBe('');
   });
 
+  // Security remediation Wave 6, Task 9 — configUpdate.require_manifest_signing_key_id
+  // is ALWAYS sent, as true or false, mirroring AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID.
+  // Sending the explicit false is what makes the switch reversible: an agent that
+  // already persisted true must revert when the operator reverts the env var, and
+  // an omitted key is a no-op on the agent. Agents older than Wave 6 ignore the
+  // key whichever way it arrives, so rolling-deploy safety is unaffected.
+  it('sends require_manifest_signing_key_id=false in configUpdate when the env var is unset', async () => {
+    delete process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID;
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown>;
+    expect(configUpdate.require_manifest_signing_key_id).toBe(false);
+  });
+
+  it('sends require_manifest_signing_key_id=false in configUpdate when the env var is explicitly false', async () => {
+    process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID = 'false';
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown>;
+    expect(configUpdate.require_manifest_signing_key_id).toBe(false);
+  });
+
+  it('sends require_manifest_signing_key_id=true in configUpdate when the env var is true', async () => {
+    process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID = 'true';
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown>;
+    expect(configUpdate.require_manifest_signing_key_id).toBe(true);
+  });
+
   it('#1105: fetches the trust keyset AFTER the org DB context is released (not while holding the tx)', async () => {
     getActiveTrustKeysetMock.mockResolvedValue([]);
     callOrder.length = 0;
@@ -438,6 +509,128 @@ describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () 
     // the REST path so agents don't choke parsing the field. The empty
     // array is also what hosted-SaaS returns when no key is provisioned.
     expect(body.manifestTrustKeys).toEqual([]);
+  });
+});
+
+// =====================================================================
+// Wave 6 Task 7 — signed manifest key delegation delivery.
+//
+// Heartbeat is the path that actually matters for adoption: enrollment
+// happens once, but every agent in the fleet heartbeats, so this is how a
+// prepared rotation reaches devices that were already enrolled.
+// =====================================================================
+describe('POST /agents/:id/heartbeat — manifestKeyDelegations delivery (Wave 6 Task 7)', () => {
+  const delegation = {
+    schemaVersion: 1 as const,
+    oldKeyId: 'deploy-2026-05-09-aaaaaaaa',
+    newKeyId: 'deploy-2026-08-06-bbbbbbbb',
+    newPublicKeyB64: 'AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=',
+    epoch: 7,
+    notBefore: '2026-08-06T00:00:00Z',
+    notAfter: '2026-09-05T00:00:00Z',
+    signatureBase64: 'c2ln',
+  };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    getActiveManifestKeyDelegationsMock.mockResolvedValue([]);
+    // See the note in the #639 suite: the watchdog restart-log cache is
+    // module-global, so it must be reset or these assertions inherit
+    // dedupe state from whichever suites ran first.
+    const { resetWatchdogRestartLogCacheForTests } = await import('./heartbeat');
+    resetWatchdogRestartLogCacheForTests();
+
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          siteId: 'site-1',
+          hostname: 'host-1',
+          osType: 'linux',
+          osVersion: 'Ubuntu 22.04',
+          osBuild: null,
+          architecture: 'amd64',
+          agentVersion: '0.65.10',
+          deviceRole: 'server',
+          deviceRoleSource: 'auto',
+          agentTokenHash: 'hash',
+          tokenIssuedAt: new Date(),
+        },
+      ]),
+    );
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({
+        where: vi.fn(() => whereResultWithReturning()),
+      })),
+    });
+    insertMock.mockReturnValue({
+      values: vi.fn().mockResolvedValue(undefined),
+    });
+    selectMock.mockReturnValue(selectChainResolving([]));
+  });
+
+  async function heartbeat() {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+  }
+
+  it('includes manifestKeyDelegations from getActiveManifestKeyDelegations()', async () => {
+    getActiveManifestKeyDelegationsMock.mockResolvedValue([delegation]);
+
+    const resp = await heartbeat();
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.manifestKeyDelegations).toEqual([delegation]);
+  });
+
+  it('returns manifestKeyDelegations=[] when nothing is prepared', async () => {
+    const resp = await heartbeat();
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.manifestKeyDelegations).toEqual([]);
+  });
+
+  it('still returns 200 with an empty list when the delegation lookup throws', async () => {
+    // A rotation-record failure must not take down heartbeat: commands,
+    // upgrades and token rotation all ride on this response.
+    getActiveManifestKeyDelegationsMock.mockRejectedValue(new Error('boom'));
+
+    const resp = await heartbeat();
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.manifestKeyDelegations).toEqual([]);
+  });
+
+  it('#1105: fetches delegations AFTER the org DB context is released', async () => {
+    callOrder.length = 0;
+    getActiveManifestKeyDelegationsMock.mockResolvedValue([delegation]);
+
+    await heartbeat();
+
+    const released = callOrder.indexOf('dbContext:released');
+    const fetched = callOrder.indexOf('delegations:fetched');
+    expect(released).toBeGreaterThanOrEqual(0);
+    expect(fetched).toBeGreaterThanOrEqual(0);
+    // Same rule as the trust keyset: the org transaction must close before
+    // this acquires a second pooled connection, or a mass reconnect
+    // self-deadlocks the pool.
+    expect(released).toBeLessThan(fetched);
+  });
+
+  it('preserves detectWatchdogStateCollapse and the restart-log cache reset export', async () => {
+    // Wave 6 Task 7 must not regress the #1121 watchdog surface that other
+    // suites in this file depend on.
+    const mod = await import('./heartbeat');
+    expect(typeof mod.detectWatchdogStateCollapse).toBe('function');
+    expect(typeof mod.resetWatchdogRestartLogCacheForTests).toBe('function');
+    expect(
+      mod.detectWatchdogStateCollapse({ watchdogState: 42 }, undefined),
+    ).not.toBeNull();
   });
 });
 
@@ -1331,6 +1524,144 @@ describe('pendingReboot persistence', () => {
     // arg) before asserting the flag is absent from it.
     expect(updateArg).toHaveProperty('watchdogStatus');
     expect(updateArg).not.toHaveProperty('pendingReboot');
+  });
+});
+
+// ---------------------------------------------------------------------
+// outboundNetworkPolicyVersion capability handshake (Wave 6 Task 4, security
+// remediation)
+// ---------------------------------------------------------------------
+describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
+  const deviceRow = {
+    id: 'device-1',
+    orgId: 'org-1',
+    siteId: 'site-1',
+    hostname: 'host-1',
+    osType: 'linux',
+    osVersion: 'Ubuntu 22.04',
+    osBuild: null,
+    architecture: 'amd64',
+    agentVersion: '0.65.10',
+    deviceRole: 'server',
+    deviceRoleSource: 'auto',
+    agentTokenHash: 'hash',
+    tokenIssuedAt: new Date(),
+    mainAgentSilentSince: null,
+  };
+
+  async function setupMocks(setSpy: ReturnType<typeof vi.fn>) {
+    vi.clearAllMocks();
+    // Dedupe cache is a module-global — reset it so a capability assertion in
+    // one test can never inherit state left behind by another.
+    const { resetWatchdogRestartLogCacheForTests } = await import('./heartbeat');
+    resetWatchdogRestartLogCacheForTests();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    selectMock.mockReturnValue(selectChainResolving([]));
+  }
+
+  it('records version 1 from a capable heartbeat', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...minimalHeartbeatBody,
+        securityCapabilities: { outboundNetworkPolicyVersion: 1 },
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.outboundNetworkPolicyVersion).toBe(1);
+  });
+
+  it('leaves version 0 when an old heartbeat omits securityCapabilities entirely', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    // minimalHeartbeatBody has no securityCapabilities key — simulates an
+    // agent build that predates Wave 6 Task 4.
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.outboundNetworkPolicyVersion).toBe(0);
+  });
+
+  it('records version 0 for an unrecognized capability version rather than trusting it', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...minimalHeartbeatBody,
+        securityCapabilities: { outboundNetworkPolicyVersion: 2 },
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.outboundNetworkPolicyVersion).toBe(0);
+  });
+
+  it('resets a previously-capable device back to 0 on a downgraded (old) heartbeat', async () => {
+    // Same device row shape regardless of its PRIOR stored capability value —
+    // the write is unconditional every heartbeat, not a merge against the
+    // existing row, so what matters is what THIS heartbeat declares.
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.outboundNetworkPolicyVersion).toBe(0);
+  });
+
+  it('watchdog heartbeats never touch outboundNetworkPolicyVersion', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    vi.clearAllMocks();
+    const { resetWatchdogRestartLogCacheForTests } = await import('./heartbeat');
+    resetWatchdogRestartLogCacheForTests();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([{ ...deviceRow, lastSeenAt: new Date() }]),
+    );
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    selectMock.mockReturnValue(selectChainResolving([]));
+
+    const resp = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        role: 'watchdog',
+        agentVersion: '0.65.10',
+        watchdogState: 'MONITORING',
+        securityCapabilities: { outboundNetworkPolicyVersion: 1 },
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    expect(setSpy).toHaveBeenCalled();
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg).toHaveProperty('watchdogStatus');
+    expect(updateArg).not.toHaveProperty('outboundNetworkPolicyVersion');
   });
 });
 

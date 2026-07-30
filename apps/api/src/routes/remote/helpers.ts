@@ -378,6 +378,7 @@ export const DEFAULT_REMOTE_SESSION_PROMPT_CONFIG: RemoteSessionPromptConfig = {
 // Mirrors the `systemAuth` constant in services/remoteAccessPolicy.ts so internal
 // policy resolution sees every assignment level regardless of the caller scope.
 const promptConfigSystemAuth: AuthContext = {
+  principal: { kind: 'system', reason: 'remote-prompt-config-resolution' },
   user: { id: 'system', email: 'system', name: 'System', isPlatformAdmin: false },
   token: {} as never,
   partnerId: null,

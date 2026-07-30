@@ -42,6 +42,7 @@ function makeAuth(opts: {
 } = {}): AuthContext {
   const { scope = 'organization', allowedSiteIds, orgId = 'org-1' } = opts;
   return {
+    principal: { kind: 'user_session' },
     user: { id: 'u1', email: 'a@b.c', name: 'A', isPlatformAdmin: false },
     token: {} as any,
     partnerId: null,

@@ -12,6 +12,12 @@ import {
 import { resolveEdrInstaller, type ResolvedInstaller } from './edrInstallerResolver';
 import { resolveInstallerVariables, type InstallerVariableContext } from './installerVariables';
 import { getPresignedUrl, isS3Configured, isS3NotFound } from './s3Storage';
+import {
+  evaluateManagedSoftwareDispatch,
+  type ManagedSoftwareDispatchDenialReason,
+  getManagedSoftwarePolicyMode,
+} from './managedSoftwareDispatchPolicy';
+import { getEffectiveSoftwareDownloadPolicy } from './softwareDownloadPolicy';
 import { sendCommandToAgent, type AgentCommand } from '../routes/agentWs';
 
 export interface CreateSoftwareDeploymentInput {
@@ -207,6 +213,10 @@ export async function createSoftwareDeployment(
         siteId: devices.siteId,
         hostname: devices.hostname,
         customFields: devices.customFields,
+        // Wave 6 Task 5: the agent's outbound-network-policy capability, written
+        // from the heartbeat handshake. 0 = pre-Wave-6 agent with no dial-time
+        // destination policy.
+        outboundNetworkPolicyVersion: devices.outboundNetworkPolicyVersion,
       })
       .from(devices)
       .where(
@@ -248,8 +258,30 @@ export async function createSoftwareDeployment(
       : undefined;
     const forceReinstall = options?.forceReinstall === true;
 
+    // Managed software destination policy (Wave 6 Task 5). The mode is read
+    // ONCE per dispatch batch so every device in one deployment is decided
+    // under the same rules, and the effective org ∪ site allowlist is fetched
+    // once per distinct site rather than once per device.
+    const policyMode = getManagedSoftwarePolicyMode();
+    const policyBySite = new Map<string, Promise<{ approvedPrivateOrigins: string[] }>>();
+    const effectivePolicyFor = (siteId: string | null | undefined) => {
+      const key = siteId ?? '';
+      let pending = policyBySite.get(key);
+      if (!pending) {
+        pending = getEffectiveSoftwareDownloadPolicy(orgId, siteId ?? undefined).then((policy) => ({
+          approvedPrivateOrigins: [...policy.approvedPrivateOrigins],
+        }));
+        policyBySite.set(key, pending);
+      }
+      return pending;
+    };
+
     const dispatchedDeviceIds: string[] = [];
     let variableFailureCount = 0;
+    let policyDenialCount = 0;
+    // Bounded reasons only (see managedSoftwareDispatchPolicy) — safe to
+    // interpolate into the aggregate message, unlike a URL or host.
+    const policyDenialReasons = new Set<ManagedSoftwareDispatchDenialReason>();
     for (const device of targetDevices) {
       // Resolve `{{...}}` variables against this device's org/site/device context.
       // Skipped entirely unless `templatesUseVariables` (computed once above); the
@@ -290,12 +322,42 @@ export async function createSoftwareDeployment(
         deviceSilentInstallArgs = resolved.silentInstallArgs;
       }
 
+      // Destination gate — BEFORE sendCommandToAgent. A denied device gets a
+      // failed result carrying the bounded reason and NO enqueued command; the
+      // agent's dial-time policy remains the authoritative defense for the
+      // devices that do receive one.
+      const { approvedPrivateOrigins } = await effectivePolicyFor(device.siteId);
+      const decision = evaluateManagedSoftwareDispatch({
+        downloadUrl: deviceDownloadUrl,
+        approvedPrivateOrigins,
+        outboundNetworkPolicyVersion: device.outboundNetworkPolicyVersion,
+        mode: policyMode,
+      });
+      if (!decision.allowed) {
+        await db
+          .update(deploymentResults)
+          .set({ status: 'failed', errorMessage: decision.reason, completedAt: new Date() })
+          .where(
+            and(
+              eq(deploymentResults.deploymentId, deployment.id),
+              eq(deploymentResults.deviceId, device.id),
+            ),
+          );
+        policyDenialCount++;
+        policyDenialReasons.add(decision.reason);
+        continue;
+      }
+
       const command: AgentCommand = {
         id: `sw-install-${deployment.id}-${device.id}`,
         type: 'software_install',
         payload: {
           deploymentId: deployment.id,
           downloadUrl: deviceDownloadUrl,
+          downloadPolicy: {
+            version: 1,
+            approvedPrivateOrigins,
+          },
           checksum: versionRecord.checksum,
           fileName:
             versionRecord.originalFileName ?? `package.${versionRecord.fileType ?? 'exe'}`,
@@ -311,15 +373,20 @@ export async function createSoftwareDeployment(
       dispatchedDeviceIds.push(device.id);
     }
 
-    // If installer variables were in play and NOTHING dispatched because every
-    // target failed resolution, report failure — mirrors the EDR/no-installer
-    // paths rather than reporting a false 'pending' success to the caller.
-    if (variableFailureCount > 0 && dispatchedDeviceIds.length === 0) {
+    // If NOTHING dispatched because every target failed variable resolution or
+    // was denied by the destination policy, report failure — mirrors the
+    // EDR/no-installer paths rather than reporting a false 'pending' success to
+    // the caller.
+    if (dispatchedDeviceIds.length === 0 && (variableFailureCount > 0 || policyDenialCount > 0)) {
       return {
         deploymentId: deployment.id,
         deployment,
         status: 'failed',
-        message: 'All target devices failed installer variable resolution',
+        message:
+          variableFailureCount > 0
+            ? 'All target devices failed installer variable resolution'
+            : 'All target devices denied by the managed software network policy: ' +
+              [...policyDenialReasons].sort().join(', '),
         dispatchedDeviceIds: [],
       };
     }

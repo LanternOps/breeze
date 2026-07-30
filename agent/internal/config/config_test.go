@@ -919,3 +919,41 @@ func TestSaveToRoundTripsDeviceID(t *testing.T) {
 		t.Errorf("DeviceID = %q, want %q", loaded.DeviceID, cfg.DeviceID)
 	}
 }
+
+// TestSaveToRoundTripsRequireManifestSigningKeyID pins the agent-side rollout
+// control for exact-signing-key-ID verification. Without the viper.Set in
+// SaveTo the field silently reverts to false on the next save — i.e. an agent
+// that was switched to fail-closed would quietly go back to accepting
+// ID-less manifests.
+func TestSaveToRoundTripsRequireManifestSigningKeyID(t *testing.T) {
+	defer viper.Reset()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	cfg := Default()
+	cfg.AgentID = "ab3c20eddb470acffd33bbe00f25e0348e89298ab80cece542bb1fbf921e5776"
+	cfg.ServerURL = "https://api.example.test"
+	if cfg.RequireManifestSigningKeyID {
+		t.Fatal("RequireManifestSigningKeyID must default to false (compatibility mode)")
+	}
+	cfg.RequireManifestSigningKeyID = true
+
+	if err := SaveTo(cfg, cfgPath); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(raw), "require_manifest_signing_key_id") {
+		t.Fatalf("expected require_manifest_signing_key_id key in agent.yaml, got:\n%s", raw)
+	}
+
+	loaded, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !loaded.RequireManifestSigningKeyID {
+		t.Error("RequireManifestSigningKeyID did not round-trip through SaveTo/Load")
+	}
+}

@@ -2321,7 +2321,7 @@ jobs:
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -2379,7 +2379,7 @@ jobs:
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -2438,7 +2438,7 @@ jobs:
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -2510,6 +2510,102 @@ jobs:
           path: m365-graph-read-executor-image-digest.txt
           retention-days: 90
 
+  build-docker-m365-graph-actions-executor:
+    name: Build & Push M365 Graph Actions Executor Image
+    runs-on: ubuntu-latest
+    needs: [create-release]
+    if: >-
+      github.ref_type == 'tag'
+      && startsWith(github.ref, 'refs/tags/v')
+      && !cancelled()
+      && needs.create-release.result == 'success'
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      executor-image-digest: ${{ steps.push-executor-digest.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # IMAGE_NAME is ${{ github.repository }} (e.g. LanternOps/breeze), but a
+      # container reference must be lowercase. The api/web jobs launder this
+      # through docker/metadata-action (which lowercases); this job builds the
+      # ref by hand, so lowercase it explicitly.
+      - name: Compute lowercase image base
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          BASE="${REGISTRY}/${IMAGE_NAME}"
+          echo "IMAGE_BASE=${BASE,,}" >> "$GITHUB_ENV"
+
+      # Push by digest only: no release-facing tag exists until this exact
+      # manifest passes the blocking vulnerability scan below.
+      - name: Build and push unadvertised executor digest
+        id: push-executor-digest
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: apps/m365-graph-actions-executor/Dockerfile
+          outputs: type=image,name=${{ env.IMAGE_BASE }}/m365-graph-actions-executor,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan exact executor digest
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_BASE }}/m365-graph-actions-executor@${{ steps.push-executor-digest.outputs.digest }}
+          severity: 'HIGH,CRITICAL'
+          format: 'table'
+          exit-code: '1'
+
+      # Promote the already-scanned manifest. imagetools only creates tag
+      # references; it never rebuilds or mutates the image layers.
+      - name: Promote scanned executor digest
+        env:
+          EXECUTOR_REPOSITORY: ${{ env.IMAGE_BASE }}/m365-graph-actions-executor
+          EXECUTOR_IMAGE_DIGEST: ${{ steps.push-executor-digest.outputs.digest }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          VERSION="${RELEASE_REF_NAME#v}"
+          SHORT_SHA="${RELEASE_SHA::7}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Executor image promotion requires an exact semver release tag" >&2
+            exit 1
+          fi
+          docker buildx imagetools create \
+            --tag "${EXECUTOR_REPOSITORY}:${VERSION}" \
+            --tag "${EXECUTOR_REPOSITORY}:sha-${SHORT_SHA}" \
+            "${EXECUTOR_REPOSITORY}@${EXECUTOR_IMAGE_DIGEST}"
+
+      - name: Record executor digest
+        env:
+          EXECUTOR_IMAGE_DIGEST: ${{ steps.push-executor-digest.outputs.digest }}
+        run: |
+          test -n "$EXECUTOR_IMAGE_DIGEST"
+          printf '%s\n' "$EXECUTOR_IMAGE_DIGEST" > m365-graph-actions-executor-image-digest.txt
+
+      - name: Upload executor digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: m365-graph-actions-executor-image-digest
+          path: m365-graph-actions-executor-image-digest.txt
+          retention-days: 90
+
   build-docker-web:
     name: Build & Push Web Docker Image
     runs-on: ubuntu-latest
@@ -2539,7 +2635,7 @@ jobs:
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -2596,7 +2692,7 @@ jobs:
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}

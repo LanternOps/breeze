@@ -66,6 +66,7 @@ export function createSystemAuthContext(): AuthContext {
   };
 
   return {
+    principal: { kind: 'system', reason: 'feature-config-resolution' },
     user: {
       id: '00000000-0000-0000-0000-000000000000',
       email: 'system@breeze.internal',

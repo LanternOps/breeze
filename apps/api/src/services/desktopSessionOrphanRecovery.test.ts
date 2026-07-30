@@ -8,6 +8,7 @@ import {
 
 const session = {
   id: '11111111-1111-4111-8111-111111111111',
+  type: 'desktop',
   deviceId: '22222222-2222-4222-8222-222222222222',
   orgId: '33333333-3333-4333-8333-333333333333',
   userId: '44444444-4444-4444-8444-444444444444',
@@ -118,6 +119,44 @@ describe('desktop orphan recovery', () => {
       sessionId: session.id,
       finalizationId: '55555555-5555-4555-8555-555555555555',
     });
+  });
+
+  it('never claims a live non-desktop session (terminal 60s revocation regression, #2871)', async () => {
+    const deps = dependencies();
+    vi.mocked(deps.loadSession).mockResolvedValue({
+      ...session,
+      type: 'terminal',
+    });
+    const service = createDesktopSessionOrphanRecoveryService(deps);
+
+    // Two passes separated by more than a full lease TTL — the exact cadence
+    // that previously claimed and finalized a healthy live terminal session.
+    await expect(service.recover(session.id, 'background')).resolves.toBe('not_orphaned');
+    deps.setNow!(31_000);
+    await expect(service.recover(session.id, 'background')).resolves.toBe('not_orphaned');
+
+    expect(deps.observeSharedState).not.toHaveBeenCalled();
+    expect(deps.claimOrphanIntent).not.toHaveBeenCalled();
+    expect(deps.finalize).not.toHaveBeenCalled();
+  });
+
+  it('refuses to finalize when the row flips to a non-desktop type between observations', async () => {
+    const deps = dependencies();
+    const service = createDesktopSessionOrphanRecoveryService(deps);
+
+    await service.recover(session.id, 'background');
+    // Within the second recover() call the row is loaded twice: the entry
+    // check sees a desktop row, but the post-lease-TTL RE-load returns a
+    // non-desktop row. The re-load guard must refuse the claim — this is the
+    // deep checkpoint, distinct from the entry guard covered above.
+    vi.mocked(deps.loadSession)
+      .mockResolvedValueOnce(session)
+      .mockResolvedValueOnce({ ...session, type: 'terminal' });
+    deps.setNow!(31_000);
+    await expect(service.recover(session.id, 'background')).resolves.toBe('not_orphaned');
+
+    expect(deps.claimOrphanIntent).not.toHaveBeenCalled();
+    expect(deps.finalize).not.toHaveBeenCalled();
   });
 
   it('does not treat a recent pending row as orphaned', async () => {

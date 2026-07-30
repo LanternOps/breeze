@@ -234,9 +234,12 @@ func TestDetectedDesiredResolvesConsoleSessionIDBeforeLock(t *testing.T) {
 
 	called := make(chan struct{}, 1)
 	m.consoleSessionIDFn = func() string {
-		// Taking m.mu here proves detectedDesired had not already locked it.
-		m.mu.Lock()
-		m.mu.Unlock()
+		// Acquiring m.mu here proves detectedDesired had not already locked it.
+		if !m.mu.TryLock() {
+			t.Error("consoleSessionIDFn ran while detectedDesired held m.mu")
+		} else {
+			m.mu.Unlock()
+		}
 		called <- struct{}{}
 		return "1"
 	}

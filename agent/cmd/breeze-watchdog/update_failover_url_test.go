@@ -14,38 +14,40 @@ import (
 // guard for the watchdog binary updater. doUpdateWatchdog (and its identically
 // wired sibling doUpdateAgent) must resolve the control-plane URL from the live
 // provider — the FailoverClient's BaseURL — at download time, NOT from the
-// cfg.ServerURL copy captured at startup. Before the fix the updater built
+// cfg.ServerURL copy captured at startup. Before the #2478 fix the updater built
 // updater.Config{ServerURL: cfg.ServerURL} and therefore kept downloading from
 // the dead primary even after the FailoverClient had retargeted itself to the
 // promoted backup via SetBaseURL during a failover window.
 //
 // doUpdateWatchdog is used (rather than doUpdateAgent) because it derives its
 // BinaryPath from os.Executable() — the test binary, in a writable temp dir — so
-// the updater's write-preflight passes and the download actually routes over
-// HTTP where the two servers below can observe which origin was contacted.
-// doUpdateAgent shares the exact same serverURL wiring, so this proves the class.
+// the updater's write-preflight passes and the download attempt actually reaches
+// HTTP request construction. doUpdateAgent shares the exact same serverURL
+// wiring, so this proves the class.
+//
+// Wave-06 security remediation update: doUpdateWatchdog now routes downloads
+// through the agent's shared outbound network policy (agent/internal/netpolicy),
+// which rejects ANY loopback destination outright and unconditionally — the
+// same protection that closes SSRF-AGENT-001 also means neither local httptest
+// server below can ever actually be dialed. The download therefore always
+// fails now, and this test can no longer prove routing by observing which
+// server received a request. Instead it inspects the returned error: net/http
+// wraps every transport/policy error in a *url.Error that names the exact
+// request URL it attempted (this is netpolicy's own documented limitation —
+// see its package doc — which is why production code must never log this raw
+// error, only errors.As to *netpolicy.PolicyError and log .Reason; a TEST
+// asserting on it is fine). Asserting on that URL proves doUpdateWatchdog
+// targeted the live promoted backup, not the stale cfg.ServerURL snapshot of
+// the dead primary — the same property #2478 fixed, just observed differently.
 func TestDoUpdateWatchdogFollowsFailoverBaseURLPromotion(t *testing.T) {
 	// deadPrimary stands in for the failed primary captured in cfg at startup.
-	// A hit here after promotion is the bug the fix removes.
-	deadHit := false
 	deadPrimary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		deadHit = true
 		http.Error(w, "dead primary must not be contacted", http.StatusGone)
 	}))
 	defer deadPrimary.Close()
 
-	// promotedBackup is what the FailoverClient was retargeted to. It returns a
-	// well-formed-but-untrusted download info body so the updater proceeds past
-	// the request into manifest verification (which fails closed — fine; we only
-	// assert which origin received the download request, not update success).
-	promotedHit := false
+	// promotedBackup is what the FailoverClient was retargeted to.
 	promotedBackup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/agent-versions/") && strings.Contains(r.URL.Path, "/download") {
-			promotedHit = true
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"url":"` + r.URL.Scheme + `","checksum":"x","manifest":"{}","manifestSignature":"AAAA"}`))
-			return
-		}
 		http.Error(w, "not found", http.StatusNotFound)
 	}))
 	defer promotedBackup.Close()
@@ -67,14 +69,16 @@ func TestDoUpdateWatchdogFollowsFailoverBaseURLPromotion(t *testing.T) {
 	fc := watchdog.NewFailoverClient(deadPrimary.URL, "agent-1", "tok", nil)
 	fc.SetBaseURL(promotedBackup.URL)
 
-	// Expected to fail (untrusted manifest); we assert routing, not success. The
-	// download failure also means restartWatchdogService() is never reached.
-	_ = doUpdateWatchdog("2.1.0", fc.BaseURL, cfg, tokens, journal)
-
-	if deadHit {
-		t.Fatal("doUpdateWatchdog contacted the dead primary (cfg.ServerURL) after failover promotion (#2478)")
+	updateErr := doUpdateWatchdog("2.1.0", fc.BaseURL, cfg, tokens, journal)
+	if updateErr == nil {
+		t.Fatal("expected doUpdateWatchdog to fail: both test servers are loopback, which the shared network policy always rejects regardless of which origin was targeted")
 	}
-	if !promotedHit {
-		t.Fatal("doUpdateWatchdog did not download from the promoted backup (fc.BaseURL)")
+
+	msg := updateErr.Error()
+	if strings.Contains(msg, deadPrimary.URL) {
+		t.Fatalf("doUpdateWatchdog targeted the dead primary (cfg.ServerURL) after failover promotion (#2478): %v", updateErr)
+	}
+	if !strings.Contains(msg, promotedBackup.URL) {
+		t.Fatalf("doUpdateWatchdog did not target the promoted backup (fc.BaseURL): %v", updateErr)
 	}
 }

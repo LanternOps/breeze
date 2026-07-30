@@ -57,6 +57,7 @@ describe('HELPER_TOOL_SCOPING <-> tool schema consistency (finding A regression 
 
 function helperAuth(deviceId: string): AuthContext {
   return {
+    principal: { kind: 'helper' },
     user: { id: deviceId, email: 'h', name: 'h', isPlatformAdmin: false },
     token: {} as AuthContext['token'],
     partnerId: null,

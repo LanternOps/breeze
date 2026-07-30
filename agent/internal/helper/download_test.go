@@ -1,9 +1,9 @@
 package helper
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
@@ -11,95 +11,112 @@ import (
 	"github.com/breeze-rmm/agent/internal/updater"
 )
 
-// TestDefaultHelperDownloaderRejectsOffOriginRedirect proves the production
-// helper download path (the updater-backed verified downloader) does NOT follow
-// a redirect off the configured control-plane origin to an attacker-controlled
-// CDN. This is the core of the HIGH-severity finding: the old downloadFile used
-// http.DefaultClient (follows redirects) and ran the result as SYSTEM/root with
-// no integrity check.
-func TestDefaultHelperDownloaderRejectsOffOriginRedirect(t *testing.T) {
-	// A malicious "CDN" that, if ever reached, would serve poisoned bytes.
-	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("POISONED-INSTALLER-PAYLOAD"))
-	}))
-	defer evil.Close()
-
-	// The control plane: its download-info endpoint 302-redirects off-origin to
-	// the evil CDN (mirrors BINARY_SOURCE=github serving the helper download).
-	var infoHits int
-	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/download") {
-			infoHits++
-			http.Redirect(w, r, evil.URL+"/breeze-helper-windows.msi", http.StatusFound)
-			return
-		}
-		http.Error(w, "not found", http.StatusNotFound)
-	}))
-	defer control.Close()
-
-	dl := defaultHelperDownloader(func() string { return control.URL }, secmem.NewSecureString("tok"), "1.2.3", nil)
-	path, err := dl("1.2.3")
-	if err == nil {
-		if path != "" {
-			_ = os.Remove(path)
-		}
-		t.Fatalf("expected verified download to reject the off-origin redirect, got success (path=%q)", path)
-	}
-	// The error must come from refusing the unsigned redirect, never from having
-	// fetched and trusted the evil payload.
-	if !strings.Contains(err.Error(), "redirect") && !strings.Contains(err.Error(), "signed") && !strings.Contains(err.Error(), "manifest") {
-		t.Fatalf("expected a redirect/manifest-trust rejection, got: %v", err)
-	}
-}
-
-// TestDefaultHelperDownloaderUsesHelperComponent confirms the verified
-// downloader queries the agent-versions download endpoint with
-// component=helper, so the signed release manifest's helper asset
-// (breeze-helper-*) is the trust anchor — not the unauthenticated
-// /download/helper/:os/:arch redirect route.
-func TestDefaultHelperDownloaderUsesHelperComponent(t *testing.T) {
-	var gotComponent string
-	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotComponent = r.URL.Query().Get("component")
-		// Return a well-formed-but-untrusted info body so the path proceeds past
-		// the request and into manifest verification (which will fail closed —
-		// that's fine; we only assert the component here).
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"url":"` + r.URL.Scheme + `","checksum":"x","manifest":"{}","manifestSignature":"AAAA"}`))
-	}))
-	defer control.Close()
-
-	dl := defaultHelperDownloader(func() string { return control.URL }, secmem.NewSecureString("tok"), "9.9.9", nil)
-	_, _ = dl("9.9.9") // error expected (untrusted manifest); we only inspect the request
-	if gotComponent != "helper" {
-		t.Fatalf("verified helper downloader queried component=%q, want %q", gotComponent, "helper")
+// TestDefaultHelperDownloaderRejectsOffOriginRedirect (pre-wave-06 test,
+// DELETED — see below) used to prove the production helper download path
+// never follows an off-origin CDN redirect, by pointing a local httptest
+// "control plane" at a local httptest "evil CDN" via a 302 and asserting the
+// evil server was never hit. This is the core of the original HIGH-severity
+// finding: the old downloadFile used http.DefaultClient (follows redirects)
+// and ran the result as SYSTEM/root with no integrity check.
+//
+// It no longer holds as written: since the wave-06 network-policy hardening,
+// EVERY loopback destination is rejected outright and unconditionally by
+// agent/internal/netpolicy, so "control" (a local httptest server) is itself
+// unreachable and the request now fails before it ever reaches control's
+// redirect handler — evilHits becomes structurally unreachable, and the test
+// would pass even if off-origin redirects were followed unconditionally
+// (i.e. it regressed to vacuous, the same defect the review flagged in
+// TestDownloadFromURL_IgnoresHostileProxyEnvironment).
+//
+// I deleted it rather than rebuild it here: defaultHelperDownloader has no
+// seam to inject a netpolicy.Resolver (it constructs updater.New(cfg)
+// entirely inside its own closure — see helperUpdaterConfig below), so a
+// helper-package test cannot make the control-plane hop reachable without
+// adding test-only surface to production code for a property this package
+// does not itself implement. defaultHelperDownloader contributes no
+// redirect-handling logic of its own; it only builds an *updater.Config
+// (Component: "helper" plus the same ServerURL/BackupServerURL/AuthToken
+// shape every other updater.New caller uses) and delegates to
+// updater.Updater.DownloadBinary. The off-origin-redirect property is
+// covered where it is actually enforced:
+//   - agent/internal/netpolicy/http_test.go: TestRedirectToUnsafeTargetRejected,
+//     TestRedirectToPrivateAddressRejected, TestRedirectCrossOriginStripsCredentials
+//   - agent/internal/updater/updater_security_test.go:
+//     TestClient_RedirectPolicy_RejectsHTTPSDowngrade,
+//     TestClient_RedirectPolicy_StripsAuthorizationOnOriginChange,
+//     TestClient_RedirectPolicy_EnforcesTenHopLimit,
+//     TestClient_RedirectPolicy_RejectsHopToLoopback,
+//     TestClient_RedirectPolicy_RejectsHopToMetadata (redirect-hop coverage,
+//     not just an initial target)
+//
+// TestHelperUpdaterConfig_UsesHelperComponent confirms the verified downloader
+// queries the agent-versions download endpoint with component=helper, so the
+// signed release manifest's helper asset (breeze-helper-*) is the trust
+// anchor — not the unauthenticated /download/helper/:os/:arch redirect route.
+//
+// This asserts the built *updater.Config directly (via helperUpdaterConfig)
+// rather than observing an actual HTTP request: since the wave-06 network-
+// policy hardening, no test in this package can complete a real request
+// against a local httptest server at all (see the deleted-test comment
+// above).
+func TestHelperUpdaterConfig_UsesHelperComponent(t *testing.T) {
+	cfg := helperUpdaterConfig(func() string { return "https://control.example" }, nil, secmem.NewSecureString("tok"), "9.9.9", nil, nil)
+	if cfg.Component != "helper" {
+		t.Fatalf("helper updater config Component = %q, want %q", cfg.Component, "helper")
 	}
 }
 
-// TestDefaultHelperDownloaderResolvesServerURLAtCallTime is the #2478 regression
-// guard: the downloader must read the serverURL provider on every call, so a
-// backup-server-URL promotion (#2323) that happens AFTER the manager is
-// constructed is honored. Before the fix the URL was a plain string baked into
-// the closure at construction, so the helper kept fetching from the dead primary
-// for the rest of the process lifetime after a failover.
+// TestHelperUpdaterConfig_ThreadsBackupServerURL proves backupServerURL
+// reaches updater.Config.BackupServerURL — the field netpolicy uses to admit
+// the configured backup control plane into ControlPlaneOrigins. A Manager
+// construction site that forgot to pass helper.WithBackupServerURL would
+// silently produce a Config with an empty BackupServerURL here.
+func TestHelperUpdaterConfig_ThreadsBackupServerURL(t *testing.T) {
+	cfg := helperUpdaterConfig(
+		func() string { return "https://primary.example" },
+		func() string { return "https://backup.example" },
+		secmem.NewSecureString("tok"), "9.9.9", nil, nil,
+	)
+	if cfg.BackupServerURL != "https://backup.example" {
+		t.Fatalf("BackupServerURL = %q, want %q", cfg.BackupServerURL, "https://backup.example")
+	}
+}
+
+// TestHelperUpdaterConfig_NilBackupServerURLIsNoOp proves a nil
+// backupServerURL provider (no WithBackupServerURL option set, or an agent
+// build predating failover awareness) produces an empty BackupServerURL
+// rather than panicking.
+func TestHelperUpdaterConfig_NilBackupServerURLIsNoOp(t *testing.T) {
+	cfg := helperUpdaterConfig(func() string { return "https://primary.example" }, nil, secmem.NewSecureString("tok"), "9.9.9", nil, nil)
+	if cfg.BackupServerURL != "" {
+		t.Fatalf("BackupServerURL = %q, want empty for a nil provider", cfg.BackupServerURL)
+	}
+}
+
+// TestDefaultHelperDownloaderResolvesServerURLAtCallTime is the #2478
+// regression guard: the downloader must read the serverURL provider on every
+// call, so a backup-server-URL promotion (#2323) that happens AFTER the
+// manager is constructed is honored. Before the #2478 fix the URL was a plain
+// string baked into the closure at construction, so the helper kept fetching
+// from the dead primary for the rest of the process lifetime after a
+// failover.
+//
+// Wave-06 update: both test servers are loopback, which the shared network
+// policy now rejects outright regardless of which one is targeted, so this
+// can no longer prove routing by observing which server received a request
+// (see the deleted TestDefaultHelperDownloaderRejectsOffOriginRedirect's
+// comment above for the general pattern this hits).
+// net/http wraps the rejection in a *url.Error that names the exact request
+// URL attempted; asserting on that (test-only — production code must never
+// log this raw error, only the bounded netpolicy.PolicyError.Reason) proves
+// the live promoted URL was used, not the stale captured-at-construction one.
 func TestDefaultHelperDownloaderResolvesServerURLAtCallTime(t *testing.T) {
-	// deadPrimary is the URL captured when the downloader is built. A hit here
-	// after promotion is the bug.
-	deadHit := false
 	deadPrimary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		deadHit = true
 		http.Error(w, "dead primary must not be contacted", http.StatusGone)
 	}))
 	defer deadPrimary.Close()
 
-	promotedHit := false
 	promotedBackup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/download") {
-			promotedHit = true
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"url":"` + r.URL.Scheme + `","checksum":"x","manifest":"{}","manifestSignature":"AAAA"}`))
-			return
-		}
 		http.Error(w, "not found", http.StatusNotFound)
 	}))
 	defer promotedBackup.Close()
@@ -107,16 +124,19 @@ func TestDefaultHelperDownloaderResolvesServerURLAtCallTime(t *testing.T) {
 	// The provider starts on the dead primary, then is promoted to the backup
 	// AFTER the downloader closure is built — exactly the failover ordering.
 	current := deadPrimary.URL
-	dl := defaultHelperDownloader(func() string { return current }, secmem.NewSecureString("tok"), "1.2.3", nil)
+	dl := defaultHelperDownloader(func() string { return current }, nil, secmem.NewSecureString("tok"), "1.2.3", nil, nil)
 	current = promotedBackup.URL
 
-	_, _ = dl("1.2.3") // error expected (untrusted manifest); we assert routing
-
-	if deadHit {
-		t.Fatal("helper downloader contacted the dead primary after promotion — URL was captured at construction (#2478)")
+	_, err := dl("1.2.3")
+	if err == nil {
+		t.Fatal("expected the download to fail: both test servers are loopback, which the shared network policy always rejects")
 	}
-	if !promotedHit {
-		t.Fatal("helper downloader did not follow the promoted backup URL")
+	msg := err.Error()
+	if strings.Contains(msg, deadPrimary.URL) {
+		t.Fatalf("helper downloader targeted the dead primary after promotion — URL was captured at construction (#2478): %v", err)
+	}
+	if !strings.Contains(msg, promotedBackup.URL) {
+		t.Fatalf("helper downloader did not target the promoted backup URL: %v", err)
 	}
 }
 
@@ -124,3 +144,88 @@ func TestDefaultHelperDownloaderResolvesServerURLAtCallTime(t *testing.T) {
 // compatible with updater.Updater.DownloadBinary so the production shim is a
 // one-liner and the seam stays honest.
 var _ func(string) (string, error) = (&updater.Updater{}).DownloadBinary
+
+// TestHelperUpdaterConfig_ThreadsRequireManifestSigningKeyID proves the
+// fail-closed rollout control reaches the helper's verified downloader. A
+// Manager construction site that forgot helper.WithRequireManifestSigningKeyID
+// would leave the helper package on the compatibility path (verify against the
+// whole key set) even on an agent whose own self-update is fail-closed.
+func TestHelperUpdaterConfig_ThreadsRequireManifestSigningKeyID(t *testing.T) {
+	cfg := helperUpdaterConfig(func() string { return "https://control.example" }, nil, secmem.NewSecureString("tok"), "9.9.9", nil, func() bool { return true })
+	if !cfg.RequireManifestSigningKeyID {
+		t.Fatal("RequireManifestSigningKeyID did not reach the helper updater config")
+	}
+
+	relaxed := helperUpdaterConfig(func() string { return "https://control.example" }, nil, secmem.NewSecureString("tok"), "9.9.9", nil, nil)
+	if relaxed.RequireManifestSigningKeyID {
+		t.Fatal("RequireManifestSigningKeyID must stay false when not requested")
+	}
+}
+
+// Finding I4 of the wave-06 whole-branch review: the Manager took the pinned
+// manifest key set and the key-ID requirement BY VALUE and baked them into
+// downloadFunc at construction, while h.config.PinnedManifestPubKeys is replaced
+// at runtime (the manifest-trust-pin path and applyManifestKeyDelegations both
+// rewrite it after a config.Reload()) and the main/watchdog updaters re-read it.
+// Once the delegated key was activated — this wave's own stated end state — the
+// server signed helper manifests with the new key ID while the Manager still
+// verified against the frozen old set, so Breeze Assist install/update failed
+// closed until the agent process restarted, with no server-side signal.
+//
+// Both options now take providers, exactly as WithBackupServerURL already did.
+// This asserts LATE resolution through the real seams: options → Manager fields
+// → the per-download config builder. Reverting either option to a by-value
+// parameter does not compile against this test.
+func TestHelperUpdaterConfig_ResolvesManifestTrustPerDownload(t *testing.T) {
+	keys := []string{"key-old:AAAA"}
+	requireKeyID := false
+
+	m := New(
+		context.Background(),
+		func() string { return "https://control.example" },
+		secmem.NewSecureString("tok"),
+		"agent-1",
+		WithAgentVersion("9.9.9"),
+		WithManifestKeys(func() []string { return keys }),
+		WithRequireManifestSigningKeyID(func() bool { return requireKeyID }),
+	)
+
+	build := func() *updater.Config {
+		return helperUpdaterConfig(m.serverURL, m.backupServerURL, m.authToken,
+			m.agentVersion, m.manifestKeys, m.requireManifestSigningKeyID)
+	}
+
+	before := build()
+	if len(before.PinnedManifestPubKeys) != 1 || before.PinnedManifestPubKeys[0] != "key-old:AAAA" {
+		t.Fatalf("initial PinnedManifestPubKeys = %v, want [key-old:AAAA]", before.PinnedManifestPubKeys)
+	}
+	if before.RequireManifestSigningKeyID {
+		t.Fatal("initial RequireManifestSigningKeyID = true, want false")
+	}
+
+	// The runtime change: a delegation is adopted and the key-ID requirement is
+	// pushed on. Neither goes through the Manager.
+	keys = []string{"key-old:AAAA", "key-new:BBBB"}
+	requireKeyID = true
+
+	after := build()
+	if len(after.PinnedManifestPubKeys) != 2 || after.PinnedManifestPubKeys[1] != "key-new:BBBB" {
+		t.Fatalf("PinnedManifestPubKeys froze at construction: %v", after.PinnedManifestPubKeys)
+	}
+	if !after.RequireManifestSigningKeyID {
+		t.Fatal("RequireManifestSigningKeyID froze at construction")
+	}
+}
+
+// A directly-constructed Manager (what most tests in this package use) has nil
+// providers; that must mean "unset", not a panic on the first download.
+func TestHelperUpdaterConfig_NilManifestTrustProvidersAreUnset(t *testing.T) {
+	cfg := helperUpdaterConfig(func() string { return "https://control.example" },
+		nil, secmem.NewSecureString("tok"), "9.9.9", nil, nil)
+	if cfg.PinnedManifestPubKeys != nil {
+		t.Fatalf("PinnedManifestPubKeys = %v, want nil for a nil provider", cfg.PinnedManifestPubKeys)
+	}
+	if cfg.RequireManifestSigningKeyID {
+		t.Fatal("RequireManifestSigningKeyID = true, want false for a nil provider")
+	}
+}

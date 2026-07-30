@@ -7,4 +7,12 @@ const token = Astro.url.searchParams.get('token') || '';
 
 <AuthLayout title="Accept Invite">
   <AcceptInviteForm client:load token={token} />
+  <!-- The island keeps the submit button disabled until it hydrates (#2868),
+       so without JavaScript the form is intentionally inert. Explain why. -->
+  <noscript>
+    <p class="mt-4 text-center text-sm text-muted-foreground">
+      JavaScript is required to activate your account. Please enable JavaScript
+      and reload this page.
+    </p>
+  </noscript>
 </AuthLayout>

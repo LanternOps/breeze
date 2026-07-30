@@ -1,0 +1,234 @@
+{
+  "_contract": [
+    "Shared Go/TS accept-set parity fixture for approved private software-download origins.",
+    "",
+    "Read by BOTH sides of the seam:",
+    "  Go: agent/internal/netpolicy/origin_parity_test.go",
+    "  TS: packages/shared/src/validators/softwareDownloadPolicy.parity.test.ts",
+    "",
+    "Fields:",
+    "  origin        - the raw string an operator could type into the allowlist.",
+    "  goAcceptsRaw  - whether netpolicy.parseOrigin(origin) succeeds. Recorded for",
+    "                  documentation; it is NOT the safety property (Go legitimately",
+    "                  accepts strings the HTTPS-only TS schema refuses, e.g. http://",
+    "                  or a loopback literal, because parseOrigin does not classify",
+    "                  addresses -- that happens at dial time).",
+    "  tsNormalized  - the exact value normalizePrivateSoftwareOrigin must return, or",
+    "                  null when it must reject.",
+    "",
+    "THE LOAD-BEARING INVARIANT, asserted by the Go test: for every case with a",
+    "non-null tsNormalized, netpolicy.parseOrigin(tsNormalized) must SUCCEED. That is",
+    "the accept-set subset property. Violating it is not a cosmetic divergence: the",
+    "agent's netpolicy.NewClient aborts on the FIRST unparseable configured origin,",
+    "so a single validator-blessed row the agent cannot parse denies an entire",
+    "org/site every managed-software install -- including public-CDN installs that",
+    "need no allowlist entry at all. (The agent also degrades to an empty approved",
+    "set rather than failing outright now; this fixture keeps the validator from",
+    "producing the input that degradation exists to survive.)",
+    "",
+    "When adding a host spelling to either side's rules, add a case here FIRST."
+  ],
+  "cases": [
+    {
+      "origin": "https://files.corp.internal",
+      "goAcceptsRaw": true,
+      "tsNormalized": "https://files.corp.internal",
+      "note": "the ordinary case: a customer-hosted repository name"
+    },
+    {
+      "origin": "https://files.corp.internal:8443",
+      "goAcceptsRaw": true,
+      "tsNormalized": "https://files.corp.internal:8443",
+      "note": "explicit non-default port survives normalization on both sides"
+    },
+    {
+      "origin": "https://FILES.Corp.Internal.",
+      "goAcceptsRaw": true,
+      "tsNormalized": "https://files.corp.internal",
+      "note": "case and trailing root dot both normalize away, identically"
+    },
+    {
+      "origin": "https://10.0.0.5",
+      "goAcceptsRaw": true,
+      "tsNormalized": "https://10.0.0.5",
+      "note": "RFC1918 literal: exactly what this allowlist exists to approve"
+    },
+    {
+      "origin": "https://10.20.30.40:8443",
+      "goAcceptsRaw": true,
+      "tsNormalized": "https://10.20.30.40:8443",
+      "note": "RFC1918 literal with a port"
+    },
+    {
+      "origin": "https://100.64.0.1",
+      "goAcceptsRaw": true,
+      "tsNormalized": "https://100.64.0.1",
+      "note": "CGNAT is classPrivate on the Go side, not forbidden"
+    },
+    {
+      "origin": "https://[fd00::1]",
+      "goAcceptsRaw": true,
+      "tsNormalized": "https://[fd00::1]",
+      "note": "ULA literal, the IPv6 counterpart of RFC1918"
+    },
+    {
+      "origin": "https://[fd00::1]:8443",
+      "goAcceptsRaw": true,
+      "tsNormalized": "https://[fd00::1]:8443",
+      "note": "bracketed ULA literal keeps its brackets and port"
+    },
+    {
+      "origin": "https://[2001:db8::1]",
+      "goAcceptsRaw": true,
+      "tsNormalized": "https://[2001:db8::1]",
+      "note": "canonical IPv6 text form"
+    },
+    {
+      "origin": "https://8.8.8.8",
+      "goAcceptsRaw": true,
+      "tsNormalized": "https://8.8.8.8",
+      "note": "a public literal is storable; it simply grants nothing extra"
+    },
+    {
+      "origin": "https://beef.cafe",
+      "goAcceptsRaw": true,
+      "tsNormalized": "https://beef.cafe",
+      "note": "OVER-REJECTION GUARD: all-hex-letter name, no 0x marker, so isNumericLookingHost must say no on both sides"
+    },
+    {
+      "origin": "https://x.x",
+      "goAcceptsRaw": true,
+      "tsNormalized": "https://x.x",
+      "note": "OVER-REJECTION GUARD: only separator/marker characters but no digit, so isNumericLookingHost must say no (hasDigit rule)"
+    },
+
+    {
+      "origin": "https://192.168.1.x",
+      "goAcceptsRaw": false,
+      "tsNormalized": null,
+      "note": "C1: exactly how a tech writes a subnet. The WHATWG parser keeps it as a DNS name, so nothing but isNumericLookingHost rejects it"
+    },
+    {
+      "origin": "https://172.16.x.x",
+      "goAcceptsRaw": false,
+      "tsNormalized": null,
+      "note": "C1: same shape, two wildcard labels"
+    },
+    {
+      "origin": "https://0xdead.beef",
+      "goAcceptsRaw": false,
+      "tsNormalized": null,
+      "note": "C1: hex shorthand whose trailing label kept the URL parser from resolving it to an address; rejected only because a 0x marker is present"
+    },
+    {
+      "origin": "https://0x1.0x2.ba.be",
+      "goAcceptsRaw": false,
+      "tsNormalized": null,
+      "note": "C1: mixed hex shorthand"
+    },
+    {
+      "origin": "https://1.2.3.4.5",
+      "goAcceptsRaw": false,
+      "tsNormalized": null,
+      "note": "five numeric labels: the URL parser refuses it outright, Go's isNumericLookingHost catches it"
+    },
+    {
+      "origin": "https://host..example",
+      "goAcceptsRaw": false,
+      "tsNormalized": null,
+      "note": "empty label is not a valid DNS name and would be a forbidden-hostname bypass spelling"
+    },
+    {
+      "origin": "https://[::ffff:10.0.0.5]",
+      "goAcceptsRaw": false,
+      "tsNormalized": null,
+      "note": "IPv4-mapped is rejected unconditionally on both sides; write https://10.0.0.5 instead"
+    },
+    {
+      "origin": "https://files.corp.internal:0",
+      "goAcceptsRaw": false,
+      "tsNormalized": null,
+      "note": "port 0 is out of range for both"
+    },
+    {
+      "origin": "https://user:pass@files.corp.internal",
+      "goAcceptsRaw": false,
+      "tsNormalized": null,
+      "note": "userinfo is refused by both"
+    },
+    {
+      "origin": "https://2130706433",
+      "goAcceptsRaw": false,
+      "tsNormalized": null,
+      "note": "decimal shorthand for 127.0.0.1: Go rejects the shape, TS canonicalizes then rejects the loopback range. Different reason, same answer"
+    },
+    {
+      "origin": "https://0177.0.0.1",
+      "goAcceptsRaw": false,
+      "tsNormalized": null,
+      "note": "octal shorthand for 127.0.0.1"
+    },
+    {
+      "origin": "https://127.1",
+      "goAcceptsRaw": false,
+      "tsNormalized": null,
+      "note": "short-form shorthand for 127.0.0.1"
+    },
+
+    {
+      "origin": "https://127.0.0.1",
+      "goAcceptsRaw": true,
+      "tsNormalized": null,
+      "note": "TS-STRICTER: parseOrigin does not classify addresses (that is dial time), so Go parses this happily; the validator refuses to store a loopback origin at all"
+    },
+    {
+      "origin": "https://metadata.google.internal",
+      "goAcceptsRaw": true,
+      "tsNormalized": null,
+      "note": "TS-STRICTER: same reason -- Go's forbidden-hostname check is at dial time, not in parseOrigin"
+    },
+    {
+      "origin": "https://100.100.100.200",
+      "goAcceptsRaw": true,
+      "tsNormalized": null,
+      "note": "TS-STRICTER: Alibaba metadata inside the otherwise-allowed CGNAT range"
+    },
+    {
+      "origin": "http://files.corp.internal",
+      "goAcceptsRaw": true,
+      "tsNormalized": null,
+      "note": "TS-STRICTER: Go accepts http for a configured CONTROL-PLANE origin; an approved software origin is HTTPS-only"
+    },
+    {
+      "origin": "https://files.corp.internal/path",
+      "goAcceptsRaw": true,
+      "tsNormalized": null,
+      "note": "TS-STRICTER: parseOrigin discards the path; the validator refuses it so a stored entry cannot look like a prefix rule"
+    },
+    {
+      "origin": "https://*.corp.internal",
+      "goAcceptsRaw": true,
+      "tsNormalized": null,
+      "note": "TS-STRICTER: Go's checkHostShape has no opinion on '*' (nothing would ever match the literal name at dial time); the validator refuses it so nobody stores a wildcard believing it works"
+    },
+
+    {
+      "origin": "https://0xa000005",
+      "goAcceptsRaw": false,
+      "tsNormalized": "https://10.0.0.5",
+      "note": "DOCUMENTED CANONICALIZATION: Go rejects the raw hex shorthand, but the value the validator STORES is the canonical dotted quad, which Go accepts -- so the subset property holds on what actually crosses the wire. The raw form never reaches the agent"
+    },
+    {
+      "origin": "https://010.0.0.5",
+      "goAcceptsRaw": false,
+      "tsNormalized": "https://8.0.0.5",
+      "note": "DOCUMENTED CANONICALIZATION, and a footgun: the WHATWG parser reads the leading zero as octal, so an operator who meant 10.0.0.5 stores PUBLIC 8.0.0.5. Storable and parseable by both sides -- it just does not approve what they intended"
+    },
+    {
+      "origin": "https://[2001:0db8::1]",
+      "goAcceptsRaw": false,
+      "tsNormalized": "https://[2001:db8::1]",
+      "note": "DOCUMENTED CANONICALIZATION: Go rejects non-canonical IPv6 text, but the stored value is the canonical form (the WHATWG serializer compresses the longest zero run exactly as netip.Addr.String does)"
+    }
+  ]
+}

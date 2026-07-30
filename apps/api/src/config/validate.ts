@@ -655,6 +655,34 @@ const envSchema = z
     // require Compose wiring this task does not scope.
     AGENT_MTLS_BINDING_MODE: z.enum(['off', 'audit', 'enforce']).default('off'),
 
+    // Security remediation Wave 6, Task 9 — agent manifest-signing-key-ID
+    // requirement (routes/agents/heartbeat.ts pushes
+    // configUpdate.require_manifest_signing_key_id=true ONLY when this is
+    // explicitly 'true'). Defaults to false so a rolling deploy or a server
+    // rollback stays compatible with agents that predate exact-key-ID
+    // verification (Wave 6 Task 6/7). Strict two-value enum (not a free
+    // `.optional()` string) so a typo boot-refuses instead of silently
+    // staying on the safe default — see docs/operations/agent-network-and-manifest-rollout.md.
+    AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: z.enum(['true', 'false']).default('false'),
+
+    // Security remediation Wave 6, Task 9 (approved plan deviation D1) — the
+    // managed-software destination gate (services/managedSoftwareDispatchPolicy.ts).
+    //   compat (default): a private destination still requires agent
+    //     capability >= 1 and fails closed — that is the security fix, on
+    //     from the first deploy. An apparently-public destination stays
+    //     permitted to a capability-0 device so deploy day does not fail
+    //     every in-flight software push to a not-yet-upgraded fleet.
+    //   enforce: every managed-software command requires capability >= 1,
+    //     public destinations included — the end state once the fleet has
+    //     upgraded.
+    // The runtime reader (getManagedSoftwarePolicyMode()) treats any
+    // unset/unrecognized value as compat, by design, so a misconfiguration
+    // can never silently take software deployment down. This schema still
+    // boot-refuses an explicit typo/garbage value rather than silently
+    // accepting it — the exact #2896 class of gap this task closes for both
+    // of its own variables.
+    MANAGED_SOFTWARE_POLICY_MODE: z.enum(['compat', 'enforce']).default('compat'),
+
     // -- Email-to-ticket ingest (Phase 4) ------------------------------------
     // Both optional. If MAILGUN_INBOUND_SIGNING_KEY is unset, `verify()` returns
     // false and the webhook responds 401 (permanent — the provider does NOT retry).
@@ -1687,6 +1715,14 @@ export function validateConfig(): AppConfig {
     MAILGUN_INBOUND_SIGNING_KEY: env.MAILGUN_INBOUND_SIGNING_KEY,
     TICKETS_INBOUND_DOMAIN: env.TICKETS_INBOUND_DOMAIN,
     AGENT_MTLS_BINDING_MODE: env.AGENT_MTLS_BINDING_MODE,
+    // Security remediation Wave 6, Task 9. Both MUST be listed here (not
+    // just declared in envSchema above) — a variable present in the schema
+    // but missing from this pick list is silently never validated: its value
+    // is always undefined at parse time, so the schema default always wins
+    // and a typo is accepted at boot instead of refusing to start (issue
+    // #2896, filed against IP_ALLOWLIST_ENFORCEMENT_MODE).
+    AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID,
+    MANAGED_SOFTWARE_POLICY_MODE: env.MANAGED_SOFTWARE_POLICY_MODE,
   });
 
   if (!result.success) {

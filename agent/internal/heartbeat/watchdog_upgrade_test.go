@@ -175,6 +175,19 @@ func TestHandleWatchdogUpgrade_RefusesNonSemverTarget(t *testing.T) {
 	}
 }
 
+// SECURITY / parity: the watchdog decision must NOT receive the main-agent
+// "dev" build development-compatibility exception, even though its "current"
+// baseline is literally h.agentVersion. If the agent is itself a dev build,
+// a server-directed watchdog swap must still fail closed — only the agent's
+// own self-update is allowed to waive the guard for "dev".
+func TestHandleWatchdogUpgrade_RefusesWhenAgentIsDevBuild(t *testing.T) {
+	h, calls, _ := newWatchdogTestHeartbeat("dev", true)
+	h.handleWatchdogUpgrade("0.83.0")
+	if calls.Load() != 0 {
+		t.Fatalf("expected installer NOT called when agent is a dev build, got %d", calls.Load())
+	}
+}
+
 // The in-progress guard prevents overlapping heartbeat-delivered signals from
 // running the swap concurrently.
 func TestHandleWatchdogUpgrade_SkipsWhenInProgress(t *testing.T) {

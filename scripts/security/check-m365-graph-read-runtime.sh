@@ -46,6 +46,13 @@ NODE
 
 # Standalone Compose bind-mounts file-backed secrets and does not implement
 # target uid/gid/mode. Provision those properties on the source file itself.
+#
+# LOCAL-RUN CAVEAT (macOS): Docker Desktop's VirtioFS/gRPC-FUSE layer remaps
+# bind-mount ownership to whichever uid/gid the container runs as, so the
+# probe's `uid !== 1001 || gid !== 1001` assertion always observes 1001:1001
+# here and cannot fail. Only the mode assertion is falsifiable on macOS; the
+# ownership half is real ONLY on the Linux CI runner. Do not conclude from a
+# green local run that the ownership check works.
 docker run --rm --user 0:0 -v "$TMP_DIR:/work" "$NODE_IMAGE" \
   sh -ec 'chown 1001:1001 /work/api-signing-private.jwk && chmod 0400 /work/api-signing-private.jwk'
 

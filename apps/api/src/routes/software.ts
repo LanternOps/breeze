@@ -11,10 +11,20 @@ import {
   softwareInventory,
   devices,
 } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, requireSiteAccess } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { resolveDeploymentTargets } from '../services/deploymentTargetResolver';
 import { resolveEdrInstaller, type ResolvedInstaller } from '../services/edrInstallerResolver';
+import {
+  getEffectiveSoftwareDownloadPolicy,
+  getOrganizationSoftwareDownloadPolicy,
+  setOrganizationSoftwareDownloadPolicy,
+  setSiteSoftwareDownloadPolicy,
+} from '../services/softwareDownloadPolicy';
+import {
+  evaluateManagedSoftwareDispatch,
+  getManagedSoftwarePolicyMode,
+} from '../services/managedSoftwareDispatchPolicy';
 import {
   uploadBinary,
   getPresignedUrl,
@@ -36,7 +46,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { createSoftwareDeployment } from '../services/softwareDeployment';
-import { detectionRulesSchema } from '@breeze/shared';
+import { detectionRulesSchema, softwareDownloadPolicySchema } from '@breeze/shared';
 
 export const softwareRoutes = new Hono();
 const requireSoftwareRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -402,6 +412,8 @@ const listInventorySchema = z.object({
 });
 
 const inventoryParamSchema = z.object({ deviceId: z.string().guid() });
+
+const downloadPolicySiteParamSchema = z.object({ siteId: z.string().guid() });
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -1324,7 +1336,14 @@ softwareRoutes.post(
           return c.json({ data: { id: deployment!.id, status: 'failed', message: 'No installer available for this version' } }, 200);
         }
 
-        const targetDevices = await db.select({ id: devices.id, agentId: devices.agentId })
+        const targetDevices = await db.select({
+          id: devices.id,
+          agentId: devices.agentId,
+          // Wave 6 Task 5: site drives the effective org ∪ site download
+          // allowlist; the capability version is the dispatch gate's input.
+          siteId: devices.siteId,
+          outboundNetworkPolicyVersion: devices.outboundNetworkPolicyVersion,
+        })
           .from(devices)
           .where(and(
             eq(devices.orgId, orgId),
@@ -1339,13 +1358,54 @@ softwareRoutes.post(
           ? versionRecord.detectionRules
           : undefined;
 
+        // Managed software destination policy (Wave 6 Task 5) — same gate the
+        // canonical services/softwareDeployment.ts path applies. The mode is
+        // read once per batch; the effective allowlist is fetched once per
+        // distinct site.
+        const policyMode = getManagedSoftwarePolicyMode();
+        const policyBySite = new Map<string, Promise<{ approvedPrivateOrigins: string[] }>>();
+        const effectivePolicyFor = (siteId: string | null | undefined) => {
+          const key = siteId ?? '';
+          let pending = policyBySite.get(key);
+          if (!pending) {
+            pending = getEffectiveSoftwareDownloadPolicy(orgId, siteId ?? undefined).then((policy) => ({
+              approvedPrivateOrigins: [...policy.approvedPrivateOrigins],
+            }));
+            policyBySite.set(key, pending);
+          }
+          return pending;
+        };
+
         for (const device of targetDevices) {
+          // Gate BEFORE sendCommandToAgent: a denied device gets a failed
+          // result carrying the bounded reason and no enqueued command.
+          const { approvedPrivateOrigins } = await effectivePolicyFor(device.siteId);
+          const decision = evaluateManagedSoftwareDispatch({
+            downloadUrl: finalDownloadUrl,
+            approvedPrivateOrigins,
+            outboundNetworkPolicyVersion: device.outboundNetworkPolicyVersion,
+            mode: policyMode,
+          });
+          if (!decision.allowed) {
+            await db.update(deploymentResults)
+              .set({ status: 'failed', errorMessage: decision.reason, completedAt: new Date() })
+              .where(and(
+                eq(deploymentResults.deploymentId, deployment!.id),
+                eq(deploymentResults.deviceId, device.id),
+              ));
+            continue;
+          }
+
           const command: AgentCommand = {
             id: `sw-install-${deployment!.id}-${device.id}`,
             type: 'software_install',
             payload: {
               deploymentId: deployment!.id,
               downloadUrl: finalDownloadUrl,
+              downloadPolicy: {
+                version: 1,
+                approvedPrivateOrigins,
+              },
               checksum: versionRecord.checksum,
               fileName: versionRecord.originalFileName ?? `package.${versionRecord.fileType ?? 'exe'}`,
               fileType: versionRecord.fileType ?? 'exe',
@@ -1558,5 +1618,117 @@ softwareRoutes.get(
       .orderBy(softwareInventory.name);
 
     return c.json({ data: items });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// PRIVATE SOFTWARE DOWNLOAD ORIGIN POLICY (Wave 6 Task 4, security remediation)
+// ---------------------------------------------------------------------------
+// Server-side counterpart to agent/internal/netpolicy (Tasks 1-3): the org-
+// and site-scoped allowlist of approved private origins the agent may dial
+// for managed-software downloads. Task 5 (not this file) sends the effective
+// allowlist with every managed-software command. Every endpoint here is
+// MFA-protected and requires devices:write, matching the brief — this is a
+// security-relevant policy surface, not a read-only informational one.
+
+// GET /download-policy - Effective (org-only, since no site is targeted)
+// approved-origins policy for the caller's org.
+softwareRoutes.get(
+  '/download-policy',
+  requireScope('organization', 'partner', 'system'),
+  requireSoftwareWrite,
+  requireMfa(),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
+
+    const policy = await getOrganizationSoftwareDownloadPolicy(orgId);
+    return c.json({ data: policy });
+  }
+);
+
+// PUT /download-policy - Replace the organization's approved-origins policy.
+softwareRoutes.put(
+  '/download-policy',
+  requireScope('organization', 'partner', 'system'),
+  requireSoftwareWrite,
+  requireMfa(),
+  zValidator('json', softwareDownloadPolicySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
+
+    const payload = c.req.valid('json');
+    const result = await setOrganizationSoftwareDownloadPolicy(orgId, payload);
+    // A missing/RLS-invisible org (or a 0-row UPDATE despite the service's own
+    // prior SELECT finding a row) must not read as success — see the service's
+    // doc comment. Surfacing 404 here matches routes/orgs.ts's precedent for
+    // the same zero-row-write class of bug rather than returning 200 for a
+    // write that never persisted.
+    if (!result.ok) return c.json({ error: 'Organization not found' }, 404);
+
+    // Audit metadata is a count + version only — never the raw request URL or
+    // its query string (finding: policy-change audit rows must not carry URL
+    // query data). Written only on confirmed success, never for a rejected
+    // write.
+    writeRouteAudit(c, {
+      orgId,
+      action: 'software.downloadPolicy.update',
+      resourceType: 'organization',
+      resourceId: orgId,
+      details: {
+        version: result.policy.version,
+        approvedOriginCount: result.policy.approvedPrivateOrigins.length,
+      },
+    });
+
+    return c.json({ data: result.policy });
+  }
+);
+
+// PUT /download-policy/sites/:siteId - Replace a single site's approved-
+// origins policy. requireSiteAccess enforces the caller's site allowlist
+// (denied-site partner users get 403); the service additionally scopes the
+// site lookup to the resolved org, so a siteId belonging to a different org
+// 404s rather than silently writing (or reading) another tenant's row.
+softwareRoutes.put(
+  '/download-policy/sites/:siteId',
+  requireScope('organization', 'partner', 'system'),
+  requireSoftwareWrite,
+  requireMfa(),
+  requireSiteAccess('siteId'),
+  zValidator('param', downloadPolicySiteParamSchema),
+  zValidator('json', softwareDownloadPolicySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
+
+    const { siteId } = c.req.valid('param');
+    const payload = c.req.valid('json');
+
+    const result = await setSiteSoftwareDownloadPolicy(orgId, siteId, payload);
+    if (!result.ok) return c.json({ error: 'Site not found' }, 404);
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'software.downloadPolicy.site.update',
+      resourceType: 'site',
+      resourceId: siteId,
+      details: {
+        version: result.policy.version,
+        approvedOriginCount: result.policy.approvedPrivateOrigins.length,
+      },
+    });
+
+    // Return the EFFECTIVE (org ∪ site) policy — what Task 5's dispatch path
+    // will actually send to devices at this site — not just the site's own
+    // delta, so the operator sees the real outcome of the write.
+    return c.json({ data: result.effective });
   }
 );

@@ -77,6 +77,30 @@ export async function acceptQuote(
   // both pass the status guard and each create an invoice (atom-1/C2).
   const [quote] = await db.select().from(quotes).where(eq(quotes.id, params.quoteId)).for('update').limit(1);
   if (!quote) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
+  // Durable single-use backstop (#2875, wave-3 schema 2026-08-06-c): a
+  // token-based response whose jti was already consumed on this row is a
+  // replay — even when the Redis revocation marker was lost (flush/failover/
+  // TTL). Checked BEFORE the status guard and with a 401 (not 409) so a
+  // replayed link fails exactly like the Redis resolve() gate does.
+  if (
+    params.acceptanceTokenJti
+    && quote.publicResponseConsumedAt != null
+    && quote.publicResponseJti === params.acceptanceTokenJti
+  ) {
+    throw new QuoteServiceError('This link is invalid or has expired', 401, 'RESPONSE_CONSUMED');
+  }
+  // Forward-compat guard for the wave-3 v1 model (response jti persisted at
+  // send with public_token_version=1): a version-1 row may only ever be
+  // consumed by the exact jti it was issued with — a different signed token
+  // must never claim or rewrite the stored response jti. Inert for today's
+  // version-0 rows.
+  if (
+    params.acceptanceTokenJti
+    && (quote.publicTokenVersion ?? 0) !== 0
+    && quote.publicResponseJti !== params.acceptanceTokenJti
+  ) {
+    throw new QuoteServiceError('This link is invalid or has expired', 401, 'RESPONSE_CONSUMED');
+  }
   if (quote.status !== 'sent' && quote.status !== 'viewed') {
     throw new QuoteServiceError(`Cannot accept a quote in status ${quote.status}`, 409, 'INVALID_STATE');
   }
@@ -252,6 +276,19 @@ export async function acceptQuote(
       convertedAt: now,
       convertedInvoiceId: invoice!.id,
       updatedAt: now,
+      // Durable response-capability consumption (#2875): for a token-based
+      // (public) accept, claim + consume the response jti in the SAME
+      // transaction as the status change. Redis stays the hot-path revocation
+      // check; these columns are the durable authority a Redis flush cannot
+      // erase. Portal accepts carry no token and leave them NULL — the quote
+      // status machine already blocks any later public response.
+      ...(params.acceptanceTokenJti
+        ? {
+            publicResponseJti: params.acceptanceTokenJti,
+            publicResponseConsumedAt: now,
+            publicResponseOutcome: 'accepted',
+          }
+        : {}),
     })
     .where(eq(quotes.id, quote.id));
 

@@ -3,7 +3,7 @@ import { zValidator } from '../lib/validation';
 import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
-import { authenticatorDevices, authenticatorPolicies } from '../db/schema';
+import { authenticatorDevices, authenticatorPolicies, mobileDevices } from '../db/schema';
 import { authMiddleware, requirePermission, requireMfa } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import {
@@ -320,7 +320,36 @@ authenticatorRoutes.post(
 
     // Per-install device id is a UX/migration hint only (client-controlled,
     // SR-001) — null when the header is absent.
-    const mobileDeviceId = readMobileDeviceId(c);
+    //
+    // The header carries `mobile_devices.device_id` — the VARCHAR per-install id
+    // minted on the phone — NOT `mobile_devices.id`, the server-side uuid PK that
+    // `authenticator_devices.mobile_device_id` FKs. Conflating the two shipped an
+    // outage: the raw header went straight into the FK column and every mobile
+    // registration 500'd (23503 for a uuid-shaped header, 22P02 for junk) —
+    // Sentry BREEZE-12 / BREEZE-13.
+    //
+    // So: resolve, never trust. The lookup targets the varchar column (a junk
+    // header is a miss, not a cast error) and carries an EXPLICIT ownership
+    // predicate — RLS will not do that for us, because mobile_devices' SELECT
+    // policy has an `OR EXISTS` branch that lets any same-tenant partner/org
+    // token read a colleague's row (same reasoning as the SR-002 guard in
+    // routes/mobile.ts). A miss degrades to null rather than failing the
+    // registration; `mobile_device_id` is never read back anywhere in the API.
+    const mobileDeviceHeader = readMobileDeviceId(c);
+    let mobileDeviceId: string | null = null;
+    if (mobileDeviceHeader) {
+      const [owned] = await db
+        .select({ id: mobileDevices.id })
+        .from(mobileDevices)
+        .where(
+          and(
+            eq(mobileDevices.deviceId, mobileDeviceHeader),
+            eq(mobileDevices.userId, auth.user.id)
+          )
+        )
+        .limit(1);
+      mobileDeviceId = owned?.id ?? null;
+    }
 
     const [inserted] = await db
       .insert(authenticatorDevices)
@@ -352,7 +381,13 @@ authenticatorRoutes.post(
         deviceId: inserted.id,
         kind: 'mobile_hw_key',
         isPlatformBound: true,
+        // The RESOLVED mobile_devices.id (uuid PK), or null. The raw header is
+        // recorded under a deliberately distinct key so the two can never be
+        // conflated again.
         mobileDeviceId,
+        ...(mobileDeviceHeader && !mobileDeviceId
+          ? { mobileDeviceHeaderUnresolved: mobileDeviceHeader }
+          : {}),
       },
     });
 

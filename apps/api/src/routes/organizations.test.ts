@@ -40,6 +40,12 @@ vi.mock('../db', () => {
     withDbAccessContext: vi.fn(async (_ctx: any, fn: any) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: any) => fn()),
     runOutsideDbContext: vi.fn((fn: any) => fn()),
+    // tenantOffboarding's inCallerOrSystemDbContext (#2877) consults the
+    // ambient-context metadata at runtime on the DELETE partner/org paths
+    // (abort*Offboarding); undefined = no ambient context → fresh system
+    // context, matching this file's transactionless mock shape.
+    getCurrentDbAccessContext: vi.fn(() => undefined),
+    hasDbAccessContext: vi.fn(() => false),
     SYSTEM_DB_ACCESS_CONTEXT: { scope: 'system', orgId: null, accessibleOrgIds: null }
   };
 });

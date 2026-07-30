@@ -25,6 +25,7 @@ function handlerFor(name: string): AiTool['handler'] {
 }
 function makeAuth(allowedSiteIds?: string[]): AuthContext {
   return {
+    principal: { kind: 'user_session' },
     user: { id: 'u1', email: 'a@b.c', name: 'A', isPlatformAdmin: false },
     token: {} as any, partnerId: null, orgId: 'org-1', scope: 'organization',
     accessibleOrgIds: ['org-1'], orgCondition: () => undefined, canAccessOrg: () => true,

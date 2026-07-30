@@ -12,6 +12,7 @@ const mockDb = db as unknown as { select: ReturnType<typeof vi.fn> };
 
 function makeAuth(allowedSiteIds?: string[]): AuthContext {
   return {
+    principal: { kind: 'user_session' },
     user: { id: 'u1', email: 'a@b.c', name: 'A', isPlatformAdmin: false },
     token: {} as any,
     partnerId: null,

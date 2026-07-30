@@ -137,7 +137,20 @@ vi.mock('../services/ticketConfigService', () => ({
 
 vi.mock('../db/schema', () => ({
   partners: {},
-  organizations: {},
+  // #2879 — sentinel columns (same pattern as sites.id below) so the
+  // suspended-org override tests can assert the UPDATE's WHERE re-asserts
+  // eq(organizations.status,'suspended') / eq(organizations.partnerId,...)
+  // via the eq spy. Real drizzle eq/isNull build SQL lazily, so plain-object
+  // sentinels are safe — the mocked db never executes them.
+  organizations: {
+    id: { __column: 'organizations.id' },
+    partnerId: { __column: 'organizations.partnerId' },
+    status: { __column: 'organizations.status' },
+    deletedAt: { __column: 'organizations.deletedAt' }
+  },
+  // #2879 — the suspended-org lifecycle override re-reads the caller's raw
+  // partner_users.org_ids selection under a system context.
+  partnerUsers: { userId: {}, partnerId: {}, orgIds: {} },
   // Give sites.id a recognizable sentinel so the site-allowlist test can assert
   // inArray was called against the sites.id column specifically.
   sites: { id: { __column: 'sites.id' }, orgId: { __column: 'sites.orgId' } },
@@ -158,7 +171,12 @@ vi.mock('drizzle-orm', async (importActual) => {
     // is fully mocked, so the return value is never executed, but the sentinel
     // columns ({ __column: ... }) aren't real Drizzle columns and would make the
     // real inArray throw on introspection.
-    inArray: vi.fn((column: unknown, values: unknown) => ({ __inArray: { column, values } }))
+    inArray: vi.fn((column: unknown, values: unknown) => ({ __inArray: { column, values } })),
+    // #2879 — spy with the REAL implementation so tests can assert the
+    // suspended-org lifecycle override re-asserts its WHERE predicates
+    // (eq(organizations.status,'suspended') / eq(organizations.partnerId,...))
+    // without changing any behavior for the rest of the file.
+    eq: vi.fn(actual.eq)
   };
 });
 
@@ -199,9 +217,9 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
-import { inArray } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
-import { sites } from '../db/schema';
+import { organizations, sites } from '../db/schema';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { authMiddleware } from '../middleware/auth';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
@@ -225,7 +243,7 @@ describe('org routes', () => {
   let app: Hono;
 
   const setAuthContext = (overrides: Partial<{
-    user: { id: string; email: string; name: string };
+    user: { id: string; email: string; name: string; isPlatformAdmin?: boolean };
     token: Record<string, unknown>;
     partnerId: string | null;
     orgId: string | null;
@@ -1780,6 +1798,299 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+
+    // #2879 — suspended orgs are excluded from accessibleOrgIds, which made
+    // suspended→offboarding (and reactivation) unreachable for the partner
+    // that suspended the org. A narrow override lets a partner admin apply a
+    // STATUS-ONLY lifecycle transition to a suspended org it owns; everything
+    // else stays 404.
+    describe('suspended-org lifecycle override (#2879)', () => {
+      // db.select mock for one .select().from().where().limit() call.
+      const selectLimitOnce = (rows: unknown[]) => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(rows)
+          })
+        })
+      });
+
+      const mockUpdateReturning = (rows: unknown[]) => {
+        const returning = vi.fn().mockResolvedValue(rows);
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ returning })
+          })
+        } as any);
+        return returning;
+      };
+
+      // Partner admin whose accessible set does NOT include the suspended org
+      // (that's the bug's precondition — computeAccessibleOrgIds filtered it out).
+      const setSuspendedOrgPartnerContext = (
+        partnerOrgAccess: 'all' | 'selected' | 'none' = 'all'
+      ) => {
+        setAuthContext({
+          scope: 'partner',
+          partnerId: 'partner-123',
+          accessibleOrgIds: ['org-1'],
+          partnerOrgAccess
+        });
+      };
+
+      const patchOrg = (orgId: string, body: Record<string, unknown>) =>
+        app.request(`/orgs/organizations/${orgId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+
+      it('lets the owning partner admin move a suspended org to offboarding', async () => {
+        setSuspendedOrgPartnerContext('all');
+        // Ownership probe: suspended org under the caller's partner.
+        vi.mocked(db.select).mockReturnValueOnce(
+          selectLimitOnce([{ partnerId: 'partner-123', status: 'suspended' }]) as any
+        );
+        const returning = mockUpdateReturning([{ id: 'org-suspended', name: 'O', status: 'offboarding' }]);
+
+        const res = await patchOrg('org-suspended', { status: 'offboarding' });
+
+        expect(res.status).toBe(200);
+        expect(beginOrganizationOffboarding).toHaveBeenCalledWith('org-suspended', 'user-123');
+        // The override WRITE must escape the partner RLS context (which cannot
+        // see the suspended org) into its own fresh system-scope transaction —
+        // the ownership probe alone is not enough (in production the UPDATE
+        // would silently match 0 rows → 404, re-opening #2879). Assert ≥2
+        // system-context entries happened BEFORE the UPDATE's returning()
+        // executed (probe + update wrapper); the fire-and-forget audit write
+        // always lands after the update, so it cannot satisfy this.
+        const returningOrder = returning.mock.invocationCallOrder[0]!;
+        const sysCtxEntriesBeforeUpdate = vi.mocked(withSystemDbAccessContext)
+          .mock.invocationCallOrder.filter((order) => order < returningOrder).length;
+        expect(sysCtxEntriesBeforeUpdate).toBeGreaterThanOrEqual(2);
+        // The override UPDATE must re-assert, in its own WHERE, the facts the
+        // probe checked — partner-owned AND still suspended — so a concurrent
+        // change between check and write collapses to 0 rows instead of
+        // resurrecting a churned/reparented org (TOCTOU guard).
+        expect(eq).toHaveBeenCalledWith(organizations.status, 'suspended');
+        expect(eq).toHaveBeenCalledWith(organizations.partnerId, 'partner-123');
+      });
+
+      it('does not add the override predicates on the normal accessible-org path', async () => {
+        setSuspendedOrgPartnerContext('all');
+        // org-1 IS in accessibleOrgIds → normal path, no override.
+        mockUpdateReturning([{ id: 'org-1', name: 'O', status: 'active' }]);
+
+        const res = await patchOrg('org-1', { status: 'active' });
+
+        expect(res.status).toBe(200);
+        expect(eq).not.toHaveBeenCalledWith(organizations.status, 'suspended');
+      });
+
+      it('lets the owning partner admin reactivate a suspended org to active', async () => {
+        setSuspendedOrgPartnerContext('all');
+        vi.mocked(db.select).mockReturnValueOnce(
+          selectLimitOnce([{ partnerId: 'partner-123', status: 'suspended' }]) as any
+        );
+        mockUpdateReturning([{ id: 'org-suspended', name: 'O', status: 'active' }]);
+
+        const res = await patchOrg('org-suspended', { status: 'active' });
+
+        expect(res.status).toBe(200);
+        expect(restoreOrganizationTenantAccess).toHaveBeenCalledWith('org-suspended');
+      });
+
+      it('denies the override for a cross-partner suspended org (404, no write)', async () => {
+        setSuspendedOrgPartnerContext('all');
+        vi.mocked(db.select).mockReturnValueOnce(
+          selectLimitOnce([{ partnerId: 'partner-OTHER', status: 'suspended' }]) as any
+        );
+
+        const res = await patchOrg('org-suspended', { status: 'offboarding' });
+
+        expect(res.status).toBe(404);
+        expect(db.update).not.toHaveBeenCalled();
+        expect(beginOrganizationOffboarding).not.toHaveBeenCalled();
+      });
+
+      it('denies the override when the target org is not actually suspended', async () => {
+        setSuspendedOrgPartnerContext('all');
+        // e.g. an org already flipped to churned out-of-band.
+        vi.mocked(db.select).mockReturnValueOnce(
+          selectLimitOnce([{ partnerId: 'partner-123', status: 'churned' }]) as any
+        );
+
+        const res = await patchOrg('org-invisible', { status: 'offboarding' });
+
+        expect(res.status).toBe(404);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('does NOT let a non-status edit ride the override — suspended orgs stay unwritable', async () => {
+        setSuspendedOrgPartnerContext('all');
+
+        const res = await patchOrg('org-suspended', { name: 'Renamed while suspended' });
+
+        expect(res.status).toBe(404);
+        expect(db.select).not.toHaveBeenCalled(); // rejected before any DB probe
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('does NOT allow extra fields alongside status on the override', async () => {
+        setSuspendedOrgPartnerContext('all');
+
+        const res = await patchOrg('org-suspended', { status: 'offboarding', name: 'sneaky' });
+
+        expect(res.status).toBe(404);
+        // Rejected on payload shape BEFORE any DB probe — without this pin the
+        // test passes vacuously off the default empty select mock even if the
+        // status-only guard is deleted (mutation-proven in review).
+        expect(db.select).not.toHaveBeenCalled();
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('does NOT allow suspended→churned (must drain via offboarding)', async () => {
+        setSuspendedOrgPartnerContext('all');
+
+        const res = await patchOrg('org-suspended', { status: 'churned' });
+
+        expect(res.status).toBe(404);
+        // Same vacuity pin as above: churned must be rejected by the exit-status
+        // allowlist itself, before any DB probe.
+        expect(db.select).not.toHaveBeenCalled();
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('fails closed for a partner user with org_access none', async () => {
+        setSuspendedOrgPartnerContext('none');
+
+        const res = await patchOrg('org-suspended', { status: 'offboarding' });
+
+        expect(res.status).toBe(404);
+        expect(db.select).not.toHaveBeenCalled();
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it("grants a 'selected' user the override only when the org is in their raw selection", async () => {
+        setSuspendedOrgPartnerContext('selected');
+        vi.mocked(db.select)
+          .mockReturnValueOnce(selectLimitOnce([{ partnerId: 'partner-123', status: 'suspended' }]) as any)
+          .mockReturnValueOnce(selectLimitOnce([{ orgIds: ['org-suspended', 'org-1'] }]) as any);
+        const returning = mockUpdateReturning([{ id: 'org-suspended', name: 'O', status: 'offboarding' }]);
+
+        const res = await patchOrg('org-suspended', { status: 'offboarding' });
+
+        expect(res.status).toBe(200);
+        expect(beginOrganizationOffboarding).toHaveBeenCalledWith('org-suspended', 'user-123');
+        // Same system-context escape pin as the 'all' happy path (probe +
+        // update wrapper both before the UPDATE executed).
+        const returningOrder = returning.mock.invocationCallOrder[0]!;
+        const sysCtxEntriesBeforeUpdate = vi.mocked(withSystemDbAccessContext)
+          .mock.invocationCallOrder.filter((order) => order < returningOrder).length;
+        expect(sysCtxEntriesBeforeUpdate).toBeGreaterThanOrEqual(2);
+      });
+
+      it("denies a 'selected' user whose selection does not include the org", async () => {
+        setSuspendedOrgPartnerContext('selected');
+        vi.mocked(db.select)
+          .mockReturnValueOnce(selectLimitOnce([{ partnerId: 'partner-123', status: 'suspended' }]) as any)
+          .mockReturnValueOnce(selectLimitOnce([{ orgIds: ['org-1'] }]) as any);
+
+        const res = await patchOrg('org-suspended', { status: 'offboarding' });
+
+        expect(res.status).toBe(404);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('ordinary read routes still cannot see the suspended org (no visibility widening)', async () => {
+        setSuspendedOrgPartnerContext('all');
+
+        const res = await app.request('/orgs/organizations/org-suspended');
+
+        expect(res.status).toBe(404);
+        expect(db.select).not.toHaveBeenCalled();
+      });
+    });
+
+    // #2879 — a membership-less platform admin has no role row, so plain
+    // requirePermission 403s and system scope could not drive lifecycle
+    // transitions. The update route grants scope=system + isPlatformAdmin
+    // directly (mirroring platformAdminMiddleware's authority model).
+    describe('platform-admin permission bypass on org update (#2879)', () => {
+      it('lets a membership-less platform admin update an org when role permissions resolve to none', async () => {
+        permissionMockState.granted = false; // simulate "No permissions found"
+        setAuthContext({
+          scope: 'system',
+          partnerId: null,
+          user: { id: 'admin-1', email: 'admin@example.com', name: 'Admin', isPlatformAdmin: true }
+        });
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O', status: 'offboarding' }])
+            })
+          })
+        } as any);
+
+        const res = await app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'offboarding' })
+        });
+
+        expect(res.status).toBe(200);
+        expect(beginOrganizationOffboarding).toHaveBeenCalledWith('org-1', 'admin-1');
+      });
+
+      it('does NOT bypass permissions for a system-scope caller without isPlatformAdmin', async () => {
+        permissionMockState.granted = false;
+        setAuthContext({
+          scope: 'system',
+          partnerId: null,
+          user: { id: 'svc-1', email: 'svc@example.com', name: 'Svc', isPlatformAdmin: false }
+        });
+
+        const res = await app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'offboarding' })
+        });
+
+        expect(res.status).toBe(403);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('does NOT bypass permissions for partner scope even for a platform admin flag', async () => {
+        permissionMockState.granted = false;
+        setAuthContext({
+          scope: 'partner',
+          partnerId: 'partner-123',
+          user: { id: 'user-123', email: 'test@example.com', name: 'T', isPlatformAdmin: true }
+        });
+
+        const res = await app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'offboarding' })
+        });
+
+        expect(res.status).toBe(403);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('does NOT extend the bypass to other org routes — DELETE still requires role permissions', async () => {
+        permissionMockState.granted = false;
+        setAuthContext({
+          scope: 'system',
+          partnerId: null,
+          user: { id: 'admin-1', email: 'admin@example.com', name: 'Admin', isPlatformAdmin: true }
+        });
+
+        const res = await app.request('/orgs/organizations/org-1', { method: 'DELETE' });
+
+        expect(res.status).toBe(403);
+        expect(db.update).not.toHaveBeenCalled(); // soft-delete write never runs
+      });
     });
 
     // issue #1963: the org write path feeds getOrgAgentUpdatePolicy, so a

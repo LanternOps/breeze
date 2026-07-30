@@ -49,6 +49,23 @@ export type ActionIntentStatus = (typeof actionIntentStatusEnum)[number];
 export const actionIntentSourceEnum = ['chat', 'mcp_api'] as const;
 export type ActionIntentSource = (typeof actionIntentSourceEnum)[number];
 
+/**
+ * Mirrors AuthContext's PrincipalKind, plus 'unknown' for rows created before
+ * the discriminator existed. Pinned to the runtime union by a test.
+ */
+export const actionIntentOriginPrincipalKindEnum = [
+  'user_session',
+  'client_user',
+  'api_key',
+  'oauth_grant',
+  'agent',
+  'helper',
+  'system',
+  'unknown',
+] as const;
+export type ActionIntentOriginPrincipalKind =
+  (typeof actionIntentOriginPrincipalKindEnum)[number];
+
 export const intentOutboxEventEnum = ['intent_created', 'intent_approved'] as const;
 export type IntentOutboxEvent = (typeof intentOutboxEventEnum)[number];
 
@@ -71,6 +88,30 @@ export const actionIntents = pgTable(
       onDelete: 'set null',
     }),
     source: text('source').notNull().$type<ActionIntentSource>(),
+    /**
+     * The KIND of principal that created this intent, recorded as a durable
+     * fact rather than derived at release time.
+     *
+     * `source` is a lossy proxy: it has only 'chat' | 'mcp_api', while an
+     * AuthContext principal can be user_session/client_user/api_key/
+     * oauth_grant/agent/helper/system. And the actor columns cannot stand in
+     * for it either — `requested_by_user_id` is written for EVERY intent
+     * (holding the key's CREATOR for API-key callers) and
+     * `requesting_api_key_id` is never written at all. Gates meaning "a human
+     * did this" must read this column.
+     *
+     * 'unknown' is the backfill value for rows predating the discriminator.
+     * It is deliberately NOT 'user_session': a human-required gate must fail
+     * on an unknown origin, not pass.
+     *
+     * Immutable — covered by action_intents_immutable_trg.
+     */
+    originPrincipalKind: text('origin_principal_kind')
+      .notNull()
+      .default('unknown')
+      .$type<ActionIntentOriginPrincipalKind>(),
+    /** Key/grant id when the origin was an api_key or oauth_grant. Immutable. */
+    originPrincipalId: text('origin_principal_id'),
     requestingClientLabel: varchar('requesting_client_label', { length: 255 }),
 
     // Immutable action content (UPDATE-blocked by action_intents_immutable_trg

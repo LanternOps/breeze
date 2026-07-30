@@ -15,7 +15,67 @@ import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { ipAllowlistGuard } from './ipAllowlistGuard';
 import { isSelfManagedDbContextRoute } from './selfManagedDbContextRoutes';
 
+/**
+ * The transports/actors that can produce an AuthContext.
+ *
+ * - `user_session`  a Breeze user (MSP tech / admin) authenticated
+ *                   interactively via the session JWT. The only kind that can
+ *                   satisfy a "requires a Breeze operator" gate.
+ * - `client_user`   an END-CUSTOMER human in a client surface (AI for Office
+ *                   via Entra SSO). Interactive, but NOT a Breeze operator —
+ *                   kept separate so a gate meaning "a tech" can never be
+ *                   satisfied by a customer's employee.
+ * - `api_key`       an MCP/partner API key. Carries its creator's user id but
+ *                   acts autonomously, with no human present.
+ * - `oauth_grant`   an MCP-OAuth access token acting for a user.
+ * - `agent`         a device agent.
+ * - `helper`        a Breeze Helper desktop session.
+ * - `system`        synthetic contexts built by background jobs, workers, and
+ *                   schedulers that have no external caller at all. TRUSTED
+ *                   internal origin — not a dumping ground for "don't know".
+ * - `unknown`       provenance is genuinely unrecoverable. Only produced when
+ *                   reconstructing a principal for a record written before
+ *                   this discriminator existed. Trusted by nothing, and
+ *                   deliberately NOT folded into `system`: a future gate that
+ *                   trusts internal system callers must not thereby trust
+ *                   records whose origin nobody can vouch for.
+ */
+export type PrincipalKind =
+  | { kind: 'user_session' }
+  | { kind: 'client_user' }
+  | { kind: 'api_key'; apiKeyId?: string }
+  | { kind: 'oauth_grant'; grantId?: string }
+  | { kind: 'agent'; deviceId?: string }
+  | { kind: 'helper'; deviceId?: string }
+  | { kind: 'system'; reason: string }
+  | { kind: 'unknown' };
+
+/**
+ * Gate for "a human must be doing this". Use instead of hand-written
+ * `principal.kind === 'user_session'` checks so the rule has one definition.
+ *
+ * Deliberately an allowlist of ONE: every other kind acts without a person
+ * present, including `oauth_grant` (which acts *for* a user but not *as* an
+ * interactive session).
+ */
+export function isInteractiveUserSession(auth: Pick<AuthContext, 'principal'>): boolean {
+  return auth.principal.kind === 'user_session';
+}
+
 export interface AuthContext {
+  /**
+   * What KIND of principal this context represents — distinct from WHO it
+   * represents (`user`) and from what it may reach (`scope`).
+   *
+   * This exists because `user.id` cannot answer "is a human doing this?".
+   * An MCP API key is built with `user.id = apiKey.createdBy`
+   * (buildAuthFromApiKey), so a key and the human who minted it are
+   * indistinguishable by identity alone — and MCP deliberately auto-executes
+   * Tier-3 tools without approval. Any gate that must mean "a person, in a
+   * session, right now" needs this discriminator; user identity is not enough.
+   */
+  principal: PrincipalKind;
+
   user: {
     id: string;
     email: string;
@@ -570,6 +630,9 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
   const canAccessSite = siteAccessCheck(allowedSiteIds);
 
   c.set('auth', {
+    // The interactive session JWT path — the one place a real human at a
+    // browser produces an AuthContext.
+    principal: { kind: 'user_session' },
     user: {
       id: user.id,
       email: user.email,
