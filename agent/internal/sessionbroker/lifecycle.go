@@ -130,6 +130,16 @@ func (m *HelperLifecycleManager) handleSCMEvent(event SCMSessionEvent) {
 		m.stopKey(userKey)
 		m.reconcile()
 	case wtsSessionLogoff, wtsSessionTerminate:
+		// Clear any retention timestamp for this Windows session id before
+		// anything else. Windows recycles session ids after logoff, so a new
+		// logon that reuses this id must start with a clean disconnect clock —
+		// otherwise it could inherit a stale (or already-expired)
+		// disconnectedSince from the prior occupant. dropLeases/removeDesired/
+		// stopKey below each take m.mu themselves and none holds it across
+		// this case, so this lock/unlock cannot nest or deadlock with them.
+		m.mu.Lock()
+		delete(m.disconnectedSince, event.SessionID)
+		m.mu.Unlock()
 		if m.currentMode() == LifecycleModeOnDemand {
 			m.dropLeases(event.SessionID, ipc.HelperRoleSystem, ipc.HelperRoleUser)
 		}

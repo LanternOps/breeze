@@ -170,6 +170,12 @@ type HelperLifecycleManager struct {
 	rdsHost       bool
 	localOverride string
 
+	// consoleSessionIDFn resolves the active console (physical-monitor)
+	// Windows session id. Defaults to GetConsoleSessionID (a WTS syscall);
+	// tests inject a stub. detectedDesired MUST resolve this before taking
+	// m.mu — see the call site.
+	consoleSessionIDFn func() string
+
 	leases map[HelperKey]*helperLease
 	kickCh chan struct{}
 }
@@ -190,7 +196,8 @@ func newHelperLifecycleManager(broker *Broker, detector SessionDetector, scmCh <
 		disconnectedSince: make(map[uint32]time.Time),
 		now:               time.Now,
 
-		mode: LifecycleModeAlwaysOn,
+		mode:               LifecycleModeAlwaysOn,
+		consoleSessionIDFn: GetConsoleSessionID,
 
 		leases: make(map[HelperKey]*helperLease),
 		kickCh: make(chan struct{}, 1),
@@ -258,17 +265,23 @@ func (m *HelperLifecycleManager) detectedDesired() (map[HelperKey]bool, error) {
 	if err != nil {
 		return nil, err
 	}
+	// consoleID MUST be resolved before m.mu is taken: consoleSessionIDFn
+	// defaults to GetConsoleSessionID, which makes a WTS syscall, and calling
+	// it under the lock would serialize an OS call behind a hot-path mutex
+	// (and risks deadlock if the injected fn ever touches m.mu, as the
+	// regression test for this does).
+	consoleID := m.consoleSessionIDFn()
 	desired := make(map[HelperKey]bool, len(sessions)*2)
 	for _, session := range sessions {
-		if key, ok := helperKeyFromDetected(session, ipc.HelperRoleSystem); ok {
+		if key, ok := helperKeyFromDetected(session, ipc.HelperRoleSystem, m.rdsHost, consoleID); ok {
 			desired[key] = true
 		}
-		if key, ok := helperKeyFromDetected(session, ipc.HelperRoleUser); ok {
+		if key, ok := helperKeyFromDetected(session, ipc.HelperRoleUser, m.rdsHost, consoleID); ok {
 			desired[key] = true
 		}
 	}
 	m.mu.Lock()
-	applyDisconnectedRetention(desired, sessions, m.disconnectedSince, m.now(), disconnectedHelperRetention)
+	applyDisconnectedRetention(desired, sessions, m.disconnectedSince, m.now(), disconnectedHelperRetention, m.rdsHost, consoleID)
 	m.mu.Unlock()
 	return desired, nil
 }
