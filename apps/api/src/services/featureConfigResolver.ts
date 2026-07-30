@@ -268,7 +268,9 @@ export async function resolveAlertRulesForDevice(
       configPolicyFeatureLinks,
       and(
         eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        inArray(configPolicyFeatureLinks.featureType, ['alert_rule', 'monitoring'])
+        // Server-evaluated rules live exclusively under alert_rule links since the
+        // 2026-07-30 ownership consolidation migration.
+        eq(configPolicyFeatureLinks.featureType, 'alert_rule')
       )
     )
     .innerJoin(
