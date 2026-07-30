@@ -2207,7 +2207,19 @@
     "runOnDevice": "Run script on {{hostname}}",
     "runScript": "Run Script",
     "searchPlaceholder": "Search scripts...",
+    "sessionAny": "Any session (console)",
     "title": "Select Script",
     "unnamedScript": "Unnamed Script"
+  },
+  "sessionPicker": {
+    "titleDesktop": "Select a session to view",
+    "titleScript": "Select a session to run in",
+    "loading": "Loading sessions…",
+    "fetchFailed": "Could not load sessions",
+    "noSessions": "No interactive sessions found",
+    "sessionLabel": "session {{id}}",
+    "idleMinutes": "idle {{count}}m",
+    "disconnectedNotShadowable": "Disconnected sessions cannot be viewed — no active desktop to capture",
+    "cancel": "Cancel"
   }
 }

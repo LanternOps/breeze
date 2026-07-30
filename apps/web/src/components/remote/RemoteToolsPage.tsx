@@ -58,6 +58,7 @@ type DeviceApiResponse = {
   isHeadless?: boolean;
   desktopAccess?: DesktopAccessState | null;
   remoteAccessPolicy?: RemoteAccessPolicy | null;
+  helperLifecycleMode?: 'always-on' | 'on-demand' | null;
 };
 
 type ApiProcess = {
@@ -401,6 +402,7 @@ export default function RemoteToolsPage({
   const [isHeadless, setIsHeadless] = useState(false);
   const [desktopAccess, setDesktopAccess] = useState<DesktopAccessState | null>(null);
   const [remoteAccessPolicy, setRemoteAccessPolicy] = useState<RemoteAccessPolicy | null>(null);
+  const [helperLifecycleMode, setHelperLifecycleMode] = useState<'always-on' | 'on-demand' | null>(null);
 
   // Process state
   const [processes, setProcesses] = useState<Process[]>([]);
@@ -460,6 +462,7 @@ export default function RemoteToolsPage({
         setIsHeadless(data.isHeadless === true);
         setDesktopAccess(data.desktopAccess ?? null);
         setRemoteAccessPolicy(data.remoteAccessPolicy ?? null);
+        setHelperLifecycleMode(data.helperLifecycleMode ?? null);
       } catch (error) {
         console.error('Failed to load device info:', error);
       }
@@ -826,7 +829,7 @@ export default function RemoteToolsPage({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <ConnectDesktopButton deviceId={deviceId} isHeadless={isHeadless} desktopAccess={desktopAccess} remoteAccessPolicy={remoteAccessPolicy} />
+          <ConnectDesktopButton deviceId={deviceId} isHeadless={isHeadless} desktopAccess={desktopAccess} remoteAccessPolicy={remoteAccessPolicy} helperLifecycleMode={helperLifecycleMode} />
           {shouldShowClose && (
             <button
               onClick={handleClose}

@@ -44,6 +44,23 @@ const SCRIPTS_DATA = [
   },
 ];
 
+// Live-sessions fixture (GET /devices/:id/sessions/live)
+const SESSIONS_RESPONSE = {
+  data: {
+    deviceId: 'dev-1',
+    sessions: [
+      { sessionId: 1, username: 'console-user', state: 'active', type: 'console', helperConnected: false, idleMinutes: 0 },
+      { sessionId: 5, username: 'bob', state: 'disconnected', type: 'rdp', helperConnected: false, idleMinutes: 90 },
+    ],
+  },
+};
+
+// Route the shared fetch mock by URL: /devices/... → live sessions, else scripts.
+const routeFetchMock = () =>
+  fetchWithAuthMock.mockImplementation(async (url: string) =>
+    url.startsWith('/devices/') ? makeJsonResponse(SESSIONS_RESPONSE) : makeJsonResponse(SCRIPTS_DATA)
+  );
+
 describe('ScriptPickerModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -68,6 +85,7 @@ describe('ScriptPickerModal', () => {
     expect(onSelect).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'p1', name: 'No Params' }),
       'system',
+      undefined,
       undefined
     );
     expect(onClose).toHaveBeenCalled();
@@ -151,7 +169,8 @@ describe('ScriptPickerModal', () => {
     expect(onSelect).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'p2', name: 'With Params' }),
       'system',
-      expect.objectContaining({ message: 'hello', count: 5 })
+      expect.objectContaining({ message: 'hello', count: 5 }),
+      undefined
     );
     expect(onClose).toHaveBeenCalled();
   });
@@ -223,5 +242,67 @@ describe('ScriptPickerModal', () => {
     });
 
     expect(screen.queryByText('Configure Parameters')).toBeNull();
+  });
+});
+
+describe('ScriptPickerModal session targeting', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shows the session dropdown only for runAs=user on an on-demand device', async () => {
+    routeFetchMock();
+    render(
+      <ScriptPickerModal isOpen onClose={vi.fn()} onSelect={vi.fn()} deviceHostname="rds-01"
+        deviceOs="windows" deviceId="dev-1" helperLifecycleMode="on-demand" />
+    );
+    // default runAs=system: no dropdown
+    expect(screen.queryByTestId('script-session-target')).toBeNull();
+
+    fireEvent.change(screen.getByTestId('script-run-as'), { target: { value: 'user' } });
+    await waitFor(() => expect(screen.getByTestId('script-session-target')).toBeDefined());
+    // disconnected sessions stay selectable for scripts
+    expect(screen.getByText(/bob/)).toBeDefined();
+  });
+
+  it('never shows the dropdown without deviceId (bulk runs) or on always-on devices', () => {
+    routeFetchMock();
+    const { rerender } = render(
+      <ScriptPickerModal isOpen onClose={vi.fn()} onSelect={vi.fn()} deviceHostname="many" deviceOs="windows" />
+    );
+    fireEvent.change(screen.getByTestId('script-run-as'), { target: { value: 'user' } });
+    expect(screen.queryByTestId('script-session-target')).toBeNull();
+
+    rerender(
+      <ScriptPickerModal isOpen onClose={vi.fn()} onSelect={vi.fn()} deviceHostname="ws-01"
+        deviceOs="windows" deviceId="dev-2" helperLifecycleMode="always-on" />
+    );
+    fireEvent.change(screen.getByTestId('script-run-as'), { target: { value: 'user' } });
+    expect(screen.queryByTestId('script-session-target')).toBeNull();
+  });
+
+  it('passes the chosen session to onSelect', async () => {
+    routeFetchMock();
+    const onSelect = vi.fn();
+    render(
+      // deviceOs omitted so the linux fixture scripts aren't OS-filtered out —
+      // the session-target gate is independent of OS.
+      <ScriptPickerModal isOpen onClose={vi.fn()} onSelect={onSelect} deviceHostname="rds-01"
+        deviceId="dev-1" helperLifecycleMode="on-demand" />
+    );
+    fireEvent.change(screen.getByTestId('script-run-as'), { target: { value: 'user' } });
+    await waitFor(() => expect(screen.getByTestId('script-session-target')).toBeDefined());
+    fireEvent.change(screen.getByTestId('script-session-target'), { target: { value: '5' } });
+
+    // 'No Params' (id p1) is parameterless → selecting it fires onSelect immediately.
+    await waitFor(() => expect(screen.getByText('No Params')).toBeDefined());
+    fireEvent.click(screen.getByText('No Params'));
+
+    expect(onSelect).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'p1' }),
+      'user',
+      undefined,
+      5
+    );
   });
 });

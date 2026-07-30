@@ -9,6 +9,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
 type blockingLifecycleShutdown struct {
@@ -24,6 +27,26 @@ func (l *blockingLifecycleShutdown) Stop() {
 }
 
 func (l *blockingLifecycleShutdown) Done() <-chan struct{} { return l.done }
+
+func (l *blockingLifecycleShutdown) Mode() string { return "always-on" }
+
+func (l *blockingLifecycleShutdown) SetModeOverride(string) {}
+
+// Lease/readiness methods exist only to satisfy helperLifecycleController —
+// this fake covers shutdown ordering, which never touches them.
+func (l *blockingLifecycleShutdown) AcquireLease(uint32, ipc.HelperRole, string, time.Duration) error {
+	return nil
+}
+
+func (l *blockingLifecycleShutdown) RenewLease(uint32, ipc.HelperRole, string, time.Duration) error {
+	return nil
+}
+
+func (l *blockingLifecycleShutdown) ReleaseLease(uint32, ipc.HelperRole, string) {}
+
+func (l *blockingLifecycleShutdown) WaitForHelperReady(context.Context, sessionbroker.HelperKey) sessionbroker.HelperWaitResult {
+	return sessionbroker.HelperWaitResult{Status: sessionbroker.HelperWaitTimeout}
+}
 
 func TestBootstrapHelperLifecycleBeforeBrokerListen(t *testing.T) {
 	var order []string

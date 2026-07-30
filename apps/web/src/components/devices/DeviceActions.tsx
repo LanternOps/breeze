@@ -289,6 +289,7 @@ export default function DeviceActions({
                 isHeadless={device.isHeadless}
                 desktopAccess={device.desktopAccess}
                 remoteAccessPolicy={device.remoteAccessPolicy}
+                helperLifecycleMode={device.helperLifecycleMode}
               />
               <button
                 type="button"
@@ -446,6 +447,7 @@ export default function DeviceActions({
           isHeadless={device.isHeadless}
           desktopAccess={device.desktopAccess}
           remoteAccessPolicy={device.remoteAccessPolicy}
+          helperLifecycleMode={device.helperLifecycleMode}
         />
         <button
           type="button"

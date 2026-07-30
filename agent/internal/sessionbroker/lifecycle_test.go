@@ -110,6 +110,32 @@ func TestHandleSCMRemoteConnectRestoresUserHelper(t *testing.T) {
 // formerly named wtsSessionDisconnect was really WTS_REMOTE_DISCONNECT (0x4)
 // only, so the console case was unhandled and the user helper survived a
 // console disconnect.
+// TestHandleSCMLogoffClearsDisconnectedSince is the regression test for the
+// recycled-session-id trap: without clearing disconnectedSince on logoff, a
+// Windows session ID that gets reused for a brand-new logon would inherit a
+// stale "disconnected since" timestamp from the previous occupant and could be
+// pruned (or retained) using a clock that has nothing to do with the new
+// session's actual disconnect history.
+func TestHandleSCMLogoffClearsDisconnectedSince(t *testing.T) {
+	for _, eventType := range []uint32{wtsSessionLogoff, wtsSessionTerminate} {
+		t.Run(string(rune(eventType)), func(t *testing.T) {
+			m, _ := newWindowsLifecycleHarness(t, nil)
+			m.mu.Lock()
+			m.disconnectedSince[7] = time.Now().Add(-time.Hour)
+			m.mu.Unlock()
+
+			m.handleSCMEvent(SCMSessionEvent{EventType: eventType, SessionID: 7})
+
+			m.mu.Lock()
+			_, tracked := m.disconnectedSince[7]
+			m.mu.Unlock()
+			if tracked {
+				t.Fatal("disconnectedSince entry for the logged-off session must be cleared, not inherited by a recycled session id")
+			}
+		})
+	}
+}
+
 func TestHandleSCMConsoleDisconnectStopsUserHelper(t *testing.T) {
 	m, _ := newWindowsLifecycleHarness(t, []DetectedSession{{Session: "7", State: "disconnected", Type: "console"}})
 	system := newFakeHelperProcess(6300)

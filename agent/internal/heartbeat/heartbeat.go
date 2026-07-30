@@ -107,6 +107,11 @@ type HeartbeatPayload struct {
 	OSVersion      string              `json:"osVersion,omitempty"`
 	OSBuild        string              `json:"osBuild,omitempty"`
 	IsHeadless     bool                `json:"isHeadless"`
+	// HelperLifecycleMode is the resolved helper spawn mode ("always-on" |
+	// "on-demand"); on-demand means the host was detected (or configured) as
+	// an RD Session Host and the UI should offer session targeting. Empty
+	// when no lifecycle manager runs (non-Windows, non-service).
+	HelperLifecycleMode string `json:"helperLifecycleMode,omitempty"`
 	// Current-state power/battery telemetry (#2142). Pointer + omitempty so an
 	// old agent (or a platform that can't report power state) omits the field
 	// and the server keeps whatever it last knew rather than clobbering it.
@@ -176,6 +181,10 @@ type HelperSettings struct {
 	ShowDeviceInfo     bool   `json:"showDeviceInfo"`
 	ShowRequestSupport bool   `json:"showRequestSupport"`
 	PortalUrl          string `json:"portalUrl,omitempty"`
+	// LifecycleMode is the server-side helper lifecycle override
+	// ("auto" | "always-on" | "on-demand"); empty means auto. Applied to the
+	// sessionbroker lifecycle, NOT to the Tauri Assist manager.
+	LifecycleMode string `json:"lifecycleMode,omitempty"`
 }
 
 type Command struct {
@@ -184,9 +193,31 @@ type Command struct {
 	Payload map[string]any `json:"payload"`
 }
 
+// helperLifecycleController is the subset of *sessionbroker.HelperLifecycleManager
+// the heartbeat drives: shutdown, the resolved mode, and — for on-demand (RDS)
+// hosts — the lease + readiness API that replaces "a helper is always running"
+// with "a helper exists while an operation holds a lease on its session".
 type helperLifecycleController interface {
 	Stop()
 	Done() <-chan struct{}
+	Mode() string
+	SetModeOverride(override string)
+	AcquireLease(sessionID uint32, role ipc.HelperRole, opID string, ttl time.Duration) error
+	RenewLease(sessionID uint32, role ipc.HelperRole, opID string, ttl time.Duration) error
+	ReleaseLease(sessionID uint32, role ipc.HelperRole, opID string)
+	WaitForHelperReady(ctx context.Context, key sessionbroker.HelperKey) sessionbroker.HelperWaitResult
+}
+
+// lifecycleMode returns the resolved helper lifecycle mode, or "" when no
+// lifecycle manager runs (non-Windows, non-service). "on-demand" gates every
+// RDS-specific behavior in the command handlers.
+func (h *Heartbeat) lifecycleMode() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.helperLifecycle == nil {
+		return ""
+	}
+	return h.helperLifecycle.Mode()
 }
 
 type Heartbeat struct {
@@ -286,6 +317,22 @@ type Heartbeat struct {
 	pamGateStuckReassertInterval time.Duration
 	wsDesktopStart               func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
 	desktopOwners                sync.Map // desktop session ID -> helper session ID
+
+	// desktopTargets maps remote desktop session id -> explicitly targeted
+	// Windows session ("" for untargeted/legacy connects) so the stop path can
+	// route the banner-hide and end-of-session notify to the same user who saw
+	// the consent prompt. Guarded by h.mu.
+	desktopTargets map[string]string
+
+	// desktopLeases maps remote desktop session id -> the on-demand helper
+	// leases held for it (see handlers_desktop_lease.go). Only populated in
+	// "on-demand" lifecycle mode. Guarded by h.mu.
+	desktopLeases map[string]*desktopLeaseHold
+
+	// desktopHelperPresent reports whether the helper for a key is still
+	// connected; the lease-renewal goroutine uses it to notice a stream that
+	// died without a stop_desktop. Test seam — nil means "ask the broker".
+	desktopHelperPresent func(sessionbroker.HelperKey) bool
 
 	// Resilience & observability
 	pool        *workerpool.Pool
@@ -566,6 +613,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		retryCfg:        httputil.DefaultRetryConfig(),
 		seenCommands:    make(map[string]time.Time),
 		backupOutbox:    newBackupResultOutbox(backupResultOutboxDir()),
+		desktopTargets:  make(map[string]string),
 	}
 	h.accepting.Store(true)
 	h.isService = cfg.IsService
@@ -961,6 +1009,28 @@ func (h *Heartbeat) sendUpdateStatus(targetVersion string) {
 	}
 }
 
+// setDesktopTarget records the explicitly targeted Windows session ("" for
+// untargeted/legacy connects) for a remote desktop session id, so the stop
+// path can later route the banner-hide/end-of-session notify to the same
+// user who saw the consent prompt (see takeDesktopTarget).
+func (h *Heartbeat) setDesktopTarget(sessionID, targetWinSession string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.desktopTargets == nil {
+		h.desktopTargets = make(map[string]string)
+	}
+	h.desktopTargets[sessionID] = targetWinSession
+}
+
+// takeDesktopTarget returns and clears the recorded target for a session.
+func (h *Heartbeat) takeDesktopTarget(sessionID string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	t := h.desktopTargets[sessionID]
+	delete(h.desktopTargets, sessionID)
+	return t
+}
+
 // sendDesktopDisconnectNotification tells the API that a WebRTC peer
 // connection dropped so it can mark the session as disconnected and allow
 // the viewer to reconnect.
@@ -971,6 +1041,15 @@ func (h *Heartbeat) sendDesktopDisconnectNotification(sessionID string) {
 	// no-op for un-prompted sessions. Done before the wsClient guard so the
 	// local UX still tears down even if the WS link is gone.
 	h.handleConsentSessionEnd(sessionID)
+
+	// Symmetrical with the target release above: a peer disconnect ends the
+	// session for good, so the on-demand helper leases must go too. Without
+	// this the renewal goroutine would keep renewing a lease for a dead stream
+	// whenever the helper process itself outlives the peer connection (its
+	// broker session is still up, so the "helper vanished" self-stop never
+	// fires) and the helper would be pinned forever. leaseLinger still keeps
+	// the helper warm for a prompt viewer reconnect. No-op in always-on mode.
+	h.releaseDesktopLeases(sessionID)
 
 	if h.wsClient == nil {
 		return
@@ -1097,7 +1176,7 @@ func (h *Heartbeat) Start() {
 	var lifecycle *sessionbroker.HelperLifecycleManager
 	if h.scmSessionCh != nil && h.sessionBroker != nil {
 		ctx, cancel := context.WithCancel(context.Background())
-		lifecycle = sessionbroker.NewHelperLifecycleManager(h.sessionBroker, h.scmSessionCh)
+		lifecycle = sessionbroker.NewHelperLifecycleManager(h.sessionBroker, h.scmSessionCh, h.config.HelperLifecycleMode)
 		h.mu.Lock()
 		h.helperLifecycle = lifecycle
 		h.lifecycleCancel = cancel
@@ -3419,6 +3498,12 @@ func (h *Heartbeat) sendHeartbeat() {
 		SecurityCapabilities: SecurityCapabilities{OutboundNetworkPolicyVersion: 1},
 	}
 
+	h.mu.Lock()
+	if h.helperLifecycle != nil {
+		payload.HelperLifecycleMode = h.helperLifecycle.Mode()
+	}
+	h.mu.Unlock()
+
 	// Only report virtualization once background hardware collection has
 	// actually classified it (#1387). Before then — or if hardware collection
 	// failed — leave IsVirtual nil so the field is omitted and the server keeps
@@ -3963,6 +4048,15 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 			ShowRequestSupport: response.HelperSettings.ShowRequestSupport,
 			PortalUrl:          response.HelperSettings.PortalUrl,
 		})
+		// LifecycleMode is a sessionbroker concern, not an Assist setting, so it
+		// bypasses helperMgr and drives the lifecycle manager directly. Idempotent
+		// and cheap — the manager no-ops when the resolved mode is unchanged.
+		h.mu.Lock()
+		lc := h.helperLifecycle
+		h.mu.Unlock()
+		if lc != nil {
+			lc.SetModeOverride(response.HelperSettings.LifecycleMode)
+		}
 	}
 }
 

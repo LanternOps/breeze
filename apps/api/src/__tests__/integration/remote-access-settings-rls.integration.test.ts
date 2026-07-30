@@ -68,6 +68,16 @@ function orgContext(orgId: string): DbAccessContext {
   };
 }
 
+function partnerContext(partnerId: string, orgIds: string[] = []): DbAccessContext {
+  return {
+    scope: 'partner',
+    orgId: null,
+    accessibleOrgIds: orgIds,
+    accessiblePartnerIds: [partnerId],
+    userId: null,
+  };
+}
+
 // Re-seeds fresh on every call. Intentionally NOT memoized: setup.ts's
 // beforeEach cleanupDatabase() TRUNCATEs partners/organizations CASCADE before
 // each test, so cached rows would be gone by assertion time (vacuous reads).
@@ -127,6 +137,82 @@ async function seedFixture(): Promise<Fixture> {
   });
 }
 
+// Partner-owned fixture topology, for the dual-axis (2026-07-29) cases.
+// Fixture topology (seeded fresh per test under system scope):
+//   partnerA → orgA
+//            → policyFresh (org_id NULL, partner_id partnerA) → linkPartnerFresh (remote_access, no settings)
+//            → policyForge (org_id NULL, partner_id partnerA) → linkPartnerForge (remote_access, no settings)
+//            → policySeeded (org_id NULL, partner_id partnerA) → linkSeeded (remote_access) → settingsPartnerA
+//   partnerB (no orgs needed — only used to forge)
+interface PartnerFixture {
+  orgA: { id: string };
+  linkPartnerFresh: { id: string };
+  linkPartnerForge: { id: string };
+  settingsPartnerA: { id: string };
+  partnerAContext: DbAccessContext;
+  partnerBContext: DbAccessContext;
+  orgAContext: DbAccessContext;
+}
+
+async function seedPartnerFixture(): Promise<PartnerFixture> {
+  return withSystemDbAccessContext(async () => {
+    const partnerA = await createPartner();
+    const orgA = await createOrganization({ partnerId: partnerA.id });
+    const partnerB = await createPartner();
+    seededPartnerIds.push(partnerA.id, partnerB.id);
+
+    const [policyFresh] = await db
+      .insert(configurationPolicies)
+      .values({ orgId: null, partnerId: partnerA.id, name: 'RAS Partner Policy (fresh)', status: 'active' })
+      .returning({ id: configurationPolicies.id });
+    const [linkPartnerFresh] = await db
+      .insert(configPolicyFeatureLinks)
+      .values({ configPolicyId: policyFresh!.id, featureType: 'remote_access', inlineSettings: {} })
+      .returning({ id: configPolicyFeatureLinks.id });
+
+    const [policyForge] = await db
+      .insert(configurationPolicies)
+      .values({ orgId: null, partnerId: partnerA.id, name: 'RAS Partner Policy (forge target)', status: 'active' })
+      .returning({ id: configurationPolicies.id });
+    const [linkPartnerForge] = await db
+      .insert(configPolicyFeatureLinks)
+      .values({ configPolicyId: policyForge!.id, featureType: 'remote_access', inlineSettings: {} })
+      .returning({ id: configPolicyFeatureLinks.id });
+
+    const [policySeeded] = await db
+      .insert(configurationPolicies)
+      .values({ orgId: null, partnerId: partnerA.id, name: 'RAS Partner Policy (pre-seeded)', status: 'active' })
+      .returning({ id: configurationPolicies.id });
+    const [linkSeeded] = await db
+      .insert(configPolicyFeatureLinks)
+      .values({ configPolicyId: policySeeded!.id, featureType: 'remote_access', inlineSettings: {} })
+      .returning({ id: configPolicyFeatureLinks.id });
+    const [settingsPartnerA] = await db
+      .insert(configPolicyRemoteAccessSettings)
+      .values({
+        featureLinkId: linkSeeded!.id,
+        sessionPromptMode: 'consent',
+        consentUnavailableBehavior: 'block',
+        technicianIdentityLevel: 'name',
+      })
+      .returning({ id: configPolicyRemoteAccessSettings.id });
+
+    if (!linkPartnerFresh || !linkPartnerForge || !settingsPartnerA) {
+      throw new Error('failed to seed partner-owned remote-access settings fixture');
+    }
+
+    return {
+      orgA: { id: orgA.id },
+      linkPartnerFresh: { id: linkPartnerFresh.id },
+      linkPartnerForge: { id: linkPartnerForge.id },
+      settingsPartnerA: { id: settingsPartnerA.id },
+      partnerAContext: partnerContext(partnerA.id, [orgA.id]),
+      partnerBContext: partnerContext(partnerB.id, []),
+      orgAContext: orgContext(orgA.id),
+    };
+  });
+}
+
 // Best-effort safety net only; setup.ts's beforeEach already wipes core tenant
 // tables CASCADE (which cascades through the policy FKs) before every test.
 afterAll(async () => {
@@ -137,10 +223,16 @@ afterAll(async () => {
   // Separate transactions: the policy delete takes org-level partner-export
   // locks while the organizations delete takes partner-level locks, and the
   // lock hierarchy forbids partner-after-org within one transaction.
+  // Includes partner-owned policies (org_id NULL, partner_id set) — those
+  // wouldn't be caught by the org-subselect delete below, and would otherwise
+  // FK-block the partner delete that follows.
   await withSystemDbAccessContext(async () => {
     await db
       .delete(configurationPolicies)
-      .where(sql`${configurationPolicies.orgId} IN (SELECT id FROM organizations WHERE partner_id IN (${partnerList}))`);
+      .where(
+        sql`${configurationPolicies.orgId} IN (SELECT id FROM organizations WHERE partner_id IN (${partnerList}))
+            OR ${configurationPolicies.partnerId} IN (${partnerList})`
+      );
   });
   await withSystemDbAccessContext(async () => {
     await db.delete(organizations).where(sql`${organizations.partnerId} IN (${partnerList})`);
@@ -244,5 +336,77 @@ describe('config_policy_remote_access_settings RLS isolation (breeze_app)', () =
     expect(readBack[0]?.mode).toBe('notify');
     // The org id is genuinely org A's (sanity on the fixture, not just RLS).
     expect(orgA.id).toBeTruthy();
+  });
+});
+
+// Dual-axis coverage (2026-07-29-remote-access-settings-partner-rls.sql,
+// pre-existing bug 4): the 2026-06-19 policies reached ownership only via
+// breeze_has_org_access(cp.org_id). For a partner-owned parent policy
+// (org_id NULL, partner_id set — 2026-06-27-config-policies-partner-ownership)
+// that branch is always false, so partner-wide consent settings were
+// invisible/unwritable to every org- and partner-scoped principal. The read
+// path used by agents is unaffected (system context); this is the broken
+// UI write/read surface for a technician editing a partner-wide policy.
+describe('partner-owned policy consent settings (dual-axis)', () => {
+  // Owning-partner write+read: the case the org-only policy fails before the
+  // 2026-07-29 migration (breeze_has_org_access(NULL) -> false -> 0 rows /
+  // 42501 on insert).
+  runDb('partner-scope token of the owning partner can INSERT + SELECT the child row', async () => {
+    const { linkPartnerFresh, partnerAContext } = await seedPartnerFixture();
+
+    const inserted = await withDbAccessContext(partnerAContext, () =>
+      db
+        .insert(configPolicyRemoteAccessSettings)
+        .values({
+          featureLinkId: linkPartnerFresh.id,
+          sessionPromptMode: 'notify',
+          consentUnavailableBehavior: 'proceed',
+          technicianIdentityLevel: 'name_email',
+        })
+        .returning({ id: configPolicyRemoteAccessSettings.id })
+    );
+    expect(inserted).toHaveLength(1);
+
+    const readBack = await withDbAccessContext(partnerAContext, () =>
+      db
+        .select({ id: configPolicyRemoteAccessSettings.id, mode: configPolicyRemoteAccessSettings.sessionPromptMode })
+        .from(configPolicyRemoteAccessSettings)
+        .where(eq(configPolicyRemoteAccessSettings.id, inserted[0]!.id))
+    );
+    expect(readBack).toHaveLength(1);
+    expect(readBack[0]?.mode).toBe('notify');
+  });
+
+  // Org tokens never pass breeze_has_partner_access — RLS stays stricter than
+  // the app layer. Do not "fix" this by loosening the policy; a partner-wide
+  // row is visible only to callers holding partner-axis access.
+  runDb('org-scope token in the owning partner CANNOT see partner-wide child rows', async () => {
+    const { settingsPartnerA, orgAContext } = await seedPartnerFixture();
+
+    const rows = await withDbAccessContext(orgAContext, () =>
+      db
+        .select({ id: configPolicyRemoteAccessSettings.id })
+        .from(configPolicyRemoteAccessSettings)
+        .where(eq(configPolicyRemoteAccessSettings.id, settingsPartnerA.id))
+    );
+    expect(rows).toHaveLength(0);
+  });
+
+  // Cross-partner forge: partnerB has no access grant to partnerA's
+  // partner-owned link, so the WITH CHECK must reject with 42501 — never a
+  // silent 0-row no-op and never an incidental FK error (the link resolves).
+  runDb('cross-partner forge fails with 42501', async () => {
+    const { linkPartnerForge, partnerBContext } = await seedPartnerFixture();
+
+    await expect(
+      withDbAccessContext(partnerBContext, () =>
+        db.insert(configPolicyRemoteAccessSettings).values({
+          featureLinkId: linkPartnerForge.id, // partner A's link — RLS must reject
+          sessionPromptMode: 'consent',
+          consentUnavailableBehavior: 'block',
+          technicianIdentityLevel: 'generic',
+        })
+      )
+    ).rejects.toMatchObject({ cause: { code: '42501' } });
   });
 });

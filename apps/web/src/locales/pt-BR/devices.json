@@ -2207,7 +2207,19 @@
     "runOnDevice": "Executar script em {{hostname}}",
     "runScript": "Executar script",
     "searchPlaceholder": "Pesquisar scripts...",
+    "sessionAny": "Qualquer sessão (console)",
     "title": "Selecionar script",
     "unnamedScript": "Script sem nome"
+  },
+  "sessionPicker": {
+    "titleDesktop": "Selecione uma sessão para visualizar",
+    "titleScript": "Selecione uma sessão para executar",
+    "loading": "Carregando sessões…",
+    "fetchFailed": "Não foi possível carregar as sessões",
+    "noSessions": "Nenhuma sessão interativa encontrada",
+    "sessionLabel": "sessão {{id}}",
+    "idleMinutes": "{{count}} min inativa",
+    "disconnectedNotShadowable": "Sessões desconectadas não podem ser visualizadas — nenhuma área de trabalho ativa para capturar",
+    "cancel": "Cancelar"
   }
 }

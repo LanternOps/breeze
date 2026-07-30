@@ -36,15 +36,21 @@ const (
 	wtsSessionTerminate  = 0xb
 )
 
-func NewHelperLifecycleManager(broker *Broker, scmCh <-chan SCMSessionEvent) *HelperLifecycleManager {
+func NewHelperLifecycleManager(broker *Broker, scmCh <-chan SCMSessionEvent, modeOverride string) *HelperLifecycleManager {
+	rdsHost := detectRDSHost()
+	mode := resolveLifecycleMode(modeOverride, rdsHost)
+	log.Info("helper lifecycle mode resolved", "mode", string(mode), "rdsHost", rdsHost, "override", modeOverride)
 	manager, err := buildWindowsHelperLifecycleManager(broker, scmCh, newWindowsHelperSpawner)
 	if err != nil {
 		// Keep heartbeat startup operational, but disable proactive spawning.
 		// Reconciliation will retry on the next agent/service restart, when a
 		// fresh Job Object can be created before any helper process exists.
 		log.Error("lifecycle: failed to initialize helper Job Object", "error", err.Error())
-		return newHelperLifecycleManager(broker, NewSessionDetector(), scmCh, nil)
+		manager = newHelperLifecycleManager(broker, NewSessionDetector(), scmCh, nil)
 	}
+	manager.mode = mode
+	manager.rdsHost = rdsHost
+	manager.localOverride = modeOverride
 	return manager
 }
 
@@ -90,6 +96,8 @@ func (m *HelperLifecycleManager) Start(ctx context.Context) {
 			}
 		case <-ticker.C:
 			m.reconcile()
+		case <-m.kickCh:
+			m.reconcile()
 		}
 	}
 }
@@ -109,12 +117,32 @@ func (m *HelperLifecycleManager) handleSCMEvent(event SCMSessionEvent) {
 		m.reconcile()
 	// Session went away but is still logged on. The user helper requires
 	// state=="active" so it goes; the SYSTEM helper is retained deliberately
-	// (an RDP session keeps running when disconnected).
+	// in always-on mode (an RDP session keeps running when disconnected). In
+	// on-demand mode a disconnected session is no longer shadowable, so its
+	// SYSTEM lease dies with the connection.
 	case wtsRemoteDisconnect, wtsConsoleDisconnect:
+		if m.currentMode() == LifecycleModeOnDemand {
+			m.dropLeases(event.SessionID, ipc.HelperRoleSystem)
+			m.removeDesired(systemKey)
+			m.stopKey(systemKey)
+		}
 		m.removeDesired(userKey)
 		m.stopKey(userKey)
 		m.reconcile()
 	case wtsSessionLogoff, wtsSessionTerminate:
+		// Clear any retention timestamp for this Windows session id before
+		// anything else. Windows recycles session ids after logoff, so a new
+		// logon that reuses this id must start with a clean disconnect clock —
+		// otherwise it could inherit a stale (or already-expired)
+		// disconnectedSince from the prior occupant. dropLeases/removeDesired/
+		// stopKey below each take m.mu themselves and none holds it across
+		// this case, so this lock/unlock cannot nest or deadlock with them.
+		m.mu.Lock()
+		delete(m.disconnectedSince, event.SessionID)
+		m.mu.Unlock()
+		if m.currentMode() == LifecycleModeOnDemand {
+			m.dropLeases(event.SessionID, ipc.HelperRoleSystem, ipc.HelperRoleUser)
+		}
 		m.removeDesired(systemKey, userKey)
 		m.stopKey(userKey)
 		m.stopKey(systemKey)

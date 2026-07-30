@@ -412,6 +412,14 @@ export default function DevicesPage() {
             d.reliabilityTrend === 'degrading'
               ? d.reliabilityTrend
               : null,
+          // RDS per-session helper mode (Task 12): validated against the known
+          // values so an unexpected API value falls back to null rather than
+          // leaking through the type — Tasks 13/14 gate the session picker on
+          // this being exactly 'on-demand'.
+          helperLifecycleMode:
+            d.helperLifecycleMode === 'always-on' || d.helperLifecycleMode === 'on-demand'
+              ? d.helperLifecycleMode
+              : null,
         };
       });
 
@@ -595,7 +603,7 @@ export default function DevicesPage() {
     setScriptTargetDevices([]);
   };
 
-  const handleScriptSelect = (script: Script, runAs: ScriptRunAsSelection, parameters?: Record<string, unknown>) => {
+  const handleScriptSelect = (script: Script, runAs: ScriptRunAsSelection, parameters?: Record<string, unknown>, _targetSessionId?: number) => {
     // Gate script execution behind a scope-naming confirm dialog. Capture the
     // target devices now: ScriptPickerModal calls onClose() right after
     // onSelect(), and closeScriptPicker() resets scriptTargetDevices to [] —

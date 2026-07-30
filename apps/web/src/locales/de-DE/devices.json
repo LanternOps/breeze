@@ -2207,7 +2207,19 @@
     "runOnDevice": "Skript auf {{hostname}} ausführen",
     "runScript": "Skript ausführen",
     "searchPlaceholder": "Skripte suchen...",
+    "sessionAny": "Beliebige Sitzung (Konsole)",
     "title": "Wählen Sie Skript",
     "unnamedScript": "Unbenanntes Skript"
+  },
+  "sessionPicker": {
+    "titleDesktop": "Sitzung zum Anzeigen auswählen",
+    "titleScript": "Sitzung zum Ausführen auswählen",
+    "loading": "Sitzungen werden geladen…",
+    "fetchFailed": "Sitzungen konnten nicht geladen werden",
+    "noSessions": "Keine interaktiven Sitzungen gefunden",
+    "sessionLabel": "Sitzung {{id}}",
+    "idleMinutes": "{{count}} Min. inaktiv",
+    "disconnectedNotShadowable": "Getrennte Sitzungen können nicht angezeigt werden – kein aktiver Desktop zum Erfassen",
+    "cancel": "Abbrechen"
   }
 }

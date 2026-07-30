@@ -14,7 +14,6 @@ import (
 	"syscall"
 )
 
-const plistLabel = "com.breeze.helper"
 const plistPath = "/Library/LaunchAgents/com.breeze.helper.plist"
 const appBundleName = "Breeze Helper.app"
 
@@ -79,35 +78,6 @@ func xmlEscapeString(s string) string {
 	var buf bytes.Buffer
 	_ = xml.EscapeText(&buf, []byte(s))
 	return buf.String()
-}
-
-func installAutoStart(binaryPath string) error {
-	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>%s</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>%s</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <false/>
-    <key>LimitLoadToSessionType</key>
-    <string>Aqua</string>
-</dict>
-</plist>
-`, xmlEscapeString(plistLabel), xmlEscapeString(binaryPath))
-
-	if err := os.WriteFile(plistPath, []byte(plist), 0644); err != nil {
-		return fmt.Errorf("write plist: %w", err)
-	}
-
-	log.Info("installed LaunchAgent plist", "path", plistPath)
-	return nil
 }
 
 func removeAutoStart() error {

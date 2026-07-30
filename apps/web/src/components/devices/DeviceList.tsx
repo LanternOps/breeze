@@ -221,6 +221,15 @@ export type Device = {
    * implies the group's kind is 'vm_host' — no group fetch needed.
    */
   linkGroupRole?: 'host' | 'guest' | null;
+  /**
+   * RDS per-session helper mode reported by the agent heartbeat
+   * (devices.helper_lifecycle_mode). 'on-demand' gates Tasks 13/14's session
+   * pickers (RD connect, script dialog). null/undefined = not reported
+   * (non-RDS host, or an agent predating the per-session helper plan).
+   * This is a UI hint, not an auth gate — see the truthy-guard comment in
+   * apps/api/src/routes/agents/heartbeat.ts.
+   */
+  helperLifecycleMode?: 'always-on' | 'on-demand' | null;
 };
 
 // Columns that only make sense for the network arm (#1322); hidden unless
@@ -2221,6 +2230,7 @@ export default function DeviceList({
                             isHeadless={device.isHeadless}
                             desktopAccess={device.desktopAccess}
                             remoteAccessPolicy={device.remoteAccessPolicy}
+                            helperLifecycleMode={device.helperLifecycleMode}
                           />
                           <div className="relative">
                             <button

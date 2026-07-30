@@ -21,6 +21,11 @@ import (
 
 var log = logging.L("helper")
 
+// sweepLegacyAutoStart enables the one-time HKLM Run cleanup in Apply. The
+// value only ever exists on Windows (legacy installs); other platforms use
+// launchd/systemd artifacts handled by migrate/uninstall.
+var sweepLegacyAutoStart = runtime.GOOS == "windows"
+
 // Settings mirrors the API HelperSettings shape.
 type Settings struct {
 	Enabled            bool   `json:"enabled" yaml:"-"`
@@ -163,6 +168,8 @@ type Manager struct {
 	pendingHelperVersion string
 	updateFailures       int
 	abandonedVersion     string // version we gave up updating to
+
+	legacyAutoStartCleaned bool
 }
 
 // New creates a new helper Manager. serverURL is a provider (func() string) so
@@ -278,6 +285,20 @@ func (m *Manager) Apply(settings *Settings) {
 		m.migrateToSessions()
 	}
 
+	// Nothing installs the HKLM Run "BreezeHelper" value anymore — spawning is
+	// manager-driven — but hosts upgraded before the per-session migration may
+	// still carry it, and Windows fires it for EVERY logon session, bypassing
+	// the console-only enumerator filter on RDS hosts. The migration-time
+	// removal only runs under one-time conditions, so sweep it here once per
+	// agent process. Idempotent: removeAutoStart is a no-op when absent.
+	if sweepLegacyAutoStart && !m.legacyAutoStartCleaned {
+		if err := removeAutoStartFunc(); err != nil {
+			log.Warn("failed to remove legacy HKLM Run autostart", "error", err.Error())
+		} else {
+			m.legacyAutoStartCleaned = true
+		}
+	}
+
 	if m.sessionEnumerator == nil {
 		return
 	}
@@ -367,6 +388,29 @@ func (m *Manager) Apply(settings *Settings) {
 		m.stopSessionWatcher(state)
 		if err := m.ensureStoppedSession(state); err != nil {
 			log.Error("failed to stop breeze assist", "session", si.Key, "error", err.Error())
+		}
+	}
+
+	// After an agent upgrade, m.sessions starts empty in memory. A helper
+	// spawned into a non-console (e.g. RDP) session before the upgrade may
+	// still be running, but the console-only enumerator never surfaces that
+	// session key — so without this merge it would run unmanaged until
+	// logoff and its sessions/<key> dir would linger. Fold on-disk session
+	// directories into m.sessions so the stale loop below sees (and stops)
+	// them via the same refreshPID/ensureStoppedSession mechanics.
+	if entries, err := os.ReadDir(filepath.Join(m.baseDir, "sessions")); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			key := entry.Name()
+			if activeKeys[key] {
+				continue
+			}
+			if _, exists := m.sessions[key]; exists {
+				continue
+			}
+			m.sessions[key] = newSessionState(key, m.baseDir)
 		}
 	}
 

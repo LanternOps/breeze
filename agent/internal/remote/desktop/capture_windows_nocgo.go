@@ -298,6 +298,7 @@ func (c *gdiCapturer) Capture() (*image.RGBA, error) {
 
 	// Secure-desktop transitions can invalidate DCs transiently. Treat this as
 	// "no frame yet" so the session loop skips without flooding error logs.
+	// The startup probe (probeCapture) retries then fails on persistent nil frames.
 	if lastErr != nil {
 		c.recordCaptureFailureLocked(lastErr)
 	}

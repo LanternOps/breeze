@@ -72,6 +72,10 @@ export const devices = pgTable('devices', {
   osBuild: varchar('os_build', { length: 100 }),
   architecture: varchar('architecture', { length: 20 }).notNull(),
   agentVersion: varchar('agent_version', { length: 50 }).notNull(),
+  // Resolved helper spawn mode reported by the agent ("always-on" |
+  // "on-demand"); on-demand marks RD Session Hosts, where the web UI offers
+  // per-session targeting. Null for old agents / non-Windows.
+  helperLifecycleMode: varchar('helper_lifecycle_mode', { length: 20 }),
   status: deviceStatusEnum('status').notNull().default('offline'),
   lastSeenAt: timestamp('last_seen_at'),
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),

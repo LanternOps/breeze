@@ -148,6 +148,10 @@ type Config struct {
 	// User helper configuration
 	UserHelperEnabled bool   `mapstructure:"user_helper_enabled"`
 	IPCSocketPath     string `mapstructure:"ipc_socket_path"`
+	// HelperLifecycleMode overrides on-demand vs always-on helper spawning:
+	// "always-on" | "on-demand" | "auto" (default). Auto resolves to on-demand
+	// on RD Session Hosts and always-on everywhere else.
+	HelperLifecycleMode string `mapstructure:"helper_lifecycle_mode"`
 
 	// Patch management
 	PatchExcludeDrivers        bool     `mapstructure:"patch_exclude_drivers"`

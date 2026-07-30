@@ -30,6 +30,13 @@ const (
 	// connected. main's deleted KillStaleHelpers was strictly more aggressive —
 	// it killed before EVERY respawn with no timeout at all.
 	helperStartupTimeout = 90 * time.Second
+
+	// disconnectedHelperRetention caps how long the SYSTEM helper of a
+	// disconnected RDP session stays desired. Long enough to survive brief
+	// network drops and RDP reconnects; short enough that helpers don't
+	// accumulate on terminal servers where disconnected sessions linger for
+	// days. Phase 1's on-demand lifecycle re-spawns on target if needed.
+	disconnectedHelperRetention = 10 * time.Minute
 )
 
 type SCMSessionEvent struct {
@@ -149,6 +156,28 @@ type HelperLifecycleManager struct {
 	doneOnce       sync.Once
 	gracePeriod    time.Duration
 	finalWait      time.Duration
+
+	disconnectedSince map[uint32]time.Time
+	now               func() time.Time
+
+	// mode is the resolved lifecycle mode. It is mutable: SetModeOverride can
+	// flip it live from a heartbeat while the run loop reads it concurrently, so
+	// every read/write of mode MUST hold m.mu (use currentMode() off the hot
+	// setter path). rdsHost is the cached host-detection result and localOverride
+	// is the operator's explicit local config; both are set once at construction
+	// and thereafter read-only, so SetModeOverride can re-resolve against them.
+	mode          LifecycleMode
+	rdsHost       bool
+	localOverride string
+
+	// consoleSessionIDFn resolves the active console (physical-monitor)
+	// Windows session id. Defaults to GetConsoleSessionID (a WTS syscall);
+	// tests inject a stub. detectedDesired MUST resolve this before taking
+	// m.mu — see the call site.
+	consoleSessionIDFn func() string
+
+	leases map[HelperKey]*helperLease
+	kickCh chan struct{}
 }
 
 func newHelperLifecycleManager(broker *Broker, detector SessionDetector, scmCh <-chan SCMSessionEvent, spawner helperSpawner) *HelperLifecycleManager {
@@ -163,6 +192,15 @@ func newHelperLifecycleManager(broker *Broker, detector SessionDetector, scmCh <
 		stopCh:      make(chan struct{}),
 		gracePeriod: 2 * time.Second,
 		finalWait:   2 * time.Second,
+
+		disconnectedSince: make(map[uint32]time.Time),
+		now:               time.Now,
+
+		mode:               LifecycleModeAlwaysOn,
+		consoleSessionIDFn: GetConsoleSessionID,
+
+		leases: make(map[HelperKey]*helperLease),
+		kickCh: make(chan struct{}, 1),
 	}
 	if broker != nil {
 		m.observerRemove = broker.AddSessionLifecycleObserver(m.sessionAuthenticated, m.sessionClosed)
@@ -171,6 +209,49 @@ func newHelperLifecycleManager(broker *Broker, detector SessionDetector, scmCh <
 }
 
 func (m *HelperLifecycleManager) Done() <-chan struct{} { return m.done }
+
+// Mode reports the resolved lifecycle mode ("always-on" | "on-demand") for
+// heartbeat reporting and diagnostics. Reads under m.mu — the mode is mutable
+// via SetModeOverride.
+func (m *HelperLifecycleManager) Mode() string { return string(m.currentMode()) }
+
+// currentMode returns the resolved lifecycle mode under lock. Every read of
+// m.mode outside the setter must go through here (or an inline lock) because
+// SetModeOverride mutates m.mode from the heartbeat goroutine.
+func (m *HelperLifecycleManager) currentMode() LifecycleMode {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.mode
+}
+
+// SetModeOverride applies the server-delivered lifecycle override
+// ("auto" | "always-on" | "on-demand" | ""). Precedence: an explicit local
+// config override (helper_lifecycle_mode / BREEZE_HELPER_LIFECYCLE_MODE) is
+// the operator's break-glass and always wins; otherwise the server value is
+// resolved against RDS detection. A live switch to always-on strands no
+// state: leases are cleared and the reconcile respawns per-session helpers.
+// A switch to on-demand leaves the lease table empty, so the next reconcile
+// reaps every unleased helper. Called every heartbeat — must be idempotent.
+func (m *HelperLifecycleManager) SetModeOverride(override string) {
+	m.mu.Lock()
+	if m.localOverride != "" && m.localOverride != "auto" {
+		m.mu.Unlock()
+		return
+	}
+	newMode := resolveLifecycleMode(override, m.rdsHost)
+	if newMode == m.mode {
+		m.mu.Unlock()
+		return
+	}
+	log.Info("helper lifecycle mode changed by server override",
+		"from", string(m.mode), "to", string(newMode), "override", override)
+	m.mode = newMode
+	if newMode == LifecycleModeAlwaysOn {
+		m.leases = make(map[HelperKey]*helperLease)
+	}
+	m.mu.Unlock()
+	m.kickReconcile()
+}
 
 func (m *HelperLifecycleManager) finishStart() {
 	m.doneOnce.Do(func() { close(m.done) })
@@ -184,15 +265,47 @@ func (m *HelperLifecycleManager) detectedDesired() (map[HelperKey]bool, error) {
 	if err != nil {
 		return nil, err
 	}
+	// consoleID MUST be resolved before m.mu is taken: consoleSessionIDFn
+	// defaults to GetConsoleSessionID, which makes a WTS syscall, and calling
+	// it under the lock would serialize an OS call behind a hot-path mutex
+	// (and risks deadlock if the injected fn ever touches m.mu, as the
+	// regression test for this does).
+	consoleID := m.consoleSessionIDFn()
 	desired := make(map[HelperKey]bool, len(sessions)*2)
 	for _, session := range sessions {
-		if key, ok := helperKeyFromDetected(session, ipc.HelperRoleSystem); ok {
+		if key, ok := helperKeyFromDetected(session, ipc.HelperRoleSystem, m.rdsHost, consoleID); ok {
 			desired[key] = true
 		}
-		if key, ok := helperKeyFromDetected(session, ipc.HelperRoleUser); ok {
+		if key, ok := helperKeyFromDetected(session, ipc.HelperRoleUser, m.rdsHost, consoleID); ok {
 			desired[key] = true
 		}
 	}
+	m.mu.Lock()
+	applyDisconnectedRetention(desired, sessions, m.disconnectedSince, m.now(), disconnectedHelperRetention, m.rdsHost, consoleID)
+	m.mu.Unlock()
+	return desired, nil
+}
+
+// computeDesired is the single desired-set entry point: detector-driven in
+// always-on mode (the historical behavior), lease-driven in on-demand mode.
+func (m *HelperLifecycleManager) computeDesired() (map[HelperKey]bool, error) {
+	if m.currentMode() != LifecycleModeOnDemand {
+		return m.detectedDesired()
+	}
+	if m.detector == nil {
+		return map[HelperKey]bool{}, nil
+	}
+	sessions, err := m.detector.ListSessions()
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	desired, expired := leasedDesired(m.leases, sessions, m.now())
+	for _, key := range expired {
+		log.Info("lease expired", "helperKey", key.String())
+		delete(m.leases, key)
+	}
+	m.mu.Unlock()
 	return desired, nil
 }
 
@@ -203,7 +316,7 @@ func (m *HelperLifecycleManager) Bootstrap() error {
 	if m.broker == nil {
 		return nil
 	}
-	desired, err := m.detectedDesired()
+	desired, err := m.computeDesired()
 	if err != nil {
 		return err
 	}
@@ -221,7 +334,7 @@ func (m *HelperLifecycleManager) reconcile() {
 	if m.detector == nil || m.broker == nil || m.spawner == nil {
 		return
 	}
-	desired, err := m.detectedDesired()
+	desired, err := m.computeDesired()
 	if err != nil {
 		log.Warn("lifecycle: failed to list sessions", "error", err.Error())
 		return

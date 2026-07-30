@@ -309,3 +309,27 @@ func (r *helperRegistry) keys() []HelperKey {
 func (r *helperRegistry) len() int {
 	return len(r.keys())
 }
+
+// helperDiagnosis is a point-in-time snapshot of why a key's helper might not
+// be coming up, for typed spawn-wait reporting.
+type helperDiagnosis struct {
+	tracked          bool
+	state            helperState
+	fatalUntil       time.Time
+	retriesExhausted bool
+}
+
+func (r *helperRegistry) diagnose(key HelperKey, now time.Time) helperDiagnosis {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry := r.current[key]
+	if entry == nil {
+		return helperDiagnosis{}
+	}
+	return helperDiagnosis{
+		tracked:          true,
+		state:            entry.state,
+		fatalUntil:       entry.fatalExitUntil,
+		retriesExhausted: entry.retryCount >= maxSpawnRetries && entry.state == helperExited,
+	}
+}

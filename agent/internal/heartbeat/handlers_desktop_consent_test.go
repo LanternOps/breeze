@@ -347,7 +347,7 @@ func TestConsentGate_RequestConsent_Allow(t *testing.T) {
 	h := &Heartbeat{sessionBroker: broker}
 
 	prompt := consentModePrompt("block", 5000)
-	verdict, helperPresent, timedOut := h.requestConsent("sess-allow", prompt)
+	verdict, helperPresent, timedOut := h.requestConsent("sess-allow", prompt, "")
 
 	<-done
 	_ = session.Close()
@@ -389,7 +389,7 @@ func TestConsentGate_RequestConsent_Timeout_Proceed(t *testing.T) {
 	h := &Heartbeat{sessionBroker: broker}
 
 	prompt := consentModePrompt("proceed", 100)
-	verdict, helperPresent, timedOut := h.requestConsent("sess-timeout-proceed", prompt)
+	verdict, helperPresent, timedOut := h.requestConsent("sess-timeout-proceed", prompt, "")
 
 	_ = session.Close()
 

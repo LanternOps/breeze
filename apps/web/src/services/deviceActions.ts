@@ -363,11 +363,13 @@ export async function executeScript(
   scriptId: string,
   deviceIds: string[],
   parameters?: Record<string, unknown>,
-  runAs?: ScriptRunAsOverride
+  runAs?: ScriptRunAsOverride,
+  targetSessionId?: number
 ): Promise<ScriptExecuteResult> {
   const body: Record<string, unknown> = { deviceIds };
   if (parameters) body.parameters = parameters;
   if (runAs) body.runAs = runAs;
+  if (targetSessionId != null) body.targetSessionId = targetSessionId;
 
   const response = await fetchWithAuth(`/scripts/${scriptId}/execute`, {
     method: 'POST',
@@ -496,6 +498,30 @@ export async function clearDeviceSessions(deviceId: string): Promise<{ cleaned: 
   }
 
   return await response.json();
+}
+
+export type LiveSession = {
+  sessionId: number;
+  username: string;
+  state: string;
+  type: string;
+  helperConnected: boolean;
+  idleMinutes: number | null;
+};
+
+/**
+ * Synchronously probe the device's live interactive sessions (Task 2:
+ * GET /devices/:id/sessions/live). Throws with the server's `error` string
+ * on a non-OK response so the caller can surface the agent-offline / probe
+ * failure loudly rather than showing an empty picker.
+ */
+export async function fetchLiveSessions(deviceId: string): Promise<LiveSession[]> {
+  const response = await fetchWithAuth(`/devices/${deviceId}/sessions/live`);
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error((body as { error?: string } | null)?.error ?? 'Failed to list sessions');
+  }
+  return (body as { data?: { sessions?: LiveSession[] } } | null)?.data?.sessions ?? [];
 }
 
 export async function toggleMaintenanceMode(
