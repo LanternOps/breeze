@@ -37,10 +37,22 @@ func NewInventoryCollector() *InventoryCollector {
 	return &InventoryCollector{}
 }
 
+// partitionsFn is disk.Partitions, indirected so tests can simulate the
+// partial-success contract described on CollectDisks.
+var partitionsFn = disk.Partitions
+
 // CollectDisks collects information about all mounted disk drives
 func (c *InventoryCollector) CollectDisks() ([]DiskInfo, error) {
-	partitions, err := disk.Partitions(false)
-	if err != nil {
+	// gopsutil's Windows implementation returns the drives it *did* enumerate
+	// alongside a non-fatal warnings aggregate (`return ret, warnings.Reference()`).
+	// A single unreadable volume — an empty card reader, a disconnected mapped
+	// drive — fails GetVolumeInformation with "Access is denied" and populates
+	// that aggregate, so treating any error as fatal throws away every healthy
+	// disk on the machine and the endpoint reports no disk inventory at all.
+	// Only fail when nothing was enumerated; on Linux/macOS a genuine error
+	// yields no partitions, so that path is unchanged.
+	partitions, err := partitionsFn(false)
+	if err != nil && len(partitions) == 0 {
 		return nil, err
 	}
 
