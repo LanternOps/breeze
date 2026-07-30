@@ -189,7 +189,7 @@ func TestSecureLogDirectoryRejectsSymlinkedAncestorComponent(t *testing.T) {
 	logDir := filepath.Join(linkParent, "logs")
 
 	err := secureLogDirectory(logDir)
-	requireUnsafeLogPath(t, err)
+	_ = requireUnsafeLogPath(t, err)
 
 	if _, statErr := os.Lstat(logDir); !os.IsNotExist(statErr) {
 		t.Fatalf("expected logs dir to never be created under a symlinked parent, lstat err=%v", statErr)
@@ -254,7 +254,7 @@ func TestSecureLogDirectoryRejectsSymlinkSeveralLevelsBelowRealRoot(t *testing.T
 	logDir := filepath.Join(linkedMid, "a", "b")
 
 	err := secureLogDirectory(logDir)
-	requireUnsafeLogPath(t, err)
+	_ = requireUnsafeLogPath(t, err)
 }
 
 func TestSecureLogDirectoryRepairsMode0700(t *testing.T) {
@@ -327,7 +327,7 @@ func TestOpenSecureLogFileRejectsSymlink(t *testing.T) {
 		f.Close()
 		t.Fatalf("expected nil file for a symlinked log path")
 	}
-	requireUnsafeLogPath(t, err)
+	_ = requireUnsafeLogPath(t, err)
 	requireTargetUntouched(t, target, targetBefore)
 }
 
@@ -364,7 +364,7 @@ func TestOpenSecureLogFileRequiresRegularFile(t *testing.T) {
 		f.Close()
 		t.Fatalf("expected nil file for a non-regular target")
 	}
-	requireUnsafeLogPath(t, err)
+	_ = requireUnsafeLogPath(t, err)
 }
 
 func TestOpenSecureLogFileRejectsHardLink(t *testing.T) {
@@ -380,7 +380,7 @@ func TestOpenSecureLogFileRejectsHardLink(t *testing.T) {
 		f.Close()
 		t.Fatalf("expected nil file for a hard-linked log path")
 	}
-	requireUnsafeLogPath(t, err)
+	_ = requireUnsafeLogPath(t, err)
 	requireTargetUntouched(t, target, targetBefore)
 }
 
@@ -438,7 +438,7 @@ func captureStderr(t *testing.T, fn func()) string {
 	captured := make(chan string, 1)
 	go func() {
 		var buf strings.Builder
-		io.Copy(&buf, r)
+		_, _ = io.Copy(&buf, r) // drains until r hits EOF on w.Close(); nothing here inspects the error.
 		captured <- buf.String()
 	}()
 
@@ -459,11 +459,11 @@ func captureStderr(t *testing.T, fn func()) string {
 	// deferred Goexit safety net) is harmless — the second call just
 	// returns an already-closed error, which nothing here inspects.
 	defer func() { os.Stderr = orig }()
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	fn()
 
-	w.Close()
+	_ = w.Close()
 	return <-captured
 }
 
@@ -569,7 +569,7 @@ func TestRepairLogFileModeDoesNotDeadlockWhenInstalledAsGlobalLoggerSink(t *test
 	logPath := filepath.Join(base, "agent.log")
 
 	rw := newTestRotatingWriter(t, logPath, 4, 2) // rotate on almost every write
-	defer rw.Close()
+	defer func() { _ = rw.Close() }()
 
 	Init("text", "info", rw) // install rw as the actual global slog sink, like agentapp does
 	t.Cleanup(func() { Init("text", "info", nil) })
@@ -606,7 +606,7 @@ func TestValidateRotationPathRejectsSymlink(t *testing.T) {
 	}
 
 	err := validateRotationPath(backup)
-	requireUnsafeLogPath(t, err)
+	_ = requireUnsafeLogPath(t, err)
 }
 
 func TestValidateRotationPathAllowsMissingPath(t *testing.T) {
@@ -625,7 +625,7 @@ func TestValidateRotationPathRejectsNonRegularFile(t *testing.T) {
 	}
 
 	err := validateRotationPath(dirAsBackup)
-	requireUnsafeLogPath(t, err)
+	_ = requireUnsafeLogPath(t, err)
 }
 
 // --- RotatingWriter: current log symlink ---
@@ -640,10 +640,10 @@ func TestRotatingWriterCurrentLogSymlinkNeverOpensOrWrites(t *testing.T) {
 
 	rw, err := NewRotatingWriter(logPath, 1, 2)
 	if rw != nil {
-		rw.Close()
+		_ = rw.Close()
 		t.Fatalf("expected nil writer for a symlinked log path")
 	}
-	requireUnsafeLogPath(t, err)
+	_ = requireUnsafeLogPath(t, err)
 	requireTargetUntouched(t, target, targetBefore)
 
 	info, err := os.Lstat(logPath)
@@ -668,7 +668,7 @@ func TestRotatingWriterBackupSymlinkDisablesWriter(t *testing.T) {
 	logPath := filepath.Join(base, "agent.log")
 
 	rw := newTestRotatingWriter(t, logPath, 4, 2)
-	defer rw.Close()
+	defer func() { _ = rw.Close() }()
 
 	backup1 := logPath + ".1"
 	if err := os.Symlink(target, backup1); err != nil {
@@ -699,7 +699,7 @@ func TestRotatingWriterBackupsGetRepairedTo0600Mode(t *testing.T) {
 	logPath := filepath.Join(base, "agent.log")
 
 	rw := newTestRotatingWriter(t, logPath, 4, 2)
-	defer rw.Close()
+	defer func() { _ = rw.Close() }()
 
 	if _, err := rw.Write([]byte("12345")); err != nil { // > maxSize(4), triggers rotate
 		t.Fatalf("write: %v", err)
@@ -743,7 +743,7 @@ func TestRotatingWriterReopenRejectsSymlinkSwap(t *testing.T) {
 	logPath := filepath.Join(base, "agent.log")
 
 	rw := newTestRotatingWriter(t, logPath, 1<<20, 2)
-	defer rw.Close()
+	defer func() { _ = rw.Close() }()
 
 	if _, err := rw.Write([]byte("line one\n")); err != nil {
 		t.Fatalf("initial write: %v", err)
@@ -759,7 +759,7 @@ func TestRotatingWriterReopenRejectsSymlinkSwap(t *testing.T) {
 	}
 
 	err := rw.Reopen()
-	requireUnsafeLogPath(t, err)
+	_ = requireUnsafeLogPath(t, err)
 	if !rw.disabled {
 		t.Fatalf("expected the writer to be disabled after Reopen hit a symlink")
 	}
@@ -803,7 +803,7 @@ func TestRotatingWriterReopenSymlinkSwapRace(t *testing.T) {
 	logPath := filepath.Join(base, "agent.log")
 
 	rw := newTestRotatingWriter(t, logPath, 1<<20, 2)
-	defer rw.Close()
+	defer func() { _ = rw.Close() }()
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
@@ -816,10 +816,17 @@ func TestRotatingWriterReopenSymlinkSwapRace(t *testing.T) {
 				return
 			default:
 			}
-			os.Remove(logPath)
-			os.Symlink(target, logPath)
-			os.Remove(logPath)
-			os.WriteFile(logPath, []byte("regular\n"), 0600)
+			// Deliberately ignored: this is best-effort attacker churn racing
+			// the writer goroutine, so every step here is expected to fail
+			// under legitimate interleavings (Remove racing an already-gone
+			// path, Symlink racing a path the writer just recreated). Per the
+			// comment on this test, the only real invariant is the
+			// target-snapshot assertion below — it must hold no matter how
+			// many of these steps actually land.
+			_ = os.Remove(logPath)
+			_ = os.Symlink(target, logPath)
+			_ = os.Remove(logPath)
+			_ = os.WriteFile(logPath, []byte("regular\n"), 0600)
 		}
 	}()
 
@@ -877,7 +884,7 @@ func TestRotatingWriterRotationSymlinkSwapRaceNeverWritesTarget(t *testing.T) {
 	logPath := filepath.Join(base, "agent.log")
 
 	rw := newTestRotatingWriter(t, logPath, 8, 2) // rotate on almost every write
-	defer rw.Close()
+	defer func() { _ = rw.Close() }()
 
 	backup1 := logPath + ".1"
 
@@ -892,9 +899,13 @@ func TestRotatingWriterRotationSymlinkSwapRaceNeverWritesTarget(t *testing.T) {
 				return
 			default:
 			}
-			os.Remove(backup1)
-			os.Symlink(target, backup1)
-			os.Remove(backup1)
+			// Deliberately ignored — see the identical comment in
+			// TestRotatingWriterReopenSymlinkSwapRace above: best-effort
+			// attacker churn, expected to fail under legitimate races, with
+			// the target-snapshot assertion below as the only real invariant.
+			_ = os.Remove(backup1)
+			_ = os.Symlink(target, backup1)
+			_ = os.Remove(backup1)
 		}
 	}()
 
@@ -939,7 +950,7 @@ func TestRotatingWriterFinalReopenSymlinkSwapRace(t *testing.T) {
 	logPath := filepath.Join(base, "agent.log")
 
 	rw := newTestRotatingWriter(t, logPath, 8, 2)
-	defer rw.Close()
+	defer func() { _ = rw.Close() }()
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
@@ -952,9 +963,13 @@ func TestRotatingWriterFinalReopenSymlinkSwapRace(t *testing.T) {
 				return
 			default:
 			}
-			os.Remove(logPath)
-			os.Symlink(target, logPath)
-			os.Remove(logPath)
+			// Deliberately ignored — see the identical comment in
+			// TestRotatingWriterReopenSymlinkSwapRace above: best-effort
+			// attacker churn, expected to fail under legitimate races, with
+			// the target-snapshot assertion below as the only real invariant.
+			_ = os.Remove(logPath)
+			_ = os.Symlink(target, logPath)
+			_ = os.Remove(logPath)
 		}
 	}()
 
@@ -979,7 +994,7 @@ func TestRotatingWriterConcurrentWritesAndRotation(t *testing.T) {
 	logPath := filepath.Join(base, "agent.log")
 
 	rw := newTestRotatingWriter(t, logPath, 64, 3)
-	defer rw.Close()
+	defer func() { _ = rw.Close() }()
 
 	var wg sync.WaitGroup
 	for g := 0; g < 8; g++ {
