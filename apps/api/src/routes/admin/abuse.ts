@@ -18,6 +18,7 @@ import { revokeAllPartnerOauthArtifacts } from '../../oauth/grantRevocation';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../../services/authLifecycle';
 import { restorePartnerTenantAccess } from '../../services/tenantLifecycle';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
+import { getBreezeBillingClient } from '../../services/breezeBillingClient';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { captureException } from '../../services/sentry';
 import { requireMfa } from '../../middleware/auth';
@@ -290,6 +291,28 @@ abuseRoutes.post(
       }
     }
 
+    // Cancel the partner's billing subscription so a suspended-for-abuse account
+    // stops billing (a stolen card keeps getting charged otherwise) instead of
+    // waiting for a manual cancel in Stripe. Best-effort like the teardown steps
+    // above — a billing-service hiccup must NOT abort a suspension already
+    // committed to the DB. Never refunds (that stays a manual operator decision).
+    // Skipped entirely on installs with no billing service configured
+    // (self-hosted). Outcome is recorded in the audit trail either way.
+    let billingSubscriptionCanceled: boolean | null = null;
+    let billingCancelError: string | null = null;
+    if (process.env.BREEZE_BILLING_URL) {
+      try {
+        const cancelResult = await getBreezeBillingClient().cancelSubscription({
+          partnerId,
+          immediate: true,
+        });
+        billingSubscriptionCanceled = cancelResult.canceled;
+      } catch (err) {
+        billingCancelError = err instanceof Error ? err.message : String(err);
+        captureException(err, c);
+      }
+    }
+
     const auditResult: 'success' | 'failure' =
       tokenRevocationFailures.length === 0 && oauthRevocationError === null
         ? 'success'
@@ -313,6 +336,8 @@ abuseRoutes.post(
           remoteSessionTeardownFailures,
           oauthGrantsRevoked: oauthRevocationResult?.grantsRevoked ?? 0,
           oauthRefreshTokensRevoked: oauthRevocationResult?.refreshTokensRevoked ?? 0,
+          billingSubscriptionCanceled,
+          ...(billingCancelError !== null ? { billingCancelError } : {}),
           ...(tokenRevocationFailures.length > 0
             ? { tokenRevocationFailures }
             : {}),
@@ -364,6 +389,8 @@ abuseRoutes.post(
           userCount: result.userCount,
           apiKeyCount: result.apiKeyCount,
           queuedUninstalls: result.deviceCount,
+          billingSubscriptionCanceled,
+          ...(billingCancelError !== null ? { billingCancelFailed: true } : {}),
         },
         500,
       );
@@ -379,6 +406,11 @@ abuseRoutes.post(
       remoteSessionTeardownFailures,
       oauthGrantsRevoked: oauthRevocationResult?.grantsRevoked ?? 0,
       oauthRefreshTokensRevoked: oauthRevocationResult?.refreshTokensRevoked ?? 0,
+      // The whole point of the billing step is "stop charging a stolen card" —
+      // an operator must see a failed cancel in the response, not only in
+      // Sentry/audit, so they can cancel manually in Stripe.
+      billingSubscriptionCanceled,
+      ...(billingCancelError !== null ? { billingCancelFailed: true } : {}),
     });
   }
 );
@@ -490,7 +522,10 @@ abuseRoutes.post(
       userCount: result.userCount,
       agentTokensRestored,
       note:
-        'Devices that received uninstall commands cannot be auto-restored. Re-enrollment required.',
+        'Devices that received uninstall commands cannot be auto-restored. Re-enrollment required.' +
+        (process.env.BREEZE_BILLING_URL
+          ? ' If suspend-for-abuse canceled the subscription, billing is NOT auto-restored — re-create it manually for a wrongly-suspended partner.'
+          : ''),
     });
   }
 );

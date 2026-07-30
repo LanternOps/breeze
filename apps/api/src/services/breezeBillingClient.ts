@@ -1,8 +1,26 @@
+export interface CancelSubscriptionResult {
+  /** false when the partner had no subscription (idempotent no-op). */
+  canceled: boolean;
+  stripeSubscriptionId?: string;
+  immediate: boolean;
+}
+
 export interface BreezeBillingClient {
   createSetupIntent(input: {
     partnerId: string;
     returnUrl: string;
   }): Promise<{ setupUrl: string; customerId: string }>;
+
+  /**
+   * Cancel a partner's subscription via breeze-billing's service-to-service
+   * endpoint. Defaults to immediate cancellation (used on abuse suspension).
+   * Never refunds. Idempotent — returns `canceled: false` when there was no
+   * subscription. Throws BillingError on a non-2xx response.
+   */
+  cancelSubscription(input: {
+    partnerId: string;
+    immediate?: boolean;
+  }): Promise<CancelSubscriptionResult>;
 }
 
 export class BillingError extends Error {
@@ -40,6 +58,37 @@ export function createBreezeBillingClient(opts: {
       }
       const json = (await res.json()) as { setup_url: string; customer_id: string };
       return { setupUrl: json.setup_url, customerId: json.customer_id };
+    },
+
+    async cancelSubscription({ partnerId, immediate = true }) {
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      const billingKey = process.env.BREEZE_BILLING_API_KEY;
+      if (billingKey) headers['Authorization'] = `Bearer ${billingKey}`;
+      const res = await doFetch(
+        `${opts.baseUrl}/billing/api/internal/partners/${encodeURIComponent(partnerId)}/cancel-subscription`,
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ immediate }),
+        },
+      );
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new BillingError(
+          'BILLING_UNAVAILABLE',
+          `Billing service returned ${res.status}: ${body.slice(0, 200)}`,
+        );
+      }
+      const json = (await res.json()) as {
+        canceled: boolean;
+        stripeSubscriptionId?: string;
+        immediate: boolean;
+      };
+      return {
+        canceled: json.canceled,
+        stripeSubscriptionId: json.stripeSubscriptionId,
+        immediate: json.immediate,
+      };
     },
   };
 }
