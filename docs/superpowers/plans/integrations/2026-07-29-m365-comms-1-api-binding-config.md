@@ -70,8 +70,20 @@ Spec §5.2 ("Sender pinning (change 2)") and §5.2 item 5.
 - Test: `apps/api/src/services/actionIntents/revalidateRelease.test.ts` — **CREATE. `revalidateRelease.ts` has no dedicated unit test today**; it is covered only indirectly through its two callers (`services/aiAgentSdk.test.ts`, `jobs/intentReleaseWorker*Headless.integration.test.ts`). There is no `intentFixture()` helper to reuse — Step 6 builds one.
 - Test: `apps/api/src/__tests__/integration/actionIntentBinding.integration.test.ts` (create)
 
-**⚠️ Known blast radius — two shipped fixtures use a fake digest and WILL fail.**
-`services/aiAgentSdk.test.ts:241` and `services/aiAgentSdk.planMatch.test.ts:118` both set `argumentDigest: 'digest-1'`, which is not `sha256(canonicalize(arguments))` of anything. The recompute added in Step 8 turns both red. That is the check working. **Fix the fixtures to carry a real digest computed from their own `arguments`; do not weaken, skip, or conditionally bypass the recompute.** The worker integration suites already use a correct canonical digest (`intentReleaseWorkerM365Headless.integration.test.ts:20` says so explicitly) and should stay green — if one of them fails, read it before assuming it is a fixture problem.
+**⚠️ Known blast radius — a shipped fixture uses a fake digest and WILL fail.**
+`jobs/intentReleaseWorker.test.ts:185` sets `argumentDigest: 'digest-1'`, which is not `sha256(canonicalize(arguments))` of anything. The recompute added in Step 8 turns **31 tests in that one file** red. That is the check working. Fix by hoisting the arguments and deriving the digest:
+
+```ts
+import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';
+
+const RUN_SCRIPT_ARGS = { scriptId: 'abc' };
+const RUN_SCRIPT_DIGEST = computeArgumentDigest(canonicalizeArguments(RUN_SCRIPT_ARGS));
+// then in baseIntent(): arguments: RUN_SCRIPT_ARGS, argumentDigest: RUN_SCRIPT_DIGEST,
+```
+
+**Do not weaken, skip, or conditionally bypass the recompute to keep a fixture green.** The `'stale-digest'` fixture at ~line 459 is the intended `digest_mismatch` case and must stay as it is.
+
+`services/aiAgentSdk.test.ts:241` and `services/aiAgentSdk.planMatch.test.ts:118` also carry `argumentDigest: 'digest-1'`, but both suites mock `revalidateApprovedIntentForRelease` itself, so they never reach the recompute and stay green. Verified, not assumed — 102 passed. The worker *integration* suites already use a correct canonical digest (`intentReleaseWorkerM365Headless.integration.test.ts:20` says so explicitly).
 
 **Interfaces:**
 - Consumes: `canonicalizeArguments`, `computeArgumentDigest` from `./canonicalize` (already imported at `intentService.ts:12`); `ActionIntent` type from `db/schema/actionIntents`.
@@ -649,15 +661,55 @@ M365_COMMS_CLIENT_ID=
 M365_COMMS_EXECUTOR_URL=https://comms-executor.internal/
 M365_COMMS_EXECUTOR_AUDIENCE=m365-communications-executor
 M365_COMMS_EXECUTOR_SIGNING_KID=
-M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE=/run/secrets/m365-comms-executor-signing.jwk
+M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE=/run/secrets/m365_comms_executor_signing_private_jwk
 ```
 
-- [ ] **Step 8: Check the compose bind-mount guard**
+- [ ] **Step 7b: Map every one of those vars into `docker-compose.yml` — `.env.example` alone is a silent no-op**
 
-If Step 7 referenced a new file-shaped path in any tracked compose file, `apps/api/src/config/composeBindMounts.test.ts` (required **Test API** job) will fail when the source does not exist. This plan adds no compose mounts — if you added one, create the file or use an extensionless path.
+**This step is not optional and its omission is a CI failure, not a deploy-time surprise.** `apps/api/src/config/envComposeParity.test.ts` (required **Test API** job) asserts that every var documented in the root `.env.example` actually reaches a container. Compose interpolation only happens for vars listed in a service's `environment:` block — a value in `.env` that is not mapped there never reaches the process, so the var reads as unset at runtime and boot validation silently passes.
 
-Run: `pnpm --filter=@breeze/api exec vitest run src/config/composeBindMounts.test.ts`
-Expected: PASS
+Add to the `api` service `environment:` block in `docker-compose.yml`, after the `M365_GRAPH_ACTIONS_*` entries:
+
+```yaml
+      # M365 communications-delegated. Gated per USER, not per org — a delegated
+      # mailbox connection is owned by one human. No vault vars here on purpose:
+      # the API never touches the comms vault (the client certificate and the
+      # token-cache KEK belong to the executor, which is the only identity that
+      # can decrypt the cache).
+      M365_COMMS_ONBOARDING_ENABLED: ${M365_COMMS_ONBOARDING_ENABLED:-false}
+      M365_COMMS_ONBOARDING_USER_IDS: ${M365_COMMS_ONBOARDING_USER_IDS:-}
+      M365_COMMS_TOOLS_ENABLED: ${M365_COMMS_TOOLS_ENABLED:-false}
+      M365_COMMS_TOOLS_USER_IDS: ${M365_COMMS_TOOLS_USER_IDS:-}
+      M365_COMMS_CLIENT_ID: ${M365_COMMS_CLIENT_ID:-}
+      M365_COMMS_EXECUTOR_URL: ${M365_COMMS_EXECUTOR_URL:-}
+      M365_COMMS_EXECUTOR_AUDIENCE: ${M365_COMMS_EXECUTOR_AUDIENCE:-m365-communications-executor}
+      M365_COMMS_EXECUTOR_SIGNING_KID: ${M365_COMMS_EXECUTOR_SIGNING_KID:-}
+      M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: /run/secrets/m365_comms_executor_signing_private_jwk
+```
+
+The JWK path is a Docker **secret**, not a bind mount, so it also needs both halves of the secret wiring the siblings use — the `api` service's `secrets:` list:
+
+```yaml
+      - source: m365_comms_executor_signing_private_jwk
+        target: m365_comms_executor_signing_private_jwk
+```
+
+and the top-level `secrets:` block, defaulting to `/dev/null` so dark deployments stay optional:
+
+```yaml
+  m365_comms_executor_signing_private_jwk:
+    file: ${M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}
+```
+
+- [ ] **Step 8: Run both compose guards**
+
+```bash
+pnpm --filter=@breeze/api exec vitest run src/config/envComposeParity.test.ts src/config/composeBindMounts.test.ts
+```
+
+Expected: PASS. `envComposeParity` is the one Step 7b satisfies. `composeBindMounts` asserts that a file-shaped, repo-relative bind-mount source exists — this plan adds no bind mounts (the JWK is a secret with a `/dev/null` default, not a mount), so it should be unaffected.
+
+> If `composeBindMounts` fails to load with `TypeError: defineScalarTag is not a function`, that is a local `yaml` dependency resolution problem, not your change — confirm by stashing and re-running. CI resolves it correctly.
 
 - [ ] **Step 9: Typecheck and lint**
 

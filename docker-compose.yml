@@ -233,6 +233,20 @@ services:
       M365_GRAPH_ACTIONS_EXECUTOR_AUDIENCE: ${M365_GRAPH_ACTIONS_EXECUTOR_AUDIENCE:-m365-graph-actions-executor}
       M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_KID: ${M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_KID:-}
       M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: /run/secrets/m365_graph_actions_executor_signing_private_jwk
+      # M365 communications-delegated. Gated per USER, not per org — a delegated
+      # mailbox connection is owned by one human. No vault vars here on purpose:
+      # the API never touches the comms vault (the client certificate and the
+      # token-cache KEK belong to the executor, which is the only identity that
+      # can decrypt the cache).
+      M365_COMMS_ONBOARDING_ENABLED: ${M365_COMMS_ONBOARDING_ENABLED:-false}
+      M365_COMMS_ONBOARDING_USER_IDS: ${M365_COMMS_ONBOARDING_USER_IDS:-}
+      M365_COMMS_TOOLS_ENABLED: ${M365_COMMS_TOOLS_ENABLED:-false}
+      M365_COMMS_TOOLS_USER_IDS: ${M365_COMMS_TOOLS_USER_IDS:-}
+      M365_COMMS_CLIENT_ID: ${M365_COMMS_CLIENT_ID:-}
+      M365_COMMS_EXECUTOR_URL: ${M365_COMMS_EXECUTOR_URL:-}
+      M365_COMMS_EXECUTOR_AUDIENCE: ${M365_COMMS_EXECUTOR_AUDIENCE:-m365-communications-executor}
+      M365_COMMS_EXECUTOR_SIGNING_KID: ${M365_COMMS_EXECUTOR_SIGNING_KID:-}
+      M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: /run/secrets/m365_comms_executor_signing_private_jwk
       APP_VERSION: ${BREEZE_VERSION:-dev}
       BREEZE_VERSION: ${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
       BINARY_SOURCE: ${BINARY_SOURCE:-github}
@@ -347,6 +361,8 @@ services:
         target: m365_graph_read_executor_signing_private_jwk
       - source: m365_graph_actions_executor_signing_private_jwk
         target: m365_graph_actions_executor_signing_private_jwk
+      - source: m365_comms_executor_signing_private_jwk
+        target: m365_comms_executor_signing_private_jwk
     depends_on:
       binaries-init:
         condition: service_completed_successfully
@@ -544,3 +560,5 @@ secrets:
     file: ${M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}
   m365_graph_actions_executor_signing_private_jwk:
     file: ${M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}
+  m365_comms_executor_signing_private_jwk:
+    file: ${M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}

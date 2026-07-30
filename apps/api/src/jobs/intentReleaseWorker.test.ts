@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';
 
 // ---------------------------------------------------------------------------
 // Hoisted shared mock state
@@ -170,6 +171,9 @@ import { M365ConnectionUnavailableError } from '../services/m365ToolsHeadless';
 // the invariant the worker relies on without inventing a parallel harness.
 import { assertNoPlaintextSecret, type SecretToolResult } from '../services/actionIntents/secretBearingTools';
 
+const RUN_SCRIPT_ARGS = { scriptId: 'abc' };
+const RUN_SCRIPT_DIGEST = computeArgumentDigest(canonicalizeArguments(RUN_SCRIPT_ARGS));
+
 function baseIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
   return {
     id: 'intent-1',
@@ -181,8 +185,12 @@ function baseIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
     requestingClientLabel: null,
     actionName: 'run_script',
     actionVersion: 1,
-    arguments: { scriptId: 'abc' },
-    argumentDigest: 'digest-1',
+    arguments: RUN_SCRIPT_ARGS,
+    // Must be the REAL canonical digest: revalidateApprovedIntentForRelease
+    // recomputes it from `arguments` and refuses with digest_mismatch when the
+    // two disagree (design §5.2). A placeholder string passes the stored-string
+    // comparison but not the recompute.
+    argumentDigest: RUN_SCRIPT_DIGEST,
     targetSummary: 'run_script(scriptId=abc)',
     impactSummary: 'Runs a script',
     reason: null,
