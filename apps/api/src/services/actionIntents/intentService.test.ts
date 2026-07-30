@@ -376,6 +376,56 @@ describe('createActionIntent — digest stability', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Connection binding (M365 comms — design §5.2 sender pinning)
+// ---------------------------------------------------------------------------
+
+describe('createActionIntent binding', () => {
+  it('persists connectionId and tenantId when binding is supplied', async () => {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
+    dbState.insertActionIntentsResults.push([makeIntentRow({ id: 'intent-bind', status: 'cancelled', errorCode: 'no_eligible_approvers' })]);
+    dbState.updateActionIntentsResults.push([makeIntentRow({ id: 'intent-bind', status: 'cancelled', errorCode: 'no_eligible_approvers' })]);
+    await createActionIntent(makeAuth(), baseInput({
+      toolName: 'm365_send_mail',
+      input: { to: ['a@example.com'], subject: 's', bodyText: 'b' },
+      binding: {
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        tenantId: '22222222-2222-4222-8222-222222222222',
+      },
+    }));
+    const captured = dbState.insertedActionIntentValues[0];
+    expect(captured?.connectionId).toBe('11111111-1111-4111-8111-111111111111');
+    expect(captured?.tenantId).toBe('22222222-2222-4222-8222-222222222222');
+  });
+
+  it('leaves both columns null when binding is omitted', async () => {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
+    dbState.insertActionIntentsResults.push([makeIntentRow({ id: 'intent-nobind', status: 'cancelled', errorCode: 'no_eligible_approvers' })]);
+    dbState.updateActionIntentsResults.push([makeIntentRow({ id: 'intent-nobind', status: 'cancelled', errorCode: 'no_eligible_approvers' })]);
+    await createActionIntent(makeAuth(), baseInput({
+      toolName: 'execute_command',
+      input: { command: 'whoami' },
+    }));
+    const captured = dbState.insertedActionIntentValues[0];
+    expect(captured?.connectionId).toBeNull();
+    expect(captured?.tenantId).toBeNull();
+  });
+
+  it('rejects a non-canonical tenantId before it reaches the uuid column', async () => {
+    // action_intents.tenant_id is a Postgres `uuid`; an uppercase or malformed
+    // GUID raises 22P02 at INSERT. Fail in the service with a typed error.
+    await expect(createActionIntent(makeAuth(), baseInput({
+      toolName: 'm365_send_mail',
+      input: { to: ['a@example.com'], subject: 's', bodyText: 'b' },
+      binding: {
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        tenantId: 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA',
+      },
+    }))).rejects.toThrow(/binding\.tenantId must be a canonical lowercase UUID/);
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Idempotency
 // ---------------------------------------------------------------------------
 
