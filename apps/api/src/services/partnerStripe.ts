@@ -6,7 +6,7 @@ import { encryptSecret, decryptSecret } from './secretCrypto';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 
 // Pinned API version — do not rely on the SDK default (it moves on upgrade).
-const API_VERSION = '2026-03-25.dahlia';
+const API_VERSION = '2026-06-24.dahlia';
 
 export type PartnerStripeErrorCode =
   | 'NO_STRIPE_KEY'        // partner never configured a key / disconnected

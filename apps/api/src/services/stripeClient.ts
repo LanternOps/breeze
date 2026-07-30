@@ -15,7 +15,7 @@ export function getStripe(): Stripe {
   const key = getConfig().STRIPE_SECRET_KEY;
   if (!key) throw new StripeNotConfiguredError();
   // API version explicitly pinned (do not rely on the SDK default, which moves on upgrade).
-  if (!cached) cached = new Stripe(key, { apiVersion: '2026-03-25.dahlia' });
+  if (!cached) cached = new Stripe(key, { apiVersion: '2026-06-24.dahlia' });
   return cached;
 }
 
