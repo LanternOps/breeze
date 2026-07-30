@@ -143,12 +143,11 @@ export const COMMS_PLAN_VECTORS: readonly CommsPlanVector[] = [
     why:
       'Same content as `minimal-single-recipient`, generation 1 instead of 0. It changes the ' +
       'envelope digest and leaves the plan digest BYTE-IDENTICAL, because the plan carries only ' +
-      'the Graph operation and none of the binding fields. This vector exists to pin that ' +
-      'asymmetry rather than to assert it is correct: design §5.2 says the signed claim is the ' +
-      'stored intent.argumentDigest (= the envelope digest), while §5.3 says the executor ' +
-      'recomputes the plan and compares — and those cannot both hold, since the two digests ' +
-      'differ. Whichever way that is resolved, this vector fails loudly if the plan starts or ' +
-      'stops covering the binding. OPEN — see the PR discussion.',
+      'the Graph operation and none of the binding fields. Resolved 2026-07-29 (design §5.3(b)): ' +
+      'the signed JWT carries BOTH digests — effectDigest = the stored intent.argumentDigest ' +
+      '(envelope), planDigest persisted at creation — and the executor recomputes both from the ' +
+      'received envelope. Neither subsumes the other, which is exactly the asymmetry this vector ' +
+      'pins: it fails loudly if the plan starts or stops covering the binding.',
     input: {
       ...base,
       consentGeneration: 1,

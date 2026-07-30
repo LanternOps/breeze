@@ -10,3 +10,4 @@ export * from './writeActions';
 export * from './commsActions';
 export * from './commsEffect';
 export * from './commsPlan';
+export * from './commsExecutorContracts';
