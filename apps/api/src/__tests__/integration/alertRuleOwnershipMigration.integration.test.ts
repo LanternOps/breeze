@@ -41,8 +41,38 @@ const MIGRATION_FILE = join(
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
+function migrationText(): string {
+  return readFileSync(MIGRATION_FILE, 'utf8');
+}
+
 async function runMigration() {
-  await getTestDb().execute(sql.raw(readFileSync(MIGRATION_FILE, 'utf8')));
+  await getTestDb().execute(sql.raw(migrationText()));
+}
+
+/**
+ * The RLS-sensitive DML half of the migration — everything above the
+ * `-- @data-section-end` sentinel. The half below it is function DDL that only
+ * the owner/migration role may execute, so it cannot be replayed as
+ * `breeze_app`.
+ */
+function dataSection(): string {
+  const [dml, ...rest] = migrationText().split('-- @data-section-end');
+  if (rest.length === 0) {
+    throw new Error('migration lost its `-- @data-section-end` sentinel — see the note in the .sql file');
+  }
+  return dml!;
+}
+
+/**
+ * Runs SQL as the unprivileged `breeze_app` role — the same non-superuser,
+ * non-BYPASSRLS role production uses, so FORCE ROW LEVEL SECURITY actually
+ * applies. `SET LOCAL ROLE` reverts when the transaction commits.
+ */
+async function runAsAppRole(statements: string) {
+  await getTestDb().transaction(async (tx) => {
+    await tx.execute(sql.raw('SET LOCAL ROLE breeze_app'));
+    await tx.execute(sql.raw(statements));
+  });
 }
 
 const METRIC_CONDITIONS = [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 90 }];
@@ -350,6 +380,60 @@ describe('alert-rule ownership consolidation migration (2026-07-30)', () => {
     // partner-export watermark), which is what the IS DISTINCT FROM guard and
     // the empty affected-policy set exist to prevent.
     expect(after).toEqual(before);
+  });
+
+  // ==========================================================================
+  // The `SELECT set_config('breeze.scope', 'system', true)` line at the top of
+  // the migration is load-bearing in production and invisible in every test
+  // above: the integration superuser (`breeze_test`) is BYPASSRLS, so those
+  // tests pass identically with the line deleted. Production applies migrations
+  // as a role that is NOT guaranteed to bypass RLS, and all three tables
+  // touched here are FORCE ROW LEVEL SECURITY. Without system scope the DML
+  // sees zero rows: nothing moves, no warning is raised, the postcondition
+  // counts zero and passes vacuously, the migration records as applied, and the
+  // resolver cutover then silently stops evaluating every monitoring-owned
+  // rule. These two tests are the only thing standing between that line and
+  // someone deleting it as redundant.
+  // ==========================================================================
+  runDb('moves rules under FORCE RLS when replayed as the unprivileged breeze_app role', async () => {
+    const db = getTestDb();
+    const [role] = await db.execute<{ rolsuper: boolean; rolbypassrls: boolean }>(
+      sql`SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = 'breeze_app'`
+    );
+    // Guard: if this ever stops being a genuinely RLS-bound role the test is
+    // no longer proving anything, and we want to know rather than pass silently.
+    expect(role, 'breeze_app role missing from the test database').toBeDefined();
+    expect(role!.rolsuper, 'breeze_app must not be superuser for this test to mean anything').toBe(false);
+    expect(role!.rolbypassrls, 'breeze_app must not have BYPASSRLS for this test to mean anything').toBe(false);
+
+    const seed = await seedScenario();
+    await runAsAppRole(dataSection());
+
+    const moved = await rulesForLink(seed.alertLinkAId);
+    expect(moved.map((r) => r.id)).toEqual([seed.keepRuleId, seed.metricRuleId, seed.eventRuleId]);
+    expect(await rulesForLink(seed.monitoringLinkAId)).toHaveLength(0);
+    const monitoringA = await linkById(seed.monitoringLinkAId);
+    expect(monitoringA!.inlineSettings).toEqual({ checkIntervalSeconds: 60, watches: [] });
+  });
+
+  runDb('silently moves nothing as breeze_app once the system-scope line is removed', async () => {
+    const seed = await seedScenario();
+    const withoutSystemScope = dataSection().replace(
+      /SELECT set_config\('breeze\.scope', 'system', true\);/,
+      '-- system scope deliberately removed for this negative control',
+    );
+    expect(withoutSystemScope).not.toContain("set_config('breeze.scope', 'system'");
+
+    // The damning part: this does NOT throw. RLS hides the rows, so the
+    // postcondition counts zero and the migration "succeeds" while doing
+    // nothing at all.
+    await expect(runAsAppRole(withoutSystemScope)).resolves.toBeUndefined();
+
+    const stranded = await rulesForLink(seed.monitoringLinkAId);
+    expect(stranded.map((r) => r.id)).toEqual([seed.metricRuleId, seed.eventRuleId, seed.dupeRuleId]);
+    expect(await rulesForLink(seed.alertLinkAId)).toHaveLength(1);
+    const monitoringA = await linkById(seed.monitoringLinkAId);
+    expect(monitoringA!.inlineSettings).toHaveProperty('alertRules');
   });
 
   runDb('is a no-op when no rules are owned by monitoring links', async () => {

@@ -17,6 +17,13 @@
 -- The migration is idempotent: after a successful run there are no rules left
 -- under monitoring links, so every step is a no-op on replay.
 --
+-- Alert cooldowns: the evaluator keys its Redis cooldown on the rule id
+-- (`cpar:<ruleId>:<deviceId>`), so the rule ids dropped by the dedupe step
+-- orphan their cooldown keys. Each deduped rule x device may therefore fire one
+-- spurious alert immediately after this migration; it self-heals within that
+-- rule's cooldownMinutes. Moved rules keep their ids and so keep their
+-- cooldowns.
+--
 -- Finally, the raw-SQL partner-export materializer is fixed forward: its
 -- monitoring branch still re-derived the old 4-key shape
 -- (checkIntervalSeconds, watches, eventLogAlerts, alertRules). It now emits
@@ -208,6 +215,13 @@ BEGIN
     RAISE EXCEPTION 'alert-rule consolidation postcondition failed: % rules still under monitoring links', remaining;
   END IF;
 END $$;
+
+-- @data-section-end
+-- Everything above is the RLS-sensitive data migration; everything below is
+-- function DDL that only the migration/owner role may execute.
+-- alertRuleOwnershipMigration.integration.test.ts splits the file on this
+-- sentinel so it can replay just the DML as the unprivileged `breeze_app`
+-- role and prove the system-scope line above is load-bearing. Keep it.
 
 -- ---------------------------------------------------------------------------
 -- Partner-export materializer parity.
