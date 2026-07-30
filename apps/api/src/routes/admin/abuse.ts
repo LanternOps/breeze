@@ -20,6 +20,7 @@ import { restorePartnerTenantAccess } from '../../services/tenantLifecycle';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { getBreezeBillingClient } from '../../services/breezeBillingClient';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import { billingStatusContradictsPayment } from '../../services/partnerActivation';
 import { captureException } from '../../services/sentry';
 import { requireMfa } from '../../middleware/auth';
 import type { Database } from '../../db';
@@ -431,6 +432,7 @@ abuseRoutes.post(
             id: partners.id,
             paymentMethodAttachedAt: partners.paymentMethodAttachedAt,
             emailVerifiedAt: partners.emailVerifiedAt,
+            billingSubscriptionStatus: partners.billingSubscriptionStatus,
           })
           .from(partners)
           .where(eq(partners.id, partnerId))
@@ -443,8 +445,19 @@ abuseRoutes.post(
         // Preserve the FULL activation gate (email verification AND payment
         // method) — unsuspend must not become the one path that activates an
         // unverified partner. Otherwise route back through pending-activation.
+        //
+        // The billing-status veto matters more here than anywhere else: a
+        // partner suspended for card-testing abuse typically carries an
+        // `incomplete_expired` subscription, and before the veto its (falsely
+        // written) payment stamp would send it straight back to `active` under
+        // an admin's unsuspend. Vetoed partners land on `pending` and must
+        // complete a real payment.
         const newStatus: 'active' | 'pending' =
-          partner.paymentMethodAttachedAt && partner.emailVerifiedAt ? 'active' : 'pending';
+          partner.paymentMethodAttachedAt &&
+          partner.emailVerifiedAt &&
+          !billingStatusContradictsPayment(partner.billingSubscriptionStatus)
+            ? 'active'
+            : 'pending';
 
         await tx
           .update(partners)

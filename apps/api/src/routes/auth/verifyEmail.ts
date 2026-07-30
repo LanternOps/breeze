@@ -50,6 +50,36 @@ function sha256Hex(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+/**
+ * The hook's `actionUrl` is persisted to `partners.settings` and then served to
+ * clients by BOTH `/partner/me` and the `partnerGuard` 403 body, where it is
+ * rendered as a link. The web island guards with its own `isSafeUrl`, but every
+ * other consumer of that 403 (mobile, future clients) does not — so reject
+ * anything that isn't http(s) at the point of storage rather than trusting each
+ * reader. `javascript:` and `data:` are the payloads that matter here.
+ */
+/**
+ * A hook-supplied redirect target is only safe if it is a single-slash relative
+ * path. `//evil.com` passes a naive `startsWith('/')` and is protocol-relative,
+ * and `/\evil.com` is normalized to the same host by some browsers. Control
+ * characters are rejected so this cannot be smuggled into a header later.
+ * Kept in sync with `apps/web/src/lib/authNext.ts::getSafeNext`.
+ */
+function isSafeRelativeRedirect(url: string | undefined): boolean {
+  if (!url || !url.startsWith('/')) return false;
+  if (url.length > 1 && (url[1] === '/' || url[1] === '\\')) return false;
+  return !/[\x00-\x1F\x7F]/.test(url);
+}
+
+function isSafeHookActionUrl(url: string): boolean {
+  try {
+    const { protocol } = new URL(url);
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 export const verifyEmailRoutes = new Hono();
 
 const verifyEmailSchema = z.object({
@@ -461,47 +491,84 @@ async function finalizePendingRegistration(
 
     const VALID_STATUSES = ['pending', 'active', 'suspended', 'churned'] as const;
     let effectiveStatus: PartnerStatus = facts.partnerRow.status;
+
+    // The status override and the inactive-screen banner are INDEPENDENT
+    // contributions to one UPDATE. They used to be one nested block, gated on
+    // `hookResponse.status !== partnerRow.status` — which silently dropped the
+    // banner for every hosted signup from 2026-05-01 (#542) onward: that commit
+    // made the API create hosted partners `pending` itself, and breeze-billing's
+    // hook also returns `pending`, so the statuses matched and the branch never
+    // ran. The banner is the ONLY payment presentation on the web login path
+    // (`stores/auth.ts` → /account/inactive → statusActionUrl), so 144 partners
+    // sat on "Your account is being set up. Please check back shortly." with no
+    // way to pay. Keep these two concerns separate.
+    const updateSet: Record<string, unknown> = {};
+
+    const msgSettings: Record<string, string> = {};
+    if (hookResponse?.message) msgSettings.statusMessage = hookResponse.message;
+    if (hookResponse?.actionUrl && isSafeHookActionUrl(hookResponse.actionUrl)) {
+      msgSettings.statusActionUrl = hookResponse.actionUrl;
+    } else if (hookResponse?.actionUrl) {
+      console.error(
+        `[verify-email] Hook returned a non-http(s) actionUrl for partner ${created.partnerId}; dropping it`,
+      );
+    }
+    if (hookResponse?.actionLabel) msgSettings.statusActionLabel = hookResponse.actionLabel;
+    if (Object.keys(msgSettings).length > 0) {
+      updateSet.settings = sql`COALESCE(${partners.settings}, '{}'::jsonb) || ${JSON.stringify(msgSettings)}::jsonb`;
+    }
+
+    let statusChange: PartnerStatus | null = null;
     if (hookResponse?.status && hookResponse.status !== facts.partnerRow.status) {
       if (!VALID_STATUSES.includes(hookResponse.status as never)) {
         console.error(
           `[verify-email] Hook returned invalid status '${hookResponse.status}' for partner ${created.partnerId}; ignoring`,
         );
       } else {
-        try {
-          const updateSet: Record<string, unknown> = { status: hookResponse.status };
-          if (hookResponse.message || hookResponse.actionUrl || hookResponse.actionLabel) {
-            const msgSettings: Record<string, string | null> = {};
-            if (hookResponse.message) msgSettings.statusMessage = hookResponse.message;
-            if (hookResponse.actionUrl) msgSettings.statusActionUrl = hookResponse.actionUrl;
-            if (hookResponse.actionLabel) msgSettings.statusActionLabel = hookResponse.actionLabel;
-            updateSet.settings = sql`COALESCE(${partners.settings}, '{}'::jsonb) || ${JSON.stringify(msgSettings)}::jsonb`;
-          }
-          await withSystemDbAccessContext(() =>
-            db.update(partners).set(updateSet).where(eq(partners.id, created.partnerId)),
-          );
-          effectiveStatus = hookResponse.status as PartnerStatus;
-        } catch (statusErr) {
-          console.error('[verify-email] hook-status update failed', {
-            partnerId: created.partnerId,
-            error: statusErr instanceof Error ? statusErr.message : String(statusErr),
-          });
-          writeAuditEvent(c, {
-            orgId: null,
-            actorType: 'system',
-            action: 'register-partner.hook-status-update-failed',
-            resourceType: 'partner',
-            resourceId: created.partnerId,
-            resourceName: facts.partnerRow.name,
-            details: { fromStatus: facts.partnerRow.status, toStatus: hookResponse.status },
-            result: 'failure',
-            errorMessage: statusErr instanceof Error ? statusErr.message : String(statusErr),
-          });
-        }
+        statusChange = hookResponse.status as PartnerStatus;
+        updateSet.status = statusChange;
       }
     }
 
-    // Only allow relative redirects from hooks (open-redirect guard).
-    const redirectUrl = hookResponse?.redirectUrl?.startsWith('/') ? hookResponse.redirectUrl : undefined;
+    if (Object.keys(updateSet).length > 0) {
+      updateSet.updatedAt = new Date();
+      try {
+        await withSystemDbAccessContext(() =>
+          db.update(partners).set(updateSet).where(eq(partners.id, created.partnerId)),
+        );
+        if (statusChange) effectiveStatus = statusChange;
+      } catch (statusErr) {
+        console.error('[verify-email] hook status/banner update failed', {
+          partnerId: created.partnerId,
+          error: statusErr instanceof Error ? statusErr.message : String(statusErr),
+        });
+        writeAuditEvent(c, {
+          orgId: null,
+          actorType: 'system',
+          action: 'register-partner.hook-status-update-failed',
+          resourceType: 'partner',
+          resourceId: created.partnerId,
+          resourceName: facts.partnerRow.name,
+          details: {
+            fromStatus: facts.partnerRow.status,
+            // null when this UPDATE carried only banner fields — do not imply a
+            // status transition that was never attempted.
+            toStatus: statusChange,
+            bannerKeys: Object.keys(msgSettings),
+          },
+          result: 'failure',
+          errorMessage: statusErr instanceof Error ? statusErr.message : String(statusErr),
+        });
+      }
+    }
+
+    // Only allow same-origin relative redirects from hooks (open-redirect
+    // guard). A bare leading-slash test is NOT sufficient: `//evil.com` is
+    // protocol-relative and navigates off-origin, and browsers normalize
+    // `/\evil.com` into the same thing. Mirrors apps/web's getSafeNext.
+    const redirectUrl = isSafeRelativeRedirect(hookResponse?.redirectUrl)
+      ? hookResponse!.redirectUrl
+      : undefined;
 
     writeAuthAudit(c, {
       action: 'auth.email_verified',

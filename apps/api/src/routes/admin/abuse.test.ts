@@ -11,6 +11,7 @@ const txMockState = vi.hoisted(() => ({
     status: string;
     paymentMethodAttachedAt: Date | null;
     emailVerifiedAt: Date | null;
+    billingSubscriptionStatus?: string | null;
   },
   partnerDevices: [] as Array<{ id: string }>,
   partnerOrgs: [] as Array<{ id: string }>,
@@ -885,6 +886,39 @@ describe('admin/abuse — unsuspend agent-fleet restore', () => {
     // The partners UPDATE itself must have been issued with status 'pending',
     // not 'active' — distinguish it from the separate users re-enable update
     // (which always sets status 'active' + disabledReason) by shape.
+    const capturedPartnerUpdate = txMockState.updates.find(
+      (u) => u.values && 'status' in u.values && !('disabledReason' in u.values),
+    )?.values;
+    expect(capturedPartnerUpdate).toBeDefined();
+    expect(capturedPartnerUpdate!.status).toBe('pending');
+  });
+
+  // Regression coverage for the billing-status veto: a card-testing partner
+  // typically carries an incomplete_expired subscription alongside a falsely
+  // written payment stamp (#718). Unsuspend must not trust the stamp when the
+  // billing status contradicts it — the partner lands on 'pending' and has to
+  // complete a real payment.
+  it('unsuspend falls back to pending when billing status contradicts the payment stamp', async () => {
+    txMockState.partner = {
+      id: 'partner-1',
+      status: 'suspended',
+      paymentMethodAttachedAt: new Date(),
+      emailVerifiedAt: new Date(),
+      billingSubscriptionStatus: 'incomplete_expired',
+    };
+
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/unsuspend', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'reinstating but subscription never completed' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string };
+    expect(body.status).toBe('pending');
+    expect(restorePartnerTenantAccess).not.toHaveBeenCalled();
+
     const capturedPartnerUpdate = txMockState.updates.find(
       (u) => u.values && 'status' in u.values && !('disabledReason' in u.values),
     )?.values;

@@ -344,6 +344,7 @@ export async function consumeVerificationToken(rawToken: string): Promise<Consum
           id: partners.id,
           status: partners.status,
           paymentMethodAttachedAt: partners.paymentMethodAttachedAt,
+          billingSubscriptionStatus: partners.billingSubscriptionStatus,
         })
         .from(partners)
         .where(eq(partners.id, row.partnerId))
@@ -360,6 +361,7 @@ export async function consumeVerificationToken(rawToken: string): Promise<Consum
           status: partnerBefore.status,
           emailVerifiedAt: now,
           paymentMethodAttachedAt: partnerBefore.paymentMethodAttachedAt,
+          billingSubscriptionStatus: partnerBefore.billingSubscriptionStatus,
         });
 
       // Always stamp email_verified_at. When both preconditions are met,
