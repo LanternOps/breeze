@@ -499,8 +499,12 @@ describe('partner desired-configuration material watermarks', () => {
       suppressPatternIds: [], scheduleType: 'manual', intervalMinutes: null,
       cron: null, timezone: 'UTC',
     });
+    // Canonical 2-key monitoring shape: alert rules are owned by the
+    // alert_rule feature link as of 2026-07-30-alert-rule-ownership-
+    // consolidation.sql, which redefined the SQL materializer's monitoring
+    // branch to match assembleInlineSettings().
     expect(settings.monitoring).toEqual({
-      checkIntervalSeconds: 60, watches: [], eventLogAlerts: [], alertRules: [],
+      checkIntervalSeconds: 60, watches: [],
     });
     expect(settings.backup).toEqual({
       schedule: {}, retention: {}, paths: [], backupMode: 'file', targets: {},
