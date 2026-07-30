@@ -154,6 +154,46 @@ describe('MonitoringTab alert-rule consolidation', () => {
     expect(settings.checkIntervalSeconds).toBe(90);
     expect(settings.watches).toHaveLength(1);
   });
+
+  it('tells the tech where the legacy rules went instead of dropping them silently', () => {
+    render(
+      <MonitoringTab
+        policyId="policy-1"
+        existingLink={legacyLink}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />,
+    );
+
+    const notice = screen.getByTestId('monitoring-legacy-alert-rules-notice');
+    // One alertRules entry + one eventLogAlerts entry on the fixture link.
+    expect(notice.textContent).toContain('2');
+    expect(notice.textContent).toContain('Alerts');
+    // Non-blocking: saving the tab still works.
+    expect(
+      (screen.getByRole('button', { name: /^Save$/i }) as HTMLButtonElement).disabled
+    ).toBe(false);
+  });
+
+  it('shows no legacy notice for a link that never carried alert rules', () => {
+    renderTab();
+    expect(screen.queryByTestId('monitoring-legacy-alert-rules-notice')).toBeNull();
+  });
+
+  it('navigates to the Alerts tab from the legacy notice', () => {
+    render(
+      <MonitoringTab
+        policyId="policy-1"
+        existingLink={legacyLink}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />,
+    );
+
+    window.location.hash = '';
+    fireEvent.click(screen.getByTestId('monitoring-legacy-alert-rules-link'));
+    expect(window.location.hash).toBe('#alert_rule');
+  });
 });
 
 describe('MonitoringTab disclosure keyboard toggle (issue #1932)', () => {

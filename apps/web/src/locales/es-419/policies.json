@@ -248,7 +248,11 @@
         "thisRuleUsesRetiredConditionTypes": "Esta regla todavía usa tipos de condición retirados ({{types}}). Elimine esas condiciones antes de guardar: el servidor rechaza las reglas que las contienen.",
         "textContainedInTheEventSourceCaseInsensitive": "Texto contenido en la fuente del evento (no distingue mayúsculas)",
         "textContainedInTheEventMessageCaseInsensitive": "Texto contenido en el mensaje del evento (no distingue mayúsculas)",
-        "eGFailedLogin": "p.ej. inicio de sesión fallido"
+        "eGFailedLogin": "p.ej. inicio de sesión fallido",
+        "thisRuleUsesUnsupportedMetrics": "Esta regla usa una métrica que el motor de alertas no puede evaluar ({{metrics}}). Elija una métrica compatible —o elimine la condición— antes de guardar; el servidor rechaza las reglas que la contienen.",
+        "thisConditionUsesAnUnsupportedMetric": "El motor de alertas no evalúa la métrica «{{metric}}», por lo que esta condición se muestra solo de lectura.",
+        "valueCount": "Valor (cantidad)",
+        "metricNotSet": "sin definir"
       },
       "automationTab": {
         "uTC": "UTC",
@@ -808,27 +812,13 @@
         "addAServiceOrProcessToStart": "Agregue un servicio o proceso para comenzar a monitorear.",
         "alertOnStop2": "alerta en parada",
         "autoRestart2": "reinicio automático",
-        "service2": "servicio",
         "eGNginxSshd": "p.ej. nginx, sshd",
         "eGNodeJava": "p.ej. nodo, java",
-        "process2": "proceso",
-        "metric2": "métrico",
-        "status": "estado",
-        "bandwidthHigh2": "bandwidth_high",
-        "networkDirection": "networkDirection",
-        "diskIoHigh": "disk_io_high",
-        "diskDirection": "diskDirection",
-        "networkErrors2": "network_errors",
-        "errorType2": "errorType",
-        "patchCompliance2": "patch_compliance",
-        "certExpiry": "cert_expiry",
-        "custom2": "personalizado",
-        "off": "apagado",
-        "checkResults": "check_results",
         "monitored": "monitoreado",
         "inventory": "inventario",
         "deviceThresholdsAndEventLogAlertsPointer": "Los umbrales de dispositivo y las alertas del registro de eventos se configuran en la función Alertas de esta política.",
-        "openAlertsFeature": "Abrir Alertas"
+        "openAlertsFeature": "Abrir Alertas",
+        "legacyAlertRulesMovedToAlerts": "{{count}} regla(s) de alerta heredada(s) guardadas en esta pestaña se movieron a la función Alertas de esta política. Monitoreo ya no las almacena."
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Capture indicaciones de elevación Windows UAC",

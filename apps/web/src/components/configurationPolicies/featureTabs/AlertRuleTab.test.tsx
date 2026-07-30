@@ -603,6 +603,231 @@ describe('AlertRuleTab legacy condition types the editor no longer offers', () =
   });
 });
 
+// A metric NAME outside the evaluator's domain is as dead as a retired
+// condition TYPE: the pre-consolidation Monitoring tab offered "Network Usage",
+// normalizeMetricName() resolves it to null, and the write schema now rejects
+// it. Left looking editable, the rule renders as an ordinary CPU threshold and
+// one unrelated tweak silently rewrites it.
+describe('AlertRuleTab flags metrics outside the evaluator domain', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    saveMock.mockResolvedValue({
+      id: 'link-1',
+      featureType: 'alert_rule',
+      featurePolicyId: null,
+      inlineSettings: {},
+    });
+  });
+
+  const networkCondition = { type: 'metric', metric: 'network', operator: 'gt', value: 80 };
+
+  function renderWithItems(items: Array<Record<string, unknown>>) {
+    render(
+      <AlertRuleTab
+        policyId="policy-1"
+        existingLink={{
+          id: 'link-1',
+          featureType: 'alert_rule',
+          featurePolicyId: null,
+          inlineSettings: { items },
+        }}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+  }
+
+  it('flags a network-metric rule and renders the condition read-only', () => {
+    renderWithItems([
+      { name: 'Network rule', severity: 'medium', conditions: [networkCondition], cooldownMinutes: 15, autoResolve: false },
+    ]);
+
+    expect(screen.getByTestId('alert-rule-legacy-flag-0')).toBeTruthy();
+    fireEvent.click(screen.getByText('Network rule'));
+
+    const warning = screen.getByTestId('alert-rule-legacy-warning-0');
+    expect(warning.textContent).toContain('network');
+    expect(warning.textContent?.toLowerCase()).toContain('metric');
+
+    // Read-only: no metric/operator dropdowns and no value spinner to nudge.
+    const row = screen.getByTestId('alert-rule-0-condition-0');
+    expect(within(row).queryAllByRole('combobox')).toHaveLength(0);
+    expect(within(row).queryAllByRole('spinbutton')).toHaveLength(0);
+    expect(
+      screen.getByTestId('alert-rule-0-condition-0-readonly-type').textContent
+    ).toContain('network');
+  });
+
+  it('preserves the unsupported condition verbatim when an adjacent rule is edited', async () => {
+    renderWithItems([
+      { name: 'Network rule', severity: 'medium', conditions: [networkCondition], cooldownMinutes: 15, autoResolve: false },
+      {
+        name: 'CPU rule', severity: 'high',
+        conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80 }],
+        cooldownMinutes: 15, autoResolve: false,
+      },
+    ]);
+
+    fireEvent.click(screen.getByText('CPU rule'));
+    fireEvent.change(controlForLabel('Value (%)') as HTMLInputElement, { target: { value: '95' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+
+    const items = lastSavedItems();
+    expect((items[1]!.conditions as any[])[0]).toMatchObject({ metric: 'cpu', value: 95 });
+    expect((items[0]!.conditions as any[])[0]).toEqual(networkCondition);
+  });
+
+  it('flags a metric condition with NO metric name instead of defaulting it to CPU', async () => {
+    // Same class of dead rule as `network`: normalizeMetricName(undefined) is
+    // null, and 2026-07-30-b-drop-never-firing-metric-alert-rules.sql deletes
+    // it as never-firing. Defaulting
+    // it to "cpu" on load would resurrect it as a live CPU rule on next save.
+    renderWithItems([
+      {
+        name: 'Metric-less rule', severity: 'medium',
+        conditions: [{ type: 'metric', operator: 'gt', value: 80 }],
+        cooldownMinutes: 15, autoResolve: false,
+      },
+    ]);
+
+    expect(screen.getByTestId('alert-rule-legacy-flag-0')).toBeTruthy();
+    fireEvent.click(screen.getByText('Metric-less rule'));
+    expect(screen.getByTestId('alert-rule-legacy-warning-0').textContent).toContain('not set');
+
+    const row = screen.getByTestId('alert-rule-0-condition-0');
+    expect(within(row).queryAllByRole('combobox')).toHaveLength(0);
+    expect(within(row).queryAllByRole('spinbutton')).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    // Still metric-less in the payload — the editor never invented "cpu".
+    expect((lastSavedItems()[0]!.conditions as any[])[0]).not.toHaveProperty('metric');
+  });
+
+  it('treats a legacy `threshold`-typed condition as an ordinary editable metric', async () => {
+    // handlers/threshold.ts calls the metric handler "threshold" (aliases
+    // ['metric']) and the old AI tool docs advertised it, so rows carry it.
+    renderWithItems([
+      {
+        name: 'Legacy threshold', severity: 'high',
+        conditions: [{ type: 'threshold', metric: 'cpu', operator: 'gt', value: 90 }],
+        cooldownMinutes: 15, autoResolve: false,
+      },
+    ]);
+
+    expect(screen.queryByTestId('alert-rule-legacy-flag-0')).toBeNull();
+    fireEvent.click(screen.getByText('Legacy threshold'));
+    expect(metricSelect().value).toBe('cpu');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    expect((lastSavedItems()[0]!.conditions as any[])[0]).toMatchObject({ type: 'metric', metric: 'cpu' });
+  });
+});
+
+describe('AlertRuleTab metric value bounds are metric-aware', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    saveMock.mockResolvedValue({
+      id: 'link-1', featureType: 'alert_rule', featurePolicyId: null, inlineSettings: {},
+    });
+  });
+
+  function renderCondition(condition: Record<string, unknown>, name: string) {
+    render(
+      <AlertRuleTab
+        policyId="policy-1"
+        existingLink={{
+          id: 'link-1', featureType: 'alert_rule', featurePolicyId: null,
+          inlineSettings: {
+            items: [{ name, severity: 'medium', conditions: [condition], cooldownMinutes: 15, autoResolve: false }],
+          },
+        }}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+    fireEvent.click(screen.getByText(name));
+  }
+
+  it('caps a percentage metric at 100 and clamps an over-range entry', async () => {
+    renderCondition({ type: 'metric', metric: 'cpu', operator: 'gt', value: 80 }, 'CPU rule');
+    const input = controlForLabel('Value (%)') as HTMLInputElement;
+    expect(input.getAttribute('max')).toBe('100');
+
+    fireEvent.change(input, { target: { value: '150' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    expect((lastSavedItems()[0]!.conditions as any[])[0].value).toBe(100);
+  });
+
+  it('leaves processCount uncapped — it is a count, not a percentage', async () => {
+    renderCondition({ type: 'metric', metric: 'processCount', operator: 'gt', value: 400 }, 'Process rule');
+    const input = controlForLabel('Value (count)') as HTMLInputElement;
+    expect(input.getAttribute('max')).toBeNull();
+
+    fireEvent.change(input, { target: { value: '650' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    expect((lastSavedItems()[0]!.conditions as any[])[0].value).toBe(650);
+  });
+});
+
+// Fields with no control in this editor are still columns on
+// config_policy_alert_rules; the AI tool and the API both write them. A rule
+// that loses its custom templates because someone nudged the severity is silent
+// data loss.
+describe('AlertRuleTab preserves fields it does not render', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    saveMock.mockResolvedValue({
+      id: 'link-1', featureType: 'alert_rule', featurePolicyId: null, inlineSettings: {},
+    });
+  });
+
+  it('keeps titleTemplate, messageTemplate, sortOrder and autoResolveConditions across an unrelated edit', async () => {
+    const autoResolveConditions = [{ type: 'metric', metric: 'cpu', operator: 'lt', value: 50 }];
+    render(
+      <AlertRuleTab
+        policyId="policy-1"
+        existingLink={{
+          id: 'link-1', featureType: 'alert_rule', featurePolicyId: null,
+          inlineSettings: {
+            items: [{
+              name: 'Templated rule',
+              severity: 'high',
+              conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80 }],
+              cooldownMinutes: 15,
+              autoResolve: true,
+              autoResolveConditions,
+              titleTemplate: 'CPU pegged on {{deviceName}}',
+              messageTemplate: 'Sustained CPU above 80% on {{deviceName}}',
+              sortOrder: 7,
+            }],
+          },
+        }}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByText('Templated rule'));
+    // Unrelated edit: bump the severity.
+    fireEvent.click(screen.getByRole('button', { name: 'Critical' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+
+    expect(lastSavedItems()[0]).toMatchObject({
+      severity: 'critical',
+      titleTemplate: 'CPU pegged on {{deviceName}}',
+      messageTemplate: 'Sustained CPU above 80% on {{deviceName}}',
+      sortOrder: 7,
+      autoResolveConditions,
+    });
+  });
+});
+
 // The rule-card header wraps a delete button, so it cannot itself be a native
 // <button>: React logs "In HTML, <button> cannot be a descendant of <button>.
 // This will cause a hydration error." on every expand. It is a role="button"

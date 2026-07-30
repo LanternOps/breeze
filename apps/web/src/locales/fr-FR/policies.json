@@ -248,7 +248,11 @@
         "thisRuleUsesRetiredConditionTypes": "Cette règle utilise encore des types de condition retirés ({{types}}). Supprimez ces conditions avant d’enregistrer — le serveur rejette les règles qui en contiennent.",
         "textContainedInTheEventSourceCaseInsensitive": "Texte contenu dans la source de l’événement (insensible à la casse)",
         "textContainedInTheEventMessageCaseInsensitive": "Texte contenu dans le message de l’événement (insensible à la casse)",
-        "eGFailedLogin": "par exemple, échec de connexion"
+        "eGFailedLogin": "par exemple, échec de connexion",
+        "thisRuleUsesUnsupportedMetrics": "Cette règle utilise une métrique que le moteur d'alertes ne peut pas évaluer ({{metrics}}). Choisissez une métrique prise en charge — ou supprimez la condition — avant d'enregistrer ; le serveur refuse les règles qui la contiennent.",
+        "thisConditionUsesAnUnsupportedMetric": "La métrique « {{metric}} » n'est pas évaluée par le moteur d'alertes, cette condition est donc affichée en lecture seule.",
+        "valueCount": "Valeur (nombre)",
+        "metricNotSet": "non défini"
       },
       "automationTab": {
         "uTC": "UTC",
@@ -808,27 +812,13 @@
         "addAServiceOrProcessToStart": "Ajoutez un service ou un processus pour commencer à surveiller.",
         "alertOnStop2": "Alerte à l’arrêt",
         "autoRestart2": "Redémarrage automatique",
-        "service2": "Service",
         "eGNginxSshd": "Par exemple nginx, sshd",
         "eGNodeJava": "Par exemple Node, Java",
-        "process2": "Processus",
-        "metric2": "Métrique",
-        "status": "Statut",
-        "bandwidthHigh2": "bandwidth_high",
-        "networkDirection": "réseauDirection",
-        "diskIoHigh": "disk_io_high",
-        "diskDirection": "diskDirection",
-        "networkErrors2": "network_errors",
-        "errorType2": "ErrorType",
-        "patchCompliance2": "patch_compliance",
-        "certExpiry": "cert_expiry",
-        "custom2": "personnalisé",
-        "off": "désactivé",
-        "checkResults": "check_results",
         "monitored": "Surveillé",
         "inventory": "Inventaire",
         "deviceThresholdsAndEventLogAlertsPointer": "Les seuils d’appareil et les alertes du journal d’événements se configurent dans la fonctionnalité Alertes de cette politique.",
-        "openAlertsFeature": "Ouvrir Alertes"
+        "openAlertsFeature": "Ouvrir Alertes",
+        "legacyAlertRulesMovedToAlerts": "{{count}} règle(s) d'alerte héritée(s) enregistrée(s) dans cet onglet ont été déplacées vers la fonctionnalité Alertes de cette politique. La supervision ne les conserve plus."
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Capture Windows Prompts d’élévation UAC",

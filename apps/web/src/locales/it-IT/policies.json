@@ -248,7 +248,11 @@
         "thisRuleUsesRetiredConditionTypes": "Questa regola usa ancora tipi di condizione ritirati ({{types}}). Rimuovi quelle condizioni prima di salvare: il server rifiuta le regole che le contengono.",
         "textContainedInTheEventSourceCaseInsensitive": "Testo contenuto nell'origine evento (senza distinzione tra maiuscole e minuscole)",
         "textContainedInTheEventMessageCaseInsensitive": "Testo contenuto nel messaggio evento (senza distinzione tra maiuscole e minuscole)",
-        "eGFailedLogin": "ad es. failed login"
+        "eGFailedLogin": "ad es. failed login",
+        "thisRuleUsesUnsupportedMetrics": "Questa regola usa una metrica che il motore degli avvisi non può valutare ({{metrics}}). Scegli una metrica supportata — o rimuovi la condizione — prima di salvare; il server rifiuta le regole che la contengono.",
+        "thisConditionUsesAnUnsupportedMetric": "La metrica «{{metric}}» non viene valutata dal motore degli avvisi, quindi questa condizione è mostrata in sola lettura.",
+        "valueCount": "Valore (conteggio)",
+        "metricNotSet": "non impostata"
       },
       "automationTab": {
         "uTC": "UTC",
@@ -808,27 +812,13 @@
         "addAServiceOrProcessToStart": "Aggiungi un servizio o un processo per iniziare il monitoraggio.",
         "alertOnStop2": "avvisa all'arresto",
         "autoRestart2": "riavvio automatico",
-        "service2": "service",
         "eGNginxSshd": "ad es. nginx, sshd",
         "eGNodeJava": "ad es. node, java",
-        "process2": "process",
-        "metric2": "metric",
-        "status": "status",
-        "bandwidthHigh2": "bandwidth_high",
-        "networkDirection": "networkDirection",
-        "diskIoHigh": "disk_io_high",
-        "diskDirection": "diskDirection",
-        "networkErrors2": "network_errors",
-        "errorType2": "errorType",
-        "patchCompliance2": "patch_compliance",
-        "certExpiry": "cert_expiry",
-        "custom2": "custom",
-        "off": "off",
-        "checkResults": "check_results",
         "monitored": "monitored",
         "inventory": "inventory",
         "deviceThresholdsAndEventLogAlertsPointer": "Le soglie dei dispositivi e gli avvisi del log eventi si configurano nella funzione Avvisi di questo criterio.",
-        "openAlertsFeature": "Apri Avvisi"
+        "openAlertsFeature": "Apri Avvisi",
+        "legacyAlertRulesMovedToAlerts": "{{count}} regola/e di avviso legacy salvate in questa scheda sono state spostate nella funzione Avvisi di questo criterio. Il monitoraggio non le memorizza più."
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Acquisisci prompt di elevazione UAC di Windows",

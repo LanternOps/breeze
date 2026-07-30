@@ -248,7 +248,11 @@
         "thisRuleUsesRetiredConditionTypes": "This rule still uses retired condition types ({{types}}). Remove those conditions before saving — the server rejects rules that contain them.",
         "textContainedInTheEventSourceCaseInsensitive": "Text contained in the event source (case-insensitive)",
         "textContainedInTheEventMessageCaseInsensitive": "Text contained in the event message (case-insensitive)",
-        "eGFailedLogin": "e.g. failed login"
+        "eGFailedLogin": "e.g. failed login",
+        "thisRuleUsesUnsupportedMetrics": "This rule uses a metric the alert engine cannot evaluate ({{metrics}}). Pick a supported metric — or remove the condition — before saving; the server rejects rules that contain it.",
+        "thisConditionUsesAnUnsupportedMetric": "The metric \"{{metric}}\" is not evaluated by the alert engine, so this condition is shown read-only.",
+        "valueCount": "Value (count)",
+        "metricNotSet": "not set"
       },
       "automationTab": {
         "uTC": "UTC",
@@ -808,27 +812,13 @@
         "addAServiceOrProcessToStart": "Add a service or process to start monitoring.",
         "alertOnStop2": "alert on stop",
         "autoRestart2": "auto-restart",
-        "service2": "service",
         "eGNginxSshd": "e.g. nginx, sshd",
         "eGNodeJava": "e.g. node, java",
-        "process2": "process",
-        "metric2": "metric",
-        "status": "status",
-        "bandwidthHigh2": "bandwidth_high",
-        "networkDirection": "networkDirection",
-        "diskIoHigh": "disk_io_high",
-        "diskDirection": "diskDirection",
-        "networkErrors2": "network_errors",
-        "errorType2": "errorType",
-        "patchCompliance2": "patch_compliance",
-        "certExpiry": "cert_expiry",
-        "custom2": "custom",
-        "off": "off",
-        "checkResults": "check_results",
         "monitored": "monitored",
         "inventory": "inventory",
         "deviceThresholdsAndEventLogAlertsPointer": "Device thresholds and event log alerts are configured in the Alerts feature of this policy.",
-        "openAlertsFeature": "Open Alerts"
+        "openAlertsFeature": "Open Alerts",
+        "legacyAlertRulesMovedToAlerts": "{{count}} legacy alert rule(s) saved on this tab were moved to the Alerts feature of this policy. Monitoring no longer stores them."
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Capture Windows UAC elevation prompts",

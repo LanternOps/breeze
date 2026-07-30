@@ -248,7 +248,11 @@
         "thisRuleUsesRetiredConditionTypes": "Esta regra ainda usa tipos de condição descontinuados ({{types}}). Remova essas condições antes de salvar — o servidor rejeita regras que as contenham.",
         "textContainedInTheEventSourceCaseInsensitive": "Texto contido na origem do evento (sem diferenciar maiúsculas)",
         "textContainedInTheEventMessageCaseInsensitive": "Texto contido na mensagem do evento (sem diferenciar maiúsculas)",
-        "eGFailedLogin": "ex.: falha de login"
+        "eGFailedLogin": "ex.: falha de login",
+        "thisRuleUsesUnsupportedMetrics": "Esta regra usa uma métrica que o mecanismo de alertas não consegue avaliar ({{metrics}}). Escolha uma métrica compatível — ou remova a condição — antes de salvar; o servidor rejeita regras que a contenham.",
+        "thisConditionUsesAnUnsupportedMetric": "A métrica \"{{metric}}\" não é avaliada pelo mecanismo de alertas, portanto esta condição é exibida somente para leitura.",
+        "valueCount": "Valor (contagem)",
+        "metricNotSet": "não definida"
       },
       "automationTab": {
         "uTC": "UTC",
@@ -808,27 +812,13 @@
         "addAServiceOrProcessToStart": "Adicione um serviço ou processo para começar a monitorar.",
         "alertOnStop2": "alertar ao parar",
         "autoRestart2": "reinício automático",
-        "service2": "serviço",
         "eGNginxSshd": "ex.: nginx, sshd",
         "eGNodeJava": "ex.: node, java",
-        "process2": "processo",
-        "metric2": "metric",
-        "status": "status",
-        "bandwidthHigh2": "bandwidth_high",
-        "networkDirection": "networkDirection",
-        "diskIoHigh": "disk_io_high",
-        "diskDirection": "diskDirection",
-        "networkErrors2": "network_errors",
-        "errorType2": "errorType",
-        "patchCompliance2": "patch_compliance",
-        "certExpiry": "cert_expiry",
-        "custom2": "custom",
-        "off": "off",
-        "checkResults": "check_results",
         "monitored": "monitored",
         "inventory": "inventory",
         "deviceThresholdsAndEventLogAlertsPointer": "Os limites de dispositivo e os alertas de log de eventos são configurados no recurso Alertas desta política.",
-        "openAlertsFeature": "Abrir Alertas"
+        "openAlertsFeature": "Abrir Alertas",
+        "legacyAlertRulesMovedToAlerts": "{{count}} regra(s) de alerta legada(s) salvas nesta aba foram movidas para o recurso Alertas desta política. O monitoramento não as armazena mais."
       },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Capturar solicitações de elevação do UAC do Windows",
