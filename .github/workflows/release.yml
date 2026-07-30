@@ -12,7 +12,6 @@ on:
         default: true
 
 env:
-  NODE_VERSION: '22'
   PNPM_VERSION: '10.34.5'
   GO_VERSION: '1.25.12'
   REGISTRY: ghcr.io
@@ -43,7 +42,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -76,7 +75,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -1099,7 +1098,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Setup Rust
@@ -1257,7 +1256,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Setup Rust
@@ -1342,7 +1341,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Setup Rust
@@ -1479,7 +1478,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Setup Rust
@@ -1712,7 +1711,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
