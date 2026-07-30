@@ -771,7 +771,12 @@ export const ALERT_METRIC_NAMES = [
 ] as const;
 
 const metricConditionSchema = z.object({
-  type: z.literal('metric'),
+  // `threshold` is the evaluator's OWN canonical name for this handler
+  // (handlers/threshold.ts declares `type: 'threshold'` with `aliases: ['metric']`)
+  // and the pre-consolidation AI tool docs advertised it, so stored rows carry
+  // it. Canonicalize to `metric` — the spelling every other surface (editor,
+  // decompose, docs) uses — exactly as `status` is folded into `offline` below.
+  type: z.enum(['metric', 'threshold']).transform(() => 'metric' as const),
   metric: z.enum(ALERT_METRIC_NAMES),
   // `neq` is included because the evaluator supports it — threshold.ts's own
   // validate() accepts gt/gte/lt/lte/eq/neq. The editor has always offered
@@ -811,7 +816,18 @@ const eventLogConditionSchema = z.object({
   windowMinutes: z.number().int().min(1).max(1440).default(15),
 });
 
-export const alertRuleConditionSchema = z.union([
+// discriminatedUnion, not union: with a plain union every member fails on a
+// malformed condition and Zod surfaces a bare `invalid_union` whose message is
+// "Invalid input" — the HTTP and AI surfaces then tell the caller nothing about
+// WHICH field is wrong. Discriminating on `type` picks exactly one member and
+// reports that member's own issue (e.g. the metric enum message), and an
+// unrecognised `type` gets a message naming every accepted type.
+//
+// Zod 4 supports a discriminator that is an enum with a `.transform()` (the
+// `metric|threshold` and `offline|status` aliases below) and an option that is
+// itself a piped object schema (offline's duration fold) — both are exercised
+// by alertRuleConditions.test.ts, which is what keeps this switch honest.
+export const alertRuleConditionSchema = z.discriminatedUnion('type', [
   metricConditionSchema,
   offlineConditionSchema,
   eventLogConditionSchema,

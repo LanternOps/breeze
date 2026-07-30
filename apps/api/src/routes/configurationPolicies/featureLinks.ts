@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
+import { zodValidationErrorBody } from '../../lib/zodIssues';
 import type { AuthContext } from '../../middleware/auth';
 import { hasSatisfiedMfa, requirePermission, requireScope } from '../../middleware/auth';
 import {
@@ -130,7 +131,7 @@ featureLinkRoutes.post(
       if (!parsed.success) {
         // `issues` included so the web client (extractApiError) can render the messages.
         return c.json(
-          { error: 'Invalid patch settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+          zodValidationErrorBody('Invalid patch settings', parsed.error),
           400
         );
       }
@@ -145,7 +146,7 @@ featureLinkRoutes.post(
       const parsed = schema.safeParse(data.inlineSettings);
       if (!parsed.success) {
         return c.json(
-          { error: 'Invalid backup settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+          zodValidationErrorBody('Invalid backup settings', parsed.error),
           400
         );
       }
@@ -156,7 +157,7 @@ featureLinkRoutes.post(
       const parsed = pamInlineSettingsSchema.safeParse(data.inlineSettings);
       if (!parsed.success) {
         return c.json(
-          { error: 'Invalid pam settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+          zodValidationErrorBody('Invalid pam settings', parsed.error),
           400
         );
       }
@@ -167,7 +168,7 @@ featureLinkRoutes.post(
       const parsed = remoteAccessInlineSettingsSchema.safeParse(data.inlineSettings);
       if (!parsed.success) {
         return c.json(
-          { error: 'Invalid remote access settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+          zodValidationErrorBody('Invalid remote access settings', parsed.error),
           400
         );
       }
@@ -178,7 +179,7 @@ featureLinkRoutes.post(
       const parsed = onedriveHelperInlineSettingsSchema.safeParse(data.inlineSettings);
       if (!parsed.success) {
         return c.json(
-          { error: 'Invalid onedrive_helper settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+          zodValidationErrorBody('Invalid onedrive_helper settings', parsed.error),
           400
         );
       }
@@ -198,7 +199,7 @@ featureLinkRoutes.post(
       const parsed = alertRuleInlineSettingsSchema.safeParse(data.inlineSettings);
       if (!parsed.success) {
         return c.json(
-          { error: 'Invalid alert_rule settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+          zodValidationErrorBody('Invalid alert_rule settings', parsed.error),
           400
         );
       }
@@ -209,7 +210,7 @@ featureLinkRoutes.post(
       const parsed = monitoringInlineSettingsSchema.safeParse(data.inlineSettings);
       if (!parsed.success) {
         return c.json(
-          { error: 'Invalid monitoring settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+          zodValidationErrorBody('Invalid monitoring settings', parsed.error),
           400
         );
       }
@@ -297,7 +298,7 @@ featureLinkRoutes.patch(
         const parsed = patchInlineSettingsSchema.safeParse(data.inlineSettings ?? {});
         if (!parsed.success) {
           return c.json(
-            { error: 'Invalid patch settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+            zodValidationErrorBody('Invalid patch settings', parsed.error),
             400
           );
         }
@@ -317,7 +318,7 @@ featureLinkRoutes.patch(
         const parsed = schema.safeParse(data.inlineSettings);
         if (!parsed.success) {
           return c.json(
-            { error: 'Invalid backup settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+            zodValidationErrorBody('Invalid backup settings', parsed.error),
             400
           );
         }
@@ -327,7 +328,7 @@ featureLinkRoutes.patch(
         const parsed = pamInlineSettingsSchema.safeParse(data.inlineSettings);
         if (!parsed.success) {
           return c.json(
-            { error: 'Invalid pam settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+            zodValidationErrorBody('Invalid pam settings', parsed.error),
             400
           );
         }
@@ -337,7 +338,7 @@ featureLinkRoutes.patch(
         const parsed = remoteAccessInlineSettingsSchema.safeParse(data.inlineSettings);
         if (!parsed.success) {
           return c.json(
-            { error: 'Invalid remote access settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+            zodValidationErrorBody('Invalid remote access settings', parsed.error),
             400
           );
         }
@@ -347,7 +348,7 @@ featureLinkRoutes.patch(
         const parsed = onedriveHelperInlineSettingsSchema.safeParse(data.inlineSettings);
         if (!parsed.success) {
           return c.json(
-            { error: 'Invalid onedrive_helper settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+            zodValidationErrorBody('Invalid onedrive_helper settings', parsed.error),
             400
           );
         }
@@ -363,7 +364,7 @@ featureLinkRoutes.patch(
         const parsed = alertRuleInlineSettingsSchema.safeParse(data.inlineSettings);
         if (!parsed.success) {
           return c.json(
-            { error: 'Invalid alert_rule settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+            zodValidationErrorBody('Invalid alert_rule settings', parsed.error),
             400
           );
         }
@@ -373,7 +374,7 @@ featureLinkRoutes.patch(
         const parsed = monitoringInlineSettingsSchema.safeParse(data.inlineSettings);
         if (!parsed.success) {
           return c.json(
-            { error: 'Invalid monitoring settings', details: parsed.error.flatten(), issues: parsed.error.issues },
+            zodValidationErrorBody('Invalid monitoring settings', parsed.error),
             400
           );
         }

@@ -715,6 +715,81 @@ describe('configuration policy AI tools', () => {
     expect(vi.mocked(addFeatureLink)).toHaveBeenCalledWith(POLICY_ID, 'monitoring', null, raw);
   });
 
+  // Condition payloads are a UNION nested inside items[]. Zod reports a union
+  // failure as one `invalid_union` issue whose own message is a bare "Invalid
+  // input"; the model needs the offending field and value named or it cannot
+  // self-correct. describeFirstZodIssue unwraps it.
+  it('names the offending metric value on an invalid alert_rule condition rather than "Invalid input"', async () => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({
+      id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Org policy',
+    } as any);
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action: 'add',
+      configPolicyId: POLICY_ID,
+      featureType: 'alert_rule',
+      inlineSettings: { items: [{ name: 'Bogus', conditions: [{ type: 'metric', metric: 'bogus', operator: 'gt', value: 80 }] }] },
+    }, makeAuth());
+
+    const { error } = JSON.parse(output);
+    expect(error).toContain('items.0.conditions.0.metric');
+    expect(error).toContain('cpu');
+    expect(error).not.toMatch(/— Invalid input$/);
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  // The `update` action re-derives featureType from the stored link, so its
+  // validation is a SEPARATE code path from `add` — these two mirror the
+  // add-action cases above.
+  it('rejects an invalid alert_rule payload on the UPDATE action with a specific message', async () => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({
+      id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Org policy',
+    } as any);
+    mockSelectRows([{ featureType: 'alert_rule' }]);
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action: 'update',
+      configPolicyId: POLICY_ID,
+      featureLinkId: 'link-1',
+      inlineSettings: { items: [{ name: 'Bogus', conditions: [{ type: 'metric', metric: 'bogus', operator: 'gt', value: 80 }] }] },
+    }, makeAuth());
+
+    const { error } = JSON.parse(output);
+    expect(error).toContain('alert_rule');
+    expect(error).toContain('items.0.conditions.0.metric');
+    expect(error).not.toBe(GENERIC_TOOL_ERROR_MESSAGE);
+    expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('surfaces the monitoring write-barrier pointer on the UPDATE action too', async () => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({
+      id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Org policy',
+    } as any);
+    mockSelectRows([{ featureType: 'monitoring' }]);
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action: 'update',
+      configPolicyId: POLICY_ID,
+      featureLinkId: 'link-1',
+      inlineSettings: {
+        watches: [],
+        alertRules: [{ name: 'High CPU', conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80 }] }],
+      },
+    }, makeAuth());
+
+    expect(JSON.parse(output).error).toContain('moved to the Alerts feature');
+    expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
+  });
+
   it('manage_configuration_policy create ownerScope=partner is denied without partner-wide capability', async () => {
     canManagePartnerWidePoliciesMock.mockReturnValue(false);
 
