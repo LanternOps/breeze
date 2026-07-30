@@ -261,6 +261,53 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('M365 communications-delegated (comms) boot validation', () => {
+    it('fails boot when comms onboarding is enabled without a client id', () => {
+      withEnv({
+        ...validEnv,
+        M365_COMMS_ONBOARDING_ENABLED: 'true',
+        M365_COMMS_CLIENT_ID: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/M365_COMMS_CLIENT_ID is required/);
+      });
+    });
+
+    it('fails boot when comms tools are enabled without a user allowlist', () => {
+      // The loader never reads the tools allowlist (it's on the hot
+      // tool-registration path), so the boot validator must check it
+      // explicitly — this proves the call site in validate.ts is wired.
+      const dir = mkdtempSync(join(tmpdir(), 'breeze-m365-comms-boot-'));
+      const signingJwkFile = join(dir, 'signing.jwk');
+      writeFileSync(signingJwkFile, JSON.stringify({
+        kty: 'OKP',
+        crv: 'Ed25519',
+        alg: 'EdDSA',
+        use: 'sig',
+        kid: 'comms-kid-1',
+        x: Buffer.alloc(32, 1).toString('base64url'),
+        d: Buffer.alloc(32, 2).toString('base64url'),
+      }), { mode: 0o600 });
+      chmodSync(signingJwkFile, 0o600);
+
+      try {
+        withEnv({
+          ...validEnv,
+          M365_COMMS_TOOLS_ENABLED: 'true',
+          M365_COMMS_CLIENT_ID: '33333333-3333-4333-8333-333333333333',
+          M365_COMMS_EXECUTOR_URL: 'https://comms-executor.internal.example.test',
+          M365_COMMS_EXECUTOR_AUDIENCE: 'm365-communications-executor',
+          M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: signingJwkFile,
+          M365_COMMS_EXECUTOR_SIGNING_KID: 'comms-kid-1',
+          PUBLIC_URL: 'https://console.example.test',
+        }, () => {
+          expect(() => validateConfig()).toThrow(/M365_COMMS_TOOLS_USER_IDS/);
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('rejects production with only the administrator DATABASE_URL', () => {
     withEnv({
       ...validEnv,

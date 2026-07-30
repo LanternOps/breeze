@@ -2,6 +2,7 @@ import { isIP } from 'net';
 import { z } from 'zod';
 import { validateM365CustomerGraphReadRuntimeConfigAtBoot } from '../services/m365ControlPlane/runtimeConfig';
 import { validateM365CustomerGraphActionsRuntimeConfigAtBoot } from '../services/m365ControlPlane/writeActionRuntimeConfig';
+import { validateM365CommunicationsRuntimeConfigAtBoot } from '../services/m365ControlPlane/commsRuntimeConfig';
 import {
   decodePartnerApiCursorSigningKey,
   isRecognizedSelfHostSignal,
@@ -1760,6 +1761,12 @@ export function validateConfig(): AppConfig {
   // (customer-graph-actions): parsed lazily, but validated eagerly at boot
   // when the write-action tools rollout is enabled.
   validateM365CustomerGraphActionsRuntimeConfigAtBoot(env);
+
+  // Same again for the communications-delegated descriptor (per-USER axis).
+  // Deliberately NOT paired with an APP_ENCRYPTION_KEY_ID assertion: comms has
+  // no reveal path and no API-side sealing — the token cache is the
+  // executor's, wrapped under a KEK the API's identity cannot get (§3.2).
+  validateM365CommunicationsRuntimeConfigAtBoot(env);
 
   // APP_ENCRYPTION_KEY_ID is required once Graph write-action tools are enabled:
   // the reset-password reveal seals its temp credential with AAD-bound v3 ciphertext
