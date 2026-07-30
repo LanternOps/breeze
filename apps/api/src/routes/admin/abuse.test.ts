@@ -935,6 +935,9 @@ describe('admin/abuse — billing subscription cancel on suspend', () => {
     expect(res.status).toBe(200);
     // immediate cancellation — the account is terminated for abuse, not downgraded.
     expect(billingCancelMock).toHaveBeenCalledWith({ partnerId: 'partner-1', immediate: true });
+    const body = await res.json();
+    expect(body.billingSubscriptionCanceled).toBe(true);
+    expect(body.billingCancelFailed).toBeUndefined();
     const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
     expect(auditCall.result).toBe('success');
     expect(auditCall.details).toMatchObject({ billingSubscriptionCanceled: true });
@@ -952,6 +955,11 @@ describe('admin/abuse — billing subscription cancel on suspend', () => {
     // The DB suspend already committed; a billing hiccup must not turn it into a failure.
     expect(res.status).toBe(200);
     expect(billingCancelMock).toHaveBeenCalledTimes(1);
+    // The operator must see the failed cancel in the response — the card is
+    // still live and needs a manual cancel in Stripe.
+    const body = await res.json();
+    expect(body.billingSubscriptionCanceled).toBeNull();
+    expect(body.billingCancelFailed).toBe(true);
     const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
     expect(auditCall.result).toBe('success');
     expect(auditCall.details).toMatchObject({
