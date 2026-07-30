@@ -119,12 +119,21 @@ Alert rules define what conditions to watch for and which devices to monitor.
 
 2. Give the rule a **name** and choose a **severity** level.
 
-3. Add one or more **conditions**. Each condition specifies:
-   - **Type** -- metric threshold, status change, or custom condition
-   - **Metric** -- CPU, memory, disk, or network usage
-   - **Operator** -- greater than, less than, equals, etc.
-   - **Threshold value** -- the numeric value that triggers the alert
-   - **Duration** -- the sliding window over which samples are evaluated. The alert fires when the **average** of all samples within this window breaches the threshold (previously every individual sample had to breach). This change makes rules more tolerant of momentary spikes; if you had rules tuned for a single-sample breach, consider shortening the duration or lowering the threshold to preserve the same effective sensitivity.
+3. Add one to ten **conditions**. A rule fires when its conditions are met; each condition is one of three types.
+
+   **Metric threshold** -- compares a collected device metric against a number:
+   - **Metric** -- CPU usage, memory usage, disk usage (all percentages), or process count (a raw count).
+   - **Operator** -- greater than, greater or equal, less than, less or equal, equals, not equals.
+   - **Value** -- the number that triggers the alert. `0`--`100` for the percentage metrics; unbounded for process count.
+   - **Duration** -- the sliding window, in minutes, over which samples are evaluated. The alert fires when the **average** of all samples within this window breaches the threshold (previously every individual sample had to breach). This makes rules more tolerant of momentary spikes; if you had rules tuned for a single-sample breach, consider shortening the duration or lowering the threshold to preserve the same effective sensitivity.
+
+   **Device offline** -- fires when a device has been continuously unreachable for the configured number of minutes. See [Offline Duration](#offline-duration-for-configuration-policy-rules) below for the 24-hour cap.
+
+   **Event log** -- fires on entries the agent collects from the Windows Event Log, macOS unified log, or Linux journal:
+   - **Category** -- security, hardware, application, or system.
+   - **Minimum level** -- warning, error, or critical. The condition matches this level **and above**, so "warning" also matches errors and criticals.
+   - **Source pattern** and **message pattern** (both optional) -- plain text matched as a **case-insensitive substring**, not a regular expression. `login fail` matches "Login Failed for user"; `^Login` matches nothing.
+   - **Count threshold** and **window** -- how many matching events must occur (1--10,000) within how many minutes (1--1,440) before the alert fires. The default, 1 event in 15 minutes, fires on the first match.
 
 4. Choose the **target scope**:
    - **All Devices** -- applies to every device in the organization
@@ -141,6 +150,10 @@ Alert rules define what conditions to watch for and which devices to monitor.
 8. Click **Save**.
 
 </Steps>
+
+<Aside type="caution">
+  Older rules may still carry condition types Breeze no longer evaluates -- `custom`, and a "network usage" metric that never had a metric to compare against. Those are shown read-only with an amber warning on the rule, and the rule cannot be saved until you remove or replace the condition. Agent-side service and process watches are configured separately, on the policy's **Monitoring** tab -- see [Service & Process Monitoring](/features/service-monitoring/).
+</Aside>
 
 ### Testing a Rule
 
