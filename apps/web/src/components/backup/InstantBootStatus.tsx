@@ -4,6 +4,7 @@ import { AlertCircle, Loader2, Monitor, RefreshCw, Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { useTranslation } from 'react-i18next';
+import { asList } from '@/lib/asList';
 import '../../lib/i18n';
 
 type InstantBootStatusRow = {
@@ -36,7 +37,7 @@ export default function InstantBootStatus() {
         throw new Error('Failed to fetch instant boot status');
       }
       const payload = await response.json();
-      const data = payload?.data ?? payload ?? [];
+      const data = asList(payload);
       setBoots(Array.isArray(data) ? data : []);
       setError(undefined);
     } catch (err) {

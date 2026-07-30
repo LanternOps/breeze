@@ -10,6 +10,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
+import { asList } from '@/lib/asList';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -65,7 +66,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
         throw new Error(t('scriptExecutionsPage.errors.fetchExecutions'));
       }
       const data = await response.json();
-      setExecutions(data.data ?? data.executions ?? (Array.isArray(data) ? data : []));
+      setExecutions(asList(data, 'executions'));
     } catch (err) {
       setError(err instanceof Error ? err.message : t('scriptExecutionsPage.errors.generic'));
     } finally {
@@ -78,7 +79,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
       const response = await fetchWithAuth('/devices');
       if (response.ok) {
         const data = await response.json();
-        setDevices(data.data ?? data.devices ?? (Array.isArray(data) ? data : []));
+        setDevices(asList(data, 'devices'));
       }
     } catch {
       // Silently fail
@@ -90,7 +91,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
       const response = await fetchWithAuth('/orgs/sites');
       if (response.ok) {
         const data = await response.json();
-        setSites(data.data ?? data.sites ?? (Array.isArray(data) ? data : []));
+        setSites(asList(data, 'sites'));
       }
     } catch {
       // Silently fail

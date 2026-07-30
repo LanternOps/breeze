@@ -102,6 +102,7 @@ describe('navSections structure (#1321, #1324)', () => {
       '/settings/catalog',
       '/software',
       '/software-inventory',
+      '/devices/groups',
       '/configuration-policies',
       '/integrations',
     ]);

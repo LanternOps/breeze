@@ -20,6 +20,7 @@ import { formatNumber } from '@/lib/i18n/format';
 import { fetchWithAuth } from '../../stores/auth';
 import AlphaBadge from '../shared/AlphaBadge';
 import { useTranslation } from 'react-i18next';
+import { asList } from '@/lib/asList';
 import '../../lib/i18n';
 
 type RestoreType = 'full' | 'selective';
@@ -186,7 +187,7 @@ export default function RestoreWizard() {
         throw new Error('Failed to fetch restore history');
       }
       const payload = await response.json();
-      const data = payload?.data ?? payload ?? [];
+      const data = asList(payload);
       setRestoreHistory(Array.isArray(data) ? data as RestoreJob[] : []);
     } catch (err) {
       setRestoreError((prev) => prev ?? (err instanceof Error ? err.message : 'Failed to fetch restore history'));

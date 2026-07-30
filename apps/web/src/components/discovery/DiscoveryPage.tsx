@@ -16,6 +16,7 @@ import { ActionError, runAction } from '../../lib/runAction';
 import { navigateTo } from '../../lib/navigation';
 import { OrgRequiredState } from '../shared/OrgRequiredState';
 import { OrgLoadFailedState } from '../shared/OrgLoadFailedState';
+import { asList } from '@/lib/asList';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -376,7 +377,7 @@ export default function DiscoveryPage() {
         throw new Error(t('discoveryPage.errors.fetchProfiles'));
       }
       const data = await response.json();
-      setProfiles(data.data ?? data.profiles ?? data ?? []);
+      setProfiles(asList(data, 'profiles'));
     } catch (err) {
       setProfilesError(err instanceof Error ? err.message : t('discoveryPage.errors.generic'));
     } finally {

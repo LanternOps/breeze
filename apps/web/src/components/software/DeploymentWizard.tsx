@@ -8,6 +8,7 @@ import {
   CalendarClock,
   ClipboardList,
 } from "lucide-react";
+import { asList } from '@/lib/asList';
 import { cn } from "@/lib/utils";
 import { fetchWithAuth } from "../../stores/auth";
 import { runAction, ActionError } from "../../lib/runAction";
@@ -238,7 +239,7 @@ export default function DeploymentWizard({
       if (catalogResponse.ok) {
         const catalogPayload = await catalogResponse.json();
         const rawCatalog =
-          catalogPayload.data ?? catalogPayload.catalog ?? catalogPayload ?? [];
+          asList(catalogPayload, 'catalog');
         const catalogRows = Array.isArray(rawCatalog) ? rawCatalog : [];
         const versionResults = await Promise.allSettled(
           catalogRows.map(async (row) => {
@@ -250,7 +251,7 @@ export default function DeploymentWizard({
             if (!response.ok) return [] as SoftwareVersionOption[];
             const payload = await response.json();
             const rawVersions =
-              payload.data ?? payload.versions ?? payload ?? [];
+              asList(payload, 'versions');
             if (!Array.isArray(rawVersions))
               return [] as SoftwareVersionOption[];
             return rawVersions
@@ -277,7 +278,7 @@ export default function DeploymentWizard({
       if (sitesResponse.ok) {
         const sitesPayload = await sitesResponse.json();
         const rawSites =
-          sitesPayload.data ?? sitesPayload.sites ?? sitesPayload ?? [];
+          asList(sitesPayload, 'sites');
         if (Array.isArray(rawSites)) {
           for (const site of rawSites) {
             const siteRecord = site as Record<string, unknown>;
@@ -295,7 +296,7 @@ export default function DeploymentWizard({
       if (groupsResponse.ok) {
         const groupsPayload = await groupsResponse.json();
         const rawGroups =
-          groupsPayload.data ?? groupsPayload.groups ?? groupsPayload ?? [];
+          asList(groupsPayload, 'groups');
         if (Array.isArray(rawGroups)) {
           for (const group of rawGroups) {
             const groupRecord = group as Record<string, unknown>;
@@ -320,7 +321,7 @@ export default function DeploymentWizard({
       if (devicesResponse.ok) {
         const devicesPayload = await devicesResponse.json();
         const rawDevices =
-          devicesPayload.data ?? devicesPayload.devices ?? devicesPayload ?? [];
+          asList(devicesPayload, 'devices');
         if (Array.isArray(rawDevices)) {
           deviceRows = rawDevices as Array<Record<string, unknown>>;
           for (const deviceRecord of deviceRows) {

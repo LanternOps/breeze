@@ -15,6 +15,7 @@ import SLAConfigDialog from './SLAConfigDialog';
 import AlphaBadge from '../shared/AlphaBadge';
 import { formatPercent } from '@/lib/i18n/format';
 import { useTranslation } from 'react-i18next';
+import { asList } from '@/lib/asList';
 import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -81,13 +82,13 @@ export default function SLADashboard() {
 
       if (cfgRes.ok) {
         const payload = await cfgRes.json();
-        const data = payload?.data ?? payload ?? [];
+        const data = asList(payload);
         setConfigs(Array.isArray(data) ? data : []);
       }
 
       if (evtRes.ok) {
         const payload = await evtRes.json();
-        const data = payload?.data ?? payload ?? [];
+        const data = asList(payload);
         setEvents(Array.isArray(data) ? data : []);
       }
 

@@ -4,6 +4,7 @@ import type { SavedFilter, FilterConditionGroup } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { FilterBuilder } from './FilterBuilder';
 import { useTranslation } from 'react-i18next';
+import { asList } from '@/lib/asList';
 
 interface SavedFilterListProps {
   onSelectFilter?: (filter: SavedFilter) => void;
@@ -46,7 +47,7 @@ export function SavedFilterList({
         throw new Error('Failed to fetch saved filters');
       }
       const data = await response.json();
-      setFilters(data.data ?? data.filters ?? data ?? []);
+      setFilters(asList(data, 'filters'));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch filters');
     } finally {

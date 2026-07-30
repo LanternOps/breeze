@@ -8,6 +8,7 @@ import {
 } from "react";
 import { Plus, Pencil, Trash2, Shield, Play, X } from "lucide-react";
 import { fetchWithAuth } from "@/stores/auth";
+import { asList } from "@/lib/asList";
 import type { FilterConditionGroup } from "@breeze/shared";
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from "../filters/FilterBuilder";
 import { FilterPreview } from "../filters/FilterPreview";
@@ -299,7 +300,7 @@ export default function DeviceGroupsPage() {
         throw new Error("Failed to fetch device groups");
       }
       const data = await response.json();
-      const nextGroups = (data.groups ?? data ?? []).map(normalizeGroup);
+      const nextGroups = asList<DeviceGroup>(data, "groups").map(normalizeGroup);
       setGroups(nextGroups);
     } catch (err) {
       setError(
@@ -317,7 +318,7 @@ export default function DeviceGroupsPage() {
       const response = await fetchWithAuth("/devices");
       if (response.ok) {
         const data = await response.json();
-        setDevices(data.devices ?? data ?? []);
+        setDevices(asList<Device>(data, "devices"));
       }
     } catch {
       // Devices are optional for the page to render.
@@ -326,10 +327,12 @@ export default function DeviceGroupsPage() {
 
   const fetchSites = useCallback(async () => {
     try {
-      const response = await fetchWithAuth("/sites");
+      // Sites live under the orgs router (`/orgs/sites`) — a bare `/sites`
+      // 404s, which this page swallowed silently.
+      const response = await fetchWithAuth("/orgs/sites");
       if (response.ok) {
         const data = await response.json();
-        setSites(data.sites ?? data ?? []);
+        setSites(asList<Site>(data, "sites"));
       }
     } catch {
       // Sites are optional and can be derived from device data.
@@ -341,7 +344,7 @@ export default function DeviceGroupsPage() {
       const response = await fetchWithAuth("/policies");
       if (response.ok) {
         const data = await response.json();
-        setPolicies(data.policies ?? data ?? []);
+        setPolicies(asList<Policy>(data, "policies"));
       }
     } catch {
       // Policies are optional for this page.
@@ -353,7 +356,7 @@ export default function DeviceGroupsPage() {
       const response = await fetchWithAuth("/scripts");
       if (response.ok) {
         const data = await response.json();
-        setScripts(data.scripts ?? data ?? []);
+        setScripts(asList<Script>(data, "scripts"));
       }
     } catch {
       // Scripts are optional for this page.

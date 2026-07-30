@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils';
 import { extractApiError } from '@/lib/apiError';
 import { fetchWithAuth } from '../../stores/auth';
 import { useTranslation } from 'react-i18next';
+import { asList } from '@/lib/asList';
 import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -57,7 +58,7 @@ export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogP
         const response = await fetchWithAuth('/devices');
         if (response.ok) {
           const payload = await response.json();
-          const data = payload?.data ?? payload ?? [];
+          const data = asList(payload);
           setDevices(Array.isArray(data) ? data : []);
         }
       } catch {

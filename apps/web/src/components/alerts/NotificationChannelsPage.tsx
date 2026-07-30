@@ -13,6 +13,7 @@ import { extractApiError } from '@/lib/apiError';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { i18n } from '../../lib/i18n';
+import { asList } from '@/lib/asList';
 
 // Exported for unit-testing without mounting the full component.
 export async function runChannelTest(
@@ -162,7 +163,7 @@ export default function NotificationChannelsPage() {
         return;
       }
       const data = await response.json();
-      setRoutingRules(data.rules ?? data.data ?? (Array.isArray(data) ? data : []));
+      setRoutingRules(asList(data, 'rules'));
     } catch (err) {
       console.warn('[NotificationChannelsPage] fetchRoutingRules', err);
     }
@@ -182,7 +183,7 @@ export default function NotificationChannelsPage() {
         throw new Error(extractApiError(data, t('notificationChannelsPage.failedToFetchNotificationChannels')));
       }
       const data = await response.json();
-      setChannels(data.channels ?? data.data ?? (Array.isArray(data) ? data : []));
+      setChannels(asList(data, 'channels'));
     } catch (err) {
       setError(err instanceof Error ? err.message : t('notificationChannelsPage.genericError'));
     } finally {

@@ -7,6 +7,7 @@ import { widthPercentClass } from '@/lib/utils';
 import { extractApiError } from '@/lib/apiError';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
+import { asList } from '@/lib/asList';
 
 export type DiscoveryJobStatus = 'scheduled' | 'running' | 'completed' | 'failed' | 'cancelled' | 'pending';
 
@@ -173,7 +174,7 @@ export default function DiscoveryJobList({ timezone, profileFilter, profileSubne
         throw new Error(t('discoveryJobList.errors.fetch'));
       }
       const data = await response.json();
-      const items = data.data ?? data.jobs ?? data ?? [];
+      const items = asList(data, 'jobs');
       setJobs(items.map((job: ApiDiscoveryJob) => mapJob(job, t)));
     } catch (err) {
       setError(err instanceof Error ? err.message : t('discoveryJobList.errors.generic'));

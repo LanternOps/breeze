@@ -12,6 +12,7 @@ import { useOrgStore } from '../../stores/orgStore';
 import { showToast } from '../shared/Toast';
 import { cn } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
+import { asList } from '@/lib/asList';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -66,7 +67,7 @@ export default function ScriptsPage() {
         throw new Error(t('scriptsPage.errors.fetch'));
       }
       const data = await response.json();
-      setScripts(data.data ?? data.scripts ?? (Array.isArray(data) ? data : []));
+      setScripts(asList(data, 'scripts'));
     } catch (err) {
       setError(err instanceof Error ? err.message : t('scriptsPage.errors.generic'));
     } finally {
@@ -79,7 +80,7 @@ export default function ScriptsPage() {
       const response = await fetchWithAuth('/devices?limit=10000');
       if (response.ok) {
         const data = await response.json();
-        const raw = data.data ?? data.devices ?? (Array.isArray(data) ? data : []);
+        const raw = asList(data, 'devices');
         setDevices(raw.map((d: Record<string, unknown>) => ({
           id: d.id as string,
           hostname: (d.hostname ?? '') as string,
@@ -99,7 +100,7 @@ export default function ScriptsPage() {
       const response = await fetchWithAuth('/orgs/sites');
       if (response.ok) {
         const data = await response.json();
-        setSites(data.data ?? data.sites ?? (Array.isArray(data) ? data : []));
+        setSites(asList(data, 'sites'));
       }
     } catch {
       // Silently fail - sites will be empty

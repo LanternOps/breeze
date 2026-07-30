@@ -14,6 +14,7 @@ import { Dialog } from '../shared/Dialog';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { useTranslation } from 'react-i18next';
+import { asList } from '@/lib/asList';
 import '../../lib/i18n';
 
 type Device = { id: string; hostname?: string | null; displayName?: string | null };
@@ -117,7 +118,7 @@ export default function DRExecutionView({
 
       if (devicesResponse.ok) {
         const devicesPayload = await devicesResponse.json();
-        const nextDevices = (devicesPayload?.data ?? devicesPayload?.devices ?? devicesPayload ?? []) as Device[];
+        const nextDevices = (asList(devicesPayload, 'devices')) as Device[];
         setDevices(
           nextDevices.reduce<Record<string, Device>>((accumulator, device) => {
             accumulator[device.id] = device;

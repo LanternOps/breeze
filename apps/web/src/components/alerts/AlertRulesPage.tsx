@@ -8,6 +8,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { extractApiError } from '@/lib/apiError';
+import { asList } from '@/lib/asList';
 
 type ModalMode = 'closed' | 'delete' | 'test';
 
@@ -35,7 +36,7 @@ export default function AlertRulesPage() {
         throw new Error(extractApiError(errData, 'Failed to fetch alert rules'));
       }
       const data = await response.json();
-      setRules(data.rules ?? data.data ?? (Array.isArray(data) ? data : []));
+      setRules(asList(data, 'rules'));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {

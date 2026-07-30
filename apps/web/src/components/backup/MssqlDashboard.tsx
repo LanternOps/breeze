@@ -19,6 +19,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { formatBytes, formatTime } from './backupDashboardHelpers';
 import AlphaBadge from '../shared/AlphaBadge';
 import { useTranslation } from 'react-i18next';
+import { asList } from '@/lib/asList';
 import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -118,7 +119,7 @@ export default function MssqlDashboard() {
 
       if (deviceRes.ok) {
         const payload = await deviceRes.json();
-        const data = payload?.data ?? payload ?? [];
+        const data = asList(payload);
         const targets = Array.isArray(data) ? data as DeviceSummary[] : [];
         setDiscoveryTargets(targets);
         setEmptyDiscoveryDeviceId((current) => {

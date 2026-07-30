@@ -17,6 +17,7 @@ import VMRestoreSpecsStep from './VMRestoreSpecsStep';
 import VMRestoreConfirmStep from './VMRestoreConfirmStep';
 import AlphaBadge from '../shared/AlphaBadge';
 import { useTranslation } from 'react-i18next';
+import { asList } from '@/lib/asList';
 import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -88,7 +89,7 @@ export default function VMRestoreWizard() {
 
         if (snapRes.ok) {
           const payload = await snapRes.json();
-          const data = payload?.data ?? payload ?? [];
+          const data = asList(payload);
           const snapshotRows = Array.isArray(data) ? data : [];
           setSnapshots(
             snapshotRows.map((snapshot) => {
@@ -103,7 +104,7 @@ export default function VMRestoreWizard() {
 
         if (devRes.ok) {
           const payload = await devRes.json();
-          const data = payload?.data ?? payload ?? [];
+          const data = asList(payload);
           const all = Array.isArray(data) ? data : [];
           setDevices(all.filter((d: Device) => d.osType?.toLowerCase().includes('windows')));
         }

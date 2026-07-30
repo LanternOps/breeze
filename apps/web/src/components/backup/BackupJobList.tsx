@@ -20,6 +20,7 @@ import { loginPathWithNext } from '../../lib/authScope';
 import { formatNumber } from '@/lib/i18n/format';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
+import { asList } from '@/lib/asList';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -226,7 +227,7 @@ export default function BackupJobList() {
         throw new Error('Failed to fetch backup jobs');
       }
       const payload = await response.json();
-      const data = payload?.data ?? payload ?? [];
+      const data = asList(payload);
       const now = Date.now();
 
       // Reconcile against recently-cancelled jobs before anything else so a stale

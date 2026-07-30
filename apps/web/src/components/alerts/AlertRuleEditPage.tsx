@@ -9,6 +9,7 @@ import { useOrgStore } from '../../stores/orgStore';
 import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
 import { navigateTo } from '@/lib/navigation';
 import { extractApiError } from '@/lib/apiError';
+import { asList } from '@/lib/asList';
 
 type Site = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -82,7 +83,7 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
       const response = await fetchWithAuth('/orgs/sites');
       if (response.ok) {
         const data = await response.json();
-        setSites(data.sites ?? data.data ?? (Array.isArray(data) ? data : []));
+        setSites(asList(data, 'sites'));
       }
     } catch {
       // Silently fail
@@ -94,7 +95,7 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
       const response = await fetchWithAuth('/groups');
       if (response.ok) {
         const data = await response.json();
-        setGroups(data.groups ?? data.data ?? (Array.isArray(data) ? data : []));
+        setGroups(asList(data, 'groups'));
       }
     } catch {
       // Silently fail
@@ -106,7 +107,7 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
       const response = await fetchWithAuth('/devices');
       if (response.ok) {
         const data = await response.json();
-        const deviceList = data.devices ?? data.data ?? (Array.isArray(data) ? data : []);
+        const deviceList = asList(data, 'devices');
         setDevices(
           deviceList.map((d: { id: string; hostname: string }) => ({
             id: d.id,
@@ -124,7 +125,7 @@ export default function AlertRuleEditPage({ ruleId, isNew = false }: AlertRuleEd
       const response = await fetchWithAuth('/alerts/channels');
       if (response.ok) {
         const data = await response.json();
-        setNotificationChannels(data.channels ?? data.data ?? (Array.isArray(data) ? data : []));
+        setNotificationChannels(asList(data, 'channels'));
       }
     } catch {
       // Silently fail

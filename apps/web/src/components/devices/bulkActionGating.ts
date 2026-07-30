@@ -97,6 +97,11 @@ export const DECOMMISSION_BLOCKED_BULK_ACTIONS: ReadonlySet<string> = new Set([
  *   decommission    — retiring dead machines IS the use case.
  *   deploy-software — navigates to /software; sends no command from here.
  *   link-*          — DB-only topology linkage; no agent involved.
+ *   compare         — navigates to /devices/compare; read-only comparison
+ *                     view, sends no commands. (It shows stored metrics where
+ *                     available and synthetic placeholders otherwise, so a
+ *                     decommissioned device is a legitimate — if sometimes
+ *                     approximate — comparison subject.)
  *
  * NOTE (follow-up, deliberately out of scope): the API *also* refuses
  * `decommissioned` for bulk wake (`commands.ts:89`) and for maintenance
@@ -115,6 +120,7 @@ export const INTENTIONALLY_UNGATED_BULK_ACTIONS: ReadonlySet<string> = new Set([
   'deploy-software',
   'link-multiboot',
   'link-vm-host',
+  'compare',
 ]);
 
 type DeviceTranslation = ReturnType<typeof useTranslation<'devices'>>['t'];
