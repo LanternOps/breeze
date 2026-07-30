@@ -26,6 +26,7 @@ import {
   PartnerWideWriteDeniedError,
 } from './configurationPolicy';
 import { db } from '../db';
+import { configPolicyAlertRules } from '../db/schema';
 
 // Chain for `db.select().from(...).where(...)` awaited directly (links query)
 function selectWhereRows(rows: unknown[]) {
@@ -513,6 +514,154 @@ describe('addFeatureLink — alert_rule inlineSettings service-layer validation'
     });
 
     expect(normalizedRowValues[0].conditions).toEqual([{ type: 'offline', durationMinutes: 10 }]);
+  });
+});
+
+// ============================================================
+// monitoring decompose/assemble — owns only agent-side watches (Task 3,
+// alerts/monitoring consolidation). Non-empty alertRules/eventLogAlerts are
+// rejected at the schema barrier (Task 1); this describe block asserts the
+// decompose/assemble code itself no longer touches config_policy_alert_rules.
+// ============================================================
+describe('monitoring decompose/assemble — no longer owns alert rules', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // tx mock for a successful monitoring addFeatureLink: insert #1 is the
+  // feature link, insert #2 is config_policy_monitoring_settings (needs a
+  // `.returning()` for the settings row id), insert #3 (only when watches
+  // are non-empty) is config_policy_monitoring_watches.
+  function txForMonitoringInsert() {
+    let insertCall = 0;
+    const insertedTables: unknown[] = [];
+    const tx = {
+      insert: vi.fn((table: unknown) => {
+        insertCall += 1;
+        insertedTables.push(table);
+        if (insertCall === 1) {
+          return {
+            values: vi.fn((v: any) => ({
+              onConflictDoNothing: vi.fn(() => ({
+                returning: vi.fn(() =>
+                  Promise.resolve([
+                    {
+                      id: 'link-mon',
+                      configPolicyId: 'policy-1',
+                      featureType: 'monitoring',
+                      featurePolicyId: null,
+                      inlineSettings: v.inlineSettings,
+                    },
+                  ])
+                ),
+              })),
+            })),
+          };
+        }
+        if (insertCall === 2) {
+          // config_policy_monitoring_settings insert (decomposeInlineSettings)
+          return {
+            values: vi.fn(() => ({
+              returning: vi.fn(() => Promise.resolve([{ id: 'settings-1', checkIntervalSeconds: 60 }])),
+            })),
+          };
+        }
+        // config_policy_monitoring_watches insert
+        return { values: vi.fn(() => Promise.resolve([])) };
+      }),
+    };
+    return { tx, insertedTables, insertCallCount: () => insertCall };
+  }
+
+  it('monitoring decompose no longer inserts config_policy_alert_rules rows', async () => {
+    const { tx, insertedTables, insertCallCount } = txForMonitoringInsert();
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    const link = await addFeatureLink('policy-1', 'monitoring', null, {
+      checkIntervalSeconds: 60,
+      watches: [{ watchType: 'service', name: 'MSSQLSERVER' }],
+    });
+
+    expect(link).not.toBeNull();
+    // Exactly 3 inserts: feature link, monitoring settings, monitoring watches.
+    expect(insertCallCount()).toBe(3);
+    expect(insertedTables).not.toContain(configPolicyAlertRules);
+  });
+
+  it('monitoring decompose rejects legacy non-empty alertRules payloads', async () => {
+    const { tx } = txForMonitoringInsert();
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await expect(
+      addFeatureLink('policy-1', 'monitoring', null, {
+        alertRules: [{ name: 'x', conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80 }] }],
+      })
+    ).rejects.toThrow(/moved to the Alerts feature/);
+  });
+
+  it('monitoring decompose rejects legacy non-empty eventLogAlerts payloads', async () => {
+    const { tx } = txForMonitoringInsert();
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await expect(
+      addFeatureLink('policy-1', 'monitoring', null, {
+        eventLogAlerts: [{ name: 'x', category: 'system', level: 'error' }],
+      })
+    ).rejects.toThrow(/moved to the Alerts feature/);
+  });
+
+  it('monitoring assemble returns only checkIntervalSeconds and watches', async () => {
+    const link = {
+      id: 'link-mon',
+      configPolicyId: 'policy-1',
+      featureType: 'monitoring',
+      featurePolicyId: null,
+      inlineSettings: { checkIntervalSeconds: 60, watches: [] },
+    };
+
+    // Chain for `db.select().from(...).where(...).orderBy(...)` (watches query)
+    function selectOrderByRows(rows: unknown[]) {
+      const chain: any = {};
+      chain.from = vi.fn(() => chain);
+      chain.where = vi.fn(() => chain);
+      chain.orderBy = vi.fn(() => Promise.resolve(rows));
+      return chain;
+    }
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereRows([link]) as any) // links query
+      .mockReturnValueOnce(
+        selectLimitRows([{ id: 'settings-1', featureLinkId: 'link-mon', checkIntervalSeconds: 60 }]) as any
+      ) // config_policy_monitoring_settings
+      .mockReturnValueOnce(
+        selectOrderByRows([
+          {
+            watchType: 'service',
+            name: 'MSSQLSERVER',
+            displayName: null,
+            enabled: true,
+            alertOnStop: true,
+            alertAfterConsecutiveFailures: 2,
+            alertSeverity: 'high',
+            cpuThresholdPercent: null,
+            memoryThresholdMb: null,
+            thresholdDurationSeconds: 60,
+            autoRestart: false,
+            maxRestartAttempts: 3,
+            restartCooldownSeconds: 300,
+            sortOrder: 0,
+          },
+        ]) as any
+      ); // config_policy_monitoring_watches — if assemble still read
+      // config_policy_alert_rules here, this mock queue would be exhausted
+      // and the next db.select() call would return undefined, throwing.
+
+    const result = await listFeatureLinks('policy-1');
+    const settings = result[0]!.inlineSettings as Record<string, unknown>;
+
+    expect(Object.keys(settings).sort()).toEqual(['checkIntervalSeconds', 'watches']);
+    expect(settings.checkIntervalSeconds).toBe(60);
+    expect((settings.watches as unknown[]).length).toBe(1);
   });
 });
 

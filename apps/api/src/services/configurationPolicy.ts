@@ -567,47 +567,6 @@ async function decomposeInlineSettings(
         );
       }
 
-      // Insert event log alert rules (only enabled ones)
-      if (parsed.eventLogAlerts?.length > 0) {
-        const VALID_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
-        type AlertSev = (typeof VALID_SEVERITIES)[number];
-        for (const alert of parsed.eventLogAlerts) {
-          if (!alert.enabled) continue;
-          await tx.insert(configPolicyAlertRules).values({
-            featureLinkId: linkId,
-            name: alert.name,
-            severity: (VALID_SEVERITIES.includes(alert.severity as AlertSev) ? alert.severity : 'high') as AlertSev,
-            conditions: [{
-              type: 'event_log' as const,
-              category: alert.category,
-              level: alert.level,
-              sourcePattern: alert.sourcePattern || undefined,
-              messagePattern: alert.messagePattern || undefined,
-              countThreshold: alert.countThreshold,
-              windowMinutes: alert.windowMinutes,
-            }],
-            cooldownMinutes: alert.windowMinutes,
-            autoResolve: true,
-          });
-        }
-      }
-
-      // Insert metric/status/custom alert rules
-      if (parsed.alertRules?.length > 0) {
-        const VALID_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
-        type AlertSev = (typeof VALID_SEVERITIES)[number];
-        await tx.insert(configPolicyAlertRules).values(
-          parsed.alertRules.map((item, idx) => ({
-            featureLinkId: linkId,
-            name: item.name,
-            severity: (VALID_SEVERITIES.includes(item.severity as AlertSev) ? item.severity : 'medium') as AlertSev,
-            conditions: item.conditions,
-            cooldownMinutes: item.cooldownMinutes,
-            autoResolve: item.autoResolve,
-            sortOrder: 1000 + idx,
-          }))
-        );
-      }
       break;
     }
 
@@ -1027,47 +986,6 @@ async function assembleInlineSettings(
         .where(eq(configPolicyMonitoringWatches.settingsId, settingsRow.id))
         .orderBy(asc(configPolicyMonitoringWatches.sortOrder));
 
-      // Reconstruct event log alerts from alert rules stored under this monitoring feature link
-      const alertRules = await db
-        .select()
-        .from(configPolicyAlertRules)
-        .where(eq(configPolicyAlertRules.featureLinkId, linkId));
-
-      const eventLogAlerts = alertRules
-        .filter((r) => {
-          const conds = r.conditions as unknown[];
-          return Array.isArray(conds) && conds.length === 1 && (conds[0] as Record<string, unknown>)?.type === 'event_log';
-        })
-        .map((r) => {
-          const cond = (r.conditions as Record<string, unknown>[])[0]!;
-          return {
-            name: r.name,
-            category: cond.category as string,
-            level: cond.level as string,
-            sourcePattern: cond.sourcePattern as string | undefined,
-            messagePattern: cond.messagePattern as string | undefined,
-            countThreshold: cond.countThreshold as number,
-            windowMinutes: cond.windowMinutes as number,
-            severity: r.severity,
-            enabled: true, // only enabled rules are stored
-          };
-        });
-
-      // Reconstruct metric/status/custom alert rules (non-event_log)
-      const metricAlertRules = alertRules
-        .filter((r) => {
-          const conds = r.conditions as unknown[];
-          if (!Array.isArray(conds) || conds.length === 0) return false;
-          return (conds[0] as Record<string, unknown>)?.type !== 'event_log';
-        })
-        .map((r) => ({
-          name: r.name,
-          severity: r.severity,
-          conditions: r.conditions,
-          cooldownMinutes: r.cooldownMinutes,
-          autoResolve: r.autoResolve,
-        }));
-
       return {
         checkIntervalSeconds: settingsRow.checkIntervalSeconds,
         watches: watches.map((w) => ({
@@ -1085,8 +1003,6 @@ async function assembleInlineSettings(
           maxRestartAttempts: w.maxRestartAttempts,
           restartCooldownSeconds: w.restartCooldownSeconds,
         })),
-        eventLogAlerts,
-        alertRules: metricAlertRules,
       };
     }
 
