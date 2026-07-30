@@ -403,6 +403,7 @@ describe('Dockerfile workspace-manifest copy scope', () => {
     // covering half of what it claims to, so pin the classification itself.
     expect(modes).toEqual([
       'apps/api/Dockerfile: pinned',
+      'apps/m365-communications-executor/Dockerfile: pinned',
       'apps/m365-graph-actions-executor/Dockerfile: pinned',
       'apps/m365-graph-read-executor/Dockerfile: pinned',
       'apps/portal/Dockerfile: pinned',
