@@ -144,7 +144,9 @@ func (rw *RotatingWriter) Reopen() error {
 	}
 
 	if rw.file != nil {
-		rw.file.Close()
+		// Best-effort: we are already disabling file output because the path is
+		// unsafe or the writer failed, so a Close error changes nothing.
+		_ = rw.file.Close()
 		rw.file = nil
 	}
 

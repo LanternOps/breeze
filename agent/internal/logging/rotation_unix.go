@@ -61,10 +61,12 @@ func secureLogDirectory(dir string) error {
 
 	f := os.NewFile(uintptr(fd), dir)
 	if f == nil {
-		unix.Close(fd)
+		// Reclaim the descriptor; the close error is unactionable here.
+		_ = unix.Close(fd)
 		return fmt.Errorf("open log directory %s: os.NewFile failed", dir)
 	}
-	defer f.Close()
+	// Directory handle is only used for Stat/Fchmod below.
+	defer func() { _ = f.Close() }()
 
 	info, err := f.Stat()
 	if err != nil {
@@ -174,17 +176,18 @@ func openSecureLogFile(path string) (*os.File, error) {
 
 	f := os.NewFile(uintptr(fd), path)
 	if f == nil {
-		unix.Close(fd)
+		// Reclaim the descriptor; the close error is unactionable here.
+		_ = unix.Close(fd)
 		return nil, fmt.Errorf("open log file %s: os.NewFile failed", path)
 	}
 
 	info, err := f.Stat()
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("stat log file %s: %w", path, err)
 	}
 	if !info.Mode().IsRegular() {
-		f.Close()
+		_ = f.Close()
 		return nil, &ErrUnsafeLogPath{Path: path, Reason: "log file is not a regular file"}
 	}
 	// O_NOFOLLOW stops a symlink at this path, but not a hardlink planted

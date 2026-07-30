@@ -223,7 +223,7 @@ func TestHelperWarnLimiterSuppressedNoInfoYet(t *testing.T) {
 
 	// Exhaust warn budget (3 warns + 1 INFO-emitting call).
 	for i := 0; i < 3; i++ {
-		lim.shouldLog(msg, now) //nolint: calls 1-3
+		_, _ = lim.shouldLog(msg, now) // calls 1-3
 		now = now.Add(time.Second)
 	}
 	lim.shouldLog(msg, now) // call 4: first INFO fires, resets suppressedSinceInfo
@@ -1025,7 +1025,7 @@ func TestInitBootstrapLoggingUnsafeLogPathDisablesFileOutputOnly(t *testing.T) {
 	// logging.
 	log.Warn("probe-message-after-unsafe-log-path")
 
-	w.Close()
+	_ = w.Close()
 	os.Stderr = origStderr
 	var buf bytes.Buffer
 	if _, err := io.Copy(&buf, r); err != nil {
