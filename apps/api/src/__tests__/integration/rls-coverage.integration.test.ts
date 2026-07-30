@@ -3,7 +3,10 @@ import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { partners, users, organizations, sites, invoices, invoiceLines, invoiceDocuments, contracts, contractLines, contractBillingPeriods, mlFeedbackEvents, unifiCollectors, unifiDeviceTelemetry, unifiClients } from '../../db/schema';
 import { approvalRequests } from '../../db/schema/approvals';
-import { manifestSigningKeys } from '../../db/schema/manifestSigningKeys';
+import {
+  manifestSigningKeys,
+  manifestSigningKeyDelegations,
+} from '../../db/schema/manifestSigningKeys';
 import { partnerAbuseSignals, abuseScriptHosts } from '../../db/schema/abuseSignals';
 import { automations, automationRuns } from '../../db/schema/automations';
 import { configurationPolicies } from '../../db/schema/configurationPolicies';
@@ -74,6 +77,7 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'device_commands', // Agent WS path: system-scoped command queue, no tenant isolation needed.
   'intent_outbox', // Action intents transactional outbox (spec 2026-07-18): system-scoped, workers-only queue, no tenant isolation needed. FK-cascades from action_intents (org-scoped, RLS shape 1). Mirrors device_commands.
   'manifest_signing_keys', // System-scoped: per-deployment agent-update signing key. Forced RLS, no policies → only system context.
+  'manifest_signing_key_delegations', // System-scoped: signed authorisation to add ONE unseen agent-update signing key (Wave 6 Task 7). No tenant column — per-deployment agent-update infrastructure. Forced RLS, single system-only policy (USING + WITH CHECK) → only system context. No org_id/device_id, so no cascade-list registration applies.
   'm365_consent_sessions', // OAuth consent state: forced RLS, system-only policies; tenant scopes must never read verifier/nonce material.
   'm365_user_consent_sessions', // Delegated (user-axis) OAuth consent state. System-only for the same reason as its org-axis sibling: the rows hold a live PKCE code_verifier and nonce. Deliberately NOT user-axis readable — the owning user's own session is still not something their session token should select.
   'vulnerability_sources', // Global vulnerability-source sync metadata. Forced RLS, no tenant policies → only system context.
@@ -1842,6 +1846,287 @@ describe('manifest_signing_keys RLS — system-only enforcement (#639)', () => {
       expect(result).toHaveLength(1);
       expect(result[0]!.keyId).toBe(keyId);
       insertedKeyIds.push(keyId);
+    },
+  );
+});
+
+// ===========================================================================
+// manifest_signing_key_delegations RLS — system-only enforcement (Wave 6 T7)
+//
+// A row in this table AUTHORISES an agent to add a previously unseen manifest
+// signing key to its frozen trust set. Signature verification is the primary
+// defence (a forger needs the current signing private key), but the table must
+// still be unreachable from any tenant context: a tenant-writable delegation
+// table would let a partner-scoped token stage trust changes for the whole
+// deployment, and a tenant-readable one leaks the rotation schedule.
+//
+// The catalog test above only proves the table is in INTENTIONAL_UNSCOPED as
+// documentation. This block forges INSERT and SELECT as `breeze_app` under a
+// tenant context and asserts Postgres rejects both, then confirms the
+// system-context read/write/update path the service and rotation CLI rely on
+// still works. UPDATE is covered specifically because `activate` stamps
+// activated_at — if the WITH CHECK arm were missing or laxer than the USING
+// arm, a tenant context could mutate an existing delegation in place.
+// ===========================================================================
+describe('manifest_signing_key_delegations RLS — system-only enforcement (Wave 6 Task 7)', () => {
+  const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const insertedEpochs: number[] = [];
+  // Epoch is UNIQUE deployment-wide, so derive a high, run-unique base rather
+  // than a fixed literal — otherwise a re-run collides with its own leftovers.
+  const epochBase = 900_000_000 + Math.floor(Math.random() * 1_000_000);
+
+  const tenantCtx = {
+    scope: 'organization' as const,
+    orgId: null,
+    accessibleOrgIds: [],
+    accessiblePartnerIds: [],
+    userId: null,
+  };
+
+  function delegationValues(epoch: number) {
+    return {
+      epoch,
+      oldKeyId: `rls-forge-old-${runSuffix}`,
+      newKeyId: `rls-forge-new-${runSuffix}`,
+      newPublicKeyB64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      notBefore: new Date('2026-08-06T00:00:00Z'),
+      notAfter: new Date('2026-09-05T00:00:00Z'),
+      signatureB64: 'Zm9yZ2Vk',
+    };
+  }
+
+  afterAll(async () => {
+    if (insertedEpochs.length === 0) return;
+    await withSystemDbAccessContext(async () => {
+      for (const epoch of insertedEpochs) {
+        await db
+          .delete(manifestSigningKeyDelegations)
+          .where(eq(manifestSigningKeyDelegations.epoch, epoch));
+      }
+    });
+  });
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'has RLS enabled AND forced with exactly one system-only policy whose USING and WITH CHECK both require breeze.scope=system',
+    async () => {
+      const [rls] = (await db.execute(sql`
+        SELECT relrowsecurity AS enabled, relforcerowsecurity AS forced
+        FROM pg_class
+        WHERE relname = 'manifest_signing_key_delegations'
+      `)) as unknown as Array<{ enabled: boolean; forced: boolean }>;
+
+      expect(rls?.enabled).toBe(true);
+      expect(rls?.forced).toBe(true);
+
+      const policies = (await db.execute(sql`
+        SELECT policyname, qual, with_check
+        FROM pg_policies
+        WHERE schemaname = 'public'
+          AND tablename = 'manifest_signing_key_delegations'
+      `)) as unknown as Array<{
+        policyname: string;
+        qual: string | null;
+        with_check: string | null;
+      }>;
+
+      expect(policies).toHaveLength(1);
+      expect(policies[0]!.policyname).toBe(
+        'manifest_signing_key_delegations_system_only',
+      );
+      // BOTH arms. A USING-only policy would let a tenant context INSERT a
+      // delegation it cannot read back — i.e. forge one blind.
+      expect(policies[0]!.qual).toMatch(/breeze\.scope/);
+      expect(policies[0]!.qual).toMatch(/'system'/);
+      expect(policies[0]!.with_check).toMatch(/breeze\.scope/);
+      expect(policies[0]!.with_check).toMatch(/'system'/);
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'INSERT as breeze_app under a tenant context is rejected by RLS',
+    async () => {
+      let caught: unknown;
+      try {
+        await withDbAccessContext(tenantCtx, async () =>
+          db
+            .insert(manifestSigningKeyDelegations)
+            .values(delegationValues(epochBase + 1)),
+        );
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeDefined();
+      const cause = caught as
+        | { cause?: { message?: string }; message?: string }
+        | undefined;
+      const message = cause?.cause?.message ?? cause?.message ?? '';
+      expect(message).toMatch(
+        /row-level security|permission denied|new row violates row-level security/i,
+      );
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'SELECT as breeze_app under a tenant context returns zero rows',
+    async () => {
+      const epoch = epochBase + 2;
+      await withSystemDbAccessContext(async () => {
+        await db
+          .insert(manifestSigningKeyDelegations)
+          .values(delegationValues(epoch));
+      });
+      insertedEpochs.push(epoch);
+
+      let rows: unknown[] = [];
+      let err: unknown = null;
+      try {
+        rows = await withDbAccessContext(tenantCtx, async () =>
+          db
+            .select({ epoch: manifestSigningKeyDelegations.epoch })
+            .from(manifestSigningKeyDelegations),
+        );
+      } catch (e) {
+        err = e;
+      }
+
+      if (err) {
+        const cause = err as { cause?: { message?: string }; message?: string };
+        const message = cause?.cause?.message ?? cause?.message ?? '';
+        expect(message).toMatch(/permission denied|row-level security/i);
+      } else {
+        expect(rows).toEqual([]);
+      }
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'UPDATE as breeze_app under a tenant context affects zero rows (activation cannot be forged)',
+    async () => {
+      const epoch = epochBase + 3;
+      await withSystemDbAccessContext(async () => {
+        await db
+          .insert(manifestSigningKeyDelegations)
+          .values(delegationValues(epoch));
+      });
+      insertedEpochs.push(epoch);
+
+      try {
+        await withDbAccessContext(tenantCtx, async () =>
+          db
+            .update(manifestSigningKeyDelegations)
+            .set({ activatedAt: new Date() })
+            .where(eq(manifestSigningKeyDelegations.epoch, epoch)),
+        );
+      } catch {
+        // permission denied is an equally acceptable rejection surface.
+      }
+
+      // Whatever the surface, the row must be untouched.
+      const [row] = await withSystemDbAccessContext(async () =>
+        db
+          .select({ activatedAt: manifestSigningKeyDelegations.activatedAt })
+          .from(manifestSigningKeyDelegations)
+          .where(eq(manifestSigningKeyDelegations.epoch, epoch)),
+      );
+      expect(row?.activatedAt).toBeNull();
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'INSERT, SELECT and UPDATE under system context succeed (the prepare/activate path)',
+    async () => {
+      const epoch = epochBase + 4;
+
+      const inserted = await withSystemDbAccessContext(async () =>
+        db
+          .insert(manifestSigningKeyDelegations)
+          .values(delegationValues(epoch))
+          .returning({ epoch: manifestSigningKeyDelegations.epoch }),
+      );
+      expect(inserted).toHaveLength(1);
+      insertedEpochs.push(epoch);
+
+      const activatedAt = new Date('2026-08-07T00:00:00Z');
+      await withSystemDbAccessContext(async () =>
+        db
+          .update(manifestSigningKeyDelegations)
+          .set({ activatedAt })
+          .where(eq(manifestSigningKeyDelegations.epoch, epoch)),
+      );
+
+      const [row] = await withSystemDbAccessContext(async () =>
+        db
+          .select({
+            epoch: manifestSigningKeyDelegations.epoch,
+            activatedAt: manifestSigningKeyDelegations.activatedAt,
+          })
+          .from(manifestSigningKeyDelegations)
+          .where(eq(manifestSigningKeyDelegations.epoch, epoch)),
+      );
+      expect(row?.epoch).toBe(epoch);
+      expect(row?.activatedAt?.toISOString()).toBe(activatedAt.toISOString());
+    },
+  );
+
+  // Drizzle wraps pg errors: the thrown error's own `.message` is only
+  // "Failed query: insert into ...". The constraint name lives on `.cause`.
+  // Same unwrapping every other forge block in this file uses.
+  async function captureDbError(run: () => Promise<unknown>): Promise<string> {
+    let caught: unknown;
+    try {
+      await run();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeDefined();
+    const cause = caught as
+      | { cause?: { message?: string }; message?: string }
+      | undefined;
+    return cause?.cause?.message ?? cause?.message ?? '';
+  }
+
+  // Split from the inverted-window case deliberately: as one test, the first
+  // rejection short-circuits the rest of the body and the second constraint
+  // is never actually exercised.
+  it.runIf(!!process.env.DATABASE_URL)(
+    'rejects a duplicate epoch (storage-layer replay guard)',
+    async () => {
+      const epoch = epochBase + 5;
+      await withSystemDbAccessContext(async () =>
+        db
+          .insert(manifestSigningKeyDelegations)
+          .values(delegationValues(epoch)),
+      );
+      insertedEpochs.push(epoch);
+
+      const message = await captureDbError(() =>
+        withSystemDbAccessContext(async () =>
+          db
+            .insert(manifestSigningKeyDelegations)
+            .values(delegationValues(epoch)),
+        ),
+      );
+      expect(message).toMatch(/duplicate key|unique/i);
+      expect(message).toMatch(/manifest_signing_key_delegations_epoch/i);
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'rejects an inverted validity window (window_chk)',
+    async () => {
+      const message = await captureDbError(() =>
+        withSystemDbAccessContext(async () =>
+          db.insert(manifestSigningKeyDelegations).values({
+            ...delegationValues(epochBase + 6),
+            notBefore: new Date('2026-09-05T00:00:00Z'),
+            notAfter: new Date('2026-08-06T00:00:00Z'),
+          }),
+        ),
+      );
+      expect(message).toMatch(
+        /manifest_signing_key_delegations_window_chk|check constraint/i,
+      );
     },
   );
 });

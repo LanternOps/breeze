@@ -9,8 +9,9 @@ func handleSetAutoUpdate(h *Heartbeat, cmd Command) tools.CommandResult {
 	// Extract the 'enabled' parameter from the payload
 	enabled := tools.GetPayloadBool(cmd.Payload, "enabled", false)
 
-	// Update the in-memory config
-	h.config.AutoUpdate = enabled
+	// Update the in-memory config. Through the accessor: this runs on a command
+	// worker goroutine while the heartbeat loop reads the same field.
+	h.setAutoUpdate(enabled)
 
 	// Log the change before persistence attempt so it always fires
 	log.Info("auto_update setting changed", "enabled", enabled)

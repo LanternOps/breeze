@@ -18,6 +18,7 @@ vi.mock('../../db', () => ({
 
 vi.mock('../../services/manifestSigning', () => ({
   getActiveTrustKeyset: vi.fn(async () => []),
+  getActiveManifestKeyDelegations: vi.fn(async () => []),
 }));
 
 vi.mock('../../modules/mcpInvites/matchInviteOnEnrollment', () => ({
@@ -101,12 +102,13 @@ vi.mock('../../services/tenantStatus', () => ({
 
 // ---------- imports after mocks ----------
 
-import { db } from '../../db';
+import { db, withSystemDbAccessContext } from '../../db';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { recordAgentEnrollment } from '../../services/anomalyMetrics';
 import { getActiveOrgTenant } from '../../services/tenantStatus';
 import * as manifestSigning from '../../services/manifestSigning';
 import { getTrustedClientIp } from '../../services/clientIp';
+import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
 import { enrollmentRoutes } from './enrollment';
 
 function buildApp(): Hono {
@@ -147,6 +149,7 @@ function mockSelectRows(rows: Record<string, unknown>[]) {
 
 async function enrollOk(): Promise<Record<string, unknown>> {
   vi.mocked(manifestSigning.getActiveTrustKeyset).mockResolvedValue([]);
+  vi.mocked(manifestSigning.getActiveManifestKeyDelegations).mockResolvedValue([]);
   mockKeyLookup({
     id: 'key-backup-url',
     orgId: 'org-backup-url',
@@ -1289,6 +1292,206 @@ describe('POST /agents/enroll — manifestTrustKeys delivery (#639)', () => {
     expect(Array.isArray(body.manifestTrustKeys)).toBe(true);
     expect(body.manifestTrustKeys).toEqual(trustKeys);
     expect(manifestSigning.getActiveTrustKeyset).toHaveBeenCalled();
+  });
+});
+
+// =====================================================================
+// Wave 6 Task 7 — signed manifest key delegation delivery + the #1105
+// enrollment ordering boundary.
+//
+// The delegation lookup is DATABASE work, so it is allowed to run inside
+// withSystemDbAccessContext. What is NOT allowed inside that context is
+// any network or queue handoff: holding a pooled connection while doing
+// external I/O is exactly the conn-hold class that #1105 exists to
+// prevent, and it self-deadlocks the pool under a mass reconnect.
+// =====================================================================
+describe('POST /agents/enroll — manifestKeyDelegations delivery (Wave 6 Task 7)', () => {
+  const delegation = {
+    schemaVersion: 1 as const,
+    oldKeyId: 'deploy-2026-05-09-aaaaaaaa',
+    newKeyId: 'deploy-2026-08-06-bbbbbbbb',
+    newPublicKeyB64: 'AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=',
+    epoch: 7,
+    notBefore: '2026-08-06T00:00:00Z',
+    notAfter: '2026-09-05T00:00:00Z',
+    signatureBase64: 'c2ln',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    process.env.NODE_ENV = 'test';
+  });
+
+  afterEach(() => {
+    // vi.clearAllMocks() clears CALLS but not implementations, so the
+    // gated withSystemDbAccessContext installed by the #1105 test below
+    // would otherwise leak into every later suite in this file and hang
+    // them. Restore the module mock's pass-through explicitly.
+    vi.mocked(withSystemDbAccessContext).mockImplementation(
+      async (fn: any) => fn(),
+    );
+  });
+
+  function mockHappyPathDb() {
+    mockKeyLookup({
+      id: 'key-happy',
+      orgId: 'org-happy',
+      siteId: 'site-happy',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi
+            .fn()
+            .mockResolvedValue([
+              { id: 'key-happy', orgId: 'org-happy', siteId: 'site-happy' },
+            ]),
+        })),
+      })),
+    } as any);
+    mockSelectRows([{ partnerId: 'partner-happy' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([]);
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+      const fakeTx = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 0 }]),
+          }),
+        }),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([
+              {
+                id: 'device-happy',
+                orgId: 'org-happy',
+                siteId: 'site-happy',
+                hostname: 'host-1',
+              },
+            ]),
+            onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+          }),
+        }),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'key-happy' }]),
+            }),
+          }),
+        }),
+        delete: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined),
+        }),
+      };
+      return fn(fakeTx);
+    });
+  }
+
+  async function enroll() {
+    return buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+  }
+
+  it('includes manifestKeyDelegations in the 201 response', async () => {
+    vi.mocked(manifestSigning.getActiveTrustKeyset).mockResolvedValue([]);
+    vi.mocked(
+      manifestSigning.getActiveManifestKeyDelegations,
+    ).mockResolvedValue([delegation]);
+    mockHappyPathDb();
+
+    const resp = await enroll();
+    expect(resp.status).toBe(201);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.manifestKeyDelegations).toEqual([delegation]);
+  });
+
+  it('returns manifestKeyDelegations=[] when none are prepared', async () => {
+    vi.mocked(manifestSigning.getActiveTrustKeyset).mockResolvedValue([]);
+    vi.mocked(
+      manifestSigning.getActiveManifestKeyDelegations,
+    ).mockResolvedValue([]);
+    mockHappyPathDb();
+
+    const resp = await enroll();
+    expect(resp.status).toBe(201);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.manifestKeyDelegations).toEqual([]);
+  });
+
+  it('still enrolls (201) with an empty delegation list when the lookup throws', async () => {
+    // A delegation-lookup failure must never block enrollment — the device
+    // simply adopts on a later heartbeat.
+    vi.mocked(manifestSigning.getActiveTrustKeyset).mockResolvedValue([]);
+    vi.mocked(
+      manifestSigning.getActiveManifestKeyDelegations,
+    ).mockRejectedValue(new Error('boom'));
+    mockHappyPathDb();
+
+    const resp = await enroll();
+    expect(resp.status).toBe(201);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.manifestKeyDelegations).toEqual([]);
+  });
+
+  it('#1105: does NOT queue warranty sync (or any external handoff) while the system DB context is unresolved, and still queues it after', async () => {
+    vi.mocked(manifestSigning.getActiveTrustKeyset).mockResolvedValue([]);
+    vi.mocked(
+      manifestSigning.getActiveManifestKeyDelegations,
+    ).mockResolvedValue([delegation]);
+    mockHappyPathDb();
+
+    // Hold the system DB context open: its callback completes, but the
+    // context itself does not resolve until we release the gate. In
+    // production this models the pooled connection still being held.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(withSystemDbAccessContext).mockImplementation(
+      async (fn: any) => {
+        const result = await fn();
+        await gate;
+        return result;
+      },
+    );
+
+    // Any network egress from inside the context would show up here.
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('no network calls are permitted here'));
+
+    const inFlight = enroll();
+    // Let the handler run as far as it can while the context is held.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // The DB lookup for delegations is allowed inside the context and has
+    // already happened...
+    expect(
+      manifestSigning.getActiveManifestKeyDelegations,
+    ).toHaveBeenCalled();
+    // ...but nothing has been handed off externally.
+    expect(queueWarrantySyncForDevice).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    release();
+    const resp = await inFlight;
+    expect(resp.status).toBe(201);
+
+    // The pre-existing enqueue still fires once the context has resolved.
+    expect(queueWarrantySyncForDevice).toHaveBeenCalledTimes(1);
+    expect(queueWarrantySyncForDevice).toHaveBeenCalledWith('device-happy');
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    fetchSpy.mockRestore();
   });
 });
 

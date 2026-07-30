@@ -24,7 +24,12 @@ import { recordAgentEnrollment } from '../../services/anomalyMetrics';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
 import { dispatchHook } from '../../services/partnerHooks';
 import { matchDeploymentInviteOnEnrollment } from '../../modules/mcpInvites/matchInviteOnEnrollment';
-import { getActiveTrustKeyset, type ManifestTrustKey } from '../../services/manifestSigning';
+import {
+  getActiveTrustKeyset,
+  getActiveManifestKeyDelegations,
+  type ManifestTrustKey,
+  type ManifestKeyDelegation,
+} from '../../services/manifestSigning';
 import { captureException } from '../../services/sentry';
 
 export const enrollmentRoutes = new Hono();
@@ -856,6 +861,29 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       captureException(err);
     }
 
+    // Signed manifest key delegations (Wave 6 Task 7). Delivered here so a
+    // device enrolling mid-rotation learns about the pending key change on
+    // its very first contact rather than waiting for a heartbeat.
+    //
+    // #1105: this is DATABASE work only — getActiveManifestKeyDelegations
+    // issues one SELECT and makes no network or queue call — so it is safe
+    // inside this system DB context, exactly like getActiveTrustKeyset
+    // above. The boundary that must not be crossed is external handoff:
+    // queueWarrantySyncForDevice still fires only AFTER this context
+    // resolves (see the end of the handler), and nothing here may be moved
+    // to join it.
+    //
+    // A failure is non-fatal: the device enrolls, and adopts on a later
+    // heartbeat. Blocking enrollment on a rotation record would turn a
+    // rotation-time hiccup into an onboarding outage.
+    let manifestKeyDelegations: ManifestKeyDelegation[] = [];
+    try {
+      manifestKeyDelegations = await getActiveManifestKeyDelegations();
+    } catch (err) {
+      console.error(`[enrollment] Failed to load manifest key delegations for enrollmentKeyId=${key.id}, deviceId=${device.id}:`, err);
+      captureException(err);
+    }
+
     return {
       deviceId: device.id,
       responseBody: {
@@ -873,6 +901,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         },
         mtls: mtlsCert,
         manifestTrustKeys,
+        manifestKeyDelegations,
       },
     };
   });

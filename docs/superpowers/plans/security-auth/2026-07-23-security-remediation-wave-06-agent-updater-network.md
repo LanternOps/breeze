@@ -26,6 +26,77 @@
 - Manifest rotation remains frozen until exact-ID handling and signed delegation are deployed and fleet adoption is proven.
 - Apply one independent review round. Rerun the full agent race suite when review changes version precedence, URL/address classification, manifest trust, filesystem opening, or config persistence.
 
+## Approved Deviations
+
+Ruled before execution, 2026-07-28. These override the task text they name.
+
+**D1 — the managed-software capability gate ships behind a mode env var (Tasks 5 and 9).**
+As written, Task 5 denies *every* managed-software command to a device reporting
+`outboundNetworkPolicyVersion = 0`, including a plainly public download URL. The API ships
+before the fleet upgrades, so on deploy day every software deployment to a not-yet-updated
+agent fails — the same fleet-outage shape Waves 3, 4, and 5 each avoided with a mode variable.
+Ship the gate behind `MANAGED_SOFTWARE_POLICY_MODE`:
+
+- `compat` (**default**): a private-origin destination still requires capability ≥ 1 and fails
+  closed exactly as Task 5 specifies — that is the security fix, and it is on from the first
+  deploy. An apparently-public destination remains permitted to a capability-0 device.
+- `enforce`: Task 5's original behavior — every managed-software command requires capability ≥ 1,
+  public destinations included.
+
+The capability-0-public-hostname-that-pivots-private case Task 5 calls out is *not* excused by
+`compat`: the agent-side dial-time policy (Task 2) is the authoritative defense there and ships
+in the same wave. `compat` accepts that a capability-0 agent keeps its current, pre-Wave-06
+exposure on public URLs until the operator flips `enforce` — it never grants a capability-0
+agent something it could not already do. Task 9 owns the variable (validate.ts, `.env.example`,
+both compose files, runbook rows, and a canary-ring row for the `compat → enforce` flip);
+Task 5 owns the gate itself and must test both modes; Task 10's regression list gains a
+compat-mode case.
+
+**D2 — partner-wide ownership of the download policy is deferred (Task 4).**
+Task 4 persists `softwareDownloadPolicy` on organization and site settings only, which sits
+against the repository's partner-wide-first principle for config surfaces. Accepted as written
+for this wave: the policy lives in existing settings JSONB rather than a new table, so the
+partner-ownership migration playbook does not literally apply, and widening ownership mid-wave
+would grow an already-large security branch. A follow-up issue tracks adding a partner tier so
+the effective allowlist becomes a partner + organization + site union.
+
+**D3 — the unsafe-address classification is a positive test, not the constraint's closed list (Task 2).**
+The Global Constraints name loopback, link-local, unspecified, multicast, and metadata endpoints as
+the universally unsafe set, and RFC1918/ULA as the allowlist-gated private set. Implemented
+literally, every other range classifies public and is dialable with no allowlist entry — including
+`100.64.0.0/10` CGNAT, which is Tailscale's range, making a tailnet-joined endpoint an SSRF pivot
+onto arbitrary tailnet peers. Classification is therefore inverted to a positive test
+(`IsGlobalUnicast() && !IsPrivate()`) plus an explicit reserved-prefix table:
+
+- `100.64.0.0/10` joins RFC1918 and IPv6 ULA as **allowlist-gated private** — a legitimate CDN is
+  never CGNAT, so exact-origin approval is the right gate rather than an outright ban;
+- `240.0.0.0/4`, `198.18.0.0/15`, `192.0.0.0/24`, `0.0.0.0/8`, and `255.255.255.255` are
+  **forbidden** outright, alongside the constraint's named classes;
+- embedded-IPv4 extraction additionally covers IPv4-compatible `::/96` and IPv4-translated
+  `::ffff:0:0/96`, matching the existing worst-of-wrapper-and-embedded rule.
+
+The named classes stay unallowlistable exactly as the constraint requires; this widens what is
+caught, never narrows it.
+
+**D4 — the agent must actually consume `require_manifest_signing_key_id` (Tasks 6 and 9).**
+The plan splits this control across two tasks and wires neither end to the other: Task 6 gave the
+agent a `RequireManifestSigningKeyID` config field and plumbed it to all eight updater construction
+sites, and Task 9 made the API send `configUpdate.require_manifest_signing_key_id=true` when the
+operator opts in — but no task taught `applyConfigUpdate` to read that key. The server's instruction
+is silently discarded, so the flag can only ever be set by hand-editing `agent.yaml`, and the
+wave's own end-state gates ("require ID only after the missing-ID count stays zero for seven
+consecutive days"; "missing-ID compatibility has been disabled" as a rotation precondition) are
+unreachable through the config surface this wave ships.
+
+Task 9 therefore also wires the agent side: `applyConfigUpdate` reads
+`require_manifest_signing_key_id` (accepting snake_case and camelCase, like its neighbours), sets
+the config field, and persists via `SaveTo`, with a Go test proving a pushed `true` survives a
+reload. Consumers re-read `h.config.RequireManifestSigningKeyID` at updater-construction time, so a
+pushed change takes effect on the next update check; the helper-manager options captured at startup
+(`heartbeat.go:610/640`) need a restart, which is the same limitation `backup_server_url` already
+has and is acceptable. Agents older than this build still ignore the key — the operator-facing
+surfaces must say so rather than implying fleet-wide effect.
+
 ## Finding Coverage
 
 | Finding | Owning tasks | Red-green regression | Enforcement acceptance |

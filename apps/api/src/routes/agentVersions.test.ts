@@ -1018,6 +1018,123 @@ describe("agentVersions routes", () => {
     });
   });
 
+  // The agent binds every release-manifest signature to the exact key ID the
+  // API supplies (P1-UPD-001): an ID mismatch fails closed instead of falling
+  // back to trying every trusted key. That makes signingKeyId load-bearing on
+  // the download response — if it silently stops being emitted for a
+  // component, every agent on that component drops to the compatibility path
+  // (or, once require_manifest_signing_key_id is on, stops updating entirely).
+  //
+  // NOTE: there is no separate `/helper/download` or `/watchdog/download`
+  // route — component is a query parameter on this one endpoint, and the agent
+  // requests it that way (updater.downloadBinary). These three cases are the
+  // per-component coverage those two route names were describing.
+  describe("GET /agent-versions/:version/download — signingKeyId passthrough", () => {
+    const cases = [
+      {
+        component: "agent",
+        assetName: "breeze-agent-linux-amd64",
+        signingKeyId: "release-artifact-manifest-ed25519",
+      },
+      {
+        component: "helper",
+        assetName: "breeze-helper-linux.AppImage",
+        signingKeyId: "deploy-2026-07-23-helper",
+      },
+      {
+        component: "watchdog",
+        assetName: "breeze-watchdog-linux-amd64",
+        signingKeyId: "release-artifact-manifest-ed25519",
+      },
+    ];
+
+    for (const tc of cases) {
+      it(`returns signingKeyId for component=${tc.component}`, async () => {
+        const canonical = `https://github.com/LanternOps/breeze/releases/download/v1.0.0/${tc.assetName}`;
+        const checksum = "d".repeat(64);
+        const signed = makeSignedReleaseManifest({
+          component: tc.component,
+          platform: "linux",
+          arch: "amd64",
+          url: canonical,
+          checksum,
+          size: 4096,
+        });
+
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  version: "1.0.0",
+                  platform: "linux",
+                  architecture: "amd64",
+                  component: tc.component,
+                  downloadUrl: canonical,
+                  checksum,
+                  fileSize: BigInt(4096),
+                  releaseManifest: signed.manifest,
+                  manifestSignature: signed.signature,
+                  signingKeyId: tc.signingKeyId,
+                },
+              ]),
+            }),
+          }),
+        } as any);
+
+        const res = await app.request(
+          `/agent-versions/1.0.0/download?platform=linux&arch=amd64&component=${tc.component}`,
+        );
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.signingKeyId).toBe(tc.signingKeyId);
+        // The ID is only meaningful next to the manifest it names.
+        expect(body.manifest).toBe(signed.manifest);
+        expect(body.manifestSignature).toBe(signed.signature);
+      });
+    }
+
+    // A row registered before signingKeyId existed (BINARY_SOURCE=local, or a
+    // pre-upgrade sync) has a null key id. The response must carry that
+    // through as an absent/null field rather than inventing one — the agent
+    // treats "no id" as the compatibility path, and a fabricated id would fail
+    // closed against a key it does not have.
+    it("passes a null signingKeyId through rather than fabricating one", async () => {
+      const checksum = "e".repeat(64);
+      const signed = makeSignedReleaseManifest({ checksum });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                version: "1.0.0",
+                platform: "linux",
+                architecture: "amd64",
+                component: "agent",
+                downloadUrl: "https://s3.example.com/agent-1.0.0",
+                checksum,
+                fileSize: BigInt(45000000),
+                releaseManifest: signed.manifest,
+                manifestSignature: signed.signature,
+                signingKeyId: null,
+              },
+            ]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(
+        "/agent-versions/1.0.0/download?platform=linux&arch=amd64",
+      );
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.signingKeyId ?? null).toBeNull();
+    });
+  });
+
   describe("POST /agent-versions", () => {
     it("should create a new version", async () => {
       vi.mocked(db.insert).mockReturnValue({

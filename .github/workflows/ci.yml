@@ -1046,11 +1046,21 @@ jobs:
       # platform at all (Linux skips them via build tag, and `go build` never
       # compiles _test.go), which is the exact gap this job was added to close.
       # When adding a package with //go:build windows tests, add it here.
+      #
+      # ./internal/logging was the second instance of exactly that gap
+      # (rotation_windows_test.go, added by the wave-06 log-rotation hardening,
+      # executed on no platform for the same reason). Verified: with
+      # GOOS=windows GOARCH=amd64 CGO_ENABLED=0 the package vets and its test
+      # binary compiles, and its GOOS=windows dependency graph contains no
+      # remote/desktop and no cgo — so unlike agentapp it needs no exemption
+      # here. It is deliberately NOT added to the race step below: the Windows
+      # tests it adds are the platform log-open/rotate helpers, and the race
+      # step's cgo requirement is not something this change verified.
       - name: Run Windows Go tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/logging ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
 
       # -race requires cgo, which remote/desktop cannot satisfy on Windows, so
       # this covers only packages that do not import it (heartbeat and agentapp

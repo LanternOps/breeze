@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -117,6 +118,25 @@ type HeartbeatPayload struct {
 	// (runtime.ReadMemStats is microseconds) so fleet-wide agent memory leaks
 	// are visible from the server without shell access to the device.
 	AgentRuntime *collectors.RuntimeStats `json:"agentRuntime,omitempty"`
+	// SecurityCapabilities declares the outbound-network-policy capability
+	// handshake (Wave 6 Task 4, security remediation). Sent unconditionally
+	// (no omitempty) so the server can tell an old agent (the whole object
+	// absent from the JSON body) from a capable one that declares version 0
+	// — which this build never does, but the server must not assume "object
+	// present" implies "version 1" either. See SecurityCapabilities below.
+	SecurityCapabilities SecurityCapabilities `json:"securityCapabilities"`
+}
+
+// SecurityCapabilities is the agent's outbound-network-policy capability
+// handshake (Wave 6 Task 4, security remediation). The API records
+// devices.outbound_network_policy_version from OutboundNetworkPolicyVersion
+// on every heartbeat and only ever trusts the recognized integer version 1;
+// any other value (including 0, or the field's absence on a pre-Task-4
+// agent) is treated as "not enforcing". Task 5's dispatch gate depends on
+// this being accurate: internal/netpolicy (Tasks 1-3) is what actually
+// enforces the policy this version number claims to be honoring.
+type SecurityCapabilities struct {
+	OutboundNetworkPolicyVersion int `json:"outboundNetworkPolicyVersion"`
 }
 
 type DesktopAccessState struct {
@@ -144,6 +164,10 @@ type HeartbeatResponse struct {
 	WatchdogUpgradeTo      string                 `json:"watchdogUpgradeTo,omitempty"`
 	ManageRemoteManagement bool                   `json:"manageRemoteManagement,omitempty"`
 	ManifestTrustKeys      []api.ManifestTrustKey `json:"manifestTrustKeys,omitempty"`
+	// Wave 6 Task 7 — signed authorisations to add an unseen manifest signing
+	// key. Nothing here is trusted on receipt; every record is verified
+	// against the currently-pinned key it names.
+	ManifestKeyDelegations []api.ManifestKeyDelegation `json:"manifestKeyDelegations,omitempty"`
 }
 
 type HelperSettings struct {
@@ -322,6 +346,30 @@ type Heartbeat struct {
 	// otherwise continue against the still-pinned (legitimate) key, masking
 	// the rejection from the operator.
 	manifestTrustRotationRejected atomic.Bool
+
+	// Latches the last expansion-rejection reason logged, so a control plane
+	// that keeps offering a key this agent has never seen produces one
+	// SECURITY line per distinct key set rather than one per heartbeat
+	// forever. Expansion rejection is now routine for any deployment that
+	// followed the old "rotate by adding a new key_id" recipe, so unlike the
+	// (rare) rotation rejection it genuinely needs the bound. Mirrors the
+	// updater's missingSigningKeyIDWarned latch.
+	manifestTrustExpansionLogged atomic.Pointer[string]
+
+	// Same bounding for delegation rejections. A control plane (or an
+	// attacker) that keeps re-offering one bad record would otherwise emit a
+	// SECURITY line on every heartbeat for the life of the agent, flooding
+	// the shipped log stream. Latched on the reason; cleared on a successful
+	// adoption so a later attempt is reported again.
+	manifestDelegationRejectionLogged atomic.Pointer[string]
+
+	// Same bounding for the catch-all (non-rotation, non-expansion) pin
+	// failure. Log shipping defaults to warn (config.go's log_shipping_level),
+	// so a control plane emitting persistently malformed trust material —
+	// a bad base64 pubkey, an unreadable pinned set — wrote one SHIPPED line
+	// per device per heartbeat, forever. Latched on the reason; cleared on a
+	// successful pin, exactly like the two siblings above.
+	manifestTrustPinFailureLogged atomic.Pointer[string]
 
 	// Helper chat enabled flag from org settings
 	helperEnabled atomic.Bool
@@ -566,7 +614,15 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		h.helperMgr = helper.New(helperCtx, h.ServerURL, secToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
 			helper.WithAgentVersion(version),
-			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
+			// Providers, not values: both fields are replaced at runtime (the
+			// manifest-trust-pin path and applyManifestKeyDelegations rewrite
+			// the pinned set; configUpdate can flip the key-ID requirement), so
+			// a by-value snapshot would freeze the helper's trust while the
+			// main/watchdog updaters follow the change. Same asymmetry
+			// WithBackupServerURL already avoided on the next line.
+			helper.WithManifestKeys(h.pinnedManifestPubKeys),
+			helper.WithRequireManifestSigningKeyID(h.requireManifestSigningKeyID),
+			helper.WithBackupServerURL(h.BackupServerURL),
 			helper.WithSpawnFunc(func(sessionKey, binaryPath string, args ...string) (int, error) {
 				// Try launching via connected user-role helper first (runs as
 				// the logged-in user, so the Tauri app inherits user identity).
@@ -594,7 +650,15 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		h.helperMgr = helper.New(helperCtx, h.ServerURL, secToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
 			helper.WithAgentVersion(version),
-			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
+			// Providers, not values: both fields are replaced at runtime (the
+			// manifest-trust-pin path and applyManifestKeyDelegations rewrite
+			// the pinned set; configUpdate can flip the key-ID requirement), so
+			// a by-value snapshot would freeze the helper's trust while the
+			// main/watchdog updaters follow the change. Same asymmetry
+			// WithBackupServerURL already avoided on the next line.
+			helper.WithManifestKeys(h.pinnedManifestPubKeys),
+			helper.WithRequireManifestSigningKeyID(h.requireManifestSigningKeyID),
+			helper.WithBackupServerURL(h.BackupServerURL),
 		)
 	}
 
@@ -2002,6 +2066,66 @@ func (h *Heartbeat) applyBackupServerURLConfig(raw any) {
 	}
 }
 
+// decideRequireManifestSigningKeyIDUpdate is the pure decision core for a
+// pushed require_manifest_signing_key_id value (Wave 6 Task 6/9, approved
+// deviation D4). Only a JSON boolean is accepted — a string, number, or any
+// other type is ignored rather than coerced, because misreading the payload
+// directly controls whether an ID-less update manifest is still accepted
+// (false) or rejected outright (true). No-op if the value already matches
+// the current setting.
+func decideRequireManifestSigningKeyIDUpdate(raw any, current bool) (bool, bool) {
+	b, ok := raw.(bool)
+	if !ok {
+		log.Warn("ignoring non-boolean require_manifest_signing_key_id config update payload")
+		return false, false
+	}
+	if b == current {
+		return false, false
+	}
+	return b, true
+}
+
+// applyRequireManifestSigningKeyIDConfig applies and persists a pushed
+// require_manifest_signing_key_id value. This is the agent-side half of the
+// control Task 9 wires on the API: without this, the server's instruction
+// was silently discarded and the field could only ever be set by hand-
+// editing agent.yaml (deviation D4).
+//
+// Consumers re-read the value through h.requireManifestSigningKeyID() at
+// updater-construction time — handlers_devupdate.go's ManifestPolicy, and
+// the main/helper/watchdog update-check call sites in this file — so a
+// pushed change takes effect on the NEXT update check, no restart required.
+// The helper Manager is included: helper.WithRequireManifestSigningKeyID and
+// helper.WithManifestKeys take PROVIDERS wired to these accessors, so the
+// helper's verified downloader resolves them per download rather than freezing
+// a process-start snapshot. Passing them by value was the I4 defect: once a
+// delegated key was activated the server signed helper manifests with the new
+// key ID while the Manager still verified against the superseded set, failing
+// Breeze Assist install/update closed until a restart with no server-side
+// signal (see docs/operations/agent-network-and-manifest-rollout.md).
+func (h *Heartbeat) applyRequireManifestSigningKeyIDConfig(raw any) {
+	h.mu.Lock()
+	current := h.config.RequireManifestSigningKeyID
+	h.mu.Unlock()
+
+	val, apply := decideRequireManifestSigningKeyIDUpdate(raw, current)
+	if !apply {
+		return
+	}
+	h.mu.Lock()
+	h.config.RequireManifestSigningKeyID = val
+	h.mu.Unlock()
+	if err := config.SetAndPersist("require_manifest_signing_key_id", val); err != nil {
+		log.Warn("failed to persist require_manifest_signing_key_id", "error", err.Error())
+		return
+	}
+	if val {
+		log.Info("require_manifest_signing_key_id enabled by control plane — update responses that omit signingKeyId will now be rejected on the next update check")
+	} else {
+		log.Info("require_manifest_signing_key_id disabled by control plane")
+	}
+}
+
 func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	if len(update) == 0 {
 		return
@@ -2046,6 +2170,18 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	}
 	if hasBS {
 		h.applyBackupServerURLConfig(bsRaw)
+	}
+
+	// Manifest signing key ID requirement (Wave 6 Task 6/9, deviation D4).
+	// Key absent = no change — compatible with servers/heartbeats that
+	// predate this control. Snake_case and camelCase both accepted, same as
+	// every other key in this function.
+	rmskRaw, hasRMSK := update["require_manifest_signing_key_id"]
+	if !hasRMSK {
+		rmskRaw, hasRMSK = update["requireManifestSigningKeyId"]
+	}
+	if hasRMSK {
+		h.applyRequireManifestSigningKeyIDConfig(rmskRaw)
 	}
 
 	// Apply onedrive_helper_settings if present (Phase 2). No-op on non-Windows.
@@ -2967,6 +3103,93 @@ func (h *Heartbeat) serverURL() string {
 	return h.config.ServerURL
 }
 
+// backupServerURL returns the current backup control-plane URL, mirroring
+// serverURL's locking. Updater construction sites pass this (as the plain-
+// string updater.Config.BackupServerURL, not a re-resolving provider — see
+// that field's doc) so netpolicy's ControlPlaneOrigins includes the backup
+// control plane alongside the primary; omitting it silently rejects
+// cleartext/private-address downloads from the backup after a failover.
+func (h *Heartbeat) backupServerURL() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.config.BackupServerURL
+}
+
+// requireManifestSigningKeyID reads the manifest key-ID enforcement flag under
+// h.mu. Wave 6 deviation D4 made this field mutable at runtime — the control
+// plane can push require_manifest_signing_key_id through configUpdate, and
+// applyRequireManifestSigningKeyIDConfig writes it while holding h.mu. Every
+// reader therefore has to take the same lock: the updater-construction sites
+// run on update and command goroutines, so touching h.config directly there is
+// a data race under the Go memory model (and `go test -race` is the gate this
+// repo enforces). Same shape, same reason, as backupServerURL above.
+func (h *Heartbeat) requireManifestSigningKeyID() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.config.RequireManifestSigningKeyID
+}
+
+// pinnedManifestPubKeys reads the pinned manifest trust-key set under h.mu.
+// Wave 6 also made this field mutable at runtime: applyManifestKeyDelegations
+// and the manifest-trust-pin path in processHeartbeatResponse both replace it
+// in-memory (after config.Reload()) on the heartbeat-response goroutine, while
+// the same five updater-construction sites as requireManifestSigningKeyID
+// read it to build an updater.Config. Unlike a bool, a slice header read
+// without synchronization can observe a torn (len, cap, ptr) triple against a
+// concurrent write — a genuine data race, not just a stale-value nuisance.
+// Same shape, same reason, as requireManifestSigningKeyID above.
+func (h *Heartbeat) pinnedManifestPubKeys() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.config.PinnedManifestPubKeys
+}
+
+// autoUpdate reads the auto-update gate under h.mu. This is the FOURTH
+// runtime-mutable field on h.config (after backupServerURL,
+// requireManifestSigningKeyID and pinnedManifestPubKeys) and it gates every
+// server-directed binary swap, so an unsynchronized read is both a data race
+// and a security-relevant one.
+//
+// The writers are all off the heartbeat goroutine: handleSetAutoUpdate (command
+// worker pool), applyDevUpdateAutoUpdatePolicy (same pool) and doUpgrade's
+// read-only-filesystem branch (the upgrade goroutine). The readers are
+// processHeartbeatResponse's upgrade branch and handleWatchdogUpgrade — and
+// processHeartbeatResponse SPAWNS the watchdog-upgrade goroutine and SUBMITS
+// pool commands from the same response, so the interleaving is one heartbeat
+// wide, not a rare startup window.
+func (h *Heartbeat) autoUpdate() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.config.AutoUpdate
+}
+
+// setAutoUpdate writes the auto-update gate under h.mu. In-memory only: every
+// caller that wants the change to survive a restart also calls
+// config.SetAndPersist (which has its own lock — see config.persistMu).
+func (h *Heartbeat) setAutoUpdate(enabled bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.config.AutoUpdate = enabled
+}
+
+// manifestDelegationEpoch reads the highest-adopted signed-key-delegation
+// epoch under h.mu, mirroring pinnedManifestPubKeys above.
+// applyManifestKeyDelegations writes it on the heartbeat-response goroutine
+// after config.Reload(); any future reader must take the same lock rather
+// than touching h.config directly.
+func (h *Heartbeat) manifestDelegationEpoch() uint64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.config.ManifestDelegationEpoch
+}
+
+// BackupServerURL is the exported form of backupServerURL, passed to
+// long-lived callers (e.g. the helper.Manager) as a provider so they
+// re-resolve it on every download instead of pinning a startup snapshot.
+func (h *Heartbeat) BackupServerURL() string {
+	return h.backupServerURL()
+}
+
 // ServerURL returns the current server base URL, reflecting any
 // backup-server-URL promotion (#2323). Long-lived client loops (UniFi
 // telemetry, workspace indexing) must read the URL through this getter on
@@ -3189,6 +3412,11 @@ func (h *Heartbeat) sendHeartbeat() {
 		HealthStatus:    h.healthMon.Summary(),
 		DeviceRole:      deviceRole,
 		IsHeadless:      h.currentHeadless(),
+		// Wave 6 Task 4 — this build enforces internal/netpolicy (Tasks 1-3),
+		// so it always declares version 1. Unconditional (not gated on any
+		// runtime check): the enforcement is compiled in, not a runtime
+		// toggle.
+		SecurityCapabilities: SecurityCapabilities{OutboundNetworkPolicyVersion: 1},
 	}
 
 	// Only report virtualization once background hardware collection has
@@ -3398,6 +3626,160 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 	return &response, true
 }
 
+// logManifestTrustExpansionLogger is the log seam for the bounded expansion
+// rejection line, so tests can count the lines a long-lived agent would
+// actually emit.
+var logManifestTrustExpansionLogger = func(err error) {
+	log.Error("SECURITY: manifest trust key expansion rejected — the control plane offered a key this agent has never seen. "+
+		"Auto-update continues against the already-pinned key; adopting a new key requires re-enrolling this agent",
+		"error", err.Error())
+}
+
+// logManifestTrustExpansionRejected emits the SECURITY line at most once per
+// distinct rejection reason (the reason names the offered key IDs). Cleared on
+// a successful pin so a later attempt is reported again.
+func (h *Heartbeat) logManifestTrustExpansionRejected(err error) {
+	reason := err.Error()
+	prev := h.manifestTrustExpansionLogged.Load()
+	if prev != nil && *prev == reason {
+		return
+	}
+	if h.manifestTrustExpansionLogged.CompareAndSwap(prev, &reason) {
+		logManifestTrustExpansionLogger(err)
+	}
+}
+
+var logManifestDelegationRejectedLogger = func(err error) {
+	log.Error("SECURITY: signed manifest key delegation rejected — the control plane offered an authorisation this agent will not accept. "+
+		"The pinned trust set is unchanged and auto-update continues against the already-trusted key",
+		"error", err.Error())
+}
+
+// logManifestDelegationRejected emits the SECURITY line at most once per
+// distinct rejection reason. Cleared on a successful adoption.
+func (h *Heartbeat) logManifestDelegationRejected(err error) {
+	reason := err.Error()
+	prev := h.manifestDelegationRejectionLogged.Load()
+	if prev != nil && *prev == reason {
+		return
+	}
+	if h.manifestDelegationRejectionLogged.CompareAndSwap(prev, &reason) {
+		logManifestDelegationRejectedLogger(err)
+	}
+}
+
+// logManifestTrustPinFailureLogger is the log seam for the bounded catch-all
+// pin-failure line, matching the two seams above so a test can count the lines
+// a long-lived agent would actually emit.
+var logManifestTrustPinFailureLogger = func(err error) {
+	log.Warn("manifest trust key pin failed (non-rotation)", "error", err.Error())
+}
+
+// logManifestTrustPinFailed emits the catch-all pin-failure warning at most once
+// per distinct reason. Its two siblings in processHeartbeatResponse already had
+// this bound; this branch did not, and it is the one a control plane emitting
+// persistently malformed trust material lands in. Cleared on a successful pin.
+func (h *Heartbeat) logManifestTrustPinFailed(err error) {
+	reason := err.Error()
+	prev := h.manifestTrustPinFailureLogged.Load()
+	if prev != nil && *prev == reason {
+		return
+	}
+	if h.manifestTrustPinFailureLogged.CompareAndSwap(prev, &reason) {
+		logManifestTrustPinFailureLogger(err)
+	}
+}
+
+// applyManifestKeyDelegations adopts any delivered delegation records.
+//
+// This is the ONLY path by which a previously unseen manifest signing key
+// enters the trust set. config.ApplyManifestKeyDelegation performs every
+// check (old key currently trusted, signature verifies with exactly that key,
+// new key unseen, epoch strictly greater than the adopted epoch, inside the
+// validity window ±5m skew, public key exactly 32 bytes once decoded) and
+// leaves agent.yaml byte-for-byte unchanged on any rejection.
+//
+// Records are applied in ASCENDING EPOCH order so that a chain (key A
+// delegates to B, B delegates to C) is applied in the order it was issued.
+// Out-of-order application would reject the later link for naming an
+// untrusted old key.
+//
+// A rejection is NOT fatal: the remaining records are still attempted, and
+// the already-pinned key continues to work. Key material, signatures and
+// manifests are never logged — key IDs and epochs are not secret.
+func (h *Heartbeat) applyManifestKeyDelegations(delivered []api.ManifestKeyDelegation) {
+	if len(delivered) == 0 {
+		return
+	}
+
+	records := make([]config.ManifestKeyDelegation, 0, len(delivered))
+	for _, d := range delivered {
+		epoch, err := d.ParseEpoch()
+		if err != nil {
+			h.logManifestDelegationRejected(err)
+			continue
+		}
+		records = append(records, config.ManifestKeyDelegation{
+			SchemaVersion:   d.SchemaVersion,
+			OldKeyID:        d.OldKeyID,
+			NewKeyID:        d.NewKeyID,
+			NewPublicKeyB64: d.NewPublicKeyB64,
+			Epoch:           epoch,
+			NotBefore:       d.NotBefore,
+			NotAfter:        d.NotAfter,
+			SignatureBase64: d.SignatureBase64,
+		})
+	}
+
+	slices.SortFunc(records, func(a, b config.ManifestKeyDelegation) int {
+		return cmp.Compare(a.Epoch, b.Epoch)
+	})
+
+	cfgPath := config.ActiveConfigFile()
+	adopted := false
+	for _, r := range records {
+		if err := config.ApplyManifestKeyDelegation(cfgPath, r, time.Now()); err != nil {
+			// Routine re-delivery of a record this agent is already in the
+			// state of. The server keeps serving an in-window delegation for
+			// the whole window so stragglers can adopt, so EVERY agent that
+			// has already adopted sees the same record again on its next
+			// heartbeat, and every device enrolled after `activate` sees one
+			// whose oldKeyId it never had. Logging those as SECURITY would
+			// mean one security-level error per agent per rotation across the
+			// fleet — the alert would be useless by the time it mattered.
+			if errors.Is(err, config.ErrManifestDelegationAlreadyAdopted) {
+				log.Debug("manifest key delegation already adopted; nothing to do",
+					"newKeyId", r.NewKeyID, "epoch", r.Epoch)
+				continue
+			}
+			h.logManifestDelegationRejected(err)
+			continue
+		}
+		adopted = true
+		log.Info("adopted signed manifest key delegation",
+			"oldKeyId", r.OldKeyID,
+			"newKeyId", r.NewKeyID,
+			"epoch", r.Epoch)
+	}
+
+	if !adopted {
+		return
+	}
+
+	// Re-arm the rejection latch and refresh the in-memory trust set so the
+	// updater sees the newly-delegated key without waiting for a restart.
+	h.manifestDelegationRejectionLogged.Store(nil)
+	if reloaded, rerr := config.Reload(); rerr != nil {
+		log.Warn("failed to reload config after adopting a manifest key delegation; in-memory pinned set stale until next restart",
+			"error", rerr.Error())
+	} else if reloaded != nil {
+		h.mu.Lock()
+		h.config.PinnedManifestPubKeys = reloaded.PinnedManifestPubKeys
+		h.config.ManifestDelegationEpoch = reloaded.ManifestDelegationEpoch
+		h.mu.Unlock()
+	}
+}
+
 // processHeartbeatResponse executes the directives carried by a validated
 // heartbeat response: configUpdate, manifest trust keys, commands, upgrades,
 // cert/token rotation, tunnel policy, and helper settings. Callers must have
@@ -3417,36 +3799,65 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	// live there. See docs/deploy/agent-update-trust-bootstrap.md for the
 	// threat model.
 	if len(response.ManifestTrustKeys) > 0 {
+		// Every delivered entry is forwarded as-is, including blank ones:
+		// config.PinManifestKeys validates the whole delivery and rejects it
+		// atomically. Silently dropping blanks here would make this path more
+		// permissive than the enrollment path (which rejects the delivery via
+		// config.BootstrapPinnedManifestKeys) and would hide a control plane
+		// emitting malformed trust material.
 		keys := make([]config.ManifestTrustKey, 0, len(response.ManifestTrustKeys))
 		for _, k := range response.ManifestTrustKeys {
-			if k.KeyID == "" || k.PublicKeyB64 == "" {
-				continue
-			}
 			keys = append(keys, config.ManifestTrustKey{KeyID: k.KeyID, PublicKeyB64: k.PublicKeyB64})
 		}
-		if len(keys) > 0 {
-			cfgPath := config.ActiveConfigFile()
-			if err := config.PinManifestKeys(cfgPath, keys); err != nil {
-				if errors.Is(err, config.ErrManifestTrustRotationRejected) {
-					h.manifestTrustRotationRejected.Store(true)
-					log.Error("SECURITY: manifest trust key rotation rejected — auto-update suspended until rotation resolved or agent restart",
-						"error", err.Error())
-				} else {
-					log.Warn("manifest trust key pin failed (non-rotation)", "error", err.Error())
-				}
+		cfgPath := config.ActiveConfigFile()
+		if err := config.PinManifestKeys(cfgPath, keys); err != nil {
+			if errors.Is(err, config.ErrManifestTrustRotationRejected) {
+				h.manifestTrustRotationRejected.Store(true)
+				log.Error("SECURITY: manifest trust key rotation rejected — auto-update suspended until rotation resolved or agent restart",
+					"error", err.Error())
+			} else if errors.Is(err, config.ErrManifestTrustExpansionRejected) {
+				// Trust expansion is frozen: the agent accepts exactly one
+				// first deployment key and never grows the set afterwards.
+				// Unlike a rotation this does not suspend auto-update (the
+				// already-pinned key is untouched and still valid), but it
+				// is a security-relevant signal, not routine noise.
+				//
+				// Bounded per distinct reason (the reason names the offered
+				// key IDs): a deployment that rotated server-side under the
+				// old additive rules will hit this on EVERY heartbeat for the
+				// rest of the agent's life, and an unbounded SECURITY line
+				// would flood the shipped log stream.
+				h.logManifestTrustExpansionRejected(err)
 			} else {
-				// Successful pin (idempotent or genuine new keyId append) means
-				// the conflict — if any — is no longer present. Clear the
-				// rotation-rejected gate so auto-update can resume.
-				h.manifestTrustRotationRejected.Store(false)
-				if reloaded, rerr := config.Reload(); rerr != nil {
-					log.Warn("failed to reload config after pinning manifest trust keys; in-memory pinned set stale until next restart", "error", rerr.Error())
-				} else if reloaded != nil {
-					h.config.PinnedManifestPubKeys = reloaded.PinnedManifestPubKeys
-				}
+				// Bounded per distinct reason, like the two branches above:
+				// this is the branch a control plane emitting persistently
+				// malformed trust material lands in, and warn is a SHIPPED
+				// level by default.
+				h.logManifestTrustPinFailed(err)
+			}
+		} else {
+			// Successful pin (idempotent, or a first-key bootstrap) means the
+			// conflict — if any — is no longer present. Clear the
+			// rotation-rejected gate so auto-update can resume, and re-arm the
+			// expansion latch so a later attempt is reported again.
+			h.manifestTrustRotationRejected.Store(false)
+			h.manifestTrustExpansionLogged.Store(nil)
+			h.manifestTrustPinFailureLogged.Store(nil)
+			if reloaded, rerr := config.Reload(); rerr != nil {
+				log.Warn("failed to reload config after pinning manifest trust keys; in-memory pinned set stale until next restart", "error", rerr.Error())
+			} else if reloaded != nil {
+				h.mu.Lock()
+				h.config.PinnedManifestPubKeys = reloaded.PinnedManifestPubKeys
+				h.mu.Unlock()
 			}
 		}
 	}
+
+	// Signed key delegations are applied AFTER the plain trust-key pin above.
+	// Ordering matters on a first-ever contact: the pin establishes the one
+	// TOFU key, and only then can a delegation naming that key as its old key
+	// be verified.
+	h.applyManifestKeyDelegations(response.ManifestKeyDelegations)
 
 	// Process any commands via worker pool
 	for _, cmd := range response.Commands {
@@ -3462,19 +3873,22 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 
 	// Handle upgrade if requested and auto-update is enabled
 	if response.UpgradeTo != "" && response.UpgradeTo != h.agentVersion {
-		if isDowngrade(response.UpgradeTo, h.agentVersion) {
-			// SECURITY: never auto-downgrade. A compromised/MITM'd control plane
-			// could otherwise force a fleet-wide rollback to an older,
-			// still-validly-signed, known-vulnerable build. Deliberate rollback
-			// is an operator action via the (default-off) dev_update path.
-			log.Error("SECURITY: refusing server-directed auto-update downgrade",
+		if decision := mainAgentUpgradeDecision(response.UpgradeTo, h.agentVersion); !decision.Allowed {
+			// SECURITY: never auto-downgrade, and never accept a malformed or
+			// prerelease-mis-ordered target. A compromised/MITM'd control
+			// plane could otherwise force a fleet-wide rollback to an older,
+			// still-validly-signed, known-vulnerable build. Deliberate
+			// rollback is an operator action via the (default-off)
+			// dev_update path.
+			log.Error("SECURITY: refusing server-directed auto-update",
 				"currentVersion", h.agentVersion,
 				"targetVersion", response.UpgradeTo,
+				"reason", decision.Reason,
 				"hint", "deliberate rollback uses the operator dev_update path")
 		} else if h.manifestTrustRotationRejected.Load() {
 			log.Error("SECURITY: skipping auto-update — manifest trust rotation rejection unresolved",
 				"targetVersion", response.UpgradeTo)
-		} else if h.config.AutoUpdate {
+		} else if h.autoUpdate() {
 			if h.upgradeInProgress.CompareAndSwap(false, true) {
 				go h.handleUpgrade(response.UpgradeTo)
 			} else {
@@ -5294,34 +5708,27 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 		return
 	}
 
-	if !h.config.AutoUpdate {
+	if !h.autoUpdate() {
 		log.Info("watchdog upgrade available but auto_update is disabled",
 			"targetVersion", targetVersion)
 		return
 	}
 
-	// SECURITY: the target always originates from the control plane and must be
-	// a real release semver. Fail CLOSED on an unparseable target (matching the
-	// helper-upgrade guard's posture) so a compromised/MITM'd control plane
-	// can't slip a non-semver value past the downgrade check below — isDowngrade
-	// fails OPEN on unparseable input, which is the right call for agent "dev"
-	// builds but wrong for a server-directed privileged swap.
-	if _, _, _, ok := parseSemver(targetVersion); !ok {
-		log.Error("SECURITY: refusing watchdog upgrade to non-semver target",
-			"targetVersion", targetVersion)
-		return
-	}
-
-	// SECURITY: never auto-downgrade the watchdog. The signed manifest only
-	// binds manifest.Release == requested version, so a compromised/MITM'd
-	// control plane could otherwise replay an older, validly-signed,
-	// known-vulnerable watchdog. The watchdog ships in lockstep with the agent,
-	// so the running agent's version is a safe floor. (Note: the target normally
-	// EQUALS the agent version — both at latest — which is exactly when a stale
-	// watchdog needs swapping, so equality must NOT be treated as a no-op.)
-	if isDowngrade(targetVersion, h.agentVersion) {
-		log.Error("SECURITY: refusing server-directed watchdog downgrade",
-			"agentVersion", h.agentVersion, "targetVersion", targetVersion)
+	// SECURITY: the target always originates from the control plane and must
+	// be a real release semver, and must not be OLDER than the running
+	// agent. The signed manifest only binds manifest.Release == requested
+	// version, so a compromised/MITM'd control plane could otherwise replay
+	// a malformed target or an older, validly-signed, known-vulnerable
+	// watchdog. The watchdog ships in lockstep with the agent, so the
+	// running agent's version is a safe floor — routed through
+	// InstalledComponentCurrent (not MainAgentCurrent), so an agent "dev"
+	// build does NOT waive this guard the way it does for its own
+	// self-update. (Note: the target normally EQUALS the agent version —
+	// both at latest — which is exactly when a stale watchdog needs
+	// swapping, so equality must NOT be treated as a no-op.)
+	if decision := watchdogUpgradeDecision(targetVersion, h.agentVersion); !decision.Allowed {
+		log.Error("SECURITY: refusing server-directed watchdog upgrade",
+			"agentVersion", h.agentVersion, "targetVersion", targetVersion, "reason", decision.Reason)
 		return
 	}
 
@@ -5358,8 +5765,12 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 	log.Info("watchdog upgrade requested", "targetVersion", targetVersion)
 	if err := install(targetVersion); err != nil {
 		// Leave watchdogInstalledVersion unset so a transient failure retries
-		// after the cooldown rather than every tick.
-		log.Error("failed to update watchdog", "targetVersion", targetVersion, "error", err.Error())
+		// after the cooldown rather than every tick. install() -> ...
+		// -> downloadWatchdogBinary is a netpolicy-enforced download; see
+		// SafeDownloadErrorFields for why err.Error() must not be logged
+		// directly.
+		key, value := updater.SafeDownloadErrorFields(err)
+		log.Error("failed to update watchdog", "targetVersion", targetVersion, key, value)
 		return
 	}
 	h.watchdogUpgradeMu.Lock()
@@ -5384,11 +5795,13 @@ const watchdogUpgradeRetryCooldown = 30 * time.Minute
 // download lives in one place.
 func (h *Heartbeat) downloadWatchdogBinary(targetVersion string) (string, error) {
 	u := updater.New(&updater.Config{
-		ServerURL:             h.serverURL,
-		AuthToken:             h.secureToken,
-		CurrentVersion:        h.agentVersion,
-		Component:             "watchdog",
-		PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
+		ServerURL:                   h.serverURL,
+		BackupServerURL:             h.backupServerURL(),
+		AuthToken:                   h.secureToken,
+		CurrentVersion:              h.agentVersion,
+		Component:                   "watchdog",
+		PinnedManifestPubKeys:       h.pinnedManifestPubKeys(),
+		RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
 	})
 	return u.DownloadBinary(targetVersion)
 }
@@ -5454,11 +5867,13 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 	download := h.userHelperDownloader
 	if download == nil {
 		helperCfg := &updater.Config{
-			ServerURL:             h.serverURL,
-			AuthToken:             h.secureToken,
-			CurrentVersion:        h.agentVersion,
-			Component:             "user-helper",
-			PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
+			ServerURL:                   h.serverURL,
+			BackupServerURL:             h.backupServerURL(),
+			AuthToken:                   h.secureToken,
+			CurrentVersion:              h.agentVersion,
+			Component:                   "user-helper",
+			PinnedManifestPubKeys:       h.pinnedManifestPubKeys(),
+			RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
 		}
 		helperUpdater := updater.New(helperCfg)
 		download = helperUpdater.DownloadBinary
@@ -5466,11 +5881,12 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 
 	tempPath, dlErr := download(targetVersion)
 	if dlErr != nil {
+		key, value := updater.SafeDownloadErrorFields(dlErr)
 		log.Warn(
 			"user-helper download failed; proceeding with agent-only upgrade",
 			"currentVersion", h.agentVersion,
 			"targetVersion", targetVersion,
-			"error", dlErr.Error(),
+			key, value,
 		)
 		return nil
 	}
@@ -5547,11 +5963,13 @@ func (h *Heartbeat) reconcileUserHelper(binaryPath string) {
 	download := h.userHelperDownloader
 	if download == nil {
 		helperCfg := &updater.Config{
-			ServerURL:             h.serverURL,
-			AuthToken:             h.secureToken,
-			CurrentVersion:        h.agentVersion,
-			Component:             "user-helper",
-			PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
+			ServerURL:                   h.serverURL,
+			BackupServerURL:             h.backupServerURL(),
+			AuthToken:                   h.secureToken,
+			CurrentVersion:              h.agentVersion,
+			Component:                   "user-helper",
+			PinnedManifestPubKeys:       h.pinnedManifestPubKeys(),
+			RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
 		}
 		download = updater.New(helperCfg).DownloadBinary
 	}
@@ -5603,20 +6021,25 @@ const (
 // WARN every tick. The ERROR carries a stable reason + consecutiveFailures so
 // fleet telemetry can GROUP BY and alert on it.
 func (h *Heartbeat) noteUserHelperReconcileFailure(reason string, err error) {
+	// reason=="download_failed" is a netpolicy-enforced download error (see
+	// SafeDownloadErrorFields); reason=="install_failed" is a local
+	// file/broker error with no URL risk. Applying the same helper to both is
+	// safe — a non-network error falls through to its unchanged Error() text.
+	key, value := updater.SafeDownloadErrorFields(err)
 	n := h.userHelperReconcileFailures.Add(1)
 	switch {
 	case n >= userHelperReconcilePersistentThreshold &&
 		(n == userHelperReconcilePersistentThreshold || n%userHelperReconcileReLogEvery == 0):
 		log.Error("user-helper reconciliation persistently failing — device cannot self-heal its missing helper",
 			"reason", reason, "consecutiveFailures", n,
-			"currentVersion", h.agentVersion, "error", err.Error())
+			"currentVersion", h.agentVersion, key, value)
 	case n == 1:
 		log.Warn("user-helper reconciliation failed; will retry on a later tick",
 			"reason", reason, "consecutiveFailures", n,
-			"currentVersion", h.agentVersion, "error", err.Error())
+			"currentVersion", h.agentVersion, key, value)
 	default:
 		log.Debug("user-helper reconciliation still failing",
-			"reason", reason, "consecutiveFailures", n, "error", err.Error())
+			"reason", reason, "consecutiveFailures", n, key, value)
 	}
 }
 
@@ -5670,12 +6093,14 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	backupPath := filepath.Join(backupDir, "breeze-agent.backup")
 
 	updaterCfg := &updater.Config{
-		ServerURL:             h.serverURL,
-		AuthToken:             h.secureToken,
-		CurrentVersion:        h.agentVersion,
-		BinaryPath:            binaryPath,
-		BackupPath:            backupPath,
-		PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
+		ServerURL:                   h.serverURL,
+		BackupServerURL:             h.backupServerURL(),
+		AuthToken:                   h.secureToken,
+		CurrentVersion:              h.agentVersion,
+		BinaryPath:                  binaryPath,
+		BackupPath:                  backupPath,
+		PinnedManifestPubKeys:       h.pinnedManifestPubKeys(),
+		RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
 	}
 
 	// Pre-download breeze-user-helper.exe on Windows so the restart-helper
@@ -5696,7 +6121,7 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 				log.Error("auto-update disabled: binary path is read-only — update the systemd unit to add the binary path to ReadWritePaths, then restart the service", "targetVersion", targetVersion, "error", err.Error())
 				h.updateReadOnlyLogged = true
 			}
-			h.config.AutoUpdate = false
+			h.setAutoUpdate(false)
 			return
 		}
 		// File locked by another process is transient — log and retry next heartbeat.
@@ -5709,7 +6134,14 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 			log.Warn("update deferred: binary is executing, will retry", "targetVersion", targetVersion, "error", err.Error())
 			return
 		}
-		log.Error("failed to update", "targetVersion", targetVersion, "error", err.Error())
+		// A download failure here may carry a *netpolicy.PolicyError, or be a
+		// *url.Error — net/http wraps EVERY transport-level failure that way
+		// (TLS handshake, connection refused/reset, timeout, EOF — not just
+		// policy rejections), and its message repeats the full request URL,
+		// capability query string included. SafeDownloadErrorFields picks the
+		// key/value that never leaks it.
+		key, value := updater.SafeDownloadErrorFields(err)
+		log.Error("failed to update", "targetVersion", targetVersion, key, value)
 		return
 	}
 

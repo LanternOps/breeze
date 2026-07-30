@@ -65,9 +65,20 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  // Not exercised by this file's tests (which cover the inventory routes'
+  // site scope, not the download-policy routes), but software.ts now
+  // registers PUT /download-policy/sites/:siteId with requireSiteAccess in
+  // its middleware chain at module-load time, so the mock must export it.
+  requireSiteAccess: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+
+vi.mock('../services/softwareDownloadPolicy', () => ({
+  getOrganizationSoftwareDownloadPolicy: vi.fn(),
+  setOrganizationSoftwareDownloadPolicy: vi.fn(),
+  setSiteSoftwareDownloadPolicy: vi.fn(),
+}));
 vi.mock('../services/deploymentTargetResolver', () => ({
   resolveDeploymentTargets: vi.fn().mockResolvedValue([]),
 }));

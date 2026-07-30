@@ -15,6 +15,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/secmem"
+	"github.com/breeze-rmm/agent/internal/updater"
 	"gopkg.in/yaml.v3"
 )
 
@@ -68,11 +69,50 @@ func WithAgentVersion(v string) Option {
 	return func(m *Manager) { m.agentVersion = v }
 }
 
-// WithManifestKeys sets deployment-pinned Ed25519 release-manifest public keys
-// (merged with the embedded trust root in the updater) so self-host
-// deployments can verify locally-signed helper manifests.
-func WithManifestKeys(keys []string) Option {
+// WithManifestKeys sets a PROVIDER for the deployment-pinned Ed25519
+// release-manifest public keys (merged with the embedded trust root in the
+// updater) so self-host deployments can verify locally-signed helper manifests.
+//
+// A provider, not a slice, for the same reason WithBackupServerURL takes one:
+// the pinned set is replaced at RUNTIME — the manifest-trust-pin path and
+// applyManifestKeyDelegations both rewrite it after a config.Reload(), and the
+// main/watchdog updaters re-read it through the heartbeat's guarded accessor.
+// Baking a startup snapshot into downloadFunc meant that once the delegated key
+// was activated the server signed helper manifests with the new key ID while
+// this Manager still verified against the frozen old set, so Breeze Assist
+// install/update failed closed until the agent process restarted, with no
+// server-side signal.
+//
+// Nil is treated as "no deployment-pinned keys" (embedded trust root only).
+func WithManifestKeys(keys func() []string) Option {
 	return func(m *Manager) { m.manifestKeys = keys }
+}
+
+// WithRequireManifestSigningKeyID mirrors the agent config field of the same
+// name onto the verified helper downloader, so a helper download response that
+// omits signingKeyId fails closed on exactly the agents where the agent's own
+// self-update does. Without it the helper path would stay in compatibility
+// mode after the fleet was switched over — a manifest could still be verified
+// by a key other than the one it names.
+//
+// Also a provider: the control plane can push require_manifest_signing_key_id
+// through configUpdate at runtime (wave-6 deviation D4), and a frozen `false`
+// here would leave the helper path permanently in compatibility mode on an
+// agent whose own self-update had already been switched to strict.
+//
+// Nil is treated as false (compatibility mode).
+func WithRequireManifestSigningKeyID(require func() bool) Option {
+	return func(m *Manager) { m.requireManifestSigningKeyID = require }
+}
+
+// WithBackupServerURL sets a provider for the configured backup control-plane
+// URL, threaded into the verified downloader's netpolicy.Policy so the backup
+// origin (not just serverURL's primary) is reachable for helper downloads
+// after a failover. Omitting this option leaves the backup control plane
+// unreachable for helper downloads even if serverURL follows the promotion —
+// it does not default to serverURL's value.
+func WithBackupServerURL(backupServerURL func() string) Option {
+	return func(m *Manager) { m.backupServerURL = backupServerURL }
 }
 
 // Manager handles helper binary lifecycle: install/update plus per-session runtime state.
@@ -85,7 +125,12 @@ type Manager struct {
 	// re-resolves it at call time and follows the heartbeat's backup-server-URL
 	// promotion (#2323) after a failover, instead of pinning the dead primary
 	// captured at construction (#2478).
-	serverURL         func() string
+	serverURL func() string
+	// backupServerURL resolves the configured backup control-plane URL, set
+	// via WithBackupServerURL. Nil means no backup is configured/known to
+	// this Manager — defaultHelperDownloader treats that as "no backup", not
+	// an error.
+	backupServerURL   func() string
 	authToken         *secmem.SecureString
 	agentID           string
 	ctx               context.Context
@@ -107,7 +152,13 @@ type Manager struct {
 	// origin. Tests inject a stub. It is NEVER the old unverified fetch.
 	downloadFunc func(version string) (string, error)
 	agentVersion string
-	manifestKeys []string
+	// manifestKeys and requireManifestSigningKeyID are PROVIDERS, not values:
+	// both underlying config fields are mutable at runtime and the verified
+	// downloader must re-read them on every download. See WithManifestKeys.
+	// Nil means "unset" and is handled by helperUpdaterConfig, not here.
+	manifestKeys func() []string
+
+	requireManifestSigningKeyID func() bool
 
 	pendingHelperVersion string
 	updateFailures       int
@@ -137,7 +188,7 @@ func New(ctx context.Context, serverURL func() string, authToken *secmem.SecureS
 		m.spawnFunc = defaultSpawnFunc
 	}
 	if m.downloadFunc == nil {
-		m.downloadFunc = defaultHelperDownloader(m.serverURL, m.authToken, m.agentVersion, m.manifestKeys)
+		m.downloadFunc = defaultHelperDownloader(m.serverURL, m.backupServerURL, m.authToken, m.agentVersion, m.manifestKeys, m.requireManifestSigningKeyID)
 	}
 	return m
 }
@@ -240,7 +291,11 @@ func (m *Manager) Apply(settings *Settings) {
 		if m.pendingHelperVersion == "" {
 			log.Debug("breeze assist enabled but no signed target version yet; deferring install")
 		} else if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
-			log.Error("failed to install breeze assist", "error", err.Error())
+			// downloadAndInstall wraps the verified downloader's error, which for
+			// any transport failure is a *url.Error carrying the presigned
+			// helper-asset URL. This log line ships, so it must be redacted.
+			key, value := updater.SafeDownloadErrorFields(err)
+			log.Error("failed to install breeze assist", key, value)
 			return
 		}
 	}
@@ -690,7 +745,9 @@ func (m *Manager) applyPendingUpdate() {
 
 	if err := m.downloadAndInstall(m.pendingHelperVersion); err != nil {
 		m.updateFailures++
-		log.Error("failed to install helper update", "error", err.Error(), "failures", m.updateFailures)
+		// Same presigned-URL hazard as the install path above.
+		key, value := updater.SafeDownloadErrorFields(err)
+		log.Error("failed to install helper update", key, value, "failures", m.updateFailures)
 		if restoreErr := restoreBackup(backupPath, m.binaryPath); restoreErr != nil {
 			log.Error("failed to rollback helper", "error", restoreErr.Error())
 		}

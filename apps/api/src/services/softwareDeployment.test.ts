@@ -1,7 +1,17 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // vi.hoisted so the mock factory can reference sendCommandMock
 const { sendCommandMock } = vi.hoisted(() => ({ sendCommandMock: vi.fn() }));
+
+// Wave 6 Task 5: the dispatch path reads the org ∪ site approved-private-origin
+// allowlist through this service. Mocked here (it is DB-backed and proven in its
+// own suite) so these tests control the effective policy per device/site; the
+// GATE itself (services/managedSoftwareDispatchPolicy.ts) is deliberately NOT
+// mocked, so every capability/mode assertion below exercises the real decision.
+const { effectivePolicyMock } = vi.hoisted(() => ({ effectivePolicyMock: vi.fn() }));
+vi.mock('./softwareDownloadPolicy', () => ({
+  getEffectiveSoftwareDownloadPolicy: effectivePolicyMock,
+}));
 
 // Match the exact import paths used by routes/software.ts (and the service will mirror them)
 vi.mock('../routes/agentWs', () => ({ sendCommandToAgent: sendCommandMock }));
@@ -121,6 +131,12 @@ describe('createSoftwareDeployment', () => {
     selectMock.mockReset();
     insertMock.mockReset();
     updateMock.mockReset();
+    effectivePolicyMock.mockReset();
+    effectivePolicyMock.mockResolvedValue({ version: 1, approvedPrivateOrigins: [] });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it('creates a deployment + per-device results and dispatches software_install for immediate install', async () => {
@@ -634,5 +650,247 @@ describe('createSoftwareDeployment', () => {
         maintenanceWindowId: null,
       })
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Managed software destination policy (Wave 6 Task 5, security remediation)
+  //
+  // This is the CANONICAL of the two managed-software dispatch paths (the other
+  // is the legacy POST /software/deploy route, covered in routes/software.test.ts).
+  // Both must attach the download policy AND apply the capability gate before
+  // sendCommandToAgent.
+  //
+  // Deviation D1: the gate runs in one of two modes read from
+  // MANAGED_SOFTWARE_POLICY_MODE.
+  //   compat (default) — a PRIVATE destination requires capability >= 1; an
+  //                      apparently-public destination is still permitted to a
+  //                      capability-0 (not yet upgraded) agent.
+  //   enforce          — every managed-software command requires capability >= 1.
+  // -------------------------------------------------------------------------
+  describe('managed software destination policy gate (Wave 6 Task 5)', () => {
+    const PUBLIC_URL = 'https://cdn.example.com/pkg.exe';
+    const PRIVATE_LITERAL_URL = 'https://10.10.0.5/pkg.exe';
+    const PRIVATE_ORIGIN_URL = 'https://files.corp.internal/pkg.exe';
+    const UPGRADE_REQUIRED = 'agent_network_policy_upgrade_required';
+
+    const catalogItem = { id: 'cat-1', orgId: null, name: 'TestApp', integrationProvider: null };
+
+    function versionRow(downloadUrl: string) {
+      return {
+        id: 'ver-p',
+        catalogId: 'cat-1',
+        s3Key: null,
+        downloadUrl,
+        checksum: null,
+        originalFileName: 'pkg.exe',
+        fileType: 'exe',
+        silentInstallArgs: null,
+        version: '1.0.0',
+      };
+    }
+
+    /** Wires the three selects + two inserts the immediate-install path performs,
+     *  and returns the spy that captures every deploymentResults UPDATE payload. */
+    function arrange(downloadUrl: string, targetDevices: unknown[]) {
+      selectMock
+        .mockReturnValueOnce(sel([versionRow(downloadUrl)]))
+        .mockReturnValueOnce(sel([catalogItem]))
+        .mockReturnValueOnce(sel(targetDevices));
+      insertMock
+        .mockReturnValueOnce(insWithReturning([{ id: 'dep-p', orgId: 'org-1' }]))
+        .mockReturnValueOnce(ins());
+      const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+      updateMock.mockReturnValue({ set: setSpy });
+      return { setSpy };
+    }
+
+    const run = (deviceIds: string[]) =>
+      createSoftwareDeployment({
+        orgId: 'org-1',
+        softwareVersionId: 'ver-p',
+        deploymentType: 'install',
+        deviceIds,
+        scheduleType: 'immediate',
+        createdBy: null,
+      });
+
+    const device = (id: string, capability: number, siteId = 'site-1') => ({
+      id,
+      agentId: `agent-${id}`,
+      siteId,
+      hostname: id.toUpperCase(),
+      customFields: {},
+      outboundNetworkPolicyVersion: capability,
+    });
+
+    // --- compat mode (the shipping default) --------------------------------
+
+    it('compat: dispatches a public destination to a capability-0 agent, with the effective allowlist attached', async () => {
+      effectivePolicyMock.mockResolvedValue({
+        version: 1,
+        approvedPrivateOrigins: ['https://files.corp.internal'],
+      });
+      arrange(PUBLIC_URL, [device('dev-1', 0)]);
+
+      const result = await run(['dev-1']);
+
+      expect(result.status).toBe('pending');
+      expect(result.dispatchedDeviceIds).toEqual(['dev-1']);
+      expect(sendCommandMock).toHaveBeenCalledTimes(1);
+      expect(sendCommandMock.mock.calls[0]![1].payload.downloadPolicy).toEqual({
+        version: 1,
+        approvedPrivateOrigins: ['https://files.corp.internal'],
+      });
+      // The allowlist is scoped to the DEVICE's org + its own site.
+      expect(effectivePolicyMock).toHaveBeenCalledWith('org-1', 'site-1');
+    });
+
+    it('compat: denies a private-literal destination to a capability-0 agent and enqueues nothing', async () => {
+      const { setSpy } = arrange(PRIVATE_LITERAL_URL, [device('dev-1', 0)]);
+
+      const result = await run(['dev-1']);
+
+      expect(sendCommandMock).not.toHaveBeenCalled();
+      expect(result.dispatchedDeviceIds).toEqual([]);
+      expect(result.status).toBe('failed');
+      expect(setSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'failed', errorMessage: UPGRADE_REQUIRED }),
+      );
+    });
+
+    it('compat: denies an operator-declared private ORIGIN (hostname, not a literal) to a capability-0 agent', async () => {
+      // The org approved https://files.corp.internal as a PRIVATE software
+      // origin — so a destination at that origin is private by declaration even
+      // though its hostname is not an IP literal.
+      effectivePolicyMock.mockResolvedValue({
+        version: 1,
+        approvedPrivateOrigins: ['https://files.corp.internal'],
+      });
+      arrange(PRIVATE_ORIGIN_URL, [device('dev-1', 0)]);
+
+      await run(['dev-1']);
+
+      expect(sendCommandMock).not.toHaveBeenCalled();
+    });
+
+    it('compat: dispatches an APPROVED private destination to a capability-1 agent', async () => {
+      effectivePolicyMock.mockResolvedValue({
+        version: 1,
+        approvedPrivateOrigins: ['https://10.10.0.5'],
+      });
+      arrange(PRIVATE_LITERAL_URL, [device('dev-1', 1)]);
+
+      const result = await run(['dev-1']);
+
+      expect(result.dispatchedDeviceIds).toEqual(['dev-1']);
+      expect(sendCommandMock.mock.calls[0]![1].payload.downloadPolicy).toEqual({
+        version: 1,
+        approvedPrivateOrigins: ['https://10.10.0.5'],
+      });
+    });
+
+    it('dispatches an UNAPPROVED private destination to a capable agent without smuggling it into the allowlist', async () => {
+      // The API is defense in depth, not the enforcement point: a capability-1
+      // agent's dial-time policy is authoritative and will refuse this exact
+      // destination because its origin is absent from the allowlist we send.
+      effectivePolicyMock.mockResolvedValue({
+        version: 1,
+        approvedPrivateOrigins: ['https://files.corp.internal'],
+      });
+      arrange(PRIVATE_LITERAL_URL, [device('dev-1', 1)]);
+
+      await run(['dev-1']);
+
+      expect(sendCommandMock).toHaveBeenCalledTimes(1);
+      const policy = sendCommandMock.mock.calls[0]![1].payload.downloadPolicy;
+      expect(policy.approvedPrivateOrigins).not.toContain('https://10.10.0.5');
+    });
+
+    it('sends each device the org ∪ site allowlist for ITS OWN site', async () => {
+      effectivePolicyMock.mockImplementation(async (_orgId: string, siteId?: string) => ({
+        version: 1,
+        approvedPrivateOrigins:
+          siteId === 'site-a'
+            ? ['https://org.example', 'https://site-a.example']
+            : ['https://org.example', 'https://site-b.example'],
+      }));
+      arrange(PUBLIC_URL, [device('dev-1', 1, 'site-a'), device('dev-2', 1, 'site-b')]);
+
+      await run(['dev-1', 'dev-2']);
+
+      expect(sendCommandMock.mock.calls[0]![1].payload.downloadPolicy.approvedPrivateOrigins).toEqual([
+        'https://org.example',
+        'https://site-a.example',
+      ]);
+      expect(sendCommandMock.mock.calls[1]![1].payload.downloadPolicy.approvedPrivateOrigins).toEqual([
+        'https://org.example',
+        'https://site-b.example',
+      ]);
+    });
+
+    it('fails only the capability-0 device on a mixed batch and still dispatches the capable one', async () => {
+      const { setSpy } = arrange(PRIVATE_LITERAL_URL, [device('dev-1', 1), device('dev-2', 0)]);
+      effectivePolicyMock.mockResolvedValue({
+        version: 1,
+        approvedPrivateOrigins: ['https://10.10.0.5'],
+      });
+
+      const result = await run(['dev-1', 'dev-2']);
+
+      expect(result.status).toBe('pending');
+      expect(result.dispatchedDeviceIds).toEqual(['dev-1']);
+      expect(sendCommandMock).toHaveBeenCalledTimes(1);
+      expect(setSpy).toHaveBeenCalledTimes(1);
+      expect(setSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'failed', errorMessage: UPGRADE_REQUIRED }),
+      );
+    });
+
+    // --- enforce mode ------------------------------------------------------
+
+    it('enforce: denies even a plainly public destination to a capability-0 agent', async () => {
+      vi.stubEnv('MANAGED_SOFTWARE_POLICY_MODE', 'enforce');
+      const { setSpy } = arrange(PUBLIC_URL, [device('dev-1', 0)]);
+
+      const result = await run(['dev-1']);
+
+      expect(sendCommandMock).not.toHaveBeenCalled();
+      expect(result.status).toBe('failed');
+      expect(setSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'failed', errorMessage: UPGRADE_REQUIRED }),
+      );
+    });
+
+    it('enforce: rejects a capability-0 agent on a public hostname that could pivot private, before any command is enqueued', async () => {
+      // The brief's DNS-rebinding / public-to-private-redirect case: a
+      // capability-0 agent cannot defend against it, and the API cannot see the
+      // pivot from the URL alone, so enforce denies the whole class. Under
+      // compat this exact case is (per D1) the agent's dial-time policy's job.
+      vi.stubEnv('MANAGED_SOFTWARE_POLICY_MODE', 'enforce');
+      arrange('https://rebind.example/pkg.exe', [device('dev-1', 0)]);
+
+      await run(['dev-1']);
+
+      expect(sendCommandMock).not.toHaveBeenCalled();
+    });
+
+    it('enforce: dispatches a public destination to a capability-1 agent', async () => {
+      vi.stubEnv('MANAGED_SOFTWARE_POLICY_MODE', 'enforce');
+      arrange(PUBLIC_URL, [device('dev-1', 1)]);
+
+      const result = await run(['dev-1']);
+
+      expect(result.dispatchedDeviceIds).toEqual(['dev-1']);
+      expect(sendCommandMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('treats an unset or unrecognized mode as compat', async () => {
+      vi.stubEnv('MANAGED_SOFTWARE_POLICY_MODE', 'banana');
+      arrange(PUBLIC_URL, [device('dev-1', 0)]);
+
+      await run(['dev-1']);
+
+      expect(sendCommandMock).toHaveBeenCalledTimes(1);
+    });
   });
 });

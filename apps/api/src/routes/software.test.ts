@@ -15,6 +15,14 @@ import { authMiddleware } from '../middleware/auth';
 import { inArray, eq } from 'drizzle-orm';
 import { resolveDeploymentTargets } from '../services/deploymentTargetResolver';
 import { createSoftwareDeployment } from '../services/softwareDeployment';
+import { writeRouteAudit } from '../services/auditEvents';
+import {
+  getEffectiveSoftwareDownloadPolicy,
+  getOrganizationSoftwareDownloadPolicy,
+  setOrganizationSoftwareDownloadPolicy,
+  setSiteSoftwareDownloadPolicy,
+} from '../services/softwareDownloadPolicy';
+import { sendCommandToAgent } from './agentWs';
 
 // Hoist the createSoftwareDeployment mock factory so the reference is available
 // both inside the vi.mock factory and in the test body.
@@ -81,9 +89,28 @@ vi.mock('../db/schema', () => ({
   softwareCatalog: { id: 'id', orgId: 'org_id', name: 'name', vendor: 'vendor', description: 'description', category: 'category' },
   softwareVersions: { id: 'id', catalogId: 'catalog_id', isLatest: 'is_latest' },
   softwareDeployments: { id: 'id', orgId: 'org_id' },
-  deploymentResults: { deploymentId: 'deployment_id', status: 'status' },
+  deploymentResults: { deploymentId: 'deployment_id', deviceId: 'device_id', status: 'status' },
   softwareInventory: { deviceId: 'device_id', name: 'name' },
-  devices: { id: 'id', orgId: 'org_id', agentId: 'agent_id' },
+  devices: {
+    id: 'id',
+    orgId: 'org_id',
+    agentId: 'agent_id',
+    siteId: 'site_id',
+    outboundNetworkPolicyVersion: 'outbound_network_policy_version',
+  },
+}));
+
+// Hoisted, mutable gate objects so individual tests can flip a gate to
+// "deny" for one request without needing to re-invoke the outer
+// requirePermission(...)/requireMfa() factory calls — those run once at
+// route-registration time (module import), so their RETURNED inner
+// middleware is what's actually wired into the router. The inner middleware
+// below reads these gates live on every call, matching the pattern used by
+// routes/alerts.test.ts.
+const { permissionGate, mfaGate, siteAccessGate } = vi.hoisted(() => ({
+  permissionGate: { deny: false },
+  mfaGate: { deny: false },
+  siteAccessGate: { deny: false },
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -98,12 +125,32 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
-  requireMfa: vi.fn(() => async (_c: any, next: any) => next())
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    if (permissionGate.deny) return c.json({ error: 'Permission denied' }, 403);
+    return next();
+  }),
+  requireMfa: vi.fn(() => async (c: any, next: any) => {
+    if (mfaGate.deny) return c.json({ error: 'MFA required' }, 403);
+    return next();
+  }),
+  requireSiteAccess: vi.fn((_siteIdParam?: string) => async (c: any, next: any) => {
+    if (siteAccessGate.deny) return c.json({ error: 'Access to this site denied' }, 403);
+    return next();
+  }),
 }));
 
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
+}));
+
+vi.mock('../services/softwareDownloadPolicy', () => ({
+  getEffectiveSoftwareDownloadPolicy: vi.fn(async () => ({
+    version: 1,
+    approvedPrivateOrigins: [] as string[],
+  })),
+  getOrganizationSoftwareDownloadPolicy: vi.fn(),
+  setOrganizationSoftwareDownloadPolicy: vi.fn(),
+  setSiteSoftwareDownloadPolicy: vi.fn(),
 }));
 
 vi.mock('../services/deploymentTargetResolver', () => ({
@@ -147,6 +194,10 @@ describe('software routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    permissionGate.deny = false;
+    mfaGate.deny = false;
+    siteAccessGate.deny = false;
     app = new Hono();
     app.route('/software', softwareRoutes);
   });
@@ -644,6 +695,145 @@ describe('software routes', () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // Managed software destination policy — LEGACY dispatch path
+  // (Wave 6 Task 5, security remediation)
+  //
+  // This route is the second of the two managed-software dispatch paths (the
+  // canonical one is services/softwareDeployment.ts, covered in its own suite).
+  // A gate on only one path is the whole vulnerability, so both are pinned.
+  // -------------------------------------------------------------------------
+  describe('POST /software/deploy destination policy gate (Wave 6 Task 5)', () => {
+    const SOFTWARE_ID = '33333333-3333-4333-8333-333333333333';
+    const DEVICE_ID = '44444444-4444-4444-8444-444444444444';
+    const UPGRADE_REQUIRED = 'agent_network_policy_upgrade_required';
+    const PUBLIC_URL = 'https://cdn.example.com/pkg.exe';
+    const PRIVATE_URL = 'https://10.10.0.5/pkg.exe';
+
+    const catalogRow = {
+      id: SOFTWARE_ID,
+      orgId: 'org-123',
+      name: 'TestApp',
+      integrationProvider: null,
+    };
+
+    // Resolves like the Drizzle chain regardless of chain depth.
+    const chain = (rows: any): any => {
+      const p: any = new Proxy(() => p, {
+        get: (_t, prop) => (prop === 'then' ? (resolve: any) => resolve(rows) : () => p),
+      });
+      return p;
+    };
+
+    function arrange(downloadUrl: string, deviceRows: any[]) {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(chain([catalogRow]))                                  // catalog
+        .mockReturnValueOnce(chain([{ id: 'ver-1', version: '1.0.0', catalogId: SOFTWARE_ID, s3Key: null, downloadUrl, checksum: null, originalFileName: 'pkg.exe', fileType: 'exe', silentInstallArgs: null, detectionRules: null }]))
+        .mockReturnValueOnce(chain(deviceRows));                                   // target devices
+      vi.mocked(db.insert).mockReturnValueOnce(chain([{ id: 'dep-legacy' }]));     // deployment
+      vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([DEVICE_ID]);
+
+      const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+      vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+      return { setSpy };
+    }
+
+    const deploy = () =>
+      app.request('/software/deploy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          softwareId: SOFTWARE_ID,
+          version: '1.0.0',
+          targets: { deviceIds: [DEVICE_ID] },
+        }),
+      });
+
+    const deviceRow = (capability: number) => ({
+      id: DEVICE_ID,
+      agentId: 'agent-1',
+      siteId: 'site-1',
+      outboundNetworkPolicyVersion: capability,
+    });
+
+    it('compat: dispatches a public destination to a capability-0 agent with the effective allowlist attached', async () => {
+      vi.mocked(getEffectiveSoftwareDownloadPolicy).mockResolvedValueOnce({
+        version: 1,
+        approvedPrivateOrigins: ['https://files.corp.internal'],
+      });
+      arrange(PUBLIC_URL, [deviceRow(0)]);
+
+      const res = await deploy();
+
+      expect(res.status).toBe(201);
+      expect(sendCommandToAgent).toHaveBeenCalledTimes(1);
+      const command = vi.mocked(sendCommandToAgent).mock.calls[0]![1] as any;
+      expect(command.payload.downloadPolicy).toEqual({
+        version: 1,
+        approvedPrivateOrigins: ['https://files.corp.internal'],
+      });
+      expect(getEffectiveSoftwareDownloadPolicy).toHaveBeenCalledWith('org-123', 'site-1');
+    });
+
+    it('compat: denies a private destination to a capability-0 agent, marks the result failed, and enqueues nothing', async () => {
+      const { setSpy } = arrange(PRIVATE_URL, [deviceRow(0)]);
+
+      const res = await deploy();
+
+      expect(res.status).toBe(201);
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+      expect(setSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'failed', errorMessage: UPGRADE_REQUIRED }),
+      );
+    });
+
+    it('compat: dispatches an approved private destination to a capability-1 agent', async () => {
+      vi.mocked(getEffectiveSoftwareDownloadPolicy).mockResolvedValueOnce({
+        version: 1,
+        approvedPrivateOrigins: ['https://10.10.0.5'],
+      });
+      arrange(PRIVATE_URL, [deviceRow(1)]);
+
+      await deploy();
+
+      expect(sendCommandToAgent).toHaveBeenCalledTimes(1);
+      const command = vi.mocked(sendCommandToAgent).mock.calls[0]![1] as any;
+      expect(command.payload.downloadPolicy.approvedPrivateOrigins).toEqual(['https://10.10.0.5']);
+    });
+
+    it('enforce: denies even a public destination to a capability-0 agent', async () => {
+      vi.stubEnv('MANAGED_SOFTWARE_POLICY_MODE', 'enforce');
+      const { setSpy } = arrange(PUBLIC_URL, [deviceRow(0)]);
+
+      await deploy();
+
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+      expect(setSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'failed', errorMessage: UPGRADE_REQUIRED }),
+      );
+    });
+
+    it('enforce: dispatches a public destination to a capability-1 agent', async () => {
+      vi.stubEnv('MANAGED_SOFTWARE_POLICY_MODE', 'enforce');
+      arrange(PUBLIC_URL, [deviceRow(1)]);
+
+      await deploy();
+
+      expect(sendCommandToAgent).toHaveBeenCalledTimes(1);
+    });
+
+    it('never puts the download URL or its query string into the audit record', async () => {
+      arrange(`${PUBLIC_URL}?X-Amz-Signature=deadbeef`, [deviceRow(1)]);
+
+      await deploy();
+
+      const auditArg = vi.mocked(writeRouteAudit).mock.calls[0]?.[1] as unknown as Record<string, unknown>;
+      const serialized = JSON.stringify(auditArg);
+      expect(serialized).not.toContain('X-Amz-Signature');
+      expect(serialized).not.toContain('cdn.example.com');
+    });
+  });
+
   describe('POST /software/deployments', () => {
     // Shared fixture UUIDs
     const VERSION_ID = '11111111-1111-4111-8111-111111111111';
@@ -785,6 +975,260 @@ describe('software routes', () => {
       expect(createDeploymentMock).toHaveBeenCalledWith(
         expect.objectContaining({ targetType: 'all' })
       );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Private software download origin policy (Wave 6 Task 4, security remediation)
+  // -------------------------------------------------------------------------
+  describe('download-policy routes', () => {
+    const VALID_POLICY = { version: 1 as const, approvedPrivateOrigins: ['https://files.corp.internal'] };
+    const SITE_ID = '11111111-1111-4111-8111-111111111111';
+
+    describe('GET /software/download-policy', () => {
+      it('returns the organization policy', async () => {
+        vi.mocked(getOrganizationSoftwareDownloadPolicy).mockResolvedValueOnce(VALID_POLICY);
+
+        const res = await app.request('/software/download-policy', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' },
+        });
+
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ data: VALID_POLICY });
+        expect(getOrganizationSoftwareDownloadPolicy).toHaveBeenCalledWith('org-123');
+      });
+
+      it('denies a cross-organization request before touching the service', async () => {
+        const res = await app.request('/software/download-policy?orgId=99999999-9999-4999-8999-999999999999', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' },
+        });
+
+        expect(res.status).toBe(403);
+        expect(getOrganizationSoftwareDownloadPolicy).not.toHaveBeenCalled();
+      });
+
+      it('403s when devices:write is missing', async () => {
+        permissionGate.deny = true;
+
+        const res = await app.request('/software/download-policy', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' },
+        });
+
+        expect(res.status).toBe(403);
+        expect(getOrganizationSoftwareDownloadPolicy).not.toHaveBeenCalled();
+      });
+
+      it('403s when MFA has not been satisfied', async () => {
+        mfaGate.deny = true;
+
+        const res = await app.request('/software/download-policy', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' },
+        });
+
+        expect(res.status).toBe(403);
+        expect(getOrganizationSoftwareDownloadPolicy).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('PUT /software/download-policy', () => {
+      it('updates the organization policy and audits without URL query data', async () => {
+        vi.mocked(setOrganizationSoftwareDownloadPolicy).mockResolvedValueOnce({
+          ok: true,
+          policy: VALID_POLICY,
+        });
+
+        const res = await app.request('/software/download-policy?orgId=org-123', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify(VALID_POLICY),
+        });
+
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ data: VALID_POLICY });
+        expect(setOrganizationSoftwareDownloadPolicy).toHaveBeenCalledWith('org-123', VALID_POLICY);
+
+        expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+        const auditArg = vi.mocked(writeRouteAudit).mock.calls[0]?.[1] as unknown as Record<string, unknown>;
+        expect(auditArg.action).toBe('software.downloadPolicy.update');
+        expect(auditArg.details).toEqual({ version: 1, approvedOriginCount: 1 });
+        // No raw URL / query string anywhere in the audit payload — the query
+        // param above (`?orgId=org-123`) must never leak into audit metadata.
+        const serialized = JSON.stringify(auditArg);
+        expect(serialized).not.toContain('?');
+        expect(serialized).not.toContain('orgId=org-123');
+        expect(auditArg).not.toHaveProperty('url');
+        expect(auditArg).not.toHaveProperty('query');
+      });
+
+      it('rejects an invalid policy body (bad origin) with 400 before touching the service', async () => {
+        const res = await app.request('/software/download-policy', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ version: 1, approvedPrivateOrigins: ['https://127.0.0.1'] }),
+        });
+
+        expect(res.status).toBe(400);
+        expect(setOrganizationSoftwareDownloadPolicy).not.toHaveBeenCalled();
+      });
+
+      it('rejects an unknown top-level key with 400 (.strict())', async () => {
+        const res = await app.request('/software/download-policy', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ ...VALID_POLICY, extra: 'nope' }),
+        });
+
+        expect(res.status).toBe(400);
+        expect(setOrganizationSoftwareDownloadPolicy).not.toHaveBeenCalled();
+      });
+
+      it('403s when devices:write is missing', async () => {
+        permissionGate.deny = true;
+
+        const res = await app.request('/software/download-policy', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify(VALID_POLICY),
+        });
+
+        expect(res.status).toBe(403);
+        expect(setOrganizationSoftwareDownloadPolicy).not.toHaveBeenCalled();
+      });
+
+      it('403s when MFA has not been satisfied', async () => {
+        mfaGate.deny = true;
+
+        const res = await app.request('/software/download-policy', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify(VALID_POLICY),
+        });
+
+        expect(res.status).toBe(403);
+        expect(setOrganizationSoftwareDownloadPolicy).not.toHaveBeenCalled();
+      });
+
+      it('404s and audits nothing when the organization is missing / the write affected 0 rows', async () => {
+        vi.mocked(setOrganizationSoftwareDownloadPolicy).mockResolvedValueOnce({
+          ok: false,
+          error: 'organization_not_found',
+        });
+
+        const res = await app.request('/software/download-policy', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify(VALID_POLICY),
+        });
+
+        expect(res.status).toBe(404);
+        expect(writeRouteAudit).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('PUT /software/download-policy/sites/:siteId', () => {
+      it('updates the site policy and returns the effective org∪site union', async () => {
+        const effective = {
+          version: 1 as const,
+          approvedPrivateOrigins: ['https://files.corp.internal', 'https://site.corp.internal'],
+        };
+        vi.mocked(setSiteSoftwareDownloadPolicy).mockResolvedValueOnce({
+          ok: true,
+          policy: VALID_POLICY,
+          effective,
+        });
+
+        const res = await app.request(`/software/download-policy/sites/${SITE_ID}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify(VALID_POLICY),
+        });
+
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ data: effective });
+        expect(setSiteSoftwareDownloadPolicy).toHaveBeenCalledWith('org-123', SITE_ID, VALID_POLICY);
+      });
+
+      it('404s when the site does not belong to the resolved organization (wrong organization)', async () => {
+        vi.mocked(setSiteSoftwareDownloadPolicy).mockResolvedValueOnce({
+          ok: false,
+          error: 'site_not_found',
+        });
+
+        const res = await app.request(`/software/download-policy/sites/${SITE_ID}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify(VALID_POLICY),
+        });
+
+        expect(res.status).toBe(404);
+      });
+
+      it('403s when the caller is denied access to the site', async () => {
+        siteAccessGate.deny = true;
+
+        const res = await app.request(`/software/download-policy/sites/${SITE_ID}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify(VALID_POLICY),
+        });
+
+        expect(res.status).toBe(403);
+        expect(setSiteSoftwareDownloadPolicy).not.toHaveBeenCalled();
+      });
+
+      it('403s when devices:write is missing', async () => {
+        permissionGate.deny = true;
+
+        const res = await app.request(`/software/download-policy/sites/${SITE_ID}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify(VALID_POLICY),
+        });
+
+        expect(res.status).toBe(403);
+        expect(setSiteSoftwareDownloadPolicy).not.toHaveBeenCalled();
+      });
+
+      it('403s when MFA has not been satisfied', async () => {
+        mfaGate.deny = true;
+
+        const res = await app.request(`/software/download-policy/sites/${SITE_ID}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify(VALID_POLICY),
+        });
+
+        expect(res.status).toBe(403);
+        expect(setSiteSoftwareDownloadPolicy).not.toHaveBeenCalled();
+      });
+
+      it('audits the site update without URL query data', async () => {
+        vi.mocked(setSiteSoftwareDownloadPolicy).mockResolvedValueOnce({
+          ok: true,
+          policy: VALID_POLICY,
+          effective: VALID_POLICY,
+        });
+
+        await app.request(`/software/download-policy/sites/${SITE_ID}?orgId=org-123`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify(VALID_POLICY),
+        });
+
+        expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+        const auditArg = vi.mocked(writeRouteAudit).mock.calls[0]?.[1] as unknown as Record<string, unknown>;
+        expect(auditArg.action).toBe('software.downloadPolicy.site.update');
+        expect(auditArg.details).toEqual({ version: 1, approvedOriginCount: 1 });
+        const serialized = JSON.stringify(auditArg);
+        expect(serialized).not.toContain('?');
+        expect(serialized).not.toContain('orgId=org-123');
+        expect(auditArg).not.toHaveProperty('url');
+        expect(auditArg).not.toHaveProperty('query');
+      });
     });
   });
 

@@ -181,6 +181,27 @@ type Config struct {
 	// so self-host (BINARY_SOURCE=local) deployments can sign their own manifests.
 	PinnedManifestPubKeys []string `mapstructure:"pinned_manifest_pub_keys" yaml:"pinned_manifest_pub_keys"`
 
+	// RequireManifestSigningKeyID makes a release-manifest response that omits
+	// signingKeyId a hard failure ("manifest signing key ID required") instead
+	// of falling back to verifying against the whole trusted key set.
+	//
+	// Default false is the compatibility position for the rollout: an agent
+	// talking to a control plane that predates signingKeyId still updates, but
+	// logs one bounded warning per process. Once every control plane in the
+	// fleet emits the ID, flipping this to true removes the last path on which
+	// a manifest can be verified by a key other than the one it names.
+	RequireManifestSigningKeyID bool `mapstructure:"require_manifest_signing_key_id" yaml:"require_manifest_signing_key_id"`
+
+	// ManifestDelegationEpoch is the highest signed-key-delegation epoch this
+	// agent has ADOPTED (0 = none). It is the monotonic replay counter: a
+	// delegation is only accepted when its epoch is STRICTLY greater than this
+	// value, so a record that has already been adopted — or an older one
+	// resurrected by an attacker — can never be applied again.
+	//
+	// Persisted in the same SaveTo that adds the delegated key, so the two
+	// facts can never disagree. See manifestdelegation.go.
+	ManifestDelegationEpoch uint64 `mapstructure:"manifest_delegation_epoch" yaml:"manifest_delegation_epoch"`
+
 	// mTLS client certificate (Cloudflare API Shield)
 	MtlsCertPEM     string `mapstructure:"mtls_cert_pem"`
 	MtlsKeyPEM      string `mapstructure:"mtls_key_pem"`
@@ -318,7 +339,35 @@ func Default() *Config {
 	}
 }
 
+// Load reads the config file (and secrets.yaml) into a fresh *Config.
+//
+// It takes persistMu because it MUTATES the package-global viper singleton
+// (SetConfigFile/AddConfigPath/AutomaticEnv/ReadInConfig/Unmarshal), and viper
+// has no internal locking. It is not a startup-only path: Reload runs on every
+// successful manifest-key pin and every delivered delegation record, while
+// SetAndPersist (command worker pool), SaveTo (cert-renewal goroutine) and
+// SetAllAndPersist (backup-URL promotion) write viper from other goroutines.
+// Several of those races are MAP races, which in production are not a corrupt
+// value but `fatal error: concurrent map read and map write` — an unrecoverable
+// throw that kills the agent process.
+//
+// Callers already holding persistMu must use loadLocked (sync.Mutex is not
+// reentrant). Verified when this lock was widened: no persistMu holder reaches
+// Load transitively — SetAndPersist/SetAllAndPersist/SetSecretAndPersist/SaveTo/
+// mutateSecretsAndPersist all stay inside viper.Set/WriteConfig, their own
+// viper.New() instances, migrateInlineSecretsToSecretFile and the enforce*
+// permission helpers, none of which call Load or Reload.
 func Load(cfgFile string) (*Config, error) {
+	persistMu.Lock()
+	defer persistMu.Unlock()
+	return loadLocked(cfgFile)
+}
+
+// loadLocked is Load's body; callers must hold persistMu. It exists so a
+// read-modify-write over the config file (PinManifestKeys,
+// ApplyManifestKeyDelegation) can hold the lock across BOTH halves instead of
+// dropping it between the read and the write.
+func loadLocked(cfgFile string) (*Config, error) {
 	cfg := Default()
 
 	if cfgFile != "" {
@@ -439,13 +488,23 @@ func Load(cfgFile string) (*Config, error) {
 	return cfg, nil
 }
 
-// persistMu serializes every config-file persist (SetAndPersist,
-// SetAllAndPersist, SetSecretAndPersist, SaveTo). All of them mutate the
-// package-global viper state and rewrite the same files; concurrent callers
-// (e.g. a set_auto_update command worker racing a backup-URL promotion)
-// previously raced viper's internal maps and each other's writes.
-// (config.Load's inline-secret migration writes outside this lock — a
-// pre-existing, startup-dominated path.)
+// persistMu serializes every access to the package-global viper singleton:
+// the persists (SetAndPersist, SetAllAndPersist, SetSecretAndPersist, SaveTo,
+// mutateSecretsAndPersist) AND the loads (Load, Reload, and the
+// read-modify-write pairs PinManifestKeys / ApplyManifestKeyDelegation). All of
+// them mutate viper state and rewrite the same files; concurrent callers (e.g. a
+// set_auto_update command worker racing a backup-URL promotion, or a Reload
+// after a manifest-key pin racing the cert-renewal goroutine's SaveTo) raced
+// viper's internal maps and each other's writes.
+//
+// Load was outside this lock until the wave-06 whole-branch review: with
+// Reload now running per successful pin and per delivered delegation record it
+// is on the per-heartbeat path, and a map race there is a
+// `fatal error: concurrent map read and map write` process kill, not a bad
+// value. See Load's comment for the deadlock audit.
+//
+// (FixConfigPermissions' inline-secret migration still writes outside this
+// lock — a pre-existing, startup-only path with no concurrent writer.)
 var persistMu sync.Mutex
 
 // SetAllAndPersist updates several non-secret config keys in viper and writes
@@ -583,8 +642,13 @@ func setSecretAndPersistLocked(key string, value any) error {
 
 // Reload reloads the currently bound config file, or the default config path
 // when no explicit file has been loaded yet.
+//
+// viper.ConfigFileUsed() is itself a read of the shared singleton, so it is
+// taken INSIDE the lock rather than passed to Load from outside it.
 func Reload() (*Config, error) {
-	return Load(viper.ConfigFileUsed())
+	persistMu.Lock()
+	defer persistMu.Unlock()
+	return loadLocked(viper.ConfigFileUsed())
 }
 
 func Save(cfg *Config) error {
@@ -594,6 +658,13 @@ func Save(cfg *Config) error {
 func SaveTo(cfg *Config, cfgFile string) error {
 	persistMu.Lock()
 	defer persistMu.Unlock()
+	return saveToLocked(cfg, cfgFile)
+}
+
+// saveToLocked is SaveTo's body; callers must hold persistMu. Paired with
+// loadLocked so a read-modify-write of the config file is atomic against every
+// other viper user.
+func saveToLocked(cfg *Config, cfgFile string) error {
 	viper.Set("agent_id", cfg.AgentID)
 	viper.Set("server_url", cfg.ServerURL)
 	viper.Set("backup_server_url", cfg.BackupServerURL)
@@ -612,6 +683,8 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	viper.Set("auto_update", cfg.AutoUpdate)
 	viper.Set("allow_dev_update", cfg.AllowDevUpdate)
 	viper.Set("pinned_manifest_pub_keys", cfg.PinnedManifestPubKeys)
+	viper.Set("require_manifest_signing_key_id", cfg.RequireManifestSigningKeyID)
+	viper.Set("manifest_delegation_epoch", cfg.ManifestDelegationEpoch)
 	// Write only the helper-scoped token to agent.yaml. Full agent and watchdog
 	// bearer tokens are persisted below in root-only secrets.yaml.
 	if cfg.HelperAuthToken != "" {

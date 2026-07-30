@@ -911,7 +911,14 @@ describe('agent routes', () => {
         policy_config_state_probes: [
           { file_path: '/etc/ssh/sshd_config', config_key: 'PermitRootLogin' }
         ],
-        patch_source_settings: { exclusiveWindowsUpdate: false }
+        patch_source_settings: { exclusiveWindowsUpdate: false },
+        // Security remediation Wave 6, Task 9 — always sent (true or false),
+        // mirroring AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID. Sending the explicit
+        // false is what makes the switch reversible: an omitted key is a no-op
+        // on the agent, so a bare toggle-off would never reach devices that
+        // already persisted true. Do not "fix" this by removing the send; see
+        // heartbeat.test.ts for the full rationale and coverage.
+        require_manifest_signing_key_id: false
       });
     });
 
@@ -1023,7 +1030,8 @@ describe('agent routes', () => {
         },
         policy_registry_state_probes: [],
         policy_config_state_probes: [],
-        patch_source_settings: { exclusiveWindowsUpdate: false }
+        patch_source_settings: { exclusiveWindowsUpdate: false },
+        require_manifest_signing_key_id: false
       });
       expect(insertValues).toHaveBeenCalledWith(
         expect.objectContaining({
