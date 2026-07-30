@@ -885,6 +885,39 @@ describe('admin/abuse — unsuspend agent-fleet restore', () => {
     expect(capturedPartnerUpdate!.status).toBe('pending');
   });
 
+  // Regression coverage for the billing-status veto: a card-testing partner
+  // typically carries an incomplete_expired subscription alongside a falsely
+  // written payment stamp (#718). Unsuspend must not trust the stamp when the
+  // billing status contradicts it — the partner lands on 'pending' and has to
+  // complete a real payment.
+  it('unsuspend falls back to pending when billing status contradicts the payment stamp', async () => {
+    txMockState.partner = {
+      id: 'partner-1',
+      status: 'suspended',
+      paymentMethodAttachedAt: new Date(),
+      emailVerifiedAt: new Date(),
+      billingSubscriptionStatus: 'incomplete_expired',
+    };
+
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/unsuspend', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'reinstating but subscription never completed' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string };
+    expect(body.status).toBe('pending');
+    expect(restorePartnerTenantAccess).not.toHaveBeenCalled();
+
+    const capturedPartnerUpdate = txMockState.updates.find(
+      (u) => u.values && 'status' in u.values && !('disabledReason' in u.values),
+    )?.values;
+    expect(capturedPartnerUpdate).toBeDefined();
+    expect(capturedPartnerUpdate!.status).toBe('pending');
+  });
+
   it('returns 500 (does NOT silently 200) when the agent-fleet restore throws', async () => {
     vi.mocked(restorePartnerTenantAccess).mockRejectedValueOnce(new Error('db unavailable'));
     const app = buildApp(platformAdminAuth);
