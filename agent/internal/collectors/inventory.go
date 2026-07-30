@@ -1,6 +1,7 @@
 package collectors
 
 import (
+	"log/slog"
 	"net"
 	"strings"
 
@@ -54,6 +55,9 @@ func (c *InventoryCollector) CollectDisks() ([]DiskInfo, error) {
 	partitions, err := partitionsFn(false)
 	if err != nil && len(partitions) == 0 {
 		return nil, err
+	}
+	if err != nil {
+		slog.Warn("disk.Partitions reported warnings; continuing with enumerated drives", "error", err.Error())
 	}
 
 	var disks []DiskInfo
