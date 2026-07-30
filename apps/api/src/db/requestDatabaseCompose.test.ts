@@ -1,10 +1,22 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const IMAGE_DIGEST = `example.invalid/breeze@sha256:${'0'.repeat(64)}`;
+
+// Every test here spawns `docker compose config`. The FIRST spawn on a cold
+// CI runner also bootstraps the compose plugin, which has been observed at
+// 5.3s — over vitest's 5s default timeout — while warm invocations take
+// ~130ms (flaked on PR #2943's run; the assertions were never wrong, the
+// subprocess was slow). Warm the plugin once, and give the docker-spawning
+// tests an explicit budget so runner load can't fail a correct contract.
+const DOCKER_SPAWN_TIMEOUT_MS = 60_000;
+
+beforeAll(() => {
+  execFileSync('docker', ['compose', 'version'], { cwd: REPOSITORY_ROOT, encoding: 'utf8' });
+}, DOCKER_SPAWN_TIMEOUT_MS);
 
 function renderApiEnvironment(overrides: Record<string, string>): Record<string, string> {
   const rendered = execFileSync('docker', [
@@ -64,7 +76,7 @@ describe('standard Compose request database configuration', () => {
     const environment = renderApiEnvironment({ BREEZE_APP_DB_PASSWORD: appPassword });
     expect(environment.DATABASE_URL_APP).toBe('');
     expect(environment.BREEZE_APP_DB_PASSWORD || environment.POSTGRES_PASSWORD).toBe(expected);
-  });
+  }, DOCKER_SPAWN_TIMEOUT_MS);
 
   it('passes an explicit DATABASE_URL_APP through to the api service', () => {
     // The reason this mapping exists: a value set in .env must reach the api
@@ -73,5 +85,5 @@ describe('standard Compose request database configuration', () => {
     const explicit = 'postgresql://breeze_app:secret@h1:5432,h2:5432/breeze';
     const environment = renderApiEnvironment({ DATABASE_URL_APP: explicit });
     expect(environment.DATABASE_URL_APP).toBe(explicit);
-  });
+  }, DOCKER_SPAWN_TIMEOUT_MS);
 });
