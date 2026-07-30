@@ -195,12 +195,12 @@ func openSecureLogFile(path string) (*os.File, error) {
 	// to /etc/shadow named agent.log). A regular file we manage should
 	// always have exactly one link.
 	if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Nlink != 1 {
-		f.Close()
+		_ = f.Close()
 		return nil, &ErrUnsafeLogPath{Path: path, Reason: "log file has multiple hard links"}
 	}
 
 	if err := repairLogFileMode(f); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
 

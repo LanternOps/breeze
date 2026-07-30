@@ -186,7 +186,9 @@ func TeeWriter(w1, w2 io.Writer) io.Writer {
 // condition clears.
 func (rw *RotatingWriter) fail(err error) error {
 	if rw.file != nil {
-		rw.file.Close()
+		// Best-effort: we are disabling file output anyway, so a Close error
+		// changes nothing.
+		_ = rw.file.Close()
 		rw.file = nil
 	}
 
@@ -214,7 +216,7 @@ func (rw *RotatingWriter) openFile() error {
 
 	info, err := f.Stat()
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("stat log file: %w", err)
 	}
 
@@ -237,7 +239,9 @@ func (rw *RotatingWriter) rotate() error {
 	}
 
 	if rw.file != nil {
-		rw.file.Close()
+		// Best-effort: the handle is being replaced; a Close error on the old
+		// one does not affect the new one.
+		_ = rw.file.Close()
 		rw.file = nil
 	}
 

@@ -41,10 +41,12 @@ func TestOpenSecureLogFileCreatesAndAppends(t *testing.T) {
 		t.Fatalf("openSecureLogFile: %v", err)
 	}
 	if _, err := f.WriteString("first\n"); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatalf("write: %v", err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
 
 	f2, err := openSecureLogFile(logPath)
 	if err != nil {

@@ -324,7 +324,7 @@ func TestOpenSecureLogFileRejectsSymlink(t *testing.T) {
 
 	f, err := openSecureLogFile(logPath)
 	if f != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatalf("expected nil file for a symlinked log path")
 	}
 	_ = requireUnsafeLogPath(t, err)
@@ -361,7 +361,7 @@ func TestOpenSecureLogFileRequiresRegularFile(t *testing.T) {
 
 	f, err := openSecureLogFile(devNull)
 	if f != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatalf("expected nil file for a non-regular target")
 	}
 	_ = requireUnsafeLogPath(t, err)
@@ -377,7 +377,7 @@ func TestOpenSecureLogFileRejectsHardLink(t *testing.T) {
 
 	f, err := openSecureLogFile(logPath)
 	if f != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatalf("expected nil file for a hard-linked log path")
 	}
 	_ = requireUnsafeLogPath(t, err)
