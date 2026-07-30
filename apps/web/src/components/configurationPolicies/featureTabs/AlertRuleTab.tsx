@@ -1,5 +1,12 @@
 import { useState, useEffect, useRef } from "react";
-import { Bell, Plus, Trash2, ChevronDown, ChevronRight } from "lucide-react";
+import {
+  Bell,
+  Plus,
+  Trash2,
+  ChevronDown,
+  ChevronRight,
+  AlertTriangle,
+} from "lucide-react";
 import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
@@ -10,16 +17,41 @@ import { i18n } from "@/lib/i18n";
 // editor emitted `status` with a `duration` field; we normalize those on load
 // (see normalizeConditions) and always emit the `offline`/`durationMinutes`
 // shape on save so rules actually evaluate (issue #1857).
-type ConditionType = "metric" | "offline" | "custom";
+//
+// `event_log` arrived with the 2026-07-30 alert consolidation: event log alert
+// rules used to live in the Monitoring feature's inline settings and are now
+// ordinary alert-rule conditions owned by this tab.
+//
+// `custom` was removed: the API condition evaluator has no handler for it, so a
+// `custom` condition never fired, and the canonical write schema now rejects it.
+type ConditionType = "metric" | "offline" | "event_log";
+const EDITABLE_CONDITION_TYPES: readonly ConditionType[] = [
+  "metric",
+  "offline",
+  "event_log",
+];
+function isEditableConditionType(type: string): type is ConditionType {
+  return (EDITABLE_CONDITION_TYPES as readonly string[]).includes(type);
+}
+type EventLogCategory = "security" | "hardware" | "application" | "system";
+type EventLogLevel = "warning" | "error" | "critical";
 type AlertSeverity = "critical" | "high" | "medium" | "low" | "info";
+// `type` is deliberately a plain string: rows saved before this editor existed
+// can carry condition types it no longer offers (`custom`, `bandwidth_high`,
+// `disk_io_high`, `network_errors`, `patch_compliance`, `cert_expiry`). Those
+// are rendered read-only and round-tripped untouched rather than dropped.
 type Condition = {
-  type: ConditionType;
+  type: string;
   metric?: string;
   operator?: string;
   value?: number;
   durationMinutes?: number;
-  field?: string;
-  customCondition?: string;
+  category?: EventLogCategory;
+  level?: EventLogLevel;
+  sourcePattern?: string;
+  messagePattern?: string;
+  countThreshold?: number;
+  windowMinutes?: number;
 };
 type AlertItem = {
   name: string;
@@ -139,7 +171,10 @@ const createOperatorOptions = () => [
     ),
   },
 ];
-const createConditionTypeOptions = () => [
+const createConditionTypeOptions = (): {
+  value: ConditionType;
+  label: string;
+}[] => [
   {
     value: "metric",
     label: i18n.t(
@@ -153,12 +188,81 @@ const createConditionTypeOptions = () => [
     ),
   },
   {
-    value: "custom",
+    value: "event_log",
     label: i18n.t(
-      "policies:configurationPolicies.featureTabs.alertRuleTab.custom",
+      "policies:configurationPolicies.featureTabs.alertRuleTab.eventLog",
     ),
   },
 ];
+const createEventCategoryOptions = (): {
+  value: EventLogCategory;
+  label: string;
+}[] => [
+  {
+    value: "security",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.security",
+    ),
+  },
+  {
+    value: "hardware",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.hardware",
+    ),
+  },
+  {
+    value: "application",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.application",
+    ),
+  },
+  {
+    value: "system",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.system",
+    ),
+  },
+];
+const createEventLevelOptions = (): {
+  value: EventLogLevel;
+  label: string;
+}[] => [
+  {
+    value: "warning",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.warning",
+    ),
+  },
+  {
+    value: "error",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.error",
+    ),
+  },
+  {
+    value: "critical",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.critical",
+    ),
+  },
+];
+// Mirrors eventLogConditionSchema in @breeze/shared: countThreshold 1-10000,
+// windowMinutes 1-1440. Clamped here so the field can't be set out of range.
+const EVENT_LOG_COUNT_MAX = 10000;
+const EVENT_LOG_WINDOW_MAX_MINUTES = 1440;
+// Seed values applied when a condition's type is switched, so the new shape is
+// immediately valid against the canonical write schema.
+const conditionDefaults: Record<ConditionType, Condition> = {
+  metric: { type: "metric", metric: "cpu", operator: "gt", value: 80 },
+  offline: { type: "offline", durationMinutes: 5 },
+  event_log: {
+    type: "event_log",
+    category: "security",
+    level: "error",
+    countThreshold: 1,
+    windowMinutes: 15,
+  },
+};
 // Offline rules are re-evaluated by a background sweep bounded to a 24h horizon,
 // so a rule with a longer duration would never fire — the device ages out of the
 // sweep first. The API rejects durations above this cap (issue #1982); mirror it
@@ -168,21 +272,21 @@ const OFFLINE_DURATION_MAX_MINUTES = 1440;
 // Migrate a single condition from the legacy `{type:'status', duration}` shape
 // to the canonical `{type:'offline', durationMinutes}` shape the evaluator reads.
 // Legacy persisted shape, before the `status`→`offline` / `duration`→`durationMinutes` rename.
-type RawCondition = Omit<Condition, "type"> & {
-  type: ConditionType | "status";
-  duration?: number;
-};
+type RawCondition = Condition & { duration?: number };
 function normalizeCondition(condition: Condition): Condition {
-  const { type, durationMinutes, duration, ...rest } =
-    condition as RawCondition;
-  if (type === "status" || type === "offline") {
+  const raw = condition as RawCondition;
+  if (raw.type === "status" || raw.type === "offline") {
+    const { duration, durationMinutes, ...rest } = raw;
     return {
       ...rest,
       type: "offline",
       durationMinutes: durationMinutes ?? duration ?? 5,
     };
   }
-  return { ...rest, type } as Condition;
+  // Every other type — including types this editor no longer offers — is
+  // returned untouched so an unrelated edit elsewhere in the rule can't strip
+  // fields off it.
+  return condition;
 }
 function normalizeConditions(item: AlertItem): AlertItem {
   if (!Array.isArray(item.conditions)) {
@@ -206,6 +310,17 @@ function loadItems(existingLink: FeatureTabProps["existingLink"]): AlertItem[] {
   }
   return [];
 }
+// Condition types the editor can no longer render a form for. Listed on the rule
+// so the tech knows why a save is being rejected and what to remove.
+function unsupportedConditionTypes(item: AlertItem): string[] {
+  return [
+    ...new Set(
+      item.conditions
+        .map((c) => c.type)
+        .filter((type) => !isEditableConditionType(type)),
+    ),
+  ];
+}
 function severityPill(severity: AlertSeverity) {
   const opt = createSeverityOptions().find((o) => o.value === severity);
   return (
@@ -227,6 +342,8 @@ export default function AlertRuleTab({
   const metricOptions = createMetricOptions();
   const operatorOptions = createOperatorOptions();
   const conditionTypeOptions = createConditionTypeOptions();
+  const eventCategoryOptions = createEventCategoryOptions();
+  const eventLevelOptions = createEventLevelOptions();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;
@@ -266,21 +383,30 @@ export default function AlertRuleTab({
       }),
     );
   };
+  // Switching a condition's type swaps in that type's seed values rather than
+  // merging, so no stale field from the previous shape is left behind.
+  const changeConditionType = (
+    itemIndex: number,
+    condIndex: number,
+    type: ConditionType,
+  ) => {
+    setItems((prev) =>
+      prev.map((item, i) => {
+        if (i !== itemIndex) return item;
+        const conditions = item.conditions.map((c, ci) =>
+          ci === condIndex ? { ...conditionDefaults[type] } : c,
+        );
+        return { ...item, conditions };
+      }),
+    );
+  };
   const addCondition = (itemIndex: number) => {
     setItems((prev) =>
       prev.map((item, i) => {
         if (i !== itemIndex) return item;
         return {
           ...item,
-          conditions: [
-            ...item.conditions,
-            {
-              type: "metric" as ConditionType,
-              metric: "cpu",
-              operator: "gt",
-              value: 80,
-            },
-          ],
+          conditions: [...item.conditions, { ...conditionDefaults.metric }],
         };
       }),
     );
@@ -410,6 +536,7 @@ export default function AlertRuleTab({
       <div className="mt-3 space-y-2">
         {items.map((item, index) => {
           const isExpanded = expandedIndex === index;
+          const unsupportedTypes = unsupportedConditionTypes(item);
           return (
             <div key={index} className="rounded-md border bg-muted/10">
               {/* Collapsed header */}
@@ -431,6 +558,12 @@ export default function AlertRuleTab({
                       )}
                   </span>
                   {severityPill(item.severity)}
+                  {unsupportedTypes.length > 0 && (
+                    <AlertTriangle
+                      data-testid={`alert-rule-legacy-flag-${index}`}
+                      className="h-4 w-4 shrink-0 text-amber-600"
+                    />
+                  )}
                   <span className="text-xs text-muted-foreground">
                     {item.conditions.length}
                     {i18n.t(
@@ -458,6 +591,22 @@ export default function AlertRuleTab({
               {/* Expanded form */}
               {isExpanded && (
                 <div className="border-t px-4 pb-4 pt-3 space-y-4">
+                  {/* Legacy condition warning */}
+                  {unsupportedTypes.length > 0 && (
+                    <div
+                      data-testid={`alert-rule-legacy-warning-${index}`}
+                      className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700"
+                    >
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                      <span>
+                        {i18n.t(
+                          "policies:configurationPolicies.featureTabs.alertRuleTab.thisRuleUsesRetiredConditionTypes",
+                          { types: unsupportedTypes.join(", ") },
+                        )}
+                      </span>
+                    </div>
+                  )}
+
                   {/* Name */}
                   <div>
                     <label className="text-xs font-medium text-muted-foreground">
@@ -526,199 +675,332 @@ export default function AlertRuleTab({
                       </button>
                     </div>
                     <div className="mt-2 space-y-2">
-                      {item.conditions.map((condition, ci) => (
-                        <div
-                          key={ci}
-                          className="rounded-md border bg-muted/20 p-3"
-                        >
-                          <div className="flex items-start gap-2">
-                            <div className="flex-1 grid gap-2 sm:grid-cols-2 md:grid-cols-4">
-                              <div>
-                                <label className="text-xs font-medium text-muted-foreground">
-                                  {i18n.t("common:labels.type")}
-                                </label>
-                                <select
-                                  value={condition.type}
-                                  onChange={(e) =>
-                                    updateCondition(index, ci, {
-                                      type: e.target.value as ConditionType,
-                                    })
-                                  }
-                                  className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
-                                >
-                                  {conditionTypeOptions.map((o) => (
-                                    <option key={o.value} value={o.value}>
-                                      {o.label}
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
+                      {item.conditions.map((condition, ci) => {
+                        const editable = isEditableConditionType(
+                          condition.type,
+                        );
+                        return (
+                          <div
+                            key={ci}
+                            data-testid={`alert-rule-${index}-condition-${ci}`}
+                            className="rounded-md border bg-muted/20 p-3"
+                          >
+                            <div className="flex items-start gap-2">
+                              <div className="flex-1 grid gap-2 sm:grid-cols-2 md:grid-cols-4">
+                                <div>
+                                  <label className="text-xs font-medium text-muted-foreground">
+                                    {i18n.t("common:labels.type")}
+                                  </label>
+                                  {editable ? (
+                                    <select
+                                      value={condition.type}
+                                      onChange={(e) =>
+                                        changeConditionType(
+                                          index,
+                                          ci,
+                                          e.target.value as ConditionType,
+                                        )
+                                      }
+                                      className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
+                                    >
+                                      {conditionTypeOptions.map((o) => (
+                                        <option key={o.value} value={o.value}>
+                                          {o.label}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  ) : (
+                                    <p className="mt-1 flex h-8 items-center truncate rounded-md border border-dashed bg-muted/40 px-2 font-mono text-xs text-muted-foreground">
+                                      {condition.type}
+                                    </p>
+                                  )}
+                                </div>
 
-                              {condition.type ===
-                                i18n.t(
-                                  "policies:configurationPolicies.featureTabs.alertRuleTab.metric3",
-                                ) && (
-                                <>
-                                  <div>
+                                {!editable && (
+                                  <p className="self-center text-xs text-muted-foreground sm:col-span-1 md:col-span-3">
+                                    {i18n.t(
+                                      "policies:configurationPolicies.featureTabs.alertRuleTab.thisConditionTypeIsNoLongerEditable",
+                                    )}
+                                  </p>
+                                )}
+
+                                {condition.type === "metric" && (
+                                  <>
+                                    <div>
+                                      <label className="text-xs font-medium text-muted-foreground">
+                                        {i18n.t(
+                                          "policies:configurationPolicies.featureTabs.alertRuleTab.metric2",
+                                        )}
+                                      </label>
+                                      <select
+                                        value={condition.metric ?? "cpu"}
+                                        onChange={(e) =>
+                                          updateCondition(index, ci, {
+                                            metric: e.target.value,
+                                          })
+                                        }
+                                        className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
+                                      >
+                                        {metricOptions.map((o) => (
+                                          <option key={o.value} value={o.value}>
+                                            {o.label}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                    <div>
+                                      <label className="text-xs font-medium text-muted-foreground">
+                                        {i18n.t(
+                                          "policies:configurationPolicies.featureTabs.alertRuleTab.operator",
+                                        )}
+                                      </label>
+                                      <select
+                                        value={condition.operator ?? "gt"}
+                                        onChange={(e) =>
+                                          updateCondition(index, ci, {
+                                            operator: e.target.value,
+                                          })
+                                        }
+                                        className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
+                                      >
+                                        {operatorOptions.map((o) => (
+                                          <option key={o.value} value={o.value}>
+                                            {o.label}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                    <div>
+                                      <label className="text-xs font-medium text-muted-foreground">
+                                        {i18n.t(
+                                          "policies:configurationPolicies.featureTabs.alertRuleTab.value",
+                                        )}
+                                      </label>
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        max={100}
+                                        value={condition.value ?? 80}
+                                        onChange={(e) =>
+                                          updateCondition(index, ci, {
+                                            value: Number(e.target.value),
+                                          })
+                                        }
+                                        className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
+                                      />
+                                    </div>
+                                  </>
+                                )}
+
+                                {condition.type === "offline" && (
+                                  <div className="sm:col-span-3">
                                     <label className="text-xs font-medium text-muted-foreground">
                                       {i18n.t(
-                                        "policies:configurationPolicies.featureTabs.alertRuleTab.metric2",
-                                      )}
-                                    </label>
-                                    <select
-                                      value={condition.metric ?? "cpu"}
-                                      onChange={(e) =>
-                                        updateCondition(index, ci, {
-                                          metric: e.target.value,
-                                        })
-                                      }
-                                      className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
-                                    >
-                                      {metricOptions.map((o) => (
-                                        <option key={o.value} value={o.value}>
-                                          {o.label}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  </div>
-                                  <div>
-                                    <label className="text-xs font-medium text-muted-foreground">
-                                      {i18n.t(
-                                        "policies:configurationPolicies.featureTabs.alertRuleTab.operator",
-                                      )}
-                                    </label>
-                                    <select
-                                      value={condition.operator ?? "gt"}
-                                      onChange={(e) =>
-                                        updateCondition(index, ci, {
-                                          operator: e.target.value,
-                                        })
-                                      }
-                                      className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
-                                    >
-                                      {operatorOptions.map((o) => (
-                                        <option key={o.value} value={o.value}>
-                                          {o.label}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  </div>
-                                  <div>
-                                    <label className="text-xs font-medium text-muted-foreground">
-                                      {i18n.t(
-                                        "policies:configurationPolicies.featureTabs.alertRuleTab.value",
+                                        "policies:configurationPolicies.featureTabs.alertRuleTab.offlineDurationMin",
                                       )}
                                     </label>
                                     <input
                                       type="number"
-                                      min={0}
-                                      max={100}
-                                      value={condition.value ?? 80}
+                                      min={1}
+                                      max={OFFLINE_DURATION_MAX_MINUTES}
+                                      value={condition.durationMinutes ?? 5}
                                       onChange={(e) =>
                                         updateCondition(index, ci, {
-                                          value: Number(e.target.value),
+                                          durationMinutes: Math.min(
+                                            OFFLINE_DURATION_MAX_MINUTES,
+                                            Math.max(1, Number(e.target.value)),
+                                          ),
                                         })
                                       }
                                       className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
                                     />
-                                  </div>
-                                </>
-                              )}
-
-                              {condition.type ===
-                                i18n.t(
-                                  "policies:configurationPolicies.featureTabs.alertRuleTab.offline",
-                                ) && (
-                                <div className="sm:col-span-3">
-                                  <label className="text-xs font-medium text-muted-foreground">
-                                    {i18n.t(
-                                      "policies:configurationPolicies.featureTabs.alertRuleTab.offlineDurationMin",
-                                    )}
-                                  </label>
-                                  <input
-                                    type="number"
-                                    min={1}
-                                    max={OFFLINE_DURATION_MAX_MINUTES}
-                                    value={condition.durationMinutes ?? 5}
-                                    onChange={(e) =>
-                                      updateCondition(index, ci, {
-                                        durationMinutes: Math.min(
-                                          OFFLINE_DURATION_MAX_MINUTES,
-                                          Math.max(1, Number(e.target.value)),
-                                        ),
-                                      })
-                                    }
-                                    className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
-                                  />
-                                  <p className="mt-1 text-[11px] text-muted-foreground">
-                                    {i18n.t(
-                                      "policies:configurationPolicies.featureTabs.alertRuleTab.max",
-                                    )}
-                                    {OFFLINE_DURATION_MAX_MINUTES}
-                                    {i18n.t(
-                                      "policies:configurationPolicies.featureTabs.alertRuleTab.min24hReEvaluationHorizon",
-                                    )}
-                                  </p>
-                                </div>
-                              )}
-
-                              {condition.type ===
-                                i18n.t(
-                                  "policies:configurationPolicies.featureTabs.alertRuleTab.custom2",
-                                ) && (
-                                <>
-                                  <div>
-                                    <label className="text-xs font-medium text-muted-foreground">
+                                    <p className="mt-1 text-[11px] text-muted-foreground">
                                       {i18n.t(
-                                        "policies:configurationPolicies.featureTabs.alertRuleTab.fieldName",
+                                        "policies:configurationPolicies.featureTabs.alertRuleTab.max",
                                       )}
-                                    </label>
-                                    <input
-                                      value={condition.field ?? ""}
-                                      onChange={(e) =>
-                                        updateCondition(index, ci, {
-                                          field: e.target.value,
-                                        })
-                                      }
-                                      placeholder={i18n.t(
-                                        "policies:configurationPolicies.featureTabs.alertRuleTab.customField",
-                                      )}
-                                      className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
-                                    />
-                                  </div>
-                                  <div className="sm:col-span-2">
-                                    <label className="text-xs font-medium text-muted-foreground">
+                                      {OFFLINE_DURATION_MAX_MINUTES}
                                       {i18n.t(
-                                        "policies:configurationPolicies.featureTabs.alertRuleTab.condition2",
+                                        "policies:configurationPolicies.featureTabs.alertRuleTab.min24hReEvaluationHorizon",
                                       )}
-                                    </label>
-                                    <input
-                                      value={condition.customCondition ?? ""}
-                                      onChange={(e) =>
-                                        updateCondition(index, ci, {
-                                          customCondition: e.target.value,
-                                        })
-                                      }
-                                      placeholder={i18n.t(
-                                        "policies:configurationPolicies.featureTabs.alertRuleTab.value100",
-                                      )}
-                                      className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
-                                    />
+                                    </p>
                                   </div>
-                                </>
-                              )}
+                                )}
+
+                                {condition.type === "event_log" && (
+                                  <>
+                                    <div>
+                                      <label className="text-xs font-medium text-muted-foreground">
+                                        {i18n.t(
+                                          "policies:configurationPolicies.featureTabs.alertRuleTab.eventCategory",
+                                        )}
+                                      </label>
+                                      <select
+                                        value={condition.category ?? "security"}
+                                        onChange={(e) =>
+                                          updateCondition(index, ci, {
+                                            category: e.target
+                                              .value as EventLogCategory,
+                                          })
+                                        }
+                                        className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
+                                      >
+                                        {eventCategoryOptions.map((o) => (
+                                          <option key={o.value} value={o.value}>
+                                            {o.label}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                    <div>
+                                      <label className="text-xs font-medium text-muted-foreground">
+                                        {i18n.t(
+                                          "policies:configurationPolicies.featureTabs.alertRuleTab.minimumLevel",
+                                        )}
+                                      </label>
+                                      <select
+                                        value={condition.level ?? "error"}
+                                        onChange={(e) =>
+                                          updateCondition(index, ci, {
+                                            level: e.target
+                                              .value as EventLogLevel,
+                                          })
+                                        }
+                                        className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
+                                      >
+                                        {eventLevelOptions.map((o) => (
+                                          <option key={o.value} value={o.value}>
+                                            {o.label}
+                                          </option>
+                                        ))}
+                                      </select>
+                                      <p className="mt-1 text-[11px] text-muted-foreground">
+                                        {i18n.t(
+                                          "policies:configurationPolicies.featureTabs.alertRuleTab.matchesThisLevelAndAbove",
+                                        )}
+                                      </p>
+                                    </div>
+                                    <div>
+                                      <label className="text-xs font-medium text-muted-foreground">
+                                        {i18n.t(
+                                          "policies:configurationPolicies.featureTabs.alertRuleTab.countThreshold",
+                                        )}
+                                      </label>
+                                      <input
+                                        type="number"
+                                        min={1}
+                                        max={EVENT_LOG_COUNT_MAX}
+                                        value={condition.countThreshold ?? 1}
+                                        onChange={(e) =>
+                                          updateCondition(index, ci, {
+                                            countThreshold: Math.min(
+                                              EVENT_LOG_COUNT_MAX,
+                                              Math.max(
+                                                1,
+                                                Number(e.target.value) || 1,
+                                              ),
+                                            ),
+                                          })
+                                        }
+                                        className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
+                                      />
+                                      <p className="mt-1 text-[11px] text-muted-foreground">
+                                        {i18n.t(
+                                          "policies:configurationPolicies.featureTabs.alertRuleTab.alertWhenThisManyEventsOccur",
+                                        )}
+                                      </p>
+                                    </div>
+                                    <div>
+                                      <label className="text-xs font-medium text-muted-foreground">
+                                        {i18n.t(
+                                          "policies:configurationPolicies.featureTabs.alertRuleTab.windowMinutes",
+                                        )}
+                                      </label>
+                                      <input
+                                        type="number"
+                                        min={1}
+                                        max={EVENT_LOG_WINDOW_MAX_MINUTES}
+                                        value={condition.windowMinutes ?? 15}
+                                        onChange={(e) =>
+                                          updateCondition(index, ci, {
+                                            windowMinutes: Math.min(
+                                              EVENT_LOG_WINDOW_MAX_MINUTES,
+                                              Math.max(
+                                                1,
+                                                Number(e.target.value) || 15,
+                                              ),
+                                            ),
+                                          })
+                                        }
+                                        className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
+                                      />
+                                    </div>
+                                    <div className="sm:col-span-2">
+                                      <label className="text-xs font-medium text-muted-foreground">
+                                        {i18n.t(
+                                          "policies:configurationPolicies.featureTabs.alertRuleTab.sourcePatternOptional",
+                                        )}
+                                      </label>
+                                      <input
+                                        value={condition.sourcePattern ?? ""}
+                                        onChange={(e) =>
+                                          updateCondition(index, ci, {
+                                            sourcePattern:
+                                              e.target.value || undefined,
+                                          })
+                                        }
+                                        maxLength={500}
+                                        placeholder={i18n.t(
+                                          "policies:configurationPolicies.featureTabs.alertRuleTab.eGEventLogOrSshd",
+                                        )}
+                                        className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
+                                      />
+                                      <p className="mt-1 text-[11px] text-muted-foreground">
+                                        {i18n.t(
+                                          "policies:configurationPolicies.featureTabs.alertRuleTab.regexToMatchTheEventSource",
+                                        )}
+                                      </p>
+                                    </div>
+                                    <div className="sm:col-span-2">
+                                      <label className="text-xs font-medium text-muted-foreground">
+                                        {i18n.t(
+                                          "policies:configurationPolicies.featureTabs.alertRuleTab.messagePatternOptional",
+                                        )}
+                                      </label>
+                                      <input
+                                        value={condition.messagePattern ?? ""}
+                                        onChange={(e) =>
+                                          updateCondition(index, ci, {
+                                            messagePattern:
+                                              e.target.value || undefined,
+                                          })
+                                        }
+                                        maxLength={500}
+                                        placeholder={i18n.t(
+                                          "policies:configurationPolicies.featureTabs.alertRuleTab.eGFailedLoginAuthentication",
+                                        )}
+                                        className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
+                                      />
+                                      <p className="mt-1 text-[11px] text-muted-foreground">
+                                        {i18n.t(
+                                          "policies:configurationPolicies.featureTabs.alertRuleTab.regexToMatchTheEventMessage",
+                                        )}
+                                      </p>
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => removeCondition(index, ci)}
+                                disabled={item.conditions.length <= 1}
+                                className="mt-4 flex h-8 w-8 items-center justify-center rounded-md text-destructive hover:bg-muted disabled:opacity-50"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
                             </div>
-                            <button
-                              type="button"
-                              onClick={() => removeCondition(index, ci)}
-                              disabled={item.conditions.length <= 1}
-                              className="mt-4 flex h-8 w-8 items-center justify-center rounded-md text-destructive hover:bg-muted disabled:opacity-50"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
 
