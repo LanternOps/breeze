@@ -1,6 +1,6 @@
 ---
 title: Service & Process Monitoring
-description: Keep Windows services and processes running, alert on event-log activity and metric thresholds, and view per-device monitoring results.
+description: Keep Windows services and processes running, with optional auto-restart, and view per-device monitoring results.
 sidebar:
   label: Service Monitoring
 ---
@@ -9,13 +9,13 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
 ## Overview
 
-Service monitoring has two sides. You **define** what an agent should watch inside the **Monitoring** feature of a [configuration policy](/features/configuration-policies/), and you **read** the results on each device's **Monitoring** tab. The agent evaluates the policy on a fixed interval, reports the status of every watched service and process, and raises alerts when something stops, crosses a threshold, or matches an event-log rule.
+Service monitoring has two sides. You **define** what an agent should watch inside the **Monitoring** feature of a [configuration policy](/features/configuration-policies/), and you **read** the results on each device's **Monitoring** tab. The agent evaluates the policy on a fixed interval, reports the status of every watched service and process, and can restart one that stops.
 
-A single Monitoring feature covers three things:
+A Monitoring feature covers one thing: **service & process watches** — services and processes that must keep running, with optional auto-restart. Event log alerts and metric/offline alert rules live in the **Alerts** feature of the policy instead — see [Alerts vs. Monitoring](/features/configuration-policies/#alerts-vs-monitoring) for the boundary between the two, and [Alerts](/features/alerts/) for how to configure them.
 
-- **Service & process watches** — services and processes that must keep running, with optional auto-restart.
-- **Event log alerts** — rules that fire on Windows Event Log / macOS unified log / Linux journal entries.
-- **Metric & status alert rules** — CPU, RAM, disk, and network thresholds, offline detection, and other conditions.
+<Aside type="note">
+  Metric alert rules and event log alerts used to be configured here. They were automatically moved to the Alerts feature of the same policy during the 2026-07-30 alerts/monitoring consolidation — no rules were lost, but you now edit them on the **Alert Rules** tab instead of **Monitoring**.
+</Aside>
 
 Because Monitoring is a configuration-policy feature, it can be owned by a single organization or made **partner-wide** to apply the same watches across every organization you manage. See [Configuration Policies](/features/configuration-policies/) for how ownership and the cascade work.
 
@@ -31,13 +31,11 @@ Because Monitoring is a configuration-policy feature, it can be owned by a singl
 
 4. **Optionally enable auto-restart.** Turn on **Auto-restart** to have the agent restart a stopped watch. Set **Max restart attempts** (0–50, default 3) and a **Cooldown** (seconds, default 300) between attempts.
 
-5. **Add event log alerts (optional).** Give the rule a name, a **Category** (`security`, `hardware`, `application`, `system`), and a **Minimum level** (`warning`, `error`, `critical` — matches that level and above). Optionally add **Source** and **Message** regex patterns, then a **Count threshold** within a **Time window** (minutes) that triggers the alert.
-
-6. **Add metric & status alert rules (optional).** Each rule has one or more conditions. Condition types include **Metric threshold** (`cpu`, `ram`, `disk`, `network` with a `gt`/`lt`/`gte`/`lte`/`eq`/`neq` operator and value), **Offline status**, **Bandwidth high**, **Disk I/O high**, **Network errors**, **Patch compliance**, **Certificate expiry**, and **Custom**. Set a **Cooldown** and optional **Auto-resolve**.
-
-7. **Save the feature.** The watches, event-log rules, and alert rules are stored on the policy and delivered to every device the policy resolves to.
+5. **Save the feature.** The watches are stored on the policy and delivered to every device the policy resolves to.
 
 </Steps>
+
+Need to alert on an event log entry, or a CPU/RAM/disk threshold, instead of (or in addition to) watching a service? Add an **Alert Rules** feature to the same policy — see [Creating Alert Rules](/features/alerts/#creating-alert-rules). One policy can carry both a Monitoring feature and an Alert Rules feature at once.
 
 <Aside type="tip">
   You can also manage watches programmatically through the AI/MCP tools `manage_service_monitors` and `get_service_monitoring_status`.
@@ -78,8 +76,11 @@ The device has no watches assigned, or the agent has not reported yet. Confirm a
 ### Auto-restart isn't recovering a service
 Check that **Auto-restart** is enabled on the watch and that **Max restart attempts** hasn't been exhausted within the **Cooldown** window. A `Restart failed` badge means the agent attempted a restart but the service did not come back.
 
-### Alerts aren't firing
-For watches, confirm **Alert on stop** is on and the **Consecutive failures** count has been reached. For event-log rules, verify the category, minimum level, and that the **Count threshold** is met within the **Time window**. See [Alerts](/features/alerts/) for where triggered alerts appear.
+### A watch alert isn't firing
+Confirm **Alert on stop** is on and the **Consecutive failures** count has been reached. See [Alerts](/features/alerts/) for where triggered alerts appear.
+
+### An event-log or metric alert isn't firing
+Event log alerts and metric/offline alert rules are configured and evaluated as part of the **Alert Rules** feature, not Monitoring. Check the category, minimum level, count threshold, and time window on the **Alert Rules** tab of the policy — see [Creating Alert Rules](/features/alerts/#creating-alert-rules).
 
 ### Partner-wide policy edits are greyed out
 Partner-wide Monitoring policies can only be edited by partner-level users with access to every organization. Organization-scoped users see the inherited settings but cannot change them — see [Configuration Policies](/features/configuration-policies/).

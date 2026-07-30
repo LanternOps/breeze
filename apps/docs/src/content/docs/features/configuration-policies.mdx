@@ -36,12 +36,12 @@ A policy can bundle multiple feature types:
 | Feature | What it controls |
 |---|---|
 | **Patch Management** | Auto-approval, schedule, reboot policy |
-| **Alert Rules** | Conditions, severity, cooldown, notification templates |
+| **Alert Rules** | CPU/RAM/disk thresholds, offline detection, event log alerts -- conditions, severity, cooldown, notification templates |
 | **Maintenance Windows** | Recurrence, duration, alert/patch/automation suppression |
 | **Compliance Rules** | Desired-state rules, enforcement level, remediation script |
 | **Backup** | Schedule and retention |
 | **Security** | Security policy settings |
-| **Monitoring** | Check configuration |
+| **Monitoring** | Agent-side service & process watches, check interval, auto-restart |
 | **Automation** | Event triggers, cron schedules, bulk actions |
 | **Privileged Access** | Windows UAC elevation prompt capture for [privileged access management](/features/pam/) |
 | **Vulnerability Scanning** | Turns on daily CVE correlation for the scope (off by default) -- see [vulnerability management](/features/vulnerability-management/) |
@@ -50,6 +50,21 @@ Each feature can be configured in one of two modes:
 
 - **Linked** — points to an existing policy object by ID (e.g., an existing alert rule). Changes to the linked object propagate automatically. Not available for `monitoring` — use inline instead.
 - **Inline** — settings are stored directly in the policy. Useful for simple configurations that don't need to be shared. Required for `monitoring`, `backup`, and `security` feature types.
+
+## Alerts vs. Monitoring
+
+**Alert Rules** and **Monitoring** are two different feature types that often get confused because both can raise an alert:
+
+- **Alert Rules** are **server-evaluated**. They watch CPU/RAM/disk usage against a threshold, detect when a device goes offline, or fire on Windows Event Log / macOS unified log / Linux journal entries. Breeze collects device metrics automatically -- Alert Rules need no prerequisite Monitoring feature, or any other feature, to work.
+- **Monitoring** is **agent-side**. It watches specific Windows services or processes you name (e.g. `Spooler`, `sshd`, `node`), reports whether each one is running, and can automatically restart one that stops. It does not evaluate metric thresholds or event logs itself.
+
+A single policy can carry both a Monitoring feature and an Alert Rules feature at the same time -- for example, watching the `Spooler` service with auto-restart while also alerting on disk usage above 90%. See [Creating Alert Rules](/features/alerts/#creating-alert-rules) and [Service & Process Monitoring](/features/service-monitoring/) for how to configure each.
+
+If the same kind of threshold is set on Alert Rules feature links at different levels of the policy hierarchy (e.g. a disk-space rule on both the organization and one of its sites), the **most specific (closest) level to the device wins** -- the same closest-wins rule that governs every other policy setting, described above.
+
+<Aside type="note">
+  Metric alert rules and event log alerts used to be configured as part of the Monitoring feature. During the 2026-07-30 alerts/monitoring consolidation, any such rules on existing policies were automatically moved to that policy's Alert Rules feature -- no rules were lost, but they're edited on the **Alert Rules** tab now rather than **Monitoring**.
+</Aside>
 
 ## Enforcement modes
 
