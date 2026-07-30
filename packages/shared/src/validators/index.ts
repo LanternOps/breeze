@@ -760,7 +760,10 @@ export const onedriveHelperInlineSettingsSchema = z.object({
 const metricConditionSchema = z.object({
   type: z.literal('metric'),
   metric: z.enum(['cpu', 'ram', 'memory', 'disk']),
-  operator: z.enum(['gt', 'gte', 'lt', 'lte', 'eq']),
+  // `neq` is included because the evaluator supports it — threshold.ts's own
+  // validate() accepts gt/gte/lt/lte/eq/neq. The editor has always offered
+  // "Not Equal", so omitting it here 400s a save the evaluator would have run.
+  operator: z.enum(['gt', 'gte', 'lt', 'lte', 'eq', 'neq']),
   value: z.number(),
   duration: z.number().int().min(0).max(86400).optional(), // seconds the condition must hold
 });

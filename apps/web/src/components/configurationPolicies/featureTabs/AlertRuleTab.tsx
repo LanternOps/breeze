@@ -956,7 +956,7 @@ export default function AlertRuleTab({
                                       />
                                       <p className="mt-1 text-[11px] text-muted-foreground">
                                         {i18n.t(
-                                          "policies:configurationPolicies.featureTabs.alertRuleTab.regexToMatchTheEventSource",
+                                          "policies:configurationPolicies.featureTabs.alertRuleTab.textContainedInTheEventSourceCaseInsensitive",
                                         )}
                                       </p>
                                     </div>
@@ -976,13 +976,13 @@ export default function AlertRuleTab({
                                         }
                                         maxLength={500}
                                         placeholder={i18n.t(
-                                          "policies:configurationPolicies.featureTabs.alertRuleTab.eGFailedLoginAuthentication",
+                                          "policies:configurationPolicies.featureTabs.alertRuleTab.eGFailedLogin",
                                         )}
                                         className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
                                       />
                                       <p className="mt-1 text-[11px] text-muted-foreground">
                                         {i18n.t(
-                                          "policies:configurationPolicies.featureTabs.alertRuleTab.regexToMatchTheEventMessage",
+                                          "policies:configurationPolicies.featureTabs.alertRuleTab.textContainedInTheEventMessageCaseInsensitive",
                                         )}
                                       </p>
                                     </div>

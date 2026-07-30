@@ -235,10 +235,7 @@
         "warning": "Avertissement",
         "error": "Erreur",
         "eGEventLogOrSshd": "par exemple EventLog ou sshd",
-        "eGFailedLoginAuthentication": "par exemple, échec de connexion|authentification",
         "matchesThisLevelAndAbove": "Matchs de ce niveau et au-delà",
-        "regexToMatchTheEventSource": "Regex pour correspondre à la source de l’événement",
-        "regexToMatchTheEventMessage": "Regex pour correspondre au message de l’événement",
         "alertWhenThisManyEventsOccur": "Alertez-vous lorsque ce nombre d’événements se produisent",
         "minimumLevel": "Niveau minimum",
         "countThreshold": "Seuil de comptage",
@@ -248,7 +245,10 @@
         "eventCategory": "Catégorie d’événement",
         "windowMinutes": "Fenêtre (minutes)",
         "thisConditionTypeIsNoLongerEditable": "Ce type de condition n’est plus modifiable ici.",
-        "thisRuleUsesRetiredConditionTypes": "Cette règle utilise encore des types de condition retirés ({{types}}). Supprimez ces conditions avant d’enregistrer — le serveur rejette les règles qui en contiennent."
+        "thisRuleUsesRetiredConditionTypes": "Cette règle utilise encore des types de condition retirés ({{types}}). Supprimez ces conditions avant d’enregistrer — le serveur rejette les règles qui en contiennent.",
+        "textContainedInTheEventSourceCaseInsensitive": "Texte contenu dans la source de l’événement (insensible à la casse)",
+        "textContainedInTheEventMessageCaseInsensitive": "Texte contenu dans le message de l’événement (insensible à la casse)",
+        "eGFailedLogin": "par exemple, échec de connexion"
       },
       "automationTab": {
         "uTC": "UTC",

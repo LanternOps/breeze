@@ -235,10 +235,7 @@
         "warning": "Warnung",
         "error": "Fehler",
         "eGEventLogOrSshd": "z.B. EventLog oder sshd",
-        "eGFailedLoginAuthentication": "z.B. Anmeldung/Authentifizierung fehlgeschlagen",
         "matchesThisLevelAndAbove": "Entspricht dieser Stufe und höher",
-        "regexToMatchTheEventSource": "Regex passend zur Ereignisquelle",
-        "regexToMatchTheEventMessage": "Regex zur Übereinstimmung mit der Ereignisnachricht",
         "alertWhenThisManyEventsOccur": "Alarmieren Sie, wenn so viele Ereignisse auftreten",
         "minimumLevel": "Mindestniveau",
         "countThreshold": "Zählschwelle",
@@ -248,7 +245,10 @@
         "eventCategory": "Ereigniskategorie",
         "windowMinutes": "Fenster (Minuten)",
         "thisConditionTypeIsNoLongerEditable": "Dieser Bedingungstyp kann hier nicht mehr bearbeitet werden.",
-        "thisRuleUsesRetiredConditionTypes": "Diese Regel verwendet noch eingestellte Bedingungstypen ({{types}}). Entfernen Sie diese Bedingungen vor dem Speichern — der Server weist Regeln zurück, die sie enthalten."
+        "thisRuleUsesRetiredConditionTypes": "Diese Regel verwendet noch eingestellte Bedingungstypen ({{types}}). Entfernen Sie diese Bedingungen vor dem Speichern — der Server weist Regeln zurück, die sie enthalten.",
+        "textContainedInTheEventSourceCaseInsensitive": "Text, der in der Ereignisquelle enthalten ist (Groß-/Kleinschreibung wird ignoriert)",
+        "textContainedInTheEventMessageCaseInsensitive": "Text, der in der Ereignisnachricht enthalten ist (Groß-/Kleinschreibung wird ignoriert)",
+        "eGFailedLogin": "z.B. Anmeldung fehlgeschlagen"
       },
       "automationTab": {
         "uTC": "UTC",

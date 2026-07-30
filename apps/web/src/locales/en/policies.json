@@ -235,10 +235,7 @@
         "warning": "Warning",
         "error": "Error",
         "eGEventLogOrSshd": "e.g. EventLog or sshd",
-        "eGFailedLoginAuthentication": "e.g. failed login|authentication",
         "matchesThisLevelAndAbove": "Matches this level and above",
-        "regexToMatchTheEventSource": "Regex to match the event source",
-        "regexToMatchTheEventMessage": "Regex to match the event message",
         "alertWhenThisManyEventsOccur": "Alert when this many events occur",
         "minimumLevel": "Minimum level",
         "countThreshold": "Count threshold",
@@ -248,7 +245,10 @@
         "eventCategory": "Event category",
         "windowMinutes": "Window (minutes)",
         "thisConditionTypeIsNoLongerEditable": "This condition type is no longer editable here.",
-        "thisRuleUsesRetiredConditionTypes": "This rule still uses retired condition types ({{types}}). Remove those conditions before saving — the server rejects rules that contain them."
+        "thisRuleUsesRetiredConditionTypes": "This rule still uses retired condition types ({{types}}). Remove those conditions before saving — the server rejects rules that contain them.",
+        "textContainedInTheEventSourceCaseInsensitive": "Text contained in the event source (case-insensitive)",
+        "textContainedInTheEventMessageCaseInsensitive": "Text contained in the event message (case-insensitive)",
+        "eGFailedLogin": "e.g. failed login"
       },
       "automationTab": {
         "uTC": "UTC",

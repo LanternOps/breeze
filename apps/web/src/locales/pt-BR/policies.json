@@ -235,10 +235,7 @@
         "warning": "Aviso",
         "error": "Erro",
         "eGEventLogOrSshd": "ex.: EventLog ou sshd",
-        "eGFailedLoginAuthentication": "ex.: falha de login|autenticação",
         "matchesThisLevelAndAbove": "Corresponde a este nível e aos superiores",
-        "regexToMatchTheEventSource": "Expressão regular para corresponder à origem do evento",
-        "regexToMatchTheEventMessage": "Expressão regular para corresponder à mensagem do evento",
         "alertWhenThisManyEventsOccur": "Alertar quando ocorrer esta quantidade de eventos",
         "minimumLevel": "Nível mínimo",
         "countThreshold": "Limite de contagem",
@@ -248,7 +245,10 @@
         "eventCategory": "Categoria do evento",
         "windowMinutes": "Janela (minutos)",
         "thisConditionTypeIsNoLongerEditable": "Este tipo de condição não pode mais ser editado aqui.",
-        "thisRuleUsesRetiredConditionTypes": "Esta regra ainda usa tipos de condição descontinuados ({{types}}). Remova essas condições antes de salvar — o servidor rejeita regras que as contenham."
+        "thisRuleUsesRetiredConditionTypes": "Esta regra ainda usa tipos de condição descontinuados ({{types}}). Remova essas condições antes de salvar — o servidor rejeita regras que as contenham.",
+        "textContainedInTheEventSourceCaseInsensitive": "Texto contido na origem do evento (sem diferenciar maiúsculas)",
+        "textContainedInTheEventMessageCaseInsensitive": "Texto contido na mensagem do evento (sem diferenciar maiúsculas)",
+        "eGFailedLogin": "ex.: falha de login"
       },
       "automationTab": {
         "uTC": "UTC",

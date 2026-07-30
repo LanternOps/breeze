@@ -27,6 +27,17 @@ describe('alertRuleConditionSchema', () => {
     expect(alertRuleConditionSchema.safeParse({ type: 'bandwidth_high', value: 100 }).success).toBe(false);
   });
 
+  it('accepts every operator the threshold evaluator validates, including neq', () => {
+    // apps/api/src/services/alertConditions/handlers/threshold.ts validates
+    // gt/gte/lt/lte/eq/neq. The AlertRuleTab editor offers all six, so any one
+    // of them missing here is a hard 400 on a rule the evaluator would have run.
+    for (const operator of ['gt', 'gte', 'lt', 'lte', 'eq', 'neq'] as const) {
+      const r = alertRuleConditionSchema.safeParse({ type: 'metric', metric: 'cpu', operator, value: 85 });
+      expect(r.success, `operator ${operator}`).toBe(true);
+    }
+    expect(alertRuleConditionSchema.safeParse({ type: 'metric', metric: 'cpu', operator: 'contains', value: 85 }).success).toBe(false);
+  });
+
   it('rejects a metric condition with no metric name', () => {
     expect(alertRuleConditionSchema.safeParse({ type: 'metric', operator: 'gt', value: 85 }).success).toBe(false);
   });
