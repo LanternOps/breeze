@@ -191,6 +191,20 @@ describe('POST /partner-api/enrollment-keys', () => {
     expect(res.status).toBe(400);
   });
 
+  it('returns 400 when ttlMinutes exceeds PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES cap', async () => {
+    // Default cap is 10_080 minutes (7 days). A partner cannot mint a 1-year key
+    // (525_600 minutes) — the Zod schema rejects it before the handler runs.
+    const res = await request({ ...validBody, ttlMinutes: 525_600 });
+    expect(res.status).toBe(400);
+    expect(mocks.insert).not.toHaveBeenCalled();
+  });
+
+  it('accepts ttlMinutes at the cap boundary (10_080 = 7 days)', async () => {
+    const res = await request({ ...validBody, ttlMinutes: 10_080 });
+    expect(res.status).toBe(201);
+    expect(mocks.insert).toHaveBeenCalledOnce();
+  });
+
   it('writes audit event with actorType api_key', async () => {
     await request(validBody);
     expect(mocks.writeAuditEventAsync).toHaveBeenCalledWith(

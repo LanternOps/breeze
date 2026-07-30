@@ -13,7 +13,6 @@ import { zValidator } from '../../lib/validation';
 
 export const partnerEnrollmentKeyRoutes = new Hono();
 
-const MAX_TTL_MINUTES = 525_600; // 1 year
 const IDEMPOTENCY_TTL_SECONDS = 86_400; // 24 hours
 
 function envInt(name: string, defaultValue: number): number {
@@ -25,12 +24,20 @@ function envInt(name: string, defaultValue: number): number {
 
 const DEFAULT_TTL_MINUTES = envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60);
 
+// Platform-operator-configured cap on how long a partner-API-minted enrollment
+// key may be valid. Partners cannot bypass this by supplying a larger ttlMinutes.
+// Default: 7 days (10_080 minutes). Override with the env var to raise or lower
+// the cap without a code change.
+const PARTNER_API_MAX_TTL_MINUTES = envInt('PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES', 10_080);
+
 const createEnrollmentKeySchema = z.object({
   orgId: z.string().uuid(),
   siteId: z.string().uuid().optional(),
   name: z.string().min(1).max(255),
   maxUsage: z.number().int().min(1).max(100_000).default(1),
-  ttlMinutes: z.number().int().min(1).max(MAX_TTL_MINUTES).default(DEFAULT_TTL_MINUTES),
+  ttlMinutes: z.number().int().min(1).max(PARTNER_API_MAX_TTL_MINUTES).default(
+    Math.min(DEFAULT_TTL_MINUTES, PARTNER_API_MAX_TTL_MINUTES),
+  ),
 }).strict();
 
 function generateEnrollmentKey(): string {
