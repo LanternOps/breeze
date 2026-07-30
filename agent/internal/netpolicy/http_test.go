@@ -147,7 +147,7 @@ func TestNewClientRejectsInvalidPolicy(t *testing.T) {
 
 	_, err = NewClient(Policy{
 		Purpose:                ManagedSoftwareDownload,
-		ApprovedPrivateOrigins: []string{"https://user:pw@repo.lan"},
+		ApprovedPrivateOrigins: []string{"https://user:pw@repo.example"},
 	})
 	assertReason(t, err, ReasonInvalidOrigin)
 }
