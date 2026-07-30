@@ -96,7 +96,7 @@
     "@breeze/extension-cli": "workspace:*",
     "@types/archiver": "^7.0.0",
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^25.9.3",
+    "@types/node": "^26.1.2",
     "@types/nodemailer": "^8.0.1",
     "@types/oidc-provider": "^9.5.0",
     "@types/pdfkit": "^0.17.6",
