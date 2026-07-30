@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { getTableConfig } from 'drizzle-orm/pg-core';
-import { m365Connections, m365ConsentSessions } from './m365';
+import { m365Connections, m365ConsentSessions, m365UserConsentSessions } from './m365';
 
 describe('m365Connections schema', () => {
   it('has canonical metadata columns and only one deprecated secret column', () => {
@@ -8,6 +8,8 @@ describe('m365Connections schema', () => {
     expect(cfg.columns.map((c) => c.name).sort()).toEqual([
       'client_id', 'client_secret', 'consented_at', 'created_at', 'created_by',
       'consent_attempt_id',
+      // Delegated (user-axis) columns — design §4.1/§5.2.
+      'delegated_user_object_id', 'consent_generation', 'observed_delegated_scopes',
       'credential_domain', 'credential_version', 'display_name', 'expires_at',
       'grants_verified_at', 'id', 'last_error_code', 'last_verified_at', 'observed_grants', 'org_id',
       'permission_manifest_version', 'profile', 'revoked_at', 'status',
@@ -30,6 +32,9 @@ describe('m365Connections schema', () => {
     const names = getTableConfig(m365Connections).indexes.map((i) => i.config.name).sort();
     expect(names).toEqual([
       'm365_connections_id_org_profile_attempt_uniq',
+      // User-axis counterpart: a delegated row has org_id NULL, and a composite FK with a
+      // NULL column is not enforced at all under MATCH SIMPLE.
+      'm365_connections_id_user_profile_attempt_uniq',
       'm365_connections_org_profile_uniq',
       'm365_connections_user_profile_uniq',
       'm365_connections_verified_tenant_profile_uniq',
@@ -73,6 +78,42 @@ describe('m365ConsentSessions schema', () => {
       'm365_consent_sessions_phase_check',
       'm365_consent_sessions_phase_fields_check',
       'm365_consent_sessions_profile_check',
+    ]);
+  });
+});
+
+describe('m365UserConsentSessions schema', () => {
+  it('carries no tenant hint, which is the point rather than an omission', () => {
+    // A first delegated sign-in happens at /common and Breeze learns `tid` only from the ID
+    // token that comes back. The shipped org-axis table requires a tenant GUID BEFORE
+    // authorization; if this column ever appears here, the phase has been conflated with
+    // identity_verification and the flow cannot work for a first connection.
+    const names = getTableConfig(m365UserConsentSessions).columns.map((c) => c.name);
+    expect(names).not.toContain('tenant_hint_hash');
+    expect(names).not.toContain('org_id');
+  });
+
+  it('requires nonce and code_verifier on every row', () => {
+    // Unlike the org-axis table, where they are phase-dependent and nullable: every
+    // delegated consent is an auth-code + PKCE flow, so both always exist.
+    const columns = getTableConfig(m365UserConsentSessions).columns;
+    expect(columns.find((c) => c.name === 'nonce')?.notNull).toBe(true);
+    expect(columns.find((c) => c.name === 'code_verifier')?.notNull).toBe(true);
+  });
+
+  it('keys the composite FK on all four NOT NULL identity columns', () => {
+    // Load-bearing: under MATCH SIMPLE a composite FK with any NULL column is not enforced
+    // at all, so a nullable column here would silently remove the constraint.
+    const cfg = getTableConfig(m365UserConsentSessions);
+    for (const name of ['connection_id', 'user_id', 'profile', 'consent_attempt_id']) {
+      expect(cfg.columns.find((c) => c.name === name)?.notNull).toBe(true);
+    }
+    const fk = cfg.foreignKeys.find(
+      (f) => f.getName() === 'm365_user_consent_sessions_connection_identity_fkey',
+    );
+    expect(fk).toBeDefined();
+    expect(fk?.reference().columns.map((c) => c.name)).toEqual([
+      'connection_id', 'user_id', 'profile', 'consent_attempt_id',
     ]);
   });
 });
