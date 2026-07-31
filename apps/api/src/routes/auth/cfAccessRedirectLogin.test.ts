@@ -138,6 +138,10 @@ const auditState = vi.hoisted(() => ({
   loginFailures: [] as Array<Record<string, unknown>>,
 }));
 
+vi.mock('../../services/sentry', () => ({
+  captureException: vi.fn(),
+}));
+
 vi.mock('../../services/auditService', () => ({
   createAuditLogAsync: vi.fn((entry: Record<string, unknown>) => {
     auditState.audits.push(entry);
@@ -614,8 +618,15 @@ describe('GET /cf-access-login', () => {
     const loc = res.headers.get('Location') ?? '';
     expect(loc).toBe('/login?signedOut=1');
     expect(loc).not.toContain('evil.example');
-    // The misconfiguration is logged so the operator knows to set DASHBOARD_URL.
+    // The misconfiguration is logged so the operator knows to set DASHBOARD_URL,
+    // and reported so it is visible somewhere other than container stdout.
     expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('DASHBOARD_URL'));
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('<unset>'));
+    const { captureException } = await import('../../services/sentry');
+    expect(captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('DASHBOARD_URL') }),
+      expect.anything()
+    );
     // The Breeze session is still cleared even though the CF chain is skipped.
     expect(cookieState.cleared).toBe(true);
     errSpy.mockRestore();
@@ -632,6 +643,8 @@ describe('GET /cf-access-login', () => {
     expect(res.status).toBe(302);
     expect(res.headers.get('Location')).toBe('/login?signedOut=1');
     expect(cookieState.cleared).toBe(true);
+    // The log names the offending value — "unset" and "typo'd" are different fixes.
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('"not a url"'));
     errSpy.mockRestore();
   });
 
@@ -647,8 +660,9 @@ describe('GET /cf-access-login', () => {
     });
     expect(res.status).toBe(302);
     const loc = res.headers.get('Location') ?? '';
+    // The "null" origin never reaches the header, and the operator is told.
     expect(loc).toBe('/login?signedOut=1');
-    expect(loc).not.toContain('null');
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('javascript:alert(1)'));
     errSpy.mockRestore();
   });
 
