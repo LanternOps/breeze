@@ -4,7 +4,7 @@ import { and, eq } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 import { db } from '../../db';
 import { enrollmentKeys } from '../../db/schema';
-import { sites } from '../../db/schema/orgs';
+import { partners, sites } from '../../db/schema/orgs';
 import { requirePartnerApiScope } from '../../middleware/partnerApiAuth';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 import { writeAuditEventAsync } from '../../services/auditEvents';
@@ -24,11 +24,39 @@ function envInt(name: string, defaultValue: number): number {
 
 const DEFAULT_TTL_MINUTES = envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60);
 
-// Platform-operator-configured cap on how long a partner-API-minted enrollment
-// key may be valid. Partners cannot bypass this by supplying a larger ttlMinutes.
-// Default: 7 days (10_080 minutes). Override with the env var to raise or lower
-// the cap without a code change.
+// Platform-operator-configured outer cap. Partners cannot exceed this regardless
+// of their per-partner settings. Default: 7 days. Override with the env var.
 const PARTNER_API_MAX_TTL_MINUTES = envInt('PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES', 10_080);
+
+/**
+ * Resolves the per-partner enrollment key TTL cap from `partners.settings`
+ * (key: `enrollmentKeyMaxTtlMinutes`) and returns a 400 response body if
+ * `ttlMinutes` exceeds it. Returns `null` when the TTL is within the cap.
+ *
+ * The static PARTNER_API_MAX_TTL_MINUTES ceiling is already enforced by the
+ * Zod schema; this check enforces the finer-grained per-partner policy that
+ * may be stricter than the platform default.
+ */
+async function assertTtlWithinCap(
+  partnerId: string,
+  ttlMinutes: number,
+): Promise<{ error: string } | null> {
+  const [row] = await db
+    .select({ settings: partners.settings })
+    .from(partners)
+    .where(eq(partners.id, partnerId))
+    .limit(1);
+
+  const settings = (row?.settings ?? {}) as Record<string, unknown>;
+  const rawCap = settings['enrollmentKeyMaxTtlMinutes'];
+  if (typeof rawCap !== 'number' || !Number.isFinite(rawCap)) return null;
+
+  const cap = Math.floor(rawCap);
+  if (ttlMinutes > cap) {
+    return { error: `ttlMinutes exceeds the partner maximum of ${cap} minutes` };
+  }
+  return null;
+}
 
 const createEnrollmentKeySchema = z.object({
   orgId: z.string().uuid(),
@@ -65,6 +93,14 @@ partnerEnrollmentKeyRoutes.post(
     // Verify the requested org is accessible to this service principal.
     if (!principal.accessibleOrgIds.includes(data.orgId)) {
       return c.json({ error: 'Access to this organization denied' }, 403);
+    }
+
+    // Enforce per-partner TTL cap from partners.settings.enrollmentKeyMaxTtlMinutes.
+    // The Zod schema already enforces the platform-wide ceiling; this check
+    // enforces any stricter cap the partner has configured.
+    const ttlCapError = await assertTtlWithinCap(principal.partnerId, data.ttlMinutes);
+    if (ttlCapError) {
+      return c.json(ttlCapError, 400);
     }
 
     // Verify siteId belongs to the target org when provided.

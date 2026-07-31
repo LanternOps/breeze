@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
   redisGet: vi.fn(),
   redisSet: vi.fn(),
   writeAuditEventAsync: vi.fn(),
+  // per-partner settings returned by the partners table select
+  partnerSettings: {} as Record<string, unknown>,
 }));
 
 vi.mock('../../db', () => ({
@@ -116,10 +118,16 @@ describe('POST /partner-api/enrollment-keys', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.accessibleOrgIds = [ORG_ID];
+    mocks.partnerSettings = {};
     mocks.redisGet.mockResolvedValue(null);
     mocks.redisSet.mockResolvedValue('OK');
     mocks.writeAuditEventAsync.mockResolvedValue(undefined);
     mocks.insert.mockReturnValue(makeInsertBuilder([fakeKey]));
+    // Default: partner has no cap configured; site lookups find a match.
+    // assertTtlWithinCap runs first (partners table), then siteId check.
+    mocks.select.mockImplementation(() =>
+      makeSelectBuilder([{ settings: mocks.partnerSettings }]),
+    );
     app = new Hono();
     app.route('/partner-api', partnerApiRoutes);
   });
@@ -145,7 +153,10 @@ describe('POST /partner-api/enrollment-keys', () => {
   });
 
   it('returns 400 when siteId does not belong to the org', async () => {
-    mocks.select.mockReturnValue(makeSelectBuilder([]));
+    // First select: partner cap (no cap configured). Second: site lookup (not found).
+    mocks.select
+      .mockReturnValueOnce(makeSelectBuilder([{ settings: {} }]))
+      .mockReturnValueOnce(makeSelectBuilder([]));
     const res = await request({ ...validBody, siteId: SITE_ID });
     expect(res.status).toBe(400);
     const body = await res.json();
@@ -176,7 +187,10 @@ describe('POST /partner-api/enrollment-keys', () => {
   });
 
   it('validates siteId when provided and creates key', async () => {
-    mocks.select.mockReturnValue(makeSelectBuilder([{ id: SITE_ID }]));
+    // First select: partner cap (no cap). Second: site lookup (found).
+    mocks.select
+      .mockReturnValueOnce(makeSelectBuilder([{ settings: {} }]))
+      .mockReturnValueOnce(makeSelectBuilder([{ id: SITE_ID }]));
     const keyWithSite = { ...fakeKey, siteId: SITE_ID };
     mocks.insert.mockReturnValue(makeInsertBuilder([keyWithSite]));
 
@@ -201,6 +215,25 @@ describe('POST /partner-api/enrollment-keys', () => {
 
   it('accepts ttlMinutes at the cap boundary (10_080 = 7 days)', async () => {
     const res = await request({ ...validBody, ttlMinutes: 10_080 });
+    expect(res.status).toBe(201);
+    expect(mocks.insert).toHaveBeenCalledOnce();
+  });
+
+  it('returns 400 when ttlMinutes exceeds the per-partner configured cap', async () => {
+    // Partner has configured a 60-minute maximum in their settings.
+    // Requesting 120 minutes must be rejected even though it is within the
+    // platform-wide Zod ceiling (10_080 minutes).
+    mocks.partnerSettings = { enrollmentKeyMaxTtlMinutes: 60 };
+    const res = await request({ ...validBody, ttlMinutes: 120 });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/ttlMinutes exceeds the partner maximum of 60 minutes/i);
+    expect(mocks.insert).not.toHaveBeenCalled();
+  });
+
+  it('accepts ttlMinutes equal to the per-partner configured cap', async () => {
+    mocks.partnerSettings = { enrollmentKeyMaxTtlMinutes: 60 };
+    const res = await request({ ...validBody, ttlMinutes: 60 });
     expect(res.status).toBe(201);
     expect(mocks.insert).toHaveBeenCalledOnce();
   });
