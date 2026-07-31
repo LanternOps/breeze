@@ -1,0 +1,190 @@
+---
+title: Rollout Modes & Compatibility Switches
+description: Why Breeze asks you to set upgrade-mode variables explicitly, what each one does, and which ones you still need to close out after a release.
+sidebar:
+  order: 5
+  label: Rollout Modes
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Some Breeze releases add environment variables that the API **refuses to boot
+without** in production, and a few compose files fail before the container even
+starts. This page explains why they exist, so you can set them with confidence
+rather than copying a value and hoping.
+
+## The problem they solve
+
+A security fix usually cannot be switched on the moment its code is deployed.
+While you are upgrading, two versions of Breeze are running at once — or a fleet
+of agents is running a mix of old and new builds. For that window, the *only*
+safe behaviour is the permissive one: keep accepting the old format, or the
+upgrade itself breaks working sessions.
+
+Once the upgrade finishes, the permissive behaviour becomes the liability. Now
+the safe behaviour is the strict one.
+
+So there are two correct values, and which one is correct depends on where you
+are in the rollout — something Breeze cannot reliably detect from inside a single
+process. Rather than guess, it asks.
+
+<Aside type="tip">
+That is the whole design rule: **when no default is safe in both states, Breeze
+makes the operator state which state they are in.** Where a safe default *does*
+exist, the variable is optional and defaults to the safe value. You will see both
+kinds below.
+</Aside>
+
+## Four kinds of switch
+
+Not every mode variable behaves the same way, and the difference tells you what
+follow-up you owe.
+
+| Kind | What it means | Follow-up |
+|---|---|---|
+| **Transition** | Two values; you move from the compatible one to the strict one once a drain completes | **Yes** — you are not done until you flip it |
+| **Operational** | A valve you open and close whenever operations require it | No — it has a normal steady state |
+| **Attestation** | You are declaring a fact about your infrastructure | No — it only changes if your infrastructure changes |
+| **Opt-in** | Off by default; turning it on is a deliberate security upgrade | Optional, but it is where the benefit lives |
+
+## Required in production
+
+These are validated at boot when `NODE_ENV=production` (or `DEPLOYMENT_ENV=staging`).
+In development they fall back to safe defaults, so local work is unaffected. The
+compose files additionally use `${VAR:?}` for these, which stops the container
+before it starts if the value is missing.
+
+### `EVENT_PERMISSION_EPOCH_MODE` — transition
+
+`compat` | `enforce` · start at `compat`
+
+Permission changes now take effect immediately rather than at the next token
+refresh, by stamping a permissions epoch onto event-WebSocket tickets. Servers
+that predate this release emit tickets with no epoch.
+
+- `compat` accepts those older tickets — required while any old server is still writing.
+- `enforce` rejects them.
+
+Flip to `enforce` at least 60 seconds after the last old server stops. Set it to
+`enforce` too early during a rolling deploy and you reject live tickets from
+servers that have not been replaced yet.
+
+<Aside type="note">
+If this value fails to parse, Breeze falls back to `enforce` — the closed mode.
+A typo fails secure, not open.
+</Aside>
+
+### `REMOTE_WS_AUTH_MODE` — transition
+
+`post_upgrade` | `pre_upgrade` · start at `post_upgrade`
+
+Controls whether remote-session tickets minted by pre-upgrade servers are still
+accepted. `post_upgrade` accepts them; `pre_upgrade` rejects them and applies the
+full authorization checks before the WebSocket upgrade.
+
+Stay on `post_upgrade` until every legacy viewer token has expired — that is a
+full viewer-token lifetime (2 hours) after the last old issuer stops, then one
+further ticket lifetime (60 seconds). The waits are sequential and cannot be
+inferred from "the deploy finished."
+
+### `REMOTE_ACCESS_ADMISSION_MODE` — operational
+
+`open` | `closed` · steady state `open`
+
+The remote-access barrier. `closed` makes every terminal, desktop, VNC and tunnel
+endpoint return `503` at the proxy, before any request reaches the API.
+
+This is not a migration setting — it is a valve you will use again. You close it
+during the lease cutover described in the [Upgrade Guide](/deploy/upgrades/#remote-access-lease-cutover),
+and any time you need remote traffic stopped for maintenance.
+
+### `REMOTE_WS_REDIS_TOPOLOGY` — attestation
+
+`standalone-single-primary` · the only accepted value
+
+Remote sessions coordinate ownership through an atomic Redis lease, so exactly one
+server owns a session at a time. That guarantee only holds on a single primary.
+Under asynchronous replication a failover can promote a replica that has not yet
+seen the latest lease write, leaving two servers each convinced they own the same
+session — which means two technicians could drive the same machine.
+
+You are asserting that your Redis is a standalone single primary with AOF enabled,
+`maxmemory-policy noeviction`, and cluster mode disabled. A runtime topology monitor
+independently checks this and **freezes remote admission** if reality disagrees, so
+the variable is your declaration and the monitor is the verification.
+
+<Aside type="caution">
+If you run Redis Sentinel, Redis Cluster, or a managed Redis with automatic
+failover, remote access will refuse to admit sessions. This is deliberate, not a
+bug. Everything else in Breeze continues to work normally. Move Redis to a single
+primary before upgrading if you need remote access.
+</Aside>
+
+## Opt-in, off by default
+
+These ship disabled. Nothing changes on upgrade; each is a separate decision with
+its own rollout procedure.
+
+### `AGENT_MTLS_BINDING_MODE`
+
+`off` (default) | `audit` | `enforce`
+
+Whether the edge certificate assertion is checked against the device's certificate
+history. `audit` computes and counts the decision without ever denying; `enforce`
+denies a mismatch. Requires a validating proxy in front of the API — leave `off` if
+you do not have one. Never inferred from `NODE_ENV`, `IS_HOSTED`, or your Cloudflare
+settings. See [mTLS](/security/mtls/).
+
+### `MANAGED_SOFTWARE_POLICY_MODE`
+
+`compat` (default) | `enforce`
+
+In `compat`, a private download destination still requires an upgraded agent and
+fails closed, while an apparently-public destination is still permitted to an agent
+that has not been upgraded yet — so deploy day does not break in-flight software
+pushes. In `enforce`, every managed-software command requires an upgraded agent.
+
+Check your count of not-yet-upgraded devices before flipping. In `enforce` they are
+denied every managed-software command.
+
+### `AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID`
+
+`false` (default) | `true`
+
+Requires agent update manifests to carry a signing key ID. Only set `true` once
+every update response includes one — watch the missing-ID count sit at zero for
+seven consecutive days across every active server version first.
+
+This is not a fleet-wide switch. An agent on a capable build applies the pushed
+value at its next update check; older builds ignore it entirely and keep accepting
+manifests without an ID.
+
+## Retention
+
+### `DEVICE_METRICS_RETENTION_DAYS`
+
+`30` (default) · clamped to 1–365
+
+`device_metrics` is the raw one-row-per-heartbeat series. It previously had no
+retention and grew without bound. A retention worker now prunes it in batches.
+
+Your history charts are unaffected — they are served from `metric_rollups`, which
+has always had its own separate retention. What this bounds is raw per-heartbeat
+detail.
+
+<Aside type="caution">
+On the first run after upgrading, everything older than the retention window is
+pruned. If you need to keep more than 30 days of raw metrics, set this **before**
+starting the new version.
+</Aside>
+
+## What you still owe after an upgrade
+
+Deploying the code is not the same as getting the protection. After a release that
+introduces transition switches, two items stay on your list until closed:
+
+1. `EVENT_PERMISSION_EPOCH_MODE` → `enforce`, once old writers have drained.
+2. `REMOTE_WS_AUTH_MODE` → `pre_upgrade`, once the viewer-token and ticket waits have elapsed.
+
+The opt-in switches above are where the remaining security benefit lives. Each has
+its own gate, and none of them should be flipped on upgrade day.

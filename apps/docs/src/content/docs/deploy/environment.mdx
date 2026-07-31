@@ -192,6 +192,7 @@ The Breeze stack includes a [coturn](https://github.com/coturn/coturn) TURN serv
 | `PROMETHEUS_PORT` | `9090` | Prometheus web UI port (monitoring stack) |
 | `ALERTMANAGER_PORT` | `9093` | Alertmanager web UI port (monitoring stack) |
 | `LOKI_PORT` | `3100` | Loki log aggregation API port (monitoring stack) |
+| `DEVICE_METRICS_RETENTION_DAYS` | `30` | Retention for the raw `device_metrics` series, clamped to 1–365. History charts are served from `metric_rollups` and are unaffected. **On first run after upgrading, older raw metrics are pruned — set this before starting the new version if you need more than 30 days.** |
 
 ## Sentry
 
@@ -232,6 +233,35 @@ Per-user and per-endpoint rate limits (login, MFA, dashboard usage) are fixed in
 | `MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG` | `10` | Concurrent remote sessions per org |
 | `MAX_ACTIVE_REMOTE_SESSIONS_PER_USER` | `5` | Concurrent remote sessions per user |
 | `PATCH_REPORT_STORAGE_PATH` | `./data/patch-reports` | Patch compliance report storage |
+
+## Rollout Modes
+
+**Required in production** (and when `DEPLOYMENT_ENV=staging`). The API refuses to
+boot without them, and the shipped compose files use `${VAR:?}` so the container
+stops before it starts. In development they fall back to the defaults shown.
+
+Full explanation of what each one is for: [Rollout Modes & Compatibility Switches](/deploy/rollout-modes/).
+
+| Variable | Default | Description |
+|---|---|---|
+| `EVENT_PERMISSION_EPOCH_MODE` | `compat` | `compat` accepts event-WebSocket tickets from pre-upgrade servers; `enforce` rejects them. Move to `enforce` ≥60s after the last old server stops. A malformed value falls back to `enforce` (fails closed). |
+| `REMOTE_WS_AUTH_MODE` | `post_upgrade` | `post_upgrade` accepts remote-session tickets minted by pre-upgrade servers; `pre_upgrade` rejects them and applies full authorization before the WebSocket upgrade. Stay on `post_upgrade` until every legacy viewer token has expired. |
+| `REMOTE_ACCESS_ADMISSION_MODE` | `open` | Remote-access barrier. `closed` returns `503` for every terminal/desktop/VNC/tunnel endpoint at the proxy. Used during the lease cutover and for maintenance. |
+| `REMOTE_WS_REDIS_TOPOLOGY` | `standalone-single-primary` | Attestation that Redis is a single primary with AOF on, `noeviction`, cluster disabled. Only accepted value. Sentinel/Cluster/HA Redis will freeze remote admission by design. |
+| `REMOTE_WS_LEGACY_TICKET_WRITER_DRAINED_AT` | — | Timestamp the last pre-upgrade ticket writer stopped. Used to compute the barrier-reopen deadline. |
+| `REMOTE_WS_LEGACY_VIEWER_ISSUER_DRAINED_AT` | — | Timestamp the last legacy viewer-token issuer stopped. Gates the move to `pre_upgrade`. |
+| `OAUTH_AUTH_EPOCH_ENFORCE_AFTER` | — | **Required when MCP OAuth is enabled in production/staging.** Absolute UTC timestamp ending the compatibility window for access tokens issued before the live-revocation release. Must be ≥1800s after new token writers start. Choose once; never extend on restart. |
+
+## Security Enforcement (opt-in)
+
+These ship **disabled**. Nothing changes on upgrade — each is a separate decision
+with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
+
+| Variable | Default | Description |
+|---|---|---|
+| `AGENT_MTLS_BINDING_MODE` | `off` | `audit` counts certificate/device binding mismatches without denying; `enforce` denies them. Requires a validating proxy. Never inferred from `NODE_ENV`/`IS_HOSTED`/`CF_MTLS_*`. |
+| `MANAGED_SOFTWARE_POLICY_MODE` | `compat` | `enforce` requires an upgraded agent for every managed-software command, public destinations included. Check your not-yet-upgraded device count first — they are denied outright. |
+| `AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID` | `false` | Requires update manifests to carry a signing key ID. Not fleet-wide: older agent builds ignore the pushed value. Only enable once the missing-ID count has been zero for 7 consecutive days. |
 
 ## Feature Flags
 
