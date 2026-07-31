@@ -4,6 +4,7 @@ import { getToolTier } from '../aiTools';
 import { checkToolPermission } from '../aiGuardrails';
 import { getActiveOrgTenant } from '../tenantStatus';
 import { buildAuthContextForIntent } from './actorContext';
+import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 
 /**
  * Shared release-time revalidation for an approved action intent (spec
@@ -41,6 +42,19 @@ export async function revalidateApprovedIntentForRelease(
   // SAME content the intent currently carries (action_intents content is
   // DB-immutable; this is defense-in-depth).
   if (!winningApproval || winningApproval.boundArgumentDigest !== intent.argumentDigest) {
+    return { ok: false, errorCode: 'digest_mismatch' };
+  }
+  // (a2) Recompute the digest FROM the stored arguments. The comparison above
+  // is two stored strings; it cannot detect a write that changed `arguments`
+  // while leaving `argument_digest` alone. The immutability trigger makes that
+  // unreachable through the app, so this is defense-in-depth against a path
+  // that bypassed it (superuser, disabled trigger, restore). Deliberately
+  // compares against the STORED digest — the value the approval bound — never
+  // a fresh computation used as its own authority (§5.2).
+  const recomputed = computeArgumentDigest(
+    canonicalizeArguments(intent.arguments as Record<string, unknown>),
+  );
+  if (recomputed !== intent.argumentDigest) {
     return { ok: false, errorCode: 'digest_mismatch' };
   }
 

@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
-import { shouldActivatePendingPartner, activatePartnerRow } from './partnerActivation';
+import {
+  shouldActivatePendingPartner,
+  activatePartnerRow,
+  billingStatusContradictsPayment,
+} from './partnerActivation';
 
 describe('shouldActivatePendingPartner (#718 reconciliation predicate)', () => {
   const verified = new Date('2026-06-13T00:00:00Z');
@@ -77,6 +81,98 @@ describe('shouldActivatePendingPartner (#718 reconciliation predicate)', () => {
         paymentMethodAttachedAt: '2026-06-13T00:05:00Z',
       }),
     ).toBe(true);
+  });
+
+  // The payment stamp was demonstrably writable without a capture (audited
+  // 2026-07-29: 34 of 55 stamped partners had zero successful Stripe charges,
+  // because an `incomplete_expired` subscription.updated backfilled it). These
+  // cases stop the stamp alone from granting access.
+  describe('billing-status veto', () => {
+    it.each(['incomplete', 'incomplete_expired', 'canceled', 'unpaid', 'paused'])(
+      'does NOT activate when the billing mirror reads %s, despite both preconditions',
+      (billingSubscriptionStatus) => {
+        expect(
+          shouldActivatePendingPartner({
+            status: 'pending',
+            emailVerifiedAt: verified,
+            paymentMethodAttachedAt: paid,
+            billingSubscriptionStatus,
+          }),
+        ).toBe(false);
+      },
+    );
+
+    it.each(['active', 'past_due', 'trialing'])(
+      'still activates when the billing mirror reads %s',
+      (billingSubscriptionStatus) => {
+        expect(
+          shouldActivatePendingPartner({
+            status: 'pending',
+            emailVerifiedAt: verified,
+            paymentMethodAttachedAt: paid,
+            billingSubscriptionStatus,
+          }),
+        ).toBe(true);
+      },
+    );
+
+    // This is a VETO, not a REQUIREMENT — and that distinction is the whole
+    // point of #718. A lost `subscription.updated` webhook leaves the mirror
+    // NULL on a partner who really did pay; requiring a good status would
+    // strand them permanently, which is the exact bug #718 exists to fix.
+    it('activates when the mirror is NULL (never populated / webhook lost)', () => {
+      expect(
+        shouldActivatePendingPartner({
+          status: 'pending',
+          emailVerifiedAt: verified,
+          paymentMethodAttachedAt: paid,
+          billingSubscriptionStatus: null,
+        }),
+      ).toBe(true);
+    });
+
+    it('activates when the field is omitted entirely (caller predates the veto)', () => {
+      expect(
+        shouldActivatePendingPartner({
+          status: 'pending',
+          emailVerifiedAt: verified,
+          paymentMethodAttachedAt: paid,
+        }),
+      ).toBe(true);
+    });
+
+    // Fails open on purpose: an unrecognised future Stripe status must not
+    // silently start locking out paying partners.
+    it('activates on an unrecognised status rather than failing closed', () => {
+      expect(
+        shouldActivatePendingPartner({
+          status: 'pending',
+          emailVerifiedAt: verified,
+          paymentMethodAttachedAt: paid,
+          billingSubscriptionStatus: 'some_future_stripe_status',
+        }),
+      ).toBe(true);
+    });
+  });
+});
+
+describe('billingStatusContradictsPayment', () => {
+  it.each(['incomplete', 'incomplete_expired', 'canceled', 'unpaid', 'paused'])(
+    'contradicts a payment stamp for %s',
+    (status) => {
+      expect(billingStatusContradictsPayment(status)).toBe(true);
+    },
+  );
+
+  it.each(['active', 'past_due', 'trialing', 'unknown_status'])(
+    'does not contradict for %s',
+    (status) => {
+      expect(billingStatusContradictsPayment(status)).toBe(false);
+    },
+  );
+
+  it.each([null, undefined])('does not contradict for %s', (status) => {
+    expect(billingStatusContradictsPayment(status)).toBe(false);
   });
 });
 

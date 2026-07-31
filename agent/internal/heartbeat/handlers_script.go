@@ -1,9 +1,12 @@
 package heartbeat
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,24 +52,64 @@ func handleScript(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
+	targetSessionID := -1
+	if ts, ok := cmd.Payload["targetSessionId"].(float64); ok && ts >= 0 && ts <= 65535 {
+		targetSessionID = int(ts)
+	}
+
+	// Explicit session targeting (RDS phase 1): route to exactly that
+	// session's user-role helper. Only meaningful for user-context runs — the
+	// API rejects targetSessionId with runAs!=user (Task 8).
+	//
+	// No runtime.GOOS gate here: h.helperLifecycle (the on-demand/RDS lease
+	// manager) IS Windows+service-gated in production (heartbeat.go), so the
+	// on-demand branch inside executeScriptInSession is safe to leave
+	// platform-agnostic and stays exercisable in cross-platform unit tests
+	// via the fake lifecycle. h.sessionBroker is NOT Windows-gated — it is
+	// also constructed for macOS/Linux daemons (UserHelperEnabled ||
+	// IsService || IsHeadless) — so executeScriptInSession's *always-on*
+	// branch (FindUserSession) carries its own Windows check instead: on
+	// Unix, Session.WinSessionID is actually the UID/identity key, and
+	// matching a numeric targetSessionId against it would risk silently
+	// hitting an unrelated user's helper.
+	if targetSessionID >= 0 && h.sessionBroker != nil && strings.EqualFold(script.RunAs, "user") {
+		return h.executeScriptInSession(cmd, script, uint32(targetSessionID), start)
+	}
+
 	// Phase 3: If runAs is specified and a user helper is connected, forward via IPC
 	if script.RunAs != "" && h.sessionBroker != nil {
 		if session := resolveRunAsSession(h.sessionBroker, script.RunAs); session != nil {
 			return h.executeViaUserHelper(session, cmd, script.Timeout)
 		}
-		if !strings.EqualFold(script.RunAs, "system") && !strings.EqualFold(script.RunAs, "elevated") {
-			// A user-context delivery was requested but no eligible helper was
-			// resolved, so the script is about to run in the local (SYSTEM)
-			// context instead. That privilege-context downgrade is security
-			// relevant — on a multi-user / RDS host it is the visible symptom of
-			// the console-session binding suppressing delivery (#1009) — so log it
-			// at WARN, not DEBUG, where it would be invisible at production log
-			// levels. The broker also WARNs why no console helper matched; this
-			// line records that the fallback actually fired. Behaviour is
-			// unchanged: we still fall through to the local executor below.
-			log.Warn("runAs delivery downgraded to local (SYSTEM) context: no eligible user helper",
-				"runAs", script.RunAs, "commandId", cmd.ID)
+	}
+	if strings.EqualFold(script.RunAs, "user") {
+		// No eligible user helper for a user-context run. The local executor
+		// would reject this anyway (executor.configureRunAs), but only after a
+		// misleading "downgraded to SYSTEM" warning; on multi-user / RDS hosts
+		// the real cause is the console-session delivery binding (#1009).
+		// Fail fast, before any process spawn, with the actual reason.
+		msg := "runAs=user requires a connected user helper session; no eligible session found (script was not executed)"
+		if h.lifecycleMode() == "on-demand" {
+			// On an RDS host at rest there are no helpers to find — the
+			// caller must target a session. Name the candidates so the tech
+			// can retry without a round trip.
+			msg = "runAs=user on an RD Session Host requires targetSessionId; eligible sessions: " + eligibleSessionsSummary()
 		}
+		return tools.CommandResult{
+			Status: "failed",
+			// Synthetic exit code: no process ran (see tools.CommandResult.ExitCode).
+			ExitCode:   1,
+			Error:      msg,
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+	if script.RunAs != "" && h.sessionBroker != nil &&
+		!strings.EqualFold(script.RunAs, "system") && !strings.EqualFold(script.RunAs, "elevated") {
+		// Explicit-username delivery didn't resolve to a helper; the local
+		// executor may still honour it (sudo on unix), so this path remains a
+		// fallthrough — but record it accurately.
+		log.Warn("runAs username did not resolve to a helper session; attempting local executor fallback",
+			"runAs", script.RunAs, "commandId", cmd.ID)
 	}
 
 	scriptResult, execErr := h.executor.Execute(script)
@@ -309,6 +352,100 @@ func helperCommandTimeout(timeoutSeconds int) time.Duration {
 		timeoutSeconds = executor.MaxTimeout
 	}
 	return time.Duration(timeoutSeconds)*time.Second + 5*time.Second
+}
+
+// executeScriptInSession delivers a user-context script to exactly the given
+// Windows session's user-role helper. In on-demand mode the helper is
+// lease-spawned and the wait failure is typed; in always-on mode the helper
+// must already be connected.
+func (h *Heartbeat) executeScriptInSession(cmd Command, script executor.ScriptExecution, winID uint32, start time.Time) tools.CommandResult {
+	fail := func(msg string) tools.CommandResult {
+		return tools.CommandResult{
+			Status: "failed",
+			// Synthetic exit code: no process ran (see tools.CommandResult.ExitCode).
+			ExitCode:   1,
+			Error:      msg,
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
+	// Session 0 parses fine and a lease on it can even be acquired, but it is
+	// never an interactive session (Session 0 isolation) — a helper will
+	// never spawn into it, so waiting would burn the full 95s helper budget
+	// only to report a misleading "helper did not become ready in time"
+	// instead of the real reason. Reject before any lease/wait, mirroring
+	// resolveDesktopTargetWinID (handlers_desktop_lease.go, Task 6).
+	if winID == 0 {
+		return fail("invalid targetSessionId 0: session 0 is never an interactive session")
+	}
+
+	// h.helperLifecycle is written once under h.mu at startup (heartbeat.go)
+	// and read from concurrent command-handler goroutines thereafter — go
+	// through the lock-guarded accessor (handlers_desktop_lease.go), not the
+	// raw field, to match every other lifecycle read in this package.
+	if lc := h.lifecycleController(); lc != nil && lc.Mode() == "on-demand" {
+		ttl := time.Duration(script.Timeout)*time.Second + time.Minute
+		if ttl < 5*time.Minute {
+			ttl = 5 * time.Minute
+		}
+		if ttl > 30*time.Minute {
+			ttl = 30 * time.Minute
+		}
+		if err := lc.AcquireLease(winID, ipc.HelperRoleUser, cmd.ID, ttl); err != nil {
+			if errors.Is(err, sessionbroker.ErrLeaseSessionNotFound) {
+				return fail(fmt.Sprintf("target session %d no longer exists; eligible sessions: %s", winID, eligibleSessionsSummary()))
+			}
+			return fail(fmt.Sprintf("failed to reserve helper for session %d: %v", winID, err))
+		}
+		defer lc.ReleaseLease(winID, ipc.HelperRoleUser, cmd.ID)
+
+		waitCtx, cancel := context.WithTimeout(context.Background(), helperReadyBudget)
+		res := lc.WaitForHelperReady(waitCtx, sessionbroker.HelperKey{WindowsSessionID: winID, Role: ipc.HelperRoleUser})
+		cancel()
+		if res.Status != sessionbroker.HelperWaitReady {
+			return fail(fmt.Sprintf("cannot run in session %d: %s", winID, helperWaitFailureMessage(res)))
+		}
+		return h.executeViaUserHelper(res.Session, cmd, script.Timeout)
+	}
+
+	// Always-on (workstation multi-user, or RDS forced always-on): the helper
+	// for the target session must already be connected.
+	//
+	// Windows-only: FindUserSession matches on Session.WinSessionID, which on
+	// Unix is actually the UID/identity key, not a Windows session number
+	// (see FindUserSession's doc comment, broker.go). A numeric
+	// targetSessionId from a client that only knows about WTS sessions could
+	// collide with a real Unix UID and silently attach to the wrong user's
+	// helper — refuse instead of risking that.
+	if runtime.GOOS != "windows" {
+		return fail(fmt.Sprintf("session targeting is not supported on this platform; no user helper eligible for session %d", winID))
+	}
+	session := h.sessionBroker.FindUserSession(strconv.FormatUint(uint64(winID), 10))
+	if session == nil {
+		return fail(fmt.Sprintf("no user helper connected in session %d; eligible sessions: %s", winID, eligibleSessionsSummary()))
+	}
+	return h.executeViaUserHelper(session, cmd, script.Timeout)
+}
+
+// eligibleSessionsSummary enumerates targetable interactive sessions for
+// error messages: "id:username(state), ...".
+func eligibleSessionsSummary() string {
+	detector := sessionbroker.NewSessionDetector()
+	detected, err := detector.ListSessions()
+	if err != nil {
+		return "unknown"
+	}
+	var parts []string
+	for _, ds := range detected {
+		if ds.Type == "services" || ds.Username == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s:%s(%s)", ds.Session, ds.Username, ds.State))
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ", ")
 }
 
 func decodeHelperRunningScripts(result *ipc.IPCCommandResult) ([]string, error) {

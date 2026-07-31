@@ -14,6 +14,12 @@ const files = [
   'BackupTab.tsx',
   'BackupDestinationSection.tsx',
   'backupTabPresets.ts',
+  // Added with the alert consolidation: AlertRuleTab had discriminated its
+  // condition editors on `condition.type === i18n.t(...)`, which only worked
+  // because the en catalog happened to store the machine value verbatim — every
+  // translated locale silently rendered no condition fields at all.
+  'AlertRuleTab.tsx',
+  'MonitoringTab.tsx',
 ];
 
 describe('configuration policy structural values', () => {
@@ -22,6 +28,9 @@ describe('configuration policy structural values', () => {
 
     expect(source).not.toMatch(/(?:update|result\.push)\(\s*i18n\.t\(/s);
     expect(source).not.toMatch(/e\.key\s*===\s*i18n\.t\(/s);
+    // Any discriminator compared against a translated label rather than the
+    // machine value it stores (e.g. `condition.type === i18n.t(...)`).
+    expect(source).not.toMatch(/\.\w+\s*===\s*\n?\s*i18n\.t\(/s);
     expect(source).not.toMatch(/value:\s*i18n\.t\(/s);
     expect(source).not.toMatch(/setMode\(\s*i18n\.t\(/s);
     expect(source).not.toMatch(

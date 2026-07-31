@@ -22,7 +22,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  NODE_VERSION: '22'
   PNPM_VERSION: '10.34.5'
   GO_VERSION: '1.25.12'
 
@@ -63,7 +62,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Test community README automation
@@ -105,7 +104,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -135,7 +134,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -211,7 +210,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -219,6 +218,76 @@ jobs:
 
       - name: Run executor tests
         run: pnpm --filter=@breeze/m365-graph-read-executor test:run
+
+  test-m365-graph-actions-executor:
+    name: Test M365 Graph Actions Executor
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .node-version
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run executor tests
+        run: pnpm --filter=@breeze/m365-graph-actions-executor test:run
+
+  test-m365-communications-executor:
+    name: Test M365 Communications Executor
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: comms_cache
+          POSTGRES_PASSWORD: comms_cache
+          POSTGRES_DB: comms_cache_test
+        ports:
+          - 5439:5432
+        options: >-
+          --health-cmd "pg_isready -U comms_cache"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run executor tests
+        env:
+          # Runs the Postgres half of the token-cache store contract suite.
+          # Without this the fenced-lease/CAS SQL is only proven in-memory.
+          M365_COMMS_TOKEN_CACHE_TEST_DSN: postgresql://comms_cache:comms_cache@localhost:5439/comms_cache_test
+        run: pnpm --filter=@breeze/m365-communications-executor test:run
 
   # Real-Postgres apply of every migration against an empty database.
   # Catches ordering bugs (issue #506) and any SQL error the static
@@ -263,7 +332,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -336,7 +405,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -362,7 +431,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -388,7 +457,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -414,7 +483,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -443,7 +512,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -469,7 +538,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -498,7 +567,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -536,7 +605,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -565,7 +634,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -597,11 +666,17 @@ jobs:
       - name: Run M365 signing secret runtime smoke
         run: bash scripts/security/check-m365-graph-read-runtime.sh
 
+      - name: Run M365 actions signing secret runtime smoke
+        run: bash scripts/security/check-m365-graph-actions-runtime.sh
+
       - name: Run relay/edge hardening guard
         run: bash scripts/security/check-relay-edge-hardening.sh
 
       - name: Run customer-PII guard
         run: bash scripts/security/check-customer-pii.sh
+
+      - name: Run agent mTLS edge policy guard
+        run: pnpm check:agent-mtls-edge-policy
 
   build-api:
     name: Build API
@@ -621,7 +696,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -665,7 +740,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -679,6 +754,76 @@ jobs:
 
       - name: Verify executor entrypoint exists
         run: test -s apps/m365-graph-read-executor/dist/index.cjs
+
+  build-m365-graph-actions-executor:
+    name: Build M365 Graph Actions Executor
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .node-version
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The root `typecheck` job only covers apps/api and apps/web, so this is
+      # the only tsc pass over the executor sources.
+      - name: Typecheck executor
+        run: pnpm --filter=@breeze/m365-graph-actions-executor exec tsc --noEmit
+
+      - name: Build executor
+        run: pnpm --filter=@breeze/m365-graph-actions-executor build
+
+      - name: Verify executor entrypoint exists
+        run: test -s apps/m365-graph-actions-executor/dist/index.cjs
+
+  build-m365-communications-executor:
+    name: Build M365 Communications Executor
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The root `typecheck` job only covers apps/api and apps/web, so this is
+      # the only tsc pass over the executor sources.
+      - name: Typecheck executor
+        run: pnpm --filter=@breeze/m365-communications-executor exec tsc --noEmit
+
+      - name: Build executor
+        run: pnpm --filter=@breeze/m365-communications-executor build
+
+      - name: Verify executor entrypoint exists
+        run: test -s apps/m365-communications-executor/dist/index.cjs
 
   build-web:
     name: Build Web
@@ -698,7 +843,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -738,7 +883,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -979,11 +1124,21 @@ jobs:
       # platform at all (Linux skips them via build tag, and `go build` never
       # compiles _test.go), which is the exact gap this job was added to close.
       # When adding a package with //go:build windows tests, add it here.
+      #
+      # ./internal/logging was the second instance of exactly that gap
+      # (rotation_windows_test.go, added by the wave-06 log-rotation hardening,
+      # executed on no platform for the same reason). Verified: with
+      # GOOS=windows GOARCH=amd64 CGO_ENABLED=0 the package vets and its test
+      # binary compiles, and its GOOS=windows dependency graph contains no
+      # remote/desktop and no cgo — so unlike agentapp it needs no exemption
+      # here. It is deliberately NOT added to the race step below: the Windows
+      # tests it adds are the platform log-open/rotate helpers, and the race
+      # step's cgo requirement is not something this change verified.
       - name: Run Windows Go tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/logging ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
 
       # -race requires cgo, which remote/desktop cannot satisfy on Windows, so
       # this covers only packages that do not import it (heartbeat and agentapp
@@ -1405,7 +1560,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -1568,6 +1723,17 @@ jobs:
           REMOTE_ACCESS_ADMISSION_MODE=open
           REMOTE_WS_AUTH_MODE=post_upgrade
           REMOTE_WS_REDIS_TOPOLOGY=standalone-single-primary
+          # docker-compose.yml defaults FORCE_HTTPS=true, but this smoke stack
+          # has no TLS terminator in front of the API — the harness reaches it
+          # directly over http://localhost with a non-canonical Host. Wave 5
+          # Task 8 (TRANSPORT-001) made scheme detection authoritative
+          # (effectiveRequestScheme reports http for a direct request even with
+          # no X-Forwarded-Proto), so under FORCE_HTTPS such requests now
+          # correctly 400 on the unrecognized Host instead of silently serving
+          # plaintext — which is right for a real edge but breaks a proxy-less
+          # smoke stack. FORCE_HTTPS belongs on the edge tier, not a bare API,
+          # so disable it here to match this topology.
+          FORCE_HTTPS=false
           EOF
 
       - name: Build and start containers
@@ -1745,7 +1911,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test-api, test-m365-graph-read-executor, test-web, test-portal, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test]
+    needs: [lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-portal, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -1754,6 +1920,8 @@ jobs:
           TYPECHECK_RESULT: ${{ needs.typecheck.result }}
           TEST_API_RESULT: ${{ needs.test-api.result }}
           TEST_M365_GRAPH_READ_EXECUTOR_RESULT: ${{ needs.test-m365-graph-read-executor.result }}
+          TEST_M365_GRAPH_ACTIONS_EXECUTOR_RESULT: ${{ needs.test-m365-graph-actions-executor.result }}
+          TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT: ${{ needs.test-m365-communications-executor.result }}
           TEST_WEB_RESULT: ${{ needs.test-web.result }}
           TEST_PORTAL_RESULT: ${{ needs.test-portal.result }}
           TEST_OFFICE_ADDIN_CORE_RESULT: ${{ needs.test-office-addin-core.result }}
@@ -1764,6 +1932,8 @@ jobs:
           SECURITY_AUDIT_RESULT: ${{ needs.security-audit.result }}
           BUILD_API_RESULT: ${{ needs.build-api.result }}
           BUILD_M365_GRAPH_READ_EXECUTOR_RESULT: ${{ needs.build-m365-graph-read-executor.result }}
+          BUILD_M365_GRAPH_ACTIONS_EXECUTOR_RESULT: ${{ needs.build-m365-graph-actions-executor.result }}
+          BUILD_M365_COMMUNICATIONS_EXECUTOR_RESULT: ${{ needs.build-m365-communications-executor.result }}
           BUILD_WEB_RESULT: ${{ needs.build-web.result }}
           BUILD_PORTAL_RESULT: ${{ needs.build-portal.result }}
           BUILD_AGENT_RESULT: ${{ needs.build-agent.result }}
@@ -1780,6 +1950,8 @@ jobs:
              [[ "${TYPECHECK_RESULT}" != "success" ]] || \
              [[ "${TEST_API_RESULT}" != "success" ]] || \
              [[ "${TEST_M365_GRAPH_READ_EXECUTOR_RESULT}" != "success" ]] || \
+             [[ "${TEST_M365_GRAPH_ACTIONS_EXECUTOR_RESULT}" != "success" ]] || \
+             [[ "${TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT}" != "success" ]] || \
              [[ "${TEST_WEB_RESULT}" != "success" ]] || \
              [[ "${TEST_PORTAL_RESULT}" != "success" ]] || \
              [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "success" ]] || \
@@ -1790,6 +1962,8 @@ jobs:
              [[ "${SECURITY_AUDIT_RESULT}" != "success" ]] || \
              [[ "${BUILD_API_RESULT}" != "success" ]] || \
              [[ "${BUILD_M365_GRAPH_READ_EXECUTOR_RESULT}" != "success" ]] || \
+             [[ "${BUILD_M365_GRAPH_ACTIONS_EXECUTOR_RESULT}" != "success" ]] || \
+             [[ "${BUILD_M365_COMMUNICATIONS_EXECUTOR_RESULT}" != "success" ]] || \
              [[ "${BUILD_WEB_RESULT}" != "success" ]] || \
              [[ "${BUILD_PORTAL_RESULT}" != "success" ]] || \
              [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \

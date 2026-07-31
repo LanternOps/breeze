@@ -1,5 +1,109 @@
-import { describe, expect, it, vi } from 'vitest';
-import { isInMaintenanceWindow, createSystemAuthContext } from './featureConfigResolver';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// ============================================
+// Mocks for resolveAlertRulesForDevice's DB-backed query construction
+// (2026-07-30 alert-rule ownership consolidation, task 6).
+//
+// The mocked query builder doesn't do real SQL filtering, so a naive mock
+// that just hands back a fixed row array can't prove the join CONDITION
+// changed. Instead this captures the actual condition object built by
+// `resolveAlertRulesForDevice` for the configPolicyFeatureLinks join (an
+// `eq`/`inArray` node produced by the real, unmocked and/eq/inArray from the
+// mocked 'drizzle-orm' below) and evaluates it against each candidate row's
+// simulated link featureType — the same shadowing bug this migration fixes
+// would show up here as the monitoring-link row leaking through.
+// ============================================
+const { selectMock } = vi.hoisted(() => ({ selectMock: vi.fn() }));
+
+vi.mock('../db', () => ({
+  db: { select: (...args: unknown[]) => selectMock(...(args as [])) },
+  getCurrentDbAccessContext: vi.fn(),
+  runOutsideDbContext: vi.fn((fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn((fn: () => Promise<unknown>) => fn()),
+}));
+
+vi.mock('../db/partnerAxisRead', () => ({
+  readWithPartnerAxisVisibility: vi.fn(),
+}));
+
+vi.mock('../db/schema', () => ({
+  configurationPolicies: {
+    id: 'configurationPolicies.id',
+    orgId: 'configurationPolicies.orgId',
+    partnerId: 'configurationPolicies.partnerId',
+    status: 'configurationPolicies.status',
+  },
+  configPolicyFeatureLinks: {
+    id: 'configPolicyFeatureLinks.id',
+    configPolicyId: 'configPolicyFeatureLinks.configPolicyId',
+    featureType: 'configPolicyFeatureLinks.featureType',
+  },
+  configPolicyAssignments: {
+    id: 'configPolicyAssignments.id',
+    configPolicyId: 'configPolicyAssignments.configPolicyId',
+    level: 'configPolicyAssignments.level',
+    targetId: 'configPolicyAssignments.targetId',
+    priority: 'configPolicyAssignments.priority',
+    createdAt: 'configPolicyAssignments.createdAt',
+    roleFilter: 'configPolicyAssignments.roleFilter',
+    osFilter: 'configPolicyAssignments.osFilter',
+  },
+  configPolicyAlertRules: {
+    id: 'configPolicyAlertRules.id',
+    featureLinkId: 'configPolicyAlertRules.featureLinkId',
+    sortOrder: 'configPolicyAlertRules.sortOrder',
+  },
+  configPolicyAutomations: {},
+  configPolicyComplianceRules: {},
+  configPolicyPatchSettings: {},
+  configPolicyMaintenanceSettings: {},
+  configPolicyBackupSettings: {},
+  backupProfiles: {},
+  backupConfigs: {},
+  devices: {
+    id: 'devices.id',
+    orgId: 'devices.orgId',
+    siteId: 'devices.siteId',
+    deviceRole: 'devices.deviceRole',
+    osType: 'devices.osType',
+  },
+  organizations: {
+    id: 'organizations.id',
+    partnerId: 'organizations.partnerId',
+  },
+  partners: {},
+  deviceGroupMemberships: {
+    deviceId: 'deviceGroupMemberships.deviceId',
+    groupId: 'deviceGroupMemberships.groupId',
+  },
+  sites: {},
+  softwarePolicies: {},
+}));
+
+vi.mock('drizzle-orm', () => {
+  const sql = Object.assign(
+    (strings: TemplateStringsArray, ...values: unknown[]) => ({ op: 'sql', strings, values }),
+    {
+      param: (value: unknown) => ({ op: 'param', value }),
+      join: (chunks: unknown[], separator: unknown) => ({ op: 'join', chunks, separator }),
+    }
+  );
+
+  return {
+    and: (...conditions: unknown[]) => ({ op: 'and', conditions }),
+    eq: (column: unknown, value: unknown) => ({ op: 'eq', column, value }),
+    inArray: (column: unknown, values: unknown[]) => ({ op: 'inArray', column, values }),
+    asc: (value: unknown) => ({ op: 'asc', value }),
+    sql,
+    SQL: class SQL {},
+  };
+});
+
+import {
+  isInMaintenanceWindow,
+  createSystemAuthContext,
+  resolveAlertRulesForDevice,
+} from './featureConfigResolver';
 
 // Helper to build a maintenance settings object.
 // Cast as `any` because the Drizzle inferred type expects table-specific columns;
@@ -311,5 +415,175 @@ describe('createSystemAuthContext', () => {
     expect(ctx.token.type).toBe('access');
     expect(ctx.token.mfa).toBe(false);
     expect(ctx.token.roleId).toBeNull();
+  });
+});
+
+// ============================================
+// resolveAlertRulesForDevice (2026-07-30 alert-rule ownership consolidation)
+//
+// Pre-migration, `configPolicyAlertRules` rows could hang off either an
+// `alert_rule` OR a `monitoring` feature link, and the resolver's join used
+// `inArray(featureType, ['alert_rule', 'monitoring'])` — so a monitoring-tab
+// row could silently shadow (or be shadowed by) an alert_rule-tab row.
+// Migration (2026-07-30-alert-rule-ownership-consolidation.sql) moved every
+// rule off monitoring links, and the resolver now joins with
+// `eq(featureType, 'alert_rule')` only. These tests fail if that join filter
+// is ever loosened back to an inArray form.
+// ============================================
+describe('resolveAlertRulesForDevice', () => {
+  type CandidateRow = {
+    alertRule: { id: string; name: string };
+    assignmentLevel: string;
+    assignmentPriority: number;
+    assignmentCreatedAt: Date;
+    assignmentId: string;
+    linkFeatureType: string;
+  };
+
+  // Simple thenable chain for the three loadDeviceHierarchy reads
+  // (device / org / device-group memberships) — none of them depend on the
+  // captured condition, so a fixed result array is enough.
+  function makeHierarchyChain(result: unknown[]) {
+    const chain: any = {
+      from: vi.fn(() => chain),
+      where: vi.fn(() => chain),
+      limit: vi.fn(() => Promise.resolve(result)),
+      then: (onFulfilled: any, onRejected?: any) => Promise.resolve(result).then(onFulfilled, onRejected),
+    };
+    return chain;
+  }
+
+  // Recursively walks the mocked condition tree built by the real (unmocked
+  // logic, mocked drizzle-orm primitives) and/eq/inArray calls, looking for
+  // the node that constrains configPolicyFeatureLinks.featureType. Any other
+  // sub-condition (e.g. the configPolicyId equality half of the join) is
+  // treated as always-true here — this harness only needs to prove which
+  // featureType values the join filter itself admits.
+  function featureTypeConditionAdmits(condition: unknown, featureType: string): boolean {
+    if (!condition || typeof condition !== 'object') return true;
+    const node = condition as { op: string; conditions?: unknown[]; column?: unknown; value?: unknown; values?: unknown[] };
+    if (node.op === 'and' && Array.isArray(node.conditions)) {
+      return node.conditions.every((c) => featureTypeConditionAdmits(c, featureType));
+    }
+    if (node.op === 'eq' && node.column === 'configPolicyFeatureLinks.featureType') {
+      return node.value === featureType;
+    }
+    if (node.op === 'inArray' && node.column === 'configPolicyFeatureLinks.featureType') {
+      return (node.values ?? []).includes(featureType);
+    }
+    return true;
+  }
+
+  // Simulates the assignments -> policies -> featureLinks -> alertRules join
+  // chain. `.innerJoin` calls happen in a fixed order in the real code:
+  // (1) configurationPolicies, (2) configPolicyFeatureLinks, (3)
+  // configPolicyAlertRules — the 2nd call's condition is the one this test
+  // cares about.
+  function makeAlertRuleJoinChain(candidateRows: CandidateRow[]) {
+    let innerJoinCount = 0;
+    let featureLinkCondition: unknown;
+    const chain: any = {
+      from: vi.fn(() => chain),
+      innerJoin: vi.fn((_table: unknown, condition: unknown) => {
+        innerJoinCount += 1;
+        if (innerJoinCount === 2) featureLinkCondition = condition;
+        return chain;
+      }),
+      where: vi.fn(() => chain),
+      orderBy: vi.fn(() => chain),
+      then: (onFulfilled: any, onRejected?: any) => {
+        const filtered = candidateRows
+          .filter((row) => featureTypeConditionAdmits(featureLinkCondition, row.linkFeatureType))
+          .map(({ linkFeatureType: _drop, ...rest }) => rest);
+        return Promise.resolve(filtered).then(onFulfilled, onRejected);
+      },
+    };
+    return chain;
+  }
+
+  function mockHierarchyReads() {
+    selectMock
+      .mockReturnValueOnce(
+        makeHierarchyChain([
+          { id: 'device-1', orgId: 'org-a', siteId: 'site-1', deviceRole: 'workstation', osType: 'windows' },
+        ])
+      ) // device
+      .mockReturnValueOnce(makeHierarchyChain([{ partnerId: null }])) // org -> partnerId
+      .mockReturnValueOnce(makeHierarchyChain([])); // device-group memberships
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+  });
+
+  it('does not return a rule reached only via a monitoring feature link (pre-migration shadow row)', async () => {
+    mockHierarchyReads();
+    selectMock.mockReturnValueOnce(
+      makeAlertRuleJoinChain([
+        {
+          alertRule: { id: 'rule-monitoring', name: 'Legacy monitoring-linked rule' },
+          assignmentLevel: 'device',
+          assignmentPriority: 0,
+          assignmentCreatedAt: new Date('2026-01-01T00:00:00Z'),
+          assignmentId: 'assignment-1',
+          linkFeatureType: 'monitoring',
+        },
+      ])
+    );
+
+    const result = await resolveAlertRulesForDevice('device-1');
+    expect(result).toEqual([]);
+  });
+
+  it('returns a rule reached via an alert_rule feature link', async () => {
+    mockHierarchyReads();
+    selectMock.mockReturnValueOnce(
+      makeAlertRuleJoinChain([
+        {
+          alertRule: { id: 'rule-1', name: 'CPU usage high' },
+          assignmentLevel: 'device',
+          assignmentPriority: 0,
+          assignmentCreatedAt: new Date('2026-01-01T00:00:00Z'),
+          assignmentId: 'assignment-1',
+          linkFeatureType: 'alert_rule',
+        },
+      ])
+    );
+
+    const result = await resolveAlertRulesForDevice('device-1');
+    expect(result).toEqual([{ id: 'rule-1', name: 'CPU usage high' }]);
+  });
+
+  // Regression test for the cross-feature shadowing bug this task fixes: with
+  // rules living ONLY under alert_rule links (the post-migration world),
+  // winning-assignment semantics must still pick the closer (device-level)
+  // assignment over a farther (site-level) one — i.e. resolving within a
+  // single feature type didn't accidentally break hierarchy precedence.
+  it('resolves the device-level policy over a site-level policy when both are alert_rule-linked', async () => {
+    mockHierarchyReads();
+    selectMock.mockReturnValueOnce(
+      makeAlertRuleJoinChain([
+        {
+          alertRule: { id: 'rule-site', name: 'Site-level rule' },
+          assignmentLevel: 'site',
+          assignmentPriority: 0,
+          assignmentCreatedAt: new Date('2026-01-01T00:00:00Z'),
+          assignmentId: 'assignment-site',
+          linkFeatureType: 'alert_rule',
+        },
+        {
+          alertRule: { id: 'rule-device', name: 'Device-level rule' },
+          assignmentLevel: 'device',
+          assignmentPriority: 0,
+          assignmentCreatedAt: new Date('2026-01-02T00:00:00Z'),
+          assignmentId: 'assignment-device',
+          linkFeatureType: 'alert_rule',
+        },
+      ])
+    );
+
+    const result = await resolveAlertRulesForDevice('device-1');
+    expect(result).toEqual([{ id: 'rule-device', name: 'Device-level rule' }]);
   });
 });

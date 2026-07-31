@@ -17,6 +17,7 @@ import { showToast } from '../shared/Toast';
 import { runAction, ActionError } from '../../lib/runAction';
 import { normalizeMetricAnomalyContext } from './alertMlContext';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
+import { asList } from '@/lib/asList';
 
 type Device = { id: string; name: string };
 
@@ -97,7 +98,7 @@ export default function AlertsPage() {
         throw new Error(t('alertsPage.failedToFetchAlerts'));
       }
       const data = await response.json();
-      const raw: Record<string, unknown>[] = data.data ?? data.alerts ?? (Array.isArray(data) ? data : []);
+      const raw: Record<string, unknown>[] = asList(data, 'alerts');
       setAlerts(normalizeAlertRows(raw, t('alertsPage.unknownDevice')));
     } catch (err) {
       setError(err instanceof Error ? err.message : t('alertsPage.genericError'));
@@ -111,7 +112,7 @@ export default function AlertsPage() {
       const response = await fetchWithAuth('/devices');
       if (response.ok) {
         const data = await response.json();
-        const raw: Record<string, unknown>[] = data.data ?? data.devices ?? (Array.isArray(data) ? data : []);
+        const raw: Record<string, unknown>[] = asList(data, 'devices');
         setDevices(
           raw.map((d) => ({
             id: String(d.id ?? ''),

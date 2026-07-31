@@ -21,6 +21,7 @@
 
 import { sql, type SQL } from 'drizzle-orm';
 import { devices } from '../../db/schema';
+import { UUID_REGEX } from '../../utils/uuid';
 
 /** Defensive per-response ceiling. The user never bumps into this; it
  *  caps any one HTTP response at ~2-3 MB of JSON for the widest current
@@ -122,7 +123,7 @@ export function decodeCursor(token: string | undefined | null): DevicesCursor | 
   if (typeof p.sort !== 'string' || !DEVICES_SORT_KEYS.includes(p.sort as DevicesSortKey)) return null;
   if (p.sortDir !== 'asc' && p.sortDir !== 'desc') return null;
   if (p.k !== null && typeof p.k !== 'string') return null;
-  if (typeof p.id !== 'string' || p.id.length === 0) return null;
+  if (typeof p.id !== 'string' || !UUID_REGEX.test(p.id)) return null;
   return {
     v: 1,
     sort: p.sort as DevicesSortKey,

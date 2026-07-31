@@ -6,6 +6,11 @@ import '@/lib/i18n';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+// The billing save-grammar, shared rather than re-copied. The local copy this
+// replaces had drifted to `ring-1 ring-warning` — a box-shadow signal the focus
+// ring painted over on the field being edited, in a token documented at ~2.3:1
+// (below the 3:1 non-text minimum). See shared/saveCues for the full rationale.
+import { SrSaved, fieldRing } from '../billing/shared/saveCues';
 import {
   createContract,
   updateContract,
@@ -49,23 +54,6 @@ const INTERVAL_PRESETS = [
   { value: 3, label: 'contracts.shared.cadence.quarterly' },
   { value: 12, label: 'contracts.shared.cadence.annual' },
 ];
-
-// ── Save-grammar helpers (byte-similar local copies of the invoice/quote
-//    editors' — kept inline per CLAUDE.md; a later pass may extract them). ──────
-
-// Visually-hidden polite live region — announces a transient "Saved" to screen
-// readers, pairing with the amber→green dirty-ring cue sighted users see.
-function SrSaved({ show, label = '', testId }: { show: boolean; label?: string; testId?: string }) {
-  // role="status" already implies aria-live="polite" — don't double it.
-  return <span role="status" className="sr-only" data-testid={testId}>{show ? label : ''}</span>;
-}
-
-// A field's save-state outline: amber while unsaved, a brief green pulse when it
-// lands, nothing at rest. It's a box-shadow (ring), so it never reflows
-// neighbours. Pair with a constant `transition-shadow` on the field.
-function fieldRing(dirty: boolean, saved: boolean): string {
-  return dirty ? 'ring-1 ring-warning' : saved ? 'ring-1 ring-success' : '';
-}
 
 interface Props {
   /** Present in edit mode (existing draft/active contract); absent when creating. */
@@ -595,12 +583,14 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     [sites],
   );
 
-  // Shared field chrome. `transition-shadow` pairs with fieldRing's box-shadow so
-  // the amber→green cue animates without reflowing neighbours; `disabled:opacity-60`
-  // renders the read-only (no contracts:write) and non-draft schedule states.
-  const baseInput = 'h-10 rounded-md border bg-background px-3 text-sm text-foreground transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60';
+  // Shared field chrome. `transition-colors` pairs with fieldRing's border-color
+  // cue (border-color is not in the shadow property set, so `transition-shadow`
+  // would make the amber→green change snap); the `border` width is what lets a
+  // color-only cue render at all. `disabled:opacity-60` renders the read-only
+  // (no contracts:write) and non-draft schedule states.
+  const baseInput = 'h-10 rounded-md border bg-background px-3 text-sm text-foreground transition-colors focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60';
   const dateInput = `${baseInput} dark:[color-scheme:dark] [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-60 hover:[&::-webkit-calendar-picker-indicator]:opacity-100`;
-  const areaInput = 'rounded-md border bg-background px-3 py-2 text-sm text-foreground transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60';
+  const areaInput = 'rounded-md border bg-background px-3 py-2 text-sm text-foreground transition-colors focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60';
   const legendCls = 'mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground';
 
   return (

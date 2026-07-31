@@ -112,7 +112,7 @@ vi.mock('../middleware/auth', () => ({
 vi.mock('../jobs/huntressSync', () => ({
   scheduleHuntressSync: vi.fn(async () => 'job-1'),
   ingestHuntressWebhookPayload: vi.fn(async () => ({
-    integrationId: 'integration-1',
+    integrationId: '33333333-3333-4333-8333-333333333333',
     fetchedAgents: 0,
     fetchedIncidents: 0,
     upsertedAgents: 0,
@@ -245,7 +245,7 @@ describe('huntress routes', () => {
       from: vi.fn(() => ({
         where: vi.fn(() => ({
           limit: vi.fn(async () => [{
-	            id: 'integration-1',
+	            id: '33333333-3333-4333-8333-333333333333',
 	            orgId: 'org-1',
 	            accountId: 'acct-123',
 	            webhookSecretEncrypted: 'enc:webhook',
@@ -255,7 +255,7 @@ describe('huntress routes', () => {
       })),
     } as any);
 
-    const res = await app.request('/huntress/webhook?integrationId=integration-1', {
+    const res = await app.request('/huntress/webhook?integrationId=33333333-3333-4333-8333-333333333333', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
@@ -266,12 +266,31 @@ describe('huntress routes', () => {
     expect(String(body.error)).toContain('signature');
   });
 
+  it('treats a non-UUID integration header as absent and returns the no-integration response', async () => {
+    const res = await app.request('/huntress/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-huntress-integration-id': 'abc',
+        'x-huntress-account-id': 'acct-123',
+      },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: 'No active Huntress integration found for webhook payload',
+    });
+    expect(db.select).not.toHaveBeenCalled();
+    expect(findHuntressIntegrationByAccount).toHaveBeenCalledWith('acct-123');
+  });
+
   it('rejects webhook payloads with missing timestamp when signature auth is enabled', async () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
           limit: vi.fn(async () => [{
-	            id: 'integration-1',
+	            id: '33333333-3333-4333-8333-333333333333',
 	            orgId: 'org-1',
 	            accountId: 'acct-123',
 	            webhookSecretEncrypted: 'enc:webhook',
@@ -281,7 +300,7 @@ describe('huntress routes', () => {
       })),
     } as any);
 
-    const res = await app.request('/huntress/webhook?integrationId=integration-1', {
+    const res = await app.request('/huntress/webhook?integrationId=33333333-3333-4333-8333-333333333333', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -317,7 +336,7 @@ describe('huntress routes', () => {
       from: vi.fn(() => ({
         where: vi.fn(() => ({
           limit: vi.fn(async () => [{
-            id: 'integration-1',
+            id: '33333333-3333-4333-8333-333333333333',
             orgId: 'org-1',
             accountId: 'acct-stored',
             webhookSecretEncrypted: 'enc:webhook',
@@ -327,7 +346,7 @@ describe('huntress routes', () => {
       })),
     } as any);
 
-    const res = await app.request('/huntress/webhook?integrationId=integration-1', {
+    const res = await app.request('/huntress/webhook?integrationId=33333333-3333-4333-8333-333333333333', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

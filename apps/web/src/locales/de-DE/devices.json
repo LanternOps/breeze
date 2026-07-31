@@ -1060,6 +1060,7 @@
     "enableMaintenance": "Wartungsmodus aktivieren",
     "disableMaintenance": "Wartungsmodus deaktivieren",
     "wakeSelected": "Ausgewählte Geräte aufwecken",
+    "compareSelected": "Ausgewählte vergleichen",
     "linkAsMultiBoot": "Link als Multiboot",
     "decommissionSelected": "Ausgewählte Geräte außer Betrieb nehmen",
     "clearSelection": "Auswahl aufheben",
@@ -1757,6 +1758,7 @@
       "maintenanceOn": "Wartung eingeschaltet",
       "multibootLinked": "Multiboot-verknüpft",
       "networkSkipped": "{{count}} Netzwerkgerät(e) übersprungen – diese Aktion gilt nur für Agent-Geräte.",
+      "compareNeedsTwo": "Der Vergleich benötigt mindestens 2 Agent-Geräte.",
       "permanentDeleteCancelled": "Endgültiges Löschen abgebrochen",
       "permanentDeleting": "Endgültiges Löschen",
       "permanentlyDeleted": "Endgültig gelöscht",
@@ -2207,7 +2209,19 @@
     "runOnDevice": "Skript auf {{hostname}} ausführen",
     "runScript": "Skript ausführen",
     "searchPlaceholder": "Skripte suchen...",
+    "sessionAny": "Beliebige Sitzung (Konsole)",
     "title": "Wählen Sie Skript",
     "unnamedScript": "Unbenanntes Skript"
+  },
+  "sessionPicker": {
+    "titleDesktop": "Sitzung zum Anzeigen auswählen",
+    "titleScript": "Sitzung zum Ausführen auswählen",
+    "loading": "Sitzungen werden geladen…",
+    "fetchFailed": "Sitzungen konnten nicht geladen werden",
+    "noSessions": "Keine interaktiven Sitzungen gefunden",
+    "sessionLabel": "Sitzung {{id}}",
+    "idleMinutes": "{{count}} Min. inaktiv",
+    "disconnectedNotShadowable": "Getrennte Sitzungen können nicht angezeigt werden – kein aktiver Desktop zum Erfassen",
+    "cancel": "Abbrechen"
   }
 }

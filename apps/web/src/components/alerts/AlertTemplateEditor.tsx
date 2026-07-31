@@ -11,6 +11,7 @@ import { getJwtClaims } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
 import { ScopeBadge } from '../shared/ScopeBadge';
 import Breadcrumbs from '../layout/Breadcrumbs';
+import { asList } from '@/lib/asList';
 
 type AlertTemplateEditorProps = {
   templateId?: string;
@@ -521,7 +522,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
       const response = await fetchWithAuth('/orgs/organizations');
       if (response.ok) {
         const data = await response.json();
-        const items = data.data ?? data.organizations ?? data ?? [];
+        const items = asList(data, 'organizations');
         setOrganizations((items as Option[]).map((org: Option) => ({
           id: org.id,
           name: org.name
@@ -537,7 +538,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
       const response = await fetchWithAuth('/orgs/sites');
       if (response.ok) {
         const data = await response.json();
-        const items = data.data ?? data.sites ?? data ?? [];
+        const items = asList(data, 'sites');
         setSites((items as Option[]).map((site: Option) => ({
           id: site.id,
           name: site.name
@@ -553,7 +554,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
       const response = await fetchWithAuth('/groups');
       if (response.ok) {
         const data = await response.json();
-        const items = data.data ?? data.groups ?? data ?? [];
+        const items = asList(data, 'groups');
         setGroups((items as Option[]).map((group: Option) => ({
           id: group.id,
           name: group.name
@@ -569,7 +570,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
       const response = await fetchWithAuth('/automations');
       if (response.ok) {
         const data = await response.json();
-        const items = data.data ?? data.automations ?? data ?? [];
+        const items = asList(data, 'automations');
         setAutomations((items as Option[]).map((automation: Option) => ({
           id: automation.id,
           name: automation.name

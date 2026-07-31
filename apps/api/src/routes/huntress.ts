@@ -30,6 +30,7 @@ import { captureException } from '../services/sentry';
 import { escapeLike } from '../utils/sql';
 import { offlineStatusSqlList, resolvedStatusSqlList } from '../services/huntressConstants';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
+import { UUID_REGEX } from '../utils/uuid';
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   if (typeof dbModule.withSystemDbAccessContext !== 'function') {
@@ -235,7 +236,9 @@ huntressRoutes.post('/webhook', async (c) => {
   const accountId = c.req.header('x-huntress-account-id') ?? parsedPayload.accountId;
 
   const integration = await resolveWebhookIntegration({
-    integrationId: integrationId && integrationId !== 'undefined' ? integrationId : null,
+    integrationId: integrationId && integrationId !== 'undefined' && UUID_REGEX.test(integrationId)
+      ? integrationId
+      : null,
     accountId,
   });
   if ('error' in integration) {

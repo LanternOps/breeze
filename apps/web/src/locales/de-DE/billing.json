@@ -543,7 +543,8 @@
         "addSome": "Fügen Sie einige zum Produktkatalog hinzu",
         "empty": "Keine Katalogartikel.",
         "loadError": "Der Katalog konnte nicht geladen werden. Öffnen Sie den Editor erneut, um es noch einmal zu versuchen – Ihre vorhandenen Elemente sind sicher.",
-        "searchPlaceholder": "Katalog nach Name oder SKU durchsuchen"
+        "searchPlaceholder": "Katalog nach Name oder SKU durchsuchen",
+        "capNote": "Es werden die ersten {{count}} Katalogartikel angezeigt – suchen Sie, um weitere zu finden."
       },
       "categories": {
         "hardware": "Hardware",
@@ -719,7 +720,7 @@
         "labelPlaceholder": "Tabellenbeschriftung (optional, z. B. Monatliche Leistungen)",
         "notTaxable": "Nicht steuerpflichtig",
         "qty": "Menge",
-        "recurrence": "Wiederholung",
+        "recurrence": "Abrechnung",
         "scrollAria": "Preistabelle – scrollen Sie auf schmalen Bildschirmen seitwärts für Gesamtsummen und Zeilenaktionen; bei langen Abschnitten scrollt sie vertikal mit fixierter Kopfzeile",
         "showSubtotal": "Zwischensummenzeile anzeigen",
         "tax": "Steuer",
@@ -794,6 +795,9 @@
         "noTargets": "Fügen Sie einen Preisabschnitt hinzu und verschieben Sie diese Positionen dann dorthin.",
         "qtyPrice": "{{qty}} × {{price}}",
         "title": "Nicht zugeordnete Positionen"
+      },
+      "unsavedField": {
+        "lines": "Positionen"
       }
     },
     "actions": {
@@ -828,12 +832,12 @@
         "ccToggle": "Cc",
         "includePdfLabel": "Angebots-PDF anhängen",
         "invalidEmail": "Ungültige E-Mail-Adresse: {{addresses}}",
-        "message": "Wir senden dieses Angebot per E-Mail an {{orgName}} und markieren es als „Gesendet“ – {{amount}} fällig bei Annahme. Dies kann nicht rückgängig gemacht werden.",
+        "message": "Wir senden dieses Angebot per E-Mail an {{orgName}} und markieren es als „Gesendet“ – {{amount}} fällig bei Annahme. Nach dem Bestätigen haben Sie 30 Sekunden Zeit, um den Versand rückgängig zu machen.",
         "messageLabel": "Persönliche Nachricht hinzufügen (optional)",
         "messagePlaceholder": "Fügen Sie eine kurze Notiz hinzu – sie erscheint in der E-Mail über dem Zusage-Link.",
         "paymentEnabled": "Online-Zahlung ist aktiviert – der Kunde kann nach der Annahme per Karte zahlen.",
-        "paymentNoteNoStripe": "Bei Annahme hat der Kunde keine Online-Zahlungsoption. Verbinden Sie Stripe unter Einstellungen → Integrationen, um eine anzubieten.",
-        "paymentWarningDeposit": "Für dieses Angebot ist eine Anzahlung konfiguriert, aber Kunden können noch nicht online zahlen – verbinden Sie Stripe unter Einstellungen → Integrationen, damit die Anzahlung bei Annahme eingezogen werden kann.",
+        "paymentNoteNoStripe": "Bei Annahme hat der Kunde keine Online-Zahlungsoption. Verbinden Sie Stripe unter <integrationsLink>Einstellungen → Integrationen</integrationsLink>, um eine anzubieten.",
+        "paymentWarningDeposit": "Für dieses Angebot ist eine Anzahlung konfiguriert, aber Kunden können noch nicht online zahlen – verbinden Sie Stripe unter <integrationsLink>Einstellungen → Integrationen</integrationsLink>, damit die Anzahlung bei Annahme eingezogen werden kann.",
         "recipientRequired": "Geben Sie mindestens einen Empfänger ein, um zu senden.",
         "signaturePreviewLabel": "Signatur (festgelegt unter Einstellungen → Branding):",
         "subjectLabel": "Betreff",
@@ -843,7 +847,8 @@
         "toLabel": "An",
         "toPlaceholder": "Empfänger hinzufügen…",
         "tooManyRecipients": "Verwenden Sie höchstens {{max}} Adressen.",
-        "zeroTotalWarning": "Dieses Angebot beträgt $0.00 — prüfen Sie vor dem Senden, ob die Positionen bepreist sind."
+        "zeroTotalWarning": "Dieses Angebot beträgt $0.00 — prüfen Sie vor dem Senden, ob die Positionen bepreist sind.",
+        "noBillingContactHint": "Für diese Organisation ist kein Rechnungskontakt hinterlegt – geben Sie eine E-Mail-Adresse ein oder ergänzen Sie eine in den <orgLink>Organisationseinstellungen</orgLink>."
       },
       "sendEmailWarning": {
         "noBillingContact": "Vorschlag als Gesendet markiert, aber es wurde keine E-Mail zugestellt — {{orgName}} hat keine Rechnungskontakt-E-Mail. Fügen Sie eine in den Organisationseinstellungen hinzu oder teilen Sie den Annahme-Link manuell.",
@@ -860,7 +865,15 @@
       "undoError": "Das Senden konnte nicht abgebrochen werden.",
       "undoSend": "Senden rückgängig",
       "undoSuccess": "Senden abgebrochen — das Angebot bleibt ein Entwurf.",
-      "undoTooLate": "Zu spät zum Rückgängigmachen — das Angebot wurde bereits gesendet."
+      "undoTooLate": "Zu spät zum Rückgängigmachen — das Angebot wurde bereits gesendet.",
+      "sendNow": "Jetzt senden",
+      "savingTimeout": "Ihre Änderungen werden noch gespeichert — das Senden wurde abgebrochen. Versuchen Sie es erneut, sobald alles gespeichert ist.",
+      "sendNowCancelError": "Sofortversand nicht möglich – das Angebot wird weiterhin wie geplant gesendet.",
+      "sendNowAlready": "Bereits unterwegs – das Angebot wird gerade gesendet.",
+      "sendCanceledSaveFailed": "Eine Änderung konnte nicht gespeichert werden, daher wurde das Senden abgebrochen. Korrigieren Sie das markierte Feld und versuchen Sie es erneut.",
+      "sendBlockedUnsaved": "„{{field}}“ enthält eine nicht gespeicherte Änderung. Korrigieren Sie sie dort und senden Sie dann.",
+      "unsavedHint": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Senden wird freigegeben, sobald sie gespeichert ist.",
+      "unsavedTitle": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Senden wird freigegeben, sobald sie gespeichert ist."
     },
     "detail": {
       "addContentInEditor": "Fügen Sie Inhalte im Editor hinzu",
@@ -889,7 +902,7 @@
         "item": "Artikel",
         "noLines": "Keine Positionen in dieser Tabelle.",
         "qty": "Menge",
-        "recurrence": "Wiederholung",
+        "recurrence": "Abrechnung",
         "tax": "Steuer",
         "total": "Insgesamt",
         "unitPrice": "Stückpreis"
@@ -1111,7 +1124,8 @@
         "editor": "Herausgeber",
         "preview": "Vorschau",
         "detail": "Detailansicht"
-      }
+      },
+      "loading": "Angebot wird geladen…"
     }
   },
   "billingUi": {
@@ -1130,7 +1144,14 @@
       "perMonth": "/Mo",
       "perYear": "/Jahr"
     },
-    "unsaved": "Nicht gespeichert"
+    "unsaved": "Nicht gespeichert",
+    "showCostMargin": "Kosten und Marge anzeigen",
+    "hideCostMargin": "Kosten und Marge ausblenden",
+    "orgCombobox": {
+      "searchPlaceholder": "Organisationen durchsuchen…",
+      "noResults": "Keine passenden Organisationen.",
+      "capNote": "Es werden die ersten {{count}} Treffer angezeigt – tippen Sie weiter, um einzugrenzen."
+    }
   },
   "bulk": {
     "bulkActionBar": {
@@ -1158,7 +1179,9 @@
       "manualLine": "Manuelle Position",
       "noCatalogItems": "Keine Katalogartikel.",
       "searchCatalog": "Katalog nach Name oder SKU durchsuchen",
-      "sourceAria": "Positionsquelle hinzufügen"
+      "sourceAria": "Positionsquelle hinzufügen",
+      "catalogLoadFailed": "Der Katalog konnte nicht geladen werden, daher können keine Artikel angezeigt werden.",
+      "retry": "Erneut versuchen"
     },
     "billTo": {
       "addInSettings": "Fügen Sie eine in den Organisationseinstellungen hinzu",
@@ -1194,7 +1217,6 @@
     "saved": "Gespeichert",
     "success": {
       "lineAdded": "Position hinzugefügt",
-      "lineRemoved": "Position entfernt",
       "notesSaved": "Notizen gespeichert",
       "termsSaved": "Begriffe gespeichert"
     },
@@ -1222,7 +1244,21 @@
     },
     "unapprovedTime": "{{count}} Positionen verweisen auf nicht genehmigte Zeiten. Vor dem Ausstellen prüfen.",
     "unapprovedTime_one": "{{count}} Position verweist auf nicht genehmigte Zeit. Vor dem Ausstellen prüfen.",
-    "unapprovedTime_other": "{{count}} Positionen verweisen auf nicht genehmigte Zeiten. Vor dem Ausstellen prüfen."
+    "unapprovedTime_other": "{{count}} Positionen verweisen auf nicht genehmigte Zeiten. Vor dem Ausstellen prüfen.",
+    "autosaveHint": "Änderungen werden automatisch gespeichert. Ein bernsteinfarbener Rahmen markiert eine ungespeicherte Änderung.",
+    "lastSaved": {
+      "saved": "Gespeichert um {{time}} Uhr",
+      "saving": "Wird gespeichert…"
+    },
+    "undo": {
+      "lineDeleted": "Position gelöscht",
+      "tooLate": "Rückgängig nicht mehr möglich – diese Position wurde bereits gelöscht.",
+      "partialFlush": "{{applied}} Löschung(en) wurden übernommen; {{failed}} sind fehlgeschlagen und wurden wiederhergestellt."
+    },
+    "linesScrollAria": "Rechnungspositionen – scrollen Sie seitwärts für weitere Spalten",
+    "unsavedField": {
+      "lines": "Positionen"
+    }
   },
   "invoiceActions": {
     "deleteConfirm": {
@@ -1248,10 +1284,16 @@
     "issueSuccess": "Rechnung ausgestellt",
     "issuing": "Wird ausgestellt…",
     "noVisibleLineHint": "Mindestens eine für Kunden sichtbare Position zum Ausstellen hinzufügen.",
-    "preparing": "Vorbereiten…"
+    "preparing": "Vorbereiten…",
+    "savingHint": "Änderungen werden gespeichert… Ausstellen wird freigegeben, sobald alles gespeichert ist.",
+    "savingTitle": "Ihre Änderungen werden gespeichert – Ausstellen wird freigegeben, sobald alles gespeichert ist.",
+    "issueCanceledSaveFailed": "Eine Änderung konnte nicht gespeichert werden, daher wurde das Ausstellen abgebrochen. Korrigieren Sie das markierte Feld und versuchen Sie es erneut.",
+    "issueCanceledStillSaving": "Ihre Änderungen werden noch gespeichert – das Ausstellen wurde abgebrochen. Versuchen Sie es erneut, sobald alles gespeichert ist.",
+    "issueBlockedUnsaved": "„{{field}}“ enthält eine nicht gespeicherte Änderung. Korrigieren Sie sie dort und stellen Sie dann aus.",
+    "unsavedHint": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Ausstellen wird freigegeben, sobald sie gespeichert ist.",
+    "unsavedTitle": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Ausstellen wird freigegeben, sobald sie gespeichert ist."
   },
   "invoiceDetail": {
-    "accountingView": "Buchhaltungsansicht (Kosten, Marge, versteckte Komponenten)",
     "deposit": {
       "duePrefix": "Anzahlung von",
       "dueSuffix": "fällig – {{paid}} von {{total}} bezahlt.",
@@ -1272,7 +1314,8 @@
       "price": "Preis",
       "qty": "Menge",
       "tax": "Steuer",
-      "total": "Insgesamt"
+      "total": "Insgesamt",
+      "allHidden": "Alle Positionen sind nur intern. Verwenden Sie „Kosten und Marge anzeigen“, um sie einzublenden."
     },
     "paymentMethods": {
       "cash": "Bargeld",
@@ -1344,7 +1387,10 @@
       "reissuedSuccess": "Rechnung storniert und als Entwurf neu ausgestellt",
       "success": "Rechnung storniert",
       "title": "Rechnung stornieren"
-    }
+    },
+    "empty": "Diese Rechnung hat noch keine Positionen.",
+    "addContentInEditor": "Positionen im Editor hinzufügen",
+    "linesScrollAria": "Rechnungspositionen – scrollen Sie seitwärts für weitere Spalten"
   },
   "invoiceDocument": {
     "billTo": "Bill zu",

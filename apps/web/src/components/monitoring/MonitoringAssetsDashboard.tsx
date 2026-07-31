@@ -19,6 +19,7 @@ import { OrgRequiredState } from '../shared/OrgRequiredState';
 import { OrgLoadFailedState } from '../shared/OrgLoadFailedState';
 import CreateMonitorForm from '../monitors/CreateMonitorForm';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
+import { asList } from '@/lib/asList';
 
 type MonitoringAsset = {
   id: string;
@@ -186,7 +187,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
           return;
         }
         const data = await res.json();
-        setTemplates(data.data ?? data.templates ?? data ?? []);
+        setTemplates(asList(data, 'templates'));
       })
       .catch((err) => {
         console.error('[MonitoringAssetsDashboard] Error loading SNMP templates:', err);

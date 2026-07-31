@@ -1060,6 +1060,7 @@
     "enableMaintenance": "Activer la maintenance",
     "disableMaintenance": "Désactiver la maintenance",
     "wakeSelected": "Wake sélectionné",
+    "compareSelected": "Comparer la sélection",
     "linkAsMultiBoot": "Liaison en tant que multi-boot",
     "decommissionSelected": "Mettre la sélection hors service",
     "clearSelection": "Effacer la sélection",
@@ -1756,6 +1757,7 @@
       "maintenanceOn": "Maintenance en marche",
       "multibootLinked": "Multidémarrage associé",
       "networkSkipped": "{{count}} Périphérique(s) réseau sauté(s) — cette action s’applique uniquement aux dispositifs agent.",
+      "compareNeedsTwo": "La comparaison nécessite au moins 2 appareils avec agent.",
       "permanentDeleteCancelled": "Suppression permanente annulée",
       "permanentDeleting": "Suppression permanente",
       "permanentlyDeleted": "Supprimé définitivement",
@@ -2207,7 +2209,19 @@
     "runOnDevice": "Exécutez un script sur {{hostname}}",
     "runScript": "Exécuter un script",
     "searchPlaceholder": "Rechercher des scripts...",
+    "sessionAny": "Toute session (console)",
     "title": "Sélectionner un script",
     "unnamedScript": "Script sans nom"
+  },
+  "sessionPicker": {
+    "titleDesktop": "Sélectionner une session à afficher",
+    "titleScript": "Sélectionner une session où exécuter",
+    "loading": "Chargement des sessions…",
+    "fetchFailed": "Impossible de charger les sessions",
+    "noSessions": "Aucune session interactive trouvée",
+    "sessionLabel": "session n° {{id}}",
+    "idleMinutes": "inactive depuis {{count}} min",
+    "disconnectedNotShadowable": "Les sessions déconnectées ne peuvent pas être affichées — aucun bureau actif à capturer",
+    "cancel": "Annuler"
   }
 }

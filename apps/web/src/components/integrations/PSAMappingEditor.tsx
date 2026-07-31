@@ -4,6 +4,7 @@ import { fetchWithAuth } from "../../stores/auth";
 import { extractApiError } from "@/lib/apiError";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
+import { asList } from '@/lib/asList';
 
 type MappingRow = {
   id: string;
@@ -84,7 +85,7 @@ export default function PSAMappingEditor() {
         );
       }
       const data = await response.json();
-      const savedMappings = data.mappings ?? data.data ?? data ?? [];
+      const savedMappings = asList(data, 'mappings');
       if (Array.isArray(savedMappings) && savedMappings.length > 0) {
         setMappings(savedMappings);
       }

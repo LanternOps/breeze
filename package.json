@@ -16,6 +16,7 @@
     "pin:github-actions": "node scripts/security/pin-github-actions.mjs",
     "test:override-floors": "node --test scripts/security/check-override-floors.test.mjs",
     "check:override-floors": "node scripts/security/check-override-floors.mjs",
+    "check:agent-mtls-edge-policy": "bash scripts/check-agent-mtls-edge-policy.sh",
     "db:migrate": "turbo run db:migrate --filter=@breeze/api",
     "db:check-drift": "turbo run db:check-drift --filter=@breeze/api",
     "db:seed": "turbo run db:seed --filter=@breeze/api",
@@ -25,7 +26,7 @@
     "wt-stack": "tsx scripts/dev/wt-stack/cli.ts"
   },
   "devDependencies": {
-    "@typescript-eslint/parser": "^8.64.0",
+    "@typescript-eslint/parser": "^8.65.0",
     "eslint": "^10.8.0",
     "tsx": "^4.23.1",
     "turbo": "^2.10.5",
@@ -33,7 +34,7 @@
   },
   "packageManager": "pnpm@10.34.5",
   "engines": {
-    "node": ">=22.19.0",
+    "node": ">=22.22.2",
     "pnpm": ">=10.34.5"
   },
   "pnpm": {

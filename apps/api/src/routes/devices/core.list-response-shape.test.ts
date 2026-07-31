@@ -156,6 +156,7 @@ describe('GET /devices — response shape', () => {
         diskTotalGb: null,
         reliabilityScore: 42,
         reliabilityTrend: 'degrading',
+        helperLifecycleMode: 'on-demand',
       },
     ]);
 
@@ -183,6 +184,10 @@ describe('GET /devices — response shape', () => {
     // linkGroupRole; dropping either silently un-groups every linked device.
     expect(row).toHaveProperty('linkGroupId', '44444444-4444-4444-8444-444444444444');
     expect(row).toHaveProperty('linkGroupRole', 'host');
+    // Task 12 (RDS per-session helpers) — helperLifecycleMode must survive
+    // the mapper: Tasks 13/14 gate the session picker on this field being
+    // 'on-demand' at the list-row level, not just on the detail page.
+    expect(row).toHaveProperty('helperLifecycleMode', 'on-demand');
   });
 
   it('returns null watchdogStatus / mainAgentSilentSince for healthy rows (still present in shape)', async () => {
@@ -224,6 +229,7 @@ describe('GET /devices — response shape', () => {
         diskTotalGb: null,
         reliabilityScore: null,
         reliabilityTrend: null,
+        helperLifecycleMode: null,
       },
     ]);
 
@@ -260,5 +266,10 @@ describe('GET /devices — response shape', () => {
     expect(Object.prototype.hasOwnProperty.call(row, 'linkGroupRole')).toBe(true);
     expect(row.linkGroupId).toBeNull();
     expect(row.linkGroupRole).toBeNull();
+
+    // Task 12 — helperLifecycleMode key present (null) for devices that
+    // haven't reported a mode (non-RDS hosts, or agents predating plan 2).
+    expect(Object.prototype.hasOwnProperty.call(row, 'helperLifecycleMode')).toBe(true);
+    expect(row.helperLifecycleMode).toBeNull();
   });
 });

@@ -28,6 +28,7 @@ type ExecuteScriptOnDevicesInput = {
   parameters?: Record<string, unknown>;
   triggerType?: 'manual' | 'scheduled' | 'alert' | 'policy';
   runAs?: 'system' | 'user';
+  targetSessionId?: number;
   auth: ScriptExecutionAuth;
   permissions?: UserPermissions;
 };
@@ -206,6 +207,7 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
           parameters,
           timeoutSeconds: script.timeoutSeconds,
           runAs,
+          ...(input.targetSessionId != null ? { targetSessionId: input.targetSessionId } : {}),
         },
         status: 'pending',
         createdBy: input.auth.user.id,

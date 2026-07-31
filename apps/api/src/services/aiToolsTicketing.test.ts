@@ -91,6 +91,7 @@ import { validateToolInput } from './aiToolSchemas';
 
 // Default auth: partner scope with access to 'o-1'.
 const auth: AuthContext = {
+  principal: { kind: 'user_session' },
   user: { id: 'u-1', email: 'tech@example.com', name: 'Tech User', isPlatformAdmin: false },
   token: {} as never,
   partnerId: 'p-1',

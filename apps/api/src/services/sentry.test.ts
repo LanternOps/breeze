@@ -110,6 +110,27 @@ describe('sentry service', () => {
     expect(setTagMock).not.toHaveBeenCalledWith('partner_id', expect.anything());
   });
 
+  // BREEZE-X: the CAS 0-row warning is only self-diagnosing if these two reach
+  // Sentry. They are gated TWICE — setCallerTags here, pickAllowedTags in the
+  // beforeSend scrubber (see the scrubEvent suite below) — and passing one gate
+  // while being dropped by the other is a silent failure.
+  it('captureMessage keeps the BREEZE-X cas_label and prior_status tags', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureMessage } = await import('./sentry');
+    initSentry();
+
+    captureMessage('Expected-rows write affected 0 rows', 'warning', undefined, {
+      cas_label: 'device_commands.ws_result_terminal_cas',
+      prior_status: 'failed:server-timeout',
+    });
+
+    expect(setTagMock).toHaveBeenCalledWith(
+      'cas_label',
+      'device_commands.ws_result_terminal_cas',
+    );
+    expect(setTagMock).toHaveBeenCalledWith('prior_status', 'failed:server-timeout');
+  });
+
   it('captureMessage sets no tags when none are passed (existing callers unaffected)', async () => {
     process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
     const { initSentry, captureMessage } = await import('./sentry');
@@ -322,6 +343,8 @@ describe('scrubEvent', () => {
         scope: 'organization',
         org_id: 'o-1',
         partner_id: 'p-1',
+        cas_label: 'device_commands.ws_result_terminal_cas',
+        prior_status: 'failed:server-timeout',
         path: '/public/quotes/raw-capability',
         arbitrary: 'raw-capability',
       },
@@ -366,6 +389,9 @@ describe('scrubEvent', () => {
       scope: 'organization',
       org_id: 'o-1',
       partner_id: 'p-1',
+      // BREEZE-X: must survive the scrubber too, not just setCallerTags.
+      cas_label: 'device_commands.ws_result_terminal_cas',
+      prior_status: 'failed:server-timeout',
     });
     expect(out.exception).toEqual({
       values: [{

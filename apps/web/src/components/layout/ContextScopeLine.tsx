@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Globe, Library, Building2 } from 'lucide-react';
-import { getRouteScope } from '../../lib/routeScope';
+import { getRouteScope, isSingleDocumentRoute } from '../../lib/routeScope';
 import { useOrgStore } from '../../stores/orgStore';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { useTranslation } from 'react-i18next';
@@ -32,6 +32,10 @@ export default function ContextScopeLine() {
   }, []);
 
   if (!pathname) return null;
+  // Quote/invoice detail pages: the document names its customer, and this line
+  // is the only scroll-away content above their pinned header chrome — see
+  // isSingleDocumentRoute.
+  if (isSingleDocumentRoute(pathname)) return null;
   const kind = getRouteScope(pathname);
   // Explicit fleet view only — the hook's discriminated union keeps the
   // transient/loading and error states from reading as fleet.

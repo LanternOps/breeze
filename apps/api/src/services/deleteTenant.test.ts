@@ -54,6 +54,7 @@ function makeAuth(overrides: Partial<AuthContext> = {}): AuthContext {
     orgCondition: () => undefined,
     canAccessOrg: () => true,
     ...overrides,
+    principal: overrides?.principal ?? { kind: 'api_key' },
   };
 }
 

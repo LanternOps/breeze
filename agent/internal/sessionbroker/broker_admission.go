@@ -37,6 +37,19 @@ var (
 	errBrokerClosed              = errors.New("session broker is closed")
 )
 
+// admissionRejectCode maps admission errors to the machine-readable Code sent
+// in the auth response, so helpers can distinguish "not currently needed"
+// (exit clean, no scheduled-task retry churn) from genuine permanent failures.
+func admissionRejectCode(err error) string {
+	switch {
+	case errors.Is(err, errHelperKeyNotDesired):
+		return "not_desired"
+	case errors.Is(err, errDuplicateHelperKey):
+		return "duplicate_key"
+	}
+	return ""
+}
+
 func admissionIdentityKey(base string, peerSession uint32, goos string) string {
 	if goos != "windows" {
 		return base
@@ -76,17 +89,25 @@ func (b *Broker) UpdateDesiredHelperKeys(desired map[HelperKey]struct{}) {
 // refreshDesiredHelperKeys obtains one detector snapshot and publishes every
 // eligible lifecycle key from it before callers inspect broker connections or
 // spawn helpers.
+//
+// This path is test-only in-tree: the production admission snapshot comes
+// from lifecycle_core.go's reconcile loop via UpdateDesiredHelperKeys, which
+// already reflects the RDS-aware retention fix (rdsHost + consoleSessionIDFn
+// threaded through detectedDesired). Broker has no rdsHost field of its own,
+// so this computes both locally to stay self-consistent with that path.
 func (b *Broker) refreshDesiredHelperKeys(detector SessionDetector) ([]DetectedSession, error) {
 	sessions, err := detector.ListSessions()
 	if err != nil {
 		return nil, err
 	}
+	rdsHost := detectRDSHost()
+	consoleID := GetConsoleSessionID()
 	desired := make(map[HelperKey]struct{}, len(sessions)*2)
 	for _, session := range sessions {
-		if key, ok := helperKeyFromDetected(session, ipc.HelperRoleSystem); ok {
+		if key, ok := helperKeyFromDetected(session, ipc.HelperRoleSystem, rdsHost, consoleID); ok {
 			desired[key] = struct{}{}
 		}
-		if key, ok := helperKeyFromDetected(session, ipc.HelperRoleUser); ok {
+		if key, ok := helperKeyFromDetected(session, ipc.HelperRoleUser, rdsHost, consoleID); ok {
 			desired[key] = struct{}{}
 		}
 	}

@@ -1,6 +1,6 @@
 import argon2 from 'argon2';
 
-const ARGON2_OPTIONS: argon2.Options = {
+const ARGON2_OPTIONS: argon2.HashOptions = {
   type: argon2.argon2id,
   memoryCost: 65536, // 64MB
   timeCost: 3,

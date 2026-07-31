@@ -149,7 +149,8 @@ import { peripheralControlRoutes } from './routes/peripheralControl';
 import { browserSecurityRoutes } from './routes/browserSecurity';
 import { c2cRoutes, m365CallbackRoute } from './routes/c2c';
 import { googleRoutes } from './routes/google';
-import { m365ConsentCallbackRoutes } from './routes/m365ConsentCallback';
+import { m365ActionsConsentCallbackRoutes, m365ConsentCallbackRoutes } from './routes/m365ConsentCallback';
+import { m365CustomerGraphActionsRoutes } from './routes/m365CustomerGraphActions';
 import { m365CustomerGraphReadRoutes } from './routes/m365CustomerGraphRead';
 import { m365Routes } from './routes/m365';
 import { onedriveRoutes } from './routes/onedrive';
@@ -188,6 +189,10 @@ import {
   initializeOAuthRevocationRetryWorker,
   shutdownOAuthRevocationRetryWorker,
 } from './jobs/oauthRevocationRetryWorker';
+import {
+  initializeMtlsCertificateRevocationWorker,
+  shutdownMtlsCertificateRevocationWorker,
+} from './jobs/mtlsCertificateRevocation';
 import { initializeAuthEmailWorker, shutdownAuthEmailWorker } from './jobs/authEmailWorker';
 import { initializeQuoteSendWorker, shutdownQuoteSendWorker } from './jobs/quoteSendQueue';
 import {
@@ -221,6 +226,8 @@ import { initializeUnifiTelemetryWorker } from './jobs/unifiTelemetryWorker';
 import { initializeSnmpRetention, shutdownSnmpRetention } from './jobs/snmpRetention';
 import { initializeReliabilityRetention, shutdownReliabilityRetention } from './jobs/reliabilityRetention';
 import { initializeProcessSampleRetention, shutdownProcessSampleRetention } from './jobs/processSampleRetention';
+import { initializeDeviceMetricsRetention, shutdownDeviceMetricsRetention } from './jobs/deviceMetricsRetention';
+import { initializeServiceProcessCheckRetention, shutdownServiceProcessCheckRetention } from './jobs/serviceProcessCheckRetention';
 import { initializePlaybookRetention, shutdownPlaybookRetention } from './jobs/playbookRetention';
 import { initializePolicyEvaluationWorker, shutdownPolicyEvaluationWorker } from './jobs/policyEvaluationWorker';
 import { initializeAutomationWorker, shutdownAutomationWorker } from './jobs/automationWorker';
@@ -979,7 +986,9 @@ api.route('/', m365CallbackRoute); // Public callback (no auth) — must precede
 api.route('/c2c', c2cRoutes);
 api.route('/google', googleRoutes);
 api.route('/m365', m365ConsentCallbackRoutes); // Public two-phase consent callback; mount before authenticated M365 routes
+api.route('/m365', m365ActionsConsentCallbackRoutes); // Public actions-profile callback (/m365/actions-consent/callback); distinct path, same base, no collision
 api.route('/m365', m365CustomerGraphReadRoutes);
+api.route('/m365/customer-graph-actions', m365CustomerGraphActionsRoutes);
 api.route('/m365', m365Routes);
 api.route('/onedrive', onedriveRoutes);
 api.route('/dr', drRoutes);
@@ -1233,9 +1242,15 @@ async function initializeWorkers(): Promise<void> {
     ['ipHistoryRetention', initializeIPHistoryRetention],
     ['reliabilityRetention', initializeReliabilityRetention],
     ['processSampleRetention', initializeProcessSampleRetention],
+    ['deviceMetricsRetention', initializeDeviceMetricsRetention],
+    ['serviceProcessCheckRetention', initializeServiceProcessCheckRetention],
     ['changeLogRetention', initializeChangeLogRetention],
     ['oauthCleanup', initializeOauthCleanupWorker],
     ['oauthRevocationRetryWorker', async () => { initializeOAuthRevocationRetryWorker(); }],
+    // Wave 5 Task 3: durable/idempotent provider certificate revocation
+    // (worker + 5-minute sweep for due retries and expired pending-activation
+    // rows). initializeMtlsCertificateRevocationWorker is synchronous.
+    ['mtlsCertificateRevocationWorker', async () => { initializeMtlsCertificateRevocationWorker(); }],
     // SR2-22: out-of-band auth-email worker (forgot-password issuance/send).
     // initializeAuthEmailWorker is synchronous (returns void), so wrap it.
     ['authEmailWorker', async () => { initializeAuthEmailWorker(); }],
@@ -1440,9 +1455,12 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownMlOutputRetention,
     shutdownReliabilityRetention,
     shutdownProcessSampleRetention,
+    shutdownDeviceMetricsRetention,
+    shutdownServiceProcessCheckRetention,
     shutdownChangeLogRetention,
     shutdownOauthCleanupWorker,
     shutdownOAuthRevocationRetryWorker,
+    shutdownMtlsCertificateRevocationWorker,
     shutdownAuthEmailWorker,
     shutdownQuoteSendWorker,
     shutdownEnrollmentKeyCleanupWorker,

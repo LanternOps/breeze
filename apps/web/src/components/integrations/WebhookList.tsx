@@ -4,6 +4,7 @@ import { fetchWithAuth } from "../../stores/auth";
 import { widthPercentClass } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
+import { asList } from '@/lib/asList';
 
 export type WebhookStatus = "active" | "disabled" | "failing";
 
@@ -55,7 +56,7 @@ export default function WebhookList({ onAdd, onEdit }: WebhookListProps) {
         throw new Error(t("webhookList.failedToFetchWebhooks"));
       }
       const data = await response.json();
-      setWebhooks(data.webhooks ?? data ?? []);
+      setWebhooks(asList(data, 'webhooks'));
     } catch (err) {
       setError(
         err instanceof Error ? err.message : t("webhookList.anErrorOccurred"),

@@ -30,6 +30,7 @@ import {
   resolvePinnedUpgradeTarget,
   type AgentVersionPins,
   type OnedriveConfigUpdate,
+  type HelperSettings,
 } from './helpers';
 import { shouldSendAgentUpgrade } from './agentUpdatePolicy';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
@@ -39,7 +40,12 @@ import { isAgentTokenRotationDue } from '../../middleware/agentAuth';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { captureException } from '../../services/sentry';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
-import { getActiveTrustKeyset, type ManifestTrustKey } from '../../services/manifestSigning';
+import {
+  getActiveTrustKeyset,
+  getActiveManifestKeyDelegations,
+  type ManifestTrustKey,
+  type ManifestKeyDelegation,
+} from '../../services/manifestSigning';
 import { decryptClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { redactSecretsDeep } from '../../services/secretRedaction';
 
@@ -460,6 +466,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // conservative default — and writing unconditionally lets the flag
     // self-clear on the first post-reboot heartbeat.
     pendingReboot: data.pendingReboot ?? false,
+    // Wave 6 Task 4 (security remediation) — outbound-network-policy
+    // capability handshake. Written UNCONDITIONALLY every heartbeat (not
+    // sticky): only the recognized integer version 1 is ever recorded as
+    // anything other than 0, so an old agent (object omitted entirely) — or
+    // a downgrade FROM a capable build back to an old one — correctly
+    // reports back down to 0 rather than leaving a stale capability claim
+    // that Task 5's dispatch gate would wrongly trust.
+    outboundNetworkPolicyVersion: data.securityCapabilities?.outboundNetworkPolicyVersion === 1 ? 1 : 0,
     updatedAt: new Date()
   };
 
@@ -526,6 +540,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   }
   if (data.osBuild !== undefined && data.osBuild !== device.osBuild) {
     deviceUpdates.osBuild = data.osBuild;
+  }
+  // NOTE: truthy guard — a device that STOPS reporting a mode (agent
+  // downgrade, host no longer RDS) keeps its last stored value forever.
+  // devices.helper_lifecycle_mode is therefore a HINT for the web UI's
+  // session pickers, never an authorization gate: a stale 'on-demand' just
+  // shows a picker whose live session fetch still returns the truth.
+  if (data.helperLifecycleMode && data.helperLifecycleMode !== device.helperLifecycleMode) {
+    deviceUpdates.helperLifecycleMode = data.helperLifecycleMode;
   }
   if (data.tccPermissions) {
     deviceUpdates.tccPermissions = data.tccPermissions;
@@ -945,12 +967,11 @@ if (latestHelper) {
     }
   }
 
-  let helperSettings: { enabled: boolean; showOpenPortal: boolean; showDeviceInfo: boolean; showRequestSupport: boolean; portalUrl?: string } | null = null;
-  try {
-    helperSettings = await buildHelperConfigUpdate(device.id, device.orgId);
-  } catch (err) {
-    console.error(`[agents] failed to read helper settings for ${agentId}:`, err);
-  }
+  // Helper settings are resolved AFTER this org-scoped block closes (#1105
+  // pattern — see below): a partner-wide helper policy (org_id NULL) is
+  // invisible under this context's RLS (accessiblePartnerIds: [] above), so
+  // resolving it here would silently miss it regardless of the resolver's own
+  // query condition.
 
   let eventLogSettings: Record<string, unknown> | null = null;
   try {
@@ -1018,6 +1039,43 @@ if (latestHelper) {
   if (patchSourceSettings) {
     mergedConfigUpdate.patch_source_settings = patchSourceSettings;
   }
+
+  // Security remediation Wave 6, Task 9 — ALWAYS sent, as true or false.
+  //
+  // An earlier revision omitted the key when unset/false, mirroring
+  // backup_server_url's "absent = no change" contract. That made the switch
+  // ONE-WAY: an agent that had already received `true` persisted it to
+  // agent.yaml, and setting AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID back to
+  // false never reverted it — the device stayed in require-ID mode until
+  // someone hand-edited agent.yaml on every machine. The runbook treats an
+  // unexpected `manifest signing key ID required` rejection as a canary STOP
+  // condition, and a stop condition whose failure mode is "the fleet can no
+  // longer auto-update" must have a rollback lever. Sending the explicit
+  // false is that lever: reverting the env var rolls capable agents back on
+  // their next heartbeat.
+  //
+  // Rolling-deploy and server-rollback safety is unaffected: agent builds
+  // older than this wave ignore the key entirely whether it arrives as true,
+  // as false, or not at all.
+  //
+  // NOTE: as of deviation D4, an agent build running this wave's Task 6/9
+  // code reads this key from configUpdate (applyConfigUpdate in
+  // agent/internal/heartbeat/heartbeat.go) and persists it via
+  // config.SetAndPersist — this is NOT a no-op. It is also NOT fleet-wide:
+  // any agent build older than this one still ignores the pushed key and
+  // keeps accepting ID-less manifests. See
+  // docs/operations/agent-network-and-manifest-rollout.md before flipping
+  // AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID=true in production.
+  //
+  // The `.trim().toLowerCase()` normalization below is belt-and-suspenders
+  // only — apps/api/src/config/validate.ts's envSchema already constrains
+  // AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID to the exact strings 'true'/'false'
+  // and boot-refuses anything else, so this read can never actually see a
+  // value that needs normalizing. The boot-time validator is the real gate;
+  // this line stays defensive only to match the read pattern used elsewhere
+  // in this function.
+  mergedConfigUpdate.require_manifest_signing_key_id =
+    (process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID ?? '').trim().toLowerCase() === 'true';
 
   const authenticatedWithPreviousToken = c.get('agentTokenRotationRequired') === true;
 
@@ -1099,8 +1157,8 @@ if (latestHelper) {
       // confirmed. Tells the agent to call /rotate-token/confirm and finish.
       confirmTokenRotation:
         (pendingRotationLive && c.get('agentPendingTokenPresented') === true) || undefined,
-      helperEnabled: helperSettings?.enabled ?? false,
-      helperSettings: helperSettings ?? undefined,
+      // helperEnabled/helperSettings are merged in AFTER this org-scoped block
+      // closes — see the #1105 comment below.
       // Opt-in default: a null pamSettings (resolver error, logged above) sends
       // false so we never prompt users on a device that opted into nothing.
       uacInterceptionEnabled: pamSettings?.uacInterceptionEnabled ?? false,
@@ -1125,6 +1183,27 @@ if (latestHelper) {
     manifestTrustKeys = await getActiveTrustKeyset();
   } catch (err) {
     console.error(`[heartbeat] Failed to load manifest trust keyset for agentId=${agentId}:`, err);
+    captureException(err);
+  }
+
+  // Signed manifest key delegations (Wave 6 Task 7). This is the path that
+  // actually drives fleet adoption of a rotation: enrollment happens once,
+  // but every agent heartbeats.
+  //
+  // #1105 — fetched OUTSIDE the org transaction for the same reason as the
+  // trust keyset directly above: getActiveManifestKeyDelegations opens its
+  // own system-scoped context/connection, and acquiring that while still
+  // holding the org connection self-deadlocks the pool under a mass agent
+  // reconnect.
+  //
+  // A failure is non-fatal — commands, upgrades and token rotation all ride
+  // on this response, and a rotation record is not worth failing them for.
+  // The agent simply adopts on a later heartbeat.
+  let manifestKeyDelegations: ManifestKeyDelegation[] = [];
+  try {
+    manifestKeyDelegations = await getActiveManifestKeyDelegations();
+  } catch (err) {
+    console.error(`[heartbeat] Failed to load manifest key delegations for agentId=${agentId}:`, err);
     captureException(err);
   }
 
@@ -1171,7 +1250,31 @@ if (latestHelper) {
     ? { ...(policyProbeConfig ?? {}), ...(scopedConfigUpdate ?? {}), ...(onedriveConfigUpdate ?? {}) }
     : null;
 
-  return c.json({ ...scoped.mainResponse, configUpdate, manifestTrustKeys });
+  // #1105 — helper settings resolved OUTSIDE the org context too (same
+  // guarantee as policyProbeConfig/onedriveSettings above): a partner-wide
+  // helper policy (org_id NULL) is invisible under the org-scoped RLS context
+  // (accessiblePartnerIds: [] there), so it must resolve under a system
+  // context anchored to this authenticated device's own org — cannot pivot
+  // tenants since both ids come from `scoped`, derived from the device the
+  // agent already authenticated as.
+  let helperSettings: HelperSettings | null = null;
+  try {
+    helperSettings = await withSystemDbAccessContext(() =>
+      buildHelperConfigUpdate(scoped.deviceId, scoped.deviceOrgId)
+    );
+  } catch (err) {
+    console.error(`[agents] failed to read helper settings for ${agentId}:`, err);
+    captureException(err);
+  }
+
+  return c.json({
+    ...scoped.mainResponse,
+    configUpdate,
+    manifestTrustKeys,
+    manifestKeyDelegations,
+    helperEnabled: helperSettings?.enabled ?? false,
+    helperSettings: helperSettings ?? undefined,
+  });
 });
 
 // Receive service/process monitoring check results from agent

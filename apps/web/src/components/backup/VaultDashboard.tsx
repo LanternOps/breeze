@@ -17,6 +17,7 @@ import { formatBytes, formatTime } from './backupDashboardHelpers';
 import VaultConfigDialog from './VaultConfigDialog';
 import AlphaBadge from '../shared/AlphaBadge';
 import { useTranslation } from 'react-i18next';
+import { asList } from '@/lib/asList';
 import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -69,7 +70,7 @@ export default function VaultDashboard() {
       const response = await fetchWithAuth('/backup/vault');
       if (!response.ok) throw new Error('Failed to fetch vaults');
       const payload = await response.json();
-      const data = payload?.data ?? payload ?? [];
+      const data = asList(payload);
       setVaults(
         Array.isArray(data)
           ? data.map((item) => {

@@ -10,6 +10,7 @@ import { extractApiError } from '@/lib/apiError';
 import { showToast } from '@/components/shared/Toast';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import SessionPickerModal from './SessionPickerModal';
 
 interface Props {
   deviceId: string;
@@ -22,6 +23,14 @@ interface Props {
   isHeadless?: boolean;
   desktopAccess?: DesktopAccessState | null;
   remoteAccessPolicy?: RemoteAccessPolicy | null;
+  /**
+   * Helper lifecycle mode for this device (Task 12). When 'on-demand' the
+   * device is an RDS host with per-session helpers: clicking connect opens a
+   * session picker first so the tech targets a specific session, and the
+   * chosen id is appended to the viewer deep link as &targetSessionId=N.
+   * Absent / 'always-on' / null ⇒ unchanged behavior for non-RDS devices.
+   */
+  helperLifecycleMode?: 'always-on' | 'on-demand' | null;
 }
 
 /**
@@ -95,10 +104,13 @@ function desktopAccessUnavailableReason(
   }
 }
 
-export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false, disabledTitle, isHeadless = false, desktopAccess = null, remoteAccessPolicy = null }: Props) {
+export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false, disabledTitle, isHeadless = false, desktopAccess = null, remoteAccessPolicy = null, helperLifecycleMode = null }: Props) {
   const { t } = useTranslation('remote');
   const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback' | 'denied'>('idle');
   const [error, setError] = useState<string | null>(null);
+  // RDS hosts (helperLifecycleMode === 'on-demand') gate connect behind a
+  // session picker so the tech targets a specific WTS session.
+  const [pickerOpen, setPickerOpen] = useState(false);
   // Populated when the VNC auto-fallback path times out — carries the info needed
   // for the "Open in Browser" fallback card so we don't navigate away automatically.
   const [vncFallback, setVncFallback] = useState<{ tunnelId: string } | null>(null);
@@ -125,7 +137,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
     fetchWithAuth(`/remote/sessions/${sessionId}/end`, { method: 'POST' }).catch(() => {});
   }, []);
 
-  const handleConnect = useCallback(async () => {
+  const startConnect = useCallback(async (targetSessionId?: number) => {
     setStatus('creating');
     setError(null);
 
@@ -393,7 +405,8 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
 
       // Build deep link URL
       const apiUrl = import.meta.env.PUBLIC_API_URL || window.location.origin;
-      const deepLink = `breeze://connect?session=${encodeURIComponent(session.id)}&code=${encodeURIComponent(codeData.code)}&api=${encodeURIComponent(apiUrl)}&device=${encodeURIComponent(deviceId)}`;
+      const deepLink = `breeze://connect?session=${encodeURIComponent(session.id)}&code=${encodeURIComponent(codeData.code)}&api=${encodeURIComponent(apiUrl)}&device=${encodeURIComponent(deviceId)}`
+        + (targetSessionId != null ? `&targetSessionId=${targetSessionId}` : '');
 
       setStatus('launching');
 
@@ -449,6 +462,16 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       setStatus('idle');
     }
   }, [deviceId, desktopAccess, remoteAccessPolicy, endSession, t]);
+
+  // Entry point for a connect click. RDS hosts open the session picker first;
+  // everything else connects immediately (unchanged behavior).
+  const handleClick = useCallback(() => {
+    if (helperLifecycleMode === 'on-demand') {
+      setPickerOpen(true);
+      return;
+    }
+    void startConnect();
+  }, [helperLifecycleMode, startConnect]);
 
   const handleDismiss = useCallback(() => {
     setVncFallback(null);
@@ -710,12 +733,24 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
     );
   }
 
+  // RDS host session picker — only mounted (isOpen-gated) for 'on-demand'
+  // devices. onSelect threads the chosen WTS session id into the deep link.
+  const pickerModal = (
+    <SessionPickerModal
+      isOpen={pickerOpen}
+      deviceId={deviceId}
+      purpose="desktop"
+      onSelect={(sessionId) => { setPickerOpen(false); void startConnect(sessionId); }}
+      onClose={() => setPickerOpen(false)}
+    />
+  );
+
   if (iconOnly) {
     return (
       <div className={`relative ${className}`}>
         <button
           type="button"
-          onClick={handleConnect}
+          onClick={handleClick}
           disabled={disabled || status === 'creating' || status === 'launching'}
           title={error || (disabled ? disabledTitle : undefined) || t('connectDesktopButton.connectDesktop')}
           className={`flex h-8 w-8 items-center justify-center rounded-md transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 ${error ? 'text-red-500' : ''}`}
@@ -728,6 +763,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         </button>
         {fallbackContent}
         {deniedContent}
+        {pickerModal}
       </div>
     );
   }
@@ -737,7 +773,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       <div className="relative">
         <button
           type="button"
-          onClick={handleConnect}
+          onClick={handleClick}
           disabled={disabled || status === 'creating' || status === 'launching'}
           title={error || (disabled ? disabledTitle : undefined)}
           className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 ${error ? 'text-red-500' : ''}`}
@@ -750,6 +786,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         </button>
         {fallbackContent}
         {deniedContent}
+        {pickerModal}
       </div>
     );
   }
@@ -758,7 +795,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
     <div className={`relative ${className}`}>
       <button
         type="button"
-        onClick={handleConnect}
+        onClick={handleClick}
         disabled={disabled || status === 'creating' || status === 'launching'}
         title={error || (disabled ? disabledTitle : undefined)}
         className={`flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${error ? 'border-red-300 bg-red-50 text-red-600 hover:bg-red-100 dark:border-red-800 dark:bg-red-950 dark:text-red-400 dark:hover:bg-red-900' : 'bg-background hover:bg-muted'}`}
@@ -773,6 +810,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
 
       {fallbackContent}
       {deniedContent}
+      {pickerModal}
     </div>
   );
 }

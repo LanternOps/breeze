@@ -72,6 +72,10 @@ export const devices = pgTable('devices', {
   osBuild: varchar('os_build', { length: 100 }),
   architecture: varchar('architecture', { length: 20 }).notNull(),
   agentVersion: varchar('agent_version', { length: 50 }).notNull(),
+  // Resolved helper spawn mode reported by the agent ("always-on" |
+  // "on-demand"); on-demand marks RD Session Hosts, where the web UI offers
+  // per-session targeting. Null for old agents / non-Windows.
+  helperLifecycleMode: varchar('helper_lifecycle_mode', { length: 20 }),
   status: deviceStatusEnum('status').notNull().default('offline'),
   lastSeenAt: timestamp('last_seen_at'),
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),
@@ -131,6 +135,15 @@ export const devices = pgTable('devices', {
   // need to know "box alive, only the BreezeAgent service is wedged" so
   // their support workflow is "remote restart" not "physical visit."
   mainAgentSilentSince: timestamp('main_agent_silent_since'),
+  // Wave 6 Task 4 (security remediation) — outbound-network-policy capability
+  // handshake. 0 (default) = unknown/not enforcing: every pre-existing row
+  // and every heartbeat from an agent build that omits `securityCapabilities`
+  // entirely. Only the recognized integer version 1 (agent/internal/netpolicy
+  // enforcement, Tasks 1-3) is ever written as anything other than 0. Written
+  // unconditionally every heartbeat (not sticky), so a downgrade to an older
+  // build correctly reports back down to 0. Task 5 gates managed-software
+  // dispatch on this value.
+  outboundNetworkPolicyVersion: integer('outbound_network_policy_version').notNull().default(0),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()

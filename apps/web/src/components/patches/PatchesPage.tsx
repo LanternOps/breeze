@@ -21,6 +21,7 @@ import { showToast } from '../shared/Toast';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { Dialog } from '../shared/Dialog';
 import { runAction, ActionError } from '@/lib/runAction';
+import { asList } from '@/lib/asList';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -158,7 +159,7 @@ export default function PatchesPage() {
         throw new Error(t('patchesPage.errors.fetchRings'));
       }
       const data = await response.json();
-      const ringData = data.data ?? data ?? [];
+      const ringData = asList(data);
       const normalized = Array.isArray(ringData)
         ? ringData.map((r: Record<string, unknown>) => normalizeRing(r))
         : [];
@@ -193,7 +194,7 @@ export default function PatchesPage() {
         throw new Error(t('patchesPage.errors.fetchPatches'));
       }
       const data = await response.json();
-      const patchData = data.data ?? data.patches ?? data.items ?? data ?? [];
+      const patchData = asList(data, 'patches', 'items');
       const normalized = Array.isArray(patchData)
         ? patchData.map((patch: Record<string, unknown>, index: number) => normalizePatch(patch, index))
         : [];
@@ -330,7 +331,7 @@ export default function PatchesPage() {
         }
 
         const devBody = await devResponse.json();
-        const devices = devBody.devices ?? devBody.data ?? devBody.items ?? devBody ?? [];
+        const devices = asList(devBody, 'devices', 'items');
         for (const device of Array.isArray(devices) ? devices : []) {
           const rawDevice = device && typeof device === 'object' ? device as Record<string, unknown> : null;
           const rawId = rawDevice?.id ?? rawDevice?.deviceId;

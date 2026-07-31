@@ -41,6 +41,36 @@ export async function buildAuthContextForIntent(intent: ActionIntent): Promise<A
   return null;
 }
 
+/**
+ * Maps the intent's recorded origin principal onto an AuthContext principal.
+ *
+ * 'unknown' rows predate the discriminator and their true origin is not
+ * recoverable. They map to the `unknown` kind — NOT to `system`. Conflating
+ * the two would mean a future gate trusting internal system callers would also
+ * trust every historical record, turning a fail-closed marker into an
+ * escalation. `unknown` is trusted by nothing.
+ */
+function originPrincipalFor(intent: ActionIntent): AuthContext['principal'] {
+  switch (intent.originPrincipalKind) {
+    case 'user_session':
+      return { kind: 'user_session' };
+    case 'client_user':
+      return { kind: 'client_user' };
+    case 'api_key':
+      return { kind: 'api_key', apiKeyId: intent.originPrincipalId ?? undefined };
+    case 'oauth_grant':
+      return { kind: 'oauth_grant', grantId: intent.originPrincipalId ?? undefined };
+    case 'agent':
+      return { kind: 'agent' };
+    case 'helper':
+      return { kind: 'helper' };
+    case 'system':
+      return { kind: 'system', reason: 'intent-origin-system' };
+    default:
+      return { kind: 'unknown' };
+  }
+}
+
 async function buildUserOwnedAuthContext(
   intent: ActionIntent,
   userId: string,
@@ -122,6 +152,19 @@ async function buildUserOwnedAuthContext(
     };
 
     return {
+      // Read the RECORDED origin, never a derivation. The actor columns
+      // cannot stand in for it (`requested_by_user_id` is written for every
+      // intent, holding the key's CREATOR for API-key callers; and
+      // `requesting_api_key_id` is never written at all), and `source` is a
+      // lossy proxy with only two values. Reconstructing `user_session` from
+      // `requestedByUserId` would launder an autonomous caller into an
+      // interactive one at release time.
+      //
+      // 'unknown' (pre-discriminator rows) is preserved as-is rather than
+      // being softened to user_session — a human-required gate must fail on
+      // it. It is NOT a valid AuthContext principal, so it maps to the
+      // closest fail-closed kind and is refused by any interactive gate.
+      principal: originPrincipalFor(intent),
       user: {
         id: user.id,
         email: user.email,

@@ -48,6 +48,22 @@ export type RemoteTerminalProps = {
   className?: string;
 };
 
+// Client-side keepalive (issue #2871). The server pings every 30s and closes
+// the socket when no liveness signal arrives within 40s — but it also accepts
+// a client-initiated {type:'ping'} as liveness. Sending our own pings makes
+// the keepalive survive a lost server→client ping, and expecting *some*
+// server frame (ping, pong, or output) lets the client detect a half-dead
+// connection instead of freezing silently.
+//
+// Contract with apps/api/src/routes/terminalWs.ts (PING_INTERVAL_MS = 30s,
+// PONG_TIMEOUT_MS = 10s): CLIENT_PING_INTERVAL_MS must stay well under the
+// server's 40s deadline, and SERVER_SILENCE_TIMEOUT_MS must stay above the
+// server's ping interval — otherwise healthy idle sessions get killed on
+// whichever side drifted.
+const CLIENT_PING_INTERVAL_MS = 20_000;
+const SERVER_SILENCE_TIMEOUT_MS = 45_000;
+const LIVENESS_CHECK_INTERVAL_MS = 5_000;
+
 const statusConfig: Record<ConnectionStatus, { labelKey: string; color: string; icon: typeof Wifi }> = {
   disconnected: { labelKey: 'remoteTerminal.status.disconnected', color: 'text-gray-500', icon: WifiOff },
   connecting: { labelKey: 'remoteTerminal.status.connecting', color: 'text-yellow-500', icon: Loader2 },
@@ -242,6 +258,20 @@ export default function RemoteTerminal({
       let attemptDisposed = false;
       const disposables: Array<{ dispose: () => void }> = [];
 
+      // Liveness bookkeeping for this attempt. Any frame from the server
+      // (output, connected, ping, pong, error) proves the server→client leg
+      // is alive; the watchdog below turns prolonged silence into a visible
+      // disconnect instead of a frozen terminal.
+      let lastServerFrameAt = Date.now();
+      let keepaliveInterval: ReturnType<typeof setInterval> | null = null;
+      let livenessInterval: ReturnType<typeof setInterval> | null = null;
+      const clearKeepaliveTimers = () => {
+        if (keepaliveInterval) clearInterval(keepaliveInterval);
+        keepaliveInterval = null;
+        if (livenessInterval) clearInterval(livenessInterval);
+        livenessInterval = null;
+      };
+
       /**
        * Tears down exactly this attempt: unhooks terminal input, detaches every
        * socket listener (so a late event is inert), and closes the socket. The
@@ -252,6 +282,7 @@ export default function RemoteTerminal({
         // has already fired (the handshake can fail while they are being wired).
         for (const d of disposables) d.dispose();
         disposables.length = 0;
+        clearKeepaliveTimers();
         if (attemptDisposed) return;
         attemptDisposed = true;
         ws.onopen = null;
@@ -276,10 +307,42 @@ export default function RemoteTerminal({
         terminalRef.current?.writeln(`\x1b[1;32m${t('remoteTerminal.connectedBang')}\x1b[0m`);
         terminalRef.current?.writeln('');
         terminalRef.current?.focus();
+
+        lastServerFrameAt = Date.now();
+        // Client-initiated keepalive: the server records our ping as liveness
+        // (and answers with a pong), so the session survives even if a
+        // server→client ping frame is lost.
+        keepaliveInterval = setInterval(() => {
+          if (serverReady && ws.readyState === WebSocket.OPEN) {
+            try {
+              ws.send(JSON.stringify({ type: 'ping' }));
+            } catch {
+              // A dead socket is surfaced by the liveness watchdog below.
+            }
+          }
+        }, CLIENT_PING_INTERVAL_MS);
+        // Server-silence watchdog: a healthy session receives a server frame
+        // at least every 30s (server ping) plus pong replies to our pings.
+        // Prolonged silence means the connection is dead even if no TCP close
+        // ever arrives — surface it instead of freezing (issue #2871).
+        livenessInterval = setInterval(() => {
+          if (isStale() || attemptDisposed) {
+            clearKeepaliveTimers();
+            return;
+          }
+          if (!serverReady) return;
+          if (Date.now() - lastServerFrameAt <= SERVER_SILENCE_TIMEOUT_MS) return;
+          disposeAttempt();
+          setStatus('failed');
+          setSessionId(null);
+          terminalRef.current?.writeln(`\x1b[1;31m${t('remoteTerminal.errors.closedUnexpectedly')}\x1b[0m`);
+          callOnDisconnect();
+        }, LIVENESS_CHECK_INTERVAL_MS);
       };
 
       ws.onmessage = (event) => {
         if (isStale() || attemptDisposed) return;
+        lastServerFrameAt = Date.now();
         if (terminalRef.current) {
           try {
             const message = JSON.parse(event.data);
@@ -354,6 +417,7 @@ export default function RemoteTerminal({
           handleRejectedHandshake();
           return;
         }
+        clearKeepaliveTimers();
         setStatus('failed');
         setSessionId(null);
         terminalRef.current?.writeln(`\x1b[1;31m${t('remoteTerminal.errors.connection')}\x1b[0m`);
@@ -370,6 +434,7 @@ export default function RemoteTerminal({
           handleRejectedHandshake();
           return;
         }
+        clearKeepaliveTimers();
         if (event.code !== 1000) {
           setStatus('failed');
           setSessionId(null);
@@ -624,42 +689,55 @@ export default function RemoteTerminal({
               <X className="h-4 w-4" />
               {t('remoteTerminal.disconnect')}
             </button>
-          ) : status === 'failed' ? (
-            <button
-              type="button"
-              onClick={connect}
-              className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
-            >
-              <RefreshCw className="h-4 w-4" />
-              {t('common:actions.retry')}
-            </button>
-          ) : status === 'disconnected' && autoConnectAttempted ? (
-            // Shown only after the initial auto-connect has run, i.e. the user
-            // has landed on a real disconnected state (manual Disconnect or a
-            // clean session end) rather than the brief pre-connect window on
-            // mount. Gives an explicit reconnect affordance now that we no
-            // longer auto-reconnect (#2137).
-            <button
-              type="button"
-              onClick={connect}
-              className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
-            >
-              <RefreshCw className="h-4 w-4" />
-              {t('remoteTerminal.reconnect')}
-            </button>
           ) : null}
+          {/* The retry/reconnect affordance lives in the disconnect overlay
+              below (#2871) — a dead session must be unmissable, and a single
+              button avoids duplicate controls for the same action. */}
         </div>
       </div>
 
       {/* Terminal Container */}
-      <div
-        ref={terminalContainerRef}
-        className={cn(
-          'flex-1 u-min-h-px-400 bg-[#1a1b26] text-[#f8f8f2] cursor-text p-2 overflow-hidden',
-          isFullscreen && 'min-h-0'
+      <div className={cn('relative flex-1 flex flex-col', isFullscreen && 'min-h-0')}>
+        <div
+          ref={terminalContainerRef}
+          className={cn(
+            'flex-1 u-min-h-px-400 bg-[#1a1b26] text-[#f8f8f2] cursor-text p-2 overflow-hidden',
+            isFullscreen && 'min-h-0'
+          )}
+          onClick={() => terminalRef.current?.focus()}
+        />
+        {/* Disconnect overlay (issue #2871): a dead session must be unmissable,
+            not a silent freeze. Shown for any post-connect terminal state that
+            is no longer live, with an explicit reconnect affordance. The
+            container is pointer-events-none (only the inner panel captures
+            clicks) so the scrollback behind it stays selectable/copyable, and
+            only a genuine failure dims the transcript. */}
+        {(status === 'failed' || (status === 'disconnected' && autoConnectAttempted)) && (
+          <div
+            data-testid="terminal-disconnect-overlay"
+            className={cn(
+              'pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center',
+              status === 'failed' && 'bg-black/40'
+            )}
+          >
+            <div className="pointer-events-auto flex flex-col items-center gap-3 rounded-lg bg-black/80 px-6 py-4">
+              <WifiOff className="h-8 w-8 text-red-400" />
+              <span className="text-sm font-medium text-white">
+                {t(/* i18n-dynamic */ statusConfig[status].labelKey)}
+              </span>
+              <button
+                type="button"
+                data-testid="terminal-overlay-reconnect"
+                onClick={connect}
+                className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
+              >
+                <RefreshCw className="h-4 w-4" />
+                {status === 'failed' ? t('common:actions.retry') : t('remoteTerminal.reconnect')}
+              </button>
+            </div>
+          </div>
         )}
-        onClick={() => terminalRef.current?.focus()}
-      />
+      </div>
     </div>
   );
 }

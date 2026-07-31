@@ -1,5 +1,6 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Loader2 } from 'lucide-react';
 import '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
@@ -11,6 +12,13 @@ import { usePdfDownload } from './shared/usePdfDownload';
 import { type InvoiceDetail as InvoiceDetailData, formatMoney } from './invoiceTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
+
+/** An Issue click parked until the editor goes quiet. `atFailureNonce` is the
+ *  failure count observed at click time; any change to it means a save failed
+ *  while we were waiting, so the queue cancels instead of firing. Holding it in
+ *  the queue makes that a data comparison rather than a dependency on the order
+ *  two effects observe two props. */
+type QueuedIssue = { kind: 'issue' | 'issueSend'; atFailureNonce: number };
 
 interface Props {
   detail: InvoiceDetailData;
@@ -24,6 +32,24 @@ interface Props {
    * when the header owns the actions (mirrors QuoteActions).
    */
   variant: 'rail' | 'header';
+  /** True while the editor has work genuinely IN FLIGHT — an open mutation or a
+   *  deferred line deletion awaiting its undo window. Issue must not race it: it
+   *  would snapshot and number an invoice that's missing the user's just-typed
+   *  edit. This state resolves on its own, so a click queues and waits. */
+  savePending?: boolean;
+  /** Translated label of a field holding an edit that is dirty with NOTHING in
+   *  flight — its save failed, or never fired. Waiting cannot clear this, so
+   *  Issue refuses and names the field rather than queueing behind a save that
+   *  is never coming. Null when everything is clean or genuinely saving. */
+  unsavedFieldLabel?: string | null;
+  /** Bumped by the workspace on every editor save FAILURE. A failure can still
+   *  produce "quiescence" (restored rows / cleared in-flight keys), so a
+   *  queued Issue must cancel on this signal rather than fire. */
+  saveFailureNonce?: number;
+  /** Called when Issue is clicked while savePending — lets the workspace flush
+   *  the editor's deferred deletions (undo grace window) immediately, so the
+   *  held Issue fires as soon as the DELETE lands (mirrors onSendWhilePending). */
+  onIssueWhilePending?: () => void;
 }
 
 /**
@@ -35,7 +61,7 @@ interface Props {
  * the detail view's busy state with the payment mutations and belongs with the
  * issued-lifecycle rail, not the header.
  */
-export default function InvoiceActions({ detail, onChanged, variant }: Props) {
+export default function InvoiceActions({ detail, onChanged, variant, savePending = false, unsavedFieldLabel = null, saveFailureNonce = 0, onIssueWhilePending }: Props) {
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const { invoice, lines } = detail;
@@ -56,6 +82,16 @@ export default function InvoiceActions({ detail, onChanged, variant }: Props) {
   const [issueSendOpen, setIssueSendOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // During savePending an Issue click's job is the prerequisite: the click
+  // itself blurs the dirty field (starting its save), so the action is queued
+  // to fire the moment the editor goes quiescent — one click to the money
+  // moment, never a dead one (the quote editor's Send contract).
+  //
+  // The queue CAPTURES the failure nonce it was created at. "Has a save failed
+  // since I clicked?" is then a question about data this component holds, not
+  // about the order in which two effects happen to observe two independently
+  // updated props.
+  const [queued, setQueued] = useState<QueuedIssue | null>(null);
   const refresh = useCallback(() => onChanged?.(), [onChanged]);
 
   const isDraft = invoice.status === 'draft';
@@ -100,6 +136,72 @@ export default function InvoiceActions({ detail, onChanged, variant }: Props) {
     }
   }, [issuing, invoice.id, refresh, t]);
 
+  // Refuse a click (or a queued click reaching quiescence) that can only ever
+  // wait on a save that isn't coming — name the field instead. Hoisted above
+  // the queue effect so both the immediate-click refusal and the queue's
+  // re-check share one toast/message.
+  const refuseForUnsaved = useCallback(() => {
+    showToast({ type: 'warning', message: t('invoiceActions.issueBlockedUnsaved', { field: unsavedFieldLabel }) });
+  }, [unsavedFieldLabel, t]);
+
+  // One effect resolves the queue, in strict priority: failed → cancel;
+  // still working → keep waiting; preconditions lapsed → refuse; otherwise fire.
+  //
+  // Cancelling on a CHANGED nonce (rather than on a separately-ordered effect)
+  // is what makes this safe. A failed delete-flush restores its rows and a
+  // failed line blur-save clears its in-flight key, so both read as "quiet" —
+  // firing then would issue an invoice contradicting what the user last saw.
+  // The previous shape split this across two effects and relied on `savePending`
+  // arriving one commit after the nonce (the editor reports it through an
+  // effect). That happened to hold, but nothing stated it: deriving the pending
+  // signal synchronously would have silently armed a same-commit race on an
+  // irreversible money action.
+  useEffect(() => {
+    if (!queued) return;
+    if (saveFailureNonce !== queued.atFailureNonce) {
+      setQueued(null);
+      showToast({ type: 'error', message: t('invoiceActions.issueCanceledSaveFailed') });
+      return;
+    }
+    if (savePending) return;
+    setQueued(null);
+    // The unsaved-field refusal is re-checked here too: the click gate tests
+    // savePending FIRST, so a click during a deferred delete queues even while
+    // an earlier failed save (nonce already captured at click time — no new
+    // bump is coming) keeps a field dirty. Quiescence cannot clear that field,
+    // so firing would issue the invoice at the pre-edit money. Refuse and name
+    // the field, exactly as an immediate click would have.
+    if (unsavedFieldLabel) {
+      refuseForUnsaved();
+      return;
+    }
+    // The button's own gate is re-checked here: the queue can outlive it. The
+    // last customer-visible line may have been sitting in its undo window, and
+    // the flush this very click triggered is what deleted it for good.
+    if (!hasVisibleLines) {
+      showToast({ type: 'warning', message: t('invoiceActions.noVisibleLineHint') });
+      return;
+    }
+    // Plain Issue runs directly (it's reversible via Void); Issue & Send opens
+    // its confirm dialog — the user still confirms the email before it sends.
+    if (queued.kind === 'issue') void issue(false);
+    else setIssueSendOpen(true);
+  }, [queued, saveFailureNonce, savePending, unsavedFieldLabel, refuseForUnsaved, hasVisibleLines, issue, t]);
+
+  // Slow-save backstop: with failures handled above, the only way a queue waits
+  // this long is a save that is genuinely still in flight (or a pending-state
+  // bug). Drop the queued action after a bounded wait with an honest "still
+  // saving" explanation — never claim a failure we didn't see. Cleared
+  // automatically when the effect above fires or cancels the queue.
+  useEffect(() => {
+    if (!queued) return;
+    const timer = setTimeout(() => {
+      setQueued(null);
+      showToast({ type: 'warning', message: t('invoiceActions.issueCanceledStillSaving') });
+    }, 15_000);
+    return () => clearTimeout(timer);
+  }, [queued, t]);
+
   const remove = useCallback(async () => {
     if (deleting) return;
     setDeleting(true);
@@ -135,6 +237,11 @@ export default function InvoiceActions({ detail, onChanged, variant }: Props) {
   if (!canIssue && !canDownload && !canDelete) return null;
 
   const issueDisabled = issuing || !hasVisibleLines;
+  // Why the money-buttons are held, if they are. 'saving' resolves on its own
+  // and a click queues behind it; 'unsaved' never will, so a click refuses and
+  // names the field. Order matters: a field mid-save is dirty AND in flight.
+  const heldReason: 'saving' | 'unsaved' | null = savePending ? 'saving' : unsavedFieldLabel ? 'unsaved' : null;
+  const heldHintId = `invoice-issue-held-hint-${variant}`;
 
   return (
     <>
@@ -146,25 +253,69 @@ export default function InvoiceActions({ detail, onChanged, variant }: Props) {
           <>
             <button
               type="button"
-              onClick={() => void issue(false)}
+              onClick={() => {
+                if (savePending) { onIssueWhilePending?.(); setQueued({ kind: 'issue', atFailureNonce: saveFailureNonce }); return; }
+                if (unsavedFieldLabel) { refuseForUnsaved(); return; }
+                void issue(false);
+              }}
               disabled={issueDisabled}
-              aria-describedby={!hasVisibleLines ? `invoice-no-visible-hint-${variant}` : undefined}
-              title={!hasVisibleLines ? t('invoiceActions.noVisibleLineHint') : undefined}
+              aria-describedby={
+                !hasVisibleLines ? `invoice-no-visible-hint-${variant}`
+                  : heldReason ? heldHintId
+                  : undefined
+              }
+              title={
+                !hasVisibleLines ? t('invoiceActions.noVisibleLineHint')
+                  : heldReason === 'saving' ? t('invoiceActions.savingTitle')
+                  : heldReason === 'unsaved' ? t('invoiceActions.unsavedTitle', { field: unsavedFieldLabel })
+                  : undefined
+              }
               data-testid="invoice-issue"
-              className={`${btnBase} border hover:bg-muted disabled:opacity-50`}
+              className={`${btnBase} relative border hover:bg-muted disabled:opacity-50`}
             >
-              {issuing ? t('invoiceActions.issuing') : t('invoiceActions.issue')}
+              {/* Spinner = a promise of forthcoming completion, so it renders
+                  only while something WILL complete: an in-flight issue or a
+                  queued click awaiting quiescence. Plain savePending (a dirty
+                  field, maybe one whose save failed and stays dirty by design)
+                  gets the static hint below, never an infinite spinner. */}
+              {(issuing || queued !== null) && (
+                <Loader2 className="absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 animate-spin" aria-hidden="true" />
+              )}
+              <span className={issuing || queued !== null ? 'opacity-30' : ''}>
+                {issuing ? t('invoiceActions.issuing') : t('invoiceActions.issue')}
+              </span>
             </button>
             <button
               type="button"
-              onClick={() => setIssueSendOpen(true)}
+              onClick={() => {
+                if (savePending) { onIssueWhilePending?.(); setQueued({ kind: 'issueSend', atFailureNonce: saveFailureNonce }); return; }
+                if (unsavedFieldLabel) { refuseForUnsaved(); return; }
+                setIssueSendOpen(true);
+              }}
               disabled={issueDisabled}
-              aria-describedby={!hasVisibleLines ? `invoice-no-visible-hint-${variant}` : undefined}
-              title={!hasVisibleLines ? t('invoiceActions.noVisibleLineHint') : undefined}
+              aria-describedby={
+                !hasVisibleLines ? `invoice-no-visible-hint-${variant}`
+                  : heldReason ? heldHintId
+                  : undefined
+              }
+              title={
+                !hasVisibleLines ? t('invoiceActions.noVisibleLineHint')
+                  : heldReason === 'saving' ? t('invoiceActions.savingTitle')
+                  : heldReason === 'unsaved' ? t('invoiceActions.unsavedTitle', { field: unsavedFieldLabel })
+                  : undefined
+              }
               data-testid="invoice-issue-send"
-              className={`${btnBase} bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50`}
+              className={`${btnBase} relative bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50`}
             >
-              {issuing ? t('invoiceActions.issuing') : t('invoiceActions.issueAndSend')}
+              {/* Overlay spinner while a queued click settles or the issue is in
+                  flight; the label always defines the button's size (mirrors the
+                  quote Send button). See the spinner note on plain Issue above. */}
+              {(issuing || queued !== null) && (
+                <Loader2 className="absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 animate-spin" aria-hidden="true" />
+              )}
+              <span className={issuing || queued !== null ? 'opacity-30' : ''}>
+                {issuing ? t('invoiceActions.issuing') : t('invoiceActions.issueAndSend')}
+              </span>
             </button>
           </>
         )}
@@ -201,6 +352,22 @@ export default function InvoiceActions({ detail, onChanged, variant }: Props) {
             className={header ? 'basis-full text-xs text-muted-foreground text-right' : 'text-center text-xs text-muted-foreground'}
           >
             {t('invoiceActions.noVisibleLineHint')}
+          </p>
+        )}
+        {canIssue && hasVisibleLines && heldReason && (
+          // Same placement rules as the no-visible-lines hint above: the user must
+          // be able to SEE why the money-buttons are held, not just hover for it.
+          // The two reasons get different copy and different testids — telling a
+          // user "Saving changes…" about a field that already failed to save is
+          // advice they can follow forever without getting anywhere.
+          <p
+            id={heldHintId}
+            data-testid={heldReason === 'saving' ? 'invoice-issue-saving-hint' : 'invoice-issue-unsaved-hint'}
+            className={header ? 'basis-full text-xs text-muted-foreground text-right' : 'text-center text-xs text-muted-foreground'}
+          >
+            {heldReason === 'saving'
+              ? t('invoiceActions.savingHint')
+              : t('invoiceActions.unsavedHint', { field: unsavedFieldLabel })}
           </p>
         )}
       </div>

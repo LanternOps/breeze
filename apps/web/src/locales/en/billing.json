@@ -543,7 +543,8 @@
         "addSome": "Add some in Product Catalog",
         "empty": "No catalog items.",
         "loadError": "Couldn't load the catalog. Reopen the editor to retry — your existing items are safe.",
-        "searchPlaceholder": "Search catalog by name or SKU"
+        "searchPlaceholder": "Search catalog by name or SKU",
+        "capNote": "Showing the first {{count}} catalog items — search to find the rest."
       },
       "categories": {
         "hardware": "Hardware",
@@ -719,7 +720,7 @@
         "labelPlaceholder": "Table label (optional, e.g. Monthly services)",
         "notTaxable": "Not taxable",
         "qty": "Qty",
-        "recurrence": "Recurrence",
+        "recurrence": "Billing",
         "scrollAria": "Pricing table — scrolls sideways on narrow screens for totals and row actions, and vertically (with the header pinned) once a section grows long",
         "showSubtotal": "Show subtotal row",
         "tax": "Tax",
@@ -794,6 +795,9 @@
         "noTargets": "Add a pricing section, then move these lines into it.",
         "qtyPrice": "{{qty}} × {{price}}",
         "title": "Unassigned lines"
+      },
+      "unsavedField": {
+        "lines": "Line items"
       }
     },
     "actions": {
@@ -828,12 +832,12 @@
         "ccToggle": "Cc",
         "includePdfLabel": "Attach the proposal PDF",
         "invalidEmail": "Invalid email address: {{addresses}}",
-        "message": "We'll email this proposal to {{orgName}} and mark it Sent — {{amount}} due on acceptance. This can't be undone.",
+        "message": "We'll email this proposal to {{orgName}} and mark it Sent — {{amount}} due on acceptance. You'll have 30 seconds to undo after confirming.",
         "messageLabel": "Add a personal message (optional)",
         "messagePlaceholder": "Include a short note — it appears in the email above the accept link.",
         "paymentEnabled": "Online payment is enabled — the customer can pay by card after accepting.",
-        "paymentNoteNoStripe": "When the customer accepts, they won't have an online payment option. Connect Stripe in Settings → Integrations to offer one.",
-        "paymentWarningDeposit": "This proposal asks for a deposit, but customers can't pay online yet — connect Stripe in Settings → Integrations so the deposit can be collected on acceptance.",
+        "paymentNoteNoStripe": "When the customer accepts, they won't have an online payment option. Connect Stripe in <integrationsLink>Settings → Integrations</integrationsLink> to offer one.",
+        "paymentWarningDeposit": "This proposal asks for a deposit, but customers can't pay online yet — connect Stripe in <integrationsLink>Settings → Integrations</integrationsLink> so the deposit can be collected on acceptance.",
         "recipientRequired": "Enter at least one recipient to send.",
         "signaturePreviewLabel": "Signature (set in Settings → Branding):",
         "subjectLabel": "Subject",
@@ -843,7 +847,8 @@
         "toLabel": "To",
         "toPlaceholder": "Add recipient…",
         "tooManyRecipients": "Use at most {{max}} addresses.",
-        "zeroTotalWarning": "This quote totals $0.00 — check that its items are priced before sending."
+        "zeroTotalWarning": "This quote totals $0.00 — check that its items are priced before sending.",
+        "noBillingContactHint": "No billing contact is saved for this organization — enter an email, or add one in the <orgLink>organization settings</orgLink>."
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposal marked Sent, but no email was delivered — {{orgName}} has no billing contact email. Add one in the organization settings, or share the accept link manually.",
@@ -860,7 +865,15 @@
       "undoError": "Could not cancel the send.",
       "undoSend": "Undo send",
       "undoSuccess": "Send canceled — the quote is still a draft.",
-      "undoTooLate": "Too late to undo — the proposal was already sent."
+      "undoTooLate": "Too late to undo — the proposal was already sent.",
+      "sendNow": "Send now",
+      "savingTimeout": "Still saving your changes — Send was canceled. Try again once everything is saved.",
+      "sendNowCancelError": "Couldn't send immediately — the proposal will still send as scheduled.",
+      "sendNowAlready": "Already on its way — the proposal is being sent now.",
+      "sendCanceledSaveFailed": "A change failed to save, so Send was canceled. Fix the highlighted field and try again.",
+      "sendBlockedUnsaved": "“{{field}}” has a change that hasn’t saved. Fix it there, then Send.",
+      "unsavedHint": "“{{field}}” has an unsaved change — Send unlocks once it saves.",
+      "unsavedTitle": "“{{field}}” has an unsaved change — Send unlocks once it saves."
     },
     "detail": {
       "addContentInEditor": "Add content in the Editor",
@@ -889,7 +902,7 @@
         "item": "Item",
         "noLines": "No lines in this table.",
         "qty": "Qty",
-        "recurrence": "Recurrence",
+        "recurrence": "Billing",
         "tax": "Tax",
         "total": "Total",
         "unitPrice": "Unit price"
@@ -1111,7 +1124,8 @@
         "editor": "Editor",
         "preview": "Preview",
         "detail": "Details"
-      }
+      },
+      "loading": "Loading quote…"
     }
   },
   "billingUi": {
@@ -1130,7 +1144,14 @@
       "perMonth": "/mo",
       "perYear": "/yr"
     },
-    "unsaved": "Unsaved"
+    "unsaved": "Unsaved",
+    "showCostMargin": "Show cost & margin",
+    "hideCostMargin": "Hide cost & margin",
+    "orgCombobox": {
+      "searchPlaceholder": "Search organizations…",
+      "noResults": "No matching organizations.",
+      "capNote": "Showing the first {{count}} matches — keep typing to narrow."
+    }
   },
   "bulk": {
     "bulkActionBar": {
@@ -1158,7 +1179,9 @@
       "manualLine": "Manual line",
       "noCatalogItems": "No catalog items.",
       "searchCatalog": "Search catalog by name or SKU",
-      "sourceAria": "Add line source"
+      "sourceAria": "Add line source",
+      "catalogLoadFailed": "The catalog couldn't be loaded, so no items can be shown.",
+      "retry": "Try again"
     },
     "billTo": {
       "addInSettings": "Add one in Organization settings",
@@ -1194,7 +1217,6 @@
     "saved": "Saved",
     "success": {
       "lineAdded": "Line added",
-      "lineRemoved": "Line removed",
       "notesSaved": "Notes saved",
       "termsSaved": "Terms saved"
     },
@@ -1222,7 +1244,21 @@
     },
     "unapprovedTime": "{{count}} lines reference unapproved time. Review before issuing.",
     "unapprovedTime_one": "{{count}} line reference unapproved time. Review before issuing.",
-    "unapprovedTime_other": "{{count}} lines reference unapproved time. Review before issuing."
+    "unapprovedTime_other": "{{count}} lines reference unapproved time. Review before issuing.",
+    "autosaveHint": "Changes save automatically. An amber outline marks an unsaved edit.",
+    "lastSaved": {
+      "saved": "Saved {{time}}",
+      "saving": "Saving…"
+    },
+    "undo": {
+      "lineDeleted": "Line deleted",
+      "tooLate": "Too late to undo — that line was already deleted.",
+      "partialFlush": "{{applied}} line deletion(s) were applied; {{failed}} failed and were restored."
+    },
+    "linesScrollAria": "Invoice lines — scroll sideways for more columns",
+    "unsavedField": {
+      "lines": "Line items"
+    }
   },
   "invoiceActions": {
     "deleteConfirm": {
@@ -1248,10 +1284,16 @@
     "issueSuccess": "Invoice issued",
     "issuing": "Issuing…",
     "noVisibleLineHint": "Add at least one customer-visible line to issue.",
-    "preparing": "Preparing…"
+    "preparing": "Preparing…",
+    "savingHint": "Saving changes… Issue unlocks when everything is saved.",
+    "savingTitle": "Saving your changes — Issue unlocks when everything is saved.",
+    "issueCanceledSaveFailed": "A change failed to save, so Issue was canceled. Fix the highlighted field and try again.",
+    "issueCanceledStillSaving": "Still saving your changes — Issue was canceled. Try again once everything is saved.",
+    "issueBlockedUnsaved": "“{{field}}” has a change that hasn’t saved. Fix it there, then Issue.",
+    "unsavedHint": "“{{field}}” has an unsaved change — Issue unlocks once it saves.",
+    "unsavedTitle": "“{{field}}” has an unsaved change — Issue unlocks once it saves."
   },
   "invoiceDetail": {
-    "accountingView": "Accounting view (cost, margin, hidden components)",
     "deposit": {
       "duePrefix": "Deposit of",
       "dueSuffix": "due — {{paid}} of {{total}} paid.",
@@ -1272,7 +1314,8 @@
       "price": "Price",
       "qty": "Qty",
       "tax": "Tax",
-      "total": "Total"
+      "total": "Total",
+      "allHidden": "All lines are internal-only. Use “Show cost & margin” to view them."
     },
     "paymentMethods": {
       "cash": "Cash",
@@ -1344,7 +1387,10 @@
       "reissuedSuccess": "Invoice voided and reissued as a draft",
       "success": "Invoice voided",
       "title": "Void invoice"
-    }
+    },
+    "empty": "This invoice has no lines yet.",
+    "addContentInEditor": "Add lines in the Editor",
+    "linesScrollAria": "Invoice lines — scroll sideways for more columns"
   },
   "invoiceDocument": {
     "billTo": "Bill to",

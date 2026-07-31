@@ -6,6 +6,7 @@ const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 const CREDENTIAL_VERSION = /^[0-9a-f]{32}$/;
 const VAULT_REF = /^akv:\/\/([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)\/m365-customer-graph-actions\/([0-9a-f]{32})$/;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
+const CALLBACK_PATH = '/api/v1/m365/actions-consent/callback';
 const INTERNAL_AUTH_ISSUER = 'breeze-api' as const;
 const INTERNAL_AUTH_AUDIENCE = 'm365-graph-actions-executor' as const;
 
@@ -35,6 +36,7 @@ export type ExecutorInternalAuthPublicJwk = z.infer<typeof publicJwkSchema>;
 
 export interface M365GraphActionsExecutorConfig {
   clientId: string;
+  callbackUrl: string;
   vaultUrl: string;
   vaultRef: string;
   credentialVersion: string;
@@ -67,6 +69,28 @@ function required(source: Environment, name: string): string {
   const value = source[name]?.trim();
   if (!value) throw new Error(`${name} is required`);
   return value;
+}
+
+function parseCallbackUrl(source: Environment): string {
+  const raw = required(source, 'M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_URL');
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error('M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_URL must be the exact HTTPS consent callback URI');
+  }
+  if (
+    parsed.protocol !== 'https:'
+    || parsed.username
+    || parsed.password
+    || parsed.pathname !== CALLBACK_PATH
+    || parsed.search
+    || parsed.hash
+    || raw !== `${parsed.origin}${CALLBACK_PATH}`
+  ) {
+    throw new Error('M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_URL must be the exact HTTPS consent callback URI');
+  }
+  return raw;
 }
 
 function parseVaultUrl(source: Environment): string {
@@ -139,6 +163,7 @@ export function loadExecutorConfig(
     throw new Error('M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID must be a canonical UUID');
   }
 
+  const callbackUrl = parseCallbackUrl(source);
   const vaultUrl = parseVaultUrl(source);
   const credentialVersion = required(source, 'M365_CUSTOMER_GRAPH_ACTIONS_CREDENTIAL_VERSION');
   if (!CREDENTIAL_VERSION.test(credentialVersion)) {
@@ -194,6 +219,7 @@ export function loadExecutorConfig(
 
   return {
     clientId,
+    callbackUrl,
     vaultUrl,
     vaultRef,
     credentialVersion,

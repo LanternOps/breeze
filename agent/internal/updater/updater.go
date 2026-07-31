@@ -16,11 +16,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/netpolicy"
 	"github.com/breeze-rmm/agent/internal/secmem"
 )
 
@@ -42,26 +44,180 @@ type Config struct {
 	BinaryPath     string
 	BackupPath     string
 
+	// BackupServerURL is the configured backup control-plane URL, as a plain
+	// string rather than a re-resolving provider (contrast ServerURL): each
+	// construction site here builds a fresh Updater per download operation,
+	// so a snapshot taken at New() time is never stale within that call. It
+	// is passed to netpolicy alongside ServerURL() as a ControlPlaneOrigins
+	// member — origin membership is what grants cleartext HTTP and private-
+	// address reachability, and it is exact (scheme+host+port), so omitting
+	// this field silently makes the backup control plane unreachable for
+	// updater downloads even though heartbeat/failover treat it as a first-
+	// class server.
+	BackupServerURL string
+
 	// PinnedManifestPubKeys are deployment-specific Ed25519 pubkeys delivered
 	// by the API via enrollment/heartbeat and pinned TOFU-style. Format
 	// matches agent config: "<keyId>:<base64-raw-pubkey>". Merged with the
-	// embedded LanternOps trust root in trustedManifestKeys() so self-host
+	// embedded LanternOps trust root in manifestTrustKeys() so self-host
 	// (BINARY_SOURCE=local) deployments can verify locally-signed manifests.
 	PinnedManifestPubKeys []string
+
+	// RequireManifestSigningKeyID mirrors the agent config field of the same
+	// name: when true, a download response that omits signingKeyId fails
+	// closed instead of falling back to verifying against the whole trusted
+	// key set. Construction sites copy it from config.Config alongside
+	// PinnedManifestPubKeys.
+	RequireManifestSigningKeyID bool
 }
 
 // Updater handles agent auto-updates
 type Updater struct {
 	config *Config
 	client *http.Client
+	// clientErr is set when netpolicy.NewClient rejected the policy built
+	// from config (e.g. a malformed configured server/backup URL). It is
+	// surfaced lazily — at the first download attempt, via checkClient —
+	// rather than changing New's signature to return an error, which every
+	// one of the ten production construction sites would otherwise need to
+	// handle. The failure mode is closed: client is nil whenever clientErr
+	// is set, and every download entry point checks clientErr first.
+	clientErr error
 }
 
-// New creates a new Updater
+// New creates a new Updater. The returned client enforces netpolicy on every
+// download this Updater performs — the control-plane metadata request AND
+// the (possibly cross-origin, CDN-hosted) binary artifact fetch alike. See
+// updaterPolicy for the exact policy shape.
 func New(cfg *Config) *Updater {
-	return &Updater{
-		config: cfg,
-		client: &http.Client{Timeout: 5 * time.Minute},
+	client, err := netpolicy.NewClient(updaterPolicy(cfg))
+	if err != nil {
+		// err is always a *netpolicy.PolicyError carrying a bounded reason
+		// (e.g. a malformed configured server/backup URL) — safe to log
+		// directly, unlike the *url.Error net/http produces at download
+		// time, which repeats the full request URL.
+		log.Error("updater network policy misconfigured; downloads will fail closed", "error", err.Error())
 	}
+	return &Updater{
+		config:    cfg,
+		client:    client,
+		clientErr: err,
+	}
+}
+
+// updaterPolicy builds the netpolicy.Policy that governs every network
+// destination this Updater talks to. ControlPlaneOrigins carries BOTH the
+// primary (cfg.ServerURL()) and the configured backup server URL, snapshotted
+// once here — matching BackupServerURL's plain-string (non-reresolving)
+// shape, since every construction site builds a fresh Updater per download
+// rather than holding one across a failover promotion. Origin membership is
+// what grants cleartext HTTP and private-address reachability for the
+// ControlPlaneDownload purpose; omitting either origin silently makes that
+// control plane's downloads fail with cleartext_not_allowed or
+// private_address_not_allowed.
+func updaterPolicy(cfg *Config) netpolicy.Policy {
+	var origins []string
+	if cfg != nil {
+		if cfg.ServerURL != nil {
+			origins = append(origins, cfg.ServerURL())
+		}
+		origins = append(origins, cfg.BackupServerURL)
+	}
+	return netpolicy.Policy{
+		Purpose:             netpolicy.ControlPlaneDownload,
+		ControlPlaneOrigins: origins,
+		MaxRedirects:        10,
+		RequestTimeout:      5 * time.Minute,
+		MaxResponseBytes:    maxUpdateBinaryBytes,
+	}
+}
+
+// checkClient fails closed when New's netpolicy client construction failed,
+// or (defensively) when a directly-constructed Updater in a test never set
+// client at all. Called at the top of every method that reaches u.client.
+func (u *Updater) checkClient() error {
+	if u.clientErr != nil {
+		return fmt.Errorf("updater network client unavailable: %w", u.clientErr)
+	}
+	if u.client == nil {
+		return fmt.Errorf("updater network client not initialized")
+	}
+	return nil
+}
+
+// PolicyRejectionReason extracts the bounded netpolicy.PolicyError reason
+// from a download error, if the error chain contains one. Callers logging a
+// download failure MUST use this instead of err.Error(): net/http wraps
+// every client/transport error in *url.Error, whose message repeats the full
+// request URL — including any capability query string — regardless of what
+// error netpolicy itself returned.
+func PolicyRejectionReason(err error) (string, bool) {
+	var pe *netpolicy.PolicyError
+	if errors.As(err, &pe) {
+		return pe.Reason, true
+	}
+	return "", false
+}
+
+// SafeDownloadErrorFields returns the single structured log key/value pair a
+// caller should attach when reporting a download failure — chosen so the
+// value never contains a request URL:
+//
+//   - a *netpolicy.PolicyError anywhere in the chain: ("policyReason", the
+//     bounded reason).
+//   - a *url.Error: net/http wraps EVERY transport-level failure this way —
+//     TLS handshake errors, connection refused/reset, timeouts, EOF, not just
+//     policy rejections — and its Error() repeats the full request URL,
+//     capability query string included, regardless of what the underlying
+//     error is. Returns ("error", the underlying error's text only, with the
+//     URL stripped).
+//   - anything else (e.g. a checksum mismatch or manifest verification
+//     failure, where no URL is embedded): ("error", err.Error()) unchanged.
+//
+// Every download-failure log line in this codebase should go through this
+// (or PolicyRejectionReason directly, for a caller that wants to skip
+// non-policy failures entirely) rather than hand-rolling the errors.As dance
+// per call site — that duplication is exactly how a download path ends up on
+// the unsafe err.Error() branch unnoticed.
+func SafeDownloadErrorFields(err error) (key, value string) {
+	if err == nil {
+		return "error", ""
+	}
+	if reason, ok := PolicyRejectionReason(err); ok {
+		return "policyReason", reason
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		// urlErr.Err is nil in principle (nothing in net/http's contract
+		// forbids it, and a caller can construct one). This is an exported
+		// helper on a failure path that runs inside goroutines, where a nil
+		// dereference is a process crash, not a failed download — so fall back
+		// to the operation name, which carries no URL.
+		if urlErr.Err == nil {
+			return "error", "url error during " + urlErr.Op
+		}
+		return "error", urlErr.Err.Error()
+	}
+	return "error", err.Error()
+}
+
+// SafeDownloadErrorMessage is SafeDownloadErrorFields collapsed into ONE
+// redacted string, for the paths that ship a download failure OFF THE BOX (a
+// command result POSTed to the control plane, or a log line at a shipped level)
+// rather than into a structured local journal. Use SafeDownloadErrorFields
+// where a key/value pair is what the sink wants.
+//
+// This exists because the previous pattern at those call sites was
+// `errMsg = err.Error()`, which is exactly the unsafe branch: net/http wraps
+// every transport failure in *url.Error, whose message repeats the full request
+// URL — the presigned CDN URL, capability query string included, after a
+// redirect.
+func SafeDownloadErrorMessage(err error) string {
+	key, value := SafeDownloadErrorFields(err)
+	if key == "policyReason" {
+		return "network policy rejected the download: " + value
+	}
+	return value
 }
 
 // serverURL resolves the control-plane base URL from the ServerURL provider.
@@ -83,19 +239,111 @@ var ErrReadOnlyFS = fmt.Errorf("binary path is on a read-only filesystem")
 // but this sentinel prevents misclassification as ErrReadOnlyFS.
 var ErrTextBusy = fmt.Errorf("binary is currently executing")
 
-const maxUpdateBinaryBytes int64 = 500 * 1024 * 1024
+// maxUpdateBinaryBytes bounds both the netpolicy transport (Policy.
+// MaxResponseBytes) and the explicit CopyBounded call in downloadFromURL. A
+// var (not const), matching the trustedUpdateManifestPublicKeys pattern in
+// this file, solely so tests can shrink it — serving/copying the real 500 MiB
+// bound in a unit test is impractical. Production behavior is unchanged.
+var maxUpdateBinaryBytes int64 = 500 * 1024 * 1024
 
-// trustedUpdateManifestPublicKeys is the embedded trust root for release
-// manifest signatures. It MUST match the raw Ed25519 public key in
-// internal/release-keys/release-manifest.ed25519.pub (the SPKI suffix); the
-// release.yml workflow signs every manifest with the corresponding private
-// key. TestEmbeddedTrustRootMatchesRepoPubKey enforces that match at build
-// time so the agent never ships with a mismatched trust root again.
+// ManifestPublicKeys maps a manifest signing key ID to the raw Ed25519 public
+// key it names. Trust is keyed, not a bag: verification looks up the ONE key
+// whose ID the download response supplied and uses only that key.
+type ManifestPublicKeys map[string]ed25519.PublicKey
+
+// mustDecodeKey decodes a compile-time-constant base64 Ed25519 public key.
+// Panicking is correct here: the only inputs are literals in this file, so a
+// failure means the binary was built with a malformed trust root and must not
+// run at all.
+func mustDecodeKey(b64 string) ed25519.PublicKey {
+	decoded, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil || len(decoded) != ed25519.PublicKeySize {
+		panic("updater: embedded manifest public key is not a base64 Ed25519 public key")
+	}
+	return ed25519.PublicKey(decoded)
+}
+
+// embeddedManifestPublicKeys is the embedded trust root for release manifest
+// signatures. The value MUST match the raw Ed25519 public key in
+// internal/release-keys/release-manifest.ed25519.pub (the SPKI suffix), and
+// the ID MUST match the signingKeyId the API stamps onto GitHub-sourced
+// download responses (apps/api/src/services/binarySync.ts); the release.yml
+// workflow signs every manifest with the corresponding private key.
+// TestEmbeddedTrustRootMatchesRepoPubKey enforces both halves at build time so
+// the agent never ships with a mismatched trust root again.
 //
-// Self-hosters can append additional base64 raw Ed25519 public keys via the
-// BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS env var (read in trustedManifestKeys).
-var trustedUpdateManifestPublicKeys = []string{
-	"yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=",
+// These entries are the LanternOps root and are NOT deployment-pinned keys:
+// their presence never consumes a deployment's one TOFU bootstrap, and a
+// pinned entry may not shadow one of these IDs (manifestTrustKeys rejects it).
+//
+// Self-hosters can add keys via the BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS env var
+// (read in manifestTrustKeys), preferably in "<keyId>:<base64>" form so they
+// participate in exact-ID verification.
+var embeddedManifestPublicKeys = ManifestPublicKeys{
+	"release-artifact-manifest-ed25519": mustDecodeKey("yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso="),
+}
+
+// missingSigningKeyIDWarned bounds the compatibility warning to once per
+// process: the agent re-checks for updates on every heartbeat, so an unbounded
+// warning would fill the log (and the shipped log stream) with one line per
+// poll for every agent talking to a control plane that predates signingKeyId.
+var missingSigningKeyIDWarned atomic.Bool
+
+// missingSigningKeyIDWarner is the log seam for that warning, following the
+// package-level *ForTests var pattern used elsewhere in the agent
+// (config.atomicWriteFileForTests). Tests swap it for a counter and call
+// resetMissingSigningKeyIDWarningForTests so warning-count assertions never
+// inherit state from an earlier test in the same process.
+var missingSigningKeyIDWarner = func() {
+	log.Warn("update manifest response omitted signingKeyId; verifying against the full trusted key set. " +
+		"Set require_manifest_signing_key_id: true once every control plane in the fleet supplies it")
+}
+
+func resetMissingSigningKeyIDWarningForTests() {
+	missingSigningKeyIDWarned.Store(false)
+}
+
+func warnMissingSigningKeyIDOnce() {
+	if missingSigningKeyIDWarned.CompareAndSwap(false, true) {
+		missingSigningKeyIDWarner()
+	}
+}
+
+// unusableTrustSetLogger is the log seam for the one condition in this file
+// that stops the agent updating entirely: trust material that cannot be
+// assembled (a malformed pinned entry, a malformed BREEZE_UPDATE_MANIFEST_
+// PUBLIC_KEYS entry, or a key trying to occupy an embedded key's ID).
+//
+// Failing closed there is deliberate — a silently skipped entry is how a
+// deployment loses its pin without noticing — but "no updates, ever" must not
+// also be silent or unreadable. The line names the offending entry (position
+// and, once validated, key ID; never key bytes) and states the remediation, so
+// an operator can act on it without reading source.
+var unusableTrustSetLogger = func(reason string) {
+	log.Error("SECURITY: manifest trust set is unusable — this agent will not accept ANY update until it is fixed. "+
+		"Remediation: re-enroll the agent (re-enrollment re-bootstraps pinned_manifest_pub_keys in agent.yaml), "+
+		"or correct the offending entry by hand",
+		"reason", reason)
+}
+
+// unusableTrustSetReason latches the last reason logged so a permanently
+// broken config produces one line, not one per update check (the agent polls
+// on every heartbeat). A different reason logs again, and recovery re-arms the
+// latch so a recurrence is not swallowed.
+var unusableTrustSetReason atomic.Pointer[string]
+
+func resetUnusableTrustSetLogForTests() {
+	unusableTrustSetReason.Store(nil)
+}
+
+func logUnusableTrustSet(reason string) {
+	prev := unusableTrustSetReason.Load()
+	if prev != nil && *prev == reason {
+		return
+	}
+	if unusableTrustSetReason.CompareAndSwap(prev, &reason) {
+		unusableTrustSetLogger(reason)
+	}
 }
 
 type updateManifest struct {
@@ -259,32 +507,193 @@ func pkgAssetChecksum(verifiedManifest []byte, version string) (string, error) {
 	return "", fmt.Errorf("release artifact manifest does not include %s", name)
 }
 
-func (u *Updater) trustedManifestKeys() []ed25519.PublicKey {
-	configured := strings.TrimSpace(os.Getenv("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS"))
-	rawKeys := append([]string{}, trustedUpdateManifestPublicKeys...)
-	if configured != "" {
-		rawKeys = append(rawKeys, strings.Split(configured, ",")...)
+// manifestTrustKeys assembles this updater's trust material:
+//
+//   - keyed: keyId → public key, from the embedded root, from any
+//     "<keyId>:<base64>" entries in BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS, and
+//     from the deployment-pinned config entries. This is the ONLY material
+//     consulted when the download response carries a signingKeyId.
+//   - unkeyed: legacy bare-base64 env entries, which have no ID and are
+//     therefore usable only on the missing-ID compatibility path.
+//
+// It fails closed rather than skipping bad material:
+//
+//   - a malformed pinned entry is an error, not a silent drop — dropping it
+//     quietly demotes the deployment back to the embedded vendor root, which
+//     is precisely the substitution this change forbids;
+//   - a pinned or env key that tries to occupy an embedded key's ID with
+//     different bytes is an error — a deployment must never be able to
+//     substitute its own key for the LanternOps root by reusing its ID.
+//
+// Any such failure disables updates entirely, so it is reported through
+// logUnusableTrustSet: one bounded, remediation-bearing line per distinct
+// cause rather than silence or one line per heartbeat.
+func (u *Updater) manifestTrustKeys() (ManifestPublicKeys, []ed25519.PublicKey, error) {
+	keyed, unkeyed, err := u.assembleManifestTrustKeys()
+	if err != nil {
+		logUnusableTrustSet(err.Error())
+		return nil, nil, err
 	}
+	// A usable trust set re-arms the latch, so a fault that recurs after a
+	// re-enrollment is reported again rather than swallowed.
+	unusableTrustSetReason.Store(nil)
+	return keyed, unkeyed, nil
+}
+
+func (u *Updater) assembleManifestTrustKeys() (ManifestPublicKeys, []ed25519.PublicKey, error) {
+	keyed := make(ManifestPublicKeys, len(embeddedManifestPublicKeys)+4)
+	embeddedIDs := make(map[string]struct{}, len(embeddedManifestPublicKeys))
+	for id, key := range embeddedManifestPublicKeys {
+		keyed[id] = key
+		embeddedIDs[id] = struct{}{}
+	}
+
+	// add installs one keyId → key binding, refusing to overwrite an embedded
+	// entry (or to conflict with an equally-named key already added).
+	add := func(id string, key ed25519.PublicKey, source string) error {
+		if existing, ok := keyed[id]; ok {
+			if existing.Equal(key) {
+				return nil
+			}
+			if _, embedded := embeddedIDs[id]; embedded {
+				return fmt.Errorf("%s manifest key may not replace the embedded trust root under keyId=%s", source, id)
+			}
+			return fmt.Errorf("conflicting %s manifest keys for keyId=%s", source, id)
+		}
+		keyed[id] = key
+		return nil
+	}
+
+	var unkeyed []ed25519.PublicKey
+	for i, raw := range strings.Split(os.Getenv("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS"), ",") {
+		pos := i + 1
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		// Base64 never contains ':', so a colon unambiguously marks the
+		// keyed "<keyId>:<base64>" form. The bare form predates key IDs and
+		// stays supported, but only for ID-less manifests — there is no ID an
+		// ID-bound manifest could name it by.
+		if id, b64, ok := strings.Cut(raw, ":"); ok {
+			if !config.ValidManifestKeyID(id) {
+				return nil, nil, fmt.Errorf("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS entry #%d is malformed: key id is empty, too long, or contains characters outside [A-Za-z0-9._-]", pos)
+			}
+			key, err := decodeManifestPubKey(b64)
+			if err != nil {
+				return nil, nil, fmt.Errorf("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS entry #%d (keyId=%s) is malformed: value is not a base64-encoded 32-byte Ed25519 public key", pos, id)
+			}
+			if err := add(id, key, "environment"); err != nil {
+				return nil, nil, err
+			}
+			continue
+		}
+		key, err := decodeManifestPubKey(raw)
+		if err != nil {
+			return nil, nil, fmt.Errorf("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS entry #%d is malformed: expected a base64-encoded 32-byte Ed25519 public key, or \"<keyId>:<base64>\"", pos)
+		}
+		unkeyed = append(unkeyed, key)
+	}
+
 	// Per-deployment pinned keys delivered by the API via enrollment/heartbeat
 	// (see #625). Format on disk: "<keyId>:<base64-pubkey>".
 	if u != nil && u.config != nil {
-		for _, entry := range u.config.PinnedManifestPubKeys {
-			parts := strings.SplitN(entry, ":", 2)
-			if len(parts) == 2 && parts[1] != "" {
-				rawKeys = append(rawKeys, parts[1])
+		pinned, err := config.ParsePinnedManifestKeys(u.config.PinnedManifestPubKeys)
+		if err != nil {
+			return nil, nil, fmt.Errorf("pinned manifest trust set is unusable: %w", err)
+		}
+		for id, b64 := range pinned {
+			key, err := decodeManifestPubKey(b64)
+			if err != nil {
+				return nil, nil, fmt.Errorf("pinned manifest trust set is unusable: malformed key for keyId=%s", id)
+			}
+			if err := add(id, key, "pinned"); err != nil {
+				return nil, nil, err
 			}
 		}
 	}
 
-	keys := make([]ed25519.PublicKey, 0, len(rawKeys))
-	for _, raw := range rawKeys {
-		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(raw))
-		if err != nil || len(decoded) != ed25519.PublicKeySize {
-			continue
-		}
-		keys = append(keys, ed25519.PublicKey(decoded))
+	return keyed, unkeyed, nil
+}
+
+func decodeManifestPubKey(b64 string) (ed25519.PublicKey, error) {
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(b64))
+	if err != nil {
+		return nil, fmt.Errorf("manifest public key is not valid base64")
 	}
-	return keys
+	if len(decoded) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("manifest public key has wrong length")
+	}
+	return ed25519.PublicKey(decoded), nil
+}
+
+// requireSigningKeyID reports whether an ID-less manifest response must fail
+// closed. Nil-safe so a directly-constructed Updater in a test behaves like
+// the compatibility default.
+func (u *Updater) requireSigningKeyID() bool {
+	return u != nil && u.config != nil && u.config.RequireManifestSigningKeyID
+}
+
+// verifyManifestSignature is the trust decision for a release manifest.
+//
+// When signingKeyID is present it binds verification to that ONE key: the ID
+// is validated, looked up in the keyed trust set, and the signature is checked
+// against that key alone. A malformed ID, an unknown ID, or a signature made
+// by any other key — including another key this agent legitimately trusts —
+// fails closed. There is deliberately no fallback loop after an ID mismatch:
+// trying the remaining keys is what made possession of ANY trusted key
+// sufficient to sign an update for any agent (P1-UPD-001).
+//
+// When signingKeyID is absent, RequireManifestSigningKeyID decides: true fails
+// closed, false verifies against the whole key set and emits one bounded
+// warning per process.
+func (u *Updater) verifyManifestSignature(payload, signature []byte, signingKeyID string) error {
+	keyed, unkeyed, err := u.manifestTrustKeys()
+	if err != nil {
+		return err
+	}
+
+	if id := strings.TrimSpace(signingKeyID); id != "" {
+		// Never echo an unvalidated ID: it is control-plane supplied and
+		// reaches log lines through the caller's error reporting.
+		if !config.ValidManifestKeyID(id) {
+			return fmt.Errorf("update manifest signing key id is malformed")
+		}
+		key, ok := keyed[id]
+		if !ok {
+			return fmt.Errorf("unknown update manifest signing key id %q", id)
+		}
+		if !ed25519.Verify(key, payload, signature) {
+			return fmt.Errorf("update manifest signature verification failed for signing key id %q", id)
+		}
+		return nil
+	}
+
+	if u.requireSigningKeyID() {
+		return fmt.Errorf("manifest signing key ID required")
+	}
+
+	if len(keyed) == 0 && len(unkeyed) == 0 {
+		return fmt.Errorf("no trusted update manifest public keys configured")
+	}
+
+	for _, key := range keyed {
+		if ed25519.Verify(key, payload, signature) {
+			// Warn only on ACCEPTANCE: the warning means "this agent took an
+			// update whose manifest named no key". A response that fails
+			// verification anyway must not consume the one-per-process budget
+			// and hide a later, genuinely accepted ID-less manifest.
+			warnMissingSigningKeyIDOnce()
+			return nil
+		}
+	}
+	for _, key := range unkeyed {
+		if ed25519.Verify(key, payload, signature) {
+			warnMissingSigningKeyIDOnce()
+			return nil
+		}
+	}
+	return fmt.Errorf("update manifest signature verification failed")
 }
 
 func normalizePreflightErr(err error) error {
@@ -427,7 +836,10 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 		if pkgErr != nil {
 			log.Warn("signed .pkg checksum unavailable, falling back to verified-binary replacement", "error", pkgErr.Error())
 		} else if installErr := u.installViaPkg(version, pkgChecksum); installErr != nil {
-			log.Warn("pkg install failed, falling back to binary replacement", "error", installErr.Error())
+			// installViaPkg downloads the signed .pkg (pkg_darwin.go), so this
+			// error chain can be a *url.Error carrying the presigned asset URL.
+			key, value := SafeDownloadErrorFields(installErr)
+			log.Warn("pkg install failed, falling back to binary replacement", key, value)
 		} else {
 			return nil // .pkg install handles binary replacement + restart
 		}
@@ -460,12 +872,18 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 	return nil
 }
 
-// downloadInfo holds the JSON response from the download endpoint
+// downloadInfo holds the JSON response from the download endpoint.
+//
+// SigningKeyID names the ONE key the manifest signature must verify against
+// (see verifyManifestSignature). It is empty for control planes that predate
+// the field and for locally-sourced binaries; RequireManifestSigningKeyID
+// decides whether that is tolerated.
 type downloadInfo struct {
 	URL               string `json:"url"`
 	Checksum          string `json:"checksum"`
 	Manifest          string `json:"manifest"`
 	ManifestSignature string `json:"manifestSignature"`
+	SigningKeyID      string `json:"signingKeyId"`
 }
 
 func (u *Updater) requestWithoutRedirect(req *http.Request) (*http.Response, error) {
@@ -492,11 +910,15 @@ func (u *Updater) parseDownloadInfo(resp *http.Response) (downloadInfo, error) {
 		return info, nil
 
 	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
-		location, err := resp.Location()
-		if err != nil {
+		if _, err := resp.Location(); err != nil {
 			return downloadInfo{}, fmt.Errorf("download redirect missing location: %w", err)
 		}
-		return downloadInfo{}, fmt.Errorf("download redirects are not trusted without a signed release manifest (location %s)", location.String())
+		// Deliberately does NOT embed the redirect Location in the error: this
+		// message reaches callers' download-failure logs verbatim (it is a
+		// plain error, not a *netpolicy.PolicyError or *url.Error, so
+		// SafeDownloadErrorFields's stripping does not apply to it), and the
+		// target may carry a capability query string.
+		return downloadInfo{}, fmt.Errorf("download redirects are not trusted without a signed release manifest")
 
 	default:
 		return downloadInfo{}, fmt.Errorf("download info request failed with status %d", resp.StatusCode)
@@ -509,21 +931,9 @@ func (u *Updater) verifyUpdateManifest(info downloadInfo, version string) (updat
 		return updateManifest{}, fmt.Errorf("invalid update manifest signature encoding")
 	}
 
-	keys := u.trustedManifestKeys()
-	if len(keys) == 0 {
-		return updateManifest{}, fmt.Errorf("no trusted update manifest public keys configured")
-	}
-
 	payload := []byte(info.Manifest)
-	verified := false
-	for _, key := range keys {
-		if ed25519.Verify(key, payload, signature) {
-			verified = true
-			break
-		}
-	}
-	if !verified {
-		return updateManifest{}, fmt.Errorf("update manifest signature verification failed")
+	if err := u.verifyManifestSignature(payload, signature, info.SigningKeyID); err != nil {
+		return updateManifest{}, err
 	}
 
 	var manifest updateManifest
@@ -672,6 +1082,9 @@ func (u *Updater) DownloadBinary(version string) (string, error) {
 // second round-trip; it is safe to use because verifyUpdateManifest has already
 // checked its Ed25519 signature.
 func (u *Updater) downloadBinary(version string) (string, updateManifest, []byte, error) {
+	if err := u.checkClient(); err != nil {
+		return "", updateManifest{}, nil, err
+	}
 	if u.config.AuthToken == nil {
 		return "", updateManifest{}, nil, fmt.Errorf("auth token not available")
 	}
@@ -704,8 +1117,12 @@ func (u *Updater) downloadBinary(version string) (string, updateManifest, []byte
 	// checksum lookup in UpdateTo.
 	verifiedPayload := []byte(info.Manifest)
 
-	// Step 2: Download the actual binary from the manifest URL. downloadFromURL
-	// enforces scheme and origin against the configured control-plane URL.
+	// Step 2: Download the actual binary from the manifest URL. info.URL may
+	// be cross-origin from the configured control plane (a signed manifest
+	// legitimately points at a public CDN); downloadFromURL no longer
+	// enforces an origin match itself — destination safety (scheme, dial-time
+	// address, redirect chain, credential stripping) is u.client's job alone,
+	// via the netpolicy.Policy built in updaterPolicy.
 	tempPath, err := u.downloadFromURL(info.URL)
 	if err != nil {
 		return "", updateManifest{}, nil, err
@@ -865,8 +1282,17 @@ func (u *Updater) DownloadAndVerify(url, expectedChecksum string) (string, error
 // silently inherited whatever UpdateToWithUserHelper had last stuffed into
 // u.extras, which was a real footgun for any future dev-push surface that
 // shared an Updater instance with the heartbeat upgrade path.
-func (u *Updater) UpdateFromURL(url, expectedChecksum string, opts UpdateOptions) error {
-	log.Info("starting dev update from URL", "url", url)
+func (u *Updater) UpdateFromURL(rawURL, expectedChecksum string, opts UpdateOptions) error {
+	// Log only the host, never the full URL: dev_update's downloadUrl is
+	// operator/control-plane supplied and may legitimately carry a
+	// capability query string (e.g. a signed CDN asset URL), which must
+	// never reach a log line. host is best-effort — a parse failure logs
+	// "" rather than falling back to the raw URL.
+	host := ""
+	if parsed, perr := url.Parse(rawURL); perr == nil {
+		host = parsed.Host
+	}
+	log.Info("starting dev update from URL", "host", host)
 
 	// Pre-flight: verify we can write to the binary's directory.
 	// Skip on Windows — the running exe is locked by the OS, but
@@ -879,7 +1305,7 @@ func (u *Updater) UpdateFromURL(url, expectedChecksum string, opts UpdateOptions
 	}
 
 	// 1. Download binary directly
-	tempPath, err := u.downloadFromURL(url)
+	tempPath, err := u.downloadFromURL(rawURL)
 	if err != nil {
 		return fmt.Errorf("failed to download binary: %w", err)
 	}
@@ -932,41 +1358,26 @@ func (u *Updater) UpdateFromURL(url, expectedChecksum string, opts UpdateOptions
 	return nil
 }
 
-// downloadFromURL downloads a binary directly from the given URL to a temp file.
-// The URL origin (host and scheme) must match the configured ServerURL to prevent credential leakage.
+// downloadFromURL downloads a binary directly from the given URL to a temp
+// file. rawURL may be cross-origin from the configured control plane — the
+// signed-manifest flow legitimately follows a control-plane URL to a public
+// CDN — so this method does NOT compare origins itself. All destination
+// safety (scheme, dial-time address, redirect chain, credential stripping on
+// origin change) is enforced by u.client, which netpolicy.NewClient built
+// from updaterPolicy(u.config); this is the single, dial-time-authoritative
+// check. A local host/scheme comparison here would be redundant at best and
+// a silent divergence risk at worst — removed, not duplicated (#SSRF-AGENT-001).
 func (u *Updater) downloadFromURL(rawURL string) (string, error) {
+	if err := u.checkClient(); err != nil {
+		return "", err
+	}
 	if u.config.AuthToken == nil {
 		return "", fmt.Errorf("auth token not available")
-	}
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return "", fmt.Errorf("invalid download URL: %w", err)
-	}
-	serverParsed, err := url.Parse(u.serverURL())
-	if err != nil {
-		return "", fmt.Errorf("invalid server URL: %w", err)
-	}
-	if parsed.Scheme != "https" && parsed.Scheme != "http" {
-		return "", fmt.Errorf("unsupported download URL scheme: %q", parsed.Scheme)
-	}
-	if serverParsed.Scheme != "https" && serverParsed.Scheme != "http" {
-		return "", fmt.Errorf("unsupported server URL scheme: %q", serverParsed.Scheme)
-	}
-	if parsed.Host != serverParsed.Host {
-		return "", fmt.Errorf("download URL host %q does not match server %q", parsed.Host, serverParsed.Host)
-	}
-	// Never downgrade from an HTTPS control plane to HTTP binary downloads.
-	if serverParsed.Scheme == "https" && parsed.Scheme != "https" {
-		return "", fmt.Errorf("insecure download URL scheme %q for HTTPS server", parsed.Scheme)
-	}
-	// Keep protocol aligned to avoid credential scope surprises.
-	if parsed.Scheme != serverParsed.Scheme && !(serverParsed.Scheme == "http" && parsed.Scheme == "https") {
-		return "", fmt.Errorf("download URL scheme %q does not match server scheme %q", parsed.Scheme, serverParsed.Scheme)
 	}
 
 	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("invalid download URL: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+u.config.AuthToken.Reveal())
 
@@ -986,9 +1397,14 @@ func (u *Updater) downloadFromURL(rawURL string) (string, error) {
 	}
 	defer tempFile.Close()
 
-	if _, err := io.Copy(tempFile, resp.Body); err != nil {
+	// CopyBounded, not io.Copy: the transport already caps the response body
+	// via Policy.MaxResponseBytes when u.client is netpolicy-backed, but a
+	// caller that overrides u.client (or a future policy change) must not be
+	// able to reintroduce an unbounded write to disk. CopyBounded errors
+	// rather than truncating silently.
+	if _, err := netpolicy.CopyBounded(tempFile, resp.Body, maxUpdateBinaryBytes); err != nil {
 		removeCleanup(tempFile.Name())
-		return "", err
+		return "", fmt.Errorf("failed to download binary: %w", err)
 	}
 
 	return tempFile.Name(), nil

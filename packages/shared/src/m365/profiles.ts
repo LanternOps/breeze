@@ -57,7 +57,13 @@ const MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID = '00000003-0000-0000-c000-0000000
 export const M365_PERMISSION_PROFILES = {
   'communications-delegated': {
     id: 'communications-delegated',
-    version: 1,
+    // v2 (2026-07-29): trimmed to mail-only. v1 also requested Chat.ReadWrite,
+    // ChannelMessage.Read.All and ChannelMessage.Send for a Teams catalog that does not
+    // exist and is not in the first cut. The actions runbook's own principle applies —
+    // consenting scopes nothing exercises "only widens the mutation blast radius" — and
+    // for a *delegated* profile the re-consent cost is one sign-in by one person, the
+    // cheapest re-consent in the system. Teams scopes come back with the Teams catalog.
+    version: 2,
     ownerAxis: 'user',
     authMode: 'delegated',
     credentialDomain: 'communications-delegated',
@@ -65,13 +71,17 @@ export const M365_PERMISSION_PROFILES = {
     delegatedPermissions: [
       'openid',
       'profile',
+      // Load-bearing: without it Microsoft issues no refresh token, and every send would
+      // need an interactive sign-in — which is exactly what the durable release path
+      // cannot do.
       'offline_access',
+      // Covers the consent-time identity probe, GET /me?$select=id,userPrincipalName,mail
+      // (design §4.2). Note the probe deliberately does NOT read /me/mailboxSettings, so
+      // MailboxSettings.Read is not required here.
       'User.Read',
+      // Mail.Read would cover list/get, but draft.create needs write on the mailbox.
       'Mail.ReadWrite',
       'Mail.Send',
-      'Chat.ReadWrite',
-      'ChannelMessage.Read.All',
-      'ChannelMessage.Send',
     ],
     applicationPermissions: [],
   },
@@ -153,10 +163,23 @@ export const M365_PERMISSION_PROFILES = {
     applicationPermissions: [
       'User.ReadWrite.All',
       'User-PasswordProfile.ReadWrite.All',
-      'Group.ReadWrite.All',
-      'DeviceManagementManagedDevices.PrivilegedOperations.All',
-      'DeviceManagementConfiguration.ReadWrite.All',
-      'Sites.ReadWrite.All',
+      // roadmap (each future action needs a manifest version bump + customer re-consent):
+      //   'Group.ReadWrite.All',
+      //   'DeviceManagementManagedDevices.PrivilegedOperations.All',
+      //   'DeviceManagementConfiguration.ReadWrite.All',
+      //   'Sites.ReadWrite.All',
+    ],
+    applicationPermissionAssignments: [
+      {
+        resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
+        appRoleId: '204e0828-b5ca-4ad8-b9f3-f32a958e7cc4',
+        value: 'User.ReadWrite.All',
+      },
+      {
+        resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
+        appRoleId: '56760768-b641-451f-8906-e1b8ab31bca7',
+        value: 'User-PasswordProfile.ReadWrite.All',
+      },
     ],
   },
   'customer-exchange-powershell': {

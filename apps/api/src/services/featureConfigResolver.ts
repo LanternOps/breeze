@@ -66,6 +66,7 @@ export function createSystemAuthContext(): AuthContext {
   };
 
   return {
+    principal: { kind: 'system', reason: 'feature-config-resolution' },
     user: {
       id: '00000000-0000-0000-0000-000000000000',
       email: 'system@breeze.internal',
@@ -267,7 +268,9 @@ export async function resolveAlertRulesForDevice(
       configPolicyFeatureLinks,
       and(
         eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        inArray(configPolicyFeatureLinks.featureType, ['alert_rule', 'monitoring'])
+        // Server-evaluated rules live exclusively under alert_rule links since the
+        // 2026-07-30 ownership consolidation migration.
+        eq(configPolicyFeatureLinks.featureType, 'alert_rule')
       )
     )
     .innerJoin(

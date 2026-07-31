@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import InvoiceDetail from './InvoiceDetail';
 import type { InvoiceDetail as InvoiceDetailData } from './invoiceTypes';
 import { fetchWithAuth } from '../../stores/auth';
+import { _resetShowMarginMemoryForTests } from './billingUi';
 
 type Perm = { resource: string; action: string };
 
@@ -63,6 +64,14 @@ const stripePayment = {
 beforeEach(() => {
   vi.clearAllMocks();
   state.permissions = [];
+  // Pre-enable the persisted cost/margin preference so margin visibility below
+  // is decided purely by the permission gate under test, not the toggle default.
+  localStorage.clear();
+  // The memory mirror deliberately outlives localStorage.clear(), so a suite
+  // that ever clicks a MarginToggle would leak the preference into its
+  // neighbours without this.
+  _resetShowMarginMemoryForTests();
+  localStorage.setItem('breeze:quote-editor-show-margin', '1');
   fetchMock.mockImplementation(async (input: string) => {
     if (input.endsWith('/payments')) return json({ data: [stripePayment] });
     return json({ data: {} });
@@ -83,7 +92,9 @@ describe('InvoiceDetail — permission gating', () => {
     expect(screen.queryByTestId('invoice-payment-void-p1')).not.toBeInTheDocument();
     expect(screen.queryByTestId('invoice-payment-form')).not.toBeInTheDocument();
     expect(screen.queryByTestId('invoice-payment-submit')).not.toBeInTheDocument();
-    // But cost/margin IS a read affordance — invoices:read sees the margin panel.
+    // But cost/margin IS a read affordance — invoices:read sees the margin panel
+    // (with the persisted internal-view preference on) and its toggle.
+    expect(screen.getByTestId('invoice-detail-toggle-margin')).toBeInTheDocument();
     expect(screen.getByTestId('invoice-margin')).toBeInTheDocument();
   });
 

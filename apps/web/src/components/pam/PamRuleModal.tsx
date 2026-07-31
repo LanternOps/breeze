@@ -24,6 +24,7 @@ import {
   btnPrimaryClass,
   inputCompactClass as inputClass,
 } from './ui';
+import { asList } from '@/lib/asList';
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 
@@ -216,7 +217,7 @@ export default function PamRuleModal({
       .then(async (res) => {
         if (res.ok) {
           const data = await res.json();
-          const items = (data.data ?? data.organizations ?? data ?? []) as NamedOption[];
+          const items = (asList(data, 'organizations')) as NamedOption[];
           setOrgs(items.map((o) => ({ id: o.id, name: o.name })));
           if (!isEdit && items.length > 1) {
             setSelectedOrgId((prev) => prev || items[0]!.id);
@@ -239,7 +240,7 @@ export default function PamRuleModal({
       .then(async (res) => {
         if (res.ok) {
           const data = await res.json();
-          const items = (data.data ?? data.sites ?? data ?? []) as NamedOption[];
+          const items = (asList(data, 'sites')) as NamedOption[];
           setSites(items.map((s) => ({ id: s.id, name: s.name })));
           setSiteId((prev) => {
             if (prev && !items.some((s) => s.id === prev)) {

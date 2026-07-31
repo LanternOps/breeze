@@ -32,10 +32,14 @@ import {
 import { setAnomalyMetricsRecorder } from '../services/anomalyMetrics';
 import { setAbuseMetricsRecorder } from '../services/abuseMetrics';
 import { setProxyTrustMetricsRecorder } from '../services/clientIp';
-import { registerM365CustomerGraphReadPrometheusCounter } from '../services/m365ControlPlane/metrics';
+import {
+  registerM365CustomerGraphActionsPrometheusCounter,
+  registerM365CustomerGraphReadPrometheusCounter,
+} from '../services/m365ControlPlane/metrics';
 import { registerM365GraphReadActionPrometheusCounter } from '../services/m365ControlPlane/readActionMetrics';
 import { registerM365GraphActionsPrometheusCounter } from '../services/m365ControlPlane/writeActionMetrics';
 import { registerActionIntentPrometheusCounter } from '../services/actionIntents/metrics';
+import { registerAgentCertificateBindingPrometheusCounter } from '../services/agentCertificateBinding';
 import { setExtensionMetricsRecorder } from '../extensions/metrics';
 
 export {
@@ -92,9 +96,11 @@ let METRICS_SCRAPE_IP_ALLOWLIST = parseCsvSet(process.env.METRICS_SCRAPE_IP_ALLO
 
 const register = new Registry();
 registerM365CustomerGraphReadPrometheusCounter(register);
+registerM365CustomerGraphActionsPrometheusCounter(register);
 registerM365GraphReadActionPrometheusCounter(register);
 registerM365GraphActionsPrometheusCounter(register);
 registerActionIntentPrometheusCounter(register);
+registerAgentCertificateBindingPrometheusCounter(register);
 
 const httpRequestsTotal = new Counter({
   name: 'http_requests_total',

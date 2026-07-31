@@ -2,12 +2,16 @@ package heartbeat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
 type blockingLifecycleShutdown struct {
@@ -23,6 +27,26 @@ func (l *blockingLifecycleShutdown) Stop() {
 }
 
 func (l *blockingLifecycleShutdown) Done() <-chan struct{} { return l.done }
+
+func (l *blockingLifecycleShutdown) Mode() string { return "always-on" }
+
+func (l *blockingLifecycleShutdown) SetModeOverride(string) {}
+
+// Lease/readiness methods exist only to satisfy helperLifecycleController —
+// this fake covers shutdown ordering, which never touches them.
+func (l *blockingLifecycleShutdown) AcquireLease(uint32, ipc.HelperRole, string, time.Duration) error {
+	return nil
+}
+
+func (l *blockingLifecycleShutdown) RenewLease(uint32, ipc.HelperRole, string, time.Duration) error {
+	return nil
+}
+
+func (l *blockingLifecycleShutdown) ReleaseLease(uint32, ipc.HelperRole, string) {}
+
+func (l *blockingLifecycleShutdown) WaitForHelperReady(context.Context, sessionbroker.HelperKey) sessionbroker.HelperWaitResult {
+	return sessionbroker.HelperWaitResult{Status: sessionbroker.HelperWaitTimeout}
+}
 
 func TestBootstrapHelperLifecycleBeforeBrokerListen(t *testing.T) {
 	var order []string
@@ -203,5 +227,45 @@ func TestBootstrapRetryStopsOnContextCancel(t *testing.T) {
 	case <-listened:
 		t.Fatal("listener started despite bootstrap never succeeding")
 	default:
+	}
+}
+
+// TestHeartbeatPayloadSecurityCapabilitiesJSON pins the exact wire shape the
+// server-side heartbeat schema expects (Wave 6 Task 4, security
+// remediation): `{"securityCapabilities":{"outboundNetworkPolicyVersion":1}}`.
+// A field rename, a dropped `omitempty`-less requirement, or a wrapper-type
+// change here would silently desync from apps/api/src/routes/agents/
+// schemas.ts without either side's own tests catching it.
+func TestHeartbeatPayloadSecurityCapabilitiesJSON(t *testing.T) {
+	payload := HeartbeatPayload{
+		Status:               "ok",
+		AgentVersion:         "1.2.3",
+		SecurityCapabilities: SecurityCapabilities{OutboundNetworkPolicyVersion: 1},
+	}
+
+	body, err := json.Marshal(&payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	rawCaps, ok := decoded["securityCapabilities"]
+	if !ok {
+		t.Fatalf("securityCapabilities key missing from marshaled payload: %s", body)
+	}
+	caps, ok := rawCaps.(map[string]any)
+	if !ok {
+		t.Fatalf("securityCapabilities is not an object: %#v", rawCaps)
+	}
+	version, ok := caps["outboundNetworkPolicyVersion"]
+	if !ok {
+		t.Fatalf("outboundNetworkPolicyVersion key missing: %#v", caps)
+	}
+	if got, want := version, float64(1); got != want {
+		t.Fatalf("outboundNetworkPolicyVersion = %v, want %v", got, want)
 	}
 }

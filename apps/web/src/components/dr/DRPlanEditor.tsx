@@ -10,6 +10,7 @@ import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import DRPlanGroupCard, { type DRGroupForm, type DRPlanDevice as Device } from './DRPlanGroupCard';
 import { useTranslation } from 'react-i18next';
+import { asList } from '@/lib/asList';
 import '../../lib/i18n';
 
 type DRPlanDetails = {
@@ -89,7 +90,7 @@ export default function DRPlanEditor({
 
         if (!devicesResponse.ok) throw new Error('Failed to load devices');
         const devicesPayload = await devicesResponse.json();
-        const nextDevices = devicesPayload?.data ?? devicesPayload?.devices ?? devicesPayload ?? [];
+        const nextDevices = asList(devicesPayload, 'devices');
         if (!cancelled) {
           setDevices(Array.isArray(nextDevices) ? nextDevices : []);
         }

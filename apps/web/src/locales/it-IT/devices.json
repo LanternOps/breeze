@@ -1060,6 +1060,7 @@
     "enableMaintenance": "Abilita manutenzione",
     "disableMaintenance": "Disabilita manutenzione",
     "wakeSelected": "Riattiva selezionati",
+    "compareSelected": "Confronta selezionati",
     "linkAsMultiBoot": "Collega come multi-boot",
     "decommissionSelected": "Dismetti selezionati",
     "clearSelection": "Cancella selezione",
@@ -1761,6 +1762,7 @@
       "maintenanceOn": "Manutenzione attivata",
       "multibootLinked": "Multiboot collegato",
       "networkSkipped": "{{count}} dispositivi di rete ignorati — questa azione si applica solo ai dispositivi con agente.",
+      "compareNeedsTwo": "Il confronto richiede almeno 2 dispositivi con agente.",
       "permanentDeleteCancelled": "Eliminazione permanente annullata",
       "permanentDeleting": "Eliminazione permanente in corso",
       "permanentlyDeleted": "Eliminato definitivamente",
@@ -2207,7 +2209,19 @@
     "runOnDevice": "Esegui lo script su {{hostname}}",
     "runScript": "Esegui script",
     "searchPlaceholder": "Cerca gli script...",
+    "sessionAny": "Qualsiasi sessione (console)",
     "title": "Seleziona script",
     "unnamedScript": "Script senza nome"
+  },
+  "sessionPicker": {
+    "titleDesktop": "Seleziona una sessione da visualizzare",
+    "titleScript": "Seleziona una sessione in cui eseguire",
+    "loading": "Caricamento sessioni…",
+    "fetchFailed": "Impossibile caricare le sessioni",
+    "noSessions": "Nessuna sessione interattiva trovata",
+    "sessionLabel": "sessione {{id}}",
+    "idleMinutes": "inattiva da {{count}} min",
+    "disconnectedNotShadowable": "Le sessioni disconnesse non possono essere visualizzate — nessun desktop attivo da acquisire",
+    "cancel": "Annulla"
   }
 }

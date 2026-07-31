@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuoteActions from './QuoteActions';
@@ -21,6 +21,8 @@ vi.mock('../../../stores/auth', () => ({
 }));
 vi.mock('../../../lib/api/quotes', () => ({ sendQuote: vi.fn(), deleteQuote: vi.fn(), quotePdfUrl: vi.fn().mockReturnValue('/quotes/q-1/pdf') }));
 vi.mock('../../shared/ConfirmDialog', () => ({ ConfirmDialog: () => null }));
+const showToastMock = vi.fn();
+vi.mock('../../shared/Toast', () => ({ showToast: (a: unknown) => showToastMock(a) }));
 
 function draft(extra: Partial<QuoteDetailData['quote']> = {}): QuoteDetailData {
   return {
@@ -35,6 +37,21 @@ function draft(extra: Partial<QuoteDetailData['quote']> = {}): QuoteDetailData {
     },
     blocks: [],
     lines: [],
+  };
+}
+
+/** A draft that Send will actually arm: one customer-visible line. */
+function sendable(): QuoteDetailData {
+  return {
+    ...draft(),
+    blocks: [{ id: 'b-1', quoteId: 'q-1', orgId: 'org-1', blockType: 'line_items', content: {}, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z' }],
+    lines: [{
+      id: 'l-1', quoteId: 'q-1', blockId: 'b-1', orgId: 'org-1', sourceType: 'manual',
+      catalogItemId: null, parentLineId: null, unitCost: null, sku: null, partNumber: null,
+      name: 'Support', description: null, quantity: '1.00', unitPrice: '100.00', taxable: false,
+      customerVisible: true, lineTotal: '100.00', recurrence: 'one_time', termMonths: null,
+      billingFrequency: null, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
+    }],
   };
 }
 
@@ -113,5 +130,99 @@ describe('QuoteActions — header variant', () => {
     // Quiescence arrives → the queued composer opens without another click.
     rerender(<QuoteActions detail={withLine} onChanged={vi.fn()} variant="header" savePending={false} />);
     await waitFor(() => expect(screen.getByTestId('quote-send-confirm')).toBeInTheDocument());
+  });
+
+  it('cancels a queued Send when a save FAILURE arrives with quiescence in the same render', async () => {
+    // The quote side had no failure signal at all: a blur-save that failed
+    // cleared its in-flight key, which read as "quiet", and the composer opened
+    // over a stale total. Both props flip in ONE rerender — split across two,
+    // the assertion would pass even with the guard ordered wrongly.
+    const { rerender } = render(
+      <QuoteActions detail={sendable()} onChanged={vi.fn()} variant="header" savePending saveFailureNonce={0} />,
+    );
+    await waitFor(() => expect(screen.getByTestId('quote-actions-header')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('quote-send'));
+    expect(screen.queryByTestId('quote-send-confirm')).not.toBeInTheDocument();
+
+    rerender(
+      <QuoteActions detail={sendable()} onChanged={vi.fn()} variant="header" savePending={false} saveFailureNonce={1} />,
+    );
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    await act(async () => {});
+    expect(screen.queryByTestId('quote-send-confirm')).not.toBeInTheDocument();
+  });
+
+  it('drops a queued Send after 10s with honest still-saving copy, not a claimed failure', async () => {
+    // The old copy ("check your connection and try again") asserted a failure
+    // nobody observed — failures are handled by the nonce above, so anything
+    // reaching this timer is genuinely still in flight.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      render(<QuoteActions detail={sendable()} onChanged={vi.fn()} variant="header" savePending />);
+      await waitFor(() => expect(screen.getByTestId('quote-actions-header')).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId('quote-send'));
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+
+      expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
+      expect(screen.queryByTestId('quote-send-confirm')).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses a Send click for a field that failed to save, instead of queueing forever', async () => {
+    render(<QuoteActions detail={sendable()} onChanged={vi.fn()} variant="header" unsavedFieldLabel="Terms & Conditions" />);
+    await waitFor(() => expect(screen.getByTestId('quote-actions-header')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('quote-send-saving-hint')).not.toBeInTheDocument();
+    expect(screen.getByTestId('quote-send-unsaved-hint')).toHaveTextContent('Terms & Conditions');
+
+    fireEvent.click(screen.getByTestId('quote-send'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'warning', message: expect.stringContaining('Terms & Conditions') }),
+    ));
+    expect(screen.queryByTestId('quote-send-confirm')).not.toBeInTheDocument();
+  });
+
+  it('re-checks the unsaved-field refusal before opening a queued Send composer', async () => {
+    // The click gate tests savePending FIRST, so a click during a deferred
+    // delete queues even while an earlier failed save keeps a field dirty
+    // (its nonce bump happened BEFORE the click, so the captured nonce never
+    // changes). When the editor goes quiet the queue must re-check the label
+    // and refuse — opening the composer would quote a stale total.
+    const { rerender } = render(
+      <QuoteActions detail={sendable()} onChanged={vi.fn()} variant="header" savePending unsavedFieldLabel="Terms & Conditions" />,
+    );
+    await waitFor(() => expect(screen.getByTestId('quote-actions-header')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('quote-send'));
+    expect(screen.queryByTestId('quote-send-confirm')).not.toBeInTheDocument();
+
+    // Quiescence arrives with the field STILL flagged unsaved.
+    rerender(
+      <QuoteActions detail={sendable()} onChanged={vi.fn()} variant="header" savePending={false} unsavedFieldLabel="Terms & Conditions" />,
+    );
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'warning', message: expect.stringContaining('Terms & Conditions') }),
+    ));
+    await act(async () => {});
+    expect(screen.queryByTestId('quote-send-confirm')).not.toBeInTheDocument();
+  });
+
+  it('does not spin the Send button on a bare savePending — only on a queued click', async () => {
+    // A spinner promises forthcoming completion. Spinning on savePending meant
+    // a field left dirty by a failed save spun indefinitely.
+    render(<QuoteActions detail={sendable()} onChanged={vi.fn()} variant="header" savePending />);
+    await waitFor(() => expect(screen.getByTestId('quote-actions-header')).toBeInTheDocument());
+
+    const send = screen.getByTestId('quote-send');
+    expect(send.querySelector('.animate-spin')).toBeNull();
+
+    fireEvent.click(send); // now something WILL complete
+    expect(send.querySelector('.animate-spin')).not.toBeNull();
   });
 });

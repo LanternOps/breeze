@@ -9,6 +9,7 @@ import {
   type RegistrationResponseJSON
 } from '@simplewebauthn/browser';
 import { extractApiError } from '@/lib/apiError';
+import { getSafeNext } from '@/lib/authNext';
 import {
   applyAppearancePreferences,
   applyResolvedLocalePreferences,
@@ -984,6 +985,7 @@ export async function apiVerifyEmail(token: string): Promise<{
   user?: User;
   tokens?: Tokens;
   status?: 'sign_in';
+  redirectUrl?: string;
 }> {
   try {
     const response = await fetch(buildApiUrl('/auth/verify-email'), {
@@ -1011,6 +1013,17 @@ export async function apiVerifyEmail(token: string): Promise<{
       autoActivated: data.autoActivated,
       user: data.user,
       tokens: data.tokens,
+      // Where the post-registration hook wants a still-inactive partner to go
+      // (hosted: /billing/plans). Runs through the shared open-redirect guard
+      // rather than a bare `startsWith('/')`, which would admit the
+      // protocol-relative `//evil.com` and the `/\evil.com` form some browsers
+      // normalize to it. `navigateTo` re-applies getSafeNext at the sink, so
+      // this is defence in depth — but the value this function RETURNS must
+      // already be safe, or a future caller that navigates directly inherits a
+      // hole from a field that looks validated.
+      redirectUrl: typeof data.redirectUrl === 'string'
+        ? getSafeNext(data.redirectUrl, '') || undefined
+        : undefined,
     };
   } catch {
     return { success: false, error: 'Network error' };

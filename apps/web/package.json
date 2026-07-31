@@ -20,8 +20,8 @@
     "clean": "rm -rf dist .astro"
   },
   "dependencies": {
-    "@astrojs/node": "^11.0.2",
-    "@astrojs/react": "^6.0.1",
+    "@astrojs/node": "^11.0.3",
+    "@astrojs/react": "^6.0.2",
     "@breeze/extension-web-sdk": "workspace:*",
     "@fontsource/plus-jakarta-sans": "^5.2.8",
     "@hookform/resolvers": "^5.4.0",
@@ -38,7 +38,7 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/xterm": "^6.0.0",
-    "astro": "^7.1.2",
+    "astro": "^7.1.6",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cytoscape": "^3.34.0",
@@ -49,8 +49,8 @@
     "jspdf-autotable": "^5.0.8",
     "lucide-react": "^1.21.0",
     "monaco-editor": "0.55.1",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "react-hook-form": "^7.81.0",
     "react-i18next": "^17.0.10",
     "react-markdown": "^10.1.0",
@@ -61,7 +61,7 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
-    "@astrojs/check": "^0.9.9",
+    "@astrojs/check": "^0.9.10",
     "@tailwindcss/forms": "^0.5.10",
     "@tailwindcss/typography": "^0.5.20",
     "@tailwindcss/vite": "^4.3.3",
@@ -74,7 +74,7 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitest/coverage-v8": "^4.1.10",
-    "jsdom": "^29.1.1",
+    "jsdom": "^30.0.1",
     "playwright": "^1.58.2",
     "tailwindcss": "^4.3.1",
     "typescript": "^5.7.2",

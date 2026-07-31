@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
-import { mobileRoutes } from './mobile';
+import { decodeCursor, encodeCursor, mobileRoutes } from './mobile';
 
 // Partial-mock drizzle-orm so `inArray` is a spy while every other operator
 // (and/eq/sql/...) stays real. The /summary site-narrowing tests assert that
@@ -169,6 +169,27 @@ const mockDeleteReturning = (result: unknown) => ({
   where: vi.fn().mockReturnValue({
     returning: vi.fn().mockResolvedValue(result)
   })
+});
+
+describe('mobile cursor decoding', () => {
+  it('returns null when the cursor id is not a UUID', () => {
+    const cursor = Buffer.from(JSON.stringify({
+      ts: '2026-07-28T12:00:00.000Z',
+      id: 'not-a-uuid',
+    })).toString('base64url');
+
+    expect(decodeCursor(cursor)).toBeNull();
+  });
+
+  it('decodes a cursor with a valid UUID id', () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    const cursor = encodeCursor('2026-07-28T12:00:00.000Z', id);
+
+    expect(decodeCursor(cursor!)).toEqual({
+      ts: new Date('2026-07-28T12:00:00.000Z'),
+      id,
+    });
+  });
 });
 
 describe('mobile routes', () => {

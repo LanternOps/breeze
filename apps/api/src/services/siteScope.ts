@@ -26,6 +26,7 @@ import {
 } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { UserPermissions } from './permissions';
+import { permissionGrantMatches } from './permissionMatching';
 
 export type SiteScopeV1 =
   | { version: 1; kind: 'unrestricted'; orgId: string }
@@ -647,8 +648,10 @@ async function roleGrantsReportAction(
     .where(
       and(
         eq(rolePermissions.roleId, roleId),
-        eq(permissions.resource, 'reports'),
-        eq(permissions.action, action),
+        // '*' rows must survive the SQL filter so wildcard super-roles
+        // (Partner Admin's `*|*`) are honored — see permissionGrantMatches.
+        inArray(permissions.resource, ['reports', '*']),
+        inArray(permissions.action, [action, '*']),
         eq(roles.scope, expectedRole.scope),
         or(
           eq(roles.isSystem, true),
@@ -661,8 +664,7 @@ async function roleGrantsReportAction(
 
   return rows.some(
     (row) =>
-      row.resource === 'reports' &&
-      row.action === action &&
+      permissionGrantMatches(row, 'reports', action) &&
       row.roleScope === expectedRole.scope &&
       (row.roleIsSystem ||
         (expectedRole.scope === 'organization'
@@ -922,8 +924,7 @@ function batchRoleGrantsReportAction(
   return rows.some(
     (row) =>
       row.roleId === roleId &&
-      row.resource === 'reports' &&
-      row.action === action &&
+      permissionGrantMatches(row, 'reports', action) &&
       row.roleScope === expectedRole.scope &&
       (row.roleIsSystem ||
         (expectedRole.scope === 'organization'
@@ -1049,8 +1050,8 @@ async function resolveRequestReportAuthorityMapInSystemContext(
         .where(
           and(
             inArray(rolePermissions.roleId, organizationRoleIds),
-            eq(permissions.resource, 'reports'),
-            eq(permissions.action, action),
+            inArray(permissions.resource, ['reports', '*']),
+            inArray(permissions.action, [action, '*']),
           ),
         );
 
@@ -1120,8 +1121,8 @@ async function resolveRequestReportAuthorityMapInSystemContext(
         .where(
           and(
             inArray(rolePermissions.roleId, partnerRoleIds),
-            eq(permissions.resource, 'reports'),
-            eq(permissions.action, action),
+            inArray(permissions.resource, ['reports', '*']),
+            inArray(permissions.action, [action, '*']),
           ),
         );
 

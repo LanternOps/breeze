@@ -17,8 +17,8 @@
     "@tauri-apps/plugin-deep-link": "^2.4.9",
     "@tauri-apps/plugin-shell": "^2.0.0",
     "lucide-react": "^1.21.0",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
@@ -27,10 +27,10 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
-    "jsdom": "^29.1.1",
+    "jsdom": "^30.0.1",
     "tailwindcss": "^4.3.1",
     "typescript": "^5.5.4",
-    "vite": "^8.0.16",
+    "vite": "^8.1.5",
     "vitest": "^4.1.10"
   }
 }

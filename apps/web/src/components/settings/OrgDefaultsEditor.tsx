@@ -124,11 +124,13 @@ const policyOptions = [
   { value: 'lenient', labelKey: 'orgDefaultsEditor.policies.options.lenient' },
 ];
 
+// Key casing matches the locale files (PascalCase leaf), which all seven
+// locales share — the camelCase spelling rendered raw keys in the select.
 const groupOptions = [
-  { value: 'All Managed Devices', labelKey: 'orgDefaultsEditor.deviceGroup.options.allManagedDevices' },
-  { value: 'Critical Infrastructure', labelKey: 'orgDefaultsEditor.deviceGroup.options.criticalInfrastructure' },
-  { value: 'Remote Staff', labelKey: 'orgDefaultsEditor.deviceGroup.options.remoteStaff' },
-  { value: 'Contractors', labelKey: 'orgDefaultsEditor.deviceGroup.options.contractors' },
+  { value: 'All Managed Devices', labelKey: 'orgDefaultsEditor.deviceGroup.options.AllManagedDevices' },
+  { value: 'Critical Infrastructure', labelKey: 'orgDefaultsEditor.deviceGroup.options.CriticalInfrastructure' },
+  { value: 'Remote Staff', labelKey: 'orgDefaultsEditor.deviceGroup.options.RemoteStaff' },
+  { value: 'Contractors', labelKey: 'orgDefaultsEditor.deviceGroup.options.Contractors' },
 ];
 const alertThresholds = [
   { value: 'critical', labelKey: 'orgDefaultsEditor.alertSeverity.options.critical' },

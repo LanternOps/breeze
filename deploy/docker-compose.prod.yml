@@ -117,6 +117,10 @@ services:
       API_URL: ${API_URL:-}
       FORCE_HTTPS: ${FORCE_HTTPS:-true}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
+      # Optional, but required once M365_GRAPH_ACTIONS_TOOLS_ENABLED=true below —
+      # boot refuses to start without it (see that var's comment). Must be set
+      # here AND in .env; compose only interpolates vars listed in this block.
+      APP_ENCRYPTION_KEY_ID: ${APP_ENCRYPTION_KEY_ID:-}
       MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?Set MFA_ENCRYPTION_KEY in .env}
       ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER:?Set ENROLLMENT_KEY_PEPPER in .env}
       # Enrollment link / bootstrap token lifetimes + the expired-key sweep
@@ -169,6 +173,17 @@ services:
       # as the Graph-read executor above: intentionally not part of this
       # generic Compose stack — deploy it separately with a workload identity,
       # private ingress, and controlled HTTPS egress. Disabled by default.
+      # ONBOARDING_ENABLED gates the org-facing consent card; TOOLS_ENABLED
+      # (below) independently gates the AI tools/headless execution — either
+      # one enabled forces full executor descriptor validation at boot, which
+      # in production also requires PUBLIC_APP_URL/PUBLIC_API_URL (or
+      # PUBLIC_URL) to derive the consent callback origin (both are already
+      # mapped above).
+      M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED: ${M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED:-false}
+      M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ORG_IDS: ${M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ORG_IDS:-}
+      # Enabling this also requires APP_ENCRYPTION_KEY_ID above — boot refuses
+      # to start without it, because the m365_reset_password reveal-secret
+      # path seals its temp credential with AAD-bound v3 ciphertext.
       M365_GRAPH_ACTIONS_TOOLS_ENABLED: ${M365_GRAPH_ACTIONS_TOOLS_ENABLED:-false}
       M365_GRAPH_ACTIONS_TOOLS_ORG_IDS: ${M365_GRAPH_ACTIONS_TOOLS_ORG_IDS:-}
       M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID: ${M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID:-}
@@ -207,6 +222,28 @@ services:
       # CF-Connecting-IP is authoritative. Self-hosters NOT behind Cloudflare
       # must leave this unset — see the base docker-compose.yml note.
       TRUST_CF_CONNECTING_IP: "${TRUST_CF_CONNECTING_IP:-true}"
+      # off is the safe mixed-version default even on this hosted reference
+      # stack: the edge certificate assertion is never consulted until an
+      # operator explicitly advances it through the audit rollout. Never
+      # inferred from NODE_ENV/IS_HOSTED/CF_MTLS_*. See
+      # docs/operations/cloudflare-mtls-setup.md for the rollout sequence.
+      AGENT_MTLS_BINDING_MODE: ${AGENT_MTLS_BINDING_MODE:-off}
+      # Wave 6 security remediation rollout controls. Default-bearing form so
+      # a missing value cannot make the stack refuse to start — both are
+      # compatibility controls whose defaults are the safe state. See
+      # docs/operations/agent-network-and-manifest-rollout.md before setting
+      # either to anything other than its default in production.
+      #
+      # AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: NOT a no-op and NOT fleet-wide.
+      # A capable agent (this build or newer) applies a pushed `true`/`false`
+      # on its next update check (re-read at updater-construction time; its
+      # helper-manager needs a restart to pick up the change, same limitation
+      # as backup_server_url). An agent build older than this one ignores the
+      # pushed value entirely and keeps accepting ID-less manifests.
+      # The key is always sent, as true or false, so reverting this variable
+      # rolls capable agents back on their next heartbeat.
+      AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: ${AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID:-false}
+      MANAGED_SOFTWARE_POLICY_MODE: ${MANAGED_SOFTWARE_POLICY_MODE:-compat}
       PARTNER_HOOKS_URL: http://billing:3002/hooks
       BILLING_SERVICE_URL: http://billing:3002
       BILLING_SERVICE_API_KEY: ${BILLING_SERVICE_API_KEY:-}

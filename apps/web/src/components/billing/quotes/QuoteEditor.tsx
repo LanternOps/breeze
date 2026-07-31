@@ -39,7 +39,7 @@ import PolishButton from '../../catalog/PolishButton';
 import { BlockCard, QuoteImagePreview } from './QuoteBlockCard';
 import { QuoteBulkBar } from './QuoteBulkBar';
 import { UnassignedLines } from './QuoteUnassignedLines';
-import { UNAUTHORIZED, type LineUpdate, SrSaved, fieldRing, pendingKey, useSavedFlash } from './quoteEditorShared';
+import { UNAUTHORIZED, type LineUpdate, SrSaved, fieldRing, pendingKey, useSavedFlash, useShowInternalMargin } from './quoteEditorShared';
 import { useMenuKeyboard } from '../shared/menuKeyboard';
 import { UnsavedBadge, RecurringBillingNote, MarginPanel } from '../billingUi';
 import {
@@ -107,15 +107,30 @@ interface Props {
    *  Send until the quote is quiescent, so the irreversible money-moment
    *  can't race a blur-save. */
   onPendingEditsChange?: (hasPendingEdits: boolean) => void;
+  /** Reports every save FAILURE. Quiescence alone is not a safe Send signal: a
+   *  failed blur-save clears its in-flight key and a failed delete-flush
+   *  restores its rows, both of which read as "quiet" — QuoteActions cancels a
+   *  queued Send on this rather than opening a composer for a stale total. */
+  onSaveFailure?: () => void;
+  /** Reports a field whose save failed and is still dirty (translated label), or
+   *  null. Waiting cannot clear it, so Send names the field instead of showing
+   *  "Saving changes…" about a save that is never coming. */
+  onUnsavedEditsChange?: (unsavedFieldLabel: string | null) => void;
   /** Hands the workspace an imperative "flush deferred deletions now" hook
    *  (called with null on unmount). QuoteActions invokes it when Send is
    *  clicked during the undo grace window, so the held Send fires as soon as
    *  the DELETE lands instead of waiting out the rest of the window. */
   onRegisterPendingDeleteFlush?: (flush: (() => void) | null) => void;
+  /** Controlled cost/margin visibility: when provided (the workspace renders
+   *  the toggle in the pinned header, next to Send), the editor consumes the
+   *  value and drops its own toolbar toggle. When absent the editor
+   *  self-manages via useShowInternalMargin (standalone mounts / tests). */
+  showInternal?: boolean;
+  onToggleInternal?: () => void;
 }
 
 
-export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, onRegisterPendingDeleteFlush }: Props) {
+export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, onSaveFailure, onUnsavedEditsChange, onRegisterPendingDeleteFlush, showInternal: showInternalProp, onToggleInternal }: Props) {
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const canWrite = can('quotes', 'write');
@@ -124,22 +139,13 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   // Margin summary is gated the same way QuoteDetail gates it — on quotes:read —
   // rather than on write, which would hide the aggregate while showing the parts.
   const canSeeMargin = can('quotes', 'read');
-  // "Show cost & margin" governs EVERY internal-economics surface — the per-line
-  // cost/markup bands AND the rail's Margin panel — so one toggle honestly means
-  // "no margin on screen" (a tech screen-sharing with a client must be able to
-  // trust it). Collapsed by default; the choice persists per browser so daily
-  // margin-watchers aren't re-toggling on every quote.
-  const SHOW_INTERNAL_KEY = 'breeze:quote-editor-show-margin';
-  const [showInternal, setShowInternalState] = useState(
-    () => typeof localStorage !== 'undefined' && localStorage.getItem(SHOW_INTERNAL_KEY) === '1',
-  );
-  const setShowInternal = useCallback((updater: (v: boolean) => boolean) => {
-    setShowInternalState((v) => {
-      const next = updater(v);
-      try { localStorage.setItem(SHOW_INTERNAL_KEY, next ? '1' : '0'); } catch { /* private mode — session-only */ }
-      return next;
-    });
-  }, []);
+  // Cost/margin visibility: controlled by the workspace when the props are
+  // supplied (toggle lives in the pinned header), self-managed otherwise. See
+  // useShowInternalMargin for what the flag governs and why it persists.
+  const [fallbackShowInternal, toggleFallbackShowInternal] = useShowInternalMargin();
+  const internalControlled = showInternalProp !== undefined;
+  const showInternal = showInternalProp ?? fallbackShowInternal;
+  const toggleShowInternal = onToggleInternal ?? toggleFallbackShowInternal;
   const { quote, blocks: serverBlocks, lines: serverLines } = detail;
   const currency = quote.currencyCode;
 
@@ -234,6 +240,10 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   // indicator near the autosave hint — null until this session's first save
   // (nothing to report before that; the indicator itself stays unrendered).
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  // Keys whose most recent save attempt FAILED, cleared when one succeeds. Used
+  // with a still-dirty check to tell "this never saved" apart from the normal
+  // gap between a successful save and its refetch.
+  const [failedKeys, setFailedKeys] = useState<ReadonlySet<string>>(() => new Set());
 
   // Run a scoped mutation: mark the key pending, run, surface failures via the
   // standard handleActionError path, and always clear the key. Returns whether
@@ -246,16 +256,19 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
       try {
         await fn();
         setLastSavedAt(Date.now());
+        setFailedKeys((s) => { if (!s.has(key)) return s; const n = new Set(s); n.delete(key); return n; });
         return true;
       } catch (err) {
         handleActionError(err, errMsg);
+        setFailedKeys((s) => { if (s.has(key)) return s; const n = new Set(s); n.add(key); return n; });
+        onSaveFailure?.();
         return false;
       } finally {
         inFlight.current.delete(key);
         setPending((s) => { const n = new Set(s); n.delete(key); return n; });
       }
     },
-    [],
+    [onSaveFailure],
   );
 
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
@@ -271,15 +284,15 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const [termsSaved, flashTermsSaved] = useSavedFlash();
   const canCatalogWrite = can('catalog', 'write');
 
-  // Surface "is anything still saving / sitting dirty?" to the workspace so the
-  // Send button can wait for quiescence. Pending covers every in-flight mutation
-  // (line/block/terms/add/remove); the terms dirty flag covers the rail's
-  // blur-to-save field. Per-line dirty state isn't lifted — clicking Send blurs
-  // the focused field, whose commit lands in `pending` before the dialog opens.
-  // Deferred deletions count too: their DELETE hasn't fired yet, so a Send
-  // must not snapshot a quote the user has visibly already trimmed (clicking
-  // Send also flushes them immediately — see onRegisterPendingDeleteFlush).
-  const hasPendingEdits = pending.size > 0 || termsDirty
+  // Two separate questions, mirroring the invoice editor (see the long note
+  // there). hasPendingEdits = work genuinely IN FLIGHT, which resolves on its
+  // own and which a queued Send may wait for. Deferred deletions count: their
+  // DELETE hasn't fired yet, so a Send must not snapshot a quote the user has
+  // visibly already trimmed (clicking Send also flushes them immediately — see
+  // onRegisterPendingDeleteFlush). A merely-dirty field is NOT in flight: on
+  // failure it stays dirty forever, and reporting it here is what used to pin
+  // "Saving changes…" up over a save that had already given up.
+  const hasPendingEdits = pending.size > 0
     || pendingDeletedLineIds.size > 0 || pendingDeletedBlockIds.size > 0;
   useEffect(() => { onPendingEditsChange?.(hasPendingEdits); }, [hasPendingEdits, onPendingEditsChange]);
   // Clear on unmount so a stale `true` can't lock Send after the editor is gone
@@ -610,6 +623,23 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
       return { ...m, [id]: draft };
     });
   }, []);
+  // A field whose save failed AND which still diverges from the server. Both
+  // halves are required: failure alone keeps blocking after the user reverts by
+  // hand (the commit path short-circuits on an unchanged value, so nothing
+  // clears the flag), and divergence alone fires during the round-trip between
+  // a successful save and its refetch. `lineDrafts` is the per-line divergence
+  // signal the rail already maintains, including its own unmount cleanup.
+  const unsavedFieldLabel = useMemo(() => {
+    if (pending.size > 0) return null;
+    if (failedKeys.has('terms') && termsDirty) return t('quotes.editor.terms.title');
+    for (const id of Object.keys(lineDrafts)) {
+      if (failedKeys.has(pendingKey.line(id))) return t('quotes.editor.unsavedField.lines');
+    }
+    return null;
+  }, [pending.size, failedKeys, termsDirty, lineDrafts, t]);
+  useEffect(() => { onUnsavedEditsChange?.(unsavedFieldLabel); }, [unsavedFieldLabel, onUnsavedEditsChange]);
+  useEffect(() => () => onUnsavedEditsChange?.(null), [onUnsavedEditsChange]);
+
   // Drop drafts for lines that no longer exist (removed) so a stale draft can't
   // skew the rail after a delete.
   useEffect(() => {
@@ -2064,7 +2094,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                             </li>
                           ))}
                         </ul>
-                        <p className="mt-1 text-[11px] text-muted-foreground">{t('quotes.editor.contract.autoHint')}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">{t('quotes.editor.contract.autoHint')}</p>
                       </div>
                     )}
 
@@ -2146,10 +2176,12 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
 
   return (
     <div className="space-y-6" data-testid="quote-editor">
-      {/* The autosave hint is writer-only, but the cost/margin toggle is offered to
-          everyone who can see the editor: read-only users also have per-line cost
-          bands and deserve the same collapse control (ml-auto keeps it right-aligned
-          whether or not the hint renders). */}
+      {/* The cost/margin toggle renders here only when the editor self-manages it
+          (standalone mounts / tests) — in the workspace the toggle sits in the
+          pinned header instead, so the toolbar row collapses entirely for a
+          read-only user there. ml-auto keeps the toggle right-aligned whether or
+          not the writer-only hint renders. */}
+      {(canWrite || !internalControlled) && (
       <div className="flex flex-wrap items-center gap-2">
         {canWrite && (
           <p className="text-xs text-muted-foreground" data-testid="quote-editor-autosave-hint">
@@ -2179,17 +2211,20 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
             {t('quotes.editor.coverPage.enable')}
           </label>
         )}
-        <button
-          type="button"
-          onClick={() => setShowInternal((v) => !v)}
-          aria-pressed={showInternal}
-          data-testid="quote-editor-toggle-internal"
-          className={`ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors hover:bg-muted ${showInternal ? 'border-primary/40 bg-primary/10 text-primary' : ''}`}
-        >
-          {showInternal ? <EyeOff className="h-3.5 w-3.5" aria-hidden="true" /> : <Eye className="h-3.5 w-3.5" aria-hidden="true" />}
-          {showInternal ? t('quotes.editor.actions.hideCostMargin') : t('quotes.editor.actions.showCostMargin')}
-        </button>
+        {!internalControlled && (
+          <button
+            type="button"
+            onClick={toggleShowInternal}
+            aria-pressed={showInternal}
+            data-testid="quote-editor-toggle-internal"
+            className={`ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors hover:bg-muted ${showInternal ? 'border-primary/40 bg-primary/10 text-primary' : ''}`}
+          >
+            {showInternal ? <EyeOff className="h-3.5 w-3.5" aria-hidden="true" /> : <Eye className="h-3.5 w-3.5" aria-hidden="true" />}
+            {showInternal ? t('quotes.editor.actions.hideCostMargin') : t('quotes.editor.actions.showCostMargin')}
+          </button>
+        )}
       </div>
+      )}
       {/* Cover page: a toolbar toggle, not a permanent card — the once-per-quote
           setup stays out of the daily compose path. Fields appear only while
           enabled. */}
@@ -2675,13 +2710,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
           {sortedBlocks.length >= 2 && (
             <nav
               aria-label={t('quotes.editor.outline.aria')}
+              aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
               data-testid="quote-outline"
               className="rounded-lg border bg-card p-3 shadow-xs"
             >
-              <h2
-                className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
-                title={t('quotes.editor.outline.shortcutHint')}
-              >
+              <h2 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 {t('quotes.editor.outline.title')}
               </h2>
               <ul className="space-y-0.5">
@@ -2703,6 +2736,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                   </li>
                 ))}
               </ul>
+              {/* Visible, not a hover `title`: a shortcut nobody can discover
+                  by keyboard or touch may as well not exist. */}
+              <p className="mt-1.5 text-xs text-muted-foreground/80" data-testid="quote-outline-shortcut-hint">
+                {t('quotes.editor.outline.shortcutHint')}
+              </p>
             </nav>
           )}
 
@@ -2720,7 +2758,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
               disabled={!canWrite || isPending('terms')}
               data-testid="quote-terms"
               rows={3}
-              className={`w-full rounded-md border bg-background px-3 py-2 text-sm transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(termsDirty, termsSaved)}`}
+              className={`w-full rounded-md border bg-background px-3 py-2 text-sm transition-colors focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(termsDirty, termsSaved)}`}
               placeholder={t('quotes.editor.terms.placeholder')}
             />
             <SrSaved show={termsSaved} testId="quote-terms-saved" />
@@ -2879,7 +2917,7 @@ function InsertGap({ index, active, onToggle, label, dropActive, onDragOver, onD
         onClick={onToggle}
         aria-expanded={active}
         data-testid={`quote-insert-section-${index}`}
-        className={`inline-flex items-center gap-1 rounded-full border bg-card px-2.5 py-0.5 text-[11px] font-medium transition-opacity focus:opacity-100 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${
+        className={`inline-flex items-center gap-1 rounded-full border bg-card px-2.5 py-0.5 text-xs font-medium transition-opacity focus:opacity-100 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${
           active ? 'border-primary/40 text-primary opacity-100' : 'text-muted-foreground opacity-0 hover:text-foreground group-hover/gap:opacity-100'
         }`}
       >

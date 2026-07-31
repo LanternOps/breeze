@@ -35,6 +35,7 @@ import type { AuthContext } from '../middleware/auth';
 import { ContractServiceError } from './contractTypes';
 
 const auth: AuthContext = {
+  principal: { kind: 'user_session' },
   user: { id: 'u-1', email: 'user@example.test', name: 'User', isPlatformAdmin: false },
   token: {
     sub: 'u-1',

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -74,8 +75,15 @@ type MtlsCertData struct {
 }
 
 type EnrollResponse struct {
-	AgentID           string             `json:"agentId"`
-	AuthToken         string             `json:"authToken"`
+	AgentID   string `json:"agentId"`
+	AuthToken string `json:"authToken"`
+	// DeviceID is the server's device row UUID (devices.id) — distinct from
+	// AgentID (devices.agent_id). Wave 5 Task 5: the mTLS renewal recovery
+	// proof (see RecoveryProof / mtls.BuildRenewalProofCanonicalBytes) is
+	// canonicalized on this value, matching mtlsRenewalProof.ts server-side.
+	// The enrollment route has always returned deviceId; this field lets the
+	// agent finally capture and persist it (config.Config.DeviceID).
+	DeviceID          string             `json:"deviceId,omitempty"`
 	WatchdogAuthToken string             `json:"watchdogAuthToken"`
 	HelperAuthToken   string             `json:"helperAuthToken"`
 	OrgID             string             `json:"orgId"`
@@ -84,6 +92,13 @@ type EnrollResponse struct {
 	Config            AgentConfig        `json:"config"`
 	Mtls              *MtlsCertData      `json:"mtls"`
 	ManifestTrustKeys []ManifestTrustKey `json:"manifestTrustKeys,omitempty"`
+	// Wave 6 Task 7. Present so the wire contract is complete and a device
+	// enrolling mid-rotation is told about the pending key change on first
+	// contact. Trust bootstrap itself still happens through
+	// config.BootstrapPinnedManifestKeys; a delegation cannot bootstrap trust
+	// (its old key ID would not be pinned yet), so these are adopted on the
+	// first heartbeat after enrollment rather than during it.
+	ManifestKeyDelegations []ManifestKeyDelegation `json:"manifestKeyDelegations,omitempty"`
 }
 
 // ManifestTrustKey is a per-deployment Ed25519 pubkey delivered at enrollment
@@ -95,10 +110,116 @@ type ManifestTrustKey struct {
 	ValidFrom    string `json:"validFrom,omitempty"`
 }
 
+// ManifestKeyDelegation is a signed, monotonic, time-bounded authorisation to
+// add ONE previously unseen manifest signing key to the agent's frozen trust
+// set (Wave 6 Task 7). It is validated by config.ApplyManifestKeyDelegation,
+// which verifies the signature against the currently-trusted key named by
+// OldKeyID; nothing here is trusted on receipt.
+type ManifestKeyDelegation struct {
+	SchemaVersion   int    `json:"schemaVersion"`
+	OldKeyID        string `json:"oldKeyId"`
+	NewKeyID        string `json:"newKeyId"`
+	NewPublicKeyB64 string `json:"newPublicKeyB64"`
+	// Deliberately json.Number rather than uint64. A malformed epoch (a
+	// negative, a fraction, an exponent) would make encoding/json fail the
+	// WHOLE response decode if this were uint64 — costing the agent its
+	// commands, upgrades and token rotation over a field it may not even
+	// need. As json.Number the bad value is confined to this record, which
+	// then fails closed in ParseEpoch.
+	Epoch           json.Number `json:"epoch"`
+	NotBefore       string      `json:"notBefore"`
+	NotAfter        string      `json:"notAfter"`
+	SignatureBase64 string      `json:"signatureBase64"`
+}
+
+// ParseEpoch converts the wire epoch to the unsigned integer the canonical
+// signing payload uses. It accepts ONLY a plain non-negative decimal, matching
+// the API's formatDelegationEpoch — "1e3" or "1.0" denote a value that could
+// not have been signed in that spelling, so they fail closed.
+func (d ManifestKeyDelegation) ParseEpoch() (uint64, error) {
+	raw := d.Epoch.String()
+	if raw == "" {
+		return 0, fmt.Errorf("manifest key delegation epoch is missing")
+	}
+	epoch, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("manifest key delegation epoch is not an unsigned decimal integer")
+	}
+	return epoch, nil
+}
+
 type RenewCertResponse struct {
 	Mtls        *MtlsCertData `json:"mtls"`
 	Quarantined bool          `json:"quarantined,omitempty"`
 	Error       string        `json:"error,omitempty"`
+}
+
+// RecoveryProof is the expired-certificate recovery proof sent as
+// recoveryProof on a v2 /renew-cert request, matching
+// apps/api/src/services/mtlsRenewalProof.ts's RenewalProof shape exactly.
+// SignatureBase64 is produced by mtls.SignRenewalProof over the canonical
+// bytes built by mtls.BuildRenewalProofCanonicalBytes.
+type RecoveryProof struct {
+	ChallengeID     string `json:"challengeId"`
+	ExpiresUnix     int64  `json:"expiresUnix"`
+	SignatureBase64 string `json:"signatureBase64"`
+}
+
+// RenewCertV2Response is the reply to a protocolVersion-2 /renew-cert
+// request. A CAPABLE server answers with the two-phase (pending +
+// activation-window) shape: ProtocolVersion == 2 and CertificateID set. A
+// LEGACY server (mid rolling-upgrade, running the pre-Task-4 route) answers
+// with the old single-phase shape instead — no protocolVersion or
+// certificateId, Mtls populated and already active. Callers MUST check
+// IsLegacyResponse() before deciding whether to stage-and-confirm or
+// promote immediately; decoding tolerantly handles both wire shapes with a
+// single struct.
+type RenewCertV2Response struct {
+	ProtocolVersion     int           `json:"protocolVersion"`
+	CertificateID       string        `json:"certificateId"`
+	ActivationExpiresAt string        `json:"activationExpiresAt"`
+	Mtls                *MtlsCertData `json:"mtls"`
+	Quarantined         bool          `json:"quarantined,omitempty"`
+	Error               string        `json:"error,omitempty"`
+}
+
+// IsLegacyResponse reports whether this response used the pre-Task-4
+// single-phase shape (rolling-upgrade compatibility): no protocolVersion or
+// certificateId came back even though the agent's request declared
+// protocolVersion 2. In that case Mtls (if present) is already the server's
+// final, active certificate — there is no pending row to confirm.
+func (r *RenewCertV2Response) IsLegacyResponse() bool {
+	return r.ProtocolVersion != 2 || r.CertificateID == ""
+}
+
+// RenewalChallengeResponse is the reply to POST /renew-cert/challenge.
+type RenewalChallengeResponse struct {
+	ChallengeID string `json:"challengeId"`
+	ExpiresUnix int64  `json:"expiresUnix"`
+	Error       string `json:"error,omitempty"`
+}
+
+// ConfirmCertRenewalResponse is the reply to POST /renew-cert/confirm.
+type ConfirmCertRenewalResponse struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+	// AlreadyActive is set by the server when the confirmed certificate was
+	// ALREADY this device's active identity — i.e. a previous confirm
+	// succeeded and its response was lost in flight. The agent must still
+	// promote the pending material in that case, not discard it.
+	AlreadyActive bool `json:"alreadyActive,omitempty"`
+}
+
+// ConfirmConflictBody is the shape a two-phase-capable server returns with a
+// 409 from /renew-cert/confirm. `State` is the certificate row's actual state,
+// which tells the agent whether the material it is holding was already adopted
+// by the server ("active") or is terminally dead ("revoked",
+// "pending_revocation") and must be discarded. An older server sends no
+// `state`, which the agent treats as the far more likely "already active"
+// case — see heartbeat.confirmPendingMTLSCert.
+type ConfirmConflictBody struct {
+	Error string `json:"error,omitempty"`
+	State string `json:"state,omitempty"`
 }
 
 type RotateTokenResponse struct {
@@ -303,6 +424,143 @@ func (c *Client) RenewCert() (*RenewCertResponse, error) {
 		return &result, nil // caller checks Quarantined or Error
 	}
 
+	return &result, nil
+}
+
+// RequestRenewalChallenge requests a short-lived (5-minute) recovery
+// challenge for expired-certificate renewal (POST /renew-cert/challenge).
+// The caller signs the returned challenge with the OLD certificate's private
+// key (mtls.SignRenewalProof) to prove possession before it can renew
+// without an active, unexpired mTLS handshake.
+func (c *Client) RequestRenewalChallenge() (*RenewalChallengeResponse, error) {
+	url := fmt.Sprintf("%s/api/v1/agents/renew-cert/challenge", c.baseURL)
+	req, err := http.NewRequest("POST", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create renew-cert/challenge request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.authToken)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send renew-cert/challenge request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read renew-cert/challenge response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &ErrHTTPStatus{StatusCode: resp.StatusCode, Body: string(bodyBytes)}
+	}
+
+	var result RenewalChallengeResponse
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return nil, fmt.Errorf("failed to decode renew-cert/challenge response: %w", err)
+	}
+	return &result, nil
+}
+
+// RenewCertV2 requests a certificate renewal using the two-phase
+// (protocolVersion 2) protocol (security remediation Wave 5 Task 5). proof
+// is nil for a routine renewal against a still-valid certificate, and
+// populated (via RequestRenewalChallenge + mtls.SignRenewalProof) only when
+// the active certificate has already expired.
+//
+// The response may come back in either wire shape — see
+// RenewCertV2Response.IsLegacyResponse. This method itself does not decide
+// what to do with the result; the caller (heartbeat's two-phase renewal
+// driver) does.
+func (c *Client) RenewCertV2(proof *RecoveryProof) (*RenewCertV2Response, error) {
+	reqBody := map[string]any{"protocolVersion": 2}
+	if proof != nil {
+		reqBody["recoveryProof"] = proof
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal renew-cert request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/v1/agents/renew-cert", c.baseURL)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create renew-cert request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.authToken)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send renew-cert request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read renew-cert response body: %w", err)
+	}
+
+	// Same tolerance as RenewCert: a 403 quarantine response is still decoded
+	// so the caller can inspect Quarantined/Error, matching existing agent
+	// behavior for the legacy endpoint.
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusForbidden {
+		return nil, fmt.Errorf("renew-cert failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var result RenewCertV2Response
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return nil, fmt.Errorf("failed to decode renew-cert response (status %d): %w", resp.StatusCode, err)
+	}
+	return &result, nil
+}
+
+// ConfirmCertRenewal completes phase two of a two-phase mTLS renewal
+// (POST /renew-cert/confirm). It MUST be called on a Client built with
+// NewClientWithTLS presenting the PENDING certificate's material — the
+// server authenticates the new identity via the edge's certificate
+// assertion, not the request body. A non-2xx response is returned as an
+// error and the caller must NOT promote the pending certificate in that
+// case (see ErrHTTPStatus for status-code introspection).
+func (c *Client) ConfirmCertRenewal(certificateID string) (*ConfirmCertRenewalResponse, error) {
+	body, err := json.Marshal(map[string]any{
+		"protocolVersion": 2,
+		"certificateId":   certificateID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal renew-cert/confirm request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/v1/agents/renew-cert/confirm", c.baseURL)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create renew-cert/confirm request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.authToken)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send renew-cert/confirm request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read renew-cert/confirm response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		// Non-2xx: do not promote. The caller keeps the pending certificate on
+		// disk (or discards it, for the terminal cases it recognizes) and
+		// retains the OLD active certificate untouched either way.
+		return nil, &ErrHTTPStatus{StatusCode: resp.StatusCode, Body: string(bodyBytes)}
+	}
+
+	var result ConfirmCertRenewalResponse
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return nil, fmt.Errorf("failed to decode renew-cert/confirm response: %w", err)
+	}
 	return &result, nil
 }
 

@@ -78,6 +78,7 @@ function buildManageMonitors(): (input: Record<string, unknown>, auth: AuthConte
 // Unrestricted org-scope caller.
 function makeUnrestrictedAuth(): AuthContext {
   return {
+    principal: { kind: 'user_session' },
     user: { id: 'user-1', email: 'u@example.com', name: 'U', isPlatformAdmin: false },
     token: {} as any,
     partnerId: null,

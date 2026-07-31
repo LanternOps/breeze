@@ -68,6 +68,17 @@ vi.mock('../middleware/auth', () => ({
   // middleware (orgs.ts:350/367/622); without a stub here the mocked auth
   // module yields `undefined` for it and route registration throws.
   requirePartner: async (_c: any, next: any) => next(),
+  // Not exercised by this file's tests (which cover orgId resolution, not the
+  // download-policy routes), but software.ts now registers
+  // PUT /download-policy/sites/:siteId with requireSiteAccess in its
+  // middleware chain at module-load time, so the mock must export it.
+  requireSiteAccess: vi.fn(() => async (_c: any, next: any) => next()),
+}));
+
+vi.mock('../services/softwareDownloadPolicy', () => ({
+  getOrganizationSoftwareDownloadPolicy: vi.fn(),
+  setOrganizationSoftwareDownloadPolicy: vi.fn(),
+  setSiteSoftwareDownloadPolicy: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------

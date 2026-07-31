@@ -59,6 +59,7 @@ import { resolveUserGroupMembershipCached } from '../../services/onedriveGraph';
 import { captureException } from '../../services/sentry';
 import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
+import { normalizeCertificateSerial } from '../../services/agentCertificateBinding';
 import { isAllowedPolicyConfigProbe } from './policyProbeSafety';
 import { PAM_DEFAULTS, parsePamSettings, type PamSettings } from './pamSettings';
 import {
@@ -2355,15 +2356,27 @@ export async function issueMtlsCertForDevice(deviceId: string, orgId: string): P
     const mtlsSettings = await getOrgMtlsSettings(orgId);
     cert = await cfService.issueCertificate(mtlsSettings.certLifetimeDays);
   } catch (err) {
-    console.error('[agents] mTLS cert issuance failed, falling back to bearer-only auth:', err);
+    // I9: issueCertificate throws a typed, body-free CloudflareMtlsError now;
+    // log the bounded name rather than the whole error object.
+    console.error(
+      '[agents] mTLS cert issuance failed, falling back to bearer-only auth:',
+      err instanceof Error ? err.name : 'unknown',
+    );
     return null;
   }
 
   try {
+    // Wave 5 Task 6 fix round 3 (code review): `cert.serialNumber` is
+    // Cloudflare's raw `serial_number` API field — format not guaranteed to
+    // match the canonical uppercase-hex-no-separators form the certificate
+    // binding decision (services/agentCertificateBinding.ts) compares
+    // against. Normalize with the same shared helper used everywhere else a
+    // serial crosses a trust boundary, so this (initial enrollment/
+    // provisioning/quarantine-reissue) path stores rows canonical too.
     await db
       .update(devices)
       .set({
-        mtlsCertSerialNumber: cert.serialNumber,
+        mtlsCertSerialNumber: normalizeCertificateSerial(cert.serialNumber),
         mtlsCertExpiresAt: new Date(cert.expiresOn),
         mtlsCertIssuedAt: new Date(cert.issuedOn),
         mtlsCertCfId: cert.id,
@@ -2393,6 +2406,13 @@ export interface HelperSettings {
   showDeviceInfo: boolean;
   showRequestSupport: boolean;
   portalUrl?: string;
+  /**
+   * Helper lifecycle override for RDS hosts ('auto' | 'always-on' |
+   * 'on-demand'). Undefined = auto. Precedence on the agent: explicit local
+   * agent config > this value > RDS auto-detection. Cached with the rest of
+   * the helper settings (120s) — mode changes land within TTL + heartbeat.
+   */
+  lifecycleMode?: 'auto' | 'always-on' | 'on-demand';
 }
 
 const HELPER_DEFAULTS: HelperSettings = {
@@ -2402,7 +2422,11 @@ const HELPER_DEFAULTS: HelperSettings = {
   showRequestSupport: true,
 };
 
-async function resolveDeviceHelperSettings(deviceId: string): Promise<HelperSettings> {
+// Resolves the helper feature settings for a device from configuration
+// policies. Returns null when NO helper feature link matched — callers
+// distinguish "no policy" (legacy org fallback applies) from an explicit
+// enabled:false (which must win; see buildHelperConfigUpdate).
+export async function resolveDeviceHelperSettings(deviceId: string): Promise<HelperSettings | null> {
   // 1. Load device
   const [device] = await db
     .select({ orgId: devices.orgId, siteId: devices.siteId })
@@ -2410,7 +2434,7 @@ async function resolveDeviceHelperSettings(deviceId: string): Promise<HelperSett
     .where(eq(devices.id, deviceId))
     .limit(1);
 
-  if (!device) return HELPER_DEFAULTS;
+  if (!device) return null;
 
   // 2. Load org (for partnerId)
   const [org] = await db
@@ -2458,11 +2482,16 @@ async function resolveDeviceHelperSettings(deviceId: string): Promise<HelperSett
     ))
     .where(and(
       eq(configurationPolicies.status, 'active'),
-      eq(configurationPolicies.orgId, device.orgId),
+      // Org-owned policies for this device's org, OR partner-owned policies
+      // (org_id NULL) for this device's partner — same dual-axis shape as
+      // resolveEffectiveConfigWithExecutor (services/configurationPolicy.ts).
+      org?.partnerId
+        ? sql`(${configurationPolicies.orgId} = ${device.orgId} OR (${configurationPolicies.orgId} IS NULL AND ${configurationPolicies.partnerId} = ${org.partnerId}))`
+        : eq(configurationPolicies.orgId, device.orgId),
       or(...targetConditions),
     ));
 
-  if (rows.length === 0) return HELPER_DEFAULTS;
+  if (rows.length === 0) return null;
 
   // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
   rows.sort((a, b) => {
@@ -2472,7 +2501,7 @@ async function resolveDeviceHelperSettings(deviceId: string): Promise<HelperSett
   });
 
   const winner = rows[0];
-  if (!winner?.inlineSettings) return HELPER_DEFAULTS;
+  if (!winner?.inlineSettings) return null;
 
   const s = winner.inlineSettings as Record<string, unknown>;
   return {
@@ -2481,6 +2510,9 @@ async function resolveDeviceHelperSettings(deviceId: string): Promise<HelperSett
     showDeviceInfo: typeof s.showDeviceInfo === 'boolean' ? s.showDeviceInfo : HELPER_DEFAULTS.showDeviceInfo,
     showRequestSupport: typeof s.showRequestSupport === 'boolean' ? s.showRequestSupport : HELPER_DEFAULTS.showRequestSupport,
     portalUrl: typeof s.portalUrl === 'string' && s.portalUrl ? s.portalUrl : undefined,
+    lifecycleMode: s.lifecycleMode === 'auto' || s.lifecycleMode === 'always-on' || s.lifecycleMode === 'on-demand'
+      ? s.lifecycleMode
+      : undefined,
   };
 }
 
@@ -2508,16 +2540,18 @@ export async function buildHelperConfigUpdate(deviceId: string, orgId: string): 
   // Try config policy resolution first
   let settings = await resolveDeviceHelperSettings(deviceId);
 
-  // Fallback: if no policy found, check org-level settings for backward compat
-  if (!settings.enabled) {
+  // Legacy org-level fallback applies ONLY when no policy matched at all. An
+  // explicit enabled:false policy must win over organizations.settings.helper
+  // (previously `!settings.enabled` fell through, and the fallback also
+  // discarded the four resolved UI fields).
+  if (settings === null) {
+    let orgEnabled = false;
     try {
-      const orgSettings = await getOrgHelperSettings(orgId);
-      if (orgSettings.enabled) {
-        settings = { ...HELPER_DEFAULTS, enabled: true };
-      }
+      orgEnabled = (await getOrgHelperSettings(orgId)).enabled;
     } catch {
-      // ignore — defaults are fine
+      // defaults are fine
     }
+    settings = { ...HELPER_DEFAULTS, enabled: orgEnabled };
   }
 
   if (redis) {

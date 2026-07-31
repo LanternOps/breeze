@@ -19,6 +19,7 @@ import type { AiTool } from './aiTools';
 import { ringAutoApproveSchema, backupProfileSelectionsSchema } from '@breeze/shared/validators';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { validateS3Details } from '../routes/backup/schemas';
 
 /**
  * Defense-in-depth (#1317): the manage_update_rings AI tool writes `autoApprove`
@@ -40,6 +41,34 @@ function validateRingAutoApprove(
     return { error: message };
   }
   return { value: parsed.data as Record<string, unknown> };
+}
+
+/**
+ * manage_backup_configs used to write `providerConfig` straight to the DB,
+ * bypassing the REST routes' S3 endpoint validation entirely (the one
+ * remaining save-time hole in Sentry BREEZE-P). Route s3 configs through the
+ * same `validateS3Details` helper the REST routes use
+ * (routes/backup/schemas.ts) so a malformed/scheme-less endpoint is rejected
+ * here instead of shipping to every agent and only failing later at
+ * probe/backup time — agent/internal/backup/providers/s3.go does no
+ * coercion of its own.
+ */
+function resolveS3ProviderConfig(
+  raw: Record<string, unknown>
+): { value: Record<string, unknown> } | { error: string } {
+  const details: Record<string, unknown> = { ...raw };
+  const { error, region, endpoint } = validateS3Details(details);
+  if (error) return { error };
+  if (region) details.region = region;
+  if (endpoint) {
+    details.endpoint = endpoint;
+  } else {
+    // coerceS3EndpointUrl returns undefined for a blank/absent endpoint.
+    // Without this, a raw '' endpoint would survive in `details` and
+    // accumulate as a blank row (Sentry BREEZE-P residual gap (b)).
+    delete details.endpoint;
+  }
+  return { value: details };
 }
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -802,12 +831,19 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (!input.provider) return JSON.stringify({ error: 'provider is required (s3, azure_blob, google_cloud, backblaze, local)' });
         if (!input.providerConfig) return JSON.stringify({ error: 'providerConfig is required (provider-specific settings)' });
 
+        let providerConfig = input.providerConfig as Record<string, unknown>;
+        if (input.provider === 's3') {
+          const resolved = resolveS3ProviderConfig(providerConfig);
+          if ('error' in resolved) return JSON.stringify({ error: resolved.error });
+          providerConfig = resolved.value;
+        }
+
         const rows = await db.insert(backupConfigs).values({
           orgId,
           name: input.name as string,
           type: input.type as any,
           provider: input.provider as any,
-          providerConfig: input.providerConfig as any,
+          providerConfig: providerConfig as any,
           schedule: (input.schedule as any) ?? null,
           retention: (input.retention as any) ?? null,
           compression: input.compression !== false,
@@ -838,7 +874,16 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (typeof input.name === 'string') updates.name = input.name;
         if (typeof input.type === 'string') updates.type = input.type;
         if (typeof input.provider === 'string') updates.provider = input.provider;
-        if (input.providerConfig) updates.providerConfig = input.providerConfig;
+        if (input.providerConfig) {
+          const targetProvider = typeof input.provider === 'string' ? input.provider : existing.provider;
+          if (targetProvider === 's3') {
+            const resolved = resolveS3ProviderConfig(input.providerConfig as Record<string, unknown>);
+            if ('error' in resolved) return JSON.stringify({ error: resolved.error });
+            updates.providerConfig = resolved.value;
+          } else {
+            updates.providerConfig = input.providerConfig;
+          }
+        }
         if (input.schedule) updates.schedule = input.schedule;
         if (input.retention) updates.retention = input.retention;
         if (typeof input.compression === 'boolean') updates.compression = input.compression;

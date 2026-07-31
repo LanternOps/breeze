@@ -23,6 +23,7 @@ import {
   isIntegrationProvider,
   type IntegrationProvider,
 } from "./providerBranding";
+import { asList } from '@/lib/asList';
 import { useEdrReadiness, type EdrReadiness } from "./useEdrReadiness";
 import BuiltinPackageDetail from "./BuiltinPackageDetail";
 import { useTranslation } from "react-i18next";
@@ -238,7 +239,7 @@ export default function SoftwareCatalog() {
           ),
         );
       const payload = await response.json();
-      const data = payload.data ?? payload ?? [];
+      const data = asList(payload);
       if (Array.isArray(data)) {
         setCatalogItems(
           data.map((item: Record<string, unknown>) => ({

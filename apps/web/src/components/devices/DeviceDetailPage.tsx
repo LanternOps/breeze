@@ -105,6 +105,16 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         pendingReboot: data.pendingReboot === true,
         desktopAccess: data.desktopAccess ?? undefined,
         remoteAccessPolicy: data.remoteAccessPolicy ?? undefined,
+        // Link-group membership (#2138/#2308). Carried through so the detail
+        // page can hide the Linked Profiles tab on an unlinked device (#2865)
+        // without a second fetch — the detail endpoint already returns both
+        // columns (neither is in SENSITIVE_DEVICE_FIELDS).
+        linkGroupId: data.linkGroupId ?? null,
+        linkGroupRole: data.linkGroupRole ?? null,
+        // RDS per-session helper mode (Task 12) — gates the session pickers
+        // added in Tasks 13/14. Not in SENSITIVE_DEVICE_FIELDS, so the
+        // detail endpoint's full-row spread already includes it.
+        helperLifecycleMode: data.helperLifecycleMode ?? null,
       };
 
       setDevice(transformedDevice);
@@ -424,12 +434,13 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
     script: Script,
     runAs: ScriptRunAsSelection,
     parameters?: Record<string, unknown>,
+    targetSessionId?: number,
   ) => {
     if (actionInProgress || !device) return;
 
     try {
       setActionInProgress(true);
-      await executeScript(script.id, [device.id], parameters, runAs);
+      await executeScript(script.id, [device.id], parameters, runAs, targetSessionId);
       showToast({
         type: "success",
         message: `Script "${script.name}" queued for ${device.hostname}`,
@@ -525,6 +536,8 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         onSelect={handleScriptSelect}
         deviceHostname={device.hostname}
         deviceOs={device.os}
+        deviceId={device.id}
+        helperLifecycleMode={device.helperLifecycleMode ?? null}
       />
     </div>
   );

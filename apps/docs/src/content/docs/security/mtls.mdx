@@ -69,21 +69,109 @@ Breeze optionally integrates with **Cloudflare API Shield** to issue mTLS client
 
 7. **Configure Cloudflare WAF rules**
 
-   Once all agents have certificates, add a WAF rule to enforce mTLS:
+   Once all agents have certificates, add a WAF rule to enforce mTLS on the **exact** protected
+   route set — REST agent identity, renewal confirmation, and the command WebSocket. This same
+   expression is mirrored verbatim in `docker/Caddyfile.prod` and CI-enforced by
+   `pnpm check:agent-mtls-edge-policy`, so never widen it to a `contains` or trailing-wildcard match:
 
    ```
-   Rule name: Require mTLS for Agent API
-   Expression: (http.request.uri.path contains "/api/v1/agents/" and not cf.tls_client_auth.cert_verified)
+   Rule name: Require mTLS for the protected agent route set
+   Expression:
+   (
+     http.request.uri.path matches "^/api/v1/agents/[0-9a-fA-F]{64}(?:/.*)?$"
+     or http.request.uri.path eq "/api/v1/agents/renew-cert/confirm"
+     or http.request.uri.path matches "^/api/v1/agent-ws/[0-9a-fA-F]{64}/ws$"
+     or http.request.uri.path matches "^/api/v1/(?:ext/)?[a-z0-9][a-z0-9-]*/agent/[0-9a-fA-F]{64}(?:/.*)?$"
+   )
+   and http.request.uri.path not in {
+     "/api/v1/agents/enroll"
+     "/api/v1/agents/renew-cert"
+     "/api/v1/agents/renew-cert/challenge"
+   }
+   and not cf.tls_client_auth.cert_verified
    Action: Block
    ```
 
-   Exclude the enrollment and cert renewal endpoints:
-   ```
-   Exception: http.request.uri.path eq "/api/v1/agents/enroll"
-              or http.request.uri.path contains "/renew-cert"
-   ```
+   The identity segment is **64 hex characters**, not a UUID: the agent ID is
+   `randomBytes(32).toString('hex')`. A UUID-shaped `{36}` pattern matches no agent route at all
+   while wrongly matching the 36-character UUID **admin** routes (`/api/v1/agents/<deviceId>/approve`
+   and friends), which are browser/user-JWT routes with no client certificate. The fourth pattern
+   covers extensions that declare `agentRoutes: true`, which mount a second agent-token surface at
+   `/api/v1/ext/<extension>/agent/<agentId>` and `/api/v1/<routeNamespace>/agent/<agentId>`.
+
+   The renewal **confirmation** route (`/renew-cert/confirm`) is deliberately protected, not
+   exempted — it proves possession of the newly issued identity. Only the three bearer-only
+   endpoints above (enrollment, renewal request, renewal challenge) are exempt, and each is an exact
+   path, never a substring.
 
 </Steps>
+
+## Edge Assertion Contract
+
+Cloudflare's WAF rule above blocks unverified traffic at the edge, but the API still needs to know
+*which* device presented the certificate — that per-device match is a separate, API-layer decision
+(`AGENT_MTLS_BINDING_MODE`). The API reads exactly two internal headers and nothing else:
+
+| Header | Meaning |
+|---|---|
+| `X-Breeze-Client-Cert-Verified` | `true` only when the request's mTLS handshake was verified by the trusted edge |
+| `X-Breeze-Client-Cert-Serial` | The verified certificate's serial number, uppercase hex, no separators |
+
+These are trusted only when the request arrives from a configured trusted proxy — the API never
+reads raw Cloudflare headers (`Cf-Client-Cert-*`) directly. The bundled `docker/Caddyfile.prod`
+normalizes this at the last hop before the API in two distinct places, and the split is
+load-bearing:
+
+- **Globally, before any routing**, the site block deletes inbound
+  `X-Breeze-Client-Cert-Verified` and `X-Breeze-Client-Cert-Serial` with `request_header -...`.
+  This covers **every** route that reaches the API origin, not just the main `/api/*` one —
+  `/api/v1/mcp/sse`, `/api/v1/ai/sessions/*/stream`, `/api/v1/helper/chat/sessions/*/messages`,
+  `/oauth/*` and the OAuth `.well-known` endpoints each proxy to the same `api:3001` through their
+  own `handle` blocks, and a per-route strip would have to be remembered for each new one. Stripping
+  once, globally, makes the safe state the default for future routes as well.
+- **Per route, at the proxy hop**, Cloudflare's raw certificate material (`Cf-Client-Cert-*`,
+  including PEM/DER, which must never reach the API) is discarded, and — only in the `/api/*`
+  block — the two Breeze headers are set from a verified Cloudflare result via a strict allowlist
+  map. The serial is gated on that **same** verified condition, not just the verified flag, so an
+  unverified or spoofed result can never carry a real-looking serial number downstream.
+
+The set and the delete must never live in the same `reverse_proxy` block: Caddy compiles a
+`reverse_proxy`'s `header_up` lines into a single header operation and applies deletes **after**
+sets, regardless of the order they were written, so a co-located `header_up -X-Breeze-...` silently
+erases the value the neighbouring `header_up X-Breeze-... {placeholder}` just produced and the
+binding layer goes inert with no error anywhere. `scripts/check-agent-mtls-edge-policy.sh` rejects
+that shape. Full detail: `docs/operations/cloudflare-mtls-setup.md` (including a
+spoofing-resistance test you can run against your own deployment).
+
+<Aside type="danger">
+  This contract depends entirely on the API never being reachable except through the trusted edge.
+  A directly-reachable origin lets an attacker set `X-Breeze-Client-Cert-Verified: true` themselves —
+  Caddy's stripping only protects against a forged header riding along with *its own* inbound
+  request, not a request that bypassed Cloudflare and hit Caddy or the API directly. Never expose the
+  API or Caddy's port on a public interface as a fallback path.
+</Aside>
+
+Roll out enforcement in three steps, each requiring an explicit operator change to
+`AGENT_MTLS_BINDING_MODE` — self-hosted deployments stay `off` by default and see no behavior change:
+
+1. `off` (default) — the assertion is never consulted.
+2. `audit` — the binding decision is computed and counted, never denies. Use this to measure
+   mismatch/missing rates before enforcing.
+3. `enforce` — a device with an active stored certificate must present a verified, matching
+   assertion or the request is denied. A device with no certificate history at all (legacy,
+   pre-mTLS) remains allowed, so mixed-version fleets do not break.
+
+<Aside>
+  Self-hosted: leave `AGENT_MTLS_BINDING_MODE=off` unless your own reverse proxy validates the peer
+  certificate and strips/overwrites both headers at the last hop before the API, exactly as the
+  bundled Caddy config does. Setting these headers from arbitrary client input is explicitly
+  unsupported.
+</Aside>
+
+`AGENT_MTLS_BINDING_MODE` is mapped explicitly into the API service in both `docker-compose.yml`
+and `deploy/docker-compose.prod.yml`, defaulted to `off` (`${AGENT_MTLS_BINDING_MODE:-off}`) — set
+it in your `.env` file to change it. It is never inferred from `NODE_ENV`, `IS_HOSTED`, or the
+`CF_MTLS_*` issuance variables; the operator always selects the mode explicitly.
 
 ## Certificate Lifecycle
 

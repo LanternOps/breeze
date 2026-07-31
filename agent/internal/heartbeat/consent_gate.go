@@ -68,9 +68,10 @@ func parseDesktopPrompt(payload map[string]any) *ipc.DesktopPrompt {
 }
 
 // requestConsent asks the local user (via the consent_ui-capable helper) to
-// allow or deny a remote session. It uses h.consentUISession() to locate the
-// best consent-UI helper: the Tauri assist helper (consent_ui) when present,
-// else a native user-helper that advertised consent_ui_fallback. Returns
+// allow or deny a remote session. It uses h.consentUISessionForTarget to
+// locate the best consent-UI helper: the Tauri assist helper (consent_ui)
+// when present, else a native user-helper that advertised consent_ui_fallback
+// — both scoped strictly to targetWinSession when it is non-empty. Returns
 // (verdict, helperPresent, timedOut):
 //   - no consent_ui-capable helper connected -> ("", false, false)  [helper_absent]
 //   - helper present but IPC timed out        -> ("", true, true)   [timeout]
@@ -82,14 +83,27 @@ func parseDesktopPrompt(payload map[string]any) *ipc.DesktopPrompt {
 // policy for the helper_absent/timeout cases and fails closed for an
 // invalid reply from a present helper. requestConsent itself does not decide
 // whether to proceed.
-func (h *Heartbeat) requestConsent(sessionID string, prompt *ipc.DesktopPrompt) (verdict string, helperPresent, timedOut bool) {
+func (h *Heartbeat) requestConsent(sessionID string, prompt *ipc.DesktopPrompt, targetWinSession string) (verdict string, helperPresent, timedOut bool) {
 	if h.sessionBroker == nil {
 		return "", false, false
 	}
-	session := h.consentUISession()
+	session := h.consentUISessionForTarget(targetWinSession)
 	if session == nil {
 		return "", false, false
 	}
+
+	// Record which helper the prompt is routed to. On the success path the
+	// broker's send/reply is otherwise silent, so this is the only line that
+	// attributes a ConsentRequest to a specific Windows session — the invariant
+	// that matters when a shadow targets one RDS session among several.
+	log.Info("routing consent prompt to helper",
+		"sessionId", sessionID,
+		"targeted", targetWinSession != "",
+		"winSession", session.WinSessionID,
+		"identity", session.IdentityKey,
+		"role", session.HelperRole,
+		"pid", session.PID,
+	)
 
 	req := ipc.ConsentRequest{
 		SessionID:       sessionID,
@@ -130,40 +144,57 @@ func (h *Heartbeat) requestConsent(sessionID string, prompt *ipc.DesktopPrompt) 
 	return result.Decision, true, false
 }
 
-// consentUISession returns the best helper session able to render consent UI:
-// the Tauri assist helper (rich branded dialog) when connected, else a
-// user-helper that advertised native fallback dialogs at auth.
-func (h *Heartbeat) consentUISession() *sessionbroker.Session {
-	if s := h.sessionBroker.PreferredSessionWithScope("consent_ui"); s != nil {
+// sessionWithScopeForTarget resolves the helper session that should present
+// user-facing UI for an operation. An empty target keeps the legacy
+// machine-global selection (workstations, untargeted connects). A non-empty
+// target is strict: UI must land in that Windows session or nowhere —
+// falling back to another session would show the prompt to the wrong user.
+func (h *Heartbeat) sessionWithScopeForTarget(scope, targetWinSession string) *sessionbroker.Session {
+	if targetWinSession == "" {
+		return h.sessionBroker.PreferredSessionWithScope(scope)
+	}
+	return h.sessionBroker.SessionWithScopeInWinSession(scope, targetWinSession)
+}
+
+// consentUISessionForTarget returns the best helper session able to render
+// consent UI: the Tauri assist helper (rich branded dialog) when connected,
+// else a user-helper that advertised native fallback dialogs at auth. When
+// targetWinSession is non-empty, both scopes are resolved strictly within
+// that Windows session (see sessionWithScopeForTarget) — never falling back
+// to another user's session.
+func (h *Heartbeat) consentUISessionForTarget(targetWinSession string) *sessionbroker.Session {
+	if s := h.sessionWithScopeForTarget(ipc.ScopeConsentUI, targetWinSession); s != nil {
 		return s
 	}
-	return h.sessionBroker.PreferredSessionWithScope(ipc.ScopeConsentUIFallback)
+	return h.sessionWithScopeForTarget(ipc.ScopeConsentUIFallback, targetWinSession)
 }
 
 // afterDesktopStart fires the start-of-session notice + banner for a session that
 // is proceeding, and remembers the prompt so the disconnect path can fire the
 // ended notice and hide the banner. Best-effort: failures are logged, never fatal.
-func (h *Heartbeat) afterDesktopStart(sessionID string, prompt *ipc.DesktopPrompt) {
+func (h *Heartbeat) afterDesktopStart(sessionID string, prompt *ipc.DesktopPrompt, targetWinSession string) {
 	if prompt == nil {
 		return
 	}
 	rememberDesktopPrompt(sessionID, prompt)
 
 	if prompt.Mode == "notify" {
-		h.sendSessionNotify(connectedNotifyBody(prompt))
+		h.sendSessionNotify(connectedNotifyBody(prompt), targetWinSession)
 	}
 	if prompt.ShowIndicator {
-		h.sendBannerShow(sessionID, prompt)
+		h.sendBannerShow(sessionID, prompt, targetWinSession)
 	}
 }
 
 // sendSessionNotify pushes a fire-and-forget desktop notification to the
-// preferred notify-capable helper. Used for the start/ended session notices.
-func (h *Heartbeat) sendSessionNotify(body string) {
+// notify-capable helper. Used for the start/ended session notices. An empty
+// targetWinSession keeps the legacy machine-global selection; a non-empty one
+// routes strictly to that Windows session (see sessionWithScopeForTarget).
+func (h *Heartbeat) sendSessionNotify(body, targetWinSession string) {
 	if h.sessionBroker == nil || body == "" {
 		return
 	}
-	session := h.sessionBroker.PreferredSessionWithScope("notify")
+	session := h.sessionWithScopeForTarget("notify", targetWinSession)
 	if session == nil {
 		log.Warn("no notify-capable helper for session notice")
 		return
@@ -180,12 +211,13 @@ func (h *Heartbeat) sendSessionNotify(body string) {
 
 // sendBannerShow tells the consent-UI helper (assist app, or the native
 // user-helper as fallback) to display the on-screen session indicator
-// banner. Fire-and-forget; the helper renders it.
-func (h *Heartbeat) sendBannerShow(sessionID string, prompt *ipc.DesktopPrompt) {
+// banner. Fire-and-forget; the helper renders it. See
+// consentUISessionForTarget for the targeting semantics.
+func (h *Heartbeat) sendBannerShow(sessionID string, prompt *ipc.DesktopPrompt, targetWinSession string) {
 	if h.sessionBroker == nil {
 		return
 	}
-	session := h.consentUISession()
+	session := h.consentUISessionForTarget(targetWinSession)
 	if session == nil {
 		log.Warn("no consent-ui-capable helper for session banner", "sessionId", sessionID)
 		return
@@ -201,12 +233,13 @@ func (h *Heartbeat) sendBannerShow(sessionID string, prompt *ipc.DesktopPrompt) 
 }
 
 // sendBannerHide tells the consent-UI helper (assist app, or the native
-// user-helper as fallback) to remove the session banner.
-func (h *Heartbeat) sendBannerHide(sessionID string) {
+// user-helper as fallback) to remove the session banner. See
+// consentUISessionForTarget for the targeting semantics.
+func (h *Heartbeat) sendBannerHide(sessionID, targetWinSession string) {
 	if h.sessionBroker == nil {
 		return
 	}
-	session := h.consentUISession()
+	session := h.consentUISessionForTarget(targetWinSession)
 	if session == nil {
 		return
 	}
@@ -217,17 +250,26 @@ func (h *Heartbeat) sendBannerHide(sessionID string) {
 
 // handleConsentSessionEnd fires the ended notice + banner-hide for a session that
 // had a remembered prompt, then forgets the mapping. Called from the peer
-// disconnect path. No-op when the session was never prompted.
+// disconnect path (unconditionally, for every desktop session — prompted or
+// not), so h.takeDesktopTarget runs first and unconditionally to release the
+// entry set in handleStartDesktop regardless of whether a prompt is present.
+// The notify/banner sends themselves are still a no-op when the session was
+// never prompted. Routes to the same Windows session that was targeted at
+// start, so the end-of-session UX lands with the same user who saw the
+// consent prompt / start notice, not wherever the machine-global preference
+// now points.
 func (h *Heartbeat) handleConsentSessionEnd(sessionID string) {
+	targetWinSession := h.takeDesktopTarget(sessionID)
+
 	prompt := takeDesktopPrompt(sessionID)
 	if prompt == nil {
 		return
 	}
 	if prompt.ShowIndicator {
-		h.sendBannerHide(sessionID)
+		h.sendBannerHide(sessionID, targetWinSession)
 	}
 	if prompt.NotifyOnEnd {
-		h.sendSessionNotify("Remote session ended")
+		h.sendSessionNotify("Remote session ended", targetWinSession)
 	}
 }
 

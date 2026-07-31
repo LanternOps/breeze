@@ -43,6 +43,8 @@ import { registerPolicyPrereqTools } from './aiToolsPolicyPrereqs';
 
 const PARTNER_ID = '00000000-0000-0000-0000-000000000001';
 const RING_ID = '22222222-2222-2222-2222-222222222222';
+const ORG_ID = '33333333-3333-3333-3333-333333333333';
+const BACKUP_CONFIG_ID = '44444444-4444-4444-4444-444444444444';
 
 function makeAuth() {
   return {
@@ -62,6 +64,26 @@ function getTool() {
   const tool = tools.get('manage_update_rings');
   if (!tool) throw new Error('manage_update_rings tool not registered');
   return tool;
+}
+
+function getBackupConfigsTool() {
+  const tools = new Map<string, any>();
+  registerPolicyPrereqTools(tools);
+  const tool = tools.get('manage_backup_configs');
+  if (!tool) throw new Error('manage_backup_configs tool not registered');
+  return tool;
+}
+
+function makeOrgAuth() {
+  return {
+    user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
+    scope: 'organization',
+    partnerId: null,
+    orgId: ORG_ID,
+    accessibleOrgIds: [ORG_ID],
+    canAccessOrg: () => true,
+    orgCondition: () => undefined,
+  } as any;
 }
 
 function mockInsertReturns(row: Record<string, unknown>) {
@@ -263,5 +285,148 @@ describe('manage_update_rings autoApprove fail-closed write boundary (#1317)', (
     const written = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
     expect(written.partnerId).toBe(PARTNER_ID);
     expect(written.orgId).toBeUndefined();
+  });
+});
+
+// manage_backup_configs used to write `providerConfig` straight to the DB,
+// bypassing the REST routes' S3 endpoint validation entirely — the one
+// remaining save-time hole in Sentry BREEZE-P. These tests cover routing it
+// through the same validateS3Details helper the REST routes use.
+describe('manage_backup_configs S3 endpoint validation (Sentry BREEZE-P residual gap)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('rejects create with a genuinely malformed S3 endpoint and does NOT write', async () => {
+    const tool = getBackupConfigsTool();
+    const output = await tool.handler(
+      {
+        action: 'create',
+        name: 'S3 backup',
+        type: 'file',
+        provider: 's3',
+        providerConfig: {
+          bucket: 'backups',
+          region: 'us-east-1',
+          accessKey: 'key',
+          secretKey: 'secret',
+          endpoint: 'not a valid url with spaces',
+        },
+      },
+      makeOrgAuth()
+    );
+
+    const parsed = JSON.parse(output);
+    expect(parsed.error).toMatch(/not a valid URL/i);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('persists the normalized endpoint on create, not the raw scheme-less value', async () => {
+    mockInsertReturns({ id: BACKUP_CONFIG_ID, name: 'S3 backup' });
+    const tool = getBackupConfigsTool();
+    const output = await tool.handler(
+      {
+        action: 'create',
+        name: 'S3 backup',
+        type: 'file',
+        provider: 's3',
+        providerConfig: {
+          bucket: 'backups',
+          region: 'us-east-1',
+          accessKey: 'key',
+          secretKey: 'secret',
+          endpoint: 'minio.internal.example.com:9000',
+        },
+      },
+      makeOrgAuth()
+    );
+
+    expect(JSON.parse(output).success).toBe(true);
+    const written = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+    expect(written.providerConfig.endpoint).toBe('https://minio.internal.example.com:9000/');
+  });
+
+  it('does not persist a blank endpoint string on create (Sentry BREEZE-P gap (b))', async () => {
+    mockInsertReturns({ id: BACKUP_CONFIG_ID, name: 'S3 backup' });
+    const tool = getBackupConfigsTool();
+    const output = await tool.handler(
+      {
+        action: 'create',
+        name: 'S3 backup',
+        type: 'file',
+        provider: 's3',
+        providerConfig: {
+          bucket: 'backups',
+          region: 'us-east-1',
+          accessKey: 'key',
+          secretKey: 'secret',
+          endpoint: '',
+        },
+      },
+      makeOrgAuth()
+    );
+
+    expect(JSON.parse(output).success).toBe(true);
+    const written = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+    expect(written.providerConfig).not.toHaveProperty('endpoint');
+  });
+
+  it('rejects update with a malformed S3 endpoint and does NOT write', async () => {
+    mockSelectReturns({
+      id: BACKUP_CONFIG_ID,
+      orgId: ORG_ID,
+      name: 'S3 backup',
+      provider: 's3',
+      providerConfig: { bucket: 'backups', region: 'us-east-1' },
+    });
+    const tool = getBackupConfigsTool();
+    const output = await tool.handler(
+      {
+        action: 'update',
+        configId: BACKUP_CONFIG_ID,
+        providerConfig: {
+          bucket: 'backups',
+          region: 'us-east-1',
+          accessKey: 'key',
+          secretKey: 'secret',
+          endpoint: 'not a valid url with spaces',
+        },
+      },
+      makeOrgAuth()
+    );
+
+    const parsed = JSON.parse(output);
+    expect(parsed.error).toMatch(/not a valid URL/i);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('persists the normalized endpoint on update, not the raw scheme-less value', async () => {
+    mockSelectReturns({
+      id: BACKUP_CONFIG_ID,
+      orgId: ORG_ID,
+      name: 'S3 backup',
+      provider: 's3',
+      providerConfig: { bucket: 'backups', region: 'us-east-1' },
+    });
+    mockUpdate();
+    const tool = getBackupConfigsTool();
+    const output = await tool.handler(
+      {
+        action: 'update',
+        configId: BACKUP_CONFIG_ID,
+        providerConfig: {
+          bucket: 'backups',
+          region: 'us-east-1',
+          accessKey: 'key',
+          secretKey: 'secret',
+          endpoint: 'minio.internal.example.com:9000',
+        },
+      },
+      makeOrgAuth()
+    );
+
+    expect(JSON.parse(output).success).toBe(true);
+    const setArg = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
+    expect(setArg.providerConfig.endpoint).toBe('https://minio.internal.example.com:9000/');
   });
 });

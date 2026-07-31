@@ -7,6 +7,8 @@ function createApp(options?: Parameters<typeof securityMiddleware>[0]) {
   app.use('*', securityMiddleware(options));
   app.get('/test', (c) => c.text('ok'));
   app.get('/health', (c) => c.text('healthy'));
+  app.get('/health/live', (c) => c.text('live'));
+  app.get('/health/ready', (c) => c.text('ready-probe'));
   app.get('/ready', (c) => c.text('ready'));
   return app;
 }
@@ -75,21 +77,39 @@ describe('securityMiddleware', () => {
     });
   });
 
-  describe('HTTPS redirect', () => {
-    it('redirects HTTP to HTTPS when forceHttps is true', async () => {
-      const app = createApp({ forceHttps: 'true' });
-      const req = new Request('http://example.com/test', {
-        headers: { 'x-forwarded-proto': 'http' },
+  describe('HTTPS redirect (TRANSPORT-001 — canonical scheme + Host)', () => {
+    // In this test harness there is no real TCP peer (no `env.incoming.socket`),
+    // so `trustsForwardedHeadersFrom` falls back to its NODE_ENV-based legacy
+    // default: trusted outside production when TRUSTED_PROXY_CIDRS is unset.
+    // The "spoof" case below forces production so that default flips closed,
+    // matching the real deployed posture (TRUST_PROXY_HEADERS/TRUSTED_PROXY_CIDRS
+    // explicitly configured).
+    const PUBLIC_API_URL = 'https://api.example.com';
+
+    it('redirects HTTP to HTTPS, built from PUBLIC_API_URL, when forceHttps is true', async () => {
+      const app = createApp({ forceHttps: 'true', publicApiUrl: PUBLIC_API_URL });
+      const req = new Request('http://api.example.com/test', {
+        headers: { 'x-forwarded-proto': 'http', host: 'api.example.com' },
       });
       const res = await app.request(req);
       expect(res.status).toBe(308);
-      expect(res.headers.get('Location')).toContain('https://');
+      expect(res.headers.get('Location')).toBe('https://api.example.com/test');
+    });
+
+    it('preserves query string in the redirect Location', async () => {
+      const app = createApp({ forceHttps: 'true', publicApiUrl: PUBLIC_API_URL });
+      const req = new Request('http://api.example.com/test?a=1&b=two', {
+        headers: { 'x-forwarded-proto': 'http', host: 'api.example.com' },
+      });
+      const res = await app.request(req);
+      expect(res.status).toBe(308);
+      expect(res.headers.get('Location')).toBe('https://api.example.com/test?a=1&b=two');
     });
 
     it('does not redirect when proto is already https', async () => {
-      const app = createApp({ forceHttps: 'true' });
-      const req = new Request('http://example.com/test', {
-        headers: { 'x-forwarded-proto': 'https' },
+      const app = createApp({ forceHttps: 'true', publicApiUrl: PUBLIC_API_URL });
+      const req = new Request('http://api.example.com/test', {
+        headers: { 'x-forwarded-proto': 'https', host: 'api.example.com' },
       });
       const res = await app.request(req);
       expect(res.status).toBe(200);
@@ -97,17 +117,62 @@ describe('securityMiddleware', () => {
 
     it('does not redirect when forceHttps is not set', async () => {
       const app = createApp();
-      const req = new Request('http://example.com/test', {
-        headers: { 'x-forwarded-proto': 'http' },
+      const req = new Request('http://api.example.com/test', {
+        headers: { 'x-forwarded-proto': 'http', host: 'api.example.com' },
       });
       const res = await app.request(req);
       expect(res.status).toBe(200);
     });
 
-    it('skips redirect for /health path', async () => {
+    it('does not redirect when forceHttps is true but PUBLIC_API_URL is not configured', async () => {
       const app = createApp({ forceHttps: 'true' });
-      const req = new Request('http://example.com/health', {
-        headers: { 'x-forwarded-proto': 'http' },
+      const req = new Request('http://api.example.com/test', {
+        headers: { 'x-forwarded-proto': 'http', host: 'api.example.com' },
+      });
+      const res = await app.request(req);
+      expect(res.status).toBe(200);
+    });
+
+    it('rejects an unrecognized Host with 400 instead of redirecting to it', async () => {
+      const app = createApp({ forceHttps: 'true', publicApiUrl: PUBLIC_API_URL });
+      const req = new Request('http://attacker.example.net/test', {
+        headers: { 'x-forwarded-proto': 'http', host: 'attacker.example.net' },
+      });
+      const res = await app.request(req);
+      expect(res.status).toBe(400);
+      expect(res.headers.get('Location')).toBeNull();
+    });
+
+    it('ignores a spoofed X-Forwarded-Proto: https from an untrusted peer and still redirects', async () => {
+      const original = process.env.NODE_ENV;
+      const originalCidrs = process.env.TRUSTED_PROXY_CIDRS;
+      try {
+        // Force the proxy-trust gate closed (production default) with no
+        // TRUSTED_PROXY_CIDRS configured — the harness has no real socket peer,
+        // so this is the deployed-equivalent "untrusted peer" posture.
+        process.env.NODE_ENV = 'production';
+        delete process.env.TRUSTED_PROXY_CIDRS;
+        const app = createApp({ forceHttps: 'true', publicApiUrl: PUBLIC_API_URL, nodeEnv: 'production' });
+        const req = new Request('http://api.example.com/test', {
+          headers: { 'x-forwarded-proto': 'https', host: 'api.example.com' },
+        });
+        const res = await app.request(req);
+        // The forwarded header is untrusted and dropped; the direct request URL
+        // (http://) is the only signal left, so the redirect still fires.
+        expect(res.status).toBe(308);
+        expect(res.headers.get('Location')).toBe('https://api.example.com/test');
+      } finally {
+        if (original === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = original;
+        if (originalCidrs === undefined) delete process.env.TRUSTED_PROXY_CIDRS;
+        else process.env.TRUSTED_PROXY_CIDRS = originalCidrs;
+      }
+    });
+
+    it('skips redirect for /health path', async () => {
+      const app = createApp({ forceHttps: 'true', publicApiUrl: PUBLIC_API_URL });
+      const req = new Request('http://api.example.com/health', {
+        headers: { 'x-forwarded-proto': 'http', host: 'api.example.com' },
       });
       const res = await app.request(req);
       expect(res.status).toBe(200);
@@ -115,13 +180,31 @@ describe('securityMiddleware', () => {
     });
 
     it('skips redirect for /ready path', async () => {
-      const app = createApp({ forceHttps: 'true' });
-      const req = new Request('http://example.com/ready', {
-        headers: { 'x-forwarded-proto': 'http' },
+      const app = createApp({ forceHttps: 'true', publicApiUrl: PUBLIC_API_URL });
+      const req = new Request('http://api.example.com/ready', {
+        headers: { 'x-forwarded-proto': 'http', host: 'api.example.com' },
       });
       const res = await app.request(req);
       expect(res.status).toBe(200);
       expect(await res.text()).toBe('ready');
+    });
+
+    // Regression: an orchestrator/load-balancer probes /health/ready and
+    // /health/live over plain HTTP with a raw IP/localhost Host (NOT the
+    // canonical PUBLIC_API_URL host) and NO X-Forwarded-Proto. Under FORCE_HTTPS
+    // these probe paths must pass through, never 400 for the non-canonical Host
+    // (the CI smoke-test failure this covers) and never redirect.
+    it.each([
+      ['/health/live', 'live'],
+      ['/health/ready', 'ready-probe'],
+    ])('passes %s through under FORCE_HTTPS with a non-canonical Host over http', async (path, body) => {
+      const app = createApp({ forceHttps: 'true', publicApiUrl: PUBLIC_API_URL });
+      const req = new Request(`http://localhost:3001${path}`, {
+        headers: { host: 'localhost:3001' },
+      });
+      const res = await app.request(req);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe(body);
     });
   });
 

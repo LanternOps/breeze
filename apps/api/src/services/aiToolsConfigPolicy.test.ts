@@ -79,6 +79,7 @@ import { db } from '../db';
 import { registerConfigPolicyTools } from './aiToolsConfigPolicy';
 import { addFeatureLink, getConfigPolicy, updateFeatureLink } from './configurationPolicy';
 import { onedriveHelperInlineSettingsSchema } from '@breeze/shared/validators';
+import { GENERIC_TOOL_ERROR_MESSAGE } from './aiToolErrors';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const POLICY_ID = '22222222-2222-2222-2222-222222222222';
@@ -642,6 +643,76 @@ describe('configuration policy AI tools', () => {
       { inlineSettings: onedriveHelperInlineSettingsSchema.parse(raw) },
       POLICY_ID
     );
+  });
+
+  // The alert_rule / monitoring schemas are parsed with `.parse()` inside
+  // decomposeInlineSettings, so an invalid payload used to throw past the handler
+  // into safeHandler → sanitizeThrownToolError, which is fail-closed and replaces
+  // the message with GENERIC_TOOL_ERROR_MESSAGE. The model then can't self-correct.
+  it('returns the real schema message (not the sanitized generic) for an invalid alert_rule payload', async () => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({
+      id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Org policy',
+    } as any);
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action: 'add',
+      configPolicyId: POLICY_ID,
+      featureType: 'alert_rule',
+      inlineSettings: { items: [{ name: 'Custom', conditions: [{ type: 'custom', customCondition: 'x' }] }] },
+    }, makeAuth());
+
+    const parsed = JSON.parse(output);
+    expect(parsed.error).toContain('alert_rule');
+    expect(parsed.error).not.toBe(GENERIC_TOOL_ERROR_MESSAGE);
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('surfaces the monitoring write-barrier pointer to the model instead of a generic error', async () => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({
+      id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Org policy',
+    } as any);
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action: 'add',
+      configPolicyId: POLICY_ID,
+      featureType: 'monitoring',
+      inlineSettings: {
+        watches: [],
+        alertRules: [{ name: 'High CPU', conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80 }] }],
+      },
+    }, makeAuth());
+
+    expect(JSON.parse(output).error).toContain('moved to the Alerts feature');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('passes monitoring inlineSettings through unnormalized (no deprecated barrier keys written back)', async () => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({
+      id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Org policy',
+    } as any);
+    vi.mocked(addFeatureLink).mockResolvedValue({
+      id: 'link-1', configPolicyId: POLICY_ID, featureType: 'monitoring',
+    } as any);
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const raw = { checkIntervalSeconds: 60, watches: [{ watchType: 'service', name: 'Spooler' }] };
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action: 'add',
+      configPolicyId: POLICY_ID,
+      featureType: 'monitoring',
+      inlineSettings: raw,
+    }, makeAuth());
+
+    expect(JSON.parse(output).success).toBe(true);
+    expect(vi.mocked(addFeatureLink)).toHaveBeenCalledWith(POLICY_ID, 'monitoring', null, raw);
   });
 
   it('manage_configuration_policy create ownerScope=partner is denied without partner-wide capability', async () => {

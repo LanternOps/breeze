@@ -6,5 +6,5 @@ const { id } = Astro.params;
 ---
 
 <DashboardLayout title="Invoice">
-  <InvoiceWorkspace invoiceId={id} client:load />
+  <InvoiceWorkspace id={id} client:load />
 </DashboardLayout>

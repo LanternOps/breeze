@@ -52,6 +52,7 @@ import {
   Boxes,
   Bug,
   Puzzle,
+  LayoutGrid,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
@@ -249,6 +250,7 @@ export const navSections: NavSection[] = [
       { name: 'Product Catalog', labelKey: 'nav.productCatalog', href: '/settings/catalog', icon: Tags, partnerScopeOnly: true, requiredPermission: { resource: 'catalog', action: 'read' } },
       { name: 'Software Library', labelKey: 'nav.softwareLibrary', href: '/software', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Software Policies', labelKey: 'nav.softwarePolicies', href: '/software-inventory', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Device Groups', labelKey: 'nav.deviceGroups', href: '/devices/groups', icon: LayoutGrid, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Config Policies', labelKey: 'nav.configPolicies', href: '/configuration-policies', icon: Layers, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Integrations', labelKey: 'nav.integrations', href: '/integrations', icon: Plug },
     ],

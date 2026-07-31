@@ -374,7 +374,7 @@ describe('monitoringInlineSettingsSchema', () => {
     ).toBe(false);
   });
 
-  it('should accept event log alert', () => {
+  it('should reject non-empty eventLogAlerts (moved to the Alerts feature)', () => {
     const result = monitoringInlineSettingsSchema.safeParse({
       eventLogAlerts: [
         {
@@ -384,10 +384,14 @@ describe('monitoringInlineSettingsSchema', () => {
         },
       ],
     });
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(JSON.stringify(result.error.issues)).toContain('Alerts feature');
   });
 
-  it('should reject eventLogAlerts over 50', () => {
+  // Pre-consolidation this exercised a 50-item cap; now any non-empty
+  // eventLogAlerts is write-blocked (see write-barrier tests above), so a
+  // large payload is rejected for that reason rather than a size limit.
+  it('should reject a large eventLogAlerts payload (write-blocked, not size-limited)', () => {
     const alerts = Array.from({ length: 51 }, (_, i) => ({
       name: `alert${i}`,
       category: 'security' as const,
@@ -398,7 +402,7 @@ describe('monitoringInlineSettingsSchema', () => {
     ).toBe(false);
   });
 
-  it('should accept alert rule', () => {
+  it('should reject non-empty alertRules (moved to the Alerts feature)', () => {
     const result = monitoringInlineSettingsSchema.safeParse({
       alertRules: [
         {
@@ -407,17 +411,22 @@ describe('monitoringInlineSettingsSchema', () => {
         },
       ],
     });
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(JSON.stringify(result.error.issues)).toContain('Alerts feature');
   });
 
-  it('should reject alertRules with empty conditions', () => {
+  // Pre-consolidation these exercised shape/size validation on individual
+  // rule entries; now any non-empty alertRules is write-blocked outright
+  // (see write-barrier tests above), so these payloads are rejected for
+  // that reason rather than the entry-level rules they used to test.
+  it('should reject a non-empty alertRules payload regardless of entry shape', () => {
     const result = monitoringInlineSettingsSchema.safeParse({
       alertRules: [{ name: 'Test', conditions: [] }],
     });
     expect(result.success).toBe(false);
   });
 
-  it('should reject alertRules over 100', () => {
+  it('should reject a large alertRules payload (write-blocked, not size-limited)', () => {
     const rules = Array.from({ length: 101 }, (_, i) => ({
       name: `rule${i}`,
       conditions: [{ type: 'metric' as const }],

@@ -1,10 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import HelperTab from './HelperTab';
+
+const saveMock = vi.hoisted(() => vi.fn(async () => ({ id: 'link-1' })));
 
 vi.mock('./useFeatureLink', () => ({
   useFeatureLink: () => ({
-    save: vi.fn(async () => ({ id: 'link-1' })),
+    save: saveMock,
     remove: vi.fn(async () => true),
     saving: false,
     error: null,
@@ -52,5 +54,39 @@ describe('HelperTab', () => {
     expect(screen.queryByText('Saved (not deployed)')).toBeNull();
     const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
     expect(checkboxes.every((c) => !c.disabled)).toBe(true);
+  });
+
+  it('renders the lifecycle-mode select defaulting to auto', () => {
+    render(<HelperTab {...baseProps} existingLink={helperLink(true)} />);
+    const select = screen.getByTestId('helper-lifecycle-mode') as HTMLSelectElement;
+    expect(select).toBeTruthy();
+    expect(select.value).toBe('auto');
+  });
+
+  it('includes lifecycleMode in the saved inlineSettings when set to on-demand', async () => {
+    saveMock.mockClear();
+    render(<HelperTab {...baseProps} existingLink={helperLink(true)} />);
+    fireEvent.change(screen.getByTestId('helper-lifecycle-mode'), {
+      target: { value: 'on-demand' },
+    });
+    fireEvent.click(screen.getByText('Save'));
+    await vi.waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const call = saveMock.mock.calls[0] as unknown as [
+      unknown,
+      { inlineSettings: Record<string, unknown> },
+    ];
+    expect(call[1].inlineSettings.lifecycleMode).toBe('on-demand');
+  });
+
+  it('omits lifecycleMode from the saved inlineSettings when left on auto', async () => {
+    saveMock.mockClear();
+    render(<HelperTab {...baseProps} existingLink={helperLink(true)} />);
+    fireEvent.click(screen.getByText('Save'));
+    await vi.waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const call = saveMock.mock.calls[0] as unknown as [
+      unknown,
+      { inlineSettings: Record<string, unknown> },
+    ];
+    expect('lifecycleMode' in call[1].inlineSettings).toBe(false);
   });
 });

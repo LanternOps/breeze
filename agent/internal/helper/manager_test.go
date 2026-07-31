@@ -306,3 +306,140 @@ func TestApplyDisabledInstalledCleansUpOnce(t *testing.T) {
 		t.Fatalf("second disabled tick should be a no-op, got %d uninstall calls", uninstallCalls)
 	}
 }
+
+func TestApplySweepsLegacyAutoStartOncePerProcess(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	var removeCalls int
+	origRemove := removeAutoStartFunc
+	origSweep := sweepLegacyAutoStart
+	origStopLegacy := stopHelperLegacyFunc
+	t.Cleanup(func() {
+		removeAutoStartFunc = origRemove
+		sweepLegacyAutoStart = origSweep
+		stopHelperLegacyFunc = origStopLegacy
+	})
+	removeAutoStartFunc = func() error { removeCalls++; return nil }
+	stopHelperLegacyFunc = func() {}
+	sweepLegacyAutoStart = true // simulate Windows on any test platform
+
+	mgr := New(context.Background(), nil, nil, "")
+	mgr.baseDir = tmpDir
+	// Pin to a non-existent path inside tmpDir so wasInstalled is deterministic
+	// (false) regardless of whether the platform-default helper binary path
+	// happens to exist on the machine running this test.
+	mgr.binaryPath = filepath.Join(tmpDir, "breeze-helper")
+	mgr.sessionEnumerator = &mockEnumerator{}
+
+	mgr.Apply(&Settings{Enabled: false})
+	mgr.Apply(&Settings{Enabled: false})
+
+	// One sweep per process lifetime — not one per heartbeat tick. (The
+	// migration/uninstall paths have their own removeAutoStartFunc calls;
+	// with Enabled=false and no residual state those do not fire here.)
+	if removeCalls != 1 {
+		t.Fatalf("removeAutoStartFunc called %d times, want exactly 1", removeCalls)
+	}
+}
+
+func TestApplySkipsLegacyAutoStartSweepOffWindows(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	var removeCalls int
+	origRemove := removeAutoStartFunc
+	origSweep := sweepLegacyAutoStart
+	origStopLegacy := stopHelperLegacyFunc
+	t.Cleanup(func() {
+		removeAutoStartFunc = origRemove
+		sweepLegacyAutoStart = origSweep
+		stopHelperLegacyFunc = origStopLegacy
+	})
+	removeAutoStartFunc = func() error { removeCalls++; return nil }
+	stopHelperLegacyFunc = func() {}
+	sweepLegacyAutoStart = false
+
+	mgr := New(context.Background(), nil, nil, "")
+	mgr.baseDir = tmpDir
+	// Pin to a non-existent path inside tmpDir so wasInstalled is deterministic
+	// (false) regardless of whether the platform-default helper binary path
+	// happens to exist on the machine running this test.
+	mgr.binaryPath = filepath.Join(tmpDir, "breeze-helper")
+	mgr.sessionEnumerator = &mockEnumerator{}
+
+	mgr.Apply(&Settings{Enabled: false})
+
+	if removeCalls != 0 {
+		t.Fatalf("removeAutoStartFunc called %d times, want 0 when sweep disabled", removeCalls)
+	}
+}
+
+// After an agent upgrade, m.sessions starts empty in memory. If a helper was
+// spawned into a non-console (RDP) session before the upgrade, the
+// console-only enumerator never surfaces that session key, so the pre-upgrade
+// helper would otherwise run unmanaged until logoff and its sessions/<key> dir
+// would linger. Apply must merge on-disk session directories into
+// consideration so the stale-session sweep stops it.
+func TestApplyReapsOnDiskSessionNotSurfacedByEnumerator(t *testing.T) {
+	tmpDir := t.TempDir()
+	staleStatusPath := filepath.Join(tmpDir, "sessions", "999", "helper_status.yaml")
+	if err := os.MkdirAll(filepath.Dir(staleStatusPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Simulates a pre-upgrade breeze-helper.exe still running in RDP session 999.
+	if err := os.WriteFile(staleStatusPath, []byte("version: 0.13.0\npid: 4242\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	origRemove := removeAutoStartFunc
+	origStopLegacy := stopHelperLegacyFunc
+	t.Cleanup(func() {
+		removeAutoStartFunc = origRemove
+		stopHelperLegacyFunc = origStopLegacy
+	})
+	removeAutoStartFunc = func() error { return nil }
+	stopHelperLegacyFunc = func() {}
+
+	var stoppedPIDs []int
+	mgr := New(context.Background(), nil, nil, "")
+	mgr.baseDir = tmpDir
+	// Console-only enumerator: only the interactive console session surfaces,
+	// never the RDP session 999 that owns the stale on-disk state.
+	mgr.sessionEnumerator = &mockEnumerator{
+		sessions: []SessionInfo{{Key: "501", Username: "alice", UID: 501}},
+	}
+	mgr.isOurProcessFunc = func(pid int, binaryPath string) bool { return false }
+	mgr.stopIfOursFunc = func(pid int, binaryPath string) (bool, error) {
+		stoppedPIDs = append(stoppedPIDs, pid)
+		return true, nil
+	}
+	mgr.spawnFunc = func(sessionKey, binaryPath string, args ...string) (int, error) {
+		statusPath := filepath.Join(tmpDir, "sessions", sessionKey, "helper_status.yaml")
+		_ = os.MkdirAll(filepath.Dir(statusPath), 0755)
+		_ = os.WriteFile(statusPath, []byte("version: 0.14.0\npid: 9001\n"), 0644)
+		return 9001, nil
+	}
+	helperBinary := filepath.Join(tmpDir, "breeze-helper")
+	if err := os.WriteFile(helperBinary, []byte("bin"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	mgr.binaryPath = helperBinary
+
+	if _, exists := mgr.sessions["999"]; exists {
+		t.Fatal("test setup: session 999 must start absent from the in-memory map")
+	}
+
+	mgr.Apply(&Settings{Enabled: true, ShowOpenPortal: true})
+
+	found := false
+	for _, pid := range stoppedPIDs {
+		if pid == 4242 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected stop path to run for on-disk stale session 999 (pid 4242), stopped pids: %v", stoppedPIDs)
+	}
+	if _, exists := mgr.sessions["999"]; exists {
+		t.Fatal("stale on-disk session 999 should be removed from the map once stopped")
+	}
+}

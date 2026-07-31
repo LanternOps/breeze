@@ -111,7 +111,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
   'device_filesystem_snapshots',
   'device_group_memberships', 'device_hardware', 'device_ip_history',
-  'device_metrics', 'device_network', 'device_patches',
+  'device_metrics', 'device_mtls_certificates', 'device_network', 'device_patches',
   'device_process_samples', 'device_recovery_keys', 'device_registry_state',
   'device_reliability', 'device_reliability_history', 'device_sessions',
   'device_vulnerabilities', 'device_warranty',
@@ -202,6 +202,10 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'device_metrics', 'device_software', 'device_registry_state', 'device_config_state',
   'device_commands', 'device_connections', 'device_boot_metrics',
   'device_sessions', 'device_change_log', 'device_warranty', 'device_vulnerabilities',
+  // mTLS certificate history (Wave 5 Task 2, security remediation) — FK
+  // device_id -> devices.id ON DELETE CASCADE (composite with org_id);
+  // leaf table, no children.
+  'device_mtls_certificates',
   // Patches
   'device_patches', 'patch_job_results', 'patch_rollbacks',
   // Deployments & software
@@ -622,7 +626,11 @@ coreRoutes.get(
         // column. device_reliability is org-scoped (RLS shape #1), so the
         // leftJoin stays tenant-safe; null when no score computed yet.
         reliabilityScore: deviceReliability.reliabilityScore,
-        reliabilityTrend: deviceReliability.trendDirection
+        reliabilityTrend: deviceReliability.trendDirection,
+        // RDS per-session helpers (plan 2 heartbeat ingest) — UI hint only,
+        // see the truthy-guard comment in heartbeat.ts. Tasks 13/14 gate the
+        // session picker on this being 'on-demand' at the list-row level.
+        helperLifecycleMode: devices.helperLifecycleMode
       })
       .from(devices)
       .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
@@ -746,6 +754,7 @@ coreRoutes.get(
         // score yet (no device_reliability row) — the list renders a dash.
         reliabilityScore: d.reliabilityScore ?? null,
         reliabilityTrend: d.reliabilityTrend ?? null,
+        helperLifecycleMode: d.helperLifecycleMode ?? null,
         metrics: latestMetrics
           ? {
             cpuPercent: latestMetrics.cpuPercent,

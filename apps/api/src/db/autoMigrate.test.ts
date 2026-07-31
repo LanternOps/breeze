@@ -16,6 +16,9 @@ import { getTableConfig } from 'drizzle-orm/pg-core';
 import { users } from './schema/users';
 import * as oauthSchema from './schema/oauth';
 import { quotes } from './schema/quotes';
+import { deviceMtlsCertificates } from './schema/deviceMtlsCertificates';
+import { manifestSigningKeyDelegations } from './schema/manifestSigningKeys';
+import { devices } from './schema/devices';
 
 describe('autoMigrate', () => {
   describe('detectState', () => {
@@ -347,10 +350,18 @@ describe('Wave 3 durable live authorization expansion', () => {
     expect(files).toContain(liveAuthorization);
     expect(files).toContain(quoteCapability);
     // Later waves append -d..-f to the reserved 2026-08-06 block, so assert
-    // adjacency within the block instead of pinning the global tail.
+    // the block is the contiguous lexical tail rather than pinning the
+    // global tail.
     const reservedBlock = files.filter((file) => file.startsWith('2026-08-06-'));
     expect(files.slice(-reservedBlock.length)).toEqual(reservedBlock);
-    expect(reservedBlock.indexOf(quoteCapability)).toBe(reservedBlock.indexOf(liveAuthorization) + 1);
+    // Assert RELATIVE order, not adjacency (see the Wave 6 capability and
+    // delegation migration tests below for the full rationale): a sibling
+    // branch is free to land its own migration between -b- and -c- in the
+    // same date block, and adjacency would turn that into a red main
+    // pointing at the wrong wave.
+    expect(reservedBlock.indexOf(quoteCapability)).toBeGreaterThan(
+      reservedBlock.indexOf(liveAuthorization),
+    );
   });
 
   it('registers oauth_revocation_retries as a user-id-scoped RLS table', () => {
@@ -363,6 +374,269 @@ describe('Wave 3 durable live authorization expansion', () => {
     )?.[1];
 
     expect(allowlist).toContain("'oauth_revocation_retries'");
+  });
+});
+
+describe('Wave 5 device mTLS certificate history', () => {
+  const migrationsDir = path.resolve(__dirname, '../../migrations');
+  const certificateHistory = '2026-08-06-d-device-mtls-certificate-history.sql';
+
+  it('orders the certificate-history migration after the reserved Wave 3 quote-capability migration', () => {
+    const files = readdirSync(migrationsDir)
+      .filter((file) => /^\d{4}-.*\.sql$/.test(file))
+      .sort((a, b) => a.localeCompare(b));
+    const quoteCapability = '2026-08-06-c-quote-response-capability.sql';
+
+    expect(files).toContain(certificateHistory);
+    // -d..-f is still reserved for later waves, so assert the block remains
+    // the contiguous lexical tail, rather than pinning this file as the
+    // single last migration.
+    const reservedBlock = files.filter((file) => file.startsWith('2026-08-06-'));
+    expect(files.slice(-reservedBlock.length)).toEqual(reservedBlock);
+    // Assert RELATIVE order, not adjacency (see the Wave 6 capability and
+    // delegation migration tests below for the full rationale): a sibling
+    // branch is free to land its own migration between -c- and -d- in the
+    // same date block, and adjacency would turn that into a red main
+    // pointing at the wrong wave.
+    expect(reservedBlock.indexOf(certificateHistory)).toBeGreaterThan(
+      reservedBlock.indexOf(quoteCapability),
+    );
+  });
+
+  it('defines the composite FK, state checks, indexes, and column shape for device_mtls_certificates', () => {
+    const cfg = getTableConfig(deviceMtlsCertificates);
+
+    expect(cfg.columns.map((c) => c.name).sort()).toEqual(
+      [
+        'activated_at',
+        'activation_expires_at',
+        'created_at',
+        'device_id',
+        'expires_at',
+        'fingerprint_sha256',
+        'id',
+        'issued_at',
+        'last_revoke_error',
+        'legacy_provenance',
+        'next_revoke_attempt_at',
+        'org_id',
+        'provider_certificate_id',
+        'public_key_spki',
+        'revoke_attempts',
+        'revoked_at',
+        'serial_number',
+        'state',
+        'updated_at',
+      ].sort(),
+    );
+
+    expect(cfg.foreignKeys.map((fk) => fk.getName())).toContain(
+      'device_mtls_certificates_device_org_fkey',
+    );
+
+    expect(cfg.checks.map((check) => check.name).sort()).toEqual(
+      [
+        'device_mtls_certificates_active_time_chk',
+        'device_mtls_certificates_fingerprint_chk',
+        'device_mtls_certificates_pending_expiry_chk',
+        'device_mtls_certificates_revoked_time_chk',
+        'device_mtls_certificates_state_chk',
+      ].sort(),
+    );
+
+    expect(cfg.indexes.map((i) => i.config.name).sort()).toEqual(
+      [
+        'device_mtls_certificates_one_active_uq',
+        'device_mtls_certificates_org_device_state_idx',
+        'device_mtls_certificates_org_serial_uq',
+        'device_mtls_certificates_provider_uq',
+        'device_mtls_certificates_retry_idx',
+      ].sort(),
+    );
+  });
+
+  it('enables and forces RLS with all four breeze_has_org_access policies plus breeze_app grants in the migration file', () => {
+    const migrationSql = readFileSync(path.join(migrationsDir, certificateHistory), 'utf8');
+
+    expect(migrationSql).toMatch(/ALTER TABLE device_mtls_certificates ENABLE ROW LEVEL SECURITY/);
+    expect(migrationSql).toMatch(/ALTER TABLE device_mtls_certificates FORCE ROW LEVEL SECURITY/);
+    for (const cmd of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) {
+      expect(migrationSql).toMatch(new RegExp(`FOR ${cmd}[\\s\\S]*?breeze_has_org_access`));
+    }
+    expect(migrationSql).toMatch(
+      /GRANT SELECT, INSERT, UPDATE, DELETE ON device_mtls_certificates TO breeze_app/,
+    );
+  });
+});
+
+describe('Wave 6 agent outbound-network-policy capability handshake', () => {
+  const migrationsDir = path.resolve(__dirname, '../../migrations');
+  const capabilityMigration = '2026-08-06-e-agent-outbound-network-capability.sql';
+  const certificateHistory = '2026-08-06-d-device-mtls-certificate-history.sql';
+
+  it('orders the capability migration after the reserved Wave 5 certificate-history migration and before the delegation migration', () => {
+    const files = readdirSync(migrationsDir)
+      .filter((file) => /^\d{4}-.*\.sql$/.test(file))
+      .sort((a, b) => a.localeCompare(b));
+
+    expect(files).toContain(capabilityMigration);
+
+    // Assert RELATIVE order, not adjacency. An earlier revision asserted this
+    // file sorted *immediately* after Wave 5's, which is not an invariant this
+    // wave owns: a sibling branch is free to land its own migration in the
+    // same date block, and one did (2026-08-06-e-action-intents-origin-
+    // principal.sql, from the action-intents work). Adjacency assertions turn
+    // any concurrent migration into a red main that points at the wrong wave.
+    //
+    // What actually matters is the dependency order this wave relies on:
+    // Wave 5's certificate-history migration first, then this wave's capability
+    // column, then the delegation table.
+    const delegationTable = '2026-08-06-f-manifest-key-delegations.sql';
+    expect(files.indexOf(capabilityMigration)).toBeGreaterThan(files.indexOf(certificateHistory));
+    expect(files.indexOf(delegationTable)).toBeGreaterThan(files.indexOf(capabilityMigration));
+  });
+
+  it('maps outbound_network_policy_version as a non-null integer defaulting to zero', () => {
+    const column = getTableConfig(devices).columns.find(
+      (candidate) => candidate.name === 'outbound_network_policy_version',
+    );
+
+    expect(column).toBeDefined();
+    expect(column?.getSQLType()).toBe('integer');
+    expect(column?.notNull).toBe(true);
+    expect(column?.default).toBe(0);
+  });
+
+  it('is an idempotent expand-only ADD COLUMN with no inner transaction directives', () => {
+    const migrationSql = readFileSync(path.join(migrationsDir, capabilityMigration), 'utf8');
+
+    expect(migrationSql).toMatch(
+      /ADD COLUMN IF NOT EXISTS outbound_network_policy_version integer NOT NULL DEFAULT 0/,
+    );
+    expect(migrationSql).not.toMatch(/\bBEGIN;/);
+    expect(migrationSql).not.toMatch(/\bCOMMIT;/);
+  });
+});
+
+describe('Wave 6 signed manifest key delegation', () => {
+  const migrationsDir = path.resolve(__dirname, '../../migrations');
+  const delegationMigration = '2026-08-06-f-manifest-key-delegations.sql';
+  const capabilityMigration = '2026-08-06-e-agent-outbound-network-capability.sql';
+
+  it('orders the delegation migration after the Wave 6 capability migration', () => {
+    const files = readdirSync(migrationsDir)
+      .filter((file) => /^\d{4}-.*\.sql$/.test(file))
+      .sort((a, b) => a.localeCompare(b));
+
+    expect(files).toContain(delegationMigration);
+    expect(files).toContain(capabilityMigration);
+
+    // Assert RELATIVE order, not adjacency. An earlier revision asserted this
+    // file sorted *immediately* after the capability migration, which is not
+    // an invariant this wave owns: a sibling branch is free to land its own
+    // migration in the same 2026-08-06 date block, and one did
+    // (2026-08-06-f-m365-comms-delegated.sql, from the delegated-comms work),
+    // landing lexically between the two. Adjacency assertions turn any
+    // concurrent migration into a red main that points at the wrong wave.
+    //
+    // What actually matters is the sequencing this wave relies on: its own
+    // capability-column migration lands before its own delegation-table
+    // migration, matching the design order in the Wave 6 plan.
+    expect(files.indexOf(delegationMigration)).toBeGreaterThan(
+      files.indexOf(capabilityMigration),
+    );
+  });
+
+  it('declares the delegation table column shape, unique epoch, and window check', () => {
+    const cfg = getTableConfig(manifestSigningKeyDelegations);
+
+    expect(cfg.name).toBe('manifest_signing_key_delegations');
+    expect(cfg.columns.map((c) => c.name).sort()).toEqual(
+      [
+        'activated_at',
+        'created_at',
+        'epoch',
+        'id',
+        'new_key_id',
+        'new_public_key_b64',
+        'not_after',
+        'not_before',
+        'old_key_id',
+        'signature_b64',
+      ].sort(),
+    );
+
+    // The epoch is the monotonic replay counter the agent compares against.
+    // UNIQUE is what makes epoch reuse impossible at the storage layer rather
+    // than only in the CLI's pre-checks.
+    const epoch = cfg.columns.find((c) => c.name === 'epoch');
+    expect(epoch?.notNull).toBe(true);
+    expect(epoch?.isUnique).toBe(true);
+    expect(epoch?.getSQLType()).toBe('bigint');
+
+    expect(cfg.checks.map((check) => check.name).sort()).toEqual(
+      ['manifest_signing_key_delegations_window_chk'].sort(),
+    );
+  });
+
+  it('is idempotent, has no inner transaction directives, and forces system-only RLS', () => {
+    const migrationSql = readFileSync(path.join(migrationsDir, delegationMigration), 'utf8');
+
+    expect(migrationSql).toMatch(
+      /CREATE TABLE IF NOT EXISTS manifest_signing_key_delegations/,
+    );
+    // autoMigrate wraps each file in client.begin(...) — an inner BEGIN;/COMMIT;
+    // only emits "there is already a transaction in progress".
+    expect(migrationSql).not.toMatch(/\bBEGIN;/);
+    expect(migrationSql).not.toMatch(/\bCOMMIT;/);
+
+    expect(migrationSql).toMatch(
+      /ALTER TABLE manifest_signing_key_delegations ENABLE ROW LEVEL SECURITY/,
+    );
+    expect(migrationSql).toMatch(
+      /ALTER TABLE manifest_signing_key_delegations FORCE ROW LEVEL SECURITY/,
+    );
+
+    // Exact system-only policy shape, copied from manifest_signing_keys: BOTH
+    // USING and WITH CHECK must require the system scope. A USING-only policy
+    // would let a tenant context INSERT rows it cannot read.
+    expect(migrationSql).toMatch(
+      /CREATE POLICY manifest_signing_key_delegations_system_only[\s\S]*?USING \(current_setting\('breeze\.scope', true\) = 'system'\)[\s\S]*?WITH CHECK \(current_setting\('breeze\.scope', true\) = 'system'\)/,
+    );
+    // Policy creation guarded on pg_policies so re-applying is a no-op.
+    expect(migrationSql).toMatch(/FROM pg_policies/);
+
+    // Only what the system-context service role needs. DELETE is deliberately
+    // absent: nothing in the delegation lifecycle removes a record.
+    //
+    // Assert against EXECUTABLE sql — `--` comment text in this file discusses
+    // grants in prose, and a naive whole-file regex matches the prose instead
+    // of the statement (it did, on the first run).
+    const executableSql = migrationSql
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('--'))
+      .join('\n');
+
+    expect(executableSql).toMatch(
+      /GRANT SELECT, INSERT, UPDATE ON manifest_signing_key_delegations TO breeze_app;/,
+    );
+    const grantStatements = executableSql.match(/GRANT[\s\S]*?;/g) ?? [];
+    expect(grantStatements).toHaveLength(1);
+    expect(grantStatements[0]).not.toMatch(/DELETE/);
+  });
+
+  it('has the same system-only policy shape as manifest_signing_keys (no drift between the two)', () => {
+    const delegationSql = readFileSync(path.join(migrationsDir, delegationMigration), 'utf8');
+    const signingKeySql = readFileSync(
+      path.join(migrationsDir, '2026-05-09-manifest-signing-keys.sql'),
+      'utf8',
+    );
+
+    const predicate = /current_setting\('breeze\.scope', true\) = 'system'/g;
+    // Two occurrences each (USING + WITH CHECK) — the delegation table must
+    // not be laxer than the key table it derives its trust from.
+    expect(signingKeySql.match(predicate)).toHaveLength(2);
+    expect(delegationSql.match(predicate)).toHaveLength(2);
   });
 });
 

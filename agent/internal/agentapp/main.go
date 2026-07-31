@@ -111,6 +111,21 @@ var (
 	reconcileServiceUnitIfNeededFn                                                = reconcileServiceUnitIfNeeded
 )
 
+// describeLogFileError returns a bounded, secret-free description of a log
+// file setup failure — only the path and a short reason ever appear, never
+// file contents. When err wraps *logging.ErrUnsafeLogPath (P1-AGENT-LOG-001:
+// a symlink was found at the log path, its directory, or a rotation
+// backup), the description calls out the security-relevant condition
+// explicitly so it stands out from an ordinary I/O failure in stdout/stderr
+// fallback logs.
+func describeLogFileError(err error) string {
+	var unsafePath *logging.ErrUnsafeLogPath
+	if errors.As(err, &unsafePath) {
+		return fmt.Sprintf("unsafe log path, refusing to open it (%s)", unsafePath.Reason)
+	}
+	return err.Error()
+}
+
 // initBootstrapLogging initializes the logging package with stderr +
 // the configured log file so waitForEnrollment can emit Warn/Info
 // lines before full startAgent runs. Does NOT start the log shipper,
@@ -122,16 +137,18 @@ func initBootstrapLogging(cfg *config.Config) {
 	if logFile == "" {
 		logFile = filepath.Join(config.LogDir(), "agent.log")
 	}
-	// Best effort: if the log file can't be opened (permissions, missing
-	// dir), fall back to stderr only. Bootstrap logging must never fail
-	// the agent start.
-	if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
-		logging.Init(cfg.LogFormat, cfg.LogLevel, os.Stderr)
-		return
-	}
+	// Best effort: if the log file can't be opened securely (permissions,
+	// missing dir, or an unsafe path such as a symlink — see
+	// logging.NewRotatingWriter, which now owns directory creation and
+	// symlink rejection itself), fall back to stderr only. Bootstrap
+	// logging must never fail the agent start, and file logging being
+	// disabled must never mean logging is silent: this always emits one
+	// warning through the stderr-only logger so the condition is visible.
 	rw, err := logging.NewRotatingWriter(logFile, cfg.LogMaxSizeMB, cfg.LogMaxBackups)
 	if err != nil {
 		logging.Init(cfg.LogFormat, cfg.LogLevel, os.Stderr)
+		log.Warn("log file unavailable during bootstrap, using stderr only",
+			"logFile", logFile, "reason", describeLogFileError(err))
 		return
 	}
 	logging.Init(cfg.LogFormat, cfg.LogLevel, logging.TeeWriter(os.Stderr, rw))
@@ -340,11 +357,13 @@ func Main(v string) {
 func initLogging(cfg *config.Config) {
 	var output io.Writer = os.Stdout
 	logFileFallback := false
+	var logFileFallbackReason string
 
 	if cfg.LogFile != "" {
 		rw, err := logging.NewRotatingWriter(cfg.LogFile, cfg.LogMaxSizeMB, cfg.LogMaxBackups)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to open log file %s: %v (logging to stdout)\n", cfg.LogFile, err)
+			logFileFallbackReason = describeLogFileError(err)
+			fmt.Fprintf(os.Stderr, "Failed to open log file %s: %s (logging to stdout)\n", cfg.LogFile, logFileFallbackReason)
 			logFileFallback = true
 		} else if !hasConsole() {
 			// No console attached (Windows service, launchd daemon, or systemd
@@ -364,7 +383,7 @@ func initLogging(cfg *config.Config) {
 
 	// Re-log fallback via structured logger so it appears in journalctl/Event Viewer
 	if logFileFallback {
-		log.Warn("log file fallback active, logging to stdout only", "requestedFile", cfg.LogFile)
+		log.Warn("log file fallback active, logging to stdout only", "requestedFile", cfg.LogFile, "reason", logFileFallbackReason)
 	}
 }
 
@@ -642,45 +661,47 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	var tlsCfg *tls.Config
 	if cfg.MtlsCertPEM != "" {
 		if mtls.IsExpired(cfg.MtlsCertExpires) {
-			log.Warn("mTLS certificate expired, attempting renewal")
-			// Use bearer-only client for renewal (no mTLS required)
-			renewClient := api.NewClient(cfg.ServerURL, secureToken.Reveal(), cfg.AgentID)
-			renewResp, err := renewClient.RenewCert()
+			// FINAL-REVIEW I2: this used to synchronously call the LEGACY
+			// bearer-only RenewCert here, with no recovery proof. That request
+			// is denied outright under AGENT_MTLS_BINDING_MODE=enforce (an
+			// expired active row requires a valid proof — see
+			// evaluateRenewalAuthorization), and it also bypassed the
+			// two-phase pending/confirm protocol and its durable staging
+			// entirely, so a crash mid-renewal could strand a real Cloudflare
+			// certificate with no local record.
+			//
+			// Renewal is now owned solely by the heartbeat's
+			// maybeSelfInitiateCertRenewal, which runs at Start() and on every
+			// tick: it presents the current certificate when it is still
+			// valid, builds a proof-of-possession from the expired
+			// certificate's private key when it is not, and stages the result
+			// durably before confirming. Startup only needs to avoid loading a
+			// dead certificate into the TLS config, so the agent runs
+			// bearer-only for at most one tick while that completes.
+			//
+			// The private key is deliberately LEFT IN PLACE: it is the input
+			// to the recovery proof. Clearing it here would destroy the only
+			// thing that can re-establish this device's identity.
+			// The certificate and key are deliberately LEFT IN PLACE rather
+			// than cleared: the expired certificate's private key is the
+			// input to the recovery proof, and MtlsCertPEM/MtlsCertExpires
+			// are what tell the heartbeat there IS an identity to recover.
+			// Clearing either (as this path used to, on renewal failure)
+			// destroys the only thing that can re-establish this device's
+			// identity and silently downgrades it to bearer-only forever.
+			// Only the TLS config is skipped, so the expired certificate is
+			// never presented in a handshake.
+			log.Warn("mTLS certificate expired; running bearer-only until the heartbeat's recovery renewal completes",
+				"expires", cfg.MtlsCertExpires)
+		} else {
+			var err error
+			tlsCfg, err = mtls.BuildTLSConfig(cfg.MtlsCertPEM, cfg.MtlsKeyPEM)
 			if err != nil {
-				log.Error("mTLS cert renewal request failed, continuing without mTLS", "error", err.Error())
-				cfg.MtlsCertPEM = "" // Clear so we don't load the expired cert
-			} else if renewResp.Quarantined {
-				log.Error("device quarantined by server, continuing without mTLS")
-				cfg.MtlsCertPEM = "" // Clear so we don't load the expired cert
-			} else if renewResp.Mtls != nil {
-				// Validate the cert/key pair before saving
-				if _, verifyErr := mtls.LoadClientCert(renewResp.Mtls.Certificate, renewResp.Mtls.PrivateKey); verifyErr != nil {
-					log.Error("renewed cert/key pair is invalid, continuing without mTLS", "error", verifyErr.Error())
-					cfg.MtlsCertPEM = ""
-				} else {
-					cfg.MtlsCertPEM = renewResp.Mtls.Certificate
-					cfg.MtlsKeyPEM = renewResp.Mtls.PrivateKey
-					cfg.MtlsCertExpires = renewResp.Mtls.ExpiresAt
-					cfg.AuthToken = secureToken.Reveal()
-					if saveErr := config.SaveTo(cfg, cfgFile); saveErr != nil {
-						log.Error("failed to save renewed mTLS cert to config", "error", saveErr.Error())
-					}
-					cfg.AuthToken = ""
-					log.Info("mTLS certificate renewed", "expires", renewResp.Mtls.ExpiresAt)
-				}
-			} else {
-				log.Warn("renewal response contained no cert data, continuing without mTLS")
-				cfg.MtlsCertPEM = ""
+				log.Error("failed to load mTLS certificate, continuing without mTLS", "error", err.Error())
+				tlsCfg = nil
+			} else if tlsCfg != nil {
+				log.Info("mTLS client certificate loaded")
 			}
-		}
-
-		var err error
-		tlsCfg, err = mtls.BuildTLSConfig(cfg.MtlsCertPEM, cfg.MtlsKeyPEM)
-		if err != nil {
-			log.Error("failed to load mTLS certificate, continuing without mTLS", "error", err.Error())
-			tlsCfg = nil
-		} else if tlsCfg != nil {
-			log.Info("mTLS client certificate loaded")
 		}
 	}
 
@@ -1073,6 +1094,30 @@ func resolveBackupServerURL(enrollSeed, bootstrapSeed, primaryServerURL string) 
 	return seed, nil
 }
 
+// applyEnrollResponseIdentity copies the identity/credential fields an
+// EnrollResponse carries into cfg: AgentID, AuthToken, WatchdogAuthToken,
+// HelperAuthToken, OrgID, SiteID, and DeviceID.
+//
+// DeviceID (security remediation Wave 5 Task 5) is the server's devices.id
+// UUID — distinct from AgentID/devices.agent_id — and is required to build
+// the expired-certificate mTLS renewal recovery proof
+// (mtls.BuildRenewalProofCanonicalBytes / config.Config.DeviceID). The
+// enrollment route has always returned it; nothing previously copied it into
+// the agent's persisted config, which left recovery-proof signing silently
+// unavailable end-to-end even though every other piece was wired up and
+// tested. Extracted as a named helper, mirroring
+// resolveBackupServerURL/assertHostnameNonEmpty above, so it's unit-testable
+// without going through enrollDevice's os.Exit-on-error call chain.
+func applyEnrollResponseIdentity(cfg *config.Config, enrollResp *api.EnrollResponse) {
+	cfg.AgentID = enrollResp.AgentID
+	cfg.AuthToken = enrollResp.AuthToken
+	cfg.WatchdogAuthToken = enrollResp.WatchdogAuthToken
+	cfg.HelperAuthToken = enrollResp.HelperAuthToken
+	cfg.OrgID = enrollResp.OrgID
+	cfg.SiteID = enrollResp.SiteID
+	cfg.DeviceID = enrollResp.DeviceID
+}
+
 // assertHostnameNonEmpty enforces the #439 contract: enrollment must
 // never proceed with an empty or whitespace-only hostname, because the
 // downstream substitution used to write the device UUID there and
@@ -1271,12 +1316,7 @@ func enrollDevice(enrollmentKey string) {
 		enrollError(cat, friendly, err)
 	}
 
-	cfg.AgentID = enrollResp.AgentID
-	cfg.AuthToken = enrollResp.AuthToken
-	cfg.WatchdogAuthToken = enrollResp.WatchdogAuthToken
-	cfg.HelperAuthToken = enrollResp.HelperAuthToken
-	cfg.OrgID = enrollResp.OrgID
-	cfg.SiteID = enrollResp.SiteID
+	applyEnrollResponseIdentity(cfg, enrollResp)
 
 	// Backup control-plane URL (#2288): enroll response wins; bootstrap value
 	// is the fallback. Validated before persisting — a bad value must not
@@ -1316,24 +1356,27 @@ func enrollDevice(enrollmentKey string) {
 	// Enrollment is fresh-trust: no existing pin to defend against rotation, so
 	// we set the pinned set directly. Subsequent updates flow through
 	// config.PinManifestKeys (TOFU). See #625.
+	//
+	// It goes through config.BootstrapPinnedManifestKeys rather than
+	// hand-serializing the response so the same rules apply as on the
+	// heartbeat path: every entry must be a well-formed "<keyId>:<base64
+	// Ed25519 key>", and the delivery establishes exactly ONE deployment key.
+	// Writing the response through unvalidated made enrollment a TOFU bypass
+	// (several keys could be seeded at once) and could persist bytes that are
+	// not a usable key, which the updater now treats as an unusable trust set.
 	if len(enrollResp.ManifestTrustKeys) > 0 {
-		pinned := make([]string, 0, len(enrollResp.ManifestTrustKeys))
+		delivered := make([]config.ManifestTrustKey, 0, len(enrollResp.ManifestTrustKeys))
 		for _, k := range enrollResp.ManifestTrustKeys {
-			if k.KeyID == "" || k.PublicKeyB64 == "" {
-				continue
-			}
-			pinned = append(pinned, k.KeyID+":"+k.PublicKeyB64)
+			delivered = append(delivered, config.ManifestTrustKey{KeyID: k.KeyID, PublicKeyB64: k.PublicKeyB64})
 		}
-		if len(pinned) == 0 {
-			// All entries malformed — preserve any pre-existing pinned set rather
-			// than silently destroying trust state.
-			enrollLog.Warn("enrollment response delivered manifest trust keys but all entries were malformed; not overwriting existing pinned set",
-				"received", len(enrollResp.ManifestTrustKeys))
+		pinned, err := config.BootstrapPinnedManifestKeys(delivered)
+		if err != nil {
+			// Preserve any pre-existing pinned set rather than silently
+			// destroying trust state. err carries a bounded reason and key
+			// IDs only — never key material.
+			enrollLog.Warn("rejected manifest trust keys delivered at enrollment; not overwriting existing pinned set",
+				"received", len(enrollResp.ManifestTrustKeys), "error", err.Error())
 		} else {
-			if dropped := len(enrollResp.ManifestTrustKeys) - len(pinned); dropped > 0 {
-				enrollLog.Warn("dropped malformed manifest trust keys from enrollment",
-					"received", len(enrollResp.ManifestTrustKeys), "kept", len(pinned), "dropped", dropped)
-			}
 			cfg.PinnedManifestPubKeys = pinned
 			enrollLog.Info("pinned manifest trust keys from enrollment", "count", len(pinned))
 		}
@@ -1385,7 +1428,10 @@ func initEnrollLogging(cfg *config.Config, quiet bool) {
 		cfg.LogFile = filepath.Join(config.LogDir(), "agent.log")
 	}
 
-	if err := os.MkdirAll(filepath.Dir(cfg.LogFile), 0o755); err != nil {
+	// 0700, not 0755: even this best-effort pre-create (NewRotatingWriter
+	// below secures/repairs the directory itself regardless) should never
+	// leave the log directory group/world-readable, even momentarily.
+	if err := os.MkdirAll(filepath.Dir(cfg.LogFile), 0o700); err != nil {
 		// Rare in production (MSI CA runs as SYSTEM), but if it happens
 		// the admin needs to see it in install.log — write to stderr
 		// unconditionally so the MSI verbose log captures it.
@@ -1397,7 +1443,7 @@ func initEnrollLogging(cfg *config.Config, quiet bool) {
 
 	rw, err := logging.NewRotatingWriter(cfg.LogFile, cfg.LogMaxSizeMB, cfg.LogMaxBackups)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not open log file %s: %v — structured logs will go to stdout\n", cfg.LogFile, err)
+		fmt.Fprintf(os.Stderr, "Warning: could not open log file %s: %s — structured logs will go to stdout\n", cfg.LogFile, describeLogFileError(err))
 		logging.Init(cfg.LogFormat, cfg.LogLevel, os.Stdout)
 		log = logging.L("main")
 		return
@@ -1677,6 +1723,16 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 		// is permanent (binary hash mismatch, SID lookup failure, etc.).
 		var permErr *userhelper.PermanentRejectError
 		if errors.As(err, &permErr) {
+			if permErr.Code == "not_desired" {
+				// On-demand lifecycle: this helper's session/role is simply not
+				// leased right now. That is the normal state on an RDS host at
+				// rest — exit 0 so the logon scheduled task records success and
+				// does not retry-loop on every user logon.
+				log.Info("helper not currently desired by lifecycle; exiting clean",
+					"name", name, "reason", permErr.ReasonOr(err.Error()))
+				logging.StopShipper()
+				os.Exit(0)
+			}
 			log.Error("helper permanently rejected, exiting fatal",
 				"name", name,
 				"code", permErr.CodeOr("unknown"),

@@ -140,7 +140,7 @@ vi.mock('./DeviceList', () => ({
       data-display-names={devices.map(d => d.displayName ?? '').join(',')}
       data-watchdog-versions={devices.map(d => d.watchdogVersion ?? '').join(',')}
     >
-      {['maintenance-on', 'maintenance-off', 'decommission', 'reboot', 'run-script', 'link-vm-host', 'wake', 'deploy-software'].map(action => (
+      {['maintenance-on', 'maintenance-off', 'decommission', 'reboot', 'run-script', 'link-vm-host', 'wake', 'deploy-software', 'compare'].map(action => (
         <button
           key={action}
           type="button"
@@ -1327,6 +1327,100 @@ describe('DevicesPage — ungated bulk actions still work on an all-offline flee
     expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
     expect(vi.mocked(toggleMaintenanceMode).mock.calls.map(c => c[0]).sort()).toEqual(
       [DEV_1, DEV_2].sort(),
+    );
+  });
+});
+
+// Compare bulk action — pure navigation, not an agent command. The 'compare'
+// action string is the contract between DeviceList's bulk menu and
+// DevicesPage.handleBulkAction (same drift risk as 'link-vm-host' above).
+describe('DevicesPage — compare bulk action navigates with selected ids', () => {
+  it("handles 'compare': navigates to /devices/compare?ids= without any agent call", async () => {
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+
+    fireEvent.click(screen.getByTestId('bulk-compare'));
+
+    expect(vi.mocked(navigateTo)).toHaveBeenCalledWith(
+      `/devices/compare?ids=${DEV_1},${DEV_2},${DEV_3}`,
+    );
+    // Navigation only — nothing queued against the agents.
+    const { sendBulkCommand } = await import('../../services/deviceActions');
+    expect(vi.mocked(sendBulkCommand)).not.toHaveBeenCalled();
+  });
+
+  it('drops network rows from the compare link (their ids are asset ids)', async () => {
+    const NET_1 = '44444444-4444-4444-4444-444444444444';
+    vi.mocked(fetchAllNetworkDevices).mockResolvedValue({
+      data: [{
+        id: NET_1,
+        deviceClass: 'network',
+        assetType: 'printer',
+        hostname: 'lobby-printer',
+        status: 'online',
+        lastSeenAt: new Date().toISOString(),
+        orgId: 'org-1',
+        siteId: 'site-1',
+        tags: [],
+      }],
+      total: 1,
+      pagesWalked: 1,
+    } as never);
+
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    await waitFor(() =>
+      expect(screen.getByTestId('device-list').getAttribute('data-device-count')).toBe('4'),
+    );
+
+    fireEvent.click(screen.getByTestId('bulk-compare'));
+
+    const url = vi.mocked(navigateTo).mock.calls.at(-1)?.[0] as string;
+    expect(url.startsWith('/devices/compare?ids=')).toBe(true);
+    expect(url).not.toContain(NET_1);
+    expect(url).toContain(DEV_1);
+
+    const { showToast } = await import('../shared/Toast');
+    expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'warning' }),
+    );
+  });
+
+  it('refuses to navigate when fewer than 2 agent devices survive the network filter', async () => {
+    const NET_1 = '44444444-4444-4444-4444-444444444444';
+    // 1 agent + 1 network row: passes DeviceList's 2-4 menu gate, but only one
+    // comparable device remains after the filter — a 1-device "comparison".
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [rawDevice(DEV_1, 'host-alpha')],
+    } as never);
+    vi.mocked(fetchAllNetworkDevices).mockResolvedValue({
+      data: [{
+        id: NET_1,
+        deviceClass: 'network',
+        assetType: 'printer',
+        hostname: 'lobby-printer',
+        status: 'online',
+        lastSeenAt: new Date().toISOString(),
+        orgId: 'org-1',
+        siteId: 'site-1',
+        tags: [],
+      }],
+      total: 1,
+      pagesWalked: 1,
+    } as never);
+
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    await waitFor(() =>
+      expect(screen.getByTestId('device-list').getAttribute('data-device-count')).toBe('2'),
+    );
+
+    fireEvent.click(screen.getByTestId('bulk-compare'));
+
+    expect(vi.mocked(navigateTo)).not.toHaveBeenCalled();
+    const { showToast } = await import('../shared/Toast');
+    expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'error', message: expect.stringContaining('at least 2') }),
     );
   });
 });

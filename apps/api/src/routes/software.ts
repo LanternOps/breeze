@@ -12,9 +12,14 @@ import {
   devices,
   deviceCommands,
 } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, requireSiteAccess } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { resolveDeploymentTargets } from '../services/deploymentTargetResolver';
+import {
+  getOrganizationSoftwareDownloadPolicy,
+  setOrganizationSoftwareDownloadPolicy,
+  setSiteSoftwareDownloadPolicy,
+} from '../services/softwareDownloadPolicy';
 import {
   uploadBinary,
   getPresignedUrl,
@@ -37,7 +42,7 @@ import {
   buildAndDispatchSoftwareInstalls,
   createSoftwareDeployment,
 } from '../services/softwareDeployment';
-import { detectionRulesSchema } from '@breeze/shared';
+import { detectionRulesSchema, softwareDownloadPolicySchema } from '@breeze/shared';
 
 export const softwareRoutes = new Hono();
 const requireSoftwareRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -522,6 +527,8 @@ const listInventorySchema = z.object({
 });
 
 const inventoryParamSchema = z.object({ deviceId: z.string().guid() });
+
+const downloadPolicySiteParamSchema = z.object({ siteId: z.string().guid() });
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -1526,6 +1533,15 @@ softwareRoutes.post(
 
     // Preserve the legacy failure contract: HTTP 200 with a failed status body
     // (EDR resolution error / no installer available), no audit write.
+    //
+    // This route used to re-implement dispatch inline (S3 presign, EDR
+    // resolution, the Wave 6 Task 5 managed-software destination-policy gate,
+    // per-device WS send) and had drifted from the canonical path above it.
+    // It now fully delegates to createSoftwareDeployment — including the
+    // Wave 6 Task 5 policy gate, which lives once in the shared
+    // buildAndDispatchSoftwareInstalls fan-out (services/softwareDeployment.ts)
+    // so create/scheduler/retry all apply it identically instead of each
+    // route carrying its own copy.
     if (result.status === 'failed') {
       return c.json({ data: { id: result.deploymentId, status: 'failed', message: result.message } }, 200);
     }
@@ -2036,5 +2052,117 @@ softwareRoutes.get(
       .orderBy(softwareInventory.name);
 
     return c.json({ data: items });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// PRIVATE SOFTWARE DOWNLOAD ORIGIN POLICY (Wave 6 Task 4, security remediation)
+// ---------------------------------------------------------------------------
+// Server-side counterpart to agent/internal/netpolicy (Tasks 1-3): the org-
+// and site-scoped allowlist of approved private origins the agent may dial
+// for managed-software downloads. Task 5 (not this file) sends the effective
+// allowlist with every managed-software command. Every endpoint here is
+// MFA-protected and requires devices:write, matching the brief — this is a
+// security-relevant policy surface, not a read-only informational one.
+
+// GET /download-policy - Effective (org-only, since no site is targeted)
+// approved-origins policy for the caller's org.
+softwareRoutes.get(
+  '/download-policy',
+  requireScope('organization', 'partner', 'system'),
+  requireSoftwareWrite,
+  requireMfa(),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
+
+    const policy = await getOrganizationSoftwareDownloadPolicy(orgId);
+    return c.json({ data: policy });
+  }
+);
+
+// PUT /download-policy - Replace the organization's approved-origins policy.
+softwareRoutes.put(
+  '/download-policy',
+  requireScope('organization', 'partner', 'system'),
+  requireSoftwareWrite,
+  requireMfa(),
+  zValidator('json', softwareDownloadPolicySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
+
+    const payload = c.req.valid('json');
+    const result = await setOrganizationSoftwareDownloadPolicy(orgId, payload);
+    // A missing/RLS-invisible org (or a 0-row UPDATE despite the service's own
+    // prior SELECT finding a row) must not read as success — see the service's
+    // doc comment. Surfacing 404 here matches routes/orgs.ts's precedent for
+    // the same zero-row-write class of bug rather than returning 200 for a
+    // write that never persisted.
+    if (!result.ok) return c.json({ error: 'Organization not found' }, 404);
+
+    // Audit metadata is a count + version only — never the raw request URL or
+    // its query string (finding: policy-change audit rows must not carry URL
+    // query data). Written only on confirmed success, never for a rejected
+    // write.
+    writeRouteAudit(c, {
+      orgId,
+      action: 'software.downloadPolicy.update',
+      resourceType: 'organization',
+      resourceId: orgId,
+      details: {
+        version: result.policy.version,
+        approvedOriginCount: result.policy.approvedPrivateOrigins.length,
+      },
+    });
+
+    return c.json({ data: result.policy });
+  }
+);
+
+// PUT /download-policy/sites/:siteId - Replace a single site's approved-
+// origins policy. requireSiteAccess enforces the caller's site allowlist
+// (denied-site partner users get 403); the service additionally scopes the
+// site lookup to the resolved org, so a siteId belonging to a different org
+// 404s rather than silently writing (or reading) another tenant's row.
+softwareRoutes.put(
+  '/download-policy/sites/:siteId',
+  requireScope('organization', 'partner', 'system'),
+  requireSoftwareWrite,
+  requireMfa(),
+  requireSiteAccess('siteId'),
+  zValidator('param', downloadPolicySiteParamSchema),
+  zValidator('json', softwareDownloadPolicySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
+
+    const { siteId } = c.req.valid('param');
+    const payload = c.req.valid('json');
+
+    const result = await setSiteSoftwareDownloadPolicy(orgId, siteId, payload);
+    if (!result.ok) return c.json({ error: 'Site not found' }, 404);
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'software.downloadPolicy.site.update',
+      resourceType: 'site',
+      resourceId: siteId,
+      details: {
+        version: result.policy.version,
+        approvedOriginCount: result.policy.approvedPrivateOrigins.length,
+      },
+    });
+
+    // Return the EFFECTIVE (org ∪ site) policy — what Task 5's dispatch path
+    // will actually send to devices at this site — not just the site's own
+    // delta, so the operator sees the real outcome of the write.
+    return c.json({ data: result.effective });
   }
 );

@@ -1060,6 +1060,7 @@
     "enableMaintenance": "Ativar manutenção",
     "disableMaintenance": "Desativar manutenção",
     "wakeSelected": "Acordar selecionados",
+    "compareSelected": "Comparar selecionados",
     "linkAsMultiBoot": "Vincular como multi-boot",
     "decommissionSelected": "Descomissionar selecionados",
     "clearSelection": "Limpar seleção",
@@ -1762,6 +1763,7 @@
       "maintenanceOn": "Manutenção ativada",
       "multibootLinked": "Inicialização múltipla vinculada",
       "networkSkipped": "Dispositivos de rede ignorados: {{count}} — esta ação se aplica somente a dispositivos com agente.",
+      "compareNeedsTwo": "A comparação requer pelo menos 2 dispositivos com agente.",
       "permanentDeleteCancelled": "Exclusão permanente cancelada",
       "permanentDeleting": "Excluindo permanentemente",
       "permanentlyDeleted": "Excluído permanentemente",
@@ -2207,7 +2209,19 @@
     "runOnDevice": "Executar script em {{hostname}}",
     "runScript": "Executar script",
     "searchPlaceholder": "Pesquisar scripts...",
+    "sessionAny": "Qualquer sessão (console)",
     "title": "Selecionar script",
     "unnamedScript": "Script sem nome"
+  },
+  "sessionPicker": {
+    "titleDesktop": "Selecione uma sessão para visualizar",
+    "titleScript": "Selecione uma sessão para executar",
+    "loading": "Carregando sessões…",
+    "fetchFailed": "Não foi possível carregar as sessões",
+    "noSessions": "Nenhuma sessão interativa encontrada",
+    "sessionLabel": "sessão {{id}}",
+    "idleMinutes": "{{count}} min inativa",
+    "disconnectedNotShadowable": "Sessões desconectadas não podem ser visualizadas — nenhuma área de trabalho ativa para capturar",
+    "cancel": "Cancelar"
   }
 }

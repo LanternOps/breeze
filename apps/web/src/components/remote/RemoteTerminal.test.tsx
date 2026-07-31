@@ -408,3 +408,112 @@ describe('RemoteTerminal rejected handshake (error/close before open)', () => {
     expect(ticketPostCount()).toBe(1);
   });
 });
+
+describe('RemoteTerminal keepalive & silent-death watchdog (#2871)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Mount, run the 500ms auto-connect delay, and open the socket. */
+  const openConnected = async (): Promise<MockWebSocket> => {
+    renderTerminal();
+    // Interleave microtask flushes (dynamic xterm imports → terminalReady)
+    // with timer advances (the 500ms auto-connect delay) under fake timers.
+    for (let i = 0; i < 5 && MockWebSocket.instances.length === 0; i++) {
+      await act(async () => {});
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600);
+      });
+    }
+    expect(MockWebSocket.instances).toHaveLength(1);
+    const ws = MockWebSocket.instances[0]!;
+    fireConnected(ws);
+    return ws;
+  };
+
+  const sentOfType = (ws: MockWebSocket, type: string) =>
+    ws.sent.filter((raw) => {
+      try {
+        return (JSON.parse(raw) as { type?: string }).type === type;
+      } catch {
+        return false;
+      }
+    });
+
+  it('sends client keepalive pings once the server confirms the session', async () => {
+    const ws = await openConnected();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(21_000);
+    });
+
+    expect(sentOfType(ws, 'ping').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('answers server pings with pongs and stays connected well past 60s', async () => {
+    const ws = await openConnected();
+
+    for (let i = 0; i < 4; i++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      act(() => ws.fireMessage({ type: 'ping', timestamp: 0 }));
+    }
+
+    // 2+ minutes in: no disconnect overlay, socket untouched.
+    expect(screen.queryByTestId('terminal-disconnect-overlay')).not.toBeInTheDocument();
+    expect(ws.closeCalls).toBe(0);
+    expect(sentOfType(ws, 'pong').length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('surfaces prolonged server silence as a visible disconnect with a retry affordance', async () => {
+    const ws = await openConnected();
+
+    // No server frame at all past the 45s silence deadline.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(55_000);
+    });
+
+    expect(screen.getByTestId('terminal-disconnect-overlay')).toBeInTheDocument();
+    expect(screen.getByTestId('terminal-overlay-reconnect')).toBeInTheDocument();
+    // The dead socket was torn down, not left dangling.
+    expect(ws.closeCalls).toBeGreaterThanOrEqual(1);
+  });
+
+  it('shows the disconnect overlay when the server closes the socket abnormally (e.g. 4003 revoked)', async () => {
+    const ws = await openConnected();
+
+    act(() => ws.fireClose(4003));
+
+    expect(screen.getByTestId('terminal-disconnect-overlay')).toBeInTheDocument();
+    expect(screen.getByTestId('terminal-overlay-reconnect')).toBeInTheDocument();
+  });
+
+  it('the overlay reconnect button actually reconnects after a watchdog teardown', async () => {
+    await openConnected();
+
+    // Kill the session via the silence watchdog, then click the overlay button.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(55_000);
+    });
+    const reconnect = screen.getByTestId('terminal-overlay-reconnect');
+    await act(async () => {
+      reconnect.click();
+    });
+    // Flush the session + ticket fetches and the socket construction.
+    for (let i = 0; i < 5 && MockWebSocket.instances.length < 2; i++) {
+      await act(async () => {});
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(200);
+      });
+    }
+
+    // A brand-new session and socket — the dead attempt is not reused.
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(sessionPostCount()).toBe(2);
+    expect(ticketPostCount()).toBe(2);
+  });
+});

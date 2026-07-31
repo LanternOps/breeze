@@ -26,6 +26,15 @@ vi.mock('../db/schema', () => ({
     agentTokenSuspendedReason: 'agentTokenSuspendedReason',
     hostname: 'hostname',
     lastSeenIp: 'lastSeenIp',
+    mtlsCertSerialNumber: 'mtlsCertSerialNumber',
+  },
+  // Security remediation Wave 5, Task 6 — services/agentCertificateBinding.ts
+  // (imported transitively via agentAuthMiddleware) reads this table.
+  deviceMtlsCertificates: {
+    deviceId: 'deviceMtlsCertificates.deviceId',
+    state: 'deviceMtlsCertificates.state',
+    serialNumber: 'deviceMtlsCertificates.serialNumber',
+    createdAt: 'deviceMtlsCertificates.createdAt',
   },
 }));
 
@@ -40,6 +49,11 @@ vi.mock('../services/auditService', () => ({
 
 vi.mock('../services/clientIp', () => ({
   getTrustedClientIp: vi.fn(() => 'unknown'),
+  // Security remediation Wave 5, Task 6 — agentAuthMiddleware now calls
+  // readAgentCertificateAssertion (services/agentCertificateBinding.ts),
+  // which reads this. Defaults to untrusted; individual binding tests
+  // override via vi.mocked(trustsForwardedHeadersFrom).
+  trustsForwardedHeadersFrom: vi.fn(() => false),
 }));
 
 vi.mock('../services/tenantStatus', () => ({
@@ -50,6 +64,7 @@ vi.mock('drizzle-orm', () => ({
   eq: vi.fn((left, right) => ({ left, right })),
   and: vi.fn((...args) => ({ and: args })),
   isNull: vi.fn((col) => ({ isNull: col })),
+  desc: vi.fn((col) => ({ desc: col })),
 }));
 
 import type { Context } from 'hono';
@@ -58,7 +73,7 @@ import { createHash } from 'crypto';
 import { db, withDbAccessContext } from '../db';
 import { getRedis, rateLimiter } from '../services';
 import { createAuditLogAsync } from '../services/auditService';
-import { getTrustedClientIp } from '../services/clientIp';
+import { getTrustedClientIp, trustsForwardedHeadersFrom } from '../services/clientIp';
 import { getAgentTenantState } from '../services/tenantStatus';
 import {
   agentAuthMiddleware,
@@ -251,12 +266,17 @@ function makeDevice(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function createContext(opts: { agentId?: string; token?: string; path?: string } = {}): TestContext {
+function createContext(
+  opts: { agentId?: string; token?: string; path?: string; headers?: Record<string, string> } = {},
+): TestContext {
   const headers: Record<string, string> = {};
   const store = new Map<string, unknown>();
   const reqHeaders: Record<string, string> = {};
   if (opts.token) {
     reqHeaders['authorization'] = `Bearer ${opts.token}`;
+  }
+  for (const [key, value] of Object.entries(opts.headers ?? {})) {
+    reqHeaders[key.toLowerCase()] = value;
   }
 
   let response: { status: number; body: unknown } | null = null;
@@ -375,6 +395,151 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
 
     expect(next).toHaveBeenCalledTimes(1);
     expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Security remediation Wave 5, Task 6 — the shared certificate/device
+// binding decision (services/agentCertificateBinding.ts) runs inside
+// agentAuthMiddleware after bearer + tenant-status checks. Sequenced select
+// mock: 1st call is the device lookup (buildSelectMock's persistent shape
+// won't do here since the binding check issues its OWN db.select call(s)).
+const ACTIVE_SERIAL = 'AABBCCDDEEFF00112233';
+const OTHER_SERIAL = '00112233AABBCCDDEEFF';
+
+function queueSelectOnce(rows: unknown[]) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(rows),
+        orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+      }),
+    }),
+  } as any);
+}
+
+function assertionHeaders(serial: string): Record<string, string> {
+  return {
+    'X-Breeze-Client-Cert-Verified': 'true',
+    'X-Breeze-Client-Cert-Serial': serial,
+  };
+}
+
+describe('agentAuthMiddleware - certificate/device binding (Wave 5 Task 6)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    delete process.env.AGENT_MTLS_BINDING_MODE;
+    vi.mocked(getRedis).mockReturnValue({} as any);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: true,
+      remaining: 100,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+    vi.mocked(trustsForwardedHeadersFrom).mockReturnValue(false);
+  });
+
+  afterEach(() => {
+    delete process.env.AGENT_MTLS_BINDING_MODE;
+  });
+
+  it('mode off (default): never queries the certificate identity table', async () => {
+    queueSelectOnce([makeDevice()]);
+    const c = createContext({ token: VALID_TOKEN });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    // Only the device lookup select — no second call for cert identity.
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+  });
+
+  it('mode enforce: allows through with a trusted, matching certificate assertion', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    vi.mocked(trustsForwardedHeadersFrom).mockReturnValue(true);
+    queueSelectOnce([makeDevice()]);
+    queueSelectOnce([{ serialNumber: ACTIVE_SERIAL, state: 'active' }]);
+
+    const c = createContext({ token: VALID_TOKEN, headers: assertionHeaders(ACTIVE_SERIAL) });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('mode enforce: rejects with an opaque 401 when no assertion is presented and an active cert is on file', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    queueSelectOnce([makeDevice()]);
+    queueSelectOnce([{ serialNumber: ACTIVE_SERIAL, state: 'active' }]);
+
+    const c = createContext({ token: VALID_TOKEN });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await expect(agentAuthMiddleware(c, next)).rejects.toMatchObject({
+      status: 401,
+      message: 'Invalid agent credentials',
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('mode enforce: rejects a certificate assertion naming a DIFFERENT device\'s serial (bearer token cannot choose another device\'s identity)', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    vi.mocked(trustsForwardedHeadersFrom).mockReturnValue(true);
+    queueSelectOnce([makeDevice()]);
+    queueSelectOnce([{ serialNumber: ACTIVE_SERIAL, state: 'active' }]);
+
+    // The assertion names a serial that is NOT this device's active serial
+    // (e.g. a different device's certificate) — must be denied even though
+    // the assertion itself is trusted + verified.
+    const c = createContext({ token: VALID_TOKEN, headers: assertionHeaders(OTHER_SERIAL) });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await expect(agentAuthMiddleware(c, next)).rejects.toMatchObject({ status: 401 });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('mode enforce: ignores a verified claim from an untrusted source (spoofed header) and denies', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    vi.mocked(trustsForwardedHeadersFrom).mockReturnValue(false); // untrusted source
+    queueSelectOnce([makeDevice()]);
+    queueSelectOnce([{ serialNumber: ACTIVE_SERIAL, state: 'active' }]);
+
+    const c = createContext({ token: VALID_TOKEN, headers: assertionHeaders(ACTIVE_SERIAL) });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await expect(agentAuthMiddleware(c, next)).rejects.toMatchObject({ status: 401 });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('mode audit: a mismatched assertion is observed but never blocks the request', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'audit';
+    vi.mocked(trustsForwardedHeadersFrom).mockReturnValue(true);
+    queueSelectOnce([makeDevice()]);
+    queueSelectOnce([{ serialNumber: ACTIVE_SERIAL, state: 'active' }]);
+
+    const c = createContext({ token: VALID_TOKEN, headers: assertionHeaders(OTHER_SERIAL) });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('mode enforce: a legacy device with no certificate identity at all is allowed through (compatibility)', async () => {
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+    queueSelectOnce([makeDevice()]);
+    queueSelectOnce([]); // no active row
+    queueSelectOnce([]); // no historical row either
+    queueSelectOnce([{ legacySerial: null }]); // no legacy column either
+
+    const c = createContext({ token: VALID_TOKEN });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
   });
 });
 

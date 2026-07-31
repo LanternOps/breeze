@@ -23,8 +23,8 @@ func TestHandleSetAutoUpdateChangeToTrue(t *testing.T) {
 	})
 
 	// In-memory config must be updated
-	if !h.config.AutoUpdate {
-		t.Fatal("expected h.config.AutoUpdate to be true after setting enabled=true")
+	if !h.autoUpdate() {
+		t.Fatal("expected autoUpdate() to be true after setting enabled=true")
 	}
 
 	// Status may be "completed" (if config persists successfully) or "failed" (test environment).
@@ -52,8 +52,8 @@ func TestHandleSetAutoUpdateChangeToFalse(t *testing.T) {
 	})
 
 	// In-memory config must be updated
-	if h.config.AutoUpdate {
-		t.Fatal("expected h.config.AutoUpdate to be false after setting enabled=false")
+	if h.autoUpdate() {
+		t.Fatal("expected autoUpdate() to be false after setting enabled=false")
 	}
 
 	// Status may be "completed" (if config persists successfully) or "failed" (test environment).
@@ -80,8 +80,8 @@ func TestHandleSetAutoUpdateMissingPayload(t *testing.T) {
 	})
 
 	// Should default to false when not provided
-	if h.config.AutoUpdate {
-		t.Fatal("expected h.config.AutoUpdate to be false when enabled is missing")
+	if h.autoUpdate() {
+		t.Fatal("expected autoUpdate() to be false when enabled is missing")
 	}
 }
 

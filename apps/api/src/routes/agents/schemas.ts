@@ -192,6 +192,11 @@ export const heartbeatSchema = z.object({
     checkedAt: z.string().datetime({ offset: true }),
   }).optional().catch(undefined),
   isHeadless: z.boolean().optional().catch(undefined),
+  // Resolved helper spawn mode ("always-on" | "on-demand"), reported once the
+  // agent's lifecycle manager has classified the host as an RD Session Host or
+  // not. An unrecognized value degrades to undefined (.catch) rather than
+  // 400-ing the heartbeat — old/new agent skew must never break check-ins.
+  helperLifecycleMode: z.enum(['always-on', 'on-demand']).optional().catch(undefined),
   // Current-state power/battery telemetry (#2142). Informational — a bad value
   // drops the whole battery object (.catch) rather than 400-ing the heartbeat.
   battery: z.object({
@@ -242,6 +247,14 @@ export const heartbeatSchema = z.object({
     // string, non-array) drops ONLY the UPNs, not the whole device-state block.
     signedInUpns: z.array(z.string().max(320)).max(16).default([]).catch([]),
     driftEntries: z.array(z.record(z.string(), z.unknown())).default([]),
+  }).optional().catch(undefined),
+  // Wave 6 Task 4 (security remediation) — outbound-network-policy capability
+  // handshake. Old agents omit this object entirely; a capable agent sends
+  // `{"outboundNetworkPolicyVersion":1}`. Informational — a bad value drops
+  // the whole object (.catch) rather than 400-ing the heartbeat, since the
+  // route treats anything other than exactly 1 as "not enforcing" anyway.
+  securityCapabilities: z.object({
+    outboundNetworkPolicyVersion: z.number().int().optional().catch(undefined),
   }).optional().catch(undefined),
 });
 

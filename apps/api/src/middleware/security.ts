@@ -1,4 +1,5 @@
 import type { Context, MiddlewareHandler, Next } from 'hono';
+import { canonicalHttpsRedirect, effectiveRequestScheme, isCanonicalRequestHost } from '../services/requestTransport';
 
 /**
  * Security middleware for Breeze API.
@@ -12,9 +13,29 @@ import type { Context, MiddlewareHandler, Next } from 'hono';
  * X-Content-Type-Options, X-Frame-Options, Referrer-Policy,
  * Cross-Origin isolation headers, and HSTS).
  * This middleware adds headers that secureHeaders does NOT set by default.
+ *
+ * Security remediation Wave 5, Task 8 (TRANSPORT-001): the HTTP->HTTPS
+ * redirect used to trust the raw `X-Forwarded-Proto` header unconditionally
+ * (any client reaching the API directly could claim `https` and defeat the
+ * redirect) and built the redirect `Location` from the request URL, which
+ * reflects the inbound `Host` header verbatim (attacker-controlled when the
+ * client bypasses the reverse proxy). Both are now delegated to
+ * `services/requestTransport.ts`: the effective scheme is only trusted from
+ * `X-Forwarded-Proto` when the immediate TCP peer is a configured trusted
+ * proxy, and the redirect `Location` is built ONLY from `PUBLIC_API_URL`
+ * (never from inbound `Host`) — an unrecognized `Host` gets a 400 instead of
+ * a redirect to whatever the client claimed.
  */
 
-const HEALTH_CHECK_PATHS = new Set(['/health', '/ready']);
+// Liveness/readiness probes are hit by orchestrators and load balancers with a
+// raw IP/localhost Host over plain HTTP — they must never be redirected to HTTPS
+// or 400'd for a non-canonical Host. This set must cover EVERY health route
+// registered below (/health, /health/live, /health/ready) plus the legacy /ready
+// alias. Wave 5 Task 8 (TRANSPORT-001) note: effectiveRequestScheme() reports
+// `http` for a direct request even with no X-Forwarded-Proto, so a probe path
+// omitted here is actively rejected under FORCE_HTTPS — not merely un-redirected
+// as under the prior raw-header check.
+const HEALTH_CHECK_PATHS = new Set(['/health', '/health/live', '/health/ready', '/ready']);
 
 interface SecurityMiddlewareOptions {
   /** Override NODE_ENV for testing. Defaults to process.env.NODE_ENV */
@@ -27,6 +48,8 @@ interface SecurityMiddlewareOptions {
   allowUnsafeInline?: string;
   /** Override CSP_CONNECT_HOSTS (comma-separated) for testing. */
   cspConnectHosts?: string;
+  /** Override PUBLIC_API_URL for testing. Defaults to process.env.PUBLIC_API_URL */
+  publicApiUrl?: string;
 }
 
 /**
@@ -65,6 +88,20 @@ export function securityMiddleware(options?: SecurityMiddlewareOptions): Middlew
   const cspConnectHosts = options?.cspConnectHosts ?? process.env.CSP_CONNECT_HOSTS;
   const normalized = forceHttps?.trim().toLowerCase();
   const isForceHttps = normalized === 'true' || normalized === '1';
+  const publicApiUrlRaw = options?.publicApiUrl ?? process.env.PUBLIC_API_URL;
+  // Parsed once at middleware setup, not per-request. When FORCE_HTTPS is true
+  // but PUBLIC_API_URL is missing/unparsable, the redirect/reject logic below
+  // is skipped entirely (config/validate.ts refuses production boot in that
+  // combination — see the PUBLIC_API_URL superRefine block — so this is only
+  // reachable in dev/test with an intentionally incomplete override).
+  let publicApiUrl: URL | null = null;
+  if (isForceHttps && publicApiUrlRaw) {
+    try {
+      publicApiUrl = new URL(publicApiUrlRaw);
+    } catch {
+      publicApiUrl = null;
+    }
+  }
   // Strict by default; only allow inline script/style when explicitly enabled.
   // CSP_ALLOW_UNSAFE_INLINE has NO effect in production — refusing to
   // weaken CSP in prod even if the env var is mis-set.
@@ -108,15 +145,16 @@ export function securityMiddleware(options?: SecurityMiddlewareOptions): Middlew
     const path = c.req.path;
 
     // --- HTTP -> HTTPS redirect ---
-    if (isForceHttps && !HEALTH_CHECK_PATHS.has(path)) {
-      const proto = c.req.header('x-forwarded-proto');
-      if (proto === 'http') {
-        try {
-          const url = new URL(c.req.url);
-          url.protocol = 'https:';
-          return c.redirect(url.toString(), 308);
-        } catch {
-          // Malformed URL — fall through to normal processing
+    if (isForceHttps && publicApiUrl && !HEALTH_CHECK_PATHS.has(path)) {
+      if (effectiveRequestScheme(c) === 'http') {
+        if (!isCanonicalRequestHost(c, publicApiUrl)) {
+          // Never reflect an unrecognized Host into a redirect — reject
+          // instead of redirecting to a domain the client didn't ask for.
+          return c.text('Bad Request', 400);
+        }
+        const location = canonicalHttpsRedirect(c, publicApiUrl);
+        if (location) {
+          return c.redirect(location.toString(), 308);
         }
       }
     }

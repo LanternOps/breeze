@@ -1,9 +1,11 @@
 package heartbeat
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -163,18 +165,78 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 
 	policy := parseDesktopSessionPolicy(cmd.Payload)
 
+	// Explicit per-session target (multi-session hosts): the Windows session
+	// this connect is shadowing, if any. Recorded before the consent gate so
+	// the consent prompt lands in the right session, and remembered under
+	// sessionID so the stop path (handleConsentSessionEnd, via
+	// h.takeDesktopTarget) routes the banner-hide/end-notify to the same user.
+	// "" means untargeted/legacy — every helper below keeps the pre-existing
+	// machine-global selection in that case.
+	targetSession := ""
+	if ts, ok := cmd.Payload["targetSessionId"].(float64); ok {
+		targetSession = strconv.Itoa(int(ts))
+	}
+	h.setDesktopTarget(sessionID, targetSession)
+
 	// Consent gate (Task 9): when the API attached a `prompt` block in mode
 	// "consent", ask the end user BEFORE starting any capture. A denial (or a
 	// policy-driven block when no user can answer) short-circuits with a
 	// `consent_denied` marker the API ingests to finalize the session as
 	// `denied`. An older API that sends no prompt leaves this path untouched.
 	prompt := parseDesktopPrompt(cmd.Payload)
+
+	// On-demand (RDS) hosts run zero helpers at rest: the helper this connect
+	// needs does not exist yet and is only spawned while a lease is held on its
+	// {session, role}. Take the leases BEFORE the consent gate so the consent
+	// dialog has a user helper to render in, and so the capture helper is
+	// already spawning while the user decides.
+	onDemand := h.lifecycleMode() == "on-demand"
+	if onDemand && h.sessionBroker != nil {
+		if targetSession == "" {
+			// Legacy callers (no picker) get the console session — at rest an
+			// RDS host has zero helpers, so an untargeted connect must still
+			// pick a concrete session to lease.
+			targetSession = h.sessionBroker.ConsoleSessionID()
+			if n, err := strconv.Atoi(targetSession); err == nil {
+				cmd.Payload["targetSessionId"] = float64(n) // startDesktopViaHelper re-parses payload
+			}
+			h.setDesktopTarget(sessionID, targetSession)
+		}
+		winID, err := resolveDesktopTargetWinID(targetSession)
+		if err != nil {
+			h.takeDesktopTarget(sessionID)
+			return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+		}
+		wantConsentUI := prompt != nil && prompt.Mode != "off"
+		if failure := h.acquireDesktopLeases(sessionID, winID, wantConsentUI); failure != nil {
+			h.takeDesktopTarget(sessionID)
+			failure.DurationMs = time.Since(start).Milliseconds()
+			return *failure
+		}
+		if wantConsentUI {
+			// Give the user-role helper a bounded head start so the consent
+			// dialog can render in-session; not-ready degrades to the
+			// policy's consentUnavailableBehavior (helperPresent=false).
+			waitCtx, cancelWait := context.WithTimeout(context.Background(), consentHelperWait)
+			res := h.lifecycleController().WaitForHelperReady(waitCtx, sessionbroker.HelperKey{WindowsSessionID: winID, Role: ipc.HelperRoleUser})
+			cancelWait()
+			if res.Status != sessionbroker.HelperWaitReady {
+				log.Warn("consent helper not ready in target session",
+					"sessionId", sessionID, "target", targetSession, "status", string(res.Status))
+			}
+		}
+	}
+
 	if prompt != nil && prompt.Mode == "consent" {
-		verdict, helperPresent, timedOut := h.requestConsent(sessionID, prompt)
+		verdict, helperPresent, timedOut := h.requestConsent(sessionID, prompt, targetSession)
 		proceed, reason := decideConsent(verdict, helperPresent, timedOut, prompt.ConsentUnavailableBehavior)
 		if !proceed {
 			log.Info("remote session denied by consent gate",
 				"sessionId", sessionID, "reason", reason)
+			// The session never started — no disconnect event will ever arrive
+			// to release this via handleConsentSessionEnd, so clear it here.
+			h.releaseDesktopLeases(sessionID)
+			h.takeDesktopTarget(sessionID)
 			return consentDeniedResult(sessionID, reason, time.Since(start).Milliseconds())
 		}
 	}
@@ -188,8 +250,15 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	if (h.isService || h.isHeadless) && h.sessionBroker != nil && runtime.GOOS != "linux" {
 		result := h.startDesktopViaHelper(sessionID, offer, iceServers, displayIndex, policy, cmd.Payload)
 		if result.Status == "completed" && prompt != nil {
-			h.afterDesktopStart(sessionID, prompt)
+			h.afterDesktopStart(sessionID, prompt, targetSession)
 			result = withConsentGranted(result, prompt)
+		} else if result.Status != "completed" {
+			// Helper start failed — no live session, so no disconnect event
+			// will come to release the target or the leases. Clear both now.
+			// startDesktopOnDemand already did this for the on-demand path;
+			// both are idempotent, and this covers every other failure exit.
+			h.releaseDesktopLeases(sessionID)
+			h.takeDesktopTarget(sessionID)
 		}
 		result.DurationMs = time.Since(start).Milliseconds()
 		return result
@@ -202,14 +271,24 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// proceed or block — the console user is NOT interactively prompted here.
 	answer, err := h.desktopMgr.StartSession(sessionID, offer, iceServers, displayIndex, policy)
 	if err != nil {
+		// Direct start failed — same reasoning as the helper-start-failed case
+		// above: nothing will disconnect to release the target.
+		h.releaseDesktopLeases(sessionID)
+		h.takeDesktopTarget(sessionID)
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	if onDemand {
+		// Not reachable in production (on-demand implies a Windows service, which
+		// always takes the helper path above) but a lease taken must always end up
+		// either renewed or released — never left to silently expire.
+		h.startDesktopLeaseRenewal(sessionID)
 	}
 	resultData := map[string]any{
 		"sessionId": sessionID,
 		"answer":    answer,
 	}
 	if prompt != nil {
-		h.afterDesktopStart(sessionID, prompt)
+		h.afterDesktopStart(sessionID, prompt, targetSession)
 		if prompt.Mode == "consent" {
 			resultData["consentReason"] = "user"
 		}
@@ -259,6 +338,11 @@ func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		return *errResult
 	}
 
+	// Drop any on-demand helper leases first: the lease is what keeps the
+	// helper alive, and it must be released even if the stop below fails.
+	// No-op in always-on mode / when nothing was leased.
+	h.releaseDesktopLeases(sessionID)
+
 	// State-based routing: if an IPC helper actually owns this session, stop it
 	// over IPC; otherwise stop the direct desktopMgr session. Never gate on the
 	// headless flag — on Linux (and any box whose headless state flips between
@@ -303,20 +387,7 @@ func handleListSessions(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
-	items := make([]ipc.SessionInfoItem, 0, len(detected))
-	for _, ds := range detected {
-		sessionNum, err := sessionbroker.ParseWindowsSessionIDForHeartbeat(ds.Session)
-		if err != nil {
-			continue
-		}
-		items = append(items, ipc.SessionInfoItem{
-			SessionID:       sessionNum,
-			Username:        ds.Username,
-			State:           ds.State,
-			Type:            ds.Type,
-			HelperConnected: helperByWinSession[ds.Session],
-		})
-	}
+	items := sessionbroker.BuildSessionInfoItems(detected, helperByWinSession)
 
 	return tools.NewSuccessResult(map[string]any{
 		"sessions": items,

@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils';
 import { extractApiError } from '@/lib/apiError';
 import { fetchWithAuth } from '../../stores/auth';
 import { useTranslation } from 'react-i18next';
+import { asList } from '@/lib/asList';
 import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -64,12 +65,12 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
         ]);
         if (devRes.ok) {
           const payload = await devRes.json();
-          const data = payload?.data ?? payload ?? [];
+          const data = asList(payload);
           setDevices(Array.isArray(data) ? data : []);
         }
         if (grpRes.ok) {
           const payload = await grpRes.json();
-          const data = payload?.data ?? payload ?? [];
+          const data = asList(payload);
           setGroups(Array.isArray(data) ? data : []);
         }
       } catch {

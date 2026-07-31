@@ -27,6 +27,36 @@
 }
 
 {$CADDY_SITE_ADDRESS::80} {
+  # --- Wave 5 Task 7 (final review C1 + I6): GLOBAL inbound assertion strip --
+  # Runs before ANY route below, in its own headers handler. Two reasons this
+  # lives here rather than inside each `reverse_proxy` as a `header_up -...`:
+  #
+  #  1) C1: Caddy compiles a reverse_proxy's `header_up` lines into ONE
+  #     HeaderOps struct and applies `delete` AFTER `set`, regardless of the
+  #     order they appear in the Caddyfile. A `header_up -X-Breeze-...`
+  #     sitting next to a `header_up X-Breeze-... {placeholder}` therefore
+  #     STRIPS the value we just set — verified against real caddy:2, the
+  #     upstream saw no assertion headers at all, which silently made the
+  #     entire mTLS binding layer inert. Never co-locate the two again; the
+  #     edge-policy check (scripts/check-agent-mtls-edge-policy.sh) now
+  #     rejects that shape.
+  #
+  #  2) I6: the assertion normalization used to exist ONLY in `handle @api`,
+  #     so /api/v1/mcp/sse, /api/v1/ai/sessions/*/stream and /oauth/* — which
+  #     all reach the SAME api:3001 origin through their own handle blocks —
+  #     forwarded a client-supplied X-Breeze-* header untouched. Stripping
+  #     once, globally, closes every current and FUTURE route to the origin
+  #     by default: a new handle block cannot forget to opt in.
+  #
+  # A route that legitimately needs the assertion (only `handle @api` does)
+  # re-derives it from the verified provider result via the maps below. The
+  # `header_up X-Breeze-... {placeholder}` set there REPLACES rather than
+  # appends (proven against caddy:2), so this global delete plus that set are
+  # both belt and braces: even a client-supplied copy that somehow survived
+  # would be overwritten by the mapped value.
+  request_header -X-Breeze-Client-Cert-Verified
+  request_header -X-Breeze-Client-Cert-Serial
+
   # --- SSE / streaming: no compression, no buffering ---
   @streaming {
     path /api/v1/mcp/sse
@@ -36,6 +66,14 @@
   handle @streaming {
     reverse_proxy api:3001 {
       flush_interval -1
+
+      # I6: this block reaches the API origin, so the raw provider certificate
+      # headers must be discarded here too — the API must only ever see the
+      # normalized Breeze pair, and only on the routes that set it.
+      header_up -Cf-Client-Cert-Verified
+      header_up -Cf-Client-Cert-Serial
+      header_up -Cf-Client-Cert-Der-Base64
+      header_up -Cf-Client-Cert-Sha256
     }
   }
 
@@ -79,14 +117,26 @@
   # interference with the Hono bridge.
   @oauth path /oauth/*
   handle @oauth {
-    reverse_proxy api:3001
+    reverse_proxy api:3001 {
+      # I6: reaches the API origin — discard raw provider cert headers.
+      header_up -Cf-Client-Cert-Verified
+      header_up -Cf-Client-Cert-Serial
+      header_up -Cf-Client-Cert-Der-Base64
+      header_up -Cf-Client-Cert-Sha256
+    }
   }
 
   # --- OAuth + general .well-known endpoints (api) ---
   @oauthWellKnown path /.well-known/oauth-authorization-server /.well-known/oauth-protected-resource /.well-known/jwks.json
   handle @oauthWellKnown {
     encode zstd gzip
-    reverse_proxy api:3001
+    reverse_proxy api:3001 {
+      # I6: reaches the API origin — discard raw provider cert headers.
+      header_up -Cf-Client-Cert-Verified
+      header_up -Cf-Client-Cert-Serial
+      header_up -Cf-Client-Cert-Der-Base64
+      header_up -Cf-Client-Cert-Sha256
+    }
   }
 
   # --- Remote-access cutover barrier ---
@@ -110,11 +160,100 @@
     respond "{\"error\":\"remote access temporarily unavailable\"}" 503
   }
 
+  # --- Wave 5 Task 7: agent mTLS protected route set (documentation/parity) --
+  # Mirrors the Cloudflare WAF custom rule in
+  # docs/operations/cloudflare-mtls-setup.md and the fixtures in
+  # scripts/check-agent-mtls-edge-policy.sh verbatim, so all three copies of
+  # this expression can never silently drift apart. This matcher is NOT itself
+  # an enforcement point — Cloudflare's edge blocks unverified mTLS before the
+  # request reaches this tunnel hop, and the API's certificate/device binding
+  # service (agentCertificateBinding.ts) makes the final per-device decision.
+  # Exempt (bearer-only, no active identity to bind yet): /api/v1/agents/enroll,
+  # /api/v1/agents/renew-cert, /api/v1/agents/renew-cert/challenge — none of
+  # these match the expression below. Never widen it to a bare substring
+  # (`contains`) or wildcard-style renewal exemption.
+  #
+  # C3 (final review): the agent identity segment is the AGENT ID, which is
+  # `randomBytes(32).toString('hex')` = 64 hex characters
+  # (routes/agents/helpers.ts `generateAgentId`), matched against
+  # `devices.agent_id` by middleware/agentAuth.ts and routes/agentWs.ts. The
+  # original `[0-9a-fA-F-]{36}` was a UUID shape and was exactly inverted: it
+  # matched NO agent route, while it DID match the 36-character UUID admin
+  # routes (`/api/v1/agents/<deviceId>/approve` etc., mtls.ts, user-JWT +
+  # requirePermission, `z.string().guid()`), which must never be swept into an
+  # agent-mTLS protected set — an admin browser has no client certificate and
+  # would be blocked at the edge. `{64}` cannot match a 36-char UUID, so the
+  # admin surface is excluded structurally rather than by an exemption.
+  #
+  # The fourth pattern covers the extension agent mount
+  # (extensions/gateway.ts: `<mountPrefix>/agent/:id`, reachable as both
+  # `/api/v1/ext/<extension>/agent/<agentId>` and
+  # `/api/v1/<routeNamespace>/agent/<agentId>` — see extensions/loader.ts),
+  # which authenticates with the SAME agent token and device identity as the
+  # core routes and would otherwise be an unprotected second agent surface.
+  @agentMtlsProtected {
+    expression path_regexp('^/api/v1/agents/[0-9a-fA-F]{64}(?:/.*)?$') || path('/api/v1/agents/renew-cert/confirm') || path_regexp('^/api/v1/agent-ws/[0-9a-fA-F]{64}/ws$') || path_regexp('^/api/v1/(?:ext/)?[a-z0-9][a-z0-9-]*/agent/[0-9a-fA-F]{64}(?:/.*)?$')
+  }
+
   # --- API routes (with compression) ---
   @api path /api/* /s/* /health /health/* /ready /metrics/* /i/* /activate/*
   handle @api {
     encode zstd gzip
-    reverse_proxy api:3001
+
+    # Wave 5 Task 7 — normalize the agent mTLS assertion at this, the final
+    # trusted hop before the API (Internet -> cloudflared -> Caddy -> api).
+    # 1) Map Cloudflare's own verified-mTLS result to a strict boolean-text
+    #    placeholder. Only the literal "true" (as emitted by the operator's
+    #    Cloudflare Transform Rule from `cf.tls_client_auth.cert_verified`)
+    #    passes; every other value, including absent/malformed/spoofed input,
+    #    becomes "false". This is an allowlist, not a rename — it discards any
+    #    other shape a misconfigured or spoofing upstream might send.
+    #
+    #    The serial is gated on the SAME input, not forwarded unconditionally:
+    #    when verified is anything other than the literal "true", the serial
+    #    placeholder also collapses to empty, so an unverified/absent result
+    #    can never carry a real-looking serial number downstream. Both
+    #    placeholders come from one map so they can never disagree.
+    map {http.request.header.Cf-Client-Cert-Verified} {breeze_agent_cert_verified} {
+      true true
+      default false
+    }
+    map {http.request.header.Cf-Client-Cert-Verified} {breeze_agent_cert_serial} {
+      true {http.request.header.Cf-Client-Cert-Serial}
+      default ""
+    }
+
+    reverse_proxy api:3001 {
+      # 2) Discarding inbound client-forged Breeze assertion headers happens
+      #    GLOBALLY at the top of this site block (`request_header -X-Breeze-*`)
+      #    — NOT here. Putting a `header_up -X-Breeze-...` in this same block
+      #    would delete the value step 3 sets, because Caddy applies a
+      #    reverse_proxy HeaderOps `delete` after its `set` no matter the
+      #    source order (final-review finding C1, reproduced against real
+      #    caddy:2). The `header_up ... {placeholder}` sets below are
+      #    replacements, not appends, so an inbound copy cannot survive them
+      #    either — the global strip and this set are independently sufficient.
+      #
+      # 3) Set the two Breeze headers ONLY from the verified Cloudflare mTLS
+      #    result (via the allowlist maps above) or, for a self-hosted operator
+      #    terminating mTLS locally, their own certificate-validating proxy's
+      #    equivalent output — see docs/operations/cloudflare-mtls-setup.md.
+      #    Never derive these from arbitrary client-supplied input. The serial
+      #    is bound to the identical verified condition as above (step 1), so
+      #    unverified/spoofed input yields an empty serial too, not just a
+      #    false verified flag.
+      header_up X-Breeze-Client-Cert-Verified {breeze_agent_cert_verified}
+      header_up X-Breeze-Client-Cert-Serial {breeze_agent_cert_serial}
+
+      # 4) Discard Cloudflare's raw client-certificate headers so PEM/DER/
+      #    fingerprint material — and the raw pre-map verified/serial fields
+      #    themselves — never reach the API. Only the normalized Breeze pair
+      #    set above may cross this hop.
+      header_up -Cf-Client-Cert-Verified
+      header_up -Cf-Client-Cert-Serial
+      header_up -Cf-Client-Cert-Der-Base64
+      header_up -Cf-Client-Cert-Sha256
+    }
   }
 
   # --- MSP Invoice Engine + Quotes pages live in the web app at

@@ -741,3 +741,219 @@ func TestSaveToAbortsWhenStripFails(t *testing.T) {
 		t.Fatalf("agent.yaml leaked the auth token after a failed strip: %q", data)
 	}
 }
+
+// ---------- Wave 5 Task 5: pending mTLS certificate persistence ----------
+
+// TestSaveToRoundTripsPendingMTLSFields is the core durability contract: the
+// pending certificate/key/ID/expiry staged during a two-phase renewal must
+// survive an atomic save + reload byte-for-byte, exactly like the active
+// mTLS fields already do.
+func TestSaveToRoundTripsPendingMTLSFields(t *testing.T) {
+	defer viper.Reset()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	activationExpiresAt := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+
+	cfg := Default()
+	cfg.AgentID = "ab3c20eddb470acffd33bbe00f25e0348e89298ab80cece542bb1fbf921e5776"
+	cfg.ServerURL = "https://api.example.test"
+	cfg.AuthToken = "brz_agent"
+	cfg.WatchdogAuthToken = "brz_watchdog"
+	cfg.HelperAuthToken = "brz_helper"
+	cfg.MtlsCertPEM = "-----BEGIN CERTIFICATE-----\nACTIVE\n-----END CERTIFICATE-----"
+	cfg.MtlsKeyPEM = "-----BEGIN EC PRIVATE KEY-----\nACTIVEKEY\n-----END EC PRIVATE KEY-----"
+	cfg.MtlsCertExpires = "2026-10-01T00:00:00Z"
+	cfg.PendingMTLSCertificate = "-----BEGIN CERTIFICATE-----\nPENDING\n-----END CERTIFICATE-----"
+	cfg.PendingMTLSPrivateKey = "-----BEGIN EC PRIVATE KEY-----\nPENDINGKEY\n-----END EC PRIVATE KEY-----"
+	cfg.PendingMTLSCertificateID = "cert-pending-123"
+	cfg.PendingMTLSExpiresAt = activationExpiresAt
+
+	if err := SaveTo(cfg, cfgPath); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	// Pending material must never land in the world-readable agent.yaml.
+	agentYAML, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read agent.yaml: %v", err)
+	}
+	if strings.Contains(string(agentYAML), "PENDING") {
+		t.Fatalf("agent.yaml leaked pending mTLS material:\n%s", agentYAML)
+	}
+
+	loaded, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.PendingMTLSCertificate != cfg.PendingMTLSCertificate {
+		t.Errorf("PendingMTLSCertificate = %q, want %q", loaded.PendingMTLSCertificate, cfg.PendingMTLSCertificate)
+	}
+	if loaded.PendingMTLSPrivateKey != cfg.PendingMTLSPrivateKey {
+		t.Errorf("PendingMTLSPrivateKey = %q, want %q", loaded.PendingMTLSPrivateKey, cfg.PendingMTLSPrivateKey)
+	}
+	if loaded.PendingMTLSCertificateID != cfg.PendingMTLSCertificateID {
+		t.Errorf("PendingMTLSCertificateID = %q, want %q", loaded.PendingMTLSCertificateID, cfg.PendingMTLSCertificateID)
+	}
+	if !loaded.PendingMTLSExpiresAt.Equal(activationExpiresAt) {
+		t.Errorf("PendingMTLSExpiresAt = %v, want %v", loaded.PendingMTLSExpiresAt, activationExpiresAt)
+	}
+	// The active fields must be untouched by the pending round-trip.
+	if loaded.MtlsCertPEM != cfg.MtlsCertPEM || loaded.MtlsKeyPEM != cfg.MtlsKeyPEM || loaded.MtlsCertExpires != cfg.MtlsCertExpires {
+		t.Errorf("active mTLS fields corrupted by pending round-trip: cert=%q key=%q expires=%q",
+			loaded.MtlsCertPEM, loaded.MtlsKeyPEM, loaded.MtlsCertExpires)
+	}
+}
+
+// TestSaveToPromotionClearsPendingWithoutTouchingUnrelatedConfig proves the
+// single-write promotion contract: setting the active fields from the
+// pending ones and zeroing the pending fields in one SaveTo call is
+// indistinguishable, from disk, from having never staged anything — and
+// every unrelated field (org/site/watchdog settings) survives untouched.
+func TestSaveToPromotionClearsPendingWithoutTouchingUnrelatedConfig(t *testing.T) {
+	defer viper.Reset()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	cfg := Default()
+	cfg.AgentID = "ab3c20eddb470acffd33bbe00f25e0348e89298ab80cece542bb1fbf921e5776"
+	cfg.ServerURL = "https://api.example.test"
+	cfg.AuthToken = "brz_agent"
+	cfg.OrgID = "org-promote-1"
+	cfg.SiteID = "site-promote-1"
+	cfg.PAMEnabled = true
+	cfg.MtlsCertPEM = "-----BEGIN CERTIFICATE-----\nOLD\n-----END CERTIFICATE-----"
+	cfg.MtlsKeyPEM = "-----BEGIN EC PRIVATE KEY-----\nOLDKEY\n-----END EC PRIVATE KEY-----"
+	cfg.MtlsCertExpires = "2026-08-01T00:00:00Z"
+	cfg.PendingMTLSCertificate = "-----BEGIN CERTIFICATE-----\nNEW\n-----END CERTIFICATE-----"
+	cfg.PendingMTLSPrivateKey = "-----BEGIN EC PRIVATE KEY-----\nNEWKEY\n-----END EC PRIVATE KEY-----"
+	cfg.PendingMTLSCertificateID = "cert-new-1"
+	cfg.PendingMTLSExpiresAt = time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+
+	if err := SaveTo(cfg, cfgPath); err != nil {
+		t.Fatalf("SaveTo (stage): %v", err)
+	}
+
+	// Promotion: the caller (heartbeat) moves pending -> active and zeroes
+	// pending, then calls SaveTo again — a single atomic rewrite.
+	cfg.MtlsCertPEM = cfg.PendingMTLSCertificate
+	cfg.MtlsKeyPEM = cfg.PendingMTLSPrivateKey
+	cfg.MtlsCertExpires = "2026-10-27T00:00:00Z" // derived from the promoted cert body in production
+	cfg.PendingMTLSCertificate = ""
+	cfg.PendingMTLSPrivateKey = ""
+	cfg.PendingMTLSCertificateID = ""
+	cfg.PendingMTLSExpiresAt = time.Time{}
+
+	if err := SaveTo(cfg, cfgPath); err != nil {
+		t.Fatalf("SaveTo (promote): %v", err)
+	}
+
+	loaded, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.MtlsCertPEM != "-----BEGIN CERTIFICATE-----\nNEW\n-----END CERTIFICATE-----" {
+		t.Errorf("MtlsCertPEM = %q, want the promoted (formerly pending) certificate", loaded.MtlsCertPEM)
+	}
+	if loaded.MtlsKeyPEM != "-----BEGIN EC PRIVATE KEY-----\nNEWKEY\n-----END EC PRIVATE KEY-----" {
+		t.Errorf("MtlsKeyPEM = %q, want the promoted (formerly pending) key", loaded.MtlsKeyPEM)
+	}
+	if loaded.PendingMTLSCertificate != "" || loaded.PendingMTLSPrivateKey != "" ||
+		loaded.PendingMTLSCertificateID != "" || !loaded.PendingMTLSExpiresAt.IsZero() {
+		t.Errorf("promotion left pending fields behind: cert=%q key=%q id=%q expiresAt=%v",
+			loaded.PendingMTLSCertificate, loaded.PendingMTLSPrivateKey,
+			loaded.PendingMTLSCertificateID, loaded.PendingMTLSExpiresAt)
+	}
+	// Unrelated config must be untouched by the promotion write.
+	if loaded.OrgID != "org-promote-1" {
+		t.Errorf("OrgID = %q, want org-promote-1 (promotion must not touch unrelated config)", loaded.OrgID)
+	}
+	if loaded.SiteID != "site-promote-1" {
+		t.Errorf("SiteID = %q, want site-promote-1", loaded.SiteID)
+	}
+	if !loaded.PAMEnabled {
+		t.Errorf("PAMEnabled = false, want true (promotion must not touch unrelated config)")
+	}
+}
+
+// TestIsSecretYAMLKeyPendingMTLSFields extends the isSecretYAMLKey coverage
+// table for the four new pending-cert keys: they must be kept out of the
+// world-readable agent.yaml exactly like their active counterparts.
+func TestIsSecretYAMLKeyPendingMTLSFields(t *testing.T) {
+	cases := map[string]bool{
+		"pending_mtls_certificate":    true,
+		"pending_mtls_private_key":    true,
+		"pending_mtls_certificate_id": true,
+		"pending_mtls_expires_at":     true,
+	}
+	for key, want := range cases {
+		if got := isSecretYAMLKey(key); got != want {
+			t.Errorf("isSecretYAMLKey(%q) = %v, want %v", key, got, want)
+		}
+	}
+}
+
+// TestSaveToRoundTripsDeviceID guards the enrollment-plumbing field the
+// recovery-proof canonicalization depends on (devices.id, distinct from
+// AgentID/devices.agent_id) — it is a plain non-secret field, so this just
+// pins that it round-trips like org_id/site_id.
+func TestSaveToRoundTripsDeviceID(t *testing.T) {
+	defer viper.Reset()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	cfg := Default()
+	cfg.AgentID = "ab3c20eddb470acffd33bbe00f25e0348e89298ab80cece542bb1fbf921e5776"
+	cfg.ServerURL = "https://api.example.test"
+	cfg.AuthToken = "brz_agent"
+	cfg.DeviceID = "550e8400-e29b-41d4-a716-446655440000"
+
+	if err := SaveTo(cfg, cfgPath); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	loaded, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.DeviceID != cfg.DeviceID {
+		t.Errorf("DeviceID = %q, want %q", loaded.DeviceID, cfg.DeviceID)
+	}
+}
+
+// TestSaveToRoundTripsRequireManifestSigningKeyID pins the agent-side rollout
+// control for exact-signing-key-ID verification. Without the viper.Set in
+// SaveTo the field silently reverts to false on the next save — i.e. an agent
+// that was switched to fail-closed would quietly go back to accepting
+// ID-less manifests.
+func TestSaveToRoundTripsRequireManifestSigningKeyID(t *testing.T) {
+	defer viper.Reset()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	cfg := Default()
+	cfg.AgentID = "ab3c20eddb470acffd33bbe00f25e0348e89298ab80cece542bb1fbf921e5776"
+	cfg.ServerURL = "https://api.example.test"
+	if cfg.RequireManifestSigningKeyID {
+		t.Fatal("RequireManifestSigningKeyID must default to false (compatibility mode)")
+	}
+	cfg.RequireManifestSigningKeyID = true
+
+	if err := SaveTo(cfg, cfgPath); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(raw), "require_manifest_signing_key_id") {
+		t.Fatalf("expected require_manifest_signing_key_id key in agent.yaml, got:\n%s", raw)
+	}
+
+	loaded, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !loaded.RequireManifestSigningKeyID {
+		t.Error("RequireManifestSigningKeyID did not round-trip through SaveTo/Load")
+	}
+}

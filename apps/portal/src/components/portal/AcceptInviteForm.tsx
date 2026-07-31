@@ -1,5 +1,5 @@
 import { withBase } from '@/lib/basePath';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -32,6 +32,14 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  // False during SSR and until React hydrates. Before hydration the submit
+  // button stays disabled so the browser can never perform a native form
+  // submit that would serialize the password fields into the URL (#2868).
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
 
   const {
     register,
@@ -117,7 +125,11 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
   }
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+    // method="post" is a pre-hydration safety net: if the island fails to
+    // hydrate, a native submit must never be a GET that puts the password in
+    // the URL / browser history / access logs (#2868). Once hydrated,
+    // react-hook-form's handleSubmit preventDefaults and fetch() takes over.
+    <form method="post" onSubmit={handleSubmit(onSubmit)} className="space-y-6">
       <div className="text-center">
         <p className="text-sm text-muted-foreground">
           Set your password to activate your account.
@@ -193,7 +205,7 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
 
       <button
         type="submit"
-        disabled={isLoading}
+        disabled={!hydrated || isLoading}
         className={cn(
           'flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground',
           'hover:bg-primary/90 focus:outline-hidden focus:ring-2 focus:ring-primary focus:ring-offset-2',

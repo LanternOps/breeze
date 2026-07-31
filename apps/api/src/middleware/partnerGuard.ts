@@ -39,6 +39,7 @@ export async function partnerGuard(c: Context, next: Next) {
           settings: partners.settings,
           emailVerifiedAt: partners.emailVerifiedAt,
           paymentMethodAttachedAt: partners.paymentMethodAttachedAt,
+          billingSubscriptionStatus: partners.billingSubscriptionStatus,
           deletedAt: partners.deletedAt,
         })
         .from(partners)

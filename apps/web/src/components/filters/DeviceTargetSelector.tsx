@@ -6,6 +6,7 @@ import { FilterPreview } from './FilterPreview';
 import { useFilterPreview } from '../../hooks/useFilterPreview';
 import { fetchWithAuth } from '../../stores/auth';
 import { useTranslation } from 'react-i18next';
+import { asList } from '@/lib/asList';
 
 type TargetMode = 'all' | 'manual' | 'groups' | 'filter';
 
@@ -109,7 +110,7 @@ export function DeviceTargetSelector({
       fetchWithAuth('/devices').then(async (res) => {
         if (res.ok) {
           const data = await res.json();
-          const list = data.data ?? data.devices ?? data ?? [];
+          const list = asList(data, 'devices');
           setDevices(list.map((d: Record<string, unknown>) => ({
             id: d.id as string,
             hostname: (d.hostname ?? d.displayName ?? 'Unknown') as string,
@@ -130,7 +131,7 @@ export function DeviceTargetSelector({
       fetchWithAuth('/device-groups').then(async (res) => {
         if (res.ok) {
           const data = await res.json();
-          setGroups(data.data ?? data.groups ?? data ?? []);
+          setGroups(asList(data, 'groups'));
         }
       }).catch(() => {});
     }
@@ -141,7 +142,7 @@ export function DeviceTargetSelector({
       fetchWithAuth('/orgs/sites').then(async (res) => {
         if (res.ok) {
           const data = await res.json();
-          setSites(data.data ?? data.sites ?? data ?? []);
+          setSites(asList(data, 'sites'));
         }
       }).catch(() => {});
     }

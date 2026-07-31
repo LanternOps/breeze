@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -63,6 +64,19 @@ var desktopSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
 const backupProbeThreshold = 10 // keep in sync with agent/cmd/breeze-watchdog
 
+// FINAL-REVIEW I10: slack allowed on the LOCAL comparison against the
+// server-supplied pending-activation deadline, so an agent with a fast clock
+// doesn't discard every pending certificate before it can be confirmed. The
+// server-side window is 15 minutes (PENDING_ACTIVATION_TTL_MS) and the server
+// answers 410 when it has genuinely closed, so this only avoids a pointless
+// round-trip and can be generous.
+const pendingActivationClockSkew = 10 * time.Minute
+
+// FINAL-REVIEW I2: how close to expiry an active mTLS certificate may get
+// before the agent initiates renewal ITSELF, rather than waiting for the
+// server's `renewCert` heartbeat signal. See maybeSelfInitiateCertRenewal.
+const selfInitiatedRenewalLeadTime = 24 * time.Hour
+
 type HeartbeatPayload struct {
 	Metrics          *collectors.SystemMetrics `json:"metrics,omitempty"`
 	MetricsAvailable *bool                     `json:"metricsAvailable,omitempty"`
@@ -93,6 +107,11 @@ type HeartbeatPayload struct {
 	OSVersion      string              `json:"osVersion,omitempty"`
 	OSBuild        string              `json:"osBuild,omitempty"`
 	IsHeadless     bool                `json:"isHeadless"`
+	// HelperLifecycleMode is the resolved helper spawn mode ("always-on" |
+	// "on-demand"); on-demand means the host was detected (or configured) as
+	// an RD Session Host and the UI should offer session targeting. Empty
+	// when no lifecycle manager runs (non-Windows, non-service).
+	HelperLifecycleMode string `json:"helperLifecycleMode,omitempty"`
 	// Current-state power/battery telemetry (#2142). Pointer + omitempty so an
 	// old agent (or a platform that can't report power state) omits the field
 	// and the server keeps whatever it last knew rather than clobbering it.
@@ -104,6 +123,25 @@ type HeartbeatPayload struct {
 	// (runtime.ReadMemStats is microseconds) so fleet-wide agent memory leaks
 	// are visible from the server without shell access to the device.
 	AgentRuntime *collectors.RuntimeStats `json:"agentRuntime,omitempty"`
+	// SecurityCapabilities declares the outbound-network-policy capability
+	// handshake (Wave 6 Task 4, security remediation). Sent unconditionally
+	// (no omitempty) so the server can tell an old agent (the whole object
+	// absent from the JSON body) from a capable one that declares version 0
+	// — which this build never does, but the server must not assume "object
+	// present" implies "version 1" either. See SecurityCapabilities below.
+	SecurityCapabilities SecurityCapabilities `json:"securityCapabilities"`
+}
+
+// SecurityCapabilities is the agent's outbound-network-policy capability
+// handshake (Wave 6 Task 4, security remediation). The API records
+// devices.outbound_network_policy_version from OutboundNetworkPolicyVersion
+// on every heartbeat and only ever trusts the recognized integer version 1;
+// any other value (including 0, or the field's absence on a pre-Task-4
+// agent) is treated as "not enforcing". Task 5's dispatch gate depends on
+// this being accurate: internal/netpolicy (Tasks 1-3) is what actually
+// enforces the policy this version number claims to be honoring.
+type SecurityCapabilities struct {
+	OutboundNetworkPolicyVersion int `json:"outboundNetworkPolicyVersion"`
 }
 
 type DesktopAccessState struct {
@@ -131,6 +169,10 @@ type HeartbeatResponse struct {
 	WatchdogUpgradeTo      string                 `json:"watchdogUpgradeTo,omitempty"`
 	ManageRemoteManagement bool                   `json:"manageRemoteManagement,omitempty"`
 	ManifestTrustKeys      []api.ManifestTrustKey `json:"manifestTrustKeys,omitempty"`
+	// Wave 6 Task 7 — signed authorisations to add an unseen manifest signing
+	// key. Nothing here is trusted on receipt; every record is verified
+	// against the currently-pinned key it names.
+	ManifestKeyDelegations []api.ManifestKeyDelegation `json:"manifestKeyDelegations,omitempty"`
 }
 
 type HelperSettings struct {
@@ -139,6 +181,10 @@ type HelperSettings struct {
 	ShowDeviceInfo     bool   `json:"showDeviceInfo"`
 	ShowRequestSupport bool   `json:"showRequestSupport"`
 	PortalUrl          string `json:"portalUrl,omitempty"`
+	// LifecycleMode is the server-side helper lifecycle override
+	// ("auto" | "always-on" | "on-demand"); empty means auto. Applied to the
+	// sessionbroker lifecycle, NOT to the Tauri Assist manager.
+	LifecycleMode string `json:"lifecycleMode,omitempty"`
 }
 
 type Command struct {
@@ -147,9 +193,31 @@ type Command struct {
 	Payload map[string]any `json:"payload"`
 }
 
+// helperLifecycleController is the subset of *sessionbroker.HelperLifecycleManager
+// the heartbeat drives: shutdown, the resolved mode, and — for on-demand (RDS)
+// hosts — the lease + readiness API that replaces "a helper is always running"
+// with "a helper exists while an operation holds a lease on its session".
 type helperLifecycleController interface {
 	Stop()
 	Done() <-chan struct{}
+	Mode() string
+	SetModeOverride(override string)
+	AcquireLease(sessionID uint32, role ipc.HelperRole, opID string, ttl time.Duration) error
+	RenewLease(sessionID uint32, role ipc.HelperRole, opID string, ttl time.Duration) error
+	ReleaseLease(sessionID uint32, role ipc.HelperRole, opID string)
+	WaitForHelperReady(ctx context.Context, key sessionbroker.HelperKey) sessionbroker.HelperWaitResult
+}
+
+// lifecycleMode returns the resolved helper lifecycle mode, or "" when no
+// lifecycle manager runs (non-Windows, non-service). "on-demand" gates every
+// RDS-specific behavior in the command handlers.
+func (h *Heartbeat) lifecycleMode() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.helperLifecycle == nil {
+		return ""
+	}
+	return h.helperLifecycle.Mode()
 }
 
 type Heartbeat struct {
@@ -247,8 +315,24 @@ type Heartbeat struct {
 	pamRecoveryMaxAttempts       int
 	pamGateProofTimeout          time.Duration
 	pamGateStuckReassertInterval time.Duration
-	wsDesktopStart        func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
-	desktopOwners         sync.Map // desktop session ID -> helper session ID
+	wsDesktopStart               func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
+	desktopOwners                sync.Map // desktop session ID -> helper session ID
+
+	// desktopTargets maps remote desktop session id -> explicitly targeted
+	// Windows session ("" for untargeted/legacy connects) so the stop path can
+	// route the banner-hide and end-of-session notify to the same user who saw
+	// the consent prompt. Guarded by h.mu.
+	desktopTargets map[string]string
+
+	// desktopLeases maps remote desktop session id -> the on-demand helper
+	// leases held for it (see handlers_desktop_lease.go). Only populated in
+	// "on-demand" lifecycle mode. Guarded by h.mu.
+	desktopLeases map[string]*desktopLeaseHold
+
+	// desktopHelperPresent reports whether the helper for a key is still
+	// connected; the lease-renewal goroutine uses it to notice a stream that
+	// died without a stop_desktop. Test seam — nil means "ask the broker".
+	desktopHelperPresent func(sessionbroker.HelperKey) bool
 
 	// Resilience & observability
 	pool        *workerpool.Pool
@@ -293,6 +377,12 @@ type Heartbeat struct {
 	// Issue #2621 — a staged credential rotation is sitting on disk unconfirmed.
 	// Drives the per-tick retry so recovery does not depend on a process restart.
 	pendingRotationOnDisk atomic.Bool
+	// Wave 5 Task 5 — a staged (unconfirmed) mTLS certificate is sitting on
+	// disk. Mirrors pendingRotationOnDisk: drives the per-tick retry so a
+	// crash between staging and confirmation, or a confirmation whose
+	// response never landed, does not depend on another server-signaled
+	// renewCert to resume.
+	pendingMTLSCertOnDisk atomic.Bool
 	upgradeInProgress     atomic.Bool
 
 	// Set when PinManifestKeys returns ErrManifestTrustRotationRejected.
@@ -303,6 +393,30 @@ type Heartbeat struct {
 	// otherwise continue against the still-pinned (legitimate) key, masking
 	// the rejection from the operator.
 	manifestTrustRotationRejected atomic.Bool
+
+	// Latches the last expansion-rejection reason logged, so a control plane
+	// that keeps offering a key this agent has never seen produces one
+	// SECURITY line per distinct key set rather than one per heartbeat
+	// forever. Expansion rejection is now routine for any deployment that
+	// followed the old "rotate by adding a new key_id" recipe, so unlike the
+	// (rare) rotation rejection it genuinely needs the bound. Mirrors the
+	// updater's missingSigningKeyIDWarned latch.
+	manifestTrustExpansionLogged atomic.Pointer[string]
+
+	// Same bounding for delegation rejections. A control plane (or an
+	// attacker) that keeps re-offering one bad record would otherwise emit a
+	// SECURITY line on every heartbeat for the life of the agent, flooding
+	// the shipped log stream. Latched on the reason; cleared on a successful
+	// adoption so a later attempt is reported again.
+	manifestDelegationRejectionLogged atomic.Pointer[string]
+
+	// Same bounding for the catch-all (non-rotation, non-expansion) pin
+	// failure. Log shipping defaults to warn (config.go's log_shipping_level),
+	// so a control plane emitting persistently malformed trust material —
+	// a bad base64 pubkey, an unreadable pinned set — wrote one SHIPPED line
+	// per device per heartbeat, forever. Latched on the reason; cleared on a
+	// successful pin, exactly like the two siblings above.
+	manifestTrustPinFailureLogged atomic.Pointer[string]
 
 	// Helper chat enabled flag from org settings
 	helperEnabled atomic.Bool
@@ -499,6 +613,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		retryCfg:        httputil.DefaultRetryConfig(),
 		seenCommands:    make(map[string]time.Time),
 		backupOutbox:    newBackupResultOutbox(backupResultOutboxDir()),
+		desktopTargets:  make(map[string]string),
 	}
 	h.accepting.Store(true)
 	h.isService = cfg.IsService
@@ -547,7 +662,15 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		h.helperMgr = helper.New(helperCtx, h.ServerURL, secToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
 			helper.WithAgentVersion(version),
-			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
+			// Providers, not values: both fields are replaced at runtime (the
+			// manifest-trust-pin path and applyManifestKeyDelegations rewrite
+			// the pinned set; configUpdate can flip the key-ID requirement), so
+			// a by-value snapshot would freeze the helper's trust while the
+			// main/watchdog updaters follow the change. Same asymmetry
+			// WithBackupServerURL already avoided on the next line.
+			helper.WithManifestKeys(h.pinnedManifestPubKeys),
+			helper.WithRequireManifestSigningKeyID(h.requireManifestSigningKeyID),
+			helper.WithBackupServerURL(h.BackupServerURL),
 			helper.WithSpawnFunc(func(sessionKey, binaryPath string, args ...string) (int, error) {
 				// Try launching via connected user-role helper first (runs as
 				// the logged-in user, so the Tauri app inherits user identity).
@@ -575,7 +698,15 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		h.helperMgr = helper.New(helperCtx, h.ServerURL, secToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
 			helper.WithAgentVersion(version),
-			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
+			// Providers, not values: both fields are replaced at runtime (the
+			// manifest-trust-pin path and applyManifestKeyDelegations rewrite
+			// the pinned set; configUpdate can flip the key-ID requirement), so
+			// a by-value snapshot would freeze the helper's trust while the
+			// main/watchdog updaters follow the change. Same asymmetry
+			// WithBackupServerURL already avoided on the next line.
+			helper.WithManifestKeys(h.pinnedManifestPubKeys),
+			helper.WithRequireManifestSigningKeyID(h.requireManifestSigningKeyID),
+			helper.WithBackupServerURL(h.BackupServerURL),
 		)
 	}
 
@@ -878,6 +1009,28 @@ func (h *Heartbeat) sendUpdateStatus(targetVersion string) {
 	}
 }
 
+// setDesktopTarget records the explicitly targeted Windows session ("" for
+// untargeted/legacy connects) for a remote desktop session id, so the stop
+// path can later route the banner-hide/end-of-session notify to the same
+// user who saw the consent prompt (see takeDesktopTarget).
+func (h *Heartbeat) setDesktopTarget(sessionID, targetWinSession string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.desktopTargets == nil {
+		h.desktopTargets = make(map[string]string)
+	}
+	h.desktopTargets[sessionID] = targetWinSession
+}
+
+// takeDesktopTarget returns and clears the recorded target for a session.
+func (h *Heartbeat) takeDesktopTarget(sessionID string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	t := h.desktopTargets[sessionID]
+	delete(h.desktopTargets, sessionID)
+	return t
+}
+
 // sendDesktopDisconnectNotification tells the API that a WebRTC peer
 // connection dropped so it can mark the session as disconnected and allow
 // the viewer to reconnect.
@@ -888,6 +1041,15 @@ func (h *Heartbeat) sendDesktopDisconnectNotification(sessionID string) {
 	// no-op for un-prompted sessions. Done before the wsClient guard so the
 	// local UX still tears down even if the WS link is gone.
 	h.handleConsentSessionEnd(sessionID)
+
+	// Symmetrical with the target release above: a peer disconnect ends the
+	// session for good, so the on-demand helper leases must go too. Without
+	// this the renewal goroutine would keep renewing a lease for a dead stream
+	// whenever the helper process itself outlives the peer connection (its
+	// broker session is still up, so the "helper vanished" self-stop never
+	// fires) and the helper would be pinned forever. leaseLinger still keeps
+	// the helper warm for a prompt viewer reconnect. No-op in always-on mode.
+	h.releaseDesktopLeases(sessionID)
 
 	if h.wsClient == nil {
 		return
@@ -993,6 +1155,18 @@ func (h *Heartbeat) Start() {
 	// instead of 401-looping.
 	go h.reconcilePendingRotation()
 
+	// Wave 5 Task 5 — same rationale as above, for a two-phase mTLS renewal
+	// interrupted between staging the pending certificate and confirming it.
+	// The old active certificate is unaffected either way, so this is always
+	// safe to run: a no-op when nothing is pending.
+	go h.reconcilePendingMTLSCert()
+
+	// FINAL-REVIEW I2 — recover an expired (or nearly expired) certificate
+	// without waiting for a server signal the agent may never be able to
+	// receive. Runs after the reconcile above so staged material is finished
+	// first. See maybeSelfInitiateCertRenewal.
+	go h.maybeSelfInitiateCertRenewal()
+
 	// Proactively spawn helpers into user sessions so remote desktop works
 	// instantly after reboot (Windows service only). The SCM session event
 	// channel (created in constructor) is fed by the service handler
@@ -1002,7 +1176,7 @@ func (h *Heartbeat) Start() {
 	var lifecycle *sessionbroker.HelperLifecycleManager
 	if h.scmSessionCh != nil && h.sessionBroker != nil {
 		ctx, cancel := context.WithCancel(context.Background())
-		lifecycle = sessionbroker.NewHelperLifecycleManager(h.sessionBroker, h.scmSessionCh)
+		lifecycle = sessionbroker.NewHelperLifecycleManager(h.sessionBroker, h.scmSessionCh, h.config.HelperLifecycleMode)
 		h.mu.Lock()
 		h.helperLifecycle = lifecycle
 		h.lifecycleCancel = cancel
@@ -1107,6 +1281,19 @@ func (h *Heartbeat) Start() {
 			if h.pendingRotationOnDisk.Load() {
 				go h.reconcilePendingRotation()
 			}
+			// Wave 5 Task 5 — same per-tick retry pattern for an unconfirmed
+			// pending mTLS certificate.
+			if h.pendingMTLSCertOnDisk.Load() {
+				go h.reconcilePendingMTLSCert()
+			}
+			// FINAL-REVIEW I2 — also BEFORE the auth-dead skip, and for the
+			// same reason as the rotation reconcile above: an agent whose
+			// heartbeats are being refused because its certificate expired is
+			// exactly the agent that needs to renew, and the renewal endpoints
+			// are reachable without a valid certificate by design. Waiting for
+			// a `renewCert` signal that can only arrive in a heartbeat
+			// response the server is refusing to send is a deadlock.
+			go h.maybeSelfInitiateCertRenewal()
 			if h.authMon != nil && h.authMon.ShouldSkip() {
 				log.Debug("skipping heartbeat tick, auth-dead",
 					"backoff", h.authMon.BackoffDuration())
@@ -1958,6 +2145,66 @@ func (h *Heartbeat) applyBackupServerURLConfig(raw any) {
 	}
 }
 
+// decideRequireManifestSigningKeyIDUpdate is the pure decision core for a
+// pushed require_manifest_signing_key_id value (Wave 6 Task 6/9, approved
+// deviation D4). Only a JSON boolean is accepted — a string, number, or any
+// other type is ignored rather than coerced, because misreading the payload
+// directly controls whether an ID-less update manifest is still accepted
+// (false) or rejected outright (true). No-op if the value already matches
+// the current setting.
+func decideRequireManifestSigningKeyIDUpdate(raw any, current bool) (bool, bool) {
+	b, ok := raw.(bool)
+	if !ok {
+		log.Warn("ignoring non-boolean require_manifest_signing_key_id config update payload")
+		return false, false
+	}
+	if b == current {
+		return false, false
+	}
+	return b, true
+}
+
+// applyRequireManifestSigningKeyIDConfig applies and persists a pushed
+// require_manifest_signing_key_id value. This is the agent-side half of the
+// control Task 9 wires on the API: without this, the server's instruction
+// was silently discarded and the field could only ever be set by hand-
+// editing agent.yaml (deviation D4).
+//
+// Consumers re-read the value through h.requireManifestSigningKeyID() at
+// updater-construction time — handlers_devupdate.go's ManifestPolicy, and
+// the main/helper/watchdog update-check call sites in this file — so a
+// pushed change takes effect on the NEXT update check, no restart required.
+// The helper Manager is included: helper.WithRequireManifestSigningKeyID and
+// helper.WithManifestKeys take PROVIDERS wired to these accessors, so the
+// helper's verified downloader resolves them per download rather than freezing
+// a process-start snapshot. Passing them by value was the I4 defect: once a
+// delegated key was activated the server signed helper manifests with the new
+// key ID while the Manager still verified against the superseded set, failing
+// Breeze Assist install/update closed until a restart with no server-side
+// signal (see docs/operations/agent-network-and-manifest-rollout.md).
+func (h *Heartbeat) applyRequireManifestSigningKeyIDConfig(raw any) {
+	h.mu.Lock()
+	current := h.config.RequireManifestSigningKeyID
+	h.mu.Unlock()
+
+	val, apply := decideRequireManifestSigningKeyIDUpdate(raw, current)
+	if !apply {
+		return
+	}
+	h.mu.Lock()
+	h.config.RequireManifestSigningKeyID = val
+	h.mu.Unlock()
+	if err := config.SetAndPersist("require_manifest_signing_key_id", val); err != nil {
+		log.Warn("failed to persist require_manifest_signing_key_id", "error", err.Error())
+		return
+	}
+	if val {
+		log.Info("require_manifest_signing_key_id enabled by control plane — update responses that omit signingKeyId will now be rejected on the next update check")
+	} else {
+		log.Info("require_manifest_signing_key_id disabled by control plane")
+	}
+}
+
 func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	if len(update) == 0 {
 		return
@@ -2002,6 +2249,18 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	}
 	if hasBS {
 		h.applyBackupServerURLConfig(bsRaw)
+	}
+
+	// Manifest signing key ID requirement (Wave 6 Task 6/9, deviation D4).
+	// Key absent = no change — compatible with servers/heartbeats that
+	// predate this control. Snake_case and camelCase both accepted, same as
+	// every other key in this function.
+	rmskRaw, hasRMSK := update["require_manifest_signing_key_id"]
+	if !hasRMSK {
+		rmskRaw, hasRMSK = update["requireManifestSigningKeyId"]
+	}
+	if hasRMSK {
+		h.applyRequireManifestSigningKeyIDConfig(rmskRaw)
 	}
 
 	// Apply onedrive_helper_settings if present (Phase 2). No-op on non-Windows.
@@ -2923,6 +3182,93 @@ func (h *Heartbeat) serverURL() string {
 	return h.config.ServerURL
 }
 
+// backupServerURL returns the current backup control-plane URL, mirroring
+// serverURL's locking. Updater construction sites pass this (as the plain-
+// string updater.Config.BackupServerURL, not a re-resolving provider — see
+// that field's doc) so netpolicy's ControlPlaneOrigins includes the backup
+// control plane alongside the primary; omitting it silently rejects
+// cleartext/private-address downloads from the backup after a failover.
+func (h *Heartbeat) backupServerURL() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.config.BackupServerURL
+}
+
+// requireManifestSigningKeyID reads the manifest key-ID enforcement flag under
+// h.mu. Wave 6 deviation D4 made this field mutable at runtime — the control
+// plane can push require_manifest_signing_key_id through configUpdate, and
+// applyRequireManifestSigningKeyIDConfig writes it while holding h.mu. Every
+// reader therefore has to take the same lock: the updater-construction sites
+// run on update and command goroutines, so touching h.config directly there is
+// a data race under the Go memory model (and `go test -race` is the gate this
+// repo enforces). Same shape, same reason, as backupServerURL above.
+func (h *Heartbeat) requireManifestSigningKeyID() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.config.RequireManifestSigningKeyID
+}
+
+// pinnedManifestPubKeys reads the pinned manifest trust-key set under h.mu.
+// Wave 6 also made this field mutable at runtime: applyManifestKeyDelegations
+// and the manifest-trust-pin path in processHeartbeatResponse both replace it
+// in-memory (after config.Reload()) on the heartbeat-response goroutine, while
+// the same five updater-construction sites as requireManifestSigningKeyID
+// read it to build an updater.Config. Unlike a bool, a slice header read
+// without synchronization can observe a torn (len, cap, ptr) triple against a
+// concurrent write — a genuine data race, not just a stale-value nuisance.
+// Same shape, same reason, as requireManifestSigningKeyID above.
+func (h *Heartbeat) pinnedManifestPubKeys() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.config.PinnedManifestPubKeys
+}
+
+// autoUpdate reads the auto-update gate under h.mu. This is the FOURTH
+// runtime-mutable field on h.config (after backupServerURL,
+// requireManifestSigningKeyID and pinnedManifestPubKeys) and it gates every
+// server-directed binary swap, so an unsynchronized read is both a data race
+// and a security-relevant one.
+//
+// The writers are all off the heartbeat goroutine: handleSetAutoUpdate (command
+// worker pool), applyDevUpdateAutoUpdatePolicy (same pool) and doUpgrade's
+// read-only-filesystem branch (the upgrade goroutine). The readers are
+// processHeartbeatResponse's upgrade branch and handleWatchdogUpgrade — and
+// processHeartbeatResponse SPAWNS the watchdog-upgrade goroutine and SUBMITS
+// pool commands from the same response, so the interleaving is one heartbeat
+// wide, not a rare startup window.
+func (h *Heartbeat) autoUpdate() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.config.AutoUpdate
+}
+
+// setAutoUpdate writes the auto-update gate under h.mu. In-memory only: every
+// caller that wants the change to survive a restart also calls
+// config.SetAndPersist (which has its own lock — see config.persistMu).
+func (h *Heartbeat) setAutoUpdate(enabled bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.config.AutoUpdate = enabled
+}
+
+// manifestDelegationEpoch reads the highest-adopted signed-key-delegation
+// epoch under h.mu, mirroring pinnedManifestPubKeys above.
+// applyManifestKeyDelegations writes it on the heartbeat-response goroutine
+// after config.Reload(); any future reader must take the same lock rather
+// than touching h.config directly.
+func (h *Heartbeat) manifestDelegationEpoch() uint64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.config.ManifestDelegationEpoch
+}
+
+// BackupServerURL is the exported form of backupServerURL, passed to
+// long-lived callers (e.g. the helper.Manager) as a provider so they
+// re-resolve it on every download instead of pinning a startup snapshot.
+func (h *Heartbeat) BackupServerURL() string {
+	return h.backupServerURL()
+}
+
 // ServerURL returns the current server base URL, reflecting any
 // backup-server-URL promotion (#2323). Long-lived client loops (UniFi
 // telemetry, workspace indexing) must read the URL through this getter on
@@ -3145,7 +3491,18 @@ func (h *Heartbeat) sendHeartbeat() {
 		HealthStatus:    h.healthMon.Summary(),
 		DeviceRole:      deviceRole,
 		IsHeadless:      h.currentHeadless(),
+		// Wave 6 Task 4 — this build enforces internal/netpolicy (Tasks 1-3),
+		// so it always declares version 1. Unconditional (not gated on any
+		// runtime check): the enforcement is compiled in, not a runtime
+		// toggle.
+		SecurityCapabilities: SecurityCapabilities{OutboundNetworkPolicyVersion: 1},
 	}
+
+	h.mu.Lock()
+	if h.helperLifecycle != nil {
+		payload.HelperLifecycleMode = h.helperLifecycle.Mode()
+	}
+	h.mu.Unlock()
 
 	// Only report virtualization once background hardware collection has
 	// actually classified it (#1387). Before then — or if hardware collection
@@ -3354,6 +3711,160 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 	return &response, true
 }
 
+// logManifestTrustExpansionLogger is the log seam for the bounded expansion
+// rejection line, so tests can count the lines a long-lived agent would
+// actually emit.
+var logManifestTrustExpansionLogger = func(err error) {
+	log.Error("SECURITY: manifest trust key expansion rejected — the control plane offered a key this agent has never seen. "+
+		"Auto-update continues against the already-pinned key; adopting a new key requires re-enrolling this agent",
+		"error", err.Error())
+}
+
+// logManifestTrustExpansionRejected emits the SECURITY line at most once per
+// distinct rejection reason (the reason names the offered key IDs). Cleared on
+// a successful pin so a later attempt is reported again.
+func (h *Heartbeat) logManifestTrustExpansionRejected(err error) {
+	reason := err.Error()
+	prev := h.manifestTrustExpansionLogged.Load()
+	if prev != nil && *prev == reason {
+		return
+	}
+	if h.manifestTrustExpansionLogged.CompareAndSwap(prev, &reason) {
+		logManifestTrustExpansionLogger(err)
+	}
+}
+
+var logManifestDelegationRejectedLogger = func(err error) {
+	log.Error("SECURITY: signed manifest key delegation rejected — the control plane offered an authorisation this agent will not accept. "+
+		"The pinned trust set is unchanged and auto-update continues against the already-trusted key",
+		"error", err.Error())
+}
+
+// logManifestDelegationRejected emits the SECURITY line at most once per
+// distinct rejection reason. Cleared on a successful adoption.
+func (h *Heartbeat) logManifestDelegationRejected(err error) {
+	reason := err.Error()
+	prev := h.manifestDelegationRejectionLogged.Load()
+	if prev != nil && *prev == reason {
+		return
+	}
+	if h.manifestDelegationRejectionLogged.CompareAndSwap(prev, &reason) {
+		logManifestDelegationRejectedLogger(err)
+	}
+}
+
+// logManifestTrustPinFailureLogger is the log seam for the bounded catch-all
+// pin-failure line, matching the two seams above so a test can count the lines
+// a long-lived agent would actually emit.
+var logManifestTrustPinFailureLogger = func(err error) {
+	log.Warn("manifest trust key pin failed (non-rotation)", "error", err.Error())
+}
+
+// logManifestTrustPinFailed emits the catch-all pin-failure warning at most once
+// per distinct reason. Its two siblings in processHeartbeatResponse already had
+// this bound; this branch did not, and it is the one a control plane emitting
+// persistently malformed trust material lands in. Cleared on a successful pin.
+func (h *Heartbeat) logManifestTrustPinFailed(err error) {
+	reason := err.Error()
+	prev := h.manifestTrustPinFailureLogged.Load()
+	if prev != nil && *prev == reason {
+		return
+	}
+	if h.manifestTrustPinFailureLogged.CompareAndSwap(prev, &reason) {
+		logManifestTrustPinFailureLogger(err)
+	}
+}
+
+// applyManifestKeyDelegations adopts any delivered delegation records.
+//
+// This is the ONLY path by which a previously unseen manifest signing key
+// enters the trust set. config.ApplyManifestKeyDelegation performs every
+// check (old key currently trusted, signature verifies with exactly that key,
+// new key unseen, epoch strictly greater than the adopted epoch, inside the
+// validity window ±5m skew, public key exactly 32 bytes once decoded) and
+// leaves agent.yaml byte-for-byte unchanged on any rejection.
+//
+// Records are applied in ASCENDING EPOCH order so that a chain (key A
+// delegates to B, B delegates to C) is applied in the order it was issued.
+// Out-of-order application would reject the later link for naming an
+// untrusted old key.
+//
+// A rejection is NOT fatal: the remaining records are still attempted, and
+// the already-pinned key continues to work. Key material, signatures and
+// manifests are never logged — key IDs and epochs are not secret.
+func (h *Heartbeat) applyManifestKeyDelegations(delivered []api.ManifestKeyDelegation) {
+	if len(delivered) == 0 {
+		return
+	}
+
+	records := make([]config.ManifestKeyDelegation, 0, len(delivered))
+	for _, d := range delivered {
+		epoch, err := d.ParseEpoch()
+		if err != nil {
+			h.logManifestDelegationRejected(err)
+			continue
+		}
+		records = append(records, config.ManifestKeyDelegation{
+			SchemaVersion:   d.SchemaVersion,
+			OldKeyID:        d.OldKeyID,
+			NewKeyID:        d.NewKeyID,
+			NewPublicKeyB64: d.NewPublicKeyB64,
+			Epoch:           epoch,
+			NotBefore:       d.NotBefore,
+			NotAfter:        d.NotAfter,
+			SignatureBase64: d.SignatureBase64,
+		})
+	}
+
+	slices.SortFunc(records, func(a, b config.ManifestKeyDelegation) int {
+		return cmp.Compare(a.Epoch, b.Epoch)
+	})
+
+	cfgPath := config.ActiveConfigFile()
+	adopted := false
+	for _, r := range records {
+		if err := config.ApplyManifestKeyDelegation(cfgPath, r, time.Now()); err != nil {
+			// Routine re-delivery of a record this agent is already in the
+			// state of. The server keeps serving an in-window delegation for
+			// the whole window so stragglers can adopt, so EVERY agent that
+			// has already adopted sees the same record again on its next
+			// heartbeat, and every device enrolled after `activate` sees one
+			// whose oldKeyId it never had. Logging those as SECURITY would
+			// mean one security-level error per agent per rotation across the
+			// fleet — the alert would be useless by the time it mattered.
+			if errors.Is(err, config.ErrManifestDelegationAlreadyAdopted) {
+				log.Debug("manifest key delegation already adopted; nothing to do",
+					"newKeyId", r.NewKeyID, "epoch", r.Epoch)
+				continue
+			}
+			h.logManifestDelegationRejected(err)
+			continue
+		}
+		adopted = true
+		log.Info("adopted signed manifest key delegation",
+			"oldKeyId", r.OldKeyID,
+			"newKeyId", r.NewKeyID,
+			"epoch", r.Epoch)
+	}
+
+	if !adopted {
+		return
+	}
+
+	// Re-arm the rejection latch and refresh the in-memory trust set so the
+	// updater sees the newly-delegated key without waiting for a restart.
+	h.manifestDelegationRejectionLogged.Store(nil)
+	if reloaded, rerr := config.Reload(); rerr != nil {
+		log.Warn("failed to reload config after adopting a manifest key delegation; in-memory pinned set stale until next restart",
+			"error", rerr.Error())
+	} else if reloaded != nil {
+		h.mu.Lock()
+		h.config.PinnedManifestPubKeys = reloaded.PinnedManifestPubKeys
+		h.config.ManifestDelegationEpoch = reloaded.ManifestDelegationEpoch
+		h.mu.Unlock()
+	}
+}
+
 // processHeartbeatResponse executes the directives carried by a validated
 // heartbeat response: configUpdate, manifest trust keys, commands, upgrades,
 // cert/token rotation, tunnel policy, and helper settings. Callers must have
@@ -3373,36 +3884,65 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	// live there. See docs/deploy/agent-update-trust-bootstrap.md for the
 	// threat model.
 	if len(response.ManifestTrustKeys) > 0 {
+		// Every delivered entry is forwarded as-is, including blank ones:
+		// config.PinManifestKeys validates the whole delivery and rejects it
+		// atomically. Silently dropping blanks here would make this path more
+		// permissive than the enrollment path (which rejects the delivery via
+		// config.BootstrapPinnedManifestKeys) and would hide a control plane
+		// emitting malformed trust material.
 		keys := make([]config.ManifestTrustKey, 0, len(response.ManifestTrustKeys))
 		for _, k := range response.ManifestTrustKeys {
-			if k.KeyID == "" || k.PublicKeyB64 == "" {
-				continue
-			}
 			keys = append(keys, config.ManifestTrustKey{KeyID: k.KeyID, PublicKeyB64: k.PublicKeyB64})
 		}
-		if len(keys) > 0 {
-			cfgPath := config.ActiveConfigFile()
-			if err := config.PinManifestKeys(cfgPath, keys); err != nil {
-				if errors.Is(err, config.ErrManifestTrustRotationRejected) {
-					h.manifestTrustRotationRejected.Store(true)
-					log.Error("SECURITY: manifest trust key rotation rejected — auto-update suspended until rotation resolved or agent restart",
-						"error", err.Error())
-				} else {
-					log.Warn("manifest trust key pin failed (non-rotation)", "error", err.Error())
-				}
+		cfgPath := config.ActiveConfigFile()
+		if err := config.PinManifestKeys(cfgPath, keys); err != nil {
+			if errors.Is(err, config.ErrManifestTrustRotationRejected) {
+				h.manifestTrustRotationRejected.Store(true)
+				log.Error("SECURITY: manifest trust key rotation rejected — auto-update suspended until rotation resolved or agent restart",
+					"error", err.Error())
+			} else if errors.Is(err, config.ErrManifestTrustExpansionRejected) {
+				// Trust expansion is frozen: the agent accepts exactly one
+				// first deployment key and never grows the set afterwards.
+				// Unlike a rotation this does not suspend auto-update (the
+				// already-pinned key is untouched and still valid), but it
+				// is a security-relevant signal, not routine noise.
+				//
+				// Bounded per distinct reason (the reason names the offered
+				// key IDs): a deployment that rotated server-side under the
+				// old additive rules will hit this on EVERY heartbeat for the
+				// rest of the agent's life, and an unbounded SECURITY line
+				// would flood the shipped log stream.
+				h.logManifestTrustExpansionRejected(err)
 			} else {
-				// Successful pin (idempotent or genuine new keyId append) means
-				// the conflict — if any — is no longer present. Clear the
-				// rotation-rejected gate so auto-update can resume.
-				h.manifestTrustRotationRejected.Store(false)
-				if reloaded, rerr := config.Reload(); rerr != nil {
-					log.Warn("failed to reload config after pinning manifest trust keys; in-memory pinned set stale until next restart", "error", rerr.Error())
-				} else if reloaded != nil {
-					h.config.PinnedManifestPubKeys = reloaded.PinnedManifestPubKeys
-				}
+				// Bounded per distinct reason, like the two branches above:
+				// this is the branch a control plane emitting persistently
+				// malformed trust material lands in, and warn is a SHIPPED
+				// level by default.
+				h.logManifestTrustPinFailed(err)
+			}
+		} else {
+			// Successful pin (idempotent, or a first-key bootstrap) means the
+			// conflict — if any — is no longer present. Clear the
+			// rotation-rejected gate so auto-update can resume, and re-arm the
+			// expansion latch so a later attempt is reported again.
+			h.manifestTrustRotationRejected.Store(false)
+			h.manifestTrustExpansionLogged.Store(nil)
+			h.manifestTrustPinFailureLogged.Store(nil)
+			if reloaded, rerr := config.Reload(); rerr != nil {
+				log.Warn("failed to reload config after pinning manifest trust keys; in-memory pinned set stale until next restart", "error", rerr.Error())
+			} else if reloaded != nil {
+				h.mu.Lock()
+				h.config.PinnedManifestPubKeys = reloaded.PinnedManifestPubKeys
+				h.mu.Unlock()
 			}
 		}
 	}
+
+	// Signed key delegations are applied AFTER the plain trust-key pin above.
+	// Ordering matters on a first-ever contact: the pin establishes the one
+	// TOFU key, and only then can a delegation naming that key as its old key
+	// be verified.
+	h.applyManifestKeyDelegations(response.ManifestKeyDelegations)
 
 	// Process any commands via worker pool
 	for _, cmd := range response.Commands {
@@ -3418,19 +3958,22 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 
 	// Handle upgrade if requested and auto-update is enabled
 	if response.UpgradeTo != "" && response.UpgradeTo != h.agentVersion {
-		if isDowngrade(response.UpgradeTo, h.agentVersion) {
-			// SECURITY: never auto-downgrade. A compromised/MITM'd control plane
-			// could otherwise force a fleet-wide rollback to an older,
-			// still-validly-signed, known-vulnerable build. Deliberate rollback
-			// is an operator action via the (default-off) dev_update path.
-			log.Error("SECURITY: refusing server-directed auto-update downgrade",
+		if decision := mainAgentUpgradeDecision(response.UpgradeTo, h.agentVersion); !decision.Allowed {
+			// SECURITY: never auto-downgrade, and never accept a malformed or
+			// prerelease-mis-ordered target. A compromised/MITM'd control
+			// plane could otherwise force a fleet-wide rollback to an older,
+			// still-validly-signed, known-vulnerable build. Deliberate
+			// rollback is an operator action via the (default-off)
+			// dev_update path.
+			log.Error("SECURITY: refusing server-directed auto-update",
 				"currentVersion", h.agentVersion,
 				"targetVersion", response.UpgradeTo,
+				"reason", decision.Reason,
 				"hint", "deliberate rollback uses the operator dev_update path")
 		} else if h.manifestTrustRotationRejected.Load() {
 			log.Error("SECURITY: skipping auto-update — manifest trust rotation rejection unresolved",
 				"targetVersion", response.UpgradeTo)
-		} else if h.config.AutoUpdate {
+		} else if h.autoUpdate() {
 			if h.upgradeInProgress.CompareAndSwap(false, true) {
 				go h.handleUpgrade(response.UpgradeTo)
 			} else {
@@ -3505,6 +4048,15 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 			ShowRequestSupport: response.HelperSettings.ShowRequestSupport,
 			PortalUrl:          response.HelperSettings.PortalUrl,
 		})
+		// LifecycleMode is a sessionbroker concern, not an Assist setting, so it
+		// bypasses helperMgr and drives the lifecycle manager directly. Idempotent
+		// and cheap — the manager no-ops when the resolved mode is unchanged.
+		h.mu.Lock()
+		lc := h.helperLifecycle
+		h.mu.Unlock()
+		if lc != nil {
+			lc.SetModeOverride(response.HelperSettings.LifecycleMode)
+		}
 	}
 }
 
@@ -3548,9 +4100,19 @@ func (h *Heartbeat) handleUACInterception(enabled *bool) {
 	}
 }
 
-// handleCertRenewal is called in a goroutine when the server signals renewCert: true.
-// It uses a bearer-only client (no mTLS required) to call /renew-cert.
-// Guarded by certRenewing to prevent concurrent renewals from successive heartbeats.
+// handleCertRenewal is called in a goroutine when the server signals
+// renewCert: true. Guarded by certRenewing to prevent concurrent renewals
+// from successive heartbeats (shared with reconcilePendingMTLSCert, since
+// both drive the same pending-certificate state machine).
+//
+// Security remediation Wave 5 Task 5: if an unconfirmed pending certificate
+// is already on disk, this does NOT request a new one — it resumes
+// confirming the existing pending row instead. Otherwise it starts a fresh
+// two-phase renewal (protocolVersion 2): stage the pending material durably
+// BEFORE ever calling /renew-cert/confirm, then confirm, then promote. A
+// LEGACY peer server (rolling upgrade) answers with the old single-phase
+// shape instead; that path promotes immediately, exactly as this function
+// always has.
 func (h *Heartbeat) handleCertRenewal() {
 	if !h.certRenewing.CompareAndSwap(false, true) {
 		log.Info("mTLS cert renewal already in progress, skipping")
@@ -3558,63 +4120,292 @@ func (h *Heartbeat) handleCertRenewal() {
 	}
 	defer h.certRenewing.Store(false)
 
+	if h.hasPendingMTLSCert() {
+		log.Info("mTLS cert renewal requested by server but an unconfirmed pending certificate already exists; resuming confirmation instead of issuing a new one")
+		h.confirmPendingMTLSCert()
+		return
+	}
+
 	log.Info("mTLS cert renewal requested by server")
+	h.issueAndStageMTLSCert()
+}
+
+// maybeSelfInitiateCertRenewal renews the mTLS certificate WITHOUT waiting for
+// the server's `renewCert` heartbeat signal, when the active certificate has
+// expired or is about to.
+//
+// FINAL-REVIEW I2: renewal used to be reachable only via that heartbeat
+// signal, which made the expired-certificate recovery path — the whole reason
+// the proof-of-possession challenge exists — unreachable in `enforce`. The
+// chain was circular: the certificate expires, so the edge no longer verifies
+// it, so the heartbeat is denied by the binding gate, so the response carrying
+// `renewCert: true` never arrives, so the agent never asks to renew. The
+// agent sat at 401 forever holding a private key that could have proved its
+// identity the entire time. The startup path had the same hole from the other
+// side: it called the legacy bearer-only RenewCert with no proof at all.
+//
+// The renewal endpoints are deliberately exempt from the edge mTLS rule
+// (/renew-cert, /renew-cert/challenge — see docs/operations/cloudflare-mtls-setup.md),
+// precisely so an agent with a dead certificate can still reach them, and the
+// server accepts bearer + recovery proof there. Nothing but the missing
+// trigger stood between an expired agent and recovery.
+//
+// Runs on startup and on every tick, before the auth-dead skip — an agent
+// whose heartbeats are being refused is exactly the one that needs this. The
+// certRenewing guard (shared with handleCertRenewal and
+// reconcilePendingMTLSCert) keeps it from racing a server-signaled renewal,
+// and the server's own per-device renewal cooldown bounds the request rate
+// even if this fires on every tick.
+func (h *Heartbeat) maybeSelfInitiateCertRenewal() {
+	h.mu.Lock()
+	certPEM := h.config.MtlsCertPEM
+	keyPEM := h.config.MtlsKeyPEM
+	certExpires := h.config.MtlsCertExpires
+	h.mu.Unlock()
+
+	// No certificate material of any kind: this device is bearer-only (never
+	// issued one, or mTLS isn't configured server-side). Nothing to renew,
+	// and enrollment — not renewal — is what would issue a first certificate.
+	// The key alone is enough to proceed: it is what signs the recovery
+	// proof, and a startup path that declined to load an expired certificate
+	// may have left only the key and the expiry behind.
+	if (certPEM == "" && keyPEM == "") || certExpires == "" {
+		return
+	}
+
+	if !mtls.IsExpired(certExpires) && !mtls.ExpiresWithin(certExpires, selfInitiatedRenewalLeadTime) {
+		return
+	}
+
+	if !h.certRenewing.CompareAndSwap(false, true) {
+		return
+	}
+	defer h.certRenewing.Store(false)
+
+	if h.hasPendingMTLSCert() {
+		// Staged material already exists — finish that rather than issuing
+		// another certificate (which would supersede it server-side anyway).
+		h.confirmPendingMTLSCert()
+		return
+	}
+
+	if mtls.IsExpired(certExpires) {
+		log.Warn("active mTLS certificate has expired; initiating recovery renewal without waiting for a server signal")
+	} else {
+		log.Info("active mTLS certificate is approaching expiry; initiating renewal without waiting for a server signal",
+			"expires", certExpires)
+	}
+	h.issueAndStageMTLSCert()
+}
+
+// reconcilePendingMTLSCert recovers a two-phase mTLS renewal that staged
+// pending material durably but never confirmed it — the crash/restart
+// window (or a lost confirm response) the design exists to survive. Safe to
+// call on every startup and every heartbeat tick: a no-op when nothing is
+// pending. Shares the certRenewing guard with handleCertRenewal so a
+// startup reconcile, a tick-driven retry, and a fresh server-signaled
+// renewal can never run the state machine concurrently.
+func (h *Heartbeat) reconcilePendingMTLSCert() {
+	if !h.certRenewing.CompareAndSwap(false, true) {
+		return
+	}
+	defer h.certRenewing.Store(false)
+
+	if !h.hasPendingMTLSCert() {
+		h.pendingMTLSCertOnDisk.Store(false)
+		return
+	}
+
+	log.Info("found an unconfirmed pending mTLS certificate on disk; resuming confirmation")
+	h.confirmPendingMTLSCert()
+}
+
+// hasPendingMTLSCert reports whether a (not necessarily unexpired) pending
+// certificate is currently staged in h.config.
+func (h *Heartbeat) hasPendingMTLSCert() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.config.PendingMTLSCertificate != "" &&
+		h.config.PendingMTLSPrivateKey != "" &&
+		h.config.PendingMTLSCertificateID != ""
+}
+
+// issueAndStageMTLSCert requests a fresh certificate via the two-phase
+// (protocolVersion 2) protocol and, on a capable-server response, durably
+// stages it as pending before attempting confirmation. Callers must already
+// hold the certRenewing guard.
+func (h *Heartbeat) issueAndStageMTLSCert() {
+	h.mu.Lock()
+	activeCertExpires := h.config.MtlsCertExpires
+	activeCertPEM := h.config.MtlsCertPEM
+	activeKeyPEM := h.config.MtlsKeyPEM
+	deviceID := h.config.DeviceID
+	agentID := h.config.AgentID
+	h.mu.Unlock()
 
 	token := h.secureToken.Reveal()
-	renewClient := api.NewClient(h.serverURL(), token, h.config.AgentID)
+	certExpired := mtls.IsExpired(activeCertExpires)
 
-	renewResp, err := renewClient.RenewCert()
+	// FINAL-REVIEW I1: the renewal request must PRESENT the current client
+	// certificate. This used to build a bearer-only client, so in `enforce`
+	// the server's own rule — an unexpired active row requires a matching
+	// certificate assertion (evaluateRenewalAuthorization) — denied 100% of
+	// renewals: every agent's certificate would have run to expiry and the
+	// whole fleet would have locked itself out. /renew-cert is exempt from
+	// the edge mTLS rule (it must stay reachable for recovery), but being
+	// allowed through the edge without a certificate is not the same as being
+	// authorized by the API, and only the latter was ever tested.
+	//
+	// An EXPIRED certificate is deliberately NOT presented: the edge would
+	// reject the handshake outright, taking the recovery path down with it.
+	// That case authenticates with bearer + a recovery proof instead.
+	renewClient, presentedCert := newRenewalClient(h.serverURL(), token, agentID, activeCertPEM, activeKeyPEM, certExpired)
+	if !certExpired && !presentedCert {
+		log.Warn("renewing without presenting the active mTLS certificate; an enforce-mode server will deny this")
+	}
+
+	var proof *api.RecoveryProof
+	if certExpired && activeKeyPEM != "" {
+		proof = h.buildExpiredCertRecoveryProof(renewClient, deviceID, activeKeyPEM)
+	}
+
+	renewResp, err := renewClient.RenewCertV2(proof)
 	if err != nil {
 		log.Error("mTLS cert renewal failed", "error", err.Error())
 		return
 	}
-
 	if renewResp.Quarantined {
 		log.Warn("device quarantined during cert renewal")
 		return
 	}
-
 	if renewResp.Error != "" {
 		log.Error("mTLS cert renewal rejected", "error", renewResp.Error)
 		return
 	}
-
 	if renewResp.Mtls == nil {
 		log.Warn("mTLS cert renewal response missing cert data")
 		return
 	}
 
-	// Validate the cert/key pair before saving
+	// Validate the cert/key pair before doing anything else with it.
 	if _, verifyErr := mtls.LoadClientCert(renewResp.Mtls.Certificate, renewResp.Mtls.PrivateKey); verifyErr != nil {
 		log.Error("renewed cert/key pair is invalid, not saving", "error", verifyErr)
 		return
 	}
 
-	tlsCfg, err := mtls.BuildTLSConfig(renewResp.Mtls.Certificate, renewResp.Mtls.PrivateKey)
+	if renewResp.IsLegacyResponse() {
+		// Rolling-upgrade compatibility: a peer server still running the
+		// pre-Task-4 route already committed this as the device's final,
+		// active certificate — there is no pending row to confirm. Promote
+		// immediately, exactly as this function always has.
+		h.promoteLegacyCertImmediately(renewResp.Mtls)
+		return
+	}
+
+	h.stagePendingMTLSCert(renewResp)
+}
+
+// newRenewalClient builds the API client used for /renew-cert.
+//
+// FINAL-REVIEW I1: the renewal request must PRESENT the current client
+// certificate whenever there is a usable one. This path used to always build a
+// bearer-only client, so under AGENT_MTLS_BINDING_MODE=enforce the server's
+// own rule — an unexpired active certificate row requires a matching
+// certificate assertion (evaluateRenewalAuthorization) — denied 100% of
+// renewals. Every agent's certificate would have run to expiry and the entire
+// fleet would have locked itself out. /renew-cert is exempt from the EDGE
+// mTLS rule so that recovery stays reachable, but passing the edge without a
+// certificate is not the same as being authorized by the API.
+//
+// An EXPIRED certificate is deliberately NOT presented: the edge rejects the
+// handshake outright, which would take the recovery path down with it. That
+// case authenticates with bearer + a recovery proof instead.
+//
+// Returns the client and whether the active certificate is being presented.
+func newRenewalClient(serverURL, token, agentID, certPEM, keyPEM string, certExpired bool) (*api.Client, bool) {
+	if certExpired || certPEM == "" || keyPEM == "" {
+		return api.NewClient(serverURL, token, agentID), false
+	}
+	tlsCfg, err := mtls.BuildTLSConfig(certPEM, keyPEM)
+	if err != nil || tlsCfg == nil {
+		if err != nil {
+			log.Warn("could not build a TLS config from the active mTLS certificate; requesting renewal bearer-only",
+				"error", err.Error())
+		}
+		return api.NewClient(serverURL, token, agentID), false
+	}
+	return api.NewClientWithTLS(serverURL, token, agentID, tlsCfg), true
+}
+
+// buildExpiredCertRecoveryProof requests a recovery challenge and signs it
+// with the OLD (still-configured, already-expired) private key, per Task 4's
+// proof-of-possession requirement for renewing past an expired certificate.
+// Returns nil (request without a proof) on any failure along the way —
+// logged, never fatal — so the server's own binding-mode gate decides
+// whether that is acceptable (off/audit) or a denial (enforce).
+func (h *Heartbeat) buildExpiredCertRecoveryProof(renewClient *api.Client, deviceID, activeKeyPEM string) *api.RecoveryProof {
+	if deviceID == "" {
+		// Wave 5 Task 5 known gap: DeviceID (devices.id) is only populated on
+		// agents enrolled after this field was added (see config.Config.DeviceID
+		// doc comment). Without it the canonical recovery-proof bytes cannot be
+		// reproduced, so proceed without a proof — identical to pre-Task-5
+		// fail-closed behavior under an enforce-mode binding policy.
+		log.Warn("active mTLS certificate has expired but no device id is on file; requesting renewal without a recovery proof")
+		return nil
+	}
+
+	challengeResp, err := renewClient.RequestRenewalChallenge()
+	if err != nil {
+		log.Warn("failed to obtain mTLS renewal recovery challenge; requesting renewal without a proof", "error", err.Error())
+		return nil
+	}
+	if challengeResp.Error != "" {
+		log.Warn("mTLS renewal recovery challenge unavailable; requesting renewal without a proof", "error", challengeResp.Error)
+		return nil
+	}
+
+	sig, signErr := mtls.SignRenewalProof(activeKeyPEM, deviceID, challengeResp.ChallengeID, challengeResp.ExpiresUnix)
+	if signErr != nil {
+		log.Error("failed to sign mTLS renewal recovery proof", "error", signErr.Error())
+		return nil
+	}
+
+	return &api.RecoveryProof{
+		ChallengeID:     challengeResp.ChallengeID,
+		ExpiresUnix:     challengeResp.ExpiresUnix,
+		SignatureBase64: sig,
+	}
+}
+
+// promoteLegacyCertImmediately is the pre-Task-5 renewal behavior, used only
+// when the peer server's response has no protocolVersion/certificateId
+// (rolling-upgrade compatibility): the certificate is already the server's
+// final active one, so it is written straight to the active fields.
+func (h *Heartbeat) promoteLegacyCertImmediately(m *api.MtlsCertData) {
+	tlsCfg, err := mtls.BuildTLSConfig(m.Certificate, m.PrivateKey)
 	if err != nil {
 		log.Error("failed to build TLS config from renewed cert", "error", err.Error())
 		return
 	}
 
-	// Update config in memory (hold mutex to prevent races with heartbeat reads)
+	token := h.secureToken.Reveal()
 	h.mu.Lock()
-	h.config.MtlsCertPEM = renewResp.Mtls.Certificate
-	h.config.MtlsKeyPEM = renewResp.Mtls.PrivateKey
-	h.config.MtlsCertExpires = renewResp.Mtls.ExpiresAt
-
-	// Save to disk (temporarily restore auth token for save)
+	h.config.MtlsCertPEM = m.Certificate
+	h.config.MtlsKeyPEM = m.PrivateKey
+	h.config.MtlsCertExpires = m.ExpiresAt
 	h.config.AuthToken = token
-	err = config.Save(h.config)
+	err = config.SaveTo(h.config, config.ActiveConfigFile())
 	h.config.AuthToken = ""
+	if err != nil {
+		// Clear expires so the next heartbeat re-triggers renewal.
+		h.config.MtlsCertExpires = ""
+	}
+	h.mu.Unlock()
 
 	if err != nil {
 		log.Error("failed to save renewed mTLS cert -- renewal will be re-attempted", "error", err.Error())
-		// Clear expires so next heartbeat re-triggers renewal
-		h.config.MtlsCertExpires = ""
-		h.mu.Unlock()
 		return
 	}
-	h.mu.Unlock()
 
 	h.setHTTPClient(newHeartbeatHTTPClient(tlsCfg))
 	if h.wsClient != nil {
@@ -3622,8 +4413,317 @@ func (h *Heartbeat) handleCertRenewal() {
 		h.wsClient.ForceReconnect()
 	}
 
-	log.Info("mTLS certificate renewed", "expires", renewResp.Mtls.ExpiresAt)
-	log.Info("mTLS clients refreshed with renewed certificate")
+	log.Info("mTLS certificate renewed (legacy server, immediate promotion)", "expires", m.ExpiresAt)
+}
+
+// stagePendingMTLSCert durably persists a freshly-issued pending certificate
+// BEFORE any attempt to confirm it — the save-before-confirm ordering
+// invariant. A failed save rolls the in-memory staging back and leaves the
+// OLD active certificate untouched; the server's own pending row simply
+// expires and is revoked by its 5-minute sweep. A successful save proceeds
+// straight to confirmation.
+func (h *Heartbeat) stagePendingMTLSCert(renewResp *api.RenewCertV2Response) {
+	activationExpiresAt, err := mtls.ParseExpiryTime(renewResp.ActivationExpiresAt)
+	if err != nil {
+		log.Error("mTLS renewal response has an unparseable activationExpiresAt; discarding renewal",
+			"value", renewResp.ActivationExpiresAt, "error", err.Error())
+		return
+	}
+
+	token := h.secureToken.Reveal()
+	h.mu.Lock()
+	h.config.PendingMTLSCertificate = renewResp.Mtls.Certificate
+	h.config.PendingMTLSPrivateKey = renewResp.Mtls.PrivateKey
+	h.config.PendingMTLSCertificateID = renewResp.CertificateID
+	h.config.PendingMTLSExpiresAt = activationExpiresAt
+	h.config.AuthToken = token
+	saveErr := config.SaveTo(h.config, config.ActiveConfigFile())
+	h.config.AuthToken = ""
+	if saveErr != nil {
+		h.config.PendingMTLSCertificate = ""
+		h.config.PendingMTLSPrivateKey = ""
+		h.config.PendingMTLSCertificateID = ""
+		h.config.PendingMTLSExpiresAt = time.Time{}
+	}
+	h.mu.Unlock()
+
+	if saveErr != nil {
+		log.Error("mTLS renewal aborted — pending certificate could not be durably persisted; continuing on the existing certificate",
+			"error", saveErr.Error())
+		return
+	}
+
+	h.pendingMTLSCertOnDisk.Store(true)
+	log.Info("pending mTLS certificate durably staged; confirming", "certificateId", renewResp.CertificateID)
+	h.confirmPendingMTLSCert()
+}
+
+// confirmPendingMTLSCert attempts to confirm — and, on success, promote —
+// the pending mTLS certificate currently staged in h.config. Safe to call
+// whether the pending material was just staged in this same call chain or
+// recovered from disk after a restart; callers must already hold the
+// certRenewing guard.
+func (h *Heartbeat) confirmPendingMTLSCert() {
+	h.mu.Lock()
+	pendingCert := h.config.PendingMTLSCertificate
+	pendingKey := h.config.PendingMTLSPrivateKey
+	pendingCertID := h.config.PendingMTLSCertificateID
+	pendingExpiresAt := h.config.PendingMTLSExpiresAt
+	agentID := h.config.AgentID
+	h.mu.Unlock()
+
+	if pendingCert == "" || pendingKey == "" || pendingCertID == "" {
+		h.pendingMTLSCertOnDisk.Store(false)
+		return
+	}
+
+	// Ordering invariant: an activation window that has already elapsed can
+	// never be confirmed — the server's own sweep independently revokes it.
+	// Discard locally and keep using the current active certificate.
+	//
+	// FINAL-REVIEW I10: compared against the LOCAL clock with a skew
+	// allowance. activationExpiresAt is a server timestamp; a raw local
+	// compare meant an agent whose clock ran fast (a stopped-VM resume, a
+	// bad NTP peer, a dead CMOS battery) discarded every pending certificate
+	// the instant it arrived and could never complete a renewal, with nothing
+	// in the logs pointing at the clock. The server is the authority on the
+	// window anyway — it answers 410 when the window has genuinely closed —
+	// so this local check only needs to avoid pointless round-trips, and can
+	// afford to be generous.
+	if !pendingExpiresAt.IsZero() && time.Now().Add(-pendingActivationClockSkew).After(pendingExpiresAt) {
+		log.Warn("pending mTLS certificate's activation window expired before it could be confirmed; discarding and keeping the current certificate",
+			"certificateId", pendingCertID)
+		h.clearPendingMTLSCert()
+		return
+	}
+
+	h.pendingMTLSCertOnDisk.Store(true)
+
+	tlsCfg, err := mtls.BuildTLSConfig(pendingCert, pendingKey)
+	if err != nil {
+		log.Error("failed to build TLS config from pending mTLS certificate", "error", err.Error())
+		return
+	}
+
+	// Confirmation MUST run over a one-off client built from the PENDING
+	// material — the server authenticates the new identity via the edge's
+	// certificate assertion on this connection, not the bearer token alone.
+	token := h.secureToken.Reveal()
+	confirmClient := api.NewClientWithTLS(h.serverURL(), token, agentID, tlsCfg)
+
+	resp, err := confirmClient.ConfirmCertRenewal(pendingCertID)
+	if err != nil {
+		var httpErr *api.ErrHTTPStatus
+		if errors.As(err, &httpErr) {
+			switch httpErr.StatusCode {
+			case http.StatusConflict:
+				// FINAL-REVIEW C4 — the identity-loss bug. A 409 means the
+				// row is no longer pending_activation. The dominant cause by
+				// far is that a PREVIOUS confirm succeeded and its response
+				// was lost in flight: the server already activated this
+				// certificate and considers it the device's identity. Treating
+				// that as a generic failure (what this code used to do) meant
+				// the agent retried until activation_expires_at elapsed and
+				// then clearPendingMTLSCert DELETED the only copy of the cert
+				// the server is now authenticating it by — permanent identity
+				// loss from a single dropped response.
+				//
+				// A current server never sends 409 for that case at all (it
+				// re-confirms idempotently, see routes/agents/mtls.ts), and
+				// when it does send one it includes the row `state` so the
+				// two outcomes are distinguishable. Adopt on "active" or on
+				// an absent state (older server, and the safe direction:
+				// keeping material the server has activated can be corrected
+				// by another renewal, discarding it cannot be corrected at
+				// all); discard only on an explicitly terminal state.
+				if state := parseConfirmConflictState(httpErr.Body); isTerminalCertState(state) {
+					log.Warn("server reports the pending mTLS certificate is terminally unusable; discarding and keeping the current certificate",
+						"certificateId", pendingCertID, "state", state)
+					h.clearPendingMTLSCert()
+					return
+				} else {
+					log.Info("mTLS certificate confirmation returned conflict — the server has already activated this certificate; adopting it locally",
+						"certificateId", pendingCertID, "state", state)
+					h.promotePendingMTLSCert(pendingCert, pendingKey)
+					return
+				}
+			case http.StatusGone:
+				// 410: the activation window elapsed server-side and the row
+				// was never activated. The server's own sweep revokes it, so
+				// this material is genuinely dead — discard it explicitly
+				// rather than waiting for the local expiry check to notice.
+				log.Warn("pending mTLS certificate's activation window expired server-side; discarding and keeping the current certificate",
+					"certificateId", pendingCertID)
+				h.clearPendingMTLSCert()
+				return
+			case http.StatusNotFound:
+				// The row does not exist (or belongs to another device):
+				// nothing to confirm, ever. Retrying cannot help.
+				log.Warn("server does not recognize the pending mTLS certificate; discarding and keeping the current certificate",
+					"certificateId", pendingCertID)
+				h.clearPendingMTLSCert()
+				return
+			}
+		}
+		// Transport failure or any other status: do NOT promote. The old
+		// active certificate is untouched; the pending material stays on disk
+		// and the next tick/heartbeat retries.
+		log.Warn("mTLS certificate confirmation failed; retaining current certificate and will retry",
+			"certificateId", pendingCertID, "error", err.Error())
+		return
+	}
+	if !resp.Success {
+		log.Warn("mTLS certificate confirmation rejected by server; retaining current certificate",
+			"certificateId", pendingCertID, "error", resp.Error)
+		return
+	}
+	if resp.AlreadyActive {
+		log.Info("server confirmed this mTLS certificate was already active (idempotent re-confirm); adopting it locally",
+			"certificateId", pendingCertID)
+	}
+
+	h.promotePendingMTLSCert(pendingCert, pendingKey)
+}
+
+// parseConfirmConflictState extracts the certificate row state from a 409
+// /renew-cert/confirm body. Returns "" when the body is absent, unparseable,
+// or produced by a server that predates the `state` field.
+func parseConfirmConflictState(body string) string {
+	var parsed api.ConfirmConflictBody
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		return ""
+	}
+	return parsed.State
+}
+
+// isTerminalCertState reports whether a server-reported certificate state
+// means the pending material can never become this device's identity. Only an
+// EXPLICIT terminal state qualifies: an unknown/absent state must fall through
+// to adoption, because discarding material the server has already activated is
+// unrecoverable while adopting material the server later revokes is not.
+func isTerminalCertState(state string) bool {
+	return state == "revoked" || state == "pending_revocation"
+}
+
+// promotePendingMTLSCert collapses a server-confirmed pending certificate
+// into the active fields and clears the pending fields, in a single atomic
+// SaveTo write. Called only after ConfirmCertRenewal has already succeeded.
+func (h *Heartbeat) promotePendingMTLSCert(certPEM, keyPEM string) {
+	expiresStr := ""
+	if notAfter, err := mtls.CertificateNotAfter(certPEM); err != nil {
+		log.Warn("could not parse promoted mTLS certificate's own expiry; MtlsCertExpires will be stale until the next renewal check",
+			"error", err.Error())
+	} else {
+		expiresStr = notAfter.UTC().Format(time.RFC3339)
+	}
+
+	tlsCfg, err := mtls.BuildTLSConfig(certPEM, keyPEM)
+	if err != nil {
+		log.Error("promoted mTLS cert/key failed to build a TLS config; NOT promoting, keeping current certificate", "error", err.Error())
+		return
+	}
+
+	token := h.secureToken.Reveal()
+	h.mu.Lock()
+	// FINAL-REVIEW C4 (inert retry): snapshot every field this write mutates
+	// so a failed SaveTo can restore ALL of them. The previous version zeroed
+	// the in-memory pending fields BEFORE SaveTo and left them zeroed when the
+	// save failed. hasPendingMTLSCert reads those same in-memory fields, so
+	// the "will retry" path it logged was inert: reconcilePendingMTLSCert saw
+	// no pending certificate and returned immediately, while the disk still
+	// held the un-promoted pending state. In-memory and on-disk state now
+	// stay identical through a failure, so a resume — this tick's retry or a
+	// restart reading the file — genuinely finds the pending material.
+	prevCertPEM := h.config.MtlsCertPEM
+	prevKeyPEM := h.config.MtlsKeyPEM
+	prevExpires := h.config.MtlsCertExpires
+	prevPendingCert := h.config.PendingMTLSCertificate
+	prevPendingKey := h.config.PendingMTLSPrivateKey
+	prevPendingCertID := h.config.PendingMTLSCertificateID
+	prevPendingExpiresAt := h.config.PendingMTLSExpiresAt
+
+	h.config.MtlsCertPEM = certPEM
+	h.config.MtlsKeyPEM = keyPEM
+	if expiresStr != "" {
+		h.config.MtlsCertExpires = expiresStr
+	}
+	h.config.PendingMTLSCertificate = ""
+	h.config.PendingMTLSPrivateKey = ""
+	h.config.PendingMTLSCertificateID = ""
+	h.config.PendingMTLSExpiresAt = time.Time{}
+	h.config.AuthToken = token
+	saveErr := config.SaveTo(h.config, config.ActiveConfigFile())
+	h.config.AuthToken = ""
+	if saveErr != nil {
+		h.config.MtlsCertPEM = prevCertPEM
+		h.config.MtlsKeyPEM = prevKeyPEM
+		h.config.MtlsCertExpires = prevExpires
+		h.config.PendingMTLSCertificate = prevPendingCert
+		h.config.PendingMTLSPrivateKey = prevPendingKey
+		h.config.PendingMTLSCertificateID = prevPendingCertID
+		h.config.PendingMTLSExpiresAt = prevPendingExpiresAt
+	}
+	h.mu.Unlock()
+
+	if saveErr != nil {
+		// The server has ALREADY confirmed/promoted this certificate — only
+		// our local disk write failed. Both in-memory and on-disk state have
+		// been left holding the pending material, so hasPendingMTLSCert is
+		// true and the retry loop (and a restart) will actually resume. The
+		// server's confirm is idempotent for an already-active row, so the
+		// retry completes rather than 409-looping.
+		log.Error("mTLS certificate confirmed by server but promoting it locally failed; will retry", "error", saveErr.Error())
+		h.pendingMTLSCertOnDisk.Store(true)
+		return
+	}
+
+	h.pendingMTLSCertOnDisk.Store(false)
+	h.setHTTPClient(newHeartbeatHTTPClient(tlsCfg))
+	if h.wsClient != nil {
+		h.wsClient.UpdateTLSConfig(tlsCfg)
+		h.wsClient.ForceReconnect()
+	}
+	log.Info("mTLS certificate renewed and confirmed", "expires", expiresStr)
+}
+
+// clearPendingMTLSCert discards a pending certificate that can never be
+// confirmed (its activation window elapsed). The current active certificate
+// is left untouched — this can never make the agent worse off than before
+// the renewal attempt.
+func (h *Heartbeat) clearPendingMTLSCert() {
+	token := h.secureToken.Reveal()
+	h.mu.Lock()
+	// FINAL-REVIEW C4 (same defect class as promotePendingMTLSCert): restore
+	// the in-memory pending fields when SaveTo fails. Zeroing them and leaving
+	// them zeroed made hasPendingMTLSCert report "nothing pending" while the
+	// disk still held the row, so the "will retry on the next tick" path was
+	// inert and the stale pending state survived on disk indefinitely.
+	prevPendingCert := h.config.PendingMTLSCertificate
+	prevPendingKey := h.config.PendingMTLSPrivateKey
+	prevPendingCertID := h.config.PendingMTLSCertificateID
+	prevPendingExpiresAt := h.config.PendingMTLSExpiresAt
+
+	h.config.PendingMTLSCertificate = ""
+	h.config.PendingMTLSPrivateKey = ""
+	h.config.PendingMTLSCertificateID = ""
+	h.config.PendingMTLSExpiresAt = time.Time{}
+	h.config.AuthToken = token
+	err := config.SaveTo(h.config, config.ActiveConfigFile())
+	h.config.AuthToken = ""
+	if err != nil {
+		h.config.PendingMTLSCertificate = prevPendingCert
+		h.config.PendingMTLSPrivateKey = prevPendingKey
+		h.config.PendingMTLSCertificateID = prevPendingCertID
+		h.config.PendingMTLSExpiresAt = prevPendingExpiresAt
+	}
+	h.mu.Unlock()
+
+	if err != nil {
+		log.Error("failed to clear expired pending mTLS certificate from disk; will retry on the next tick", "error", err.Error())
+		h.pendingMTLSCertOnDisk.Store(true)
+		return
+	}
+	h.pendingMTLSCertOnDisk.Store(false)
 }
 
 func (h *Heartbeat) handleTokenRotation() {
@@ -4702,34 +5802,27 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 		return
 	}
 
-	if !h.config.AutoUpdate {
+	if !h.autoUpdate() {
 		log.Info("watchdog upgrade available but auto_update is disabled",
 			"targetVersion", targetVersion)
 		return
 	}
 
-	// SECURITY: the target always originates from the control plane and must be
-	// a real release semver. Fail CLOSED on an unparseable target (matching the
-	// helper-upgrade guard's posture) so a compromised/MITM'd control plane
-	// can't slip a non-semver value past the downgrade check below — isDowngrade
-	// fails OPEN on unparseable input, which is the right call for agent "dev"
-	// builds but wrong for a server-directed privileged swap.
-	if _, _, _, ok := parseSemver(targetVersion); !ok {
-		log.Error("SECURITY: refusing watchdog upgrade to non-semver target",
-			"targetVersion", targetVersion)
-		return
-	}
-
-	// SECURITY: never auto-downgrade the watchdog. The signed manifest only
-	// binds manifest.Release == requested version, so a compromised/MITM'd
-	// control plane could otherwise replay an older, validly-signed,
-	// known-vulnerable watchdog. The watchdog ships in lockstep with the agent,
-	// so the running agent's version is a safe floor. (Note: the target normally
-	// EQUALS the agent version — both at latest — which is exactly when a stale
-	// watchdog needs swapping, so equality must NOT be treated as a no-op.)
-	if isDowngrade(targetVersion, h.agentVersion) {
-		log.Error("SECURITY: refusing server-directed watchdog downgrade",
-			"agentVersion", h.agentVersion, "targetVersion", targetVersion)
+	// SECURITY: the target always originates from the control plane and must
+	// be a real release semver, and must not be OLDER than the running
+	// agent. The signed manifest only binds manifest.Release == requested
+	// version, so a compromised/MITM'd control plane could otherwise replay
+	// a malformed target or an older, validly-signed, known-vulnerable
+	// watchdog. The watchdog ships in lockstep with the agent, so the
+	// running agent's version is a safe floor — routed through
+	// InstalledComponentCurrent (not MainAgentCurrent), so an agent "dev"
+	// build does NOT waive this guard the way it does for its own
+	// self-update. (Note: the target normally EQUALS the agent version —
+	// both at latest — which is exactly when a stale watchdog needs
+	// swapping, so equality must NOT be treated as a no-op.)
+	if decision := watchdogUpgradeDecision(targetVersion, h.agentVersion); !decision.Allowed {
+		log.Error("SECURITY: refusing server-directed watchdog upgrade",
+			"agentVersion", h.agentVersion, "targetVersion", targetVersion, "reason", decision.Reason)
 		return
 	}
 
@@ -4766,8 +5859,12 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 	log.Info("watchdog upgrade requested", "targetVersion", targetVersion)
 	if err := install(targetVersion); err != nil {
 		// Leave watchdogInstalledVersion unset so a transient failure retries
-		// after the cooldown rather than every tick.
-		log.Error("failed to update watchdog", "targetVersion", targetVersion, "error", err.Error())
+		// after the cooldown rather than every tick. install() -> ...
+		// -> downloadWatchdogBinary is a netpolicy-enforced download; see
+		// SafeDownloadErrorFields for why err.Error() must not be logged
+		// directly.
+		key, value := updater.SafeDownloadErrorFields(err)
+		log.Error("failed to update watchdog", "targetVersion", targetVersion, key, value)
 		return
 	}
 	h.watchdogUpgradeMu.Lock()
@@ -4792,11 +5889,13 @@ const watchdogUpgradeRetryCooldown = 30 * time.Minute
 // download lives in one place.
 func (h *Heartbeat) downloadWatchdogBinary(targetVersion string) (string, error) {
 	u := updater.New(&updater.Config{
-		ServerURL:             h.serverURL,
-		AuthToken:             h.secureToken,
-		CurrentVersion:        h.agentVersion,
-		Component:             "watchdog",
-		PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
+		ServerURL:                   h.serverURL,
+		BackupServerURL:             h.backupServerURL(),
+		AuthToken:                   h.secureToken,
+		CurrentVersion:              h.agentVersion,
+		Component:                   "watchdog",
+		PinnedManifestPubKeys:       h.pinnedManifestPubKeys(),
+		RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
 	})
 	return u.DownloadBinary(targetVersion)
 }
@@ -4862,11 +5961,13 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 	download := h.userHelperDownloader
 	if download == nil {
 		helperCfg := &updater.Config{
-			ServerURL:             h.serverURL,
-			AuthToken:             h.secureToken,
-			CurrentVersion:        h.agentVersion,
-			Component:             "user-helper",
-			PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
+			ServerURL:                   h.serverURL,
+			BackupServerURL:             h.backupServerURL(),
+			AuthToken:                   h.secureToken,
+			CurrentVersion:              h.agentVersion,
+			Component:                   "user-helper",
+			PinnedManifestPubKeys:       h.pinnedManifestPubKeys(),
+			RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
 		}
 		helperUpdater := updater.New(helperCfg)
 		download = helperUpdater.DownloadBinary
@@ -4874,11 +5975,12 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 
 	tempPath, dlErr := download(targetVersion)
 	if dlErr != nil {
+		key, value := updater.SafeDownloadErrorFields(dlErr)
 		log.Warn(
 			"user-helper download failed; proceeding with agent-only upgrade",
 			"currentVersion", h.agentVersion,
 			"targetVersion", targetVersion,
-			"error", dlErr.Error(),
+			key, value,
 		)
 		return nil
 	}
@@ -4955,11 +6057,13 @@ func (h *Heartbeat) reconcileUserHelper(binaryPath string) {
 	download := h.userHelperDownloader
 	if download == nil {
 		helperCfg := &updater.Config{
-			ServerURL:             h.serverURL,
-			AuthToken:             h.secureToken,
-			CurrentVersion:        h.agentVersion,
-			Component:             "user-helper",
-			PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
+			ServerURL:                   h.serverURL,
+			BackupServerURL:             h.backupServerURL(),
+			AuthToken:                   h.secureToken,
+			CurrentVersion:              h.agentVersion,
+			Component:                   "user-helper",
+			PinnedManifestPubKeys:       h.pinnedManifestPubKeys(),
+			RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
 		}
 		download = updater.New(helperCfg).DownloadBinary
 	}
@@ -5011,20 +6115,25 @@ const (
 // WARN every tick. The ERROR carries a stable reason + consecutiveFailures so
 // fleet telemetry can GROUP BY and alert on it.
 func (h *Heartbeat) noteUserHelperReconcileFailure(reason string, err error) {
+	// reason=="download_failed" is a netpolicy-enforced download error (see
+	// SafeDownloadErrorFields); reason=="install_failed" is a local
+	// file/broker error with no URL risk. Applying the same helper to both is
+	// safe — a non-network error falls through to its unchanged Error() text.
+	key, value := updater.SafeDownloadErrorFields(err)
 	n := h.userHelperReconcileFailures.Add(1)
 	switch {
 	case n >= userHelperReconcilePersistentThreshold &&
 		(n == userHelperReconcilePersistentThreshold || n%userHelperReconcileReLogEvery == 0):
 		log.Error("user-helper reconciliation persistently failing — device cannot self-heal its missing helper",
 			"reason", reason, "consecutiveFailures", n,
-			"currentVersion", h.agentVersion, "error", err.Error())
+			"currentVersion", h.agentVersion, key, value)
 	case n == 1:
 		log.Warn("user-helper reconciliation failed; will retry on a later tick",
 			"reason", reason, "consecutiveFailures", n,
-			"currentVersion", h.agentVersion, "error", err.Error())
+			"currentVersion", h.agentVersion, key, value)
 	default:
 		log.Debug("user-helper reconciliation still failing",
-			"reason", reason, "consecutiveFailures", n, "error", err.Error())
+			"reason", reason, "consecutiveFailures", n, key, value)
 	}
 }
 
@@ -5078,12 +6187,14 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	backupPath := filepath.Join(backupDir, "breeze-agent.backup")
 
 	updaterCfg := &updater.Config{
-		ServerURL:             h.serverURL,
-		AuthToken:             h.secureToken,
-		CurrentVersion:        h.agentVersion,
-		BinaryPath:            binaryPath,
-		BackupPath:            backupPath,
-		PinnedManifestPubKeys: h.config.PinnedManifestPubKeys,
+		ServerURL:                   h.serverURL,
+		BackupServerURL:             h.backupServerURL(),
+		AuthToken:                   h.secureToken,
+		CurrentVersion:              h.agentVersion,
+		BinaryPath:                  binaryPath,
+		BackupPath:                  backupPath,
+		PinnedManifestPubKeys:       h.pinnedManifestPubKeys(),
+		RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
 	}
 
 	// Pre-download breeze-user-helper.exe on Windows so the restart-helper
@@ -5104,7 +6215,7 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 				log.Error("auto-update disabled: binary path is read-only — update the systemd unit to add the binary path to ReadWritePaths, then restart the service", "targetVersion", targetVersion, "error", err.Error())
 				h.updateReadOnlyLogged = true
 			}
-			h.config.AutoUpdate = false
+			h.setAutoUpdate(false)
 			return
 		}
 		// File locked by another process is transient — log and retry next heartbeat.
@@ -5117,7 +6228,14 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 			log.Warn("update deferred: binary is executing, will retry", "targetVersion", targetVersion, "error", err.Error())
 			return
 		}
-		log.Error("failed to update", "targetVersion", targetVersion, "error", err.Error())
+		// A download failure here may carry a *netpolicy.PolicyError, or be a
+		// *url.Error — net/http wraps EVERY transport-level failure that way
+		// (TLS handshake, connection refused/reset, timeout, EOF — not just
+		// policy rejections), and its message repeats the full request URL,
+		// capability query string included. SafeDownloadErrorFields picks the
+		// key/value that never leaks it.
+		key, value := updater.SafeDownloadErrorFields(err)
+		log.Error("failed to update", "targetVersion", targetVersion, key, value)
 		return
 	}
 

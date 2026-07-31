@@ -28,13 +28,29 @@ func (k HelperKey) String() string {
 	return fmt.Sprintf("%d-%s", k.WindowsSessionID, k.Role)
 }
 
-func helperRoleDesired(s DetectedSession, role ipc.HelperRole) bool {
+// retainDisconnectedSystemHelper reports whether a disconnected session should
+// keep its SYSTEM helper (subject to the TTL cap in applyDisconnectedRetention).
+// On an RDS host WTSClientProtocolType is unreliable after disconnect (it
+// reverts to 0, so the session reports Type="console"), so key on
+// state+non-console instead of Type. On a workstation, preserve the historical
+// Type=="rdp" truth table exactly (rdsHost=false path is bit-identical).
+func retainDisconnectedSystemHelper(s DetectedSession, rdsHost bool, consoleSessionID string) bool {
+	if s.State != "disconnected" {
+		return false
+	}
+	if rdsHost {
+		return s.Session != consoleSessionID
+	}
+	return s.Type == "rdp"
+}
+
+func helperRoleDesired(s DetectedSession, role ipc.HelperRole, rdsHost bool, consoleSessionID string) bool {
 	if s.Session == "0" || s.Type == "services" {
 		return false
 	}
 	switch role {
 	case ipc.HelperRoleSystem:
-		return s.State == "active" || s.State == "connected" || (s.Type == "rdp" && s.State == "disconnected")
+		return s.State == "active" || s.State == "connected" || retainDisconnectedSystemHelper(s, rdsHost, consoleSessionID)
 	case ipc.HelperRoleUser:
 		return s.State == "active"
 	default:
@@ -42,8 +58,8 @@ func helperRoleDesired(s DetectedSession, role ipc.HelperRole) bool {
 	}
 }
 
-func helperKeyFromDetected(s DetectedSession, role ipc.HelperRole) (HelperKey, bool) {
-	if !helperRoleDesired(s, role) {
+func helperKeyFromDetected(s DetectedSession, role ipc.HelperRole, rdsHost bool, consoleSessionID string) (HelperKey, bool) {
+	if !helperRoleDesired(s, role, rdsHost, consoleSessionID) {
 		return HelperKey{}, false
 	}
 	id, err := strconv.ParseUint(s.Session, 10, 32)

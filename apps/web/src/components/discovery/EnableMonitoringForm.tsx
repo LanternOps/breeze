@@ -3,6 +3,7 @@ import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import CreateMonitorForm from '../monitors/CreateMonitorForm';
+import { asList } from '@/lib/asList';
 
 type SNMPTemplate = {
   id: string;
@@ -45,7 +46,7 @@ export default function EnableMonitoringForm({
       .then(async (res) => {
         if (res.ok) {
           const data = await res.json();
-          setTemplates(data.data ?? data.templates ?? data ?? []);
+          setTemplates(asList(data, 'templates'));
         } else {
           setTemplateError(t('enableMonitoringForm.errors.loadTemplates'));
         }

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // We test the platform-admin gate, Zod validation, audit-log shape, and
 // not-found path. The full suspend transaction (multi-statement Drizzle calls
@@ -11,6 +11,7 @@ const txMockState = vi.hoisted(() => ({
     status: string;
     paymentMethodAttachedAt: Date | null;
     emailVerifiedAt: Date | null;
+    billingSubscriptionStatus?: string | null;
   },
   partnerDevices: [] as Array<{ id: string }>,
   partnerOrgs: [] as Array<{ id: string }>,
@@ -200,6 +201,13 @@ vi.mock('../../oauth/grantRevocation', () => ({
     refreshTokensRevoked: 0,
     jtisRevoked: 0,
   })),
+}));
+
+// Billing subscription cancel on suspend. vi.hoisted so the stable mock fn is
+// referenceable inside the (hoisted) factory and assertable across calls.
+const billingCancelMock = vi.hoisted(() => vi.fn());
+vi.mock('../../services/breezeBillingClient', () => ({
+  getBreezeBillingClient: () => ({ cancelSubscription: billingCancelMock }),
 }));
 
 // /unsuspend now restores the agent fleet that an orgs.ts-initiated suspend
@@ -885,6 +893,39 @@ describe('admin/abuse — unsuspend agent-fleet restore', () => {
     expect(capturedPartnerUpdate!.status).toBe('pending');
   });
 
+  // Regression coverage for the billing-status veto: a card-testing partner
+  // typically carries an incomplete_expired subscription alongside a falsely
+  // written payment stamp (#718). Unsuspend must not trust the stamp when the
+  // billing status contradicts it — the partner lands on 'pending' and has to
+  // complete a real payment.
+  it('unsuspend falls back to pending when billing status contradicts the payment stamp', async () => {
+    txMockState.partner = {
+      id: 'partner-1',
+      status: 'suspended',
+      paymentMethodAttachedAt: new Date(),
+      emailVerifiedAt: new Date(),
+      billingSubscriptionStatus: 'incomplete_expired',
+    };
+
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/unsuspend', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'reinstating but subscription never completed' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string };
+    expect(body.status).toBe('pending');
+    expect(restorePartnerTenantAccess).not.toHaveBeenCalled();
+
+    const capturedPartnerUpdate = txMockState.updates.find(
+      (u) => u.values && 'status' in u.values && !('disabledReason' in u.values),
+    )?.values;
+    expect(capturedPartnerUpdate).toBeDefined();
+    expect(capturedPartnerUpdate!.status).toBe('pending');
+  });
+
   it('returns 500 (does NOT silently 200) when the agent-fleet restore throws', async () => {
     vi.mocked(restorePartnerTenantAccess).mockRejectedValueOnce(new Error('db unavailable'));
     const app = buildApp(platformAdminAuth);
@@ -899,5 +940,79 @@ describe('admin/abuse — unsuspend agent-fleet restore', () => {
     expect(body.agentRestoreFailed).toBe(true);
     const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
     expect(auditCall.result).toBe('failure');
+  });
+});
+
+describe('admin/abuse — billing subscription cancel on suspend', () => {
+  const originalBillingUrl = process.env.BREEZE_BILLING_URL;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetState();
+    process.env.NODE_ENV = 'test';
+    billingCancelMock.mockResolvedValue({ canceled: true, immediate: true });
+  });
+
+  afterEach(() => {
+    if (originalBillingUrl === undefined) delete process.env.BREEZE_BILLING_URL;
+    else process.env.BREEZE_BILLING_URL = originalBillingUrl;
+  });
+
+  it('cancels the partner subscription immediately and records it in the audit', async () => {
+    process.env.BREEZE_BILLING_URL = 'http://billing.test';
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'stolen-card mass enrollment ring' }),
+    });
+    expect(res.status).toBe(200);
+    // immediate cancellation — the account is terminated for abuse, not downgraded.
+    expect(billingCancelMock).toHaveBeenCalledWith({ partnerId: 'partner-1', immediate: true });
+    const body = await res.json();
+    expect(body.billingSubscriptionCanceled).toBe(true);
+    expect(body.billingCancelFailed).toBeUndefined();
+    const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
+    expect(auditCall.result).toBe('success');
+    expect(auditCall.details).toMatchObject({ billingSubscriptionCanceled: true });
+  });
+
+  it('does NOT abort the suspend when billing cancel fails (best-effort) and records the error', async () => {
+    process.env.BREEZE_BILLING_URL = 'http://billing.test';
+    billingCancelMock.mockRejectedValue(new Error('billing 503'));
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'stolen-card mass enrollment ring' }),
+    });
+    // The DB suspend already committed; a billing hiccup must not turn it into a failure.
+    expect(res.status).toBe(200);
+    expect(billingCancelMock).toHaveBeenCalledTimes(1);
+    // The operator must see the failed cancel in the response — the card is
+    // still live and needs a manual cancel in Stripe.
+    const body = await res.json();
+    expect(body.billingSubscriptionCanceled).toBeNull();
+    expect(body.billingCancelFailed).toBe(true);
+    const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
+    expect(auditCall.result).toBe('success');
+    expect(auditCall.details).toMatchObject({
+      billingSubscriptionCanceled: null,
+      billingCancelError: 'billing 503',
+    });
+  });
+
+  it('skips billing entirely when no billing service is configured (self-hosted)', async () => {
+    delete process.env.BREEZE_BILLING_URL;
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confirmEmail: 'admin@breeze.test', reason: 'stolen-card mass enrollment ring' }),
+    });
+    expect(res.status).toBe(200);
+    expect(billingCancelMock).not.toHaveBeenCalled();
+    const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
+    expect(auditCall.details).toMatchObject({ billingSubscriptionCanceled: null });
   });
 });

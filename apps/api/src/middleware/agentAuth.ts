@@ -6,6 +6,7 @@ import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { devices } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
 import { type AgentTokenSuspendReason } from '../services/agentTokenSuspension';
+import { enforceAgentCertificateBinding, readAgentCertificateAssertion } from '../services/agentCertificateBinding';
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIp } from '../services/clientIp';
 import { getAgentTenantState } from '../services/tenantStatus';
@@ -551,6 +552,24 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   const pathSegments = (c.req.path ?? '').split('/').filter(Boolean);
   if (tenantState === 'draining' && !isDrainAllowedAgentPath(pathSegments, agentId)) {
     return c.json({ error: 'tenant_offboarding' }, 403);
+  }
+
+  // Security remediation Wave 5, Task 6 — shared certificate/device binding
+  // decision (services/agentCertificateBinding.ts). Runs AFTER bearer/token
+  // auth and the tenant-status gate, BEFORE the request is granted access.
+  // `device.id` here is the ALREADY-authenticated device row the bearer
+  // token matched — never client-controlled input — so a stolen token can
+  // never select a different device's certificate identity to bind against.
+  // In the default `off` mode this never touches the DB (no perf cost for
+  // the common case).
+  const certAssertion = readAgentCertificateAssertion(c);
+  const bindingDecision = await enforceAgentCertificateBinding({
+    deviceId: device.id,
+    assertion: certAssertion,
+    pathClass: 'rest',
+  });
+  if (!bindingDecision.allowed) {
+    throw new HTTPException(401, { message: 'Invalid agent credentials' });
   }
 
   if (match.tokenRotationRequired) {

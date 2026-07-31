@@ -204,6 +204,12 @@ type AuthResponse struct {
 	AllowedScopes []string `json:"allowedScopes,omitempty"`
 	Reason        string   `json:"reason,omitempty"`
 	Permanent     bool     `json:"permanent,omitempty"`
+
+	// Code is a machine-readable rejection class for Accepted==false. Known
+	// values: "not_desired" (helper key absent from the lifecycle desired set
+	// — in on-demand mode this is the NORMAL answer for a logon-task helper
+	// and the helper should exit 0), "duplicate_key".
+	Code string `json:"code,omitempty"`
 }
 
 // Capabilities is sent by the user helper after successful auth.
@@ -389,6 +395,9 @@ type SessionInfoItem struct {
 	State           string `json:"state"`
 	Type            string `json:"type"`
 	HelperConnected bool   `json:"helperConnected"`
+	// IdleMinutes is minutes since last user input in the session, capped at
+	// one week. Nil when the platform could not measure input idle.
+	IdleMinutes *int `json:"idleMinutes,omitempty"`
 }
 
 // WatchdogPing is sent by the watchdog to the agent to request a liveness check.

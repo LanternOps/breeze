@@ -72,6 +72,14 @@ export interface CreateActionIntentInput {
   idempotencyKey?: string;
   /** Resolved via resolveWritableToolOrgId when absent. */
   orgId?: string;
+  /**
+   * Pins the intent to the M365 connection whose credential will perform the
+   * effect (design §5.2). Populates the already-immutable
+   * `action_intents.connection_id` / `tenant_id` columns, which the release
+   * path compares against the freshly-loaded connection on all four binding
+   * fields. Absent for every non-comms tool, which is why it is optional.
+   */
+  binding?: { connectionId: string; tenantId: string };
 }
 
 export type ActionIntentSnapshot = {
@@ -116,6 +124,10 @@ const CHAT_EXPIRY_MS = 5 * 60 * 1000;
 const MCP_EXPIRY_MS = 24 * 60 * 60 * 1000;
 
 const MAX_ARG_VALUE_LEN = 80;
+
+/** Canonical lowercase UUID — the only form the Postgres `uuid` binding
+ * columns may receive (design §5.2; an uppercase GUID would 22P02 at INSERT). */
+const CANONICAL_UUID_LOWER = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 // ---------------------------------------------------------------------------
 // Summary / digest helpers
@@ -222,6 +234,18 @@ export async function createActionIntent(
   const orgId = resolvedOrg.orgId;
   const requesterId = auth.user.id;
 
+  if (input.binding) {
+    // Both columns are Postgres `uuid`. An uppercase or malformed GUID would
+    // raise 22P02 at INSERT, surfacing as a 500 rather than a validation
+    // error, so reject it here.
+    if (!CANONICAL_UUID_LOWER.test(input.binding.connectionId)) {
+      throw new ActionIntentError('binding.connectionId must be a canonical lowercase UUID', 'invalid_binding');
+    }
+    if (!CANONICAL_UUID_LOWER.test(input.binding.tenantId)) {
+      throw new ActionIntentError('binding.tenantId must be a canonical lowercase UUID', 'invalid_binding');
+    }
+  }
+
   const canonical = canonicalizeArguments(input.input);
   const argumentDigest = computeArgumentDigest(canonical);
   const idempotencyKey = input.idempotencyKey ?? deriveIdempotencyKey(requesterId, input.toolName, argumentDigest);
@@ -297,6 +321,18 @@ export async function createActionIntent(
           orgId,
           partnerId: auth.partnerId ?? null,
           requestedByUserId: requesterId,
+          // Record the ORIGIN principal as a fact, at the one moment it is
+          // known for certain. Do NOT derive this later from `source` or from
+          // which actor column is populated — see the column's doc comment.
+          originPrincipalKind: auth.principal.kind,
+          originPrincipalId:
+            auth.principal.kind === 'api_key'
+              ? auth.principal.apiKeyId ?? null
+              : auth.principal.kind === 'oauth_grant'
+                ? auth.principal.grantId ?? null
+                : null,
+          connectionId: input.binding?.connectionId ?? null,
+          tenantId: input.binding?.tenantId ?? null,
           source: input.source,
           requestingClientLabel,
           actionName: input.toolName,

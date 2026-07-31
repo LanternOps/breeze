@@ -11,7 +11,11 @@
     "./validators": "./src/validators/index.ts",
     "./constants": "./src/constants/index.ts",
     "./m365": "./src/m365/index.ts",
-    "./reportPdf": "./src/reportPdf/index.ts"
+    "./reportPdf": "./src/reportPdf/index.ts",
+    "./canonicalize": "./src/canonicalize/index.ts",
+    "./canonicalize/vectors": "./src/canonicalize/vectors.ts",
+    "./m365/commsDigests": "./src/m365/commsDigests.ts",
+    "./m365/commsPlanVectors": "./src/m365/commsPlanVectors.ts"
   },
   "scripts": {
     "test": "vitest",
@@ -24,7 +28,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^25.9.3",
+    "@types/node": "^26.1.2",
     "typescript": "^5.7.2",
     "vitest": "^4.1.10"
   }

@@ -13,7 +13,6 @@ import (
 	"syscall"
 )
 
-const desktopEntryDir = "/etc/xdg/autostart"
 const desktopEntryPath = "/etc/xdg/autostart/breeze-helper.desktop"
 
 func packageExtension() string { return ".AppImage" }
@@ -55,35 +54,6 @@ func installPackage(appImagePath, binaryPath string) error {
 	}
 
 	log.Info("AppImage installed", "path", binaryPath)
-	return nil
-}
-
-// renderAutoStartEntry returns the XDG desktop entry content for the given
-// binary path. The Exec= value is quoted with %q so that paths containing
-// spaces or other shell-special characters are handled correctly.
-func renderAutoStartEntry(binaryPath string) string {
-	return fmt.Sprintf(`[Desktop Entry]
-Type=Application
-Name=Breeze Helper
-Exec=%q
-Hidden=false
-NoDisplay=true
-X-GNOME-Autostart-enabled=true
-`, binaryPath)
-}
-
-func installAutoStart(binaryPath string) error {
-	entry := renderAutoStartEntry(binaryPath)
-
-	if err := os.MkdirAll(desktopEntryDir, 0755); err != nil {
-		return fmt.Errorf("create autostart dir: %w", err)
-	}
-
-	if err := os.WriteFile(desktopEntryPath, []byte(entry), 0644); err != nil {
-		return fmt.Errorf("write desktop entry: %w", err)
-	}
-
-	log.Info("installed XDG autostart entry", "path", desktopEntryPath)
 	return nil
 }
 

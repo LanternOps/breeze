@@ -15,12 +15,22 @@ const {
   epochsMock,
   authState,
 } = vi.hoisted(() => {
+  // Every `where(...)` expression handed to a select is recorded so tests can
+  // assert on the predicate itself, not just on the rows the mock replays.
+  // Required for the ownership guard on the mobile-device lookup: a test that
+  // only inspects the inserted value would still pass with
+  // `eq(mobileDevices.userId, ...)` deleted.
+  const selectWheres: unknown[] = [];
+
   const makeSelectChain = (rows: unknown[]) => {
     const chain: any = {
       from: vi.fn(() => chain),
       leftJoin: vi.fn(() => chain),
       innerJoin: vi.fn(() => chain),
-      where: vi.fn(() => chain),
+      where: vi.fn((expr: unknown) => {
+        selectWheres.push(expr);
+        return chain;
+      }),
       orderBy: vi.fn(() => chain),
       limit: vi.fn(() => Promise.resolve(rows)),
     };
@@ -32,6 +42,7 @@ const {
   return {
     dbState: {
       selectQueue: [] as unknown[][],
+      selectWheres,
       updateSets: [] as Record<string, unknown>[],
       insertValues: [] as Record<string, unknown>[],
       insertReturning: [] as unknown[],
@@ -139,6 +150,15 @@ vi.mock('../db/schema', () => ({
   authenticatorPolicies: {
     partnerId: 'authenticatorPolicies.partnerId',
   },
+  mobileDevices: {
+    id: 'mobileDevices.id',
+    // NOTE: `deviceId` is the varchar external (per-install) id; `id` is the
+    // server-side uuid PK. Keeping both stubs distinct is what lets the tests
+    // below prove the lookup targets the varchar column.
+    deviceId: 'mobileDevices.deviceId',
+    userId: 'mobileDevices.userId',
+    status: 'mobileDevices.status',
+  },
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -173,6 +193,38 @@ vi.mock('../services/authenticatorPolicy', async (importOriginal) => {
   return { ...actual, loadPartnerPolicy: vi.fn().mockResolvedValue(null) }; // validateRaiseOnly stays real
 });
 
+/**
+ * Flattens a drizzle SQL expression (as produced by `and(eq(...), eq(...))`)
+ * into the list of literal values it was built from. The suite's schema mock
+ * hands drizzle plain strings as "columns", so both the column stubs and the
+ * bound values land in the result — which is exactly what lets a test assert
+ * that a specific predicate is present in a `where`.
+ */
+function sqlValues(expr: unknown): unknown[] {
+  const out: unknown[] = [];
+  const visit = (node: any): void => {
+    if (node === null || node === undefined) return;
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    if (typeof node === 'object') {
+      if (Array.isArray(node.queryChunks)) {
+        node.queryChunks.forEach(visit);
+        return;
+      }
+      if ('value' in node) {
+        visit(node.value);
+        return;
+      }
+      return;
+    }
+    out.push(node);
+  };
+  visit(expr);
+  return out;
+}
+
 const deviceRow = {
   id: 'device-1',
   userId: 'user-123',
@@ -197,6 +249,7 @@ describe('approver device routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     dbState.selectQueue = [];
+    dbState.selectWheres.length = 0;
     dbState.updateSets = [];
     dbState.insertValues = [];
     dbState.insertReturning = [deviceRow];
@@ -473,7 +526,40 @@ describe('approver device routes', () => {
     expect(dbState.insertValues).toHaveLength(0);
   });
 
-  it('records the per-install mobileDeviceId from the header on registration', async () => {
+  // --- X-Breeze-Mobile-Device-Id resolution (Sentry BREEZE-12 / BREEZE-13) ---
+  //
+  // The header carries `mobile_devices.device_id` (a varchar per-install id
+  // minted on the phone), NOT `mobile_devices.id` (the uuid PK that
+  // authenticator_devices.mobile_device_id FKs). Writing the header straight
+  // into the FK column 500'd on every mobile registration (23503, or 22P02 for
+  // a non-uuid header). The route must resolve it to an OWNED row instead.
+
+  // Per-install id as the app actually mints it (SecureStore uuid) — uuid-SHAPED
+  // but it is a device_id value, never a mobile_devices.id.
+  const INSTALL_ID = '11111111-2222-3333-4444-555555555555';
+  const OWNED_MOBILE_ROW_ID = '99999999-8888-7777-6666-555555555555';
+
+  async function postMobileRegister(headerValue: string | null, grantId = 'g-mobile-2') {
+    return app.request('/authenticator/devices', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer access-token',
+        ...(headerValue === null ? {} : { 'X-Breeze-Mobile-Device-Id': headerValue }),
+      },
+      body: JSON.stringify({
+        registerGrantId: grantId,
+        kind: 'mobile_hw_key',
+        publicKey: 'pk',
+        label: 'iPhone',
+        isPlatformBound: true,
+      }),
+    });
+  }
+
+  it('resolves the per-install header to the owned mobile_devices row id (never the raw header)', async () => {
+    // The ownership-scoped lookup finds the caller's own row.
+    dbState.selectQueue.push([{ id: OWNED_MOBILE_ROW_ID }]);
     dbState.insertReturning = [
       {
         ...deviceRow,
@@ -481,23 +567,102 @@ describe('approver device routes', () => {
         kind: 'mobile_hw_key',
         credentialId: null,
         lastUsedAt: null,
-        mobileDeviceId: '11111111-2222-3333-4444-555555555555',
+        mobileDeviceId: OWNED_MOBILE_ROW_ID,
       },
     ];
 
-    const res = await app.request('/authenticator/devices', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer access-token',
-        'X-Breeze-Mobile-Device-Id': '11111111-2222-3333-4444-555555555555',
-      },
-      body: JSON.stringify({ registerGrantId: 'g-mobile-2', kind: 'mobile_hw_key', publicKey: 'pk', label: 'iPhone', isPlatformBound: true }),
-    });
+    const res = await postMobileRegister(INSTALL_ID);
 
     expect(res.status).toBe(201);
     const inserted = dbState.insertValues[0];
-    expect(inserted).toMatchObject({ kind: 'mobile_hw_key', mobileDeviceId: '11111111-2222-3333-4444-555555555555' });
+    expect(inserted).toMatchObject({ kind: 'mobile_hw_key', mobileDeviceId: OWNED_MOBILE_ROW_ID });
+    // The raw header must never reach the FK column.
+    expect(inserted?.mobileDeviceId).not.toBe(INSTALL_ID);
+    // Audit records the RESOLVED id, and nothing unresolved to conflate with it.
+    expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'auth.authenticator.device.register',
+        details: expect.objectContaining({ mobileDeviceId: OWNED_MOBILE_ROW_ID }),
+      }),
+    );
+    const auditDetails = (helperMocks.writeAuthAudit.mock.calls.at(-1)?.[1] as any).details;
+    expect(auditDetails).not.toHaveProperty('mobileDeviceHeaderUnresolved');
+  });
+
+  it('looks the header up by device_id AND user_id — the ownership predicate is in the where', async () => {
+    dbState.selectQueue.push([{ id: OWNED_MOBILE_ROW_ID }]);
+
+    const res = await postMobileRegister(INSTALL_ID);
+    expect(res.status).toBe(201);
+
+    expect(dbState.selectWheres).toHaveLength(1);
+    const values = sqlValues(dbState.selectWheres[0]);
+    // Matched against the varchar external id — NOT the uuid PK (a uuid-column
+    // comparison is what produced the 22P02 on junk headers).
+    expect(values).toContain('mobileDevices.deviceId');
+    expect(values).toContain(INSTALL_ID);
+    expect(values).not.toContain('mobileDevices.id');
+    // Ownership: RLS does NOT do this for us — mobile_devices' SELECT policy has
+    // an `OR EXISTS` branch letting a same-tenant token read a colleague's row.
+    expect(values).toContain('mobileDevices.userId');
+    expect(values).toContain('user-123');
+  });
+
+  it('returns 201 with mobileDeviceId null when the header matches no mobile_devices row', async () => {
+    dbState.selectQueue.push([]); // no row for this per-install id
+
+    const res = await postMobileRegister(INSTALL_ID);
+
+    expect(res.status).toBe(201);
+    expect(dbState.insertValues[0]).toMatchObject({ kind: 'mobile_hw_key', mobileDeviceId: null });
+    // Forensics: the unresolved header is kept under a DISTINCT key so it can
+    // never again be mistaken for a resolved mobile_devices.id.
+    expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({
+          mobileDeviceId: null,
+          mobileDeviceHeaderUnresolved: INSTALL_ID,
+        }),
+      }),
+    );
+  });
+
+  it('never inserts a mobile_devices row owned by a different user', async () => {
+    const OTHER_USERS_ROW_ID = '00000000-dead-beef-0000-000000000001';
+    // The ownership-scoped lookup returns nothing: the row exists, but it
+    // belongs to someone else. (The predicate itself is asserted above — this
+    // case proves the other user's id never leaks into the insert.)
+    dbState.selectQueue.push([]);
+
+    const res = await postMobileRegister(INSTALL_ID);
+
+    expect(res.status).toBe(201);
+    expect(dbState.insertValues[0]).toMatchObject({ mobileDeviceId: null });
+    expect(JSON.stringify(dbState.insertValues)).not.toContain(OTHER_USERS_ROW_ID);
+    // And the query that decided this was ownership-scoped.
+    expect(sqlValues(dbState.selectWheres[0])).toContain('mobileDevices.userId');
+  });
+
+  it('degrades to null (no throw, no 500) for a junk non-uuid header', async () => {
+    dbState.selectQueue.push([]);
+
+    const res = await postMobileRegister('hello');
+
+    expect(res.status).toBe(201);
+    expect(dbState.insertValues[0]).toMatchObject({ mobileDeviceId: null });
+    // 'hello' is compared against a varchar column, so it is a miss — not a
+    // uuid cast error (22P02).
+    expect(sqlValues(dbState.selectWheres[0])).toContain('hello');
+  });
+
+  it('inserts mobileDeviceId null and issues no lookup when the header is absent', async () => {
+    const res = await postMobileRegister(null);
+
+    expect(res.status).toBe(201);
+    expect(dbState.insertValues[0]).toMatchObject({ mobileDeviceId: null });
+    expect(dbState.selectWheres).toHaveLength(0);
   });
 
   it('requires authentication for mobile_hw_key registration', async () => {

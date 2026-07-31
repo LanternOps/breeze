@@ -69,6 +69,10 @@ vi.mock('../../services/sentry', () => ({
 
 vi.mock('../../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: vi.fn(() => '127.0.0.1'),
+  // requestTransport.ts's effectiveRequestScheme (used by isRequestConnectionSecure
+  // when setting auth cookies) checks this unconditionally, unlike the pre-TRANSPORT-001
+  // code which only called it when an X-Forwarded-Proto header was present.
+  trustsForwardedHeadersFrom: vi.fn(() => false),
 }));
 
 vi.mock('../../config/env', () => ({
@@ -127,6 +131,7 @@ import {
   invalidateOpenTokens,
 } from '../../services/emailVerification';
 import { consumePendingRegistration } from '../../services/pendingRegistration';
+import { dispatchHook } from '../../services/partnerHooks';
 import { createPartner } from '../../services/partnerCreate';
 import { writeAuthAudit } from './helpers';
 import { getEmailService } from '../../services/email';
@@ -157,6 +162,31 @@ function primeFinalizeSelects(existingUser: unknown[] = []) {
     .mockReturnValueOnce(selectChain([{ id: 'u-1', email: 'new@corp.com', name: 'A', mfaEnabled: false }]) as never)
     .mockReturnValueOnce(selectChain([{ forceMfa: false }]) as never);
   vi.mocked(db.update).mockReturnValue(updateChain() as never);
+}
+
+/**
+ * As `primeFinalizeSelects`, but returns the `set` spy so a test can inspect
+ * what was written. NOTE: `db.update` is mocked with a single shared chain, so
+ * every UPDATE in the finalizer funnels through ONE `set` mock — assert by
+ * searching `set.mock.calls`, never by call index or count. The finalizer always
+ * issues two email-verification stamps (users, then partners) before any
+ * hook-driven write, so "no settings UPDATE" means "no call carrying settings",
+ * not "no calls at all".
+ */
+function primeFinalizeSelectsWithSetSpy(existingUser: unknown[] = []) {
+  vi.mocked(db.select)
+    .mockReturnValueOnce(selectChain(existingUser) as never)
+    .mockReturnValueOnce(selectChain([{ id: 'p-1', name: 'Acme', slug: 'acme', plan: 'free', status: 'pending', settings: {} }]) as never)
+    .mockReturnValueOnce(selectChain([{ id: 'u-1', email: 'new@corp.com', name: 'A', mfaEnabled: false }]) as never)
+    .mockReturnValueOnce(selectChain([{ forceMfa: false }]) as never);
+  const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+  vi.mocked(db.update).mockReturnValue({ set } as never);
+  return set;
+}
+
+/** The UPDATE carrying the inactive-screen banner, if one was issued. */
+function findSettingsWrite(set: ReturnType<typeof vi.fn>) {
+  return set.mock.calls.map((c) => c[0] as Record<string, unknown>).find((arg) => 'settings' in arg);
 }
 
 function selectChain(rows: unknown[]) {
@@ -347,6 +377,146 @@ describe('POST /verify-email — SR2-21 pending-registration finalization (step 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ verified: false, status: 'sign_in' });
     expect(vi.mocked(createPartner)).not.toHaveBeenCalled();
+  });
+
+  // Regression cover for the #542 (2026-05-01) fallout: the banner write used to
+  // be nested inside `hookStatus !== rowStatus`, so once hosted partners were
+  // created `pending` — matching what breeze-billing's hook returns — the
+  // "Choose a Plan" CTA stopped being persisted. The inactive screen then fell
+  // back to "Your account is being set up. Please check back shortly." with no
+  // way to pay, for 144 partners across both regions.
+  describe('registration hook banner', () => {
+    const HOSTED_HOOK = {
+      status: 'pending',
+      message: 'Welcome! Choose a plan to get started with Breeze.',
+      actionUrl: 'https://us.2breeze.app/billing/plans',
+      actionLabel: 'Choose a Plan',
+      redirectUrl: '/billing/plans',
+    };
+
+    it('persists the banner when the hook AGREES with the status already created', async () => {
+      vi.mocked(consumePendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD });
+      const set = primeFinalizeSelectsWithSetSpy([]);
+      vi.mocked(dispatchHook).mockResolvedValueOnce(HOSTED_HOOK as never);
+
+      const res = await postJson('/verify-email', { token: 'raw' });
+      expect(res.status).toBe(200);
+
+      const settingsWrite = findSettingsWrite(set);
+      expect(settingsWrite).toBeDefined();
+      // Status matched, so the UPDATE must NOT try to change it.
+      expect(settingsWrite).not.toHaveProperty('status');
+      expect((await res.json()).partner.status).toBe('pending');
+    });
+
+    it('applies both the banner and the status when the hook overrides status', async () => {
+      vi.mocked(consumePendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD });
+      const set = primeFinalizeSelectsWithSetSpy([]);
+      vi.mocked(dispatchHook).mockResolvedValueOnce({ ...HOSTED_HOOK, status: 'active' } as never);
+
+      const res = await postJson('/verify-email', { token: 'raw' });
+      expect(res.status).toBe(200);
+
+      const settingsWrite = findSettingsWrite(set);
+      expect(settingsWrite).toBeDefined();
+      expect(settingsWrite!.status).toBe('active');
+      // effectiveStatus must reach the client, not the pre-hook row status.
+      expect((await res.json()).partner.status).toBe('active');
+    });
+
+    it('keeps the banner but ignores an invalid status', async () => {
+      vi.mocked(consumePendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD });
+      const set = primeFinalizeSelectsWithSetSpy([]);
+      vi.mocked(dispatchHook).mockResolvedValueOnce({ ...HOSTED_HOOK, status: 'bogus' } as never);
+
+      const res = await postJson('/verify-email', { token: 'raw' });
+      expect(res.status).toBe(200);
+
+      const settingsWrite = findSettingsWrite(set);
+      expect(settingsWrite).toBeDefined();
+      expect(settingsWrite).not.toHaveProperty('status');
+      expect((await res.json()).partner.status).toBe('pending');
+    });
+
+    it('drops a javascript: actionUrl but keeps the rest of the banner', async () => {
+      vi.mocked(consumePendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD });
+      const set = primeFinalizeSelectsWithSetSpy([]);
+      vi.mocked(dispatchHook).mockResolvedValueOnce({
+        ...HOSTED_HOOK,
+        actionUrl: 'javascript:alert(1)',
+      } as never);
+
+      const res = await postJson('/verify-email', { token: 'raw' });
+      expect(res.status).toBe(200);
+
+      const settingsWrite = findSettingsWrite(set);
+      expect(settingsWrite).toBeDefined();
+      const payload = JSON.stringify(settingsWrite!.settings);
+      expect(payload).not.toContain('javascript:');
+      expect(payload).toContain('statusMessage');
+    });
+
+    it.each([
+      ['//evil.com', 'protocol-relative'],
+      ['/\\evil.com', 'backslash normalized to protocol-relative'],
+      ['https://evil.com/x', 'absolute'],
+      ['/billing /plans', 'embedded control character'],
+    ])('drops an unsafe redirectUrl (%s — %s)', async (redirectUrl) => {
+      vi.mocked(consumePendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD });
+      primeFinalizeSelectsWithSetSpy([]);
+      vi.mocked(dispatchHook).mockResolvedValueOnce({ ...HOSTED_HOOK, redirectUrl } as never);
+
+      const res = await postJson('/verify-email', { token: 'raw' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).not.toHaveProperty('redirectUrl');
+    });
+
+    it('passes through a safe single-slash redirectUrl', async () => {
+      vi.mocked(consumePendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD });
+      primeFinalizeSelectsWithSetSpy([]);
+      vi.mocked(dispatchHook).mockResolvedValueOnce(HOSTED_HOOK as never);
+
+      const res = await postJson('/verify-email', { token: 'raw' });
+      expect((await res.json()).redirectUrl).toBe('/billing/plans');
+    });
+
+    it('issues no settings write when the hook returns nothing', async () => {
+      vi.mocked(consumePendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD });
+      const set = primeFinalizeSelectsWithSetSpy([]);
+      vi.mocked(dispatchHook).mockResolvedValueOnce(null as never);
+
+      const res = await postJson('/verify-email', { token: 'raw' });
+      expect(res.status).toBe(200);
+
+      // The two email-verification stamps still happen; nothing carries settings.
+      expect(findSettingsWrite(set)).toBeUndefined();
+      expect(set.mock.calls.length).toBeGreaterThan(0);
+    });
+
+    it('still returns 200 with the pre-hook status when the banner UPDATE throws', async () => {
+      vi.mocked(consumePendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectChain([]) as never)
+        .mockReturnValueOnce(selectChain([{ id: 'p-1', name: 'Acme', slug: 'acme', plan: 'free', status: 'pending', settings: {} }]) as never)
+        .mockReturnValueOnce(selectChain([{ id: 'u-1', email: 'new@corp.com', name: 'A', mfaEnabled: false }]) as never)
+        .mockReturnValueOnce(selectChain([{ forceMfa: false }]) as never);
+      // First two updates (the email stamps) succeed; the hook write rejects.
+      let call = 0;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            call += 1;
+            return call > 2 ? Promise.reject(new Error('boom')) : Promise.resolve(undefined);
+          }),
+        })),
+      } as never);
+      vi.mocked(dispatchHook).mockResolvedValueOnce({ ...HOSTED_HOOK, status: 'active' } as never);
+
+      const res = await postJson('/verify-email', { token: 'raw' });
+      expect(res.status).toBe(200);
+      // The write failed, so effectiveStatus must NOT advance to 'active'.
+      expect((await res.json()).partner.status).toBe('pending');
+    });
   });
 });
 

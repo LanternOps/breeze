@@ -1060,6 +1060,7 @@
     "enableMaintenance": "Habilitar mantenimiento",
     "disableMaintenance": "Desactivar mantenimiento",
     "wakeSelected": "Despertar seleccionado",
+    "compareSelected": "Comparar seleccionados",
     "linkAsMultiBoot": "Enlace como arranque múltiple",
     "decommissionSelected": "Desmantelamiento seleccionado",
     "clearSelection": "Borrar selección",
@@ -1757,6 +1758,7 @@
       "maintenanceOn": "Mantenimiento activado",
       "multibootLinked": "Arranque múltiple vinculado",
       "networkSkipped": "Dispositivos de red {{count}} omitidos: esta acción se aplica solo a los dispositivos del agente.",
+      "compareNeedsTwo": "La comparación requiere al menos 2 dispositivos con agente.",
       "permanentDeleteCancelled": "Eliminación permanente cancelada",
       "permanentDeleting": "Eliminación permanente",
       "permanentlyDeleted": "Eliminado permanentemente",
@@ -2207,7 +2209,19 @@
     "runOnDevice": "Ejecutar script en {{hostname}}",
     "runScript": "Ejecutar secuencia de comandos",
     "searchPlaceholder": "Buscar scripts...",
+    "sessionAny": "Cualquier sesión (consola)",
     "title": "Seleccionar script",
     "unnamedScript": "Script sin nombre"
+  },
+  "sessionPicker": {
+    "titleDesktop": "Selecciona una sesión para ver",
+    "titleScript": "Selecciona una sesión donde ejecutar",
+    "loading": "Cargando sesiones…",
+    "fetchFailed": "No se pudieron cargar las sesiones",
+    "noSessions": "No se encontraron sesiones interactivas",
+    "sessionLabel": "sesión {{id}}",
+    "idleMinutes": "{{count}} min inactiva",
+    "disconnectedNotShadowable": "Las sesiones desconectadas no se pueden ver: no hay escritorio activo para capturar",
+    "cancel": "Cancelar"
   }
 }

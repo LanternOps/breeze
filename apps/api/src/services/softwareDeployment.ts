@@ -13,6 +13,12 @@ import { resolveEdrInstaller, type ResolvedInstaller } from './edrInstallerResol
 import { resolveInstallerVariables, type InstallerVariableContext } from './installerVariables';
 import { getPresignedUrl, isS3Configured, isS3NotFound } from './s3Storage';
 import { queueCommand } from './commandQueue';
+import {
+  evaluateManagedSoftwareDispatch,
+  type ManagedSoftwareDispatchDenialReason,
+  getManagedSoftwarePolicyMode,
+} from './managedSoftwareDispatchPolicy';
+import { getEffectiveSoftwareDownloadPolicy } from './softwareDownloadPolicy';
 import { sendCommandToAgent, type AgentCommand } from '../routes/agentWs';
 
 export interface CreateSoftwareDeploymentInput {
@@ -292,6 +298,10 @@ export async function buildAndDispatchSoftwareInstalls(
       siteId: devices.siteId,
       hostname: devices.hostname,
       customFields: devices.customFields,
+      // Wave 6 Task 5: the agent's outbound-network-policy capability, written
+      // from the heartbeat handshake. 0 = pre-Wave-6 agent with no dial-time
+      // destination policy.
+      outboundNetworkPolicyVersion: devices.outboundNetworkPolicyVersion,
     })
     .from(devices)
     .where(
@@ -333,6 +343,26 @@ export async function buildAndDispatchSoftwareInstalls(
     : undefined;
   const forceReinstall = options?.forceReinstall === true;
 
+  // Managed software destination policy (Wave 6 Task 5). The mode is read
+  // ONCE per dispatch batch so every device in one deployment is decided
+  // under the same rules, and the effective org ∪ site allowlist is fetched
+  // once per distinct site rather than once per device. Applied uniformly
+  // here in the shared fan-out so the create, scheduler, AND retry paths all
+  // get the same gate — previously this only lived in one of the callers.
+  const policyMode = getManagedSoftwarePolicyMode();
+  const policyBySite = new Map<string, Promise<{ approvedPrivateOrigins: string[] }>>();
+  const effectivePolicyFor = (siteId: string | null | undefined) => {
+    const key = siteId ?? '';
+    let pending = policyBySite.get(key);
+    if (!pending) {
+      pending = getEffectiveSoftwareDownloadPolicy(orgId, siteId ?? undefined).then((policy) => ({
+        approvedPrivateOrigins: [...policy.approvedPrivateOrigins],
+      }));
+      policyBySite.set(key, pending);
+    }
+    return pending;
+  };
+
   // Claim marker (#1.2): the immediate dispatch path is now running for this
   // deployment. Scheduled/maintenance-window rows get theirs set by the
   // scheduler's conditional-claim update instead (markDispatched=false).
@@ -345,6 +375,10 @@ export async function buildAndDispatchSoftwareInstalls(
 
   const dispatchedDeviceIds: string[] = [];
   let variableFailureCount = 0;
+  let policyDenialCount = 0;
+  // Bounded reasons only (see managedSoftwareDispatchPolicy) — safe to
+  // interpolate into the aggregate message, unlike a URL or host.
+  const policyDenialReasons = new Set<ManagedSoftwareDispatchDenialReason>();
   for (const device of targetDevices) {
     // Resolve `{{...}}` variables against this device's org/site/device context.
     // Skipped entirely unless `templatesUseVariables` (computed once above); the
@@ -385,6 +419,32 @@ export async function buildAndDispatchSoftwareInstalls(
       deviceSilentInstallArgs = resolved.silentInstallArgs;
     }
 
+    // Destination gate — BEFORE dispatchSoftwareInstallToDevice. A denied
+    // device gets a failed result carrying the bounded reason and NO
+    // enqueued command; the agent's dial-time policy remains the
+    // authoritative defense for the devices that do receive one.
+    const { approvedPrivateOrigins } = await effectivePolicyFor(device.siteId);
+    const decision = evaluateManagedSoftwareDispatch({
+      downloadUrl: deviceDownloadUrl,
+      approvedPrivateOrigins,
+      outboundNetworkPolicyVersion: device.outboundNetworkPolicyVersion,
+      mode: policyMode,
+    });
+    if (!decision.allowed) {
+      await db
+        .update(deploymentResults)
+        .set({ status: 'failed', errorMessage: decision.reason, completedAt: new Date() })
+        .where(
+          and(
+            eq(deploymentResults.deploymentId, deploymentId),
+            eq(deploymentResults.deviceId, device.id),
+          ),
+        );
+      policyDenialCount++;
+      policyDenialReasons.add(decision.reason);
+      continue;
+    }
+
     // Attempt number for THIS dispatch — 0 unless the caller (the retry
     // endpoint) already bumped retryCount for this device and passed it
     // through. Threaded into both the payload (queued-transport result
@@ -399,6 +459,10 @@ export async function buildAndDispatchSoftwareInstalls(
       deploymentId,
       retryCount,
       downloadUrl: deviceDownloadUrl,
+      downloadPolicy: {
+        version: 1,
+        approvedPrivateOrigins,
+      },
       checksum: versionRecord.checksum,
       fileName:
         versionRecord.originalFileName ?? `package.${versionRecord.fileType ?? 'exe'}`,
@@ -413,13 +477,18 @@ export async function buildAndDispatchSoftwareInstalls(
     dispatchedDeviceIds.push(device.id);
   }
 
-  // If installer variables were in play and NOTHING dispatched because every
-  // target failed resolution, report failure — mirrors the EDR/no-installer
-  // paths rather than reporting a false 'pending' success to the caller.
-  if (variableFailureCount > 0 && dispatchedDeviceIds.length === 0) {
+  // If NOTHING dispatched because every target failed variable resolution or
+  // was denied by the destination policy, report failure — mirrors the
+  // EDR/no-installer paths rather than reporting a false 'pending' success to
+  // the caller.
+  if (dispatchedDeviceIds.length === 0 && (variableFailureCount > 0 || policyDenialCount > 0)) {
     return {
       status: 'failed',
-      message: 'All target devices failed installer variable resolution',
+      message:
+        variableFailureCount > 0
+          ? 'All target devices failed installer variable resolution'
+          : 'All target devices denied by the managed software network policy: ' +
+            [...policyDenialReasons].sort().join(', '),
       dispatchedDeviceIds: [],
     };
   }
@@ -505,6 +574,11 @@ export async function createSoftwareDeployment(
   // via the shared fan-out (presign, EDR resolution, variable substitution,
   // detection rules, failure pre-writes, WS-vs-queue delivery).
   if (scheduleType === 'immediate' && deploymentType === 'install' && deviceIds.length > 0) {
+    // Wave 6 Task 5's managed-software destination-policy gate (presign, EDR
+    // resolution, {{...}} variables, the policy gate itself, WS-vs-queue
+    // dispatch) now lives once inside buildAndDispatchSoftwareInstalls so
+    // create/scheduler/retry apply it identically instead of each caller
+    // carrying its own copy — see that function for the full gate.
     const fanout = await buildAndDispatchSoftwareInstalls({
       deploymentId: deployment.id,
       orgId,

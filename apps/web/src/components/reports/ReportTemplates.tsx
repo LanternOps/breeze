@@ -20,6 +20,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { runAction } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
+import { asList } from '@/lib/asList';
 import { useTranslation } from 'react-i18next';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -359,8 +360,8 @@ export default function ReportTemplates() {
         throw new Error(t('reports.reportTemplates.errors.fetchTemplates'));
       }
       const data = await response.json();
-      const items = (data.data ?? data.templates ?? data) as TemplateApiItem[];
-      if (Array.isArray(items) && items.length > 0) {
+      const items = asList<TemplateApiItem>(data, 'templates');
+      if (items.length > 0) {
         setTemplates(mergeTemplates(items));
       }
     } catch (err) {

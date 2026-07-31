@@ -221,6 +221,15 @@ export type Device = {
    * implies the group's kind is 'vm_host' — no group fetch needed.
    */
   linkGroupRole?: 'host' | 'guest' | null;
+  /**
+   * RDS per-session helper mode reported by the agent heartbeat
+   * (devices.helper_lifecycle_mode). 'on-demand' gates Tasks 13/14's session
+   * pickers (RD connect, script dialog). null/undefined = not reported
+   * (non-RDS host, or an agent predating the per-session helper plan).
+   * This is a UI hint, not an auth gate — see the truthy-guard comment in
+   * apps/api/src/routes/agents/heartbeat.ts.
+   */
+  helperLifecycleMode?: 'always-on' | 'on-demand' | null;
 };
 
 // Columns that only make sense for the network arm (#1322); hidden unless
@@ -2020,6 +2029,18 @@ export default function DeviceList({
                 >
                   {t("deviceList.wakeSelected")}{" "}
                 </button>
+                {/* Compare caps at 4 devices (DeviceCompare's selection limit),
+                    so the item only shows for a 2-4 selection. */}
+                {selectedIds.size >= 2 && selectedIds.size <= 4 && (
+                  <button
+                    type="button"
+                    data-testid="bulk-compare"
+                    onClick={() => handleBulkAction("compare")}
+                    className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
+                  >
+                    {t("deviceList.compareSelected")}{" "}
+                  </button>
+                )}
                 {selectedIds.size >= 2 && (
                   <button
                     type="button"
@@ -2221,6 +2242,7 @@ export default function DeviceList({
                             isHeadless={device.isHeadless}
                             desktopAccess={device.desktopAccess}
                             remoteAccessPolicy={device.remoteAccessPolicy}
+                            helperLifecycleMode={device.helperLifecycleMode}
                           />
                           <div className="relative">
                             <button

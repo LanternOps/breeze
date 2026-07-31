@@ -2,6 +2,7 @@ package userhelper
 
 import (
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -191,5 +192,18 @@ func TestValidateLaunchProcessRequestRejectsOversizedAndControlChars(t *testing.
 		Args:       tooManyArgs,
 	}); err == nil {
 		t.Fatal("expected too many args to be rejected")
+	}
+}
+
+func TestPermanentRejectCodePassthrough(t *testing.T) {
+	// The broker's structured Code must survive into PermanentRejectError so
+	// main can distinguish "not_desired" (exit 0) from real fatals (exit 2).
+	e := &PermanentRejectError{Code: "not_desired", Reason: "helper Windows session and role are not currently eligible"}
+	if e.Code != "not_desired" {
+		t.Fatal("code lost")
+	}
+	var target *PermanentRejectError
+	if !errors.As(error(e), &target) {
+		t.Fatal("errors.As must match PermanentRejectError")
 	}
 }

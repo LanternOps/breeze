@@ -27,6 +27,7 @@ export * from './maintenanceWindow';
 export * from './agentVersionPins';
 export * from './enrollmentDefaults';
 export * from './softwareDetection';
+export * from './softwareDownloadPolicy';
 
 // ============================================
 // Device Roles
@@ -751,6 +752,87 @@ export const onedriveHelperInlineSettingsSchema = z.object({
   libraries: z.array(onedriveLibraryMappingSchema).max(100).default([]),
 });
 
+// Canonical write-path schema for server-evaluated alert rule conditions.
+// Extended types (bandwidth_high, disk_io_high, network_errors, patch_compliance,
+// cert_expiry) have evaluator handlers but known payload/unit bugs — they are
+// write-blocked until fixed (see plans/monitoring/2026-07-30 follow-ups). `custom`
+// has no handler at all. Reads of existing rows remain tolerant (no parse on read).
+// Every metric name the threshold evaluator resolves to a device_metrics column
+// (METRIC_NAME_MAP in apps/api/src/services/alertConditions/utils.ts). The
+// `*Percent` / `memory` / `processes` aliases are accepted, not advertised: the
+// AlertRuleTab dropdown offers only cpu/ram/disk for NEW rules, but AI-authored
+// and pre-consolidation rows carry the aliases, and a narrower enum here would
+// hard-400 an otherwise untouched Alerts tab on save.
+export const ALERT_METRIC_NAMES = [
+  'cpu', 'cpuPercent',
+  'ram', 'ramPercent', 'memory',
+  'disk', 'diskPercent',
+  'processCount', 'processes',
+] as const;
+
+const metricConditionSchema = z.object({
+  type: z.literal('metric'),
+  metric: z.enum(ALERT_METRIC_NAMES),
+  // `neq` is included because the evaluator supports it — threshold.ts's own
+  // validate() accepts gt/gte/lt/lte/eq/neq. The editor has always offered
+  // "Not Equal", so omitting it here 400s a save the evaluator would have run.
+  operator: z.enum(['gt', 'gte', 'lt', 'lte', 'eq', 'neq']),
+  value: z.number(),
+  // Sustained window, in MINUTES, that the threshold handler averages samples
+  // over (`cond.durationMinutes || 1`, handlers/threshold.ts). The old
+  // `duration` (seconds) field is deliberately gone: no metric handler ever
+  // read it, so it advertised a sustained window that silently did nothing,
+  // while Zod's strip mode silently dropped the durationMinutes the evaluator
+  // DOES honour — degrading a sustained rule to a 1-minute window on edit.
+  durationMinutes: z.number().int().min(1).max(10080).optional(),
+});
+
+// Unlike the metric handler, the OFFLINE handler really does read a legacy
+// `duration` field (handlers/offline.ts resolveDurationMinutes, for rows the old
+// editor saved as `{type:'status', duration:N}`). Accept it and fold it into the
+// canonical `durationMinutes` — stripping it would silently reset such a rule to
+// the handler's 5-minute default the first time its policy is re-saved.
+const offlineConditionSchema = z.object({
+  type: z.enum(['offline', 'status']).transform(() => 'offline' as const),
+  durationMinutes: z.number().int().min(1).max(10080).optional(),
+  duration: z.number().int().min(1).max(10080).optional(),
+}).transform(({ duration, durationMinutes, ...rest }) => {
+  const resolved = durationMinutes ?? duration;
+  return resolved === undefined ? rest : { ...rest, durationMinutes: resolved };
+});
+
+const eventLogConditionSchema = z.object({
+  type: z.literal('event_log'),
+  category: z.enum(['security', 'hardware', 'application', 'system']),
+  level: z.enum(['warning', 'error', 'critical']),
+  sourcePattern: z.string().max(500).optional(),
+  messagePattern: z.string().max(500).optional(),
+  countThreshold: z.number().int().min(1).max(10000).default(1),
+  windowMinutes: z.number().int().min(1).max(1440).default(15),
+});
+
+export const alertRuleConditionSchema = z.union([
+  metricConditionSchema,
+  offlineConditionSchema,
+  eventLogConditionSchema,
+]);
+
+export const alertRuleItemSchema = z.object({
+  name: z.string().min(1).max(200),
+  severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).default('medium'),
+  conditions: z.array(alertRuleConditionSchema).min(1).max(10),
+  cooldownMinutes: z.number().int().min(1).max(1440).default(5),
+  autoResolve: z.boolean().default(false),
+  autoResolveConditions: z.array(alertRuleConditionSchema).nullable().optional(),
+  titleTemplate: z.string().max(500).optional(),
+  messageTemplate: z.string().max(2000).optional(),
+  sortOrder: z.number().int().min(0).optional(),
+});
+
+export const alertRuleInlineSettingsSchema = z.object({
+  items: z.array(alertRuleItemSchema).max(100).default([]),
+});
+
 export const monitoringInlineSettingsSchema = z.object({
   checkIntervalSeconds: z.number().int().min(10).max(3600).default(60),
   watches: z.array(z.object({
@@ -768,32 +850,20 @@ export const monitoringInlineSettingsSchema = z.object({
     maxRestartAttempts: z.number().int().min(0).max(50).default(3),
     restartCooldownSeconds: z.number().int().min(30).max(86400).default(300),
   })).max(200).default([]),
-  eventLogAlerts: z.array(z.object({
-    name: z.string().min(1).max(255),
-    category: z.enum(['security', 'hardware', 'application', 'system']),
-    level: z.enum(['warning', 'error', 'critical']),
-    sourcePattern: z.string().max(500).optional(),
-    messagePattern: z.string().max(500).optional(),
-    countThreshold: z.number().int().min(1).max(10000).default(1),
-    windowMinutes: z.number().int().min(1).max(1440).default(15),
-    severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).default('high'),
-    enabled: z.boolean().default(true),
-  })).max(50).default([]),
-  alertRules: z.array(z.object({
-    name: z.string().min(1).max(255),
-    severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).default('medium'),
-    conditions: z.array(z.object({
-      type: z.enum(['metric', 'status', 'custom']),
-      metric: z.string().optional(),
-      operator: z.string().optional(),
-      value: z.number().optional(),
-      duration: z.number().optional(),
-      field: z.string().optional(),
-      customCondition: z.string().optional(),
-    })).min(1),
-    cooldownMinutes: z.number().int().min(1).max(1440).default(15),
-    autoResolve: z.boolean().default(false),
-  })).max(100).default([]),
+  // Write barrier (2026-07-30 consolidation): server-evaluated rules moved to the
+  // alert_rule feature. Empty arrays from stale clients are tolerated; non-empty
+  // payloads are rejected so stale editor sessions can't resurrect ghost rules.
+  //
+  // Element type is `unknown`, not `never`: a `never` element emits its own
+  // "expected never, received object" issue FIRST, which shadows the pointer
+  // message for any consumer that reports `issues[0]` (the AI tool path does).
+  // `.max(0, ...)` on an unknown[] makes the pointer the only issue raised.
+  eventLogAlerts: z.array(z.unknown())
+    .max(0, 'Event log alert rules have moved to the Alerts feature of this policy')
+    .default([]),
+  alertRules: z.array(z.unknown())
+    .max(0, 'Metric alert rules have moved to the Alerts feature of this policy')
+    .default([]),
 });
 
 export const updateFeatureLinkSchema = z.object({

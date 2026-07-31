@@ -381,7 +381,7 @@ export function QuotesPage() {
             type="button"
             onClick={openCreate}
             data-testid="quotes-create-open"
-            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:bg-primary/90"
           >
             {t('quotes.page.newQuote')}
           </button>
@@ -483,7 +483,7 @@ export function QuotesPage() {
                 <button
                   type="button"
                   onClick={openCreate}
-                  className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+                  className="mt-4 inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:bg-primary/90"
                   data-testid="quotes-empty-new"
                 >
                   {t('quotes.page.newQuote')}
@@ -776,7 +776,7 @@ export function QuotesPage() {
               onClick={() => void submitCreate()}
               disabled={!newOrgId || creating}
               data-testid="quotes-create-submit"
-              className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+              className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
             >
               {creating ? t('quotes.page.create.working') : t('quotes.page.create.submit')}
             </button>

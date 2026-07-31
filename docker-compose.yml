@@ -130,7 +130,32 @@ services:
       # client could otherwise spoof it. Off by default; set true in .env only
       # if you front Breeze with Cloudflare.
       TRUST_CF_CONNECTING_IP: ${TRUST_CF_CONNECTING_IP:-}
+      # off is the safe mixed-version and self-hosted default: the edge
+      # certificate assertion is never consulted, so leaving this unset is a
+      # no-op. Never inferred from NODE_ENV/IS_HOSTED/CF_MTLS_* — the operator
+      # must opt in explicitly. See docs/operations/cloudflare-mtls-setup.md.
+      AGENT_MTLS_BINDING_MODE: ${AGENT_MTLS_BINDING_MODE:-off}
+      # Wave 6 security remediation rollout controls. Default-bearing form so
+      # a missing value cannot make the stack refuse to start — both are
+      # compatibility controls whose defaults are the safe state. See
+      # docs/operations/agent-network-and-manifest-rollout.md before setting
+      # either to anything other than its default in production.
+      #
+      # AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: NOT a no-op and NOT fleet-wide.
+      # A capable agent (this build or newer) applies a pushed `true`/`false`
+      # on its next update check (re-read at updater-construction time; its
+      # helper-manager needs a restart to pick up the change, same limitation
+      # as backup_server_url). An agent build older than this one ignores the
+      # pushed value entirely and keeps accepting ID-less manifests.
+      # The key is always sent, as true or false, so reverting this variable
+      # rolls capable agents back on their next heartbeat.
+      AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: ${AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID:-false}
+      MANAGED_SOFTWARE_POLICY_MODE: ${MANAGED_SOFTWARE_POLICY_MODE:-compat}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
+      # Optional, but required once M365_GRAPH_ACTIONS_TOOLS_ENABLED=true below —
+      # boot refuses to start without it (see that var's comment). Must be set
+      # here AND in .env; compose only interpolates vars listed in this block.
+      APP_ENCRYPTION_KEY_ID: ${APP_ENCRYPTION_KEY_ID:-}
       MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?Set MFA_ENCRYPTION_KEY in .env}
       ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER:?Set ENROLLMENT_KEY_PEPPER in .env}
       MFA_RECOVERY_CODE_PEPPER: ${MFA_RECOVERY_CODE_PEPPER:?Set MFA_RECOVERY_CODE_PEPPER in .env}
@@ -189,6 +214,16 @@ services:
       # as the Graph-read executor above: intentionally not part of this
       # generic Compose stack — deploy it separately with a workload identity,
       # private ingress, and controlled HTTPS egress. Disabled by default.
+      # ONBOARDING_ENABLED gates the org-facing consent card; TOOLS_ENABLED
+      # (below) independently gates the AI tools/headless execution — either
+      # one enabled forces full executor descriptor validation at boot, which
+      # in production also requires PUBLIC_APP_URL/PUBLIC_API_URL (or
+      # PUBLIC_URL) to derive the consent callback origin.
+      M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED: ${M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED:-false}
+      M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ORG_IDS: ${M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ORG_IDS:-}
+      # Enabling this also requires APP_ENCRYPTION_KEY_ID above — boot refuses
+      # to start without it, because the m365_reset_password reveal-secret
+      # path seals its temp credential with AAD-bound v3 ciphertext.
       M365_GRAPH_ACTIONS_TOOLS_ENABLED: ${M365_GRAPH_ACTIONS_TOOLS_ENABLED:-false}
       M365_GRAPH_ACTIONS_TOOLS_ORG_IDS: ${M365_GRAPH_ACTIONS_TOOLS_ORG_IDS:-}
       M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID: ${M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID:-}
@@ -198,6 +233,20 @@ services:
       M365_GRAPH_ACTIONS_EXECUTOR_AUDIENCE: ${M365_GRAPH_ACTIONS_EXECUTOR_AUDIENCE:-m365-graph-actions-executor}
       M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_KID: ${M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_KID:-}
       M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: /run/secrets/m365_graph_actions_executor_signing_private_jwk
+      # M365 communications-delegated. Gated per USER, not per org — a delegated
+      # mailbox connection is owned by one human. No vault vars here on purpose:
+      # the API never touches the comms vault (the client certificate and the
+      # token-cache KEK belong to the executor, which is the only identity that
+      # can decrypt the cache).
+      M365_COMMS_ONBOARDING_ENABLED: ${M365_COMMS_ONBOARDING_ENABLED:-false}
+      M365_COMMS_ONBOARDING_USER_IDS: ${M365_COMMS_ONBOARDING_USER_IDS:-}
+      M365_COMMS_TOOLS_ENABLED: ${M365_COMMS_TOOLS_ENABLED:-false}
+      M365_COMMS_TOOLS_USER_IDS: ${M365_COMMS_TOOLS_USER_IDS:-}
+      M365_COMMS_CLIENT_ID: ${M365_COMMS_CLIENT_ID:-}
+      M365_COMMS_EXECUTOR_URL: ${M365_COMMS_EXECUTOR_URL:-}
+      M365_COMMS_EXECUTOR_AUDIENCE: ${M365_COMMS_EXECUTOR_AUDIENCE:-m365-communications-executor}
+      M365_COMMS_EXECUTOR_SIGNING_KID: ${M365_COMMS_EXECUTOR_SIGNING_KID:-}
+      M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: /run/secrets/m365_comms_executor_signing_private_jwk
       APP_VERSION: ${BREEZE_VERSION:-dev}
       BREEZE_VERSION: ${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
       BINARY_SOURCE: ${BINARY_SOURCE:-github}
@@ -312,6 +361,8 @@ services:
         target: m365_graph_read_executor_signing_private_jwk
       - source: m365_graph_actions_executor_signing_private_jwk
         target: m365_graph_actions_executor_signing_private_jwk
+      - source: m365_comms_executor_signing_private_jwk
+        target: m365_comms_executor_signing_private_jwk
     depends_on:
       binaries-init:
         condition: service_completed_successfully
@@ -509,3 +560,5 @@ secrets:
     file: ${M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}
   m365_graph_actions_executor_signing_private_jwk:
     file: ${M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}
+  m365_comms_executor_signing_private_jwk:
+    file: ${M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}

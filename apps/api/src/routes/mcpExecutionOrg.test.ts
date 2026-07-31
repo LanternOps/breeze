@@ -30,6 +30,7 @@ const KEY_ORG = '33333333-3333-4333-8333-333333333333';
 // This is the exact shape an MSP partner-admin OAuth bearer produces.
 function partnerAuth(accessibleOrgIds: string[]): AuthContext {
   return {
+    principal: { kind: 'api_key' },
     user: { id: '44444444-4444-4444-8444-444444444444', email: 'p@msp.example', name: 'P', isPlatformAdmin: false },
     token: {} as AuthContext['token'],
     partnerId: '55555555-5555-4555-8555-555555555555',
@@ -44,6 +45,7 @@ function partnerAuth(accessibleOrgIds: string[]): AuthContext {
 // Org-scoped principal: pinned to a single org.
 function orgAuth(orgId: string): AuthContext {
   return {
+    principal: { kind: 'api_key' },
     user: { id: '66666666-6666-4666-8666-666666666666', email: 'u@org.example', name: 'U', isPlatformAdmin: false },
     token: {} as AuthContext['token'],
     partnerId: null,
@@ -59,6 +61,7 @@ function orgAuth(orgId: string): AuthContext {
 // canAccessOrg returns true for any org and accessibleOrgIds is null.
 function systemAuth(): AuthContext {
   return {
+    principal: { kind: 'api_key' },
     user: { id: '77777777-7777-4777-8777-777777777777', email: 's@breeze.example', name: 'S', isPlatformAdmin: true },
     token: {} as AuthContext['token'],
     partnerId: null,

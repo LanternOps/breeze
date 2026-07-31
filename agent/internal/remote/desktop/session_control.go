@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
@@ -296,29 +295,7 @@ func (s *Session) handleControlMessage(data []byte) {
 			slog.Warn("Failed to list sessions", "session", s.id, "error", err.Error())
 			return
 		}
-		items := make([]ipc.SessionInfoItem, 0, len(detected))
-		for _, ds := range detected {
-			if ds.Type == "services" {
-				continue
-			}
-			// Skip empty sessions with no logged-in user (e.g. pre-allocated
-			// RDP listener sessions visible at the lock screen).
-			if ds.Username == "" {
-				continue
-			}
-			sessionNum, parseErr := sessionbroker.ParseWindowsSessionIDForHeartbeat(ds.Session)
-			if parseErr != nil {
-				slog.Debug("Skipping session with unparseable ID", "session", s.id, "winSession", ds.Session, "error", parseErr.Error())
-				continue
-			}
-			items = append(items, ipc.SessionInfoItem{
-				SessionID:       sessionNum,
-				Username:        ds.Username,
-				State:           ds.State,
-				Type:            ds.Type,
-				HelperConnected: false,
-			})
-		}
+		items := sessionbroker.BuildSessionInfoItems(detected, nil)
 		resp, _ := json.Marshal(map[string]any{
 			"type":     "sessions",
 			"sessions": items,

@@ -1,31 +1,12 @@
-import { createHash } from 'crypto';
-
-function sortValue(value: unknown, seen: WeakSet<object>): unknown {
-  if (value === null || typeof value !== 'object') {
-    if (typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint') {
-      throw new TypeError('argument value is not JSON-serializable');
-    }
-    return value;
-  }
-  if (seen.has(value as object)) throw new TypeError('circular argument structure');
-  seen.add(value as object);
-  try {
-    if (Array.isArray(value)) return value.map((item) => sortValue(item, seen));
-    const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-      const item = (value as Record<string, unknown>)[key];
-      if (item !== undefined) out[key] = sortValue(item, seen);
-    }
-    return out;
-  } finally {
-    seen.delete(value as object);
-  }
-}
-
-export function canonicalizeArguments(input: Record<string, unknown>): string {
-  return JSON.stringify(sortValue(input, new WeakSet()));
-}
-
-export function computeArgumentDigest(canonical: string): string {
-  return createHash('sha256').update(canonical, 'utf8').digest('hex');
-}
+/**
+ * The canonicalizer moved to `@breeze/shared/canonicalize` so that processes outside the
+ * API — the M365 communications executor, which recomputes an approval digest before it
+ * touches any credential — agree on the bytes rather than each having their own copy.
+ *
+ * This file stays as a re-export so no call site changed in the move. Do not reimplement
+ * anything here: a second implementation turns every digest comparison into a check that
+ * an implementation agrees with itself. `@breeze/shared/canonicalize/vectors` is the
+ * frozen corpus that makes such drift fail, and `canonicalize.vectors.test.ts` runs it
+ * through this import path.
+ */
+export { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';

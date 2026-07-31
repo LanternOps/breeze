@@ -4,8 +4,10 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchLiveSessions, type LiveSession } from '../../services/deviceActions';
 import type { ScriptParameter } from '../scripts/ScriptFormSchema';
 import ScriptParametersForm, { validateParameters } from '../scripts/ScriptParametersForm';
+import { asList } from '@/lib/asList';
 
 export type ScriptLanguage = 'powershell' | 'bash' | 'python' | 'cmd';
 export type OSType = 'windows' | 'macos' | 'linux';
@@ -25,9 +27,13 @@ export type Script = {
 type ScriptPickerModalProps = {
   isOpen: boolean;
   onClose: () => void;
-  onSelect: (script: Script, runAs: ScriptRunAsSelection, parameters?: Record<string, unknown>) => void;
+  onSelect: (script: Script, runAs: ScriptRunAsSelection, parameters?: Record<string, unknown>, targetSessionId?: number) => void;
   deviceHostname?: string;
   deviceOs?: OSType | OSType[];
+  // Single-device context only: enables the RDS session-target dropdown for
+  // runAs=user when the device reports on-demand helper lifecycle.
+  deviceId?: string;
+  helperLifecycleMode?: 'always-on' | 'on-demand' | null;
 };
 
 const languageConfig: Record<ScriptLanguage, { label: string; color: string; icon: string }> = {
@@ -42,7 +48,9 @@ export default function ScriptPickerModal({
   onClose,
   onSelect,
   deviceHostname,
-  deviceOs
+  deviceOs,
+  deviceId,
+  helperLifecycleMode
 }: ScriptPickerModalProps) {
   const { t } = useTranslation('devices');
   const [scripts, setScripts] = useState<Script[]>([]);
@@ -51,6 +59,13 @@ export default function ScriptPickerModal({
   const [query, setQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [runAs, setRunAs] = useState<ScriptRunAsSelection>('system');
+
+  // RDS session targeting: only offered for a single on-demand device when
+  // running as the logged-in user. All sessions (incl. disconnected) are
+  // selectable for scripts — a process keeps running in a disconnected session.
+  const [liveSessions, setLiveSessions] = useState<LiveSession[]>([]);
+  const [targetSessionId, setTargetSessionId] = useState<number | undefined>();
+  const showSessionTarget = runAs === 'user' && helperLifecycleMode === 'on-demand' && !!deviceId;
 
   // Parameter step state
   const [view, setView] = useState<'list' | 'params'>('list');
@@ -69,6 +84,18 @@ export default function ScriptPickerModal({
     }
   }, [isOpen]);
 
+  // Reset the session target whenever the modal opens or closes.
+  useEffect(() => {
+    setTargetSessionId(undefined);
+    setLiveSessions([]);
+  }, [isOpen]);
+
+  // Fetch live sessions only once the dropdown is actually shown.
+  useEffect(() => {
+    if (!showSessionTarget || !deviceId) return;
+    fetchLiveSessions(deviceId).then(setLiveSessions).catch(() => setLiveSessions([]));
+  }, [showSessionTarget, deviceId]);
+
   async function fetchScripts() {
     try {
       setLoading(true);
@@ -80,7 +107,7 @@ export default function ScriptPickerModal({
       }
 
       const data = await response.json();
-      const scriptList = data.data ?? data.scripts ?? data ?? [];
+      const scriptList = asList(data, 'scripts');
 
       // Transform scripts
       const transformedScripts: Script[] = scriptList
@@ -149,7 +176,7 @@ export default function ScriptPickerModal({
       setParamError(undefined);
       setView('params');
     } else {
-      onSelect(script, runAs, undefined);
+      onSelect(script, runAs, undefined, showSessionTarget ? targetSessionId : undefined);
       onClose();
     }
   };
@@ -168,7 +195,7 @@ export default function ScriptPickerModal({
       setParamError(error);
       return;
     }
-    onSelect(selectedScript, runAs, paramValues);
+    onSelect(selectedScript, runAs, paramValues, showSessionTarget ? targetSessionId : undefined);
     onClose();
   };
 
@@ -225,11 +252,27 @@ export default function ScriptPickerModal({
               <select
                 value={runAs}
                 onChange={e => setRunAs(e.target.value as ScriptRunAsSelection)}
+                data-testid="script-run-as"
                 className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
                 <option value="system">{t('scriptPickerModal.runAs.system')}</option>
                 <option value="user">{t('scriptPickerModal.runAs.user')}</option>
               </select>
+              {showSessionTarget && (
+                <select
+                  value={targetSessionId ?? ''}
+                  onChange={e => setTargetSessionId(e.target.value === '' ? undefined : Number(e.target.value))}
+                  data-testid="script-session-target"
+                  className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                >
+                  <option value="">{t('scriptPickerModal.sessionAny')}</option>
+                  {liveSessions.map(s => (
+                    <option key={s.sessionId} value={s.sessionId}>
+                      {s.username} — {s.sessionId} ({s.state})
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
           </div>
 

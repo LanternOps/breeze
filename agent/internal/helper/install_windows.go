@@ -95,21 +95,6 @@ func installPackage(msiPath, _ string) error {
 	return nil
 }
 
-func installAutoStart(binaryPath string) error {
-	key, _, err := registry.CreateKey(registry.LOCAL_MACHINE, registryKey, registry.SET_VALUE)
-	if err != nil {
-		return fmt.Errorf("open registry key: %w", err)
-	}
-	defer key.Close()
-
-	if err := key.SetStringValue(registryValue, binaryPath); err != nil {
-		return fmt.Errorf("set registry value: %w", err)
-	}
-
-	log.Info("installed HKLM Run registry key", "value", registryValue)
-	return nil
-}
-
 func isHelperRunning() bool {
 	out, err := outputHelperCommand("tasklist", "/FI", "IMAGENAME eq breeze-helper.exe", "/NH")
 	if err != nil {

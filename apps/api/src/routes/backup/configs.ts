@@ -235,7 +235,15 @@ configsRoutes.post(
       // fails on every device while this API's own test probe passes.
       const { region, endpoint } = validateS3Details(details);
       if (region) details.region = region;
-      if (endpoint) details.endpoint = endpoint;
+      if (endpoint) {
+        details.endpoint = endpoint;
+      } else {
+        // coerceS3EndpointUrl returns undefined for a blank/absent endpoint
+        // (e.g. the web form's initial ''). Without this, the raw '' from
+        // the payload would survive in `details` and blank rows would keep
+        // accumulating (Sentry BREEZE-P residual gap).
+        delete details.endpoint;
+      }
     }
     const encryption = payload.encryption ?? false;
     try {
@@ -370,7 +378,15 @@ configsRoutes.patch(
           return c.json({ error }, 400);
         }
         if (region) nextProviderConfig.region = region;
-        if (endpoint) nextProviderConfig.endpoint = endpoint;
+        if (endpoint) {
+          nextProviderConfig.endpoint = endpoint;
+        } else {
+          // coerceS3EndpointUrl returns undefined for a blank/absent endpoint.
+          // Without this, the raw '' from the payload would survive in
+          // nextProviderConfig and blank rows would keep accumulating
+          // (Sentry BREEZE-P residual gap).
+          delete nextProviderConfig.endpoint;
+        }
       }
       const nextEncryption = payload.encryption ?? current.encryption;
 

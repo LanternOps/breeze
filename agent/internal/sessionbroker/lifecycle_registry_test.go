@@ -522,7 +522,7 @@ func TestRegistryBeginStopGrantsOneOwnerPerGeneration(t *testing.T) {
 }
 
 func TestLifecycleStopEndsStartLoop(t *testing.T) {
-	m := NewHelperLifecycleManager(New("stop-loop-"+t.Name(), nil), nil)
+	m := NewHelperLifecycleManager(New("stop-loop-"+t.Name(), nil), nil, "")
 	go m.Start(context.Background())
 	m.Stop()
 	select {

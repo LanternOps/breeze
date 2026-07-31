@@ -1,10 +1,12 @@
 import { Hono } from 'hono';
+import { randomUUID } from 'node:crypto';
 import { zValidator } from '../../lib/validation';
 import { and, desc, eq, gte, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../../db';
 import { deviceSessions } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
+import { sendCommandToAgentAwaitResult } from '../../services/agentCommandAwait';
 import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 
@@ -78,6 +80,76 @@ sessionsRoutes.get(
         count: active.length,
       },
     });
+  }
+);
+
+const liveSessionItemSchema = z.object({
+  sessionId: z.number().int().min(0).max(65535),
+  username: z.string(),
+  state: z.string(),
+  type: z.string(),
+  helperConnected: z.boolean().optional().default(false),
+  idleMinutes: z.number().int().min(0).nullable().optional().default(null),
+});
+
+export type LiveSessionItem = z.infer<typeof liveSessionItemSchema>;
+
+const LIST_SESSIONS_TIMEOUT_MS = 10_000;
+
+// Exported for tests. Agents return structured command output as a JSON string
+// in CommandResult.Stdout; malformed individual entries are dropped, a fully
+// malformed payload yields [] (the dialog shows "no sessions" rather than 500).
+export function parseLiveSessionsStdout(stdout: string | undefined): LiveSessionItem[] {
+  if (!stdout) return [];
+  let raw: unknown;
+  try {
+    raw = JSON.parse(stdout);
+  } catch {
+    return [];
+  }
+  const list = (raw as { sessions?: unknown[] })?.sessions;
+  if (!Array.isArray(list)) return [];
+  const out: LiveSessionItem[] = [];
+  for (const entry of list) {
+    const parsed = liveSessionItemSchema.safeParse(entry);
+    if (parsed.success) out.push(parsed.data);
+  }
+  return out;
+}
+
+// Live WTS session enumeration straight from the agent (no DB persistence).
+// Used by the RDS session pickers; distinct from /sessions/active, which reads
+// the inventoried device_sessions rows and may be minutes stale.
+sessionsRoutes.get(
+  '/:id/sessions/live',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  zValidator('param', deviceIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id: deviceId } = c.req.valid('param');
+
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+    if (!device.agentId) return c.json({ error: 'Device has no enrolled agent' }, 409);
+
+    const awaitResult = await sendCommandToAgentAwaitResult(
+      device.agentId,
+      { id: `list-sessions-${randomUUID()}`, type: 'list_sessions', payload: {} },
+      LIST_SESSIONS_TIMEOUT_MS,
+    );
+
+    if (awaitResult.status !== 'completed') {
+      const err = awaitResult.error ?? 'agent did not respond';
+      return c.json({ error: err }, /timeout/i.test(err) ? 504 : 502);
+    }
+
+    return c.json({ data: { deviceId, sessions: parseLiveSessionsStdout(awaitResult.stdout) } });
   }
 );
 
