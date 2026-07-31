@@ -304,7 +304,8 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           return;
 
         case "deploy-software":
-          void navigateTo("/software");
+          // Carry the device into the deploy wizard via the hash (#2866).
+          void navigateTo(`/software#deploy=${device.id}`);
           return;
 
         case "run-script":

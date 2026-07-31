@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// vi.hoisted so the mock factory can reference sendCommandMock
-const { sendCommandMock } = vi.hoisted(() => ({ sendCommandMock: vi.fn() }));
+// vi.hoisted so the mock factories can reference the mocks
+const { sendCommandMock, queueCommandMock } = vi.hoisted(() => ({
+  sendCommandMock: vi.fn(),
+  queueCommandMock: vi.fn(),
+}));
 
 // Wave 6 Task 5: the dispatch path reads the org ∪ site approved-private-origin
 // allowlist through this service. Mocked here (it is DB-backed and proven in its
@@ -15,6 +18,9 @@ vi.mock('./softwareDownloadPolicy', () => ({
 
 // Match the exact import paths used by routes/software.ts (and the service will mirror them)
 vi.mock('../routes/agentWs', () => ({ sendCommandToAgent: sendCommandMock }));
+
+// Offline fallback path (dispatchSoftwareInstallToDevice)
+vi.mock('./commandQueue', () => ({ queueCommand: queueCommandMock }));
 
 vi.mock('../services/s3Storage', () => ({
   getPresignedUrl: vi.fn(async () => 'https://signed.example/pkg.exe'),
@@ -43,6 +49,13 @@ vi.mock('../db', () => ({
   },
 }));
 
+// Wrap drizzle's condition builders in spies (behavior preserved) so tests can
+// assert the scopeToDeviceIds WHERE filters, not just that a write ran.
+vi.mock('drizzle-orm', async () => {
+  const actual = await vi.importActual<typeof import('drizzle-orm')>('drizzle-orm');
+  return { ...actual, inArray: vi.fn(actual.inArray), eq: vi.fn(actual.eq) };
+});
+
 vi.mock('../db/schema', () => ({
   softwareCatalog: {
     id: 'sc.id',
@@ -69,8 +82,13 @@ vi.mock('../db/schema', () => ({
   sites: { id: 's.id', name: 's.name', orgId: 's.orgId' },
 }));
 
-import { createSoftwareDeployment } from './softwareDeployment';
+import {
+  buildAndDispatchSoftwareInstalls,
+  createSoftwareDeployment,
+  dispatchSoftwareInstallToDevice,
+} from './softwareDeployment';
 import { resolveEdrInstaller } from './edrInstallerResolver';
+import { inArray } from 'drizzle-orm';
 
 const resolveEdrMock = vi.mocked(resolveEdrInstaller);
 
@@ -121,6 +139,14 @@ function upd() {
   };
 }
 
+/**
+ * Every .set() payload passed to db.update() in the current test, in call
+ * order. The default updateMock implementation (see beforeEach) records here,
+ * so tests can distinguish the dispatched_at claim write, per-device failure
+ * pre-writes, and device_command_id link writes without counting raw calls.
+ */
+let updateSetCalls: Record<string, unknown>[] = [];
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -128,9 +154,27 @@ function upd() {
 describe('createSoftwareDeployment', () => {
   beforeEach(() => {
     sendCommandMock.mockReset();
+    queueCommandMock.mockReset();
     selectMock.mockReset();
     insertMock.mockReset();
     updateMock.mockReset();
+    // Defaults: agent is online (WS delivery succeeds), and the offline
+    // fallback returns a queued device_commands row when exercised.
+    sendCommandMock.mockReturnValue(true);
+    queueCommandMock.mockResolvedValue({ id: 'queued-cmd-1' });
+    // Default capturing update chain — individual tests may still override
+    // with mockReturnValue/mockReturnValueOnce.
+    updateSetCalls = [];
+    updateMock.mockImplementation(() => ({
+      set: vi.fn((values: Record<string, unknown>) => {
+        updateSetCalls.push(values);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    }));
+    // Wave 6 Task 5: default every device to an unrestricted allowlist so
+    // pre-existing tests (written before the managed-software destination
+    // policy gate existed) keep dispatching unless a test opts into a
+    // restrictive policy/mode itself.
     effectivePolicyMock.mockReset();
     effectivePolicyMock.mockResolvedValue({ version: 1, approvedPrivateOrigins: [] });
   });
@@ -183,6 +227,71 @@ describe('createSoftwareDeployment', () => {
     expect(result.dispatchedDeviceIds).toEqual(['dev-1', 'dev-2']);
     expect(sendCommandMock).toHaveBeenCalledTimes(2);
     expect(sendCommandMock.mock.calls[0]![1].type).toBe('software_install');
+    // WS delivery succeeded for both devices — the offline fallback must not fire.
+    expect(queueCommandMock).not.toHaveBeenCalled();
+    // dispatched_at claim marker set exactly once for the immediate path.
+    const dispatchClaims = updateSetCalls.filter((v) => v.dispatchedAt instanceof Date);
+    expect(dispatchClaims).toHaveLength(1);
+  });
+
+  it('falls back to queueCommand and records deviceCommandId when the agent has no live WS socket', async () => {
+    const versionRecord = {
+      id: 'ver-off',
+      catalogId: 'cat-1',
+      s3Key: 'pkg.key',
+      downloadUrl: null,
+      checksum: 'abc123',
+      originalFileName: 'pkg.exe',
+      fileType: 'exe',
+      silentInstallArgs: '/S',
+      version: '1.0.0',
+    };
+    const catalogItem = { id: 'cat-1', orgId: null, name: 'TestApp', integrationProvider: null };
+    const deployment = { id: 'dep-off', orgId: 'org-1' };
+    const targetDevices = [
+      { id: 'dev-on', agentId: 'agent-on' },
+      { id: 'dev-off', agentId: 'agent-off' },
+    ];
+
+    selectMock
+      .mockReturnValueOnce(sel([versionRecord]))
+      .mockReturnValueOnce(sel([catalogItem]))
+      .mockReturnValueOnce(sel(targetDevices));
+    insertMock
+      .mockReturnValueOnce(insWithReturning([deployment]))
+      .mockReturnValueOnce(ins());
+
+    // First device online, second offline.
+    sendCommandMock.mockReturnValueOnce(true).mockReturnValueOnce(false);
+    queueCommandMock.mockResolvedValueOnce({ id: 'queued-cmd-off' });
+
+    const result = await createSoftwareDeployment({
+      orgId: 'org-1',
+      softwareVersionId: 'ver-off',
+      deploymentType: 'install',
+      deviceIds: ['dev-on', 'dev-off'],
+      scheduleType: 'immediate',
+      createdBy: null,
+    });
+
+    // Both devices count as dispatched — one over WS, one queued.
+    expect(result.status).toBe('pending');
+    expect(result.dispatchedDeviceIds).toEqual(['dev-on', 'dev-off']);
+
+    // The queued fallback fired once, for the offline device, with the SAME
+    // payload the WS command carried — including deploymentId for the
+    // queued-path result reconciliation.
+    expect(queueCommandMock).toHaveBeenCalledTimes(1);
+    const [queuedDeviceId, queuedType, queuedPayload] = queueCommandMock.mock.calls[0]!;
+    expect(queuedDeviceId).toBe('dev-off');
+    expect(queuedType).toBe('software_install');
+    const wsPayload = sendCommandMock.mock.calls[1]![1].payload;
+    expect(queuedPayload).toEqual(wsPayload);
+    expect(queuedPayload.deploymentId).toBe('dep-off');
+
+    // The device_commands UUID is linked into deployment_results.deviceCommandId.
+    const linkWrites = updateSetCalls.filter((v) => 'deviceCommandId' in v);
+    expect(linkWrites).toEqual([{ deviceCommandId: 'queued-cmd-off' }]);
   });
 
   it('substitutes {{...}} installer variables per device from org/site/device context', async () => {
@@ -331,8 +440,6 @@ describe('createSoftwareDeployment', () => {
       .mockReturnValueOnce(selLimit([{ name: 'Acme' }]))
       .mockReturnValueOnce(sel([{ id: 'site-1', name: 'HQ' }]));
     insertMock.mockReturnValueOnce(insWithReturning([deployment])).mockReturnValueOnce(ins());
-    const failWhere = vi.fn().mockResolvedValue(undefined);
-    updateMock.mockReturnValue({ set: vi.fn().mockReturnValue({ where: failWhere }) });
 
     const result = await createSoftwareDeployment({
       orgId: 'org-1',
@@ -349,7 +456,8 @@ describe('createSoftwareDeployment', () => {
     expect(result.dispatchedDeviceIds).toEqual(['dev-1']);
     expect(sendCommandMock).toHaveBeenCalledTimes(1);
     expect(sendCommandMock.mock.calls[0]![1].payload.downloadUrl).toBe('https://dl/KEY-1/app.msi');
-    expect(failWhere).toHaveBeenCalledTimes(1); // dev-2 only
+    // dev-2 only marked failed (the dispatched_at claim write is separate).
+    expect(updateSetCalls.filter((v) => v.status === 'failed')).toHaveLength(1);
   });
 
   it('fails a device (and never dispatches) when an installer variable cannot be resolved', async () => {
@@ -377,8 +485,6 @@ describe('createSoftwareDeployment', () => {
       .mockReturnValueOnce(selLimit([{ name: 'Acme' }]))
       .mockReturnValueOnce(sel([{ id: 'site-1', name: 'HQ' }]));
     insertMock.mockReturnValueOnce(insWithReturning([deployment])).mockReturnValueOnce(ins());
-    const failWhere = vi.fn().mockResolvedValue(undefined);
-    updateMock.mockReturnValue({ set: vi.fn().mockReturnValue({ where: failWhere }) });
 
     const result = await createSoftwareDeployment({
       orgId: 'org-1',
@@ -394,7 +500,7 @@ describe('createSoftwareDeployment', () => {
     expect(result.status).toBe('failed');
     expect(result.dispatchedDeviceIds).toEqual([]);
     expect(sendCommandMock).not.toHaveBeenCalled();
-    expect(failWhere).toHaveBeenCalledTimes(1);
+    expect(updateSetCalls.filter((v) => v.status === 'failed')).toHaveLength(1);
   });
 
   it('threads detection rules and forceReinstall into the dispatched install payload', async () => {
@@ -563,6 +669,11 @@ describe('createSoftwareDeployment', () => {
       expect.objectContaining({ maintenanceWindowId: 'mw-test-id' })
     );
     expect(result.deployment).toEqual(deployment);
+    // Non-immediate path: no dispatch ran, so dispatched_at stays NULL for the
+    // scheduler to claim later.
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(sendCommandMock).not.toHaveBeenCalled();
+    expect(queueCommandMock).not.toHaveBeenCalled();
   });
 
   it('stores a non-devices targetType as given and does not coerce to "devices"', async () => {
@@ -840,7 +951,10 @@ describe('createSoftwareDeployment', () => {
       expect(result.status).toBe('pending');
       expect(result.dispatchedDeviceIds).toEqual(['dev-1']);
       expect(sendCommandMock).toHaveBeenCalledTimes(1);
-      expect(setSpy).toHaveBeenCalledTimes(1);
+      // 2 calls: the immediate path's dispatched_at claim marker (#1.2 honest
+      // dispatch — unconditional, fires once per deployment before the
+      // per-device loop) plus the one policy-denial failure write for dev-2.
+      expect(setSpy).toHaveBeenCalledTimes(2);
       expect(setSpy).toHaveBeenCalledWith(
         expect.objectContaining({ status: 'failed', errorMessage: UPGRADE_REQUIRED }),
       );
@@ -892,5 +1006,280 @@ describe('createSoftwareDeployment', () => {
 
       expect(sendCommandMock).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe('buildAndDispatchSoftwareInstalls scopeToDeviceIds (retry path)', () => {
+  const catalogItem = { name: 'TestApp', integrationProvider: null };
+  const edrCatalogItem = { name: 'Huntress', integrationProvider: 'huntress' };
+  const versionRecord = {
+    downloadUrl: 'https://dl/pkg.exe',
+    s3Key: null,
+    checksum: null,
+    originalFileName: 'pkg.exe',
+    fileType: 'exe',
+    silentInstallArgs: '/S',
+    version: '1.0.0',
+    detectionRules: null,
+  };
+
+  beforeEach(() => {
+    sendCommandMock.mockReset();
+    queueCommandMock.mockReset();
+    selectMock.mockReset();
+    updateMock.mockReset();
+    vi.mocked(inArray).mockClear();
+    sendCommandMock.mockReturnValue(true);
+    updateSetCalls = [];
+    updateMock.mockImplementation(() => ({
+      set: vi.fn((values: Record<string, unknown>) => {
+        updateSetCalls.push(values);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    }));
+  });
+
+  it('scopes the EDR-failure pre-write to scopeToDeviceIds instead of the whole deployment', async () => {
+    resolveEdrMock.mockResolvedValueOnce({ error: 'Organization not mapped to Huntress' });
+
+    const result = await buildAndDispatchSoftwareInstalls({
+      deploymentId: 'dep-retry',
+      orgId: 'org-1',
+      versionRecord,
+      catalogItem: edrCatalogItem,
+      deviceIds: ['dev-failed'],
+      scopeToDeviceIds: ['dev-failed'],
+      options: null,
+      createdBy: null,
+      markDispatched: false,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.dispatchedDeviceIds).toEqual([]);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+    // Exactly one failure pre-write, and its WHERE carries the device-subset
+    // filter (deploymentResults.deviceId mocks to 'dr.deviceId') — a
+    // deployment-wide write would clobber previously completed rows.
+    expect(updateSetCalls.filter((v) => v.status === 'failed')).toHaveLength(1);
+    expect(inArray).toHaveBeenCalledWith('dr.deviceId', ['dev-failed']);
+  });
+
+  it('scopes the missing-installer pre-write to scopeToDeviceIds', async () => {
+    const result = await buildAndDispatchSoftwareInstalls({
+      deploymentId: 'dep-retry',
+      orgId: 'org-1',
+      versionRecord: { ...versionRecord, downloadUrl: null },
+      catalogItem,
+      deviceIds: ['dev-failed'],
+      scopeToDeviceIds: ['dev-failed'],
+      options: null,
+      createdBy: null,
+      markDispatched: false,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.message).toMatch(/No installer available/i);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+    expect(updateSetCalls.filter((v) => v.status === 'failed')).toHaveLength(1);
+    expect(inArray).toHaveBeenCalledWith('dr.deviceId', ['dev-failed']);
+  });
+
+  it('limits the dispatch loop to the scoped devices', async () => {
+    selectMock.mockReturnValueOnce(
+      sel([{ id: 'dev-a', agentId: 'agent-a' }]), // devices query (already scope-filtered)
+    );
+
+    const result = await buildAndDispatchSoftwareInstalls({
+      deploymentId: 'dep-retry',
+      orgId: 'org-1',
+      versionRecord,
+      catalogItem,
+      deviceIds: ['dev-a', 'dev-b'],
+      scopeToDeviceIds: ['dev-a'],
+      options: null,
+      createdBy: null,
+      markDispatched: false,
+    });
+
+    expect(result.status).toBe('pending');
+    expect(result.dispatchedDeviceIds).toEqual(['dev-a']);
+    expect(sendCommandMock).toHaveBeenCalledTimes(1);
+    // The devices query only asks for the intersection of deviceIds and the
+    // scope ('d.id' is the mocked devices.id column).
+    expect(inArray).toHaveBeenCalledWith('d.id', ['dev-a']);
+    // markDispatched:false — no dispatched_at re-stamp on retry.
+    expect(updateSetCalls.filter((v) => v.dispatchedAt instanceof Date)).toHaveLength(0);
+  });
+
+  it('keeps the EDR-failure pre-write deployment-wide when scopeToDeviceIds is unset', async () => {
+    resolveEdrMock.mockResolvedValueOnce({ error: 'Organization not mapped to Huntress' });
+
+    const result = await buildAndDispatchSoftwareInstalls({
+      deploymentId: 'dep-full',
+      orgId: 'org-1',
+      versionRecord,
+      catalogItem: edrCatalogItem,
+      deviceIds: ['dev-1'],
+      options: null,
+      createdBy: null,
+      markDispatched: false,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(updateSetCalls.filter((v) => v.status === 'failed')).toHaveLength(1);
+    // Unscoped: the pre-write must NOT filter on deviceId — every (pending)
+    // row of the deployment fails, byte-for-byte the pre-existing behavior.
+    expect(inArray).not.toHaveBeenCalledWith('dr.deviceId', expect.anything());
+  });
+
+  // Retry race guard (this fix): the retry endpoint bumps retryCount before
+  // calling this fan-out and passes the post-bump value via
+  // deviceRetryCounts — it must land in both the WS command id AND the
+  // payload (the offline-queue transport keys result reconciliation on the
+  // payload, since queued commands don't use the sw-install-* id shape).
+  it('bakes deviceRetryCounts into the dispatched command id and payload', async () => {
+    selectMock.mockReturnValueOnce(
+      sel([{ id: 'dev-a', agentId: 'agent-a' }]),
+    );
+
+    await buildAndDispatchSoftwareInstalls({
+      deploymentId: 'dep-retry',
+      orgId: 'org-1',
+      versionRecord,
+      catalogItem,
+      deviceIds: ['dev-a'],
+      scopeToDeviceIds: ['dev-a'],
+      options: null,
+      createdBy: null,
+      markDispatched: false,
+      deviceRetryCounts: { 'dev-a': 1 },
+    });
+
+    expect(sendCommandMock).toHaveBeenCalledTimes(1);
+    const [, dispatchedCommand] = sendCommandMock.mock.calls[0]!;
+    expect(dispatchedCommand.id).toBe('sw-install-dep-retry-dev-a-1');
+    expect(dispatchedCommand.payload.retryCount).toBe(1);
+  });
+
+  it('defaults retryCount to 0 for devices absent from deviceRetryCounts', async () => {
+    selectMock.mockReturnValueOnce(
+      sel([{ id: 'dev-a', agentId: 'agent-a' }]),
+    );
+
+    await buildAndDispatchSoftwareInstalls({
+      deploymentId: 'dep-first',
+      orgId: 'org-1',
+      versionRecord,
+      catalogItem,
+      deviceIds: ['dev-a'],
+      options: null,
+      createdBy: null,
+      markDispatched: false,
+    });
+
+    const [, dispatchedCommand] = sendCommandMock.mock.calls[0]!;
+    expect(dispatchedCommand.id).toBe('sw-install-dep-first-dev-a-0');
+    expect(dispatchedCommand.payload.retryCount).toBe(0);
+  });
+});
+
+describe('dispatchSoftwareInstallToDevice', () => {
+  const payload = {
+    deploymentId: 'dep-1',
+    downloadUrl: 'https://dl/pkg.exe',
+    checksum: null,
+    fileName: 'pkg.exe',
+    fileType: 'exe',
+    silentInstallArgs: null,
+    softwareName: 'TestApp',
+    version: '1.0.0',
+    forceReinstall: false,
+  };
+
+  beforeEach(() => {
+    sendCommandMock.mockReset();
+    queueCommandMock.mockReset();
+    updateMock.mockReset();
+    updateSetCalls = [];
+    updateMock.mockImplementation(() => ({
+      set: vi.fn((values: Record<string, unknown>) => {
+        updateSetCalls.push(values);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    }));
+  });
+
+  it('delivers over WS when the agent is connected and never queues', async () => {
+    sendCommandMock.mockReturnValue(true);
+
+    const outcome = await dispatchSoftwareInstallToDevice(
+      'dep-1',
+      { id: 'dev-1', agentId: 'agent-1' },
+      payload,
+      null,
+    );
+
+    expect(outcome).toEqual({ transport: 'ws', deviceCommandId: null });
+    expect(sendCommandMock).toHaveBeenCalledWith('agent-1', {
+      id: 'sw-install-dep-1-dev-1-0',
+      type: 'software_install',
+      payload,
+    });
+    expect(queueCommandMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('bakes a non-zero retryCount into the WS command id (retry race guard)', async () => {
+    sendCommandMock.mockReturnValue(true);
+
+    await dispatchSoftwareInstallToDevice(
+      'dep-1',
+      { id: 'dev-1', agentId: 'agent-1' },
+      payload,
+      null,
+      3,
+    );
+
+    expect(sendCommandMock).toHaveBeenCalledWith('agent-1', {
+      id: 'sw-install-dep-1-dev-1-3',
+      type: 'software_install',
+      payload,
+    });
+  });
+
+  it('queues via queueCommand and links deviceCommandId when WS delivery fails', async () => {
+    sendCommandMock.mockReturnValue(false);
+    queueCommandMock.mockResolvedValue({ id: 'queued-cmd-9' });
+
+    const outcome = await dispatchSoftwareInstallToDevice(
+      'dep-1',
+      { id: 'dev-1', agentId: 'agent-1' },
+      payload,
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    );
+
+    expect(outcome).toEqual({ transport: 'queued', deviceCommandId: 'queued-cmd-9' });
+    expect(queueCommandMock).toHaveBeenCalledWith(
+      'dev-1',
+      'software_install',
+      payload,
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    );
+    expect(updateSetCalls).toEqual([{ deviceCommandId: 'queued-cmd-9' }]);
+  });
+
+  it('returns transport queued with null id (and skips the link write) when queueCommand returns no row', async () => {
+    sendCommandMock.mockReturnValue(false);
+    queueCommandMock.mockResolvedValue(undefined);
+
+    const outcome = await dispatchSoftwareInstallToDevice(
+      'dep-1',
+      { id: 'dev-1', agentId: 'agent-1' },
+      payload,
+      null,
+    );
+
+    expect(outcome).toEqual({ transport: 'queued', deviceCommandId: null });
+    expect(updateMock).not.toHaveBeenCalled();
   });
 });

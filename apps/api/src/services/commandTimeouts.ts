@@ -5,6 +5,13 @@ const FIVE_MINUTES = 5 * 60 * 1000;
 const THIRTY_MINUTES = 30 * 60 * 1000;
 const SIXTY_MINUTES = 60 * 60 * 1000;
 const TWO_HOURS = 2 * 60 * 60 * 1000;
+// Matches SOFTWARE_QUEUED_EXPIRY_MS in jobs/staleCommandReaper.ts (not imported
+// to avoid a cycle): a queued software_install may wait days for an offline
+// device to reconnect. The dedicated software-deployment reaper already fails
+// the deployment_results row after 55 min once the command is DELIVERED, so
+// this long timeout only governs how long an undelivered queued command may
+// sit before the generic reaper closes it out.
+const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = THIRTY_MINUTES;
 const SCRIPT_GRACE_BUFFER_MS = 5 * 60 * 1000; // extra buffer on top of per-script timeout
 const DEFAULT_SCRIPT_TIMEOUT_S = 300;
@@ -122,6 +129,7 @@ export function getCommandTimeoutMs(
         : DEFAULT_SCRIPT_TIMEOUT_S;
     return timeoutSeconds * 1000 + SCRIPT_GRACE_BUFFER_MS;
   }
+  if (commandType === CommandTypes.SOFTWARE_INSTALL) return SEVEN_DAYS;
   if (SHORT_TIMEOUT_TYPES.has(commandType)) return FIVE_MINUTES;
   if (MEDIUM_TIMEOUT_TYPES.has(commandType)) return THIRTY_MINUTES;
   if (RESTORE_TIMEOUT_TYPES.has(commandType)) return SIXTY_MINUTES;

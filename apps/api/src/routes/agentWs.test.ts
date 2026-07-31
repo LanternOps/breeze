@@ -202,6 +202,16 @@ vi.mock('../services/restoreResultPersistence', () => ({
   updateRestoreJobFromResult: vi.fn((...args: unknown[]) => updateRestoreJobFromResultMock(...(args as []))),
 }));
 
+// sw-install orphan branch: keep the real SW_INSTALL_COMMAND_ID_REGEX (shared
+// with routes/agents/commands.ts) and mock only the deployment_results writer.
+vi.mock('../services/softwareDeploymentResult', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/softwareDeploymentResult')>();
+  return {
+    ...actual,
+    applySoftwareInstallResult: vi.fn(),
+  };
+});
+
 vi.mock('../services/auditService', () => ({
   createAuditLogAsync: vi.fn().mockResolvedValue(undefined),
   createAuditLog: vi.fn().mockResolvedValue(undefined),
@@ -262,9 +272,11 @@ import {
   disconnectAgent,
   isAgentConnected,
   sendCommandToAgent,
+  processOrphanedCommandResult,
   __resetCrossTenantDropsForTest,
   AGENT_WS_CAPABILITIES,
 } from './agentWs';
+import { applySoftwareInstallResult } from '../services/softwareDeploymentResult';
 import { isRedisAvailable } from '../services/redis';
 import { checkAgentCertificateBinding } from '../services/agentCertificateBinding';
 import { claimPendingCommandsForDevice } from '../services/commandDispatch';
@@ -3000,5 +3012,103 @@ describe('late terminal_start failure binds to the exact terminal generation', (
       resourceId: 'device-term-foreign',
       details: expect.objectContaining({ kind: 'term_failed', reason: 'cross-tenant-probe' }),
     });
+  });
+});
+
+describe('sw-install WS orphan-result branch', () => {
+  const deploymentUuid = '11111111-1111-4111-8111-111111111111';
+  const deviceUuid = '33333333-3333-4333-8333-333333333333';
+  const otherDeviceUuid = '55555555-5555-4555-8555-555555555555';
+  const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
+
+  beforeEach(() => {
+    vi.mocked(applySoftwareInstallResult).mockReset();
+    vi.mocked(applySoftwareInstallResult).mockResolvedValue(undefined);
+  });
+
+  function swResult(overrides: Record<string, unknown> = {}) {
+    return {
+      type: 'command_result' as const,
+      commandId: swCommandId,
+      status: 'completed' as const,
+      exitCode: 0,
+      stdout: 'installed',
+      durationMs: 9_000,
+      ...overrides,
+    };
+  }
+
+  it('applies a sw-install result bound to the socket-authenticated device', async () => {
+    await processOrphanedCommandResult('agent-sw', deviceUuid, swResult());
+
+    expect(applySoftwareInstallResult).toHaveBeenCalledTimes(1);
+    expect(applySoftwareInstallResult).toHaveBeenCalledWith({
+      deploymentId: deploymentUuid,
+      deviceId: deviceUuid,
+      status: 'completed',
+      exitCode: 0,
+      stdout: 'installed',
+      stderr: undefined,
+      error: undefined,
+      startedAt: undefined,
+      durationMs: 9_000,
+      attemptNumber: 0,
+    });
+  });
+
+  it('parses the attempt suffix off a retried sw-install commandId and passes it through', async () => {
+    const retriedCommandId = `sw-install-${deploymentUuid}-${deviceUuid}-2`;
+
+    await processOrphanedCommandResult('agent-sw', deviceUuid, swResult({ commandId: retriedCommandId }));
+
+    expect(applySoftwareInstallResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deploymentId: deploymentUuid,
+        deviceId: deviceUuid,
+        attemptNumber: 2,
+      })
+    );
+  });
+
+  it('rejects a sw-install result whose embedded device id does not match the authenticated device', async () => {
+    await processOrphanedCommandResult('agent-sw', otherDeviceUuid, swResult());
+
+    expect(applySoftwareInstallResult).not.toHaveBeenCalled();
+  });
+
+  it('passes failure details through to the shared helper', async () => {
+    await processOrphanedCommandResult(
+      'agent-sw',
+      deviceUuid,
+      swResult({ status: 'failed', exitCode: 1603, error: 'msi fatal error', stdout: undefined })
+    );
+
+    expect(applySoftwareInstallResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deploymentId: deploymentUuid,
+        deviceId: deviceUuid,
+        status: 'failed',
+        exitCode: 1603,
+        error: 'msi fatal error',
+      })
+    );
+  });
+
+  it('does not treat non-sw-install command ids as software installs', async () => {
+    await processOrphanedCommandResult(
+      'agent-sw',
+      deviceUuid,
+      swResult({ commandId: 'dev-push-abc123' })
+    );
+
+    expect(applySoftwareInstallResult).not.toHaveBeenCalled();
+  });
+
+  it('survives a helper failure without throwing (logged + captured)', async () => {
+    vi.mocked(applySoftwareInstallResult).mockRejectedValueOnce(new Error('db down'));
+
+    await expect(
+      processOrphanedCommandResult('agent-sw', deviceUuid, swResult())
+    ).resolves.toBeUndefined();
   });
 });

@@ -1317,7 +1317,16 @@
       "createdBy": "Creato da",
       "noDeploymentsMatchYourFilters": "Nessuna distribuzione corrisponde ai filtri.",
       "running3": "running",
-      "pending": "pending"
+      "pending": "pending",
+      "inProgress": "In corso",
+      "completedWithErrors": "Completata con errori",
+      "immediate": "Immediata",
+      "loadingDeployments": "Caricamento delle distribuzioni…",
+      "failedToLoadDeployments": "Impossibile caricare le distribuzioni",
+      "noDeploymentsYet": "Non è stata ancora creata alcuna distribuzione.",
+      "failedToCancelDeployment": "Impossibile annullare la distribuzione",
+      "deploymentCancelled": "Distribuzione annullata",
+      "pageOf": "Pagina {{page}} di {{pages}}"
     },
     "deploymentProgress": {
       "queued": "In coda",
@@ -1339,7 +1348,20 @@
       "completed3": "Completato",
       "error": "Errore",
       "deploymentComplete": "Distribuzione completata",
-      "inProgress": "In corso"
+      "inProgress": "In corso",
+      "autoRefreshing": "Aggiornamento automatico ogni 5 secondi",
+      "queuedOffline": "In coda — dispositivo offline",
+      "cancelled": "Annullata",
+      "downloading": "Download in corso",
+      "installing": "Installazione in corso",
+      "exitCode": "Codice di uscita",
+      "retryStarted": "Nuovo tentativo avviato",
+      "failedToRetryDeployment": "Impossibile ripetere la distribuzione",
+      "failedToCancelDeployment": "Impossibile annullare la distribuzione",
+      "deploymentCancelled": "Distribuzione annullata",
+      "failedToLoadDeployment": "Impossibile caricare la distribuzione",
+      "loadingDeployment": "Caricamento della distribuzione…",
+      "devicesFinished": "{{finished}} dispositivi su {{total}} completati"
     },
     "deploymentWizard": {
       "selectSoftware": "Seleziona software",
@@ -1422,7 +1444,8 @@
       "deviceCount_one": "{{count}} dispositivo",
       "deviceCount_other": "{{count}} dispositivi",
       "groupCount_one": "{{count}} gruppo",
-      "groupCount_other": "{{count}} gruppi"
+      "groupCount_other": "{{count}} gruppi",
+      "viewDeployment": "Visualizza distribuzione"
     },
     "detectionRulesEditor": {
       "detectionRules": "Regole di rilevamento",
@@ -1552,7 +1575,10 @@
       "deleting": "Eliminazione...",
       "deployWizardTitle": "deploy-wizard-title",
       "deploySoftware": "Distribuisci software",
-      "bulkSoftwareDeployment": "Distribuzione software massiva"
+      "bulkSoftwareDeployment": "Distribuzione software massiva",
+      "catalogTab": "Catalogo",
+      "summaryCompleted7d": "Completate (7 gg)",
+      "summaryFailed7d": "Non riuscite (7 gg)"
     },
     "softwareComplianceReport": {
       "softwareComplianceReport": "Report conformità software",

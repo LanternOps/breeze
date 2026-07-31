@@ -32,6 +32,7 @@ the real open work, each merit-reviewed:
 | `2026-06-23-ml-device-instability-shadow-phase-a.md` | 🟨 revisit | Phase A plumbing is cheap; **hold Phase B** — competes with `reliabilityScoring` (still being tuned, #1908). |
 | `2026-06-15-authenticator-registration-redesign.md` | 🔴 bug / ⛔ don't run as-written | Two live bugs: mobile approver reg 400s (#1890 re-added `currentPassword`, client not updated); browser approver reg **never worked** (`stores/authenticator.ts` never sent it, since #1369). Enforcing partners hard-blocked (403 ≥L2); others silently downgraded to L1. Mobile silent-fail already fixed (#2683). Fix: short-lived `authenticator:register` re-auth token + browser password field — do NOT drop `currentPassword`. Filed: **#2707**. |
 | `2026-06-22-be16-vuln-mgmt-phase5-network-devices.md` | ❌ drop-candidate | Blocked on BE-30, which is an abandoned 5-month-stale branch. Plan admits "roadmap completeness." |
+| `2026-07-28-software-deployment-visibility.md` | ✅ do | Deploy wizard is write-only: no UI shows deployment status, scheduled deploys never dispatch, offline devices silently dropped. Fix System A pipeline (dispatch/scheduler/reaper/retry), then wire the existing mock `DeploymentList`/`DeploymentProgress` into a Deployments tab. 3 PRs + optional 4th. Relates to #2866. |
 
 ✅ do = greenlight (⚠️ = one tweak first). 🟨 revisit = do part, hold part.
 🔴 = live bug, but not fixable by running this plan. ❌ = recommend dropping.

@@ -140,7 +140,7 @@ vi.mock('./DeviceList', () => ({
       data-display-names={devices.map(d => d.displayName ?? '').join(',')}
       data-watchdog-versions={devices.map(d => d.watchdogVersion ?? '').join(',')}
     >
-      {['maintenance-on', 'maintenance-off', 'decommission', 'reboot', 'run-script', 'link-vm-host', 'wake', 'compare'].map(action => (
+      {['maintenance-on', 'maintenance-off', 'decommission', 'reboot', 'run-script', 'link-vm-host', 'wake', 'deploy-software', 'compare'].map(action => (
         <button
           key={action}
           type="button"
@@ -905,6 +905,24 @@ describe('DevicesPage — vm_host bulk link chain (#2308)', () => {
     });
     // Modal stays open — the user can pick again or cancel.
     expect(screen.getByTestId('vm-host-modal')).toBeInTheDocument();
+  });
+});
+
+// #2866: the bulk "Deploy software" action used to navigate to /software with
+// no state — the selection was lost and the wizard started empty. It must now
+// carry the selected device ids in the hash for SoftwareCatalog to consume.
+describe('DevicesPage — deploy-software carries the selection via the hash (#2866)', () => {
+  it('bulk action navigates to /software#deploy=<ids> with the selected agent devices', async () => {
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+
+    fireEvent.click(screen.getByTestId('bulk-deploy-software'));
+
+    await waitFor(() => {
+      expect(vi.mocked(navigateTo)).toHaveBeenCalledWith(
+        `/software#deploy=${[DEV_1, DEV_2, DEV_3].join(',')}`,
+      );
+    });
   });
 });
 

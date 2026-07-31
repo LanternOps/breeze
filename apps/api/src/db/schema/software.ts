@@ -91,6 +91,10 @@ export const softwareDeployments = pgTable('software_deployments', {
   maintenanceWindowId: uuid('maintenance_window_id').references(() => maintenanceWindows.id),
   options: jsonb('options'),
   createdBy: uuid('created_by').references(() => users.id),
+  // Dispatch claim marker: set when the per-device dispatch actually runs.
+  // The scheduler claims rows via `SET dispatched_at = now() WHERE dispatched_at IS NULL`
+  // so scheduled deployments are never double-dispatched across API instances.
+  dispatchedAt: timestamp('dispatched_at', { withTimezone: true }),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   orgIdx: index('software_deployments_org_id_idx').on(table.orgId),
@@ -108,7 +112,10 @@ export const deploymentResults = pgTable('deployment_results', {
   exitCode: integer('exit_code'),
   output: text('output'),
   errorMessage: text('error_message'),
-  retryCount: integer('retry_count').notNull().default(0)
+  retryCount: integer('retry_count').notNull().default(0),
+  // Links to the device_commands row created by the offline-queue fallback.
+  // Intentionally no FK: device_commands is the agent hot path and stays unconstrained.
+  deviceCommandId: uuid('device_command_id')
 }, (table) => ({
   deploymentIdx: index('deployment_results_deployment_id_idx').on(table.deploymentId),
   deviceIdx: index('deployment_results_device_id_idx').on(table.deviceId),

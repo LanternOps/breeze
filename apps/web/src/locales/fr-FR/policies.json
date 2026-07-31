@@ -1317,7 +1317,16 @@
       "createdBy": "Créé par",
       "noDeploymentsMatchYourFilters": "Aucun déploiement ne correspond à vos filtres.",
       "running3": "En cours",
-      "pending": "En attente"
+      "pending": "En attente",
+      "inProgress": "En cours",
+      "completedWithErrors": "Terminé avec des erreurs",
+      "immediate": "Immédiat",
+      "loadingDeployments": "Chargement des déploiements…",
+      "failedToLoadDeployments": "Échec du chargement des déploiements",
+      "noDeploymentsYet": "Aucun déploiement n’a encore été créé.",
+      "failedToCancelDeployment": "Échec de l’annulation du déploiement",
+      "deploymentCancelled": "Déploiement annulé",
+      "pageOf": "Page {{page}} sur {{pages}}"
     },
     "deploymentProgress": {
       "queued": "En file d’attente",
@@ -1339,7 +1348,20 @@
       "completed3": "Terminé le",
       "error": "Erreur",
       "deploymentComplete": "Déploiement terminé",
-      "inProgress": "En cours"
+      "inProgress": "En cours",
+      "autoRefreshing": "Actualisation automatique toutes les 5 secondes",
+      "queuedOffline": "En file d’attente — appareil hors ligne",
+      "cancelled": "Annulé",
+      "downloading": "Téléchargement en cours",
+      "installing": "Installation en cours",
+      "exitCode": "Code de sortie",
+      "retryStarted": "Nouvelle tentative lancée",
+      "failedToRetryDeployment": "Échec de la nouvelle tentative du déploiement",
+      "failedToCancelDeployment": "Échec de l’annulation du déploiement",
+      "deploymentCancelled": "Déploiement annulé",
+      "failedToLoadDeployment": "Échec du chargement du déploiement",
+      "loadingDeployment": "Chargement du déploiement…",
+      "devicesFinished": "{{finished}} appareils sur {{total}} terminés"
     },
     "deploymentWizard": {
       "selectSoftware": "Logiciel sélectionné",
@@ -1422,7 +1444,8 @@
       "deviceCount_one": "dispositif {{count}}",
       "deviceCount_other": "{{count}} dispositifs",
       "groupCount_one": "{{count}} groupe",
-      "groupCount_other": "{{count}} groupes"
+      "groupCount_other": "{{count}} groupes",
+      "viewDeployment": "Voir le déploiement"
     },
     "detectionRulesEditor": {
       "detectionRules": "Règles de détection",
@@ -1552,7 +1575,10 @@
       "deleting": "Suppression…",
       "deployWizardTitle": "deploy-wizard-title",
       "deploySoftware": "Déployer un logiciel",
-      "bulkSoftwareDeployment": "Déploiement logiciel en masse"
+      "bulkSoftwareDeployment": "Déploiement logiciel en masse",
+      "catalogTab": "Catalogue",
+      "summaryCompleted7d": "Terminés (7 j)",
+      "summaryFailed7d": "Échoués (7 j)"
     },
     "softwareComplianceReport": {
       "softwareComplianceReport": "Rapport de conformité logicielle",

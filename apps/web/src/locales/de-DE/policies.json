@@ -1317,7 +1317,16 @@
       "createdBy": "Erstellt von",
       "noDeploymentsMatchYourFilters": "Keine Bereitstellung entspricht Ihren Filtern.",
       "running3": "wird ausgeführt",
-      "pending": "ausstehend"
+      "pending": "ausstehend",
+      "inProgress": "In Bearbeitung",
+      "completedWithErrors": "Mit Fehlern abgeschlossen",
+      "immediate": "Sofort",
+      "loadingDeployments": "Bereitstellungen werden geladen…",
+      "failedToLoadDeployments": "Bereitstellungen konnten nicht geladen werden",
+      "noDeploymentsYet": "Es wurden noch keine Bereitstellungen erstellt.",
+      "failedToCancelDeployment": "Bereitstellung konnte nicht abgebrochen werden",
+      "deploymentCancelled": "Bereitstellung abgebrochen",
+      "pageOf": "Seite {{page}} von {{pages}}"
     },
     "deploymentProgress": {
       "queued": "In der Warteschlange",
@@ -1339,7 +1348,20 @@
       "completed3": "Abgeschlossen",
       "error": "Fehler",
       "deploymentComplete": "Bereitstellung abgeschlossen",
-      "inProgress": "In Bearbeitung"
+      "inProgress": "In Bearbeitung",
+      "autoRefreshing": "Automatische Aktualisierung alle 5 Sekunden",
+      "queuedOffline": "In Warteschlange — Gerät offline",
+      "cancelled": "Abgebrochen",
+      "downloading": "Wird heruntergeladen",
+      "installing": "Wird installiert",
+      "exitCode": "Exit-Code",
+      "retryStarted": "Wiederholung gestartet",
+      "failedToRetryDeployment": "Bereitstellung konnte nicht wiederholt werden",
+      "failedToCancelDeployment": "Bereitstellung konnte nicht abgebrochen werden",
+      "deploymentCancelled": "Bereitstellung abgebrochen",
+      "failedToLoadDeployment": "Bereitstellung konnte nicht geladen werden",
+      "loadingDeployment": "Bereitstellung wird geladen…",
+      "devicesFinished": "{{finished}} von {{total}} Geräten abgeschlossen"
     },
     "deploymentWizard": {
       "selectSoftware": "Wählen Sie Software",
@@ -1422,7 +1444,8 @@
       "deviceCount_one": "{{count}} Gerät",
       "deviceCount_other": "{{count}} Geräte",
       "groupCount_one": "{{count}} Gruppe",
-      "groupCount_other": "{{count}} Gruppen"
+      "groupCount_other": "{{count}} Gruppen",
+      "viewDeployment": "Bereitstellung anzeigen"
     },
     "detectionRulesEditor": {
       "detectionRules": "Erkennungsregeln",
@@ -1552,7 +1575,10 @@
       "deleting": "Löschen...",
       "deployWizardTitle": "deploy-wizard-title",
       "deploySoftware": "Software bereitstellen",
-      "bulkSoftwareDeployment": "Massensoftwarebereitstellung"
+      "bulkSoftwareDeployment": "Massensoftwarebereitstellung",
+      "catalogTab": "Katalog",
+      "summaryCompleted7d": "Abgeschlossen (7 Tage)",
+      "summaryFailed7d": "Fehlgeschlagen (7 Tage)"
     },
     "softwareComplianceReport": {
       "softwareComplianceReport": "Software-Compliance-Bericht",

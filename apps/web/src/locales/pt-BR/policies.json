@@ -1317,7 +1317,16 @@
       "createdBy": "Criado por",
       "noDeploymentsMatchYourFilters": "Nenhuma implantação corresponde aos seus filtros.",
       "running3": "running",
-      "pending": "pending"
+      "pending": "pending",
+      "inProgress": "Em andamento",
+      "completedWithErrors": "Concluído com erros",
+      "immediate": "Imediato",
+      "loadingDeployments": "Carregando implantações…",
+      "failedToLoadDeployments": "Falha ao carregar as implantações",
+      "noDeploymentsYet": "Nenhuma implantação foi criada ainda.",
+      "failedToCancelDeployment": "Falha ao cancelar a implantação",
+      "deploymentCancelled": "Implantação cancelada",
+      "pageOf": "Página {{page}} de {{pages}}"
     },
     "deploymentProgress": {
       "queued": "Na fila",
@@ -1339,7 +1348,20 @@
       "completed3": "Concluído",
       "error": "Erro",
       "deploymentComplete": "Implantação concluída",
-      "inProgress": "Em andamento"
+      "inProgress": "Em andamento",
+      "autoRefreshing": "Atualização automática a cada 5 segundos",
+      "queuedOffline": "Na fila — dispositivo offline",
+      "cancelled": "Cancelado",
+      "downloading": "Baixando",
+      "installing": "Instalando",
+      "exitCode": "Código de saída",
+      "retryStarted": "Nova tentativa iniciada",
+      "failedToRetryDeployment": "Falha ao repetir a implantação",
+      "failedToCancelDeployment": "Falha ao cancelar a implantação",
+      "deploymentCancelled": "Implantação cancelada",
+      "failedToLoadDeployment": "Falha ao carregar a implantação",
+      "loadingDeployment": "Carregando implantação…",
+      "devicesFinished": "{{finished}} de {{total}} dispositivos concluídos"
     },
     "deploymentWizard": {
       "selectSoftware": "Selecionar Software",
@@ -1422,7 +1444,8 @@
       "deviceCount_one": "{{count}} dispositivo",
       "deviceCount_other": "{{count}} dispositivos",
       "groupCount_one": "{{count}} grupo",
-      "groupCount_other": "{{count}} grupos"
+      "groupCount_other": "{{count}} grupos",
+      "viewDeployment": "Ver implantação"
     },
     "detectionRulesEditor": {
       "detectionRules": "Regras de detecção",
@@ -1552,7 +1575,10 @@
       "deleting": "Excluindo...",
       "deployWizardTitle": "deploy-wizard-title",
       "deploySoftware": "Implantar software",
-      "bulkSoftwareDeployment": "Implantação de software em massa"
+      "bulkSoftwareDeployment": "Implantação de software em massa",
+      "catalogTab": "Catálogo",
+      "summaryCompleted7d": "Concluídas (7 dias)",
+      "summaryFailed7d": "Com falha (7 dias)"
     },
     "softwareComplianceReport": {
       "softwareComplianceReport": "Relatório de conformidade de software",

@@ -1317,7 +1317,16 @@
       "createdBy": "Creado por",
       "noDeploymentsMatchYourFilters": "Ninguna implementación coincide con sus filtros.",
       "running3": "en ejecución",
-      "pending": "pendiente"
+      "pending": "pendiente",
+      "inProgress": "En curso",
+      "completedWithErrors": "Completado con errores",
+      "immediate": "Inmediato",
+      "loadingDeployments": "Cargando implementaciones…",
+      "failedToLoadDeployments": "No se pudieron cargar las implementaciones",
+      "noDeploymentsYet": "Aún no se han creado implementaciones.",
+      "failedToCancelDeployment": "No se pudo cancelar la implementación",
+      "deploymentCancelled": "Implementación cancelada",
+      "pageOf": "Página {{page}} de {{pages}}"
     },
     "deploymentProgress": {
       "queued": "En cola",
@@ -1339,7 +1348,20 @@
       "completed3": "Terminado",
       "error": "Error",
       "deploymentComplete": "Implementación completa",
-      "inProgress": "En curso"
+      "inProgress": "En curso",
+      "autoRefreshing": "Actualización automática cada 5 segundos",
+      "queuedOffline": "En cola — dispositivo sin conexión",
+      "cancelled": "Cancelado",
+      "downloading": "Descargando",
+      "installing": "Instalando",
+      "exitCode": "Código de salida",
+      "retryStarted": "Reintento iniciado",
+      "failedToRetryDeployment": "No se pudo reintentar la implementación",
+      "failedToCancelDeployment": "No se pudo cancelar la implementación",
+      "deploymentCancelled": "Implementación cancelada",
+      "failedToLoadDeployment": "No se pudo cargar la implementación",
+      "loadingDeployment": "Cargando implementación…",
+      "devicesFinished": "{{finished}} de {{total}} dispositivos finalizados"
     },
     "deploymentWizard": {
       "selectSoftware": "Seleccionar software",
@@ -1422,7 +1444,8 @@
       "deviceCount_one": "dispositivo {{count}}",
       "deviceCount_other": "dispositivos {{count}}",
       "groupCount_one": "grupo {{count}}",
-      "groupCount_other": "grupos {{count}}"
+      "groupCount_other": "grupos {{count}}",
+      "viewDeployment": "Ver implementación"
     },
     "detectionRulesEditor": {
       "detectionRules": "Reglas de detección",
@@ -1552,7 +1575,10 @@
       "deleting": "Eliminando...",
       "deployWizardTitle": "deploy-wizard-title",
       "deploySoftware": "Implementar software",
-      "bulkSoftwareDeployment": "Implementación masiva de software"
+      "bulkSoftwareDeployment": "Implementación masiva de software",
+      "catalogTab": "Catálogo",
+      "summaryCompleted7d": "Completadas (7 días)",
+      "summaryFailed7d": "Fallidas (7 días)"
     },
     "softwareComplianceReport": {
       "softwareComplianceReport": "Informe de cumplimiento de software",
