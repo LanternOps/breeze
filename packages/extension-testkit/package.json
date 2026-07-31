@@ -18,7 +18,7 @@
     "hono": "^4.12.32"
   },
   "devDependencies": {
-    "happy-dom": "^20.11.0",
+    "happy-dom": "^20.11.1",
     "typescript": "^5.7.2",
     "vitest": "^4.1.9"
   }
