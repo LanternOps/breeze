@@ -63,17 +63,23 @@ tool_tokens=(
 )
 
 # This tool token is special: matched case-insensitively it is a substring of
-# perfectly ordinary Go identifiers and string literals — any camelCase name
-# of the form remote-T... (spelled with a hyphen here so this script does not
-# contain the collision bytes itself; think of the slog keys and track
-# handlers in agent/internal/remote/desktop). Those names appear all over the
-# agent and its dependencies and survive into binaries (string literals, plus
-# pclntab function names which `-s -w` does not strip). Require a
-# non-alphanumeric byte (or start of line) before the token: real regressions
-# still match (a Go string literal is preceded by a quote), while camelCase
-# identifiers do not.
+# perfectly ordinary Go identifiers and string literals — the whole
+# remote-T... camelCase family: remote-Type, Remote-TimeStamp, remote-ttl,
+# remote-tablet (spelled with a hyphen here so this script does not contain
+# the collision bytes itself; think of the slog keys and track handlers in
+# agent/internal/remote/desktop). Those names appear all over the agent and
+# its dependencies and survive into binaries (string literals, plus pclntab
+# function names which `-s -w` does not strip). Every one of those colliders
+# is immediately preceded by `r`/`R`. Do NOT anchor on "any non-alphanumeric
+# byte before the token": compiled Go binaries pack rodata strings
+# back-to-back with no delimiters, so what byte precedes a string is
+# layout-dependent — a genuinely planted token can land right after an
+# alphanumeric byte and slip past (demonstrated in review). Instead exclude
+# exactly the known collider prefix: any byte other than r/R (or start of
+# line/file) before the token counts as a hit. The same regex is used in both
+# source and binary modes.
 tok_emo="emo""tet"
-tok_emo_re="(^|[^[:alnum:]_])${tok_emo}"
+tok_emo_re="(^|[^rR])${tok_emo}"
 
 violations=0
 
@@ -87,9 +93,16 @@ report() {
 # grep_source <needle> <label> [<matcher>] — report every agent/ Go source
 # line containing <needle> (case-insensitive; fixed-string by default, pass
 # matcher `E` for an extended-regex needle). Returns 0 if anything matched.
+# grep exit codes: 0 = match, 1 = no match, >=2 = error (unreadable file,
+# bad pattern, ...). An error must fail the guard loudly — treating it like
+# "no match" would let a broken scan pass vacuously.
 grep_source() {
-  local needle=$1 label=$2 matcher=${3:-F} hits line
-  if hits=$(LC_ALL=C grep -r -n -i "-$matcher" --include='*.go' -- "$needle" agent/ 2>/dev/null); then
+  local needle=$1 label=$2 matcher=${3:-F} hits line rc
+  hits=$(LC_ALL=C grep -r -n -i "-$matcher" --include='*.go' -- "$needle" agent/) && rc=0 || rc=$?
+  if [ "$rc" -ge 2 ]; then
+    fail "grep failed (exit $rc) while scanning agent/ source — refusing to treat an error as a pass"
+  fi
+  if [ "$rc" -eq 0 ]; then
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       # line = path:lineno:content — keep only path:lineno for the report.
@@ -101,6 +114,9 @@ grep_source() {
 }
 
 scan_source() {
+  # A guard pointed at nothing is worse than no guard: without agent/ every
+  # grep below would report "no match" and the scan would pass vacuously.
+  [ -d agent ] || fail "agent/ directory not found — source scan would be vacuous"
   # Longest-first with subsumption: the payload contains the name token, and
   # the name token contains the short token — avoid triple-reporting a line.
   if ! grep_source "$tok_av_payload" "the full AV test-file payload"; then
@@ -120,9 +136,14 @@ scan_source() {
 bin_has() {
   # Raw-byte, case-insensitive match (fixed-string by default, `E` for regex).
   # -a treats the binary as text; LC_ALL=C keeps matching byte-wise (no
-  # locale/UTF-8 surprises).
-  local matcher=${3:-F}
-  LC_ALL=C grep -a -i "-$matcher" -q -- "$2" "$1"
+  # locale/UTF-8 surprises). grep exit >=2 is an error (unreadable file, bad
+  # pattern) and must fail the guard loudly, never read as "no match".
+  local matcher=${3:-F} rc
+  LC_ALL=C grep -a -i "-$matcher" -q -- "$2" "$1" && rc=0 || rc=$?
+  if [ "$rc" -ge 2 ]; then
+    fail "grep failed (exit $rc) while scanning $1 — refusing to treat an error as a pass"
+  fi
+  return "$rc"
 }
 
 scan_binary() {

@@ -678,7 +678,12 @@ jobs:
       # #2797: plaintext threat-signature strings in agent Go source get
       # compiled verbatim into shipped binaries and AV engines flag them.
       - name: Run agent threat-signature source guard (#2797)
-        run: bash scripts/security/check-agent-binary-signatures.sh --source
+        run: pnpm check:agent-binary-signatures
+
+      # Self-test proving the guard script itself detects planted signatures
+      # and fails loudly on scan errors (mirrors test:override-floors).
+      - name: Run agent threat-signature guard self-test (#2797)
+        run: pnpm test:agent-binary-signatures
 
       - name: Run agent mTLS edge policy guard
         run: pnpm check:agent-mtls-edge-policy

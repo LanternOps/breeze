@@ -4,60 +4,77 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
 // The threat-signature table is XOR-obfuscated so its distinctive tokens never
 // appear plaintext in shipped binaries (issue #2797). These tests verify the
 // decoded table byte-for-byte WITHOUT embedding any contiguous distinctive
-// token in this source file either — every expected value is assembled at
-// runtime from fragments. Do NOT "simplify" the concatenations below into
-// single literals: the CI guard greps built binaries (and source) for the
-// contiguous tokens, and the test binary must stay clean too.
+// token in this source file OR in the compiled test binary. Two traps make
+// the obvious spellings unsafe:
+//
+//   - `"eic" + "ar-..."` is an untyped-constant expression the compiler folds
+//     at BUILD time, so the contiguous token lands verbatim in the test
+//     binary's data section — exactly the bytes AV engines key on, risking
+//     quarantine of test binaries.
+//   - Separate fragment literals (e.g. a []string joined at runtime) are not
+//     safe either: the linker packs short string literals back-to-back into
+//     rodata, and declaration-order packing was observed to reassemble the
+//     exact contiguous tokens in the compiled test binary.
+//
+// The only layout-proof form is a SINGLE literal with a separator laced
+// through the token, stripped at runtime by deobf() — the token bytes then
+// never exist contiguously anywhere but in the runtime heap. Do NOT
+// "simplify" these into plain literals, concatenations, or fragment joins.
 
-// avTestToken returns the well-known AV test-file token ("eic"+"ar"),
-// assembled at runtime.
-func avTestToken() string { return "eic" + "ar" }
+// deobf strips the '|' separators laced through a token literal (see the
+// comment above). None of the real tokens/payloads contain '|'.
+func deobf(s string) string { return strings.ReplaceAll(s, "|", "") }
+
+// avTestToken returns the well-known AV test-file token, assembled at runtime.
+func avTestToken() string { return deobf("eic|ar") }
 
 // avTestContent returns the full 68-byte AV test-file content pattern,
-// assembled at runtime from fragments.
+// assembled at runtime.
 func avTestContent() string {
-	return "X5O!P%@AP[4\\" +
-		"PZX54(P^)7CC)7}$" +
-		"EIC" + "AR-STANDARD-" +
-		"ANTIVIRUS-TEST-" +
-		"FILE!$H+H*"
+	return deobf("X5O!P|%@AP[4\\|PZX54|(P^)7C|C)7}$|EIC|AR-STAND|ARD-ANT|IVIRUS|-TEST-|FILE!|$H+H*")
 }
 
-func credToolToken() string  { return "mimi" + "katz" } // credential dumping tool name
-func credToolToken2() string { return "seku" + "rlsa" } // credential extraction module name
-func c2Token() string        { return "cobalt" + "strike" }
-func trojanToken() string    { return "emo" + "tet" }
-func trojanToken2() string   { return "trick" + "bot" }
+func avSigName() string     { return deobf("EIC|AR-Test-File") }
+func credSigName() string   { return deobf("Mimi|katz") }
+func c2SigName() string     { return deobf("Cobalt|Strike-Beacon") }
+func trojanSigName() string { return deobf("Emo|tet") }
+
+func credToolToken() string  { return deobf("mimi|katz") } // credential dumping tool name
+func credToolToken2() string { return deobf("seku|rlsa") } // credential extraction module name
+func c2Token() string        { return deobf("cobalt|strike") }
+func trojanToken() string    { return deobf("emo|tet") }
+func trojanToken2() string   { return deobf("trick|bot") }
 
 func expectedThreatSignatures() []threatSignature {
 	return []threatSignature{
 		{
-			Name:             "EIC" + "AR-Test-File",
+			Name:             avSigName(),
 			Type:             "malware",
 			Severity:         ThreatSeverityHigh,
 			FilenamePatterns: []string{avTestToken()},
 			ContentPattern:   []byte(avTestContent()),
 		},
 		{
-			Name:             "Mimi" + "katz",
+			Name:             credSigName(),
 			Type:             "malware",
 			Severity:         ThreatSeverityHigh,
 			FilenamePatterns: []string{credToolToken(), credToolToken2()},
 		},
 		{
-			Name:             "Cobalt" + "Strike-Beacon",
+			Name:             c2SigName(),
 			Type:             "malware",
 			Severity:         ThreatSeverityCritical,
 			FilenamePatterns: []string{c2Token(), "beacon"},
 		},
 		{
-			Name:             "Emo" + "tet",
+			Name:             trojanSigName(),
 			Type:             "trojan",
 			Severity:         ThreatSeverityCritical,
 			FilenamePatterns: []string{trojanToken(), trojanToken2()},
@@ -130,7 +147,7 @@ func TestDetectThreatsContentPattern(t *testing.T) {
 	if len(threats) != 1 {
 		t.Fatalf("got %d threats, want 1: %+v", len(threats), threats)
 	}
-	if want := "EIC" + "AR-Test-File"; threats[0].Name != want {
+	if want := avSigName(); threats[0].Name != want {
 		t.Errorf("threat name = %q, want %q", threats[0].Name, want)
 	}
 	if threats[0].Severity != ThreatSeverityHigh {
@@ -148,8 +165,8 @@ func TestDetectThreatsFilenamePattern(t *testing.T) {
 		wantName     string
 		wantSeverity string
 	}{
-		{"credential tool filename", credToolToken() + "_x64.bin", "Mimi" + "katz", ThreatSeverityHigh},
-		{"c2 beacon filename", c2Token() + "-loader.txt", "Cobalt" + "Strike-Beacon", ThreatSeverityCritical},
+		{"credential tool filename", credToolToken() + "_x64.bin", credSigName(), ThreatSeverityHigh},
+		{"c2 beacon filename", c2Token() + "-loader.txt", c2SigName(), ThreatSeverityCritical},
 		{"ransom note filename", "how_to_decrypt.txt", "Ransomware-Note", ThreatSeverityHigh},
 	}
 

@@ -107,41 +107,62 @@ func TestSanitizeOutput_PrivateKeyRedaction(t *testing.T) {
 	}
 }
 
+// deobfTok strips the '|' separators laced through a banned-token literal.
+// The separator keeps the contiguous token bytes out of BOTH this source
+// file and the compiled test binary (the bytes AV engines key on — issue
+// #2797): `+` concatenation of literals is constant-folded at compile time,
+// and even separate fragment literals get packed back-to-back into rodata by
+// the linker (declaration-order packing was observed to reassemble the exact
+// tokens). Only a single separator-laced literal stripped at RUNTIME is
+// layout-proof. Do NOT "simplify" into plain literals or fragment joins.
+func deobfTok(s string) string { return strings.ReplaceAll(s, "|", "") }
+
 // TestValidate_ObfuscatedCredentialToolPatterns verifies the three
 // credential-tool blocklist patterns still match after being moved to
-// XOR-obfuscated storage (issue #2797). The tool names are assembled from
-// fragments at runtime so the contiguous tokens never appear in this source
-// file or the compiled test binary — do not join them into single literals.
+// XOR-obfuscated storage (issue #2797). The tool names are assembled at
+// runtime via deobfTok (see above). Each blocked case also asserts the
+// error names the EXPECTED pattern description, so an unrelated pattern
+// match cannot mask a broken decode.
 func TestValidate_ObfuscatedCredentialToolPatterns(t *testing.T) {
 	v := NewSecurityValidator(SecurityLevelStrict)
 
+	credDumpTool := deobfTok("mimi|katz")
+	credExtractMod := deobfTok("seku|rlsa")
+	lsaDmp := deobfTok("lsa|dump")
+
 	tests := []struct {
-		name      string
-		script    string
-		wantBlock bool
+		name    string
+		script  string
+		wantErr string // "" = must pass; otherwise error must contain this description
 	}{
-		{"credential dumping tool invocation", "powershell -c .\\" + "mimi" + "katz" + ".exe", true},
-		{"credential extraction module", "Invoke-Thing " + "seku" + "rlsa" + "::logonpasswords", true},
-		{"LSA dump keyword", "run " + "lsa" + "dump" + "::sam", true},
-		{"mixed case still blocked", "MIMI" + "KATZ", true},
-		{"benign script passes", "Get-Process | Sort-Object CPU", false},
+		{"credential dumping tool invocation", "powershell -c .\\" + credDumpTool + ".exe", "credential dumping tool"},
+		{"credential extraction module", "Invoke-Thing " + credExtractMod + "::logonpasswords", "credential extraction"},
+		{"LSA dump keyword", "run " + lsaDmp + "::sam", "LSA dump"},
+		{"mixed case still blocked", strings.ToUpper(credDumpTool), "credential dumping tool"},
+		{"benign script passes", "Get-Process | Sort-Object CPU", ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := v.Validate(tt.script)
-			if tt.wantBlock && err == nil {
-				t.Errorf("Validate(%q) = nil, want dangerous-pattern error", tt.script)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Errorf("Validate(%q) = %v, want nil", tt.script, err)
+				}
+				return
 			}
-			if !tt.wantBlock && err != nil {
-				t.Errorf("Validate(%q) = %v, want nil", tt.script, err)
+			if err == nil {
+				t.Fatalf("Validate(%q) = nil, want dangerous-pattern error containing %q", tt.script, tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("Validate(%q) = %q, want error containing %q", tt.script, err.Error(), tt.wantErr)
 			}
 		})
 	}
 
 	// Basic level must NOT block strict-only patterns.
 	basic := NewSecurityValidator(SecurityLevelBasic)
-	if err := basic.Validate("mimi" + "katz"); err != nil {
+	if err := basic.Validate(credDumpTool); err != nil {
 		t.Errorf("basic-level Validate blocked a strict-only pattern: %v", err)
 	}
 }

@@ -17,17 +17,22 @@
 // only job is to keep byte-for-byte token matches out of the on-disk binary.
 //
 // Regenerating encoded literals: XOR each byte of the plaintext with Key
-// (0x5A). One-liner (do not commit the plaintext anywhere in the repo):
+// (0x5A). `go run` cannot read program source from stdin, so write a
+// throwaway generator to a temp file OUTSIDE the repo, run it, then delete
+// it (never commit the plaintext anywhere in the repo):
 //
-//	go run - <<'EOF'
+//	cat > "${TMPDIR:-/tmp}/xorgen.go" <<'EOF'
 //	package main
+//
 //	import "fmt"
+//
 //	func main() {
 //		s := "plaintext-token-here"
 //		for i := 0; i < len(s); i++ { fmt.Printf("0x%02x, ", s[i]^0x5a) }
 //		fmt.Println()
 //	}
 //	EOF
+//	go run "${TMPDIR:-/tmp}/xorgen.go" && rm "${TMPDIR:-/tmp}/xorgen.go"
 package obfuscate
 
 // Key is the single-byte XOR key applied to every encoded literal.
