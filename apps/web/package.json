@@ -33,7 +33,7 @@
     "@tiptap/extension-link": "^3.28.0",
     "@tiptap/extension-underline": "^3.29.1",
     "@tiptap/pm": "^3.28.0",
-    "@tiptap/react": "^3.28.0",
+    "@tiptap/react": "^3.29.1",
     "@tiptap/starter-kit": "^3.28.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
