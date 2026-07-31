@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 
 import { z } from 'zod';
 
-import { TOOL_TIERS } from './aiAgentSdkTools';
+import { TOOL_TIERS, createBreezeMcpServer } from './aiAgentSdkTools';
 import { aiTools } from './aiTools';
 import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
@@ -158,6 +158,15 @@ describe('advertised input_schema matches the enforced Zod schema (#2814)', () =
  * can fail — so assert the registry actually answers for all five.
  */
 describe('registry-sourced tool descriptions resolve (#2814)', () => {
+  it('createBreezeMcpServer constructs — registryDescription throws at build time', () => {
+    // Nothing else in the suite ever BUILDS the server (the only other
+    // reference is a vi.fn() mock in streamingSessionManager.clientLoop.test.ts),
+    // so this is the sole direct cover for the throw path — which would fail
+    // every chat request, not one tool call. Also cheap cover for the other
+    // ~120 declarations against a malformed shape.
+    expect(() => createBreezeMcpServer(() => ({}) as never)).not.toThrow();
+  });
+
   it('every registry-sourced description resolves to non-empty text', () => {
     for (const name of CONFIG_POLICY_TOOLS) {
       const description = aiTools.get(name)?.definition.description;

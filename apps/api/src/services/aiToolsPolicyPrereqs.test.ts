@@ -503,3 +503,68 @@ describe('manage_software_policies partner-wide create gate (#2126)', () => {
     expect(values.partnerId).toBeNull();
   });
 });
+
+/**
+ * `manage_peripheral_policies` had no handler coverage at all despite becoming
+ * reachable from AI/MCP for the first time in #2814. It also carries the
+ * `action_type` rename — the tool takes `action_type` because `action` is the
+ * multiplexer — and a silently dropped rename would create the policy with a
+ * default enforcement mode while still reporting success.
+ */
+describe('manage_peripheral_policies create (#2814 — first reachable)', () => {
+  beforeEach(() => {
+    insertMock.mockReset();
+    updateMock.mockReset();
+    selectMock.mockReset();
+  });
+
+  function getPeripheralPoliciesTool() {
+    const tools = new Map<string, any>();
+    registerPolicyPrereqTools(tools);
+    const tool = tools.get('manage_peripheral_policies');
+    if (!tool) throw new Error('manage_peripheral_policies tool not registered');
+    return tool;
+  }
+
+  it('maps action_type onto the `action` column and scopes the row to the org', async () => {
+    mockInsertReturns({ id: 'peripheral-1', name: 'Block USB storage' });
+
+    const output = await getPeripheralPoliciesTool().handler(
+      {
+        action: 'create',
+        name: 'Block USB storage',
+        deviceClass: 'storage',
+        action_type: 'block',
+      },
+      makeOrgAuth()
+    );
+
+    expect(JSON.parse(output).success).toBe(true);
+    const values = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+    // The rename is the whole point: `action` must carry the enforcement mode,
+    // never the 'create' multiplexer value.
+    expect(values.action).toBe('block');
+    expect(values.deviceClass).toBe('storage');
+    expect(values.orgId).toBe(ORG_ID);
+  });
+
+  it('refuses to create without action_type rather than defaulting the enforcement mode', async () => {
+    const output = await getPeripheralPoliciesTool().handler(
+      { action: 'create', name: 'Incomplete', deviceClass: 'storage' },
+      makeOrgAuth()
+    );
+
+    expect(JSON.parse(output).error).toMatch(/action_type is required/);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses to create without an org context', async () => {
+    const output = await getPeripheralPoliciesTool().handler(
+      { action: 'create', name: 'No org', deviceClass: 'storage', action_type: 'block' },
+      makeAuth()
+    );
+
+    expect(JSON.parse(output).error).toMatch(/Organization context required/);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+});
