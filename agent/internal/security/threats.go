@@ -10,7 +10,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/obfuscate"
 )
 
 // Threat represents a detected security threat.
@@ -36,38 +39,92 @@ type threatSignature struct {
 	ContentPattern   []byte
 }
 
-var defaultThreatSignatures = []threatSignature{
-	{
-		Name:             "EICAR-Test-File",
-		Type:             "malware",
-		Severity:         ThreatSeverityHigh,
-		FilenamePatterns: []string{"eicar"},
-		ContentPattern:   []byte("X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"),
-	},
-	{
-		Name:             "Mimikatz",
-		Type:             "malware",
-		Severity:         ThreatSeverityHigh,
-		FilenamePatterns: []string{"mimikatz", "sekurlsa"},
-	},
-	{
-		Name:             "CobaltStrike-Beacon",
-		Type:             "malware",
-		Severity:         ThreatSeverityCritical,
-		FilenamePatterns: []string{"cobaltstrike", "beacon"},
-	},
-	{
-		Name:             "Emotet",
-		Type:             "trojan",
-		Severity:         ThreatSeverityCritical,
-		FilenamePatterns: []string{"emotet", "trickbot"},
-	},
-	{
-		Name:             "Ransomware-Note",
-		Type:             "ransomware",
-		Severity:         ThreatSeverityHigh,
-		FilenamePatterns: []string{"_readme", "how_to_decrypt", "recover", "decrypt"},
-	},
+// The threat-signature table is stored XOR-obfuscated (see internal/obfuscate)
+// and decoded lazily on first use. The signature names, filename patterns, and
+// content patterns are well-known malware/test-file tokens; as plain Go
+// literals they get compiled verbatim into the shipped binaries and AV engines
+// then flag breeze-agent.exe / breeze-user-helper.exe (issue #2797, confirmed
+// on VirusTotal). The entire table is encoded uniformly so
+// reviewers don't have to judge which tokens are "distinctive enough". The CI
+// guard scripts/security/check-agent-binary-signatures.sh checks built
+// binaries for the plaintext tokens.
+//
+// Encoded literals were produced with the XOR-0x5A scheme documented in
+// internal/obfuscate. Comments name only non-sensitive decoded values.
+var (
+	threatSignaturesOnce sync.Once
+	threatSignaturesVal  []threatSignature
+)
+
+// threatSignatures returns the decoded default threat-signature table.
+func threatSignatures() []threatSignature {
+	threatSignaturesOnce.Do(func() {
+		threatSignaturesVal = buildDefaultThreatSignatures()
+	})
+	return threatSignaturesVal
+}
+
+func buildDefaultThreatSignatures() []threatSignature {
+	dec := obfuscate.Decode
+	return []threatSignature{
+		{
+			// AV test-file signature (name + filename token + 68-byte content payload).
+			Name:     dec([]byte{0x1f, 0x13, 0x19, 0x1b, 0x08, 0x77, 0x0e, 0x3f, 0x29, 0x2e, 0x77, 0x1c, 0x33, 0x36, 0x3f}),
+			Type:     "malware",
+			Severity: ThreatSeverityHigh,
+			FilenamePatterns: []string{
+				dec([]byte{0x3f, 0x33, 0x39, 0x3b, 0x28}),
+			},
+			ContentPattern: obfuscate.DecodeBytes([]byte{
+				0x02, 0x6f, 0x15, 0x7b, 0x0a, 0x7f, 0x1a, 0x1b, 0x0a, 0x01, 0x6e, 0x06, 0x0a, 0x00, 0x02, 0x6f,
+				0x6e, 0x72, 0x0a, 0x04, 0x73, 0x6d, 0x19, 0x19, 0x73, 0x6d, 0x27, 0x7e, 0x1f, 0x13, 0x19, 0x1b,
+				0x08, 0x77, 0x09, 0x0e, 0x1b, 0x14, 0x1e, 0x1b, 0x08, 0x1e, 0x77, 0x1b, 0x14, 0x0e, 0x13, 0x0c,
+				0x13, 0x08, 0x0f, 0x09, 0x77, 0x0e, 0x1f, 0x09, 0x0e, 0x77, 0x1c, 0x13, 0x16, 0x1f, 0x7b, 0x7e,
+				0x12, 0x71, 0x12, 0x70,
+			}),
+		},
+		{
+			// Credential-dumping tool signature (name + two filename tokens).
+			Name:     dec([]byte{0x17, 0x33, 0x37, 0x33, 0x31, 0x3b, 0x2e, 0x20}),
+			Type:     "malware",
+			Severity: ThreatSeverityHigh,
+			FilenamePatterns: []string{
+				dec([]byte{0x37, 0x33, 0x37, 0x33, 0x31, 0x3b, 0x2e, 0x20}),
+				dec([]byte{0x29, 0x3f, 0x31, 0x2f, 0x28, 0x36, 0x29, 0x3b}),
+			},
+		},
+		{
+			// C2-framework beacon signature (name + tool token + "beacon").
+			Name:     dec([]byte{0x19, 0x35, 0x38, 0x3b, 0x36, 0x2e, 0x09, 0x2e, 0x28, 0x33, 0x31, 0x3f, 0x77, 0x18, 0x3f, 0x3b, 0x39, 0x35, 0x34}),
+			Type:     "malware",
+			Severity: ThreatSeverityCritical,
+			FilenamePatterns: []string{
+				dec([]byte{0x39, 0x35, 0x38, 0x3b, 0x36, 0x2e, 0x29, 0x2e, 0x28, 0x33, 0x31, 0x3f}),
+				dec([]byte{0x38, 0x3f, 0x3b, 0x39, 0x35, 0x34}), // "beacon"
+			},
+		},
+		{
+			// Banking-trojan family signature (name + two family tokens).
+			Name:     dec([]byte{0x1f, 0x37, 0x35, 0x2e, 0x3f, 0x2e}),
+			Type:     "trojan",
+			Severity: ThreatSeverityCritical,
+			FilenamePatterns: []string{
+				dec([]byte{0x3f, 0x37, 0x35, 0x2e, 0x3f, 0x2e}),
+				dec([]byte{0x2e, 0x28, 0x33, 0x39, 0x31, 0x38, 0x35, 0x2e}),
+			},
+		},
+		{
+			Name:     dec([]byte{0x08, 0x3b, 0x34, 0x29, 0x35, 0x37, 0x2d, 0x3b, 0x28, 0x3f, 0x77, 0x14, 0x35, 0x2e, 0x3f}), // "Ransomware-Note"
+			Type:     "ransomware",
+			Severity: ThreatSeverityHigh,
+			FilenamePatterns: []string{
+				dec([]byte{0x05, 0x28, 0x3f, 0x3b, 0x3e, 0x37, 0x3f}),                                           // "_readme"
+				dec([]byte{0x32, 0x35, 0x2d, 0x05, 0x2e, 0x35, 0x05, 0x3e, 0x3f, 0x39, 0x28, 0x23, 0x2a, 0x2e}), // "how_to_decrypt"
+				dec([]byte{0x28, 0x3f, 0x39, 0x35, 0x2c, 0x3f, 0x28}),                                           // "recover"
+				dec([]byte{0x3e, 0x3f, 0x39, 0x28, 0x23, 0x2a, 0x2e}),                                           // "decrypt"
+			},
+		},
+	}
 }
 
 type threatScanOptions struct {
@@ -241,7 +298,7 @@ func scanFileForThreats(path string, info fs.FileInfo, options threatScanOptions
 	var matches []Threat
 
 	needsContent := false
-	for _, signature := range defaultThreatSignatures {
+	for _, signature := range threatSignatures() {
 		if signatureMatchesName(signature, nameLower, pathLower) {
 			matches = append(matches, Threat{
 				Name:     signature.Name,
@@ -268,7 +325,7 @@ func scanFileForThreats(path string, info fs.FileInfo, options threatScanOptions
 		return matches, err
 	}
 
-	for _, signature := range defaultThreatSignatures {
+	for _, signature := range threatSignatures() {
 		if len(signature.ContentPattern) == 0 {
 			continue
 		}

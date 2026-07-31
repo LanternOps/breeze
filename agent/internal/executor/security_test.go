@@ -106,3 +106,42 @@ func TestSanitizeOutput_PrivateKeyRedaction(t *testing.T) {
 		})
 	}
 }
+
+// TestValidate_ObfuscatedCredentialToolPatterns verifies the three
+// credential-tool blocklist patterns still match after being moved to
+// XOR-obfuscated storage (issue #2797). The tool names are assembled from
+// fragments at runtime so the contiguous tokens never appear in this source
+// file or the compiled test binary — do not join them into single literals.
+func TestValidate_ObfuscatedCredentialToolPatterns(t *testing.T) {
+	v := NewSecurityValidator(SecurityLevelStrict)
+
+	tests := []struct {
+		name      string
+		script    string
+		wantBlock bool
+	}{
+		{"credential dumping tool invocation", "powershell -c .\\" + "mimi" + "katz" + ".exe", true},
+		{"credential extraction module", "Invoke-Thing " + "seku" + "rlsa" + "::logonpasswords", true},
+		{"LSA dump keyword", "run " + "lsa" + "dump" + "::sam", true},
+		{"mixed case still blocked", "MIMI" + "KATZ", true},
+		{"benign script passes", "Get-Process | Sort-Object CPU", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := v.Validate(tt.script)
+			if tt.wantBlock && err == nil {
+				t.Errorf("Validate(%q) = nil, want dangerous-pattern error", tt.script)
+			}
+			if !tt.wantBlock && err != nil {
+				t.Errorf("Validate(%q) = %v, want nil", tt.script, err)
+			}
+		})
+	}
+
+	// Basic level must NOT block strict-only patterns.
+	basic := NewSecurityValidator(SecurityLevelBasic)
+	if err := basic.Validate("mimi" + "katz"); err != nil {
+		t.Errorf("basic-level Validate blocked a strict-only pattern: %v", err)
+	}
+}
