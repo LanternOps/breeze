@@ -214,7 +214,13 @@ export default function TimezoneSelect({ value, onChange, label, id, testId }: P
         // committed zone becomes invisible to screen readers, a regression from
         // the native <select> ("Timezone, combo box, America/New_York").
         aria-label={`${label}: ${value}`}
-        onClick={() => setOpen((v) => !v)}
+        // Must go through `close()`, not a bare `setOpen(false)`. The trigger
+        // sits inside `wrapRef`, so `useClickOutside` never fires for it — a
+        // bare toggle would be a third exit that leaves `query` set, and on
+        // reopen the effect below seeds `active` from the UNFILTERED `zones`
+        // while `results` is still filtered, so Enter commits `results[active]`
+        // — a zone the user never looked at.
+        onClick={() => (open ? close() : setOpen(true))}
         onKeyDown={(event) => {
           if (!open && (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ')) {
             event.preventDefault();

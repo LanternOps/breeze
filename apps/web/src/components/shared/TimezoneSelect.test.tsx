@@ -172,6 +172,38 @@ describe('TimezoneSelect', () => {
     expect(onChange).toHaveBeenCalledWith('Europe/Paris');
   });
 
+  // The trigger is INSIDE the wrapper, so useClickOutside never fires for it —
+  // it was a third close path that skipped close() and left the query set. On
+  // reopen the effect seeds `active` from the unfiltered zone list while
+  // `results` is still filtered, so Enter committed a zone the user never saw
+  // (probe: America/New_York + query "o" -> Europe/Kaliningrad).
+  it('closing via the trigger clears the query, so a reopen cannot commit a stranded index', () => {
+    const onChange = setup('America/New_York');
+
+    fireEvent.click(screen.getByTestId('tz-trigger'));
+    fireEvent.change(screen.getByTestId('tz-search'), { target: { value: 'o' } });
+    fireEvent.click(screen.getByTestId('tz-trigger')); // close via the trigger
+    fireEvent.click(screen.getByTestId('tz-trigger')); // reopen
+
+    expect(screen.getByTestId('tz-search')).toHaveValue('');
+    fireEvent.keyDown(screen.getByTestId('tz-search'), { key: 'Enter' });
+    expect(onChange).toHaveBeenCalledWith('America/New_York');
+  });
+
+  it('a query abandoned via the trigger cannot be auto-committed in a later session', () => {
+    const onChange = setup();
+
+    fireEvent.click(screen.getByTestId('tz-trigger'));
+    fireEvent.change(screen.getByTestId('tz-search'), { target: { value: 'europe/paris' } });
+    fireEvent.click(screen.getByTestId('tz-trigger')); // "never mind"
+    expect(onChange).not.toHaveBeenCalled();
+
+    // Reopen and click away: dismiss() must not find a query to resolve.
+    fireEvent.click(screen.getByTestId('tz-trigger'));
+    fireEvent.mouseDown(document.body);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it('announces the committed zone in the trigger name, as the native select did', () => {
     setup('America/New_York');
     // aria-label overrides name-from-content, so it has to carry the value or
