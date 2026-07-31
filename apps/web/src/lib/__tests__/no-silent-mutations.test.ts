@@ -117,6 +117,11 @@ const TARGET_GLOBS = [
   'src/components/billing/InvoiceActions.tsx',
   'src/components/billing/quotes/QuoteHeaderMeta.tsx',
   'src/components/billing/quotes/QuoteLineRows.tsx',
+  // Config-policy delete migrated to runAction (#2950). Its confirmation modal
+  // is a fixed full-screen overlay that stays open on failure, so the old
+  // page-level error banner was painted behind the scrim — an unrecoverable
+  // silent failure, not merely an unguarded one.
+  'src/components/configurationPolicies/ConfigurationPoliciesPage.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -308,7 +313,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(79);
+    expect(absoluteFiles.length).toBe(80);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

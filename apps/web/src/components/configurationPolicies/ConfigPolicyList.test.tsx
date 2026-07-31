@@ -99,8 +99,23 @@ describe('ConfigPolicyList Features column (#2950)', () => {
   it('shows the empty marker only when a policy genuinely has no feature links', () => {
     render(<ConfigPolicyList policies={[{ ...orgOwned, featureLinks: [] }]} />);
 
-    expect(screen.getByTestId('config-policy-features-empty')).toBeInTheDocument();
+    const empty = screen.getByTestId('config-policy-features-empty');
+    expect(empty).toBeInTheDocument();
+    // Present-and-empty is a real answer, so it is safe to announce "None".
+    expect(empty).toHaveTextContent('None');
     expect(screen.queryByTestId('config-policy-feature-badge')).toBeNull();
+  });
+
+  it('does NOT claim "None" when the endpoint omitted featureLinks entirely', () => {
+    // web deployed ahead of api: the field is absent, not empty. Announcing
+    // "None" would assert something we do not know — every row would tell a
+    // screen-reader user their policies have no features attached.
+    render(<ConfigPolicyList policies={[{ ...orgOwned, featureLinks: undefined }]} />);
+
+    expect(screen.queryByTestId('config-policy-features-empty')).toBeNull();
+    const unknown = screen.getByTestId('config-policy-features-unknown');
+    expect(unknown).toHaveAttribute('aria-hidden', 'true');
+    expect(unknown).not.toHaveTextContent('None');
   });
 });
 
@@ -148,7 +163,32 @@ describe('ConfigPolicyList action buttons (#2950)', () => {
     }));
     render(<ConfigPolicyList policies={many} pageSize={2} />);
 
-    expect(screen.getByTestId('config-policy-prev-page')).toHaveAccessibleName('Back');
-    expect(screen.getByTestId('config-policy-next-page')).toHaveAccessibleName('Next');
+    // Pager controls, not navigation verbs — "Back" would be the wrong thing
+    // to announce here.
+    expect(screen.getByTestId('config-policy-prev-page')).toHaveAccessibleName('Previous page');
+    expect(screen.getByTestId('config-policy-next-page')).toHaveAccessibleName('Next page');
+  });
+
+  it('pages through rows and disables the controls at both boundaries', async () => {
+    const user = userEvent.setup();
+    const many: ConfigPolicy[] = Array.from({ length: 3 }, (_, i) => ({
+      ...orgOwned,
+      id: `policy-${i}`,
+      name: `Policy ${i}`,
+    }));
+    render(<ConfigPolicyList policies={many} pageSize={2} />);
+
+    const prev = screen.getByTestId('config-policy-prev-page');
+    const next = screen.getByTestId('config-policy-next-page');
+    expect(prev).toBeDisabled();
+    expect(screen.getAllByTestId('config-policy-row')).toHaveLength(2);
+
+    await user.click(next);
+
+    // Page 2 holds the single remaining row, and Next is now the boundary.
+    expect(screen.getAllByTestId('config-policy-row')).toHaveLength(1);
+    expect(screen.getByTestId('config-policy-row')).toHaveAttribute('data-policy-id', 'policy-2');
+    expect(next).toBeDisabled();
+    expect(prev).toBeEnabled();
   });
 });

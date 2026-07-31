@@ -29,6 +29,9 @@ vi.mock('@/lib/i18n', () => ({
   i18n: { t: (key: string) => `xx:${key}` },
 }));
 
+const { showToastMock } = vi.hoisted(() => ({ showToastMock: vi.fn() }));
+vi.mock('../shared/Toast', () => ({ showToast: showToastMock }));
+
 import ConfigurationPoliciesPage from './ConfigurationPoliciesPage';
 
 describe('ConfigurationPoliciesPage delete flow (#2950)', () => {
@@ -85,6 +88,37 @@ describe('ConfigurationPoliciesPage delete flow (#2950)', () => {
         { method: 'DELETE' },
       ),
     );
+  });
+
+  it('surfaces a failed delete to the user instead of hiding it behind the modal', async () => {
+    // The confirmation modal is `fixed inset-0 z-50` over an opaque scrim and
+    // stays open on failure, so a page-level error banner in normal document
+    // flow is painted BEHIND it — the user sees the button re-enable and
+    // nothing else. runAction's toast is the only feedback that reaches them.
+    const user = userEvent.setup();
+    render(<ConfigurationPoliciesPage />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('config-policy-delete-button')).toBeInTheDocument(),
+    );
+    await user.click(screen.getByTestId('config-policy-delete-button'));
+
+    fetchWithAuthMock.mockResolvedValueOnce({
+      ok: false,
+      status: 403,
+      json: async () => ({
+        error: 'Partner-wide policies require full partner org access (orgAccess must be "all")',
+      }),
+    });
+    await user.click(screen.getByTestId('config-policy-delete-confirm'));
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalled());
+    const toasted = showToastMock.mock.calls.map(([arg]) => arg);
+    expect(toasted).toContainEqual(
+      expect.objectContaining({ type: 'error' }),
+    );
+    // The server's actionable reason reaches the user, not a generic string.
+    expect(toasted.some((t) => String(t.message).includes('orgAccess'))).toBe(true);
   });
 
   it('renders the feature badges the list endpoint now returns', async () => {

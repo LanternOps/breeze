@@ -81,8 +81,11 @@ export default function ConfigPolicyList({
   // another's, which a bare "Edit" cannot.
   const editLabel = i18n.t("common:actions.edit");
   const deleteLabel = i18n.t("common:actions.delete");
-  const previousPageLabel = i18n.t("common:actions.back");
-  const nextPageLabel = i18n.t("common:actions.next");
+  // Dedicated pagination keys rather than actions.back/actions.next: those are
+  // navigation verbs ("Back"/"Retour"/"Zurück"), which is the wrong thing to
+  // announce for a pager control.
+  const previousPageLabel = i18n.t("common:actions.previousPage");
+  const nextPageLabel = i18n.t("common:actions.nextPage");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [currentPage, setCurrentPage] = useState(1);
@@ -249,7 +252,9 @@ export default function ConfigPolicyList({
                             {featureTypeLabel(link.featureType)}
                           </span>
                         ))
-                      ) : (
+                      ) : policy.featureLinks ? (
+                        // Present-but-empty: the endpoint answered, and the
+                        // answer is "no features". Safe to say so out loud.
                         <span
                           className="text-muted-foreground"
                           data-testid="config-policy-features-empty"
@@ -258,6 +263,19 @@ export default function ConfigPolicyList({
                           <span className="sr-only">
                             {i18n.t("common:labels.none")}
                           </span>
+                        </span>
+                      ) : (
+                        // Field absent — a web bundle running ahead of an api
+                        // that doesn't send featureLinks yet (version skew is
+                        // real here; see the droplet rollout notes). We do NOT
+                        // know there are no features, so render the neutral
+                        // em-dash and assert nothing to assistive tech.
+                        <span
+                          className="text-muted-foreground"
+                          aria-hidden="true"
+                          data-testid="config-policy-features-unknown"
+                        >
+                          &mdash;
                         </span>
                       )}
                     </div>
