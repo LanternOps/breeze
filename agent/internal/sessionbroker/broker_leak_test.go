@@ -315,15 +315,36 @@ func TestAdmitOrEvictRejectsWhenAllRecent(t *testing.T) {
 // must close the session. A single failure is tolerated because the wedge
 // detector is the pong-age check, not the send side.
 func TestKeepaliveClosesAfterRepeatedSendFailures(t *testing.T) {
+	const pingInterval = 10 * time.Millisecond
+
 	// Very short interval so we fire multiple ticks fast; timeout is far in
 	// the future so only the send-failure path can close the session.
-	withKeepaliveTiming(t, 10*time.Millisecond, time.Hour)
+	withKeepaliveTiming(t, pingInterval, time.Hour)
 
 	session, clientIPC := newPairedSession(t, "sendfail-1", "4000")
 
-	// Close the client side immediately so every server-side SendTyped
-	// fails with a broken-pipe / closed-connection error.
+	// The helper goes away. Closing only the peer is NOT enough to make the
+	// broker's sends fail: the peer's Close() sends a FIN, and TCP half-close
+	// means the next local Write still succeeds into the send buffer. The
+	// write side only starts erroring once the peer's RST comes back, and how
+	// long that takes is an OS/scheduler property we do not control. On
+	// Linux/macOS loopback it is a single instant round trip; on a loaded
+	// Windows runner it is unbounded, which is why this test intermittently
+	// blew its wait budget with "wsasend: An established connection was
+	// aborted" — the post-RST error arriving too late (issue #2967).
 	_ = clientIPC.Close()
+
+	// So close the BROKER side too. A locally-closed socket makes every
+	// subsequent SendTyped fail immediately and identically on every platform
+	// (net.ErrClosed, surfaced by ipc.Conn.Send's SetWriteDeadline before any
+	// syscall) — no RST, no timer, nothing to race. The loop is now guaranteed
+	// to accumulate keepaliveMaxSendFailures on consecutive ticks and exit on
+	// tick keepaliveMaxSendFailures. This is the input runKeepalive actually
+	// contracts on — "SendTyped keeps returning errors" — so forcing it
+	// directly tests the loop rather than the host's TCP teardown timing.
+	if err := session.conn.Close(); err != nil {
+		t.Fatalf("close broker-side conn: %v", err)
+	}
 
 	b := &Broker{
 		sessions:   map[string]*Session{session.SessionID: session},
@@ -336,11 +357,28 @@ func TestKeepaliveClosesAfterRepeatedSendFailures(t *testing.T) {
 		close(done)
 	}()
 
+	// The exit is now bounded by keepaliveMaxSendFailures ticks (~30ms), so
+	// this is purely a hang guard against runKeepalive never returning — not a
+	// race window. Keep it generously wide so scheduler starvation on a busy
+	// CI runner can never be mistaken for the loop failing to give up.
+	hangGuard := 100 * keepaliveMaxSendFailures * pingInterval
 	select {
 	case <-done:
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(hangGuard):
+		// Close the session so the loop exits via Done(), then wait for it
+		// before failing. Leaving the goroutine running past the end of the
+		// test lets the race detector fire on the teardown and bury the actual
+		// failure message under a stack dump.
+		// The second wait is bounded too: if the loop is wedged somewhere that
+		// does not observe Done(), give up rather than hang the package until
+		// the go test timeout.
 		_ = session.Close()
-		t.Fatal("runKeepalive did not exit after repeated send failures")
+		select {
+		case <-done:
+		case <-time.After(hangGuard):
+		}
+		t.Fatalf("runKeepalive did not exit within %v after %d consecutive send failures",
+			hangGuard, keepaliveMaxSendFailures)
 	}
 
 	if !session.IsClosed() {
