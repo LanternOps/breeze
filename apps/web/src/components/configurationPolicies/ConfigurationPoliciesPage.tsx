@@ -202,13 +202,13 @@ export default function ConfigurationPoliciesPage() {
 
       {/*
         Compare against the ModalMode literal, NOT a translated string. An i18n
-        codemod had rewritten this gate to test modalMode against the
-        configurationPoliciesPage.delete catalog entry, which only ever matched
-        because the en value happened to be the lowercase word "delete" — under
-        fr/de/es/pt it resolves to "supprimer"/"löschen"/…, so the confirmation
-        dialog never rendered and the row Delete button was a silent no-op for
-        those users (#2950). The translated-comparison guard in
-        src/lib/__tests__/no-translated-comparisons.test.ts now blocks the class.
+        codemod had rewritten this gate to `modalMode === i18n.t(...".delete")`,
+        which only ever matched because the en value happened to be the
+        lowercase word "delete" — under fr/de/es/pt it resolves to
+        "supprimer"/"löschen"/… so the confirmation dialog never rendered and
+        the row Delete button was a silent no-op for those users (#2950).
+        src/lib/__tests__/no-translated-comparisons.test.ts now guards the class
+        repo-wide (and tolerates prose like this line quoting the bad shape).
       */}
       {modalMode === "delete" &&
         selectedPolicy && (

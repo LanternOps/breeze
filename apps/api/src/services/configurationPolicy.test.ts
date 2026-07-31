@@ -1758,10 +1758,9 @@ describe('listConfigPolicies feature links', () => {
     // Ordering is delegated to the query, so the service must NOT re-sort:
     // rows come back in whatever order the DB produced them.
     expect(links.orderBy).toHaveBeenCalledTimes(1);
-    expect(result.data[0].featureLinks.map((l: { id: string }) => l.id)).toEqual([
-      'link-2',
-      'link-1',
-    ]);
+    const first = result.data[0];
+    expect(first).toBeDefined();
+    expect(first?.featureLinks.map((l) => l.id)).toEqual(['link-2', 'link-1']);
   });
 
   it('attaches links on the orgId-filtered path (the one the UI actually uses)', async () => {

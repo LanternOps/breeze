@@ -76,6 +76,26 @@ function lineAt(src: string, offset: number): number {
   return src.slice(0, offset).split('\n').length;
 }
 
+/**
+ * Blank out comment bodies, preserving every newline so offsets and line
+ * numbers are unchanged.
+ *
+ * Prose describing this bug class necessarily quotes its code shape, and a
+ * comment is not the bug. Testing whether the matched LINE starts with `*` or
+ * `//` is not enough: `{/* … *\/}` JSX comments and non-JSDoc block comments
+ * have unprefixed continuation lines, so the guard would fail on a wrapped
+ * sentence and report "compared against a translated string" pointing at a
+ * comment — a confusing red on main for someone who changed no code.
+ *
+ * Deliberately naive: a `//` inside a string literal (a URL) also gets blanked,
+ * which can only ever hide a real hit later on that same line. Erring toward a
+ * false negative is right here — a false positive reds main.
+ */
+function stripComments(src: string): string {
+  const blank = (m: string) => m.replace(/[^\n]/g, ' ');
+  return src.replace(/\/\*[\s\S]*?\*\//g, blank).replace(/\/\/[^\n]*/g, blank);
+}
+
 describe('no equality comparison against a translated string', () => {
   it('scans a non-trivial number of web sources', () => {
     // Cheap canary: a broken walker that returns [] would make the assertion
@@ -105,19 +125,41 @@ describe('no equality comparison against a translated string', () => {
     }
   });
 
+  it('does not fire on prose that quotes the bug shape in a comment', () => {
+    // A guard that reds main when someone DOCUMENTS the bug is worse than no
+    // guard — it silently constrains prose instead of code. All four shapes
+    // below matched before stripComments() replaced the line-prefix heuristic.
+    const commentary = [
+      '// modalMode === i18n.t("ns.delete") was the bug',
+      '/* mode === i18n.t("ns.audit") is wrong */',
+      '{/*\n  codemod turned this into `modalMode === i18n.t(".delete")`, which\n  only ever matched under en.\n*/}',
+      '/**\n * The gate compared activeTab === i18n.t("ns.overview2").\n */',
+    ];
+    const re = new RegExp(TRANSLATED_COMPARISON.source, 'gs');
+    for (const src of commentary) {
+      expect(re.test(src), `raw: ${src}`).toBe(true); // the shape IS present…
+      re.lastIndex = 0;
+      expect(re.test(stripComments(src)), `stripped: ${src}`).toBe(false); // …but only in a comment
+      re.lastIndex = 0;
+    }
+    // Real code on the line after a comment is still caught.
+    expect(
+      re.test(stripComments('// see below\nif (modalMode === i18n.t("ns.delete")) {}')),
+    ).toBe(true);
+  });
+
   it('finds no value compared against an i18n lookup', () => {
     const offenders: string[] = [];
 
     for (const file of sources) {
       const src = readFileSync(file, 'utf8');
+      const scannable = stripComments(src);
+      const lines = src.split('\n');
       const re = new RegExp(TRANSLATED_COMPARISON.source, 'gs');
       let match: RegExpExecArray | null;
-      while ((match = re.exec(src)) !== null) {
-        const line = lineAt(src, match.index);
-        const text = src.split('\n')[line - 1] ?? '';
-        // Prose in a comment describing the bug is not the bug.
-        if (text.trimStart().startsWith('*') || text.trimStart().startsWith('//')) continue;
-        offenders.push(`${relative(SRC_ROOT, file)}:${line}: ${text.trim()}`);
+      while ((match = re.exec(scannable)) !== null) {
+        const line = lineAt(scannable, match.index);
+        offenders.push(`${relative(SRC_ROOT, file)}:${line}: ${(lines[line - 1] ?? '').trim()}`);
       }
     }
 
