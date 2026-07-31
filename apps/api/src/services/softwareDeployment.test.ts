@@ -951,7 +951,10 @@ describe('createSoftwareDeployment', () => {
       expect(result.status).toBe('pending');
       expect(result.dispatchedDeviceIds).toEqual(['dev-1']);
       expect(sendCommandMock).toHaveBeenCalledTimes(1);
-      expect(setSpy).toHaveBeenCalledTimes(1);
+      // 2 calls: the immediate path's dispatched_at claim marker (#1.2 honest
+      // dispatch — unconditional, fires once per deployment before the
+      // per-device loop) plus the one policy-denial failure write for dev-2.
+      expect(setSpy).toHaveBeenCalledTimes(2);
       expect(setSpy).toHaveBeenCalledWith(
         expect.objectContaining({ status: 'failed', errorMessage: UPGRADE_REQUIRED }),
       );
