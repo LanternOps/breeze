@@ -1,15 +1,26 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   evaluateIpAllowlist,
   enforceIpAllowlist,
   readPartnerAllowlist,
   clearPartnerAllowlistCache,
+  ipAllowlistMode,
   isBlocked,
 } from './ipAllowlist';
 
 const serviceMocks = vi.hoisted(() => ({
   getTrustedClientIpOrUndefined: vi.fn(),
   writeAuditEvent: vi.fn(),
+}));
+
+const configMocks = vi.hoisted(() => ({
+  getConfig: vi.fn(),
+  isConfigInitialized: vi.fn(() => false),
+}));
+
+vi.mock('../config/validate', () => ({
+  getConfig: configMocks.getConfig,
+  isConfigInitialized: configMocks.isConfigInitialized,
 }));
 
 vi.mock('../db', () => {
@@ -265,5 +276,70 @@ describe('enforceIpAllowlist', () => {
 
     expect(decision).toEqual({ decision: 'skip', reason: 'mode_off' });
     expect(limit).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #2896 — the enforcement mode is read from the VALIDATED config, so the
+// value the boot enum accepted is the value the request path acts on. The raw
+// process.env read this replaced let getConfig() and the runtime disagree.
+// ---------------------------------------------------------------------------
+describe('ipAllowlistMode', () => {
+  const originalEnv = process.env.IP_ALLOWLIST_ENFORCEMENT_MODE;
+
+  beforeEach(() => {
+    configMocks.getConfig.mockReset();
+    configMocks.isConfigInitialized.mockReset();
+    configMocks.isConfigInitialized.mockReturnValue(false);
+    delete process.env.IP_ALLOWLIST_ENFORCEMENT_MODE;
+  });
+
+  afterEach(() => {
+    if (originalEnv === undefined) delete process.env.IP_ALLOWLIST_ENFORCEMENT_MODE;
+    else process.env.IP_ALLOWLIST_ENFORCEMENT_MODE = originalEnv;
+  });
+
+  describe('once validateConfig() has run', () => {
+    beforeEach(() => {
+      configMocks.isConfigInitialized.mockReturnValue(true);
+    });
+
+    it('returns the validated off', () => {
+      configMocks.getConfig.mockReturnValue({ IP_ALLOWLIST_ENFORCEMENT_MODE: 'off' });
+      expect(ipAllowlistMode()).toBe('off');
+    });
+
+    it('returns the validated enforce', () => {
+      configMocks.getConfig.mockReturnValue({ IP_ALLOWLIST_ENFORCEMENT_MODE: 'enforce' });
+      expect(ipAllowlistMode()).toBe('enforce');
+    });
+
+    // The divergence #2896 describes: config says one thing, raw env another.
+    // The validated value must win, so getConfig() and the guard never disagree.
+    it('ignores a process.env value that contradicts the validated config', () => {
+      process.env.IP_ALLOWLIST_ENFORCEMENT_MODE = 'enforce';
+      configMocks.getConfig.mockReturnValue({ IP_ALLOWLIST_ENFORCEMENT_MODE: 'off' });
+      expect(ipAllowlistMode()).toBe('off');
+    });
+  });
+
+  describe('before validateConfig() has run', () => {
+    it('falls back to the raw env read for an exact off', () => {
+      process.env.IP_ALLOWLIST_ENFORCEMENT_MODE = 'off';
+      expect(ipAllowlistMode()).toBe('off');
+      expect(configMocks.getConfig).not.toHaveBeenCalled();
+    });
+
+    it('enforces when unset', () => {
+      expect(ipAllowlistMode()).toBe('enforce');
+      expect(configMocks.getConfig).not.toHaveBeenCalled();
+    });
+
+    // Fail closed: the pre-boot window keeps the original strict-equality
+    // semantics rather than guessing at near-misses.
+    it.each(['Off', 'OFF', 'disabled', 'false'])('enforces on the near-miss %s', (value) => {
+      process.env.IP_ALLOWLIST_ENFORCEMENT_MODE = value;
+      expect(ipAllowlistMode()).toBe('enforce');
+    });
   });
 });

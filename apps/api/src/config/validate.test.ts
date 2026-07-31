@@ -2,7 +2,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { validateConfig } from './validate';
+import { ENV_SCHEMA_KEYS, buildEnvParseInput, validateConfig } from './validate';
 
 function withEnv(overrides: Record<string, string>, fn: () => void) {
   const original: Record<string, string | undefined> = {};
@@ -1104,10 +1104,11 @@ describe('validateConfig', () => {
 
   // ---- Security remediation Wave 6, Task 9 — agent manifest-signing-key-ID
   // compatibility control. Explicit boolean: only 'true'/'false' are valid,
-  // default 'false'. This is one of the two variables Task 9 owns; both
-  // MUST be validated (declared in envSchema AND read in the safeParse pick
-  // list in validateConfig()) or the value silently never reaches the parser
-  // (issue #2896's exact shape).
+  // default 'false'. This is one of the two variables Task 9 owns. Declaring it
+  // in envSchema is now sufficient to validate it — validateConfig() derives its
+  // parse input from the schema (#2896). It used to also require a matching
+  // entry in a hand-maintained pick list, and a missing entry meant the value
+  // silently never reached the parser.
   describe('AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID', () => {
     it('defaults to false when unset', () => {
       withEnv(validEnv, () => {
@@ -1130,13 +1131,12 @@ describe('validateConfig', () => {
       });
     });
 
-    // Also guards the exact bug class named in the task: a variable declared
-    // in envSchema but missing from the safeParse pick list is always
-    // undefined at parse time, so the schema default silently wins and an
-    // invalid value is accepted at boot instead of refusing to start. A bare
-    // `.toThrow()` regression-guard variant of this test would add nothing
-    // beyond the message assertion below, since a thrown error already
-    // proves the pick-list omission didn't regress — so only one test.
+    // Also guards the exact bug class named in the task: a value that never
+    // reaches the parser is undefined at parse time, so the schema default
+    // silently wins and an invalid value is accepted at boot instead of
+    // refusing to start. A bare `.toThrow()` regression-guard variant of this
+    // test would add nothing beyond the message assertion below, since a thrown
+    // error already proves the value reached the parser — so only one test.
     it('boot-refuses an invalid value instead of silently falling back to false', () => {
       withEnv({ ...validEnv, AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: 'yes' }, () => {
         expect(() => validateConfig()).toThrow('AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID');
@@ -2146,6 +2146,124 @@ describe('validateConfig', () => {
       withEnv({ ...validEnv, ...apnsFull, APNS_ENVIRONMENT: 'staging' }, () => {
         expect(() => validateConfig()).toThrow('APNS_ENVIRONMENT');
       });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #2896 — every key declared in envSchema must actually reach safeParse.
+//
+// `validateConfig()` used to build its parse input from a second,
+// hand-maintained list of `KEY: env.KEY` lines. Seven keys had drifted out of
+// it. A key missing from that list is `undefined` at parse time, so its rules
+// never run: the schema default silently wins, an operator typo boots instead
+// of failing, and `getConfig()` reports a value the runtime disagrees with.
+// The input is now derived from the schema; these tests hold that line.
+// ---------------------------------------------------------------------------
+
+function withoutEnv(keys: string[], fn: () => void) {
+  const original: Record<string, string | undefined> = {};
+  for (const key of keys) {
+    original[key] = process.env[key];
+    delete process.env[key];
+  }
+  try {
+    fn();
+  } finally {
+    for (const [key, val] of Object.entries(original)) {
+      if (val !== undefined) process.env[key] = val;
+    }
+  }
+}
+
+describe('envSchema ↔ validateConfig parse-input contract (#2896)', () => {
+  it('hands safeParse exactly the key set declared in the schema', () => {
+    expect(Object.keys(buildEnvParseInput(process.env)).sort()).toEqual(
+      [...ENV_SCHEMA_KEYS].sort(),
+    );
+  });
+
+  it('reads every declared key from the environment', () => {
+    const sentinelEnv = Object.fromEntries(
+      ENV_SCHEMA_KEYS.map((key) => [key, `sentinel-${key}`]),
+    );
+    const input = buildEnvParseInput(sentinelEnv);
+    for (const key of ENV_SCHEMA_KEYS) {
+      expect(input[key]).toBe(`sentinel-${key}`);
+    }
+  });
+
+  // The exact seven that had drifted out of the old hand-maintained list.
+  it.each([
+    'IP_ALLOWLIST_ENFORCEMENT_MODE',
+    'AGENT_AUTO_PROMOTE',
+    'SSO_DOMAIN_VERIFICATION_STRICT',
+    'QBO_CLIENT_ID',
+    'QBO_CLIENT_SECRET',
+    'QBO_REDIRECT_URI',
+    'QBO_ENVIRONMENT',
+  ])('validates %s (regression: silently dropped before #2896)', (key) => {
+    expect(ENV_SCHEMA_KEYS).toContain(key);
+    expect(buildEnvParseInput({ [key]: 'sentinel' })[key]).toBe('sentinel');
+  });
+});
+
+describe('IP_ALLOWLIST_ENFORCEMENT_MODE (#2896)', () => {
+  it('defaults to enforce when unset', () => {
+    withEnv(validEnv, () => {
+      withoutEnv(['IP_ALLOWLIST_ENFORCEMENT_MODE'], () => {
+        expect(validateConfig().IP_ALLOWLIST_ENFORCEMENT_MODE).toBe('enforce');
+      });
+    });
+  });
+
+  it('carries an explicit off through to the config object', () => {
+    withEnv({ ...validEnv, IP_ALLOWLIST_ENFORCEMENT_MODE: 'off' }, () => {
+      expect(validateConfig().IP_ALLOWLIST_ENFORCEMENT_MODE).toBe('off');
+    });
+  });
+
+  // Both compose files map this as `${IP_ALLOWLIST_ENFORCEMENT_MODE:-}`, so the
+  // key is ALWAYS injected — as "" for the many operators who never set it.
+  // Enforcing the enum without treating "" as unset would refuse boot on every
+  // one of those stacks the moment this fix shipped.
+  it.each(['', '   '])('treats a compose-injected empty value (%j) as unset', (value) => {
+    withEnv({ ...validEnv, IP_ALLOWLIST_ENFORCEMENT_MODE: value }, () => {
+      expect(validateConfig().IP_ALLOWLIST_ENFORCEMENT_MODE).toBe('enforce');
+    });
+  });
+
+  // Before the fix every one of these booted and silently enforced.
+  it.each(['Off', 'OFF', 'disabled', 'false', 'no'])(
+    'refuses boot on the near-miss value %s',
+    (value) => {
+      withEnv({ ...validEnv, IP_ALLOWLIST_ENFORCEMENT_MODE: value }, () => {
+        expect(() => validateConfig()).toThrow(/IP_ALLOWLIST_ENFORCEMENT_MODE/);
+      });
+    },
+  );
+});
+
+describe('AGENT_AUTO_PROMOTE boolean guard (dead code until #2896)', () => {
+  it('accepts an explicit false', () => {
+    withEnv({ ...validEnv, AGENT_AUTO_PROMOTE: 'false' }, () => {
+      expect(validateConfig().AGENT_AUTO_PROMOTE).toBe('false');
+    });
+  });
+
+  it('leaves the value unset when unset', () => {
+    withEnv(validEnv, () => {
+      withoutEnv(['AGENT_AUTO_PROMOTE'], () => {
+        expect(validateConfig().AGENT_AUTO_PROMOTE).toBeUndefined();
+      });
+    });
+  });
+
+  // The superRefine rule for this existed all along but never ran, because the
+  // key never reached the parser.
+  it('refuses boot on a typo that would otherwise parse as truthy', () => {
+    withEnv({ ...validEnv, AGENT_AUTO_PROMOTE: 'falze' }, () => {
+      expect(() => validateConfig()).toThrow(/AGENT_AUTO_PROMOTE/);
     });
   });
 });

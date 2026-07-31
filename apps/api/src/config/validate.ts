@@ -404,7 +404,10 @@ const portSchema = z
   .transform((val) => parseInt(val, 10))
   .pipe(z.number().int().min(1).max(65535));
 
-const envSchema = z
+// The plain-object half of the schema. Kept as its own binding purely so its
+// key set can be enumerated — `validateConfig()` derives the object it validates
+// from `ENV_SCHEMA_KEYS` below rather than from a hand-maintained pick list.
+const envObjectSchema = z
   .object({
     // -- Required (always) ---------------------------------------------------
     DATABASE_URL: z
@@ -643,7 +646,16 @@ const envSchema = z
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     PARTNER_HOOKS_URL: z.string().url().optional(),
     PARTNER_HOOKS_SECRET: z.string().min(16).optional(),
-    IP_ALLOWLIST_ENFORCEMENT_MODE: z.enum(['enforce', 'off']).default('enforce'),
+    // Empty string means "unset" — same reason as APNS_ENVIRONMENT above: both
+    // compose files map this as `${IP_ALLOWLIST_ENFORCEMENT_MODE:-}`, so the key
+    // is ALWAYS injected, as "" when the operator hasn't set it. This enum only
+    // started being enforced in #2896 (before that the value never reached the
+    // parser at all), so without the preprocess every stack that leaves the
+    // variable unset would refuse to boot on upgrade.
+    IP_ALLOWLIST_ENFORCEMENT_MODE: z.preprocess(
+      (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+      z.enum(['enforce', 'off']).default('enforce'),
+    ),
 
     // Security remediation Wave 5, Task 6 — the agent certificate/device
     // binding compatibility mode (services/agentCertificateBinding.ts),
@@ -710,7 +722,9 @@ const envSchema = z
     MCP_LLM_MODEL: z.string().optional(),
     MCP_LLM_PRICE_INPUT_PER_M_USD: z.string().optional().transform((v) => (v ? parseFloat(v) : 0)).pipe(z.number().min(0)),
     MCP_LLM_PRICE_OUTPUT_PER_M_USD: z.string().optional().transform((v) => (v ? parseFloat(v) : 0)).pipe(z.number().min(0)),
-  })
+  });
+
+const envSchema = envObjectSchema
   // --- Cross-field refinements (insecure defaults for required secrets) -------
   .superRefine((data, ctx) => {
     const isProduction = data.NODE_ENV === 'production';
@@ -1491,6 +1505,42 @@ const envSchema = z
 export type AppConfig = z.infer<typeof envSchema>;
 
 // ---------------------------------------------------------------------------
+// Parse input
+// ---------------------------------------------------------------------------
+
+/**
+ * Every key declared in `envSchema`, in declaration order.
+ *
+ * This used to be a second, hand-maintained list of `KEY: env.KEY` lines inside
+ * `validateConfig()`. A key declared in the schema but missing from that list
+ * was silently never validated: it was `undefined` at parse time, so the schema
+ * default always won, an operator typo booted instead of failing, and
+ * `getConfig()` reported a value the runtime disagreed with. Seven keys had
+ * drifted out of the list, two of them carrying rules that were therefore dead
+ * code — `IP_ALLOWLIST_ENFORCEMENT_MODE`'s `z.enum` (issue #2896) and
+ * `AGENT_AUTO_PROMOTE`'s boolean typo-guard in the `superRefine` above.
+ *
+ * Deriving the input from the schema makes that drift structurally impossible:
+ * declaring a key is now the only step required to validate it.
+ */
+export const ENV_SCHEMA_KEYS: readonly string[] = Object.freeze(
+  Object.keys(envObjectSchema.shape),
+);
+
+/**
+ * Builds the exact object `validateConfig()` hands to `safeParse` — one entry
+ * per declared schema key, read from `env`. Exported so the drift contract test
+ * can assert the parser sees every declared key.
+ */
+export function buildEnvParseInput(env: NodeJS.ProcessEnv): Record<string, string | undefined> {
+  const input: Record<string, string | undefined> = {};
+  for (const key of ENV_SCHEMA_KEYS) {
+    input[key] = env[key];
+  }
+  return input;
+}
+
+// ---------------------------------------------------------------------------
 // Singleton
 // ---------------------------------------------------------------------------
 
@@ -1505,6 +1555,17 @@ export function getConfig(): AppConfig {
     throw new Error('getConfig() called before validateConfig(). Call validateConfig() at startup.');
   }
   return _config;
+}
+
+/**
+ * True once `validateConfig()` has run.
+ *
+ * Lets a caller that legitimately runs both before and after boot (unit tests,
+ * scripts, the integration harness) branch on config availability instead of
+ * wrapping `getConfig()` in a `try`/`catch` that would also swallow real errors.
+ */
+export function isConfigInitialized(): boolean {
+  return _config !== null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1626,105 +1687,11 @@ export function validateConfig(): AppConfig {
   }
 
   // Validate required config
-  const result = envSchema.safeParse({
-    DATABASE_URL: env.DATABASE_URL,
-    DATABASE_URL_APP: env.DATABASE_URL_APP,
-    BREEZE_APP_DB_PASSWORD: env.BREEZE_APP_DB_PASSWORD,
-    POSTGRES_PASSWORD: env.POSTGRES_PASSWORD,
-    AUDIT_ADMIN_DATABASE_URL: env.AUDIT_ADMIN_DATABASE_URL,
-    JWT_SECRET: env.JWT_SECRET,
-    JWT_SIGNING_KEYRING: env.JWT_SIGNING_KEYRING,
-    JWT_ACTIVE_KID: env.JWT_ACTIVE_KID,
-    APP_ENCRYPTION_KEY: env.APP_ENCRYPTION_KEY,
-    MFA_ENCRYPTION_KEY: env.MFA_ENCRYPTION_KEY,
-    PARTNER_API_CURSOR_SIGNING_KEY: env.PARTNER_API_CURSOR_SIGNING_KEY,
-    CORS_ALLOWED_ORIGINS: env.CORS_ALLOWED_ORIGINS,
-    FORCE_HTTPS: env.FORCE_HTTPS,
-    PUBLIC_API_URL: env.PUBLIC_API_URL,
-    TRUST_PROXY_HEADERS: env.TRUST_PROXY_HEADERS,
-    TRUSTED_PROXY_CIDRS: env.TRUSTED_PROXY_CIDRS,
-    AGENT_ENROLLMENT_SECRET: env.AGENT_ENROLLMENT_SECRET,
-    ENROLLMENT_KEY_PEPPER: env.ENROLLMENT_KEY_PEPPER,
-    MFA_RECOVERY_CODE_PEPPER: env.MFA_RECOVERY_CODE_PEPPER,
-    BREEZE_BOOTSTRAP_ADMIN_EMAIL: env.BREEZE_BOOTSTRAP_ADMIN_EMAIL,
-    BREEZE_BOOTSTRAP_ADMIN_PASSWORD: env.BREEZE_BOOTSTRAP_ADMIN_PASSWORD,
-    BREEZE_BOOTSTRAP_ADMIN_NAME: env.BREEZE_BOOTSTRAP_ADMIN_NAME,
-    BINARY_SOURCE: env.BINARY_SOURCE,
-    RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS,
-    BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: env.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS,
-    IS_HOSTED: env.IS_HOSTED,
-    AGENT_BACKUP_SERVER_URL: env.AGENT_BACKUP_SERVER_URL,
-    ENABLE_2FA: env.ENABLE_2FA,
-    OAUTH_DCR_ENABLED: env.OAUTH_DCR_ENABLED,
-    OAUTH_DCR_REQUIRE_IAT: env.OAUTH_DCR_REQUIRE_IAT,
-    OAUTH_DCR_ALLOW_ANONYMOUS: env.OAUTH_DCR_ALLOW_ANONYMOUS,
-    // Wave 3 live-authorization rollout controls.
-    OAUTH_AUTH_EPOCH_ENFORCE_AFTER: env.OAUTH_AUTH_EPOCH_ENFORCE_AFTER,
-    EVENT_PERMISSION_EPOCH_MODE: env.EVENT_PERMISSION_EPOCH_MODE,
-    // Task 26 (H-3): feature-flagged production secrets.
-    MCP_OAUTH_ENABLED: env.MCP_OAUTH_ENABLED,
-    OAUTH_JWKS_PRIVATE_JWK: env.OAUTH_JWKS_PRIVATE_JWK,
-    OAUTH_COOKIE_SECRET: env.OAUTH_COOKIE_SECRET,
-    BREEZE_BILLING_URL: env.BREEZE_BILLING_URL,
-    BREEZE_BILLING_API_KEY: env.BREEZE_BILLING_API_KEY,
-    BILLING_SERVICE_URL: env.BILLING_SERVICE_URL,
-    BILLING_SERVICE_API_KEY: env.BILLING_SERVICE_API_KEY,
-    STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
-    STRIPE_WEBHOOK_SECRET: env.STRIPE_WEBHOOK_SECRET,
-    S3_BUCKET: env.S3_BUCKET,
-    S3_ACCESS_KEY: env.S3_ACCESS_KEY,
-    S3_SECRET_KEY: env.S3_SECRET_KEY,
-    EMAIL_PROVIDER: env.EMAIL_PROVIDER,
-    RESEND_API_KEY: env.RESEND_API_KEY,
-    SMTP_HOST: env.SMTP_HOST,
-    MAILGUN_API_KEY: env.MAILGUN_API_KEY,
-    MAILGUN_DOMAIN: env.MAILGUN_DOMAIN,
-    CLOUDFLARE_API_TOKEN: env.CLOUDFLARE_API_TOKEN,
-    CLOUDFLARE_ZONE_ID: env.CLOUDFLARE_ZONE_ID,
-    MSI_SIGNING_URL: env.MSI_SIGNING_URL,
-    MSI_SIGNING_CF_ACCESS_SECRET: env.MSI_SIGNING_CF_ACCESS_SECRET,
-    DELEGANT_BASE_URL: env.DELEGANT_BASE_URL,
-    DELEGANT_SERVICE_TOKEN: env.DELEGANT_SERVICE_TOKEN,
-    DELEGANT_PRINCIPAL_SIGNING_KEY: env.DELEGANT_PRINCIPAL_SIGNING_KEY,
-    DELEGANT_PRINCIPAL_KID: env.DELEGANT_PRINCIPAL_KID,
-    CF_ACCESS_TRUST_ENABLED: env.CF_ACCESS_TRUST_ENABLED,
-    CF_ACCESS_TEAM_DOMAIN: env.CF_ACCESS_TEAM_DOMAIN,
-    CF_ACCESS_AUD: env.CF_ACCESS_AUD,
-    CF_ACCESS_TRUSTS_MFA: env.CF_ACCESS_TRUSTS_MFA,
-    APNS_AUTH_KEY: env.APNS_AUTH_KEY,
-    APNS_KEY_ID: env.APNS_KEY_ID,
-    APNS_TEAM_ID: env.APNS_TEAM_ID,
-    APNS_BUNDLE_ID: env.APNS_BUNDLE_ID,
-    APNS_ENVIRONMENT: env.APNS_ENVIRONMENT,
-    API_PORT: env.API_PORT,
-    REDIS_URL: env.REDIS_URL,
-    REDIS_HOST: env.REDIS_HOST,
-    REDIS_PORT: env.REDIS_PORT,
-    REDIS_PASSWORD_FILE: env.REDIS_PASSWORD_FILE,
-    NODE_ENV: env.NODE_ENV,
-    E2E_MODE: env.E2E_MODE,
-    PARTNER_HOOKS_URL: env.PARTNER_HOOKS_URL,
-    PARTNER_HOOKS_SECRET: env.PARTNER_HOOKS_SECRET,
-    ANTHROPIC_BASE_URL: env.ANTHROPIC_BASE_URL,
-    ANTHROPIC_MODEL: env.ANTHROPIC_MODEL,
-    MCP_LLM_PROVIDER: env.MCP_LLM_PROVIDER,
-    MCP_LLM_BASE_URL: env.MCP_LLM_BASE_URL,
-    MCP_LLM_API_KEY: env.MCP_LLM_API_KEY,
-    MCP_LLM_MODEL: env.MCP_LLM_MODEL,
-    MCP_LLM_PRICE_INPUT_PER_M_USD: env.MCP_LLM_PRICE_INPUT_PER_M_USD,
-    MCP_LLM_PRICE_OUTPUT_PER_M_USD: env.MCP_LLM_PRICE_OUTPUT_PER_M_USD,
-    MAILGUN_INBOUND_SIGNING_KEY: env.MAILGUN_INBOUND_SIGNING_KEY,
-    TICKETS_INBOUND_DOMAIN: env.TICKETS_INBOUND_DOMAIN,
-    AGENT_MTLS_BINDING_MODE: env.AGENT_MTLS_BINDING_MODE,
-    // Security remediation Wave 6, Task 9. Both MUST be listed here (not
-    // just declared in envSchema above) — a variable present in the schema
-    // but missing from this pick list is silently never validated: its value
-    // is always undefined at parse time, so the schema default always wins
-    // and a typo is accepted at boot instead of refusing to start (issue
-    // #2896, filed against IP_ALLOWLIST_ENFORCEMENT_MODE).
-    AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID,
-    MANAGED_SOFTWARE_POLICY_MODE: env.MANAGED_SOFTWARE_POLICY_MODE,
-  });
+  // Every declared schema key is validated — the input is derived from the
+  // schema itself (ENV_SCHEMA_KEYS), never from a second hand-maintained list.
+  // See the ENV_SCHEMA_KEYS docblock for why: a key that reached the parser as
+  // `undefined` had its rules silently skipped (issue #2896).
+  const result = envSchema.safeParse(buildEnvParseInput(env));
 
   if (!result.success) {
     const issues = result.error.issues;
