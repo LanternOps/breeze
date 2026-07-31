@@ -753,6 +753,44 @@ async function decomposeInlineSettings(
 }
 
 /**
+ * Run the schema parses `decomposeInlineSettings` would run, WITHOUT writing.
+ *
+ * updateFeatureLink replaces normalized rows with delete-then-decompose, and
+ * decompose is where the per-feature schema is enforced — so on an invalid
+ * payload the delete had already run by the time the parse threw. The
+ * transaction rolls that back, but only as long as every caller stays inside
+ * one; asserting up front makes "validation precedes deletion" a property of
+ * the service rather than of its callers, and turns a torn-state bug into a
+ * plain ZodError before any row is touched.
+ *
+ * Mirrors exactly the `case` arms of decomposeInlineSettings that call `.parse`
+ * — the others build their rows defensively from `unknown` and cannot throw.
+ */
+function assertDecomposableInlineSettings(featureType: ConfigFeatureType, settings: unknown): void {
+  // Same early-out as decomposeInlineSettings: nothing to decompose, nothing to check.
+  if (!settings || typeof settings !== 'object') return;
+  switch (featureType) {
+    case 'alert_rule':
+      alertRuleInlineSettingsSchema.parse(settings);
+      break;
+    case 'event_log':
+      eventLogInlineSettingsSchema.parse(settings);
+      break;
+    case 'monitoring':
+      monitoringInlineSettingsSchema.parse(settings);
+      break;
+    case 'remote_access':
+      remoteAccessConsentSettingsSchema.parse(settings);
+      break;
+    case 'onedrive_helper':
+      onedriveHelperInlineSettingsSchema.parse(settings);
+      break;
+    default:
+      break;
+  }
+}
+
+/**
  * Delete existing normalized rows for a feature link.
  * Used before re-decomposing on update.
  */
@@ -784,10 +822,18 @@ async function deleteNormalizedRows(
       await tx.delete(configPolicySensitiveDataSettings).where(eq(configPolicySensitiveDataSettings.featureLinkId, linkId));
       break;
     case 'monitoring': {
-      // Watches cascade-delete from settings, so just delete settings
+      // Watches cascade-delete from settings, so just delete settings.
+      //
+      // Deliberately does NOT touch config_policy_alert_rules. The monitoring
+      // decompose path used to write alert rules keyed by the MONITORING link
+      // and this delete was its replace-half; as of the 2026-07-30 consolidation
+      // the insert half is gone and the alert_rule link is the sole owner. If
+      // 2026-07-30-alert-rule-ownership-consolidation.sql has not run (or a row
+      // slipped past it), a delete here would silently destroy legacy rules on
+      // the next save of an unrelated Monitoring setting, with nothing to
+      // re-create them. Leaving the rows in place keeps them recoverable by a
+      // replay of the migration.
       await tx.delete(configPolicyMonitoringSettings).where(eq(configPolicyMonitoringSettings.featureLinkId, linkId));
-      // Also delete event log alert rules stored under this monitoring feature link
-      await tx.delete(configPolicyAlertRules).where(eq(configPolicyAlertRules.featureLinkId, linkId));
       break;
     }
     case 'backup':
@@ -1191,6 +1237,14 @@ export async function updateFeatureLink(
     if (updates.inlineSettings !== undefined) {
       // Keep JSONB as a compatibility/UI mirror; runtime must read normalized settings.
       setValues.inlineSettings = normalizedInlineSettings;
+    }
+
+    // Validate BEFORE any write. The normalized rows are replaced further down
+    // with delete-then-decompose, and decompose is where the per-feature schema
+    // throws — so without this the delete would already have run against an
+    // invalid payload.
+    if (updates.inlineSettings !== undefined) {
+      assertDecomposableInlineSettings(existing.featureType as ConfigFeatureType, normalizedInlineSettings);
     }
 
     const [updated] = await tx

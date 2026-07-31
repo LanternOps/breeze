@@ -10,6 +10,7 @@ import {
   onedriveHelperInlineSettingsSchema,
 } from '@breeze/shared/validators';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { describeFirstZodIssue } from '../lib/zodIssues';
 import {
   resolveEffectiveConfig,
   previewEffectiveConfig,
@@ -80,12 +81,13 @@ function validateInlineSettingsForFeature(
 
   const parsed = entry.schema.safeParse(raw);
   if (!parsed.success) {
-    const first = parsed.error.issues[0];
-    if (!first) return { error: `Invalid ${featureType} inline settings.` };
-    // Prefix the field path: alert-rule conditions nest several levels deep, and
-    // a bare "Invalid input" tells the model nothing about which one to fix.
-    const path = Array.isArray(first.path) && first.path.length > 0 ? `${first.path.join('.')}: ` : '';
-    return { error: `Invalid ${featureType} inline settings — ${path}${first.message}` };
+    // describeFirstZodIssue prefixes the field path AND unwraps `invalid_union`
+    // into the offending sub-issue: alert-rule conditions are a union several
+    // levels deep inside items[], and the raw union issue is a bare
+    // "Invalid input" that tells the model nothing about what to fix.
+    const described = describeFirstZodIssue(parsed.error);
+    if (!described) return { error: `Invalid ${featureType} inline settings.` };
+    return { error: `Invalid ${featureType} inline settings — ${described}` };
   }
   return { value: entry.normalize ? parsed.data : raw };
 }
@@ -703,8 +705,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
 
 Inline settings shapes by feature type:
 - patch: { sources: ["os","third_party"], autoApprove: true, autoApproveSeverities: ["critical","important"], scheduleFrequency: "daily"|"weekly"|"monthly", scheduleTime: "02:00", scheduleDayOfWeek?: "tue", scheduleDayOfMonth?: 1, rebootPolicy: "never"|"if_required"|"always"|"maintenance_window" }
-- alert_rule: server-evaluated rules — CPU/RAM/disk thresholds, offline detection, and event log alerts. { items: [{ name, severity: "critical"|"high"|"medium"|"low"|"info" (default "medium"), conditions: 1-10 of [ { type: "metric", metric: "cpu"|"ram"|"memory"|"disk" (aliases "cpuPercent"/"ramPercent"/"diskPercent" and "processCount"/"processes" are also accepted; prefer the short names), operator: "gt"|"gte"|"lt"|"lte"|"eq"|"neq", value: number, durationMinutes?: number (1-10080; sustained window the samples are averaged over, default 1 minute) } | { type: "offline", durationMinutes?: number } | { type: "event_log", category: "security"|"hardware"|"application"|"system", level: "warning"|"error"|"critical", sourcePattern?: string (case-insensitive substring match, NOT a regex), messagePattern?: string, countThreshold?: number (1-10000, default 1), windowMinutes?: number (1-1440, default 15) } ], cooldownMinutes?: number (default 5), autoResolve?: boolean (default false), autoResolveConditions?: same condition shapes or null, titleTemplate?: string, messageTemplate?: string, sortOrder?: number }] } — 'custom' conditions and the extended types (bandwidth_high, disk_io_high, network_errors, patch_compliance, cert_expiry) are rejected on write. When the same threshold is configured in policies at different levels (e.g. org and site), the CLOSEST level to the device wins.
-- monitoring: agent-side service/process watches with auto-restart, delivered via heartbeat — NOT alerting. { checkIntervalSeconds: 60, watches: [{ watchType: "service"|"process", name: "wuauserv", displayName?: "Windows Update", enabled: true, alertOnStop: true, alertAfterConsecutiveFailures: 2, alertSeverity: "critical"|"high"|"medium"|"low"|"info", cpuThresholdPercent?: 90, memoryThresholdMb?: 500, thresholdDurationSeconds: 300, autoRestart: false, maxRestartAttempts: 3, restartCooldownSeconds: 300 }] } — inline settings carry ONLY checkIntervalSeconds/watches now; metric alert rules and event log alerts moved to the alert_rule feature. Sending a non-empty 'alertRules' or 'eventLogAlerts' array is rejected with an error directing you to the alert_rule feature type instead.
+- alert_rule: server-evaluated rules — CPU/RAM/disk thresholds, offline detection, and event log alerts. { items: [{ name, severity: "critical"|"high"|"medium"|"low"|"info" (default "medium"), conditions: 1-10 of [ { type: "metric" ("threshold" is accepted as an alias and canonicalized to "metric"), metric: "cpu"|"ram"|"disk"|"processCount" (these four are canonical; the aliases "cpuPercent"->cpu, "ramPercent"/"memory"->ram, "diskPercent"->disk, "processes"->processCount are accepted but map onto them — prefer the canonical names), operator: "gt"|"gte"|"lt"|"lte"|"eq"|"neq", value: number (a PERCENTAGE 0-100 for cpu/ram/disk; a plain count for processCount), durationMinutes?: number (1-10080; sustained window the samples are averaged over, default 1 minute) } | { type: "offline", durationMinutes?: number } | { type: "event_log", category: "security"|"hardware"|"application"|"system", level: "warning"|"error"|"critical" (matches this level and above), sourcePattern?: string (case-insensitive substring match, NOT a regex), messagePattern?: string, countThreshold?: number (1-10000, default 1), windowMinutes?: number (1-1440, default 15) } ], cooldownMinutes?: number (default 5), autoResolve?: boolean (default false), autoResolveConditions?: same condition shapes or null, titleTemplate?: string, messageTemplate?: string, sortOrder?: number }] } — 'custom' conditions and the extended types (bandwidth_high, disk_io_high, network_errors, patch_compliance, cert_expiry) are rejected on write. When the same threshold is configured in policies at different levels (e.g. org and site), the CLOSEST level to the device wins.
+- monitoring: agent-side service/process watches with auto-restart, delivered via heartbeat — not evaluated by the alert engine; watch failures are recorded and shown in the UI but do not currently raise alerts (alertOnStop/alertSeverity are stored but unused at runtime). { checkIntervalSeconds: 60, watches: [{ watchType: "service"|"process", name: "wuauserv", displayName?: "Windows Update", enabled: true, alertOnStop: true, alertAfterConsecutiveFailures: 2, alertSeverity: "critical"|"high"|"medium"|"low"|"info", cpuThresholdPercent?: 90, memoryThresholdMb?: 500, thresholdDurationSeconds: 300, autoRestart: false, maxRestartAttempts: 3, restartCooldownSeconds: 300 }] } — inline settings carry ONLY checkIntervalSeconds/watches now; metric alert rules and event log alerts moved to the alert_rule feature. Sending a non-empty 'alertRules' or 'eventLogAlerts' array is rejected with an error directing you to the alert_rule feature type instead.
 - maintenance: { recurrence: "once"|"daily"|"weekly"|"monthly", windowStart?: "ISO-8601 (for once)", durationHours: 1-72, timezone: "America/New_York", suppressAlerts: true, suppressPatching: true, suppressAutomations: false, suppressScripts: false, notifyBeforeMinutes?: 15, notifyOnStart: true, notifyOnEnd: true }
 - automation: { items: [{ name, enabled: true, triggerType: "schedule"|"event"|"manual", cronExpression?: "0 2 * * *", timezone?: "America/New_York", eventType?: "device.offline"|"alert.triggered"|"compliance.failed"|"patch.available", actions: [{ type: "run_script"|"send_notification"|"create_alert"|"execute_command", scriptId?|channelId?|severity?|message?|command? }], onFailure: "stop"|"continue"|"notify" }] }
 - event_log: { retentionDays: 30, maxEventsPerCycle: 100, collectCategories: ["security","hardware","application","system"], minimumLevel: "info"|"warning"|"error"|"critical", collectionIntervalMinutes: 15, rateLimitPerHour: 12000 }

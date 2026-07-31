@@ -824,6 +824,69 @@ describe('featureLinks routes', () => {
       expect(updateFeatureLinkMock).not.toHaveBeenCalled();
     });
 
+    // Union flattening (lib/zodIssues.ts). Conditions are a union nested inside
+    // items[], so Zod's own report is a single `invalid_union` whose message is
+    // the useless string "Invalid input" — the tech saw that in a toast with no
+    // hint which field was wrong.
+    it('POST alert_rule with an unknown metric → 400 naming the field and the accepted metrics', async () => {
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'alert_rule',
+          inlineSettings: { items: [{ name: 'Bogus', conditions: [{ type: 'metric', metric: 'bogus', operator: 'gt', value: 80 }] }] },
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as Record<string, unknown>;
+      const issuesText = JSON.stringify(body.issues);
+      expect(issuesText).toContain('cpu');
+      expect(JSON.parse(issuesText).some((i: any) => i.path.join('.') === 'items.0.conditions.0.metric')).toBe(true);
+      // `details` is derived from the same flattened set, so whichever the web
+      // client renders first it never gets the bare placeholder.
+      expect(JSON.stringify(body.details)).toContain('items.0.conditions.0.metric');
+      expect(JSON.stringify(body.details)).not.toMatch(/"Invalid input"/);
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('PATCH alert_rule with an unknown metric → 400 naming the field', async () => {
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY,
+        featureLinks: [{ id: LINK_ID, featureType: 'alert_rule' }],
+      });
+      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          inlineSettings: { items: [{ name: 'Bogus', conditions: [{ type: 'metric', metric: 'bogus', operator: 'gt', value: 80 }] }] },
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect((body.issues as any[]).some((i) => i.path.join('.') === 'items.0.conditions.0.metric')).toBe(true);
+      expect(JSON.stringify(body.details)).toContain('items.0.conditions.0.metric');
+      expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('POST alert_rule accepts `threshold` as a type alias and canonicalizes it to metric', async () => {
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'alert_rule',
+          inlineSettings: { items: [{ name: 'Legacy threshold', conditions: [{ type: 'threshold', metric: 'cpu', operator: 'gt', value: 90 }] }] },
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const [, , , inlineSettings] = addFeatureLinkMock.mock.calls[0] as any[];
+      expect(inlineSettings.items[0].conditions[0].type).toBe('metric');
+    });
+
     it('PATCH monitoring with non-empty alertRules → 400 naming the Alerts feature', async () => {
       getConfigPolicyMock.mockResolvedValue({
         ...STUB_POLICY,

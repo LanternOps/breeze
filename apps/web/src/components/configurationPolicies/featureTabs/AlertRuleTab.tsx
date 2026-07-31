@@ -14,6 +14,13 @@ import { handleToggleKeyDown } from "./disclosureKeyboard";
 import FeatureTabShell from "./FeatureTabShell";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+// The exact metric-name domain the API threshold evaluator resolves
+// (METRIC_NAME_MAP in apps/api/src/services/alertConditions/utils.ts). Imported
+// rather than re-listed so this editor's idea of "evaluable" cannot drift from
+// the schema that accepts the save.
+// (root entry, not the /validators subpath — only the bare specifier is mapped
+// in apps/web/tsconfig.json and vitest.config.ts).
+import { ALERT_METRIC_NAMES } from "@breeze/shared";
 // `offline` is the type understood by the API condition evaluator. The legacy
 // editor emitted `status` with a `duration` field; we normalize those on load
 // (see normalizeConditions) and always emit the `offline`/`durationMinutes`
@@ -40,7 +47,10 @@ type AlertSeverity = "critical" | "high" | "medium" | "low" | "info";
 // `type` is deliberately a plain string: rows saved before this editor existed
 // can carry condition types it no longer offers (`custom`, `bandwidth_high`,
 // `disk_io_high`, `network_errors`, `patch_compliance`, `cert_expiry`). Those
-// are rendered read-only and round-tripped untouched rather than dropped.
+// are rendered read-only and preserved verbatim in tab state — but the server
+// REJECTS them on save, so the rule carrying one cannot be saved at all until
+// the offending condition is removed. That is why they get an amber banner
+// rather than being quietly round-tripped.
 type Condition = {
   type: string;
   metric?: string;
@@ -54,12 +64,21 @@ type Condition = {
   countThreshold?: number;
   windowMinutes?: number;
 };
+// The fields below `autoResolve` have no control in this editor but ARE part of
+// the stored rule (alertRuleItemSchema in @breeze/shared, and columns on
+// config_policy_alert_rules). They are declared so `{...item, ...patch}` in
+// updateItem keeps them in the save payload — an unrelated severity tweak must
+// not silently reset a rule's custom title/message templates or its sort order.
 type AlertItem = {
   name: string;
   severity: AlertSeverity;
   conditions: Condition[];
   cooldownMinutes: number;
   autoResolve: boolean;
+  autoResolveConditions?: Condition[] | null;
+  titleTemplate?: string;
+  messageTemplate?: string;
+  sortOrder?: number;
 };
 const defaultItem: AlertItem = {
   name: "",
@@ -285,6 +304,29 @@ const METRIC_ALIAS_TO_OPTION: Record<string, string> = {
   memory: "ram",
   diskPercent: "disk",
 };
+// A metric name the evaluator cannot resolve (the retired "network" option is
+// the known producer — normalizeMetricName returns null for it, so the rule has
+// never fired) and that the write schema now rejects. Such a condition is
+// rendered read-only and banner-flagged: silently editable would let one
+// unrelated tweak trigger a save the server rejects with no explanation.
+function isSupportedMetric(metric: string | undefined): boolean {
+  return (
+    typeof metric === "string"
+    && (ALERT_METRIC_NAMES as readonly string[]).includes(metric)
+  );
+}
+// Value bounds are metric-dependent: cpu/ram/disk are percentages, but
+// processCount is a raw count and capping it at 100 silently rewrote any
+// "more than 250 processes" rule the AI tool had written. undefined = no cap.
+const METRIC_VALUE_MAX: Record<string, number | undefined> = {
+  cpu: 100, cpuPercent: 100,
+  ram: 100, ramPercent: 100, memory: 100,
+  disk: 100, diskPercent: 100,
+  processCount: undefined, processes: undefined,
+};
+function metricValueMax(metric: string | undefined): number | undefined {
+  return metric ? METRIC_VALUE_MAX[metric] : 100;
+}
 // Migrate a single condition from the legacy `{type:'status', duration}` shape
 // to the canonical `{type:'offline', durationMinutes}` shape the evaluator reads.
 // Legacy persisted shape, before the `status`→`offline` / `duration`→`durationMinutes` rename.
@@ -299,14 +341,29 @@ function normalizeCondition(condition: Condition): Condition {
       durationMinutes: durationMinutes ?? duration ?? 5,
     };
   }
-  if (raw.type === "metric") {
+  // `threshold` is the evaluator's own name for the metric handler
+  // (handlers/threshold.ts, aliases ['metric']) and the pre-consolidation AI
+  // tool docs advertised it, so stored rows carry it. Fold it into `metric`
+  // exactly as `status` folds into `offline` — otherwise the editor would show
+  // it as a retired, un-editable type when the server happily accepts it.
+  if (raw.type === "metric" || raw.type === "threshold") {
     const canonical = raw.metric ? METRIC_ALIAS_TO_OPTION[raw.metric] : undefined;
     // `duration` (seconds) was never read by the metric evaluator; drop it so it
     // can't be mistaken for a sustained window. `durationMinutes` IS honoured
     // and is round-tripped untouched.
     const { duration, ...rest } = raw;
-    if (duration === undefined && !canonical) return condition;
-    return canonical ? { ...rest, metric: canonical } : rest;
+    // Deliberately NO fallback for a missing metric name. A metric condition
+    // with no metric is exactly as dead as one naming "network"
+    // (normalizeMetricName(undefined) → null), and
+    // 2026-07-30-b-drop-never-firing-metric-alert-rules.sql deletes both as
+    // never-firing — defaulting it to "cpu" here would resurrect
+    // it as a live CPU rule on the next save. isEditableCondition() already
+    // returns false for it, so it gets the honest read-only + banner treatment.
+    const metric = canonical ?? rest.metric;
+    // Don't materialize a `metric: undefined` key that wasn't there.
+    return metric === undefined
+      ? { ...rest, type: "metric" }
+      : { ...rest, type: "metric", metric };
   }
   // Every other type — including types this editor no longer offers — is
   // returned untouched so an unrelated edit elsewhere in the rule can't strip
@@ -335,6 +392,15 @@ function loadItems(existingLink: FeatureTabProps["existingLink"]): AlertItem[] {
   }
   return [];
 }
+// A condition this editor can render a form for. Two ways to fail: a condition
+// TYPE it no longer offers, or a metric NAME the evaluator cannot resolve. Both
+// are rejected by the write schema, so both must be surfaced rather than left
+// looking editable.
+function isEditableCondition(condition: Condition): boolean {
+  if (!isEditableConditionType(condition.type)) return false;
+  if (condition.type === "metric") return isSupportedMetric(condition.metric);
+  return true;
+}
 // Condition types the editor can no longer render a form for. Listed on the rule
 // so the tech knows why a save is being rejected and what to remove.
 function unsupportedConditionTypes(item: AlertItem): string[] {
@@ -343,6 +409,26 @@ function unsupportedConditionTypes(item: AlertItem): string[] {
       item.conditions
         .map((c) => c.type)
         .filter((type) => !isEditableConditionType(type)),
+    ),
+  ];
+}
+// A metric condition can also carry NO metric at all — just as dead, and it has
+// to be nameable in the banner rather than silently omitted from it.
+function displayMetricName(metric: string | undefined): string {
+  return metric && metric.length > 0
+    ? metric
+    : i18n.t("policies:configurationPolicies.featureTabs.alertRuleTab.metricNotSet");
+}
+// Metric names outside the evaluator's domain, e.g. the retired "network"
+// option the old Monitoring tab offered. Reported separately from retired TYPES
+// because the remedy differs: pick a supported metric, rather than delete the
+// whole condition.
+function unsupportedConditionMetrics(item: AlertItem): string[] {
+  return [
+    ...new Set(
+      item.conditions
+        .filter((c) => c.type === "metric" && !isSupportedMetric(c.metric))
+        .map((c) => displayMetricName(c.metric)),
     ),
   ];
 }
@@ -565,6 +651,9 @@ export default function AlertRuleTab({
         {items.map((item, index) => {
           const isExpanded = expandedIndex === index;
           const unsupportedTypes = unsupportedConditionTypes(item);
+          const unsupportedMetrics = unsupportedConditionMetrics(item);
+          const hasUnsupported =
+            unsupportedTypes.length > 0 || unsupportedMetrics.length > 0;
           return (
             <div key={index} className="rounded-md border bg-muted/10">
               {/* Collapsed header.
@@ -600,7 +689,7 @@ export default function AlertRuleTab({
                       )}
                   </span>
                   {severityPill(item.severity)}
-                  {unsupportedTypes.length > 0 && (
+                  {hasUnsupported && (
                     <AlertTriangle
                       data-testid={`alert-rule-legacy-flag-${index}`}
                       className="h-4 w-4 shrink-0 text-amber-600"
@@ -637,16 +726,28 @@ export default function AlertRuleTab({
                   className="border-t px-4 pb-4 pt-3 space-y-4"
                 >
                   {/* Legacy condition warning */}
-                  {unsupportedTypes.length > 0 && (
+                  {hasUnsupported && (
                     <div
                       data-testid={`alert-rule-legacy-warning-${index}`}
                       className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700"
                     >
                       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                      <span>
-                        {i18n.t(
-                          "policies:configurationPolicies.featureTabs.alertRuleTab.thisRuleUsesRetiredConditionTypes",
-                          { types: unsupportedTypes.join(", ") },
+                      <span className="space-y-1">
+                        {unsupportedTypes.length > 0 && (
+                          <span className="block">
+                            {i18n.t(
+                              "policies:configurationPolicies.featureTabs.alertRuleTab.thisRuleUsesRetiredConditionTypes",
+                              { types: unsupportedTypes.join(", ") },
+                            )}
+                          </span>
+                        )}
+                        {unsupportedMetrics.length > 0 && (
+                          <span className="block">
+                            {i18n.t(
+                              "policies:configurationPolicies.featureTabs.alertRuleTab.thisRuleUsesUnsupportedMetrics",
+                              { metrics: unsupportedMetrics.join(", ") },
+                            )}
+                          </span>
                         )}
                       </span>
                     </div>
@@ -721,9 +822,15 @@ export default function AlertRuleTab({
                     </div>
                     <div className="mt-2 space-y-2">
                       {item.conditions.map((condition, ci) => {
-                        const editable = isEditableConditionType(
-                          condition.type,
-                        );
+                        const editable = isEditableCondition(condition);
+                        // A metric condition is un-editable only because of its
+                        // metric NAME — the type itself is fine, so the reason
+                        // shown has to say so or the tech goes looking for a
+                        // retired type that isn't there.
+                        const unsupportedMetric =
+                          condition.type === "metric" && !editable
+                            ? displayMetricName(condition.metric)
+                            : "";
                         return (
                           <div
                             key={ci}
@@ -755,21 +862,31 @@ export default function AlertRuleTab({
                                       ))}
                                     </select>
                                   ) : (
-                                    <p className="mt-1 flex h-8 items-center truncate rounded-md border border-dashed bg-muted/40 px-2 font-mono text-xs text-muted-foreground">
-                                      {condition.type}
+                                    <p
+                                      data-testid={`alert-rule-${index}-condition-${ci}-readonly-type`}
+                                      className="mt-1 flex h-8 items-center truncate rounded-md border border-dashed bg-muted/40 px-2 font-mono text-xs text-muted-foreground"
+                                    >
+                                      {unsupportedMetric
+                                        ? `${condition.type}: ${unsupportedMetric}`
+                                        : condition.type}
                                     </p>
                                   )}
                                 </div>
 
                                 {!editable && (
                                   <p className="self-center text-xs text-muted-foreground sm:col-span-1 md:col-span-3">
-                                    {i18n.t(
-                                      "policies:configurationPolicies.featureTabs.alertRuleTab.thisConditionTypeIsNoLongerEditable",
-                                    )}
+                                    {unsupportedMetric
+                                      ? i18n.t(
+                                          "policies:configurationPolicies.featureTabs.alertRuleTab.thisConditionUsesAnUnsupportedMetric",
+                                          { metric: unsupportedMetric },
+                                        )
+                                      : i18n.t(
+                                          "policies:configurationPolicies.featureTabs.alertRuleTab.thisConditionTypeIsNoLongerEditable",
+                                        )}
                                   </p>
                                 )}
 
-                                {condition.type === "metric" && (
+                                {condition.type === "metric" && editable && (
                                   <>
                                     <div>
                                       <label className="text-xs font-medium text-muted-foreground">
@@ -833,20 +950,34 @@ export default function AlertRuleTab({
                                     </div>
                                     <div>
                                       <label className="text-xs font-medium text-muted-foreground">
-                                        {i18n.t(
-                                          "policies:configurationPolicies.featureTabs.alertRuleTab.value",
-                                        )}
+                                        {metricValueMax(condition.metric) === undefined
+                                          ? i18n.t(
+                                              "policies:configurationPolicies.featureTabs.alertRuleTab.valueCount",
+                                            )
+                                          : i18n.t(
+                                              "policies:configurationPolicies.featureTabs.alertRuleTab.value",
+                                            )}
                                       </label>
                                       <input
                                         type="number"
                                         min={0}
-                                        max={100}
+                                        max={metricValueMax(condition.metric)}
                                         value={condition.value ?? 80}
-                                        onChange={(e) =>
-                                          updateCondition(index, ci, {
-                                            value: Number(e.target.value),
-                                          })
-                                        }
+                                        onChange={(e) => {
+                                          // Clamp the same way the offline
+                                          // duration field does, but against a
+                                          // metric-aware ceiling: processCount
+                                          // is a raw count with no upper bound,
+                                          // so a hard 100 would silently
+                                          // rewrite "over 250 processes".
+                                          const max = metricValueMax(condition.metric);
+                                          const raw = Number(e.target.value);
+                                          const clamped = Math.max(
+                                            0,
+                                            max === undefined ? raw : Math.min(max, raw),
+                                          );
+                                          updateCondition(index, ci, { value: clamped });
+                                        }}
                                         className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
                                       />
                                     </div>

@@ -77,6 +77,29 @@ describe('alertRuleConditionSchema', () => {
   it('rejects a metric condition with no metric name', () => {
     expect(alertRuleConditionSchema.safeParse({ type: 'metric', operator: 'gt', value: 85 }).success).toBe(false);
   });
+
+  it('accepts `threshold` as an alias of `metric` and canonicalizes it', () => {
+    // handlers/threshold.ts declares `type: 'threshold'` with aliases ['metric'],
+    // and the pre-consolidation AI tool description advertised it, so rows exist.
+    const r = alertRuleConditionSchema.safeParse({ type: 'threshold', metric: 'cpu', operator: 'gt', value: 85 });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.type).toBe('metric');
+  });
+
+  it('reports the offending field on a threshold-typed condition, not a bare union error', () => {
+    const r = alertRuleConditionSchema.safeParse({ type: 'threshold', metric: 'bogus', operator: 'gt', value: 85 });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues.some((i) => i.path.join('.') === 'metric')).toBe(true);
+      expect(JSON.stringify(r.error.issues)).not.toContain('Invalid input');
+    }
+  });
+
+  it('names the accepted condition types when `type` is unrecognised', () => {
+    const r = alertRuleConditionSchema.safeParse({ type: 'network', metric: 'network', operator: 'gt', value: 85 });
+    expect(r.success).toBe(false);
+    if (!r.success) expect(JSON.stringify(r.error.issues)).toContain('metric');
+  });
 });
 
 describe('alertRuleInlineSettingsSchema', () => {

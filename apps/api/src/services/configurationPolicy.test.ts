@@ -26,7 +26,7 @@ import {
   PartnerWideWriteDeniedError,
 } from './configurationPolicy';
 import { db } from '../db';
-import { configPolicyAlertRules } from '../db/schema';
+import { configPolicyAlertRules, configPolicyMonitoringSettings } from '../db/schema';
 
 // Chain for `db.select().from(...).where(...)` awaited directly (links query)
 function selectWhereRows(rows: unknown[]) {
@@ -514,6 +514,128 @@ describe('addFeatureLink — alert_rule inlineSettings service-layer validation'
     });
 
     expect(normalizedRowValues[0].conditions).toEqual([{ type: 'offline', durationMinutes: 10 }]);
+  });
+});
+
+// ============================================================
+// updateFeatureLink PATCH decompose — the replace half of the write path.
+// addFeatureLink only ever inserts; the UPDATE route replaces normalized rows
+// with delete-then-decompose, which is where both a data-loss bug (deleting
+// rows a feature no longer owns) and a torn-state bug (deleting before the
+// payload is known to be valid) can hide.
+// ============================================================
+describe('updateFeatureLink — normalized row replacement', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /**
+   * tx mock for updateFeatureLink: select→existing link, update→returning,
+   * plus recording every `delete(table)` and `insert(table).values(rows)` in
+   * call order so ordering assertions are possible.
+   */
+  function updateTx(existing: Record<string, unknown>) {
+    const calls: Array<{ op: 'delete' | 'insert'; table: unknown; values?: any }> = [];
+    const tx: any = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([existing])) })),
+        })),
+      })),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({
+          where: vi.fn(() => ({
+            returning: vi.fn(() => Promise.resolve([{ ...existing }])),
+          })),
+        })),
+      })),
+      delete: vi.fn((table: unknown) => {
+        calls.push({ op: 'delete', table });
+        return { where: vi.fn(() => Promise.resolve([])) };
+      }),
+      insert: vi.fn((table: unknown) => ({
+        values: vi.fn((values: any) => {
+          calls.push({ op: 'insert', table, values });
+          // Awaitable AND `.returning()`-able: monitoring's decompose chains
+          // `.returning()` off the settings insert to get the row id.
+          const result: any = Promise.resolve([{ id: 'settings-1' }]);
+          result.returning = vi.fn(() => Promise.resolve([{ id: 'settings-1' }]));
+          return result;
+        }),
+      })),
+    };
+    return { tx, calls };
+  }
+
+  it('deletes the old alert_rule rows, then reinserts them with schema defaults', async () => {
+    const { tx, calls } = updateTx({
+      id: 'link-ar', configPolicyId: 'policy-1', featureType: 'alert_rule',
+      featurePolicyId: null, inlineSettings: { items: [] },
+    });
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await updateFeatureLink('link-ar', {
+      inlineSettings: {
+        items: [{ name: 'High CPU', conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 85 }] }],
+      },
+    }, 'policy-1');
+
+    expect(calls.map((c) => c.op)).toEqual(['delete', 'insert']);
+    expect(calls[0]!.table).toBe(configPolicyAlertRules);
+    expect(calls[1]!.table).toBe(configPolicyAlertRules);
+
+    const [row] = calls[1]!.values;
+    expect(row).toMatchObject({
+      featureLinkId: 'link-ar',
+      name: 'High CPU',
+      severity: 'medium',
+      cooldownMinutes: 5,
+      autoResolve: false,
+      autoResolveConditions: null,
+      titleTemplate: '{{ruleName}} triggered on {{deviceName}}',
+      messageTemplate: '{{ruleName}} condition met',
+      sortOrder: 0,
+    });
+  });
+
+  it('throws on an invalid alert_rule payload BEFORE deleting or updating anything', async () => {
+    // Regression guard for torn state: decompose is what enforces the
+    // per-feature schema, and it runs AFTER deleteNormalizedRows. Only the
+    // surrounding transaction saved the existing rows; validation must not
+    // depend on every caller remembering to open one.
+    const { tx, calls } = updateTx({
+      id: 'link-ar', configPolicyId: 'policy-1', featureType: 'alert_rule',
+      featurePolicyId: null, inlineSettings: { items: [] },
+    });
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await expect(updateFeatureLink('link-ar', {
+      inlineSettings: { items: [{ name: 'bad', conditions: [{ type: 'metric', metric: 'network', operator: 'gt', value: 85 }] }] },
+    }, 'policy-1')).rejects.toThrow();
+
+    expect(calls).toEqual([]);
+    expect(tx.update).not.toHaveBeenCalled();
+  });
+
+  it('does NOT delete config_policy_alert_rules when a monitoring link is updated', async () => {
+    // The monitoring decompose path used to WRITE alert rules keyed by the
+    // monitoring link; this branch was its replace-half. With the insert half
+    // gone (2026-07-30 consolidation) a delete here is pure data loss for any
+    // policy the ownership migration has not yet touched — one unrelated save
+    // on the Monitoring tab and the legacy rules are unrecoverable.
+    const { tx, calls } = updateTx({
+      id: 'link-mon', configPolicyId: 'policy-1', featureType: 'monitoring',
+      featurePolicyId: null, inlineSettings: { checkIntervalSeconds: 60, watches: [] },
+    });
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await updateFeatureLink('link-mon', {
+      inlineSettings: { checkIntervalSeconds: 120, watches: [] },
+    }, 'policy-1');
+
+    const deletedTables = calls.filter((c) => c.op === 'delete').map((c) => c.table);
+    expect(deletedTables).toContain(configPolicyMonitoringSettings);
+    expect(deletedTables).not.toContain(configPolicyAlertRules);
   });
 });
 

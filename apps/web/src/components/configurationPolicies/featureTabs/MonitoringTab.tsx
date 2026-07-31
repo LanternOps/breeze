@@ -134,6 +134,17 @@ const createSeverityOptions = (): {
 // before the alert consolidation still carries `alertRules`/`eventLogAlerts`,
 // and spreading them back into state would put them straight into the next save
 // payload, which the API now rejects.
+// Counts the legacy alert rules a stored mirror still carries. readSettings
+// drops those keys from tab state (they can no longer be saved), and dropping
+// them silently would look like the tab had eaten the tech's rules — so the
+// count drives a non-blocking info banner pointing at where they went.
+function legacyAlertRuleCount(
+  stored: Record<string, unknown> | null | undefined,
+): number {
+  const raw = (stored ?? {}) as Record<string, unknown>;
+  const count = (value: unknown) => (Array.isArray(value) ? value.length : 0);
+  return count(raw.alertRules) + count(raw.eventLogAlerts);
+}
 function readSettings(
   stored: Record<string, unknown> | null | undefined,
   fallback: MonitoringSettings,
@@ -304,6 +315,7 @@ export default function MonitoringTab({
   );
   // Expanded item tracking: "watches:0"
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const legacyAlertRules = legacyAlertRuleCount(effectiveLink?.inlineSettings);
   const nameInputRef = useRef<HTMLInputElement>(null);
   // Known services for autocomplete
   const [knownServices, setKnownServices] = useState<KnownService[]>([]);
@@ -503,6 +515,33 @@ export default function MonitoringTab({
           )}
         </MonitoringSection>
       </div>
+
+      {/* ── Legacy rules this tab no longer owns (non-blocking) ── */}
+      {legacyAlertRules > 0 && (
+        <div
+          data-testid="monitoring-legacy-alert-rules-notice"
+          className="mt-4 flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-700"
+        >
+          <Bell className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            {i18n.t(
+              "policies:configurationPolicies.featureTabs.monitoringTab.legacyAlertRulesMovedToAlerts",
+              { count: legacyAlertRules },
+            )}{" "}
+            <button
+              type="button"
+              data-testid="monitoring-legacy-alert-rules-link"
+              onClick={goToAlertsTab}
+              className="font-medium underline underline-offset-2 hover:no-underline"
+            >
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.monitoringTab.openAlertsFeature",
+              )}{" "}
+              →
+            </button>
+          </span>
+        </div>
+      )}
 
       {/* ── Pointer: server-evaluated alerting lives in the Alerts feature ── */}
       <div className="mt-4">
