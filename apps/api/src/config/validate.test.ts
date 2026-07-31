@@ -1177,10 +1177,12 @@ describe('validateConfig', () => {
       });
     });
 
-    // Also guards the same pick-list-omission bug class as
+    // Also guards the same drift bug class as
     // AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID above (see that describe block's
-    // comment) — a bare `.toThrow()` regression-guard variant would add
-    // nothing over the message assertion below, so only one test.
+    // comment): a value that stops reaching the parser boots silently on the
+    // schema default instead of refusing. A bare `.toThrow()` regression-guard
+    // variant would add nothing over the message assertion below, so only one
+    // test.
     it('boot-refuses an invalid value instead of silently falling back to compat', () => {
       withEnv({ ...validEnv, MANAGED_SOFTWARE_POLICY_MODE: 'strict' }, () => {
         expect(() => validateConfig()).toThrow('MANAGED_SOFTWARE_POLICY_MODE');
@@ -2177,20 +2179,41 @@ function withoutEnv(keys: string[], fn: () => void) {
 }
 
 describe('envSchema ↔ validateConfig parse-input contract (#2896)', () => {
-  it('hands safeParse exactly the key set declared in the schema', () => {
-    expect(Object.keys(buildEnvParseInput(process.env)).sort()).toEqual(
-      [...ENV_SCHEMA_KEYS].sort(),
-    );
+  // THE acceptance test. Asserting `Object.keys(buildEnvParseInput(...))`
+  // against ENV_SCHEMA_KEYS would be tautological — that helper is a loop over
+  // ENV_SCHEMA_KEYS, so it passes for any key set including an empty one. Worse,
+  // it would not notice the actual regression: someone reintroducing a
+  // hand-picked object literal at the safeParse call site, which leaves
+  // buildEnvParseInput as dead exported code while every such test stays green.
+  //
+  // So observe the real thing instead — swap process.env for a recording proxy
+  // and assert validateConfig() actually TOUCHES every declared key. That fails
+  // on a reintroduced pick list, on a key that stops reaching the parser, and on
+  // an empty ENV_SCHEMA_KEYS.
+  it('validateConfig() reads every declared key from process.env', () => {
+    const read = new Set<string>();
+    const realEnv = process.env;
+    const target: Record<string, string | undefined> = { ...realEnv, ...validEnv };
+    const recording = new Proxy(target, {
+      get(t, prop) {
+        if (typeof prop === 'string') read.add(prop);
+        return Reflect.get(t, prop);
+      },
+    });
+
+    Object.defineProperty(process, 'env', { value: recording, configurable: true, writable: true });
+    try {
+      validateConfig();
+    } finally {
+      Object.defineProperty(process, 'env', { value: realEnv, configurable: true, writable: true });
+    }
+
+    expect(ENV_SCHEMA_KEYS.filter((key) => !read.has(key))).toEqual([]);
   });
 
-  it('reads every declared key from the environment', () => {
-    const sentinelEnv = Object.fromEntries(
-      ENV_SCHEMA_KEYS.map((key) => [key, `sentinel-${key}`]),
-    );
-    const input = buildEnvParseInput(sentinelEnv);
-    for (const key of ENV_SCHEMA_KEYS) {
-      expect(input[key]).toBe(`sentinel-${key}`);
-    }
+  it('declares a non-trivial key set (guards an empty or truncated schema shape)', () => {
+    expect(ENV_SCHEMA_KEYS.length).toBeGreaterThan(90);
+    expect(new Set(ENV_SCHEMA_KEYS).size).toBe(ENV_SCHEMA_KEYS.length);
   });
 
   // The exact seven that had drifted out of the old hand-maintained list.
@@ -2205,6 +2228,33 @@ describe('envSchema ↔ validateConfig parse-input contract (#2896)', () => {
   ])('validates %s (regression: silently dropped before #2896)', (key) => {
     expect(ENV_SCHEMA_KEYS).toContain(key);
     expect(buildEnvParseInput({ [key]: 'sentinel' })[key]).toBe('sentinel');
+  });
+});
+
+// `isConfigInitialized()` gates ipAllowlistMode()'s pre-boot fallback. Its unit
+// tests mock the whole config module, so without this the predicate itself is
+// unexercised — and inverting it (`_config !== undefined`, always true for a
+// `null`-initialised singleton) would make getConfig() throw on every pre-boot
+// caller while the entire suite stayed green. Needs a fresh module registry
+// because the singleton is process-wide and this file boots config ~200 times.
+describe('isConfigInitialized (#2896)', () => {
+  it('is false before validateConfig() and true after a successful run', async () => {
+    vi.resetModules();
+    const mod = await import('./validate');
+    expect(mod.isConfigInitialized()).toBe(false);
+    withEnv(validEnv, () => {
+      mod.validateConfig();
+    });
+    expect(mod.isConfigInitialized()).toBe(true);
+  });
+
+  it('stays false when validateConfig() throws on invalid config', async () => {
+    vi.resetModules();
+    const mod = await import('./validate');
+    withEnv({ ...validEnv, DATABASE_URL: 'not-a-postgres-url' }, () => {
+      expect(() => mod.validateConfig()).toThrow();
+    });
+    expect(mod.isConfigInitialized()).toBe(false);
   });
 });
 

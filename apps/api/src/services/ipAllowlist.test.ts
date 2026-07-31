@@ -18,7 +18,11 @@ const configMocks = vi.hoisted(() => ({
   isConfigInitialized: vi.fn(() => false),
 }));
 
-vi.mock('../config/validate', () => ({
+// Spread the real module rather than replacing it: this mock is file-wide, and
+// the first other module in this graph to import config/validate would
+// otherwise silently receive `undefined` for every export not listed here.
+vi.mock('../config/validate', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config/validate')>()),
   getConfig: configMocks.getConfig,
   isConfigInitialized: configMocks.isConfigInitialized,
 }));
@@ -265,6 +269,28 @@ describe('enforceIpAllowlist', () => {
     expect(limit).not.toHaveBeenCalled();
   });
 
+  // The tests in this block otherwise all sit on the PRE-boot fallback branch
+  // (isConfigInitialized defaults to false), which production never takes.
+  // This one exercises the branch that actually runs in a booted API.
+  it('skips without reading the allowlist when the VALIDATED config says off', async () => {
+    configMocks.isConfigInitialized.mockImplementation(() => true);
+    configMocks.getConfig.mockReturnValue({ IP_ALLOWLIST_ENFORCEMENT_MODE: 'off' });
+    serviceMocks.getTrustedClientIpOrUndefined.mockReturnValue('203.0.113.10');
+
+    try {
+      const decision = await enforceIpAllowlist(c, {
+        partnerId: 'partner-deny',
+        isPlatformAdmin: false,
+      });
+
+      expect(decision).toEqual({ decision: 'skip', reason: 'mode_off' });
+      expect(limit).not.toHaveBeenCalled();
+    } finally {
+      configMocks.isConfigInitialized.mockImplementation(() => false);
+      configMocks.getConfig.mockReset();
+    }
+  });
+
   it('skips without reading the allowlist when enforcement mode is off', async () => {
     process.env.IP_ALLOWLIST_ENFORCEMENT_MODE = 'off';
     serviceMocks.getTrustedClientIpOrUndefined.mockReturnValue('203.0.113.10');
@@ -289,8 +315,10 @@ describe('ipAllowlistMode', () => {
 
   beforeEach(() => {
     configMocks.getConfig.mockReset();
-    configMocks.isConfigInitialized.mockReset();
-    configMocks.isConfigInitialized.mockReturnValue(false);
+    // mockImplementation, NOT mockReset: the hoisted `() => false` is what keeps
+    // the other describes in this file on the pre-boot branch, and mockReset
+    // would strip it for anything declared after this block.
+    configMocks.isConfigInitialized.mockImplementation(() => false);
     delete process.env.IP_ALLOWLIST_ENFORCEMENT_MODE;
   });
 
@@ -301,7 +329,7 @@ describe('ipAllowlistMode', () => {
 
   describe('once validateConfig() has run', () => {
     beforeEach(() => {
-      configMocks.isConfigInitialized.mockReturnValue(true);
+      configMocks.isConfigInitialized.mockImplementation(() => true);
     });
 
     it('returns the validated off', () => {
@@ -320,6 +348,17 @@ describe('ipAllowlistMode', () => {
       process.env.IP_ALLOWLIST_ENFORCEMENT_MODE = 'enforce';
       configMocks.getConfig.mockReturnValue({ IP_ALLOWLIST_ENFORCEMENT_MODE: 'off' });
       expect(ipAllowlistMode()).toBe('off');
+    });
+
+    // The security-relevant direction, and the one that actually occurs: the
+    // unit setup sets the env var to 'off' globally, and a stale droplet .env
+    // looks identical. An implementation that ORed the two sources, or consulted
+    // env first and only fell through to config when env was unset, would pass
+    // the test above and silently disable enforcement fleet-wide.
+    it('enforces when the validated config says enforce and process.env says off', () => {
+      process.env.IP_ALLOWLIST_ENFORCEMENT_MODE = 'off';
+      configMocks.getConfig.mockReturnValue({ IP_ALLOWLIST_ENFORCEMENT_MODE: 'enforce' });
+      expect(ipAllowlistMode()).toBe('enforce');
     });
   });
 

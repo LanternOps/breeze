@@ -1521,7 +1521,12 @@ export type AppConfig = z.infer<typeof envSchema>;
  * `AGENT_AUTO_PROMOTE`'s boolean typo-guard in the `superRefine` above.
  *
  * Deriving the input from the schema makes that drift structurally impossible:
- * declaring a key is now the only step required to validate it.
+ * declaring a key in `envObjectSchema` is now the only step required to have it
+ * validated. Note the converse drift is NOT addressed here — `validateConfig()`
+ * and `collectWarnings()` still read a few variables straight off `env` without
+ * declaring them (`M365_GRAPH_ACTIONS_TOOLS_ENABLED`, `APP_ENCRYPTION_KEY_ID`,
+ * `TRUST_CF_CONNECTING_IP`), and a key added to the schema by some route other
+ * than this object literal would still be missed.
  */
 export const ENV_SCHEMA_KEYS: readonly string[] = Object.freeze(
   Object.keys(envObjectSchema.shape),
@@ -1558,7 +1563,9 @@ export function getConfig(): AppConfig {
 }
 
 /**
- * True once `validateConfig()` has run.
+ * True once `validateConfig()` has run SUCCESSFULLY. The singleton is assigned
+ * last, after the parse result is checked, so a run that threw on invalid
+ * config also leaves this false.
  *
  * Lets a caller that legitimately runs both before and after boot (unit tests,
  * scripts, the integration harness) branch on config availability instead of

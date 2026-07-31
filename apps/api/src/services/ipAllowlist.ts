@@ -40,6 +40,8 @@ export function evaluateIpAllowlist(params: {
     : { decision: 'deny', reason: 'not_in_list' };
 }
 
+let warnedPreBootModeRead = false;
+
 /**
  * Global enforcement mode.
  *
@@ -56,6 +58,19 @@ export function evaluateIpAllowlist(params: {
  */
 export function ipAllowlistMode(): IpAllowlistMode {
   if (!isConfigInitialized()) {
+    // No request path can reach here in production — bootstrap() calls
+    // validateConfig() before serve(). Say so out loud anyway rather than
+    // silently reading unvalidated env: a future module-scope or preflight
+    // caller would otherwise reintroduce exactly the divergence this function
+    // was changed to close. Tests deliberately live on this branch (the unit
+    // setup sets the variable and never boots config), so stay quiet there.
+    if (!warnedPreBootModeRead && process.env.NODE_ENV !== 'test') {
+      warnedPreBootModeRead = true;
+      console.warn(
+        '[ipAllowlist] enforcement mode read before validateConfig(); '
+        + 'falling back to unvalidated process.env for this process.',
+      );
+    }
     return process.env.IP_ALLOWLIST_ENFORCEMENT_MODE === 'off' ? 'off' : 'enforce';
   }
   return getConfig().IP_ALLOWLIST_ENFORCEMENT_MODE;
