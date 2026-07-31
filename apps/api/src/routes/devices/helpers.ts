@@ -5,6 +5,7 @@ import { db } from '../../db';
 import { devices } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { canAccessSite, type UserPermissions } from '../../services/permissions';
+import { PG_UUID_REGEX } from '../../utils/uuid';
 
 export { getPagination } from '../../utils/pagination';
 
@@ -83,6 +84,14 @@ export async function getDeviceWithOrgCheck(
   deviceId: string,
   auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
 ) {
+  // `devices.id` is uuid-typed, so a malformed path param reaches Postgres as a
+  // 22P02 and surfaces through the global error handler as a 500 (plus a Sentry
+  // event) instead of a 404. Reject it here, on the same not-found path callers
+  // already translate to 404 (#2968, authenticated twin of #2914).
+  if (!PG_UUID_REGEX.test(deviceId)) {
+    return null;
+  }
+
   const [device] = await db
     .select()
     .from(devices)
@@ -154,6 +163,13 @@ export async function getDeviceWithOrgAndSiteCheck(
   // it) so tests can mock `db.select` once and exercise both the org and site
   // branches. JS module mocking doesn't intercept intra-module calls, so
   // delegating would force every caller to mock both helpers.
+
+  // Same uuid guard as `getDeviceWithOrgCheck` — duplicated for the same
+  // mocking reason (#2968).
+  if (!PG_UUID_REGEX.test(deviceId)) {
+    return null;
+  }
+
   const [device] = await db
     .select()
     .from(devices)

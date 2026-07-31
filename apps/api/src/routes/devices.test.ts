@@ -666,7 +666,7 @@ describe('device routes', () => {
     it('should list devices with filters and pagination', async () => {
       const deviceList = [
         {
-          id: 'device-1',
+          id: '11111111-2222-4333-8444-555555555555',
           orgId: 'org-123',
           siteId: '11111111-1111-1111-1111-111111111111',
           agentId: 'agent-1',
@@ -689,7 +689,7 @@ describe('device routes', () => {
           diskTotalGb: 512
         },
         {
-          id: 'device-2',
+          id: '22222222-3333-4444-8555-666666666666',
           orgId: 'org-123',
           siteId: '11111111-1111-1111-1111-111111111111',
           agentId: 'agent-2',
@@ -746,8 +746,8 @@ describe('device routes', () => {
       // the per-device latest lookup path.
       const metricsTimestamp = new Date('2026-05-16T17:00:00Z');
       vi.mocked(db.execute).mockResolvedValueOnce([
-        { device_id: 'device-1', cpu_percent: 12.5, ram_percent: 33, timestamp: metricsTimestamp },
-        { device_id: 'device-2', cpu_percent: 4.2, ram_percent: 18, timestamp: metricsTimestamp },
+        { device_id: '11111111-2222-4333-8444-555555555555', cpu_percent: 12.5, ram_percent: 33, timestamp: metricsTimestamp },
+        { device_id: '22222222-3333-4444-8555-666666666666', cpu_percent: 4.2, ram_percent: 18, timestamp: metricsTimestamp },
       ] as any);
 
       const res = await app.request('/devices?status=online&osType=linux&search=host&page=1&limit=2', {
@@ -762,7 +762,7 @@ describe('device routes', () => {
       expect(body.data[0].hardware).toBeDefined();
       // LATERAL metrics row → response: snake_case columns map to
       // camelCase metrics.cpuPercent / ramPercent. Each device matches
-      // by uuid, so device-1's metrics row sticks to device-1.
+      // by uuid, so 11111111-2222-4333-8444-555555555555's metrics row sticks to 11111111-2222-4333-8444-555555555555.
       expect(body.data[0].cpuPercent).toBe(12.5);
       expect(body.data[0].ramPercent).toBe(33);
       expect(body.data[1].cpuPercent).toBe(4.2);
@@ -785,14 +785,14 @@ describe('device routes', () => {
   describe('GET /devices/:id', () => {
     it('should return device details', async () => {
       const device = {
-        id: 'device-1',
+        id: '11111111-2222-4333-8444-555555555555',
         orgId: 'org-123',
         siteId: '11111111-1111-1111-1111-111111111111',
         status: 'online'
       };
-      const hardware = { id: 'hw-1', deviceId: 'device-1' };
-      const networkInterfaces = [{ id: 'net-1', deviceId: 'device-1' }];
-      const recentMetrics = [{ id: 'metric-1', deviceId: 'device-1' }];
+      const hardware = { id: 'hw-1', deviceId: '11111111-2222-4333-8444-555555555555' };
+      const networkInterfaces = [{ id: 'net-1', deviceId: '11111111-2222-4333-8444-555555555555' }];
+      const recentMetrics = [{ id: 'metric-1', deviceId: '11111111-2222-4333-8444-555555555555' }];
       const groups = [{ groupId: 'group-1', groupName: 'Ops' }];
 
       vi.mocked(db.select)
@@ -832,14 +832,14 @@ describe('device routes', () => {
           })
         } as any);
 
-      const res = await app.request('/devices/device-1', {
+      const res = await app.request('/devices/11111111-2222-4333-8444-555555555555', {
         method: 'GET',
         headers: { Authorization: 'Bearer token' }
       });
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.id).toBe('device-1');
+      expect(body.id).toBe('11111111-2222-4333-8444-555555555555');
       expect(body.hardware).toBeDefined();
       expect(body.networkInterfaces).toHaveLength(1);
       expect(body.recentMetrics).toHaveLength(1);
@@ -869,7 +869,7 @@ describe('device routes', () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: 'device-1', orgId: 'org-123', status: 'online' }])
+            limit: vi.fn().mockResolvedValue([{ id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online' }])
           })
         })
       } as any);
@@ -877,7 +877,7 @@ describe('device routes', () => {
         values: vi.fn().mockReturnValue({
           returning: vi.fn().mockResolvedValue([{
             id: 'cmd-1',
-            deviceId: 'device-1',
+            deviceId: '11111111-2222-4333-8444-555555555555',
             type: 'reboot',
             status: 'pending',
             createdAt: new Date()
@@ -885,7 +885,7 @@ describe('device routes', () => {
         })
       } as any);
 
-      const res = await app.request('/devices/device-1/commands', {
+      const res = await app.request('/devices/11111111-2222-4333-8444-555555555555/commands', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
         body: JSON.stringify({ type: 'reboot' })
@@ -898,7 +898,7 @@ describe('device routes', () => {
     });
 
     it('should reject generic script commands', async () => {
-      const res = await app.request('/devices/device-1/commands', {
+      const res = await app.request('/devices/11111111-2222-4333-8444-555555555555/commands', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
         body: JSON.stringify({
@@ -920,7 +920,7 @@ describe('device routes', () => {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([{
-              id: 'device-1',
+              id: '11111111-2222-4333-8444-555555555555',
               orgId: 'org-123',
               siteId: '11111111-1111-1111-1111-111111111111'
             }])
@@ -931,14 +931,14 @@ describe('device routes', () => {
         set: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             returning: vi.fn().mockResolvedValue([{
-              id: 'device-1',
+              id: '11111111-2222-4333-8444-555555555555',
               displayName: 'New Name'
             }])
           })
         })
       } as any);
 
-      const res = await app.request('/devices/device-1', {
+      const res = await app.request('/devices/11111111-2222-4333-8444-555555555555', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
         body: JSON.stringify({ displayName: 'New Name' })
@@ -950,7 +950,7 @@ describe('device routes', () => {
     });
 
     it('should reject empty updates', async () => {
-      const res = await app.request('/devices/device-1', {
+      const res = await app.request('/devices/11111111-2222-4333-8444-555555555555', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
         body: JSON.stringify({})
@@ -965,7 +965,7 @@ describe('device routes', () => {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
               limit: vi.fn().mockResolvedValue([{
-                id: 'device-1',
+                id: '11111111-2222-4333-8444-555555555555',
                 orgId: 'org-123',
                 siteId: '11111111-1111-1111-1111-111111111111'
               }])
@@ -980,7 +980,7 @@ describe('device routes', () => {
           })
         } as any);
 
-      const res = await app.request('/devices/device-1', {
+      const res = await app.request('/devices/11111111-2222-4333-8444-555555555555', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
         body: JSON.stringify({ siteId: '22222222-2222-2222-2222-222222222222' })
@@ -996,7 +996,7 @@ describe('device routes', () => {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([{
-              id: 'device-1',
+              id: '11111111-2222-4333-8444-555555555555',
               orgId: 'org-123',
               status: 'online'
             }])
@@ -1007,14 +1007,14 @@ describe('device routes', () => {
         set: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             returning: vi.fn().mockResolvedValue([{
-              id: 'device-1',
+              id: '11111111-2222-4333-8444-555555555555',
               status: 'decommissioned'
             }])
           })
         })
       } as any);
 
-      const res = await app.request('/devices/device-1', {
+      const res = await app.request('/devices/11111111-2222-4333-8444-555555555555', {
         method: 'DELETE',
         headers: { Authorization: 'Bearer token' }
       });
@@ -1030,7 +1030,7 @@ describe('device routes', () => {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([{
-              id: 'device-1',
+              id: '11111111-2222-4333-8444-555555555555',
               orgId: 'org-123',
               status: 'decommissioned'
             }])
@@ -1038,7 +1038,7 @@ describe('device routes', () => {
         })
       } as any);
 
-      const res = await app.request('/devices/device-1', {
+      const res = await app.request('/devices/11111111-2222-4333-8444-555555555555', {
         method: 'DELETE',
         headers: { Authorization: 'Bearer token' }
       });
