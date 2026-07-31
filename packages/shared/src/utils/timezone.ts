@@ -53,6 +53,66 @@ export function canonicalizeTimezone(tz: unknown): string | null {
   return tz.toUpperCase() === UTC_TIMEZONE ? UTC_TIMEZONE : tz;
 }
 
+// Zones to fall back on when `Intl.supportedValuesOf` is unavailable (it is
+// ES2022 — every browser we target ships it, but an old embedded WebView or a
+// stripped-down JS runtime may not). Deliberately broader than the two
+// hardcoded UI lists this replaced (issue #2856): the failure mode being fixed
+// is "my zone isn't in the list", so a fallback that reproduces a 10-entry
+// US-centric list would just reintroduce the bug on those runtimes. Every zone
+// the old SiteForm/PartnerRegionalTab lists offered is included.
+const FALLBACK_IANA_TIMEZONES = [
+  'Africa/Cairo', 'Africa/Johannesburg', 'Africa/Lagos', 'Africa/Nairobi',
+  'America/Anchorage', 'America/Argentina/Buenos_Aires', 'America/Bogota',
+  'America/Chicago', 'America/Denver', 'America/Halifax', 'America/Los_Angeles',
+  'America/Mexico_City', 'America/New_York', 'America/Phoenix',
+  'America/Sao_Paulo', 'America/Toronto', 'America/Vancouver',
+  'Asia/Dubai', 'Asia/Hong_Kong', 'Asia/Jakarta', 'Asia/Jerusalem',
+  'Asia/Kolkata', 'Asia/Manila', 'Asia/Seoul', 'Asia/Shanghai',
+  'Asia/Singapore', 'Asia/Tokyo',
+  'Atlantic/Reykjavik',
+  'Australia/Adelaide', 'Australia/Brisbane', 'Australia/Melbourne',
+  'Australia/Perth', 'Australia/Sydney',
+  'Europe/Amsterdam', 'Europe/Athens', 'Europe/Berlin', 'Europe/Brussels',
+  'Europe/Bucharest', 'Europe/Budapest', 'Europe/Copenhagen', 'Europe/Dublin',
+  'Europe/Helsinki', 'Europe/Istanbul', 'Europe/Lisbon', 'Europe/London',
+  'Europe/Madrid', 'Europe/Moscow', 'Europe/Oslo', 'Europe/Paris',
+  'Europe/Prague', 'Europe/Rome', 'Europe/Stockholm', 'Europe/Vienna',
+  'Europe/Warsaw', 'Europe/Zurich',
+  'Pacific/Auckland', 'Pacific/Honolulu',
+];
+
+let cachedZones: string[] | null = null;
+
+// The full IANA zone list for pickers: `Intl.supportedValuesOf('timeZone')`
+// (~418 zones) with the 'UTC' sentinel prepended, since that call omits it (see
+// the note on `isValidIanaTimezone`). Result is cached — the underlying list is
+// constant for the life of the process and building it is not free.
+//
+// Returns a fresh copy each call so a caller sorting/splicing the array in
+// place cannot corrupt the cache for everyone else.
+export function listIanaTimezones(): string[] {
+  if (cachedZones) return [...cachedZones];
+
+  let supported: string[] = [];
+  try {
+    // `supportedValuesOf` is ES2022; guard rather than assume, and treat a
+    // throwing or empty implementation the same as a missing one.
+    if (typeof Intl.supportedValuesOf === 'function') {
+      supported = [...Intl.supportedValuesOf('timeZone')];
+    }
+  } catch {
+    supported = [];
+  }
+
+  const zones = supported.length > 0 ? supported : [...FALLBACK_IANA_TIMEZONES];
+  // UTC first (it is the API default), everything else alphabetical.
+  const rest = [...new Set(zones.filter((z) => z !== UTC_TIMEZONE))].sort((a, b) =>
+    a.localeCompare(b),
+  );
+  cachedZones = [UTC_TIMEZONE, ...rest];
+  return [...cachedZones];
+}
+
 export interface EffectiveTimezoneInput {
   /** A tz explicitly stored on the entity (maintenance window, automation, …). */
   explicit?: string | null;

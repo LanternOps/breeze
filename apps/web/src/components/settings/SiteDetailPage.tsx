@@ -17,6 +17,7 @@ import { useHashTab } from '@/lib/useHashState';
 import Breadcrumbs from '../layout/Breadcrumbs';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatTime as formatUserTime } from '@/lib/dateTimeFormat';
+import TimezoneSelect from '@/components/shared/TimezoneSelect';
 
 // --- Types ---
 
@@ -86,19 +87,6 @@ const tabs = [
 ];
 
 const VALID_TABS: TabKey[] = tabs.map(t => t.id);
-
-const timezoneOptions = [
-  'UTC',
-  'America/Los_Angeles',
-  'America/Denver',
-  'America/Chicago',
-  'America/New_York',
-  'Europe/London',
-  'Europe/Berlin',
-  'Asia/Singapore',
-  'Asia/Tokyo',
-  'Australia/Sydney',
-];
 
 const statusBadge: Record<string, { labelKey: string; className: string }> = {
   active: { labelKey: 'common:states.active', className: 'bg-success/15 text-success border-success/30' },
@@ -240,11 +228,17 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
   }, [fetchAssignments, fetchAvailablePolicies]);
 
   // Mark form dirty when any field changes
+  // Value-based counterpart of handleFieldChange, for controls that report a
+  // value rather than a DOM change event (TimezoneSelect).
+  const handleValueChange = (setter: (v: string) => void) => (value: string) => {
+    setter(value);
+    setSaveState((prev) => ({ ...prev, hasUnsavedChanges: true }));
+  };
+
   const handleFieldChange = (setter: (v: string) => void) => (
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
   ) => {
-    setter(e.target.value);
-    setSaveState((prev) => ({ ...prev, hasUnsavedChanges: true }));
+    handleValueChange(setter)(e.target.value);
   };
 
   const handleSaveDetails = async () => {
@@ -487,17 +481,12 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">{t('siteForm.fields.timezone')}</label>
-                    <select
+                    <TimezoneSelect
+                      label={t('siteForm.fields.timezone')}
                       value={formTimezone}
-                      onChange={handleFieldChange(setFormTimezone)}
-                      className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    >
-                      {timezoneOptions.map((tz) => (
-                        <option key={tz} value={tz}>
-                          {tz}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={handleValueChange(setFormTimezone)}
+                      testId="site-detail-timezone"
+                    />
                   </div>
                 </div>
               </section>

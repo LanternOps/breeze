@@ -183,6 +183,10 @@
     "toast": {
       "undo": "Desfazer",
       "dismiss": "Dispensar"
+    },
+    "timezoneSelect": {
+      "searchPlaceholder": "Pesquisar fusos horários…",
+      "noResults": "Nenhum fuso horário correspondente"
     }
   },
   "dashboard": {

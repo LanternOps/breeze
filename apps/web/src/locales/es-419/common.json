@@ -183,6 +183,10 @@
     "toast": {
       "undo": "Deshacer",
       "dismiss": "Descartar"
+    },
+    "timezoneSelect": {
+      "searchPlaceholder": "Buscar zonas horarias…",
+      "noResults": "No hay zonas horarias coincidentes"
     }
   },
   "dashboard": {

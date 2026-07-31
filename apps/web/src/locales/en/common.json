@@ -183,6 +183,10 @@
     "toast": {
       "undo": "Undo",
       "dismiss": "Dismiss"
+    },
+    "timezoneSelect": {
+      "searchPlaceholder": "Search time zones…",
+      "noResults": "No matching time zones"
     }
   },
   "dashboard": {

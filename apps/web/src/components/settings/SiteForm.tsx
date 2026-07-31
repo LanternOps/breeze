@@ -1,9 +1,10 @@
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { useForm } from 'react-hook-form';
+import { Controller, useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
+import TimezoneSelect from '@/components/shared/TimezoneSelect';
 
 // Only `name` is required server-side (timezone defaults to 'UTC' in the API).
 // The empty-string branch on contactEmail is load-bearing: react-hook-form
@@ -33,19 +34,6 @@ type SiteFormProps = {
   loading?: boolean;
 };
 
-const timezoneOptions = [
-  'UTC',
-  'America/Los_Angeles',
-  'America/Denver',
-  'America/Chicago',
-  'America/New_York',
-  'Europe/London',
-  'Europe/Berlin',
-  'Asia/Singapore',
-  'Asia/Tokyo',
-  'Australia/Sydney'
-];
-
 export default function SiteForm({
   onSubmit,
   onCancel,
@@ -57,6 +45,7 @@ export default function SiteForm({
   const siteSchema = useMemo(() => createSiteSchema(t), [t]);
   const {
     register,
+    control,
     handleSubmit,
     formState: { errors, isSubmitting }
   } = useForm<SiteFormValues>({
@@ -79,16 +68,6 @@ export default function SiteForm({
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
   const resolvedSubmitLabel = submitLabel ?? t('siteForm.actions.save');
-
-  // Ensure the selected/default timezone is always a real <option>, otherwise a
-  // native select silently falls back to its first option (e.g. a partner tz
-  // like "Europe/Paris" that isn't in the short list above).
-  const zones = useMemo(() => {
-    const selected = defaultValues?.timezone;
-    return selected && !timezoneOptions.includes(selected)
-      ? [selected, ...timezoneOptions]
-      : timezoneOptions;
-  }, [defaultValues?.timezone]);
 
   return (
     <form
@@ -118,17 +97,19 @@ export default function SiteForm({
           <label htmlFor="site-timezone" className="text-sm font-medium">
             {t('siteForm.fields.timezone')}
           </label>
-          <select
-            id="site-timezone"
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-            {...register('timezone')}
-          >
-            {zones.map(zone => (
-              <option key={zone} value={zone}>
-                {zone}
-              </option>
-            ))}
-          </select>
+          <Controller
+            name="timezone"
+            control={control}
+            render={({ field }) => (
+              <TimezoneSelect
+                id="site-timezone"
+                label={t('siteForm.fields.timezone')}
+                value={field.value ?? 'UTC'}
+                onChange={field.onChange}
+                testId="site-timezone"
+              />
+            )}
+          />
           {errors.timezone && (
             <p className="text-sm text-destructive">{errors.timezone.message}</p>
           )}
