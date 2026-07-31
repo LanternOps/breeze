@@ -478,6 +478,7 @@ describe('GET /cf-access-login', () => {
 
   it('logout endpoint chains app-domain + team-domain CF logouts ending at /login?signedOut=1', async () => {
     envState.enabled = true;
+    process.env.DASHBOARD_URL = 'https://breeze.example.com';
     const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
       method: 'GET',
       headers: { host: 'breeze.example.com' },
@@ -506,6 +507,7 @@ describe('GET /cf-access-login', () => {
 
   it('logout revokes all user tokens + the refresh jti when a valid refresh cookie is present', async () => {
     envState.enabled = true;
+    process.env.DASHBOARD_URL = 'https://breeze.example.com';
     servicesState.verifyResult = { type: 'refresh', sub: 'user-1', jti: 'jti-current' };
     const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
       method: 'GET',
@@ -522,6 +524,7 @@ describe('GET /cf-access-login', () => {
 
   it('logout with no refresh cookie still clears + 302s without calling revocation', async () => {
     envState.enabled = true;
+    process.env.DASHBOARD_URL = 'https://breeze.example.com';
     const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
       method: 'GET',
       headers: { host: 'breeze.example.com' },
@@ -534,6 +537,7 @@ describe('GET /cf-access-login', () => {
 
   it('logout with an invalid refresh cookie still clears + 302s (no 500)', async () => {
     envState.enabled = true;
+    process.env.DASHBOARD_URL = 'https://breeze.example.com';
     servicesState.verifyResult = null; // verifyToken rejects the cookie
     const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
       method: 'GET',
@@ -550,6 +554,7 @@ describe('GET /cf-access-login', () => {
 
   it('logout still clears + 302s when revocation throws (e.g. Redis down)', async () => {
     envState.enabled = true;
+    process.env.DASHBOARD_URL = 'https://breeze.example.com';
     servicesState.verifyResult = { type: 'refresh', sub: 'user-1', jti: 'jti-current' };
     const services = await import('../../services');
     vi.mocked(services.revokeAllUserTokens).mockRejectedValueOnce(new Error('redis down'));
@@ -595,15 +600,56 @@ describe('GET /cf-access-login', () => {
     expect(loc).not.toContain('evil.attacker.example');
   });
 
-  it('logout falls back to https + Host only when neither env is set', async () => {
+  // #2895: the route used to synthesise the origin from the request Host when
+  // neither env var was set, which made the Location header an open redirect.
+  // It now fails closed on a relative /login instead.
+  it('logout fails closed to a relative /login when neither env is set, never trusting Host', async () => {
     envState.enabled = true;
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
       method: 'GET',
-      headers: { host: 'breeze.example.com', 'x-forwarded-proto': 'http' },
+      headers: { host: 'evil.example', 'x-forwarded-proto': 'http' },
     });
+    expect(res.status).toBe(302);
     const loc = res.headers.get('Location') ?? '';
-    // Scheme is pinned to https even when the request claims otherwise.
-    expect(loc.startsWith('https://breeze.example.com/cdn-cgi/access/logout?returnTo=')).toBe(true);
+    expect(loc).toBe('/login?signedOut=1');
+    expect(loc).not.toContain('evil.example');
+    // The misconfiguration is logged so the operator knows to set DASHBOARD_URL.
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('DASHBOARD_URL'));
+    // The Breeze session is still cleared even though the CF chain is skipped.
+    expect(cookieState.cleared).toBe(true);
+    errSpy.mockRestore();
+  });
+
+  it('logout fails closed when the configured base URL is unparseable, never trusting Host', async () => {
+    envState.enabled = true;
+    process.env.DASHBOARD_URL = 'not a url';
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
+      method: 'GET',
+      headers: { host: 'evil.example' },
+    });
+    expect(res.status).toBe(302);
+    expect(res.headers.get('Location')).toBe('/login?signedOut=1');
+    expect(cookieState.cleared).toBe(true);
+    errSpy.mockRestore();
+  });
+
+  it('logout fails closed when the configured base URL has a non-http(s) scheme', async () => {
+    envState.enabled = true;
+    // `new URL('javascript:...').origin` serialises to the literal "null",
+    // which is truthy and would otherwise land in the Location header.
+    process.env.DASHBOARD_URL = 'javascript:alert(1)';
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
+      method: 'GET',
+      headers: { host: 'evil.example' },
+    });
+    expect(res.status).toBe(302);
+    const loc = res.headers.get('Location') ?? '';
+    expect(loc).toBe('/login?signedOut=1');
+    expect(loc).not.toContain('null');
+    errSpy.mockRestore();
   });
 
   it('rejects an unsafe next param and falls back to /', async () => {

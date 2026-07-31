@@ -343,17 +343,30 @@ cfAccessRedirectLoginRoutes.get('/cf-access-logout', async (c) => {
   let origin = '';
   if (configuredBase) {
     try {
-      origin = new URL(configuredBase).origin;
+      const parsed = new URL(configuredBase);
+      // Only http(s) bases yield a usable origin — anything else (e.g. an
+      // opaque scheme) serialises `origin` to the literal string "null".
+      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+        origin = parsed.origin;
+      }
     } catch {
       origin = '';
     }
   }
   if (!origin) {
-    // Last-resort fallback for deployments without DASHBOARD_URL /
-    // PUBLIC_APP_URL. Scheme is pinned to https — never trust the request
-    // to pick the scheme either.
-    const host = c.req.header('host') ?? '';
-    origin = host ? `https://${host}` : '';
+    // Fail closed (#2895). There is no safe way to synthesise an absolute
+    // origin here: the request Host header is attacker-controllable and
+    // would turn this Location into an open redirect. Skip the CF Access
+    // logout chain (which requires absolute URLs) and land on the relative
+    // /login instead — the Breeze session is already revoked and its cookie
+    // cleared above, so the user is signed out of Breeze either way. Only
+    // the CF Access cookies survive until the operator configures an origin.
+    console.error(
+      '[cf-access-logout] Neither DASHBOARD_URL nor PUBLIC_APP_URL resolves to an http(s) origin — ' +
+        'skipping the Cloudflare Access logout chain and redirecting to /login. ' +
+        'Set DASHBOARD_URL to the public Breeze URL to fully sign users out of Cloudflare Access.'
+    );
+    return new Response(null, { status: 302, headers: { Location: '/login?signedOut=1' } });
   }
 
   // CF Access stores TWO `CF_Authorization` cookies per session:
