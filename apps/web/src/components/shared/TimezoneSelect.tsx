@@ -22,7 +22,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { listIanaTimezones } from '@breeze/shared';
+import { isValidIanaTimezone, listIanaTimezones } from '@breeze/shared';
 import { useClickOutside } from '@/hooks/useClickOutside';
 import '@/lib/i18n';
 
@@ -35,32 +35,37 @@ interface Props {
   label: string;
   /** Applied to the trigger button so an external <label htmlFor> resolves. */
   id?: string;
-  disabled?: boolean;
   testId: string;
 }
 
-// `Intl.DateTimeFormat` per zone is not free and the offsets are stable for the
-// life of the page, so memoize. Rendering all ~418 options means this fills in
-// on first open and costs nothing afterwards.
+// Offsets are decorative, so a runtime that cannot produce them degrades to no
+// hint rather than breaking the picker. `timeZoneName: 'shortOffset'` is ES2022
+// — the same vintage as `Intl.supportedValuesOf` — so on the old runtimes that
+// need `listIanaTimezones()`'s fallback list, this throws for the *option*
+// (i.e. for every zone), not for the zone.
+//
+// Cached because ~418 `Intl.DateTimeFormat` constructions are not free and the
+// list is rendered whole. The cached value can go stale across a DST transition
+// in a tab left open for months; showing a one-hour-off hint beside a correct
+// zone id is a fair trade for not rebuilding 418 formatters on every keystroke.
+// Failures are deliberately NOT cached — caching a failure latches it for the
+// page even when the cause was per-call.
 const offsetCache = new Map<string, string>();
 
 function offsetLabel(timezone: string): string {
   const cached = offsetCache.get(timezone);
   if (cached !== undefined) return cached;
-  let label = '';
   try {
     const parts = new Intl.DateTimeFormat('en-US', {
       timeZone: timezone,
       timeZoneName: 'shortOffset',
     }).formatToParts(new Date());
-    label = parts.find((p) => p.type === 'timeZoneName')?.value ?? '';
+    const label = parts.find((p) => p.type === 'timeZoneName')?.value ?? '';
+    offsetCache.set(timezone, label);
+    return label;
   } catch {
-    // An invalid stored zone must still be selectable/visible — it just gets no
-    // offset hint. Throwing here would blank the whole settings form.
-    label = '';
+    return '';
   }
-  offsetCache.set(timezone, label);
-  return label;
 }
 
 // "Europe/Paris" should match a search for "paris", and "America/New_York" for
@@ -69,7 +74,7 @@ function searchable(timezone: string): string {
   return timezone.toLowerCase().replace(/_/g, ' ');
 }
 
-export default function TimezoneSelect({ value, onChange, label, id, disabled, testId }: Props) {
+export default function TimezoneSelect({ value, onChange, label, id, testId }: Props) {
   const { t } = useTranslation('common');
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -95,13 +100,16 @@ export default function TimezoneSelect({ value, onChange, label, id, disabled, t
     return zones.filter((zone) => searchable(zone).includes(q));
   }, [zones, query]);
 
-  useEffect(() => {
-    setActive(0);
-  }, [query]);
-
+  // `active` has exactly ONE writer per user action, deliberately. An earlier
+  // version reset it from a `[query]` effect *and* seeded it from the open
+  // effect; because the open effect also cleared a stale query, the two fired
+  // on the same commit and the reset won — so opening, typing, pressing Escape,
+  // reopening and pressing Enter committed UTC over the user's real zone. A
+  // picker that silently rewrites a timezone is the bug this file exists to
+  // fix, so the query is now cleared on CLOSE and `active` is set inline by
+  // whichever action changed it.
   useEffect(() => {
     if (!open) return;
-    setQuery('');
     // Open on the committed zone so the list starts where the user left it
     // rather than at UTC — with 418 entries, resetting to the top would mean
     // scrolling from Africa/Abidjan every time.
@@ -110,10 +118,29 @@ export default function TimezoneSelect({ value, onChange, label, id, disabled, t
     searchRef.current?.focus();
   }, [open, value, zones]);
 
-  useClickOutside(open, wrapRef, () => setOpen(false));
+  // Seeding `active` deep in the list (or arrowing past the ~8 visible rows of
+  // `max-h-64`) does nothing on its own — the scroll container stays parked at
+  // Africa/Abidjan while `aria-activedescendant` points elsewhere, so sighted
+  // and screen-reader users see different things. OrgCombobox avoids this by
+  // capping at 50 results; this picker deliberately shows all 418, so it has to
+  // move the viewport itself. A native <select> did this for free.
+  useEffect(() => {
+    if (!open) return;
+    const zone = results[active];
+    if (!zone) return;
+    const el = document.getElementById(optionId(zone));
+    // jsdom has no layout and so no `scrollIntoView`; this is decorative
+    // viewport movement, so feature-detect rather than let tests explode.
+    if (typeof el?.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' });
+    // `results` is intentionally omitted from the deps: this must follow the
+    // cursor, and re-running on every keystroke would fight the browser.
+  }, [active, open]);
 
   const close = () => {
     setOpen(false);
+    // Cleared here rather than on open: leaving a stale query behind is what
+    // forced the open effect to clear it, which is what created the race above.
+    setQuery('');
     triggerRef.current?.focus();
   };
 
@@ -121,6 +148,35 @@ export default function TimezoneSelect({ value, onChange, label, id, disabled, t
     close();
     onChange(timezone);
   };
+
+  // Dismissing by clicking elsewhere must not silently eat a typed-but-
+  // unconfirmed zone. `useClickOutside` fires on mousedown, so the very same
+  // click can land on a Save button afterwards — discarding the query there
+  // would save the OLD zone under a green "Saved", which is exactly the
+  // silent-wrong-value class of bug this component exists to remove.
+  //
+  // Only an UNAMBIGUOUS query is committed (an exact zone id, or a filter that
+  // narrowed to a single row). Anything still ambiguous is a genuine "I changed
+  // my mind" and is discarded, which is what clicking away normally means.
+  const dismiss = () => {
+    const typed = query.trim();
+    if (typed) {
+      const normalized = typed.toLowerCase().replace(/_/g, ' ');
+      const chosen =
+        results.find((zone) => searchable(zone) === normalized) ??
+        (results.length === 1 ? results[0] : undefined);
+      if (chosen && chosen !== value) {
+        setOpen(false);
+        setQuery('');
+        onChange(chosen);
+        return;
+      }
+    }
+    setOpen(false);
+    setQuery('');
+  };
+
+  useClickOutside(open, wrapRef, dismiss);
 
   const onSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Escape') {
@@ -153,8 +209,11 @@ export default function TimezoneSelect({ value, onChange, label, id, disabled, t
         type="button"
         aria-expanded={open}
         aria-haspopup="listbox"
-        aria-label={label}
-        disabled={disabled}
+        // `aria-label` overrides name-from-content, so it must carry the value
+        // too — otherwise the trigger announces only "Timezone, button" and the
+        // committed zone becomes invisible to screen readers, a regression from
+        // the native <select> ("Timezone, combo box, America/New_York").
+        aria-label={`${label}: ${value}`}
         onClick={() => setOpen((v) => !v)}
         onKeyDown={(event) => {
           if (!open && (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ')) {
@@ -181,7 +240,13 @@ export default function TimezoneSelect({ value, onChange, label, id, disabled, t
               ref={searchRef}
               type="text"
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                // Same action, same writer: a new filter always re-homes the
+                // cursor to the top of the NEW result set, so Enter can never
+                // commit a stale index into a different list.
+                setActive(0);
+              }}
               onKeyDown={onSearchKeyDown}
               placeholder={t('shared.timezoneSelect.searchPlaceholder')}
               aria-label={t('shared.timezoneSelect.searchPlaceholder')}
@@ -230,6 +295,15 @@ export default function TimezoneSelect({ value, onChange, label, id, disabled, t
             </p>
           )}
         </div>
+      )}
+      {/* A stored zone the API will reject (`isValidIanaTimezone` guards every
+          timezone write) otherwise looks like an ordinary option, and the user
+          only finds out when an unrelated edit fails to save with a generic
+          error. Name the problem where it can be fixed. */}
+      {value !== '' && !isValidIanaTimezone(value) && (
+        <p className="text-sm text-destructive" data-testid={`${testId}-invalid`}>
+          {t('shared.timezoneSelect.invalidStored', { value })}
+        </p>
       )}
     </div>
   );

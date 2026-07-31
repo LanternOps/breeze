@@ -186,7 +186,8 @@
     },
     "timezoneSelect": {
       "searchPlaceholder": "Pesquisar fusos horários…",
-      "noResults": "Nenhum fuso horário correspondente"
+      "noResults": "Nenhum fuso horário correspondente",
+      "invalidStored": "“{{value}}” não é um fuso horário reconhecido. Escolha um da lista — esta configuração não pode ser salva até que você o faça."
     }
   },
   "dashboard": {

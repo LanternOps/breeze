@@ -52,7 +52,6 @@ export default function SiteForm({
     resolver: zodResolver(siteSchema),
     defaultValues: {
       name: '',
-      timezone: 'UTC',
       addressLine1: '',
       addressLine2: '',
       city: '',
@@ -62,7 +61,10 @@ export default function SiteForm({
       contactName: '',
       contactEmail: '',
       contactPhone: '',
-      ...defaultValues
+      ...defaultValues,
+      // After the spread, so an explicitly-undefined/empty incoming timezone
+      // cannot leave the form value diverging from the 'UTC' the picker shows.
+      timezone: defaultValues?.timezone || 'UTC'
     }
   });
 
@@ -104,7 +106,7 @@ export default function SiteForm({
               <TimezoneSelect
                 id="site-timezone"
                 label={t('siteForm.fields.timezone')}
-                value={field.value ?? 'UTC'}
+                value={field.value || 'UTC'}
                 onChange={field.onChange}
                 testId="site-timezone"
               />

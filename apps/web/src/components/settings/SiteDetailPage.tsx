@@ -144,7 +144,9 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
 
   const populateForm = useCallback((s: SiteDetails) => {
     setFormName(s.name ?? '');
-    setFormTimezone(s.timezone ?? 'UTC');
+    // `||` not `??`: an empty-string timezone must land on UTC too, or the
+    // picker renders a blank control with no value to save.
+    setFormTimezone(s.timezone || 'UTC');
     setFormAddressLine1(s.address?.line1 ?? '');
     setFormAddressLine2(s.address?.line2 ?? '');
     setFormCity(s.address?.city ?? '');

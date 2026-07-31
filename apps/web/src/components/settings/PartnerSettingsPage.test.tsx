@@ -233,6 +233,9 @@ describe('PartnerSettingsPage language control', () => {
       expect(patchCall).toBeDefined();
       const body = JSON.parse((patchCall![1] as RequestInit).body as string);
       expect(body.settings.language).toBe(persistedLocale);
+      // The zone the user picked must reach the PATCH, not just mark the form
+      // dirty — a picker that silently drops the selection is issue #2856.
+      expect(body.settings.timezone).toBe('Europe/London');
     }
   );
 

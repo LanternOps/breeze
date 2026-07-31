@@ -167,7 +167,12 @@ export default function OrganizationsPage() {
         const response = await fetchWithAuth('/orgs/partners/me');
         if (!response.ok) return;
         const data = await response.json();
-        const tz = data?.settings?.timezone;
+        // Mirror PartnerSettingsPage's resolution order: the partner timezone
+        // is a first-class `partners.timezone` column (#1318) that the settings
+        // JSONB key only shadows. Reading the key alone silently pre-selects
+        // UTC for every new site of a partner whose zone reached the column —
+        // the same wrong-default symptom as #2856, one layer up.
+        const tz = data?.settings?.timezone || data?.timezone;
         if (!cancelled && typeof tz === 'string' && tz) setPartnerTimezone(tz);
       } catch {
         /* best-effort; keep UTC default */

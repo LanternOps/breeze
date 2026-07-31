@@ -186,7 +186,8 @@
     },
     "timezoneSelect": {
       "searchPlaceholder": "Search time zones…",
-      "noResults": "No matching time zones"
+      "noResults": "No matching time zones",
+      "invalidStored": "“{{value}}” is not a recognized time zone. Pick one from the list — this setting cannot be saved until you do."
     }
   },
   "dashboard": {

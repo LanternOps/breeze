@@ -104,13 +104,18 @@ export function listIanaTimezones(): string[] {
     supported = [];
   }
 
-  const zones = supported.length > 0 ? supported : [...FALLBACK_IANA_TIMEZONES];
+  const degraded = supported.length === 0;
+  const zones = degraded ? [...FALLBACK_IANA_TIMEZONES] : supported;
   // UTC first (it is the API default), everything else alphabetical.
   const rest = [...new Set(zones.filter((z) => z !== UTC_TIMEZONE))].sort((a, b) =>
     a.localeCompare(b),
   );
-  cachedZones = [UTC_TIMEZONE, ...rest];
-  return [...cachedZones];
+  const result = [UTC_TIMEZONE, ...rest];
+  // Only latch a real answer. Caching the degraded list would pin ~57 zones for
+  // the rest of the process off one early call, with no way back — the classic
+  // cache-a-failure shape. Recomputing the short list is free.
+  if (!degraded) cachedZones = result;
+  return result;
 }
 
 export interface EffectiveTimezoneInput {

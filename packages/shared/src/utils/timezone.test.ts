@@ -165,9 +165,51 @@ describe('listIanaTimezones', () => {
   });
 
   it('returns a defensive copy so a caller mutating the result cannot poison the cache', () => {
+    const original = listIanaTimezones().length;
     const first = listIanaTimezones();
     first.length = 0;
-    expect(listIanaTimezones().length).toBeGreaterThan(100);
+    expect(listIanaTimezones()).toHaveLength(original);
+  });
+
+  it('covers every zone the two legacy hardcoded UI lists offered, even on the fallback path', async () => {
+    // The fallback's doc comment promises this; without an assertion the
+    // promise silently rots on exactly the runtimes that depend on it.
+    const legacy = [
+      'UTC', 'America/Los_Angeles', 'America/Denver', 'America/Chicago',
+      'America/New_York', 'America/Phoenix', 'America/Anchorage',
+      'Pacific/Honolulu', 'Europe/London', 'Europe/Paris', 'Europe/Berlin',
+      'Asia/Tokyo', 'Asia/Shanghai', 'Asia/Singapore', 'Australia/Sydney',
+    ];
+    expect(listIanaTimezones()).toEqual(expect.arrayContaining(legacy));
+
+    vi.resetModules();
+    const supported = Intl.supportedValuesOf;
+    // @ts-expect-error — simulating an older runtime that lacks the ES2022 API.
+    delete Intl.supportedValuesOf;
+    try {
+      const fresh = await import('./timezone');
+      expect(fresh.listIanaTimezones()).toEqual(expect.arrayContaining(legacy));
+    } finally {
+      Intl.supportedValuesOf = supported;
+      vi.resetModules();
+    }
+  });
+
+  it('does not latch the degraded fallback list into the cache', async () => {
+    vi.resetModules();
+    const supported = Intl.supportedValuesOf;
+    // @ts-expect-error — simulating an older runtime that lacks the ES2022 API.
+    delete Intl.supportedValuesOf;
+    let fresh: typeof import('./timezone');
+    try {
+      fresh = await import('./timezone');
+      expect(fresh.listIanaTimezones().length).toBeLessThan(100);
+    } finally {
+      Intl.supportedValuesOf = supported;
+    }
+    // Caching a failure would pin the short list for the whole process.
+    expect(fresh!.listIanaTimezones().length).toBeGreaterThan(100);
+    vi.resetModules();
   });
 
   it('falls back to a broad curated list when Intl.supportedValuesOf is unavailable', async () => {

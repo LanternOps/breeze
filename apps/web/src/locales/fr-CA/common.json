@@ -186,7 +186,8 @@
     },
     "timezoneSelect": {
       "searchPlaceholder": "Rechercher un fuseau horaire…",
-      "noResults": "Aucun fuseau horaire correspondant"
+      "noResults": "Aucun fuseau horaire correspondant",
+      "invalidStored": "« {{value}} » n’est pas un fuseau horaire reconnu. Choisissez-en un dans la liste — ce paramètre ne peut pas être enregistré tant que ce n’est pas fait."
     }
   },
   "dashboard": {
