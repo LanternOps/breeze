@@ -232,8 +232,8 @@ importers:
         specifier: ^12.1.1
         version: 12.1.1
       stripe:
-        specifier: ^22.0.2
-        version: 22.0.2(@types/node@26.1.2)
+        specifier: ^22.3.2
+        version: 22.3.2(@types/node@26.1.2)
       twilio:
         specifier: ^6.0.2
         version: 6.0.2
@@ -10909,8 +10909,8 @@ packages:
     resolution: {integrity: sha512-laJTa3Jb+VQpaC6DseHhF7dXVqHTfJPCRDaEbid/drOhgitgYku/letMUqOXFoWV0zIIUbjpdH2t+tYj4bQMRQ==}
     engines: {node: '>=8'}
 
-  stripe@22.0.2:
-    resolution: {integrity: sha512-2/BLrQ3oB1zlNfeL/LfHFjTGx6EQn0j+ztrrTJHuDjV5VVIpk92oSDaxyKLUr3pG3dnee2LZqhFUv2Bf0G1/3g==}
+  stripe@22.3.2:
+    resolution: {integrity: sha512-O13QOvgEIQvDlTy6Ubb5kB980wpbhmoZNsgCXKILjCMZS67f+bW+6w99k3gnSi/N1lkryoj1WYdpGT5Wc5edjg==}
     engines: {node: '>=18'}
     peerDependencies:
       '@types/node': '>=18'
@@ -15476,9 +15476,7 @@ snapshots:
       metro-runtime: 0.84.4
     transitivePeerDependencies:
       - '@babel/core'
-      - bufferutil
       - supports-color
-      - utf-8-validate
 
   '@react-native/normalize-colors@0.86.0': {}
 
@@ -23477,7 +23475,7 @@ snapshots:
     dependencies:
       min-indent: 1.0.1
 
-  stripe@22.0.2(@types/node@26.1.2):
+  stripe@22.3.2(@types/node@26.1.2):
     optionalDependencies:
       '@types/node': 26.1.2
 
