@@ -2,10 +2,12 @@ import { readFileSync } from 'node:fs';
 
 import { describe, it, expect } from 'vitest';
 
+import { z } from 'zod';
+
 import { TOOL_TIERS } from './aiAgentSdkTools';
 import { aiTools } from './aiTools';
-import { toolInputSchemas } from './aiToolSchemas';
-import { TOOL_PERMISSIONS } from './aiGuardrails';
+import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
+import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 
 /**
  * MCP registration coverage guard (#2605).
@@ -100,74 +102,50 @@ describe('createBreezeMcpServer tool coverage vs TOOL_TIERS', () => {
 /**
  * Registration is necessary but NOT sufficient (#2814). A tool the model can
  * see still fails on every call if the downstream gates don't know it:
+ * `validateToolInput` rejects a tool with no `toolInputSchemas` entry, and
+ * `checkToolPermission` fails closed with no `TOOL_PERMISSIONS` entry. Both
+ * denials reach the model as an ordinary tool error, so the symptom is
+ * identical to #2605 — it quietly falls back to a neighbouring tool.
  *
- *  - `executeTool` runs `validateToolInput`, which REJECTS a tool with no entry
- *    in `toolInputSchemas` ("No input schema registered for tool ...").
- *  - `checkToolPermission` fails closed with "No RBAC permission mapping for
- *    tool ..." when `TOOL_PERMISSIONS` has no entry.
+ * Those two gates are asserted registry-wide in `aiToolsRegistryParity.test.ts`
+ * (which covers the session-aware tools this file's source regexes would miss),
+ * so they are deliberately NOT re-asserted here. What that suite cannot see is
+ * whether the shapes AGREE — which is the drift below.
  *
- * Both denials come back to the model as an ordinary tool error, so the symptom
- * is identical to #2605: the model quietly falls back to a neighbouring tool.
- * All four of `manage_update_rings` / `manage_software_policies` /
- * `manage_peripheral_policies` / `manage_backup_configs` were missing BOTH
- * while sitting in `TOOL_TIERS`, which also made them dead on the external
- * `/api/v1/mcp` server, where they have always been advertised.
- *
- * Scoped to `makeHandler(...)`-routed declarations: that is the wrapper that
- * runs onPreToolUse (RBAC) and dispatches into `executeTool` (Zod). The
- * directly-handled m365_* / google_* declarations bypass both by design and
- * carry their own validation, so neither gate applies to them.
+ * `manage_policy_feature_link` is the cautionary case: its `toolInputSchemas`
+ * enum sat four values behind the enum its own `input_schema` advertised, so
+ * `remote_access` / `pam` / `onedrive_helper` / `vulnerability` were documented
+ * and DB-valid yet rejected at the gate. Key-level drift is worse still,
+ * because `z.object()` STRIPS unknown keys rather than rejecting: a renamed
+ * field vanishes silently, the write lands with defaults, and the tool reports
+ * success. This test pins the advertised contract to the enforced one.
  */
+const CONFIG_POLICY_TOOLS = [
+  'manage_policy_feature_link',
+  'manage_update_rings',
+  'manage_software_policies',
+  'manage_peripheral_policies',
+  'manage_backup_configs',
+] as const;
 
-/** Tool names dispatched through `makeHandler('<name>', ...)`. */
-function makeHandlerToolNames(): string[] {
-  return Array.from(
-    new Set(Array.from(SOURCE.matchAll(/\bmakeHandler\(\s*'([a-z0-9_]+)'/g), (m) => m[1]!)),
-  );
-}
+/** The prerequisite policies a feature link points at via `featurePolicyId`. */
+const PREREQUISITE_TOOLS = CONFIG_POLICY_TOOLS.filter(
+  (name) => name !== 'manage_policy_feature_link',
+);
 
-/**
- * Pre-existing RBAC-mapping gaps, unrelated to the configuration-policy family
- * this guard was extended for. Each is a live instance of the same defect —
- * `checkToolPermission` denies every call for any caller with a role — but
- * picking the right `{ resource, action }` for each is a judgement call that
- * belongs in its own change. Recorded here so the guard stays green on today's
- * state while failing on any NEW offender; the stale check below removes an
- * entry's cover the moment it gets mapped.
- */
-const KNOWN_MISSING_TOOL_PERMISSIONS = [
-  'get_active_users',
-  'get_user_experience_metrics',
-  'get_dns_security',
-  'manage_dns_policy',
-];
-
-describe('declared tools are wired end to end, not just visible', () => {
-  it('every makeHandler-routed tool has a toolInputSchemas entry', () => {
-    const missing = makeHandlerToolNames().filter((name) => !toolInputSchemas[name]);
+describe('advertised input_schema matches the enforced Zod schema (#2814)', () => {
+  it.each(CONFIG_POLICY_TOOLS)('%s advertises exactly the keys it validates', (name) => {
+    const advertised = Object.keys(
+      aiTools.get(name)!.definition.input_schema.properties as Record<string, unknown>,
+    ).sort();
+    const enforced = Object.keys(
+      (toolInputSchemas[name] as z.ZodObject<z.ZodRawShape>).shape,
+    ).sort();
     expect(
-      missing,
-      'validateToolInput rejects these with "No input schema registered", so the model sees an '
-        + 'error on every call and silently substitutes another tool',
-    ).toEqual([]);
-  });
-
-  it('every makeHandler-routed tool has a TOOL_PERMISSIONS entry', () => {
-    const missing = makeHandlerToolNames().filter(
-      (name) => !TOOL_PERMISSIONS[name] && !KNOWN_MISSING_TOOL_PERMISSIONS.includes(name),
-    );
-    expect(
-      missing,
-      'checkToolPermission fails closed with "No RBAC permission mapping" for these',
-    ).toEqual([]);
-  });
-
-  it('keeps KNOWN_MISSING_TOOL_PERMISSIONS honest — every entry is still unmapped', () => {
-    const stale = KNOWN_MISSING_TOOL_PERMISSIONS.filter((name) => TOOL_PERMISSIONS[name]);
-    expect(
-      stale,
-      'these now have a TOOL_PERMISSIONS mapping — drop them from KNOWN_MISSING_TOOL_PERMISSIONS',
-    ).toEqual([]);
+      enforced,
+      'a key the model is told to send but Zod does not know is stripped silently — the write '
+        + 'lands with defaults and the tool still reports success',
+    ).toEqual(advertised);
   });
 });
 
@@ -180,14 +158,6 @@ describe('declared tools are wired end to end, not just visible', () => {
  * can fail — so assert the registry actually answers for all five.
  */
 describe('registry-sourced tool descriptions resolve (#2814)', () => {
-  const CONFIG_POLICY_TOOLS = [
-    'manage_policy_feature_link',
-    'manage_update_rings',
-    'manage_software_policies',
-    'manage_peripheral_policies',
-    'manage_backup_configs',
-  ];
-
   it('every registry-sourced description resolves to non-empty text', () => {
     for (const name of CONFIG_POLICY_TOOLS) {
       const description = aiTools.get(name)?.definition.description;
@@ -201,11 +171,55 @@ describe('registry-sourced tool descriptions resolve (#2814)', () => {
     const description = aiTools.get('manage_policy_feature_link')!.definition.description;
     expect(description).toContain('featurePolicyId');
     expect(description).toContain('inlineSettings');
-    for (const name of CONFIG_POLICY_TOOLS.slice(1)) {
+    for (const name of PREREQUISITE_TOOLS) {
       expect(
         aiTools.get(name)!.definition.description,
         `${name} should point back at manage_policy_feature_link`,
       ).toContain('manage_policy_feature_link');
+    }
+  });
+});
+
+/**
+ * Bounds the model cannot infer from the advertised schema. Each of these
+ * previously passed Zod and died in Postgres, surfacing to the model as a
+ * sanitized driver error it has no way to act on.
+ */
+describe('prerequisite tool bounds match the columns behind them (#2814)', () => {
+  const overLength = 'x'.repeat(201);
+
+  it.each([
+    ['manage_software_policies', { action: 'create', mode: 'blocklist' }],
+    ['manage_peripheral_policies', { action: 'create', deviceClass: 'storage', action_type: 'block' }],
+    ['manage_backup_configs', { action: 'create', type: 'file', provider: 'local' }],
+  ] as const)('%s rejects a name longer than its varchar(200) column', (name, base) => {
+    const result = validateToolInput(name, { ...base, name: overLength });
+    expect(result.success, 'a 201-char name reaches Postgres as 22001').toBe(false);
+    expect(validateToolInput(name, { ...base, name: 'x'.repeat(200) }).success).toBe(true);
+  });
+
+  it('manage_update_rings rejects a source outside the patch_source enum', () => {
+    // "os" belongs to the config-policy patch inlineSettings vocabulary, not to
+    // patch_policies.sources. Unpinned, it reached Postgres as 22P02, which
+    // safeHandler reports as "Invalid ID format — expected a valid UUID".
+    expect(validateToolInput('manage_update_rings', {
+      action: 'create', name: 'Ring', sources: ['os'],
+    }).success).toBe(false);
+    expect(validateToolInput('manage_update_rings', {
+      action: 'create', name: 'Ring', sources: ['microsoft', 'third_party'],
+    }).success).toBe(true);
+  });
+
+  it('manage_policy_feature_link accepts every DB-valid feature type', () => {
+    for (const featureType of CONFIG_FEATURE_TYPES) {
+      expect(
+        validateToolInput('manage_policy_feature_link', {
+          action: 'add',
+          configPolicyId: '00000000-0000-4000-8000-000000000000',
+          featureType,
+        }).success,
+        `featureType "${featureType}" is in config_feature_type but rejected at the gate`,
+      ).toBe(true);
     }
   });
 });

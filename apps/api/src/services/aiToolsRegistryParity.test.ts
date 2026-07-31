@@ -7,13 +7,16 @@ describe('aiTools registry parity', () => {
   const toolNames = Array.from(aiTools.keys());
 
   // Pre-existing registered tools missing schemas/permissions; tracked as known debt for a separate follow-up.
+  //
+  // These are not cosmetic: both gates fail closed, so a listed tool is dead on
+  // every surface that dispatches it — the chat MCP server AND the external
+  // /api/v1/mcp server, which advertises the whole registry via
+  // getToolDefinitions(). That is how the configuration-policy tools stayed
+  // broken through #2814. The two staleness tests at the bottom of this file
+  // stop a fixed tool from silently keeping its exemption.
   const legacySchemaGaps = new Set([
     'query_analytics',
     'get_executive_summary',
-    'manage_update_rings',
-    'manage_software_policies',
-    'manage_peripheral_policies',
-    'manage_backup_configs',
     'query_webhooks',
     'query_psa_status',
     'test_webhook',
@@ -42,10 +45,6 @@ describe('aiTools registry parity', () => {
 
   // Pre-existing registered tools missing schemas/permissions; tracked as known debt for a separate follow-up.
   const legacyPermissionGaps = new Set([
-    'manage_update_rings',
-    'manage_software_policies',
-    'manage_peripheral_policies',
-    'manage_backup_configs',
     'get_network_changes',
     'acknowledge_network_device',
     'configure_network_baseline',
@@ -83,5 +82,27 @@ describe('aiTools registry parity', () => {
     const missing = toolNames.filter(name => !(name in TOOL_PERMISSIONS));
     const untracked = missing.filter(name => !legacyPermissionGaps.has(name));
     expect(untracked, `Tools missing from TOOL_PERMISSIONS: ${untracked.join(', ')}`).toEqual([]);
+  });
+
+  // Both exemption lists above are `.filter()`ed out of the MISSING set, so a
+  // tool that later gets its schema/permission keeps its exemption forever and
+  // the list quietly stops describing reality. These two tests are what make
+  // the lists shrink-only (#2814).
+  it('keeps legacySchemaGaps honest — every entry is still missing a schema', () => {
+    const stale = Array.from(legacySchemaGaps).filter(name => name in toolInputSchemas);
+    expect(stale, `Now have schemas — drop from legacySchemaGaps: ${stale.join(', ')}`).toEqual([]);
+  });
+
+  it('keeps legacyPermissionGaps honest — every entry is still missing a permission', () => {
+    const stale = Array.from(legacyPermissionGaps).filter(name => name in TOOL_PERMISSIONS);
+    expect(stale, `Now have permissions — drop from legacyPermissionGaps: ${stale.join(', ')}`).toEqual([]);
+  });
+
+  // Neither list may name a tool that no longer exists in the registry, which
+  // would otherwise mask a rename.
+  it('neither exemption list names an unregistered tool', () => {
+    const registered = new Set(toolNames);
+    const unknown = [...legacySchemaGaps, ...legacyPermissionGaps].filter(name => !registered.has(name));
+    expect(unknown, `Not in the aiTools registry: ${unknown.join(', ')}`).toEqual([]);
   });
 });

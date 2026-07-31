@@ -430,3 +430,76 @@ describe('manage_backup_configs S3 endpoint validation (Sentry BREEZE-P residual
     expect(setArg.providerConfig.endpoint).toBe('https://minio.internal.example.com:9000/');
   });
 });
+
+/**
+ * `ownerScope: 'partner'` creates a template that applies to EVERY org under
+ * the partner, while the tool's RBAC entry only asks for `policies.write` —
+ * org-level authority. `canManagePartnerWidePolicies` is the sole thing
+ * separating the two, and until #2814 registered these tools nothing could
+ * reach the branch, so nothing covered it.
+ */
+describe('manage_software_policies partner-wide create gate (#2126)', () => {
+  beforeEach(() => {
+    insertMock.mockReset();
+    updateMock.mockReset();
+    selectMock.mockReset();
+  });
+
+  function getSoftwarePoliciesTool() {
+    const tools = new Map<string, any>();
+    registerPolicyPrereqTools(tools);
+    const tool = tools.get('manage_software_policies');
+    if (!tool) throw new Error('manage_software_policies tool not registered');
+    return tool;
+  }
+
+  const CREATE_INPUT = {
+    action: 'create',
+    ownerScope: 'partner',
+    name: 'Partner Blocklist',
+    mode: 'blocklist',
+  };
+
+  it('REFUSES a partner-scoped caller without full org access, and writes nothing', async () => {
+    const auth = { ...makeAuth(), partnerOrgAccess: 'subset' };
+    const output = await getSoftwarePoliciesTool().handler(CREATE_INPUT, auth);
+
+    expect(JSON.parse(output).error).toMatch(/full partner org access/);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('REFUSES an org-scoped caller, and writes nothing', async () => {
+    const output = await getSoftwarePoliciesTool().handler(CREATE_INPUT, makeOrgAuth());
+
+    // Asserted on the specific refusal so this cannot pass on an unrelated
+    // validation error (missing name/mode) once the gate is gone.
+    expect(JSON.parse(output).error).toMatch(/require partner scope/);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('ALLOWS partnerOrgAccess "all" and writes partnerId, never orgId', async () => {
+    mockInsertReturns({ id: 'policy-1', name: 'Partner Blocklist', partnerId: PARTNER_ID, orgId: null });
+    const auth = { ...makeAuth(), partnerOrgAccess: 'all' };
+
+    const output = await getSoftwarePoliciesTool().handler(CREATE_INPUT, auth);
+
+    expect(JSON.parse(output).error).toBeUndefined();
+    const values = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+    expect(values.partnerId).toBe(PARTNER_ID);
+    expect(values.orgId).toBeNull();
+  });
+
+  it('defaults to org ownership when ownerScope is omitted', async () => {
+    mockInsertReturns({ id: 'policy-2', name: 'Org Blocklist', orgId: ORG_ID, partnerId: null });
+
+    const output = await getSoftwarePoliciesTool().handler(
+      { action: 'create', name: 'Org Blocklist', mode: 'blocklist' },
+      makeOrgAuth()
+    );
+
+    expect(JSON.parse(output).error).toBeUndefined();
+    const values = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+    expect(values.orgId).toBe(ORG_ID);
+    expect(values.partnerId).toBeNull();
+  });
+});

@@ -17,8 +17,10 @@ import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
   peripheralPolicyTargetTypeEnum,
-  peripheralEventTypeEnum
+  peripheralEventTypeEnum,
+  patchSourceEnum
 } from '../db/schema';
+import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 
 // Reusable validators
 const uuid = z.string().guid();
@@ -1152,18 +1154,12 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     action: z.enum(['add', 'update', 'remove', 'list']),
     configPolicyId: uuid,
     featureLinkId: uuid.optional(),
-    // Must stay in step with `configFeatureTypeEnum` (db/schema/configurationPolicies.ts)
-    // and the enum advertised in the tool's own definition (aiToolsConfigPolicy.ts).
-    // This list had drifted four values behind both — remote_access / pam /
-    // onedrive_helper / vulnerability were documented and DB-valid but rejected
-    // here, so those feature types could not be linked from AI/MCP at all.
-    featureType: z.enum([
-      'patch', 'alert_rule', 'backup', 'security', 'monitoring',
-      'maintenance', 'compliance', 'automation', 'event_log',
-      'software_policy', 'sensitive_data', 'peripheral_control',
-      'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper',
-      'vulnerability',
-    ]).optional(),
+    // Derived from the canonical list, never hand-copied: this enum had drifted
+    // four values behind `configFeatureTypeEnum` and behind the enum the tool's
+    // own definition advertises, so remote_access / pam / onedrive_helper /
+    // vulnerability were documented and DB-valid but rejected here — those
+    // feature types could not be linked from AI/MCP at all (#2814).
+    featureType: z.enum(CONFIG_FEATURE_TYPES).optional(),
     featurePolicyId: uuid.optional().nullable(),
     inlineSettings: z.record(z.string(), z.unknown()).optional().nullable(),
   }),
@@ -1172,6 +1168,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   // policies that a config policy feature link points at via `featurePolicyId`.
   // Shapes mirror each tool's advertised `input_schema`; without an entry here
   // `validateToolInput` rejects every call with "No input schema registered".
+  // Bounds mirror the HTTP route (routes/updateRings.ts) and the underlying
+  // columns. `patch_policies.name` is varchar(255) here — the three schemas
+  // below are varchar(200); a looser bound just moves the rejection from a
+  // field-level Zod message to an opaque sanitized driver error.
   manage_update_rings: z.object({
     action: z.enum(['list', 'get', 'create', 'update']),
     ringId: uuid.optional(),
@@ -1179,10 +1179,14 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     description: z.string().max(2000).optional(),
     deferralDays: z.number().int().min(0).max(365).optional(),
     deadlineDays: z.number().int().min(0).max(365).optional(),
-    gracePeriodHours: z.number().int().min(0).max(720).optional(),
-    categories: z.array(z.string().max(64)).max(50).optional(),
-    excludeCategories: z.array(z.string().max(64)).max(50).optional(),
-    sources: z.array(z.string().max(64)).max(20).optional(),
+    gracePeriodHours: z.number().int().min(0).max(168).optional(),
+    categories: z.array(z.string().max(100)).max(50).optional(),
+    excludeCategories: z.array(z.string().max(100)).max(50).optional(),
+    // `patch_policies.sources` is patch_source[]. Left as free strings, the
+    // model follows the tool description and sends a value the enum rejects;
+    // Postgres raises 22P02 and safeHandler maps that to "Invalid ID format —
+    // expected a valid UUID", which is unrecoverable guidance (#2814 review).
+    sources: z.array(z.enum(patchSourceEnum.enumValues)).max(20).optional(),
     autoApprove: z.record(z.string(), z.unknown()).optional(),
     enabled: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
@@ -1192,7 +1196,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     action: z.enum(['list', 'get', 'create', 'update']),
     policyId: uuid.optional(),
     ownerScope: z.enum(['organization', 'partner']).optional(),
-    name: z.string().min(1).max(255).optional(),
+    name: z.string().min(1).max(200).optional(),
     description: z.string().max(2000).optional(),
     mode: z.enum(['allowlist', 'blocklist', 'audit']).optional(),
     rules: z.record(z.string(), z.unknown()).optional(),
@@ -1205,7 +1209,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   manage_peripheral_policies: z.object({
     action: z.enum(['list', 'get', 'create', 'update']),
     policyId: uuid.optional(),
-    name: z.string().min(1).max(255).optional(),
+    name: z.string().min(1).max(200).optional(),
     deviceClass: z.enum(peripheralDeviceClassEnum.enumValues).optional(),
     // Named `action_type` in the tool definition to avoid colliding with `action`.
     action_type: z.enum(peripheralPolicyActionEnum.enumValues).optional(),
@@ -1217,7 +1221,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   manage_backup_configs: z.object({
     action: z.enum(['list', 'get', 'create', 'update']),
     configId: uuid.optional(),
-    name: z.string().min(1).max(255).optional(),
+    name: z.string().min(1).max(200).optional(),
     type: z.enum(['file', 'system_image', 'database', 'application']).optional(),
     provider: z.enum(['s3', 'azure_blob', 'google_cloud', 'backblaze', 'local']).optional(),
     providerConfig: z.record(z.string(), z.unknown()).optional(),

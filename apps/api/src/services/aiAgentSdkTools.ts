@@ -19,7 +19,13 @@ import { compactToolResultForChat } from './aiToolOutput';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import type { ActiveSession } from './streamingSessionManager';
 import { waitForPlanApproval } from './aiAgent';
-import { aiActionPlans } from '../db/schema';
+import {
+  aiActionPlans,
+  patchSourceEnum,
+  peripheralDeviceClassEnum,
+  peripheralPolicyActionEnum,
+} from '../db/schema';
+import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
@@ -1834,13 +1840,7 @@ export function createBreezeMcpServer(
         action: z.enum(['add', 'update', 'remove', 'list']),
         configPolicyId: uuid,
         featureLinkId: uuid.optional(),
-        featureType: z.enum([
-          'patch', 'alert_rule', 'backup', 'security', 'monitoring',
-          'maintenance', 'compliance', 'automation', 'event_log',
-          'software_policy', 'sensitive_data', 'peripheral_control',
-          'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper',
-          'vulnerability',
-        ]).optional(),
+        featureType: z.enum(CONFIG_FEATURE_TYPES).optional(),
         featurePolicyId: uuid.optional().nullable(),
         inlineSettings: z.record(z.string(), z.unknown()).optional().nullable(),
       },
@@ -1861,10 +1861,10 @@ export function createBreezeMcpServer(
         description: z.string().max(2000).optional(),
         deferralDays: z.number().int().min(0).max(365).optional(),
         deadlineDays: z.number().int().min(0).max(365).optional(),
-        gracePeriodHours: z.number().int().min(0).max(720).optional(),
-        categories: z.array(z.string().max(64)).max(50).optional(),
-        excludeCategories: z.array(z.string().max(64)).max(50).optional(),
-        sources: z.array(z.string().max(64)).max(20).optional(),
+        gracePeriodHours: z.number().int().min(0).max(168).optional(),
+        categories: z.array(z.string().max(100)).max(50).optional(),
+        excludeCategories: z.array(z.string().max(100)).max(50).optional(),
+        sources: z.array(z.enum(patchSourceEnum.enumValues)).max(20).optional(),
         autoApprove: z.record(z.string(), z.unknown()).optional(),
         enabled: z.boolean().optional(),
         limit: z.number().int().min(1).max(100).optional(),
@@ -1879,7 +1879,7 @@ export function createBreezeMcpServer(
         action: z.enum(['list', 'get', 'create', 'update']),
         policyId: uuid.optional(),
         ownerScope: z.enum(['organization', 'partner']).optional(),
-        name: z.string().min(1).max(255).optional(),
+        name: z.string().min(1).max(200).optional(),
         description: z.string().max(2000).optional(),
         mode: z.enum(['allowlist', 'blocklist', 'audit']).optional(),
         rules: z.record(z.string(), z.unknown()).optional(),
@@ -1897,11 +1897,11 @@ export function createBreezeMcpServer(
       {
         action: z.enum(['list', 'get', 'create', 'update']),
         policyId: uuid.optional(),
-        name: z.string().min(1).max(255).optional(),
-        deviceClass: z.enum(['storage', 'all_usb', 'bluetooth', 'thunderbolt']).optional(),
+        name: z.string().min(1).max(200).optional(),
+        deviceClass: z.enum(peripheralDeviceClassEnum.enumValues).optional(),
         // Named `action_type` (not `action`) by the tool definition so it does
         // not collide with the action multiplexer above.
-        action_type: z.enum(['allow', 'block', 'read_only', 'alert']).optional(),
+        action_type: z.enum(peripheralPolicyActionEnum.enumValues).optional(),
         exceptions: z.array(z.record(z.string(), z.unknown())).max(200).optional(),
         isActive: z.boolean().optional(),
         limit: z.number().int().min(1).max(100).optional(),
@@ -1915,7 +1915,7 @@ export function createBreezeMcpServer(
       {
         action: z.enum(['list', 'get', 'create', 'update']),
         configId: uuid.optional(),
-        name: z.string().min(1).max(255).optional(),
+        name: z.string().min(1).max(200).optional(),
         type: z.enum(['file', 'system_image', 'database', 'application']).optional(),
         provider: z.enum(['s3', 'azure_blob', 'google_cloud', 'backblaze', 'local']).optional(),
         providerConfig: z.record(z.string(), z.unknown()).optional(),
