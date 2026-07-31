@@ -17,6 +17,7 @@ import {
   addFeatureLink,
   assignPolicy,
   updateFeatureLink,
+  listConfigPolicies,
   listFeatureLinks,
   pamInlineSettingsSchema,
   validateFeaturePolicyExists,
@@ -1611,5 +1612,124 @@ describe('remote_access addFeatureLink — unknown keys stripped from the stored
     });
 
     expect(storedJsonb).toEqual({ webrtcDesktop: false });
+  });
+});
+
+// ============================================================================
+// listConfigPolicies — Features column data (#2950)
+// ============================================================================
+
+describe('listConfigPolicies feature links', () => {
+  const ORG_ID = '11111111-1111-1111-1111-111111111111';
+
+  function orgAuth(): any {
+    return {
+      scope: 'organization',
+      orgId: ORG_ID,
+      partnerId: null,
+      accessibleOrgIds: [ORG_ID],
+      canAccessOrg: (id: string) => id === ORG_ID,
+      // Any truthy SQL stands in for the real org filter; the mocked db never
+      // interprets it.
+      orgCondition: () => ({ queryChunks: [] }),
+    };
+  }
+
+  // db.select({count}).from().where() — awaited straight off .where()
+  function countChain(total: number) {
+    const chain: any = {};
+    chain.from = vi.fn(() => chain);
+    chain.where = vi.fn(() => Promise.resolve([{ count: total }]));
+    return chain;
+  }
+
+  // db.select().from().leftJoin().where().orderBy().limit().offset()
+  function pageChain(rows: unknown[]) {
+    const chain: any = {};
+    chain.from = vi.fn(() => chain);
+    chain.leftJoin = vi.fn(() => chain);
+    chain.where = vi.fn(() => chain);
+    chain.orderBy = vi.fn(() => chain);
+    chain.limit = vi.fn(() => chain);
+    chain.offset = vi.fn(() => Promise.resolve(rows));
+    return chain;
+  }
+
+  // db.select().from().where().orderBy() — awaited off .orderBy()
+  function linksChain(rows: unknown[]) {
+    const chain: any = {};
+    chain.from = vi.fn(() => chain);
+    chain.where = vi.fn(() => chain);
+    chain.orderBy = vi.fn(() => Promise.resolve(rows));
+    return chain;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('attaches each policy its own feature links, and an empty array when it has none', async () => {
+    const rows = [
+      { id: 'policy-a', name: 'Workstations', orgId: ORG_ID, orgName: 'OliveTech' },
+      { id: 'policy-b', name: 'Servers', orgId: ORG_ID, orgName: 'OliveTech' },
+    ];
+    const links = linksChain([
+      { id: 'link-1', configPolicyId: 'policy-a', featureType: 'alert_rule' },
+      { id: 'link-2', configPolicyId: 'policy-a', featureType: 'patch' },
+    ]);
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(countChain(2) as any)
+      .mockReturnValueOnce(pageChain(rows) as any)
+      .mockReturnValueOnce(links as any);
+
+    const result = await listConfigPolicies(orgAuth(), {}, { page: 1, limit: 25 });
+
+    expect(result.data).toHaveLength(2);
+    expect(result.data[0]).toMatchObject({
+      id: 'policy-a',
+      featureLinks: [
+        { id: 'link-1', featureType: 'alert_rule' },
+        { id: 'link-2', featureType: 'patch' },
+      ],
+    });
+    // No links of its own — must be [], never another policy's links and never
+    // undefined (the UI renders the em-dash only for a genuinely empty array).
+    expect(result.data[1]).toMatchObject({ id: 'policy-b', featureLinks: [] });
+    // Pre-existing fields are untouched: the change is purely additive.
+    expect(result.data[0]).toMatchObject({ name: 'Workstations', orgName: 'OliveTech' });
+    expect(result.pagination).toEqual({ page: 1, limit: 25, total: 2 });
+  });
+
+  it('batches the feature-link read into ONE statement for the whole page (no N+1)', async () => {
+    const rows = [
+      { id: 'policy-a', name: 'A', orgId: ORG_ID },
+      { id: 'policy-b', name: 'B', orgId: ORG_ID },
+      { id: 'policy-c', name: 'C', orgId: ORG_ID },
+    ];
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(countChain(3) as any)
+      .mockReturnValueOnce(pageChain(rows) as any)
+      .mockReturnValueOnce(linksChain([]) as any);
+
+    await listConfigPolicies(orgAuth(), {}, { page: 1, limit: 25 });
+
+    // count + page + links === 3 total, regardless of how many policies the
+    // page holds. A per-policy read would make this grow with `rows.length`.
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(3);
+  });
+
+  it('skips the feature-link query entirely when the page is empty', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(countChain(0) as any)
+      .mockReturnValueOnce(pageChain([]) as any);
+
+    const result = await listConfigPolicies(orgAuth(), {}, { page: 5, limit: 25 });
+
+    expect(result.data).toEqual([]);
+    // An inArray() against an empty id list is a SQL error in Drizzle, so the
+    // third statement must not be issued at all.
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
   });
 });

@@ -10,6 +10,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { FEATURE_META, type FeatureType } from "./featureTabs/types";
 export type ConfigPolicyStatus = "active" | "inactive" | "archived";
 export type ConfigPolicy = {
   id: string;
@@ -54,16 +55,13 @@ const createStatusConfig = (): Record<
     color: "bg-muted text-muted-foreground border-border",
   },
 });
-const featureTypeLabels: Record<string, string> = {
-  patch: "Patch",
-  alert_rule: "Alert Rule",
-  backup: "Backup",
-  security: "Security",
-  monitoring: "Monitoring",
-  maintenance: "Maintenance",
-  compliance: "Compliance",
-  automation: "Automation",
-};
+// Feature badge labels come from FEATURE_META — the same registry the policy
+// editor's feature tabs render — so the list can't drift from the tab names the
+// user just clicked. The previous local map covered 8 of the 18 canonical
+// feature types and silently fell through to raw enum values for the rest.
+function featureTypeLabel(featureType: string): string {
+  return FEATURE_META[featureType as FeatureType]?.label ?? featureType;
+}
 function formatDate(dateString?: string): string {
   if (!dateString) return "\u2014";
   const date = new Date(dateString);
@@ -78,6 +76,13 @@ export default function ConfigPolicyList({
 }: ConfigPolicyListProps) {
   useTranslation("policies");
   const statusConfig = createStatusConfig();
+  // Accessible names for the icon-only controls (#2950). The row buttons append
+  // the policy name so a screen-reader user can tell one row's Edit from
+  // another's, which a bare "Edit" cannot.
+  const editLabel = i18n.t("common:actions.edit");
+  const deleteLabel = i18n.t("common:actions.delete");
+  const previousPageLabel = i18n.t("common:actions.back");
+  const nextPageLabel = i18n.t("common:actions.next");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [currentPage, setCurrentPage] = useState(1);
@@ -185,7 +190,12 @@ export default function ConfigPolicyList({
               </tr>
             ) : (
               paginatedPolicies.map((policy) => (
-                <tr key={policy.id} className="text-sm">
+                <tr
+                  key={policy.id}
+                  className="text-sm"
+                  data-testid="config-policy-row"
+                  data-policy-id={policy.id}
+                >
                   <td className="px-4 py-3 font-medium text-foreground">
                     <div className="flex items-center gap-2">
                       <span>{policy.name}</span>
@@ -233,13 +243,22 @@ export default function ConfigPolicyList({
                           <span
                             key={link.id}
                             className="inline-flex items-center rounded-full border bg-muted/50 px-2 py-0.5 text-xs text-muted-foreground"
+                            data-testid="config-policy-feature-badge"
+                            data-feature-type={link.featureType}
                           >
-                            {featureTypeLabels[link.featureType] ??
-                              link.featureType}
+                            {featureTypeLabel(link.featureType)}
                           </span>
                         ))
                       ) : (
-                        <span className="text-muted-foreground">&mdash;</span>
+                        <span
+                          className="text-muted-foreground"
+                          data-testid="config-policy-features-empty"
+                        >
+                          <span aria-hidden="true">&mdash;</span>
+                          <span className="sr-only">
+                            {i18n.t("common:labels.none")}
+                          </span>
+                        </span>
                       )}
                     </div>
                   </td>
@@ -252,15 +271,21 @@ export default function ConfigPolicyList({
                         type="button"
                         onClick={() => onEdit?.(policy)}
                         className="inline-flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
+                        title={editLabel}
+                        aria-label={`${editLabel}: ${policy.name}`}
+                        data-testid="config-policy-edit-button"
                       >
-                        <Pencil className="h-4 w-4" />
+                        <Pencil className="h-4 w-4" aria-hidden="true" />
                       </button>
                       <button
                         type="button"
                         onClick={() => onDelete?.(policy)}
                         className="inline-flex h-8 w-8 items-center justify-center rounded-md border text-destructive hover:bg-destructive/10"
+                        title={deleteLabel}
+                        aria-label={`${deleteLabel}: ${policy.name}`}
+                        data-testid="config-policy-delete-button"
                       >
-                        <Trash2 className="h-4 w-4" />
+                        <Trash2 className="h-4 w-4" aria-hidden="true" />
                       </button>
                     </div>
                   </td>
@@ -285,8 +310,11 @@ export default function ConfigPolicyList({
               onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
               disabled={currentPage === 1}
               className="inline-flex h-8 w-8 items-center justify-center rounded-md border disabled:opacity-50"
+              title={previousPageLabel}
+              aria-label={previousPageLabel}
+              data-testid="config-policy-prev-page"
             >
-              <ChevronLeft className="h-4 w-4" />
+              <ChevronLeft className="h-4 w-4" aria-hidden="true" />
             </button>
             <button
               type="button"
@@ -295,8 +323,11 @@ export default function ConfigPolicyList({
               }
               disabled={currentPage === totalPages}
               className="inline-flex h-8 w-8 items-center justify-center rounded-md border disabled:opacity-50"
+              title={nextPageLabel}
+              aria-label={nextPageLabel}
+              data-testid="config-policy-next-page"
             >
-              <ChevronRight className="h-4 w-4" />
+              <ChevronRight className="h-4 w-4" aria-hidden="true" />
             </button>
           </div>
         </div>

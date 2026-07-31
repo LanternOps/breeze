@@ -194,12 +194,20 @@ export default function ConfigurationPoliciesPage() {
         onDelete={handleDelete}
       />
 
-      {modalMode ===
-        i18n.t(
-          "policies:configurationPolicies.configurationPoliciesPage.delete",
-        ) &&
+      {/*
+        Compare against the ModalMode literal, NOT a translated string. An i18n
+        codemod turned this into `modalMode === i18n.t(...'.delete')`, which only
+        ever matched because the en value happened to be the lowercase word
+        "delete" — under fr/de/es/pt it resolves to "supprimer"/"löschen"/…, so
+        the confirmation dialog never rendered and the row Delete button was a
+        silent no-op for those users (#2950).
+      */}
+      {modalMode === "delete" &&
         selectedPolicy && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8"
+            data-testid="config-policy-delete-modal"
+          >
             <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
               <h2 className="text-lg font-semibold">
                 {i18n.t(
@@ -220,6 +228,7 @@ export default function ConfigurationPoliciesPage() {
                   type="button"
                   onClick={handleCloseModal}
                   className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
+                  data-testid="config-policy-delete-cancel"
                 >
                   {i18n.t("common:actions.cancel")}
                 </button>
@@ -228,6 +237,7 @@ export default function ConfigurationPoliciesPage() {
                   onClick={handleConfirmDelete}
                   disabled={submitting}
                   className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                  data-testid="config-policy-delete-confirm"
                 >
                   {submitting
                     ? i18n.t(
