@@ -576,7 +576,7 @@
     "rotateConfirm": "Renouveler « {{name}} » maintenant ? Les inscriptions existantes continueront de fonctionner, mais les nouvelles inscriptions devront utiliser la nouvelle clé.",
     "rotateKey": "Renouveler la clé",
     "deleteExpiredTitle": "Supprimer les clés d’inscription expirées",
-    "deleteExpiredConfirm": "Supprimer toutes les clés d’inscription expirées ? Cela ne peut pas être annulé."
+    "deleteExpiredConfirm": "Supprimer toutes les clés d’inscription expirées ? Les clés qui alimentent encore un lien de téléchargement d’installateur actif sont conservées. Cela ne peut pas être annulé."
   },
   "inboundEmail": {
     "saveError": "Impossible d’enregistrer les paramètres des e-mails entrants : votre session peut nécessiter une nouvelle vérification MFA. Réessayez.",

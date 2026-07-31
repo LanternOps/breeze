@@ -43,6 +43,7 @@ import {
   BootstrapTokenIssuanceError,
 } from "../services/installerBootstrapTokenIssuance";
 import { assertTtlWithinCap, clampTtlToCap } from "../services/enrollmentDefaults";
+import { hasNoLiveUnexhaustedBootstrapToken } from "../services/enrollmentKeyPurgeGuards";
 import { captureException } from "../services/sentry";
 
 // ============================================================
@@ -962,9 +963,24 @@ enrollmentKeyRoutes.post(
 // POST /enrollment-keys/purge-expired - Bulk hard-delete all expired
 // enrollment keys visible to the caller (org/partner/system scoped, same as
 // the GET / list route). Keys with expiresAt IS NULL are never matched by
-// the `lt` condition below and are therefore never deleted. Hard delete is
-// safe here: installer_bootstrap_tokens and deployment_invites both carry
-// ON DELETE CASCADE against enrollment_keys.
+// the `lt` condition below and are therefore never deleted.
+//
+// Hard delete is NOT unconditionally safe (#2832): installer_bootstrap_tokens
+// and deployment_invites both carry ON DELETE CASCADE against
+// enrollment_keys, and for bootstrap tokens that cascade is exactly the
+// problem. The Add Device modal's parent key is a transient 60-minute
+// container, while the bootstrap token minted from it keeps its own
+// independent TTL of up to a year — so a key becomes purge-eligible here one
+// hour after creation while its installer link is still live for another 30
+// days. This route has no grace period at all (unlike the nightly sweep's
+// 7 days), which makes it the FASTEST path to that data loss: one click on
+// the web UI's "Delete expired" button. The `hasNoLiveUnexhaustedBootstrapToken()`
+// condition below is therefore load-bearing, and is shared verbatim with
+// jobs/enrollmentKeyCleanup.ts via services/enrollmentKeyPurgeGuards.ts.
+//
+// deployment_invites needs no such exemption — it has no independent expiry,
+// so an invite is redeemable exactly while its enrollment key is (#2821,
+// pinned by cases (e)-(h) of jobs/enrollmentKeyCleanup.integration.test.ts).
 //
 // Registered BEFORE the /:id-parameterized routes (GET /:id, POST
 // /:id/rotate, DELETE /:id, etc.) so "purge-expired" is never captured as an
@@ -1004,6 +1020,14 @@ enrollmentKeyRoutes.post(
     // never-expiring keys are never touched.
     conditions.push(
       lt(enrollmentKeys.expiresAt, new Date()) as ReturnType<typeof eq>,
+    );
+
+    // #2832: exempt any key still backing a live, unexhausted installer
+    // bootstrap token — see the route's header comment above and the shared
+    // guard's docblock. Without this, "Delete expired" cascades away
+    // 30-day/1-year installer links whose 60-minute parent key aged out.
+    conditions.push(
+      hasNoLiveUnexhaustedBootstrapToken() as ReturnType<typeof eq>,
     );
 
     const deletedRows = await db

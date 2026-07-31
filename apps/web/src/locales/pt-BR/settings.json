@@ -576,7 +576,7 @@
     "rotateConfirm": "Rotacionar \"{{name}}\" agora? Os registros existentes continuarão funcionando, mas os novos deverão usar a nova chave.",
     "rotateKey": "Rotacionar chave",
     "deleteExpiredTitle": "Excluir chaves de registro expiradas",
-    "deleteExpiredConfirm": "Excluir todas as chaves de registro expiradas? Esta ação não pode ser desfeita."
+    "deleteExpiredConfirm": "Excluir todas as chaves de registro expiradas? As chaves que ainda sustentam um link de download do instalador ativo são mantidas. Esta ação não pode ser desfeita."
   },
   "inboundEmail": {
     "saveError": "Não foi possível salvar as configurações de e-mail de entrada — talvez sua sessão precise de nova verificação MFA. Tente novamente.",

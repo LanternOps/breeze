@@ -576,7 +576,7 @@
     "rotateConfirm": "Rotate \"{{name}}\" now? Existing enrollments will continue to work, but new enrollments must use the new key.",
     "rotateKey": "Rotate Key",
     "deleteExpiredTitle": "Delete expired enrollment keys",
-    "deleteExpiredConfirm": "Delete all expired enrollment keys? This cannot be undone."
+    "deleteExpiredConfirm": "Delete all expired enrollment keys? Keys still backing a live installer download link are kept. This cannot be undone."
   },
   "inboundEmail": {
     "saveError": "Could not save inbound email settings — your session may need MFA re-verification. Retry.",
