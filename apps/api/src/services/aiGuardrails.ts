@@ -399,6 +399,36 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     update: { resource: 'policies', action: 'write' },
     delete: { resource: 'policies', action: 'write' },
   },
+  // Policy prerequisite tools (aiToolsPolicyPrereqs.ts) — the standalone
+  // policies a config policy feature link points at via `featurePolicyId`.
+  // Same `policies` resource as the config-policy tools they feed, so a caller
+  // that may create the policy may also create its prerequisites. Without an
+  // entry here `checkToolPermission` fails closed on
+  // "No RBAC permission mapping for tool ...".
+  manage_update_rings: {
+    list: { resource: 'policies', action: 'read' },
+    get: { resource: 'policies', action: 'read' },
+    create: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+  },
+  manage_software_policies: {
+    list: { resource: 'policies', action: 'read' },
+    get: { resource: 'policies', action: 'read' },
+    create: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+  },
+  manage_peripheral_policies: {
+    list: { resource: 'policies', action: 'read' },
+    get: { resource: 'policies', action: 'read' },
+    create: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+  },
+  manage_backup_configs: {
+    list: { resource: 'policies', action: 'read' },
+    get: { resource: 'policies', action: 'read' },
+    create: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+  },
   apply_configuration_policy: { resource: 'policies', action: 'write' },
   remove_configuration_policy_assignment: { resource: 'policies', action: 'write' },
   // Playbook tools

@@ -1152,14 +1152,81 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     action: z.enum(['add', 'update', 'remove', 'list']),
     configPolicyId: uuid,
     featureLinkId: uuid.optional(),
+    // Must stay in step with `configFeatureTypeEnum` (db/schema/configurationPolicies.ts)
+    // and the enum advertised in the tool's own definition (aiToolsConfigPolicy.ts).
+    // This list had drifted four values behind both — remote_access / pam /
+    // onedrive_helper / vulnerability were documented and DB-valid but rejected
+    // here, so those feature types could not be linked from AI/MCP at all.
     featureType: z.enum([
       'patch', 'alert_rule', 'backup', 'security', 'monitoring',
       'maintenance', 'compliance', 'automation', 'event_log',
       'software_policy', 'sensitive_data', 'peripheral_control',
-      'warranty', 'helper',
+      'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper',
+      'vulnerability',
     ]).optional(),
     featurePolicyId: uuid.optional().nullable(),
     inlineSettings: z.record(z.string(), z.unknown()).optional().nullable(),
+  }),
+
+  // Policy prerequisite tools (aiToolsPolicyPrereqs.ts). These are the standalone
+  // policies that a config policy feature link points at via `featurePolicyId`.
+  // Shapes mirror each tool's advertised `input_schema`; without an entry here
+  // `validateToolInput` rejects every call with "No input schema registered".
+  manage_update_rings: z.object({
+    action: z.enum(['list', 'get', 'create', 'update']),
+    ringId: uuid.optional(),
+    name: z.string().min(1).max(255).optional(),
+    description: z.string().max(2000).optional(),
+    deferralDays: z.number().int().min(0).max(365).optional(),
+    deadlineDays: z.number().int().min(0).max(365).optional(),
+    gracePeriodHours: z.number().int().min(0).max(720).optional(),
+    categories: z.array(z.string().max(64)).max(50).optional(),
+    excludeCategories: z.array(z.string().max(64)).max(50).optional(),
+    sources: z.array(z.string().max(64)).max(20).optional(),
+    autoApprove: z.record(z.string(), z.unknown()).optional(),
+    enabled: z.boolean().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  manage_software_policies: z.object({
+    action: z.enum(['list', 'get', 'create', 'update']),
+    policyId: uuid.optional(),
+    ownerScope: z.enum(['organization', 'partner']).optional(),
+    name: z.string().min(1).max(255).optional(),
+    description: z.string().max(2000).optional(),
+    mode: z.enum(['allowlist', 'blocklist', 'audit']).optional(),
+    rules: z.record(z.string(), z.unknown()).optional(),
+    enforceMode: z.boolean().optional(),
+    remediationOptions: z.record(z.string(), z.unknown()).optional(),
+    isActive: z.boolean().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  manage_peripheral_policies: z.object({
+    action: z.enum(['list', 'get', 'create', 'update']),
+    policyId: uuid.optional(),
+    name: z.string().min(1).max(255).optional(),
+    deviceClass: z.enum(peripheralDeviceClassEnum.enumValues).optional(),
+    // Named `action_type` in the tool definition to avoid colliding with `action`.
+    action_type: z.enum(peripheralPolicyActionEnum.enumValues).optional(),
+    exceptions: z.array(z.record(z.string(), z.unknown())).max(200).optional(),
+    isActive: z.boolean().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  manage_backup_configs: z.object({
+    action: z.enum(['list', 'get', 'create', 'update']),
+    configId: uuid.optional(),
+    name: z.string().min(1).max(255).optional(),
+    type: z.enum(['file', 'system_image', 'database', 'application']).optional(),
+    provider: z.enum(['s3', 'azure_blob', 'google_cloud', 'backblaze', 'local']).optional(),
+    providerConfig: z.record(z.string(), z.unknown()).optional(),
+    schedule: z.record(z.string(), z.unknown()).optional(),
+    retention: z.record(z.string(), z.unknown()).optional(),
+    compression: z.boolean().optional(),
+    encryption: z.boolean().optional(),
+    isActive: z.boolean().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
   }),
 
   manage_backup_profiles: z.object({
