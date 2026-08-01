@@ -92,7 +92,7 @@ vi.mock('../middleware/userRateLimit', () => ({
 
 import { db } from '../db';
 import { inArray } from 'drizzle-orm';
-import { devices, alerts } from '../db/schema';
+import { devices, alerts, mobileDevices } from '../db/schema';
 import { authMiddleware, requirePermission } from '../middleware/auth';
 
 const mockSelectLimitChain = (result: unknown) => ({
@@ -234,6 +234,101 @@ describe('mobile routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+    });
+
+    // #2913: the row must be keyed on the phone's per-install id (the header
+    // the app already sends), otherwise mobileDeviceBlockedMiddleware — which
+    // looks that id up — can never match and "block this phone" is inert.
+    describe('installation-id keying (#2913)', () => {
+      const INSTALL = 'install-uuid-abc';
+
+      const registerWithHeader = (app: Hono) =>
+        app.request('/mobile/notifications/register', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-breeze-mobile-device-id': INSTALL
+          },
+          body: JSON.stringify({ token: 'apns-token-1', platform: 'ios' })
+        });
+
+      it('inserts under the installation id, not the push-token hash', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectLimitChain([]) as any)  // no installation-id row
+          .mockReturnValueOnce(mockSelectLimitChain([]) as any); // no legacy row to adopt
+        const values = vi.fn().mockReturnValue({
+          onConflictDoUpdate: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'mobile-1', deviceId: INSTALL, platform: 'ios' }])
+          })
+        });
+        vi.mocked(db.insert).mockReturnValue({ values } as any);
+
+        const res = await registerWithHeader(app);
+
+        expect(res.status).toBe(200);
+        expect(values).toHaveBeenCalledWith(expect.objectContaining({ deviceId: INSTALL }));
+      });
+
+      it('adopts the existing push-derived row in place instead of orphaning it', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectLimitChain([]) as any)
+          .mockReturnValueOnce(
+            mockSelectLimitChain([
+              { id: 'row-legacy', userId: 'user-123', status: 'active', apnsToken: null, fcmToken: null }
+            ]) as any
+          );
+        const set = vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'row-legacy', deviceId: INSTALL, platform: 'ios' }])
+          })
+        });
+        vi.mocked(db.update).mockReturnValue({ set } as any);
+
+        const res = await registerWithHeader(app);
+
+        expect(res.status).toBe(200);
+        // Re-keyed in place: the uuid PK (and every FK pointing at it) survives.
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({ deviceId: INSTALL }));
+        // No second mobile_devices row: the only inserts are audit writes.
+        expect(
+          vi.mocked(db.insert).mock.calls.some(([table]) => table === mobileDevices)
+        ).toBe(false);
+      });
+
+      it('parks another user ACTIVE row aside rather than inheriting it', async () => {
+        // Matching APNs token: the OS mints it per app install, so this proves
+        // the caller really is on the handset that owns the row.
+        vi.mocked(db.select).mockReturnValueOnce(
+          mockSelectLimitChain([
+            { id: 'row-other', userId: 'user-other', status: 'active', apnsToken: 'apns-token-1', fcmToken: null }
+          ]) as any
+        );
+        const displaceSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+        vi.mocked(db.update).mockReturnValue({ set: displaceSet } as any);
+        vi.mocked(db.insert).mockReturnValue(
+          mockInsertOnConflictReturning([{ id: 'mobile-2', deviceId: INSTALL, platform: 'ios' }]) as any
+        );
+
+        const res = await registerWithHeader(app);
+
+        expect(res.status).toBe(200);
+        const salted = displaceSet.mock.calls[0]?.[0].deviceId as string;
+        expect(salted.startsWith(`${INSTALL}-`)).toBe(true);
+      });
+
+      it('409s instead of reporting success when the conflict guard matches no row', async () => {
+        // Previously this returned { success: true } while the token was never
+        // stored — a silent push outage.
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectLimitChain([]) as any)
+          .mockReturnValueOnce(mockSelectLimitChain([]) as any);
+        vi.mocked(db.insert).mockReturnValue(mockInsertOnConflictReturning([]) as any);
+
+        const res = await registerWithHeader(app);
+
+        expect(res.status).toBe(409);
+        expect((await res.json()).code).toBe('device_registration_conflict');
+      });
     });
   });
 
