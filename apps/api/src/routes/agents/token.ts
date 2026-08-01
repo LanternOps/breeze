@@ -59,12 +59,22 @@ const ROTATION_CONFLICT_CODES = {
    */
   CONFLICT: 'rotation_conflict',
   /**
+   * RETRYABLE, and distinct from CONFLICT on purpose. Emitted by phase one when
+   * the caller's CURRENT token no longer matches the stored hash, so nothing was
+   * staged. Retrying with the *same* token fails identically forever — the agent
+   * needs to re-authenticate — whereas the confirm-route `rotation_conflict` is
+   * genuinely transient. Sharing one string across both would make a future
+   * reader of either route draw the wrong conclusion.
+   */
+  STALE_CURRENT: 'rotation_stale_current',
+  /**
    * RETRYABLE. The presented token is the endpoint's CURRENT credential while a
    * different set is staged. Never terminal: the staged copy the agent holds on
    * disk under this token is the credential the server is authenticating it
-   * with, so discarding it would strand the device. It resolves on its own once
-   * the competing staged set clears, at which point confirm returns
-   * `alreadyCurrent`.
+   * with, so discarding it would strand the device. Bounded, not indefinite:
+   * this is only emitted while the competing staged set is LIVE, so once that
+   * set is promoted or its TTL lapses the confirm returns `alreadyCurrent`
+   * instead (see the `pendingRotationLive` gate on the confirm route).
    */
   PENDING_TOKEN_REQUIRED: 'pending_token_required',
   /** TERMINAL. The staged set aged out before the agent could confirm it. */
@@ -211,7 +221,7 @@ tokenRoutes.post('/:id/rotate-token', async (c) => {
         error: 'Token rotation conflict; re-authenticate with the current token',
         // Retryable: nothing was staged, so the agent has no staged set to
         // discard. It simply rotates again on its next trigger.
-        code: ROTATION_CONFLICT_CODES.CONFLICT,
+        code: ROTATION_CONFLICT_CODES.STALE_CURRENT,
       },
       409
     );
@@ -299,7 +309,21 @@ tokenRoutes.post('/:id/rotate-token/confirm', async (c) => {
   // CURRENT token and finds no pending set. That is success, not a conflict —
   // returning an error here would drive an infinite retry loop on a healthy
   // device.
-  if (!device.pendingTokenHash && device.agentTokenHash === authTokenHash) {
+  // Issue #2894 — a staged set may only block this idempotent answer while it is
+  // actually LIVE. Nothing in the system ever nulls an EXPIRED pending hash: the
+  // only writers that clear the column are promotion, re-enrollment and an admin
+  // token reset, and there is no expiry sweeper. Gating on `!pendingTokenHash`
+  // alone therefore let a long-dead staged set wedge this branch shut forever,
+  // so an agent presenting its CURRENT token got `pending_token_required` on
+  // every tick indefinitely — not even bounded by the pending TTL, because the
+  // token it presents keeps authenticating. Mirrors the `pendingRotationLive`
+  // predicate in routes/agents/heartbeat.ts.
+  const pendingRotationLive =
+    !!device.pendingTokenHash &&
+    !!device.pendingTokenExpiresAt &&
+    device.pendingTokenExpiresAt > new Date();
+
+  if (!pendingRotationLive && device.agentTokenHash === authTokenHash) {
     return c.json({ confirmed: true, alreadyCurrent: true }, 200);
   }
 

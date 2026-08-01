@@ -427,9 +427,11 @@ func TestReconcilePendingRotationDiscardsExpiredStagedSet(t *testing.T) {
 func TestConfirmRotationDiscardsOnlyTerminalConflicts(t *testing.T) {
 	tests := []struct {
 		name string
-		// status/body the stubbed confirm endpoint returns.
-		status int
-		body   map[string]any
+		// status/body the stubbed confirm endpoint returns. rawBody wins when set,
+		// for responses that are not valid JSON at all.
+		status  int
+		body    map[string]any
+		rawBody string
 		// true => the staged credentials must be gone from disk afterwards.
 		wantDiscarded bool
 	}{
@@ -483,6 +485,15 @@ func TestConfirmRotationDiscardsOnlyTerminalConflicts(t *testing.T) {
 			body:          map[string]any{"error": "boom"},
 			wantDiscarded: false,
 		},
+		{
+			// A proxy or captive portal answering 200 with HTML. This must be a
+			// visible, retryable failure — not a zero-valued "unconfirmed" that
+			// loops every tick without ever logging why.
+			name:          "200 with an undecodable body is retryable",
+			status:        http.StatusOK,
+			rawBody:       `<html>captive portal</html>`,
+			wantDiscarded: false,
+		},
 	}
 
 	for _, tc := range tests {
@@ -493,6 +504,10 @@ func TestConfirmRotationDiscardsOnlyTerminalConflicts(t *testing.T) {
 				confirmCalls++
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tc.status)
+				if tc.rawBody != "" {
+					_, _ = w.Write([]byte(tc.rawBody))
+					return
+				}
 				_ = json.NewEncoder(w).Encode(tc.body)
 			})
 			srv := httptest.NewServer(mux)
@@ -526,6 +541,14 @@ func TestConfirmRotationDiscardsOnlyTerminalConflicts(t *testing.T) {
 				if persisted.PendingAuthToken != "brz_staged_agent" {
 					t.Errorf("staged auth token = %q, want brz_staged_agent — a retryable conflict "+
 						"must not cost the agent a credential the server may still accept", persisted.PendingAuthToken)
+				}
+				// Retaining the staged set is only half of "retryable". The
+				// per-tick reconcile is gated on this flag, so clearing it here
+				// would leave the set on disk with nothing scheduled to promote
+				// it — recoverable only at the next process start.
+				if !h.pendingRotationOnDisk.Load() {
+					t.Error("pendingRotationOnDisk cleared after a retryable conflict — the staged set " +
+						"is still on disk but the per-tick retry is disarmed")
 				}
 			}
 

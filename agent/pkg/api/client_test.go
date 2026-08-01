@@ -630,16 +630,45 @@ func TestConfirmTokenRotationMapsConflictCodes(t *testing.T) {
 		name   string
 		status int
 		body   string
-		// wantErr is the sentinel the caller must see; nil means "no error".
+		// wantSuccess: the call must return a confirmed response and no error.
+		// Everything else must return an error — the only question is whether
+		// IsRotationTerminal agrees it is safe to discard the staged set.
+		wantSuccess bool
+		// wantErr is the sentinel the caller must see; nil means "any error".
 		wantErr error
 		// wantTerminal is what IsRotationTerminal must report — the actual
 		// decision the heartbeat makes.
 		wantTerminal bool
 	}{
 		{
-			name:   "confirmed",
+			name:        "confirmed",
+			status:      http.StatusOK,
+			body:        `{"confirmed":true,"confirmedAt":"2026-07-31T00:00:00Z"}`,
+			wantSuccess: true,
+		},
+		{
+			// A captive portal / proxy answering 200 with HTML. Ignoring the
+			// decode error would yield a zero-valued result, and the heartbeat's
+			// `return resp.Confirmed` would report failure with NO error and NO
+			// log line — an invisible loop every tick until the TTL lapses.
+			name:   "200 with an undecodable body",
 			status: http.StatusOK,
-			body:   `{"confirmed":true,"confirmedAt":"2026-07-31T00:00:00Z"}`,
+			body:   `<html><body>captive portal</body></html>`,
+		},
+		{
+			name:   "200 with an empty body",
+			status: http.StatusOK,
+			body:   ``,
+		},
+		{
+			name:   "200 that does not actually confirm",
+			status: http.StatusOK,
+			body:   `{"confirmed":false}`,
+		},
+		{
+			name:   "409 with a non-JSON body",
+			status: http.StatusConflict,
+			body:   `<html>WAF blocked</html>`,
 		},
 		{
 			name:         "expired pending rotation",
@@ -709,7 +738,7 @@ func TestConfirmTokenRotationMapsConflictCodes(t *testing.T) {
 
 			resp, err := NewClient(ts.URL, "brz_staged", "agent-1").ConfirmTokenRotation()
 
-			if tc.wantErr == nil && tc.status == http.StatusOK {
+			if tc.wantSuccess {
 				if err != nil {
 					t.Fatalf("ConfirmTokenRotation() error = %v, want nil", err)
 				}
@@ -723,7 +752,8 @@ func TestConfirmTokenRotationMapsConflictCodes(t *testing.T) {
 			}
 
 			if err == nil {
-				t.Fatalf("ConfirmTokenRotation() error = nil, want an error")
+				t.Fatalf("ConfirmTokenRotation() error = nil, want an error — a failure the caller " +
+					"cannot see becomes a silent confirm loop with no log line (#2894)")
 			}
 			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
 				t.Fatalf("ConfirmTokenRotation() error = %v, want %v", err, tc.wantErr)
