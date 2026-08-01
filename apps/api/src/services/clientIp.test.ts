@@ -5,6 +5,7 @@ import {
   getImmediatePeerIpOrUndefined,
   isTrustedProxySource,
   setProxyTrustMetricsRecorder,
+  trustsForwardedHeadersFrom,
   _resetProxyTrustWarnStateForTests,
 } from './clientIp';
 import type { RequestLike } from './auditEvents';
@@ -286,6 +287,43 @@ describe('clientIp', () => {
       expect(message).toContain('[proxy-trust]');
       expect(message).toContain('172.30.0.44');
       expect(message).toContain('TRUSTED_PROXY_CIDRS');
+    });
+
+    // TRANSPORT-001 regression: the FORCE_HTTPS redirect calls
+    // trustsForwardedHeadersFrom and then short-circuits with a 308, so no
+    // handler downstream ever reaches getTrustedClientIp. Before this, a stale
+    // TRUSTED_PROXY_CIDRS produced a total outage (every non-health route 308s,
+    // /health exempt and still 200) with no log line naming the cause.
+    it('warns when trustsForwardedHeadersFrom rejects an untrusted peer carrying X-Forwarded-Proto', () => {
+      const trusted = trustsForwardedHeadersFrom(
+        makeContext({ 'x-forwarded-proto': 'https' }, '172.30.0.44'),
+      );
+
+      expect(trusted).toBe(false);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const message = String(warnSpy.mock.calls[0]?.[0]);
+      expect(message).toContain('[proxy-trust]');
+      expect(message).toContain('172.30.0.44');
+      expect(message).toContain('TRUSTED_PROXY_CIDRS');
+    });
+
+    it('warns when only forwarded-ip headers are present (no X-Forwarded-Proto)', () => {
+      expect(
+        trustsForwardedHeadersFrom(makeContext({ 'x-forwarded-for': '198.51.100.1' }, '172.30.0.44')),
+      ).toBe(false);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not warn for a bare request carrying no forwarded headers at all', () => {
+      expect(trustsForwardedHeadersFrom(makeContext({}, '172.30.0.44'))).toBe(false);
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not warn when the peer IS trusted, and still reports trust', () => {
+      expect(
+        trustsForwardedHeadersFrom(makeContext({ 'x-forwarded-proto': 'https' }, '172.30.0.11')),
+      ).toBe(true);
+      expect(warnSpy).not.toHaveBeenCalled();
     });
 
     it('does not warn when the immediate peer is trusted — and headers are honored as before', () => {

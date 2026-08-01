@@ -182,6 +182,24 @@ function hasForwardedIpHeaders(c: RequestLike): boolean {
   );
 }
 
+/**
+ * Any forwarded header whose value is gated on proxy trust — the IP headers
+ * above plus `X-Forwarded-Proto`.
+ *
+ * `X-Forwarded-Proto` is deliberately NOT in `hasForwardedIpHeaders`, which
+ * exists to answer "did this request carry client-IP attribution". It belongs
+ * here because a peer sending it is just as much evidence of a reverse proxy,
+ * and the FORCE_HTTPS redirect path (TRANSPORT-001) keys off that header
+ * alone — a proxy that forwards only the scheme would otherwise trip the
+ * misconfiguration silently.
+ */
+function hasTrustGatedForwardedHeaders(c: RequestLike): boolean {
+  return (
+    hasForwardedIpHeaders(c)
+    || Boolean(c.req.header('x-forwarded-proto') ?? c.req.header('X-Forwarded-Proto'))
+  );
+}
+
 function warnForwardedHeadersFromUntrustedPeer(peerIp: string | undefined): void {
   // Count every occurrence — Prometheus rates are only useful unsampled.
   proxyTrustMetricsRecorder.onForwardedHeadersFromUntrustedPeer();
@@ -272,7 +290,22 @@ export function trustsForwardedHeadersFrom(c: RequestLike): boolean {
   if (!shouldTrustProxyHeaders()) {
     return false;
   }
-  return isTrustedProxySource(getImmediatePeerIp(c, ''));
+  const peerIp = getImmediatePeerIp(c, '');
+  if (!isTrustedProxySource(peerIp)) {
+    // Same misconfiguration signal getTrustedClientIp emits, and rate-limited
+    // through the same per-peer state. Warning here is not redundant: the
+    // FORCE_HTTPS redirect in middleware/security.ts calls this and then
+    // short-circuits the request with a 308, so no handler downstream ever
+    // reaches getTrustedClientIp to raise it. That combination is silent and
+    // total — a stale TRUSTED_PROXY_CIDRS makes effectiveRequestScheme() read
+    // every request as `http`, so every non-health route 308s while /health
+    // (exempt) keeps returning 200.
+    if (hasTrustGatedForwardedHeaders(c)) {
+      warnForwardedHeadersFromUntrustedPeer(peerIp);
+    }
+    return false;
+  }
+  return true;
 }
 
 // The immediate TCP peer, socket-only — NEVER consults forwarded headers, so
