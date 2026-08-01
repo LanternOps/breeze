@@ -1150,11 +1150,24 @@ jobs:
       # review: 0x17C is ERROR_CLOUD_FILE_INVALID_REQUEST, not the
       # ERROR_CLOUD_FILE_ACCESS_DENIED (395) the OneDrive case needs.
       # Drop the filter when #2523 lands and add the package above.
+      #
+      # The PASS-count assertion is not belt-and-braces: `go test -run` exits 0
+      # with "[no tests to run]" when the regex matches nothing, so a rename
+      # would silently void the only check the Win32 table has anywhere — the
+      # same vacuous-guard failure this repo has hit before. Counting top-level
+      # PASS lines makes that a red, not a green.
       - name: Run Windows backup error-classification tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/backup -run 'TestPermanentWindowsErrnoConstantsMatchWin32|TestClassifyPermanentUploadError|TestLookupPermanentWindowsErrno'
+        shell: pwsh
+        run: |
+          $out = go test ./internal/backup -run 'TestPermanentWindowsErrnoConstantsMatchWin32|TestClassifyPermanentUploadError|TestLookupPermanentWindowsErrno' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -lt 4) { throw "expected at least 4 top-level PASS lines, got $passes - the -run filter matched nothing" }
 
       # -race requires cgo, which remote/desktop cannot satisfy on Windows, so
       # this covers only packages that do not import it (heartbeat and agentapp
