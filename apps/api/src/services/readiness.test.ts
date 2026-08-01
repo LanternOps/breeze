@@ -9,6 +9,10 @@ import {
  * Harness with a controllable clock and mutable dependency state, so a single
  * evaluator instance (one "process lifetime") can be walked through
  * healthy → unhealthy → healthy transitions.
+ *
+ * `workersHealthy` deliberately does NOT fold in `redis` — production keeps the
+ * `db` / `redis` / `workers` / `requireRedis` terms independent, and coupling
+ * them here would let a mutation in one term hide behind another.
  */
 function harness(overrides: Partial<ReadinessEvaluatorOptions> = {}) {
   const state = {
@@ -21,20 +25,23 @@ function harness(overrides: Partial<ReadinessEvaluatorOptions> = {}) {
 
   const checkDb = vi.fn(async () => state.db);
   const checkRedis = vi.fn(async () => state.redis);
-  const workersHealthy = vi.fn((redisOk: boolean) => redisOk && state.workers);
+  const workersHealthy = vi.fn((_redisOk: boolean) => state.workers);
+  const onProbeFailure = vi.fn();
 
   const evaluator = createReadinessEvaluator({
     checkDb,
     checkRedis,
     workersHealthy,
+    onProbeFailure,
     isShuttingDown: () => state.shuttingDown,
     requireRedis: true,
     ttlMs: 5_000,
+    probeTimeoutMs: 1_000,
     now: () => state.clock,
     ...overrides
   });
 
-  return { state, evaluator, checkDb, checkRedis, workersHealthy };
+  return { state, evaluator, checkDb, checkRedis, workersHealthy, onProbeFailure };
 }
 
 describe('createReadinessEvaluator', () => {
@@ -94,123 +101,265 @@ describe('createReadinessEvaluator', () => {
     expect(await evaluator.get()).toMatchObject({ ready: true, db: true });
   });
 
-  it('serves the cached snapshot within the TTL without re-probing', async () => {
-    const { state, evaluator, checkDb, checkRedis } = harness();
+  describe('verdict composition', () => {
+    it('fails readiness on unreachable Redis when Redis is required', async () => {
+      // Isolates the requireRedis term: workers report healthy, db is fine, so
+      // Redis is the only thing that can decide the verdict.
+      const { state, evaluator } = harness({
+        requireRedis: true,
+        workersHealthy: () => true
+      });
 
-    await evaluator.get();
-    state.clock += 4_999;
-    await evaluator.get();
-    await evaluator.get();
-
-    expect(checkDb).toHaveBeenCalledTimes(1);
-    expect(checkRedis).toHaveBeenCalledTimes(1);
-  });
-
-  it('re-probes once the TTL expires', async () => {
-    const { state, evaluator, checkDb } = harness();
-
-    await evaluator.get();
-    state.clock += 5_001;
-    await evaluator.get();
-
-    expect(checkDb).toHaveBeenCalledTimes(2);
-  });
-
-  it('collapses concurrent cache misses into a single probe pair (single-flight)', async () => {
-    let releaseDb: (value: boolean) => void = () => {};
-    const gate = new Promise<boolean>((resolve) => {
-      releaseDb = resolve;
-    });
-    const checkDb = vi.fn(() => gate);
-
-    const { evaluator, checkRedis } = harness({ checkDb });
-
-    const inFlight = [evaluator.get(), evaluator.get(), evaluator.get()];
-    releaseDb(true);
-    const results = await Promise.all(inFlight);
-
-    expect(checkDb).toHaveBeenCalledTimes(1);
-    expect(checkRedis).toHaveBeenCalledTimes(1);
-    expect(results.every((r) => r.ready)).toBe(true);
-  });
-
-  it('re-probes after an in-flight evaluation settles (no stuck single-flight slot)', async () => {
-    const { state, evaluator, checkDb } = harness();
-
-    await Promise.all([evaluator.get(), evaluator.get()]);
-    state.clock += 6_000;
-    await evaluator.get();
-
-    expect(checkDb).toHaveBeenCalledTimes(2);
-  });
-
-  it('reports not-ready during shutdown without probing, even with a warm ready cache', async () => {
-    const { state, evaluator, checkDb, checkRedis } = harness();
-
-    expect((await evaluator.get()).ready).toBe(true);
-    checkDb.mockClear();
-    checkRedis.mockClear();
-
-    state.shuttingDown = true;
-
-    const draining = await evaluator.get();
-    expect(draining).toMatchObject({ ready: false, db: false, redis: false, workers: false });
-    expect(checkDb).not.toHaveBeenCalled();
-    expect(checkRedis).not.toHaveBeenCalled();
-  });
-
-  it('does not resurrect a pre-shutdown cached snapshot after the drain begins', async () => {
-    const { state, evaluator } = harness();
-
-    await evaluator.get();
-    state.shuttingDown = true;
-    await evaluator.get();
-    // Even if the flag were somehow cleared, the stale cache must be gone.
-    state.shuttingDown = false;
-    state.db = false;
-
-    expect((await evaluator.get()).ready).toBe(false);
-  });
-
-  it('ignores Redis for the ready verdict when Redis is optional', async () => {
-    const { state, evaluator } = harness({
-      requireRedis: false,
-      workersHealthy: () => true
+      state.redis = false;
+      expect(await evaluator.get()).toMatchObject({
+        ready: false,
+        db: true,
+        redis: false,
+        workers: true
+      });
     });
 
-    state.redis = false;
-    const snapshot = await evaluator.get();
+    it('ignores Redis for the verdict when Redis is optional', async () => {
+      const { state, evaluator } = harness({
+        requireRedis: false,
+        workersHealthy: () => true
+      });
 
-    expect(snapshot.redis).toBe(false);
-    expect(snapshot.ready).toBe(true);
+      state.redis = false;
+      expect(await evaluator.get()).toMatchObject({ ready: true, redis: false });
+    });
+
+    it('tolerates absent workers caused by an optional Redis, while still reporting workers:false', async () => {
+      // The verdict forgives it; the `workers` field must not lie about it.
+      const { state, evaluator } = harness({
+        requireRedis: false,
+        workersHealthy: (redisOk) => redisOk
+      });
+
+      state.redis = false;
+      expect(await evaluator.get()).toMatchObject({
+        ready: true,
+        redis: false,
+        workers: false
+      });
+    });
+
+    it('still fails readiness when workers are down for a reason other than Redis', async () => {
+      const { evaluator } = harness({ requireRedis: false, workersHealthy: () => false });
+
+      expect(await evaluator.get()).toMatchObject({ ready: false, redis: true, workers: false });
+    });
+
+    it('fails readiness on a database outage regardless of Redis being optional', async () => {
+      const { state, evaluator } = harness({ requireRedis: false, workersHealthy: () => true });
+
+      state.db = false;
+      expect(await evaluator.get()).toMatchObject({ ready: false, db: false });
+    });
+
+    it('passes the freshly probed Redis result to the worker view', async () => {
+      const { state, evaluator, workersHealthy } = harness();
+
+      state.redis = false;
+      await evaluator.get();
+
+      expect(workersHealthy).toHaveBeenCalledWith(false);
+    });
   });
 
-  it('re-probes on every call when the TTL is zero', async () => {
-    const { evaluator, checkDb } = harness({ ttlMs: 0 });
+  describe('caching', () => {
+    it('serves the cached snapshot within the TTL without re-probing', async () => {
+      const { state, evaluator, checkDb, checkRedis } = harness();
 
-    await evaluator.get();
-    await evaluator.get();
+      await evaluator.get();
+      state.clock += 4_999;
+      await evaluator.get();
+      await evaluator.get();
 
-    expect(checkDb).toHaveBeenCalledTimes(2);
+      expect(checkDb).toHaveBeenCalledTimes(1);
+      expect(checkRedis).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-probes once the TTL expires', async () => {
+      const { state, evaluator, checkDb } = harness();
+
+      await evaluator.get();
+      state.clock += 5_001;
+      await evaluator.get();
+
+      expect(checkDb).toHaveBeenCalledTimes(2);
+    });
+
+    it('re-probes on every call when the TTL is zero', async () => {
+      const { evaluator, checkDb } = harness({ ttlMs: 0 });
+
+      await evaluator.get();
+      await evaluator.get();
+
+      expect(checkDb).toHaveBeenCalledTimes(2);
+    });
+
+    it('invalidate() forces the next call to re-probe', async () => {
+      const { evaluator, checkDb } = harness();
+
+      await evaluator.get();
+      evaluator.invalidate();
+      await evaluator.get();
+
+      expect(checkDb).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not let an evaluation invalidated mid-flight write its stale result back', async () => {
+      // Boot ordering: a probe starts while workers are still registering,
+      // initializeWorkers() finishes and invalidates, then the older
+      // evaluation resolves. It must not re-cache the pre-invalidate answer.
+      let release: (value: boolean) => void = () => {};
+      const gate = new Promise<boolean>((resolve) => {
+        release = resolve;
+      });
+      const checkDb = vi.fn(() => gate);
+      const { state, evaluator } = harness({ checkDb });
+
+      const stale = evaluator.get();
+      state.workers = false; // the in-flight snapshot will carry workers:false
+      evaluator.invalidate();
+      release(true);
+      await stale;
+
+      // Workers came good; the next probe must re-evaluate rather than serve
+      // the invalidated snapshot from cache.
+      state.workers = true;
+      const fresh = await evaluator.get();
+
+      expect(fresh.workers).toBe(true);
+      expect(checkDb).toHaveBeenCalledTimes(2);
+    });
   });
 
-  it('invalidate() forces the next call to re-probe', async () => {
-    const { evaluator, checkDb } = harness();
+  describe('single-flight', () => {
+    it('collapses concurrent cache misses into a single probe pair', async () => {
+      let releaseDb: (value: boolean) => void = () => {};
+      const gate = new Promise<boolean>((resolve) => {
+        releaseDb = resolve;
+      });
+      const checkDb = vi.fn(() => gate);
 
-    await evaluator.get();
-    evaluator.invalidate();
-    await evaluator.get();
+      const { evaluator, checkRedis } = harness({ checkDb });
 
-    expect(checkDb).toHaveBeenCalledTimes(2);
+      const inFlight = [evaluator.get(), evaluator.get(), evaluator.get()];
+      releaseDb(true);
+      const results = await Promise.all(inFlight);
+
+      expect(checkDb).toHaveBeenCalledTimes(1);
+      expect(checkRedis).toHaveBeenCalledTimes(1);
+      expect(results.every((r) => r.ready)).toBe(true);
+    });
+
+    it('releases the slot after an evaluation settles', async () => {
+      const { state, evaluator, checkDb } = harness();
+
+      await Promise.all([evaluator.get(), evaluator.get()]);
+      state.clock += 6_000;
+      await evaluator.get();
+
+      expect(checkDb).toHaveBeenCalledTimes(2);
+    });
+
+    it('is not wedged by a probe that throws — the next call still answers', async () => {
+      // A wedged single-flight slot would silence /ready for the rest of the
+      // process, which is a worse latch than the one this module removes.
+      let shouldThrow = true;
+      const checkDb = vi.fn(async () => {
+        if (shouldThrow) throw new Error('pool exhausted');
+        return true;
+      });
+      const { state, evaluator, onProbeFailure } = harness({ checkDb });
+
+      expect(await evaluator.get()).toMatchObject({ ready: false, db: false });
+      expect(onProbeFailure).toHaveBeenCalledWith('db', expect.any(Error));
+
+      shouldThrow = false;
+      state.clock += 6_000;
+      expect(await evaluator.get()).toMatchObject({ ready: true, db: true });
+    });
   });
 
-  it('passes the freshly probed Redis result to the worker view', async () => {
-    const { state, evaluator, workersHealthy } = harness();
+  describe('probe deadlines', () => {
+    it('counts a probe that never settles as unhealthy instead of hanging forever', async () => {
+      // postgres.js has no pool-acquire timeout, so a saturated pool leaves the
+      // query queued indefinitely. Without the deadline this call never
+      // resolves and every later probe awaits the same dead promise.
+      const { evaluator, onProbeFailure } = harness({
+        checkDb: vi.fn(() => new Promise<boolean>(() => {})),
+        probeTimeoutMs: 20
+      });
 
-    state.redis = false;
-    await evaluator.get();
+      expect(await evaluator.get()).toMatchObject({ ready: false, db: false, redis: true });
+      expect(onProbeFailure).toHaveBeenCalledWith('db', expect.any(Error));
+    });
 
-    expect(workersHealthy).toHaveBeenCalledWith(false);
+    it('keeps answering after a timed-out probe, and recovers when the probe does', async () => {
+      let hang = true;
+      const checkDb = vi.fn(() => (hang ? new Promise<boolean>(() => {}) : Promise.resolve(true)));
+      const { state, evaluator } = harness({ checkDb, probeTimeoutMs: 20 });
+
+      expect(await evaluator.get()).toMatchObject({ ready: false, db: false });
+
+      hang = false;
+      state.clock += 6_000;
+      expect(await evaluator.get()).toMatchObject({ ready: true, db: true });
+    });
+
+    it('does not report a failure for a probe that finishes inside its deadline', async () => {
+      const { evaluator, onProbeFailure } = harness({ probeTimeoutMs: 1_000 });
+
+      await evaluator.get();
+
+      expect(onProbeFailure).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('shutdown', () => {
+    it('reports not-ready without probing, even with a warm ready cache', async () => {
+      const { state, evaluator, checkDb, checkRedis } = harness();
+
+      expect((await evaluator.get()).ready).toBe(true);
+      checkDb.mockClear();
+      checkRedis.mockClear();
+
+      state.shuttingDown = true;
+
+      const draining = await evaluator.get();
+      expect(draining).toMatchObject({ ready: false, db: false, redis: false, workers: false });
+      expect(checkDb).not.toHaveBeenCalled();
+      expect(checkRedis).not.toHaveBeenCalled();
+    });
+
+    it('still advances checkedAt while draining', async () => {
+      // A frozen checkedAt is the exact symptom operators used to diagnose
+      // #2974, so the drain response must not reintroduce one.
+      const { state, evaluator } = harness();
+      state.shuttingDown = true;
+
+      const first = await evaluator.get();
+      state.clock += 1_000;
+      const second = await evaluator.get();
+
+      expect(second.checkedAt).not.toBe(first.checkedAt);
+    });
+
+    it('does not resurrect a pre-shutdown cached snapshot after the drain begins', async () => {
+      const { state, evaluator } = harness();
+
+      await evaluator.get();
+      state.shuttingDown = true;
+      await evaluator.get();
+      // Even if the flag were somehow cleared, the stale cache must be gone.
+      state.shuttingDown = false;
+      state.db = false;
+
+      expect((await evaluator.get()).ready).toBe(false);
+    });
   });
 });
 
@@ -219,7 +368,6 @@ describe('computeWorkersHealthy', () => {
     phase: 'started' as const,
     workerStatus: { alertWorkers: true, cisJobs: true },
     redisOk: true,
-    requireRedis: true,
     shuttingDown: false
   };
 
@@ -239,18 +387,18 @@ describe('computeWorkersHealthy', () => {
     expect(computeWorkersHealthy({ ...base, phase: 'pending', workerStatus: {} })).toBe(false);
   });
 
-  it('flips true once initialisation completes, with no other state change', () => {
-    const pending = computeWorkersHealthy({ ...base, phase: 'pending', workerStatus: {} });
-    const started = computeWorkersHealthy(base);
-    expect([pending, started]).toEqual([false, true]);
+  it('is unhealthy while pending even when Redis is also unreachable', () => {
+    // Guard ordering: 'pending' must be checked before the Redis branch, or a
+    // Redis-optional deployment would report healthy before anything started.
+    expect(
+      computeWorkersHealthy({ ...base, phase: 'pending', workerStatus: {}, redisOk: false })
+    ).toBe(false);
   });
 
-  it('is unhealthy when Redis is required and unreachable', () => {
+  it('is unhealthy when Redis is unreachable', () => {
+    // Every tracked worker is BullMQ-backed. Whether the deployment tolerates
+    // that is a verdict decision, not a fact about the workers.
     expect(computeWorkersHealthy({ ...base, redisOk: false })).toBe(false);
-  });
-
-  it('tolerates unreachable Redis when Redis is optional', () => {
-    expect(computeWorkersHealthy({ ...base, redisOk: false, requireRedis: false })).toBe(true);
   });
 
   it('stays unhealthy when Redis recovers but boot never started the workers', () => {
@@ -261,7 +409,29 @@ describe('computeWorkersHealthy', () => {
     ).toBe(false);
   });
 
+  it('is unhealthy when boot skipped the workers and Redis is still down', () => {
+    expect(
+      computeWorkersHealthy({
+        ...base,
+        phase: 'skipped-no-redis',
+        workerStatus: {},
+        redisOk: false
+      })
+    ).toBe(false);
+  });
+
+  it('is unhealthy for a started phase with no recorded workers', () => {
+    // `every` is vacuously true on an empty map. Guarding against that stops a
+    // refactor that marks 'started' too early from reporting a healthy API
+    // with zero workers running.
+    expect(computeWorkersHealthy({ ...base, workerStatus: {} })).toBe(false);
+  });
+
   it('is unhealthy while shutting down', () => {
     expect(computeWorkersHealthy({ ...base, shuttingDown: true })).toBe(false);
+  });
+
+  it('is unhealthy while shutting down even when everything else is healthy', () => {
+    expect(computeWorkersHealthy({ ...base, shuttingDown: true, redisOk: true })).toBe(false);
   });
 });

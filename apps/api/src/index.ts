@@ -329,6 +329,7 @@ import {
   createReadinessEvaluator,
   type WorkerInitPhase
 } from './services/readiness';
+import { createReadinessHandler } from './routes/readiness';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -377,23 +378,65 @@ let workerInitPhase: WorkerInitPhase = 'pending';
  * TTL bounds that to a single probe pair per window regardless of request rate,
  * while staying far below any realistic uptime-check interval so a genuine
  * outage still surfaces within seconds.
+ *
+ * Clamped rather than trusted: a negative value would silently disable the
+ * amplification defence, and an over-large one would re-create #2974 in slow
+ * motion by latching the answer for minutes.
  */
-const READINESS_CACHE_TTL_MS = envInt('READINESS_CACHE_TTL_MS', 5_000);
+const READINESS_CACHE_TTL_MAX_MS = 30_000;
+const readinessTtlRaw = envInt('READINESS_CACHE_TTL_MS', 5_000);
+const READINESS_CACHE_TTL_MS = Math.min(Math.max(readinessTtlRaw, 0), READINESS_CACHE_TTL_MAX_MS);
+if (READINESS_CACHE_TTL_MS !== readinessTtlRaw) {
+  console.warn(
+    `[ready] READINESS_CACHE_TTL_MS=${readinessTtlRaw} out of range, clamped to ${READINESS_CACHE_TTL_MS}ms`
+  );
+}
+
+/**
+ * Per-probe deadline. postgres.js has a connect timeout but no pool-acquire
+ * timeout, so a saturated pool can leave `select 1` queued indefinitely.
+ * Without a deadline that evaluation would never settle and the evaluator's
+ * single-flight slot would never clear, silencing `/ready` for the rest of the
+ * process. Kept well under a typical load-balancer probe timeout.
+ */
+const READINESS_PROBE_TIMEOUT_MS = Math.max(envInt('READINESS_PROBE_TIMEOUT_MS', 3_000), 100);
+
+/**
+ * One-shot guard for the "Redis came back but boot never started the workers"
+ * state. It is terminal until restart and its payload
+ * (`{db:true, redis:true, workers:false}`) is indistinguishable from #2974, so
+ * the explanation has to reach logs and Sentry rather than only a 503 body.
+ */
+let warnedWorkersNeverStarted = false;
 
 const readiness = createReadinessEvaluator({
   checkDb: () => checkDatabaseConnectivity(),
   checkRedis: () => checkRedisConnectivity(),
-  workersHealthy: (redisOk) =>
-    computeWorkersHealthy({
+  workersHealthy: (redisOk) => {
+    if (redisOk && workerInitPhase === 'skipped-no-redis' && !warnedWorkersNeverStarted) {
+      warnedWorkersNeverStarted = true;
+      const message =
+        'Redis is reachable again, but this process skipped worker startup because Redis was down at boot. ' +
+        'No queues are being consumed and /ready will stay not-ready until the API restarts.';
+      console.error(`[ready] ${message}`);
+      captureException(new Error(`[ready] ${message}`));
+    }
+
+    return computeWorkersHealthy({
       phase: workerInitPhase,
       workerStatus,
       redisOk,
-      requireRedis: REQUIRE_REDIS_ON_STARTUP,
       shuttingDown: shutdownInProgress
-    }),
+    });
+  },
   isShuttingDown: () => shutdownInProgress,
   requireRedis: REQUIRE_REDIS_ON_STARTUP,
-  ttlMs: READINESS_CACHE_TTL_MS
+  ttlMs: READINESS_CACHE_TTL_MS,
+  probeTimeoutMs: READINESS_PROBE_TIMEOUT_MS,
+  onProbeFailure: (probeName, error) => {
+    console.error(`[ready] ${probeName} probe failed:`, error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+  }
 });
 
 // Create WebSocket helpers (must be done before routes are registered)
@@ -509,32 +552,16 @@ app.get('/health/ready', async (c) => {
 // Evaluated live on each request, TTL-cached and single-flighted — see
 // `services/readiness.ts`. Response shape is unchanged, except `checkedAt` now
 // actually moves; before #2974 it was frozen at the boot-time snapshot.
-app.get('/ready', async (c) => {
-  let snapshot;
-  try {
-    snapshot = await readiness.get();
-  } catch (error) {
-    // The probes are written to resolve false rather than throw, so reaching
-    // here means the evaluator itself broke. Surface it as not-ready (never a
-    // 500, which probes would read as an ambiguous transport failure) and make
-    // sure the cause is recorded rather than swallowed.
-    console.error('[ready] Readiness evaluation failed:', error);
-    captureException(error instanceof Error ? error : new Error(String(error)));
-    return c.json(
-      {
-        ready: false,
-        db: false,
-        redis: false,
-        workers: false,
-        checkedAt: new Date().toISOString(),
-        error: 'readiness evaluation failed'
-      },
-      503
-    );
-  }
-
-  return c.json(snapshot, snapshot.ready ? 200 : 503);
-});
+app.get(
+  '/ready',
+  createReadinessHandler({
+    evaluator: readiness,
+    onEvaluationError: (error, c) => {
+      console.error('[ready] Readiness evaluation failed:', error);
+      captureException(error instanceof Error ? error : new Error(String(error)), c);
+    }
+  })
+);
 
 // Metrics endpoint (for Prometheus scraping at /metrics)
 app.route('/metrics', metricsRoutes);
@@ -1098,15 +1125,9 @@ const port = parseInt(process.env.API_PORT || '3001', 10);
 
 // Initialize background workers (only if Redis is available)
 const workerStatus: Record<string, boolean> = {};
-export function areWorkersHealthy(): boolean {
-  return computeWorkersHealthy({
-    phase: workerInitPhase,
-    workerStatus,
-    redisOk: isRedisAvailable(),
-    requireRedis: REQUIRE_REDIS_ON_STARTUP,
-    shuttingDown: shutdownInProgress
-  });
-}
+// `areWorkersHealthy()` used to be exported here. It had no callers repo-wide
+// and, now that readiness is evaluated live, a second copy of the worker-health
+// rule could only drift from what `/ready` reports. Use `readiness.get()`.
 export function getWorkerStatus(): Record<string, boolean> { return { ...workerStatus }; }
 
 let server: ReturnType<typeof serve> | null = null;
@@ -1382,6 +1403,12 @@ async function initializeWorkers(): Promise<void> {
       } catch (error) {
         workerStatus[name] = false;
         console.error(`[CRITICAL] Failed to initialize ${name}:`, error);
+        // A failed worker now pins /ready to not-ready for the process
+        // lifetime (previously the boot race often hid it), so the reason has
+        // to reach Sentry — a stdout line can't explain a permanent 503.
+        captureException(
+          error instanceof Error ? error : new Error(String(error))
+        );
       }
     })
   );
