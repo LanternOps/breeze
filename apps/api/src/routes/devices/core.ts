@@ -744,7 +744,10 @@ coreRoutes.get(
             (
               ip_address LIKE '169.254.%'
               OR ip_address LIKE '127.%'
-              OR ip_address LIKE 'fe80:%'
+              -- ILIKE, not LIKE: the column is free text from an agent
+              -- payload, and an uppercase FE80:: would otherwise be graded
+              -- routable and outrank the device's real NIC.
+              OR ip_address ILIKE 'fe80:%'
               OR ip_address = '::1'
             ) ASC,
             interface_name ASC

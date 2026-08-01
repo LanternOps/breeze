@@ -20,29 +20,31 @@ import { deviceMtlsCertificates } from './schema/deviceMtlsCertificates';
 import { manifestSigningKeyDelegations } from './schema/manifestSigningKeys';
 import { devices } from './schema/devices';
 
-// The 2026-08-06-a..f block is reserved by the remediation program: later
-// waves append -d..-f to it, and the ordering tests below assert that the
-// block stays whole so a wave migration can never be interleaved with an
-// unrelated one.
+// The 2026-08-06 date is reserved by the remediation program: its slots are
+// -a..-f, one per wave, and the ordering tests below guard the block against
+// an unrelated migration squatting inside it.
 //
-// They used to assert this as `names.slice(-block.length) === block`, i.e.
-// that the block is the GLOBAL lexical tail. That is stricter than the
-// property those tests describe and than the one they need: it also forbids
-// any migration dated after 2026-08-06 from ever existing, so the next
-// ordinary migration on a later date turns main red for a reason that has
-// nothing to do with the reserved waves. Contiguity is the real invariant —
-// the block occupies consecutive positions — and it holds whether the block
-// sits at the tail or has later-dated migrations after it.
-function expectContiguousBlock(sortedNames: string[], prefix: string): void {
-  const indices = sortedNames
-    .map((name, index) => (name.startsWith(prefix) ? index : -1))
-    .filter((index) => index >= 0);
+// They used to express that as `names.slice(-block.length) === block`, i.e.
+// "the block is the GLOBAL lexical tail". That is not the property they
+// describe, and it is unusable: it forbids any migration dated after
+// 2026-08-06 from ever existing, so the next ordinary migration on a later
+// date reds main for a reason unrelated to the waves.
+//
+// Contiguity is NOT the replacement either — on a localeCompare-sorted list
+// every common-prefix subset is contiguous by construction, so asserting it
+// would always pass and quietly delete the guard.
+//
+// What is both falsifiable and actually intended: every file on the reserved
+// date occupies one of the reserved -a..-f slots. `2026-08-06-bb-whatever.sql`
+// fails this; a legitimate wave file does not.
+const RESERVED_MIGRATION_DATE = '2026-08-06-';
+const RESERVED_SLOT_PATTERN = /^2026-08-06-[a-f]-/;
 
-  const first = indices[0];
-  expect(first).toBeDefined();
-  expect(indices).toEqual(
-    Array.from({ length: indices.length }, (_, offset) => first! + offset),
-  );
+function expectReservedBlockSlotsOnly(names: string[]): void {
+  const block = names.filter((name) => name.startsWith(RESERVED_MIGRATION_DATE));
+
+  expect(block.length).toBeGreaterThan(0);
+  expect(block.filter((name) => !RESERVED_SLOT_PATTERN.test(name))).toEqual([]);
 }
 
 describe('autoMigrate', () => {
@@ -307,7 +309,7 @@ describe('core migration ordering', () => {
     // append to it, so assert the block stays contiguous and is opened by this
     // file — never that it is the single last migration.
     const reservedBlock = ledgerNames.filter((filename) => filename.startsWith('2026-08-06-'));
-    expectContiguousBlock(ledgerNames, '2026-08-06-');
+    expectReservedBlockSlotsOnly(ledgerNames);
     expect(reservedBlock[0]).toBe(reserved);
   });
 });
@@ -377,7 +379,7 @@ describe('Wave 3 durable live authorization expansion', () => {
     // Later waves append -d..-f to the reserved 2026-08-06 block, so assert
     // the block stays contiguous rather than pinning the global tail.
     const reservedBlock = files.filter((file) => file.startsWith('2026-08-06-'));
-    expectContiguousBlock(files, '2026-08-06-');
+    expectReservedBlockSlotsOnly(files);
     // Assert RELATIVE order, not adjacency (see the Wave 6 capability and
     // delegation migration tests below for the full rationale): a sibling
     // branch is free to land its own migration between -b- and -c- in the
@@ -415,7 +417,7 @@ describe('Wave 5 device mTLS certificate history', () => {
     // -d..-f is still reserved for later waves, so assert the block remains
     // contiguous, rather than pinning this file as the single last migration.
     const reservedBlock = files.filter((file) => file.startsWith('2026-08-06-'));
-    expectContiguousBlock(files, '2026-08-06-');
+    expectReservedBlockSlotsOnly(files);
     // Assert RELATIVE order, not adjacency (see the Wave 6 capability and
     // delegation migration tests below for the full rationale): a sibling
     // branch is free to land its own migration between -c- and -d- in the

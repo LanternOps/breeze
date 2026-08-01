@@ -55,8 +55,12 @@ const noIps = device('22222222-2222-2222-2222-222222222222', 'blank-box', {
 const networkAsset = device('33333333-3333-3333-3333-333333333333', 'printer-01', {
   deviceClass: 'network',
   assetType: 'printer',
-  // A discovered asset has a LAN address but never a WAN one.
-  wanIp: null,
+  // wanIp is deliberately NON-null even though the API always sends null for a
+  // discovered asset: the dash has to come from the device-class gate, not
+  // from an empty value. With `wanIp: null` here both branches of
+  // `agentCell(device, device.wanIp || dash)` render a dash and deleting the
+  // gate would leave the test green.
+  wanIp: '198.51.100.99',
   lanIp: '192.168.1.55',
 });
 
@@ -121,6 +125,32 @@ describe('DeviceList — WAN/LAN IP columns (#2503)', () => {
 
     fireEvent.click(header);
     expect(lanIps()).toEqual(['192.168.1.10', '192.168.1.9', '—']);
+  });
+
+  it('sorts WAN IP too, keeping network rows blanks-last in both directions', () => {
+    // Network rows carry no WAN address by construction, so they are the
+    // permanent blanks in this column and must never bury the agent rows.
+    const low = device('66666666-6666-6666-6666-666666666666', 'low-wan', {
+      wanIp: '198.51.100.9',
+    });
+    const high = device('77777777-7777-7777-7777-777777777777', 'high-wan', {
+      wanIp: '198.51.100.10',
+    });
+    const printer = device('88888888-8888-8888-8888-888888888888', 'printer-02', {
+      deviceClass: 'network',
+      assetType: 'printer',
+      wanIp: null,
+    });
+    render(<DeviceList devices={[high, printer, low]} pageSize={50} />);
+
+    const header = screen.getByTitle('Sort by WAN IP');
+    const wanIps = () => screen.getAllByTestId(/-wan-ip$/).map((cell) => cell.textContent);
+
+    fireEvent.click(header);
+    expect(wanIps()).toEqual(['198.51.100.9', '198.51.100.10', '—']);
+
+    fireEvent.click(header);
+    expect(wanIps()).toEqual(['198.51.100.10', '198.51.100.9', '—']);
   });
 
   it('exposes both columns in the picker catalog under their display labels', () => {
