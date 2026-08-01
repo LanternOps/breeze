@@ -106,7 +106,15 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
     setDownloadSuccess(false);
 
     try {
-      // Create enrollment key scoped to the setup site
+      // Create enrollment key scoped to the setup site.
+      //
+      // maxUsage carries the device count for the same reason it does in
+      // AddDeviceModal.handleDownload (#2992) — see the long note there. The
+      // modern Windows / macOS-app-bundle download paths mint no child
+      // enrollment key, so this parent is the row the Enrollment Keys page
+      // shows for the installer, and omitting maxUsage let the API default it
+      // to 1 and render "0 / 1" for an installer minted for X devices. Guided
+      // setup is usually a partner's FIRST look at that page.
       const keyRes = await fetchWithAuth('/enrollment-keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -114,6 +122,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
           name: `Setup installer (${new Date().toISOString().slice(0, 10)})`,
           siteId,
           orgId,
+          maxUsage: deviceCount,
         }),
       });
 
@@ -323,9 +332,10 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
             </label>
             <input
               id="setup-device-count"
+              data-testid="setup-device-count"
               type="number"
               value={deviceCount}
-              onChange={(e) => setDeviceCount(Math.min(1000, Math.max(1, Number(e.target.value) || 1)))}
+              onChange={(e) => setDeviceCount(Math.min(1000, Math.max(1, Math.round(Number(e.target.value)) || 1)))}
               min={1}
               max={1000}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -338,6 +348,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
           {/* Download button */}
           <button
             type="button"
+            data-testid="setup-download-installer"
             onClick={handleDownload}
             disabled={downloading}
             className="w-full h-10 rounded-md bg-primary text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"

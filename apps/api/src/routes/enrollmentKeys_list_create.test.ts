@@ -288,7 +288,13 @@ describe('enrollment key routes — list & create', () => {
   describe('POST /enrollment-keys', () => {
     it('creates a new enrollment key', async () => {
       const created = makeEnrollmentKey();
-      mockInsertValuesReturning([created]);
+      // Capture rather than ignore the insert payload: the returned row is a
+      // fixture, so asserting on the response cannot tell whether maxUsage was
+      // persisted or silently swallowed by the `?? 1` default. The web
+      // installer-download flow depends on that field surviving (#2992), and
+      // createEnrollmentKeySchema is .strict() — a rename here 400s every
+      // installer download, which nothing else in the repo would catch.
+      const captured = mockInsertCapture([created]);
 
       const res = await app.request('/enrollment-keys', {
         method: 'POST',
@@ -302,7 +308,22 @@ describe('enrollment key routes — list & create', () => {
       expect(body.key).toBeDefined();
       expect(typeof body.key).toBe('string');
       expect(body.key.length).toBeGreaterThan(0);
+      expect(captured().maxUsage).toBe(10);
       expect(createAuditLogAsync).toHaveBeenCalledTimes(1);
+    });
+
+    it('defaults maxUsage to 1 when the caller omits it', async () => {
+      const created = makeEnrollmentKey();
+      const captured = mockInsertCapture([created]);
+
+      const res = await app.request('/enrollment-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Test Key' }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(captured().maxUsage).toBe(1);
     });
 
     it('rejects missing name', async () => {

@@ -459,18 +459,37 @@ export default function AddDeviceModal({
     let parentKeyId: string | undefined;
 
     try {
-      // Step 1: Create parent enrollment key (template — the installer itself
-      // carries the enrollment credential, minted from this parent below).
+      // Step 1: Create the parent enrollment key. The installer downloaded in
+      // step 2 carries a single-use *bootstrap token* issued from this parent,
+      // not the parent key itself (only the legacy macOS zip embeds a real
+      // child enrollment key).
       //
       // maxUsage MUST carry the device count (#2992). On the modern
       // bootstrap-token paths (Windows, and macOS app-bundle) the download
-      // route mints NO child enrollment key — the real device-count cap lives
-      // on the installer_bootstrap_tokens row, which the Enrollment Keys page
-      // never reads. So this parent is the ONLY row that page shows for a
-      // downloaded installer, and omitting maxUsage let the server default it
-      // to 1 (`data.maxUsage ?? 1`), rendering "0 / 1" for an installer minted
-      // for X devices. Generate Link / CLI escape the defect only because they
-      // insert a child row carrying the real count.
+      // route mints NO child enrollment key — the real device-count cap lands
+      // on the installer_bootstrap_tokens row, a table the Enrollment Keys page
+      // never reads. So *at download time* this parent is the only row that
+      // page has to show, and omitting maxUsage let the API default it to 1
+      // (`data.maxUsage ?? 1`), rendering "0 / 1" for an installer minted for
+      // X devices.
+      //
+      // Two things this does NOT do, both deliberate:
+      //  - The numerator stays 0. Redemption increments
+      //    installer_bootstrap_tokens.consumed_count and mints a fresh
+      //    single-use CHILD key per device; nothing ever bumps the parent's
+      //    usage_count. Enrollment progress shows up as those child rows
+      //    appearing, not as this fraction climbing. Surfacing the token's
+      //    consumed_count on this row is the follow-up (see PR #2993).
+      //  - handleGenerateLink below still omits maxUsage on purpose: the
+      //    installer-link route inserts a child row carrying the real count,
+      //    so setting it here too would print the same cap on two rows.
+      //
+      // Note this parent is a live credential, not merely a display row —
+      // /agents/enroll gates on usage_count < max_usage — so this widens its
+      // direct-enrollment budget from 1 to deviceCount for its 60-minute life.
+      // Accepted: the raw key is returned only to this browser and dropped
+      // below (we keep `id` alone), and the cap now matches what the operator
+      // asked for rather than under-reporting it.
       const keyRes = await fetchWithAuth("/enrollment-keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -810,11 +829,17 @@ export default function AddDeviceModal({
                     data-testid="device-count"
                     type="number"
                     value={deviceCount}
+                    // Round: the field has no `step` and isn't in a <form>, so
+                    // "2.5" is reachable. Both mint routes bound this to an
+                    // int (`maxUsage` on the parent key POST, `count` on the
+                    // download), and a fraction 400s with a wire field name the
+                    // operator has never seen. Clamp it to something valid here
+                    // instead.
                     onChange={(e) =>
                       setDeviceCount(
                         Math.min(
                           1000,
-                          Math.max(1, Number(e.target.value) || 1),
+                          Math.max(1, Math.round(Number(e.target.value)) || 1),
                         ),
                       )
                     }
