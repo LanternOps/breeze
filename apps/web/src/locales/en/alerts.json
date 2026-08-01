@@ -356,7 +356,12 @@
     },
     "retiredConditionWarning": "The \"{{type}}\" condition type is no longer supported and never triggered an alert. Remove this condition to save the rule.",
     "retiredConditionBlocksSave": "Unsupported condition type \"{{type}}\" — remove this condition before saving.",
-    "readOnlyConditionNote": "The \"{{type}}\" condition type can’t be edited here. It is kept exactly as stored."
+    "readOnlyConditionNote": "The \"{{type}}\" condition type can’t be edited here. It is kept exactly as stored.",
+    "conditionsBlockSaveSummary": "At least one condition must be fixed before this rule can be saved.",
+    "invalidMetric": "Select a metric.",
+    "invalidOperator": "Select an operator.",
+    "invalidValue": "Enter a value between 0 and 100.",
+    "invalidDuration": "Enter at least 1 minute."
   },
   "alertRuleList": {
     "editRule": "Edit rule",

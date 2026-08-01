@@ -287,9 +287,22 @@ ruleRoutes.patch(
         return c.json({ error: 'No updates provided' }, 400);
       }
 
+      // Narrower than the /alerts/rules guard on purpose: updateRuleSchema
+      // (./schemas.ts) has no overrideSettings/overrides passthrough, so there
+      // is no second key to smuggle conditions through. Add one and this must
+      // widen to match.
       const updateConditionTypeError = retiredConditionTypeError(updates.conditions);
       if (updateConditionTypeError) {
         return c.json({ error: updateConditionTypeError }, 400);
+      }
+
+      // This route accepts `enabled` too, so it is a second re-activation path
+      // alongside the toggle below — and it carries no conditions either.
+      if (updates.enabled === true && !existing.isActive) {
+        const reactivationError = await retiredConditionReactivationError(existing);
+        if (reactivationError) {
+          return c.json({ error: reactivationError }, 400);
+        }
       }
 
       const setValues: Record<string, unknown> = {};

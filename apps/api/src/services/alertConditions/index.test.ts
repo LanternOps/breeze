@@ -16,7 +16,7 @@ vi.mock('./utils', async (importOriginal) => {
 });
 
 import './index';
-import { evaluateConditions, findRetiredConditionTypes, retiredConditionTypeError } from './index';
+import { conditionPayloadsFrom, evaluateConditions, findRetiredConditionTypes, retiredConditionTypeError } from './index';
 import { conditionRegistry } from './registry';
 import { offlineHandler } from './handlers/offline';
 
@@ -69,13 +69,13 @@ describe('evaluateConditions context.actualValue (issue #1980)', () => {
 
 describe('findRetiredConditionTypes (issue #2948)', () => {
   it('flags the retired `custom` type, which never had an evaluator', () => {
-    expect(findRetiredConditionTypes([{ type: 'custom', customCondition: 'x' }])).toEqual(['custom']);
+    expect(findRetiredConditionTypes([{ type: 'custom', customCondition: 'x' }]).retired).toEqual(['custom']);
   });
 
   it('flags a bare root object, the shape the alert-template routes accept', () => {
     // Those routes validate `conditions` as z.record — an OBJECT, never an
     // array — so the un-wrapped shape is the dominant one there.
-    expect(findRetiredConditionTypes({ type: 'custom' })).toEqual(['custom']);
+    expect(findRetiredConditionTypes({ type: 'custom' }).retired).toEqual(['custom']);
   });
 
   it('descends into the alert-template editor envelope (`conditions.triggers`)', () => {
@@ -88,7 +88,7 @@ describe('findRetiredConditionTypes (issue #2948)', () => {
       thresholdDefaults: {},
       suppression: {},
     };
-    expect(findRetiredConditionTypes(payload)).toEqual(['custom']);
+    expect(findRetiredConditionTypes(payload).retired).toEqual(['custom']);
   });
 
   it('does NOT flag live types that have no registry handler', () => {
@@ -102,7 +102,7 @@ describe('findRetiredConditionTypes (issue #2948)', () => {
       { type: 'dns_threat', eventType: 'dns.threat.blocked', categories: ['malware'] },
       { type: 'event', eventSource: 'system', pattern: 'disk' },
     ];
-    expect(findRetiredConditionTypes(live)).toEqual([]);
+    expect(findRetiredConditionTypes(live).retired).toEqual([]);
     for (const condition of live) {
       expect(conditionRegistry.get(condition.type)).toBeUndefined();
     }
@@ -118,7 +118,7 @@ describe('findRetiredConditionTypes (issue #2948)', () => {
       { type: 'service_stopped', serviceName: 'spooler' },
       { type: 'cert_expiry', withinDays: 30 },
     ];
-    expect(findRetiredConditionTypes(supported)).toEqual([]);
+    expect(findRetiredConditionTypes(supported).retired).toEqual([]);
   });
 
   it('walks into nested condition groups', () => {
@@ -129,30 +129,62 @@ describe('findRetiredConditionTypes (issue #2948)', () => {
         { logic: 'and', conditions: [{ type: 'custom' }] },
       ],
     };
-    expect(findRetiredConditionTypes(tree)).toEqual(['custom']);
+    expect(findRetiredConditionTypes(tree).retired).toEqual(['custom']);
   });
 
   it('dedupes repeated retired types', () => {
-    expect(findRetiredConditionTypes([{ type: 'custom' }, { type: 'custom' }])).toEqual(['custom']);
+    expect(findRetiredConditionTypes([{ type: 'custom' }, { type: 'custom' }]).retired).toEqual(['custom']);
   });
 
   it('ignores non-object and typeless nodes rather than inventing an error', () => {
-    expect(findRetiredConditionTypes([null, 'nope', 42, {}, { type: 7 }])).toEqual([]);
+    expect(findRetiredConditionTypes([null, 'nope', 42, {}, { type: 7 }]).retired).toEqual([]);
   });
 
-  it('truncates a pathologically deep tree instead of blowing the stack', () => {
+  it('reports truncation — never a clean result — on a pathologically deep tree', () => {
     let node: Record<string, unknown> = { type: 'custom' };
     for (let i = 0; i < 5000; i++) node = { logic: 'and', conditions: [node] };
-    // Documents the deliberate fail-OPEN: past MAX_CONDITION_DEPTH the walk
-    // reports nothing and the write is accepted. The evaluator has no depth
-    // limit and still fails such a condition closed, so this degrades to the
-    // pre-fix behaviour rather than to a false rejection.
-    expect(findRetiredConditionTypes(node)).toEqual([]);
+    const scan = findRetiredConditionTypes(node);
+    // The walk cannot reach the retired leaf, so `retired` is empty — but
+    // `truncated` says the answer is inconclusive, and the caller must reject.
+    expect(scan.retired).toEqual([]);
+    expect(scan.truncated).toBe(true);
   });
 
-  it('does not run away on a wide payload', () => {
+  it('reports truncation on a payload wider than the node budget', () => {
     const wide = Array.from({ length: 20000 }, () => ({ type: 'metric', metric: 'cpu' }));
-    expect(findRetiredConditionTypes(wide)).toEqual([]);
+    expect(findRetiredConditionTypes(wide).truncated).toBe(true);
+  });
+
+  it('does not spend node budget on primitives inside arrays', () => {
+    // A flat array of strings was the cheapest way to exhaust the budget and
+    // blank the guard. Arrays of primitives must cost nothing.
+    const padded = { targetIds: Array.from({ length: 20000 }, (_, i) => `device-${i}`), conditions: [{ type: 'custom' }] };
+    const scan = findRetiredConditionTypes(padded);
+    expect(scan.retired).toEqual(['custom']);
+    expect(scan.truncated).toBe(false);
+  });
+
+  it('does not charge a nesting level for the array inside a group', () => {
+    // A `{logic, conditions[]}` level costs ONE, matching the evaluator's own
+    // recursion. Charging the array too halved the usable depth silently.
+    let node: Record<string, unknown> = { type: 'custom' };
+    for (let i = 0; i < 8; i++) node = { logic: 'and', conditions: [node] };
+    expect(findRetiredConditionTypes(node).retired).toEqual(['custom']);
+  });
+});
+
+describe('conditionPayloadsFrom (issue #2948)', () => {
+  it('extracts only the two keys the evaluator reads back', () => {
+    expect(conditionPayloadsFrom({
+      conditions: [{ type: 'custom' }],
+      autoResolveConditions: [{ type: 'metric' }],
+      targetIds: ['a', 'b'],
+      targets: { type: 'all' },
+    })).toEqual([[{ type: 'custom' }], [{ type: 'metric' }]]);
+  });
+
+  it('returns nothing for non-records', () => {
+    for (const v of [null, undefined, 'x', 7, [1, 2]]) expect(conditionPayloadsFrom(v)).toEqual([]);
   });
 });
 
@@ -164,6 +196,13 @@ describe('retiredConditionTypeError (issue #2948)', () => {
 
   it('returns null for a supported condition', () => {
     expect(retiredConditionTypeError([{ type: 'metric', metric: 'cpu', operator: 'gt', value: 85 }])).toBeNull();
+  });
+
+  it('fails CLOSED when the payload is too big to scan conclusively', () => {
+    // An inconclusive scan reported as clean re-opens the whole #2948 hole.
+    const huge = Array.from({ length: 20000 }, () => ({ nested: { deep: {} } }));
+    const message = retiredConditionTypeError(huge);
+    expect(message).toMatch(/too large or too deeply nested/i);
   });
 
   it('names the offending type and says what to do about it', () => {

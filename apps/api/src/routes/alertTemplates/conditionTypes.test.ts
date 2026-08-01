@@ -55,7 +55,15 @@ function makeDb() {
   return { select: () => chain, update: () => chain, insert: () => chain, delete: () => chain };
 }
 
-vi.mock('../../db', () => ({ db: makeDb() }));
+vi.mock('../../db', () => ({
+  db: makeDb(),
+  // The re-activation gate reads alert_templates in a SYSTEM context: an
+  // org-scoped caller cannot see a partner-owned template, and a zero-row read
+  // would look like "no retired conditions". Pass-throughs here so the test
+  // exercises the real query.
+  runOutsideDbContext: (fn: () => unknown) => fn(),
+  withSystemDbAccessContext: (fn: () => unknown) => fn(),
+}));
 vi.mock('../../db/schema', () => ({
   alertRules: { id: 'id', orgId: 'orgId', isActive: 'isActive', templateId: 'templateId' },
   alertTemplates: { id: 'id', orgId: 'orgId', conditions: 'conditions' },
@@ -193,6 +201,40 @@ describe('alert-template condition types (#2948)', () => {
     const res = await request(ruleRoutes, `/alert-templates/rules/${RULE_ID}/toggle`, 'POST', { enabled: true });
 
     expect(res.status).not.toBe(400);
+  });
+
+  it('fails CLOSED when the rule\'s template cannot be read', async () => {
+    // alert_templates SELECT is org-access OR partner-access OR built-in, and an
+    // org token never passes the partner branch — yet an org-owned rule may point
+    // at a partner-owned template. A zero-row read must not read as "nothing
+    // retired", or the gate waves through the rule it exists to stop.
+    dbRef.current = [
+      [{ partnerId: null }],
+      [{ id: RULE_ID, orgId: 'org-1', isActive: false, templateId: TEMPLATE_ID, overrideSettings: {} }],
+      [], // template invisible
+    ];
+
+    const res = await request(ruleRoutes, `/alert-templates/rules/${RULE_ID}/toggle`, 'POST', { enabled: true });
+
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toMatch(/could not be read/i);
+  });
+
+  // PATCH accepts `enabled` too, so it is a second re-activation path. It was
+  // ungated while the toggle route two functions below it was gated.
+  it('refuses to re-enable via PATCH, not just via the toggle route', async () => {
+    dbRef.current = [
+      [{ partnerId: null }],
+      [{
+        id: RULE_ID, orgId: 'org-1', isActive: false, templateId: TEMPLATE_ID,
+        overrideSettings: { conditions: [{ type: 'custom' }] },
+      }],
+    ];
+
+    const res = await request(ruleRoutes, `/alert-templates/rules/${RULE_ID}`, 'PATCH', { enabled: true });
+
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toMatch(/cannot be re-enabled/i);
   });
 
   it('does not re-check an already-active rule being toggled off', async () => {

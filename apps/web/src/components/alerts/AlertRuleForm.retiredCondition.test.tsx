@@ -119,6 +119,35 @@ describe('AlertRuleForm retired `custom` condition (#2948)', () => {
     });
   });
 
+  // Regression for the shape-validation over-reach: `value` is a PERCENT for
+  // metric conditions but Mbps for bandwidth_high and MB/s for disk_io_high, and
+  // a canonical `threshold` names `ramPercent` — all outside the editor's own
+  // enums. Validating those eagerly blocked Save with no visible error and, as
+  // the only condition, left the rule unremovable and permanently uneditable.
+  it.each([
+    ['bandwidth_high (Mbps far above the percent ceiling)', { type: 'bandwidth_high', direction: 'in', operator: 'gt', value: 500 }],
+    ['threshold with a canonical metric name', { type: 'threshold', metric: 'ramPercent', operator: 'gt', value: 90 }],
+  ])('saves a read-only %s condition verbatim instead of silently blocking', async (_name, condition) => {
+    const onSubmit = renderForm([condition]);
+
+    fireEvent.submit(screen.getByTestId('condition-readonly-0').closest('form')!);
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+    });
+    expect(onSubmit.mock.calls[0][0].conditions[0]).toEqual(condition);
+  });
+
+  it('shows a form-level summary when a retired row blocks the save', async () => {
+    // The offending row can be far below the fold; without a summary the Save
+    // click produces no perceptible change anywhere on screen.
+    renderForm([METRIC_CONDITION, CUSTOM_CONDITION]);
+
+    fireEvent.submit(screen.getByTestId('condition-retired-1').closest('form')!);
+
+    expect(await screen.findByText(/at least one condition must be fixed/i)).toBeTruthy();
+  });
+
   it('still submits a rule whose conditions are all supported', async () => {
     const onSubmit = renderForm([METRIC_CONDITION]);
 

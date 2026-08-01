@@ -4,7 +4,7 @@ import { and, eq, sql, desc, inArray, isNull, or, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { alertRules, alertTemplates, alerts, devices, deviceGroups, organizations, sites } from '../../db/schema';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
-import { retiredConditionTypeError } from '../../services/alertConditions';
+import { conditionPayloadsFrom, retiredConditionTypeError } from '../../services/alertConditions';
 import { requireMfa, requirePermission, requireScope, siteAccessCheck } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
@@ -287,11 +287,12 @@ rulesRoutes.post(
     // `overrides.autoResolveConditions` are read straight back out by
     // alertService (getApplicableRules, evaluateAutoResolveConditions). A
     // guard on `data.conditions` alone is bypassed by moving the same payload
-    // one key over.
+    // one key over. Only those two keys are scanned — not the whole blob, whose
+    // `targetIds` can hold thousands of device ids and would truncate the scan.
     const createConditionTypeError = retiredConditionTypeError([
       data.conditions,
-      data.overrideSettings,
-      data.overrides,
+      ...conditionPayloadsFrom(data.overrideSettings),
+      ...conditionPayloadsFrom(data.overrides),
     ]);
     if (createConditionTypeError) {
       return c.json({ error: createConditionTypeError }, 400);
@@ -371,6 +372,18 @@ rulesRoutes.post(
     });
     if (!template) {
       return c.json({ error: 'Failed to resolve alert template' }, 500);
+    }
+
+    // A legacy template can itself be all-`custom`: the cleanup migration
+    // deactivates RULES but never rewrites alert_templates.conditions. Creating
+    // a rule from one with no `conditions` of its own would mint a brand-new
+    // active, healthy-looking, unfirable rule (#2948) — the payload check above
+    // sees nothing because the request carries no conditions.
+    if (data.conditions === undefined) {
+      const templateConditionError = retiredConditionTypeError(template.conditions);
+      if (templateConditionError) {
+        return c.json({ error: templateConditionError }, 400);
+      }
     }
 
     if (!created) {
@@ -481,8 +494,8 @@ rulesRoutes.put(
     // retired condition rather than re-saving it verbatim.
     const updateConditionTypeError = retiredConditionTypeError([
       data.conditions,
-      data.overrideSettings,
-      data.overrides,
+      ...conditionPayloadsFrom(data.overrideSettings),
+      ...conditionPayloadsFrom(data.overrides),
     ]);
     if (updateConditionTypeError) {
       return c.json({ error: updateConditionTypeError }, 400);

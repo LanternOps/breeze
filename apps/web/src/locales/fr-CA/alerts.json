@@ -356,7 +356,12 @@
     },
     "retiredConditionWarning": "Le type de condition « {{type}} » n'est plus pris en charge et n'a jamais déclenché d'alerte. Supprimez cette condition pour enregistrer la règle.",
     "retiredConditionBlocksSave": "Type de condition non pris en charge « {{type}} » — supprimez cette condition avant d'enregistrer.",
-    "readOnlyConditionNote": "Le type de condition « {{type}} » ne peut pas être modifié ici. Il est conservé tel quel."
+    "readOnlyConditionNote": "Le type de condition « {{type}} » ne peut pas être modifié ici. Il est conservé tel quel.",
+    "conditionsBlockSaveSummary": "Au moins une condition doit être corrigée avant d’enregistrer cette règle.",
+    "invalidMetric": "Sélectionnez une métrique.",
+    "invalidOperator": "Sélectionnez un opérateur.",
+    "invalidValue": "Saisissez une valeur entre 0 et 100.",
+    "invalidDuration": "Saisissez au moins 1 minute."
   },
   "alertRuleList": {
     "editRule": "Modifier la règle",

@@ -11,6 +11,9 @@ import type { AlertSeverity } from './AlertList';
 import type { DeploymentTargetConfig } from '@breeze/shared';
 import { DeviceTargetSelector } from '../filters/DeviceTargetSelector';
 
+const METRIC_OPTION_VALUES: readonly string[] = ['cpu', 'ram', 'disk', 'network'];
+const OPERATOR_OPTION_VALUES: readonly string[] = ['gt', 'lt', 'gte', 'lte', 'eq', 'neq'];
+
 // Condition types this editor can render a form for. `metric` and `status` are
 // the evaluator's `threshold` and `offline` handlers under their legacy aliases
 // (services/alertConditions/handlers/{threshold,offline}.ts).
@@ -46,10 +49,17 @@ const conditionSchema = z
     // supported one round-trips and a retired one produces "remove this
     // condition" rather than Zod's generic "Invalid option".
     type: z.string().min(1),
-    metric: z.enum(['cpu', 'ram', 'disk', 'network']).optional(),
-    operator: z.enum(['gt', 'lt', 'gte', 'lte', 'eq', 'neq']).optional(),
-    value: z.coerce.number().min(0).max(100).optional(),
-    duration: z.coerce.number().min(1).optional(),
+    // These four are validated by the superRefine below, NOT here, and only for
+    // types this editor renders. A stored condition it can't render carries the
+    // same key names with values outside these bounds — bandwidth_high's `value`
+    // is Mbps and disk_io_high's is MB/s (both routinely > 100), and a canonical
+    // `threshold` names `ramPercent`, outside the metric enum. Validating them
+    // eagerly blocked Save on a perfectly good rule with no visible error, and
+    // (being the only condition) left it unremovable and permanently uneditable.
+    metric: z.string().optional(),
+    operator: z.string().optional(),
+    value: z.coerce.number().optional(),
+    duration: z.coerce.number().optional(),
     // Rendered read-only on a legacy `custom` row so the tech can see what they
     // are being asked to delete. The editor never writes them.
     field: z.string().optional(),
@@ -68,6 +78,26 @@ const conditionSchema = z
         path: ['type'],
         message: i18n.t('alerts:alertRuleForm.retiredConditionBlocksSave', { type: condition.type })
       });
+      return;
+    }
+    // Shape rules apply only to the two types this editor actually renders a
+    // form for. Everything else is round-tripped verbatim.
+    if (!isEditableConditionType(condition.type)) return;
+
+    if (condition.type === 'metric') {
+      if (!METRIC_OPTION_VALUES.includes(condition.metric ?? '')) {
+        ctx.addIssue({ code: 'custom', path: ['metric'], message: i18n.t('alerts:alertRuleForm.invalidMetric') });
+      }
+      if (!OPERATOR_OPTION_VALUES.includes(condition.operator ?? '')) {
+        ctx.addIssue({ code: 'custom', path: ['operator'], message: i18n.t('alerts:alertRuleForm.invalidOperator') });
+      }
+      if (condition.value === undefined || condition.value < 0 || condition.value > 100) {
+        ctx.addIssue({ code: 'custom', path: ['value'], message: i18n.t('alerts:alertRuleForm.invalidValue') });
+      }
+    }
+
+    if (condition.type === 'status' && condition.duration !== undefined && condition.duration < 1) {
+      ctx.addIssue({ code: 'custom', path: ['duration'], message: i18n.t('alerts:alertRuleForm.invalidDuration') });
     }
   });
 
@@ -122,21 +152,9 @@ const targetTypeOptions = [
   { value: 'device' }
 ];
 
-const metricOptions = [
-  { value: 'cpu' },
-  { value: 'ram' },
-  { value: 'disk' },
-  { value: 'network' }
-];
+const metricOptions = METRIC_OPTION_VALUES.map(value => ({ value }));
 
-const operatorOptions = [
-  { value: 'gt' },
-  { value: 'lt' },
-  { value: 'gte' },
-  { value: 'lte' },
-  { value: 'eq' },
-  { value: 'neq' }
-];
+const operatorOptions = OPERATOR_OPTION_VALUES.map(value => ({ value }));
 
 const conditionTypeOptions = EDITABLE_CONDITION_TYPES.map(value => ({ value }));
 
@@ -426,9 +444,18 @@ export default function AlertRuleForm({
         {/* Guarded on `.message`: per-item issues (the retired-type refinement
             below) live at errors.conditions[i].type and leave this top-level
             message undefined, which would otherwise render an empty red <p>. */}
-        {errors.conditions?.message && (
-          <p className="text-sm text-destructive">{errors.conditions.message}</p>
-        )}
+        {(() => {
+          // Per-item issues live at errors.conditions[i].<key> and leave the
+          // array-level `.message` undefined, so a guard on `.message` alone
+          // renders nothing at all when a retired row blocks the save — the
+          // Save click looks inert, especially when the offending row is off
+          // screen. Summarise here and point at the row.
+          const itemIssue = Array.isArray(errors.conditions)
+            && errors.conditions.some((e) => e && Object.values(e).some((v: any) => v?.message));
+          const summary = errors.conditions?.message
+            ?? (itemIssue ? t('alertRuleForm.conditionsBlockSaveSummary') : undefined);
+          return summary ? <p className="text-sm text-destructive">{summary}</p> : null;
+        })()}
 
         {fields.length > 0 && (
           <div className="space-y-3">
@@ -446,7 +473,12 @@ export default function AlertRuleForm({
               // "never triggered an alert" and refuse to save until they delete it.
               const isRetired = isRetiredConditionType(conditionType);
               const isReadOnly = isRetired || !isEditableConditionType(conditionType);
-              const retiredError = errors.conditions?.[index]?.type?.message;
+              // Any error on this row, not just `.type`: the row renders no inputs, so
+      // an issue on another key would otherwise have nowhere at all to appear.
+      const rowErrors = errors.conditions?.[index] as Record<string, { message?: string }> | undefined;
+      const rowError = rowErrors
+        ? Object.values(rowErrors).find(e => e?.message)?.message
+        : undefined;
               return (
               <div key={field.id} className="rounded-md border bg-muted/20 p-4">
                 <div className="flex items-start gap-3">
@@ -471,9 +503,9 @@ export default function AlertRuleForm({
                       {/* Submit-time signal. The always-on warning above does not
                           change when Save is pressed, so without this the click
                           has no visible consequence at all. */}
-                      {retiredError && (
+                      {rowError && (
                         <p className="text-xs font-medium text-destructive" data-testid={`condition-error-${index}`}>
-                          {retiredError}
+                          {rowError}
                         </p>
                       )}
                     </div>
@@ -562,7 +594,7 @@ export default function AlertRuleForm({
                     // the rule permanently uneditable. A merely read-only
                     // condition does NOT block the save, so it keeps the normal
                     // last-condition lock.
-                    disabled={fields.length === 1 && !isRetired}
+                    disabled={fields.length === 1 && !isRetired && !rowError}
                     className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-muted text-destructive disabled:opacity-50 disabled:cursor-not-allowed"
                     title={t('alertRuleForm.removeCondition')}
                   >

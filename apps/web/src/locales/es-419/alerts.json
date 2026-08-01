@@ -356,7 +356,12 @@
     },
     "retiredConditionWarning": "El tipo de condición \"{{type}}\" ya no es compatible y nunca activó una alerta. Elimine esta condición para guardar la regla.",
     "retiredConditionBlocksSave": "Tipo de condición no compatible \"{{type}}\": elimine esta condición antes de guardar.",
-    "readOnlyConditionNote": "El tipo de condición \"{{type}}\" no se puede editar aquí. Se conserva tal como está almacenado."
+    "readOnlyConditionNote": "El tipo de condición \"{{type}}\" no se puede editar aquí. Se conserva tal como está almacenado.",
+    "conditionsBlockSaveSummary": "Se debe corregir al menos una condición antes de guardar esta regla.",
+    "invalidMetric": "Seleccione una métrica.",
+    "invalidOperator": "Seleccione un operador.",
+    "invalidValue": "Ingrese un valor entre 0 y 100.",
+    "invalidDuration": "Ingrese al menos 1 minuto."
   },
   "alertRuleList": {
     "editRule": "Editar regla",

@@ -356,7 +356,12 @@
     },
     "retiredConditionWarning": "Il tipo di condizione \"{{type}}\" non è più supportato e non ha mai attivato un avviso. Rimuovi questa condizione per salvare la regola.",
     "retiredConditionBlocksSave": "Tipo di condizione non supportato \"{{type}}\" — rimuovi questa condizione prima di salvare.",
-    "readOnlyConditionNote": "Il tipo di condizione \"{{type}}\" non può essere modificato qui. Viene mantenuto così com’è."
+    "readOnlyConditionNote": "Il tipo di condizione \"{{type}}\" non può essere modificato qui. Viene mantenuto così com’è.",
+    "conditionsBlockSaveSummary": "Almeno una condizione deve essere corretta prima di salvare questa regola.",
+    "invalidMetric": "Seleziona una metrica.",
+    "invalidOperator": "Seleziona un operatore.",
+    "invalidValue": "Inserisci un valore tra 0 e 100.",
+    "invalidDuration": "Inserisci almeno 1 minuto."
   },
   "alertRuleList": {
     "editRule": "Modifica regola",

@@ -602,12 +602,34 @@ export async function retiredConditionReactivationError(rule: {
   let conditions = overrides.conditions;
 
   if (conditions === undefined || conditions === null) {
-    const [template] = await db
-      .select({ conditions: alertTemplates.conditions })
-      .from(alertTemplates)
-      .where(eq(alertTemplates.id, rule.templateId))
-      .limit(1);
-    conditions = template?.conditions;
+    // Read in a SYSTEM context, not the caller's. alert_templates SELECT is
+    // `breeze_has_org_access(org_id) OR breeze_has_partner_access(partner_id)
+    // OR is_built_in`, and an org token never passes the partner branch — yet
+    // an org-owned rule is explicitly allowed to point at a partner-owned
+    // template (see the templateDenied check in rules.ts). Reading as the
+    // caller would return zero rows for exactly that combination, and a
+    // "no conditions found" answer reads as "nothing retired" — the gate would
+    // wave through the rule it exists to stop.
+    const [template] = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        db
+          .select({ conditions: alertTemplates.conditions })
+          .from(alertTemplates)
+          .where(eq(alertTemplates.id, rule.templateId))
+          .limit(1)
+      )
+    );
+
+    if (!template) {
+      // Fail CLOSED. "I could not determine this rule's conditions" is not
+      // evidence that they are safe, and the cost of being wrong is asymmetric:
+      // a spurious error on an already-broken rule, versus silently restoring
+      // permanent alerting loss.
+      return 'This alert rule\'s template could not be read, so its conditions cannot be verified. '
+        + 'It cannot be re-enabled until the template is accessible.';
+    }
+
+    conditions = template.conditions;
   }
 
   const error = retiredConditionTypeError(conditions);

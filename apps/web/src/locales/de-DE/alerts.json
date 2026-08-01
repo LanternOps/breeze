@@ -356,7 +356,12 @@
     },
     "retiredConditionWarning": "Der Bedingungstyp \"{{type}}\" wird nicht mehr unterstützt und hat nie einen Alarm ausgelöst. Entfernen Sie diese Bedingung, um die Regel zu speichern.",
     "retiredConditionBlocksSave": "Nicht unterstützter Bedingungstyp \"{{type}}\" — entfernen Sie diese Bedingung vor dem Speichern.",
-    "readOnlyConditionNote": "Der Bedingungstyp \"{{type}}\" kann hier nicht bearbeitet werden. Er wird unverändert beibehalten."
+    "readOnlyConditionNote": "Der Bedingungstyp \"{{type}}\" kann hier nicht bearbeitet werden. Er wird unverändert beibehalten.",
+    "conditionsBlockSaveSummary": "Mindestens eine Bedingung muss korrigiert werden, bevor die Regel gespeichert werden kann.",
+    "invalidMetric": "Wählen Sie eine Metrik aus.",
+    "invalidOperator": "Wählen Sie einen Operator aus.",
+    "invalidValue": "Geben Sie einen Wert zwischen 0 und 100 ein.",
+    "invalidDuration": "Geben Sie mindestens 1 Minute ein."
   },
   "alertRuleList": {
     "editRule": "Regel bearbeiten",
