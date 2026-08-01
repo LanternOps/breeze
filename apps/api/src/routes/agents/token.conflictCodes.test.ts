@@ -135,6 +135,18 @@ function extractJsonCalls(source: string): string[] {
   return calls;
 }
 
+/**
+ * Pull the declared vocabulary out of the route source: MEMBER -> 'code_value'.
+ * Comments must already be stripped, or the prose in the jsdoc blocks between
+ * members would be scanned as code.
+ */
+function declaredCodes(strippedSource: string): Record<string, string> {
+  const start = strippedSource.indexOf('const ROTATION_CONFLICT_CODES = {');
+  if (start === -1) return {};
+  const block = strippedSource.slice(start, strippedSource.indexOf('} as const;', start));
+  return Object.fromEntries([...block.matchAll(/([A-Z_]+):\s*'([a-z_]+)'/g)].map((m) => [m[1]!, m[2]!]));
+}
+
 /** Codes the Go client maps to a terminal sentinel — i.e. "discard the staged set". */
 function goTerminalCodes(goSource: string): string[] {
   const start = goSource.indexOf('switch result.Code {');
@@ -157,14 +169,25 @@ describe('agent token rotation conflict codes', () => {
 
     for (const { file, source } of sources) {
       const stripped = stripComments(source);
-      // Exact cross-check, not a floor. If the balanced-paren walk ever desyncs
-      // — an unbalanced quote swallowing calls — the counts diverge and this
-      // fails loudly, instead of the guard silently checking fewer responses
-      // than the file contains.
+      // Cross-check against the RAW source, never the stripped copy. Comparing
+      // stripped-to-stripped is vacuous: anything stripComments swallows
+      // disappears from both sides of the equality, so the check cannot detect
+      // the one failure it exists for. A regex literal containing `//`, say,
+      // strips as a line comment and takes the rest of the line — including a
+      // whole `c.json({...}, 409)` — with it, and stripped-vs-stripped compares
+      // 0 to 0 and passes green while a conflict silently leaves the guard.
+      //
+      // If this ever fails because a COMMENT legitimately mentions `c.json(`,
+      // reword the comment. Failing loudly on the ambiguity is the point.
+      const rawCount = (source.match(/c\.json\(/g) ?? []).length;
+      expect(
+        (stripped.match(/c\.json\(/g) ?? []).length,
+        `stripComments swallowed a c.json( call in ${file} (or a comment mentions "c.json(" — reword it)`
+      ).toBe(rawCount);
       expect(
         extractJsonCalls(stripped).length,
-        `scanner lost c.json( calls in ${file}`
-      ).toBe((stripped.match(/c\.json\(/g) ?? []).length);
+        `the balanced-paren scan lost c.json( calls in ${file}`
+      ).toBe(rawCount);
     }
   });
 
@@ -197,14 +220,43 @@ describe('agent token rotation conflict codes', () => {
     }
   });
 
+  // Every 409 in this file uses the `ROTATION_CONFLICT_CODES.X` member form, so
+  // the literal spot-check above never actually fires. Without this, a brand-new
+  // member could ship without ever being registered in KNOWN_CODES — and the
+  // header's "drawn from a known vocabulary" claim would be decorative for the
+  // only form the codebase writes. Assert the vocabulary itself instead.
+  it('keeps the declared vocabulary and the known-code list in lockstep', () => {
+    for (const { file, source } of sources) {
+      const declared = declaredCodes(stripComments(source));
+      if (Object.keys(declared).length === 0) continue; // file declares none
+
+      expect(
+        Object.values(declared).sort(),
+        `${file} declares a rotation conflict code that is not registered in this test's ` +
+          'KNOWN_CODES. Add it, and classify it as terminal or retryable on BOTH sides ' +
+          '(ROTATION_CONFLICT_CODES here, the switch in agent/pkg/api/client.go there).'
+      ).toEqual([...KNOWN_CODES].sort());
+
+      // Members referenced by a 409 must actually exist in the declaration.
+      for (const { call } of conflicts) {
+        for (const [, member] of call.matchAll(/code:\s*ROTATION_CONFLICT_CODES\.([A-Z_]+)/g)) {
+          expect(declared, `409 references undeclared member ${member}`).toHaveProperty(member!);
+        }
+      }
+    }
+  });
+
   it('gives both arms of a conditional 409 body a code', () => {
     // The `pending_token_required` / `rotation_unresolvable` branch picks its
     // body with a ternary. A guard that only looked for one `code:` per call
     // would pass with one arm left bare.
     for (const { file, call } of conflicts) {
-      const arms = (call.match(/error:/g) ?? []).length;
+      // Count body objects structurally (`{ someKey:`) rather than keying off a
+      // message field — a future body using `message:`/`detail:` instead of
+      // `error:` would otherwise report a confusing "0 arms but 1 code".
+      const arms = (call.match(/\{\s*[A-Za-z_]+\s*:/g) ?? []).length;
       const codes = (call.match(/\bcode:/g) ?? []).length;
-      expect(codes, `a 409 in ${file} has ${arms} body arms but only ${codes} code(s)`).toBe(arms);
+      expect(codes, `a 409 in ${file} has ${arms} body arm(s) but ${codes} code(s)`).toBe(arms);
     }
   });
 

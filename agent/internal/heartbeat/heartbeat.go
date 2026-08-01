@@ -4843,11 +4843,14 @@ func (h *Heartbeat) confirmTokenRotation(newAuthToken string) (confirmed bool, t
 				"reason", err.Error())
 			if clearErr := config.ClearPendingCredentials(); clearErr != nil {
 				// The staged set is still on disk, so leave the per-tick retry armed
-				// and let it re-attempt the clear.
+				// and let it re-attempt the clear. Report terminal=false so the
+				// caller does not log "discarded" about credentials that are still
+				// sitting in secrets.yaml — this log line is the only forensic
+				// record of the one irreversible action in this flow.
 				log.Error("failed to clear unusable staged credentials", "error", clearErr.Error())
-			} else {
-				h.pendingRotationOnDisk.Store(false)
+				return false, false
 			}
+			h.pendingRotationOnDisk.Store(false)
 			return false, true
 		}
 		log.Error("agent token rotation confirmation failed", "error", err.Error())
