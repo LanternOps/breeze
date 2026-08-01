@@ -20,6 +20,31 @@ import { deviceMtlsCertificates } from './schema/deviceMtlsCertificates';
 import { manifestSigningKeyDelegations } from './schema/manifestSigningKeys';
 import { devices } from './schema/devices';
 
+// The 2026-08-06-a..f block is reserved by the remediation program: later
+// waves append -d..-f to it, and the ordering tests below assert that the
+// block stays whole so a wave migration can never be interleaved with an
+// unrelated one.
+//
+// They used to assert this as `names.slice(-block.length) === block`, i.e.
+// that the block is the GLOBAL lexical tail. That is stricter than the
+// property those tests describe and than the one they need: it also forbids
+// any migration dated after 2026-08-06 from ever existing, so the next
+// ordinary migration on a later date turns main red for a reason that has
+// nothing to do with the reserved waves. Contiguity is the real invariant —
+// the block occupies consecutive positions — and it holds whether the block
+// sits at the tail or has later-dated migrations after it.
+function expectContiguousBlock(sortedNames: string[], prefix: string): void {
+  const indices = sortedNames
+    .map((name, index) => (name.startsWith(prefix) ? index : -1))
+    .filter((index) => index >= 0);
+
+  const first = indices[0];
+  expect(first).toBeDefined();
+  expect(indices).toEqual(
+    Array.from({ length: indices.length }, (_, offset) => first! + offset),
+  );
+}
+
 describe('autoMigrate', () => {
   describe('detectState', () => {
     it('should return "fresh" when no users table exists', () => {
@@ -279,10 +304,10 @@ describe('core migration ordering', () => {
     expect(ledgerNames.filter((filename) => filename === reserved)).toHaveLength(1);
     expect(ledgerNames).toEqual([...ledgerNames].sort((a, b) => a.localeCompare(b)));
     // 2026-08-06-a..f is reserved by the remediation program and later waves
-    // append to it, so assert the block is the contiguous lexical tail opened
-    // by this file rather than pinning it as the single last migration.
+    // append to it, so assert the block stays contiguous and is opened by this
+    // file — never that it is the single last migration.
     const reservedBlock = ledgerNames.filter((filename) => filename.startsWith('2026-08-06-'));
-    expect(ledgerNames.slice(-reservedBlock.length)).toEqual(reservedBlock);
+    expectContiguousBlock(ledgerNames, '2026-08-06-');
     expect(reservedBlock[0]).toBe(reserved);
   });
 });
@@ -350,10 +375,9 @@ describe('Wave 3 durable live authorization expansion', () => {
     expect(files).toContain(liveAuthorization);
     expect(files).toContain(quoteCapability);
     // Later waves append -d..-f to the reserved 2026-08-06 block, so assert
-    // the block is the contiguous lexical tail rather than pinning the
-    // global tail.
+    // the block stays contiguous rather than pinning the global tail.
     const reservedBlock = files.filter((file) => file.startsWith('2026-08-06-'));
-    expect(files.slice(-reservedBlock.length)).toEqual(reservedBlock);
+    expectContiguousBlock(files, '2026-08-06-');
     // Assert RELATIVE order, not adjacency (see the Wave 6 capability and
     // delegation migration tests below for the full rationale): a sibling
     // branch is free to land its own migration between -b- and -c- in the
@@ -389,10 +413,9 @@ describe('Wave 5 device mTLS certificate history', () => {
 
     expect(files).toContain(certificateHistory);
     // -d..-f is still reserved for later waves, so assert the block remains
-    // the contiguous lexical tail, rather than pinning this file as the
-    // single last migration.
+    // contiguous, rather than pinning this file as the single last migration.
     const reservedBlock = files.filter((file) => file.startsWith('2026-08-06-'));
-    expect(files.slice(-reservedBlock.length)).toEqual(reservedBlock);
+    expectContiguousBlock(files, '2026-08-06-');
     // Assert RELATIVE order, not adjacency (see the Wave 6 capability and
     // delegation migration tests below for the full rationale): a sibling
     // branch is free to land its own migration between -c- and -d- in the

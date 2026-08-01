@@ -598,6 +598,12 @@ coreRoutes.get(
         watchdogStatus: devices.watchdogStatus,
         mainAgentSilentSince: devices.mainAgentSilentSince,
         lastSeenAt: devices.lastSeenAt,
+        // WAN IP for the opt-in list column (#2503): the source address of the
+        // agent's last authenticated request, stamped by agentAuth. That is
+        // the device's public address as the control plane sees it — note that
+        // device_network.public_ip looks like the obvious source but is never
+        // written by any code path and is always NULL.
+        lastSeenIp: devices.lastSeenIp,
         enrolledAt: devices.enrolledAt,
         tags: devices.tags,
         customFields: devices.customFields,
@@ -659,6 +665,10 @@ coreRoutes.get(
       timestamp: Date;
     }>();
 
+    // Best current LAN address per device for the opt-in list column (#2503);
+    // populated by the batched lateral below. Absent => the column dashes.
+    const lanIpByDevice = new Map<string, string>();
+
     if (deviceIds.length > 0) {
       // Per-device latest-row lookup via LATERAL + LIMIT 1 against the
       // (device_id, timestamp) primary key. Index-scan-backward returns
@@ -702,6 +712,49 @@ coreRoutes.get(
           timestamp: row.timestamp,
         });
       }
+
+      // LAN IP for the opt-in list column (#2503). One batched query for the
+      // whole page rather than a correlated subquery per row, and NOT a
+      // leftJoin on the main row query: device_network is 1:N per device (one
+      // row per interface per address family), so joining it there would fan
+      // the page out to one row per interface and silently break pagination.
+      //
+      // Ranking, best-first — the agent's is_primary flag alone is not enough
+      // to pick a row, because collectors/inventory.go sets it from a fixed
+      // interface-NAME allowlist (en0/eth0/ens33/enp0s3/wlan0/Wi-Fi/Ethernet).
+      // Real fleets are full of "Ethernet 2", "eno1", "enp3s0" etc., which
+      // that allowlist misses, so a primary-only filter would leave the column
+      // blank for a large share of devices. The tiers below degrade instead:
+      //   1. is_primary rows first (when the agent did identify one)
+      //   2. IPv4 before IPv6 (techs type v4 addresses)
+      //   3. routable addresses before APIPA/link-local/loopback — an
+      //      unconfigured 169.254.x is worse than useless in a scan column
+      //   4. interface_name for a deterministic, stable tiebreak
+      const lanIpRows = await db.execute<{ device_id: string; ip_address: string }>(sql`
+        SELECT d.device_id, n.ip_address
+        FROM (VALUES ${idTuples}) AS d(device_id)
+        INNER JOIN LATERAL (
+          SELECT ip_address, interface_name
+          FROM ${deviceNetwork}
+          WHERE device_id = d.device_id
+            AND ip_address IS NOT NULL
+          ORDER BY
+            is_primary DESC,
+            (ip_type = 'ipv4') DESC,
+            (
+              ip_address LIKE '169.254.%'
+              OR ip_address LIKE '127.%'
+              OR ip_address LIKE 'fe80:%'
+              OR ip_address = '::1'
+            ) ASC,
+            interface_name ASC
+          LIMIT 1
+        ) AS n ON true
+      `);
+
+      for (const row of lanIpRows) {
+        lanIpByDevice.set(row.device_id, row.ip_address);
+      }
     }
 
     // Transform to include hardware and latest metrics as nested objects
@@ -729,6 +782,11 @@ coreRoutes.get(
         mainAgentSilentSince: d.mainAgentSilentSince,
         pendingReboot: d.pendingReboot,
         lastSeenAt: d.lastSeenAt,
+        // Opt-in WAN/LAN IP columns (#2503). Both null-able: wanIp is null
+        // until the device has made one authenticated request, lanIp until an
+        // inventory run has reported an interface with an address.
+        wanIp: d.lastSeenIp ?? null,
+        lanIp: lanIpByDevice.get(d.id) ?? null,
         enrolledAt: d.enrolledAt,
         tags: d.tags,
         customFields: d.customFields,
