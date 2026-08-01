@@ -819,8 +819,14 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     // #2728 — the per-org agent rate limit is sized from the enrolled device
     // count, which is cached. Drop the cache on enrollment so a fleet being
     // rolled out isn't throttled against a stale (smaller) count for up to the
-    // cache TTL. Best-effort; the TTL is the backstop.
-    void invalidateOrgDeviceCount(getRedis(), key.orgId);
+    // cache TTL. Best-effort; the TTL is the backstop. Guarded because the
+    // device row is already committed — a cache problem must not fail an
+    // otherwise successful enrollment.
+    try {
+      void invalidateOrgDeviceCount(getRedis(), key.orgId);
+    } catch (err) {
+      console.error('[enrollment] device-count cache invalidation failed', err);
+    }
 
     recordAgentEnrollment('success', enrollmentPartnerId);
 

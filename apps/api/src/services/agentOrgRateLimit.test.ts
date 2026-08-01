@@ -1,4 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 const selectMock = vi.fn();
 
@@ -14,6 +16,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 import {
+  AGENT_EXCLUDED_INGEST_ENDPOINTS,
   AGENT_RESERVED_INGEST_ENDPOINTS,
   DEFAULT_AGENT_ORG_RATE_LIMIT,
   DEFAULT_AGENT_ORG_RATE_LIMIT_MAX,
@@ -153,36 +156,75 @@ describe('isReservedIngestPath', () => {
     expect(isReservedIngestPath(path)).toBe(false);
   });
 
-  // The reserved set is only meaningful if it matches endpoints the agent
-  // actually calls. An earlier revision listed `inventory`, which is not a
-  // route at all, while omitting `disks`, `network` and `changes` — real
-  // inventory uploads that were therefore still being dropped. This pins the
-  // set against the agent's real `sendInventoryData` endpoints.
-  it('covers the durable-inventory endpoints the agent actually uploads to', () => {
-    const agentDurableIngestEndpoints = [
-      'patches/pending',
-      'patches/installed',
-      'hardware',
-      'software',
-      'disks',
-      'network',
-      'changes',
-      'connections',
-      'eventlogs',
-      'management/posture',
-    ];
-    for (const endpoint of agentDurableIngestEndpoints) {
-      expect(
-        isReservedIngestPath(`/api/v1/agents/abc/${endpoint}`),
-        `${endpoint} should be in the reserved ingest lane`,
-      ).toBe(true);
-    }
-  });
-
   it('does not declare endpoints that are not real agent routes', () => {
     // `inventory` was declared once and does not exist; guard against it and
     // any other invented endpoint creeping back in.
     expect(AGENT_RESERVED_INGEST_ENDPOINTS).not.toContain('inventory');
+  });
+});
+
+// Contract test. The reserved set is only meaningful if it tracks the endpoints
+// the agent actually uploads to. Hand-maintaining a second copy of the list
+// inside the test cannot catch drift — it just restates the same assumption —
+// so this parses the agent source and requires every `sendInventoryData`
+// endpoint to be explicitly classified as reserved or excluded.
+//
+// This caught two real defects: a declared `inventory` endpoint that does not
+// exist, and `registry-state`/`config-state`/`warranty-info` being dropped from
+// the same 15-minute batch whose five siblings were reserved.
+describe('reserved ingest lane tracks the agent source', () => {
+  const AGENT_HEARTBEAT_SOURCE = resolve(
+    __dirname,
+    '../../../../agent/internal/heartbeat/heartbeat.go',
+  );
+
+  function agentUploadEndpoints(): string[] {
+    const source = readFileSync(AGENT_HEARTBEAT_SOURCE, 'utf8');
+    // Matches both single-line and wrapped calls:
+    //   h.sendInventoryData("hardware", ...)
+    //   h.sendInventoryData(\n  "config-state",\n ...)
+    const matches = [...source.matchAll(/sendInventoryData\(\s*"([^"]+)"/g)];
+    const endpoints = matches
+      .map((m) => m[1])
+      .filter((e): e is string => typeof e === 'string');
+    return [...new Set(endpoints)].sort();
+  }
+
+  it('finds the agent upload call sites (guards the parser itself)', () => {
+    const endpoints = agentUploadEndpoints();
+    // If this trips, the agent refactored away from sendInventoryData and the
+    // classification assertion below has quietly stopped checking anything.
+    expect(endpoints.length).toBeGreaterThanOrEqual(10);
+    expect(endpoints).toContain('hardware');
+    expect(endpoints).toContain('config-state');
+  });
+
+  it('classifies every agent upload endpoint as either reserved or excluded', () => {
+    const classified = new Set<string>([
+      ...AGENT_RESERVED_INGEST_ENDPOINTS,
+      ...AGENT_EXCLUDED_INGEST_ENDPOINTS,
+    ]);
+    const unclassified = agentUploadEndpoints().filter((e) => !classified.has(e));
+
+    expect(
+      unclassified,
+      `These agent upload endpoints are in neither AGENT_RESERVED_INGEST_ENDPOINTS nor ` +
+        `AGENT_EXCLUDED_INGEST_ENDPOINTS. Decide explicitly: reserving them protects them ` +
+        `from being starved by heartbeat volume (#2728); excluding them is fine for ` +
+        `high-cadence uploads, but say so.`,
+    ).toEqual([]);
+  });
+
+  it('every reserved endpoint is actually uploaded to by the agent', () => {
+    // The patch endpoints are sent via a helper that wraps sendInventoryData
+    // with a computed label, so allow them explicitly.
+    const viaPatchHelper = new Set(['patches', 'patches/pending', 'patches/installed']);
+    const agentEndpoints = new Set(agentUploadEndpoints());
+    const orphaned = AGENT_RESERVED_INGEST_ENDPOINTS.filter(
+      (e) => !agentEndpoints.has(e) && !viaPatchHelper.has(e),
+    );
+
+    expect(orphaned, 'Reserved endpoints the agent never uploads to').toEqual([]);
   });
 });
 

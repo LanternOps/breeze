@@ -71,15 +71,18 @@ function positiveIntFromEnv(name: string, fallback: number): number {
  * meaningful source of load — but dropping one silently corrupts
  * operator-facing posture until the next scan, which is the #2728 symptom.
  *
- * This list is derived from the agent's `sendInventoryData` call sites
- * (agent/internal/heartbeat/heartbeat.go) cross-checked against the mounted
- * routes in routes/agents/. Deliberately EXCLUDED as higher-frequency or
- * non-durable: `heartbeat`, `process-sample`, `logs`, `commands`,
- * `sessions` and `security/status` (5-minute cadence).
+ * Derived from the agent's `sendInventoryData` call sites
+ * (agent/internal/heartbeat/heartbeat.go), cross-checked against the mounted
+ * routes in routes/agents/. Note that `sendInventory()` fans out EIGHT of
+ * these as one 15-minute batch (software, disks, network, changes,
+ * connections, registry-state, config-state, warranty-info) — admitting only
+ * part of that batch would leave the rest to go stale exactly as patch posture
+ * did, so the batch is kept whole.
  *
- * Keep in sync with AGENT_RESERVED_INGEST_ENDPOINTS below — the test asserts
- * the two agree, so a new inventory endpoint can't silently fall out of the
- * lane.
+ * Endpoints in AGENT_EXCLUDED_INGEST_ENDPOINTS are deliberately left out.
+ * `agentOrgRateLimit.test.ts` parses the agent source and fails if any
+ * `sendInventoryData` endpoint appears in neither list, so a new upload can't
+ * silently fall out of the lane.
  */
 export const AGENT_RESERVED_INGEST_ENDPOINTS = [
   'patches',
@@ -91,12 +94,37 @@ export const AGENT_RESERVED_INGEST_ENDPOINTS = [
   'network',
   'changes',
   'connections',
+  'registry-state',
+  'config-state',
+  'warranty-info',
   'eventlogs',
   'management/posture',
 ] as const;
 
+/**
+ * Agent upload endpoints deliberately NOT given reserved capacity, with the
+ * reason. These run on a 5-minute cadence — frequent enough that reserving
+ * capacity for them would defeat the lane's purpose, and recent enough that a
+ * single dropped upload is corrected within minutes rather than a day.
+ */
+export const AGENT_EXCLUDED_INGEST_ENDPOINTS = [
+  'security/status',
+  'security/recovery-keys',
+  'sessions',
+] as const;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Longest-first so a shorter prefix (`patches`) can't shadow a longer sibling
+// (`patches/pending`). The `/?$` anchor makes this correct either way, but the
+// explicit ordering means it doesn't depend on backtracking to stay correct.
 const RESERVED_INGEST_PATTERN = new RegExp(
-  `/(${AGENT_RESERVED_INGEST_ENDPOINTS.map((e) => e.replace('/', '\\/')).join('|')})/?$`,
+  `/(${[...AGENT_RESERVED_INGEST_ENDPOINTS]
+    .sort((a, b) => b.length - a.length)
+    .map(escapeRegExp)
+    .join('|')})/?$`,
 );
 
 export function isReservedIngestPath(path: string): boolean {

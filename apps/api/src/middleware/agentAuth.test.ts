@@ -69,12 +69,16 @@ vi.mock('drizzle-orm', () => ({
   count: vi.fn(() => ({ count: true })),
 }));
 
-// #2728 — only the device-count lookup is stubbed (it needs Redis + a real
-// COUNT query). The sizing math, the reserved-lane path matcher and the
-// reserved-lane sizing are the REAL implementations, so these tests exercise
-// the actual wiring rather than a mock of it. Without this the harness's
-// drizzle/Redis mocks made every lookup fail into the floor, and the org limit
-// was silently always 600 no matter what the service computed.
+// #2728 — `resolveOrgRateLimit` is stubbed so a test can drive the ceiling
+// directly (the real one needs Redis plus a COUNT query); its own math is
+// covered in agentOrgRateLimit.test.ts. `isReservedIngestPath` and
+// `computeReservedIngestLimit` stay REAL, so the reserved-lane wiring under
+// test is the actual implementation.
+//
+// Without this stub the harness's drizzle/Redis mocks made every device-count
+// lookup fail into the floor, so the org limit was silently always 600 no
+// matter what the service computed — the reserved-lane assertions below were
+// passing by coincidence.
 vi.mock('../services/agentOrgRateLimit', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/agentOrgRateLimit')>();
   return {
