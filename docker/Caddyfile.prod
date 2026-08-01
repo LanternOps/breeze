@@ -89,6 +89,18 @@
     reverse_proxy api:3001
   }
 
+  # --- Agent binary / package downloads: no compression, no buffering ---
+  # These are pre-built Go binaries and .pkg archives — already compressed/packed.
+  # Applying gzip here truncates the response for large binaries (observed at
+  # exactly 12 KB short on a 19 MB agent binary). flush_interval -1 streams
+  # bytes directly without buffering so the full file is always delivered.
+  @agent_downloads path /api/v1/agents/download/* /api/v1/agents/download/*/*
+  handle @agent_downloads {
+    reverse_proxy api:3001 {
+      flush_interval -1
+    }
+  }
+
   # --- API routes (with compression) ---
   @api path /api/* /s/* /health /health/* /ready /metrics/* /i/* /activate/*
   handle @api {
