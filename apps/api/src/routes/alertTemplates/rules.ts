@@ -9,6 +9,7 @@ import { listRulesSchema, createRuleSchema, updateRuleSchema, toggleRuleSchema }
 import { resolveScopedOrgId, parseBoolean } from './helpers';
 import { getPagination } from '../../utils/pagination';
 import { PERMISSIONS } from '../../services/permissions';
+import { unsupportedConditionTypeError } from '../../services/alertConditions';
 
 export const ruleRoutes = new Hono();
 
@@ -132,6 +133,13 @@ ruleRoutes.post(
       const data = c.req.valid('json');
       if (data.orgId && data.orgId !== orgId) {
         return c.json({ error: 'Forbidden' }, 403);
+      }
+
+      // #2948 — this route writes the same overrideSettings.conditions the
+      // evaluator reads, so it needs the same boundary as POST /alerts/rules.
+      const createConditionTypeError = unsupportedConditionTypeError(data.conditions);
+      if (createConditionTypeError) {
+        return c.json({ error: createConditionTypeError }, 400);
       }
 
       // Verify template exists and is accessible
@@ -276,6 +284,11 @@ ruleRoutes.patch(
 
       if (Object.keys(updates).length === 0) {
         return c.json({ error: 'No updates provided' }, 400);
+      }
+
+      const updateConditionTypeError = unsupportedConditionTypeError(updates.conditions);
+      if (updateConditionTypeError) {
+        return c.json({ error: updateConditionTypeError }, 400);
       }
 
       const setValues: Record<string, unknown> = {};

@@ -292,10 +292,6 @@
     "value": "Value (%)",
     "offlineDurationMinutes": "Offline Duration (minutes)",
     "alertWhenDeviceIsOfflineForThis": "Alert when device is offline for this many minutes",
-    "fieldName": "Field Name",
-    "customField": "custom_field",
-    "condition": "Condition",
-    "value100": "value > 100",
     "removeCondition": "Remove condition",
     "noConditionsDefinedClickAddConditionTo": "No conditions defined. Click \"Add Condition\" to create one.",
     "notificationChannels": "Notification Channels",
@@ -356,9 +352,10 @@
     },
     "conditionTypeOption": {
       "metric": "Metric Condition",
-      "status": "Status Condition",
-      "custom": "Custom Field"
-    }
+      "status": "Status Condition"
+    },
+    "retiredConditionWarning": "The \"{{type}}\" condition type is no longer supported and never triggered an alert. Remove this condition to save the rule.",
+    "retiredConditionBlocksSave": "Unsupported condition type \"{{type}}\" — remove this condition before saving."
   },
   "alertRuleList": {
     "editRule": "Edit rule",

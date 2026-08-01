@@ -281,6 +281,70 @@ export function validateConditions(conditions: unknown): string[] {
   return errors;
 }
 
+// Deepest nesting a conditions tree is walked to. Groups nest via
+// `{logic, conditions[]}`; anything past this is malformed or hostile and is
+// not worth recursing into.
+const MAX_CONDITION_DEPTH = 10;
+
+/**
+ * Collect every condition `type` in a conditions tree that has no registered
+ * handler.
+ *
+ * The evaluator fails closed on an unknown type (`conditionRegistry.evaluate`
+ * returns `passed: false`), and a root-level array is evaluated as an implicit
+ * AND — so a single unknown type makes the whole rule permanently unfirable
+ * while still looking healthy in the UI. `custom` was exactly that: an editor
+ * option that never had a handler (#2948). Write paths use this to reject such
+ * conditions at the boundary instead of storing a rule that can never fire.
+ *
+ * Returns the offending type names (deduped, in encounter order); empty means
+ * every type in the tree resolves to a handler.
+ */
+export function findUnregisteredConditionTypes(conditions: unknown): string[] {
+  const unregistered = new Set<string>();
+
+  const walk = (node: unknown, depth: number): void => {
+    if (depth > MAX_CONDITION_DEPTH || node === null || typeof node !== 'object') return;
+
+    if (Array.isArray(node)) {
+      for (const child of node) walk(child, depth + 1);
+      return;
+    }
+
+    const record = node as Record<string, unknown>;
+    // Group node: recurse into its children. Checked before `type` so a group
+    // that also carries a stray `type` key is still traversed.
+    if (Array.isArray(record.conditions)) {
+      for (const child of record.conditions) walk(child, depth + 1);
+      return;
+    }
+    // Leaf node. A non-string or missing `type` is left to the per-handler
+    // validators / evaluator — this function reports unknown TYPES only.
+    if (typeof record.type === 'string' && !conditionRegistry.get(record.type)) {
+      unregistered.add(record.type);
+    }
+  };
+
+  walk(conditions, 0);
+  return [...unregistered];
+}
+
+/**
+ * Boundary check for alert-rule / alert-template write paths. Returns a
+ * user-facing error message when the payload names a condition type no handler
+ * can evaluate, or null when it is safe to store.
+ */
+export function unsupportedConditionTypeError(conditions: unknown): string | null {
+  if (conditions === undefined || conditions === null) return null;
+
+  const unregistered = findUnregisteredConditionTypes(conditions);
+  if (unregistered.length === 0) return null;
+
+  return `Unsupported alert condition type(s): ${unregistered.join(', ')}. `
+    + 'A rule containing one can never fire. Supported types: '
+    + `${conditionRegistry.getRegisteredTypes().sort().join(', ')}.`;
+}
+
 /**
  * Interpolate template strings with context values
  * Supports {{variable}} syntax

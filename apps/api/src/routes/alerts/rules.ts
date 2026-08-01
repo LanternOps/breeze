@@ -4,6 +4,7 @@ import { and, eq, sql, desc, inArray, isNull, or, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { alertRules, alertTemplates, alerts, devices, deviceGroups, organizations, sites } from '../../db/schema';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
+import { unsupportedConditionTypeError } from '../../services/alertConditions';
 import { requireMfa, requirePermission, requireScope, siteAccessCheck } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
@@ -276,6 +277,13 @@ rulesRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
+    // Reject conditions the evaluator has no handler for (#2948). Stored
+    // unchecked, such a rule fails closed forever while presenting as healthy.
+    const createConditionTypeError = unsupportedConditionTypeError(data.conditions);
+    if (createConditionTypeError) {
+      return c.json({ error: createConditionTypeError }, 400);
+    }
+
     // Ownership axis (#2128). Partner-wide rules evaluate against devices in
     // ALL orgs under the partner (including orgs created later), so creation
     // is gated on the partner-wide capability — same gate as software/security
@@ -453,6 +461,14 @@ rulesRoutes.put(
 
     if (Object.keys(data).length === 0) {
       return c.json({ error: 'No updates provided' }, 400);
+    }
+
+    // #2948 — same boundary as create. Also the mechanism that forces a tech
+    // editing a legacy rule to delete its retired condition rather than
+    // re-saving it verbatim.
+    const updateConditionTypeError = unsupportedConditionTypeError(data.conditions);
+    if (updateConditionTypeError) {
+      return c.json({ error: updateConditionTypeError }, 400);
     }
 
     const rule = await getAlertRuleWithOrgCheck(ruleId, auth);

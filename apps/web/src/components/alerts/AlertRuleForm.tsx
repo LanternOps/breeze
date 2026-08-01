@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import '../../lib/i18n';
+import { i18n } from '../../lib/i18n';
 import { useForm, useFieldArray, Controller } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -11,15 +11,44 @@ import type { AlertSeverity } from './AlertList';
 import type { DeploymentTargetConfig } from '@breeze/shared';
 import { DeviceTargetSelector } from '../filters/DeviceTargetSelector';
 
-const conditionSchema = z.object({
-  type: z.enum(['metric', 'status', 'custom']),
-  metric: z.enum(['cpu', 'ram', 'disk', 'network']).optional(),
-  operator: z.enum(['gt', 'lt', 'gte', 'lte', 'eq', 'neq']).optional(),
-  value: z.coerce.number().min(0).max(100).optional(),
-  duration: z.coerce.number().min(1).optional(),
-  field: z.string().optional(),
-  customCondition: z.string().optional()
-});
+// Condition types this editor can render a form for. `metric` and `status` are
+// the evaluator's `threshold` and `offline` handlers under their legacy aliases
+// (services/alertConditions/handlers/{threshold,offline}.ts). `custom` is NOT
+// here: it never had a registered handler, so the registry answered "Unknown
+// condition type" and the rule — evaluated as an implicit AND — could never
+// fire (#2948). The API now rejects it on write, so the editor must not offer it.
+export const EDITABLE_CONDITION_TYPES = ['metric', 'status'] as const;
+
+function isEditableConditionType(type: string | undefined): boolean {
+  return (EDITABLE_CONDITION_TYPES as readonly string[]).includes(type ?? '');
+}
+
+const conditionSchema = z
+  .object({
+    // Deliberately a string, not an enum over EDITABLE_CONDITION_TYPES: an
+    // already-stored retired type (`custom`) must survive as far as the
+    // superRefine below so the tech gets "remove this condition", not Zod's
+    // generic "Invalid option" with no indication of which row is at fault.
+    type: z.string().min(1),
+    metric: z.enum(['cpu', 'ram', 'disk', 'network']).optional(),
+    operator: z.enum(['gt', 'lt', 'gte', 'lte', 'eq', 'neq']).optional(),
+    value: z.coerce.number().min(0).max(100).optional(),
+    duration: z.coerce.number().min(1).optional(),
+    // Retained read-only: a legacy `custom` condition carries these, and the
+    // retired-condition row renders them so the tech can see what they are
+    // deleting. The editor never writes them.
+    field: z.string().optional(),
+    customCondition: z.string().optional()
+  })
+  .superRefine((condition, ctx) => {
+    if (!isEditableConditionType(condition.type)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['type'],
+        message: i18n.t('alerts:alertRuleForm.retiredConditionBlocksSave', { type: condition.type })
+      });
+    }
+  });
 
 const alertRuleSchema = z.object({
   name: z.string().min(1, 'Rule name is required'),
@@ -88,11 +117,7 @@ const operatorOptions = [
   { value: 'neq' }
 ];
 
-const conditionTypeOptions = [
-  { value: 'metric' },
-  { value: 'status' },
-  { value: 'custom' }
-];
+const conditionTypeOptions = EDITABLE_CONDITION_TYPES.map(value => ({ value }));
 
 export default function AlertRuleForm({
   onSubmit,
@@ -383,10 +408,31 @@ export default function AlertRuleForm({
 
         {fields.length > 0 && (
           <div className="space-y-3">
-            {fields.map((field, index) => (
+            {fields.map((field, index) => {
+              const conditionType = watchConditions?.[index]?.type;
+              // A stored condition whose type this editor no longer offers
+              // (`custom`, #2948). Rendered read-only rather than dropped into
+              // the type <select>, which would silently coerce it to the first
+              // option — resurrecting a dead condition as a live CPU rule.
+              const isRetired = !isEditableConditionType(conditionType);
+              return (
               <div key={field.id} className="rounded-md border bg-muted/20 p-4">
                 <div className="flex items-start gap-3">
                   <GripVertical className="h-5 w-5 text-muted-foreground mt-2.5 cursor-move" />
+                  {isRetired ? (
+                    <div className="flex-1 space-y-1" data-testid={`condition-retired-${index}`}>
+                      <p className="text-xs font-medium text-muted-foreground">{t('alertRuleForm.type')}</p>
+                      <p className="text-sm font-medium">{conditionType}</p>
+                      {watchConditions?.[index]?.customCondition && (
+                        <p className="text-xs text-muted-foreground break-all">
+                          {watchConditions[index]?.field ?? ''} {watchConditions[index]?.customCondition}
+                        </p>
+                      )}
+                      <p className="text-xs text-destructive">
+                        {t('alertRuleForm.retiredConditionWarning', { type: conditionType })}
+                      </p>
+                    </div>
+                  ) : (
                   <div className="flex-1 grid gap-4 sm:grid-cols-2 md:grid-cols-4">
                     <div className="space-y-1">
                       <label className="text-xs font-medium text-muted-foreground">{t('alertRuleForm.type')}</label>
@@ -461,31 +507,15 @@ export default function AlertRuleForm({
                       </div>
                     )}
 
-                    {watchConditions?.[index]?.type === 'custom' && (
-                      <>
-                        <div className="space-y-1">
-                          <label className="text-xs font-medium text-muted-foreground">{t('alertRuleForm.fieldName')}</label>
-                          <input
-                            placeholder={t('alertRuleForm.customField')}
-                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                            {...register(`conditions.${index}.field`)}
-                          />
-                        </div>
-                        <div className="space-y-1 sm:col-span-2">
-                          <label className="text-xs font-medium text-muted-foreground">{t('alertRuleForm.condition')}</label>
-                          <input
-                            placeholder={t('alertRuleForm.value100')}
-                            className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                            {...register(`conditions.${index}.customCondition`)}
-                          />
-                        </div>
-                      </>
-                    )}
                   </div>
+                  )}
                   <button
                     type="button"
                     onClick={() => remove(index)}
-                    disabled={fields.length === 1}
+                    // A retired condition is always removable, even as the last
+                    // one: it blocks the save, so keeping it pinned would leave
+                    // the rule permanently uneditable.
+                    disabled={fields.length === 1 && !isRetired}
                     className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-muted text-destructive disabled:opacity-50 disabled:cursor-not-allowed"
                     title={t('alertRuleForm.removeCondition')}
                   >
@@ -493,7 +523,8 @@ export default function AlertRuleForm({
                   </button>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
 

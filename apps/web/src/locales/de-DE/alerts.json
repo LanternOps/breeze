@@ -292,10 +292,6 @@
     "value": "Wert (%)",
     "offlineDurationMinutes": "Offline-Dauer (Minuten)",
     "alertWhenDeviceIsOfflineForThis": "Warnung, wenn das Gerät so viele Minuten lang offline ist",
-    "fieldName": "Feldname",
-    "customField": "custom_field",
-    "condition": "Zustand",
-    "value100": "Wert > 100",
     "removeCondition": "Bedingung entfernen",
     "noConditionsDefinedClickAddConditionTo": "Keine Bedingungen definiert. Klicken Sie auf „Bedingung hinzufügen“, um eine zu erstellen.",
     "notificationChannels": "Benachrichtigungskanäle",
@@ -356,9 +352,10 @@
     },
     "conditionTypeOption": {
       "metric": "Metrische Bedingung",
-      "status": "Statusbedingung",
-      "custom": "Benutzerdefiniertes Feld"
-    }
+      "status": "Statusbedingung"
+    },
+    "retiredConditionWarning": "Der Bedingungstyp \"{{type}}\" wird nicht mehr unterstützt und hat nie einen Alarm ausgelöst. Entfernen Sie diese Bedingung, um die Regel zu speichern.",
+    "retiredConditionBlocksSave": "Nicht unterstützter Bedingungstyp \"{{type}}\" — entfernen Sie diese Bedingung vor dem Speichern."
   },
   "alertRuleList": {
     "editRule": "Regel bearbeiten",

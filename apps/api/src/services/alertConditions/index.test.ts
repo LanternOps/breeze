@@ -16,7 +16,7 @@ vi.mock('./utils', async (importOriginal) => {
 });
 
 import './index';
-import { evaluateConditions } from './index';
+import { evaluateConditions, findUnregisteredConditionTypes, unsupportedConditionTypeError } from './index';
 import { conditionRegistry } from './registry';
 import { offlineHandler } from './handlers/offline';
 
@@ -64,5 +64,69 @@ describe('evaluateConditions context.actualValue (issue #1980)', () => {
     expect(result.context.actualValue).toBeCloseTo(92.33, 1);
     // Must not be the latest sub-threshold sample.
     expect(result.context.actualValue).not.toBe(88);
+  });
+});
+
+describe('findUnregisteredConditionTypes (issue #2948)', () => {
+  it('flags the retired `custom` type, which never had a handler', () => {
+    expect(findUnregisteredConditionTypes([{ type: 'custom', customCondition: 'x' }])).toEqual(['custom']);
+  });
+
+  it('accepts every type the registry actually resolves, aliases included', () => {
+    const supported = [
+      { type: 'metric', metric: 'cpu', operator: 'gt', value: 85 },
+      { type: 'threshold', metric: 'cpuPercent', operator: 'gt', value: 85 },
+      { type: 'status', duration: 10 },
+      { type: 'offline', durationMinutes: 10 },
+      { type: 'event_log', category: 'system', level: 'error' },
+      { type: 'service_stopped', serviceName: 'spooler' },
+      { type: 'cert_expiry', withinDays: 30 },
+    ];
+    expect(findUnregisteredConditionTypes(supported)).toEqual([]);
+  });
+
+  it('walks into nested condition groups', () => {
+    const tree = {
+      logic: 'or',
+      conditions: [
+        { type: 'metric', metric: 'cpu', operator: 'gt', value: 85 },
+        { logic: 'and', conditions: [{ type: 'custom' }, { type: 'made_up' }] },
+      ],
+    };
+    expect(findUnregisteredConditionTypes(tree)).toEqual(['custom', 'made_up']);
+  });
+
+  it('dedupes repeated unknown types', () => {
+    expect(findUnregisteredConditionTypes([{ type: 'custom' }, { type: 'custom' }])).toEqual(['custom']);
+  });
+
+  it('ignores non-object and typeless nodes rather than inventing an error', () => {
+    // A missing/non-string `type` is the per-handler validators' problem, not
+    // this function's — it reports unknown TYPES only.
+    expect(findUnregisteredConditionTypes([null, 'nope', 42, {}, { type: 7 }])).toEqual([]);
+  });
+
+  it('stops recursing on a pathologically deep tree instead of blowing the stack', () => {
+    let node: Record<string, unknown> = { type: 'custom' };
+    for (let i = 0; i < 5000; i++) node = { logic: 'and', conditions: [node] };
+    expect(() => findUnregisteredConditionTypes(node)).not.toThrow();
+  });
+});
+
+describe('unsupportedConditionTypeError (issue #2948)', () => {
+  it('returns null when nothing was supplied', () => {
+    expect(unsupportedConditionTypeError(undefined)).toBeNull();
+    expect(unsupportedConditionTypeError(null)).toBeNull();
+  });
+
+  it('returns null for a supported condition', () => {
+    expect(unsupportedConditionTypeError([{ type: 'metric', metric: 'cpu', operator: 'gt', value: 85 }])).toBeNull();
+  });
+
+  it('names the offending type and the supported ones', () => {
+    const message = unsupportedConditionTypeError([{ type: 'custom' }]);
+    expect(message).toContain('custom');
+    expect(message).toContain('never fire');
+    expect(message).toContain('offline');
   });
 });

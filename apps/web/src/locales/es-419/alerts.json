@@ -292,10 +292,6 @@
     "value": "Valor (%)",
     "offlineDurationMinutes": "Duración sin conexión (minutos)",
     "alertWhenDeviceIsOfflineForThis": "Alerta cuando el dispositivo está desconectado durante tantos minutos",
-    "fieldName": "Nombre del campo",
-    "customField": "custom_field",
-    "condition": "Condición",
-    "value100": "valor > 100",
     "removeCondition": "Eliminar condición",
     "noConditionsDefinedClickAddConditionTo": "No hay condiciones definidas. Haga clic en \"Agregar condición\" para crear una.",
     "notificationChannels": "Canales de notificación",
@@ -356,9 +352,10 @@
     },
     "conditionTypeOption": {
       "metric": "Condición métrica",
-      "status": "Condición de estado",
-      "custom": "Campo personalizado"
-    }
+      "status": "Condición de estado"
+    },
+    "retiredConditionWarning": "El tipo de condición \"{{type}}\" ya no es compatible y nunca activó una alerta. Elimine esta condición para guardar la regla.",
+    "retiredConditionBlocksSave": "Tipo de condición no compatible \"{{type}}\": elimine esta condición antes de guardar."
   },
   "alertRuleList": {
     "editRule": "Editar regla",
