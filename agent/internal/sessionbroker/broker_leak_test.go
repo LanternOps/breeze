@@ -1,7 +1,11 @@
 package sessionbroker
 
 import (
+	"fmt"
+	"io"
+	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -311,9 +315,21 @@ func TestAdmitOrEvictRejectsWhenAllRecent(t *testing.T) {
 	}
 }
 
-// After repeated send failures (above the threshold), the keepalive loop
-// must close the session. A single failure is tolerated because the wedge
-// detector is the pong-age check, not the send side.
+// keepaliveHangGuard bounds how long a keepalive test waits for a loop that
+// should already have made its decision. Every keepalive decision below is
+// reached within a few ticks, so this is a guard against runKeepalive never
+// returning at all — NOT a race window that a busy CI runner can lose. Keep it
+// far wider than any plausible scheduling delay: a flaky failure here must
+// always mean "the loop is wedged", never "the runner was slow".
+func keepaliveHangGuard(pingInterval time.Duration) time.Duration {
+	return 100 * keepaliveMaxSendFailures * pingInterval
+}
+
+// After repeated send failures (at the threshold), the keepalive loop must
+// close the session. The pong-age check is the real wedge detector, so the
+// send side deliberately tolerates fewer than keepaliveMaxSendFailures
+// consecutive failures — that tolerance is pinned by
+// TestKeepaliveToleratesSendFailuresBelowThreshold below.
 func TestKeepaliveClosesAfterRepeatedSendFailures(t *testing.T) {
 	const pingInterval = 10 * time.Millisecond
 
@@ -324,24 +340,29 @@ func TestKeepaliveClosesAfterRepeatedSendFailures(t *testing.T) {
 	session, clientIPC := newPairedSession(t, "sendfail-1", "4000")
 
 	// The helper goes away. Closing only the peer is NOT enough to make the
-	// broker's sends fail: the peer's Close() sends a FIN, and TCP half-close
-	// means the next local Write still succeeds into the send buffer. The
-	// write side only starts erroring once the peer's RST comes back, and how
-	// long that takes is an OS/scheduler property we do not control. On
-	// Linux/macOS loopback it is a single instant round trip; on a loaded
-	// Windows runner it is unbounded, which is why this test intermittently
-	// blew its wait budget with "wsasend: An established connection was
-	// aborted" — the post-RST error arriving too late (issue #2967).
+	// broker's sends fail promptly: the peer's Close() sends a FIN, which ends
+	// only our READ direction — the local send direction stays open, so the
+	// next Write still lands in the send buffer. Writes start erroring only
+	// once the peer's RST comes back, and when that happens is an OS/scheduler
+	// property we do not control. Measured on macOS loopback, one or two writes
+	// succeed first: fast enough to hide the race behind 10ms ticks, but never
+	// synchronous. On a loaded Windows runner there is no bound we can rely on,
+	// and this test only budgeted 500ms to collect three consecutive failures —
+	// the most likely reason it intermittently failed with "wsasend: An
+	// established connection was aborted" (issue #2967 records the symptom but
+	// no failure-counter log, so plain tick starvation is also consistent; this
+	// change removes both possibilities).
 	_ = clientIPC.Close()
 
-	// So close the BROKER side too. A locally-closed socket makes every
-	// subsequent SendTyped fail immediately and identically on every platform
-	// (net.ErrClosed, surfaced by ipc.Conn.Send's SetWriteDeadline before any
-	// syscall) — no RST, no timer, nothing to race. The loop is now guaranteed
-	// to accumulate keepaliveMaxSendFailures on consecutive ticks and exit on
-	// tick keepaliveMaxSendFailures. This is the input runKeepalive actually
+	// So close the BROKER side too, which is what actually makes this
+	// deterministic. On a locally-closed socket ipc.Conn.Send fails at its
+	// opening SetWriteDeadline — an fd refcount check inside net, with no
+	// syscall, no RST and no timer — so every tick fails immediately and
+	// identically on every platform. The loop is guaranteed to accumulate
+	// keepaliveMaxSendFailures on consecutive ticks and exit on tick
+	// keepaliveMaxSendFailures. That is the input runKeepalive actually
 	// contracts on — "SendTyped keeps returning errors" — so forcing it
-	// directly tests the loop rather than the host's TCP teardown timing.
+	// directly tests the loop instead of the host's TCP teardown timing.
 	if err := session.conn.Close(); err != nil {
 		t.Fatalf("close broker-side conn: %v", err)
 	}
@@ -357,18 +378,16 @@ func TestKeepaliveClosesAfterRepeatedSendFailures(t *testing.T) {
 		close(done)
 	}()
 
-	// The exit is now bounded by keepaliveMaxSendFailures ticks (~30ms), so
-	// this is purely a hang guard against runKeepalive never returning — not a
-	// race window. Keep it generously wide so scheduler starvation on a busy
-	// CI runner can never be mistaken for the loop failing to give up.
-	hangGuard := 100 * keepaliveMaxSendFailures * pingInterval
+	// Exit is bounded by keepaliveMaxSendFailures × pingInterval, so this is
+	// purely a hang guard (see keepaliveHangGuard).
+	hangGuard := keepaliveHangGuard(pingInterval)
 	select {
 	case <-done:
 	case <-time.After(hangGuard):
 		// Close the session so the loop exits via Done(), then wait for it
 		// before failing. Leaving the goroutine running past the end of the
-		// test lets the race detector fire on the teardown and bury the actual
-		// failure message under a stack dump.
+		// test lets the race detector fire on withKeepaliveTiming's cleanup and
+		// bury the actual failure message under a stack dump.
 		// The second wait is bounded too: if the loop is wedged somewhere that
 		// does not observe Done(), give up rather than hang the package until
 		// the go test timeout.
@@ -377,12 +396,164 @@ func TestKeepaliveClosesAfterRepeatedSendFailures(t *testing.T) {
 		case <-done:
 		case <-time.After(hangGuard):
 		}
-		t.Fatalf("runKeepalive did not exit within %v after %d consecutive send failures",
-			hangGuard, keepaliveMaxSendFailures)
+		t.Fatalf("runKeepalive did not exit within %v (plus up to %v grace); expected it to give up after %d consecutive send failures",
+			hangGuard, hangGuard, keepaliveMaxSendFailures)
 	}
 
 	if !session.IsClosed() {
 		t.Fatal("session should have been closed after repeated send failures")
+	}
+}
+
+// scriptedConn is a net.Conn whose write path fails on demand, so a test can
+// drive runKeepalive's send-failure counter exactly instead of provoking real
+// socket errors and hoping the OS cooperates (issue #2967).
+//
+// The scripted failure point is SetWriteDeadline rather than Write, and that
+// choice is load-bearing: ipc.Conn.Send poisons the Conn on a Write error, so
+// a Write-based script would only ever be consulted once — every later Send
+// would short-circuit on the poison flag and the counter would stop advancing.
+// The deadline-set error path deliberately does not poison, so each tick
+// re-enters the script and failures stay countable and recoverable.
+type scriptedConn struct {
+	// attempts counts send attempts (arming writes), not total calls.
+	attempts atomic.Int64
+	// failAttempt reports whether the nth attempt (1-based) should fail.
+	failAttempt func(n int64) bool
+}
+
+// SetWriteDeadline counts and scripts send attempts. ipc.Conn.Send calls this
+// twice per send: once to arm an absolute deadline, then once via defer to
+// clear it with the zero time. Only the arming call is a send attempt; the
+// deferred clear is ignored so the counter matches sends one-for-one.
+func (c *scriptedConn) SetWriteDeadline(t time.Time) error {
+	if t.IsZero() {
+		return nil
+	}
+	n := c.attempts.Add(1)
+	if c.failAttempt(n) {
+		return fmt.Errorf("scripted send failure on attempt %d", n)
+	}
+	return nil
+}
+
+func (c *scriptedConn) Write(p []byte) (int, error)     { return len(p), nil }
+func (c *scriptedConn) Read([]byte) (int, error)        { return 0, io.EOF }
+func (c *scriptedConn) Close() error                    { return nil }
+func (c *scriptedConn) LocalAddr() net.Addr             { return &net.TCPAddr{IP: net.IPv4zero} }
+func (c *scriptedConn) RemoteAddr() net.Addr            { return &net.TCPAddr{IP: net.IPv4zero} }
+func (c *scriptedConn) SetDeadline(time.Time) error     { return nil }
+func (c *scriptedConn) SetReadDeadline(time.Time) error { return nil }
+
+// newScriptedSession builds a Session whose transport fails sends according to
+// failAttempt. No sockets are involved, so nothing here depends on OS timing.
+func newScriptedSession(t *testing.T, sessionID string, failAttempt func(n int64) bool) (*Session, *scriptedConn) {
+	t.Helper()
+	conn := &scriptedConn{failAttempt: failAttempt}
+	session := NewSession(ipc.NewConn(conn), 1000, "9000", "testuser", "x11:0", sessionID,
+		[]string{"notify", "tray", "desktop"})
+	return session, conn
+}
+
+// The loop must give up after EXACTLY keepaliveMaxSendFailures consecutive
+// send failures — not earlier. Without this assertion the suite stays green
+// if the threshold regresses to 1, because every other keepalive test only
+// checks that the session eventually closes.
+func TestKeepaliveClosesAtSendFailureThreshold(t *testing.T) {
+	const pingInterval = 10 * time.Millisecond
+	withKeepaliveTiming(t, pingInterval, time.Hour)
+
+	session, conn := newScriptedSession(t, "threshold-1", func(int64) bool { return true })
+
+	b := &Broker{
+		sessions:   map[string]*Session{session.SessionID: session},
+		byIdentity: map[string][]*Session{session.IdentityKey: {session}},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		b.runKeepalive(session)
+		close(done)
+	}()
+
+	hangGuard := keepaliveHangGuard(pingInterval)
+	select {
+	case <-done:
+	case <-time.After(hangGuard):
+		_ = session.Close()
+		select {
+		case <-done:
+		case <-time.After(hangGuard):
+		}
+		t.Fatalf("runKeepalive did not exit within %v (plus up to %v grace) with every send failing",
+			hangGuard, hangGuard)
+	}
+
+	// Reading the counter after <-done is safe: the channel close orders the
+	// loop's final write before this read.
+	if got := conn.attempts.Load(); got != keepaliveMaxSendFailures {
+		t.Errorf("keepalive made %d send attempts before giving up, want exactly %d",
+			got, keepaliveMaxSendFailures)
+	}
+	if !session.IsClosed() {
+		t.Error("session should have been closed at the send-failure threshold")
+	}
+}
+
+// Fewer than keepaliveMaxSendFailures consecutive failures must NOT close the
+// session, and a success must reset the counter. Pins both halves of the
+// tolerance that keepaliveMaxSendFailures exists to provide.
+func TestKeepaliveToleratesSendFailuresBelowThreshold(t *testing.T) {
+	const pingInterval = 10 * time.Millisecond
+	withKeepaliveTiming(t, pingInterval, time.Hour)
+
+	// Fail every attempt except every keepaliveMaxSendFailures'th, so the run
+	// of consecutive failures never exceeds keepaliveMaxSendFailures-1 and the
+	// counter is reset by a success each cycle.
+	session, conn := newScriptedSession(t, "tolerate-1", func(n int64) bool {
+		return n%keepaliveMaxSendFailures != 0
+	})
+
+	b := &Broker{
+		sessions:   map[string]*Session{session.SessionID: session},
+		byIdentity: map[string][]*Session{session.IdentityKey: {session}},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		b.runKeepalive(session)
+		close(done)
+	}()
+
+	// Poll the attempt counter rather than sleeping a fixed span: a slow runner
+	// only takes longer to reach the target, it never fails early. The only way
+	// to miss the target is a loop that stops attempting sends, which is itself
+	// a real failure.
+	const wantAttempts = 3 * keepaliveMaxSendFailures
+	hangGuard := keepaliveHangGuard(pingInterval)
+	deadline := time.Now().Add(hangGuard)
+	for conn.attempts.Load() < wantAttempts {
+		if session.IsClosed() {
+			t.Fatalf("session closed after %d send attempts — fewer than %d consecutive failures must be tolerated",
+				conn.attempts.Load(), keepaliveMaxSendFailures)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("keepalive made only %d send attempts in %v, want at least %d",
+				conn.attempts.Load(), hangGuard, wantAttempts)
+		}
+		time.Sleep(pingInterval / 2)
+	}
+
+	if session.IsClosed() {
+		t.Fatal("session must stay open while failures never reach the threshold")
+	}
+
+	// The loop is healthy; make sure it still exits on Done().
+	_ = session.Close()
+	select {
+	case <-done:
+	case <-time.After(hangGuard):
+		t.Fatalf("runKeepalive did not exit within %v after session.Close()", hangGuard)
 	}
 }
 
