@@ -459,7 +459,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		uploadStart := time.Now()
 		uploadErr := attemptFileUpload(ctx, provider, file, backupPath)
 		if uploadErr != nil && !errors.Is(uploadErr, errBackupStopped) {
-			if reason, permanent := classifyPermanentUploadError(uploadErr); permanent {
+			if reason, permanent := classifyPermanentUploadError(uploadErr, file.sourcePath); permanent {
 				// The source is locked by a live process, already gone, or an
 				// unhydratable cloud placeholder. A retry cannot change that,
 				// so skip immediately instead of burning uploadRetryDelay on a

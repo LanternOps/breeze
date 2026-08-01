@@ -18,20 +18,26 @@ import (
 // GPUCache, WebView2 leveldb), 16 not-found on cache files that vanished
 // between scan and upload. A separate OneDrive repro burned 630s of backoff on
 // 21 cloud-only placeholders: the backup helper runs as SYSTEM and cannot
-// hydrate a user's placeholder, so ERROR_CLOUD_FILE_ACCESS_DENIED (0x8007017C,
-// Win32 code 0x17C) is deterministic there by construction.
+// hydrate a user's placeholder, so ERROR_CLOUD_FILE_ACCESS_DENIED is
+// deterministic there by construction.
 //
 // The codes are declared here, platform-independently, so the table stays
 // unit-testable on macOS/Linux; only the syscall.Errno -> table lookup is
 // Windows-gated (permanentUploadErrno, in the _windows/_other files).
 // upload_error_class_codes_windows_test.go asserts each value against its
-// golang.org/x/sys/windows constant when the suite runs on Windows.
+// golang.org/x/sys/windows constant, and CI runs that file on Windows.
 const (
-	winErrFileNotFound          uintptr = 2     // ERROR_FILE_NOT_FOUND
-	winErrPathNotFound          uintptr = 3     // ERROR_PATH_NOT_FOUND
-	winErrSharingViolation      uintptr = 32    // ERROR_SHARING_VIOLATION
-	winErrLockViolation         uintptr = 33    // ERROR_LOCK_VIOLATION
-	winErrCloudFileAccessDenied uintptr = 0x17C // ERROR_CLOUD_FILE_ACCESS_DENIED
+	winErrFileNotFound     uintptr = 2  // ERROR_FILE_NOT_FOUND
+	winErrPathNotFound     uintptr = 3  // ERROR_PATH_NOT_FOUND
+	winErrSharingViolation uintptr = 32 // ERROR_SHARING_VIOLATION
+	winErrLockViolation    uintptr = 33 // ERROR_LOCK_VIOLATION
+	// ERROR_CLOUD_FILE_ACCESS_DENIED, HRESULT 0x8007018B. NOTE: #2997 quotes
+	// the HRESULT as 0x8007017C, whose Win32 code (380) is actually
+	// ERROR_CLOUD_FILE_INVALID_REQUEST. The message logged in that repro —
+	// "Access to the cloud file is denied." — is emitted only by 395, and Go
+	// renders the message from the errno it holds, so 395 is the code that
+	// actually occurred and 0x8007017C is a transcription slip in the report.
+	winErrCloudFileAccessDenied uintptr = 0x18B // 395
 )
 
 // permanentWindowsErrnos maps each permanent Win32 code to its symbolic name,
@@ -63,7 +69,8 @@ func lookupPermanentWindowsErrno(code uintptr) (string, bool) {
 
 // classifyPermanentUploadError reports whether a per-file upload failure is
 // permanent — i.e. re-attempting the same file cannot change the outcome — and
-// returns a short reason for the log line.
+// returns a short reason for the log line. sourcePath is the file being backed
+// up, and is required: see the source-attribution step below.
 //
 // Callers use this ONLY to decide whether to spend uploadRetryDelay before the
 // single retry. It never changes what happens to the file: a permanent failure
@@ -73,7 +80,7 @@ func lookupPermanentWindowsErrno(code uintptr) (string, bool) {
 //
 // Conservative by design: anything unrecognised is treated as transient and
 // keeps its retry, so a misclassification costs 30s rather than a lost file.
-func classifyPermanentUploadError(err error) (string, bool) {
+func classifyPermanentUploadError(err error, sourcePath string) (string, bool) {
 	if err == nil {
 		return "", false
 	}
@@ -85,10 +92,27 @@ func classifyPermanentUploadError(err error) (string, bool) {
 		errors.Is(err, context.DeadlineExceeded) {
 		return "", false
 	}
+	// Only a failure attributable to the SOURCE file can be permanent, so the
+	// chain must contain an *fs.PathError naming it. Every provider opens the
+	// source with os.Open(localPath) and wraps the result with %w
+	// (providers/{s3,azure,gcs,b2}.go, providers/local.go), so a real
+	// source-read failure always carries one.
+	//
+	// This guard is load-bearing, not defensive: LocalProvider also creates the
+	// DESTINATION per file (os.MkdirAll/os.Create, providers/local.go), and a
+	// destination on a UNC path or mapped drive that drops mid-run returns
+	// ERROR_PATH_NOT_FOUND / ENOENT. Without the check, a 20-second share blip
+	// would classify every remaining file permanent and drain the rest of the
+	// backup at memory speed with zero retries — turning the 30s backoff, which
+	// is the only thing absorbing short destination outages, into mass data
+	// loss. An unrecognised error shape simply keeps its retry.
+	var pathErr *fs.PathError
+	if !errors.As(err, &pathErr) || pathErr.Path != sourcePath {
+		return "", false
+	}
 	// Windows-only: the Win32 codes above, matched numerically off the
-	// syscall.Errno in the chain (os.File read/open failures surface as
-	// *fs.PathError, which CompressFile wraps with %w, so errors.As reaches it).
-	if name, ok := permanentUploadErrno(err); ok {
+	// syscall.Errno the *fs.PathError carries.
+	if name, ok := permanentUploadErrno(pathErr.Err); ok {
 		return name, true
 	}
 	// Portable: a source file that no longer exists. Covers ENOENT on Unix and
@@ -97,7 +121,7 @@ func classifyPermanentUploadError(err error) (string, bool) {
 	// fs.ErrNotExist. This is the branch that makes the fix meaningful on the
 	// agent's Unix builds too — a temp/cache file that vanishes between scan
 	// and upload is just as unretryable there.
-	if errors.Is(err, fs.ErrNotExist) {
+	if errors.Is(pathErr, fs.ErrNotExist) {
 		return "file not found", true
 	}
 	return "", false

@@ -156,6 +156,7 @@ func TestPerFileUploadRetry_PermanentError_StillCountedAndJobContinues(t *testin
 }
 
 func TestClassifyPermanentUploadError(t *testing.T) {
+	const src = `C:\Users\u\AppData\Local\Google\Chrome\User Data\Default\Cache\Cache_Data\f_00a1`
 	tests := []struct {
 		name string
 		err  error
@@ -168,21 +169,63 @@ func TestClassifyPermanentUploadError(t *testing.T) {
 		{name: "deadline exceeded is never permanent", err: context.DeadlineExceeded, want: false},
 		{name: "generic transient upload error", err: errors.New("UploadPart: RequestTimeout"), want: false},
 		{name: "connection reset is transient", err: syscall.ECONNRESET, want: false},
-		{name: "vanished source file", err: notFoundErr("C:\\Users\\u\\AppData\\Local\\Google\\Chrome\\Cache\\f_00a1"), want: true},
+		{name: "vanished source file", err: notFoundErr(src), want: true},
 		{
 			name: "vanished source file surfaced by the compression layer",
-			err:  fmt.Errorf("failed to compress file: %w", &fs.PathError{Op: "read", Path: "x", Err: syscall.ENOENT}),
+			err:  fmt.Errorf("failed to compress file: %w", &fs.PathError{Op: "read", Path: src, Err: syscall.ENOENT}),
 			want: true,
 		},
-		{name: "bare fs.ErrNotExist", err: fs.ErrNotExist, want: true},
+		// A bare sentinel carries no path, so it cannot be attributed to the
+		// source and must keep its retry.
+		{name: "bare fs.ErrNotExist is not attributable to the source", err: fs.ErrNotExist, want: false},
+		// The destination-outage guard. LocalProvider creates the destination
+		// per file; a UNC/mapped-drive target that drops mid-run returns
+		// ENOENT from os.MkdirAll. Classifying that permanent would drain the
+		// remaining files out of the backup with zero retries.
+		{
+			name: "vanished DESTINATION directory stays transient",
+			err:  fmt.Errorf("failed to create backup directory: %w", &fs.PathError{Op: "mkdir", Path: `\\nas\backups\snap`, Err: syscall.ENOENT}),
+			want: false,
+		},
+		{
+			name: "unwritable DESTINATION file stays transient",
+			err:  fmt.Errorf("failed to create destination file: %w", &fs.PathError{Op: "open", Path: `\\nas\backups\snap\f_00a1.gz`, Err: syscall.ENOENT}),
+			want: false,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, got := classifyPermanentUploadError(tc.err)
+			_, got := classifyPermanentUploadError(tc.err, src)
 			if got != tc.want {
 				t.Fatalf("classifyPermanentUploadError(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+// A destination-side failure must keep the full retry: it is the only thing
+// absorbing a short NAS/UNC outage, and skipping it would drop every remaining
+// file in the run.
+func TestPerFileUploadRetry_DestinationError_StillWaitsAndRetries(t *testing.T) {
+	const delay = 200 * time.Millisecond
+	restore := setUploadRetryDelayForTest(delay)
+	defer restore()
+
+	src := writeTempFile(t, "a")
+	destErr := fmt.Errorf("failed to create backup directory: %w",
+		&fs.PathError{Op: "mkdir", Path: `\\nas\backups\snap`, Err: syscall.ENOENT})
+	p := newFixedErrorProvider(destErr)
+	files := []backupFile{{sourcePath: src, snapshotPath: "a", size: 1}}
+
+	start := time.Now()
+	if _, err := CreateSnapshotContext(context.Background(), p, files); err == nil {
+		t.Fatal("want an error when the destination is unreachable, got nil")
+	}
+	if elapsed := time.Since(start); elapsed < delay {
+		t.Fatalf("destination error skipped the retry backoff: elapsed %s, want >= %s", elapsed, delay)
+	}
+	if got := p.callCount(src); got != 2 {
+		t.Fatalf("want 2 upload attempts for a destination error (initial + one retry), got %d", got)
 	}
 }
 
@@ -200,10 +243,13 @@ func TestLookupPermanentWindowsErrno(t *testing.T) {
 		{name: "lock violation", code: 33, wantName: "ERROR_LOCK_VIOLATION", want: true},
 		{name: "file not found", code: 2, wantName: "ERROR_FILE_NOT_FOUND", want: true},
 		{name: "path not found", code: 3, wantName: "ERROR_PATH_NOT_FOUND", want: true},
-		{name: "cloud file access denied (OneDrive placeholder)", code: 0x17C, wantName: "ERROR_CLOUD_FILE_ACCESS_DENIED", want: true},
+		{name: "cloud file access denied (OneDrive placeholder)", code: 395, wantName: "ERROR_CLOUD_FILE_ACCESS_DENIED", want: true},
 		{name: "success is not a failure", code: 0, want: false},
 		{name: "plain access denied stays retryable", code: 5, want: false},
 		{name: "network name deleted stays retryable", code: 64, want: false},
+		// 380 is ERROR_CLOUD_FILE_INVALID_REQUEST, not ACCESS_DENIED — the
+		// HRESULT quoted in #2997 (0x8007017C) points here by mistake.
+		{name: "cloud file invalid request stays retryable", code: 380, want: false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

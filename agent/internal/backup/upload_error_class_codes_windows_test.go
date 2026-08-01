@@ -41,16 +41,28 @@ func TestPermanentWindowsErrnoConstantsMatchWin32(t *testing.T) {
 // %w wrapping the upload path applies. Windows-only because syscall.Errno
 // values are platform-specific.
 func TestClassifyPermanentUploadError_RealWindowsErrno(t *testing.T) {
-	err := fmt.Errorf("failed to compress file: %w", &fs.PathError{
-		Op:   "read",
-		Path: `C:\Users\u\AppData\Local\Google\Chrome\User Data\Default\Cache\Cache_Data\f_00a1`,
-		Err:  syscall.Errno(windows.ERROR_SHARING_VIOLATION),
-	})
-	name, ok := classifyPermanentUploadError(err)
-	if !ok {
-		t.Fatalf("want ERROR_SHARING_VIOLATION classified permanent, got transient")
-	}
-	if name != "ERROR_SHARING_VIOLATION" {
-		t.Fatalf("reason = %q, want ERROR_SHARING_VIOLATION", name)
+	const src = `C:\Users\u\AppData\Local\Google\Chrome\User Data\Default\Cache\Cache_Data\f_00a1`
+	for _, tc := range []struct {
+		name  string
+		errno windows.Errno
+	}{
+		{"ERROR_SHARING_VIOLATION", windows.ERROR_SHARING_VIOLATION},
+		{"ERROR_LOCK_VIOLATION", windows.ERROR_LOCK_VIOLATION},
+		{"ERROR_CLOUD_FILE_ACCESS_DENIED", windows.ERROR_CLOUD_FILE_ACCESS_DENIED},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := fmt.Errorf("failed to compress file: %w", &fs.PathError{
+				Op:   "read",
+				Path: src,
+				Err:  syscall.Errno(tc.errno),
+			})
+			name, ok := classifyPermanentUploadError(err, src)
+			if !ok {
+				t.Fatalf("want %s classified permanent, got transient", tc.name)
+			}
+			if name != tc.name {
+				t.Fatalf("reason = %q, want %q", name, tc.name)
+			}
+		})
 	}
 }
