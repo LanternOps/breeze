@@ -324,6 +324,11 @@ import * as dbModule from './db';
 import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
 import { and, eq, sql } from 'drizzle-orm';
 import { envInt } from './utils/envInt';
+import {
+  computeWorkersHealthy,
+  createReadinessEvaluator,
+  type WorkerInitPhase
+} from './services/readiness';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -347,22 +352,49 @@ const REQUIRE_REDIS_ON_STARTUP = envFlag(
 
 const app = new Hono();
 
-const readinessState: {
-  dbOk: boolean;
-  redisOk: boolean;
-  workersHealthy: boolean;
-  checkedAt: string | null;
-} = {
+/**
+ * Boot-time connectivity results. These drive the startup fail-fast gate and
+ * the decision to start Redis-backed workers. They deliberately do NOT answer
+ * `/ready` — that used to be exactly the bug (#2974): the snapshot was taken
+ * once during boot, and whichever way the race with worker registration landed
+ * was latched for the process lifetime.
+ */
+const startupChecks = {
   dbOk: false,
-  redisOk: false,
-  workersHealthy: false,
-  checkedAt: null
+  redisOk: false
 };
 
-function isReady(): boolean {
-  const redisReady = REQUIRE_REDIS_ON_STARTUP ? readinessState.redisOk : true;
-  return readinessState.dbOk && redisReady && readinessState.workersHealthy;
-}
+/** How far boot-time worker initialisation has progressed. */
+let workerInitPhase: WorkerInitPhase = 'pending';
+
+/**
+ * Readiness cache lifetime.
+ *
+ * `/ready` is unauthenticated and exempt from the global rate limiter
+ * (`SKIP_PATHS` in `middleware/globalRateLimit.ts`, so load-balancer probes
+ * aren't throttled). An uncached live check would therefore let any anonymous
+ * caller drive one Postgres `select 1` plus one Redis `PING` per request. The
+ * TTL bounds that to a single probe pair per window regardless of request rate,
+ * while staying far below any realistic uptime-check interval so a genuine
+ * outage still surfaces within seconds.
+ */
+const READINESS_CACHE_TTL_MS = envInt('READINESS_CACHE_TTL_MS', 5_000);
+
+const readiness = createReadinessEvaluator({
+  checkDb: () => checkDatabaseConnectivity(),
+  checkRedis: () => checkRedisConnectivity(),
+  workersHealthy: (redisOk) =>
+    computeWorkersHealthy({
+      phase: workerInitPhase,
+      workerStatus,
+      redisOk,
+      requireRedis: REQUIRE_REDIS_ON_STARTUP,
+      shuttingDown: shutdownInProgress
+    }),
+  isShuttingDown: () => shutdownInProgress,
+  requireRedis: REQUIRE_REDIS_ON_STARTUP,
+  ttlMs: READINESS_CACHE_TTL_MS
+});
 
 // Create WebSocket helpers (must be done before routes are registered)
 const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
@@ -472,19 +504,36 @@ app.get('/health/ready', async (c) => {
   );
 });
 
-// Legacy /ready alias (backward compatibility)
-app.get('/ready', (c) => {
-  const ready = isReady();
-  return c.json(
-    {
-      ready,
-      db: readinessState.dbOk,
-      redis: readinessState.redisOk,
-      workers: readinessState.workersHealthy,
-      checkedAt: readinessState.checkedAt
-    },
-    ready ? 200 : 503
-  );
+// Legacy /ready alias (backward compatibility).
+//
+// Evaluated live on each request, TTL-cached and single-flighted — see
+// `services/readiness.ts`. Response shape is unchanged, except `checkedAt` now
+// actually moves; before #2974 it was frozen at the boot-time snapshot.
+app.get('/ready', async (c) => {
+  let snapshot;
+  try {
+    snapshot = await readiness.get();
+  } catch (error) {
+    // The probes are written to resolve false rather than throw, so reaching
+    // here means the evaluator itself broke. Surface it as not-ready (never a
+    // 500, which probes would read as an ambiguous transport failure) and make
+    // sure the cause is recorded rather than swallowed.
+    console.error('[ready] Readiness evaluation failed:', error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+    return c.json(
+      {
+        ready: false,
+        db: false,
+        redis: false,
+        workers: false,
+        checkedAt: new Date().toISOString(),
+        error: 'readiness evaluation failed'
+      },
+      503
+    );
+  }
+
+  return c.json(snapshot, snapshot.ready ? 200 : 503);
 });
 
 // Metrics endpoint (for Prometheus scraping at /metrics)
@@ -1050,7 +1099,13 @@ const port = parseInt(process.env.API_PORT || '3001', 10);
 // Initialize background workers (only if Redis is available)
 const workerStatus: Record<string, boolean> = {};
 export function areWorkersHealthy(): boolean {
-  return readinessState.workersHealthy;
+  return computeWorkersHealthy({
+    phase: workerInitPhase,
+    workerStatus,
+    redisOk: isRedisAvailable(),
+    requireRedis: REQUIRE_REDIS_ON_STARTUP,
+    shuttingDown: shutdownInProgress
+  });
 }
 export function getWorkerStatus(): Record<string, boolean> { return { ...workerStatus }; }
 
@@ -1206,10 +1261,10 @@ async function initializeWebhookDeliveryWorker(): Promise<void> {
 }
 
 async function initializeWorkers(): Promise<void> {
-  if (!readinessState.redisOk || !isRedisAvailable()) {
+  if (!startupChecks.redisOk || !isRedisAvailable()) {
     console.warn('[WARN] Redis not available - background workers disabled');
-    readinessState.workersHealthy = !REQUIRE_REDIS_ON_STARTUP;
-    readinessState.checkedAt = new Date().toISOString();
+    workerInitPhase = 'skipped-no-redis';
+    readiness.invalidate();
     return;
   }
 
@@ -1332,8 +1387,10 @@ async function initializeWorkers(): Promise<void> {
   );
 
   const failed = Object.entries(workerStatus).filter(([, ok]) => !ok).map(([n]) => n);
-  readinessState.workersHealthy = failed.length === 0;
-  readinessState.checkedAt = new Date().toISOString();
+  workerInitPhase = 'started';
+  // Drop any snapshot taken during the boot race so the next probe sees the
+  // real outcome immediately instead of waiting out the TTL.
+  readiness.invalidate();
 
   if (failed.length === 0) {
     console.log('All background workers initialized');
@@ -1375,9 +1432,8 @@ async function runStartupChecks(): Promise<void> {
     checkRedisConnectivity()
   ]);
 
-  readinessState.dbOk = dbOk;
-  readinessState.redisOk = redisOk;
-  readinessState.checkedAt = new Date().toISOString();
+  startupChecks.dbOk = dbOk;
+  startupChecks.redisOk = redisOk;
 
   if (REQUIRE_DB_ON_STARTUP && !dbOk) {
     throw new Error('Database is required at startup but is unreachable');
@@ -1526,9 +1582,10 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   // (cause of fleetwide false-offline after a restart).
   if (server) {
     const httpServer = server as unknown as import('http').Server;
-    // Make readiness fail so any load balancer stops routing to us.
-    readinessState.workersHealthy = false;
-    readinessState.checkedAt = new Date().toISOString();
+    // Make readiness fail so any load balancer stops routing to us. The
+    // evaluator short-circuits on `shutdownInProgress` (already set above);
+    // dropping the cache too means no probe can be served a stale "ready".
+    readiness.invalidate();
     httpServer.close();                 // stop accepting NEW connections
     if (typeof httpServer.closeIdleConnections === 'function') {
       httpServer.closeIdleConnections(); // drop idle keep-alive sockets now
