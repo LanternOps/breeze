@@ -3,6 +3,7 @@ package sessionbroker
 import (
 	"encoding/json"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,16 +12,17 @@ import (
 )
 
 // backupDeathRig wires a Broker to a piped backup-helper session the way a live
-// agent does: the session carries the "backup" scope and the backup role, is
-// registered as the current backup session, and its RecvLoop dispatches through
-// the real Broker.dispatchHelperMessage. That means an unsolicited terminal
-// backup_result travels the production path (RecvLoop -> dispatchHelperMessage
-// -> onMessage), so the tests below exercise wiring rather than a mock.
+// agent does. Crucially the session is driven by the SAME goroutine shape as
+// production — RecvLoop followed by finishHelperSession, exactly as
+// Broker.handleConnection does — so the tests exercise the wiring rather than
+// calling the cleanup by hand. Killing the helper end of the pipe is the whole
+// trigger; no test reaches in and invokes the reporting path itself.
 type backupDeathRig struct {
-	broker    *Broker
-	session   *Session
-	helper    *ipc.Conn
-	forwarded chan *ipc.Envelope
+	broker       *Broker
+	session      *Session
+	helper       *ipc.Conn
+	forwarded    chan *ipc.Envelope
+	disconnected chan struct{}
 }
 
 func newBackupDeathRig(t *testing.T) *backupDeathRig {
@@ -28,8 +30,9 @@ func newBackupDeathRig(t *testing.T) *backupDeathRig {
 
 	brokerSide, helperSide := net.Pipe()
 	rig := &backupDeathRig{
-		helper:    ipc.NewConn(helperSide),
-		forwarded: make(chan *ipc.Envelope, 8),
+		helper:       ipc.NewConn(helperSide),
+		forwarded:    make(chan *ipc.Envelope, 8),
+		disconnected: make(chan struct{}),
 	}
 
 	rig.session = &Session{
@@ -51,7 +54,12 @@ func newBackupDeathRig(t *testing.T) *backupDeathRig {
 	rig.broker.sessions[rig.session.SessionID] = rig.session
 	rig.broker.SetBackupSession(rig.session)
 
-	go rig.session.RecvLoop(rig.broker.dispatchHelperMessage)
+	// The production shape: handleConnection's tail, verbatim.
+	go func() {
+		rig.session.RecvLoop(rig.broker.dispatchHelperMessage)
+		rig.broker.finishHelperSession(rig.session)
+		close(rig.disconnected)
+	}()
 
 	t.Cleanup(func() {
 		_ = helperSide.Close()
@@ -60,43 +68,50 @@ func newBackupDeathRig(t *testing.T) *backupDeathRig {
 	return rig
 }
 
-// ackNextCommand plays the helper side of one forwarded backup command: it
-// reads the request and replies on the request's envelope id, mirroring
-// breeze-backup's async ack (cmd/breeze-backup/main.go). ackSuccess=false
-// models a helper that refused to start the run.
-func (r *backupDeathRig) ackNextCommand(ackSuccess bool) {
+// serveAcks plays the helper side for n forwarded commands, replying on each
+// request's envelope id the way breeze-backup's async ack does
+// (cmd/breeze-backup/main.go). ackSuccess=false models a refused run.
+func (r *backupDeathRig) serveAcks(n int, ackSuccess bool) {
 	go func() {
-		env, err := r.helper.Recv()
-		if err != nil {
-			return
+		for i := 0; i < n; i++ {
+			env, err := r.helper.Recv()
+			if err != nil {
+				return
+			}
+			var req backupipc.BackupCommandRequest
+			if err := json.Unmarshal(env.Payload, &req); err != nil {
+				return
+			}
+			ack := backupipc.BackupCommandResult{
+				CommandID: req.CommandID,
+				Success:   ackSuccess,
+				Stdout:    `{"started":true}`,
+			}
+			_ = r.helper.SendTyped(env.ID, backupipc.TypeBackupResult, ack)
 		}
-		var req backupipc.BackupCommandRequest
-		if err := json.Unmarshal(env.Payload, &req); err != nil {
-			return
-		}
-		ack := backupipc.BackupCommandResult{
-			CommandID: req.CommandID,
-			Success:   ackSuccess,
-			Stdout:    `{"started":true}`,
-		}
-		_ = r.helper.SendTyped(env.ID, backupipc.TypeBackupResult, ack)
 	}()
 }
 
 // startAsyncRun forwards an async backup_run and waits for the helper's ack,
-// leaving the run in flight exactly as it is after a real backup_run command.
+// leaving the run in flight exactly as a real backup_run command does.
 func (r *backupDeathRig) startAsyncRun(t *testing.T, commandID string, ackSuccess bool) {
 	t.Helper()
-	r.ackNextCommand(ackSuccess)
+	r.serveAcks(1, ackSuccess)
 	if _, err := r.broker.ForwardBackupCommand(commandID, "backup_run", nil, 5*time.Second, true); err != nil {
-		t.Fatalf("ForwardBackupCommand: %v", err)
+		t.Fatalf("ForwardBackupCommand(%s): %v", commandID, err)
 	}
 }
 
 // killHelper simulates breeze-backup.exe being terminated: the helper end of
-// the pipe goes away, RecvLoop hits EOF and returns.
-func (r *backupDeathRig) killHelper() {
+// the pipe goes away, RecvLoop hits EOF, and the production cleanup runs.
+func (r *backupDeathRig) killHelper(t *testing.T) {
+	t.Helper()
 	_ = r.helper.Close()
+	select {
+	case <-r.disconnected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the session teardown to complete")
+	}
 }
 
 func (r *backupDeathRig) nextForwarded(t *testing.T) *ipc.Envelope {
@@ -110,13 +125,28 @@ func (r *backupDeathRig) nextForwarded(t *testing.T) *ipc.Envelope {
 	}
 }
 
+// expectNoForwarded is called only after killHelper has confirmed teardown
+// finished, and the reporting path is synchronous within it, so anything the
+// disconnect would have sent is already queued.
 func (r *backupDeathRig) expectNoForwarded(t *testing.T) {
 	t.Helper()
 	select {
 	case env := <-r.forwarded:
 		t.Fatalf("expected no forwarded envelope, got type=%q payload=%s", env.Type, string(env.Payload))
-	case <-time.After(250 * time.Millisecond):
+	default:
 	}
+}
+
+func (r *backupDeathRig) trackedRuns() int {
+	r.broker.mu.RLock()
+	bh := r.broker.backup
+	r.broker.mu.RUnlock()
+	if bh == nil {
+		return 0
+	}
+	bh.mu.Lock()
+	defer bh.mu.Unlock()
+	return len(bh.activeRuns)
 }
 
 func decodeBackupResult(t *testing.T, env *ipc.Envelope) backupipc.BackupCommandResult {
@@ -131,6 +161,19 @@ func decodeBackupResult(t *testing.T, env *ipc.Envelope) backupipc.BackupCommand
 	return result
 }
 
+func assertHelperDeathResult(t *testing.T, result backupipc.BackupCommandResult, wantCommandID string) {
+	t.Helper()
+	if result.CommandID != wantCommandID {
+		t.Errorf("CommandID = %q, want %q", result.CommandID, wantCommandID)
+	}
+	if result.Success {
+		t.Error("expected Success=false for a helper that died mid-run")
+	}
+	if result.Stderr != backupHelperDiedError {
+		t.Errorf("Stderr = %q, want %q", result.Stderr, backupHelperDiedError)
+	}
+}
+
 // TestBackupHelperDeath_ActiveRun_ReportsTerminalFailure is the #2998 headline:
 // when breeze-backup dies mid-run the disconnect must synthesize a terminal
 // backup_result so the server fails the job in seconds, instead of leaving it
@@ -139,20 +182,51 @@ func TestBackupHelperDeath_ActiveRun_ReportsTerminalFailure(t *testing.T) {
 	rig := newBackupDeathRig(t)
 	rig.startAsyncRun(t, "cmd-run-1", true)
 
-	rig.killHelper()
-	rig.broker.finishHelperSession(rig.session)
+	rig.killHelper(t)
 
-	result := decodeBackupResult(t, rig.nextForwarded(t))
-	if result.CommandID != "cmd-run-1" {
-		t.Errorf("CommandID = %q, want cmd-run-1", result.CommandID)
+	assertHelperDeathResult(t, decodeBackupResult(t, rig.nextForwarded(t)), "cmd-run-1")
+	rig.expectNoForwarded(t)
+	if got := rig.trackedRuns(); got != 0 {
+		t.Errorf("tracked runs after death = %d, want 0", got)
 	}
-	if result.Success {
-		t.Error("expected Success=false for a helper that died mid-run")
+}
+
+// TestBackupHelperDeath_ConcurrentRuns_ReportsEveryRun covers the shape a
+// profile fan-out produces: several backup_run commands executing on one helper
+// at once (file + system_image both dispatch as backup_run). Every one of them
+// must be failed, not just the most recent — tracking only the latest would
+// leave the others stranded for the reaper, i.e. #2998 unfixed for fan-out.
+func TestBackupHelperDeath_ConcurrentRuns_ReportsEveryRun(t *testing.T) {
+	rig := newBackupDeathRig(t)
+	rig.serveAcks(2, true)
+
+	var wg sync.WaitGroup
+	for _, id := range []string{"cmd-run-a", "cmd-run-b"} {
+		wg.Add(1)
+		go func(commandID string) {
+			defer wg.Done()
+			if _, err := rig.broker.ForwardBackupCommand(commandID, "backup_run", nil, 5*time.Second, true); err != nil {
+				t.Errorf("ForwardBackupCommand(%s): %v", commandID, err)
+			}
+		}(id)
 	}
-	if result.Stderr != backupHelperDiedError {
-		t.Errorf("Stderr = %q, want %q", result.Stderr, backupHelperDiedError)
+	wg.Wait()
+
+	rig.killHelper(t)
+
+	got := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		result := decodeBackupResult(t, rig.nextForwarded(t))
+		assertHelperDeathResult(t, result, result.CommandID)
+		got[result.CommandID] = true
+	}
+	if !got["cmd-run-a"] || !got["cmd-run-b"] {
+		t.Fatalf("expected both runs failed, got %v", got)
 	}
 	rig.expectNoForwarded(t)
+	if n := rig.trackedRuns(); n != 0 {
+		t.Errorf("tracked runs after death = %d, want 0", n)
+	}
 }
 
 // TestBackupHelperDeath_NoActiveRun_ReportsNothing guards the normal case: a
@@ -160,16 +234,15 @@ func TestBackupHelperDeath_ActiveRun_ReportsTerminalFailure(t *testing.T) {
 func TestBackupHelperDeath_NoActiveRun_ReportsNothing(t *testing.T) {
 	rig := newBackupDeathRig(t)
 
-	rig.killHelper()
-	rig.broker.finishHelperSession(rig.session)
+	rig.killHelper(t)
 
 	rig.expectNoForwarded(t)
 }
 
 // TestBackupHelperDeath_AfterTerminalResult_DoesNotDoubleReport proves the
 // disconnect is a no-op once the helper has already delivered its terminal
-// result — the ordinary end of every successful async run, where the helper
-// sends the result and then exits.
+// result — the ordinary end of every async run, where the helper sends the
+// result and then exits.
 func TestBackupHelperDeath_AfterTerminalResult_DoesNotDoubleReport(t *testing.T) {
 	rig := newBackupDeathRig(t)
 	rig.startAsyncRun(t, "cmd-run-2", true)
@@ -190,10 +263,71 @@ func TestBackupHelperDeath_AfterTerminalResult_DoesNotDoubleReport(t *testing.T)
 		t.Fatalf("unexpected genuine result: %+v", got)
 	}
 
-	rig.killHelper()
-	rig.broker.finishHelperSession(rig.session)
+	rig.killHelper(t)
 
 	rig.expectNoForwarded(t)
+	if n := rig.trackedRuns(); n != 0 {
+		t.Errorf("tracked runs after terminal result = %d, want 0", n)
+	}
+}
+
+// TestBackupHelperDeath_AckThenImmediateDeath_ReportsExactlyOnce pins the
+// interleaving that matters most in the field: a run that dies microseconds
+// after acking (bad VSS snapshot, OOM, missing repository). The terminal
+// failure must be reported EXACTLY once — either synthesized by the disconnect,
+// or returned as an error from the forward, which the heartbeat turns into the
+// command's failure result. Never both (duplicate) and never neither (the job
+// strands for the 15-minute reaper, i.e. #2998 unfixed).
+func TestBackupHelperDeath_AckThenImmediateDeath_ReportsExactlyOnce(t *testing.T) {
+	for i := 0; i < 60; i++ {
+		rig := newBackupDeathRig(t)
+
+		// Ack and die in the same breath, with no synchronization against the
+		// forwarding goroutine.
+		go func() {
+			env, err := rig.helper.Recv()
+			if err != nil {
+				return
+			}
+			var req backupipc.BackupCommandRequest
+			if err := json.Unmarshal(env.Payload, &req); err != nil {
+				return
+			}
+			ack := backupipc.BackupCommandResult{CommandID: req.CommandID, Success: true, Stdout: `{"started":true}`}
+			_ = rig.helper.SendTyped(env.ID, backupipc.TypeBackupResult, ack)
+			_ = rig.helper.Close()
+		}()
+
+		_, err := rig.broker.ForwardBackupCommand("cmd-race", "backup_run", nil, 5*time.Second, true)
+
+		select {
+		case <-rig.disconnected:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for the session teardown to complete")
+		}
+
+		reported := 0
+		for {
+			select {
+			case env := <-rig.forwarded:
+				assertHelperDeathResult(t, decodeBackupResult(t, env), "cmd-race")
+				reported++
+				continue
+			default:
+			}
+			break
+		}
+
+		switch {
+		case err != nil && reported != 0:
+			t.Fatalf("iteration %d: double report — forward errored (%v) AND %d synthetic failures", i, err, reported)
+		case err == nil && reported != 1:
+			t.Fatalf("iteration %d: forward succeeded but %d synthetic failures reported, want exactly 1", i, reported)
+		}
+		if n := rig.trackedRuns(); n != 0 {
+			t.Fatalf("iteration %d: %d runs left tracked after death — a later disconnect would fail a finished job", i, n)
+		}
+	}
 }
 
 // TestBackupHelperDeath_SyncCommandInFlight_ReportsNothing keeps the synthetic
@@ -215,8 +349,7 @@ func TestBackupHelperDeath_SyncCommandInFlight_ReportsNothing(t *testing.T) {
 		t.Fatalf("helper Recv: %v", err)
 	}
 
-	rig.killHelper()
-	rig.broker.finishHelperSession(rig.session)
+	rig.killHelper(t)
 
 	select {
 	case err := <-done:
@@ -237,15 +370,18 @@ func TestBackupHelperDeath_AckReportedFailure_ReportsNothing(t *testing.T) {
 	rig := newBackupDeathRig(t)
 	rig.startAsyncRun(t, "cmd-run-3", false)
 
-	rig.killHelper()
-	rig.broker.finishHelperSession(rig.session)
+	rig.killHelper(t)
 
 	rig.expectNoForwarded(t)
+	if n := rig.trackedRuns(); n != 0 {
+		t.Errorf("tracked runs after a refused ack = %d, want 0", n)
+	}
 }
 
 // TestBackupHelperDeath_NonBackupRole_ReportsNothing pins the role gate: a user
-// helper disconnecting must never touch the backup reporting path, even while a
-// backup run is in flight on the separate backup session.
+// helper disconnecting must never touch the backup reporting path. The live
+// backup run is then failed by its own helper's death, proving the run was
+// genuinely tracked the whole time rather than the assertion passing vacuously.
 func TestBackupHelperDeath_NonBackupRole_ReportsNothing(t *testing.T) {
 	rig := newBackupDeathRig(t)
 	rig.startAsyncRun(t, "cmd-run-4", true)
@@ -257,8 +393,10 @@ func TestBackupHelperDeath_NonBackupRole_ReportsNothing(t *testing.T) {
 		done:      make(chan struct{}),
 	}
 	rig.broker.finishHelperSession(other)
-
 	rig.expectNoForwarded(t)
+
+	rig.killHelper(t)
+	assertHelperDeathResult(t, decodeBackupResult(t, rig.nextForwarded(t)), "cmd-run-4")
 }
 
 // TestBackupHelperDeath_StaleSession_ReportsNothing prevents the worst failure
@@ -276,17 +414,13 @@ func TestBackupHelperDeath_StaleSession_ReportsNothing(t *testing.T) {
 		pending:       make(map[string]pendingResponse),
 		done:          make(chan struct{}),
 	}
-	rig.broker.finishHelperSession(stale)
+	rig.broker.reportBackupHelperDeath(stale)
 
 	rig.expectNoForwarded(t)
 
 	// The live session still owns the run, so its own death still reports.
-	rig.killHelper()
-	rig.broker.finishHelperSession(rig.session)
-	result := decodeBackupResult(t, rig.nextForwarded(t))
-	if result.CommandID != "cmd-run-5" || result.Success {
-		t.Fatalf("unexpected result after live-session death: %+v", result)
-	}
+	rig.killHelper(t)
+	assertHelperDeathResult(t, decodeBackupResult(t, rig.nextForwarded(t)), "cmd-run-5")
 }
 
 // newDiscardPipeConn returns one end of a pipe whose peer is drained and

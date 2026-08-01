@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -64,17 +66,48 @@ type backupHelper struct {
 	binaryPath string
 	spawning   bool
 
-	// activeRunCommandID is the command id of an async backup_run that the
-	// helper acked but has not yet delivered a terminal result for. It is the
-	// only signal that a run is still in flight, and therefore the gate on
-	// synthesizing a failure when the helper dies (#2998).
+	// activeRuns holds every async backup_run this helper is executing, keyed
+	// by command id. It is the gate on synthesizing a failure when the helper
+	// dies (#2998), and it is a MAP rather than a single slot because
+	// concurrent runs on one device are a normal shape, not a corner case: a
+	// profile fan-out dispatches one job per selection and both `file` and
+	// `system_image` resolve to commandType backup_run
+	// (apps/api/src/jobs/backupWorker.ts), the agent dispatches commands from a
+	// worker pool, and the helper runs each in its own goroutine
+	// (cmd/breeze-backup/main.go). A single slot would let the second run
+	// overwrite the first and leave the first stranded for the 15-minute
+	// reaper — the very bug #2998 fixes.
 	//
 	// Only the async flow is tracked. On the legacy synchronous path the
 	// forwarder is still blocked in Session.SendCommand, which errors out when
 	// the session closes and reports the failure itself — tracking it here too
 	// would double-report the same command.
-	activeRunCommandID string
+	activeRuns map[string]backupRunState
+
+	// deadSession is the last session whose death was reported. It closes the
+	// window where a forwarder is mid-flight while the helper dies: the
+	// forwarder consults it to decide whether the run it just started is
+	// already doomed. Holding one dead *Session is deliberate — the pointer is
+	// the identity, and it is replaced on the next death.
+	deadSession *Session
 }
+
+// backupRunState distinguishes a run whose forwarder is still blocked waiting
+// for the helper's ack from one the helper has confirmed it is executing.
+//
+// The distinction is what makes helper-death reporting exactly-once. A run
+// still awaiting its ack must NOT be reported by the death path, because its
+// forwarder is about to return an error (Session.SendCommand fails when the
+// session closes) and the heartbeat reports that failure itself. Only a
+// confirmed-running command has nobody else left to report it.
+type backupRunState int
+
+const (
+	// backupRunPendingAck: recorded before the request was sent, ack not yet seen.
+	backupRunPendingAck backupRunState = iota
+	// backupRunExecuting: the helper acked; the terminal result is still owed.
+	backupRunExecuting
+)
 
 // GetOrSpawnBackupHelper returns the existing backup helper session or spawns a new one.
 func (b *Broker) GetOrSpawnBackupHelper(binaryPath string) (*Session, error) {
@@ -227,22 +260,60 @@ func (b *Broker) ForwardBackupCommand(commandID, commandType string, payload []b
 		Async:       async,
 	}
 
-	env, err := session.SendCommand(commandID, backupipc.TypeBackupCommand, req, timeout)
-
-	// An async backup_run leaves the run executing inside the helper after the
-	// ack returns, with the terminal result promised as a later unsolicited
-	// envelope. Record it so a helper death before that result can be reported
-	// (#2998). Anything the caller already turns into a command failure — a
-	// send/timeout error, an unparseable ack, or an ack that says the run did
-	// not start — is deliberately NOT tracked: the failure is reported by the
-	// forwarder's return value instead.
-	if async && commandType == backupRunCommandType && bh != nil && err == nil && ackStartedRun(env) {
-		bh.mu.Lock()
-		bh.activeRunCommandID = commandID
-		bh.mu.Unlock()
+	tracked := async && commandType == backupRunCommandType && bh != nil
+	if !tracked {
+		return session.SendCommand(commandID, backupipc.TypeBackupCommand, req, timeout)
 	}
 
-	return env, err
+	// Record BEFORE sending, not after. The helper's terminal result is
+	// delivered by the RecvLoop goroutine and can land before this goroutine
+	// resumes from SendCommand — recording afterwards would re-add a command
+	// that already finished, and the next disconnect would then fail an
+	// already-completed job (#2998 review). Recording first means every
+	// dispatch of this command id is ordered after the entry exists.
+	bh.mu.Lock()
+	if bh.activeRuns == nil {
+		bh.activeRuns = make(map[string]backupRunState)
+	}
+	bh.activeRuns[commandID] = backupRunPendingAck
+	bh.mu.Unlock()
+
+	env, err := session.SendCommand(commandID, backupipc.TypeBackupCommand, req, timeout)
+
+	// Nothing started: drop the entry. The forwarder's own error/failed-ack
+	// return is what reports this command's failure, so the death path must
+	// not report it a second time.
+	if err != nil || !ackStartedRun(env) {
+		bh.mu.Lock()
+		delete(bh.activeRuns, commandID)
+		bh.mu.Unlock()
+		return env, err
+	}
+
+	// The helper confirmed the run. Promote it to executing — but only if the
+	// entry is still there. It can have vanished two ways, and they need
+	// opposite answers:
+	//
+	//   - the terminal result already arrived (a run that failed in
+	//     microseconds): the server has been told, so re-adding the id would
+	//     strand a false failure for the next disconnect. Leave it gone.
+	//   - the helper died and the death path cleared the map: it deliberately
+	//     did NOT report this command (still pending-ack), so this call must
+	//     fail it instead. That keeps helper-death reporting exactly-once in
+	//     every interleaving.
+	bh.mu.Lock()
+	if _, stillTracked := bh.activeRuns[commandID]; stillTracked {
+		bh.activeRuns[commandID] = backupRunExecuting
+		bh.mu.Unlock()
+		return env, nil
+	}
+	doomed := bh.deadSession == session
+	bh.mu.Unlock()
+
+	if doomed {
+		return env, fmt.Errorf("%s", backupHelperDiedError)
+	}
+	return env, nil
 }
 
 // ackStartedRun reports whether an async backup_run ack means the run is now
@@ -289,9 +360,7 @@ func (b *Broker) noteBackupRunResult(env *ipc.Envelope) {
 	}
 
 	bh.mu.Lock()
-	if bh.activeRunCommandID == result.CommandID {
-		bh.activeRunCommandID = ""
-	}
+	delete(bh.activeRuns, result.CommandID)
 	bh.mu.Unlock()
 }
 
@@ -307,62 +376,88 @@ func (b *Broker) noteBackupRunResult(env *ipc.Envelope) {
 // unsolicited result uses, so it inherits the heartbeat's delivery path
 // including the outbox that survives a WS gap.
 func (b *Broker) reportBackupHelperDeath(session *Session) {
+	if session == nil {
+		return
+	}
+
+	// bh.session is written under b.mu (SetBackupSession, ClearBackupSession,
+	// registerNonLifecycleSession), so it must be read under b.mu too — this
+	// value decides whether a customer's run gets failed, and an unsynchronized
+	// read of it would be a genuine data race. b.mu -> bh.mu is the lock order
+	// used everywhere else in this file, so nesting them here is safe.
 	b.mu.RLock()
 	bh := b.backup
-	b.mu.RUnlock()
-	if bh == nil || session == nil {
+	if bh == nil {
+		b.mu.RUnlock()
 		return
 	}
-
 	bh.mu.Lock()
-	current := bh.session
-	commandID := bh.activeRunCommandID
-	// A different live session means the run belongs to the helper that
-	// replaced this one; failing it here would kill a backup that is still
+	// A different live session means the runs belong to the helper that
+	// replaced this one; failing them here would kill backups that are still
 	// executing. A nil current session is this session's own teardown (the
-	// shutdown path clears it before the disconnect lands), and the run is
+	// shutdown path clears it before the disconnect lands), and the runs are
 	// dead either way, so that case still reports.
-	superseded := current != nil && current != session
-	if !superseded && commandID != "" {
-		bh.activeRunCommandID = ""
+	superseded := bh.session != nil && bh.session != session
+	var commandIDs []string
+	stillTracked := len(bh.activeRuns)
+	if !superseded {
+		// Report only the runs the helper confirmed it was executing. A run
+		// still awaiting its ack is the forwarder's to fail — it is blocked in
+		// SendCommand, which errors when the session closes. Clearing the map
+		// wholesale (both states) is what tells that forwarder its entry is
+		// gone, so it fails the command instead of promoting a dead run.
+		for id, state := range bh.activeRuns {
+			if state == backupRunExecuting {
+				commandIDs = append(commandIDs, id)
+			}
+		}
+		bh.activeRuns = nil
+		bh.deadSession = session
 	}
 	bh.mu.Unlock()
+	b.mu.RUnlock()
 
-	if commandID == "" {
-		return
-	}
 	if superseded {
-		backupLog.Warn("backup helper session disconnected while another session owns the in-flight run",
-			"sessionId", session.SessionID, "commandId", commandID)
+		if stillTracked > 0 {
+			backupLog.Warn("backup helper session disconnected while another session owns the in-flight runs",
+				"sessionId", session.SessionID, "runs", stillTracked)
+		}
 		return
 	}
-
-	backupLog.Warn("backup helper exited with a run in flight, failing the job",
-		"sessionId", session.SessionID,
-		"commandId", commandID,
-		"error", backupHelperDiedError,
-	)
+	if len(commandIDs) == 0 {
+		return
+	}
+	// Deterministic order so a multi-run fan-out reports predictably.
+	sort.Strings(commandIDs)
 
 	if b.onMessage == nil {
 		backupLog.Error("no message handler wired, cannot report backup helper death",
-			"commandId", commandID)
+			"sessionId", session.SessionID, "commandIds", strings.Join(commandIDs, ","))
 		return
 	}
 
-	payload, err := json.Marshal(backupipc.BackupCommandResult{
-		CommandID: commandID,
-		Success:   false,
-		Stderr:    backupHelperDiedError,
-	})
-	if err != nil {
-		backupLog.Error("failed to encode backup helper death result",
-			"commandId", commandID, "error", err.Error())
-		return
-	}
+	for _, commandID := range commandIDs {
+		backupLog.Warn("backup helper exited with a run in flight, failing the job",
+			"sessionId", session.SessionID,
+			"commandId", commandID,
+			"error", backupHelperDiedError,
+		)
 
-	b.onMessage(session, &ipc.Envelope{
-		ID:      commandID + "-helper-death",
-		Type:    backupipc.TypeBackupResult,
-		Payload: payload,
-	})
+		payload, err := json.Marshal(backupipc.BackupCommandResult{
+			CommandID: commandID,
+			Success:   false,
+			Stderr:    backupHelperDiedError,
+		})
+		if err != nil {
+			backupLog.Error("failed to encode backup helper death result",
+				"commandId", commandID, "error", err.Error())
+			continue
+		}
+
+		b.onMessage(session, &ipc.Envelope{
+			ID:      commandID + "-helper-death",
+			Type:    backupipc.TypeBackupResult,
+			Payload: payload,
+		})
+	}
 }
