@@ -83,13 +83,6 @@ type backupHelper struct {
 	// the session closes and reports the failure itself — tracking it here too
 	// would double-report the same command.
 	activeRuns map[string]backupRunState
-
-	// deadSession is the last session whose death was reported. It closes the
-	// window where a forwarder is mid-flight while the helper dies: the
-	// forwarder consults it to decide whether the run it just started is
-	// already doomed. Holding one dead *Session is deliberate — the pointer is
-	// the identity, and it is replaced on the next death.
-	deadSession *Session
 }
 
 // backupRunState distinguishes a run whose forwarder is still blocked waiting
@@ -107,6 +100,17 @@ const (
 	backupRunPendingAck backupRunState = iota
 	// backupRunExecuting: the helper acked; the terminal result is still owed.
 	backupRunExecuting
+	// backupRunDoomed: the helper died while this run was still pending-ack.
+	// The death path leaves this tombstone instead of reporting, because the
+	// forwarder is the one that must fail the command; the forwarder consumes
+	// the tombstone when it resumes.
+	//
+	// The doom signal has to be per-command, not per-session: "my entry is
+	// gone" is ambiguous on its own — it also happens when the genuine
+	// terminal result was delivered and the helper then exited normally, and
+	// failing the command in THAT case would contradict a success the server
+	// already recorded.
+	backupRunDoomed
 )
 
 // GetOrSpawnBackupHelper returns the existing backup helper session or spawns a new one.
@@ -290,30 +294,35 @@ func (b *Broker) ForwardBackupCommand(commandID, commandType string, payload []b
 		return env, err
 	}
 
-	// The helper confirmed the run. Promote it to executing — but only if the
-	// entry is still there. It can have vanished two ways, and they need
-	// opposite answers:
+	// The helper confirmed the run. What happened to the entry in the meantime
+	// decides who owns this command's outcome:
 	//
-	//   - the terminal result already arrived (a run that failed in
-	//     microseconds): the server has been told, so re-adding the id would
-	//     strand a false failure for the next disconnect. Leave it gone.
-	//   - the helper died and the death path cleared the map: it deliberately
-	//     did NOT report this command (still pending-ack), so this call must
-	//     fail it instead. That keeps helper-death reporting exactly-once in
-	//     every interleaving.
+	//   - gone: the terminal result already arrived (a run that finished or
+	//     failed in microseconds) and the server has been told. Re-adding the
+	//     id would strand a false failure for the next disconnect, and
+	//     returning an error here would contradict a result already recorded.
+	//     Stay silent.
+	//   - doomed: the helper died while this run was still pending-ack. The
+	//     death path deliberately did not report it, so this call must fail it.
+	//   - otherwise: promote to executing; the death path owns it from here.
+	//
+	// Those three answers are what make helper-death reporting exactly-once in
+	// every interleaving of this goroutine and the RecvLoop goroutine.
 	bh.mu.Lock()
-	if _, stillTracked := bh.activeRuns[commandID]; stillTracked {
+	state, stillTracked := bh.activeRuns[commandID]
+	switch {
+	case !stillTracked:
+		bh.mu.Unlock()
+		return env, nil
+	case state == backupRunDoomed:
+		delete(bh.activeRuns, commandID)
+		bh.mu.Unlock()
+		return env, fmt.Errorf("%s", backupHelperDiedError)
+	default:
 		bh.activeRuns[commandID] = backupRunExecuting
 		bh.mu.Unlock()
 		return env, nil
 	}
-	doomed := bh.deadSession == session
-	bh.mu.Unlock()
-
-	if doomed {
-		return env, fmt.Errorf("%s", backupHelperDiedError)
-	}
-	return env, nil
 }
 
 // ackStartedRun reports whether an async backup_run ack means the run is now
@@ -397,22 +406,30 @@ func (b *Broker) reportBackupHelperDeath(session *Session) {
 	// executing. A nil current session is this session's own teardown (the
 	// shutdown path clears it before the disconnect lands), and the runs are
 	// dead either way, so that case still reports.
+	//
+	// The map is deliberately left untouched on the superseded branch. Any
+	// residue from the superseded session is then attributed to the next
+	// session's death — accepted, because reaching this branch at all requires
+	// a replacement helper to register in the window between RecvLoop
+	// returning and this report, and mis-attributing is strictly better than
+	// failing the live helper's runs.
 	superseded := bh.session != nil && bh.session != session
 	var commandIDs []string
 	stillTracked := len(bh.activeRuns)
 	if !superseded {
 		// Report only the runs the helper confirmed it was executing. A run
-		// still awaiting its ack is the forwarder's to fail — it is blocked in
-		// SendCommand, which errors when the session closes. Clearing the map
-		// wholesale (both states) is what tells that forwarder its entry is
-		// gone, so it fails the command instead of promoting a dead run.
+		// still awaiting its ack is the forwarder's to fail — it is either
+		// blocked in SendCommand (which errors when the session closes) or
+		// about to resume and find the tombstone left here. Reporting those
+		// too would double-fail the command.
 		for id, state := range bh.activeRuns {
 			if state == backupRunExecuting {
 				commandIDs = append(commandIDs, id)
+				delete(bh.activeRuns, id)
+				continue
 			}
+			bh.activeRuns[id] = backupRunDoomed
 		}
-		bh.activeRuns = nil
-		bh.deadSession = session
 	}
 	bh.mu.Unlock()
 	b.mu.RUnlock()

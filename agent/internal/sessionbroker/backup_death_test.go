@@ -3,7 +3,7 @@ package sessionbroker
 import (
 	"encoding/json"
 	"net"
-	"sync"
+	"runtime"
 	"testing"
 	"time"
 
@@ -27,8 +27,53 @@ type backupDeathRig struct {
 
 func newBackupDeathRig(t *testing.T) *backupDeathRig {
 	t.Helper()
-
 	brokerSide, helperSide := net.Pipe()
+	return newBackupDeathRigOn(t, brokerSide, helperSide)
+}
+
+// newBufferedBackupDeathRig uses a kernel-buffered loopback pair instead of the
+// synchronous net.Pipe, so the helper can queue an ack, a terminal result and a
+// close without waiting for the broker to read each one. That is what a real
+// unix-socket helper does, and it is the only way to drive the interleaving
+// where RecvLoop consumes everything before the forwarding goroutine resumes.
+func newBufferedBackupDeathRig(t *testing.T) *backupDeathRig {
+	t.Helper()
+	brokerSide, helperSide := newLoopbackConnPair(t)
+	return newBackupDeathRigOn(t, brokerSide, helperSide)
+}
+
+func newLoopbackConnPair(t *testing.T) (net.Conn, net.Conn) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen loopback: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	type accepted struct {
+		conn net.Conn
+		err  error
+	}
+	accepts := make(chan accepted, 1)
+	go func() {
+		conn, err := listener.Accept()
+		accepts <- accepted{conn: conn, err: err}
+	}()
+
+	dialed, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatalf("dial loopback: %v", err)
+	}
+	got := <-accepts
+	if got.err != nil {
+		t.Fatalf("accept loopback: %v", got.err)
+	}
+	return got.conn, dialed
+}
+
+func newBackupDeathRigOn(t *testing.T, brokerSide, helperSide net.Conn) *backupDeathRig {
+	t.Helper()
+
 	rig := &backupDeathRig{
 		helper:       ipc.NewConn(helperSide),
 		forwarded:    make(chan *ipc.Envelope, 8),
@@ -198,19 +243,16 @@ func TestBackupHelperDeath_ActiveRun_ReportsTerminalFailure(t *testing.T) {
 // leave the others stranded for the reaper, i.e. #2998 unfixed for fan-out.
 func TestBackupHelperDeath_ConcurrentRuns_ReportsEveryRun(t *testing.T) {
 	rig := newBackupDeathRig(t)
-	rig.serveAcks(2, true)
 
-	var wg sync.WaitGroup
-	for _, id := range []string{"cmd-run-a", "cmd-run-b"} {
-		wg.Add(1)
-		go func(commandID string) {
-			defer wg.Done()
-			if _, err := rig.broker.ForwardBackupCommand(commandID, "backup_run", nil, 5*time.Second, true); err != nil {
-				t.Errorf("ForwardBackupCommand(%s): %v", commandID, err)
-			}
-		}(id)
-	}
-	wg.Wait()
+	// The two dispatches are serialized, not raced. What this test needs is
+	// two runs tracked SIMULTANEOUSLY, which sequential starts give; racing the
+	// sends instead would trip a pre-existing ipc.Conn defect — Send assigns
+	// env.Seq outside c.mu (internal/ipc/protocol.go), so concurrent senders on
+	// one Conn can reach the wire out of sequence and the peer rejects the
+	// frame as a replay. That is a real bug for the production fan-out this
+	// test models, but it belongs to the ipc package, not to #2998.
+	rig.startAsyncRun(t, "cmd-run-a", true)
+	rig.startAsyncRun(t, "cmd-run-b", true)
 
 	rig.killHelper(t)
 
@@ -330,6 +372,62 @@ func TestBackupHelperDeath_AckThenImmediateDeath_ReportsExactlyOnce(t *testing.T
 	}
 }
 
+// TestBackupHelperDeath_TerminalResultThenDeathDuringForward_NoContradiction
+// pins the interleaving that a per-session "is the helper dead" flag gets
+// wrong. The helper acks, delivers a genuine SUCCESS result, and exits — all
+// while the forwarding goroutine is still between SendCommand and its
+// bookkeeping. When it resumes, its tracking entry is gone and the helper is
+// dead, but the run is NOT a casualty: the server already has the real result.
+// Failing the command here would overwrite a recorded success with a bogus
+// "backup helper exited unexpectedly".
+func TestBackupHelperDeath_TerminalResultThenDeathDuringForward_NoContradiction(t *testing.T) {
+	// Single-threaded scheduling makes the forwarding goroutine reliably lose
+	// the race to RecvLoop, which is the whole point of the test.
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+
+	for i := 0; i < 40; i++ {
+		rig := newBufferedBackupDeathRig(t)
+
+		go func() {
+			env, err := rig.helper.Recv()
+			if err != nil {
+				return
+			}
+			var req backupipc.BackupCommandRequest
+			if err := json.Unmarshal(env.Payload, &req); err != nil {
+				return
+			}
+			ack := backupipc.BackupCommandResult{CommandID: req.CommandID, Success: true, Stdout: `{"started":true}`}
+			_ = rig.helper.SendTyped(env.ID, backupipc.TypeBackupResult, ack)
+
+			// The real terminal result, then a normal exit.
+			done := backupipc.BackupCommandResult{CommandID: req.CommandID, Success: true, Stdout: `{"filesBackedUp":12}`}
+			_ = rig.helper.SendTyped(req.CommandID+"-final", backupipc.TypeBackupResult, done)
+			_ = rig.helper.Close()
+		}()
+
+		_, err := rig.broker.ForwardBackupCommand("cmd-finished", "backup_run", nil, 5*time.Second, true)
+		if err != nil {
+			t.Fatalf("iteration %d: forward failed a run that completed successfully: %v", i, err)
+		}
+
+		select {
+		case <-rig.disconnected:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for the session teardown to complete")
+		}
+
+		result := decodeBackupResult(t, rig.nextForwarded(t))
+		if !result.Success || result.CommandID != "cmd-finished" {
+			t.Fatalf("iteration %d: expected the genuine success result, got %+v", i, result)
+		}
+		rig.expectNoForwarded(t)
+		if n := rig.trackedRuns(); n != 0 {
+			t.Fatalf("iteration %d: %d runs left tracked after a completed run", i, n)
+		}
+	}
+}
+
 // TestBackupHelperDeath_SyncCommandInFlight_ReportsNothing keeps the synthetic
 // failure off the legacy synchronous path. There the caller is still blocked in
 // Session.SendCommand, which errors out when the session closes, and the
@@ -360,6 +458,41 @@ func TestBackupHelperDeath_SyncCommandInFlight_ReportsNothing(t *testing.T) {
 		t.Fatal("timed out waiting for the synchronous forward to fail")
 	}
 	rig.expectNoForwarded(t)
+}
+
+// TestBackupHelperDeath_DeathBeforeAck_ForwarderOwnsTheFailure covers the
+// helper dying with the request delivered but never acked. The forward is still
+// blocked in SendCommand, which errors when the session closes, and the
+// heartbeat turns that into the command's failure — so the death path must stay
+// silent. Reporting it here as well would fail the same command twice.
+func TestBackupHelperDeath_DeathBeforeAck_ForwarderOwnsTheFailure(t *testing.T) {
+	rig := newBackupDeathRig(t)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := rig.broker.ForwardBackupCommand("cmd-unacked", "backup_run", nil, 5*time.Second, true)
+		done <- err
+	}()
+
+	// Request reaches the helper, which dies without acking.
+	if _, err := rig.helper.Recv(); err != nil {
+		t.Fatalf("helper Recv: %v", err)
+	}
+	rig.killHelper(t)
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected the forward to fail when the session closed before the ack")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the forward to fail")
+	}
+
+	rig.expectNoForwarded(t)
+	if n := rig.trackedRuns(); n != 0 {
+		t.Errorf("tracked runs after an unacked death = %d, want 0", n)
+	}
 }
 
 // TestBackupHelperDeath_AckReportedFailure_ReportsNothing covers a helper that
