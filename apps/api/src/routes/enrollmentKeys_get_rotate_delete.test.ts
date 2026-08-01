@@ -218,20 +218,6 @@ function mockDeleteWhereReturningCapture(rows: any[]): () => any {
 }
 
 /**
- * The #2832 exemption builds a correlated NOT EXISTS subquery via
- * `db.select(...).from(...).where(...)`. It never executes here (no Postgres
- * in this suite) — it only has to satisfy drizzle's `SQLWrapper` duck-typing
- * (a `getSQL()` method) so `notExists(...)` can embed it. Wrapping the REAL
- * condition production code built (via the unmocked drizzle `and`/`eq`/`gt`/
- * `lt`) means the captured WHERE genuinely reflects the generated predicate
- * rather than a canned stand-in. Mirrors the identical stub in
- * jobs/enrollmentKeyCleanup.test.ts.
- *
- * Registered with `mockReturnValue` (not `...Once`) so it stays in place for
- * however many times the guard is built, and does not consume the
- * `mockReturnValueOnce` queue the single-record `db.select` helpers rely on.
- */
-/**
  * Flattens a drizzle condition to its static text. The existing purge tests
  * assert via `JSON.stringify`, which cannot see inside the #2832 exemption:
  * `notExists()` embeds the subquery as an opaque `SQLWrapper` (an object whose
@@ -256,6 +242,20 @@ function sqlText(q: unknown): string {
   return '';
 }
 
+/**
+ * The #2832 exemption builds a correlated NOT EXISTS subquery via
+ * `db.select(...).from(...).where(...)`. It never executes here (no Postgres
+ * in this suite) — it only has to satisfy drizzle's `SQLWrapper` duck-typing
+ * (a `getSQL()` method) so `notExists(...)` can embed it. Wrapping the REAL
+ * condition production code built (via the unmocked drizzle `and`/`eq`/`gt`/
+ * `lt`) means the captured WHERE genuinely reflects the generated predicate
+ * rather than a canned stand-in. Mirrors the identical stub in
+ * jobs/enrollmentKeyCleanup.test.ts.
+ *
+ * Registered with `mockReturnValue` (not `...Once`) so it stays in place for
+ * however many times the guard is built, and does not consume the
+ * `mockReturnValueOnce` queue the single-record `db.select` helpers rely on.
+ */
 function mockBootstrapTokenExemptionSubquery() {
   vi.mocked(db.select).mockReturnValue({
     from: () => ({
