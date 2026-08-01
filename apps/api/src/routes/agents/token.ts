@@ -23,6 +23,56 @@ export const tokenRoutes = new Hono();
  */
 const PENDING_ROTATION_TTL_MS = 60 * 60 * 1000; // 1 hour
 
+/**
+ * Issue #2894 — machine-readable conflict codes for the rotation routes.
+ *
+ * EVERY 409 these routes emit carries one of these, so the agent can tell a
+ * conflict it should give up on from one it should retry. Before this the two
+ * compare-and-swap conflicts returned a bare `{ error }`, the agent's client
+ * collapsed them into a generic error, and the heartbeat retried the confirm on
+ * every tick until the pending TTL expired.
+ *
+ * The split is deliberately conservative, and the asymmetry is the whole point:
+ *
+ *  - TERMINAL means the staged set can never be promoted AND is not the
+ *    endpoint's current credential, so discarding it costs the agent nothing.
+ *    An agent that acts on this drops the staged set immediately.
+ *  - RETRYABLE means the staged token may still be live server-side (it is the
+ *    pending hash, or it is the current hash). Discarding it there could strand
+ *    the device — see #2772/#2773 — so the agent must keep it and retry.
+ *
+ * Anything an older agent does not recognise falls through to retry, which is
+ * the safe default. `token.conflictCodes.test.ts` fails the build if a future
+ * 409 in this file is added without a code.
+ */
+const ROTATION_CONFLICT_CODES = {
+  /**
+   * TERMINAL. The presented token is neither the server's staged token nor its
+   * current one — a newer rotation, an admin token reset or a re-enrollment
+   * moved past it. It can never be promoted and it is not the live credential.
+   */
+  UNRESOLVABLE: 'rotation_unresolvable',
+  /**
+   * RETRYABLE. The promotion could not be applied right now, but the presented
+   * token is still the server's staged credential. Re-reading the row on the
+   * next attempt yields a precise (possibly terminal) answer.
+   */
+  CONFLICT: 'rotation_conflict',
+  /**
+   * RETRYABLE. The presented token is the endpoint's CURRENT credential while a
+   * different set is staged. Never terminal: the staged copy the agent holds on
+   * disk under this token is the credential the server is authenticating it
+   * with, so discarding it would strand the device. It resolves on its own once
+   * the competing staged set clears, at which point confirm returns
+   * `alreadyCurrent`.
+   */
+  PENDING_TOKEN_REQUIRED: 'pending_token_required',
+  /** TERMINAL. The staged set aged out before the agent could confirm it. */
+  PENDING_ROTATION_EXPIRED: 'pending_rotation_expired',
+  /** RETRYABLE. A staged rotation must be confirmed before a new one starts. */
+  PENDING_ROTATION_UNCONFIRMED: 'pending_rotation_unconfirmed',
+} as const;
+
 tokenRoutes.post('/:id/rotate-token', async (c) => {
   const agentId = c.req.param('id');
   const agent = c.get('agent') as AgentAuthContext;
@@ -50,7 +100,10 @@ tokenRoutes.post('/:id/rotate-token', async (c) => {
   // which is precisely the divergence this design exists to prevent.
   if (c.get('agentPendingTokenPresented')) {
     return c.json(
-      { error: 'Confirm the pending rotation before starting a new one', code: 'pending_rotation_unconfirmed' },
+      {
+        error: 'Confirm the pending rotation before starting a new one',
+        code: ROTATION_CONFLICT_CODES.PENDING_ROTATION_UNCONFIRMED,
+      },
       409
     );
   }
@@ -153,7 +206,15 @@ tokenRoutes.post('/:id/rotate-token', async (c) => {
       agentId,
       deviceId: device.id,
     });
-    return c.json({ error: 'Token rotation conflict; re-authenticate with the current token' }, 409);
+    return c.json(
+      {
+        error: 'Token rotation conflict; re-authenticate with the current token',
+        // Retryable: nothing was staged, so the agent has no staged set to
+        // discard. It simply rotates again on its next trigger.
+        code: ROTATION_CONFLICT_CODES.CONFLICT,
+      },
+      409
+    );
   }
 
   try {
@@ -247,15 +308,39 @@ tokenRoutes.post('/:id/rotate-token/confirm', async (c) => {
   // given no evidence of holding — exactly the unverified commit that caused
   // this bug.
   if (!device.pendingTokenHash || device.pendingTokenHash !== authTokenHash) {
+    // Issue #2894 — the two sub-cases are NOT interchangeable, and conflating
+    // them is how an error-signalling fix turns into a stranded endpoint.
+    //
+    // If the presented token is this device's CURRENT credential, the agent is
+    // holding a live token under its pending_* keys: a newer rotation was staged
+    // after this one was promoted. It must keep that copy and retry — the
+    // conflict clears by itself when the competing staged set is confirmed or
+    // expires, and the retry then lands on the `alreadyCurrent` branch above.
+    //
+    // Otherwise the presented token is neither staged nor current (it survives
+    // only inside the previous-token grace window, if at all). Nothing can ever
+    // promote it, so say so and let the agent stop asking.
+    const presentedTokenIsCurrent = device.agentTokenHash === authTokenHash;
     return c.json(
-      { error: 'Confirm must be sent with the pending rotation token', code: 'pending_token_required' },
+      presentedTokenIsCurrent
+        ? {
+            error: 'Confirm must be sent with the pending rotation token',
+            code: ROTATION_CONFLICT_CODES.PENDING_TOKEN_REQUIRED,
+          }
+        : {
+            error: 'Staged rotation superseded; discard it and re-authenticate with the current token',
+            code: ROTATION_CONFLICT_CODES.UNRESOLVABLE,
+          },
       409
     );
   }
 
   if (!device.pendingTokenExpiresAt || device.pendingTokenExpiresAt <= new Date()) {
     return c.json(
-      { error: 'Pending rotation has expired; request a new rotation', code: 'pending_rotation_expired' },
+      {
+        error: 'Pending rotation has expired; request a new rotation',
+        code: ROTATION_CONFLICT_CODES.PENDING_ROTATION_EXPIRED,
+      },
       409
     );
   }
@@ -263,7 +348,18 @@ tokenRoutes.post('/:id/rotate-token/confirm', async (c) => {
   const confirmedAt = new Date();
 
   if (!device.agentTokenHash) {
-    return c.json({ error: 'Rotation confirm conflict; re-authenticate and retry' }, 409);
+    // No current hash to compare-and-swap against, so the promotion cannot run.
+    // Deliberately RETRYABLE, not terminal: we only get here because the
+    // presented token IS the live staged hash, which means it is the one
+    // credential this device can still authenticate with. Telling the agent to
+    // discard it would take away the last working token.
+    return c.json(
+      {
+        error: 'Rotation confirm conflict; re-authenticate and retry',
+        code: ROTATION_CONFLICT_CODES.CONFLICT,
+      },
+      409
+    );
   }
 
   let promoted: boolean;
@@ -292,7 +388,20 @@ tokenRoutes.post('/:id/rotate-token/confirm', async (c) => {
       agentId,
       deviceId: device.id,
     });
-    return c.json({ error: 'Rotation confirm conflict; re-authenticate and retry' }, 409);
+    // RETRYABLE by construction. The SELECT above saw the staged hash and the
+    // current hash the CAS bound to, so zero rows means the row moved between
+    // the read and the write — a concurrent promotion, admin token reset or
+    // re-enrollment. That is transient: the next attempt re-reads the row and
+    // gets a precise answer (`alreadyCurrent`, `rotation_unresolvable`, or
+    // `pending_rotation_expired`). Marking it terminal would let the agent
+    // discard a staged set that a single retry would have promoted.
+    return c.json(
+      {
+        error: 'Rotation confirm conflict; re-authenticate and retry',
+        code: ROTATION_CONFLICT_CODES.CONFLICT,
+      },
+      409
+    );
   }
 
   try {

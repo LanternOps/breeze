@@ -601,6 +601,28 @@ func (c *Client) RotateToken() (*RotateTokenResponse, error) {
 // credentials and start a fresh rotation.
 var ErrPendingRotationExpired = errors.New("pending rotation expired")
 
+// ErrRotationUnresolvable reports that the staged credential set is neither the
+// server's staged credential nor its current one — a newer rotation, an admin
+// token reset or a re-enrollment moved past it. Issue #2894: before the server
+// signalled this the agent could not tell it from a transient conflict, so it
+// re-confirmed on every heartbeat tick until the pending TTL expired.
+//
+// Like ErrPendingRotationExpired this is TERMINAL: the caller must discard the
+// staged set instead of retrying.
+var ErrRotationUnresolvable = errors.New("pending rotation can never be promoted")
+
+// IsRotationTerminal reports whether a ConfirmTokenRotation error means the
+// staged credential set is provably dead and must be discarded.
+//
+// The set is deliberately small and closed. A conflict the server marked
+// retryable, an unknown code from a newer server, a 5xx and a transport failure
+// all return false and therefore retry — discarding a staged set the server may
+// still be authenticating the device with is unrecoverable (#2772/#2773), while
+// retrying a dead one merely costs a request per tick until the TTL lapses.
+func IsRotationTerminal(err error) bool {
+	return errors.Is(err, ErrPendingRotationExpired) || errors.Is(err, ErrRotationUnresolvable)
+}
+
 // ConfirmTokenRotation completes phase two of a two-phase rotation. It MUST be
 // called on a client built with the NEW (staged) agent token — the server treats
 // possession of that token as the endpoint's proof that the credential was
@@ -631,8 +653,15 @@ func (c *Client) ConfirmTokenRotation() (*ConfirmTokenRotationResponse, error) {
 	_ = json.Unmarshal(bodyBytes, &result)
 
 	if resp.StatusCode != http.StatusOK {
-		if result.Code == "pending_rotation_expired" {
+		// Issue #2894 — only these two codes are terminal. Every other code
+		// (including `rotation_conflict` and `pending_token_required`, which the
+		// server emits while the staged token may still be live) falls through to
+		// the generic error below and is retried.
+		switch result.Code {
+		case "pending_rotation_expired":
 			return nil, ErrPendingRotationExpired
+		case "rotation_unresolvable":
+			return nil, ErrRotationUnresolvable
 		}
 		// A 401 here means the server would not accept the STAGED token at all —
 		// it expired (auth rejects an expired pending hash before this route ever

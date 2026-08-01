@@ -4826,11 +4826,15 @@ func (h *Heartbeat) confirmTokenRotation(newAuthToken string) bool {
 	confirmClient := api.NewClient(h.serverURL(), newAuthToken, h.config.AgentID)
 	resp, err := confirmClient.ConfirmTokenRotation()
 	if err != nil {
-		if errors.Is(err, api.ErrPendingRotationExpired) {
-			// The staged set can never be promoted now. Drop it so startup
-			// reconciliation doesn't retry forever; the durable current
-			// credentials are untouched and still valid.
-			log.Warn("pending token rotation can no longer be promoted (expired or revoked); discarding staged credentials")
+		if api.IsRotationTerminal(err) {
+			// The staged set can never be promoted now — it expired, or the server
+			// told us (#2894) that it is neither the staged nor the current
+			// credential. Drop it so the per-tick retry and startup reconciliation
+			// stop asking; the durable current credentials are untouched and still
+			// valid. Every other failure — including a conflict the server marked
+			// retryable — leaves the staged set on disk to try again.
+			log.Warn("pending token rotation can no longer be promoted (expired, superseded or revoked); discarding staged credentials",
+				"reason", err.Error())
 			if clearErr := config.ClearPendingCredentials(); clearErr != nil {
 				log.Error("failed to clear unusable staged credentials", "error", clearErr.Error())
 			} else {
