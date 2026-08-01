@@ -402,12 +402,26 @@ export async function applyBackupCommandResultToJob(params: {
   deviceId: string;
   resultStatus: string;
   result: ParsedBackupCommandResult & { error?: string };
+  /**
+   * Where this "result" came from. `'agent'` (the default) is a real terminal
+   * result off the WS/queue path. `'reconcile'` (#3006) is a result synthesized
+   * from a snapshot manifest found in storage by
+   * `reconcileOrphanedBackupSnapshots`, which adopts already-uploaded objects
+   * into a restore point for a job whose terminal result was lost in transit.
+   *
+   * The only behavioural difference is the status guard: a reconcile
+   * completion may also flip a job the agent itself reported `failed` (no
+   * stale-reaper marker), because the manifest in the bucket is direct
+   * evidence the upload finished regardless of what the job row says. It still
+   * must NOT resurrect a `cancelled` job — see the guard below.
+   */
+  source?: 'agent' | 'reconcile';
 }): Promise<{
   applied: boolean;
   snapshotDbId: string | null;
   providerSnapshotId: string | null;
 }> {
-  const { jobId, orgId, deviceId, resultStatus, result } = params;
+  const { jobId, orgId, deviceId, resultStatus, result, source = 'agent' } = params;
   const providerSnapshotId = result.snapshot?.id ?? result.snapshotId ?? null;
   const metadata = normalizeMetadata(result.metadata);
   const now = new Date();
@@ -469,15 +483,24 @@ export async function applyBackupCommandResultToJob(params: {
   // reaper failed (its error_log carries STALE_BACKUP_REAP_MARKER). A user
   // `cancelled` job and a genuine, non-reaper agent `failed` are NOT resurrected
   // (they carry no marker / a different status).
+  //
+  // #3006: a reconcile-sourced completion widens the `failed` half of that
+  // guard to ANY failed job, dropping the marker requirement. The evidence is
+  // stronger here than for a late agent result: the caller has already read
+  // `snapshots/<id>/manifest.json` out of the destination bucket, so the
+  // upload demonstrably finished no matter which code path failed the job.
+  // `cancelled` and `completed` are still excluded — a user cancel is a
+  // deliberate decision, and a completed job already owns its restore point.
   const isCompletedResult = resultStatus === 'completed';
-  const statusGuard = isCompletedResult
-    ? or(
-        inArray(backupJobs.status, IN_FLIGHT_BACKUP_JOB_STATUSES),
-        and(
+  const failedJobGuard =
+    source === 'reconcile'
+      ? eq(backupJobs.status, 'failed')
+      : and(
           eq(backupJobs.status, 'failed'),
           like(backupJobs.errorLog, `%${STALE_BACKUP_REAP_MARKER}%`)
-        )
-      )
+        );
+  const statusGuard = isCompletedResult
+    ? or(inArray(backupJobs.status, IN_FLIGHT_BACKUP_JOB_STATUSES), failedJobGuard)
     : inArray(backupJobs.status, IN_FLIGHT_BACKUP_JOB_STATUSES);
 
   const [updatedJob] = await db

@@ -11,6 +11,13 @@ import { refreshDispatchedExpectation } from './agentWorkExpectation';
  * agent/internal/websocket/client.go). `current`/`total` are BYTES;
  * `filesDone`/`filesTotal` are counts. `phase` is always "uploading" today —
  * treat it as an opaque optional string, never branch on it.
+ *
+ * `snapshotId` (#3006) is the snapshot the agent is currently writing. It is
+ * absent on emissions that predate snapshot creation (the pre-scan keepalive
+ * and the "scanning done" totals notice) and on restore progress. Bounded to
+ * 200 chars to match backup_jobs.snapshot_id — an over-long value must be
+ * rejected as an invalid payload rather than raising a Postgres 22001 out of
+ * a fire-and-forget WS handler.
  */
 export const backupProgressPayloadSchema = z.object({
   phase: z.string().optional(),
@@ -18,6 +25,7 @@ export const backupProgressPayloadSchema = z.object({
   total: z.number().nonnegative().optional(),
   filesDone: z.number().nonnegative().optional(),
   filesTotal: z.number().nonnegative().optional(),
+  snapshotId: z.string().min(1).max(200).optional(),
 });
 
 export type BackupProgressPayload = z.infer<typeof backupProgressPayloadSchema>;
@@ -100,6 +108,22 @@ export async function applyBackupProgress(params: {
   }
   if (progress.filesTotal !== undefined) {
     updateSet.totalFiles = progress.filesTotal;
+  }
+  // #3006: record the snapshot ID the moment the agent reports it, instead of
+  // waiting for the terminal result. A result lost in transit (#3001 oversized
+  // payload, #2998 helper death) used to leave the job with snapshot_id NULL,
+  // so the objects already uploaded to the customer's bucket had nothing
+  // linking them to a restore point — neither restorable nor visible to
+  // retention. With the ID on the row, the reconcile path can adopt them.
+  //
+  // The agent is authoritative for the run it is currently executing (its
+  // identity was verified above) and a run keeps ONE snapshot ID for its whole
+  // life — including across a journal resume — so a later value simply
+  // overwrites an earlier one. The UPDATE below is guarded on the job still
+  // being in-flight, so this can never clobber an ID written by a terminal
+  // result.
+  if (progress.snapshotId !== undefined) {
+    updateSet.snapshotId = progress.snapshotId;
   }
 
   const updated = await db

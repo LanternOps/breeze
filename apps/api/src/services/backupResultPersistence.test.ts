@@ -680,6 +680,36 @@ describe('backup result persistence', () => {
     expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 
+  // #3006: a reconcile-sourced completion is evidence read straight out of the
+  // destination bucket (`snapshots/<id>/manifest.json` exists), so it may adopt
+  // ANY failed job — not just one the stale reaper marked. Asserted on the
+  // guard expression itself because the chainable mock ignores the WHERE.
+  it('drops the reaper-marker requirement for a reconcile-sourced completion', async () => {
+    const guardFor = async (source: 'agent' | 'reconcile') => {
+      vi.mocked(db.update).mockReturnValue(chainMock([]) as any);
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      await applyBackupCommandResultToJob({
+        jobId: 'job-1',
+        orgId: 'org-1',
+        deviceId: 'device-1',
+        resultStatus: 'completed',
+        result: { snapshotId: 'provider-snap-1', filesBackedUp: 1 },
+        source,
+      });
+      const where = vi.mocked(db.update).mock.results[0]!.value.where.mock.calls[0][0];
+      return JSON.stringify(where);
+    };
+
+    const agentGuard = await guardFor('agent');
+    expect(agentGuard).toContain('[stale-backup-reaper]');
+
+    vi.mocked(db.update).mockReset();
+    const reconcileGuard = await guardFor('reconcile');
+    expect(reconcileGuard).not.toContain('[stale-backup-reaper]');
+    // Still status-scoped: a cancelled/completed job must remain untouchable.
+    expect(reconcileGuard).toContain('failed');
+  });
+
   it('FIX 7 fallback: logs + captureException when a late success cannot be recorded (user-cancelled / already-terminal job) so the snapshot is not silently orphaned', async () => {
     // The guarded UPDATE matches nothing (job is `cancelled` or a non-reaper
     // `failed`), so the snapshot in storage has no backup_snapshots row.

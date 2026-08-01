@@ -341,12 +341,61 @@ func TestSnapshotProgressCallback(t *testing.T) {
 	restore := setProgressThrottleForTest(0) // emit every file in tests
 	defer restore()
 	_, err := createSnapshotWithProgress(context.Background(), p, files,
-		func(fd, ft int, bd, bt int64) { got = append(got, bd) }, nil, nil)
+		func(fd, ft int, bd, bt int64, snapshotID string) { got = append(got, bd) }, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) == 0 || got[len(got)-1] != 30 {
 		t.Fatalf("want final bytesDone=30, got %v", got)
+	}
+}
+
+// #3006: the snapshot ID must reach the server through progress BEFORE any
+// file is uploaded, so a run whose terminal result is lost in transit still
+// leaves backup_jobs.snapshot_id pointing at the objects it wrote. The very
+// first emission must therefore already carry the ID, and every subsequent
+// emission must carry the SAME one (the server keys a restore point on it).
+func TestSnapshotProgressCarriesSnapshotIDFromFirstEmission(t *testing.T) {
+	restore := setProgressThrottleForTest(0) // emit on every file
+	defer restore()
+
+	p := &okProvider{}
+	files := []backupFile{
+		{sourcePath: writeTempFile(t, "a"), snapshotPath: "a", size: 10},
+		{sourcePath: writeTempFile(t, "b"), snapshotPath: "b", size: 20},
+	}
+
+	type emission struct {
+		filesDone  int
+		bytesDone  int64
+		snapshotID string
+	}
+	var got []emission
+	snapshot, err := createSnapshotWithProgress(context.Background(), p, files,
+		func(fd, ft int, bd, bt int64, snapshotID string) {
+			got = append(got, emission{filesDone: fd, bytesDone: bd, snapshotID: snapshotID})
+		}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) == 0 {
+		t.Fatal("no progress emissions")
+	}
+
+	// The first emission is the forced registration one: the ID is already
+	// known, nothing has uploaded yet.
+	if got[0].snapshotID != snapshot.ID {
+		t.Fatalf("first emission must carry the snapshot ID %q, got %q", snapshot.ID, got[0].snapshotID)
+	}
+	if got[0].filesDone != 0 || got[0].bytesDone != 0 {
+		t.Fatalf("registration emission must report zero progress, got filesDone=%d bytesDone=%d",
+			got[0].filesDone, got[0].bytesDone)
+	}
+
+	for i, e := range got {
+		if e.snapshotID != snapshot.ID {
+			t.Fatalf("emission %d carried snapshot ID %q, want %q", i, e.snapshotID, snapshot.ID)
+		}
 	}
 }
 
@@ -1329,7 +1378,7 @@ func TestSnapshotProgressKeepalive_EmitsDuringInFlightUpload(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		_, err := createSnapshotWithProgress(context.Background(), provider, files,
-			func(fd, ft int, bd, bt int64) {
+			func(fd, ft int, bd, bt int64, snapshotID string) {
 				select {
 				case progressed <- emission{fd, ft, bd, bt}:
 				default:
@@ -1337,6 +1386,15 @@ func TestSnapshotProgressKeepalive_EmitsDuringInFlightUpload(t *testing.T) {
 			}, nil, nil)
 		done <- err
 	}()
+
+	// Drain the forced snapshot-registration emission (#3006), which fires
+	// before the upload loop starts. Without this the keepalive assertion
+	// below would be satisfied by the registration emission instead.
+	select {
+	case <-progressed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no snapshot-registration progress emission")
+	}
 
 	// A keepalive emission must arrive WHILE the (only) upload is blocked —
 	// i.e. before we release the provider — carrying the unchanged counters.

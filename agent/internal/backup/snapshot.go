@@ -143,7 +143,16 @@ type contextUploader interface {
 // out of the known totals. Called from the snapshot upload loop, throttled
 // (see progressThrottle) except for a final unconditional call after the
 // last file.
-type ProgressFn func(filesDone, filesTotal int, bytesDone, bytesTotal int64)
+//
+// snapshotID is the ID of the snapshot currently being written, or "" for
+// emissions that happen before a snapshot exists (the pre-scan whole-run
+// keepalive and the "scanning done" totals notice, both in backup.go). It is
+// carried on every progress emission so the SERVER learns the snapshot ID
+// while the run is still in flight, instead of only from the terminal result
+// (#3006): a dropped terminal result then still leaves backup_jobs.snapshot_id
+// pointing at the objects that were actually uploaded, so the snapshot can be
+// adopted into a restore point rather than orphaned in the bucket forever.
+type ProgressFn func(filesDone, filesTotal int, bytesDone, bytesTotal int64, snapshotID string)
 
 // progressThrottle is the minimum interval between ProgressFn invocations
 // from the snapshot loop (the final call after the loop always fires
@@ -340,7 +349,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			return
 		}
 		lastProgressAt = time.Now()
-		onProgress(filesDone, filesTotal, bytesDone, bytesTotal)
+		onProgress(filesDone, filesTotal, bytesDone, bytesTotal, snapshot.ID)
 	}
 	markDone := func(fileCount int, byteCount int64) {
 		progressMu.Lock()
@@ -377,6 +386,15 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			<-keepaliveDone
 		}()
 	}
+
+	// Register the snapshot ID with the server BEFORE the first byte is
+	// uploaded (#3006). Every later emission carries it too, but this forced
+	// one guarantees it is sent even if the run dies during the very first
+	// file — and it is the only emission that is not subject to the throttle
+	// window, so the server learns the ID immediately rather than up to
+	// progressThrottle later. Counters are still all-zero here, which is
+	// exactly the state the upload loop starts from.
+	emitProgress(true)
 
 	// Resume matching: build the full matched set up front (rather than
 	// deciding file-by-file inside the loop below) so filesDone/bytesDone
