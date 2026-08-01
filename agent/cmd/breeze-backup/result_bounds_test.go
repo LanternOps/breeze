@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -71,6 +72,35 @@ func buildLargeRunJob(files, failures int) *backup.BackupJob {
 	return job
 }
 
+// Building and marshalling a 60k-entry manifest costs ~5s under -race, and
+// several tests need the identical input, so the marshalled stdout is built
+// once per package run. The fixtures are treated strictly read-only (Go strings
+// are immutable and fitBackupResultToIPC takes its argument by value).
+var (
+	oversizeRunOnce   sync.Once
+	oversizeRunStdout string
+	fieldRunOnce      sync.Once
+	fieldRunJob       *backup.BackupJob
+)
+
+// oversizeRunResult returns a backup_run result whose marshalled manifest is
+// comfortably past ipc.MaxMessageSize (~25 MB).
+func oversizeRunResult(t *testing.T) backupipc.BackupCommandResult {
+	t.Helper()
+	oversizeRunOnce.Do(func() {
+		data, err := json.Marshal(buildLargeRunJob(oversizeFileCount, fieldReportErrorCount))
+		if err != nil {
+			panic(err)
+		}
+		oversizeRunStdout = string(data)
+	})
+	return backupipc.BackupCommandResult{
+		CommandID: "822e0c7f-7e35-43e6-b0fc-0912a5c0d221",
+		Success:   true,
+		Stdout:    oversizeRunStdout,
+	}
+}
+
 func mustRunResult(t *testing.T, job *backup.BackupJob) backupipc.BackupCommandResult {
 	t.Helper()
 	data, err := json.Marshal(job)
@@ -103,7 +133,8 @@ func payloadSize(t *testing.T, result backupipc.BackupCommandResult) int {
 // reaches the wire; the payload is dominated by the per-file snapshot manifest
 // (Snapshot.Files), one entry per backed-up file.
 func TestUnboundedRunResultExceedsIPCLimit(t *testing.T) {
-	job := buildLargeRunJob(fieldReportFileCount, fieldReportErrorCount)
+	fieldRunOnce.Do(func() { fieldRunJob = buildLargeRunJob(fieldReportFileCount, fieldReportErrorCount) })
+	job := fieldRunJob
 	result := mustRunResult(t, job)
 
 	if got := payloadSize(t, result); got <= ipc.MaxMessageSize {
@@ -124,8 +155,7 @@ func TestUnboundedRunResultExceedsIPCLimit(t *testing.T) {
 // TestFitBackupResultBoundsLargeRun is the core contract: whatever the run
 // produced, the result handed to conn.Send fits the frame.
 func TestFitBackupResultBoundsLargeRun(t *testing.T) {
-	job := buildLargeRunJob(oversizeFileCount, fieldReportErrorCount)
-	fitted, degraded := fitBackupResultToIPC(mustRunResult(t, job))
+	fitted, degraded := fitBackupResultToIPC(oversizeRunResult(t))
 
 	if degraded == "" {
 		t.Fatal("expected fitBackupResultToIPC to report that it degraded the payload")
@@ -141,8 +171,7 @@ func TestFitBackupResultBoundsLargeRun(t *testing.T) {
 // truncation. Losing error detail is acceptable; losing the fact that the
 // backup succeeded is not.
 func TestFitBackupResultPreservesTerminalStatus(t *testing.T) {
-	job := buildLargeRunJob(oversizeFileCount, fieldReportErrorCount)
-	fitted, _ := fitBackupResultToIPC(mustRunResult(t, job))
+	fitted, _ := fitBackupResultToIPC(oversizeRunResult(t))
 
 	if !fitted.Success {
 		t.Error("expected Success to survive truncation")
@@ -241,6 +270,17 @@ func TestFitBackupResultBoundsOversizeStderr(t *testing.T) {
 	if !strings.HasPrefix(fitted.Stderr, "open C:\\Users\\jdoe\\file.dat") {
 		t.Errorf("expected the leading stderr detail to be kept, got %.80q", fitted.Stderr)
 	}
+	// Pin that TIER 1 did this, not tier 4's last-resort clamp. Without these
+	// two assertions the test passes with tier 1 deleted — tier 4 rescues it
+	// at a 16x smaller cap — and tier 1 is the "bound the detail before
+	// marshalling" half of the fix, so it must be independently required.
+	if len(fitted.Stderr) < maxResultTextBytes {
+		t.Errorf("expected ~%d bytes of stderr retained by tier 1, got %d (tier 4 clamp?)",
+			maxResultTextBytes, len(fitted.Stderr))
+	}
+	if !strings.HasPrefix(degraded, "stderr truncated") {
+		t.Errorf("expected the tier-1 stderr note, got %q", degraded)
+	}
 }
 
 // TestFitBackupResultAlwaysFits is the total-postcondition test: no matter how
@@ -312,8 +352,7 @@ func TestSendBackupResultDeliversOversizeRun(t *testing.T) {
 	sender := ipc.NewConn(clientNC)
 	receiver := ipc.NewConn(serverNC)
 
-	job := buildLargeRunJob(oversizeFileCount, fieldReportErrorCount)
-	result := mustRunResult(t, job)
+	result := oversizeRunResult(t)
 
 	sendErr := make(chan error, 1)
 	go func() { sendErr <- sendBackupResult(sender, "env-1", result) }()
@@ -454,8 +493,7 @@ func TestFitBackupResultRejectsUnsummarisableBody(t *testing.T) {
 // would leave a previous delivery's backup_snapshot_files rows in place while
 // hasIndexedFiles flipped to false — two states that then disagree.
 func TestEmptySnapshotFilesKeepsTheFilesKey(t *testing.T) {
-	job := buildLargeRunJob(oversizeFileCount, fieldReportErrorCount)
-	fitted, _ := fitBackupResultToIPC(mustRunResult(t, job))
+	fitted, _ := fitBackupResultToIPC(oversizeRunResult(t))
 
 	var out map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(fitted.Stdout), &out); err != nil {
@@ -516,5 +554,142 @@ func TestFitBackupResultDropsOversizeSystemStateManifest(t *testing.T) {
 	}
 	if !strings.Contains(out.Warning, "systemStateManifest") {
 		t.Errorf("expected the persisted warning to name the dropped manifest, got %q", out.Warning)
+	}
+}
+
+// TestFitBackupResultReducesToScalars exercises TIER 3, which tier 2 hides
+// whenever the bulk sits in one big container. Here the bulk is spread across
+// many containers that are each individually under bulkFieldThreshold, so tier
+// 2 drops nothing and tier 3 is what has to save the terminal status.
+//
+// Without this the whole reduceToScalars path is unexecuted: it could return an
+// empty object, or lose status/snapshotId/errorCount, with the suite still green.
+func TestFitBackupResultReducesToScalars(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`{"id":"job-1","status":"completed","filesBackedUp":42,"bytesBackedUp":999,` +
+		`"errorCount":317,"snapshot":{"id":"snapshot-1","size":999}`)
+	// Each container is just under the bulk threshold, so tier 2 skips them all.
+	chunk := strings.Repeat(`"x",`, 800) + `"x"`
+	for i := 0; i < 6000; i++ {
+		fmt.Fprintf(&b, `,"detail%04d":[%s]`, i, chunk)
+	}
+	b.WriteString("}")
+	in := backupipc.BackupCommandResult{CommandID: "cmd-scalars", Success: true, Stdout: b.String()}
+	if len(in.Stdout) <= resultPayloadBudget {
+		t.Fatalf("fixture must be oversize, got %d bytes", len(in.Stdout))
+	}
+
+	fitted, degraded := fitBackupResultToIPC(in)
+	if got := payloadSize(t, fitted); got > resultPayloadBudget {
+		t.Fatalf("fitted payload is %d bytes, over the %d budget", got, resultPayloadBudget)
+	}
+	if !strings.Contains(degraded, "summary scalars") {
+		t.Fatalf("expected tier 3 to be the tier that fired, got %q", degraded)
+	}
+	if !fitted.Success {
+		t.Error("expected success to survive tier 3")
+	}
+	var out struct {
+		ID            string          `json:"id"`
+		Status        string          `json:"status"`
+		FilesBackedUp int             `json:"filesBackedUp"`
+		BytesBackedUp int64           `json:"bytesBackedUp"`
+		ErrorCount    int             `json:"errorCount"`
+		Warning       string          `json:"warning"`
+		Detail0000    json.RawMessage `json:"detail0000"`
+		Snapshot      struct {
+			ID string `json:"id"`
+		} `json:"snapshot"`
+	}
+	if err := json.Unmarshal([]byte(fitted.Stdout), &out); err != nil {
+		t.Fatalf("fitted stdout is not valid JSON: %v", err)
+	}
+	if out.Status != "completed" || out.ID != "job-1" || out.Snapshot.ID != "snapshot-1" {
+		t.Errorf("terminal identity did not survive tier 3: id=%q status=%q snapshotId=%q",
+			out.ID, out.Status, out.Snapshot.ID)
+	}
+	if out.FilesBackedUp != 42 || out.BytesBackedUp != 999 {
+		t.Errorf("counters did not survive tier 3: files=%d bytes=%d", out.FilesBackedUp, out.BytesBackedUp)
+	}
+	if out.ErrorCount != 317 {
+		t.Errorf("expected errorCount 317 to survive tier 3, got %d", out.ErrorCount)
+	}
+	if len(out.Detail0000) != 0 {
+		t.Error("expected the container fields to be dropped by tier 3")
+	}
+	if !strings.Contains(out.Warning, "detail0000") {
+		t.Errorf("expected tier 3 to record the omitted fields in the persisted warning, got %.120q", out.Warning)
+	}
+}
+
+// TestFitBackupResultLastResortRecoversStatus exercises TIER 4's salvage branch
+// on an object body. Every existing tier-4 case has non-object stdout, so
+// lastResortStdout's recovery loop never runs and could return nothing at all
+// with the suite still green — yet recovering status/snapshotId is the entire
+// reason tier 4 exists.
+//
+// The fixture survives tier 3 because it is all scalars: tier 3 keeps every
+// scalar (clamped to maxResultTextBytes), and thousands of clamped scalars are
+// still over budget.
+func TestFitBackupResultLastResortRecoversStatus(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`{"id":"job-9","status":"completed","snapshotId":"snapshot-9"`)
+	blob := strings.Repeat("z", 12*1024)
+	for i := 0; i < 3000; i++ {
+		fmt.Fprintf(&b, `,"note%04d":"%s"`, i, blob)
+	}
+	b.WriteString("}")
+	in := backupipc.BackupCommandResult{CommandID: "cmd-lastresort", Success: true, Stdout: b.String()}
+
+	fitted, degraded := fitBackupResultToIPC(in)
+	if got := payloadSize(t, fitted); got > resultPayloadBudget {
+		t.Fatalf("fitted payload is %d bytes, over the %d budget", got, resultPayloadBudget)
+	}
+	if !strings.Contains(degraded, "minimal terminal status") {
+		t.Fatalf("expected tier 4 to be the tier that fired, got %q", degraded)
+	}
+	var out struct {
+		ID         string `json:"id"`
+		Status     string `json:"status"`
+		SnapshotID string `json:"snapshotId"`
+		Warning    string `json:"warning"`
+	}
+	if err := json.Unmarshal([]byte(fitted.Stdout), &out); err != nil {
+		t.Fatalf("fitted stdout is not valid JSON: %v", err)
+	}
+	if out.Status != "completed" {
+		t.Errorf("expected tier 4 to recover status, got %q", out.Status)
+	}
+	if out.SnapshotID != "snapshot-9" {
+		t.Errorf("expected tier 4 to recover snapshotId, got %q", out.SnapshotID)
+	}
+	if out.ID != "job-9" {
+		t.Errorf("expected tier 4 to recover the job id, got %q", out.ID)
+	}
+	if !strings.Contains(out.Warning, "IPC limit") {
+		t.Errorf("expected tier 4 to explain itself in the warning, got %q", out.Warning)
+	}
+}
+
+// TestSendBackupResultReportsSendFailure pins that a residual send failure is
+// still returned (and therefore logged) rather than swallowed. Both call sites
+// discard the error with `_ =`, so this log line is the only remaining evidence
+// that a terminal status never reached the server.
+func TestSendBackupResultReportsSendFailure(t *testing.T) {
+	serverNC, clientNC := net.Pipe()
+	if err := serverNC.Close(); err != nil {
+		t.Fatalf("close receiver: %v", err)
+	}
+	if err := clientNC.Close(); err != nil {
+		t.Fatalf("close sender: %v", err)
+	}
+
+	err := sendBackupResult(ipc.NewConn(clientNC), "env-dead", backupipc.BackupCommandResult{
+		CommandID: "cmd-dead",
+		Success:   true,
+		Stdout:    `{"status":"completed","snapshot":{"id":"snapshot-1"}}`,
+	})
+	if err == nil {
+		t.Fatal("expected a send over a closed connection to return an error, not be swallowed")
 	}
 }
