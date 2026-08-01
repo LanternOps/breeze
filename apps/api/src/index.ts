@@ -926,6 +926,10 @@ api.route('/action-intents', actionIntentsRoutes);
 // middleware only acts on a device id, which only mobile clients ever carry.
 api.use('/authenticator/*', mobileDeviceBlockedMiddleware);
 api.route('/authenticator', authenticatorRoutes);
+// Same reasoning as /authenticator/*: /me/approver-devices lets a caller
+// enumerate and REVOKE the user's approver devices, so a revoked handset
+// holding a still-valid token could knock out its owner's second factor.
+api.use('/me/approver-devices/*', mobileDeviceBlockedMiddleware);
 api.route('/me/approver-devices', approverDevicesRoutes);
 api.route('/', lifecycleRoutes);
 api.route('/', lifecycleAdminRoutes);

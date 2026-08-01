@@ -29,6 +29,7 @@ import { emitAlertStateFeedback } from '../services/mlFeedbackEmitters';
 import { readMobileDeviceId } from '../services/mobileDeviceBinding';
 import { planMobileDeviceId, saltDeviceId } from '../services/mobileDeviceIdentity';
 import { captureMessage } from '../services/sentry';
+import { createReportThrottle } from '../utils/reportThrottle';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { UUID_REGEX } from '../utils/uuid';
 
@@ -76,6 +77,20 @@ export function decodeCursor(raw: string | undefined): CursorTuple | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Thrown inside the displace transaction to roll it back; mapped to a 409 by
+ * the caller. Never escapes the route.
+ */
+class MobileDeviceRegistrationConflict extends Error {}
+
+/** One report per fallback reason per 15 min — see utils/reportThrottle. */
+const registrationFallbackThrottle = createReportThrottle(15 * 60 * 1000);
+
+/** Test seam: clears the registration-fallback report throttle. */
+export function _resetRegistrationFallbackReportsForTests(): void {
+  registrationFallbackThrottle.reset();
 }
 
 function derivePushDeviceId(userId: string, platform: 'ios' | 'android', token: string) {
@@ -290,11 +305,21 @@ mobileRoutes.post(
     const { token, platform } = c.req.valid('json');
     const now = new Date();
 
-    // #2913: key the row on the phone's per-install id (the header the app
-    // already sends on every request, and the value the blocked-device
-    // middleware looks up) rather than on the push-token hash. The hash
-    // remains the fallback for header-less callers and the id we adopt FROM.
-    const installationId = readMobileDeviceId(c);
+    // #2913: key the row on the phone's per-install id (the value the
+    // blocked-device middleware looks up) rather than on the push-token hash.
+    // The hash remains the fallback for header-less callers and the id we
+    // adopt FROM.
+    //
+    // Precedence MUST mirror mobileDeviceBlockedMiddleware: the SIGNED `mdid`
+    // claim first, the header only for pre-binding tokens. Keying off the raw
+    // header alone would let a client authenticate as install X and then
+    // register its row under install Y, so the middleware's lookup on X misses
+    // forever — the same inert control this issue is about, re-opened by the
+    // very client it constrains (SR-001: the header is forgeable).
+    const installationId =
+      typeof auth.token?.mdid === 'string' && auth.token.mdid.length > 0
+        ? auth.token.mdid
+        : readMobileDeviceId(c);
     const legacyDeviceId = derivePushDeviceId(auth.user.id, platform, token);
     const plan = await planMobileDeviceId({
       userId: auth.user.id,
@@ -304,10 +329,11 @@ mobileRoutes.post(
       token
     });
 
-    if (plan.fallbackReason) {
+    if (plan.fallbackReason && registrationFallbackThrottle.shouldReport(plan.fallbackReason)) {
       // We could not key this phone on its installation id, so the blocked-
       // device check still cannot see it. Say so rather than leaving another
-      // silently inert control behind (#2913).
+      // silently inert control behind (#2913). Throttled: a phone stuck in
+      // this state re-registers on every app foreground.
       captureMessage(
         'mobile push registration fell back to push-derived device id — block enforcement stays inert for this caller',
         'warning',
@@ -324,29 +350,87 @@ mobileRoutes.post(
       updatedAt: now
     };
 
+    let device: typeof mobileDevices.$inferSelect | undefined;
+    let displacedRowId: string | null = null;
+
     // Another account's ACTIVE row already holds this installation id (the
     // phone changed hands). Park it under a salted id so the caller can take
     // the clean key without inheriting the previous user's row.
+    //
+    // Atomic with the insert: a displace that committed while the insert
+    // failed would leave the previous owner re-keyed for nothing, and their
+    // live tokens still carry the ORIGINAL id as their signed `mdid` — so a
+    // later block on that row would match nothing. Roll both back together.
+    //
+    // The displaced row also loses its push tokens: they are the same
+    // OS-minted tokens the caller just submitted (that is what proved the
+    // shared handset), so leaving them would fan the previous user's
+    // notifications out to the new user's phone.
     if (plan.displaceRowId) {
-      await db
-        .update(mobileDevices)
-        .set({ deviceId: saltDeviceId(plan.deviceId, now.getTime()), updatedAt: now })
-        .where(
-          and(
-            eq(mobileDevices.id, plan.displaceRowId),
-            eq(mobileDevices.status, 'active'),
-            ne(mobileDevices.userId, auth.user.id)
-          )
-        );
-    }
+      const displaceRowId = plan.displaceRowId;
+      let sawConflict = false;
+      device = await db.transaction(async (tx) => {
+        await tx
+          .update(mobileDevices)
+          .set({
+            deviceId: saltDeviceId(plan.deviceId, now.getTime()),
+            fcmToken: null,
+            apnsToken: null,
+            notificationsEnabled: false,
+            updatedAt: now
+          })
+          .where(
+            and(
+              eq(mobileDevices.id, displaceRowId),
+              eq(mobileDevices.status, 'active'),
+              ne(mobileDevices.userId, auth.user.id)
+            )
+          );
 
-    let device: typeof mobileDevices.$inferSelect | undefined;
+        const [inserted] = await tx
+          .insert(mobileDevices)
+          .values({ userId: auth.user.id, deviceId: plan.deviceId, platform, ...tokenFields })
+          .returning();
+
+        if (!inserted) {
+          // Abort so the displacement is rolled back rather than stranding the
+          // previous owner under a salted id for a registration that failed.
+          // The flag — not the thrown value — is what the catch keys on: the
+          // driver may wrap or replace the error on rollback, and a mis-typed
+          // sentinel would surface as a 500 instead of the intended 409.
+          sawConflict = true;
+          throw new MobileDeviceRegistrationConflict();
+        }
+        return inserted;
+      }).catch((err: unknown) => {
+        if (sawConflict || isPgUniqueViolation(err)) {
+          return undefined;
+        }
+        throw err;
+      });
+
+      if (!device) {
+        return c.json(
+          {
+            error: 'This device could not be registered for notifications.',
+            code: 'device_registration_conflict'
+          },
+          409
+        );
+      }
+      displacedRowId = displaceRowId;
+    }
 
     // Adoption: rewrite this phone's existing push-derived row onto the
     // installation id, keeping its uuid PK so notification preferences and
     // every FK pointing at it survive. A no-op result means a concurrent
     // request already adopted (or blocked) the row — fall through to the
     // upsert, whose conflict path converges on the same row.
+    //
+    // Deliberately NOT inside the displace transaction: adoption and
+    // displacement are mutually exclusive (adoption only fires when no row
+    // holds the installation id, displacement only when one does), and the
+    // 23505 recovery below could not continue inside an aborted transaction.
     if (plan.adoptRowId) {
       try {
         [device] = await db
@@ -413,7 +497,11 @@ mobileRoutes.post(
       resourceType: 'mobile_device',
       resourceId: device?.id,
       resourceName: device?.deviceId,
-      details: { platform }
+      // A displacement re-keys ANOTHER account's row. That must never be an
+      // unrecorded side effect of a routine push registration.
+      details: displacedRowId
+        ? { platform, displacedMobileDeviceId: displacedRowId }
+        : { platform }
     });
 
     return c.json({ success: true });

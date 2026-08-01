@@ -5,6 +5,7 @@ import { mobileDevices } from '../db/schema';
 import { verifyToken } from '../services/jwt';
 import { MOBILE_DEVICE_ID_HEADER, readMobileDeviceId } from '../services/mobileDeviceBinding';
 import { captureMessage } from '../services/sentry';
+import { createReportThrottle } from '../utils/reportThrottle';
 
 /**
  * An inert security control is indistinguishable from a working one — which is
@@ -19,16 +20,12 @@ import { captureMessage } from '../services/sentry';
  * limited to one report per source per interval so a fleet of unregistered
  * phones cannot flood Sentry.
  */
-const UNRESOLVED_REPORT_INTERVAL_MS = 15 * 60 * 1000;
-const lastUnresolvedReportAt = new Map<string, number>();
+const unresolvedReportThrottle = createReportThrottle(15 * 60 * 1000);
 
 function reportUnresolvedDeviceId(source: 'signed-claim' | 'header'): void {
-  const now = Date.now();
-  const previous = lastUnresolvedReportAt.get(source) ?? 0;
-  if (now - previous < UNRESOLVED_REPORT_INTERVAL_MS) {
+  if (!unresolvedReportThrottle.shouldReport(source)) {
     return;
   }
-  lastUnresolvedReportAt.set(source, now);
   captureMessage(
     'mobile device id resolved to no mobile_devices row — block enforcement is inert for this caller',
     'warning',
@@ -39,7 +36,7 @@ function reportUnresolvedDeviceId(source: 'signed-claim' | 'header'): void {
 
 /** Test seam: clears the report rate limiter between cases. */
 export function _resetUnresolvedDeviceReportsForTests(): void {
-  lastUnresolvedReportAt.clear();
+  unresolvedReportThrottle.reset();
 }
 
 /**
