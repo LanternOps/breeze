@@ -18,6 +18,7 @@ import { hashEnrollmentKeyCandidates } from '../../services/enrollmentKeySecurit
 import { getTrustedClientIp } from '../../services/clientIp';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
+import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
 import { enrollSchema } from './schemas';
 import { generateAgentId, generateApiKey, issueMtlsCertForDevice } from './helpers';
 import { recordAgentEnrollment } from '../../services/anomalyMetrics';
@@ -814,6 +815,12 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     }
 
     const mtlsCert = await issueMtlsCertForDevice(device.id, key.orgId);
+
+    // #2728 — the per-org agent rate limit is sized from the enrolled device
+    // count, which is cached. Drop the cache on enrollment so a fleet being
+    // rolled out isn't throttled against a stale (smaller) count for up to the
+    // cache TTL. Best-effort; the TTL is the backstop.
+    void invalidateOrgDeviceCount(getRedis(), key.orgId);
 
     recordAgentEnrollment('success', enrollmentPartnerId);
 

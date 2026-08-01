@@ -4,6 +4,8 @@ import { optionalJsonValidator, zValidator } from '../../lib/validation';
 import { and, eq, gte, like, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { createHash, randomBytes } from 'crypto';
+import { getRedis } from '../../services/redis';
+import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
 import {
   devices,
   deviceHardware,
@@ -1474,6 +1476,10 @@ coreRoutes.delete(
       }
       throw err;
     }
+
+    // #2728 — the per-org agent rate limit is sized from a cached enrolled
+    // device count. Drop the cache so the org's ceiling reflects the removal.
+    void invalidateOrgDeviceCount(getRedis(), device.orgId);
 
     writeRouteAudit(c, {
       orgId: device.orgId,

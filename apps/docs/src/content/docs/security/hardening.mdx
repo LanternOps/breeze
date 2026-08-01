@@ -134,7 +134,11 @@ Breeze implements Redis-backed sliding window rate limiting:
 | Login | 5 attempts | 5 minutes |
 | API (per user) | 100 requests | 60 seconds |
 | Agent (per device) | 120 requests | 60 seconds |
-| Agent (per organization) | 600 requests | 60 seconds |
+| Agent (per organization) | `max(600, devices × 12)`, capped at 20,000 | 60 seconds |
 | Enrollment | 10 attempts | 60 seconds |
 
-The per-organization agent limit is configurable via `AGENT_ORG_RATE_LIMIT_PER_MIN` and caps total fleet traffic for any single tenant. When exceeded, the API returns `429` with `Retry-After: 60`; agents respect this header and back off automatically.
+The per-organization agent limit caps total fleet traffic for any single tenant. It scales with the org's enrolled device count between a floor (`AGENT_ORG_RATE_LIMIT_PER_MIN`, default 600) and a hard platform ceiling (`AGENT_ORG_RATE_LIMIT_MAX`, default 20,000), with the per-device allowance set by `AGENT_ORG_RATE_LIMIT_PER_DEVICE` (default 12). A flat ceiling was previously applied to every tenant regardless of fleet size, which silently dropped patch inventory for larger orgs.
+
+When exceeded, the API returns `429` with a `Retry-After` derived from the sliding-window reset; agents respect this header and back off automatically, adding their own randomized jitter so a rejected fleet doesn't retry in lockstep.
+
+Because the organization bucket is shared across every device in the tenant, low-frequency but high-value ingest (patch, inventory, hardware, software and event-log uploads — which run once per 15 minutes to once per 24 hours per device) is admitted from a small **reserved lane** worth 20% of the ceiling when the main bucket is exhausted. This prevents constant heartbeat traffic from starving the uploads that carry operator-facing device posture.
