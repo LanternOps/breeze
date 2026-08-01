@@ -459,7 +459,18 @@ export default function AddDeviceModal({
     let parentKeyId: string | undefined;
 
     try {
-      // Step 1: Create parent enrollment key (template — child key handles actual enrollment count)
+      // Step 1: Create parent enrollment key (template — the installer itself
+      // carries the enrollment credential, minted from this parent below).
+      //
+      // maxUsage MUST carry the device count (#2992). On the modern
+      // bootstrap-token paths (Windows, and macOS app-bundle) the download
+      // route mints NO child enrollment key — the real device-count cap lives
+      // on the installer_bootstrap_tokens row, which the Enrollment Keys page
+      // never reads. So this parent is the ONLY row that page shows for a
+      // downloaded installer, and omitting maxUsage let the server default it
+      // to 1 (`data.maxUsage ?? 1`), rendering "0 / 1" for an installer minted
+      // for X devices. Generate Link / CLI escape the defect only because they
+      // insert a child row carrying the real count.
       const keyRes = await fetchWithAuth("/enrollment-keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -467,6 +478,7 @@ export default function AddDeviceModal({
           name: `Add device installer (${new Date().toISOString().slice(0, 10)})`,
           siteId: selectedSiteId,
           orgId: currentOrgId,
+          maxUsage: deviceCount,
         }),
       });
 

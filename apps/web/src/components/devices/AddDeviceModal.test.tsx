@@ -210,6 +210,71 @@ describe('AddDeviceModal', () => {
     expect(String(dlCall[0])).toContain('ttlMinutes=1440');
   });
 
+  // #2992 — the modern Windows / macOS-app-bundle download paths mint only an
+  // installer_bootstrap_tokens row, never a child enrollment key, so this
+  // parent is the ONLY row the Enrollment Keys page shows for the download.
+  // Omitting maxUsage let the API default it to 1 and the page rendered
+  // "0 / 1" for an installer minted for X devices.
+  it('sends the device count as the parent key maxUsage so usage reads 0 / X', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/enrollment-keys') {
+        return makeJsonResponse({ id: 'key-123', key: 'raw-key-abc' }, true, 201);
+      }
+      if (url.startsWith('/enrollment-keys/key-123/installer/')) {
+        return makeJsonResponse(null, true);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+
+    fireEvent.change(screen.getByTestId('device-count'), { target: { value: '7' } });
+    fireEvent.click(getDownloadButton());
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
+    });
+
+    const createBody = JSON.parse(
+      (fetchWithAuthMock.mock.calls[0][1] as RequestInit).body as string,
+    );
+    expect(createBody.maxUsage).toBe(7);
+
+    // …and the same count still drives the installer (bootstrap token) cap.
+    expect(String(fetchWithAuthMock.mock.calls[1][0])).toContain('count=7');
+  });
+
+  it('defaults the parent key maxUsage to the default device count', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/enrollment-keys') {
+        return makeJsonResponse({ id: 'key-123', key: 'raw-key-abc' }, true, 201);
+      }
+      if (url.startsWith('/enrollment-keys/key-123/installer/')) {
+        return makeJsonResponse(null, true);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+
+    const deviceCount = Number(
+      (screen.getByTestId('device-count') as HTMLInputElement).value,
+    );
+    fireEvent.click(getDownloadButton());
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
+    });
+
+    const createBody = JSON.parse(
+      (fetchWithAuthMock.mock.calls[0][1] as RequestInit).body as string,
+    );
+    expect(createBody.maxUsage).toBe(deviceCount);
+    expect(deviceCount).toBeGreaterThanOrEqual(1);
+  });
+
   it('sends the selected expiry to the installer download URL', async () => {
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
