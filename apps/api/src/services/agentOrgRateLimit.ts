@@ -2,6 +2,7 @@ import type { Redis } from 'ioredis';
 import { and, count, eq, ne } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { devices } from '../db/schema';
+import { captureException } from './sentry';
 
 /**
  * Per-organization agent rate-limit sizing (issue #2728).
@@ -64,14 +65,39 @@ function positiveIntFromEnv(name: string, fallback: number): number {
 }
 
 /**
- * Endpoints carrying low-frequency, high-value inventory that must not be
- * starved by heartbeat volume. These fire once per 15 minutes to once per 24
- * hours per device, so admitting them from a reserved lane cannot itself
- * become a source of load — but dropping one silently corrupts operator-facing
- * posture until the next scan.
+ * Endpoints carrying durable inventory that must not be starved by heartbeat
+ * volume. These fire roughly once per 15 minutes to once per 24 hours per
+ * device, so admitting them from a reserved lane cannot itself become a
+ * meaningful source of load — but dropping one silently corrupts
+ * operator-facing posture until the next scan, which is the #2728 symptom.
+ *
+ * This list is derived from the agent's `sendInventoryData` call sites
+ * (agent/internal/heartbeat/heartbeat.go) cross-checked against the mounted
+ * routes in routes/agents/. Deliberately EXCLUDED as higher-frequency or
+ * non-durable: `heartbeat`, `process-sample`, `logs`, `commands`,
+ * `sessions` and `security/status` (5-minute cadence).
+ *
+ * Keep in sync with AGENT_RESERVED_INGEST_ENDPOINTS below — the test asserts
+ * the two agree, so a new inventory endpoint can't silently fall out of the
+ * lane.
  */
-const RESERVED_INGEST_PATTERN =
-  /\/(patches|patches\/pending|patches\/installed|inventory|hardware|software|eventlogs)\/?$/;
+export const AGENT_RESERVED_INGEST_ENDPOINTS = [
+  'patches',
+  'patches/pending',
+  'patches/installed',
+  'hardware',
+  'software',
+  'disks',
+  'network',
+  'changes',
+  'connections',
+  'eventlogs',
+  'management/posture',
+] as const;
+
+const RESERVED_INGEST_PATTERN = new RegExp(
+  `/(${AGENT_RESERVED_INGEST_ENDPOINTS.map((e) => e.replace('/', '\\/')).join('|')})/?$`,
+);
 
 export function isReservedIngestPath(path: string): boolean {
   return RESERVED_INGEST_PATTERN.test(path);
@@ -138,8 +164,14 @@ export async function getCachedOrgDeviceCount(
     deviceCount = rows[0]?.value ?? 0;
   } catch (err) {
     // Fail to the floor, not to a generous ceiling: an unavailable DB is not a
-    // reason to widen a tenant guardrail.
-    console.error('[agentOrgRateLimit] device count query failed', { orgId, err });
+    // reason to widen a tenant guardrail. But this is loud, not silent — for a
+    // large fleet the ceiling collapses to the floor, which will 429 most of
+    // the org, so it needs to reach Sentry and not just stdout.
+    console.error(
+      `[agentOrgRateLimit] device count query failed for org ${orgId} — falling back to the rate-limit floor; a large fleet will be throttled`,
+      err,
+    );
+    captureException(err, undefined, { service: 'agentOrgRateLimit', orgId });
     return null;
   }
 
@@ -160,9 +192,21 @@ export async function getCachedOrgDeviceCount(
 }
 
 /**
- * Invalidate the cached device count for an org. Call on enrollment and on
- * device removal so a growing fleet isn't throttled against a stale count for
- * up to the TTL. Best-effort: the TTL is the backstop when this is missed.
+ * Invalidate the cached device count for an org.
+ *
+ * Wired into the two paths where a stale count would matter most: enrollment
+ * (a fleet rollout must not be throttled against a smaller count) and
+ * permanent device deletion.
+ *
+ * It is deliberately NOT wired into every path that can change the counted
+ * set — decommission, manual provisioning and cross-org moves also shift it.
+ * {@link DEVICE_COUNT_CACHE_TTL_SECONDS} is the real guarantee, and those
+ * paths only ever leave the count slightly HIGH for up to the TTL, which
+ * widens the ceiling marginally rather than throttling anyone. A decommissioned
+ * device also can't authenticate at all (agentAuth rejects it before the rate
+ * limiter), so it contributes no traffic against the ceiling it inflates.
+ *
+ * Best-effort: failures are logged and swallowed.
  */
 export async function invalidateOrgDeviceCount(
   redis: Redis | null,

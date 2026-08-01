@@ -1348,16 +1348,7 @@ func (h *Heartbeat) Start() {
 			// Initial send is the explicit startup dispatch; this gate handles the rest.
 			patchIntervalHours := clampPatchScanIntervalHours(h.config.PatchScanIntervalHours)
 			patchInterval := time.Duration(patchIntervalHours) * time.Hour
-			// #2728 — also fires when a bounded retry from a previously failed
-			// submission comes due, so a 429'd upload doesn't strand posture
-			// for a whole interval.
-			shouldSendPatch := patchScanDue(now, h.lastPatchUpdate, h.nextPatchRetryAt, patchInterval)
-			if shouldSendPatch {
-				h.lastPatchUpdate = now
-				// Clear the retry slot as we dispatch; sendPatchInventory
-				// re-arms it if this attempt also fails.
-				h.nextPatchRetryAt = time.Time{}
-			}
+			shouldSendPatch := h.claimPatchScanLocked(now, patchInterval)
 			h.mu.Unlock()
 
 			// Check for recent boot every few minutes (not every heartbeat tick).
@@ -1734,6 +1725,24 @@ func patchScanDue(now, lastUpdate, nextRetryAt time.Time, interval time.Duration
 		return true
 	}
 	return !nextRetryAt.IsZero() && !now.Before(nextRetryAt)
+}
+
+// claimPatchScanLocked decides whether a patch scan is due and, if so, claims
+// it by advancing the gate so the next tick can't dispatch a duplicate
+// concurrent scan. Returns whether the caller should dispatch.
+//
+// The decision and the state transition live together here (rather than being
+// open-coded in the tick loop) so the whole gate is exercised by one test
+// instead of only its pure predicate. Caller must hold h.mu.
+func (h *Heartbeat) claimPatchScanLocked(now time.Time, interval time.Duration) bool {
+	if !patchScanDue(now, h.lastPatchUpdate, h.nextPatchRetryAt, interval) {
+		return false
+	}
+	h.lastPatchUpdate = now
+	// Clear the retry slot as we dispatch; sendPatchInventory re-arms it if
+	// this attempt also fails.
+	h.nextPatchRetryAt = time.Time{}
+	return true
 }
 
 // runProcessSampler periodically captures a top-N process snapshot and POSTs it,
@@ -2527,7 +2536,19 @@ func (h *Heartbeat) sendPatchInventory() {
 	installedItems = installedPatchStateItems(installedItems)
 
 	if len(pendingItems) == 0 && len(installedItems) == 0 {
+		if err != nil {
+			// Collection FAILED and produced nothing. The scheduler already
+			// stamped lastPatchUpdate, so returning quietly here would strand
+			// posture for a full interval with no retry — the same #2728
+			// symptom, reached through the collector instead of the network.
+			log.Warn("patch inventory collection produced no items after an error — arming retry")
+			h.recordPatchSendOutcome(false)
+			return
+		}
+		// Genuinely nothing to report: a successful scan of a device with no
+		// patches. Clear any armed retry so an earlier failure doesn't linger.
 		log.Debug("no patches found")
+		h.recordPatchSendOutcome(true)
 		return
 	}
 
@@ -2536,11 +2557,15 @@ func (h *Heartbeat) sendPatchInventory() {
 		log.Warn("failed to send pending patch inventory", "error", pendingErr.Error())
 	}
 	if installedErr != nil {
-		log.Warn("failed to send installed patch inventory", "error", installedErr.Error())
+		// Not retried: the retry budget is gated on the PENDING upload, which
+		// is the one carrying operator-facing patch posture. This is a
+		// severity call, not a claim that the data is redundant — both
+		// payloads are equally resent by the next scan. Stated explicitly so
+		// the non-retry is visible rather than inferred.
+		log.Warn("failed to send installed patch inventory — will not be retried until the next scheduled scan",
+			"error", installedErr.Error())
 	}
-	// #2728 — the pending upload is what carries patch posture, so only it
-	// gates the retry. A failed `installed` upload is logged but doesn't
-	// re-arm a scan (it's derived state the next scan will resend anyway).
+	// #2728 — only the pending upload gates the retry schedule (see above).
 	h.recordPatchSendOutcome(pendingErr == nil)
 }
 
@@ -2572,6 +2597,13 @@ func (h *Heartbeat) recordPatchSendOutcome(ok bool) {
 		log.Error("patch inventory submission failed after all retries — device patch posture is stale until the next scheduled scan",
 			"attempts", h.patchSendFailures)
 		h.nextPatchRetryAt = time.Time{}
+		// Reset the counter so the NEXT scan episode gets a fresh budget.
+		// Without this the counter stays above the budget forever (it only
+		// ever reset on success), so every future scan would skip retries
+		// entirely and silently revert to the pre-#2728 behaviour — an org
+		// that is over its ceiling today is usually over it tomorrow too, so
+		// the recurring failure is the expected path, not the exception.
+		h.patchSendFailures = 0
 		return
 	}
 

@@ -549,14 +549,14 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
         orgLimit,
         reservedLane: reserved ? 'exhausted' : 'not-eligible',
       });
-      const retryAfter = Math.max(
-        1,
-        Math.ceil((orgRateCheck.resetAt.getTime() - Date.now()) / 1000),
-      );
-      // Derived from the actual window reset rather than a flat "60": a fixed
-      // value hands every rejected agent in the fleet the same wake-up time.
-      // (The agent additionally jitters this — see httputil.applyPositiveJitter.)
-      c.header('Retry-After', String(retryAfter));
+      // Advertise the full window. `orgRateCheck.resetAt` is when ONE slot
+      // frees (oldest entry + window), which under sustained saturation is
+      // ~now — advertising that would tell the whole fleet to come back in a
+      // second and turn backoff into a hot loop, amplifying the very overload
+      // that caused the rejection. De-synchronizing the herd is the agent's
+      // job, via additive jitter on this value (httputil.applyPositiveJitter),
+      // not the server's job via a varying header.
+      c.header('Retry-After', String(AGENT_ORG_RATE_WINDOW_SECONDS));
       return c.json({ error: 'org_rate_limit_exceeded' }, 429);
     }
 

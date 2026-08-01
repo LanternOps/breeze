@@ -1477,10 +1477,6 @@ coreRoutes.delete(
       throw err;
     }
 
-    // #2728 — the per-org agent rate limit is sized from a cached enrolled
-    // device count. Drop the cache so the org's ceiling reflects the removal.
-    void invalidateOrgDeviceCount(getRedis(), device.orgId);
-
     writeRouteAudit(c, {
       orgId: device.orgId,
       action: 'device.permanent_delete',
@@ -1498,6 +1494,13 @@ coreRoutes.delete(
           : {}),
       }
     });
+
+    // #2728 — the per-org agent rate limit is sized from a cached enrolled
+    // device count. Drop the cache so the org's ceiling reflects the removal.
+    // Deliberately AFTER writeRouteAudit: getRedis() can throw on a
+    // misconfigured-Redis boot, and a throw here must not turn a completed
+    // destructive delete into a 500 that also skipped its audit record.
+    void invalidateOrgDeviceCount(getRedis(), device.orgId);
 
     return c.json({
       success: true,

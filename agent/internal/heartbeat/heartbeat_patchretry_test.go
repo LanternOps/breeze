@@ -163,6 +163,110 @@ func TestPatchRetryBudgetIsBounded(t *testing.T) {
 	}
 }
 
+// ---------- claimPatchScanLocked (the gate the tick loop actually calls) ----------
+
+func TestClaimPatchScanLocked(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	day := 24 * time.Hour
+
+	t.Run("not due leaves state untouched", func(t *testing.T) {
+		h := &Heartbeat{lastPatchUpdate: now.Add(-1 * time.Hour)}
+		if h.claimPatchScanLocked(now, day) {
+			t.Fatal("expected no claim inside the interval with no retry armed")
+		}
+		if !h.lastPatchUpdate.Equal(now.Add(-1 * time.Hour)) {
+			t.Fatal("lastPatchUpdate must not move when the scan is not claimed")
+		}
+	})
+
+	t.Run("interval elapsed claims and stamps", func(t *testing.T) {
+		h := &Heartbeat{lastPatchUpdate: now.Add(-25 * time.Hour)}
+		if !h.claimPatchScanLocked(now, day) {
+			t.Fatal("expected a claim once the interval elapsed")
+		}
+		if !h.lastPatchUpdate.Equal(now) {
+			t.Fatalf("lastPatchUpdate = %v, want %v", h.lastPatchUpdate, now)
+		}
+	})
+
+	// The #2728 fix: a retry armed after a failed submission must fire well
+	// inside the 24h interval, and claiming it must clear the slot so the very
+	// next tick doesn't dispatch a second scan.
+	t.Run("armed retry fires inside the interval and clears the slot", func(t *testing.T) {
+		h := &Heartbeat{
+			lastPatchUpdate:  now.Add(-1 * time.Hour),
+			nextPatchRetryAt: now.Add(-time.Second),
+		}
+		if !h.claimPatchScanLocked(now, day) {
+			t.Fatal("expected the armed retry to claim a scan inside the interval")
+		}
+		if !h.nextPatchRetryAt.IsZero() {
+			t.Fatal("claiming must clear the retry slot")
+		}
+		if !h.lastPatchUpdate.Equal(now) {
+			t.Fatal("claiming must stamp lastPatchUpdate")
+		}
+		// Immediately re-claiming must not dispatch a duplicate scan.
+		if h.claimPatchScanLocked(now, day) {
+			t.Fatal("a second immediate claim must not dispatch a duplicate scan")
+		}
+	})
+
+	t.Run("future retry does not claim", func(t *testing.T) {
+		h := &Heartbeat{
+			lastPatchUpdate:  now.Add(-1 * time.Hour),
+			nextPatchRetryAt: now.Add(5 * time.Minute),
+		}
+		if h.claimPatchScanLocked(now, day) {
+			t.Fatal("expected no claim while the armed retry is still in the future")
+		}
+		if h.nextPatchRetryAt.IsZero() {
+			t.Fatal("an unclaimed retry slot must survive")
+		}
+	})
+}
+
+// End-to-end state machine: a failed submission must lead to another scan
+// inside the interval. This is the actual #2728 regression — before the fix the
+// gate was stamped at dispatch and nothing re-armed it, so posture stayed stale
+// for a full 24h.
+func TestFailedSubmissionSchedulesAnotherScanInsideTheInterval(t *testing.T) {
+	// recordPatchSendOutcome arms the retry off the real clock, so the gate
+	// ticks must use the real clock too — a synthetic epoch would make
+	// lastPatchUpdate look years stale and fire the interval path instead of
+	// the retry path we're actually testing.
+	now := time.Now()
+	day := 24 * time.Hour
+	h := &Heartbeat{}
+
+	// Tick 1: first ever scan is due, and is claimed.
+	if !h.claimPatchScanLocked(now, day) {
+		t.Fatal("expected the initial scan to be claimed")
+	}
+
+	// The submission fails.
+	h.recordPatchSendOutcome(false)
+
+	// Without the fix, nothing would be armed and the next claim would be 24h
+	// out. Assert a retry is armed and lands well inside the interval.
+	if h.nextPatchRetryAt.IsZero() {
+		t.Fatal("a failed submission must arm a retry")
+	}
+	retryDelay := h.nextPatchRetryAt.Sub(time.Now())
+	if retryDelay >= day {
+		t.Fatalf("retry scheduled %v out — no better than waiting for the interval", retryDelay)
+	}
+
+	// A tick shortly before the retry is due must NOT dispatch...
+	if h.claimPatchScanLocked(h.nextPatchRetryAt.Add(-time.Second), day) {
+		t.Fatal("claimed a scan before the armed retry came due")
+	}
+	// ...and a tick at/after it must.
+	if !h.claimPatchScanLocked(h.nextPatchRetryAt, day) {
+		t.Fatal("failed to claim the scan once the armed retry came due")
+	}
+}
+
 // ---------- recordPatchSendOutcome ----------
 
 func TestRecordPatchSendOutcomeArmsAndClearsRetry(t *testing.T) {
@@ -206,9 +310,6 @@ func TestRecordPatchSendOutcomeStopsAfterBudgetExhausted(t *testing.T) {
 	if !h.nextPatchRetryAt.IsZero() {
 		t.Fatal("expected no armed retry once the attempt budget is exhausted")
 	}
-	if h.patchSendFailures != maxPatchSendRetries+1 {
-		t.Fatalf("patchSendFailures = %d, want %d", h.patchSendFailures, maxPatchSendRetries+1)
-	}
 
 	// A later success must fully reset the state so the next transient failure
 	// gets a fresh budget.
@@ -220,6 +321,56 @@ func TestRecordPatchSendOutcomeStopsAfterBudgetExhausted(t *testing.T) {
 	h.recordPatchSendOutcome(false)
 	if h.nextPatchRetryAt.IsZero() {
 		t.Fatal("expected a fresh retry budget after a success")
+	}
+}
+
+// Regression guard: the counter must reset when the budget is SPENT, not only
+// on success. An org over its rate-limit ceiling today is usually over it
+// tomorrow too, so a recurring failure is the expected path. If the counter
+// latched above the budget, every future scan would skip retries entirely and
+// silently revert to the pre-#2728 behaviour.
+func TestRecordPatchSendOutcomeGivesEachScanEpisodeAFreshBudget(t *testing.T) {
+	h := &Heartbeat{}
+
+	spendWholeBudget := func(episode int) {
+		for i := 0; i < maxPatchSendRetries; i++ {
+			h.recordPatchSendOutcome(false)
+			if h.nextPatchRetryAt.IsZero() {
+				t.Fatalf("episode %d, retry %d: expected an armed retry while budget remains",
+					episode, i+1)
+			}
+		}
+		// The attempt that spends the budget.
+		h.recordPatchSendOutcome(false)
+		if !h.nextPatchRetryAt.IsZero() {
+			t.Fatalf("episode %d: expected no armed retry once the budget is spent", episode)
+		}
+		if h.patchSendFailures != 0 {
+			t.Fatalf("episode %d: counter did not reset after the budget was spent (=%d) — "+
+				"the next scan would get no retries at all",
+				episode, h.patchSendFailures)
+		}
+	}
+
+	// Three consecutive bad days, no success in between.
+	for episode := 1; episode <= 3; episode++ {
+		spendWholeBudget(episode)
+	}
+}
+
+func TestRecordPatchSendOutcomeClearsRetryWhenNothingToSend(t *testing.T) {
+	h := &Heartbeat{}
+	h.recordPatchSendOutcome(false)
+	if h.nextPatchRetryAt.IsZero() {
+		t.Fatal("precondition: expected an armed retry")
+	}
+
+	// A later scan that finds no patches at all is a successful scan; it must
+	// clear the armed retry rather than leave it dangling.
+	h.recordPatchSendOutcome(true)
+	if !h.nextPatchRetryAt.IsZero() || h.patchSendFailures != 0 {
+		t.Fatalf("expected cleared state, got failures=%d retryAt=%v",
+			h.patchSendFailures, h.nextPatchRetryAt)
 	}
 }
 

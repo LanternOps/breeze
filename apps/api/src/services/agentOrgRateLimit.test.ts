@@ -14,6 +14,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 import {
+  AGENT_RESERVED_INGEST_ENDPOINTS,
   DEFAULT_AGENT_ORG_RATE_LIMIT,
   DEFAULT_AGENT_ORG_RATE_LIMIT_MAX,
   DEFAULT_AGENT_ORG_RATE_LIMIT_PER_DEVICE,
@@ -128,28 +129,60 @@ describe('computeReservedIngestLimit', () => {
 });
 
 describe('isReservedIngestPath', () => {
-  it.each([
-    '/api/v1/agents/abc/patches/pending',
-    '/api/v1/agents/abc/patches/installed',
-    '/api/v1/agents/abc/patches',
-    '/api/v1/agents/abc/inventory',
-    '/api/v1/agents/abc/hardware',
-    '/api/v1/agents/abc/software',
-    '/api/v1/agents/abc/eventlogs',
-    '/api/v1/agents/abc/patches/pending/',
-  ])('treats %s as reserved low-frequency ingest', (path) => {
-    expect(isReservedIngestPath(path)).toBe(true);
-  });
+  // Derived from the declared endpoint list rather than restating the regex,
+  // so the two can't drift.
+  it.each(AGENT_RESERVED_INGEST_ENDPOINTS)(
+    'treats the declared endpoint %s as reserved',
+    (endpoint) => {
+      expect(isReservedIngestPath(`/api/v1/agents/abc/${endpoint}`)).toBe(true);
+      // Hono paths may carry a trailing slash.
+      expect(isReservedIngestPath(`/api/v1/agents/abc/${endpoint}/`)).toBe(true);
+    },
+  );
 
   it.each([
     '/api/v1/agents/abc/heartbeat',
     '/api/v1/agents/abc/process-sample',
     '/api/v1/agents/abc/logs',
     '/api/v1/agents/abc/commands',
+    '/api/v1/agents/abc/sessions',
+    '/api/v1/agents/abc/security/status',
     '/api/v1/agents/abc/patches/pending/extra',
     '/api/v1/agents/abc/patchesomething',
   ])('does not reserve %s', (path) => {
     expect(isReservedIngestPath(path)).toBe(false);
+  });
+
+  // The reserved set is only meaningful if it matches endpoints the agent
+  // actually calls. An earlier revision listed `inventory`, which is not a
+  // route at all, while omitting `disks`, `network` and `changes` — real
+  // inventory uploads that were therefore still being dropped. This pins the
+  // set against the agent's real `sendInventoryData` endpoints.
+  it('covers the durable-inventory endpoints the agent actually uploads to', () => {
+    const agentDurableIngestEndpoints = [
+      'patches/pending',
+      'patches/installed',
+      'hardware',
+      'software',
+      'disks',
+      'network',
+      'changes',
+      'connections',
+      'eventlogs',
+      'management/posture',
+    ];
+    for (const endpoint of agentDurableIngestEndpoints) {
+      expect(
+        isReservedIngestPath(`/api/v1/agents/abc/${endpoint}`),
+        `${endpoint} should be in the reserved ingest lane`,
+      ).toBe(true);
+    }
+  });
+
+  it('does not declare endpoints that are not real agent routes', () => {
+    // `inventory` was declared once and does not exist; guard against it and
+    // any other invented endpoint creeping back in.
+    expect(AGENT_RESERVED_INGEST_ENDPOINTS).not.toContain('inventory');
   });
 });
 
