@@ -7,7 +7,7 @@
  * report per key per interval is enough to notice the condition; the fix is
  * driven by its presence, not its count.
  */
-export function createReportThrottle(intervalMs: number) {
+export function createReportThrottle(intervalMs: number, maxKeys = 10_000) {
   const lastReportedAt = new Map<string, number>();
 
   return {
@@ -16,6 +16,13 @@ export function createReportThrottle(intervalMs: number) {
       const previous = lastReportedAt.get(key);
       if (previous !== undefined && now - previous < intervalMs) {
         return false;
+      }
+      // Per-caller keys make the key space unbounded, so cap it. Dropping the
+      // whole window only ever makes us report MORE — never less — so the
+      // signal cannot be lost, unlike an eviction policy that could silence a
+      // key that is actively firing.
+      if (lastReportedAt.size >= maxKeys && !lastReportedAt.has(key)) {
+        lastReportedAt.clear();
       }
       lastReportedAt.set(key, now);
       return true;

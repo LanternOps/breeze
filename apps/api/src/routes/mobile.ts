@@ -85,12 +85,49 @@ export function decodeCursor(raw: string | undefined): CursorTuple | null {
  */
 class MobileDeviceRegistrationConflict extends Error {}
 
-/** One report per fallback reason per 15 min — see utils/reportThrottle. */
+/**
+ * Throttled per (reason, caller) rather than per reason alone. The key space
+ * matters: `unverified-installation-claim` means someone asserted ANOTHER
+ * account's installation id without holding that install's push token — an
+ * attempted eviction of a stranger's device row. A process-wide key would
+ * collapse a campaign enumerating ids across many users into a single event
+ * indistinguishable from one benign occurrence.
+ */
 const registrationFallbackThrottle = createReportThrottle(15 * 60 * 1000);
+const registrationConflictThrottle = createReportThrottle(15 * 60 * 1000);
 
-/** Test seam: clears the registration-fallback report throttle. */
+/** Test seam: clears the registration report throttles. */
 export function _resetRegistrationFallbackReportsForTests(): void {
   registrationFallbackThrottle.reset();
+  registrationConflictThrottle.reset();
+}
+
+/**
+ * Both 409 exits, with a signal attached. A phone whose installation id is
+ * permanently held by a foreign or blocked row would otherwise 409 on every
+ * app foreground and produce no server-side evidence at all — the same
+ * "indistinguishable from working" failure mode #2913 is about.
+ */
+function registrationConflict(
+  c: import('hono').Context,
+  userId: string,
+  reason: 'displace-insert-conflict' | 'upsert-guard-matched-no-row'
+) {
+  if (registrationConflictThrottle.shouldReport(`${reason}:${userId}`)) {
+    captureMessage(
+      'mobile push registration conflicted — the phone is not receiving notifications',
+      'warning',
+      undefined,
+      { area: 'mobile-device-identity', reason }
+    );
+  }
+  return c.json(
+    {
+      error: 'This device could not be registered for notifications.',
+      code: 'device_registration_conflict'
+    },
+    409
+  );
 }
 
 function derivePushDeviceId(userId: string, platform: 'ios' | 'android', token: string) {
@@ -329,7 +366,10 @@ mobileRoutes.post(
       token
     });
 
-    if (plan.fallbackReason && registrationFallbackThrottle.shouldReport(plan.fallbackReason)) {
+    if (
+      plan.fallbackReason &&
+      registrationFallbackThrottle.shouldReport(`${plan.fallbackReason}:${auth.user.id}`)
+    ) {
       // We could not key this phone on its installation id, so the blocked-
       // device check still cannot see it. Say so rather than leaving another
       // silently inert control behind (#2913). Throttled: a phone stuck in
@@ -369,8 +409,15 @@ mobileRoutes.post(
     if (plan.displaceRowId) {
       const displaceRowId = plan.displaceRowId;
       let sawConflict = false;
+      let displacedRows = 0;
       device = await db.transaction(async (tx) => {
-        await tx
+        // `.returning()` is load-bearing: the WHERE re-checks state that
+        // planMobileDeviceId read a moment earlier, so a row blocked, deleted
+        // or re-keyed in between matches nothing. Without the row count we
+        // would report a displacement — and a token-clearing — that never
+        // happened. A 0-row write under FORCE RLS is exactly the silent-write
+        // class the repo guards elsewhere, and `tx` bypasses that guard.
+        const displaced = await tx
           .update(mobileDevices)
           .set({
             deviceId: saltDeviceId(plan.deviceId, now.getTime()),
@@ -385,7 +432,9 @@ mobileRoutes.post(
               eq(mobileDevices.status, 'active'),
               ne(mobileDevices.userId, auth.user.id)
             )
-          );
+          )
+          .returning({ id: mobileDevices.id });
+        displacedRows = displaced.length;
 
         const [inserted] = await tx
           .insert(mobileDevices)
@@ -410,15 +459,10 @@ mobileRoutes.post(
       });
 
       if (!device) {
-        return c.json(
-          {
-            error: 'This device could not be registered for notifications.',
-            code: 'device_registration_conflict'
-          },
-          409
-        );
+        return registrationConflict(c, auth.user.id, 'displace-insert-conflict');
       }
-      displacedRowId = displaceRowId;
+      // Only claim a displacement that actually moved a row.
+      displacedRowId = displacedRows > 0 ? displaceRowId : null;
     }
 
     // Adoption: rewrite this phone's existing push-derived row onto the
@@ -427,29 +471,37 @@ mobileRoutes.post(
     // request already adopted (or blocked) the row — fall through to the
     // upsert, whose conflict path converges on the same row.
     //
-    // Deliberately NOT inside the displace transaction: adoption and
-    // displacement are mutually exclusive (adoption only fires when no row
-    // holds the installation id, displacement only when one does), and the
-    // 23505 recovery below could not continue inside an aborted transaction.
+    // The 23505 recovery REQUIRES its own transaction. authMiddleware wraps the
+    // whole request in one (`withDbAccessContext` -> `db.transaction`), and the
+    // ambient `db` resolves to it — so a unique violation raised here would
+    // abort the REQUEST transaction, leaving the fallback upsert below to die
+    // with 25P02 and the mapped response discarded in favour of a raw 500.
+    // Nesting yields a SAVEPOINT, so the conflict rolls back to it and the
+    // outer transaction survives to run the upsert.
     if (plan.adoptRowId) {
-      try {
-        [device] = await db
-          .update(mobileDevices)
-          .set({ deviceId: plan.deviceId, platform, ...tokenFields })
-          .where(
-            and(
-              eq(mobileDevices.id, plan.adoptRowId),
-              eq(mobileDevices.userId, auth.user.id),
-              eq(mobileDevices.status, 'active')
+      const adoptRowId = plan.adoptRowId;
+      device = await db
+        .transaction(async (tx) => {
+          const [adopted] = await tx
+            .update(mobileDevices)
+            .set({ deviceId: plan.deviceId, platform, ...tokenFields })
+            .where(
+              and(
+                eq(mobileDevices.id, adoptRowId),
+                eq(mobileDevices.userId, auth.user.id),
+                eq(mobileDevices.status, 'active')
+              )
             )
-          )
-          .returning();
-      } catch (err) {
-        // A concurrent registration inserted the installation-id row between
-        // our read and this update. Not an error — the upsert below lands on
-        // that row instead, leaving the legacy row to be adopted next time.
-        if (!isPgUniqueViolation(err)) throw err;
-      }
+            .returning();
+          return adopted;
+        })
+        .catch((err: unknown) => {
+          // A concurrent registration inserted the installation-id row between
+          // our read and this update. Not an error — the upsert below lands on
+          // that row instead, leaving the legacy row to be adopted next time.
+          if (isPgUniqueViolation(err)) return undefined;
+          throw err;
+        });
     }
 
     if (!device) {
@@ -482,13 +534,7 @@ mobileRoutes.post(
       // by another account. Returning `{ success: true }` here (the previous
       // behaviour) reported a registration that never happened, so the phone
       // silently stopped receiving pushes.
-      return c.json(
-        {
-          error: 'This device could not be registered for notifications.',
-          code: 'device_registration_conflict'
-        },
-        409
-      );
+      return registrationConflict(c, auth.user.id, 'upsert-guard-matched-no-row');
     }
 
     writeRouteAudit(c, {

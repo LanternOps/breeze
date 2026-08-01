@@ -20,10 +20,18 @@ vi.mock('drizzle-orm', async (importOriginal) => {
   };
 });
 
-const { publishEventMock, setCooldownMock, emitAlertStateFeedbackMock, rateLimitState, authState } = vi.hoisted(() => ({
+const {
+  publishEventMock,
+  setCooldownMock,
+  emitAlertStateFeedbackMock,
+  writeRouteAuditMock,
+  rateLimitState,
+  authState
+} = vi.hoisted(() => ({
   publishEventMock: vi.fn().mockResolvedValue('event-1'),
   setCooldownMock: vi.fn().mockResolvedValue(undefined),
   emitAlertStateFeedbackMock: vi.fn().mockResolvedValue(undefined),
+  writeRouteAuditMock: vi.fn(),
   rateLimitState: { allowed: true },
   authState: {
     permissions: undefined as { allowedSiteIds?: string[] } | undefined,
@@ -81,6 +89,13 @@ vi.mock('../middleware/auth', () => ({
 
 vi.mock('../services/eventBus', () => ({
   publishEvent: publishEventMock
+}));
+
+// Partial-mock: auditEvents re-exports helpers that agentWs.ts evaluates at
+// module scope, so a bare factory drops them and the import chain dies.
+vi.mock('../services/auditEvents', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/auditEvents')>()),
+  writeRouteAudit: writeRouteAuditMock
 }));
 
 vi.mock('../services/alertCooldown', () => ({
@@ -295,7 +310,9 @@ describe('mobile routes', () => {
             returning: vi.fn().mockResolvedValue([{ id: 'row-legacy', deviceId: INSTALL, platform: 'ios' }])
           })
         });
-        vi.mocked(db.update).mockReturnValue({ set } as any);
+        // The adopt UPDATE runs in its own nested transaction (SAVEPOINT) so a
+        // 23505 cannot abort the request-wide transaction opened by authMiddleware.
+        vi.mocked(db.transaction).mockImplementation(async (cb: any) => cb({ update: () => ({ set }) }));
 
         const res = await registerWithHeader(app);
 
@@ -316,7 +333,11 @@ describe('mobile routes', () => {
             { id: 'row-other', userId: 'user-other', status: 'active', apnsToken: 'apns-token-1', fcmToken: null }
           ]) as any
         );
-        const displaceSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+        const displaceSet = vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'row-other' }])
+          })
+        });
         const tx = {
           update: vi.fn().mockReturnValue({ set: displaceSet }),
           insert: vi.fn().mockReturnValue(
@@ -338,6 +359,38 @@ describe('mobile routes', () => {
           fcmToken: null,
           notificationsEnabled: false
         });
+        // Re-keying another account's row is never an unrecorded side effect.
+        expect(writeRouteAuditMock.mock.calls.at(-1)?.[1]?.details).toMatchObject({
+          displacedMobileDeviceId: 'row-other'
+        });
+      });
+
+      it('does not claim a displacement when the salting UPDATE matched no row', async () => {
+        // TOCTOU: the incumbent can be blocked, deleted or re-keyed between
+        // planMobileDeviceId and the transaction. Auditing a displacement —
+        // and a push-token clearing — that never happened is its own lie.
+        vi.mocked(db.select).mockReturnValueOnce(
+          mockSelectLimitChain([
+            { id: 'row-other', userId: 'user-other', status: 'active', apnsToken: 'apns-token-1', fcmToken: null }
+          ]) as any
+        );
+        const tx = {
+          update: vi.fn().mockReturnValue({
+            set: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) })
+            })
+          }),
+          insert: vi.fn().mockReturnValue(
+            mockInsertReturning([{ id: 'mobile-2', deviceId: INSTALL, platform: 'ios' }])
+          )
+        };
+        vi.mocked(db.transaction).mockImplementation(async (cb: any) => cb(tx));
+
+        const res = await registerWithHeader(app);
+
+        expect(res.status).toBe(200);
+        const auditDetails = writeRouteAuditMock.mock.calls.at(-1)?.[1]?.details;
+        expect(auditDetails).not.toHaveProperty('displacedMobileDeviceId');
       });
 
       it('rolls the displacement back and 409s when the insert lands no row', async () => {
@@ -348,7 +401,11 @@ describe('mobile routes', () => {
         );
         const tx = {
           update: vi.fn().mockReturnValue({
-            set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+            set: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: 'row-other' }])
+              })
+            })
           }),
           insert: vi.fn().mockReturnValue(mockInsertReturning([]))
         };
