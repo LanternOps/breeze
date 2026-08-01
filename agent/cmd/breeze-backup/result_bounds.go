@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -51,25 +53,32 @@ const (
 // (backupResultPersistence reads snapshot.id / .timestamp / .size).
 var snapshotIdentityKeys = []string{"id", "timestamp", "size", "formatVersion", "baseSnapshotId"}
 
-// resultIdentityKeys are the top-level result fields kept in the reduced tier —
-// the terminal status and the counters the server persists. Notably errorCount
-// survives even when every individual failure detail is gone.
-var resultIdentityKeys = []string{
-	"id", "jobId", "snapshotId", "status", "backupType",
-	"startedAt", "completedAt",
-	"filesBackedUp", "bytesBackedUp",
-	"referencedFiles", "referencedBytes",
-	"errorCount", "warning",
-}
+// bulkFieldThreshold is the encoded size past which a top-level container
+// (array/object) field counts as "bulk" and is dropped ahead of the scalars.
+// Anything under it is cheaper to keep than to reason about.
+const bulkFieldThreshold = 4 * 1024
 
 // fitBackupResultToIPC returns result bounded so its marshalled payload fits
 // resultPayloadBudget, degrading in tiers and stopping at the first that fits:
 //
-//  1. always: truncate the free-text warning/stderr fields;
-//  2. drop the per-file snapshot index (snapshot.files), keeping snapshot
-//     identity — this is what actually blows the budget on a real run;
-//  3. reduce stdout to the terminal-status identity fields only;
+//  1. always: truncate the free-text stderr field (cheap, no JSON parse);
+//  2. empty the per-file snapshot index, cap the warning text, and drop any
+//     other bulk container field — this is what actually blows the budget;
+//  3. reduce stdout to its SCALAR fields plus the snapshot's identity;
 //  4. last resort: a hand-built minimal status object.
+//
+// Tiers 2 and 3 are deliberately shape-agnostic — they drop bulk containers and
+// keep scalars rather than matching an enumerated field list. Every command has
+// its own body (backup.BackupJob, backup.RestoreResult, verify results, …) and
+// the unbounded field is always a per-file array (Snapshot.Files,
+// RestoreResult.FailedFiles, …) while the fields the server persists are always
+// summary scalars. An enumerated keep-list would silently zero
+// filesRestored/filesFailed on the paths it forgot; keeping every scalar cannot.
+//
+// A stdout that is not a JSON object at all (e.g. backup_list's array) cannot be
+// summarised this way, so it degrades to an explicit failure instead of a
+// success with an empty body — an empty snapshot list read as "no backups" is
+// worse than a loud error.
 //
 // The second return value describes what was dropped, and is "" when the result
 // was already within budget. It is non-empty exactly when the caller should log
@@ -81,7 +90,8 @@ func fitBackupResultToIPC(result backupipc.BackupCommandResult) (backupipc.Backu
 	// detail BEFORE marshalling is the primary fix; the tiers below are the
 	// defensive net behind it. Stderr is the unbounded one on this path: a hard
 	// failure routes errors.Join(<every per-file error>) through
-	// fail(err.Error()), which nothing caps.
+	// fail(err.Error()), which nothing caps — as does the vault auto-sync
+	// result, whose Stderr joins one entry per failed file.
 	if truncated, dropped := truncateText(result.Stderr, maxResultTextBytes); dropped > 0 {
 		result.Stderr = truncated
 		notes = append(notes, fmt.Sprintf("stderr truncated (%d bytes dropped)", dropped))
@@ -90,32 +100,42 @@ func fitBackupResultToIPC(result backupipc.BackupCommandResult) (backupipc.Backu
 		return result, joinNotes(notes)
 	}
 
-	// Tier 2 — drop the per-file snapshot index and cap the warning text. Only
-	// reached when the result is actually oversize, so the ordinary path never
-	// pays for parsing a multi-megabyte stdout.
-	//
-	// The index is dropped whole rather than truncated: the server sets
-	// hasIndexedFiles from snapshot.files.length, so a partial index would
-	// present as a complete browsable file list that is silently missing
-	// entries.
-	if stdout, warnDropped := boundStdoutWarning(result.Stdout); warnDropped > 0 {
-		result.Stdout = stdout
-		notes = append(notes, fmt.Sprintf("warning truncated (%d bytes dropped)", warnDropped))
-	}
-	if reduced, dropped, ok := dropSnapshotFiles(result.Stdout); ok {
-		result.Stdout = reduced
-		if dropped > 0 {
-			notes = append(notes, fmt.Sprintf("snapshot file index dropped (%d entries, result exceeded the %d byte IPC limit)", dropped, ipc.MaxMessageSize))
-		}
-		if fits(result) {
-			return result, joinNotes(notes)
-		}
+	// Only reached when the result is actually oversize, so the ordinary path
+	// never pays for parsing a multi-megabyte stdout.
+	obj, isObject := decodeStdoutObject(result.Stdout)
+	if !isObject {
+		notes = append(notes, "result body could not be summarised and was replaced with an oversize failure")
+		return oversizeFailureResult(result), joinNotes(notes)
 	}
 
-	// Tier 3 — terminal status + counters only.
-	if reduced, ok := reduceToIdentity(result.Stdout); ok {
+	// Tier 2 — cap the warning text, empty the per-file snapshot index, and
+	// drop any other bulk container.
+	//
+	// The snapshot index is emptied rather than truncated: the server derives
+	// hasIndexedFiles from snapshot.files.length, so a partial index would
+	// present as a complete browsable file list silently missing entries. It is
+	// emptied rather than removed because the server's stale-row cleanup is
+	// gated on the KEY being present (`if (snapshot && result.snapshot?.files)`
+	// in backupResultPersistence.ts) — omitting it would leave a previous
+	// delivery's file rows in place while hasIndexedFiles flipped to false.
+	if dropped := boundObjectWarning(obj); dropped > 0 {
+		notes = append(notes, fmt.Sprintf("warning truncated (%d bytes dropped)", dropped))
+	}
+	if entries, ok := emptySnapshotFiles(obj); ok {
+		notes = append(notes, fmt.Sprintf("snapshot file index dropped (%d entries)", entries))
+	}
+	for _, key := range dropBulkFields(obj) {
+		notes = append(notes, fmt.Sprintf("%s dropped (bulk field)", key))
+	}
+	result.Stdout = encodeStdoutObject(obj, result.Stdout)
+	if fits(result) {
+		return result, joinNotes(notes)
+	}
+
+	// Tier 3 — scalar fields plus the snapshot identity only.
+	if reduced, ok := reduceToScalars(result.Stdout); ok {
 		result.Stdout = reduced
-		notes = append(notes, "result reduced to terminal status only")
+		notes = append(notes, "result reduced to summary scalars only")
 		if fits(result) {
 			return result, joinNotes(notes)
 		}
@@ -175,7 +195,16 @@ func fits(result backupipc.BackupCommandResult) bool {
 	if len(result.Stdout)+len(result.Stderr)+len(result.CommandID) > resultPayloadBudget {
 		return false
 	}
-	return marshalledSize(result) <= resultPayloadBudget
+	size := marshalledSize(result)
+	// A result that cannot be marshalled at all is not "fitting" — treating
+	// marshalledSize's -1 sentinel as a small size would return an unsendable
+	// payload from a function whose contract is that the send will succeed.
+	// (BackupCommandResult is only strings/bool/int64, so this is unreachable
+	// today; it is guarded so it stays unreachable if the type grows a field.)
+	if size < 0 {
+		return false
+	}
+	return size <= resultPayloadBudget
 }
 
 // marshalledSize returns the marshalled byte length of result, or -1 when it
@@ -230,104 +259,147 @@ func encodeStdoutObject(obj map[string]json.RawMessage, fallback string) string 
 	return string(data)
 }
 
-// boundStdoutWarning truncates the result's `warning` field in place, returning
-// the rewritten stdout and how many bytes were dropped.
-func boundStdoutWarning(stdout string) (string, int) {
-	obj, ok := decodeStdoutObject(stdout)
-	if !ok {
-		return stdout, 0
-	}
+// boundObjectWarning truncates the object's `warning` field in place, returning
+// how many bytes were dropped.
+func boundObjectWarning(obj map[string]json.RawMessage) int {
 	raw, present := obj["warning"]
 	if !present {
-		return stdout, 0
+		return 0
 	}
 	var warning string
 	if err := json.Unmarshal(raw, &warning); err != nil {
-		return stdout, 0
+		return 0
 	}
 	truncated, dropped := truncateText(warning, maxResultTextBytes)
 	if dropped == 0 {
-		return stdout, 0
+		return 0
 	}
 	obj["warning"] = mustRawString(truncated)
-	return encodeStdoutObject(obj, stdout), dropped
+	return dropped
 }
 
-// dropSnapshotFiles removes snapshot.files, keeping the snapshot's identity
-// fields, and records the drop in the result's `warning` so it is visible
-// server-side (the warning is persisted to the job's errorLog) rather than only
-// in a log line on the endpoint. Reports the number of entries dropped and
-// whether stdout was a JSON object at all.
-func dropSnapshotFiles(stdout string) (string, int, bool) {
-	obj, ok := decodeStdoutObject(stdout)
-	if !ok {
-		return stdout, 0, false
-	}
+// emptySnapshotFiles replaces snapshot.files with an empty array and records
+// the drop in the result's `warning`, so it is visible server-side (the warning
+// is persisted to the job's errorLog) rather than only in an endpoint log line.
+// Reports the number of entries dropped and whether anything was dropped.
+func emptySnapshotFiles(obj map[string]json.RawMessage) (int, bool) {
 	rawSnap, present := obj["snapshot"]
 	if !present {
-		return stdout, 0, true
+		return 0, false
 	}
 	var snap map[string]json.RawMessage
 	if err := json.Unmarshal(rawSnap, &snap); err != nil || snap == nil {
-		return stdout, 0, true
+		return 0, false
+	}
+	raw, hasFiles := snap["files"]
+	if !hasFiles {
+		return 0, false
 	}
 	var files []json.RawMessage
-	if raw, hasFiles := snap["files"]; hasFiles {
-		if err := json.Unmarshal(raw, &files); err != nil {
-			files = nil
-		}
+	if err := json.Unmarshal(raw, &files); err != nil || len(files) == 0 {
+		return 0, false
 	}
-	if len(files) == 0 {
-		return stdout, 0, true
-	}
-
-	kept := make(map[string]json.RawMessage, len(snapshotIdentityKeys))
-	for _, key := range snapshotIdentityKeys {
-		if v, exists := snap[key]; exists {
-			kept[key] = v
-		}
-	}
-	rawKept, err := json.Marshal(kept)
+	snap["files"] = json.RawMessage("[]")
+	rebuilt, err := json.Marshal(snap)
 	if err != nil {
-		return stdout, 0, true
+		return 0, false
 	}
-	obj["snapshot"] = rawKept
+	obj["snapshot"] = rebuilt
 	obj["warning"] = mustRawString(appendResultWarning(obj["warning"], fmt.Sprintf(
 		"snapshot file index omitted (%d entries): the result exceeded the %d byte agent IPC limit, so per-file restore browsing is unavailable for this snapshot",
 		len(files), ipc.MaxMessageSize)))
-	return encodeStdoutObject(obj, stdout), len(files), true
+	return len(files), true
 }
 
-// reduceToIdentity strips stdout down to the terminal-status identity fields.
-func reduceToIdentity(stdout string) (string, bool) {
+// dropBulkFields removes every top-level container field whose encoded size
+// exceeds bulkFieldThreshold — the per-file arrays (restore's failedFiles /
+// warnings, verify's failedFiles) that are unbounded for the same reason
+// Snapshot.Files is. `snapshot` is exempt: emptySnapshotFiles already handled
+// its bulk and the rest of it is the identity the server needs. Returns the
+// keys dropped, sorted for a deterministic note, and records them in `warning`.
+func dropBulkFields(obj map[string]json.RawMessage) []string {
+	var dropped []string
+	for key, raw := range obj {
+		if key == "snapshot" || len(raw) <= bulkFieldThreshold {
+			continue
+		}
+		if !isJSONContainer(raw) {
+			continue
+		}
+		delete(obj, key)
+		dropped = append(dropped, key)
+	}
+	if len(dropped) == 0 {
+		return nil
+	}
+	sort.Strings(dropped)
+	obj["warning"] = mustRawString(appendResultWarning(obj["warning"], fmt.Sprintf(
+		"detail field(s) omitted (%s): the result exceeded the %d byte agent IPC limit",
+		strings.Join(dropped, ", "), ipc.MaxMessageSize)))
+	return dropped
+}
+
+// isJSONContainer reports whether raw encodes a JSON array or object — the only
+// shapes that can grow without bound. Scalars are always kept: they are the
+// summary counters the server persists (filesRestored, filesFailed, errorCount).
+func isJSONContainer(raw json.RawMessage) bool {
+	for _, b := range raw {
+		switch b {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '[', '{':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// reduceToScalars strips stdout down to its scalar fields plus the snapshot's
+// identity. Keeping every scalar — rather than an enumerated allow-list — is
+// what stops this tier from silently zeroing a counter the server reads
+// (filesRestored, filesFailed, errorCount, …) on a command shape it never
+// anticipated.
+func reduceToScalars(stdout string) (string, bool) {
 	obj, ok := decodeStdoutObject(stdout)
 	if !ok {
 		return stdout, false
 	}
-	kept := make(map[string]json.RawMessage, len(resultIdentityKeys)+1)
-	for _, key := range resultIdentityKeys {
-		if v, exists := obj[key]; exists {
-			kept[key] = v
+	var containers []string
+	kept := make(map[string]json.RawMessage, len(obj))
+	for key, raw := range obj {
+		if isJSONContainer(raw) {
+			containers = append(containers, key)
+			continue
 		}
+		kept[key] = raw
 	}
 	// Keep the snapshot's identity — without it the server records no
 	// providerSnapshotId and the successful run yields no restore point.
 	if rawSnap, present := obj["snapshot"]; present {
 		var snap map[string]json.RawMessage
 		if err := json.Unmarshal(rawSnap, &snap); err == nil && snap != nil {
-			identity := make(map[string]json.RawMessage, len(snapshotIdentityKeys))
+			identity := make(map[string]json.RawMessage, len(snapshotIdentityKeys)+1)
 			for _, key := range snapshotIdentityKeys {
 				if v, exists := snap[key]; exists {
 					identity[key] = v
 				}
 			}
+			identity["files"] = json.RawMessage("[]")
 			if rawIdentity, err := json.Marshal(identity); err == nil {
 				kept["snapshot"] = rawIdentity
 			}
 		}
 	}
-	// A pathological identity field (e.g. a megabyte-long snapshot id) would
-	// keep this tier over budget; bound every retained string.
+	if len(containers) > 0 {
+		sort.Strings(containers)
+		kept["warning"] = mustRawString(appendResultWarning(kept["warning"], fmt.Sprintf(
+			"detail field(s) omitted (%s): the result exceeded the %d byte agent IPC limit",
+			strings.Join(containers, ", "), ipc.MaxMessageSize)))
+	}
+	// A pathological scalar (e.g. a megabyte-long snapshot id) would keep this
+	// tier over budget; bound every retained string.
 	for key, raw := range kept {
 		var s string
 		if err := json.Unmarshal(raw, &s); err != nil {
@@ -338,6 +410,24 @@ func reduceToIdentity(stdout string) (string, bool) {
 		}
 	}
 	return encodeStdoutObject(kept, stdout), true
+}
+
+// oversizeFailureResult replaces a result whose body cannot be summarised (a
+// stdout that is not a JSON object, e.g. backup_list's array) with an explicit
+// failure. A terminal status still lands — the point of #3001 — but an empty
+// body is never handed back under Success: true, where the server would read it
+// as a complete, empty answer.
+func oversizeFailureResult(result backupipc.BackupCommandResult) backupipc.BackupCommandResult {
+	// Size is captured before the fields are cleared — reporting it after would
+	// print the size of the replacement, not of what was dropped.
+	original := len(result.Stdout) + len(result.Stderr)
+	result.Stdout = ""
+	result.Success = false
+	result.Stderr = fmt.Sprintf(
+		"backup helper result exceeded the %d byte agent IPC limit (%d bytes) and could not be summarised; the command may have succeeded but its output could not be delivered",
+		ipc.MaxMessageSize, original)
+	result.CommandID, _ = truncateText(result.CommandID, maxLastResortFieldBytes)
+	return result
 }
 
 // lastResortStdout builds a minimal terminal-status object from whatever can

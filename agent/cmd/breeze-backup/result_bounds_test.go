@@ -247,35 +247,55 @@ func TestFitBackupResultBoundsOversizeStderr(t *testing.T) {
 // pathological the payload, the returned result fits the frame, because a
 // terminal status must always land.
 func TestFitBackupResultAlwaysFits(t *testing.T) {
-	cases := map[string]backupipc.BackupCommandResult{
+	cases := map[string]struct {
+		in backupipc.BackupCommandResult
+		// summarisable is true when the body is a JSON object, so the tiers can
+		// reduce it while keeping Success. A body that is not an object cannot
+		// be summarised and is deliberately delivered as an explicit failure
+		// rather than as a success with an empty body.
+		summarisable bool
+	}{
 		"non-json stdout": {
-			CommandID: "cmd-1",
-			Success:   true,
-			Stdout:    strings.Repeat("x", ipc.MaxMessageSize+1024),
+			in: backupipc.BackupCommandResult{
+				CommandID: "cmd-1",
+				Success:   true,
+				Stdout:    strings.Repeat("x", ipc.MaxMessageSize+1024),
+			},
 		},
 		"json array stdout": {
-			CommandID: "cmd-2",
-			Success:   true,
-			Stdout:    "[" + strings.Repeat(`"`+strings.Repeat("y", 1024)+`",`, 20000) + `"tail"]`,
+			in: backupipc.BackupCommandResult{
+				CommandID: "cmd-2",
+				Success:   true,
+				Stdout:    "[" + strings.Repeat(`"`+strings.Repeat("y", 1024)+`",`, 20000) + `"tail"]`,
+			},
 		},
 		"giant warning only": {
-			CommandID: "cmd-3",
-			Success:   true,
-			Stdout:    `{"status":"completed","snapshot":{"id":"snap-1"},"warning":"` + strings.Repeat("w", ipc.MaxMessageSize) + `"}`,
+			in: backupipc.BackupCommandResult{
+				CommandID: "cmd-3",
+				Success:   true,
+				Stdout:    `{"status":"completed","snapshot":{"id":"snap-1"},"warning":"` + strings.Repeat("w", ipc.MaxMessageSize) + `"}`,
+			},
+			summarisable: true,
 		},
-		"empty": {CommandID: "cmd-4", Success: true},
+		"empty": {
+			in:           backupipc.BackupCommandResult{CommandID: "cmd-4", Success: true},
+			summarisable: true,
+		},
 	}
-	for name, in := range cases {
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			fitted, _ := fitBackupResultToIPC(in)
+			fitted, _ := fitBackupResultToIPC(tc.in)
 			if got := payloadSize(t, fitted); got > resultPayloadBudget {
 				t.Fatalf("fitted payload is %d bytes, over the %d budget", got, resultPayloadBudget)
 			}
-			if fitted.CommandID != in.CommandID {
-				t.Errorf("expected commandId %q to survive, got %q", in.CommandID, fitted.CommandID)
+			if fitted.CommandID != tc.in.CommandID {
+				t.Errorf("expected commandId %q to survive, got %q", tc.in.CommandID, fitted.CommandID)
 			}
-			if fitted.Success != in.Success {
-				t.Errorf("expected success %v to survive, got %v", in.Success, fitted.Success)
+			if tc.summarisable && !fitted.Success {
+				t.Error("expected a summarisable body to keep its success status")
+			}
+			if !tc.summarisable && fitted.Success {
+				t.Error("expected an unsummarisable oversize body to degrade to a failure")
 			}
 		})
 	}
@@ -286,8 +306,8 @@ func TestFitBackupResultAlwaysFits(t *testing.T) {
 // the agent received nothing at all. Now a terminal result arrives.
 func TestSendBackupResultDeliversOversizeRun(t *testing.T) {
 	serverNC, clientNC := net.Pipe()
-	defer serverNC.Close()
-	defer clientNC.Close()
+	defer func() { _ = serverNC.Close() }()
+	defer func() { _ = clientNC.Close() }()
 
 	sender := ipc.NewConn(clientNC)
 	receiver := ipc.NewConn(serverNC)
@@ -298,7 +318,9 @@ func TestSendBackupResultDeliversOversizeRun(t *testing.T) {
 	sendErr := make(chan error, 1)
 	go func() { sendErr <- sendBackupResult(sender, "env-1", result) }()
 
-	receiver.SetReadDeadline(time.Now().Add(30 * time.Second))
+	if err := receiver.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
 	env, err := receiver.Recv()
 	if err != nil {
 		t.Fatalf("recv: %v", err)
@@ -330,5 +352,169 @@ func TestSendBackupResultDeliversOversizeRun(t *testing.T) {
 	if out.Status != "completed" || out.Snapshot.ID == "" || out.ErrorCount != fieldReportErrorCount {
 		t.Errorf("terminal status did not survive delivery: status=%q snapshotId=%q errorCount=%d",
 			out.Status, out.Snapshot.ID, out.ErrorCount)
+	}
+}
+
+// TestFitBackupResultPreservesRestoreScalars is the regression guard for the
+// review finding that an enumerated keep-list would silently zero the counters
+// the server persists. A partial restore's oversize failedFiles array must be
+// dropped WITHOUT zeroing filesRestored / bytesRestored / filesFailed, which
+// restoreResultPersistence reads straight into the restore job row.
+func TestFitBackupResultPreservesRestoreScalars(t *testing.T) {
+	failed := make([]string, 0, 200000)
+	for i := 0; i < 200000; i++ {
+		failed = append(failed, fmt.Sprintf(`C:\Users\jdoe\Documents\archive\report_%06d.docx: access is denied`, i))
+	}
+	restore := backup.RestoreResult{
+		SnapshotID:    "snapshot-20260801T125517Z-5edfcd7e",
+		Status:        "partial",
+		FilesRestored: 98211,
+		BytesRestored: 27412998811,
+		FilesFailed:   len(failed),
+		FailedFiles:   failed,
+		Error:         "restore completed partially",
+	}
+	data, err := json.Marshal(restore)
+	if err != nil {
+		t.Fatalf("marshal restore result: %v", err)
+	}
+	in := backupipc.BackupCommandResult{CommandID: "restore-1", Success: true, Stdout: string(data)}
+
+	fitted, degraded := fitBackupResultToIPC(in)
+	if degraded == "" {
+		t.Fatal("expected an oversize restore result to be reported as degraded")
+	}
+	if got := payloadSize(t, fitted); got > resultPayloadBudget {
+		t.Fatalf("fitted payload is %d bytes, over the %d budget", got, resultPayloadBudget)
+	}
+	if !fitted.Success {
+		t.Error("a restore that ran must not be flipped to failure just because its detail was oversize")
+	}
+
+	var out backup.RestoreResult
+	if err := json.Unmarshal([]byte(fitted.Stdout), &out); err != nil {
+		t.Fatalf("fitted stdout is not valid JSON: %v", err)
+	}
+	if out.Status != "partial" {
+		t.Errorf("expected status partial, got %q", out.Status)
+	}
+	if out.SnapshotID != "snapshot-20260801T125517Z-5edfcd7e" {
+		t.Errorf("expected snapshotId to survive, got %q", out.SnapshotID)
+	}
+	if out.FilesRestored != 98211 {
+		t.Errorf("expected filesRestored 98211 to survive, got %d", out.FilesRestored)
+	}
+	if out.BytesRestored != 27412998811 {
+		t.Errorf("expected bytesRestored to survive, got %d", out.BytesRestored)
+	}
+	if out.FilesFailed != 200000 {
+		t.Errorf("expected filesFailed 200000 to survive, got %d", out.FilesFailed)
+	}
+	if len(out.FailedFiles) != 0 {
+		t.Errorf("expected the failedFiles array to be dropped, got %d entries", len(out.FailedFiles))
+	}
+	if out.Error != "restore completed partially" {
+		t.Errorf("expected the error scalar to survive, got %q", out.Error)
+	}
+}
+
+// TestFitBackupResultRejectsUnsummarisableBody pins that a body we cannot
+// summarise (backup_list returns a top-level JSON ARRAY) degrades to an
+// explicit failure rather than an empty success. An empty snapshot list read as
+// "this device has no backups" is worse than a loud error.
+func TestFitBackupResultRejectsUnsummarisableBody(t *testing.T) {
+	entry := `{"id":"snapshot-20260801T125517Z-5edfcd7e","size":35421941515},`
+	in := backupipc.BackupCommandResult{
+		CommandID: "list-1",
+		Success:   true,
+		Stdout:    "[" + strings.Repeat(entry, 400000) + `{"id":"tail"}]`,
+	}
+
+	fitted, degraded := fitBackupResultToIPC(in)
+	if degraded == "" {
+		t.Fatal("expected an oversize list result to be reported as degraded")
+	}
+	if got := payloadSize(t, fitted); got > resultPayloadBudget {
+		t.Fatalf("fitted payload is %d bytes, over the %d budget", got, resultPayloadBudget)
+	}
+	if fitted.Success {
+		t.Error("an unsummarisable oversize body must not be delivered as a success")
+	}
+	if fitted.Stdout != "" {
+		t.Errorf("expected an empty stdout, got %.80q", fitted.Stdout)
+	}
+	if !strings.Contains(fitted.Stderr, "IPC limit") {
+		t.Errorf("expected the stderr to explain the oversize, got %.120q", fitted.Stderr)
+	}
+}
+
+// TestEmptySnapshotFilesKeepsTheFilesKey pins that the dropped index is an
+// EMPTY ARRAY, not an absent key. The server's stale-row cleanup is gated on
+// key presence (`if (snapshot && result.snapshot?.files)`), so omitting the key
+// would leave a previous delivery's backup_snapshot_files rows in place while
+// hasIndexedFiles flipped to false — two states that then disagree.
+func TestEmptySnapshotFilesKeepsTheFilesKey(t *testing.T) {
+	job := buildLargeRunJob(oversizeFileCount, fieldReportErrorCount)
+	fitted, _ := fitBackupResultToIPC(mustRunResult(t, job))
+
+	var out map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(fitted.Stdout), &out); err != nil {
+		t.Fatalf("fitted stdout is not valid JSON: %v", err)
+	}
+	var snap map[string]json.RawMessage
+	if err := json.Unmarshal(out["snapshot"], &snap); err != nil {
+		t.Fatalf("fitted snapshot is not valid JSON: %v", err)
+	}
+	raw, present := snap["files"]
+	if !present {
+		t.Fatal("expected snapshot.files to be present as an empty array, not omitted")
+	}
+	var files []json.RawMessage
+	if err := json.Unmarshal(raw, &files); err != nil {
+		t.Fatalf("snapshot.files is not an array: %v", err)
+	}
+	if len(files) != 0 {
+		t.Errorf("expected snapshot.files to be empty, got %d entries", len(files))
+	}
+}
+
+// TestFitBackupResultDropsOversizeSystemStateManifest covers a system_image run
+// whose bulk is the system-state manifest rather than the file index: it must
+// be dropped, and the drop must be recorded in the warning the server persists
+// — a BMR restore point with a silently-null manifest is not usable.
+func TestFitBackupResultDropsOversizeSystemStateManifest(t *testing.T) {
+	manifest := `{"platform":"windows","artifacts":[` +
+		strings.Repeat(`{"name":"registry-hive","path":"C:\\Windows\\System32\\config\\SOFTWARE","bytes":123456},`, 200000) +
+		`{"name":"tail"}]}`
+	stdout := `{"id":"job-1","status":"completed","filesBackedUp":12,"bytesBackedUp":345,` +
+		`"snapshot":{"id":"snapshot-1","size":345},"systemStateManifest":` + manifest + `}`
+	in := backupipc.BackupCommandResult{CommandID: "sysimage-1", Success: true, Stdout: stdout}
+
+	fitted, degraded := fitBackupResultToIPC(in)
+	if got := payloadSize(t, fitted); got > resultPayloadBudget {
+		t.Fatalf("fitted payload is %d bytes, over the %d budget", got, resultPayloadBudget)
+	}
+	if !strings.Contains(degraded, "systemStateManifest") {
+		t.Errorf("expected the degradation note to name systemStateManifest, got %q", degraded)
+	}
+	var out struct {
+		Status              string          `json:"status"`
+		Warning             string          `json:"warning"`
+		SystemStateManifest json.RawMessage `json:"systemStateManifest"`
+		Snapshot            struct {
+			ID string `json:"id"`
+		} `json:"snapshot"`
+	}
+	if err := json.Unmarshal([]byte(fitted.Stdout), &out); err != nil {
+		t.Fatalf("fitted stdout is not valid JSON: %v", err)
+	}
+	if len(out.SystemStateManifest) != 0 {
+		t.Error("expected the oversize systemStateManifest to be dropped")
+	}
+	if out.Status != "completed" || out.Snapshot.ID != "snapshot-1" {
+		t.Errorf("terminal status did not survive: status=%q snapshotId=%q", out.Status, out.Snapshot.ID)
+	}
+	if !strings.Contains(out.Warning, "systemStateManifest") {
+		t.Errorf("expected the persisted warning to name the dropped manifest, got %q", out.Warning)
 	}
 }
