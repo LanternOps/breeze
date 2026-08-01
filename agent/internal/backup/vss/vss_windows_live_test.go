@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -82,6 +83,19 @@ func TestLive_CreateShadowCopy_EndToEnd(t *testing.T) {
 	if got != shadow {
 		t.Errorf("GetShadowPath = %q, want %q", got, shadow)
 	}
+
+	if len(session.UnprotectedVolumes) != 0 {
+		t.Errorf("expected no unprotected volumes, got %v", session.UnprotectedVolumes)
+	}
+
+	// The shadow copy must outlive CreateShadowCopy's own Release +
+	// CoUninitialize + UnlockOSThread. A reviewer read the VSS docs as meaning
+	// the device dies with the IVssBackupComponents object, which would make the
+	// whole snapshot useless to the caller; these copies are auto-release, which
+	// on Windows means reclaimed at requester *process* exit. Sleep and force a
+	// GC first so this is not passing on a timing accident.
+	runtime.GC()
+	time.Sleep(5 * time.Second)
 
 	// The shadow copy must actually be readable: list the Windows directory
 	// through the device path.

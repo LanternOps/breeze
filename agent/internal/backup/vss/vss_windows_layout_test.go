@@ -213,3 +213,40 @@ func TestUtf16PtrToString_NilIsEmpty(t *testing.T) {
 		t.Errorf("round-trip failed: %q", got)
 	}
 }
+
+// TestVolumeMountPoint covers the second #2999 defect: backup.go derives
+// volumes with filepath.VolumeName, which yields "C:" — and
+// AddToSnapshotSet("C:") returns VSS_E_OBJECT_NOT_FOUND, verified on Server
+// 2022. VSS wants a mount point.
+func TestVolumeMountPoint(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`C:`, `C:\`},
+		{`C:\`, `C:\`},
+		{`D:`, `D:\`},
+		{`\\?\Volume{11111111-2222-3333-4444-555555555555}\`, `\\?\Volume{11111111-2222-3333-4444-555555555555}\`},
+		{`C:/`, `C:/`},
+		{``, ``},
+	}
+	for _, tc := range cases {
+		if got := volumeMountPoint(tc.in); got != tc.want {
+			t.Errorf("volumeMountPoint(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestHrStatusUnwrittenSentinel pins the property the sentinel relies on: it
+// must not collide with S_OK or any VSS async status, so that "QueryStatus
+// wrote nothing" stays distinguishable from "finished".
+func TestHrStatusUnwrittenSentinel(t *testing.T) {
+	if hrStatusUnwritten >= 0 {
+		t.Fatalf("sentinel must be negative so an unwritten value is never read as success, got %d", hrStatusUnwritten)
+	}
+	// Via a variable: uint32(<negative typed constant>) is a compile-time error.
+	sentinelSigned := hrStatusUnwritten
+	sentinel := uint32(sentinelSigned)
+	for _, status := range []uint32{0 /* S_OK */, vssSAsyncPending, vssSAsyncFinished, vssSAsyncCancelled} {
+		if sentinel == status {
+			t.Errorf("sentinel collides with a real VSS status 0x%08X", status)
+		}
+	}
+}

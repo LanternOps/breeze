@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -111,11 +112,27 @@ const (
 	sFalse = 1 // S_FALSE
 )
 
+// hrStatusUnwritten seeds the QueryStatus out-param so that "the callee never
+// wrote anything" is distinguishable from S_OK. VSS never returns this value.
+const hrStatusUnwritten int32 = -0x7FFFFFFF
+
+// freeSnapshotPropsMissing keeps the "vssapi.dll has no VssFreeSnapshotProperties"
+// warning to one line per process.
+var freeSnapshotPropsMissing sync.Once
+
 // IVssAsync QueryStatus result codes (`vss.h`).
 const (
 	vssSAsyncPending   uint32 = 0x00042309
 	vssSAsyncFinished  uint32 = 0x0004230A
 	vssSAsyncCancelled uint32 = 0x0004230B
+)
+
+// The short writer-state vocabulary the rest of Breeze uses.
+const (
+	writerStateStable  = "stable"
+	writerStateWaiting = "waiting"
+	writerStateFailed  = "failed"
+	writerStateUnknown = "unknown"
 )
 
 // VSS_WRITER_STATE values (`vss.h`). Anything >= vssWsFailedAtIdentify is a
@@ -201,19 +218,18 @@ func (p *WindowsProvider) CreateShadowCopy(ctx context.Context, volumes []string
 	defer ole.CoUninitialize()
 
 	// --- Create IVssBackupComponents ---
-	var backupComponents uintptr
-	hr, _, _ := procCreateVssBackupComponentsInternal.Call(uintptr(unsafe.Pointer(&backupComponents)))
-	if err := checkHR(hr, "CreateVssBackupComponentsInternal"); err != nil {
+	backupComponents, err := createBackupComponents()
+	if err != nil {
 		return nil, err
 	}
-	if backupComponents == 0 {
-		return nil, fmt.Errorf("vss: CreateVssBackupComponentsInternal returned a nil interface")
-	}
 
-	// The shadow copies created below are non-persistent and live for as long
-	// as this process does, so releasing the components object here is safe:
-	// breeze-backup runs one job per process and the caller only needs the
-	// shadow device paths.
+	// The shadow copies created below are non-persistent VSS_CTX_BACKUP copies,
+	// which Windows reclaims when the requester *process* exits — not when this
+	// interface is released. breeze-backup runs one job per process and the
+	// caller only needs the device paths, so releasing here is safe. Verified on
+	// Server 2022: the device stays readable after Release and CoUninitialize
+	// for the life of the process (TestLive_CreateShadowCopy_EndToEnd reads
+	// through it after this function has returned).
 	defer callVtable(backupComponents, vtblRelease) //nolint:errcheck
 
 	slog.Info("vss: backup components created")
@@ -240,6 +256,9 @@ func (p *WindowsProvider) CreateShadowCopy(ctx context.Context, volumes []string
 	if err := p.waitForAsync(ctx, gatherAsync, "GatherWriterMetadata"); err != nil {
 		return nil, err
 	}
+	// Deferred rather than called at the end: every early return below would
+	// otherwise leak the writer metadata for the rest of the process.
+	defer callVtable(backupComponents, vtblFreeWriterMetadata) //nolint:errcheck
 	slog.Info("vss: writer metadata gathered")
 
 	// StartSnapshotSet must precede AddToSnapshotSet; without it every
@@ -254,8 +273,16 @@ func (p *WindowsProvider) CreateShadowCopy(ctx context.Context, volumes []string
 	// writers are holding state for; tell them to stand down.
 	snapshotSetStarted := true
 	defer func() {
-		if snapshotSetStarted {
-			callVtable(backupComponents, vtblAbortBackup) //nolint:errcheck
+		if !snapshotSetStarted {
+			return
+		}
+		if _, abortErr := callVtable(backupComponents, vtblAbortBackup); abortErr != nil {
+			// Not cosmetic: a failed abort can leave the snapshot set in
+			// progress, and the *next* backup run then fails with
+			// VSS_E_SNAPSHOT_SET_IN_PROGRESS. Losing this silently would leave
+			// that failure with no antecedent in the logs.
+			slog.Error("vss: AbortBackup failed; the snapshot set may remain in progress "+
+				"and break subsequent backup runs", "error", abortErr.Error())
 		}
 	}()
 
@@ -324,51 +351,78 @@ func (p *WindowsProvider) CreateShadowCopy(ctx context.Context, volumes []string
 	// The snapshot exists; AbortBackup would now destroy it.
 	snapshotSetStarted = false
 
-	// Collect writer statuses (best-effort — don't fail the snapshot on this).
-	writers := p.collectWriterStatuses(ctx, backupComponents)
+	var warnings []string
+
+	// Collect writer statuses (best-effort — a snapshot that exists is still
+	// worth using, so this never fails the run). Failure to *enumerate* is
+	// recorded too: otherwise `Writers: null` in the manifest is
+	// indistinguishable from a machine with no registered writers.
+	writers, writerErr := p.collectWriterStatuses(ctx, backupComponents)
+	if writerErr != nil {
+		warnMsg := fmt.Sprintf("writer status enumeration failed (%s) — writer state for this snapshot is unknown", writerErr)
+		slog.Warn("vss: " + warnMsg)
+		warnings = append(warnings, warnMsg)
+	}
+	// A writer stuck in a failed state means the data it owns is
+	// crash-inconsistent even though the snapshot itself succeeded — which is
+	// the whole reason to use VSS rather than copying files. Surface it instead
+	// of leaving it in a struct field nobody reads.
+	for _, w := range writers {
+		if w.State != writerStateFailed {
+			continue
+		}
+		warnMsg := fmt.Sprintf("writer %q (%s) is in a failed state — data owned by this writer may be application-inconsistent", w.Name, w.ID)
+		if w.LastError != "" {
+			warnMsg += ": " + w.LastError
+		}
+		slog.Warn("vss: " + warnMsg)
+		warnings = append(warnings, warnMsg)
+	}
 
 	// GetSnapshotProperties for each volume.
 	shadowPaths := make(map[string]string, len(entries))
-	var sessionID string
-	var warnings []string
+	var unprotected []string
 
 	for _, entry := range entries {
 		deviceName, err := p.getSnapshotDeviceName(backupComponents, entry.snapID)
 		if err != nil {
-			warnMsg := fmt.Sprintf("GetSnapshotProperties failed for volume %s: %s", entry.volume, err.Error())
+			unprotected = append(unprotected, entry.volume)
+			warnMsg := fmt.Sprintf("volume %s has no shadow copy (%s) — it will be read LIVE and in-use files may be skipped", entry.volume, err.Error())
 			slog.Warn("vss: " + warnMsg)
 			warnings = append(warnings, warnMsg)
 			continue
 		}
 		shadowPaths[entry.volume] = deviceName
-		if sessionID == "" {
-			sessionID = guidToString(entry.snapID)
-		}
 	}
 
 	// A snapshot set with no usable device paths is not a usable snapshot —
 	// returning it would make the caller rewrite nothing and silently read the
-	// live volume while reporting a VSS-backed backup.
+	// live volume while reporting a VSS-backed backup. Carry the per-volume
+	// HRESULTs into the error: the caller logs only this string, so dropping
+	// them leaves "VSS silently isn't working" with no diagnostic content.
 	if len(shadowPaths) == 0 {
-		return nil, fmt.Errorf("vss: no shadow copy device paths resolved for %d volume(s)", len(entries))
+		return nil, fmt.Errorf("vss: no shadow copy device paths resolved for %d volume(s): %s",
+			len(entries), strings.Join(warnings, "; "))
 	}
 
-	// Free writer metadata now that the snapshot is complete.
-	callVtable(backupComponents, vtblFreeWriterMetadata) //nolint:errcheck
-
 	session := &VSSSession{
-		ID:          sessionID,
-		Volumes:     volumes,
-		ShadowPaths: shadowPaths,
-		Writers:     writers,
-		Warnings:    warnings,
-		CreatedAt:   time.Now().UTC(),
+		// Identify the session by the snapshot *set*, not by whichever volume
+		// happened to resolve first — that varied with which volume failed.
+		ID:                 guidToString(snapshotSetID),
+		Volumes:            volumes,
+		ShadowPaths:        shadowPaths,
+		UnprotectedVolumes: unprotected,
+		Writers:            writers,
+		Warnings:           warnings,
+		CreatedAt:          time.Now().UTC(),
 	}
 
 	slog.Info("vss: shadow copy created",
-		"sessionId", sessionID,
-		"volumes", len(volumes),
-		"shadowPaths", len(shadowPaths),
+		"sessionId", session.ID,
+		"volumesRequested", len(volumes),
+		"volumesProtected", len(shadowPaths),
+		"volumesUnprotected", len(unprotected),
+		"writers", len(writers),
 		"durationMs", time.Since(start).Milliseconds(),
 	)
 
@@ -379,21 +433,35 @@ func (p *WindowsProvider) CreateShadowCopy(ctx context.Context, volumes []string
 // ReleaseShadowCopy
 // ---------------------------------------------------------------------------
 
-// ReleaseShadowCopy is best-effort cleanup. The shadow copies created by
-// CreateShadowCopy are non-persistent VSS_CTX_BACKUP copies owned by the
-// IVssBackupComponents instance that made them, and that instance is already
-// released by the time this runs; Windows reclaims the copies when the
-// breeze-backup process exits. This call therefore exists to log the release
-// point, not to delete anything.
+// ReleaseShadowCopy is deliberately a no-op that always returns nil.
+//
+// The shadow copies CreateShadowCopy makes are non-persistent VSS_CTX_BACKUP
+// copies; Windows reclaims them when the breeze-backup process exits, and that
+// process runs exactly one job. There is nothing left to delete here. What this
+// replaced was worse than nothing: it created a *second* IVssBackupComponents
+// and called BackupComplete on it, which cannot work — that instance has no
+// backup in progress.
+//
+// What it does NOT do: signal BackupComplete to the writers, which are
+// therefore left in VSS_WS_WAITING_FOR_BACKUP_COMPLETE until the process exits.
+// Doing that properly means keeping the IVssBackupComponents alive for the
+// session on a dedicated COM thread, which is a lifetime rewrite of this
+// package rather than part of the #2999 fix. Tracked as a follow-up on #2999.
+//
+// The error return exists only to satisfy the Provider interface; a caller
+// checking it is checking a constant.
 func (p *WindowsProvider) ReleaseShadowCopy(session *VSSSession) error {
 	if session == nil {
+		// A caller bug rather than a normal state — don't let it vanish.
+		slog.Warn("vss: ReleaseShadowCopy called with a nil session")
 		return nil
 	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	slog.Info("vss: shadow copy released", "sessionId", session.ID)
+	slog.Info("vss: shadow copy released (no-op; writers were not sent BackupComplete)",
+		"sessionId", session.ID)
 	return nil
 }
 
@@ -415,13 +483,9 @@ func (p *WindowsProvider) ListWriters(ctx context.Context) ([]WriterStatus, erro
 	}
 	defer ole.CoUninitialize()
 
-	var backupComponents uintptr
-	hr, _, _ := procCreateVssBackupComponentsInternal.Call(uintptr(unsafe.Pointer(&backupComponents)))
-	if err := checkHR(hr, "CreateVssBackupComponentsInternal"); err != nil {
+	backupComponents, err := createBackupComponents()
+	if err != nil {
 		return nil, err
-	}
-	if backupComponents == 0 {
-		return nil, fmt.Errorf("vss: CreateVssBackupComponentsInternal returned a nil interface")
 	}
 	defer callVtable(backupComponents, vtblRelease) //nolint:errcheck
 
@@ -439,8 +503,11 @@ func (p *WindowsProvider) ListWriters(ctx context.Context) ([]WriterStatus, erro
 		return nil, err
 	}
 
-	writers := p.collectWriterStatuses(ctx, backupComponents)
+	writers, writerErr := p.collectWriterStatuses(ctx, backupComponents)
 	callVtable(backupComponents, vtblFreeWriterMetadata) //nolint:errcheck
+	if writerErr != nil {
+		return nil, writerErr
+	}
 
 	return writers, nil
 }
@@ -466,6 +533,20 @@ func (p *WindowsProvider) GetShadowPath(session *VSSSession, volume string) (str
 
 // callVtable invokes a COM vtable method on a raw interface pointer.
 // The first argument (obj) is automatically prepended as the implicit `this`.
+//
+// //go:uintptrescapes is load-bearing, not decoration. Callers pass
+// uintptr(unsafe.Pointer(&x)) for out-params, and the unsafe rules only keep
+// `x` pinned when that conversion appears in the argument list of the syscall
+// itself. Here the value instead travels through this function's variadic
+// slice, so without the directive a stack growth inside callVtable could move
+// the caller's frame and leave VSS writing into abandoned stack memory. The
+// directive forces those arguments to the heap and keeps them alive for the
+// duration of the call.
+//
+// This is only sound while every such conversion appears directly in a
+// callVtable(...) argument list. Do not hoist one into a local first.
+//
+//go:uintptrescapes
 func callVtable(obj uintptr, index uintptr, args ...uintptr) (uintptr, error) {
 	if obj == 0 {
 		return 0, fmt.Errorf("vss: vtable[%d] called on nil object", index)
@@ -512,20 +593,29 @@ func (p *WindowsProvider) waitForAsync(ctx context.Context, asyncPtr uintptr, la
 	for {
 		select {
 		case <-ctx.Done():
-			callVtable(asyncPtr, vtblAsyncCancel) //nolint:errcheck
+			cancelAsync(asyncPtr, label)
 			return fmt.Errorf("vss: %s timed out: %w", label, ErrVSSTimeout)
 		default:
 		}
 
 		// QueryStatus(OUT HRESULT *pHrResult, IN OUT INT *pReserved). The
 		// operation's real outcome lands in pHrResult; the method's own return
-		// value only reports whether the query itself worked.
-		var hrStatus int32
-		var reserved int32
+		// value only reports whether the query itself worked. pReserved must be
+		// NULL (MSDN).
+		//
+		// Seeded with a sentinel rather than left at the zero value: 0 is S_OK,
+		// so an implementation that returns success without writing pHrResult
+		// would otherwise read as "finished". That is exactly what #2999 did —
+		// the index pointed at Wait(), which never touches this out-param — and
+		// the failure mode would be a silent success instead of a loud one.
+		hrStatus := hrStatusUnwritten
 		if _, err := callVtable(asyncPtr, vtblAsyncQueryStatus,
-			uintptr(unsafe.Pointer(&hrStatus)),
-			uintptr(unsafe.Pointer(&reserved))); err != nil {
+			uintptr(unsafe.Pointer(&hrStatus)), 0); err != nil {
 			return fmt.Errorf("vss: %s QueryStatus failed: %w", label, err)
+		}
+		if hrStatus == hrStatusUnwritten {
+			return fmt.Errorf("vss: %s QueryStatus reported success but wrote no status "+
+				"(vtable index or argument marshalling is wrong)", label)
 		}
 
 		switch uint32(hrStatus) {
@@ -539,7 +629,8 @@ func (p *WindowsProvider) waitForAsync(ctx context.Context, asyncPtr uintptr, la
 			if hrStatus < 0 {
 				return fmt.Errorf("vss: %s failed HRESULT 0x%08X", label, uint32(hrStatus))
 			}
-			// Any other success code means the operation is no longer pending.
+			slog.Warn("vss: async reported an unrecognised success code; treating as finished",
+				"op", label, "hresult", fmt.Sprintf("0x%08X", uint32(hrStatus)))
 			return nil
 		}
 
@@ -550,7 +641,7 @@ func (p *WindowsProvider) waitForAsync(ctx context.Context, asyncPtr uintptr, la
 
 		select {
 		case <-ctx.Done():
-			callVtable(asyncPtr, vtblAsyncCancel) //nolint:errcheck
+			cancelAsync(asyncPtr, label)
 			return fmt.Errorf("vss: %s timed out: %w", label, ErrVSSTimeout)
 		case <-time.After(interval):
 		}
@@ -574,8 +665,14 @@ func (p *WindowsProvider) getSnapshotDeviceName(bc uintptr, snapID windows.GUID)
 	if prop.SnapshotDeviceObject == 0 {
 		return "", fmt.Errorf("snapshot device name is nil")
 	}
-
-	return utf16PtrToString(prop.SnapshotDeviceObject), nil
+	// A non-nil pointer to an empty string is just as unusable: the caller
+	// prefixes paths with this, so "" would turn C:\Users into a bogus
+	// drive-relative path and the walk would silently find nothing.
+	name := utf16PtrToString(prop.SnapshotDeviceObject)
+	if name == "" {
+		return "", fmt.Errorf("snapshot device name is empty")
+	}
+	return name, nil
 }
 
 // freeSnapshotProperties releases the strings VSS allocated inside a
@@ -583,35 +680,45 @@ func (p *WindowsProvider) getSnapshotDeviceName(bc uintptr, snapID windows.GUID)
 // than crashing a backup over a memory leak.
 func freeSnapshotProperties(prop *vssSnapshotProp) {
 	if err := procVssFreeSnapshotProperties.Find(); err != nil {
-		slog.Debug("vss: VssFreeSnapshotProperties unavailable, leaking snapshot property strings",
-			"error", err.Error())
+		// Warn once, not per snapshot: this condition never clears, so Debug
+		// would make a permanent leak invisible in production while a
+		// per-volume Warn would spam. (The export is present on Server 2022 and
+		// Windows 10/11; this path is for stripped or embedded images.)
+		freeSnapshotPropsMissing.Do(func() {
+			slog.Warn("vss: VssFreeSnapshotProperties is unavailable in vssapi.dll; "+
+				"snapshot property strings will leak for the life of this process",
+				"error", err.Error())
+		})
 		return
 	}
-	procVssFreeSnapshotProperties.Call(uintptr(unsafe.Pointer(prop)))
+	procVssFreeSnapshotProperties.Call(uintptr(unsafe.Pointer(prop))) //nolint:errcheck
 }
 
 // collectWriterStatuses enumerates VSS writers and their post-snapshot state.
 // Failures are logged but do not abort the caller — writer telemetry is
 // diagnostic, and a snapshot that exists is still worth using.
-func (p *WindowsProvider) collectWriterStatuses(ctx context.Context, bc uintptr) []WriterStatus {
+func (p *WindowsProvider) collectWriterStatuses(ctx context.Context, bc uintptr) ([]WriterStatus, error) {
+	// This is diagnostic telemetry, so cap it well below the provider's snapshot
+	// budget (600s by default). A hung writer must not burn the caller's whole
+	// VSS window here, ahead of the device-path resolution that actually matters.
+	ctx, cancel := context.WithTimeout(ctx, writerStatusTimeout)
+	defer cancel()
+
 	// GatherWriterStatus must run before GetWriterStatus{Count,}.
 	var statusAsync uintptr
 	if _, err := callVtable(bc, vtblGatherWriterStatus,
 		uintptr(unsafe.Pointer(&statusAsync))); err != nil {
-		slog.Warn("vss: GatherWriterStatus failed", "error", err.Error())
-		return nil
+		return nil, fmt.Errorf("GatherWriterStatus: %w", err)
 	}
 	if err := p.waitForAsync(ctx, statusAsync, "GatherWriterStatus"); err != nil {
-		slog.Warn("vss: GatherWriterStatus wait failed", "error", err.Error())
-		return nil
+		return nil, err
 	}
 	defer callVtable(bc, vtblFreeWriterStatus) //nolint:errcheck
 
 	var count uint32
 	if _, err := callVtable(bc, vtblGetWriterStatusCount,
 		uintptr(unsafe.Pointer(&count))); err != nil {
-		slog.Warn("vss: GetWriterStatusCount failed", "error", err.Error())
-		return nil
+		return nil, fmt.Errorf("GetWriterStatusCount: %w", err)
 	}
 
 	writers := make([]WriterStatus, 0, count)
@@ -637,9 +744,7 @@ func (p *WindowsProvider) collectWriterStatuses(ctx context.Context, bc uintptr)
 		}
 
 		name := utf16PtrToString(namePtr)
-		if namePtr != 0 {
-			procSysFreeString.Call(namePtr)
-		}
+		freeBSTR(namePtr)
 
 		ws := WriterStatus{
 			ID:    guidToString(writerID),
@@ -651,7 +756,56 @@ func (p *WindowsProvider) collectWriterStatuses(ctx context.Context, bc uintptr)
 		}
 		writers = append(writers, ws)
 	}
-	return writers
+	return writers, nil
+}
+
+// writerStatusTimeout bounds the optional writer-status gather.
+const writerStatusTimeout = 30 * time.Second
+
+// createBackupComponents constructs an IVssBackupComponents, checking that the
+// export resolves first. windows.LazyProc.Call *panics* when the DLL or export
+// is missing, and a panic takes the whole breeze-backup process down — whereas
+// the caller is written to degrade gracefully on an error ("proceeding without
+// VSS"). Hosts without a usable vssapi.dll must get the degraded path, not a
+// crashed job.
+func createBackupComponents() (uintptr, error) {
+	if err := procCreateVssBackupComponentsInternal.Find(); err != nil {
+		return 0, fmt.Errorf("vss: vssapi.dll/CreateVssBackupComponentsInternal unavailable: %w", err)
+	}
+	var bc uintptr
+	hr, _, _ := procCreateVssBackupComponentsInternal.Call(uintptr(unsafe.Pointer(&bc)))
+	if err := checkHR(hr, "CreateVssBackupComponentsInternal"); err != nil {
+		return 0, err
+	}
+	if bc == 0 {
+		return 0, fmt.Errorf("vss: CreateVssBackupComponentsInternal returned a nil interface")
+	}
+	return bc, nil
+}
+
+// freeBSTR releases a BSTR returned by a VSS out-param. Skips the call rather
+// than panicking if oleaut32 cannot be resolved (see createBackupComponents);
+// leaking a writer name beats losing the job.
+func freeBSTR(bstr uintptr) {
+	if bstr == 0 {
+		return
+	}
+	if err := procSysFreeString.Find(); err != nil {
+		return
+	}
+	procSysFreeString.Call(bstr) //nolint:errcheck
+}
+
+// cancelAsync aborts an in-flight IVssAsync after a timeout. A failed Cancel
+// means the operation keeps running while we release the object out from under
+// it, which is a plausible antecedent for a later
+// VSS_E_SNAPSHOT_SET_IN_PROGRESS — so it gets a log line rather than a
+// //nolint:errcheck.
+func cancelAsync(asyncPtr uintptr, label string) {
+	if _, err := callVtable(asyncPtr, vtblAsyncCancel); err != nil {
+		slog.Warn("vss: cancelling a timed-out async operation failed; it may still be running",
+			"op", label, "error", err.Error())
+	}
 }
 
 // writerStateName maps a VSS_WRITER_STATE to the short vocabulary the rest of
@@ -659,13 +813,13 @@ func (p *WindowsProvider) collectWriterStatuses(ctx context.Context, bc uintptr)
 func writerStateName(state uint32) string {
 	switch {
 	case state == vssWsStable:
-		return "stable"
+		return writerStateStable
 	case state > vssWsStable && state < vssWsFailedAtIdentify:
-		return "waiting"
+		return writerStateWaiting
 	case state >= vssWsFailedAtIdentify && state <= vssWsFailedAtBackupEnd:
-		return "failed"
+		return writerStateFailed
 	default:
-		return "unknown"
+		return writerStateUnknown
 	}
 }
 
