@@ -9,7 +9,8 @@ import { listRulesSchema, createRuleSchema, updateRuleSchema, toggleRuleSchema }
 import { resolveScopedOrgId, parseBoolean } from './helpers';
 import { getPagination } from '../../utils/pagination';
 import { PERMISSIONS } from '../../services/permissions';
-import { unsupportedConditionTypeError } from '../../services/alertConditions';
+import { retiredConditionTypeError } from '../../services/alertConditions';
+import { retiredConditionReactivationError } from '../alerts/helpers';
 
 export const ruleRoutes = new Hono();
 
@@ -137,7 +138,7 @@ ruleRoutes.post(
 
       // #2948 — this route writes the same overrideSettings.conditions the
       // evaluator reads, so it needs the same boundary as POST /alerts/rules.
-      const createConditionTypeError = unsupportedConditionTypeError(data.conditions);
+      const createConditionTypeError = retiredConditionTypeError(data.conditions);
       if (createConditionTypeError) {
         return c.json({ error: createConditionTypeError }, 400);
       }
@@ -286,7 +287,7 @@ ruleRoutes.patch(
         return c.json({ error: 'No updates provided' }, 400);
       }
 
-      const updateConditionTypeError = unsupportedConditionTypeError(updates.conditions);
+      const updateConditionTypeError = retiredConditionTypeError(updates.conditions);
       if (updateConditionTypeError) {
         return c.json({ error: updateConditionTypeError }, 400);
       }
@@ -399,6 +400,15 @@ ruleRoutes.post(
 
       if (existing.orgId === null) {
         return c.json({ error: PARTNER_WIDE_RULE_READONLY_HERE }, 403);
+      }
+
+      // #2948 — same gate as PUT /alerts/rules. Without it this is the one-click
+      // path back to a rule that is enabled, looks healthy, and can never fire.
+      if (enabled && !existing.isActive) {
+        const reactivationError = await retiredConditionReactivationError(existing);
+        if (reactivationError) {
+          return c.json({ error: reactivationError }, 400);
+        }
       }
 
       const [updated] = await db

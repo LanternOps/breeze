@@ -355,7 +355,8 @@
       "status": "Status Condition"
     },
     "retiredConditionWarning": "The \"{{type}}\" condition type is no longer supported and never triggered an alert. Remove this condition to save the rule.",
-    "retiredConditionBlocksSave": "Unsupported condition type \"{{type}}\" — remove this condition before saving."
+    "retiredConditionBlocksSave": "Unsupported condition type \"{{type}}\" — remove this condition before saving.",
+    "readOnlyConditionNote": "The \"{{type}}\" condition type can’t be edited here. It is kept exactly as stored."
   },
   "alertRuleList": {
     "editRule": "Edit rule",

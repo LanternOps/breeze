@@ -13,35 +13,56 @@ import { DeviceTargetSelector } from '../filters/DeviceTargetSelector';
 
 // Condition types this editor can render a form for. `metric` and `status` are
 // the evaluator's `threshold` and `offline` handlers under their legacy aliases
-// (services/alertConditions/handlers/{threshold,offline}.ts). `custom` is NOT
-// here: it never had a registered handler, so the registry answered "Unknown
-// condition type" and the rule — evaluated as an implicit AND — could never
-// fire (#2948). The API now rejects it on write, so the editor must not offer it.
+// (services/alertConditions/handlers/{threshold,offline}.ts).
+//
+// This is NOT the set of types the system supports. The registry resolves a
+// dozen (event_log, service_stopped, cert_expiry, patch_compliance, …) and the
+// API accepts all of them on POST /alerts/rules, plus push-evaluated types like
+// `dns_threat` that never touch the registry at all. Anything outside this list
+// is rendered read-only and round-tripped verbatim — see RETIRED_CONDITION_TYPES
+// for the much narrower set that actually blocks a save.
 export const EDITABLE_CONDITION_TYPES = ['metric', 'status'] as const;
+
+// Types that were once writable but have no evaluator behind them. Mirrors
+// RETIRED_CONDITION_TYPES in apps/api/src/services/alertConditions/index.ts —
+// keep the two in step. `custom` never had a registered handler, so the registry
+// answered "Unknown condition type" and the rule, evaluated as an implicit AND,
+// could never fire (#2948). These are the only types that block a save.
+export const RETIRED_CONDITION_TYPES = ['custom'] as const;
 
 function isEditableConditionType(type: string | undefined): boolean {
   return (EDITABLE_CONDITION_TYPES as readonly string[]).includes(type ?? '');
 }
 
+function isRetiredConditionType(type: string | undefined): boolean {
+  return (RETIRED_CONDITION_TYPES as readonly string[]).includes(type ?? '');
+}
+
 const conditionSchema = z
   .object({
-    // Deliberately a string, not an enum over EDITABLE_CONDITION_TYPES: an
-    // already-stored retired type (`custom`) must survive as far as the
-    // superRefine below so the tech gets "remove this condition", not Zod's
-    // generic "Invalid option" with no indication of which row is at fault.
+    // Deliberately a string, not an enum over EDITABLE_CONDITION_TYPES: a
+    // stored type this editor cannot render (`event_log`, `cert_expiry`, a
+    // retired `custom`) must survive as far as the superRefine below, so a
+    // supported one round-trips and a retired one produces "remove this
+    // condition" rather than Zod's generic "Invalid option".
     type: z.string().min(1),
     metric: z.enum(['cpu', 'ram', 'disk', 'network']).optional(),
     operator: z.enum(['gt', 'lt', 'gte', 'lte', 'eq', 'neq']).optional(),
     value: z.coerce.number().min(0).max(100).optional(),
     duration: z.coerce.number().min(1).optional(),
-    // Retained read-only: a legacy `custom` condition carries these, and the
-    // retired-condition row renders them so the tech can see what they are
-    // deleting. The editor never writes them.
+    // Rendered read-only on a legacy `custom` row so the tech can see what they
+    // are being asked to delete. The editor never writes them.
     field: z.string().optional(),
     customCondition: z.string().optional()
   })
+  // passthrough, NOT strip: a condition type this editor cannot render still
+  // carries fields it does not model (event_log's category/level/windowMinutes,
+  // cert_expiry's withinDays). Zod's default strip mode would silently delete
+  // them on save, turning a working condition into an unevaluable one — the
+  // very failure this PR exists to remove.
+  .passthrough()
   .superRefine((condition, ctx) => {
-    if (!isEditableConditionType(condition.type)) {
+    if (isRetiredConditionType(condition.type)) {
       ctx.addIssue({
         code: 'custom',
         path: ['type'],
@@ -402,7 +423,10 @@ export default function AlertRuleForm({
           </button>
         </div>
 
-        {errors.conditions && (
+        {/* Guarded on `.message`: per-item issues (the retired-type refinement
+            below) live at errors.conditions[i].type and leave this top-level
+            message undefined, which would otherwise render an empty red <p>. */}
+        {errors.conditions?.message && (
           <p className="text-sm text-destructive">{errors.conditions.message}</p>
         )}
 
@@ -410,17 +434,28 @@ export default function AlertRuleForm({
           <div className="space-y-3">
             {fields.map((field, index) => {
               const conditionType = watchConditions?.[index]?.type;
-              // A stored condition whose type this editor no longer offers
-              // (`custom`, #2948). Rendered read-only rather than dropped into
-              // the type <select>, which would silently coerce it to the first
-              // option — resurrecting a dead condition as a live CPU rule.
-              const isRetired = !isEditableConditionType(conditionType);
+              // Two different "can't edit this here" cases, deliberately kept
+              // apart (#2948):
+              //   * RETIRED — `custom`. No evaluator has ever existed for it, so
+              //     it is dead data and blocks the save until removed.
+              //   * READ-ONLY — a type this form can't render but the system
+              //     fully supports (event_log, cert_expiry, a canonical
+              //     `offline`, the push-evaluated `dns_threat`). Shown as-is,
+              //     round-tripped verbatim via .passthrough(), save NOT blocked.
+              // Collapsing the two would tell a tech their working offline rule
+              // "never triggered an alert" and refuse to save until they delete it.
+              const isRetired = isRetiredConditionType(conditionType);
+              const isReadOnly = isRetired || !isEditableConditionType(conditionType);
+              const retiredError = errors.conditions?.[index]?.type?.message;
               return (
               <div key={field.id} className="rounded-md border bg-muted/20 p-4">
                 <div className="flex items-start gap-3">
                   <GripVertical className="h-5 w-5 text-muted-foreground mt-2.5 cursor-move" />
-                  {isRetired ? (
-                    <div className="flex-1 space-y-1" data-testid={`condition-retired-${index}`}>
+                  {isReadOnly ? (
+                    <div
+                      className="flex-1 space-y-1"
+                      data-testid={isRetired ? `condition-retired-${index}` : `condition-readonly-${index}`}
+                    >
                       <p className="text-xs font-medium text-muted-foreground">{t('alertRuleForm.type')}</p>
                       <p className="text-sm font-medium">{conditionType}</p>
                       {watchConditions?.[index]?.customCondition && (
@@ -428,9 +463,19 @@ export default function AlertRuleForm({
                           {watchConditions[index]?.field ?? ''} {watchConditions[index]?.customCondition}
                         </p>
                       )}
-                      <p className="text-xs text-destructive">
-                        {t('alertRuleForm.retiredConditionWarning', { type: conditionType })}
+                      <p className={isRetired ? 'text-xs text-destructive' : 'text-xs text-muted-foreground'}>
+                        {isRetired
+                          ? t('alertRuleForm.retiredConditionWarning', { type: conditionType })
+                          : t('alertRuleForm.readOnlyConditionNote', { type: conditionType })}
                       </p>
+                      {/* Submit-time signal. The always-on warning above does not
+                          change when Save is pressed, so without this the click
+                          has no visible consequence at all. */}
+                      {retiredError && (
+                        <p className="text-xs font-medium text-destructive" data-testid={`condition-error-${index}`}>
+                          {retiredError}
+                        </p>
+                      )}
                     </div>
                   ) : (
                   <div className="flex-1 grid gap-4 sm:grid-cols-2 md:grid-cols-4">
@@ -514,7 +559,9 @@ export default function AlertRuleForm({
                     onClick={() => remove(index)}
                     // A retired condition is always removable, even as the last
                     // one: it blocks the save, so keeping it pinned would leave
-                    // the rule permanently uneditable.
+                    // the rule permanently uneditable. A merely read-only
+                    // condition does NOT block the save, so it keeps the normal
+                    // last-condition lock.
                     disabled={fields.length === 1 && !isRetired}
                     className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-muted text-destructive disabled:opacity-50 disabled:cursor-not-allowed"
                     title={t('alertRuleForm.removeCondition')}

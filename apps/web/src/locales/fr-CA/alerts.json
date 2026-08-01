@@ -355,7 +355,8 @@
       "status": "État"
     },
     "retiredConditionWarning": "Le type de condition « {{type}} » n'est plus pris en charge et n'a jamais déclenché d'alerte. Supprimez cette condition pour enregistrer la règle.",
-    "retiredConditionBlocksSave": "Type de condition non pris en charge « {{type}} » — supprimez cette condition avant d'enregistrer."
+    "retiredConditionBlocksSave": "Type de condition non pris en charge « {{type}} » — supprimez cette condition avant d'enregistrer.",
+    "readOnlyConditionNote": "Le type de condition « {{type}} » ne peut pas être modifié ici. Il est conservé tel quel."
   },
   "alertRuleList": {
     "editRule": "Modifier la règle",

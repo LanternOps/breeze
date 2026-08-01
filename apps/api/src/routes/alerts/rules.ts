@@ -4,7 +4,7 @@ import { and, eq, sql, desc, inArray, isNull, or, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { alertRules, alertTemplates, alerts, devices, deviceGroups, organizations, sites } from '../../db/schema';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
-import { unsupportedConditionTypeError } from '../../services/alertConditions';
+import { retiredConditionTypeError } from '../../services/alertConditions';
 import { requireMfa, requirePermission, requireScope, siteAccessCheck } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
@@ -26,6 +26,7 @@ import {
   validateAlertRuleNotificationBindings,
   formatAlertRuleResponse,
   resolveAlertTemplate,
+  retiredConditionReactivationError,
 } from './helpers';
 
 export const rulesRoutes = new Hono();
@@ -277,9 +278,21 @@ rulesRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
-    // Reject conditions the evaluator has no handler for (#2948). Stored
-    // unchecked, such a rule fails closed forever while presenting as healthy.
-    const createConditionTypeError = unsupportedConditionTypeError(data.conditions);
+    // Reject retired condition types (#2948). Stored unchecked, such a rule
+    // fails closed forever while presenting as a healthy, enabled rule.
+    //
+    // Checked over `overrideSettings`/`overrides` as well as `conditions`, not
+    // just the latter: both are `z.any()` passthroughs that are merged into
+    // baseOverrides below, and `overrides.conditions` /
+    // `overrides.autoResolveConditions` are read straight back out by
+    // alertService (getApplicableRules, evaluateAutoResolveConditions). A
+    // guard on `data.conditions` alone is bypassed by moving the same payload
+    // one key over.
+    const createConditionTypeError = retiredConditionTypeError([
+      data.conditions,
+      data.overrideSettings,
+      data.overrides,
+    ]);
     if (createConditionTypeError) {
       return c.json({ error: createConditionTypeError }, 400);
     }
@@ -463,10 +476,14 @@ rulesRoutes.put(
       return c.json({ error: 'No updates provided' }, 400);
     }
 
-    // #2948 — same boundary as create. Also the mechanism that forces a tech
-    // editing a legacy rule to delete its retired condition rather than
-    // re-saving it verbatim.
-    const updateConditionTypeError = unsupportedConditionTypeError(data.conditions);
+    // #2948 — same boundary as create, over the same three passthrough fields.
+    // Also the mechanism that forces a tech editing a legacy rule to delete its
+    // retired condition rather than re-saving it verbatim.
+    const updateConditionTypeError = retiredConditionTypeError([
+      data.conditions,
+      data.overrideSettings,
+      data.overrides,
+    ]);
     if (updateConditionTypeError) {
       return c.json({ error: updateConditionTypeError }, 400);
     }
@@ -611,6 +628,21 @@ rulesRoutes.put(
 
     const isActive = data.isActive ?? data.enabled ?? data.active;
     if (isActive !== undefined) updates.isActive = isActive;
+
+    // Re-enabling a rule the #2948 cleanup migration switched off must go
+    // through the same boundary. This request carries no `conditions`, so the
+    // payload check above cannot see them — resolve the rule's effective ones.
+    // Only on the false -> true edge: an already-active rule being edited for
+    // some other reason is not made un-saveable by this.
+    if (isActive === true && !rule.isActive) {
+      const reactivationError = await retiredConditionReactivationError({
+        templateId: (updates.templateId as string) ?? rule.templateId,
+        overrideSettings: updates.overrideSettings ?? rule.overrideSettings,
+      });
+      if (reactivationError) {
+        return c.json({ error: reactivationError }, 400);
+      }
+    }
 
     if (Object.keys(updates).length === 0) {
       return c.json({ error: 'No updates provided' }, 400);

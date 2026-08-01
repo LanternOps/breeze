@@ -16,7 +16,7 @@ vi.mock('./utils', async (importOriginal) => {
 });
 
 import './index';
-import { evaluateConditions, findUnregisteredConditionTypes, unsupportedConditionTypeError } from './index';
+import { evaluateConditions, findRetiredConditionTypes, retiredConditionTypeError } from './index';
 import { conditionRegistry } from './registry';
 import { offlineHandler } from './handlers/offline';
 
@@ -67,12 +67,48 @@ describe('evaluateConditions context.actualValue (issue #1980)', () => {
   });
 });
 
-describe('findUnregisteredConditionTypes (issue #2948)', () => {
-  it('flags the retired `custom` type, which never had a handler', () => {
-    expect(findUnregisteredConditionTypes([{ type: 'custom', customCondition: 'x' }])).toEqual(['custom']);
+describe('findRetiredConditionTypes (issue #2948)', () => {
+  it('flags the retired `custom` type, which never had an evaluator', () => {
+    expect(findRetiredConditionTypes([{ type: 'custom', customCondition: 'x' }])).toEqual(['custom']);
   });
 
-  it('accepts every type the registry actually resolves, aliases included', () => {
+  it('flags a bare root object, the shape the alert-template routes accept', () => {
+    // Those routes validate `conditions` as z.record — an OBJECT, never an
+    // array — so the un-wrapped shape is the dominant one there.
+    expect(findRetiredConditionTypes({ type: 'custom' })).toEqual(['custom']);
+  });
+
+  it('descends into the alert-template editor envelope (`conditions.triggers`)', () => {
+    // AlertTemplateEditor posts { triggers, thresholdDefaults, notifications,
+    // escalationRules, autoRemediation, suppression }. A walk that only
+    // recursed on a `conditions` array missed this entirely, making the guard
+    // on POST/PATCH /alert-templates dead code for the product's own UI.
+    const payload = {
+      triggers: [{ type: 'event', eventSource: 'x', pattern: 'y' }, { type: 'custom' }],
+      thresholdDefaults: {},
+      suppression: {},
+    };
+    expect(findRetiredConditionTypes(payload)).toEqual(['custom']);
+  });
+
+  it('does NOT flag live types that have no registry handler', () => {
+    // The single most important case in this file. `dns_threat` is a seeded
+    // built-in evaluated by the event-bus subscriber in
+    // services/dnsThreatAlerts.ts, and `event` is what the alert-template
+    // editor writes — neither is in conditionRegistry. A registry-allowlist
+    // guard would 400 both, breaking the documented way to narrow a DNS-threat
+    // rule (editing override_settings.conditions.categories).
+    const live = [
+      { type: 'dns_threat', eventType: 'dns.threat.blocked', categories: ['malware'] },
+      { type: 'event', eventSource: 'system', pattern: 'disk' },
+    ];
+    expect(findRetiredConditionTypes(live)).toEqual([]);
+    for (const condition of live) {
+      expect(conditionRegistry.get(condition.type)).toBeUndefined();
+    }
+  });
+
+  it('accepts every registry-backed type, aliases included', () => {
     const supported = [
       { type: 'metric', metric: 'cpu', operator: 'gt', value: 85 },
       { type: 'threshold', metric: 'cpuPercent', operator: 'gt', value: 85 },
@@ -82,7 +118,7 @@ describe('findUnregisteredConditionTypes (issue #2948)', () => {
       { type: 'service_stopped', serviceName: 'spooler' },
       { type: 'cert_expiry', withinDays: 30 },
     ];
-    expect(findUnregisteredConditionTypes(supported)).toEqual([]);
+    expect(findRetiredConditionTypes(supported)).toEqual([]);
   });
 
   it('walks into nested condition groups', () => {
@@ -90,43 +126,50 @@ describe('findUnregisteredConditionTypes (issue #2948)', () => {
       logic: 'or',
       conditions: [
         { type: 'metric', metric: 'cpu', operator: 'gt', value: 85 },
-        { logic: 'and', conditions: [{ type: 'custom' }, { type: 'made_up' }] },
+        { logic: 'and', conditions: [{ type: 'custom' }] },
       ],
     };
-    expect(findUnregisteredConditionTypes(tree)).toEqual(['custom', 'made_up']);
+    expect(findRetiredConditionTypes(tree)).toEqual(['custom']);
   });
 
-  it('dedupes repeated unknown types', () => {
-    expect(findUnregisteredConditionTypes([{ type: 'custom' }, { type: 'custom' }])).toEqual(['custom']);
+  it('dedupes repeated retired types', () => {
+    expect(findRetiredConditionTypes([{ type: 'custom' }, { type: 'custom' }])).toEqual(['custom']);
   });
 
   it('ignores non-object and typeless nodes rather than inventing an error', () => {
-    // A missing/non-string `type` is the per-handler validators' problem, not
-    // this function's — it reports unknown TYPES only.
-    expect(findUnregisteredConditionTypes([null, 'nope', 42, {}, { type: 7 }])).toEqual([]);
+    expect(findRetiredConditionTypes([null, 'nope', 42, {}, { type: 7 }])).toEqual([]);
   });
 
-  it('stops recursing on a pathologically deep tree instead of blowing the stack', () => {
+  it('truncates a pathologically deep tree instead of blowing the stack', () => {
     let node: Record<string, unknown> = { type: 'custom' };
     for (let i = 0; i < 5000; i++) node = { logic: 'and', conditions: [node] };
-    expect(() => findUnregisteredConditionTypes(node)).not.toThrow();
+    // Documents the deliberate fail-OPEN: past MAX_CONDITION_DEPTH the walk
+    // reports nothing and the write is accepted. The evaluator has no depth
+    // limit and still fails such a condition closed, so this degrades to the
+    // pre-fix behaviour rather than to a false rejection.
+    expect(findRetiredConditionTypes(node)).toEqual([]);
+  });
+
+  it('does not run away on a wide payload', () => {
+    const wide = Array.from({ length: 20000 }, () => ({ type: 'metric', metric: 'cpu' }));
+    expect(findRetiredConditionTypes(wide)).toEqual([]);
   });
 });
 
-describe('unsupportedConditionTypeError (issue #2948)', () => {
+describe('retiredConditionTypeError (issue #2948)', () => {
   it('returns null when nothing was supplied', () => {
-    expect(unsupportedConditionTypeError(undefined)).toBeNull();
-    expect(unsupportedConditionTypeError(null)).toBeNull();
+    expect(retiredConditionTypeError(undefined)).toBeNull();
+    expect(retiredConditionTypeError(null)).toBeNull();
   });
 
   it('returns null for a supported condition', () => {
-    expect(unsupportedConditionTypeError([{ type: 'metric', metric: 'cpu', operator: 'gt', value: 85 }])).toBeNull();
+    expect(retiredConditionTypeError([{ type: 'metric', metric: 'cpu', operator: 'gt', value: 85 }])).toBeNull();
   });
 
-  it('names the offending type and the supported ones', () => {
-    const message = unsupportedConditionTypeError([{ type: 'custom' }]);
+  it('names the offending type and says what to do about it', () => {
+    const message = retiredConditionTypeError([{ type: 'custom' }]);
     expect(message).toContain('custom');
     expect(message).toContain('never fire');
-    expect(message).toContain('offline');
+    expect(message).toMatch(/remove or replace/i);
   });
 });

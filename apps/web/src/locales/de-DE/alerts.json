@@ -355,7 +355,8 @@
       "status": "Statusbedingung"
     },
     "retiredConditionWarning": "Der Bedingungstyp \"{{type}}\" wird nicht mehr unterstützt und hat nie einen Alarm ausgelöst. Entfernen Sie diese Bedingung, um die Regel zu speichern.",
-    "retiredConditionBlocksSave": "Nicht unterstützter Bedingungstyp \"{{type}}\" — entfernen Sie diese Bedingung vor dem Speichern."
+    "retiredConditionBlocksSave": "Nicht unterstützter Bedingungstyp \"{{type}}\" — entfernen Sie diese Bedingung vor dem Speichern.",
+    "readOnlyConditionNote": "Der Bedingungstyp \"{{type}}\" kann hier nicht bearbeitet werden. Er wird unverändert beibehalten."
   },
   "alertRuleList": {
     "editRule": "Regel bearbeiten",

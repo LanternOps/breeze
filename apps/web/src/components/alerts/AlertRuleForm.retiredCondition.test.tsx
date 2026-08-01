@@ -59,7 +59,7 @@ describe('AlertRuleForm retired `custom` condition (#2948)', () => {
     expect(retired.querySelector('select')).toBeNull();
   });
 
-  it('blocks the save while a retired condition is present', async () => {
+  it('blocks the save while a retired condition is present, and says why on submit', async () => {
     const onSubmit = renderForm([METRIC_CONDITION, CUSTOM_CONDITION]);
 
     fireEvent.submit(screen.getByTestId('condition-retired-1').closest('form')!);
@@ -67,6 +67,40 @@ describe('AlertRuleForm retired `custom` condition (#2948)', () => {
     await waitFor(() => {
       expect(onSubmit).not.toHaveBeenCalled();
     });
+    // A blocked submit that renders nothing new is indistinguishable from a
+    // broken Save button. The refinement's message lives at
+    // errors.conditions[1].type, which the top-level errors.conditions.message
+    // paragraph never reads.
+    const submitError = await screen.findByTestId('condition-error-1');
+    expect(submitError.textContent).toMatch(/custom/);
+  });
+
+  // The registry resolves a dozen condition types and the API accepts all of
+  // them; this form can only render two. The rest must be shown read-only and
+  // round-tripped verbatim — NOT branded "no longer supported" and NOT blocking
+  // the save, which would tell a tech their working offline rule never fired
+  // and refuse to save until they deleted it.
+  it.each([
+    ['offline', { type: 'offline', durationMinutes: 15 }],
+    ['event_log', { type: 'event_log', category: 'system', level: 'error', countThreshold: 3, windowMinutes: 30 }],
+    ['cert_expiry', { type: 'cert_expiry', withinDays: 30 }],
+  ])('renders a supported-but-uneditable %s condition read-only without blocking the save', async (_name, condition) => {
+    const onSubmit = renderForm([condition]);
+
+    const row = screen.getByTestId('condition-readonly-0');
+    expect(row.textContent).toContain(condition.type);
+    expect(row.textContent).not.toMatch(/no longer supported/i);
+    expect(screen.queryByTestId('condition-retired-0')).toBeNull();
+
+    fireEvent.submit(row.closest('form')!);
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+    });
+    // And every field survives: Zod's default strip mode would have deleted
+    // category/level/windowMinutes/withinDays, turning a working condition into
+    // an unevaluable one on save.
+    expect(onSubmit.mock.calls[0][0].conditions[0]).toEqual(condition);
   });
 
   it('lets the retired condition be removed even as the only condition', async () => {

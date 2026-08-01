@@ -355,7 +355,8 @@
       "status": "Condição de status"
     },
     "retiredConditionWarning": "O tipo de condição \"{{type}}\" não é mais compatível e nunca disparou um alerta. Remova esta condição para salvar a regra.",
-    "retiredConditionBlocksSave": "Tipo de condição não compatível \"{{type}}\" — remova esta condição antes de salvar."
+    "retiredConditionBlocksSave": "Tipo de condição não compatível \"{{type}}\" — remova esta condição antes de salvar.",
+    "readOnlyConditionNote": "O tipo de condição \"{{type}}\" não pode ser editado aqui. Ele é mantido exatamente como está."
   },
   "alertRuleList": {
     "editRule": "Editar regra",

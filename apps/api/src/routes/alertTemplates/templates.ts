@@ -9,7 +9,7 @@ import { listTemplatesSchema, createTemplateSchema, updateTemplateSchema } from 
 import { parseBoolean } from './helpers';
 import { getPagination } from '../../utils/pagination';
 import { PERMISSIONS } from '../../services/permissions';
-import { unsupportedConditionTypeError } from '../../services/alertConditions';
+import { retiredConditionTypeError } from '../../services/alertConditions';
 
 export const templateRoutes = new Hono();
 
@@ -177,8 +177,10 @@ templateRoutes.post(
       const data = c.req.valid('json');
 
       // #2948 — template conditions are the evaluator's fallback when a rule
-      // carries no override, so an unevaluable type is just as dead here.
-      const createConditionTypeError = unsupportedConditionTypeError(data.conditions);
+      // carries no override, so a retired type is just as dead here. The
+      // editor nests its triggers under `conditions.triggers`, which the walk
+      // in retiredConditionTypeError descends into.
+      const createConditionTypeError = retiredConditionTypeError(data.conditions);
       if (createConditionTypeError) {
         return c.json({ error: createConditionTypeError }, 400);
       }
@@ -317,7 +319,7 @@ templateRoutes.patch(
         return c.json({ error: writable.error }, writable.status);
       }
 
-      const updateConditionTypeError = unsupportedConditionTypeError(updates.conditions);
+      const updateConditionTypeError = retiredConditionTypeError(updates.conditions);
       if (updateConditionTypeError) {
         return c.json({ error: updateConditionTypeError }, 400);
       }

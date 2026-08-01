@@ -50,7 +50,9 @@ vi.mock('./helpers', () => ({
   // the condition-type guard to prove the guard did NOT fire, without needing a
   // full Drizzle chain stub.
   getAlertRuleWithOrgCheck: vi.fn(async () => undefined),
-  isRecord: vi.fn(() => false),
+  // NOT stubbed to false: the overrideSettings/overrides passthrough merge
+  // depends on it, and stubbing it away hid the bypass this file now covers.
+  isRecord: vi.fn((v: unknown) => v !== null && typeof v === 'object' && !Array.isArray(v)),
   getOverrides: vi.fn(() => ({})),
   normalizeTargetsForRule: vi.fn(() => ({ targetType: 'all', targetId: 'org-1', targetIds: [], targets: { type: 'all', ids: [] } })),
   getNotificationChannelIds: vi.fn(() => []),
@@ -60,9 +62,11 @@ vi.mock('./helpers', () => ({
   // Undefined template => create stops at 500 "Failed to resolve alert
   // template", which is again past the guard.
   resolveAlertTemplate: vi.fn(async () => ({ template: undefined, created: false })),
+  retiredConditionReactivationError: vi.fn(async () => null),
 }));
 
 import { rulesRoutes } from './rules';
+import * as helpers from './helpers';
 
 function makeApp() {
   const app = new Hono();
@@ -113,8 +117,8 @@ describe('alert rule condition types (#2948)', () => {
     expect(res.status).toBe(400);
     const body = await res.json() as { error: string };
     expect(body.error).toContain('custom');
-    // The message must name what IS supported, or the tech has no next step.
-    expect(body.error).toContain('threshold');
+    // The message must tell the tech what to do, not just that it failed.
+    expect(body.error).toMatch(/remove or replace/i);
   });
 
   it('rejects an unregistered type nested inside a condition group', async () => {
@@ -156,5 +160,88 @@ describe('alert rule condition types (#2948)', () => {
     const res = await put({ name: 'renamed' });
 
     expect(res.status).toBe(404);
+  });
+
+  // `overrideSettings` and `overrides` are z.any() passthroughs merged into the
+  // stored overrideSettings, and alertService reads overrides.conditions /
+  // overrides.autoResolveConditions straight back out. A guard on `conditions`
+  // alone is bypassed by moving the same payload one key over.
+  it('rejects a retired type smuggled through overrideSettings', async () => {
+    const res = await post({
+      // Valid top-level conditions, poisoned overrides — the shape that slipped
+      // past a `data.conditions`-only guard. (`conditions` is required by the
+      // create schema when no templateId is given, so it must be present.)
+      ...VALID_RULE,
+      conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 85 }],
+      overrideSettings: { conditions: [{ type: 'custom', customCondition: 'x' }] },
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toContain('custom');
+  });
+
+  it('rejects a retired type smuggled through overrides.autoResolveConditions', async () => {
+    const res = await post({
+      ...VALID_RULE,
+      conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 85 }],
+      overrides: { autoResolveConditions: [{ type: 'custom' }] },
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects the same smuggling on update', async () => {
+    const res = await put({ overrideSettings: { conditions: [{ type: 'custom' }] } });
+
+    expect(res.status).toBe(400);
+  });
+
+  // The registry is NOT the set of live condition types. `dns_threat` is a
+  // seeded built-in evaluated by the event-bus subscriber in
+  // services/dnsThreatAlerts.ts; narrowing one is a plain PUT of
+  // override_settings.conditions.categories. A registry-allowlist guard would
+  // 400 that working feature.
+  it('refuses to re-enable a rule the cleanup migration deactivated', async () => {
+    // The migration deactivates alert_rules whose every effective condition is
+    // retired; it cannot delete them (alerts.rule_id is a real FK). Without a
+    // gate here, flipping the rule back on restores the exact pre-#2948 state —
+    // enabled, healthy-looking, unfirable — and this request carries no
+    // `conditions`, so the payload guard never sees it.
+    vi.mocked(helpers.getAlertRuleWithOrgCheck).mockResolvedValue({
+      id: RULE_ID, orgId: 'org-1', partnerId: null, isActive: false,
+      targetType: 'all', targetId: 'org-1',
+      templateId: '11112222-3333-4444-8555-666677778888',
+      overrideSettings: { conditions: [{ type: 'custom' }] },
+    } as never);
+    vi.mocked(helpers.retiredConditionReactivationError).mockResolvedValue(
+      'Retired alert condition type(s): custom. This rule cannot be re-enabled until it is replaced.'
+    );
+
+    const res = await put({ isActive: true });
+
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toMatch(/cannot be re-enabled/i);
+  });
+
+  it('does not gate an already-active rule being edited for another reason', async () => {
+    vi.mocked(helpers.getAlertRuleWithOrgCheck).mockResolvedValue({
+      id: RULE_ID, orgId: 'org-1', partnerId: null, isActive: true,
+      targetType: 'all', targetId: 'org-1',
+      templateId: '11112222-3333-4444-8555-666677778888',
+      overrideSettings: {},
+    } as never);
+
+    await put({ isActive: true, name: 'renamed' });
+
+    expect(helpers.retiredConditionReactivationError).not.toHaveBeenCalled();
+  });
+
+  it('does not block a live push-evaluated type that has no registry handler', async () => {
+    const res = await post({
+      ...VALID_RULE,
+      conditions: [{ type: 'dns_threat', eventType: 'dns.threat.blocked', categories: ['malware'] }],
+    });
+
+    expect(res.status).not.toBe(400);
   });
 });

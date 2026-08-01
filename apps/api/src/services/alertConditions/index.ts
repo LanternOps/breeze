@@ -286,25 +286,61 @@ export function validateConditions(conditions: unknown): string[] {
 // not worth recursing into.
 const MAX_CONDITION_DEPTH = 10;
 
+// Ceiling on how many nodes the walk will visit, so an oversized or hostile
+// payload can't turn this boundary check into a CPU sink. `/alerts/rules`
+// validates `conditions` as `z.any()` with no size cap of its own.
+const MAX_CONDITION_NODES = 5000;
+
 /**
- * Collect every condition `type` in a conditions tree that has no registered
- * handler.
+ * Condition types that were once writable but have no evaluator behind them.
  *
- * The evaluator fails closed on an unknown type (`conditionRegistry.evaluate`
- * returns `passed: false`), and a root-level array is evaluated as an implicit
- * AND — so a single unknown type makes the whole rule permanently unfirable
- * while still looking healthy in the UI. `custom` was exactly that: an editor
- * option that never had a handler (#2948). Write paths use this to reject such
- * conditions at the boundary instead of storing a rule that can never fire.
+ * **A denylist, deliberately — NOT "every type absent from `conditionRegistry`".**
+ * The registry is not the complete set of live condition types: `dns_threat`
+ * (seeded built-in template, `db/seed.ts`) is evaluated by an event-bus
+ * subscriber in `services/dnsThreatAlerts.ts` that never consults the registry,
+ * and the alert-template editor writes `type: 'event'` triggers. Rejecting
+ * "unregistered" types would 400 those working features — e.g. the documented
+ * way to narrow a DNS-threat rule is editing its `override_settings.conditions
+ * .categories`, which is a plain `PUT /alerts/rules`.
  *
- * Returns the offending type names (deduped, in encounter order); empty means
- * every type in the tree resolves to a handler.
+ * So the failure mode is chosen on purpose: this misses a hypothetical future
+ * dead type rather than breaking a live one. Add an entry here when a type is
+ * retired, alongside a cleanup migration for rows that already carry it.
  */
-export function findUnregisteredConditionTypes(conditions: unknown): string[] {
-  const unregistered = new Set<string>();
+export const RETIRED_CONDITION_TYPES: ReadonlySet<string> = new Set([
+  // #2948 — offered by both alert-rule editors, never had a handler.
+  // `conditionRegistry.evaluate` answered "Unknown condition type: custom" with
+  // passed=false, and a root-level array is evaluated as an implicit AND
+  // (`evaluateConditions` wraps it in `{logic:'and'}`), so a rule carrying one
+  // could never fire. Inside an explicit `or` group it would not be fatal, but
+  // the write boundary rejects it there too: a type with no evaluator is a bug
+  // in the payload either way.
+  'custom',
+]);
+
+/**
+ * Collect every retired condition type appearing anywhere in a conditions
+ * payload.
+ *
+ * The walk is deliberately structure-agnostic — it descends into every nested
+ * object and array rather than only `{logic, conditions[]}` groups. The write
+ * paths this guards accept several different envelopes for the same data: a
+ * bare array (`POST /alerts/rules`), a `{logic, conditions[]}` group, and the
+ * alert-template editor's `{triggers: [...], thresholdDefaults, ...}` object
+ * (`z.record` on those routes, never an array). A structure-aware walk silently
+ * missed the last of those. Over-walking is safe *because* this is a denylist:
+ * the worst case is finding a retired type somewhere unexpected, which is still
+ * a type nobody can evaluate.
+ *
+ * Returns the offending type names, deduped. Empty means the payload is clean.
+ */
+export function findRetiredConditionTypes(conditions: unknown): string[] {
+  const retired = new Set<string>();
+  let visited = 0;
 
   const walk = (node: unknown, depth: number): void => {
-    if (depth > MAX_CONDITION_DEPTH || node === null || typeof node !== 'object') return;
+    if (depth > MAX_CONDITION_DEPTH || ++visited > MAX_CONDITION_NODES) return;
+    if (node === null || typeof node !== 'object') return;
 
     if (Array.isArray(node)) {
       for (const child of node) walk(child, depth + 1);
@@ -312,37 +348,37 @@ export function findUnregisteredConditionTypes(conditions: unknown): string[] {
     }
 
     const record = node as Record<string, unknown>;
-    // Group node: recurse into its children. Checked before `type` so a group
-    // that also carries a stray `type` key is still traversed.
-    if (Array.isArray(record.conditions)) {
-      for (const child of record.conditions) walk(child, depth + 1);
-      return;
+    if (typeof record.type === 'string' && RETIRED_CONDITION_TYPES.has(record.type)) {
+      retired.add(record.type);
     }
-    // Leaf node. A non-string or missing `type` is left to the per-handler
-    // validators / evaluator — this function reports unknown TYPES only.
-    if (typeof record.type === 'string' && !conditionRegistry.get(record.type)) {
-      unregistered.add(record.type);
+    for (const value of Object.values(record)) {
+      if (value !== null && typeof value === 'object') walk(value, depth + 1);
     }
   };
 
   walk(conditions, 0);
-  return [...unregistered];
+  return [...retired];
 }
 
 /**
- * Boundary check for alert-rule / alert-template write paths. Returns a
- * user-facing error message when the payload names a condition type no handler
- * can evaluate, or null when it is safe to store.
+ * Boundary check for the alert-rule / alert-template write paths. Returns a
+ * user-facing error message when the payload carries a retired condition type,
+ * or null when it is safe to store.
+ *
+ * Note the depth/node caps above mean a pathologically nested payload can slip
+ * a retired type past this check. That degrades to the pre-#2948 behaviour —
+ * the evaluator (`evaluateConditionRecursive`, which has no depth limit) still
+ * fails it closed — rather than to a false rejection.
  */
-export function unsupportedConditionTypeError(conditions: unknown): string | null {
+export function retiredConditionTypeError(conditions: unknown): string | null {
   if (conditions === undefined || conditions === null) return null;
 
-  const unregistered = findUnregisteredConditionTypes(conditions);
-  if (unregistered.length === 0) return null;
+  const retired = findRetiredConditionTypes(conditions);
+  if (retired.length === 0) return null;
 
-  return `Unsupported alert condition type(s): ${unregistered.join(', ')}. `
-    + 'A rule containing one can never fire. Supported types: '
-    + `${conditionRegistry.getRegisteredTypes().sort().join(', ')}.`;
+  return `Retired alert condition type(s): ${retired.join(', ')}. `
+    + 'These never had an evaluator behind them, so a rule containing one can never fire. '
+    + 'Remove or replace the condition.';
 }
 
 /**

@@ -12,6 +12,7 @@ import {
   partners,
 } from '../../db/schema';
 import { siteAccessCheck } from '../../middleware/auth';
+import { retiredConditionTypeError } from '../../services/alertConditions';
 import {
   validateEmailConfig,
   validateWebhookConfig,
@@ -574,4 +575,43 @@ export async function resolveAlertTemplate(params: {
     .returning();
 
   return { template: createdTemplate, created: true };
+}
+
+/**
+ * Guard for the re-activation paths (#2948).
+ *
+ * `2026-08-06-g-drop-custom-alert-conditions.sql` deactivates standalone alert
+ * rules whose every effective condition is the retired `custom` type — it
+ * cannot delete them, because `alerts.rule_id` is a real FK with no
+ * `ON DELETE`. Without this check the obvious reaction to a rule that "turned
+ * itself off after an upgrade" — flipping it back on via the toggle or a
+ * PUT — silently restores the exact pre-fix state: enabled, healthy-looking,
+ * permanently unfirable. Neither of those paths sends `conditions`, so the
+ * write-boundary check on the payload never sees them.
+ *
+ * Resolves the rule's EFFECTIVE conditions with the same precedence
+ * formatAlertRuleResponse and alertService.getApplicableRules use
+ * (`overrides.conditions ?? template.conditions`) and returns an error message
+ * when they are retired, or null when re-activation is safe.
+ */
+export async function retiredConditionReactivationError(rule: {
+  templateId: string;
+  overrideSettings?: unknown;
+}): Promise<string | null> {
+  const overrides = getOverrides(rule.overrideSettings);
+  let conditions = overrides.conditions;
+
+  if (conditions === undefined || conditions === null) {
+    const [template] = await db
+      .select({ conditions: alertTemplates.conditions })
+      .from(alertTemplates)
+      .where(eq(alertTemplates.id, rule.templateId))
+      .limit(1);
+    conditions = template?.conditions;
+  }
+
+  const error = retiredConditionTypeError(conditions);
+  if (!error) return null;
+
+  return `${error} This rule cannot be re-enabled until it is replaced.`;
 }

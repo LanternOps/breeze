@@ -355,7 +355,8 @@
       "status": "Condizione stato"
     },
     "retiredConditionWarning": "Il tipo di condizione \"{{type}}\" non è più supportato e non ha mai attivato un avviso. Rimuovi questa condizione per salvare la regola.",
-    "retiredConditionBlocksSave": "Tipo di condizione non supportato \"{{type}}\" — rimuovi questa condizione prima di salvare."
+    "retiredConditionBlocksSave": "Tipo di condizione non supportato \"{{type}}\" — rimuovi questa condizione prima di salvare.",
+    "readOnlyConditionNote": "Il tipo di condizione \"{{type}}\" non può essere modificato qui. Viene mantenuto così com’è."
   },
   "alertRuleList": {
     "editRule": "Modifica regola",
