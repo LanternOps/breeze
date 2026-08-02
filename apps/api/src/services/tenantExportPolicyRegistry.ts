@@ -154,6 +154,13 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "escalation_policies": tablePolicy("org_id", {"included":["id","org_id","partner_id","name","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["steps"]}),
   "event_bus_events": tablePolicy("org_id", {"included":["id","org_id","event_type","source","priority","processed_at","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["payload","metadata"]}),
   "executive_summaries": tablePolicy("org_id", {"included":["id","org_id","period_type","period_start","period_end","generated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["device_stats","alert_stats","patch_stats","sla_stats","trends","highlights"]}),
+  // extension_org_installs is the L1 install-scoping authorization record
+  // (Task 2) — no secrets, no open containers: extension_name is a plain
+  // catalog-style identifier (same as device_id/config_id elsewhere),
+  // installed_by is an actor user id like created_by/approved_by on the
+  // tables above, and enabled/installed_at/updated_at are plain
+  // status/timestamp columns.
+  "extension_org_installs": tablePolicy("org_id", {"included":["extension_name","org_id","enabled","installed_by","installed_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "google_workspace_connections": tablePolicy("org_id", {"included":["id","org_id","customer_domain","admin_email","service_account_email","status","created_by","last_verified_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":["service_account_key"],"excludedOpen":[]}),
   "group_membership_log": tablePolicy("org_id", {"included":["id","group_id","device_id","org_id","action","reason","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "huntress_agents": tablePolicy("org_id", {"included":["id","org_id","integration_id","huntress_agent_id","device_id","hostname","platform","status","last_seen_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["metadata"]}),
