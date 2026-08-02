@@ -361,6 +361,13 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// rewritten, systemStateStagingDir is simply the path collectSystemState
 	// returned, and it is the same prefix collectBackupFilesFromPaths produces
 	// for markSystemStateFiles to match on.
+	//
+	// The index is POSITIONAL and captured immediately before the append below.
+	// Nothing may insert into, reorder, filter or dedupe backupPaths between
+	// that append and rewritePathsForVSS, or the exclusion lands on a real user
+	// path — which would then read live with its warning suppressed, i.e. the
+	// #2999 class this file works to keep visible. If backupPaths ever needs
+	// post-processing, append the staging dir after it instead of moving this.
 	var systemStateStagingDir string
 	systemStateStagingIdx := noStagingIdx
 	if m.config.SystemStateEnabled {
@@ -371,6 +378,14 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		if ssErr != nil {
 			systemStateErr = ssErr
 			log.Warn("system state collection failed, proceeding without", "error", ssErr.Error())
+			// systemStateErr alone only fails the run when there is nothing
+			// else to fall back on (the len(files)==0 branch below). A run that
+			// ALSO has configured file paths keeps going and completes green,
+			// so without this the operator is never told the system state is
+			// absent — the same silent outcome as #3026, reached by a different
+			// route. CollectSystemState only errors when a REQUIRED class
+			// failed, i.e. the capture would not boot at restore time.
+			appendWarning(job, "system state was not collected: "+ssErr.Error())
 		} else {
 			job.SystemStateManifest = manifest
 			// Collection succeeded on all *required* artifacts (missing a
@@ -379,10 +394,19 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			// ...) — surface them as a completion warning so a degraded capture
 			// is visible without discarding an otherwise-usable backup.
 			if len(manifest.IncompleteSteps) > 0 {
-				job.Warning = fmt.Sprintf("system state collection incomplete: %v failed", manifest.IncompleteSteps)
-				log.Warn("system state collection incomplete", "warning", job.Warning)
+				// appendWarning, not a raw assignment: this used to be the
+				// first and only writer of job.Warning, but it is now one of
+				// several (the collection-failure note above, the live-read
+				// note and the uncaptured-artifacts note below). A raw
+				// assignment here silently discards whichever of those ran
+				// first.
+				incomplete := fmt.Sprintf("system state collection incomplete: %v failed", manifest.IncompleteSteps)
+				appendWarning(job, incomplete)
+				log.Warn("system state collection incomplete", "warning", incomplete)
 			}
-			// Append staging dir to backup paths so artifacts are included in snapshot
+			// Append the staging dir to the walked paths so its artifacts land
+			// in the backup manifest. NOT in the VSS shadow copy — the rewrite
+			// below deliberately skips this entry (see rewritePathsForVSS).
 			systemStateStagingIdx = len(backupPaths)
 			systemStateStagingDir = stagingDir
 			backupPaths = append(backupPaths, stagingDir)
@@ -456,19 +480,30 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	}
 	if systemStateArtifactsMissing(job.SystemStateManifest, markSystemStateFiles(files, systemStateStagingDir)) {
 		// Reached only when the manifest and the collected files disagree, so
-		// it cannot fire on a healthy run. A warning rather than a failure:
-		// the file-path portion of the backup is still valid and worth
-		// keeping, but the run must stop presenting as a complete system
-		// image. appendWarning is the only VSS/system-state signal that
-		// reaches the server (see the live-read warning above).
+		// it cannot fire on a healthy run.
+		//
+		// Warning rather than failure for the JOB: the file-path portion is
+		// still valid and restorable, so failing would throw away good data.
+		// But a warning alone is not enough, because unlike job.VSSMetadata the
+		// manifest DOES survive the trip — it is persisted to
+		// backup_snapshots.system_state_manifest and handed to the bare-metal
+		// recovery paths. Left intact it would advertise a complete system
+		// state on a restore point that holds none of it, which is the #3026
+		// symptom rather than a report of it. So drop the artifact list it can
+		// no longer vouch for, and keep the rest of the manifest (platform, OS
+		// version, hardware profile) — that is inline collector output, still
+		// accurate, and the hardware profile is persisted from here for
+		// recovery planning.
+		artifactCount := len(job.SystemStateManifest.Artifacts)
 		log.Warn("system state manifest was recorded but none of its artifacts were captured; "+
 			"the restore point does not contain the system state it describes",
 			"jobId", job.ID,
-			"artifacts", len(job.SystemStateManifest.Artifacts),
+			"artifacts", artifactCount,
 			"stagingDir", systemStateStagingDir,
 		)
-		appendWarning(job, "system state artifacts were not captured: the manifest describes "+
-			strconv.Itoa(len(job.SystemStateManifest.Artifacts))+" artifacts but none reached the snapshot")
+		job.SystemStateManifest.Artifacts = nil
+		appendWarning(job, "system state artifacts were not captured: the manifest described "+
+			strconv.Itoa(artifactCount)+" artifacts but none reached the snapshot")
 	}
 	if len(files) == 0 {
 		if err := runCtx.Err(); err != nil {
@@ -1034,11 +1069,12 @@ const noStagingIdx = -1
 //
 // Two exclusions, both deliberate:
 //
-//   - stagingIdx, the system-state staging dir. The agent creates it itself
-//     during this run, after the snapshot, so it is excluded from the rewrite
-//     and can only ever be read live (see rewritePathsForVSS). That makes it an
-//     expected member of the unmapped set on every system_image run, not a
-//     symptom of anything.
+//   - stagingIdx, the system-state staging dir (#3025 added this exclusion;
+//     #3026 extended it to the rewrite). The agent creates it itself during
+//     this run, after the snapshot, so it is excluded from the rewrite and can
+//     only ever be read live (see rewritePathsForVSS). That makes it an
+//     expected member of the unmapped set on every run where VSS is active and
+//     system-state collection succeeded, not a symptom of anything.
 //   - Anything whose volume is not a local drive letter. VSS cannot snapshot a
 //     UNC share, and filepath.VolumeName yields "" for a relative or
 //     drive-rooted path, which extractVolumes never even requests. Reporting
@@ -1092,17 +1128,24 @@ func summarizeLiveReads(paths []string) string {
 // not exist inside that point-in-time image — but %TEMP% normally sits on C:,
 // normally one of the shadowed backup volumes, so rewriting it would map it
 // onto a snapshot path that is simply absent. The walk then finds nothing,
-// markSystemStateFiles matches zero files, and the job still reports success
-// with SystemStateManifest set: silent, partial data loss in the default
-// configuration (#3026). The live volume is the only place those artifacts
-// exist, so that is where the path must keep pointing.
+// markSystemStateFiles matches zero files, and a run that also has configured
+// file paths still reports success with SystemStateManifest set: silent,
+// partial data loss (#3026). (A system-state-ONLY run trips the len(files)==0
+// hard-failure guard instead, so it fails loudly rather than silently.) The
+// live volume is the only place those artifacts exist, so that is where the
+// path must keep pointing.
+//
+// Reachable whenever VSS and system-state collection are both on for the same
+// run — an agent.yaml enabling backup_vss_enabled and
+// backup_system_state_enabled, or a system_image run with an explicit vss
+// override. Server-dispatched system_image runs default VSS off (defaultVSS in
+// cmd/breeze-backup/exec_backup.go), so this is opt-in rather than universal.
 //
 // The second return value holds the indices of paths left pointing at the live
 // volume — those that found no shadow root, plus stagingIdx when it is in
-// range. The no-shadow-root
-// fallback is deliberate — a volume whose snapshot failed is still worth a
-// best-effort read — but it is also indistinguishable, from the walk onward,
-// from a successful VSS backup. It is how a shadowPaths key-format change would
+// range. The no-shadow-root fallback is deliberate — a volume whose snapshot
+// failed is still worth a best-effort read — but it is also indistinguishable,
+// from the walk onward, from a successful VSS backup. It is how a shadowPaths key-format change would
 // silently reintroduce #2999, so the caller reports it rather than letting it
 // pass unnoticed. Indices, not paths, so the caller can tell an unshadowed user
 // volume (worth a warning) apart from the staging dir it wrote itself (never

@@ -224,9 +224,12 @@ func TestRewritePathsForVSS_ReportsUnmappedPathsRatherThanFailingSilently(t *tes
 // before the fix the rewrite happily mapped the staging dir onto
 // \\?\GLOBALROOT\...\Windows\Temp\breeze-systemstate-XXXX — a path that is not
 // in the snapshot. The walk then found nothing, the stat failure was folded
-// into the aggregate "backup file scan completed with errors" warning, and the
-// job still reported success with SystemStateManifest set. Silent data loss in
-// the DEFAULT configuration.
+// into the aggregate "backup file scan completed with errors" warning, and a
+// run that also had configured file paths still reported success with
+// SystemStateManifest set. (A system-state-only run fails on the len(files)==0
+// guard instead.) Reachable whenever VSS and system-state collection are both
+// enabled for the same run; server-dispatched system_image runs default VSS
+// off, so it is opt-in rather than universal.
 //
 // The index is therefore excluded from the rewrite itself, not merely from the
 // operator warning: the path must keep pointing at the live volume, which is
@@ -360,8 +363,9 @@ func TestRewritePathsForVSS_StagingDirIsNotWarnedAsALiveRead(t *testing.T) {
 	}
 }
 
-// reportableLiveReads is the only new decision this change makes: which
-// unmapped paths an operator actually hears about. The caller that uses it
+// reportableLiveReads decides which unmapped paths an operator actually hears
+// about — the new decision #3025 introduced, alongside the rewrite-side
+// exclusion #3026 added above. The caller that uses it
 // needs an elevated Windows box and a real VSS provider to reach, so this is
 // the level at which that logic can be tested at all. Windows-gated because
 // isLocalVolumePath rests on filepath.VolumeName, which is "" for everything

@@ -190,6 +190,7 @@ func isUnderDir(p, dir string) bool {
 // (e.g. a test double that reuses a fixed staging path across simulated
 // runs) and gives readers/reviewers a single obvious place the "never
 // referenced" rule lives, matching the design doc's explicit callout.
+//
 // Returns the number of files marked, so the caller can detect a manifest that
 // describes artifacts no collected file was matched to — see
 // systemStateArtifactsMissing.
@@ -214,10 +215,11 @@ func markSystemStateFiles(files []backupFile, stagingDir string) int {
 // The manifest is written from the collector's own return value, so it says
 // nothing about whether the artifacts reached the snapshot. #3026 was one route
 // to that divergence (the staging dir rewritten onto a VSS shadow path that
-// predates it); the walk failing, the staging dir being cleaned early, or a
-// user exclude pattern matching artifact names are others. Each one produces a
-// green job whose restore point is missing the system state it claims. Rather
-// than guard only the route that was fixed, make the outcome itself loud.
+// predates it); the walk failing on the staging root, or a user exclude pattern
+// matching artifact names, are others. On a run that also has configured file
+// paths each one produces a green job whose restore point is missing the system
+// state it claims. Rather than guard only the route that was fixed, make the
+// outcome itself loud.
 //
 // A manifest with no artifacts is not a divergence — there is nothing to match
 // — so it is excluded rather than reported on every such run.
