@@ -236,9 +236,17 @@ export const deviceNetwork = pgTable('device_network', {
   ipAddress: varchar('ip_address', { length: 45 }),
   ipType: varchar('ip_type', { length: 4 }).notNull().default('ipv4'),
   isPrimary: boolean('is_primary').notNull().default(false),
+  // NOTE: never written. The inventory ingest (routes/agents/inventory.ts)
+  // omits it and no other writer exists, so this column is always NULL.
+  // The device's public/WAN address lives on devices.last_seen_ip instead.
   publicIp: varchar('public_ip', { length: 45 }),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (table) => ({
+  // Every reader of this table filters by device_id (device-detail /network,
+  // cascade delete, the Devices-list LAN IP lookup). See migration
+  // 2026-08-07-device-network-device-id-index.sql.
+  deviceIdIdx: index('device_network_device_id_idx').on(table.deviceId),
+}));
 
 export const deviceIpHistory = pgTable('device_ip_history', {
   id: uuid('id').primaryKey().defaultRandom(),

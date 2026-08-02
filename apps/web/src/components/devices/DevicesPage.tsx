@@ -373,6 +373,11 @@ export default function DevicesPage() {
           agentVersion: (d.agentVersion ?? '') as string,
           watchdogVersion: (d.watchdogVersion ?? null) as string | null,
           agentServerUrl: (d.agentServerUrl ?? null) as string | null,
+          // Opt-in WAN/LAN IP columns (#2503). Both are string-or-null on the
+          // wire; anything else degrades to null so a malformed value renders
+          // the dash instead of leaking through the type.
+          wanIp: typeof d.wanIp === 'string' ? d.wanIp : null,
+          lanIp: typeof d.lanIp === 'string' ? d.lanIp : null,
           tags: (d.tags ?? []) as string[],
           deviceRole: d.deviceRole as DeviceRole | undefined,
           deviceRoleSource: d.deviceRoleSource as string | undefined,
@@ -445,6 +450,11 @@ export default function DevicesPage() {
         siteName: '',
         agentVersion: '',
         watchdogVersion: null,
+        // A discovered asset never authenticates to the control plane, so it
+        // has no WAN address; its discovered `ipAddress` IS its LAN address,
+        // which is exactly what the LAN IP column wants (#2503).
+        wanIp: null,
+        lanIp: typeof d.ipAddress === 'string' ? d.ipAddress : null,
         tags: (d.tags ?? []) as string[],
         manufacturer: (d.manufacturer ?? null) as string | null,
         model: (d.model ?? null) as string | null,
