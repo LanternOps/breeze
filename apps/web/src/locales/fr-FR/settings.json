@@ -542,7 +542,7 @@
     "hideExpired": "Hide expiré",
     "deleteExpired": "Supprimer les clés expirées",
     "shortCode": "Code court",
-    "installerUsage": "Programmes d’installation {{consumed}} / {{max}}",
+    "installerUsage": "Appareils de l’installateur {{consumed}} / {{max}}",
     "usage": "Utilisation",
     "expires": "Expiration",
     "empty": "Aucune clé d’inscription trouvée. Créez-en un pour commencer.",

@@ -109,8 +109,10 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
       // Create enrollment key scoped to the setup site. maxUsage is
       // deliberately left unset — it is an enforced enrollment budget, not a
       // display label. See the note in AddDeviceModal.handleDownload (#2992);
-      // the installer's real device-count cap lives on the bootstrap token,
-      // which the Enrollment Keys list now reads.
+      // on Windows and the macOS app-bundle path the installer's real
+      // device-count cap lives on the bootstrap token (on the legacy macOS zip
+      // fallback it lives on a child key), and the Enrollment Keys list now
+      // reads the former.
       const keyRes = await fetchWithAuth('/enrollment-keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

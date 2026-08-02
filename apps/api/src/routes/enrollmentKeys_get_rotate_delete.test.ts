@@ -240,7 +240,7 @@ describe('enrollment key routes — get, rotate, delete', () => {
     it('reports installer bootstrap-token capacity when the key has minted one', async () => {
       mockSelectFromWhereLimit([makeEnrollmentKey()]);
       mockSelectFromWhereGroupBy([
-        { parentEnrollmentKeyId: KEY_ID, tokens: 1, consumed: 3, max: 7 },
+        { parentEnrollmentKeyId: KEY_ID, consumed: 3, max: 7 },
       ]);
 
       const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
@@ -250,7 +250,7 @@ describe('enrollment key routes — get, rotate, delete', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.installerTokens).toEqual({ tokens: 1, consumed: 3, max: 7 });
+      expect(body.installerTokens).toEqual({ consumed: 3, max: 7 });
       // The key's own budget is reported unchanged — the installer figure is a
       // separate counter, not a rewrite of it.
       expect(body.maxUsage).toBe(10);

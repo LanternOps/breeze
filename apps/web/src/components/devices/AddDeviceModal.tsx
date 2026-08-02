@@ -460,9 +460,10 @@ export default function AddDeviceModal({
 
     try {
       // Step 1: Create the parent enrollment key. The installer downloaded in
-      // step 2 carries a single-use *bootstrap token* issued from this parent,
-      // not the parent key itself (only the legacy macOS zip embeds a real
-      // child enrollment key).
+      // step 2 carries a *bootstrap token* issued from this parent — whose own
+      // max_usage IS the device count, redeemable once per device — not the
+      // parent key itself (only the legacy macOS zip embeds a real child
+      // enrollment key).
       //
       // maxUsage is deliberately NOT set from deviceCount (#2992). It is
       // tempting — the Enrollment Keys page renders usage_count / max_usage,
@@ -815,11 +816,13 @@ export default function AddDeviceModal({
                     type="number"
                     value={deviceCount}
                     // Round: the field has no `step` and isn't in a <form>, so
-                    // "2.5" is reachable. Both mint routes bound this to an
-                    // int (`maxUsage` on the parent key POST, `count` on the
-                    // download), and a fraction 400s with a wire field name the
-                    // operator has never seen. Clamp it to something valid here
-                    // instead.
+                    // "2.5" is reachable. Both routes this value reaches bound
+                    // it to an int — `?count=` on the installer download and
+                    // `count` on the installer-link POST — so a fraction 400s
+                    // with a wire field name the operator has never seen. Clamp
+                    // it to something valid here instead. (The CLI tab's own
+                    // count field is a different input on a route that
+                    // truncates rather than rejects.)
                     onChange={(e) =>
                       setDeviceCount(
                         Math.min(

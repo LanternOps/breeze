@@ -544,13 +544,13 @@ function sanitizeEnrollmentKey(
 }
 
 /**
- * Installer capacity minted from a key, aggregated across its
+ * Installer device capacity minted from a key, aggregated across its
  * `installer_bootstrap_tokens` rows.
  *
  * Why this exists (#2992): on the modern download paths — Windows, and macOS
  * in its default app-bundle mode — the installer routes create NO child
- * enrollment key. They issue a bootstrap token, and that token carries the
- * device count the operator asked for; the child key is minted lazily, one per
+ * enrollment key. They issue a bootstrap token whose `max_usage` IS the device
+ * count the operator asked for, and mint a single-use child key lazily, one per
  * device, at redemption. So the enrollment_keys row the Enrollment Keys page
  * renders knows nothing about the installer, and `usage_count / max_usage`
  * showed "0 / 1" for an installer built for X devices.
@@ -560,10 +560,11 @@ function sanitizeEnrollmentKey(
  * budget (`/agents/enroll` matches on `usage_count < max_usage`, and the
  * short-link and MCP-invite paths atomically claim `usage_count` against it),
  * so it would widen a live credential to fix a display string.
+ *
+ * Counts DEVICE SLOTS, not installers: a key that produced two 5-device
+ * downloads reports max 10, not 2.
  */
 export interface InstallerTokenUsage {
-  /** How many bootstrap tokens this key has minted (all time). */
-  tokens: number;
   /** Σ consumed_count — devices that have actually redeemed an installer. */
   consumed: number;
   /** Σ max_usage — total device slots those installers were minted for. */
@@ -574,47 +575,63 @@ export interface InstallerTokenUsage {
  * Batched lookup of installer capacity for the keys on one list page.
  *
  * Deliberately a SECOND query rather than a leftJoin onto the list select:
- * `installer_bootstrap_tokens` is 1:N per parent key (every download from the
- * same key mints another token), so joining it would fan the page out into
- * duplicate key rows and corrupt the pagination the caller was handed. Bounded
- * by page size — at most `limit` ids.
+ * `installer_bootstrap_tokens` is 1:N per parent key (nothing constrains it to
+ * one, and every download from the same key mints another), so joining it would
+ * fan the page out into duplicate key rows and corrupt the pagination the caller
+ * was handed. Bounded by page size — at most `limit` (<= 100) ids, served by
+ * idx_installer_bootstrap_tokens_parent.
  *
  * Aggregation rule for a key with SEVERAL tokens: SUM across all of them,
  * including expired ones. Summing (rather than "most recent") means a key that
  * produced three installers reports the whole picture instead of hiding the
  * first two; including expired tokens keeps the number STABLE — a live "3 / 7"
  * would otherwise silently flip back to the parent's own "0 / 1" the moment the
- * token aged out, even though those three devices really did enroll. Expiry is
- * already communicated by the row's own expiresAt / status badge.
+ * token aged out, even though those three devices really did enroll.
+ *
+ * KNOWN LIMIT — this reports slots USED of slots MINTED, and deliberately does
+ * not claim the installer is still redeemable. Do not read the row's status
+ * badge as covering it: a bootstrap token gets a fresh lifetime independent of
+ * its parent (see installerBootstrapTokenIssuance), and the Add-Device parent
+ * is a 60-minute container, so an installer routinely outlives the key it was
+ * minted from. Surfacing per-token expiry on this line is a separate change.
  *
  * RLS: `installer_bootstrap_tokens` is a shape-1 (direct org_id) table with
  * enabled + forced policies (`2026-04-19-a-installer-bootstrap-tokens.sql`), so
  * this SELECT is org-filtered by Postgres in the request context on top of the
  * app-layer `inArray` on ids the caller already proved access to.
+ *
+ * Never throws. This is cosmetic enrichment on a read that worked before it
+ * existed; a failed aggregate degrades to "no installer info" rather than
+ * blanking the operator's whole Enrollment Keys page.
  */
-async function fetchInstallerTokenUsage(
+export async function fetchInstallerTokenUsage(
   keyIds: string[],
+  c?: Context,
 ): Promise<Map<string, InstallerTokenUsage>> {
   const usage = new Map<string, InstallerTokenUsage>();
   if (keyIds.length === 0) return usage;
 
-  const rows = await db
-    .select({
-      parentEnrollmentKeyId: installerBootstrapTokens.parentEnrollmentKeyId,
-      tokens: sql<number>`count(*)`,
-      consumed: sql<number>`coalesce(sum(${installerBootstrapTokens.consumedCount}), 0)`,
-      max: sql<number>`coalesce(sum(${installerBootstrapTokens.maxUsage}), 0)`,
-    })
-    .from(installerBootstrapTokens)
-    .where(inArray(installerBootstrapTokens.parentEnrollmentKeyId, keyIds))
-    .groupBy(installerBootstrapTokens.parentEnrollmentKeyId);
+  try {
+    const rows = await db
+      .select({
+        parentEnrollmentKeyId: installerBootstrapTokens.parentEnrollmentKeyId,
+        consumed: sql<number>`coalesce(sum(${installerBootstrapTokens.consumedCount}), 0)`,
+        max: sql<number>`coalesce(sum(${installerBootstrapTokens.maxUsage}), 0)`,
+      })
+      .from(installerBootstrapTokens)
+      .where(inArray(installerBootstrapTokens.parentEnrollmentKeyId, keyIds))
+      .groupBy(installerBootstrapTokens.parentEnrollmentKeyId);
 
-  for (const row of rows) {
-    usage.set(row.parentEnrollmentKeyId, {
-      tokens: Number(row.tokens),
-      consumed: Number(row.consumed),
-      max: Number(row.max),
-    });
+    for (const row of rows) {
+      usage.set(row.parentEnrollmentKeyId, {
+        consumed: Number(row.consumed),
+        max: Number(row.max),
+      });
+    }
+  } catch (err) {
+    console.error("[enrollment-keys] installer usage aggregate failed:", err);
+    captureException(err, c);
+    return new Map();
   }
   return usage;
 }
@@ -708,6 +725,7 @@ enrollmentKeyRoutes.get(
     // usage_count is what actually gets claimed).
     const installerUsage = await fetchInstallerTokenUsage(
       keyList.map((keyRecord) => keyRecord.id),
+      c,
     );
 
     return c.json({
@@ -956,7 +974,7 @@ enrollmentKeyRoutes.get(
 
     // Same shape as the list route so a caller doesn't have to special-case
     // which endpoint it read the key from (#2992).
-    const installerUsage = await fetchInstallerTokenUsage([enrollmentKey.id]);
+    const installerUsage = await fetchInstallerTokenUsage([enrollmentKey.id], c);
 
     return c.json({
       ...sanitizeEnrollmentKey(enrollmentKey),

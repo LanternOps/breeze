@@ -78,7 +78,7 @@ interface Row {
   expiresAt: string | null;
   createdBy: string | null;
   createdAt: string;
-  installerTokens?: { tokens: number; consumed: number; max: number } | null;
+  installerTokens?: { consumed: number; max: number } | null;
 }
 
 const PAST = new Date(Date.now() - 86_400_000).toISOString();
@@ -315,7 +315,7 @@ describe('EnrollmentKeyManager — create form site selector', () => {
           id: 'k-installer',
           usageCount: 0,
           maxUsage: 1,
-          installerTokens: { tokens: 1, consumed: 0, max: 7 },
+          installerTokens: { consumed: 0, max: 7 },
         }),
       ]);
       render(<EnrollmentKeyManager />);
@@ -335,7 +335,7 @@ describe('EnrollmentKeyManager — create form site selector', () => {
           id: 'k-partial',
           usageCount: 0,
           maxUsage: 1,
-          installerTokens: { tokens: 1, consumed: 3, max: 7 },
+          installerTokens: { consumed: 3, max: 7 },
         }),
       ]);
       render(<EnrollmentKeyManager />);
@@ -343,6 +343,30 @@ describe('EnrollmentKeyManager — create form site selector', () => {
       const cell = await screen.findByTestId('key-installer-usage-k-partial');
       expect(cell.textContent).toContain('3');
       expect(cell.textContent).toContain('7');
+    });
+
+    // The design's justification for TWO lines rather than a replacement: some
+    // keys carry both counters live (an installer-link child key accrues
+    // usage_count from direct enrollments AND parents bootstrap tokens issued
+    // by the one-time public-download route). Collapsing them would hide a real
+    // budget, so both must render with their own numbers.
+    it('renders both counters when a key has real usage AND installers', async () => {
+      routeFetch([
+        makeRow({
+          id: 'k-both',
+          usageCount: 4,
+          maxUsage: 10,
+          installerTokens: { consumed: 2, max: 3 },
+        }),
+      ]);
+      render(<EnrollmentKeyManager />);
+
+      expect((await screen.findByTestId('key-usage-k-both')).textContent).toContain('4 / 10');
+      const installer = screen.getByTestId('key-installer-usage-k-both');
+      expect(installer.textContent).toContain('2');
+      expect(installer.textContent).toContain('3');
+      // The two must stay distinct — neither folded into nor replacing the other.
+      expect(installer.textContent).not.toContain('10');
     });
 
     it('renders nothing extra for a key that never minted an installer', async () => {

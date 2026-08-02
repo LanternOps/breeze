@@ -24,16 +24,15 @@ interface EnrollmentKey {
   createdBy: string | null;
   createdAt: string;
   /**
-   * Installer capacity minted from this key, summed over its bootstrap tokens
-   * (#2992). null when the key never produced an installer.
+   * Device slots across the installers minted from this key, summed over its
+   * bootstrap tokens (#2992). null when the key never produced an installer.
    *
-   * This is a SEPARATE budget from usageCount/maxUsage, not a replacement for
-   * it: the modern installer downloads mint no child enrollment key, so the
-   * device count the operator chose lands here and nowhere else — while
-   * usageCount is still the real, claimed counter for short-link and
-   * MCP-invite keys. Both get rendered; see the usage cell below.
+   * A SEPARATE counter from usageCount/maxUsage, not a replacement: the modern
+   * installer downloads mint no child enrollment key, so the device count the
+   * operator chose lands here and nowhere else. Both get rendered; see the
+   * usage cell below.
    */
-  installerTokens?: { tokens: number; consumed: number; max: number } | null;
+  installerTokens?: { consumed: number; max: number } | null;
 }
 
 interface CreateFormValues {
@@ -547,17 +546,20 @@ export default function EnrollmentKeyManager() {
                           {key.usageCount}{key.maxUsage !== null ? ` / ${key.maxUsage}` : ''}
                         </div>
                         {/*
-                          #2992 — the installer's own device budget. Shown as a
-                          second line rather than replacing the numbers above,
-                          because both are real and they are NOT interchangeable:
-                          a short-link key claims usage_count per download AND
-                          mints a bootstrap token per download, so collapsing to
-                          one figure would hide a genuine budget. For the
-                          Add-Device / guided-setup parents — the case the bug
-                          was reported against — usage_count is inert and this
-                          line is the only true statement about the installer.
+                          #2992 — device slots across the installers minted from
+                          this key. A second line rather than a replacement for
+                          the numbers above, because the two count different
+                          things and neither can be folded into the other:
+                          usageCount is enrollments claimed against THIS key,
+                          while this is redemptions of bootstrap tokens parented
+                          to it. No row is guaranteed to carry both — for the
+                          Add-Device / guided-setup parents (the case the bug was
+                          reported against) usageCount is inert and this line is
+                          the only true statement about the installer, whereas a
+                          CLI or MCP-invite key has no tokens at all and only the
+                          line above means anything.
                         */}
-                        {key.installerTokens && key.installerTokens.max > 0 && (
+                        {key.installerTokens && (
                           <div
                             className="text-xs text-muted-foreground"
                             data-testid={`key-installer-usage-${key.id}`}
