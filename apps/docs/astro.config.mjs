@@ -168,6 +168,7 @@ export default defineConfig({
                 },
                 { slug: 'features/identity-console' },
                 { slug: 'features/webhooks' },
+                { slug: 'features/extensions' },
                 { slug: 'features/plugins' },
                 { slug: 'features/branding' },
                 { slug: 'features/portal' },

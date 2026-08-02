@@ -1,0 +1,55 @@
+---
+title: Extensions
+description: Signed runtime bundles that extend Breeze with additional routes, AI tools, background jobs, and web surfaces.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Extensions are signed runtime bundles the operator provisions server-wide. Each
+extension declares a manifest (`name`, `routeNamespace`, migrations, and a
+`tenancy` block) that the host verifies, migrates, and activates at startup.
+Once active, an extension can contribute HTTP routes (mounted at
+`/api/v1/ext/<name>/…`, with a legacy alias at `/api/v1/<routeNamespace>/…`),
+AI tools exposed over the MCP server, and background jobs — all running
+in-process against the same request-scoped, RLS-bounded database handle core
+routes use.
+
+<Aside type="note">
+  This page covers the *runtime extension* system (`installed_extensions`,
+  manifest-declared bundles). It is unrelated to the separate, older
+  [Plugins](/features/plugins/) catalog (`plugin_catalog` /
+  `plugin_installations`).
+</Aside>
+
+---
+
+## Tenant-scoped installs
+
+By default an extension serves every organization on the server
+(`installScope: "server"`). An extension may opt in to per-tenant activation by
+declaring, in its manifest `tenancy` block:
+
+```json
+"tenancy": { "installScope": "org" }
+```
+
+The operator still provisions one bundle server-wide; activation is an
+authorization record per organization. Partner admins manage activations
+(bounded by their accessible organizations):
+
+- `PUT /api/v1/extensions/:name/orgs/:orgId` — activate
+- `DELETE /api/v1/extensions/:name/orgs/:orgId` — deactivate
+- `GET /api/v1/extensions/:name/orgs` — list activations the caller may see
+
+A non-activated organization receives **404** on every request surface, on both
+`/api/v1/ext/<name>/…` and the legacy `/api/v1/<routeNamespace>/…` alias. This
+includes extension-contributed AI tools — a non-activated org's callers never
+see the tool in an MCP `tools/list`, and a direct `tools/call` against it fails
+the same non-disclosure way as an HTTP 404, without revealing whether the tool
+or the org is the reason. Background jobs read the activation set via
+`context.tenancy.installedOrgs()`, so scheduled and reconciler work only
+touches organizations that are currently enabled — an empty install set means
+"no orgs enabled," not "install state unavailable."
+
+This is install **scoping** (authorization), not sandboxing: it decides which
+tenants an extension serves, not what its code can access.
