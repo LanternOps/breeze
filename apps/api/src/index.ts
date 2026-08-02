@@ -160,7 +160,21 @@ import { extensionsAdminRoutes } from './routes/extensionsAdmin';
 import { extensionsWebRoutes } from './routes/extensionsWeb';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
-import { captureException, flushSentry, initSentry } from './services/sentry';
+import {
+  captureException,
+  captureMessage,
+  flushSentry,
+  initSentry,
+  setConnectTimeoutClassifier,
+} from './services/sentry';
+import {
+  getEventLoopLagStats,
+  getEventLoopStarvationThresholdMs,
+  startEventLoopMonitor,
+  stopEventLoopMonitor,
+} from './services/eventLoopMonitor';
+import { createStarvationReporter } from './services/eventLoopStarvationReporter';
+import { diagnoseConnectTimeout } from './services/postgresConnectTimeout';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
@@ -463,10 +477,18 @@ app.get('/health/ready', async (c) => {
 
   const allOk = Object.values(checks).every((v) => v === 'ok');
 
+  // #3022 — event-loop lag is REPORTED here but deliberately does NOT feed
+  // `allOk`. Starvation is a load symptom, and failing readiness under load
+  // would pull the instance out of rotation, push its traffic onto the
+  // remaining instances, and starve those in turn. The whole point of surfacing
+  // it is to make the condition diagnosable, not to act on it automatically.
+  const eventLoop = getEventLoopLagStats();
+
   return c.json(
     {
       status: allOk ? 'ready' : 'not_ready',
-      checks
+      checks,
+      eventLoop
     },
     allOk ? 200 : 503
   );
@@ -1031,6 +1053,18 @@ app.onError((err, c) => {
     );
   }
 
+  // #3022 — say out loud what a CONNECT_TIMEOUT actually means before the raw
+  // error is logged. The driver's own message is `write CONNECT_TIMEOUT
+  // <host>:<port>`, which reads as a database or network fault and sent the
+  // original investigation after both; the loop being blocked produces a
+  // byte-identical error. Console-side only (the Sentry tags are set in
+  // captureException) so the explanation is present even when Sentry is
+  // disabled, which is the self-hosted default.
+  const connectTimeout = diagnoseConnectTimeout(err);
+  if (connectTimeout) {
+    console.error(connectTimeout.message);
+  }
+
   // Route unhandled errors to Sentry. Per-route `captureException(err, c)`
   // calls only cover routes with explicit try/catch — anything that throws
   // and falls through to onError was previously invisible to Sentry.
@@ -1401,6 +1435,10 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   console.log(`[shutdown] Received ${signal}, shutting down gracefully...`);
 
   getWebhookWorker().stop();
+  // The sampler is already unref'd, so this is tidiness rather than a
+  // requirement — it just stops starvation warnings from being emitted about a
+  // process that is deliberately winding down and no longer serving traffic.
+  stopEventLoopMonitor();
   if (auditRetryInterval) {
     clearInterval(auditRetryInterval);
     auditRetryInterval = null;
@@ -1637,6 +1675,27 @@ async function bootstrap(): Promise<void> {
   // (migrations, seeds, self-tests) and the global onError/unhandledRejection
   // handlers are actually captured. No-op unless SENTRY_DSN is set.
   initSentry();
+
+  // #3022 — start measuring event-loop lag immediately after Sentry, and before
+  // migrations/startup checks, so a stall is observable for the whole life of
+  // the process rather than only once it is serving traffic. The monitor is a
+  // native histogram plus one unref'd interval; it holds nothing open and adds
+  // no per-request work. Reports go to the console always, and to Sentry on a
+  // throttle (a single stall produces a run of breaching samples, and this repo
+  // has twice had an unthrottled recurring warning exhaust the event quota).
+  startEventLoopMonitor({
+    onSample: createStarvationReporter({
+      thresholdMs: getEventLoopStarvationThresholdMs,
+      capture: (message, tags) => captureMessage(message, 'warning', undefined, tags),
+    }),
+  });
+
+  // Inject the CONNECT_TIMEOUT classifier into the Sentry layer. It is wired
+  // here rather than imported by services/sentry.ts so that module stays a leaf
+  // — see setConnectTimeoutClassifier for the import-graph reason. Must follow
+  // startEventLoopMonitor: before the monitor runs, every diagnosis correctly
+  // reports 'unknown' rather than guessing.
+  setConnectTimeoutClassifier(diagnoseConnectTimeout);
 
   // Validate configuration before anything else — fail fast on missing/insecure secrets.
   // The validated config is stored as a singleton; retrieve later via getConfig().

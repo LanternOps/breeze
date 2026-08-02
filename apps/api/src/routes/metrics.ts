@@ -13,6 +13,7 @@ import { db } from '../db';
 import { deviceMetrics, devices, metricRollups, recoveryReadiness as recoveryReadinessTable, remoteSessions } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
+import { getEventLoopLagStats } from '../services/eventLoopMonitor';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { BACKUP_LOW_READINESS_THRESHOLD } from './backup/constants';
 import {
@@ -389,6 +390,43 @@ const nodejsVersionInfoGauge = new Gauge({
   registers: [register]
 });
 
+// #3022 — event-loop lag as a scrapable series. This is the metric whose
+// absence made the original incident a manual investigation: three unrelated
+// Sentry signatures, all downstream of a stalled main thread, and nothing in
+// the dashboards that showed the stall itself. Seconds (not ms) to match
+// Prometheus base-unit convention and the upstream `nodejs_eventloop_lag_*`
+// naming, so existing alert expressions transfer.
+const eventLoopLagMaxGauge = new Gauge({
+  name: 'breeze_nodejs_eventloop_lag_max_seconds',
+  help: 'Worst event-loop delay observed in the retained sampling window',
+  registers: [register]
+});
+
+const eventLoopLagMeanGauge = new Gauge({
+  name: 'breeze_nodejs_eventloop_lag_mean_seconds',
+  help: 'Mean event-loop delay across the retained sampling window',
+  registers: [register]
+});
+
+// Exposed as its own series rather than left to a `> threshold` alert
+// expression so the API's own starvation threshold — which is configurable via
+// EVENT_LOOP_STARVATION_WARN_MS — stays the single definition of "starved",
+// instead of being restated (and drifting) in the alerting rules.
+const eventLoopStarvedGauge = new Gauge({
+  name: 'breeze_nodejs_eventloop_starved',
+  help: '1 when event-loop lag is at or above the configured starvation threshold, else 0',
+  registers: [register]
+});
+
+// 0 whenever the monitor is disabled or not yet started. Without this, the
+// three gauges above sit at 0 in exactly that case and read as a perfectly
+// healthy loop — alert on `monitored == 0` to catch a blind instance.
+const eventLoopMonitoredGauge = new Gauge({
+  name: 'breeze_nodejs_eventloop_monitored',
+  help: '1 when event-loop lag instrumentation is running, else 0',
+  registers: [register]
+});
+
 function initializeMetricDefaults(): void {
   httpRequestsInFlight.set(0);
   devicesActiveGauge.set(0);
@@ -423,6 +461,12 @@ function initializeMetricDefaults(): void {
   extensionJobsTotal.labels('unknown', 'unknown').inc(0);
   extensionJobOutcomeTotal.labels('unknown', 'unknown', 'success').inc(0);
   nodejsVersionInfoGauge.labels(process.version).set(1);
+  // Publish the event-loop series from process start so a dashboard or alert
+  // rule referencing them is never querying a metric that does not exist yet.
+  eventLoopMonitoredGauge.set(0);
+  eventLoopLagMaxGauge.set(0);
+  eventLoopLagMeanGauge.set(0);
+  eventLoopStarvedGauge.set(0);
 }
 
 initializeMetricDefaults();
@@ -472,6 +516,18 @@ function normalizeMetricLabel(value: string, fallback: string): string {
 
 function updateProcessMetrics(): void {
   processStartTimeGauge.set(Math.floor(Date.now() / 1000 - process.uptime()));
+  updateEventLoopMetrics();
+}
+
+function updateEventLoopMetrics(): void {
+  const stats = getEventLoopLagStats();
+  eventLoopMonitoredGauge.set(stats.monitored ? 1 : 0);
+  // `worstLagMs` rather than `maxLagMs`: it folds in a stall that is still in
+  // flight and therefore has not been recorded as a sample yet. A scrape that
+  // lands mid-stall must not report the loop as healthy.
+  eventLoopLagMaxGauge.set(stats.worstLagMs / 1000);
+  eventLoopLagMeanGauge.set(stats.meanLagMs / 1000);
+  eventLoopStarvedGauge.set(stats.starved ? 1 : 0);
 }
 
 function upsertCounterState(state: Map<string, CounterValue>, labels: Record<string, string>, amount = 1): void {

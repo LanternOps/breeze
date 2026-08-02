@@ -2,6 +2,9 @@ import * as Sentry from '@sentry/node';
 import type { Context } from 'hono';
 import { API_VERSION } from '../version';
 import { pgErrorCode } from '../utils/pgErrors';
+// TYPE-ONLY on purpose — erased at build time, so this adds no runtime import
+// edge. See setConnectTimeoutClassifier below for why that matters.
+import type { ConnectTimeoutDiagnosis } from './postgresConnectTimeout';
 import {
   UNMATCHED_ROUTE_LABEL,
   safeMatchedRouteLabel,
@@ -22,6 +25,27 @@ const RLS_DENY_SQLSTATE = '42501';
 
 let initialized = false;
 
+/**
+ * #3022 CONNECT_TIMEOUT classifier, injected at boot rather than imported.
+ *
+ * This module is imported by ~120 others, `db/index.ts` among them. A static
+ * import back to the classifier therefore pulls it — and the event-loop monitor
+ * behind it — into the module graph of everything that merely reports an error,
+ * including the DB module itself. That measurably slowed module evaluation and
+ * pushed `db/requestDatabasePool.test.ts` (a hard 15s budget on a dynamic
+ * `import('./index')`) over its timeout. Inverting the dependency keeps
+ * `services/sentry` a leaf, matching how the metrics recorders are wired
+ * (`setBackupMetricsRecorder`, `setS1MetricsRecorder`, …).
+ *
+ * Unset means "not wired yet" — the tags are simply omitted, never guessed.
+ */
+type ConnectTimeoutClassifier = (err: unknown) => ConnectTimeoutDiagnosis | null;
+let connectTimeoutClassifier: ConnectTimeoutClassifier | null = null;
+
+export function setConnectTimeoutClassifier(classifier: ConnectTimeoutClassifier | null): void {
+  connectTimeoutClassifier = classifier;
+}
+
 const ALLOWED_TAG_NAMES = new Set([
   'method',
   'route_template',
@@ -41,6 +65,14 @@ const ALLOWED_TAG_NAMES = new Set([
   // tenant, device, or command identifier.
   'prior_status',
   'cas_label',
+  // #3022: a Postgres CONNECT_TIMEOUT is already tagged `pg_code:CONNECT_TIMEOUT`,
+  // but that alone says nothing about WHY — the driver reports the identical
+  // error whether the handshake failed or this process was simply never
+  // scheduled to run the socket callbacks. These two split that bucket in
+  // Sentry. Both are closed sets by construction (see ConnectTimeoutCause and
+  // bucketEventLoopLag); neither carries a tenant, device, or host identifier.
+  'connect_timeout_cause',
+  'event_loop_lag_bucket',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;
@@ -240,6 +272,23 @@ export function captureException(
       if (sqlState === RLS_DENY_SQLSTATE) {
         scope.setTag('rls_deny', true);
       }
+    }
+
+    // #3022. Tagged HERE rather than in the HTTP error handler because a
+    // CONNECT_TIMEOUT is just as likely to surface from a BullMQ worker as from
+    // a request — in the original incident the loudest signature in Sentry was
+    // the patch scheduler, not any route. captureException is the one chokepoint
+    // every path already goes through, so tagging it here covers all of them.
+    // Best-effort: diagnosis never throws, but a telemetry helper must not be
+    // able to swallow the exception it was called to report.
+    try {
+      const diagnosis = connectTimeoutClassifier?.(err) ?? null;
+      if (diagnosis) {
+        scope.setTag('connect_timeout_cause', diagnosis.cause);
+        scope.setTag('event_loop_lag_bucket', diagnosis.lagBucket);
+      }
+    } catch {
+      // Classification is diagnostic only — never let it displace the report.
     }
 
     Sentry.captureException(err);
