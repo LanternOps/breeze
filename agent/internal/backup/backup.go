@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -453,7 +454,22 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		// backupFile.originalPath doc comment.
 		originalPathsForVSS(files, vssSession.ShadowPaths)
 	}
-	markSystemStateFiles(files, systemStateStagingDir)
+	if systemStateArtifactsMissing(job.SystemStateManifest, markSystemStateFiles(files, systemStateStagingDir)) {
+		// Reached only when the manifest and the collected files disagree, so
+		// it cannot fire on a healthy run. A warning rather than a failure:
+		// the file-path portion of the backup is still valid and worth
+		// keeping, but the run must stop presenting as a complete system
+		// image. appendWarning is the only VSS/system-state signal that
+		// reaches the server (see the live-read warning above).
+		log.Warn("system state manifest was recorded but none of its artifacts were captured; "+
+			"the restore point does not contain the system state it describes",
+			"jobId", job.ID,
+			"artifacts", len(job.SystemStateManifest.Artifacts),
+			"stagingDir", systemStateStagingDir,
+		)
+		appendWarning(job, "system state artifacts were not captured: the manifest describes "+
+			strconv.Itoa(len(job.SystemStateManifest.Artifacts))+" artifacts but none reached the snapshot")
+	}
 	if len(files) == 0 {
 		if err := runCtx.Err(); err != nil {
 			return stopBackupRun()
@@ -1082,7 +1098,8 @@ func summarizeLiveReads(paths []string) string {
 // exist, so that is where the path must keep pointing.
 //
 // The second return value holds the indices of paths left pointing at the live
-// volume — those that found no shadow root, plus stagingIdx. The no-shadow-root
+// volume — those that found no shadow root, plus stagingIdx when it is in
+// range. The no-shadow-root
 // fallback is deliberate — a volume whose snapshot failed is still worth a
 // best-effort read — but it is also indistinguishable, from the walk onward,
 // from a successful VSS backup. It is how a shadowPaths key-format change would

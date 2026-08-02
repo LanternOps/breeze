@@ -262,6 +262,17 @@ func TestRewritePathsForVSS_LeavesSystemStateStagingDirUnrewritten(t *testing.T)
 			wantUnmap:   []int{1},
 		},
 		{
+			// A system-state-only run (SystemStateEnabled, no configured
+			// paths) puts the staging dir at index 0, so 0 must be a real
+			// index here and never a second sentinel.
+			name:        "staging dir at index 0 is excluded like any other",
+			paths:       []string{staging},
+			shadowPaths: map[string]string{"C:": shadowRoot},
+			stagingIdx:  0,
+			want:        []string{staging},
+			wantUnmap:   []int{0},
+		},
+		{
 			name:        "no staging dir this run leaves every path eligible for rewrite",
 			paths:       []string{`C:\Users\data`, `C:\Logs`},
 			shadowPaths: map[string]string{"C:": shadowRoot},
@@ -283,6 +294,9 @@ func TestRewritePathsForVSS_LeavesSystemStateStagingDirUnrewritten(t *testing.T)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, unmapped := rewritePathsForVSS(tt.paths, tt.shadowPaths, tt.stagingIdx)
+			if len(got) != len(tt.want) {
+				t.Fatalf("rewritePathsForVSS returned %d paths, want %d", len(got), len(tt.want))
+			}
 			for i := range tt.want {
 				if got[i] != tt.want[i] {
 					t.Errorf("path %d = %q, want %q", i, got[i], tt.want[i])
