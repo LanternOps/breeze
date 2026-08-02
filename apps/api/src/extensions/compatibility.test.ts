@@ -176,6 +176,11 @@ describe('SDK v1 release fixture', () => {
       audit: async () => undefined,
       log: () => undefined,
       config: {},
+      tenancy: {
+        installedOrgs: async () => {
+          throw new Error('tenancy.installedOrgs() is not modeled by this fixture');
+        },
+      },
     });
     const staged = session.finish();
 

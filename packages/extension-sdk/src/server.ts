@@ -28,6 +28,19 @@ export interface ExtensionRuntimeContext {
   audit(event: Record<string, unknown>): Promise<void>;
   log(level: 'debug' | 'info' | 'warn' | 'error', message: string, fields?: Record<string, unknown>): void;
   config: Readonly<Record<string, unknown>>;
+  tenancy: {
+    /**
+     * The org ids this extension is currently activated for (enabled installs
+     * only) — the set a background sweep should iterate instead of enumerating
+     * tenants itself. Fresh host-side read per call, in the HOST's system
+     * scope; the extension never self-elevates.
+     *
+     * Throws for `installScope: "server"` extensions (there is no per-org
+     * install set) and on any read failure — an unreadable set must never be
+     * mistaken for an empty one. `[]` always means "activated for no orgs".
+     */
+    installedOrgs(): Promise<string[]>;
+  };
 }
 
 export interface BreezeExtensionV1 {

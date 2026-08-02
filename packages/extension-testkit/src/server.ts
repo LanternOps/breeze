@@ -62,6 +62,26 @@ function throwingDb(): ExtensionRuntimeContext['db'] {
   });
 }
 
+/**
+ * This harness exercises the v1 `register()` contract, not the host's tenancy
+ * runtime — there is no reconciler, no manifest-driven install scope, and no
+ * org install store to back a real answer. A permissive `[]` stub would let a
+ * job handler silently iterate zero orgs and read as "no installs" instead of
+ * "not modeled here", so — same philosophy as {@link throwingDb} — any access
+ * throws instead.
+ */
+function throwingTenancy(): ExtensionRuntimeContext['tenancy'] {
+  return {
+    installedOrgs: async () => {
+      throw new Error(
+        'extension called context.tenancy.installedOrgs(), but stageExtensionForTest does not model '
+        + 'per-org install sets. This harness exercises the register() contract; if you need to test '
+        + 'installedOrgs() behavior, do so against the reconciler directly.',
+      );
+    },
+  };
+}
+
 function createContext(options: StageExtensionOptions): ExtensionRuntimeContext {
   const db: ExtensionRuntimeContext['db'] = options.db
     ? ({ execute: (query: unknown) => options.db!.execute(query) } as ExtensionRuntimeContext['db'])
@@ -75,6 +95,7 @@ function createContext(options: StageExtensionOptions): ExtensionRuntimeContext 
     audit: async () => {},
     log: () => {},
     config: Object.freeze({}),
+    tenancy: throwingTenancy(),
   };
 }
 
