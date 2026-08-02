@@ -454,10 +454,17 @@ export async function applyBackupCommandResultToJob(params: {
       // record of why the run reported failure — the exact forensic trail
       // someone needs to explain a snapshot attributed by write time alone.
       // Preserve it, marked as historical, instead of clearing it.
+      // The self-match arm keeps this idempotent. Re-adoption is an EXPECTED
+      // path (that is the whole reason `completed` is adoptable — see
+      // ADOPTABLE_JOB_STATUSES), and without it each retry would re-prefix,
+      // yielding "[reconciled-from-storage] prior failure: [reconciled-from-
+      // storage] prior failure: disk full". Postgres LIKE treats only % _ \
+      // as special, so the literal `[` needs no escaping.
       updateData.errorLog = sql`
         CASE
           WHEN ${backupJobs.errorLog} IS NULL THEN NULL
           WHEN ${backupJobs.errorLog} LIKE ${`%${STALE_BACKUP_REAP_MARKER}%`} THEN NULL
+          WHEN ${backupJobs.errorLog} LIKE ${`${RECONCILE_PRIOR_ERROR_PREFIX}%`} THEN ${backupJobs.errorLog}
           ELSE ${RECONCILE_PRIOR_ERROR_PREFIX} || ${backupJobs.errorLog}
         END
       `;

@@ -420,6 +420,54 @@ describe('reconcileOrphanedBackupSnapshots', () => {
     expect(applyBackupCommandResultToJobMock.mock.calls[0]![0].jobId).toBe('job-newer');
   });
 
+  it('refuses a snapshot ANOTHER org also claims, even when one of our own jobs claims it too', async () => {
+    // The dedupe keeps one winner per snapshot id. Consulting only the winner
+    // would let a same-org job mask a foreign claim and hand another tenant's
+    // snapshot to whoever happens to run reconcile.
+    oneManifest();
+    queueSelects(
+      baseSelects([
+        claimingJob({ id: 'job-ours', createdAt: new Date('2026-08-01T09:00:00Z') }),
+        claimingJob({
+          id: 'job-theirs',
+          orgId: OTHER_ORG_ID,
+          configId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+          createdAt: new Date('2026-08-01T07:00:00Z'),
+        }),
+      ])
+    );
+
+    const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+    expect(result.adopted).toBe(0);
+    expect(result.candidates[0]!.skipReason).toBe('claimed-by-another-organization');
+    expect(applyBackupCommandResultToJobMock).not.toHaveBeenCalled();
+  });
+
+  it('prefers a claim on THIS destination over a newer one on a sibling config', async () => {
+    // A customer who deletes and recreates a config against the same bucket can
+    // leave two same-org jobs on one snapshot id (a journal resume keys on
+    // provider identity, not configId). Picking purely by recency would skip
+    // the snapshot as job-on-another-config.
+    oneManifest();
+    fetchBackupObjectTextMock.mockResolvedValue(manifest('snap-1'));
+    queueSelects(
+      baseSelects([
+        claimingJob({
+          id: 'job-other-config',
+          configId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+          createdAt: new Date('2026-08-01T10:00:00Z'),
+        }),
+        claimingJob({ id: 'job-this-config', createdAt: new Date('2026-08-01T07:00:00Z') }),
+      ])
+    );
+
+    const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+    expect(result.adopted).toBe(1);
+    expect(applyBackupCommandResultToJobMock.mock.calls[0]![0].jobId).toBe('job-this-config');
+  });
+
   it('adopts a half-written completed job that never got its restore point', async () => {
     // Adoption is not atomic: the job UPDATE commits before the
     // backup_snapshots insert. A crash between them leaves a completed job with

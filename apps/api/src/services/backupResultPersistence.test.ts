@@ -746,6 +746,10 @@ describe('backup result persistence', () => {
     expect(errorLogSql).toContain('[reconciled-from-storage] prior failure: ');
     // The stale-reaper note is noise, not evidence — that one still clears.
     expect(errorLogSql).toContain('[stale-backup-reaper]');
+    // Re-adoption is an EXPECTED path (that is why `completed` is adoptable),
+    // so the prefix must be self-matching or it compounds on every retry:
+    // "[reconciled-from-storage] prior failure: [reconciled-from-storage] …".
+    expect(errorLogSql).toContain('[reconciled-from-storage] prior failure: %');
   });
 
   it('FIX 7 fallback: logs + captureException when a late success cannot be recorded (user-cancelled / already-terminal job) so the snapshot is not silently orphaned', async () => {

@@ -35,7 +35,7 @@ import {
  * partition by org — the agent writes `snapshots/<id>/...` verbatim with no
  * org or device prefix (see the KNOWN GAP note in backupSnapshotStorage.ts).
  * Enumerating it is therefore a cross-tenant read risk whenever two orgs point
- * their `backup_configs` at the same physical bucket. Three defences, in
+ * their `backup_configs` at the same physical bucket. Four defences, in
  * order of strength:
  *
  *  1. The caller may only name a `configId` their OWN org owns (checked below
@@ -46,10 +46,16 @@ import {
  *     way to manufacture a restore point without one. Claims are resolved in a
  *     SYSTEM db context precisely so a row owned by ANOTHER org is VISIBLE and
  *     can be refused; under the caller's own RLS context it would look
- *     unclaimed and get stolen.
- *  3. If the destination's storage identity is shared with any other org's
+ *     unclaimed and get stolen. ANY foreign claim refuses the snapshot, even
+ *     when one of our own jobs claims it too (see `foreignClaimed`).
+ *  3. The claiming job must target THIS destination, so a restore point is
+ *     never stamped with a config whose bucket does not hold the objects.
+ *  4. If the destination's storage identity is shared with any other org's
  *     config, the weaker time-window matcher is disabled entirely — only exact
  *     `backup_jobs.snapshot_id` matches (which are unambiguous) are adopted.
+ *     Sharing is tested on both `normalizeStorageIdentity` AND a cruder
+ *     provider+bucket key, because the former only canonicalises the default
+ *     AWS endpoint (see `coarseStorageIdentity`).
  */
 
 /**
@@ -199,6 +205,14 @@ type SnapshotClaims = {
   restorable: Map<string, string>;
   /** snapshotId -> the job that already recorded it. */
   jobs: Map<string, ClaimingJob>;
+  /**
+   * Snapshot ids claimed by a job in SOME OTHER org — tracked separately from
+   * `jobs`, which keeps only one winner per id. Without this, two jobs in
+   * different orgs sharing an id would let the dedupe silently discard the
+   * foreign claim and hand the snapshot to whichever org's job sorted first.
+   * Any foreign claim refuses the snapshot outright.
+   */
+  foreignClaimed: Set<string>;
 };
 
 type AdoptableJob = {
@@ -335,16 +349,35 @@ function extractManifestBearingSnapshots(
  */
 async function loadClaimsAndSharing(params: {
   orgId: string;
+  configId: string;
   storageIdentity: string;
   coarseIdentity: string;
   snapshotIds: string[];
 }): Promise<{ claims: SnapshotClaims; sharedDestination: boolean }> {
-  const { orgId, storageIdentity, coarseIdentity, snapshotIds } = params;
+  const { orgId, configId, storageIdentity, coarseIdentity, snapshotIds } = params;
 
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const restorable = new Map<string, string>();
       const jobs = new Map<string, ClaimingJob>();
+      const foreignClaimed = new Set<string>();
+
+      // Rank for the dedupe below: a claim on THIS destination beats one on a
+      // sibling config (a customer who deleted and recreated a config against
+      // the same bucket can produce both, since a journal resume keys on
+      // provider identity, not configId), and newer beats older.
+      const rank = (claim: ClaimingJob): [number, number, string] => [
+        claim.configId === configId ? 1 : 0,
+        claim.createdAt?.getTime() ?? 0,
+        claim.jobId,
+      ];
+      const outranks = (a: ClaimingJob, b: ClaimingJob): boolean => {
+        const [ac, at, aj] = rank(a);
+        const [bc, bt, bj] = rank(b);
+        if (ac !== bc) return ac > bc;
+        if (at !== bt) return at > bt;
+        return aj > bj;
+      };
 
       for (const batch of chunk(snapshotIds, CLAIM_LOOKUP_CHUNK)) {
         const snapshotRows = await db
@@ -380,17 +413,15 @@ async function loadClaimsAndSharing(params: {
             status: row.status,
             createdAt: row.createdAt ?? null,
           };
+          if (claim.orgId !== orgId) {
+            foreignClaimed.add(row.snapshotId);
+          }
           // Duplicates are now normal: a journal resume reuses the SAME
           // snapshot id under a NEW backup_jobs row, and mid-run registration
-          // records it on both. Pick the newest deterministically rather than
-          // letting scan order decide which run owns the objects.
+          // records it on both. Rank deterministically rather than letting
+          // scan order decide which run owns the objects.
           const existing = jobs.get(row.snapshotId);
-          if (
-            !existing ||
-            (claim.createdAt?.getTime() ?? 0) > (existing.createdAt?.getTime() ?? 0) ||
-            ((claim.createdAt?.getTime() ?? 0) === (existing.createdAt?.getTime() ?? 0) &&
-              claim.jobId > existing.jobId)
-          ) {
+          if (!existing || outranks(claim, existing)) {
             jobs.set(row.snapshotId, claim);
           }
         }
@@ -413,7 +444,7 @@ async function loadClaimsAndSharing(params: {
         );
       });
 
-      return { claims: { restorable, jobs }, sharedDestination };
+      return { claims: { restorable, jobs, foreignClaimed }, sharedDestination };
     })
   );
 }
@@ -572,8 +603,12 @@ export async function reconcileOrphanedBackupSnapshots(params: {
    * so there is NO ambient request transaction — pinning one across a
    * full-bucket S3 listing plus multi-MB manifest fetches would be the #1105
    * pool-poison class on a tenant-controlled endpoint host. Each DB phase
-   * therefore opens its own short context, and the storage I/O happens between
-   * them. Defaults to a pass-through for callers that already hold a context.
+   * therefore opens its own short context, with the listing and manifest
+   * fetches between them. (One pre-existing exception: provider-enforced
+   * object lock is applied inside applyBackupCommandResultToJob, i.e. inside
+   * the adoption write context — see the note in
+   * middleware/selfManagedDbContextRoutes.ts.) Defaults to a pass-through for
+   * callers that already hold a context.
    */
   runInDbContext?: <T>(fn: () => Promise<T>) => Promise<T>;
 }): Promise<ReconcileResult> {
@@ -635,6 +670,7 @@ export async function reconcileOrphanedBackupSnapshots(params: {
   const coarseIdentity = coarseStorageIdentity(config.provider, providerConfigRecord);
   const { claims, sharedDestination } = await loadClaimsAndSharing({
     orgId: params.orgId,
+    configId: params.configId,
     storageIdentity,
     coarseIdentity,
     snapshotIds,
@@ -688,6 +724,14 @@ export async function reconcileOrphanedBackupSnapshots(params: {
     // backup_progress — the #3006 structural fix) but never got a terminal
     // result, so it has no restore point. Unambiguous and safe even on a
     // shared bucket.
+    // Checked BEFORE the winner: any foreign claim refuses the snapshot, even
+    // when a same-org job also carries the id. Consulting only the deduped
+    // winner would let a same-org job mask another tenant's claim.
+    if (claims.foreignClaimed.has(snapshotId)) {
+      skip('claimed-by-another-organization');
+      continue;
+    }
+
     const claimingJob = claims.jobs.get(snapshotId);
     if (claimingJob) {
       if (claimingJob.orgId !== params.orgId) {
