@@ -501,9 +501,12 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 		result := executeCommand(req, mgr, vaultState, conn, commandCanceller)
 		result.CommandID = req.CommandID
 		result.DurationMs = time.Since(start).Milliseconds()
-		if err := sendUnsolicitedResult(conn, result); err != nil {
-			slog.Error("failed to send final backup result", "commandId", req.CommandID, "error", err.Error())
-		}
+		// sendUnsolicitedResult bounds the payload before sending: an oversize
+		// terminal result used to be dropped outright, leaving a SUCCEEDED
+		// backup stuck `running` until the stale-backup reaper failed it
+		// (#3001). Send failures are logged inside sendBackupResult under
+		// component=backup so they ship server-side.
+		_ = sendUnsolicitedResult(conn, result)
 		return
 	}
 
@@ -518,9 +521,10 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 	result.CommandID = req.CommandID
 	result.DurationMs = time.Since(start).Milliseconds()
 
-	if err := conn.SendTyped(env.ID, backupipc.TypeBackupResult, result); err != nil {
-		slog.Error("failed to send result", "commandId", req.CommandID, "error", err.Error())
-	}
+	// Same oversize guard as the async path above: the synchronous reply is
+	// what resolves the agent's pending request, so dropping it strands the
+	// command until its forward wait times out (#3001).
+	_ = sendBackupResult(conn, env.ID, result)
 }
 
 // sendUnsolicitedResult sends a terminal backup_result envelope that is not
@@ -531,9 +535,12 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 // broker's session.pending map and instead falls through
 // dispatchHelperMessage to the heartbeat's unsolicited-result handler (see
 // heartbeat.go, case backupipc.TypeBackupResult).
+//
+// It goes through sendBackupResult so the payload is bounded to the IPC frame
+// first — see result_bounds.go and #3001.
 func sendUnsolicitedResult(conn *ipc.Conn, result backupipc.BackupCommandResult) error {
 	id := fmt.Sprintf("%s-final-%d", result.CommandID, time.Now().UnixNano())
-	return conn.SendTyped(id, backupipc.TypeBackupResult, result)
+	return sendBackupResult(conn, id, result)
 }
 
 func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn, commandCanceller *activeCommandCanceller) backupipc.BackupCommandResult {
