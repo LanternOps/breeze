@@ -331,8 +331,35 @@ export class EventLoopLagMonitor {
    */
   private coversWindow(nowMs: number, windowMs: number): boolean {
     if (this.startedAtMs === 0) return false;
-    if (this.sampleIntervalMs > windowMs) return false;
+    if (this.sampleIntervalMs > this.blindSpotBudgetMs(windowMs)) return false;
     return nowMs - this.startedAtMs >= windowMs;
+  }
+
+  /**
+   * Largest sampling interval whose blind spot is still tolerable for a query
+   * about `windowMs`.
+   *
+   * The blind spot is the CURRENT, not-yet-recorded interval: a stall that
+   * starts and ends inside it is captured by no sample, and `inFlightLagMs`
+   * subtracts a full interval so it reads 0. That hole is `sampleIntervalMs`
+   * wide — it is NOT bounded by `windowMs`. Comparing the interval against the
+   * window alone (the first version of this guard) therefore only caught the
+   * extreme case: at a 9s interval and a 10s window, an 8.5s stall sitting
+   * inside one interval still produced `coversWindow: true` and a confident
+   * "the event loop stayed healthy, check database reachability".
+   *
+   * The invariant that actually holds is `sampleIntervalMs <= starvation
+   * threshold`: a stall big enough to matter then necessarily crosses an
+   * interval boundary and becomes visible, either as a delayed sample or as
+   * in-flight lag. The window is kept as a second bound so a query narrower
+   * than the threshold is judged on its own terms.
+   *
+   * Note the shipped defaults satisfy this only by coincidence
+   * (DEFAULT_SAMPLE_INTERVAL_MS === DEFAULT_STARVATION_MS === 1000), which is
+   * exactly why it is enforced rather than assumed.
+   */
+  private blindSpotBudgetMs(windowMs: number): number {
+    return Math.min(windowMs, getEventLoopStarvationThresholdMs());
   }
 
   /**

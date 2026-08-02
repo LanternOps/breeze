@@ -418,8 +418,13 @@ const eventLoopLagWindowMaxGauge = new Gauge({
   registers: [register]
 });
 
-const eventLoopLagMeanGauge = new Gauge({
-  name: 'breeze_nodejs_eventloop_lag_mean_seconds',
+// Named `_window_` to match its time base. It summarises the retained window,
+// while `_lag_max_seconds` is instantaneous — leaving it as a bare `_lag_mean_`
+// made the two read as a matched max/mean pair that they are not, and a
+// recovered loop could publish a max BELOW its mean (0.005 vs 0.011), which on
+// a dashboard reads as an instrumentation bug.
+const eventLoopLagWindowMeanGauge = new Gauge({
+  name: 'breeze_nodejs_eventloop_lag_window_mean_seconds',
   help: 'Mean event-loop delay across the retained sampling window',
   registers: [register]
 });
@@ -483,7 +488,7 @@ function initializeMetricDefaults(): void {
   eventLoopMonitoredGauge.set(0);
   eventLoopLagMaxGauge.set(0);
   eventLoopLagWindowMaxGauge.set(0);
-  eventLoopLagMeanGauge.set(0);
+  eventLoopLagWindowMeanGauge.set(0);
   eventLoopStarvedGauge.set(0);
 }
 
@@ -546,7 +551,14 @@ function updateEventLoopMetrics(): void {
   // scrape landing mid-stall must not report the loop as healthy.
   eventLoopLagMaxGauge.set(latest.worstLagMs / 1000);
   eventLoopLagWindowMaxGauge.set(stats.worstLagMs / 1000);
-  eventLoopLagMeanGauge.set(stats.meanLagMs / 1000);
+  eventLoopLagWindowMeanGauge.set(stats.meanLagMs / 1000);
+  // Uses the RAW EVENT_LOOP_STARVATION_WARN_MS, not the connect-window cap that
+  // services/postgresConnectTimeout.ts applies. Deliberate: this gauge tracks
+  // "is the loop unhealthy by the operator's own definition", whereas the cap
+  // exists solely so a raised warn threshold cannot mis-attribute a specific
+  // Postgres timeout. With EVENT_LOOP_STARVATION_WARN_MS above 10s the two can
+  // disagree for the same stall — the gauge reads 0 while Sentry says
+  // event-loop-starvation — and that is the intended reading of each.
   eventLoopStarvedGauge.set(
     latest.monitored && latest.worstLagMs >= stats.starvationThresholdMs ? 1 : 0,
   );

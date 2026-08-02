@@ -202,6 +202,7 @@ describe('EventLoopLagMonitor', () => {
     // The bug this guards: `monitored: true` with a lag of 0 during the first
     // 10s after boot means "not observed", not "did not happen". Reading it as
     // health produces a confident, WRONG connectivity verdict.
+    process.env.EVENT_LOOP_STARVATION_WARN_MS = '1000';
     const { monitor, setNow } = makeMonitor({ sampleIntervalMs: 1_000 });
     monitor.start(); // t = 1_000_000
 
@@ -212,16 +213,31 @@ describe('EventLoopLagMonitor', () => {
     expect(monitor.read(10_000).coversWindow).toBe(true);
   });
 
-  it('coversWindow is false when sampling is coarser than the window', () => {
-    // A 12s stall under a 30s interval is invisible: no sample records it, and
-    // inFlightLagMs subtracts a full 30s interval and reads 0.
-    const { monitor, setNow } = makeMonitor({ sampleIntervalMs: 30_000 });
+  it.each([
+    ['coarser than the window', 30_000],
+    ['inside the window but coarser than the starvation threshold', 9_000],
+  ])('coversWindow is false when sampling is %s', (_label, sampleIntervalMs) => {
+    // The blind spot is the current, not-yet-recorded interval, and it is one
+    // INTERVAL wide — not one window wide. At a 9s interval an 8.5s stall fits
+    // entirely inside it: no sample records it and inFlightLagMs subtracts a
+    // full 9s and reads 0. Guarding only `interval > window` left that case
+    // reporting a confident "connectivity".
+    process.env.EVENT_LOOP_STARVATION_WARN_MS = '1000';
+    const { monitor, setNow } = makeMonitor({ sampleIntervalMs });
     monitor.start();
 
     setNow(1_600_000); // long uptime — only the interval width disqualifies it
     const reading = monitor.read(10_000);
     expect(reading.monitored).toBe(true);
     expect(reading.coversWindow).toBe(false);
+  });
+
+  it('coversWindow is true when sampling is at least as fine as the threshold', () => {
+    process.env.EVENT_LOOP_STARVATION_WARN_MS = '1000';
+    const { monitor, setNow } = makeMonitor({ sampleIntervalMs: 1_000 });
+    monitor.start();
+    setNow(1_600_000);
+    expect(monitor.read(10_000).coversWindow).toBe(true);
   });
 
   it('latest() reports the last completed interval, not the retained high-water mark', () => {

@@ -174,7 +174,10 @@ import {
   stopEventLoopMonitor,
 } from './services/eventLoopMonitor';
 import { createStarvationReporter } from './services/eventLoopStarvationReporter';
-import { safeDiagnoseConnectTimeout } from './services/postgresConnectTimeout';
+import {
+  getConnectTimeoutStarvationThresholdMs,
+  safeDiagnoseConnectTimeout,
+} from './services/postgresConnectTimeout';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
@@ -1699,10 +1702,25 @@ async function bootstrap(): Promise<void> {
   // is a Prometheus series nobody is alerting on yet. Printing the effective
   // interval also makes a misparsed env var (parseInt('2s') === 2) visible.
   if (eventLoopMonitor) {
+    // Both thresholds are printed because they can differ: the warn threshold is
+    // the operator's knob, while CONNECT_TIMEOUT attribution caps it at the
+    // connect budget so a raised warn value cannot mis-attribute a timeout.
+    // Printing only the former would advertise 15000ms while diagnosis applied
+    // 10000ms.
     console.log(
       `[event-loop] Lag monitor started (interval ${eventLoopMonitor.intervalMs}ms, `
-      + `starvation threshold ${getEventLoopStarvationThresholdMs()}ms)`,
+      + `warn threshold ${getEventLoopStarvationThresholdMs()}ms, `
+      + `CONNECT_TIMEOUT attribution threshold ${getConnectTimeoutStarvationThresholdMs()}ms)`,
     );
+    // A sampling interval coarser than the warn threshold leaves a blind spot
+    // one interval wide, which degrades every diagnosis in it to "unknown".
+    if (eventLoopMonitor.intervalMs > getEventLoopStarvationThresholdMs()) {
+      console.warn(
+        `[event-loop] EVENT_LOOP_MONITOR_INTERVAL_MS (${eventLoopMonitor.intervalMs}ms) exceeds the `
+        + `starvation threshold (${getEventLoopStarvationThresholdMs()}ms). Stalls shorter than one `
+        + `sampling interval cannot be observed, so CONNECT_TIMEOUT causes will report "unknown" (#3022).`,
+      );
+    }
   } else {
     console.warn(
       '[event-loop] Lag monitor DISABLED via EVENT_LOOP_MONITOR_DISABLED — Postgres '

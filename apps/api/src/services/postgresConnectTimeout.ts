@@ -55,6 +55,27 @@ import {
  */
 export const POSTGRES_CONNECT_TIMEOUT_SECONDS = 10;
 
+/**
+ * The lag at or above which a CONNECT_TIMEOUT is attributed to the event loop.
+ *
+ * Capped at the connect budget on purpose. EVENT_LOOP_STARVATION_WARN_MS is a
+ * *warning volume* knob — an operator quieting a noisy instance may raise it
+ * freely, and has no reason to think that touches error attribution. Used
+ * uncapped it does: at 15000 a 12s stall that demonstrably consumed the entire
+ * 10s budget would be reported as `connectivity` — "the event loop stayed
+ * healthy, check database reachability" — which is the precise misdirection
+ * this module exists to remove, restated with the authority of a verdict.
+ *
+ * A stall at least as long as the window is sufficient on its own to explain
+ * the timeout, so no configuration may classify it as anything else.
+ */
+export function getConnectTimeoutStarvationThresholdMs(): number {
+  return Math.min(
+    getEventLoopStarvationThresholdMs(),
+    POSTGRES_CONNECT_TIMEOUT_SECONDS * 1_000,
+  );
+}
+
 /** The driver's `code`/`errno` for a connect-phase timeout. */
 export const CONNECT_TIMEOUT_CODE = 'CONNECT_TIMEOUT';
 
@@ -105,17 +126,7 @@ export function diagnoseConnectTimeout(
   const lag = reading ?? readEventLoopLag(windowMs);
   const worstLagMs = Math.round(lag.worstLagMs);
 
-  // Capped at the connect budget on purpose. EVENT_LOOP_STARVATION_WARN_MS is a
-  // *warning volume* knob — an operator quieting a noisy instance may raise it
-  // freely, and has no reason to think that touches error attribution. Used
-  // uncapped it does: at 15000 a 12s stall that demonstrably consumed the entire
-  // 10s budget would be reported as `connectivity` — "the event loop stayed
-  // healthy, check database reachability" — which is the precise misdirection
-  // this module exists to remove, restated with the authority of a verdict.
-  //
-  // A stall at least as long as the window is sufficient on its own to explain
-  // the timeout, so no configuration may classify it as anything else.
-  const starvationThresholdMs = Math.min(getEventLoopStarvationThresholdMs(), windowMs);
+  const starvationThresholdMs = getConnectTimeoutStarvationThresholdMs();
 
   // Fail to 'unknown', never to 'connectivity'. Without evidence covering the
   // window, quietly asserting "the database was unreachable" is precisely the

@@ -294,11 +294,11 @@ describe('metrics routes', () => {
       return res.text();
     }
 
-    it('publishes all four series even with no monitor running', async () => {
+    it('publishes every series even with no monitor running', async () => {
       const body = await scrape();
       expect(body).toContain('# TYPE breeze_nodejs_eventloop_lag_max_seconds gauge');
       expect(body).toContain('# TYPE breeze_nodejs_eventloop_lag_window_max_seconds gauge');
-      expect(body).toContain('# TYPE breeze_nodejs_eventloop_lag_mean_seconds gauge');
+      expect(body).toContain('# TYPE breeze_nodejs_eventloop_lag_window_mean_seconds gauge');
       expect(body).toContain('# TYPE breeze_nodejs_eventloop_starved gauge');
       // The one that keeps a blind instance from reading as a healthy one.
       expect(getMetricLine(body, 'breeze_nodejs_eventloop_monitored')).toBe(
@@ -318,8 +318,8 @@ describe('metrics routes', () => {
       expect(getMetricLine(body, 'breeze_nodejs_eventloop_lag_max_seconds')).toBe(
         'breeze_nodejs_eventloop_lag_max_seconds 2.5',
       );
-      expect(getMetricLine(body, 'breeze_nodejs_eventloop_lag_mean_seconds')).toBe(
-        'breeze_nodejs_eventloop_lag_mean_seconds 0.04',
+      expect(getMetricLine(body, 'breeze_nodejs_eventloop_lag_window_mean_seconds')).toBe(
+        'breeze_nodejs_eventloop_lag_window_mean_seconds 0.04',
       );
       expect(getMetricLine(body, 'breeze_nodejs_eventloop_starved')).toBe(
         'breeze_nodejs_eventloop_starved 1',
@@ -343,6 +343,12 @@ describe('metrics routes', () => {
       );
       expect(getMetricLine(body, 'breeze_nodejs_eventloop_lag_window_max_seconds')).toBe(
         'breeze_nodejs_eventloop_lag_window_max_seconds 9',
+      );
+      // The mean must be named for the same time base as the window max, not
+      // read as the partner of the instantaneous max — otherwise a recovered
+      // loop publishes a max below its mean.
+      expect(getMetricLine(body, 'breeze_nodejs_eventloop_lag_window_mean_seconds')).toBe(
+        'breeze_nodejs_eventloop_lag_window_mean_seconds 0.011',
       );
     });
 

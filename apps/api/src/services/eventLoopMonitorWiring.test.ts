@@ -58,6 +58,16 @@ describe('event-loop monitor bootstrap wiring (index.ts)', () => {
     // effective interval, which is what makes a misparsed env var visible.
     expect(indexSource).toMatch(/\[event-loop\] Lag monitor started/);
     expect(indexSource).toMatch(/\[event-loop\] Lag monitor DISABLED/);
+    // Both thresholds: the warn knob and the capped attribution threshold can
+    // differ, and printing only the former advertises a value diagnosis does
+    // not use.
+    expect(indexSource).toMatch(/getConnectTimeoutStarvationThresholdMs\(\)/);
+  });
+
+  it('warns when the sampling interval is coarser than the starvation threshold', () => {
+    // That configuration leaves a blind spot one sampling interval wide, in
+    // which a stall is unobservable and every diagnosis degrades to "unknown".
+    expect(indexSource).toMatch(/EVENT_LOOP_MONITOR_INTERVAL_MS \(\$\{eventLoopMonitor\.intervalMs\}ms\) exceeds/);
   });
 
   it('stops the monitor on graceful shutdown', () => {
