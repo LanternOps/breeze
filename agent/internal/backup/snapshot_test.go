@@ -341,12 +341,58 @@ func TestSnapshotProgressCallback(t *testing.T) {
 	restore := setProgressThrottleForTest(0) // emit every file in tests
 	defer restore()
 	_, err := createSnapshotWithProgress(context.Background(), p, files,
-		func(fd, ft int, bd, bt int64) { got = append(got, bd) }, nil, nil)
+		func(fd, ft int, bd, bt int64, snapshotID string) { got = append(got, bd) }, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) == 0 || got[len(got)-1] != 30 {
 		t.Fatalf("want final bytesDone=30, got %v", got)
+	}
+}
+
+// #3006: the snapshot ID must reach the server through progress BEFORE any
+// file is uploaded, so a run whose terminal result is lost in transit still
+// leaves backup_jobs.snapshot_id pointing at the objects it wrote. The very
+// first emission must therefore already carry the ID, and every subsequent
+// emission must carry the SAME one (the server keys a restore point on it).
+func TestSnapshotProgressCarriesSnapshotIDFromFirstEmission(t *testing.T) {
+	restore := setProgressThrottleForTest(0) // emit on every file
+	defer restore()
+
+	p := &okProvider{}
+	files := []backupFile{
+		{sourcePath: writeTempFile(t, "a"), snapshotPath: "a", size: 10},
+		{sourcePath: writeTempFile(t, "b"), snapshotPath: "b", size: 20},
+	}
+
+	type emission struct {
+		filesDone  int
+		bytesDone  int64
+		snapshotID string
+	}
+	var got []emission
+	snapshot, err := createSnapshotWithProgress(context.Background(), p, files,
+		func(fd, ft int, bd, bt int64, snapshotID string) {
+			got = append(got, emission{filesDone: fd, bytesDone: bd, snapshotID: snapshotID})
+		}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) == 0 {
+		t.Fatal("no progress emissions")
+	}
+
+	// The first emission is the forced registration one: the ID is already
+	// known before any upload. (Deliberately no assertion on the counters here
+	// — on a resumed run they are pre-seeded, see the resume test below.)
+	if got[0].snapshotID != snapshot.ID {
+		t.Fatalf("first emission must carry the snapshot ID %q, got %q", snapshot.ID, got[0].snapshotID)
+	}
+
+	for i, e := range got {
+		if e.snapshotID != snapshot.ID {
+			t.Fatalf("emission %d carried snapshot ID %q, want %q", i, e.snapshotID, snapshot.ID)
+		}
 	}
 }
 
@@ -861,6 +907,68 @@ func TestCreateSnapshotWithProgress_ResumeAfterInterruption(t *testing.T) {
 	}
 }
 
+// #3006: on a RESUMED run the forced snapshot-registration emission must
+// report the pre-seeded resume counters, not zeros. Emitting before the resume
+// seed would make progress appear to go backwards to 0 and then jump — exactly
+// what the counters are not allowed to do (a server-side reaper reads them as
+// liveness), and sticky if the resumed run dies right after registering.
+func TestSnapshotRegistrationEmissionReportsResumedCounters(t *testing.T) {
+	restore := setProgressThrottleForTest(0)
+	defer restore()
+
+	provider := newMockProvider()
+	tmpDir := t.TempDir()
+	modTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	journalDir := t.TempDir()
+	journal, _, err := openSnapshotJournal(journalDir, "test-resume-progress", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	resumedPath := createTempFile(t, tmpDir, "resumed.txt", "already-uploaded")
+	resumedSize := int64(len("already-uploaded"))
+	if err := journal.Record(SnapshotFile{
+		SourcePath: resumedPath, Size: resumedSize, ModTime: modTime, Checksum: "resumed",
+	}); err != nil {
+		t.Fatalf("Record failed: %v", err)
+	}
+
+	files := []backupFile{
+		{sourcePath: resumedPath, snapshotPath: "path_0/resumed.txt", size: resumedSize, modTime: modTime},
+		{sourcePath: createTempFile(t, tmpDir, "pending.txt", "todo"), snapshotPath: "path_0/pending.txt", size: 4, modTime: modTime},
+	}
+
+	type emission struct {
+		filesDone  int
+		bytesDone  int64
+		snapshotID string
+	}
+	var got []emission
+	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files,
+		func(fd, ft int, bd, bt int64, snapshotID string) {
+			got = append(got, emission{filesDone: fd, bytesDone: bd, snapshotID: snapshotID})
+		}, journal, nil)
+	if err != nil {
+		t.Fatalf("createSnapshotWithProgress failed: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("no progress emissions")
+	}
+	if got[0].snapshotID != snapshot.ID {
+		t.Fatalf("first emission must carry the snapshot ID %q, got %q", snapshot.ID, got[0].snapshotID)
+	}
+	if got[0].filesDone != 1 || got[0].bytesDone != resumedSize {
+		t.Fatalf("registration emission must report the resumed counters (1 file, %d bytes), got filesDone=%d bytesDone=%d",
+			resumedSize, got[0].filesDone, got[0].bytesDone)
+	}
+	// And nothing ever regresses.
+	for i := 1; i < len(got); i++ {
+		if got[i].filesDone < got[i-1].filesDone || got[i].bytesDone < got[i-1].bytesDone {
+			t.Fatalf("progress went backwards at emission %d: %+v -> %+v", i, got[i-1], got[i])
+		}
+	}
+}
+
 // TestCreateSnapshotWithProgress_ChangedFileReuploadsAndSupersedes covers
 // the resume-match rule's negative case: a file present in the journal but
 // whose (size, modTime) changed since is treated as a miss — re-uploaded,
@@ -1329,7 +1437,7 @@ func TestSnapshotProgressKeepalive_EmitsDuringInFlightUpload(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		_, err := createSnapshotWithProgress(context.Background(), provider, files,
-			func(fd, ft int, bd, bt int64) {
+			func(fd, ft int, bd, bt int64, snapshotID string) {
 				select {
 				case progressed <- emission{fd, ft, bd, bt}:
 				default:
@@ -1337,6 +1445,15 @@ func TestSnapshotProgressKeepalive_EmitsDuringInFlightUpload(t *testing.T) {
 			}, nil, nil)
 		done <- err
 	}()
+
+	// Drain the forced snapshot-registration emission (#3006), which fires
+	// before the upload loop starts. Without this the keepalive assertion
+	// below would be satisfied by the registration emission instead.
+	select {
+	case <-progressed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no snapshot-registration progress emission")
+	}
 
 	// A keepalive emission must arrive WHILE the (only) upload is blocked —
 	// i.e. before we release the provider — carrying the unchanged counters.

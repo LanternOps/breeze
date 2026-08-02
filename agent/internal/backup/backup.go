@@ -487,7 +487,9 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		// Initial "scanning done" notice: totals are now known even though
 		// nothing has uploaded yet, so the server learns the run's scope
 		// before the (throttled) per-file progress calls start arriving.
-		progressFn(0, len(files), 0, bytesTotal)
+		// No snapshot exists yet — createSnapshotWithProgress mints the ID
+		// below and emits it on its own first (forced) progress call.
+		progressFn(0, len(files), 0, bytesTotal, "")
 	}
 
 	// Checkpoint journal: keyed by destination identity (provider kind +
@@ -758,8 +760,9 @@ func startRunKeepalive(ctx context.Context, onProgress ProgressFn) (stop func())
 				// Totals are unknown until the scan completes; a zero heartbeat
 				// exists purely to refresh the server's last_progress_at during
 				// the pre-upload phases. filesDone stays 0, so nothing the loop
-				// later reports can appear to go backwards.
-				onProgress(0, 0, 0, 0)
+				// later reports can appear to go backwards. This keepalive only
+				// runs before the snapshot is created, so it never has an ID.
+				onProgress(0, 0, 0, 0, "")
 			}
 		}
 	}()

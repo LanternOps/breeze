@@ -992,9 +992,13 @@ func TestStartRunKeepalive_EmitsThenStopsCleanly(t *testing.T) {
 
 	var mu sync.Mutex
 	var calls int
-	onProgress := func(filesDone, filesTotal int, bytesDone, bytesTotal int64) {
+	var sawSnapshotID bool
+	onProgress := func(filesDone, filesTotal int, bytesDone, bytesTotal int64, snapshotID string) {
 		mu.Lock()
 		calls++
+		if snapshotID != "" {
+			sawSnapshotID = true
+		}
 		mu.Unlock()
 	}
 
@@ -1027,6 +1031,16 @@ func TestStartRunKeepalive_EmitsThenStopsCleanly(t *testing.T) {
 	mu.Unlock()
 	if final != afterStop {
 		t.Fatalf("keepalive emitted after stop: %d -> %d (goroutine not joined)", afterStop, final)
+	}
+
+	// The pre-scan keepalive runs before any snapshot exists, so it must never
+	// claim one (#3006): a non-empty ID here would let the server record a
+	// snapshot_id for objects that were never written.
+	mu.Lock()
+	claimed := sawSnapshotID
+	mu.Unlock()
+	if claimed {
+		t.Fatal("pre-scan keepalive emitted a non-empty snapshot ID")
 	}
 
 	// A second stop is a safe no-op (idempotent).
