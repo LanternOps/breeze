@@ -459,27 +459,46 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		uploadStart := time.Now()
 		uploadErr := attemptFileUpload(ctx, provider, file, backupPath)
 		if uploadErr != nil && !errors.Is(uploadErr, errBackupStopped) {
-			// Exactly one retry, only for a non-cancel failure (including a
-			// per-file deadline expiry, which attemptFileUpload has already
-			// converted to a plain error). Job-context cancel during the
-			// backoff wait aborts immediately — never retried.
-			//
-			// Warn, not debug: a single retry is the first observable symptom
-			// of a stalling destination, and it is the point at which we have
-			// already burned the full per-file deadline.
-			log.Warn("file upload failed, retrying once",
-				"path", file.sourcePath,
-				"bytes", file.size,
-				"elapsedMs", time.Since(uploadStart).Milliseconds(),
-				"deadlineMs", deadline.Milliseconds(),
-				"retryDelayMs", uploadRetryDelay.Milliseconds(),
-				"error", uploadErr.Error(),
-			)
-			select {
-			case <-ctx.Done():
-				uploadErr = errBackupStopped
-			case <-time.After(uploadRetryDelay):
-				uploadErr = attemptFileUpload(ctx, provider, file, backupPath)
+			if reason, permanent := classifyPermanentUploadError(uploadErr, file.sourcePath); permanent {
+				// The source is locked by a live process, already gone, or an
+				// unhydratable cloud placeholder. A retry cannot change that,
+				// so skip immediately instead of burning uploadRetryDelay on a
+				// foregone conclusion — a real 123,600-file C:\Users run spent
+				// 2h38m of its 2h41m asleep here for 316 such files (#2997).
+				//
+				// This ONLY removes the sleep. The file falls through to the
+				// same skip-and-continue block below: counted in
+				// UploadFailures (and so job.ErrorCount), job carries on.
+				log.Warn("file upload failed permanently, skipping without retry",
+					"path", file.sourcePath,
+					"bytes", file.size,
+					"elapsedMs", time.Since(uploadStart).Milliseconds(),
+					"reason", reason,
+					"error", uploadErr.Error(),
+				)
+			} else {
+				// Exactly one retry, only for a non-cancel failure (including a
+				// per-file deadline expiry, which attemptFileUpload has already
+				// converted to a plain error). Job-context cancel during the
+				// backoff wait aborts immediately — never retried.
+				//
+				// Warn, not debug: a single retry is the first observable symptom
+				// of a stalling destination, and it is the point at which we have
+				// already burned the full per-file deadline.
+				log.Warn("file upload failed, retrying once",
+					"path", file.sourcePath,
+					"bytes", file.size,
+					"elapsedMs", time.Since(uploadStart).Milliseconds(),
+					"deadlineMs", deadline.Milliseconds(),
+					"retryDelayMs", uploadRetryDelay.Milliseconds(),
+					"error", uploadErr.Error(),
+				)
+				select {
+				case <-ctx.Done():
+					uploadErr = errBackupStopped
+				case <-time.After(uploadRetryDelay):
+					uploadErr = attemptFileUpload(ctx, provider, file, backupPath)
+				}
 			}
 		}
 		if uploadErr != nil {

@@ -20,6 +20,33 @@ import { deviceMtlsCertificates } from './schema/deviceMtlsCertificates';
 import { manifestSigningKeyDelegations } from './schema/manifestSigningKeys';
 import { devices } from './schema/devices';
 
+// The 2026-08-06 date is reserved by the remediation program: its slots are
+// -a..-f, one per wave, and the ordering tests below guard the block against
+// an unrelated migration squatting inside it.
+//
+// They used to express that as `names.slice(-block.length) === block`, i.e.
+// "the block is the GLOBAL lexical tail". That is not the property they
+// describe, and it is unusable: it forbids any migration dated after
+// 2026-08-06 from ever existing, so the next ordinary migration on a later
+// date reds main for a reason unrelated to the waves.
+//
+// Contiguity is NOT the replacement either — on a localeCompare-sorted list
+// every common-prefix subset is contiguous by construction, so asserting it
+// would always pass and quietly delete the guard.
+//
+// What is both falsifiable and actually intended: every file on the reserved
+// date occupies one of the reserved -a..-f slots. `2026-08-06-bb-whatever.sql`
+// fails this; a legitimate wave file does not.
+const RESERVED_MIGRATION_DATE = '2026-08-06-';
+const RESERVED_SLOT_PATTERN = /^2026-08-06-[a-f]-/;
+
+function expectReservedBlockSlotsOnly(names: string[]): void {
+  const block = names.filter((name) => name.startsWith(RESERVED_MIGRATION_DATE));
+
+  expect(block.length).toBeGreaterThan(0);
+  expect(block.filter((name) => !RESERVED_SLOT_PATTERN.test(name))).toEqual([]);
+}
+
 describe('autoMigrate', () => {
   describe('detectState', () => {
     it('should return "fresh" when no users table exists', () => {
@@ -279,10 +306,10 @@ describe('core migration ordering', () => {
     expect(ledgerNames.filter((filename) => filename === reserved)).toHaveLength(1);
     expect(ledgerNames).toEqual([...ledgerNames].sort((a, b) => a.localeCompare(b)));
     // 2026-08-06-a..f is reserved by the remediation program and later waves
-    // append to it, so assert the block is the contiguous lexical tail opened
-    // by this file rather than pinning it as the single last migration.
+    // append to it, so assert the block stays contiguous and is opened by this
+    // file — never that it is the single last migration.
     const reservedBlock = ledgerNames.filter((filename) => filename.startsWith('2026-08-06-'));
-    expect(ledgerNames.slice(-reservedBlock.length)).toEqual(reservedBlock);
+    expectReservedBlockSlotsOnly(ledgerNames);
     expect(reservedBlock[0]).toBe(reserved);
   });
 });
@@ -350,10 +377,9 @@ describe('Wave 3 durable live authorization expansion', () => {
     expect(files).toContain(liveAuthorization);
     expect(files).toContain(quoteCapability);
     // Later waves append -d..-f to the reserved 2026-08-06 block, so assert
-    // the block is the contiguous lexical tail rather than pinning the
-    // global tail.
+    // the block stays contiguous rather than pinning the global tail.
     const reservedBlock = files.filter((file) => file.startsWith('2026-08-06-'));
-    expect(files.slice(-reservedBlock.length)).toEqual(reservedBlock);
+    expectReservedBlockSlotsOnly(files);
     // Assert RELATIVE order, not adjacency (see the Wave 6 capability and
     // delegation migration tests below for the full rationale): a sibling
     // branch is free to land its own migration between -b- and -c- in the
@@ -389,10 +415,9 @@ describe('Wave 5 device mTLS certificate history', () => {
 
     expect(files).toContain(certificateHistory);
     // -d..-f is still reserved for later waves, so assert the block remains
-    // the contiguous lexical tail, rather than pinning this file as the
-    // single last migration.
+    // contiguous, rather than pinning this file as the single last migration.
     const reservedBlock = files.filter((file) => file.startsWith('2026-08-06-'));
-    expect(files.slice(-reservedBlock.length)).toEqual(reservedBlock);
+    expectReservedBlockSlotsOnly(files);
     // Assert RELATIVE order, not adjacency (see the Wave 6 capability and
     // delegation migration tests below for the full rationale): a sibling
     // branch is free to land its own migration between -c- and -d- in the
