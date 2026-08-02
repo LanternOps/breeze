@@ -989,6 +989,37 @@ async function handleToolsCall(
     return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
   }
 
+  // Org-install non-disclosure gate (Task 7b finding 1): without this, a
+  // named org-scoped extension tool sails past this early "Unknown tool"
+  // check (getToolTier IS defined for it) and only gets denied deep inside
+  // executeTool below — whose thrown error is caught by `execute()`'s
+  // try/catch and returned as a JSON-RPC SUCCESS envelope with `isError:
+  // true` content, a shape trivially distinguishable from THIS function's
+  // -32602 ERROR envelope for a truly-nonexistent tool name. That let a
+  // non-installed org detect the extension exists by the response shape
+  // alone, defeating the same non-disclosure contract `executeTool`'s own
+  // gate (aiTools.ts) upholds. Deny here, in the SAME shape as the
+  // baseTier-undefined branch above, before any guardrails/ledger/audit work.
+  // Reuses the tools/list filter's lazy-loaded registry/reader (see
+  // getMcpOrgInstallModules above) — same install-scope resolution, same
+  // fail-closed-on-no-org contract, same uncaught (propagating) reader-error
+  // behavior as executeTool's own gate. A DISABLED (not just non-installed)
+  // extension's tool is already covered by the baseTier-undefined branch
+  // above — `registry.findAiToolOwner`/`getAiTool` both skip disabled
+  // snapshots — so no separate handling is needed here for that case.
+  {
+    const { registry, installScopeOf, reader } = await getMcpOrgInstallModules();
+    const owner = registry.findAiToolOwner(toolName);
+    if (owner) {
+      const manifest = registry.get(owner)?.manifest;
+      if (manifest && installScopeOf(manifest) === 'org') {
+        if (!auth.orgId || !(await reader(owner, auth.orgId))) {
+          return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
+        }
+      }
+    }
+  }
+
   // Run guardrails BEFORE the scope gates so the EFFECTIVE tier (which a
   // per-action escalation can raise above the tool's static base tier — e.g.
   // registry_operations base tier 1 but action:'delete_key' → tier 3) drives
@@ -1135,6 +1166,16 @@ async function handleToolsCall(
     execute,
   );
 }
+
+/**
+ * Test-only direct access to the JSON-RPC `tools/list` / `tools/call`
+ * handlers, bypassing the HTTP + API-key/bearer transport layer entirely.
+ * Lets Task 7b's org-install-gate tests inject a controlled `AuthContext`
+ * without mocking the whole auth middleware stack — mirrors the existing
+ * `__loadMcpBootstrapForTests` test-only export above.
+ */
+export const __handleToolsListForTests = handleToolsList;
+export const __handleToolsCallForTests = handleToolsCall;
 
 function writeMcpToolAuditEvent(
   c: Context | undefined,
