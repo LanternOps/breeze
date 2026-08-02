@@ -392,7 +392,35 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 
 	// Rewrite paths to shadow copy device paths when VSS is active
 	if vssSession != nil {
-		backupPaths = rewritePathsForVSS(backupPaths, vssSession.ShadowPaths)
+		var unmappedIdx []int
+		backupPaths, unmappedIdx = rewritePathsForVSS(backupPaths, vssSession.ShadowPaths)
+		if liveReads := reportableLiveReads(backupPaths, unmappedIdx, systemStateStagingIdx); len(liveReads) > 0 {
+			shadowedVolumes := make([]string, 0, len(vssSession.ShadowPaths))
+			for vol := range vssSession.ShadowPaths {
+				shadowedVolumes = append(shadowedVolumes, vol)
+			}
+			sort.Strings(shadowedVolumes)
+			summary := summarizeLiveReads(liveReads)
+			// Overlaps the provider's own UnprotectedVolumes warning for a
+			// volume whose snapshot failed — every non-staging path's volume
+			// was requested, so that is the common cause. What it adds is
+			// path-level detail, and it uniquely covers the case the provider
+			// cannot see: VSS reported total success but the path never
+			// matched a shadow root.
+			log.Warn("VSS is active but some backup paths are NOT routed through the shadow copy; "+
+				"they will be read from the live volume, where in-use files can fail or be captured torn",
+				"jobId", job.ID,
+				"unmappedPathCount", len(liveReads),
+				"paths", summary,
+				"shadowedVolumes", strings.Join(shadowedVolumes, ", "),
+			)
+			// The log line alone is endpoint-local. job.VSSMetadata looks like
+			// the richer channel but does not survive the trip: the API's
+			// result schema has no vssMetadata key, so it is stripped at parse,
+			// and the vss_metadata column is never written. job.Warning is the
+			// only VSS signal that reaches the server today.
+			appendWarning(job, "read from the live volume, not the VSS shadow copy: "+summary)
+		}
 	}
 	if systemStateStagingIdx >= 0 && systemStateStagingIdx < len(backupPaths) {
 		// The staging dir's OS temp volume commonly coincides with a
@@ -989,8 +1017,71 @@ func extractVolumes(paths []string) []string {
 
 // rewritePathsForVSS rewrites source paths to use VSS shadow copy device paths.
 // e.g., "C:\\Users\\data" with shadow "C:" -> "\\\\?\\GLOBALROOT\\...\\Users\\data"
-func rewritePathsForVSS(paths []string, shadowPaths map[string]string) []string {
+//
+// The second return value holds the indices of paths that found no shadow root
+// and were left pointing at the live volume. That fallback is deliberate — a
+// volume whose snapshot failed is still worth a best-effort read — but it is
+// also indistinguishable, from the walk onward, from a successful VSS backup.
+// It is how a shadowPaths key-format change would silently reintroduce #2999,
+// so the caller reports it rather than letting it pass unnoticed. Indices, not
+// paths, so the caller can exclude the system-state staging dir it wrote
+// itself (see the call site).
+// reportableLiveReads selects, from rewritePathsForVSS's unmapped indices, the paths
+// actually worth reporting.
+//
+// Two exclusions, both deliberate:
+//
+//   - stagingIdx, the system-state staging dir. The agent creates it itself
+//     during this run, so it can only ever be read live. (It is created AFTER
+//     the snapshot, which is a separate problem for the case where it IS
+//     mapped — see the systemStateStagingIdx block in RunBackupContext.)
+//   - Anything whose volume is not a local drive letter. VSS cannot snapshot a
+//     UNC share, and filepath.VolumeName yields "" for a relative or
+//     drive-rooted path, which extractVolumes never even requests. Reporting
+//     those would fire on every run of an unchanged config, and a warning that
+//     is always on is a warning operators learn to ignore.
+//
+// Split out as a pure function because the caller needs a real elevated
+// Windows box and a live VSS provider to reach, so this is the only way the
+// selection logic itself is testable.
+func reportableLiveReads(paths []string, unmapped []int, stagingIdx int) []string {
+	var liveReads []string
+	for _, idx := range unmapped {
+		if idx == stagingIdx || idx < 0 || idx >= len(paths) {
+			continue
+		}
+		if !isLocalVolumePath(paths[idx]) {
+			continue
+		}
+		liveReads = append(liveReads, paths[idx])
+	}
+	return liveReads
+}
+
+// isLocalVolumePath reports whether p is rooted on a local drive letter
+// ("C:..."), the only shape VSS can snapshot and therefore the only shape
+// whose absence from the shadow map is worth reporting.
+func isLocalVolumePath(p string) bool {
+	vol := filepath.VolumeName(p)
+	return len(vol) == 2 && vol[1] == ':'
+}
+
+// summarizeLiveReads renders the unmapped paths for an operator-facing message,
+// capped like every other per-item summary in this file. The cap is not
+// cosmetic: this string is promoted into job.Warning, which the IPC result
+// bounding truncates and appends to (see cmd/breeze-backup/result_bounds.go),
+// so an unbounded join can be cut mid-path or crowd out other diagnostics.
+func summarizeLiveReads(paths []string) string {
+	if len(paths) <= maxUploadFailureDetails {
+		return strings.Join(paths, "; ")
+	}
+	return strings.Join(paths[:maxUploadFailureDetails], "; ") +
+		fmt.Sprintf(" (+%d more)", len(paths)-maxUploadFailureDetails)
+}
+
+func rewritePathsForVSS(paths []string, shadowPaths map[string]string) ([]string, []int) {
 	rewritten := make([]string, len(paths))
+	var unmapped []int
 	for i, p := range paths {
 		vol := filepath.VolumeName(p)
 		if shadow, ok := shadowPaths[vol]; ok {
@@ -998,9 +1089,10 @@ func rewritePathsForVSS(paths []string, shadowPaths map[string]string) []string 
 			rewritten[i] = shadow + rest
 		} else {
 			rewritten[i] = p // fallback: use original path
+			unmapped = append(unmapped, i)
 		}
 	}
-	return rewritten
+	return rewritten, unmapped
 }
 
 // originalPathsForVSS sets backupFile.originalPath for every file whose
