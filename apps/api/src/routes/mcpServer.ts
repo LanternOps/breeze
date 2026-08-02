@@ -836,8 +836,10 @@ async function handleJsonRpc(
  * Task 7b, requirement 6 (disclosure-hardening, NOT the security boundary —
  * `executeTool`'s org-install gate in aiTools.ts is): `auth` is already a
  * parameter of the enclosing `handleJsonRpc`, so the caller's org is trivially
- * available here, unlike the in-product chat surface (aiAgentSdkTools.ts),
- * which was left unfiltered — see the Task 7b report for that gap.
+ * available here. The in-product chat surface (aiAgentSdkTools.ts) advertises
+ * no extension tools today; its tool definitions are static core tools, and
+ * execution is gated by executeTool. If chat ever starts advertising registry
+ * tools, it will need this same tools/list filter.
  *
  * Loaded lazily via dynamic `import()`, NOT a static top-level import: several
  * existing `tools/call`-only test files (mcpServer.creatorPermsNull.test.ts

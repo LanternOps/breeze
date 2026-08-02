@@ -10,8 +10,9 @@ import {
  * Registered inside every extension dispatch wrapper AFTER that wrapper's auth
  * guard — both gateway entry points (`/api/v1/ext/:extension/*` and the legacy
  * `/api/v1/:routeNamespace/*` alias) funnel through the wrappers, so the alias
- * is covered by construction, and the client-ai surface wrapper registers the
- * same guard. On the agent path it additionally runs after the post-auth
+ * is covered by construction. The client-ai surface wrapper (unmerged W4 branch)
+ * must register this same guard when it lands — until then that surface does not
+ * exist on this branch. On the agent path it additionally runs after the post-auth
  * availability middleware, mirroring the existing gateway.ts ordering comment.
  *
  * Deny is 404 — matching each surface's own not-found shape — so a
