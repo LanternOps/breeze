@@ -1164,7 +1164,8 @@ jobs:
       # codes (#2997) against golang.org/x/sys/windows, and those codes drive
       # ~300 of the 316 field failures that fix targets — yet the package
       # cannot join the list above while its pre-existing Windows reds stand
-      # (#2523). A -run filter selects only the classification tests, so this
+      # (#2523). A -run filter selects only the classification and VSS
+      # path-rewrite tests, so this
       # gate is green today and still catches a typo'd code. It caught one in
       # review: 0x17C is ERROR_CLOUD_FILE_INVALID_REQUEST, not the
       # ERROR_CLOUD_FILE_ACCESS_DENIED (395) the OneDrive case needs.
@@ -1176,23 +1177,24 @@ jobs:
       # same vacuous-guard failure this repo has hit before. Counting top-level
       # PASS lines makes that a red, not a green.
       # TestRewritePathsForVSS* rides the same filter. It is the other half of
-      # the VSS fix (#2999): the provider is proven by live tests that cannot
-      # run on a CI runner, but the path-rewrite seam that decides whether a
-      # backup reads the shadow copy or the live volume is pure string logic,
-      # and it is only meaningful on Windows because filepath.VolumeName
-      # returns "" everywhere else. Without this it has no CI coverage at all.
+      # the VSS fix (#2999): the provider is proven by live tests we do not run
+      # on CI runners (they need elevation, create a real snapshot, and take
+      # minutes), but the path-rewrite seam that decides whether a backup reads
+      # the shadow copy or the live volume is pure string logic, and it is only
+      # meaningful on Windows because filepath.VolumeName returns "" everywhere
+      # else. Without this it has no CI coverage at all.
       - name: Run Windows backup error-classification and VSS path-rewrite tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
         shell: pwsh
         run: |
-          $out = go test ./internal/backup -run 'TestPermanentWindowsErrnoConstantsMatchWin32|TestClassifyPermanentUploadError|TestLookupPermanentWindowsErrno|TestRewritePathsForVSS' -v 2>&1
+          $out = go test ./internal/backup -run 'TestPermanentWindowsErrnoConstantsMatchWin32|TestClassifyPermanentUploadError|TestLookupPermanentWindowsErrno|TestRewritePathsForVSS|TestReportableLiveReads|TestSummarizeLiveReads' -v 2>&1
           $exit = $LASTEXITCODE
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
-          if ($passes -lt 7) { throw "expected at least 7 top-level PASS lines, got $passes - the -run filter matched nothing" }
+          if ($passes -ne 11) { throw "expected exactly 11 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # -race requires cgo, which remote/desktop cannot satisfy on Windows, so
       # this covers only packages that do not import it (heartbeat and agentapp

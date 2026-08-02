@@ -4,8 +4,11 @@ package backup
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,19 +17,29 @@ import (
 )
 
 // rewritePathsForVSS is the seam that decides whether a backup actually reads
-// through the shadow copy or silently reads the live volume. It could not be
-// covered portably alongside originalPathsForVSS in backup_test.go: it calls
-// filepath.VolumeName, which returns "" for every path on non-Windows, so the
-// same table on macOS/Linux would exercise nothing but the fallback branch and
-// pass vacuously. Hence a Windows-gated file.
+// through the shadow copy or silently reads the live volume, and until now it
+// had no test at all. It could not be covered portably alongside
+// originalPathsForVSS in backup_test.go: it calls filepath.VolumeName, whose
+// non-Windows implementation always returns "", so on macOS/Linux every lookup
+// misses and only the fallback branch runs. Hence a Windows-gated file.
 //
-// The gap this closes is specific. #2999 fixed VSS itself and added live tests
-// in internal/backup/vss, but those reconstruct the shadow path by hand
-// (`shadow + target[len(vol):]`) rather than calling rewritePathsForVSS. A
-// divergence between that function and the key format the provider stores in
-// VSSSession.ShadowPaths would leave every one of those tests green while
-// production quietly backed up the live volume — the exact failure #2999 was
-// about, minus the error message.
+// What this does and does not close, precisely — the provider side is already
+// guarded. vss/vss_windows_live_test.go asserts that ShadowPaths is keyed on
+// the caller's volume string rather than the normalised mount point, so a
+// re-key there fails that test. The gaps are narrower than "nobody would
+// notice":
+//
+//   - Nothing called rewritePathsForVSS. Both live suites reconstruct the
+//     shadow path by hand (`shadow + target[len(vol):]`), so a change on
+//     backup.go's side of the seam — the prefix arithmetic, or the lookup key
+//     — is not caught by them.
+//   - Neither live suite runs in CI. Both are opt-in behind BREEZE_VSS_LIVE
+//     and need elevation and a real snapshot, so the provider-side guard is a
+//     guard only for whoever remembers to run it.
+//
+// The tests below therefore pin backup.go's half of the contract in CI, and
+// TestRewritePathsForVSS_MountPointKeyedShadowMapIsReportedUnmapped encodes the
+// #2999 hazard itself as an executable statement rather than a comment.
 
 func TestRewritePathsForVSS_RoutesPathsThroughShadowRoot(t *testing.T) {
 	const shadowRoot = `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1`
@@ -57,6 +70,21 @@ func TestRewritePathsForVSS_RoutesPathsThroughShadowRoot(t *testing.T) {
 			in:   `D:\other\f.txt`,
 			want: `D:\other\f.txt`,
 		},
+		{
+			// VSS cannot snapshot a UNC share, so this always falls back.
+			// liveReadPaths filters it out of the operator warning; the
+			// rewrite itself must still leave the path usable.
+			name: "UNC path falls back unchanged",
+			in:   `\\server\share\dir\f.txt`,
+			want: `\\server\share\dir\f.txt`,
+		},
+		{
+			// filepath.VolumeName is "" here, which extractVolumes never
+			// requests, so no shadow root can exist for it.
+			name: "drive-rooted path with no volume falls back unchanged",
+			in:   `\Data\f.txt`,
+			want: `\Data\f.txt`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -69,27 +97,36 @@ func TestRewritePathsForVSS_RoutesPathsThroughShadowRoot(t *testing.T) {
 	}
 }
 
-// TestRewritePathsForVSS_KeyFormatMatchesExtractVolumes is the real regression
-// guard. The provider deliberately keys VSSSession.ShadowPaths on the caller's
-// original volume string ("C:", no trailing separator) even though the COM call
-// itself needs a mount point ("C:\") — #2999 notes that re-keying the map would
-// make this lookup miss and silently read the live volume.
+// TestRewritePathsForVSS_KeyFormatMatchesExtractVolumes pins backup.go's half
+// of the keying contract: whatever extractVolumes hands the provider must be a
+// key this lookup hits.
 //
-// That contract spans two packages and is held together by nothing but string
-// format, so assert it directly: every volume extractVolumes produces must be a
-// key this lookup hits. If either side is re-keyed, this fails instead of
-// production silently degrading.
+// Scope, so nobody trusts this further than it goes: both functions derive
+// their key from filepath.VolumeName on the same strings, so this fails only
+// if one of them stops doing that. It does NOT guard the provider's side of
+// the contract — vss.CreateShadowCopy storing the map under a different key is
+// caught by vss_windows_live_test.go, which is opt-in and does not run in CI.
+// The literal-format assertion below is the part that would survive a re-key
+// on either side.
 func TestRewritePathsForVSS_KeyFormatMatchesExtractVolumes(t *testing.T) {
 	paths := []string{`C:\Users\data`, `C:\Logs\app.log`, `D:\Backups`}
 
-	// Build the shadow map exactly the way a real session would: keyed on
-	// whatever extractVolumes hands the provider.
-	shadowPaths := make(map[string]string)
-	for i, vol := range extractVolumes(paths) {
-		shadowPaths[vol] = `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy` + string(rune('1'+i))
+	volumes := extractVolumes(paths)
+	// Pin the literal format rather than only the round trip: "C:", never
+	// "C:\". This is the string the provider is required to key on.
+	want := []string{"C:", "D:"}
+	if len(volumes) != len(want) {
+		t.Fatalf("extractVolumes = %v, want %v", volumes, want)
 	}
-	if len(shadowPaths) != 2 {
-		t.Fatalf("extractVolumes produced %d volumes, want 2 (C: and D:)", len(shadowPaths))
+	for i, vol := range volumes {
+		if vol != want[i] {
+			t.Fatalf("extractVolumes = %v, want %v (bare volume name, no trailing separator)", volumes, want)
+		}
+	}
+
+	shadowPaths := make(map[string]string)
+	for i, vol := range volumes {
+		shadowPaths[vol] = `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy` + strconv.Itoa(i+1)
 	}
 
 	rewritten, unmapped := rewritePathsForVSS(paths, shadowPaths)
@@ -100,6 +137,53 @@ func TestRewritePathsForVSS_KeyFormatMatchesExtractVolumes(t *testing.T) {
 	for i, p := range rewritten {
 		if p == paths[i] {
 			t.Errorf("path %q was not rewritten — extractVolumes and the shadow-path lookup disagree on key format", paths[i])
+		}
+	}
+}
+
+// TestRewritePathsForVSS_MountPointKeyedShadowMapIsReportedUnmapped turns the
+// #2999 hazard from a comment into an executable statement. PR #3005 records
+// that the session map "stays keyed on the caller's original string — re-keying
+// it would make rewritePathsForVSS's lookup miss and silently read the live
+// volume." This is what that miss looks like: mount-point keys ("C:\") produce
+// no match, and the path must be REPORTED rather than quietly served live.
+func TestRewritePathsForVSS_MountPointKeyedShadowMapIsReportedUnmapped(t *testing.T) {
+	shadowPaths := map[string]string{`C:\`: `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1`}
+
+	rewritten, unmapped := rewritePathsForVSS([]string{`C:\Users\data`}, shadowPaths)
+
+	if len(unmapped) != 1 || unmapped[0] != 0 {
+		t.Fatalf("a mount-point-keyed shadow map must leave the path unmapped and reported, got unmapped=%v", unmapped)
+	}
+	if rewritten[0] != `C:\Users\data` {
+		t.Errorf("unmapped path should be left as the original live path, got %q", rewritten[0])
+	}
+}
+
+// rewritePathsForVSS and originalPathsForVSS are inverses, and the journal's
+// resume key depends on that. backup_test.go covers the inverse portably with
+// fake "VOL:" paths; only here can the real pair be round-tripped against
+// Windows volume semantics, including the bare "C:" and "C:\" forms where an
+// off-by-one in the prefix arithmetic would hide.
+func TestRewritePathsForVSS_RoundTripsThroughOriginalPathsForVSS(t *testing.T) {
+	const shadowRoot = `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1`
+	shadowPaths := map[string]string{"C:": shadowRoot}
+	originals := []string{`C:\Users\data\f.txt`, `C:\`, `C:`}
+
+	rewritten, unmapped := rewritePathsForVSS(originals, shadowPaths)
+	if len(unmapped) != 0 {
+		t.Fatalf("unmapped = %v, want none", unmapped)
+	}
+
+	files := make([]backupFile, len(rewritten))
+	for i, p := range rewritten {
+		files[i] = backupFile{sourcePath: p}
+	}
+	originalPathsForVSS(files, shadowPaths)
+
+	for i, f := range files {
+		if f.originalPath != originals[i] {
+			t.Errorf("round trip of %q produced %q", originals[i], f.originalPath)
 		}
 	}
 }
@@ -129,6 +213,112 @@ func TestRewritePathsForVSS_ReportsUnmappedPathsRatherThanFailingSilently(t *tes
 	}
 	if unmapped[0] != 1 || unmapped[1] != 2 {
 		t.Errorf("unmapped = %v, want [1 2]", unmapped)
+	}
+}
+
+// reportableLiveReads is the only new decision this change makes: which
+// unmapped paths an operator actually hears about. The caller that uses it
+// needs an elevated Windows box and a real VSS provider to reach, so this is
+// the level at which that logic can be tested at all. Windows-gated because
+// isLocalVolumePath rests on filepath.VolumeName, which is "" for everything
+// off-Windows — a portable version would assert nothing.
+func TestReportableLiveReads_Selection(t *testing.T) {
+	const noStaging = -1
+
+	tests := []struct {
+		name       string
+		paths      []string
+		unmapped   []int
+		stagingIdx int
+		want       []string
+	}{
+		{
+			name:       "reports an unshadowed local volume",
+			paths:      []string{`C:\shadowed`, `D:\live`},
+			unmapped:   []int{1},
+			stagingIdx: noStaging,
+			want:       []string{`D:\live`},
+		},
+		{
+			name:       "excludes the system-state staging dir the agent just wrote",
+			paths:      []string{`C:\data`, `C:\Windows\Temp\breeze-systemstate-1`},
+			unmapped:   []int{1},
+			stagingIdx: 1,
+			want:       nil,
+		},
+		{
+			// Always unmapped, every run, forever — reporting it would train
+			// operators to ignore the warning.
+			name:       "excludes UNC paths VSS can never snapshot",
+			paths:      []string{`\\server\share\dir`},
+			unmapped:   []int{0},
+			stagingIdx: noStaging,
+			want:       nil,
+		},
+		{
+			name:       "excludes paths with no volume name",
+			paths:      []string{`\Data\f.txt`},
+			unmapped:   []int{0},
+			stagingIdx: noStaging,
+			want:       nil,
+		},
+		{
+			name:       "reports the local volume while excluding staging and UNC alongside it",
+			paths:      []string{`D:\live`, `\\server\share`, `C:\Windows\Temp\breeze-systemstate-1`},
+			unmapped:   []int{0, 1, 2},
+			stagingIdx: 2,
+			want:       []string{`D:\live`},
+		},
+		{
+			name:       "nothing unmapped reports nothing",
+			paths:      []string{`C:\data`},
+			unmapped:   nil,
+			stagingIdx: noStaging,
+			want:       nil,
+		},
+		{
+			// Defensive: a stale index must not panic the run.
+			name:       "out-of-range indices are ignored",
+			paths:      []string{`C:\data`},
+			unmapped:   []int{5, -2},
+			stagingIdx: noStaging,
+			want:       nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := reportableLiveReads(tt.paths, tt.unmapped, tt.stagingIdx)
+			if len(got) != len(tt.want) {
+				t.Fatalf("reportableLiveReads = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("reportableLiveReads = %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+// The summary is promoted into job.Warning, which the IPC result bounding
+// truncates and appends to, so it must be capped rather than joined wholesale.
+func TestSummarizeLiveReads_CapsTheList(t *testing.T) {
+	under := []string{`C:\a`, `D:\b`}
+	if got, want := summarizeLiveReads(under), `C:\a; D:\b`; got != want {
+		t.Errorf("summarizeLiveReads = %q, want %q", got, want)
+	}
+
+	over := make([]string, maxUploadFailureDetails+3)
+	for i := range over {
+		over[i] = `D:\p` + strconv.Itoa(i)
+	}
+	got := summarizeLiveReads(over)
+	if strings.Contains(got, `D:\p`+strconv.Itoa(maxUploadFailureDetails)) {
+		t.Errorf("summary should stop at %d paths, got %q", maxUploadFailureDetails, got)
+	}
+	if want := fmt.Sprintf("(+%d more)", len(over)-maxUploadFailureDetails); !strings.HasSuffix(got, want) {
+		t.Errorf("summary = %q, want it to end with %q", got, want)
 	}
 }
 
