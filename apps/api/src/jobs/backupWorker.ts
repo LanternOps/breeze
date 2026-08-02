@@ -713,6 +713,10 @@ async function processResults(
     orgId: data.orgId,
     deviceId: data.deviceId,
     resultStatus,
+    // NB: NOT `result.status` — backupCommandResultSchema parsed `data.result`,
+    // whose `status` is the OUTER command status. The agent's own terminal
+    // status rides the distinct `agentStatus` key (see backupProcessResultSchema).
+    agentStatus: data.result.agentStatus,
     result: {
       ...result,
       error: data.result.error,

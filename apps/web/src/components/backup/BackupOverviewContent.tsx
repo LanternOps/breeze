@@ -265,7 +265,10 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
             ) : (
               recentJobs.map((job) => {
                 const normalizedStatus = resolveJobStatus(job.status);
-                const status = statusConfig[normalizedStatus as StatusConfigKey];
+                // Fall back rather than index blindly: an unmapped key from
+                // resolveJobStatus would otherwise throw on `.icon` and blank
+                // the whole overview.
+                const status = statusConfig[normalizedStatus as StatusConfigKey] ?? statusConfig.warning;
                 const StatusIcon = status.icon;
                 return (
                   <div

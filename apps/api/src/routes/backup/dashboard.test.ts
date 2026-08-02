@@ -224,6 +224,79 @@ describe('backup dashboard routes', () => {
     expect(body.data.attentionError).toBe(false);
   });
 
+  // #3000: a device whose latest backup landed `partial` (a real snapshot, but
+  // a disproportionate share of the data missing) must reach attentionItems.
+  // Before the partial status existed such a run was indistinguishable from a
+  // clean one, so nothing keyed on job status ever fired for it.
+  it('flags a device whose latest backup is partial in attentionItems', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // configCount
+      .mockReturnValueOnce(chainMock([{ count: 1 }])) // jobCount
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // snapshotCount
+      .mockReturnValueOnce(chainMock([{ completed: 0, failed: 0, partial: 1, running: 0, pending: 0 }])) // last24hStats
+      .mockReturnValueOnce(chainMock([{ totalBytes: 0, count: 0 }])) // storageStats
+      .mockReturnValueOnce(chainMock([])) // recentJobsRaw
+      .mockReturnValueOnce(chainMock([])) // ranked-jobs subquery build (value unused)
+      .mockReturnValueOnce(chainMock([
+        {
+          deviceId: FAILING_DEVICE_ID,
+          status: 'partial',
+          errorLog: '21 of 22 files failed to upload',
+          completedAt: new Date('2026-07-14T10:00:00.000Z'),
+          createdAt: new Date('2026-07-14T09:55:00.000Z'),
+          rn: 1,
+          deviceName: 'Finance Laptop',
+          deviceHostname: 'fin-laptop-01',
+        },
+      ])); // ranked-jobs rows
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.attentionItems).toHaveLength(1);
+    // A single partial run is a warning, not yet critical, and the copy must
+    // not call it a failure.
+    expect(body.data.attentionItems[0]).toMatchObject({
+      id: `backup-failing-${FAILING_DEVICE_ID}`,
+      severity: 'warning',
+    });
+    expect(body.data.attentionItems[0].title).toContain('only partially completed');
+    expect(body.data.attentionItems[0].description).toContain('21 of 22 files failed to upload');
+  });
+
+  // A cancelled job is a user action, not a fault: it must NOT raise attention.
+  it('does not flag a device whose latest backup was cancelled', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // configCount
+      .mockReturnValueOnce(chainMock([{ count: 1 }])) // jobCount
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // snapshotCount
+      .mockReturnValueOnce(chainMock([{ completed: 0, failed: 0, partial: 0, running: 0, pending: 0 }])) // last24hStats
+      .mockReturnValueOnce(chainMock([{ totalBytes: 0, count: 0 }])) // storageStats
+      .mockReturnValueOnce(chainMock([])) // recentJobsRaw
+      .mockReturnValueOnce(chainMock([])) // ranked-jobs subquery build (value unused)
+      .mockReturnValueOnce(chainMock([
+        {
+          deviceId: FAILING_DEVICE_ID,
+          status: 'cancelled',
+          errorLog: null,
+          completedAt: new Date('2026-07-14T10:00:00.000Z'),
+          createdAt: new Date('2026-07-14T09:55:00.000Z'),
+          rn: 1,
+          deviceName: 'Finance Laptop',
+          deviceHostname: 'fin-laptop-01',
+        },
+      ])); // ranked-jobs rows
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.attentionItems).toEqual([]);
+  });
+
   it('surfaces a degraded attentionError flag when the attention-items query fails (not a silent all-clear)', async () => {
     resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
 

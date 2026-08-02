@@ -129,7 +129,14 @@ export const policyUpdateSchema = z.object({
 });
 
 export const jobListSchema = z.object({
-  status: z.enum(['queued', 'running', 'completed', 'failed', 'canceled']).optional(),
+  // The real backup_status enum values, plus the two legacy misspellings
+  // ('queued'/'canceled') this schema has always accepted — they are kept only
+  // so an existing caller does not start 400ing, and they match no rows. The
+  // correct spellings are 'pending' and 'cancelled'.
+  status: z.enum([
+    'pending', 'running', 'completed', 'failed', 'cancelled', 'partial',
+    'queued', 'canceled',
+  ]).optional(),
   device: z.string().optional(),
   deviceId: z.string().optional(),
   date: z.string().optional(),

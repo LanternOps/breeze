@@ -72,3 +72,40 @@ describe('backupCommandResultSchema — incremental-backup referenced stats', ()
     expect(parsed.referencedFiles).toBeUndefined();
   });
 });
+
+// #3000: the agent's own terminal status is the ONLY channel through which a
+// `partial` run can be distinguished — the outer command-result status is a
+// binary completed/failed derived from a success bool.
+describe('backupCommandResultSchema — agent terminal status (#3000)', () => {
+  it('preserves a partial status from the agent payload', () => {
+    const parsed = backupCommandResultSchema.parse({
+      jobId: 'job-1',
+      snapshotId: 'snap-1',
+      status: 'partial',
+      filesBackedUp: 1,
+      bytesBackedUp: 85,
+      errorCount: 21,
+      warning: '21 of 22 files failed to upload',
+    });
+    expect(parsed.status).toBe('partial');
+    expect(parsed.errorCount).toBe(21);
+  });
+
+  it('accepts an agent status outside the DB enum instead of rejecting the whole result', () => {
+    // The agent's vocabulary is wider than backup_status (it also emits
+    // `skipped`/`stopped`). A strict enum here would 400 the ENTIRE result,
+    // losing the snapshot id and counters over a value we do not care about.
+    const parsed = backupCommandResultSchema.parse({
+      snapshotId: 'snap-1',
+      status: 'skipped',
+      filesBackedUp: 0,
+    });
+    expect(parsed.status).toBe('skipped');
+    expect(parsed.snapshotId).toBe('snap-1');
+  });
+
+  it('treats a result with no status as an ordinary completion (legacy agent)', () => {
+    const parsed = backupCommandResultSchema.parse({ snapshotId: 'snap-1', filesBackedUp: 3 });
+    expect(parsed.status).toBeUndefined();
+  });
+});

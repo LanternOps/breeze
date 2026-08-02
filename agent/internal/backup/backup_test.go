@@ -842,6 +842,13 @@ func (p *failSubstringUploadProvider) Upload(localPath, remotePath string) error
 // A partial-success run (some files uploaded, some retry-exhausted) must
 // complete WITH a visible Warning + ErrorCount — never as a green job with
 // zero errors that is silently an incomplete restore point.
+//
+// 1 of 2 files (and 54% of the bytes) is a DISPROPORTIONATE loss, so since
+// #3000 the terminal status is `partial` rather than `completed`. Everything
+// else this test guards — the run does not hard-fail, the snapshot is real,
+// and the failures are visible in Warning/ErrorCount — is unchanged. See
+// TestRunBackupContext_SmallFailureRatioStaysCompleted for the below-threshold
+// counterpart that still reports `completed`.
 func TestRunBackupContext_PartialFailureSetsWarningAndErrorCount(t *testing.T) {
 	restore := setUploadRetryDelayForTest(0)
 	defer restore()
@@ -861,8 +868,8 @@ func TestRunBackupContext_PartialFailureSetsWarningAndErrorCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("partial success must not fail the run, got: %v", err)
 	}
-	if job.Status != jobStatusCompleted {
-		t.Fatalf("expected completed status, got %q", job.Status)
+	if job.Status != jobStatusPartial {
+		t.Fatalf("expected partial status for a 1-of-2 failure run, got %q", job.Status)
 	}
 	if job.ErrorCount != 1 {
 		t.Fatalf("expected ErrorCount=1, got %d", job.ErrorCount)
@@ -882,6 +889,11 @@ func TestRunBackupContext_PartialFailureSetsWarningAndErrorCount(t *testing.T) {
 // walk failures, missing paths) must complete WITH a visible Warning +
 // ErrorCount — never as a green job with errorCount 0. scan errors only ride
 // job.Error otherwise, which marshals to `{}` and the server never reads.
+//
+// 1 unreadable path out of 2 attempted is disproportionate, so since #3000 the
+// terminal status is `partial`. Note this case is caught by the FILE gate, not
+// the byte gate: a file whose os.Stat failed has no known size and contributes
+// nothing to the scanned-byte denominator.
 func TestRunBackupContext_ScanErrorSetsWarningAndErrorCount(t *testing.T) {
 	goodDir := t.TempDir()
 	createTempFile(t, goodDir, "readable.txt", "content that uploads fine")
@@ -901,8 +913,8 @@ func TestRunBackupContext_ScanErrorSetsWarningAndErrorCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a partial-scan run must still complete, got: %v", err)
 	}
-	if job.Status != jobStatusCompleted {
-		t.Fatalf("expected completed status, got %q", job.Status)
+	if job.Status != jobStatusPartial {
+		t.Fatalf("expected partial status for a 1-of-2 unreadable-path run, got %q", job.Status)
 	}
 	if job.ErrorCount != 1 {
 		t.Fatalf("expected ErrorCount=1 for one unreadable path, got %d", job.ErrorCount)

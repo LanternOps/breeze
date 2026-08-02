@@ -39,6 +39,18 @@ export const backupSystemStateManifestResultSchema = z
 export const backupCommandResultSchema = z.object({
   jobId: z.string().optional(),
   snapshotId: z.string().optional(),
+  // The agent's OWN terminal status (agent-side BackupJob.Status). The outer
+  // websocket CommandResult.status is only ever completed/failed — it is
+  // derived from a success bool — so this is the sole channel through which a
+  // `partial` run can be distinguished from a clean one (#3000).
+  //
+  // Deliberately a permissive string rather than an enum: the agent's status
+  // vocabulary is wider than the DB enum (it also emits `skipped`/`stopped`),
+  // and an enum here would 400 the ENTIRE result — losing the snapshot id and
+  // counters — over a status value we do not care about. The mapping to a DB
+  // enum value is done explicitly in applyBackupCommandResultToJob, which
+  // treats anything it does not recognise as an ordinary completion.
+  status: z.string().optional(),
   filesBackedUp: z.number().int().nonnegative().optional(),
   bytesBackedUp: z.number().nonnegative().refine(Number.isInteger, 'expected integer').optional(),
   warning: z.string().optional(),

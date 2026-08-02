@@ -704,3 +704,134 @@ describe('backup result persistence', () => {
   });
 });
 
+
+// #3000: a run that produced a real snapshot but lost a disproportionate share
+// of its work is reported by the agent as `partial`. It must be persisted as a
+// distinct terminal status WITHOUT losing any of the success-path persistence —
+// the snapshot is real and restorable, so dropping its backup_snapshots row
+// would strand it in the bucket.
+describe('partial backup terminal status (#3000)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    resolveBackupProtectionForDeviceMock.mockReset();
+  });
+
+  function mockSuccessPath() {
+    vi.mocked(db.update)
+      .mockReturnValueOnce(chainMock([{ id: 'job-1', configId: 'config-1', backupType: 'file', backupMode: 'file' }]) as any)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([]) as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([{ featureLinkId: 'feature-1', policyId: null, deviceId: 'device-1' }]) as any);
+    vi.mocked(db.insert).mockReturnValueOnce(chainMock([{
+      id: 'snapshot-db-1',
+      jobId: 'job-1',
+      snapshotId: 'provider-snap-1',
+    }]) as any);
+    vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+    vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+    vi.mocked(computeExpiresAt).mockReturnValue(null);
+  }
+
+  function setArgs() {
+    return vi.mocked(db.update).mock.results[0]?.value?.set;
+  }
+
+  it('writes status "partial" when the agent reports a partial run', async () => {
+    mockSuccessPath();
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      agentStatus: 'partial',
+      result: {
+        snapshotId: 'provider-snap-1',
+        filesBackedUp: 1,
+        bytesBackedUp: 85,
+        errorCount: 21,
+        warning: '21 of 22 files failed to upload',
+      } as any,
+    });
+
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'partial',
+      // The counters and the failure summary must still be recorded — the
+      // partial status ADDS a signal, it does not replace the existing ones.
+      fileCount: 1,
+      totalSize: 85,
+      errorCount: 21,
+      errorLog: '21 of 22 files failed to upload',
+    }));
+  });
+
+  it('still creates the backup_snapshots row for a partial run', async () => {
+    mockSuccessPath();
+
+    const outcome = await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      agentStatus: 'partial',
+      result: { snapshotId: 'provider-snap-1', filesBackedUp: 1, errorCount: 21 } as any,
+    });
+
+    // The whole point of `partial` rather than `failed`: a real, restorable
+    // snapshot exists and must be recorded.
+    expect(db.insert).toHaveBeenCalled();
+    expect(outcome.applied).toBe(true);
+    expect(outcome.snapshotDbId).toBe('snapshot-db-1');
+    expect(outcome.providerSnapshotId).toBe('provider-snap-1');
+  });
+
+  it('writes status "completed" when the agent reports no partial status', async () => {
+    mockSuccessPath();
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: { snapshotId: 'provider-snap-1', filesBackedUp: 4 } as any,
+    });
+
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+  });
+
+  it('collapses an agent status that is not a backup_status enum value to completed', async () => {
+    // The agent's vocabulary is wider than the DB enum — it also emits
+    // `skipped` and `stopped`. Writing one of those straight through would
+    // blow up the UPDATE with an invalid enum value.
+    mockSuccessPath();
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      agentStatus: 'skipped',
+      result: { snapshotId: 'provider-snap-1', filesBackedUp: 0 } as any,
+    });
+
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+  });
+
+  it('keeps a failed result failed even if an agent status rides along', async () => {
+    vi.mocked(db.update).mockReturnValueOnce(chainMock([{ id: 'job-1', configId: 'config-1' }]) as any);
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'failed',
+      agentStatus: 'partial',
+      result: { error: 'provider unreachable' } as any,
+    });
+
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+});

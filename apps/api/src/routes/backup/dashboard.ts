@@ -41,6 +41,14 @@ type AttentionItem = {
 // is surfacing failures, so a swallowed error must never render as "healthy".
 type AttentionItemsResult = { items: AttentionItem[]; error: boolean };
 
+// Terminal job statuses that mean "this device did NOT get a good backup".
+// `partial` belongs here alongside `failed` (#3000): a run that stored a
+// fraction of its data is not a success, and before this it was reported with
+// the same green status as a clean run, so nothing keyed on job status ever
+// fired for it. `cancelled` is deliberately absent — that one is a user action,
+// not a fault.
+const NEEDS_ATTENTION_JOB_STATUSES: ReadonlySet<string> = new Set(['failed', 'partial']);
+
 // A device needs attention when its most-recently created backup job
 // failed. Severity escalates to 'critical' once the two most recent jobs
 // both failed (a single blip stays 'warning'). This is intentionally
@@ -99,26 +107,40 @@ async function resolveAttentionItems(
     for (const [deviceId, jobs] of byDevice) {
       const sorted = [...jobs].sort((a, b) => a.rn - b.rn);
       const latest = sorted[0];
-      if (!latest || latest.status !== 'failed') continue;
+      // #3000: `partial` counts as needing attention. A device whose latest run
+      // stored a sliver of its data is exactly the case the issue reported as
+      // invisible — it is not a success, and a dashboard that only surfaces
+      // hard failures never mentions it.
+      if (!latest || !NEEDS_ATTENTION_JOB_STATUSES.has(latest.status)) continue;
 
       let consecutiveFailures = 0;
       let reason: string | null = null;
+      // Wording only: a run of `partial` jobs is not a run of "failures", so
+      // the copy has to soften when any of the counted jobs was partial.
+      let sawPartial = false;
       for (const job of sorted) {
-        if (job.status !== 'failed') break;
+        if (!NEEDS_ATTENTION_JOB_STATUSES.has(job.status)) break;
         consecutiveFailures += 1;
+        if (job.status === 'partial') sawPartial = true;
         if (!reason && job.errorLog) reason = job.errorLog;
       }
 
       const deviceName = latest.deviceName ?? latest.deviceHostname ?? deviceId.slice(0, 8);
       const lastFailureAt = (latest.completedAt ?? latest.createdAt).toISOString();
+      const singularTitle =
+        latest.status === 'partial'
+          ? `${deviceName}: latest backup only partially completed`
+          : `${deviceName}: latest backup failed`;
 
       items.push({
         id: `backup-failing-${deviceId}`,
         title:
           consecutiveFailures > 1
-            ? `${deviceName}: ${consecutiveFailures} consecutive backup failures`
-            : `${deviceName}: latest backup failed`,
-        description: [reason, `Last failed ${lastFailureAt}`].filter(Boolean).join(' · '),
+            ? sawPartial
+              ? `${deviceName}: ${consecutiveFailures} consecutive unsuccessful backups`
+              : `${deviceName}: ${consecutiveFailures} consecutive backup failures`
+            : singularTitle,
+        description: [reason, `Last unsuccessful ${lastFailureAt}`].filter(Boolean).join(' · '),
         severity: consecutiveFailures >= 2 ? 'critical' : 'warning',
         lastFailureAt,
       });
@@ -271,10 +293,14 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
         .from(backupSnapshots)
         .where(and(eq(backupSnapshots.orgId, orgId), snapshotDeviceScope))
         .then((r) => r[0]?.count ?? 0),
-      noSiteAllowedDevices ? Promise.resolve({ completed: 0, failed: 0, running: 0, pending: 0 }) : db
+      noSiteAllowedDevices ? Promise.resolve({ completed: 0, failed: 0, partial: 0, running: 0, pending: 0 }) : db
         .select({
           completed: sql<number>`count(*) filter (where ${backupJobs.status} = 'completed')::int`,
           failed: sql<number>`count(*) filter (where ${backupJobs.status} = 'failed')::int`,
+          // #3000: without its own counter a partial job vanishes from BOTH
+          // sides of the dashboard's success-rate fraction, so a device whose
+          // every run is partial reads as having no runs at all.
+          partial: sql<number>`count(*) filter (where ${backupJobs.status} = 'partial')::int`,
           running: sql<number>`count(*) filter (where ${backupJobs.status} = 'running')::int`,
           pending: sql<number>`count(*) filter (where ${backupJobs.status} = 'pending')::int`,
         })
@@ -286,7 +312,7 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
             jobDeviceScope
           )
         )
-        .then((r) => r[0] ?? { completed: 0, failed: 0, running: 0, pending: 0 }),
+        .then((r) => r[0] ?? { completed: 0, failed: 0, partial: 0, running: 0, pending: 0 }),
       noSiteAllowedDevices ? Promise.resolve({ totalBytes: 0, count: 0 }) : db
         .select({
           totalBytes: sql<number>`coalesce(sum(${backupSnapshots.size}), 0)::bigint`,
