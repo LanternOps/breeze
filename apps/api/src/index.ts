@@ -158,6 +158,7 @@ import { drRoutes } from './routes/dr';
 import { adminRoutes } from './routes/admin';
 import { extensionsAdminRoutes } from './routes/extensionsAdmin';
 import { extensionsWebRoutes } from './routes/extensionsWeb';
+import { extensionOrgInstallRoutes } from './routes/extensionOrgInstalls';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
 import { captureException, flushSentry, initSentry } from './services/sentry';
@@ -1004,6 +1005,12 @@ api.route('/admin', accountDeletionAdminRoutes);
 // asset serving. Distinct from `/admin/extensions` above (platform-admin
 // operations) — this is the tenant-facing surface a browser reads.
 api.route('/extensions', extensionsWebRoutes);
+// Partner management surface for tenant-scoped extension installs (L1):
+// partner/system-scope callers activate/deactivate/list an extension's
+// per-org installs. 'extensions' is a reserved route namespace (no extension
+// routeNamespace can shadow it), and this mount, like the two above,
+// precedes the gateway catch-all registration below.
+api.route('/extensions', extensionOrgInstallRoutes);
 
 // One system-scoped state store, shared by the per-request enabled gate, the
 // startup reconciler, and the BullMQ job host. The gate checks
