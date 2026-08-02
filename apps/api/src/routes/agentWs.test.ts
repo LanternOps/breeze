@@ -262,8 +262,8 @@ vi.mock('../services/sentry', async (importOriginal) => {
   return { ...actual, captureMessage: vi.fn() };
 });
 
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { devices, deviceCommands } from '../db/schema';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbAccessContext } from '../db';
+import { devices, deviceCommands, scriptExecutions } from '../db/schema';
 import { captureMessage } from '../services/sentry';
 import {
   createAgentWsHandlers,
@@ -2461,6 +2461,165 @@ describe('device_commands access context on the WS result path (#1375)', () => {
     // context — in that exact order. Asserting the full stack (rather than
     // "both are non-zero") is what fails if the two wrappers are ever swapped.
     expect(write.stack).toEqual(['outside', 'system']);
+  });
+});
+
+// #3021: the command_result message must NOT run under a message-level org
+// context. The old `runWithAgentDbAccess('agentWs.commandResult', ...)` wrap
+// held one pooled connection idle-in-transaction for the whole message while
+// the nested `runOutsideDbContext(() => withSystemDbAccessContext(...))` steps
+// inside processCommandResult (lookup CAS, lifecycle recheck, audit write)
+// each acquired a SECOND connection — two pool slots per command result, the
+// same defect #2765 fixed on the HTTP /commands route. The fix scopes the org
+// context to exactly the pieces that need ambient tenant RLS (the per-type
+// handler dispatch and the orphaned-result branches), so no org transaction is
+// ever open while a fresh system context acquires.
+//
+// Same caveat as the #1375 suite above: `../db` is mocked wholesale, so this
+// pins WRAPPER COMPOSITION at the call sites, not real pool behaviour.
+describe('#3021: command_result opens no message-level org context', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('runs the device_commands steps with no enclosing org context and the per-type handler under a short org wrap', async () => {
+    // Open first, before the wrapper/DB spies below, so the handshake's own
+    // traffic can never land in `observed`.
+    const { handlers, ws } = await connectedAgent('agent-3021', { deviceId: 'device-3021', orgId: 'org-3021' });
+
+    // Track the ACTIVE WRAPPER STACK at the moment of every DB call. An
+    // `org:*` frame present during the deviceCommands select/update or the
+    // devices lifecycle recheck is the #3021 bug re-introduced: an org
+    // transaction held open while other work runs (and, for the CAS, while a
+    // nested system context acquires a second pooled connection).
+    const stack: string[] = [];
+    const orgContexts: Array<Record<string, unknown>> = [];
+
+    vi.mocked(withDbAccessContext).mockImplementation((async (ctx: any, fn: any) => {
+      orgContexts.push(ctx);
+      stack.push(`org:${ctx.label}`);
+      try {
+        return await fn();
+      } finally {
+        stack.pop();
+      }
+    }) as any);
+    vi.mocked(runOutsideDbContext).mockImplementation((async (fn: any) => {
+      stack.push('outside');
+      try {
+        return await fn();
+      } finally {
+        stack.pop();
+      }
+    }) as any);
+    vi.mocked(withSystemDbAccessContext).mockImplementation((async (fn: any) => {
+      stack.push('system');
+      try {
+        return await fn();
+      } finally {
+        stack.pop();
+      }
+    }) as any);
+
+    const observed: Array<{ op: 'select' | 'update'; table: unknown; stack: string[] }> = [];
+    const record = (op: 'select' | 'update', table: unknown) => {
+      observed.push({ op, table, stack: [...stack] });
+    };
+
+    // A `script`-type command with an executionId payload so the dispatch
+    // reaches handleScriptResult, whose scriptExecutions update NEEDS ambient
+    // tenant RLS — the piece that proves the short handler wrap exists.
+    const commandRow = {
+      id: 'cmd-3021',
+      type: 'script',
+      payload: { executionId: 'exec-3021' },
+      deviceId: 'device-3021',
+    };
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: vi.fn((table: unknown) => {
+        record('select', table);
+        const rows = table === deviceCommands ? [commandRow] : [];
+        return {
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          }),
+        };
+      }),
+    })) as any);
+    vi.mocked(db.update).mockImplementation(((table: unknown) => {
+      record('update', table);
+      const returning = vi.fn().mockResolvedValue([{ id: 'row-1', scriptId: 'script-1' }]);
+      return {
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ returning }),
+          returning,
+        }),
+      };
+    }) as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '44444444-4444-4444-8444-444444444444',
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'ok',
+      }),
+    } as any, ws as any);
+
+    // The deviceCommands lookup + terminal CAS keep their #1375 composition —
+    // and, new with #3021, have NO enclosing `org:*` frame.
+    const commandOps = observed.filter((o) => o.table === deviceCommands);
+    expect(commandOps.map((o) => o.op)).toEqual(['select', 'update']);
+    expect(commandOps.find((o) => o.op === 'select')!.stack).toEqual(['outside']);
+    expect(commandOps.find((o) => o.op === 'update')!.stack).toEqual(['outside', 'system']);
+
+    // The devices lifecycle recheck likewise runs outside any org context.
+    const deviceReads = observed.filter((o) => o.table === devices && o.op === 'select');
+    expect(deviceReads.length).toBeGreaterThan(0);
+    for (const read of deviceReads) {
+      expect(read.stack).toEqual(['outside', 'system']);
+    }
+
+    // The per-type handler's tenant-RLS write runs under EXACTLY the short
+    // labelled org wrap — present (RLS visibility preserved) and alone on the
+    // stack (no system context nested inside an org transaction).
+    const scriptOps = observed.filter((o) => o.table === scriptExecutions);
+    expect(scriptOps.map((o) => o.op)).toEqual(['update']);
+    expect(scriptOps[0]!.stack).toEqual(['org:agentWs.commandResult.handler']);
+
+    // The short wrap carries the authenticated agent's org, and no context
+    // anywhere in the message used the removed message-level label.
+    const handlerCtx = orgContexts.find((c) => c.label === 'agentWs.commandResult.handler');
+    expect(handlerCtx).toMatchObject({ scope: 'organization', orgId: 'org-3021', accessibleOrgIds: ['org-3021'] });
+    expect(orgContexts.map((c) => c.label)).not.toContain('agentWs.commandResult');
+
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('wraps a non-UUID orphaned result in the short orphaned org context, not a message-level wrap', async () => {
+    const { handlers, ws } = await connectedAgent('agent-3021b', { deviceId: 'device-3021b', orgId: 'org-3021b' });
+
+    const orgLabels: string[] = [];
+    vi.mocked(withDbAccessContext).mockImplementation((async (ctx: any, fn: any) => {
+      orgLabels.push(ctx.label);
+      return fn();
+    }) as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'mon-monitor-3021-1',
+        status: 'completed',
+        result: { monitorId: 'monitor-3021', status: 'online', responseMs: 5 },
+      }),
+    } as any, ws as any);
+
+    expect(orgLabels).toContain('agentWs.commandResult.orphaned');
+    expect(orgLabels).not.toContain('agentWs.commandResult');
   });
 });
 

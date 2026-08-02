@@ -1177,12 +1177,13 @@ export async function processOrphanedCommandResult(
         details: monitorData as Record<string, unknown>
       };
       if (isRedisAvailable()) {
-        // Command results are processed inside a held org-scoped transaction
-        // (runWithAgentDbAccess). runOutsideDbContext exits the ALS context so
-        // instrumented-queue tripwires pass and any nested DB work routes to
-        // the pool — it does NOT release the outer transaction's connection,
-        // which stays held for the (normally short) Redis round-trips; the
-        // full fix is dispatching enqueues after the context closes (#1105).
+        // Orphaned results run inside a SHORT org-scoped transaction
+        // (agentWs.commandResult.orphaned, #3021). runOutsideDbContext exits
+        // the ALS context so instrumented-queue tripwires pass and any nested
+        // DB work routes to the pool — it does NOT release the outer
+        // transaction's connection, which stays held for the (normally short)
+        // Redis round-trips; the full fix is dispatching enqueues after the
+        // context closes (#1105).
         await runOutsideDbContext(() =>
           enqueueMonitorCheckResult(monitorId, checkResult, {
             actorType: 'agent',
@@ -1691,13 +1692,51 @@ export async function processOrphanedCommandResult(
 }
 
 /**
- * Process command result from agent
+ * Open a SHORT org-scoped DB access context for one agent-message DB
+ * operation. Module-level twin of the per-connection `runWithAgentDbAccess`
+ * closure in createAgentWsHandlers (which delegates here) so module-level
+ * paths like processCommandResult can scope individual operations instead of
+ * running under a message-long wrap.
+ *
+ * #3021: contexts opened through this helper must NEVER enclose a nested
+ * `withSystemDbAccessContext` (or any other context-opening helper) —
+ * `runOutsideDbContext` only exits the AsyncLocalStorage, it does NOT release
+ * this context's pooled connection, so nesting holds two connections at once
+ * and self-amplifies pool pressure (the #1105 class; see #2765 for the HTTP
+ * twin). Keep the wrapped work to plain ambient-`db` operations.
+ */
+async function runWithAgentOrgDbAccess<T>(label: string, orgId: string, fn: () => Promise<T>): Promise<T> {
+  return withDbAccessContext(
+    {
+      scope: 'organization',
+      orgId,
+      accessibleOrgIds: [orgId],
+      // Agents are org-scoped; they have no access to partner-level tables.
+      accessiblePartnerIds: [],
+      // Agents don't browse the catalog as org users; null disables the
+      // partner-wide read branch (safe).
+      currentPartnerId: null,
+      label
+    },
+    fn
+  );
+}
+
+/**
+ * Process command result from agent.
+ *
+ * #3021: deliberately NOT wrapped in a message-level org context by the
+ * `command_result` case (the WS twin of #2765). The lookup, lifecycle
+ * recheck, terminal CAS, and audit write below each manage their own
+ * short-lived context, and the per-type handler dispatch gets its own
+ * org-scoped wrap — so no step ever acquires a second pooled connection
+ * while another context's connection is held open (#1105).
  */
 async function processCommandResult(
   agentId: string,
   result: z.infer<typeof commandResultSchema>,
-  deviceId?: string,
-  orgId?: string
+  deviceId: string | undefined,
+  orgId: string
 ): Promise<void> {
   try {
     // #2434 chokepoint — FIRST statement, so "any agent result that enters this
@@ -1723,8 +1762,14 @@ async function processCommandResult(
 
     // Non-UUID command IDs (for example mon-* and snmp-*) are dispatched directly
     // over WebSocket and do not have a device_commands row.
+    // Short org wrap (#3021): the orphaned branches read/write RLS-guarded
+    // org tables (discovery jobs, snmp devices, backup/restore jobs) through
+    // the ambient db, so they need the tenant context the removed
+    // message-level wrap used to provide.
     if (!UUID_REGEX.test(result.commandId)) {
-      await processOrphanedCommandResult(agentId, deviceId ?? '', result);
+      await runWithAgentOrgDbAccess('agentWs.commandResult.orphaned', orgId, () =>
+        processOrphanedCommandResult(agentId, deviceId ?? '', result)
+      );
       return;
     }
 
@@ -1735,10 +1780,12 @@ async function processCommandResult(
     let resolvedDeviceId: string | undefined = deviceId;
 
     if (resolvedDeviceId) {
-      // Query device_commands OUTSIDE the current transaction context.
-      // device_commands has no RLS; leaving the held org-scoped transaction
-      // guarantees visibility of rows committed by the dispatcher after this
-      // transaction began.
+      // Query device_commands OUTSIDE any ambient transaction context.
+      // device_commands has no RLS. Since #3021 removed the message-level org
+      // wrap there normally IS no ambient context here, but runOutsideDbContext
+      // is kept as defense: if a future caller reintroduces one, escaping it
+      // preserves fresh-snapshot visibility of rows the dispatcher committed
+      // after that transaction began.
       //
       // The READ deliberately stays on the bare pool while the write below
       // takes an explicit system context. Only insert/update/delete are
@@ -1770,31 +1817,44 @@ async function processCommandResult(
       );
       command = row;
     } else {
-      // Fallback: resolve deviceId from agentId via devices table
-      const [ownedCommand] = await db
-        .select({
-          command: deviceCommands,
-          deviceId: devices.id
-        })
-        .from(deviceCommands)
-        .innerJoin(devices, eq(deviceCommands.deviceId, devices.id))
-        .where(
-          and(
-            eq(deviceCommands.id, result.commandId),
-            eq(devices.agentId, agentId),
-            eq(deviceCommands.targetRole, 'agent'),
-            inArray(deviceCommands.status, ACCEPTED_COMMAND_RESULT_STATUSES)
-          )
+      // Fallback: resolve deviceId from agentId via devices table. `devices`
+      // IS RLS-guarded, so with no ambient tenant context (#3021) this join
+      // genuinely needs an explicit system context — a bare-pool read would
+      // silently return 0 rows and misroute the result to the orphaned path.
+      // System (not org) scope matches isAgentDeviceStillAuthorized: the
+      // predicate binds devices.agentId to the socket's authenticated agent,
+      // so tenancy is enforced by the key, not the context.
+      const [ownedCommand] = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          db
+            .select({
+              command: deviceCommands,
+              deviceId: devices.id
+            })
+            .from(deviceCommands)
+            .innerJoin(devices, eq(deviceCommands.deviceId, devices.id))
+            .where(
+              and(
+                eq(deviceCommands.id, result.commandId),
+                eq(devices.agentId, agentId),
+                eq(deviceCommands.targetRole, 'agent'),
+                inArray(deviceCommands.status, ACCEPTED_COMMAND_RESULT_STATUSES)
+              )
+            )
+            .limit(1)
         )
-        .limit(1);
+      );
       command = ownedCommand?.command;
       resolvedDeviceId = ownedCommand?.deviceId;
     }
 
     if (!command || !resolvedDeviceId) {
       // Discovery and SNMP commands are dispatched directly via WebSocket
-      // without creating a deviceCommands record. Handle them here.
-      await processOrphanedCommandResult(agentId, deviceId ?? '', result);
+      // without creating a deviceCommands record. Handle them here (short org
+      // wrap for the same reason as the non-UUID branch above, #3021).
+      await runWithAgentOrgDbAccess('agentWs.commandResult.orphaned', orgId, () =>
+        processOrphanedCommandResult(agentId, deviceId ?? '', result)
+      );
       return;
     }
 
@@ -1920,7 +1980,11 @@ async function processCommandResult(
         const rejectedHandler = commandResultHandlers[command.type];
         if (rejectedHandler) {
           try {
-            await rejectedHandler({ agentId, command, result: normalizedResult, resolvedDeviceId: resolvedDeviceId!, stdout });
+            // Short org wrap (#3021): handlers touch RLS-guarded org tables
+            // through the ambient db (same as the happy-path dispatch below).
+            await runWithAgentOrgDbAccess('agentWs.commandResult.handler', orgId, () =>
+              rejectedHandler({ agentId, command, result: normalizedResult, resolvedDeviceId: resolvedDeviceId!, stdout })
+            );
           } catch (handlerErr) {
             console.error(`[AgentWs] Failed to finalize rejected ${command.type} result ${result.commandId}:`, handlerErr);
             captureException(handlerErr);
@@ -1939,14 +2003,18 @@ async function processCommandResult(
     if (DR_COMMAND_TYPES.has(command.type) && typeof commandPayload.drExecutionId === 'string') {
       try {
         const { handleDrCommandResult } = await import('./backup/drResultHandler');
-        await handleDrCommandResult({
-          commandId: result.commandId,
-          commandType: command.type,
-          deviceId: resolvedDeviceId,
-          status: normalizedResult.status,
-          result: normalizedResult.result,
-          payload: commandPayload,
-        });
+        // Short org wrap (#3021): DR result persistence reads/writes
+        // RLS-guarded org tables through the ambient db.
+        await runWithAgentOrgDbAccess('agentWs.commandResult.drResult', orgId, () =>
+          handleDrCommandResult({
+            commandId: result.commandId,
+            commandType: command.type,
+            deviceId: resolvedDeviceId!,
+            status: normalizedResult.status,
+            result: normalizedResult.result,
+            payload: commandPayload,
+          })
+        );
       } catch (err) {
         console.error(`[AgentWs] Failed to persist DR result state for ${result.commandId}:`, err);
         captureException(err);
@@ -1955,8 +2023,8 @@ async function processCommandResult(
       try {
         const { enqueueDrExecutionReconcile } = await import('../jobs/drExecutionWorker');
         const drExecutionId = commandPayload.drExecutionId as string;
-        // Exit the held org-scoped transaction context for the Redis
-        // round-trips (#1105) — see the note on the monitor-result branch.
+        // No ambient context here since #3021; runOutsideDbContext kept so the
+        // instrumented-queue tripwire stays satisfied if one is reintroduced.
         await runOutsideDbContext(() => enqueueDrExecutionReconcile(drExecutionId));
       } catch (err) {
         console.error(`[AgentWs] Failed to enqueue DR reconciliation for ${result.commandId}:`, err);
@@ -1964,10 +2032,16 @@ async function processCommandResult(
       }
     }
 
-    // Dispatch to per-command-type handler if one is registered
+    // Dispatch to per-command-type handler if one is registered.
+    // Short org wrap (#3021): handlers read/write RLS-guarded org tables
+    // (script_executions, discovery_jobs, backup/restore jobs, …) through the
+    // ambient db, so they need the tenant context — but ONLY they do, which is
+    // why the wrap sits here instead of around the whole message.
     const handler = commandResultHandlers[command.type];
     if (handler) {
-      await handler({ agentId, command, result: normalizedResult, resolvedDeviceId: resolvedDeviceId!, stdout });
+      await runWithAgentOrgDbAccess('agentWs.commandResult.handler', orgId, () =>
+        handler({ agentId, command, result: normalizedResult, resolvedDeviceId: resolvedDeviceId!, stdout })
+      );
     }
   } catch (error) {
     console.error(`[AgentWs] Failed to process command result for ${agentId}:`, error);
@@ -1996,20 +2070,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
    * sessionId) — they become a Sentry tag and part of the grouping message.
    */
   const runWithAgentDbAccess = async <T>(label: string, fn: () => Promise<T>): Promise<T> => {
-    return withDbAccessContext(
-      {
-        scope: 'organization',
-        orgId: agentDb.orgId,
-        accessibleOrgIds: [agentDb.orgId],
-        // Agents are org-scoped; they have no access to partner-level tables.
-        accessiblePartnerIds: [],
-        // Agents don't browse the catalog as org users; null disables the
-        // partner-wide read branch (safe).
-        currentPartnerId: null,
-        label
-      },
-      fn
-    );
+    return runWithAgentOrgDbAccess(label, agentDb.orgId, fn);
   };
 
   // The delivery epoch this handler set owns, stamped when its socket is
@@ -2543,8 +2604,16 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               );
               return;
             }
-            await runWithAgentDbAccess('agentWs.commandResult', async () =>
-              processCommandResult(agentId, parsed.data as z.infer<typeof commandResultSchema>, authenticatedAgent.deviceId, authenticatedAgent.orgId)
+            // #3021: NO message-level org wrap here (the WS twin of #2765).
+            // processCommandResult manages its own short-lived contexts — the
+            // old request-long wrap held one pooled connection idle-in-
+            // transaction while the nested system contexts inside acquired a
+            // second, doubling pool pressure per command result (#1105).
+            await processCommandResult(
+              agentId,
+              parsed.data as z.infer<typeof commandResultSchema>,
+              authenticatedAgent.deviceId,
+              authenticatedAgent.orgId
             );
             ws.send(JSON.stringify({
               type: 'ack',
