@@ -778,7 +778,12 @@ describe('device routes', () => {
       // the max timestamp). If a future refactor reverts to those, the
       // db.select call count here will jump from 2 to 4.
       expect(vi.mocked(db.select).mock.calls.length).toBe(2);
-      expect(vi.mocked(db.execute).mock.calls.length).toBe(1);
+      // Two db.execute laterals per page, both batched over the whole page:
+      // latest metrics, then the LAN-IP lookup added for the opt-in WAN/LAN
+      // IP columns (#2503). The point of the guard is that neither degrades
+      // into per-device queries — if this number starts scaling with the row
+      // count, something has moved inside the map().
+      expect(vi.mocked(db.execute).mock.calls.length).toBe(2);
     });
   });
 

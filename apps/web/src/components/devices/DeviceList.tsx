@@ -147,6 +147,18 @@ export type Device = {
    * responses from older API versions or agents too old to send it.
    */
   agentServerUrl?: string | null;
+  /**
+   * Public address the control plane last saw the agent connect from
+   * (devices.last_seen_ip, #2503). Agent rows only — null until the device
+   * has made one authenticated request, and always null for network rows.
+   */
+  wanIp?: string | null;
+  /**
+   * Best current local address for the device (#2503). For agent rows the API
+   * picks one interface from device_network (primary > IPv4 > routable);
+   * for network-discovered rows it is the discovered asset's own IP.
+   */
+  lanIp?: string | null;
   tags: string[];
   lastUser?: string;
   uptimeSeconds?: number;
@@ -482,6 +494,12 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   lastSeen: (d) => new Date(d.lastSeen).getTime() || null,
   agentVersion: (d) => d.agentVersion || null,
   watchdogVersion: (d) => d.watchdogVersion?.trim() || null,
+  // IP columns (#2503) sort as strings through the shared numeric collator,
+  // which happens to give correct dotted-quad ordering: it compares digit runs
+  // numerically, so 192.168.1.9 < 192.168.1.10 and 10.x < 192.x. Missing
+  // values sort blanks-last (null) to match the dash the cell renders (#1284).
+  wanIp: (d) => d.wanIp || null,
+  lanIp: (d) => d.lanIp || null,
   serverUrl: (d) => serverHost(d.agentServerUrl),
   tags: (d) => (d.tags && d.tags.length > 0 ? d.tags.join(", ") : null),
   lastUser: (d) => d.lastUser || null,
@@ -1553,6 +1571,40 @@ export default function DeviceList({
           data-testid={`device-${device.id}-server-url`}
         >
           {serverHost(device.agentServerUrl) || dash}
+        </td>
+      ),
+    },
+    // WAN/LAN IP columns (#2503). Both are opt-in and default-hidden. Header
+    // labels stay literal English here, matching every other opt-in column in
+    // this table (osVersion, power, vpn, …); only the ten default-visible
+    // columns are translated today.
+    wanIp: {
+      header: () => sortHeader("wanIp", "WAN IP", "Sort by WAN IP"),
+      // Agent-only: a discovered printer/switch never authenticates to the
+      // control plane, so there is no source address to report for it.
+      cell: (device) => (
+        <td
+          key="wanIp"
+          className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap font-mono"
+          title={device.wanIp ?? undefined}
+          data-testid={`device-${device.id}-wan-ip`}
+        >
+          {agentCell(device, device.wanIp || dash)}
+        </td>
+      ),
+    },
+    lanIp: {
+      header: () => sortHeader("lanIp", "LAN IP", "Sort by LAN IP"),
+      // Populated for BOTH arms: agent rows get the interface the API picked
+      // out of device_network, network rows their own discovered address.
+      cell: (device) => (
+        <td
+          key="lanIp"
+          className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap font-mono"
+          title={device.lanIp ?? undefined}
+          data-testid={`device-${device.id}-lan-ip`}
+        >
+          {device.lanIp || dash}
         </td>
       ),
     },

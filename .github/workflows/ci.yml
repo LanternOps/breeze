@@ -1159,6 +1159,35 @@ jobs:
           CGO_ENABLED: "0"
         run: go test ./internal/sessionbroker ./internal/eventlog ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
 
+      # internal/backup is the third instance of the same gap: its
+      # upload_error_class_codes_windows_test.go pins the Win32 permanent-error
+      # codes (#2997) against golang.org/x/sys/windows, and those codes drive
+      # ~300 of the 316 field failures that fix targets — yet the package
+      # cannot join the list above while its pre-existing Windows reds stand
+      # (#2523). A -run filter selects only the classification tests, so this
+      # gate is green today and still catches a typo'd code. It caught one in
+      # review: 0x17C is ERROR_CLOUD_FILE_INVALID_REQUEST, not the
+      # ERROR_CLOUD_FILE_ACCESS_DENIED (395) the OneDrive case needs.
+      # Drop the filter when #2523 lands and add the package above.
+      #
+      # The PASS-count assertion is not belt-and-braces: `go test -run` exits 0
+      # with "[no tests to run]" when the regex matches nothing, so a rename
+      # would silently void the only check the Win32 table has anywhere — the
+      # same vacuous-guard failure this repo has hit before. Counting top-level
+      # PASS lines makes that a red, not a green.
+      - name: Run Windows backup error-classification tests
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/backup -run 'TestPermanentWindowsErrnoConstantsMatchWin32|TestClassifyPermanentUploadError|TestLookupPermanentWindowsErrno' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -lt 4) { throw "expected at least 4 top-level PASS lines, got $passes - the -run filter matched nothing" }
+
       # -race requires cgo, which remote/desktop cannot satisfy on Windows, so
       # this covers only packages that do not import it (heartbeat and agentapp
       # do, transitively). Same package set as the step above: sessionbroker is
