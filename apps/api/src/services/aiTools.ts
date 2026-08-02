@@ -20,6 +20,11 @@ import {
   createExtensionStateStore,
   type ExtensionStateStore,
 } from '../extensions/stateStore';
+import {
+  createOrgInstalledReader,
+  installScopeOf,
+  type OrgInstalledReader,
+} from '../extensions/orgInstallGate';
 
 // Pre-existing domain modules
 import { registerAgentLogTools } from './aiToolsAgentLogs';
@@ -295,6 +300,23 @@ function defaultExtensionEnabledStore(): AiToolEnabledStore {
   return extensionEnabledStore;
 }
 
+/**
+ * The shared, lazily-built reader backing the extension AI-tool ORG-INSTALL
+ * gate (Task 7b — closes the fourth production dispatch path into extension
+ * code that the L1 install-scoping plan missed; the other three are the HTTP
+ * gateway wrappers, gated in orgInstallGate.ts/gateway.ts).
+ *
+ * Same memoization discipline as `defaultExtensionEnabledStore` above: built
+ * once, read on every `executeTool` call via the default parameter, but only
+ * ever consulted for org-scoped extension tools (see the gate below) — a
+ * server-scoped extension or a core tool never reaches it.
+ */
+let extensionOrgInstallReader: OrgInstalledReader | null = null;
+function defaultExtensionOrgInstallReader(): OrgInstalledReader {
+  extensionOrgInstallReader ??= createOrgInstalledReader();
+  return extensionOrgInstallReader;
+}
+
 function resolveExtensionTool(
   toolName: string,
   registry: ExtensionContributionRegistry,
@@ -410,6 +432,7 @@ export async function executeTool(
   auth: AuthContext,
   registry: ExtensionContributionRegistry = extensionContributionRegistry,
   store: AiToolEnabledStore = defaultExtensionEnabledStore(),
+  installReader: OrgInstalledReader = defaultExtensionOrgInstallReader(),
 ): Promise<string> {
   const coreTool = aiTools.get(toolName);
   const extensionTool = resolveExtensionTool(toolName, registry);
@@ -430,6 +453,32 @@ export async function executeTool(
     const owner = registry.findAiToolOwner(toolName);
     if (!owner || !(await store.isEnabled(owner))) {
       throw new Error(`Unknown tool: ${toolName}`);
+    }
+
+    // ORG-INSTALL gate (Task 7b): `executeTool` is the fourth production
+    // dispatch path into extension code — the HTTP gateway wrappers
+    // (orgInstallGate.ts/gateway.ts) cover the other three, but nothing
+    // upstream of here checks per-org installs for AI-tool calls, so a
+    // non-installed org could invoke an org-scoped extension's tools through
+    // chat/MCP/the SDK. `registry.get(owner)` is guaranteed defined here:
+    // `owner` came from `findAiToolOwner`, which only returns names present
+    // in the same `active` map `get` reads — the defensive throw below is
+    // unreachable in practice but keeps this fail-closed instead of silently
+    // skipping the gate if that invariant is ever violated.
+    const staged = registry.get(owner);
+    if (!staged) throw new Error(`Unknown tool: ${toolName}`);
+    if (installScopeOf(staged.manifest) === 'org') {
+      const orgId = auth.orgId;
+      // No single resolvable org (system/partner-scope callers) FAILS CLOSED,
+      // same as the gateway guard's `resolveCallerOrgId` contract. Reader
+      // errors PROPAGATE (never caught here) so an unreadable install set is
+      // never mistaken for "not installed" turned "allow". The response shape
+      // is identical to the enabled-gate throw above and the unknown-tool
+      // throw at the top of this function — a non-installed org cannot
+      // distinguish "not installed for you" from "does not exist".
+      if (!orgId || !(await installReader(owner, orgId))) {
+        throw new Error(`Unknown tool: ${toolName}`);
+      }
     }
   }
 

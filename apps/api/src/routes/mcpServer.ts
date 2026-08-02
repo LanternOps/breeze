@@ -25,6 +25,7 @@ import { MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { bearerTokenAuthMiddleware, resolvePartnerAccessibleOrgIds } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
+import type { OrgInstalledReader } from '../extensions/orgInstallGate';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement } from '../services/aiGuardrails';
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
@@ -800,7 +801,7 @@ async function handleJsonRpc(
         return jsonRpcResult(req.id, {});
 
       case 'tools/list':
-        return handleToolsList(req.id, scopes);
+        return await handleToolsList(req.id, scopes, auth);
 
       case 'tools/call':
         return await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c, sessionId);
@@ -831,7 +832,48 @@ async function handleJsonRpc(
 // tools/list
 // ============================================
 
-function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse {
+/**
+ * Task 7b, requirement 6 (disclosure-hardening, NOT the security boundary —
+ * `executeTool`'s org-install gate in aiTools.ts is): `auth` is already a
+ * parameter of the enclosing `handleJsonRpc`, so the caller's org is trivially
+ * available here, unlike the in-product chat surface (aiAgentSdkTools.ts),
+ * which was left unfiltered — see the Task 7b report for that gap.
+ *
+ * Loaded lazily via dynamic `import()`, NOT a static top-level import: several
+ * existing `tools/call`-only test files (mcpServer.creatorPermsNull.test.ts
+ * and siblings) mock `../services/aiTools` wholesale and never previously
+ * pulled in the extensions subsystem, so a static import here measurably grew
+ * their cold `vi.resetModules()` re-import cost past the default 5s test
+ * timeout. `tools/list` requests pay the one-time load cost instead; nothing
+ * that never calls `tools/list` does. Memoized after the first `tools/list`
+ * call, same "build once" discipline as the module-scope readers elsewhere
+ * (aiTools.ts's `defaultExtensionEnabledStore` / `defaultExtensionOrgInstallReader`).
+ */
+let mcpOrgInstallModules: {
+  registry: typeof import('../extensions/contributionRegistry')['extensionContributionRegistry'];
+  installScopeOf: typeof import('../extensions/orgInstallGate')['installScopeOf'];
+  reader: OrgInstalledReader;
+} | null = null;
+async function getMcpOrgInstallModules() {
+  if (!mcpOrgInstallModules) {
+    const [{ extensionContributionRegistry }, { installScopeOf, createOrgInstalledReader }] = await Promise.all([
+      import('../extensions/contributionRegistry'),
+      import('../extensions/orgInstallGate'),
+    ]);
+    mcpOrgInstallModules = {
+      registry: extensionContributionRegistry,
+      installScopeOf,
+      reader: createOrgInstalledReader(),
+    };
+  }
+  return mcpOrgInstallModules;
+}
+
+async function handleToolsList(
+  id: string | number,
+  scopes: string[],
+  auth: AuthContext,
+): Promise<JsonRpcResponse> {
   const allTools = getToolDefinitions();
   const hasExecute = scopes.includes('ai:execute');
   const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
@@ -839,7 +881,7 @@ function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse
   const hasWrite = hasExecute || scopes.includes('ai:write');
 
   // Filter tools based on API key scopes.
-  const filteredTools = allTools.filter((tool) => {
+  const scopedTools = allTools.filter((tool) => {
     const tier = getToolTier(tool.name);
     if (tier === undefined) return false;
 
@@ -850,6 +892,33 @@ function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse
     // Tier 3+ (destructive) = ai:execute
     return hasExecute && (!requireExecuteAdmin || hasExecuteAdmin);
   });
+
+  // Org-install visibility filter: hide an org-scoped extension's tools from
+  // a caller whose org has no enabled install, so a non-installed org can't
+  // even see the tool exists. A core tool (no owner) always passes through
+  // untouched, so this adds no reader calls to the all-core-tools path. A
+  // caller with no single resolvable org (system/partner-scope keys) never
+  // sees an org-scoped extension's tools — fail closed the same way
+  // `executeTool` does. A reader failure PROPAGATES (never caught here) to
+  // `handleJsonRpc`'s catch, which reports a JSON-RPC error — never a silent
+  // show-all or hide-all.
+  const { registry, installScopeOf, reader } = await getMcpOrgInstallModules();
+  const filteredTools: typeof scopedTools = [];
+  for (const tool of scopedTools) {
+    const owner = registry.findAiToolOwner(tool.name);
+    if (!owner) {
+      filteredTools.push(tool);
+      continue;
+    }
+    const manifest = registry.get(owner)?.manifest;
+    if (!manifest || installScopeOf(manifest) !== 'org') {
+      filteredTools.push(tool);
+      continue;
+    }
+    if (auth.orgId && (await reader(owner, auth.orgId))) {
+      filteredTools.push(tool);
+    }
+  }
 
   const result = filteredTools.map((tool) => ({
     name: tool.name,
