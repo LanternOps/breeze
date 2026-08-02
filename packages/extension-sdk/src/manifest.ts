@@ -122,6 +122,13 @@ const tenancySchema = z.object({
   deviceOrgDenormalizedTables: z.array(z.string()).default([]),
   deviceOrgMoveDeleteTables: z.array(z.string()).optional(),
   nonTenantTables: z.array(z.string()).optional(),
+  /**
+   * L1 install scoping (authorization, NOT containment — see the tenant-scoped
+   * install design). 'org': the host only dispatches requests / reveals the
+   * install set for orgs with an enabled extension_org_installs row. 'server'
+   * (default): today's behavior, no per-org gating.
+   */
+  installScope: z.enum(['server', 'org']).default('server'),
 }).strict();
 
 const pageSchema = z.object({
@@ -212,6 +219,7 @@ const manifestSchemaV1 = z.object({
     orgExportColumns: {},
     deviceCascadeDeleteTables: [],
     deviceOrgDenormalizedTables: [],
+    installScope: 'server',
   }),
 }).strict().superRefine((manifest, ctx) => {
   if (manifest.web && !manifest.requires.webSdk) {
@@ -259,8 +267,8 @@ const manifestSchemaV1 = z.object({
 export type ExtensionCapability = (typeof SUPPORTED_EXTENSION_CAPABILITIES)[number];
 type ParsedExtensionTenancyDeclaration = z.infer<typeof tenancySchema>;
 export type ExtensionTenancyDeclaration =
-  Omit<ParsedExtensionTenancyDeclaration, 'orgExportColumns'>
-  & Partial<Pick<ParsedExtensionTenancyDeclaration, 'orgExportColumns'>>;
+  Omit<ParsedExtensionTenancyDeclaration, 'orgExportColumns' | 'installScope'>
+  & Partial<Pick<ParsedExtensionTenancyDeclaration, 'orgExportColumns' | 'installScope'>>;
 
 type ParsedExtensionManifestV1 = z.infer<typeof manifestSchemaV1>;
 export type ExtensionManifestV1 =

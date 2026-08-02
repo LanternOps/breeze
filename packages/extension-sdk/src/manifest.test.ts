@@ -290,3 +290,60 @@ describe('parseExtensionManifestV1', () => {
     expect(() => parseExtensionManifestV1({ ...valid, web: webWithoutPages })).toThrow();
   });
 });
+
+describe('tenancy.installScope', () => {
+  const base = {
+    apiVersion: 'breeze.extensions/v1',
+    name: 'demo',
+    version: '1.0.0',
+    routeNamespace: 'demo',
+    requires: { breeze: '>=1.0.0', serverSdk: '^1.0.0', capabilities: ['server.routes.v1'] },
+    server: { entry: 'dist/server.js' },
+    migrationsDir: 'migrations',
+    schemaCompatibilityFloor: '1.0.0',
+    jobs: [],
+    aiTools: [],
+  };
+
+  it('defaults to "server" when the tenancy block is absent', () => {
+    const parsed = parseExtensionManifestV1(base);
+    expect(parsed.tenancy.installScope).toBe('server');
+  });
+
+  it('defaults to "server" when tenancy is declared without it', () => {
+    const parsed = parseExtensionManifestV1({
+      ...base,
+      tenancy: {
+        orgCascadeDeleteTables: ['demo_items'],
+        deviceCascadeDeleteTables: [],
+        deviceOrgDenormalizedTables: [],
+      },
+    });
+    expect(parsed.tenancy.installScope).toBe('server');
+  });
+
+  it('accepts "org"', () => {
+    const parsed = parseExtensionManifestV1({
+      ...base,
+      tenancy: {
+        orgCascadeDeleteTables: [],
+        deviceCascadeDeleteTables: [],
+        deviceOrgDenormalizedTables: [],
+        installScope: 'org',
+      },
+    });
+    expect(parsed.tenancy.installScope).toBe('org');
+  });
+
+  it('rejects unknown values', () => {
+    expect(() => parseExtensionManifestV1({
+      ...base,
+      tenancy: {
+        orgCascadeDeleteTables: [],
+        deviceCascadeDeleteTables: [],
+        deviceOrgDenormalizedTables: [],
+        installScope: 'tenant',
+      },
+    })).toThrow();
+  });
+});

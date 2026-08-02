@@ -204,6 +204,19 @@ describe('parseExtensionManifest', () => {
       })
     ).not.toThrow();
   });
+
+  it('defaults tenancy.installScope to "server"', () => {
+    const m = parseExtensionManifest(valid);
+    expect(m.tenancy.installScope).toBe('server');
+  });
+
+  it('accepts tenancy.installScope "org"', () => {
+    const m = parseExtensionManifest({
+      ...valid,
+      tenancy: { installScope: 'org' },
+    });
+    expect(m.tenancy.installScope).toBe('org');
+  });
 });
 
 describe('RESERVED_ROUTE_NAMESPACES', () => {
