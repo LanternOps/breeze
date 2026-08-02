@@ -136,6 +136,20 @@ function makeEnrollmentKey(overrides: Record<string, any> = {}) {
   };
 }
 
+/**
+ * Mock for db.select().from().where().groupBy() — the installer bootstrap-token
+ * aggregate GET /:id runs after loading the key (#2992).
+ */
+function mockSelectFromWhereGroupBy(rows: any[]) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        groupBy: vi.fn().mockResolvedValue(rows),
+      }),
+    }),
+  } as any);
+}
+
 /** Mock for db.select().from().where().limit() — single-record lookups */
 function mockSelectFromWhereLimit(rows: any[]) {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -204,6 +218,7 @@ describe('enrollment key routes — get, rotate, delete', () => {
   describe('GET /enrollment-keys/:id', () => {
     it('returns enrollment key details without raw key', async () => {
       mockSelectFromWhereLimit([makeEnrollmentKey()]);
+      mockSelectFromWhereGroupBy([]);
 
       const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
         method: 'GET',
@@ -215,6 +230,31 @@ describe('enrollment key routes — get, rotate, delete', () => {
       expect(body.id).toBe(KEY_ID);
       expect(body.name).toBe('Test Key');
       expect(body.key).toBeUndefined();
+      // Key with no installers → null, so the UI falls back to the key's own
+      // counters (#2992).
+      expect(body.installerTokens).toBeNull();
+    });
+
+    // #2992 — the detail route carries the same installer aggregate as the
+    // list route, so a caller doesn't have to know which endpoint it read from.
+    it('reports installer bootstrap-token capacity when the key has minted one', async () => {
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+      mockSelectFromWhereGroupBy([
+        { parentEnrollmentKeyId: KEY_ID, tokens: 1, consumed: 3, max: 7 },
+      ]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.installerTokens).toEqual({ tokens: 1, consumed: 3, max: 7 });
+      // The key's own budget is reported unchanged — the installer figure is a
+      // separate counter, not a rewrite of it.
+      expect(body.maxUsage).toBe(10);
+      expect(body.usageCount).toBe(0);
     });
 
     it('returns 404 for nonexistent key', async () => {

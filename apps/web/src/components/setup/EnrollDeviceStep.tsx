@@ -106,15 +106,11 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
     setDownloadSuccess(false);
 
     try {
-      // Create enrollment key scoped to the setup site.
-      //
-      // maxUsage carries the device count for the same reason it does in
-      // AddDeviceModal.handleDownload (#2992) — see the long note there. The
-      // modern Windows / macOS-app-bundle download paths mint no child
-      // enrollment key, so this parent is the row the Enrollment Keys page
-      // shows for the installer, and omitting maxUsage let the API default it
-      // to 1 and render "0 / 1" for an installer minted for X devices. Guided
-      // setup is usually a partner's FIRST look at that page.
+      // Create enrollment key scoped to the setup site. maxUsage is
+      // deliberately left unset — it is an enforced enrollment budget, not a
+      // display label. See the note in AddDeviceModal.handleDownload (#2992);
+      // the installer's real device-count cap lives on the bootstrap token,
+      // which the Enrollment Keys list now reads.
       const keyRes = await fetchWithAuth('/enrollment-keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -122,7 +118,6 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
           name: `Setup installer (${new Date().toISOString().slice(0, 10)})`,
           siteId,
           orgId,
-          maxUsage: deviceCount,
         }),
       });
 

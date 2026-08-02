@@ -51,19 +51,20 @@ function mockHappyPath() {
 /**
  * #2992 — guided setup mints its installer through the same two-step flow as
  * the Add Device modal: POST /enrollment-keys for a parent, then
- * GET /enrollment-keys/:id/installer/:platform?count=N. The modern Windows /
- * macOS-app-bundle download paths create no child enrollment key, so that
- * parent is the row the Enrollment Keys page shows — and a parent minted
- * without maxUsage gets the API's `?? 1` default, rendering "0 / 1" for an
- * installer built for N devices. Guided setup is typically a partner's first
- * visit to that page, so the defect is most visible here.
+ * GET /enrollment-keys/:id/installer/:platform?count=N.
+ *
+ * The device count belongs on the bootstrap token that the second call mints,
+ * NOT on the parent key: `max_usage` is an enforced enrollment budget
+ * (/agents/enroll matches on usage_count < max_usage), so writing a device
+ * count there to fix the Enrollment Keys display would widen a live
+ * credential. The list route reads the token instead.
  */
-describe('EnrollDeviceStep — installer parent key carries the device count (#2992)', () => {
+describe('EnrollDeviceStep — installer device count (#2992)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('sends the device count as the parent key maxUsage', async () => {
+  it('sends the device count to the installer route, not the key budget', async () => {
     mockHappyPath();
 
     render(<EnrollDeviceStep orgId="org-1" siteId="site-1" onFinish={vi.fn()} />);
@@ -80,32 +81,16 @@ describe('EnrollDeviceStep — installer parent key carries the device count (#2
     const createBody = JSON.parse((createCall[1] as RequestInit).body as string);
     expect(createBody.siteId).toBe('site-1');
     expect(createBody.orgId).toBe('org-1');
-    expect(createBody.maxUsage).toBe(12);
+    // Never the parent key's budget — that column gates real enrollments.
+    expect(createBody.maxUsage).toBeUndefined();
 
-    // The key's cap and the installer's own cap must not drift apart.
+    // The count drives the installer (bootstrap token) cap, and only that.
     expect(String(fetchWithAuthMock.mock.calls[1][0])).toContain('count=12');
   });
 
-  it('defaults maxUsage to 1 when the operator leaves the count alone', async () => {
-    mockHappyPath();
-
-    render(<EnrollDeviceStep orgId="org-1" siteId="site-1" onFinish={vi.fn()} />);
-
-    fireEvent.click(screen.getByTestId('setup-download-installer'));
-
-    await waitFor(() => {
-      expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
-    });
-
-    const createBody = JSON.parse(
-      (fetchWithAuthMock.mock.calls[0][1] as RequestInit).body as string,
-    );
-    expect(createBody.maxUsage).toBe(1);
-  });
-
   // The field has no `step` and isn't inside a <form>, so "4.5" is reachable.
-  // Both mint routes bound this to an int; sending a fraction 400s with a wire
-  // field name ("maxUsage") the operator has never seen.
+  // The download route bounds `count` to an int; sending a fraction 400s with
+  // a wire field name the operator has never seen.
   it('rounds a fractional device count before either mint route sees it', async () => {
     mockHappyPath();
 
@@ -118,10 +103,6 @@ describe('EnrollDeviceStep — installer parent key carries the device count (#2
       expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
     });
 
-    const createBody = JSON.parse(
-      (fetchWithAuthMock.mock.calls[0][1] as RequestInit).body as string,
-    );
-    expect(createBody.maxUsage).toBe(5);
     expect(String(fetchWithAuthMock.mock.calls[1][0])).toContain('count=5');
   });
 });

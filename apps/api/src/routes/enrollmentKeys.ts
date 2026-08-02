@@ -7,6 +7,7 @@ import { customAlphabet } from "nanoid";
 import { db, withSystemDbAccessContext } from "../db";
 import { enrollmentKeys, organizations } from "../db/schema";
 import { sites } from "../db/schema/orgs";
+import { installerBootstrapTokens } from "../db/schema/installerBootstrapTokens";
 import {
   authMiddleware,
   requireMfa,
@@ -542,6 +543,82 @@ function sanitizeEnrollmentKey(
   return safeRecord;
 }
 
+/**
+ * Installer capacity minted from a key, aggregated across its
+ * `installer_bootstrap_tokens` rows.
+ *
+ * Why this exists (#2992): on the modern download paths — Windows, and macOS
+ * in its default app-bundle mode — the installer routes create NO child
+ * enrollment key. They issue a bootstrap token, and that token carries the
+ * device count the operator asked for; the child key is minted lazily, one per
+ * device, at redemption. So the enrollment_keys row the Enrollment Keys page
+ * renders knows nothing about the installer, and `usage_count / max_usage`
+ * showed "0 / 1" for an installer built for X devices.
+ *
+ * Read-side by design. The obvious alternative — writing the device count into
+ * the parent's `max_usage` — is wrong: `max_usage` is an ENFORCED enrollment
+ * budget (`/agents/enroll` matches on `usage_count < max_usage`, and the
+ * short-link and MCP-invite paths atomically claim `usage_count` against it),
+ * so it would widen a live credential to fix a display string.
+ */
+export interface InstallerTokenUsage {
+  /** How many bootstrap tokens this key has minted (all time). */
+  tokens: number;
+  /** Σ consumed_count — devices that have actually redeemed an installer. */
+  consumed: number;
+  /** Σ max_usage — total device slots those installers were minted for. */
+  max: number;
+}
+
+/**
+ * Batched lookup of installer capacity for the keys on one list page.
+ *
+ * Deliberately a SECOND query rather than a leftJoin onto the list select:
+ * `installer_bootstrap_tokens` is 1:N per parent key (every download from the
+ * same key mints another token), so joining it would fan the page out into
+ * duplicate key rows and corrupt the pagination the caller was handed. Bounded
+ * by page size — at most `limit` ids.
+ *
+ * Aggregation rule for a key with SEVERAL tokens: SUM across all of them,
+ * including expired ones. Summing (rather than "most recent") means a key that
+ * produced three installers reports the whole picture instead of hiding the
+ * first two; including expired tokens keeps the number STABLE — a live "3 / 7"
+ * would otherwise silently flip back to the parent's own "0 / 1" the moment the
+ * token aged out, even though those three devices really did enroll. Expiry is
+ * already communicated by the row's own expiresAt / status badge.
+ *
+ * RLS: `installer_bootstrap_tokens` is a shape-1 (direct org_id) table with
+ * enabled + forced policies (`2026-04-19-a-installer-bootstrap-tokens.sql`), so
+ * this SELECT is org-filtered by Postgres in the request context on top of the
+ * app-layer `inArray` on ids the caller already proved access to.
+ */
+async function fetchInstallerTokenUsage(
+  keyIds: string[],
+): Promise<Map<string, InstallerTokenUsage>> {
+  const usage = new Map<string, InstallerTokenUsage>();
+  if (keyIds.length === 0) return usage;
+
+  const rows = await db
+    .select({
+      parentEnrollmentKeyId: installerBootstrapTokens.parentEnrollmentKeyId,
+      tokens: sql<number>`count(*)`,
+      consumed: sql<number>`coalesce(sum(${installerBootstrapTokens.consumedCount}), 0)`,
+      max: sql<number>`coalesce(sum(${installerBootstrapTokens.maxUsage}), 0)`,
+    })
+    .from(installerBootstrapTokens)
+    .where(inArray(installerBootstrapTokens.parentEnrollmentKeyId, keyIds))
+    .groupBy(installerBootstrapTokens.parentEnrollmentKeyId);
+
+  for (const row of rows) {
+    usage.set(row.parentEnrollmentKeyId, {
+      tokens: Number(row.tokens),
+      consumed: Number(row.consumed),
+      max: Number(row.max),
+    });
+  }
+  return usage;
+}
+
 const idParamSchema = z.object({ id: z.string().guid() });
 
 // ============================================
@@ -624,8 +701,20 @@ enrollmentKeyRoutes.get(
       .limit(limit)
       .offset(offset);
 
+    // Installer capacity for this page only (#2992) — see
+    // fetchInstallerTokenUsage for why this is a second keyed query and not a
+    // join. `null` for a key that never minted an installer, so the UI can fall
+    // back to the key's own counters (correct for CLI / plain keys, where
+    // usage_count is what actually gets claimed).
+    const installerUsage = await fetchInstallerTokenUsage(
+      keyList.map((keyRecord) => keyRecord.id),
+    );
+
     return c.json({
-      data: keyList.map((keyRecord) => sanitizeEnrollmentKey(keyRecord)),
+      data: keyList.map((keyRecord) => ({
+        ...sanitizeEnrollmentKey(keyRecord),
+        installerTokens: installerUsage.get(keyRecord.id) ?? null,
+      })),
       pagination: { page, limit, total },
     });
   },
@@ -865,7 +954,14 @@ enrollmentKeyRoutes.get(
       return c.json({ error: "Access denied" }, 403);
     }
 
-    return c.json(sanitizeEnrollmentKey(enrollmentKey));
+    // Same shape as the list route so a caller doesn't have to special-case
+    // which endpoint it read the key from (#2992).
+    const installerUsage = await fetchInstallerTokenUsage([enrollmentKey.id]);
+
+    return c.json({
+      ...sanitizeEnrollmentKey(enrollmentKey),
+      installerTokens: installerUsage.get(enrollmentKey.id) ?? null,
+    });
   },
 );
 

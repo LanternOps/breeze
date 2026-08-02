@@ -542,6 +542,7 @@
     "hideExpired": "Hide expired",
     "deleteExpired": "Delete expired",
     "shortCode": "Short code",
+    "installerUsage": "Installers {{consumed}} / {{max}}",
     "usage": "Usage",
     "expires": "Expires",
     "empty": "No enrollment keys found. Create one to get started.",

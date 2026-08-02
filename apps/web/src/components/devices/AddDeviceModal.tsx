@@ -464,32 +464,18 @@ export default function AddDeviceModal({
       // not the parent key itself (only the legacy macOS zip embeds a real
       // child enrollment key).
       //
-      // maxUsage MUST carry the device count (#2992). On the modern
-      // bootstrap-token paths (Windows, and macOS app-bundle) the download
-      // route mints NO child enrollment key — the real device-count cap lands
-      // on the installer_bootstrap_tokens row, a table the Enrollment Keys page
-      // never reads. So *at download time* this parent is the only row that
-      // page has to show, and omitting maxUsage let the API default it to 1
-      // (`data.maxUsage ?? 1`), rendering "0 / 1" for an installer minted for
-      // X devices.
-      //
-      // Two things this does NOT do, both deliberate:
-      //  - The numerator stays 0. Redemption increments
-      //    installer_bootstrap_tokens.consumed_count and mints a fresh
-      //    single-use CHILD key per device; nothing ever bumps the parent's
-      //    usage_count. Enrollment progress shows up as those child rows
-      //    appearing, not as this fraction climbing. Surfacing the token's
-      //    consumed_count on this row is the follow-up (see PR #2993).
-      //  - handleGenerateLink below still omits maxUsage on purpose: the
-      //    installer-link route inserts a child row carrying the real count,
-      //    so setting it here too would print the same cap on two rows.
-      //
-      // Note this parent is a live credential, not merely a display row —
-      // /agents/enroll gates on usage_count < max_usage — so this widens its
-      // direct-enrollment budget from 1 to deviceCount for its 60-minute life.
-      // Accepted: the raw key is returned only to this browser and dropped
-      // below (we keep `id` alone), and the cap now matches what the operator
-      // asked for rather than under-reporting it.
+      // maxUsage is deliberately NOT set from deviceCount (#2992). It is
+      // tempting — the Enrollment Keys page renders usage_count / max_usage,
+      // so an unset maxUsage takes the API's `?? 1` default and the row reads
+      // "0 / 1" for an installer minted for X devices. But max_usage is an
+      // enforced enrollment budget, not a label: /agents/enroll matches any key
+      // with usage_count < max_usage, and the short-link and MCP-invite paths
+      // atomically claim usage_count against it. Widening it here would hand
+      // this key N direct-enrollment slots to fix a display bug, and would make
+      // the same column mean different things depending on which flow minted
+      // the key. The real device-count cap lives on the installer_bootstrap_
+      // tokens row; the Enrollment Keys list now reads it (see
+      // EnrollmentKeyManager's usage cell).
       const keyRes = await fetchWithAuth("/enrollment-keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -497,7 +483,6 @@ export default function AddDeviceModal({
           name: `Add device installer (${new Date().toISOString().slice(0, 10)})`,
           siteId: selectedSiteId,
           orgId: currentOrgId,
-          maxUsage: deviceCount,
         }),
       });
 

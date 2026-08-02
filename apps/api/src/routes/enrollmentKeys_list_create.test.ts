@@ -131,6 +131,21 @@ function mockSelectFromWhereOrderByLimitOffset(rows: any[]) {
   } as any);
 }
 
+/**
+ * Mock for db.select().from().where().groupBy() — the batched installer
+ * bootstrap-token aggregate the list/detail routes run after loading keys
+ * (#2992). Rows are `{ parentEnrollmentKeyId, tokens, consumed, max }`.
+ */
+function mockSelectFromWhereGroupBy(rows: any[]) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        groupBy: vi.fn().mockResolvedValue(rows),
+      }),
+    }),
+  } as any);
+}
+
 /** Mock for db.insert().values().returning() */
 function mockInsertValuesReturning(rows: any[]) {
   vi.mocked(db.insert).mockReturnValueOnce({
@@ -181,12 +196,89 @@ describe('enrollment key routes — list & create', () => {
   // GET / — List enrollment keys
   // ============================================
   describe('GET /enrollment-keys', () => {
+    // ------------------------------------------------------------------
+    // #2992 — installer capacity on the list rows.
+    //
+    // The Add-Device / guided-setup download paths mint NO child enrollment
+    // key: the device count the operator chose lives on an
+    // installer_bootstrap_tokens row, so the key row alone rendered "0 / 1"
+    // for an installer built for X devices. The list route now reports that
+    // token capacity alongside the key's own counters.
+    // ------------------------------------------------------------------
+    it('attaches installer bootstrap-token capacity to the matching key only', async () => {
+      mockSelectFromWhere([{ count: 2 }]);
+      mockSelectFromWhereOrderByLimitOffset([
+        makeEnrollmentKey({ name: 'Installer parent' }),
+        makeEnrollmentKey({ id: 'key-2', name: 'Plain key' }),
+      ]);
+      mockSelectFromWhereGroupBy([
+        { parentEnrollmentKeyId: KEY_ID, tokens: 1, consumed: 3, max: 7 },
+      ]);
+
+      const res = await app.request('/enrollment-keys', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // One aggregate row must not fan out or reorder the page.
+      expect(body.data).toHaveLength(2);
+      expect(body.pagination.total).toBe(2);
+
+      expect(body.data[0].installerTokens).toEqual({ tokens: 1, consumed: 3, max: 7 });
+      // A key that never minted an installer reports null, so the UI keeps
+      // showing its own usage_count — which IS claimed for short-link and
+      // MCP-invite keys.
+      expect(body.data[1].installerTokens).toBeNull();
+
+      // The key's own budget is untouched: this is a read-side addition, and
+      // max_usage stays an enforced enrollment budget, not a display label.
+      expect(body.data[0].maxUsage).toBe(10);
+      expect(body.data[0].usageCount).toBe(0);
+    });
+
+    it('sums capacity across several tokens minted from one key', async () => {
+      mockSelectFromWhere([{ count: 1 }]);
+      mockSelectFromWhereOrderByLimitOffset([makeEnrollmentKey()]);
+      // Postgres SUM() comes back as a string over the wire; the route must
+      // coerce or the UI renders "12" as "0"+"12" style garbage.
+      mockSelectFromWhereGroupBy([
+        { parentEnrollmentKeyId: KEY_ID, tokens: '3', consumed: '4', max: '12' },
+      ]);
+
+      const res = await app.request('/enrollment-keys', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      const body = await res.json();
+      expect(body.data[0].installerTokens).toEqual({ tokens: 3, consumed: 4, max: 12 });
+    });
+
+    it('skips the aggregate query entirely when the page is empty', async () => {
+      mockSelectFromWhere([{ count: 0 }]);
+      mockSelectFromWhereOrderByLimitOffset([]);
+      // Deliberately NO groupBy mock: an empty page must not issue the second
+      // query at all (a bare `IN ()` is both wasteful and invalid SQL).
+
+      const res = await app.request('/enrollment-keys', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toEqual([]);
+    });
+
     it('lists enrollment keys for org-scoped user', async () => {
       mockSelectFromWhere([{ count: 2 }]);
       mockSelectFromWhereOrderByLimitOffset([
         makeEnrollmentKey({ name: 'Key 1' }),
         makeEnrollmentKey({ id: 'key-2', name: 'Key 2' }),
       ]);
+      mockSelectFromWhereGroupBy([]);
 
       const res = await app.request('/enrollment-keys', {
         method: 'GET',
@@ -269,6 +361,7 @@ describe('enrollment key routes — list & create', () => {
     it('supports pagination parameters', async () => {
       mockSelectFromWhere([{ count: 100 }]);
       mockSelectFromWhereOrderByLimitOffset([makeEnrollmentKey()]);
+      mockSelectFromWhereGroupBy([]);
 
       const res = await app.request('/enrollment-keys?page=3&limit=10', {
         method: 'GET',
