@@ -47,12 +47,17 @@ type Conn struct {
 	conn       net.Conn
 	sessionKey []byte
 	keyMu      sync.RWMutex // protects sessionKey
-	// sendSeq is the outbound sequence counter. It is atomic only so tests can
-	// observe it; it must be advanced ONLY with mu held. The receiver enforces
-	// strict ordering, not just uniqueness, so a number handed out without the
-	// write lock can reach the socket after a higher one and be discarded as a
-	// replay (issue #3007). Atomicity alone does not buy that ordering.
+	// sendSeq is the outbound sequence counter and the canonical statement of
+	// this type's ordering invariant: it must be advanced ONLY with mu held.
+	// The receiver enforces strict ordering, not just uniqueness, so a number
+	// handed out without the write lock can reach the socket after a higher one
+	// and be discarded as a replay (issue #3007). Atomicity alone does not buy
+	// that ordering — the type is atomic only so TestConnSendSeqAssignedUnder-
+	// WriteLock can observe the counter without racing it.
 	sendSeq atomic.Uint64
+	// recvSeq is the inbound counter. Recv load-then-stores it non-atomically
+	// with respect to other Recv calls, so a Conn must have a single reader;
+	// every caller today runs one Recv loop.
 	recvSeq atomic.Uint64
 	mu      sync.Mutex // serializes writes
 	// writeTimeoutNanos, when > 0, overrides the package-level writeTimeout for
@@ -128,6 +133,10 @@ func (c *Conn) SetWriteDeadline(t time.Time) error {
 
 // Send marshals an Envelope and writes it as [4-byte BE length][JSON].
 // It computes the HMAC and sets the sequence number automatically.
+//
+// Send mutates env (Seq and HMAC), so a caller must not share one *Envelope
+// across concurrent Sends — build a fresh envelope per call, as SendTyped and
+// SendError do.
 func (c *Conn) Send(env *Envelope) error {
 	// Fast path so an already-poisoned Conn fails without contending for the
 	// write lock. The authoritative check is repeated under c.mu below.
@@ -135,31 +144,39 @@ func (c *Conn) Send(env *Envelope) error {
 		return err
 	}
 
+	// Reject an oversized payload before taking the lock. The authoritative
+	// check is on the marshalled frame below, but that one runs inside the
+	// critical section, so without this a caller could hold c.mu across the
+	// hashing and marshalling of an arbitrarily large payload only to have it
+	// rejected — starving every other writer, including the keepalive pong
+	// whose absence gets the macOS user helper evicted (issue #2273). This
+	// bounds the in-lock work to roughly MaxMessageSize.
+	if len(env.Payload) > MaxMessageSize {
+		return fmt.Errorf("ipc: payload too large: %d > %d", len(env.Payload), MaxMessageSize)
+	}
+
 	// The sequence number, the HMAC that covers it, the marshal and the socket
 	// write all happen under c.mu. That is what makes the number a frame
-	// carries agree with the order it reaches the socket. Recv enforces strict
-	// monotonicity, so when the number was handed out before the lock two
-	// concurrent senders could take seq 1 and 2 and arrive as 2 then 1 — the
-	// loser was rejected as a replay, never retried, and logged as if it were
-	// tampering. The window was the HMAC plus the marshal, so it widened with
-	// payload size and preferentially ate the large messages, i.e. the
-	// terminal results that matter most (issue #3007).
+	// carries agree with the order it reaches the socket: Recv enforces strict
+	// monotonicity, so a number handed out before the lock let two concurrent
+	// senders take seq 1 and 2 and arrive as 2 then 1 (issue #3007). The loser
+	// is not merely dropped — every Recv caller treats the error as fatal, so
+	// one reordered frame tears down the whole IPC session, which is how a
+	// backup's terminal result goes missing.
 	//
 	// This widens the critical section to cover computeHMAC and json.Marshal.
-	// That cost is real but bounded: both are pure CPU proportional to payload
-	// size (~5.6 ms/MiB measured on an M4 Pro, so ~90 ms at the 16 MiB
-	// MaxMessageSize), while the lock already covers two blocking socket
-	// writes sharing a 30s deadline. It does not reintroduce the #2273 wedge,
-	// which was about *unbounded* blocking on a stalled peer — nothing added
-	// inside the lock here can block indefinitely.
+	// Both are pure CPU proportional to payload size and are now bounded by the
+	// pre-lock check above, against a lock that already covers two blocking
+	// socket writes sharing a 30s deadline. It does not reintroduce the #2273
+	// wedge, which was about *unbounded* blocking on a stalled peer: the only
+	// blocking call inside the lock is still the deadline-bounded write, and
+	// keyMu (taken by computeHMAC) is held only across a pointer read.
 	//
-	// The alternative — take the seq under the lock, marshal outside, then
-	// write in seq order via a ticket — was rejected. Writes must happen in a
-	// total order regardless, so it only pipelines CPU work against a single
-	// write, and it buys that with an unbounded ticket wait: a sender that
-	// abandons its ticket on a marshal error, the oversize rejection, or a
-	// panic wedges every later sender with no deadline to bound it. That is
-	// strictly worse than the hazard #2273 removed.
+	// An ordered handoff — seq under the lock, marshal outside, write in seq
+	// order via a ticket — was considered and rejected; see the commit message
+	// and PR for #3007. In short: writes are totally ordered anyway, so it only
+	// pipelines CPU against a single write, and it pays with an unbounded
+	// ticket wait that no deadline bounds.
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -179,9 +196,10 @@ func (c *Conn) Send(env *Envelope) error {
 		return fmt.Errorf("ipc: marshal envelope: %w", err)
 	}
 
-	// A rejected message still consumed a sequence number. That is fine: Recv
-	// requires each Seq to be greater than the last, not contiguous, so gaps
-	// are legal.
+	// Catches an envelope whose framing overhead pushes a just-under-limit
+	// payload over. A rejected message still consumed a sequence number, which
+	// is fine: Recv requires each Seq to be greater than the last, not
+	// contiguous, so gaps are legal.
 	if len(data) > MaxMessageSize {
 		return fmt.Errorf("ipc: message too large: %d > %d", len(data), MaxMessageSize)
 	}

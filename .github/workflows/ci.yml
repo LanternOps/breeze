@@ -1135,16 +1135,24 @@ jobs:
       # tests it adds are the platform log-open/rotate helpers, and the race
       # step's cgo requirement is not something this change verified.
       #
-      # ./internal/ipc was missing entirely (issue #3007). It is the framing
-      # layer every helper talks over — on Windows that is a named pipe, and
-      # auth_windows.go is a platform-specific peer-auth path — yet none of its
-      # tests had ever run on Windows. Verified the same way as logging: with
-      # GOOS=windows GOARCH=amd64 CGO_ENABLED=0 it vets, its test binary
-      # compiles, and its GOOS=windows dependency graph contains no
-      # remote/desktop and no cgo. Unlike logging it IS added to the race step:
-      # the bug that prompted this (concurrent Send racing the write lock) is
-      # precisely what the detector catches, and ipc is already compiled under
-      # cgo on Windows there as a dependency of sessionbroker.
+      # ./internal/ipc was missing entirely (issue #3007). Unlike eventlog and
+      # logging this adds no previously-unrun test — ipc has no //go:build
+      # windows test files, and its tests use TCP loopback rather than the named
+      # pipe it uses in production, so this does NOT close a named-pipe coverage
+      # gap. It earns its place differently: ipc is the concurrency-critical
+      # framing layer every helper writes through, its Send path is guarded by a
+      # single mutex, and none of that had ever been exercised on the Windows
+      # scheduler and net stack. Adding it also gets auth_windows.go compiled by
+      # a test binary. Verified the same way as logging: with GOOS=windows
+      # GOARCH=amd64 CGO_ENABLED=0 it vets, its test binary compiles, and its
+      # GOOS=windows dependency graph contains no remote/desktop and no cgo.
+      #
+      # It IS added to the race step below (unlike logging) because it is a
+      # shared-mutex concurrency package worth detector coverage on the OS it
+      # ships to, and ipc is already compiled under cgo there as a dependency of
+      # sessionbroker. Note the #3007 bug itself was NOT a data race — sendSeq
+      # was already atomic — so -race would not have caught it; the regression
+      # test asserts receiver-visible ordering instead.
       - name: Run Windows Go tests
         working-directory: agent
         env:

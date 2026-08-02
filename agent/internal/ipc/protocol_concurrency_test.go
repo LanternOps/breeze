@@ -30,19 +30,22 @@ func mustJSONString(t *testing.T, n int) json.RawMessage {
 	return raw
 }
 
-// TestConnSendSeqAssignedUnderWriteLock is the targeted, near-deterministic
-// reproduction. It exploits the fact that the pre-fix race window is the HMAC
-// computation plus the JSON marshal, which scales with payload size: a large
-// message takes its sequence number and then spends milliseconds hashing and
-// marshalling, while a small message that starts later takes the next sequence
-// number and reaches the socket first.
+// TestConnSendSeqAssignedUnderWriteLock is the targeted, fast reproduction. It
+// exploits the fact that the pre-fix window is the HMAC computation plus the
+// JSON marshal, which scales with payload size: a large message takes its
+// sequence number and then spends milliseconds hashing and marshalling, while a
+// small message that starts later takes the next number and reaches the socket
+// first. The spin-wait on sendSeq starts the small send only once the large one
+// has claimed a number, so this reproduces reliably rather than by luck.
 //
-// The spin-wait on sendSeq is what makes this deterministic rather than a
-// coin flip — it starts the small send only once the large one has definitely
-// claimed a sequence number. Under the fix that claim happens with c.mu held,
-// so the small send blocks on the mutex and the wire order matches the
-// sequence order; before the fix it happens with no lock held, so the small
-// send overtakes and the receiver rejects the large frame as a replay.
+// Its validity depends on sendSeq being published where it is claimed, which is
+// an implementation detail. That holds for the bug as filed and for a verbatim
+// re-introduction, but a variant that reserves the number outside the lock and
+// publishes sendSeq only after the write would make this test pass while still
+// being broken. TestConnSendConcurrentSendersAllAccepted below is the
+// authoritative guard — it asserts only receiver-observable behaviour and
+// catches that variant too. Demoting sendSeq to a plain uint64 fails loudly
+// here (compile error), which is intentional.
 func TestConnSendSeqAssignedUnderWriteLock(t *testing.T) {
 	serverConn, clientConn := createSocketPair(t)
 	defer serverConn.Close()
@@ -71,8 +74,8 @@ func TestConnSendSeqAssignedUnderWriteLock(t *testing.T) {
 		t.Fatalf("set read deadline: %v", err)
 	}
 
-	// 2 MiB: large enough that HMAC + marshal take milliseconds, which is
-	// ~1000x the small send's whole code path.
+	// 2 MiB: large enough that HMAC + marshal take milliseconds, two orders of
+	// magnitude more than the small send's whole code path.
 	bigEnv := &Envelope{ID: "big", Type: TypePing, Payload: mustJSONString(t, 2<<20)}
 	smallEnv := &Envelope{ID: "small", Type: TypePing, Payload: json.RawMessage(`"x"`)}
 
@@ -108,9 +111,12 @@ func TestConnSendSeqAssignedUnderWriteLock(t *testing.T) {
 	}
 }
 
-// TestConnSendConcurrentSendersAllAccepted is the broad -race guard: N
+// TestConnSendConcurrentSendersAllAccepted is the authoritative guard: N
 // goroutines sharing one Conn, every frame must be accepted by the receiver in
-// strictly increasing sequence order. This models the production fan-out —
+// strictly increasing sequence order. Note the assertion is the receiver's, not
+// the race detector's — #3007 was an ordering bug in race-free code (sendSeq
+// was already atomic), so this fails with or without -race. This models the
+// production fan-out —
 // concurrent backup run reporting, emitVaultAutoSyncResult, and progress or
 // keepalive pings overlapping a terminal result all write to the same Conn.
 func TestConnSendConcurrentSendersAllAccepted(t *testing.T) {
@@ -182,38 +188,34 @@ func TestConnSendConcurrentSendersAllAccepted(t *testing.T) {
 	wg.Wait()
 	close(sendErrs)
 
-	// The receiver is the primary assertion: when it rejects a frame it also
-	// closes its end, so the send errors that follow are downstream noise.
-	if err := <-recvErr; err != nil {
-		t.Fatalf("receiver rejected a legitimate frame (issue #3007): %v", err)
-	}
+	// Report send failures FIRST. t.Fatalf runs runtime.Goexit, so draining
+	// after the recvErr check would never execute — and if a sender is what
+	// failed first (a stalled runner tripping the write deadline), the receiver
+	// then starves and reports a misleading "the fix regressed" message with
+	// the real cause discarded.
 	for err := range sendErrs {
 		t.Errorf("send failed: %v", err)
+	}
+	if err := <-recvErr; err != nil {
+		t.Fatalf("receiver rejected a legitimate frame (issue #3007): %v", err)
 	}
 }
 
 // BenchmarkConnSendConcurrent measures Send throughput with several goroutines
 // sharing one Conn, at payload sizes spanning the range the agent actually
 // uses. It exists to quantify the cost of moving the HMAC and the JSON marshal
-// inside the write lock (issue #3007).
+// inside the write lock (issue #3007); the before/after figures that justified
+// that choice are recorded in the PR for #3007, not here, since the "before"
+// column describes a code state no longer in the tree.
 //
-// Measured on an M4 Pro (14 procs), before vs. after that change:
-//
-//	              -cpu=1 (uncontended)        -cpu=14 (saturated)
-//	 256 B        33.3 -> 30.7 us  (none)     39.4 -> 43.9 us  (~+11%)
-//	64 KiB         294 ->  265 us  (none)      98 ->  304 us  (~3x)
-//	 1 MiB        4.62 -> 4.37 ms  (none)     0.53 ->  4.30 ms (~8x)
-//
-// Uncontended cost is nil — the fix adds no work to a Send. The saturated
-// large-payload column is the whole cost: the old code let N goroutines
-// marshal on N cores and serialized only the write, so it beat the serial
-// ceiling. That advantage is unreachable in production, because the two
-// properties never co-occur on this transport: the large messages (script
-// command_result, screenshots) are request/response seconds-to-minutes apart,
-// while the high-rate messages (backup_restore per-file progress, keepalives)
-// are 200-500 byte structs whose marshal is nanoseconds. Remote-desktop video,
-// the one profile that would have made this expensive, does not use ipc.Conn
-// at all — frames go over WebSocket/WebRTC and TypeDesktopFrame is unused.
+// The summary that stays true: the change costs nothing on an uncontended Send,
+// and shows up only when several goroutines push large payloads simultaneously,
+// because the old code let them marshal on N cores while serializing just the
+// write. That profile does not occur on this transport — its large messages are
+// request/response, its high-rate messages are a few hundred bytes, and
+// remote-desktop video (the one profile that would have made this expensive)
+// does not use ipc.Conn at all: frames go over WebSocket/WebRTC and
+// TypeDesktopFrame has no sender.
 func BenchmarkConnSendConcurrent(b *testing.B) {
 	for _, size := range []int{256, 64 << 10, 1 << 20} {
 		b.Run(fmt.Sprintf("payload-%d", size), func(b *testing.B) {
@@ -257,8 +259,9 @@ func BenchmarkConnSendConcurrent(b *testing.B) {
 	}
 }
 
-// createSocketPairTB is createSocketPair widened to testing.TB so benchmarks
-// can use it too.
+// createSocketPairTB returns a connected pair of loopback TCP conns. It is the
+// single implementation behind createSocketPair, widened to testing.TB so
+// benchmarks can use it too.
 func createSocketPairTB(tb testing.TB) (net.Conn, net.Conn) {
 	tb.Helper()
 
@@ -268,12 +271,14 @@ func createSocketPairTB(tb testing.TB) (net.Conn, net.Conn) {
 	}
 	defer listener.Close()
 
+	// Buffered and always sent to, including on the error path: a bare return
+	// here would leave the receive below blocked until the whole test binary
+	// times out instead of failing immediately.
 	clientCh := make(chan net.Conn, 1)
 	go func() {
 		conn, err := net.Dial("tcp", listener.Addr().String())
 		if err != nil {
 			tb.Errorf("dial: %v", err)
-			return
 		}
 		clientCh <- conn
 	}()
@@ -283,5 +288,9 @@ func createSocketPairTB(tb testing.TB) (net.Conn, net.Conn) {
 		tb.Fatalf("accept: %v", err)
 	}
 
-	return serverConn, <-clientCh
+	clientConn := <-clientCh
+	if clientConn == nil {
+		tb.Fatal("dial failed; see error above")
+	}
+	return serverConn, clientConn
 }

@@ -421,7 +421,9 @@ func TestConnSendOversizedDoesNotPoison(t *testing.T) {
 	server := NewConn(serverConn)
 	client := NewConn(clientConn)
 
-	// Oversized payload is rejected by the size check, before c.mu / any Write.
+	// Rejected before any Write. Note this payload is not valid JSON, so it is
+	// json.Marshal that rejects it, not a size check — see
+	// TestConnSendOversizedPayloadRejectedBeforeLock for the size paths.
 	big := make(json.RawMessage, MaxMessageSize+1)
 	for i := range big {
 		big[i] = 'A'
@@ -543,10 +545,19 @@ func TestConnSendStalledDoesNotStarveOtherWriter(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	// Writer 2 (the "keepalive pong") must not block forever: once writer 1's
-	// deadline fires and releases c.mu, writer 2 proceeds and returns an error
-	// (either its own deadline or the poison fast-path). Before the fix it
-	// would block on Lock() indefinitely.
+	// deadline fires and releases c.mu, writer 2 proceeds. Before the #2273 fix
+	// it would block on Lock() indefinitely.
+	//
+	// Writer 2 also pins the under-lock poison re-check (issue #3007). It
+	// cleared the pre-lock fast path while the Conn was still healthy, so only
+	// the re-check inside the critical section can stop it: writer 1 calls
+	// poison() while still holding c.mu, so writer 2 is guaranteed to observe
+	// writePoisoned the instant it acquires the lock. Without the re-check it
+	// would instead append a frame to a stream writer 1's partial write already
+	// desynced, and burn its own full writeTimeout doing so — which is what the
+	// elapsed-time assertion below detects.
 	w2 := make(chan error, 1)
+	start := time.Now()
 	go func() { w2 <- client.Send(&Envelope{ID: "2", Type: TypePing, Payload: payload}) }()
 
 	for i, ch := range []chan error{w1, w2} {
@@ -555,36 +566,71 @@ func TestConnSendStalledDoesNotStarveOtherWriter(t *testing.T) {
 			if err == nil {
 				t.Fatalf("writer %d unexpectedly succeeded against a dead peer", i+1)
 			}
+			if i == 1 {
+				if !strings.Contains(err.Error(), "poisoned") {
+					t.Fatalf("writer 2 wrote into a poisoned stream instead of failing on the "+
+						"under-lock re-check (issue #3007): %v", err)
+				}
+				if elapsed := time.Since(start); elapsed >= writeTimeout {
+					t.Fatalf("writer 2 took %v (>= writeTimeout %v) — it attempted its own write "+
+						"rather than failing fast on the poison re-check", elapsed, writeTimeout)
+				}
+			}
 		case <-time.After(2 * time.Second):
 			t.Fatalf("writer %d blocked — stalled writer starved the mutex", i+1)
 		}
 	}
 }
 
+// TestConnSendOversizedPayloadRejectedBeforeLock covers the pre-lock payload
+// guard (issue #3007): an oversized payload must be rejected without holding
+// c.mu across its marshal, and must not consume a sequence number or poison the
+// Conn. It uses a VALID oversized JSON payload deliberately — the older
+// oversize test fills the payload with 'A', which is not JSON, so it errors in
+// json.Marshal and never exercises a size check at all.
+func TestConnSendOversizedPayloadRejectedBeforeLock(t *testing.T) {
+	serverConn, clientConn := createSocketPair(t)
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	server := NewConn(serverConn)
+	client := NewConn(clientConn)
+
+	big, err := json.Marshal(strings.Repeat("a", MaxMessageSize+1))
+	if err != nil {
+		t.Fatalf("build oversized payload: %v", err)
+	}
+	if err := client.Send(&Envelope{ID: "big", Type: TypePing, Payload: big}); err == nil {
+		t.Fatal("expected oversized payload to be rejected")
+	} else if !strings.Contains(err.Error(), "payload too large") {
+		t.Fatalf("expected the pre-lock payload guard to reject it, got: %v", err)
+	}
+
+	// No sequence number was consumed, so the next frame is still seq 1.
+	if got := client.sendSeq.Load(); got != 0 {
+		t.Errorf("rejected payload consumed a sequence number: sendSeq=%d, want 0", got)
+	}
+
+	// The Conn is not poisoned and remains usable end-to-end.
+	done := make(chan error, 1)
+	go func() { done <- client.SendTyped("ok", TypePing, map[string]string{"a": "b"}) }()
+
+	if err := server.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	env, err := server.Recv()
+	if err != nil {
+		t.Fatalf("recv after rejected oversized payload: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("send after rejected oversized payload: %v", err)
+	}
+	if env.Seq != 1 {
+		t.Errorf("expected the next frame to carry seq 1, got %d", env.Seq)
+	}
+}
+
 func createSocketPair(t *testing.T) (net.Conn, net.Conn) {
 	t.Helper()
-
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer listener.Close()
-
-	clientCh := make(chan net.Conn, 1)
-	go func() {
-		conn, err := net.Dial("tcp", listener.Addr().String())
-		if err != nil {
-			t.Errorf("dial: %v", err)
-			return
-		}
-		clientCh <- conn
-	}()
-
-	serverConn, err := listener.Accept()
-	if err != nil {
-		t.Fatalf("accept: %v", err)
-	}
-
-	clientConn := <-clientCh
-	return serverConn, clientConn
+	return createSocketPairTB(t)
 }
