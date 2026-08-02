@@ -19,7 +19,12 @@ import './setup';
 
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import {
+  db,
+  withDbAccessContext,
+  withSystemDbAccessContext,
+  type DbAccessContext,
+} from '../../db';
 import {
   enrollmentKeys,
   installerBootstrapTokens,
@@ -30,6 +35,16 @@ import {
 import { fetchInstallerTokenUsage } from '../../routes/enrollmentKeys';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
+
+function orgCtx(orgId: string): DbAccessContext {
+  return {
+    scope: 'organization',
+    orgId,
+    accessibleOrgIds: [orgId],
+    accessiblePartnerIds: null,
+    userId: null,
+  };
+}
 
 describe('installer token usage aggregate (#2992, real Postgres)', () => {
   runDb(
@@ -172,4 +187,71 @@ describe('installer token usage aggregate (#2992, real Postgres)', () => {
       }
     },
   );
+
+  /**
+   * The helper claims it "never throws" and degrades to no-installer-info
+   * rather than 500-ing the Enrollment Keys page. That claim is only true
+   * because the query runs on a nested SAVEPOINT.
+   *
+   * A bare try/catch does NOT achieve it: request handlers run inside
+   * withDbAccessContext's postgres.js `sql.begin`, which records the error on
+   * the outer scope and re-throws it at COMMIT even though the callback
+   * resolved (#2189). Swallowing would still 500, just without the route's own
+   * context. This test pins the difference — it fails if the savepoint is
+   * removed, even with the try/catch left in place.
+   */
+  runDb('degrades to an empty map without poisoning the request transaction', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const org = await withSystemDbAccessContext(async () => {
+      const [partner] = await db
+        .insert(partners)
+        .values({
+          name: `Degrade Partner ${unique}`,
+          slug: `degrade-partner-${unique}`,
+          type: 'msp',
+          plan: 'pro',
+          status: 'active',
+        })
+        .returning({ id: partners.id });
+      const [o] = await db
+        .insert(organizations)
+        .values({
+          partnerId: partner!.id,
+          name: `Degrade Org ${unique}`,
+          slug: `degrade-org-${unique}`,
+          type: 'customer',
+          status: 'active',
+        })
+        .returning({ id: organizations.id });
+      return { partnerId: partner!.id, orgId: o!.id };
+    });
+
+    try {
+      // The whole point: this must RESOLVE. Before the savepoint it rejected
+      // at commit with the raw PostgresError.
+      const outcome = await withDbAccessContext(orgCtx(org.orgId), async () => {
+        // 'not-a-uuid' makes Postgres throw 22P02 inside the aggregate —
+        // a real failure shape, not a stubbed one.
+        const usage = await fetchInstallerTokenUsage(['not-a-uuid']);
+
+        // The outer transaction must still be usable afterwards; a poisoned
+        // one fails every follow-up query with 25P02.
+        const [stillAlive] = await db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.id, org.orgId));
+
+        return { size: usage.size, stillAlive: stillAlive?.id };
+      });
+
+      expect(outcome.size).toBe(0);
+      expect(outcome.stillAlive).toBe(org.orgId);
+    } finally {
+      await withSystemDbAccessContext(async () => {
+        await db.delete(organizations).where(eq(organizations.id, org.orgId));
+        await db.delete(partners).where(eq(partners.id, org.partnerId));
+      });
+    }
+  });
 });

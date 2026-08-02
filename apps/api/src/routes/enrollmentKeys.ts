@@ -601,8 +601,20 @@ export interface InstallerTokenUsage {
  * app-layer `inArray` on ids the caller already proved access to.
  *
  * Never throws. This is cosmetic enrichment on a read that worked before it
- * existed; a failed aggregate degrades to "no installer info" rather than
+ * existed, so a failed aggregate degrades to "no installer info" rather than
  * blanking the operator's whole Enrollment Keys page.
+ *
+ * The nested `db.transaction` is load-bearing, not decoration — a bare
+ * try/catch here does NOT work. Request handlers run inside
+ * withDbAccessContext's postgres.js `sql.begin`, whose scope attaches
+ * `q.catch(e => uncaughtError ||= e)` to every query and re-throws the
+ * original error at COMMIT even when the callback resolved. Swallowing the
+ * error would still 500 the page, just without the route's own context (#2189;
+ * see dbSavepointErrorIsolation.integration.test.ts). A nested transaction
+ * becomes `sql.savepoint`, which gets its own scope and rolls back to the
+ * savepoint — leaving the outer transaction healthy and its uncaughtError
+ * unset. The query MUST be issued on `tx`: the ambient `db` proxy resolves via
+ * AsyncLocalStorage to the OUTER transaction and would reintroduce the clobber.
  */
 export async function fetchInstallerTokenUsage(
   keyIds: string[],
@@ -612,15 +624,17 @@ export async function fetchInstallerTokenUsage(
   if (keyIds.length === 0) return usage;
 
   try {
-    const rows = await db
-      .select({
-        parentEnrollmentKeyId: installerBootstrapTokens.parentEnrollmentKeyId,
-        consumed: sql<number>`coalesce(sum(${installerBootstrapTokens.consumedCount}), 0)`,
-        max: sql<number>`coalesce(sum(${installerBootstrapTokens.maxUsage}), 0)`,
-      })
-      .from(installerBootstrapTokens)
-      .where(inArray(installerBootstrapTokens.parentEnrollmentKeyId, keyIds))
-      .groupBy(installerBootstrapTokens.parentEnrollmentKeyId);
+    const rows = await db.transaction((tx) =>
+      tx
+        .select({
+          parentEnrollmentKeyId: installerBootstrapTokens.parentEnrollmentKeyId,
+          consumed: sql<number>`coalesce(sum(${installerBootstrapTokens.consumedCount}), 0)`,
+          max: sql<number>`coalesce(sum(${installerBootstrapTokens.maxUsage}), 0)`,
+        })
+        .from(installerBootstrapTokens)
+        .where(inArray(installerBootstrapTokens.parentEnrollmentKeyId, keyIds))
+        .groupBy(installerBootstrapTokens.parentEnrollmentKeyId),
+    );
 
     for (const row of rows) {
       usage.set(row.parentEnrollmentKeyId, {

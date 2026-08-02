@@ -10,16 +10,25 @@ const { mfaGate, permissionGate } = vi.hoisted(() => ({
   permissionGate: { deny: false },
 }));
 
-vi.mock('../db', () => ({
-  runOutsideDbContext: vi.fn((fn) => fn()),
-  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  db: {
+// `db.transaction` is mocked to invoke its callback with the SAME object, so a
+// nested savepoint (used by the installer-usage aggregate, #2992) routes
+// straight back to the `db.select` mocks these tests already configure.
+const dbMock = vi.hoisted(() => {
+  const m: Record<string, any> = {
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
-  },
+  };
+  m.transaction = vi.fn(async (fn: (tx: unknown) => unknown) => fn(m));
+  return m;
+});
+
+vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  db: dbMock,
 }));
 
 vi.mock('../db/schema', () => ({
