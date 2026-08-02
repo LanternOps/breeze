@@ -74,26 +74,26 @@ describe('event-loop monitor bootstrap wiring (index.ts)', () => {
     expect(indexSource).toMatch(/stopEventLoopMonitor\s*\(/);
   });
 
-  it('reports event-loop lag on /health/ready without gating readiness on it', () => {
-    // Readiness must NOT flip on starvation: pulling a loaded instance out of
-    // rotation pushes its traffic onto its peers and starves them in turn.
-    expect(indexSource).toMatch(/getEventLoopLagStats\s*\(/);
+  it('keeps event-loop telemetry off the unauthenticated /health/ready', () => {
+    // /health/ready is in HEALTH_CHECK_PATHS (middleware/security.ts) — it
+    // answers without auth. The lag stats are a live load gradient plus the
+    // starvation threshold itself, so publishing them there hands an
+    // unauthenticated prober a readout of whether its own load is starving the
+    // instance. Binary availability is what belongs on this endpoint; the
+    // numbers live on the auth-gated /metrics, and the starvation reporter
+    // logs to the console regardless.
+    //
+    // Asserting absence (rather than deleting the test with the code) is the
+    // point: the block reads as harmless diagnostics, so the obvious future
+    // edit is to add it back.
     const readyBlock = indexSource.slice(
       indexSource.indexOf("app.get('/health/ready'"),
       indexSource.indexOf("app.get('/ready'"),
     );
     expect(readyBlock.length).toBeGreaterThan(0);
-    expect(readyBlock).toContain('eventLoop');
-    // `allOk` must be computed from `checks` alone, and the lag stats must be
-    // read AFTER it — so no future edit can fold starvation into `checks`
-    // (e.g. `checks.eventLoop = stats.starved ? 'error' : 'ok'`) and silently
-    // start shedding traffic from a merely-busy instance. Ordering is the
-    // structural guarantee; a keyword blocklist is not.
-    const allOkAt = readyBlock.indexOf('const allOk = Object.values(checks)');
-    const statsAt = readyBlock.indexOf('getEventLoopLagStats(');
-    expect(allOkAt).toBeGreaterThan(-1);
-    expect(statsAt).toBeGreaterThan(allOkAt);
-    expect(readyBlock).not.toMatch(/checks\.\w*[eE]vent[lL]oop/);
+    expect(readyBlock).toContain('const allOk = Object.values(checks)');
+    expect(readyBlock).not.toMatch(/getEventLoopLagStats/);
+    expect(readyBlock).not.toMatch(/[eE]vent[lL]oop\s*[,:}]/);
     expect(readyBlock).not.toMatch(/starved/);
   });
 });

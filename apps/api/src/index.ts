@@ -168,7 +168,6 @@ import {
   setConnectTimeoutClassifier,
 } from './services/sentry';
 import {
-  getEventLoopLagStats,
   getEventLoopStarvationThresholdMs,
   startEventLoopMonitor,
   stopEventLoopMonitor,
@@ -480,18 +479,21 @@ app.get('/health/ready', async (c) => {
 
   const allOk = Object.values(checks).every((v) => v === 'ok');
 
-  // #3022 — event-loop lag is REPORTED here but deliberately does NOT feed
-  // `allOk`. Starvation is a load symptom, and failing readiness under load
-  // would pull the instance out of rotation, push its traffic onto the
-  // remaining instances, and starve those in turn. The whole point of surfacing
-  // it is to make the condition diagnosable, not to act on it automatically.
-  const eventLoop = getEventLoopLagStats();
-
+  // #3022 — event-loop lag is deliberately NOT reported here. This endpoint is
+  // unauthenticated (see HEALTH_CHECK_PATHS in middleware/security.ts), and the
+  // lag stats are a live load gradient plus the starvation threshold itself,
+  // which would let an unauthenticated prober measure whether its own load is
+  // starving the instance. What this endpoint already exposes is binary
+  // availability; a tunable pressure readout is a different thing.
+  //
+  // Nothing is lost by the omission: the same numbers are on the auth-gated
+  // /metrics as Prometheus gauges, and the starvation reporter logs to the
+  // console unconditionally. Load balancers — the actual consumers here — read
+  // the status code, not the body.
   return c.json(
     {
       status: allOk ? 'ready' : 'not_ready',
-      checks,
-      eventLoop
+      checks
     },
     allOk ? 200 : 503
   );
