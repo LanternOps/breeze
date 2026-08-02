@@ -1157,7 +1157,7 @@ jobs:
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./cmd/breeze-watchdog
 
       # internal/backup is the third instance of the same gap: its
       # upload_error_class_codes_windows_test.go pins the Win32 permanent-error
