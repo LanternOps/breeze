@@ -1,5 +1,5 @@
 /**
- * Replays 2026-08-06-g-drop-custom-alert-conditions.sql against seeded "dirty"
+ * Replays 2026-08-08-drop-custom-alert-conditions.sql against seeded "dirty"
  * data — rules still storing the retired `custom` condition type, the shape a
  * pre-#2946 tenant has in production.
  *
@@ -42,7 +42,7 @@ import { getTestDb } from './setup';
 
 const MIGRATION_FILE = join(
   __dirname,
-  '../../../migrations/2026-08-06-g-drop-custom-alert-conditions.sql',
+  '../../../migrations/2026-08-08-drop-custom-alert-conditions.sql',
 );
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
