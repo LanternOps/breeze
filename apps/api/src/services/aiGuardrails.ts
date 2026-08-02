@@ -99,7 +99,7 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   security_scan: ['quarantine', 'remove', 'restore'],
   disk_cleanup: ['execute'],
   manage_startup_items: ['disable', 'enable'],
-  manage_scheduled_tasks: ['run', 'disable', 'enable', 'delete'],
+  manage_scheduled_tasks: ['run', 'disable', 'enable'],
   // Fleet tools — Tier 3 actions (require user approval)
   manage_configuration_policy: ['create', 'update', 'delete'],
   manage_deployments: ['create', 'start', 'cancel'],
@@ -273,7 +273,6 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     run: { resource: 'devices', action: 'execute' },
     disable: { resource: 'devices', action: 'execute' },
     enable: { resource: 'devices', action: 'execute' },
-    delete: { resource: 'devices', action: 'execute' },
   },
   take_screenshot: { resource: 'devices', action: 'execute' },
   analyze_screen: { resource: 'devices', action: 'execute' },
@@ -505,6 +504,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   manage_notification_channels: {
     list: { resource: 'alerts', action: 'read' },
     test: { resource: 'alerts', action: 'write' },
+    create: { resource: 'alerts', action: 'write' },
+    update: { resource: 'alerts', action: 'write' },
+    delete: { resource: 'alerts', action: 'write' },
   },
   // Saved filter tools
   manage_saved_filters: {
@@ -569,6 +571,99 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // permissions live in TOOL_EXTRA_PERMISSIONS below.
   send_deployment_invites: { resource: 'devices', action: 'write' },
   configure_defaults: { resource: 'organizations', action: 'write' },
+
+  // Registration-debt payoff: RBAC entries for tools that were registered in
+  // aiTools but had no TOOL_PERMISSIONS entry (legacyPermissionGaps in
+  // aiToolsRegistryParity.test.ts). See that file's history for context.
+  // Incidents (analogy: manage_dr_plan/sync_huntress_data org-write; get_dr_plan_details org-read)
+  create_incident: { resource: 'organizations', action: 'write' },
+  get_incident_timeline: { resource: 'organizations', action: 'read' },
+  generate_incident_report: { resource: 'organizations', action: 'read' },
+  // Device-execute (analogy: s1_isolate_device, execute_command; collect_evidence includes
+  // screenshot => privileged extraction like take_screenshot)
+  execute_containment: { resource: 'devices', action: 'execute' },
+  collect_evidence: { resource: 'devices', action: 'execute' },
+
+  // Policy-prereq family (analogy: manage_backup_profiles per-action map)
+  manage_update_rings: {
+    list: { resource: 'policies', action: 'read' },
+    get: { resource: 'policies', action: 'read' },
+    create: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+  },
+  manage_backup_configs: {
+    list: { resource: 'policies', action: 'read' },
+    get: { resource: 'policies', action: 'read' },
+    create: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+  },
+
+  // Device reads (analogy: analyze_boot_performance, query_change_log)
+  get_user_experience_metrics: { resource: 'devices', action: 'read' },
+  get_ip_history: { resource: 'devices', action: 'read' },
+  get_active_users: { resource: 'devices', action: 'read' },
+
+  // Security visibility (analogy: get_security_posture devices:read; PAM entries mirror
+  // routes/pam.ts requirePamRead/Execute)
+  get_dns_security: { resource: 'devices', action: 'read' },
+  manage_dns_policy: { resource: 'devices', action: 'write' },
+  get_browser_security: { resource: 'devices', action: 'read' },
+  manage_browser_policy: {
+    list: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
+    apply: { resource: 'devices', action: 'execute' },   // queues real deviceCommands (parity: apply_cis_remediation)
+  },
+  get_sensitive_data_overview: { resource: 'devices', action: 'read' },
+  remediate_sensitive_data: {
+    encrypt: { resource: 'devices', action: 'execute' },
+    quarantine: { resource: 'devices', action: 'execute' },
+    secure_delete: { resource: 'devices', action: 'execute' },
+    accept_risk: { resource: 'devices', action: 'write' },
+    false_positive: { resource: 'devices', action: 'write' },
+    mark_remediated: { resource: 'devices', action: 'write' },
+  },
+  request_elevation: { resource: 'devices', action: 'execute' },   // routes/pam.ts: respond gates on requirePamExecute; rule auto-approve makes this privilege-granting
+  revoke_elevation: { resource: 'devices', action: 'execute' },    // routes/pam.ts revoke gates on requirePamExecute
+  get_elevation_history: { resource: 'devices', action: 'read' },  // requirePamRead
+
+  // Compliance / software / peripheral (analogy: query_compliance_policies policies:read;
+  // manage_configuration_policy map)
+  get_software_compliance: { resource: 'policies', action: 'read' },
+  manage_software_policies: {
+    list: { resource: 'policies', action: 'read' },
+    get: { resource: 'policies', action: 'read' },
+    create: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+  },
+  manage_software_policy: {
+    list: { resource: 'policies', action: 'read' },
+    get: { resource: 'policies', action: 'read' },
+    create: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+    delete: { resource: 'policies', action: 'write' },
+  },
+  remediate_software_violation: { resource: 'devices', action: 'execute' },  // analogy: apply_cis_remediation
+  manage_peripheral_policies: {
+    list: { resource: 'policies', action: 'read' },
+    get: { resource: 'policies', action: 'read' },
+    create: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+  },
+  manage_peripheral_policy: {
+    create: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+    disable: { resource: 'policies', action: 'write' },
+    add_exception: { resource: 'policies', action: 'write' },
+    remove_exception: { resource: 'policies', action: 'write' },
+  },
+  get_peripheral_activity: { resource: 'devices', action: 'read' },
+
+  // Network (mirror backing REST routes: networkChanges.ts uses devices:read + alerts:acknowledge;
+  // networkBaselines.ts uses devices:write)
+  get_network_changes: { resource: 'devices', action: 'read' },
+  acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
+  configure_network_baseline: { resource: 'devices', action: 'write' },
 };
 
 const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string }[]> = {
@@ -676,6 +771,10 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   sync_huntress_data: { limit: 10, windowSeconds: 300 },
   // User risk tools
   assign_security_training: { limit: 10, windowSeconds: 300 },
+  // Registration-debt payoff: rate limits for newly-permissioned tools.
+  execute_containment: { limit: 5, windowSeconds: 600 },       // mirrors s1_isolate_device
+  collect_evidence: { limit: 10, windowSeconds: 300 },          // mirrors take_screenshot-class dispatch
+  remediate_software_violation: { limit: 10, windowSeconds: 600 }, // mirrors apply_cis_remediation
 };
 
 export interface GuardrailCheck {

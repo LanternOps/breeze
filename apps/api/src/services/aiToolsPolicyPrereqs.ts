@@ -180,7 +180,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           gracePeriodHours: { type: 'number', description: 'Hours after deadline before reboot is forced (default: 4)' },
           categories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to include (e.g. ["critical","important","security"])' },
           excludeCategories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to exclude' },
-          sources: { type: 'array', items: { type: 'string' }, description: 'Patch sources: ["os","third_party"]' },
+          sources: { type: 'array', items: { type: 'string' }, description: 'Patch sources: ["microsoft","apple","linux","third_party","custom"]' },
           autoApprove: { type: 'object', description: 'Auto-approval rules (e.g. { enabled: true, severities: ["critical","important"], deferralDays: 0 }). severities must be a subset of ["critical","important","moderate","low"]. If enabled is true you MUST list at least one severity — an enabled rule with an empty severity set is rejected (it would auto-approve nothing).' },
           enabled: { type: 'boolean', description: 'Whether ring is active (for update)' },
           limit: { type: 'number', description: 'Max results for list (default 25)' },
