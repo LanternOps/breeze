@@ -475,7 +475,7 @@ describe('DeviceBackupTab', () => {
   });
 
   describe('VSS status panel (#3027)', () => {
-    function mockStatusWithVss(vssMetadata: unknown) {
+    function mockStatusWithVss(vssMetadata: unknown, lastJobExtra: Record<string, unknown> = {}) {
       fetchMock.mockImplementation(async (input, init) => {
         const url = String(input);
         const method = (init as RequestInit | undefined)?.method ?? 'GET';
@@ -490,6 +490,7 @@ describe('DeviceBackupTab', () => {
                 createdAt: '2026-03-30T00:00:00Z',
                 completedAt: '2026-03-30T00:10:00Z',
                 vssMetadata,
+                ...lastJobExtra,
               },
             },
           });
@@ -560,6 +561,44 @@ describe('DeviceBackupTab', () => {
       await screen.findByText('Job History');
       expect(screen.queryByText('VSS Status')).toBeNull();
       expect(screen.queryByTestId('backup-vss-unprotected-volumes')).toBeNull();
+    });
+
+    it('surfaces a total VSS failure, which has NO vssMetadata and so no panel', async () => {
+      // The worst outcome and previously the most invisible: the shadow copy
+      // never started, so there is nothing for the VSS panel to render, and
+      // this tab used to ignore errorLog entirely — a run that read every file
+      // off the live volume displayed as a clean, green backup.
+      mockStatusWithVss(null, {
+        status: 'completed',
+        errorLog: 'VSS shadow copy could not be created, so every path was read from the live volume',
+      });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      const banner = await screen.findByTestId('backup-last-job-diagnostic');
+      expect(banner.textContent).toContain('read from the live volume');
+      // A successful-but-degraded run is a WARNING, not an error.
+      expect(banner.textContent).toContain('completed with warnings');
+      expect(banner.className).not.toMatch(/destructive/);
+    });
+
+    it('styles the diagnostic as an error when the run actually failed', async () => {
+      mockStatusWithVss(null, { status: 'failed', errorLog: 'upload destination unreachable' });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      const banner = await screen.findByTestId('backup-last-job-diagnostic');
+      expect(banner.textContent).toContain('Last backup failed');
+      expect(banner.className).toMatch(/destructive/);
+    });
+
+    it('renders no diagnostic banner for a clean run', async () => {
+      mockStatusWithVss(null, { errorLog: null });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      await screen.findByText('Job History');
+      expect(screen.queryByTestId('backup-last-job-diagnostic')).toBeNull();
     });
   });
 });

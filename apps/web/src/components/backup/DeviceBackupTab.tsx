@@ -51,6 +51,11 @@ type BackupJob = {
   totalSize?: number | null;
   errorCount?: number | null;
   vssMetadata?: VssMetadata | null;
+  // Despite the name this is the run's DIAGNOSTIC channel, not strictly errors:
+  // a successful-but-degraded run writes its warning here (e.g. VSS could not
+  // be created, so paths were read live). Rendered accordingly below — labelled
+  // by the job's own status rather than always as an error.
+  errorLog?: string | null;
 };
 
 type Snapshot = {
@@ -393,6 +398,12 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
   const hasVssWarnings = latestVssWriters.some((writer) => normalizeVssState(writer.state) !== 'stable');
   const unprotectedVolumes = getVssStringList(status?.lastJob?.vssMetadata, 'unprotectedVolumes');
   const vssWarnings = getVssStringList(status?.lastJob?.vssMetadata, 'warnings');
+  // The run's diagnostic text. On a job that did NOT fail this is a degradation
+  // note, not an error — and it is the only channel a total VSS failure has,
+  // since that outcome produces no vssMetadata at all. This tab used to ignore
+  // errorLog entirely, so such a run displayed as a clean green backup.
+  const lastJobDiagnostic = lastJob?.errorLog?.trim() || null;
+  const lastJobFailed = lastJobStatus === 'failed';
   const selectedSnapshot = snapshots.find((snapshot) => snapshot.id === selectedSnapshotId) ?? snapshots[0] ?? null;
   // Prefer the API-reported device zone; fall back to the already-validated
   // zone passed by the parent (never an invalid IANA id). formatDateTime
@@ -560,6 +571,34 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
           </div>
         )}
       </div>
+
+      {/* Latest-run diagnostic. Rendered whether or not there is VSS metadata:
+          a run whose shadow copy could not be created reports its degradation
+          ONLY here, and that is precisely the run that would otherwise look
+          clean. Styled by the job's real status — a completed-but-degraded run
+          is a warning, not an error (the job list's blanket "error log" framing
+          is what made these easy to dismiss). */}
+      {lastJobDiagnostic && (
+        <div
+          className={cn(
+            'flex items-start gap-2 rounded-lg border p-4 text-sm',
+            lastJobFailed
+              ? 'border-destructive/40 bg-destructive/10 text-destructive'
+              : 'border-warning/40 bg-warning/10 text-warning'
+          )}
+          data-testid="backup-last-job-diagnostic"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <p className="font-medium">
+              {lastJobFailed
+                ? t('deviceBackupTab.lastBackupFailed')
+                : t('deviceBackupTab.lastBackupCompletedWithWarnings')}
+            </p>
+            <p className="mt-1 break-words opacity-90">{lastJobDiagnostic}</p>
+          </div>
+        </div>
+      )}
 
       {/* VSS Status */}
       {showVssStatus && (

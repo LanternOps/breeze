@@ -473,6 +473,23 @@ describe('backup dashboard routes', () => {
       expect(body.data.lastJob).toHaveProperty('vssMetadata');
       expect(body.data.lastJob.vssMetadata).toBeNull();
     });
+
+    it('includes errorLog — the ONLY channel a total VSS failure has', async () => {
+      // When the shadow copy could not be created there is no vssMetadata at
+      // all, so the degradation rides the warning into error_log. Without this
+      // the device tab showed a clean green backup for a run that read every
+      // file off the live volume.
+      mockStatusQueries(makeJob({
+        vssMetadata: null,
+        errorLog: 'VSS shadow copy could not be created, so every path was read from the live volume',
+      }));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.lastJob.errorLog).toContain('read from the live volume');
+    });
   });
 });
 

@@ -173,6 +173,8 @@
     "latestBackupJob": "Ultimo processo di backup",
     "oneOrMoreVssWritersAreNotStable": "Uno o più writer VSS non sono stabili. Rivedi gli ultimi stati dei writer prima della prossima esecuzione.",
     "vssUnprotectedVolumes": "Letto dal volume attivo, non da una copia shadow VSS: {{volumes}}. I file in uso su questi volumi potrebbero essere stati ignorati o acquisiti in uno stato incoerente.",
+    "lastBackupFailed": "Ultimo backup non riuscito",
+    "lastBackupCompletedWithWarnings": "Ultimo backup completato con avvisi",
     "writer": "Writer",
     "state": "Stato",
     "noVssWriterDetailsWereReportedForThe": "Non sono stati riportati dettagli dei writer VSS per l'ultimo backup.",

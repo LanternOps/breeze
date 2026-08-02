@@ -173,6 +173,8 @@
     "latestBackupJob": "Letzter Sicherungsauftrag",
     "oneOrMoreVssWritersAreNotStable": "Einer oder mehrere VSS-Writer sind nicht stabil. Überprüfen Sie vor der nächsten Ausführung die neuesten Writer-Zustände.",
     "vssUnprotectedVolumes": "Vom Live-Volume gelesen, nicht von einer VSS-Schattenkopie: {{volumes}}. Auf diesen Volumes verwendete Dateien wurden möglicherweise übersprungen oder in einem inkonsistenten Zustand erfasst.",
+    "lastBackupFailed": "Letzte Sicherung fehlgeschlagen",
+    "lastBackupCompletedWithWarnings": "Letzte Sicherung mit Warnungen abgeschlossen",
     "writer": "VSS-Writer",
     "state": "Status",
     "noVssWriterDetailsWereReportedForThe": "Für die letzte Sicherung wurden keine VSS-Writerdetails gemeldet.",
