@@ -25,6 +25,7 @@ function chainMock(resolvedValue: unknown = []) {
 
 const selectMock = vi.fn(() => chainMock([]));
 const resolveAllBackupAssignedDevicesMock = vi.fn();
+const resolveBackupConfigForDeviceMock = vi.fn(async () => null as unknown);
 
 vi.mock('../../db', () => ({
   db: {
@@ -65,10 +66,13 @@ vi.mock('../../db/schema', () => ({
     displayName: 'devices.display_name',
     hostname: 'devices.hostname',
   },
+  // `partial` counts as a restore point (#3000) — the status route reads this
+  // to decide lastSuccessAt.
+  RESTORABLE_BACKUP_JOB_STATUSES: ['completed', 'partial'] as const,
 }));
 
 vi.mock('../../services/featureConfigResolver', () => ({
-  resolveBackupConfigForDevice: vi.fn(),
+  resolveBackupConfigForDevice: (...args: unknown[]) => resolveBackupConfigForDeviceMock(...(args as [])),
   resolveAllBackupAssignedDevices: (...args: unknown[]) => resolveAllBackupAssignedDevicesMock(...(args as [])),
 }));
 
@@ -412,6 +416,63 @@ describe('backup dashboard routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.attentionItems).toEqual([]);
+  });
+
+  describe('GET /status/:deviceId — lastJob VSS metadata (#3027)', () => {
+    function mockStatusQueries(job: Record<string, unknown>) {
+      resolveBackupConfigForDeviceMock.mockResolvedValueOnce(null);
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]))
+        .mockReturnValueOnce(chainMock([job]));
+    }
+
+    function makeJob(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'job-vss',
+        status: 'completed',
+        createdAt: new Date('2026-04-01T00:00:00.000Z'),
+        completedAt: new Date('2026-04-01T00:10:00.000Z'),
+        errorLog: null,
+        vssMetadata: null,
+        ...overrides,
+      };
+    }
+
+    it('includes vssMetadata in the lastJob projection', async () => {
+      // Regression: the projection returned only {id,status,createdAt,completedAt},
+      // so the device tab's VSS panel could never render — showVssStatus was
+      // permanently false regardless of what the agent reported.
+      mockStatusQueries(makeJob({
+        vssMetadata: {
+          shadowCopyId: 'set-1',
+          writers: [{ name: 'NTDS', state: 'failed' }],
+          unprotectedVolumes: ['D:\\'],
+        },
+      }));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.lastJob.vssMetadata).toEqual({
+        shadowCopyId: 'set-1',
+        writers: [{ name: 'NTDS', state: 'failed' }],
+        unprotectedVolumes: ['D:\\'],
+      });
+    });
+
+    it('returns null (not undefined) when the run recorded no VSS metadata', async () => {
+      // The UI gates on `!= null`, so the key has to be present and explicitly
+      // null rather than dropped from the JSON body.
+      mockStatusQueries(makeJob());
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.lastJob).toHaveProperty('vssMetadata');
+      expect(body.data.lastJob.vssMetadata).toBeNull();
+    });
   });
 });
 

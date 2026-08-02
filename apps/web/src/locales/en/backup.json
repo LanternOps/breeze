@@ -172,6 +172,7 @@
     "vssStatus": "VSS Status",
     "latestBackupJob": "Latest backup job",
     "oneOrMoreVssWritersAreNotStable": "One or more VSS writers are not stable. Review the latest writer states before the next run.",
+    "vssUnprotectedVolumes": "Read from the live volume, not a VSS shadow copy: {{volumes}}. In-use files on these volumes may have been skipped or captured in an inconsistent state.",
     "writer": "Writer",
     "state": "State",
     "noVssWriterDetailsWereReportedForThe": "No VSS writer details were reported for the latest backup.",

@@ -172,6 +172,7 @@
     "vssStatus": "Statut VSS",
     "latestBackupJob": "Dernière tâche de sauvegarde",
     "oneOrMoreVssWritersAreNotStable": "Un ou plusieurs rédacteurs VSS ne sont pas stables. Consultez les derniers écrits des auteurs avant la prochaine édition.",
+    "vssUnprotectedVolumes": "Lu à partir du volume actif, et non d’une copie fantôme VSS : {{volumes}}. Les fichiers en cours d’utilisation sur ces volumes peuvent avoir été ignorés ou capturés dans un état incohérent.",
     "writer": "Écrivain",
     "state": "État",
     "noVssWriterDetailsWereReportedForThe": "Aucun détail de l’auteur VSS n’a été rapporté pour la dernière sauvegarde.",

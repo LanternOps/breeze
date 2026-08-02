@@ -328,6 +328,15 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 				"elapsedMs", time.Since(vssStart).Milliseconds(),
 				"error", vssErr.Error(),
 			)
+			// #3027: the worst VSS outcome used to be the quietest one. When the
+			// session never starts there is no VSSMetadata to send, so without
+			// this the run reaches the server indistinguishable from a clean
+			// VSS-backed backup — every path read live, every locked file at
+			// risk of being skipped, and nothing anywhere saying so. The
+			// per-path warning further down only fires when a session DID
+			// start, so it cannot cover this branch.
+			appendWarning(job, "VSS shadow copy could not be created; every path was read from the live volume, "+
+				"where in-use files can be skipped or captured torn: "+vssErr.Error())
 		} else {
 			vssSession = session
 			job.VSSMetadata = &vss.VSSMetadata{
@@ -335,8 +344,13 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 				CreationTime: session.CreatedAt,
 				Writers:      session.Writers,
 				ExposedPaths: session.ShadowPaths,
-				Warnings:     session.Warnings,
-				DurationMs:   time.Since(vssStart).Milliseconds(),
+				// Copied, not derived: ExposedPaths lists only the volumes that
+				// succeeded, so a volume with no shadow device is indistinguishable
+				// from one that was never requested. Omitting this was how a
+				// partially-snapshotted run reached the server looking clean.
+				UnprotectedVolumes: session.UnprotectedVolumes,
+				Warnings:           session.Warnings,
+				DurationMs:         time.Since(vssStart).Milliseconds(),
 			}
 			if len(session.Warnings) > 0 {
 				log.Warn("VSS completed with warnings",
@@ -414,11 +428,16 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 				"paths", summary,
 				"shadowedVolumes", strings.Join(shadowedVolumes, ", "),
 			)
-			// The log line alone is endpoint-local. job.VSSMetadata looks like
-			// the richer channel but does not survive the trip: the API's
-			// result schema has no vssMetadata key, so it is stripped at parse,
-			// and the vss_metadata column is never written. job.Warning is the
-			// only VSS signal that reaches the server today.
+			// The log line alone is endpoint-local. Both server-visible channels
+			// are used, deliberately, because they carry different things:
+			// job.VSSMetadata (#3027) is the structured record — per-writer
+			// state, unprotected volumes, shadow paths — persisted to
+			// backup_jobs.vss_metadata for the device tab's VSS panel, while
+			// this warning is the loud, always-rendered summary that survives
+			// even when the IPC bounding drops vssMetadata as a bulk field
+			// (result_bounds.go). The warning also uniquely covers the case
+			// the VSS provider cannot see: VSS reported total success but the
+			// path never matched a shadow root, so UnprotectedVolumes is empty.
 			appendWarning(job, "read from the live volume, not the VSS shadow copy: "+summary)
 		}
 	}

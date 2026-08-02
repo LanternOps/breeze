@@ -172,6 +172,7 @@
     "vssStatus": "Status do VSS",
     "latestBackupJob": "Job de backup mais recente",
     "oneOrMoreVssWritersAreNotStable": "Um ou mais VSS writers não estão estáveis. Revise os estados mais recentes dos writers antes da próxima execução.",
+    "vssUnprotectedVolumes": "Lido do volume ativo, não de uma cópia de sombra VSS: {{volumes}}. Arquivos em uso nesses volumes podem ter sido ignorados ou capturados em um estado inconsistente.",
     "writer": "Gravador",
     "state": "Estado",
     "noVssWriterDetailsWereReportedForThe": "Nenhum detalhe de VSS writer foi relatado para o backup mais recente.",

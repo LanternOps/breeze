@@ -23,7 +23,7 @@ import {
   checkBackupProviderCapabilities,
 } from './backupSnapshotStorage';
 import { resolveBackupProtectionForDevice } from './featureConfigResolver';
-import { redactSecretsFromOutput } from './secretRedaction';
+import { redactSecretsDeep, redactSecretsFromOutput } from './secretRedaction';
 
 type SnapshotImmutabilityEnforcement = 'application' | 'provider';
 
@@ -53,6 +53,154 @@ function normalizeMetadata(
   return metadata && typeof metadata === 'object' && !Array.isArray(metadata)
     ? { ...metadata }
     : {};
+}
+
+/**
+ * Bounds on the agent-supplied VSS diagnostics blob persisted to
+ * `backup_jobs.vss_metadata` (#3027).
+ *
+ * The result schema is deliberately permissive (an unmodeled field must never
+ * fail the parse and take the snapshot id down with it — the F13 lesson), so
+ * the bounding lives HERE, at the last hop before the column. It has to: the
+ * only ceiling on the way in is the 5 MB `stdout` cap in agentWs's
+ * `commandResultSchema`, which `backup_run` rides because it is not a
+ * "critical family" and so never reaches the 512 KB structured cap in
+ * `ensureCriticalResultSizeLimits`.
+ *
+ * Real-world size is tiny — a Windows box registers a few dozen VSS writers —
+ * so any result anywhere near these limits is a bug or a hostile agent, and
+ * truncating it is strictly better than storing it.
+ */
+const MAX_VSS_METADATA_BYTES = 64 * 1024;
+const MAX_VSS_ARRAY_ENTRIES = 200;
+const MAX_VSS_STRING_LENGTH = 1024;
+
+function boundVssString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  return value.length > MAX_VSS_STRING_LENGTH
+    ? `${value.slice(0, MAX_VSS_STRING_LENGTH)}…[truncated]`
+    : value;
+}
+
+function boundVssStringArray(value: unknown): { entries: string[]; dropped: number } | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const strings = value.filter((entry): entry is string => typeof entry === 'string');
+  return {
+    entries: strings
+      .slice(0, MAX_VSS_ARRAY_ENTRIES)
+      .map((entry) => boundVssString(entry) as string),
+    dropped: Math.max(0, strings.length - MAX_VSS_ARRAY_ENTRIES),
+  };
+}
+
+/**
+ * Normalize + bound + redact the agent's `vssMetadata` before it becomes a
+ * jsonb column value. Returns `undefined` when there is nothing to persist, so
+ * a legacy agent (which omits the field entirely) leaves the column untouched
+ * rather than overwriting a previously-recorded value with NULL.
+ *
+ * Rebuilt field-by-field rather than stored verbatim: the zod schema is
+ * `.passthrough()`, and passing an arbitrary agent-authored object straight
+ * into jsonb would hand back the unbounded surface the caps exist to remove.
+ * Unmodeled TOP-LEVEL keys survive only when scalar — the same "keep scalars,
+ * drop containers" rule the agent's own IPC bounding uses
+ * (`reduceToScalars`, agent/cmd/breeze-backup/result_bounds.go), so a future
+ * agent field is forward-compatible without reopening the hole.
+ *
+ * Truncation is never silent: whatever is dropped is named in the persisted
+ * `warnings` array, which is what the UI renders.
+ */
+export function sanitizeVssMetadata(
+  raw: ParsedBackupCommandResult['vssMetadata'],
+): Record<string, unknown> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+
+  const source = raw as Record<string, unknown>;
+  const notes: string[] = [];
+  const out: Record<string, unknown> = {};
+
+  // Unmodeled scalars first so a modeled key always wins the assignment below.
+  for (const [key, value] of Object.entries(source)) {
+    if (value === null || typeof value === 'boolean' || typeof value === 'number') {
+      out[key] = value;
+    } else if (typeof value === 'string') {
+      out[key] = boundVssString(value);
+    }
+  }
+
+  const shadowCopyId = boundVssString(source.shadowCopyId);
+  if (shadowCopyId !== undefined) out.shadowCopyId = shadowCopyId;
+  const creationTime = boundVssString(source.creationTime);
+  if (creationTime !== undefined) out.creationTime = creationTime;
+  if (typeof source.durationMs === 'number') out.durationMs = source.durationMs;
+
+  if (Array.isArray(source.writers)) {
+    const writers = source.writers.filter(
+      (writer): writer is Record<string, unknown> =>
+        Boolean(writer) && typeof writer === 'object' && !Array.isArray(writer),
+    );
+    out.writers = writers.slice(0, MAX_VSS_ARRAY_ENTRIES).map((writer) => {
+      const bounded: Record<string, unknown> = {};
+      for (const field of ['name', 'id', 'state', 'lastError'] as const) {
+        const value = boundVssString(writer[field]);
+        if (value !== undefined) bounded[field] = value;
+      }
+      return bounded;
+    });
+    if (writers.length > MAX_VSS_ARRAY_ENTRIES) {
+      notes.push(`${writers.length - MAX_VSS_ARRAY_ENTRIES} additional VSS writer entries were dropped`);
+    }
+  }
+
+  const unprotected = boundVssStringArray(source.unprotectedVolumes);
+  if (unprotected) {
+    out.unprotectedVolumes = unprotected.entries;
+    if (unprotected.dropped > 0) {
+      notes.push(`${unprotected.dropped} additional unprotected-volume entries were dropped`);
+    }
+  }
+
+  if (source.exposedPaths && typeof source.exposedPaths === 'object' && !Array.isArray(source.exposedPaths)) {
+    const entries = Object.entries(source.exposedPaths as Record<string, unknown>).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string',
+    );
+    out.exposedPaths = Object.fromEntries(
+      entries.slice(0, MAX_VSS_ARRAY_ENTRIES).map(([volume, path]) => [volume, boundVssString(path) as string]),
+    );
+    if (entries.length > MAX_VSS_ARRAY_ENTRIES) {
+      notes.push(`${entries.length - MAX_VSS_ARRAY_ENTRIES} additional shadow-path entries were dropped`);
+    }
+  }
+
+  const warnings = boundVssStringArray(source.warnings);
+  const warningEntries = warnings ? [...warnings.entries] : [];
+  if (warnings && warnings.dropped > 0) {
+    notes.push(`${warnings.dropped} additional VSS warnings were dropped`);
+  }
+
+  const finish = (extraNotes: string[]): Record<string, unknown> => {
+    const combined = [...warningEntries, ...notes, ...extraNotes];
+    if (combined.length > 0) out.warnings = combined;
+    else delete out.warnings;
+    return redactSecretsDeep(out) as Record<string, unknown>;
+  };
+
+  let result = finish([]);
+  if (JSON.stringify(result).length <= MAX_VSS_METADATA_BYTES) return result;
+
+  // Still oversize: drop the bulk containers, keeping the scalars and the
+  // unprotected-volume list (the field that actually says "this snapshot is
+  // incomplete"). Mirrors the agent's tier-2 bulk-field drop.
+  delete out.writers;
+  delete out.exposedPaths;
+  result = finish(['VSS writer and shadow-path detail was dropped: the reported metadata exceeded the size limit']);
+  if (JSON.stringify(result).length <= MAX_VSS_METADATA_BYTES) return result;
+
+  // Pathological. Keep a marker rather than persisting nothing: "the agent
+  // reported unusable VSS metadata" is itself a finding.
+  return {
+    warnings: ['VSS metadata was discarded: the reported payload exceeded the size limit'],
+  };
 }
 
 function resolveSnapshotEncryptionKeyId(metadata: Record<string, unknown>): string | null {
@@ -543,6 +691,19 @@ export async function applyBackupCommandResultToJob(params: {
 
   if (providerSnapshotId) {
     updateData.snapshotId = providerSnapshotId;
+  }
+
+  // #3027: VSS diagnostics land on BOTH the success and failure branches, on
+  // purpose. A failed run's writer states are the more valuable of the two —
+  // "which writer wedged" is the question you ask about a failure — and a
+  // *successful* run whose volumes were read live is precisely the
+  // "backed up, but every locked file was skipped" case that motivated this.
+  // Only written when the agent reported it: a legacy agent omits the key
+  // entirely, and the column must keep whatever it already held rather than be
+  // overwritten with NULL.
+  const vssMetadata = sanitizeVssMetadata(result.vssMetadata);
+  if (vssMetadata !== undefined) {
+    updateData.vssMetadata = vssMetadata;
   }
 
   // FIX 7: a genuinely-successful backup whose result lands AFTER the stale

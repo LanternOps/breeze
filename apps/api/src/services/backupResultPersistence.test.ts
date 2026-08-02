@@ -99,6 +99,7 @@ import { db } from '../db';
 import {
   applyBackupCommandResultToJob,
   markBackupJobFailedIfInFlight,
+  sanitizeVssMetadata,
 } from './backupResultPersistence';
 import {
   applyGfsTagsToSnapshot,
@@ -945,5 +946,202 @@ describe('partial backup terminal status (#3000)', () => {
 
     expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
     expect(db.insert).not.toHaveBeenCalled();
+  });
+});
+
+describe('VSS metadata persistence (#3027)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    resolveBackupProtectionForDeviceMock.mockReset();
+  });
+
+  function mockSuccessPath() {
+    vi.mocked(db.update)
+      .mockReturnValueOnce(chainMock([{ id: 'job-1', configId: 'config-1', backupType: 'file', backupMode: 'file' }]) as any)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([]) as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([{ featureLinkId: null, policyId: null, deviceId: 'device-1' }]) as any);
+    vi.mocked(db.insert).mockReturnValueOnce(chainMock([{
+      id: 'snapshot-db-1',
+      jobId: 'job-1',
+      snapshotId: 'provider-snap-1',
+    }]) as any);
+    vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+    vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+    vi.mocked(computeExpiresAt).mockReturnValue(null);
+  }
+
+  function setArgs() {
+    return vi.mocked(db.update).mock.results[0]?.value?.set;
+  }
+
+  it('writes vss_metadata on a SUCCESSFUL run — a green job whose volumes were read live is the whole point', async () => {
+    mockSuccessPath();
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: {
+        snapshotId: 'provider-snap-1',
+        filesBackedUp: 4,
+        vssMetadata: {
+          shadowCopyId: 'set-1',
+          writers: [{ name: 'NTDS', id: 'w-1', state: 'failed', lastError: 'timed out' }],
+          unprotectedVolumes: ['D:\\'],
+          durationMs: 900,
+        },
+      } as any,
+    });
+
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({
+      vssMetadata: expect.objectContaining({
+        shadowCopyId: 'set-1',
+        unprotectedVolumes: ['D:\\'],
+        writers: [{ name: 'NTDS', id: 'w-1', state: 'failed', lastError: 'timed out' }],
+      }),
+    }));
+  });
+
+  it('writes vss_metadata on a FAILED run too — writer state is what explains the failure', async () => {
+    vi.mocked(db.update).mockReturnValueOnce(chainMock([{ id: 'job-1', configId: 'config-1' }]) as any);
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'failed',
+      result: {
+        error: 'snapshot creation failed',
+        vssMetadata: { shadowCopyId: 'set-2', writers: [{ name: 'SqlServerWriter', state: 'failed' }] },
+      } as any,
+    });
+
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'failed',
+      vssMetadata: expect.objectContaining({ shadowCopyId: 'set-2' }),
+    }));
+  });
+
+  it('leaves the column untouched for a legacy agent that reports no vssMetadata', async () => {
+    mockSuccessPath();
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: { snapshotId: 'provider-snap-1', filesBackedUp: 4 } as any,
+    });
+
+    // NOT `vssMetadata: null` — overwriting a previously-recorded blob with NULL
+    // on a retry would destroy the diagnostics we are here to keep.
+    expect(setArgs()).toHaveBeenCalledWith(
+      expect.not.objectContaining({ vssMetadata: expect.anything() }),
+    );
+  });
+});
+
+describe('sanitizeVssMetadata (#3027)', () => {
+  it('returns undefined for absent / non-object input so the column is not written', () => {
+    expect(sanitizeVssMetadata(undefined)).toBeUndefined();
+    expect(sanitizeVssMetadata(null)).toBeUndefined();
+    expect(sanitizeVssMetadata([] as any)).toBeUndefined();
+  });
+
+  it('keeps the modeled fields verbatim when the payload is ordinary', () => {
+    const sanitized = sanitizeVssMetadata({
+      shadowCopyId: 'set-1',
+      creationTime: '2026-08-02T00:00:00Z',
+      writers: [{ name: 'NTDS', id: 'w-1', state: 'stable' }],
+      exposedPaths: { 'C:\\': '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1' },
+      unprotectedVolumes: ['D:\\'],
+      warnings: ['volume D:\\ has no shadow copy'],
+      durationMs: 4200,
+    } as any);
+
+    expect(sanitized).toEqual({
+      shadowCopyId: 'set-1',
+      creationTime: '2026-08-02T00:00:00Z',
+      writers: [{ name: 'NTDS', id: 'w-1', state: 'stable' }],
+      exposedPaths: { 'C:\\': '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1' },
+      unprotectedVolumes: ['D:\\'],
+      warnings: ['volume D:\\ has no shadow copy'],
+      durationMs: 4200,
+    });
+  });
+
+  it('keeps an unmodeled SCALAR but drops an unmodeled CONTAINER', () => {
+    // Same rule the agent's own IPC bounding uses (reduceToScalars): a future
+    // agent field stays forward-compatible without reopening the unbounded hole.
+    const sanitized = sanitizeVssMetadata({
+      shadowCopyId: 'set-1',
+      providerVersion: '10.0.0',
+      snapshotAttempts: 3,
+      hugeFutureBlob: Array.from({ length: 10 }, (_, i) => `entry-${i}`),
+    } as any) as Record<string, unknown>;
+
+    expect(sanitized.providerVersion).toBe('10.0.0');
+    expect(sanitized.snapshotAttempts).toBe(3);
+    expect(sanitized.hugeFutureBlob).toBeUndefined();
+  });
+
+  it('caps oversized arrays and NAMES what it dropped in warnings', () => {
+    const sanitized = sanitizeVssMetadata({
+      shadowCopyId: 'set-1',
+      writers: Array.from({ length: 500 }, (_, i) => ({ name: `w-${i}`, state: 'stable' })),
+      unprotectedVolumes: Array.from({ length: 500 }, (_, i) => `V${i}:\\`),
+    } as any) as Record<string, unknown>;
+
+    expect((sanitized.writers as unknown[]).length).toBe(200);
+    expect((sanitized.unprotectedVolumes as unknown[]).length).toBe(200);
+    // Truncation is never silent.
+    expect(sanitized.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('300 additional VSS writer entries were dropped'),
+      expect.stringContaining('300 additional unprotected-volume entries were dropped'),
+    ]));
+  });
+
+  it('drops the bulk containers but KEEPS unprotectedVolumes when the blob is still oversize', async () => {
+    // 200 writers each carrying a max-length lastError blows the byte budget.
+    const sanitized = sanitizeVssMetadata({
+      shadowCopyId: 'set-1',
+      writers: Array.from({ length: 200 }, (_, i) => ({
+        name: `w-${i}`,
+        state: 'failed',
+        lastError: 'x'.repeat(1024),
+      })),
+      unprotectedVolumes: ['D:\\'],
+    } as any) as Record<string, unknown>;
+
+    expect(sanitized.writers).toBeUndefined();
+    expect(sanitized.exposedPaths).toBeUndefined();
+    // The field that actually says "this snapshot is incomplete" survives.
+    expect(sanitized.unprotectedVolumes).toEqual(['D:\\']);
+    expect(sanitized.shadowCopyId).toBe('set-1');
+    expect(sanitized.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('exceeded the size limit'),
+    ]));
+  });
+
+  it('truncates a pathologically long string rather than storing it', () => {
+    const sanitized = sanitizeVssMetadata({
+      shadowCopyId: 'z'.repeat(50_000),
+    } as any) as Record<string, unknown>;
+
+    expect((sanitized.shadowCopyId as string).length).toBeLessThan(1_200);
+    expect(sanitized.shadowCopyId).toContain('[truncated]');
+  });
+
+  it('redacts a secret an agent leaked into a VSS warning', () => {
+    const sanitized = sanitizeVssMetadata({
+      shadowCopyId: 'set-1',
+      warnings: ['writer failed: -----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----'],
+    } as any) as Record<string, unknown>;
+
+    expect(JSON.stringify(sanitized)).not.toContain('MIIabc');
   });
 });

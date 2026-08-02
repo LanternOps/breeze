@@ -473,4 +473,93 @@ describe('DeviceBackupTab', () => {
     expect(within(jobHistoryTable as HTMLTableElement).getByText('Partial')).toBeTruthy();
     expect(within(jobHistoryTable as HTMLTableElement).queryByText('Pending')).toBeNull();
   });
+
+  describe('VSS status panel (#3027)', () => {
+    function mockStatusWithVss(vssMetadata: unknown) {
+      fetchMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = (init as RequestInit | undefined)?.method ?? 'GET';
+
+        if (url === '/backup/status/device-1') {
+          return makeJsonResponse({
+            data: {
+              protected: true,
+              lastJob: {
+                id: 'job-vss',
+                status: 'completed',
+                createdAt: '2026-03-30T00:00:00Z',
+                completedAt: '2026-03-30T00:10:00Z',
+                vssMetadata,
+              },
+            },
+          });
+        }
+        if (url === '/backup/jobs?deviceId=device-1') return makeJsonResponse({ data: [] });
+        if (url === '/backup/snapshots?deviceId=device-1' && method === 'GET') {
+          return makeJsonResponse({ data: [] });
+        }
+        return makeJsonResponse({}, false, 404);
+      });
+    }
+
+    it('renders the writer table once the API actually returns vssMetadata', async () => {
+      // The panel existed but was unreachable: lastJob's projection omitted
+      // vssMetadata, so showVssStatus was permanently false and this whole
+      // branch was dead code.
+      mockStatusWithVss({
+        shadowCopyId: 'set-1',
+        writers: [
+          { name: 'SqlServerWriter', state: 'stable' },
+          { name: 'NTDS', state: 'failed' },
+        ],
+      });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      expect(await screen.findByText('SqlServerWriter')).toBeTruthy();
+      expect(screen.getByText('NTDS')).toBeTruthy();
+      // A non-stable writer still raises the existing writer banner.
+      expect(screen.getByText(/writers are not stable/i)).toBeTruthy();
+    });
+
+    it('flags unprotected volumes on a SUCCESSFUL run — "backed up" vs "backed up but read live"', async () => {
+      // The signal that motivated the issue: every writer stable, job green,
+      // and yet a whole volume was read off the live filesystem.
+      mockStatusWithVss({
+        shadowCopyId: 'set-1',
+        writers: [{ name: 'SqlServerWriter', state: 'stable' }],
+        unprotectedVolumes: ['D:\\'],
+      });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      const banner = await screen.findByTestId('backup-vss-unprotected-volumes');
+      expect(banner.textContent).toContain('D:\\');
+      // Not merely the writer banner, which stays silent here.
+      expect(screen.queryByText(/writers are not stable/i)).toBeNull();
+    });
+
+    it('lists provider warnings carried on the metadata', async () => {
+      mockStatusWithVss({
+        shadowCopyId: 'set-1',
+        writers: [{ name: 'SqlServerWriter', state: 'stable' }],
+        warnings: ['volume D:\\ has no shadow copy (0x80042308)'],
+      });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      const warnings = await screen.findByTestId('backup-vss-warnings');
+      expect(warnings.textContent).toContain('0x80042308');
+    });
+
+    it('hides the panel entirely when the run reported no VSS metadata (non-Windows / VSS off)', async () => {
+      mockStatusWithVss(null);
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      await screen.findByText('Job History');
+      expect(screen.queryByText('VSS Status')).toBeNull();
+      expect(screen.queryByTestId('backup-vss-unprotected-volumes')).toBeNull();
+    });
+  });
 });
