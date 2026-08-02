@@ -15,8 +15,8 @@ import (
 // outside c.mu, so two concurrent senders could acquire sequence numbers in one
 // order and reach the socket in the opposite order. The receiver enforces
 // strict monotonicity (Recv rejects seq <= last as a replay), so the frame that
-// lost the race was discarded — silently dropping a legitimate, correctly
-// HMAC'd message and logging it as if it were tampering.
+// lost the race was discarded — and since every Recv caller treats the error as
+// fatal, one reordered frame tore down the whole IPC session.
 
 // mustJSONString builds a valid JSON string payload of roughly n bytes. The
 // payload has to be real JSON because json.Marshal compacts (and therefore
@@ -48,8 +48,8 @@ func mustJSONString(t *testing.T, n int) json.RawMessage {
 // here (compile error), which is intentional.
 func TestConnSendSeqAssignedUnderWriteLock(t *testing.T) {
 	serverConn, clientConn := createSocketPair(t)
-	defer serverConn.Close()
-	defer clientConn.Close()
+	defer func() { _ = serverConn.Close() }()
+	defer func() { _ = clientConn.Close() }()
 
 	server := NewConn(serverConn)
 	client := NewConn(clientConn)
@@ -115,10 +115,10 @@ func TestConnSendSeqAssignedUnderWriteLock(t *testing.T) {
 // goroutines sharing one Conn, every frame must be accepted by the receiver in
 // strictly increasing sequence order. Note the assertion is the receiver's, not
 // the race detector's — #3007 was an ordering bug in race-free code (sendSeq
-// was already atomic), so this fails with or without -race. This models the
-// production fan-out —
-// concurrent backup run reporting, emitVaultAutoSyncResult, and progress or
-// keepalive pings overlapping a terminal result all write to the same Conn.
+// was already atomic), so this fails with or without -race. It models the
+// production fan-out: concurrent backup run reporting, emitVaultAutoSyncResult,
+// and progress or keepalive pings overlapping a terminal result all write to
+// the same Conn.
 func TestConnSendConcurrentSendersAllAccepted(t *testing.T) {
 	const (
 		senders          = 8
@@ -129,8 +129,8 @@ func TestConnSendConcurrentSendersAllAccepted(t *testing.T) {
 	)
 
 	serverConn, clientConn := createSocketPair(t)
-	defer serverConn.Close()
-	defer clientConn.Close()
+	defer func() { _ = serverConn.Close() }()
+	defer func() { _ = clientConn.Close() }()
 
 	server := NewConn(serverConn)
 	client := NewConn(clientConn)
@@ -145,7 +145,7 @@ func TestConnSendConcurrentSendersAllAccepted(t *testing.T) {
 		// socket buffer until the 30s write deadline, turning a fast failure
 		// into a multi-minute one. Close the read end so they fail immediately.
 		fail := func(err error) {
-			serverConn.Close()
+			_ = serverConn.Close()
 			recvErr <- err
 		}
 		var prev uint64
@@ -220,8 +220,8 @@ func BenchmarkConnSendConcurrent(b *testing.B) {
 	for _, size := range []int{256, 64 << 10, 1 << 20} {
 		b.Run(fmt.Sprintf("payload-%d", size), func(b *testing.B) {
 			serverConn, clientConn := createSocketPairTB(b)
-			defer serverConn.Close()
-			defer clientConn.Close()
+			defer func() { _ = serverConn.Close() }()
+			defer func() { _ = clientConn.Close() }()
 
 			client := NewConn(clientConn)
 
@@ -242,7 +242,6 @@ func BenchmarkConnSendConcurrent(b *testing.B) {
 				b.Fatalf("marshal payload: %v", err)
 			}
 
-			b.SetBytes(int64(size))
 			b.ResetTimer()
 			b.RunParallel(func(pb *testing.PB) {
 				for pb.Next() {
@@ -253,7 +252,7 @@ func BenchmarkConnSendConcurrent(b *testing.B) {
 				}
 			})
 			b.StopTimer()
-			clientConn.Close()
+			_ = clientConn.Close()
 			<-done
 		})
 	}
@@ -269,7 +268,7 @@ func createSocketPairTB(tb testing.TB) (net.Conn, net.Conn) {
 	if err != nil {
 		tb.Fatalf("listen: %v", err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	// Buffered and always sent to, including on the error path: a bare return
 	// here would leave the receive below blocked until the whole test binary
