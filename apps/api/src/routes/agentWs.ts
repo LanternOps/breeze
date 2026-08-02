@@ -1698,12 +1698,24 @@ export async function processOrphanedCommandResult(
  * paths like processCommandResult can scope individual operations instead of
  * running under a message-long wrap.
  *
- * #3021: contexts opened through this helper must NEVER enclose a nested
- * `withSystemDbAccessContext` (or any other context-opening helper) —
- * `runOutsideDbContext` only exits the AsyncLocalStorage, it does NOT release
- * this context's pooled connection, so nesting holds two connections at once
- * and self-amplifies pool pressure (the #1105 class; see #2765 for the HTTP
- * twin). Keep the wrapped work to plain ambient-`db` operations.
+ * #3021: be deliberate about context-opening helpers nested under this wrap —
+ * there are two DISTINCT failure modes:
+ *
+ * - a BARE nested `withSystemDbAccessContext` opens nothing:
+ *   withDbAccessContext early-returns when a context is already active
+ *   (db/index.ts), so the "system" work silently runs inside THIS org
+ *   transaction under org RLS (one connection, wrong-scope hazard).
+ * - the `runOutsideDbContext(() => withSystemDbAccessContext(...))` form
+ *   genuinely opens a second context, but runOutsideDbContext does NOT
+ *   release this context's pooled connection — two connections held at
+ *   once, the #1105 class (#2765 is the HTTP twin).
+ *
+ * The direct callees under the #3021 command-result wraps use neither form.
+ * Indirect residues remain (e.g. publishEvent subscribers open system
+ * contexts after exiting the ALS, and some desktop-path callees use the
+ * outside+system form) — those still double-hold briefly, a known #1105
+ * follow-up, now bounded by short per-operation wraps instead of a
+ * message-long one.
  */
 async function runWithAgentOrgDbAccess<T>(label: string, orgId: string, fn: () => Promise<T>): Promise<T> {
   return withDbAccessContext(
@@ -1726,11 +1738,20 @@ async function runWithAgentOrgDbAccess<T>(label: string, orgId: string, fn: () =
  * Process command result from agent.
  *
  * #3021: deliberately NOT wrapped in a message-level org context by the
- * `command_result` case (the WS twin of #2765). The lookup, lifecycle
- * recheck, terminal CAS, and audit write below each manage their own
- * short-lived context, and the per-type handler dispatch gets its own
- * org-scoped wrap — so no step ever acquires a second pooled connection
- * while another context's connection is held open (#1105).
+ * `command_result` case (the WS twin of #2765). The primary device_commands
+ * lookup deliberately runs contextless on the bare pool (no RLS on that
+ * table); the fallback lookup, lifecycle recheck, terminal CAS, and audit
+ * write each manage their own short-lived context; and the per-type handler
+ * dispatch and orphaned branches get their own short org-scoped wraps — so
+ * no step on this path directly acquires a second pooled connection while
+ * another context's connection is held open (#1105).
+ *
+ * Trade-off (deliberate): the terminal CAS commits independently, so a
+ * failure AFTER it (e.g. a handler wrap failing to open under pool
+ * exhaustion) reaches the function-level catch with the command row already
+ * terminal and the ack still sent — the agent won't redeliver, and the
+ * downstream org-table transition is left to the stale-timeout sweeps. The
+ * catch logs + Sentry-captures, so this is loud, not silent.
  */
 async function processCommandResult(
   agentId: string,
