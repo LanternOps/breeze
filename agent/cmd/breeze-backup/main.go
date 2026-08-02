@@ -610,11 +610,14 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 		// mgr here may be the ephemeral payload-built manager resolved above
 		// (not the long-lived agent.yaml manager), so the progress fn is set
 		// on it directly, right before the run that actually uses it.
-		mgr.SetProgressFn(func(filesDone, filesTotal int, bytesDone, bytesTotal int64) {
+		mgr.SetProgressFn(func(filesDone, filesTotal int, bytesDone, bytesTotal int64, snapshotID string) {
 			sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{
 				CommandID: req.CommandID, Phase: "uploading",
 				Current: bytesDone, Total: bytesTotal,
 				FilesDone: filesDone, FilesTotal: filesTotal,
+				// Forwarded so the server records backup_jobs.snapshot_id
+				// mid-run (#3006). Empty on pre-snapshot keepalives.
+				SnapshotID: snapshotID,
 			})
 		})
 		result := marshalResult(mgr.RunBackupContext(ctx, excludes))

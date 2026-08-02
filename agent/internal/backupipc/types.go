@@ -63,4 +63,11 @@ type BackupProgress struct {
 	FilesDone  int    `json:"filesDone,omitempty"`
 	FilesTotal int    `json:"filesTotal,omitempty"`
 	Message    string `json:"message,omitempty"`
+	// SnapshotID is the backup_run snapshot currently being written. Empty
+	// until the snapshot is created (pre-scan keepalives) and always empty for
+	// restore progress. Sent so the server can persist backup_jobs.snapshot_id
+	// while the run is in flight (#3006) instead of learning it only from the
+	// terminal result — a result that can be lost in transit (#3001, #2998),
+	// stranding the uploaded objects with no restore point.
+	SnapshotID string `json:"snapshotId,omitempty"`
 }

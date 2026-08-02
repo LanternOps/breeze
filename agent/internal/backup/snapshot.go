@@ -143,7 +143,16 @@ type contextUploader interface {
 // out of the known totals. Called from the snapshot upload loop, throttled
 // (see progressThrottle) except for a final unconditional call after the
 // last file.
-type ProgressFn func(filesDone, filesTotal int, bytesDone, bytesTotal int64)
+//
+// snapshotID is the ID of the snapshot currently being written, or "" for
+// emissions that happen before a snapshot exists (the pre-scan whole-run
+// keepalive and the "scanning done" totals notice, both in backup.go). It is
+// carried on every progress emission so the SERVER learns the snapshot ID
+// while the run is still in flight, instead of only from the terminal result
+// (#3006): a dropped terminal result then still leaves backup_jobs.snapshot_id
+// pointing at the objects that were actually uploaded, so the snapshot can be
+// adopted into a restore point rather than orphaned in the bucket forever.
+type ProgressFn func(filesDone, filesTotal int, bytesDone, bytesTotal int64, snapshotID string)
 
 // progressThrottle is the minimum interval between ProgressFn invocations
 // from the snapshot loop (the final call after the loop always fires
@@ -340,7 +349,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			return
 		}
 		lastProgressAt = time.Now()
-		onProgress(filesDone, filesTotal, bytesDone, bytesTotal)
+		onProgress(filesDone, filesTotal, bytesDone, bytesTotal, snapshot.ID)
 	}
 	markDone := func(fileCount int, byteCount int64) {
 		progressMu.Lock()
@@ -398,9 +407,23 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 				"resumedFiles", len(resumedFiles),
 				"resumedBytes", resumedBytes,
 			)
-			emitProgress(true)
+			// The forced registration emit below reports these seeded counters,
+			// so no separate emission is needed here.
 		}
 	}
+
+	// Register the snapshot ID with the server BEFORE the first byte is
+	// uploaded (#3006). Every later emission carries it too, but this forced
+	// one guarantees it is sent even if the run dies during the very first
+	// file — and it is the only emission not subject to the throttle window,
+	// so the server learns the ID immediately rather than up to
+	// progressThrottle later.
+	//
+	// Placed AFTER the resume pre-seed on purpose: emitting first would report
+	// filesDone/bytesDone as 0 on a resumed run and then jump up, and progress
+	// that appears to go backwards is precisely what the counters are not
+	// allowed to do (see startRunKeepalive in backup.go).
+	emitProgress(true)
 
 	// abortStopped is the single exit point for every errBackupStopped
 	// return. See the journal parameter doc above for why cleanup is
