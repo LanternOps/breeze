@@ -580,7 +580,7 @@ export async function resolveAlertTemplate(params: {
 /**
  * Guard for the re-activation paths (#2948).
  *
- * `2026-08-06-g-drop-custom-alert-conditions.sql` deactivates standalone alert
+ * `2026-08-08-drop-custom-alert-conditions.sql` deactivates standalone alert
  * rules whose every effective condition is the retired `custom` type — it
  * cannot delete them, because `alerts.rule_id` is a real FK with no
  * `ON DELETE`. Without this check the obvious reaction to a rule that "turned
