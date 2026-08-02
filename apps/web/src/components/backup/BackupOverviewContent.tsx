@@ -268,7 +268,14 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
                 // Fall back rather than index blindly: an unmapped key from
                 // resolveJobStatus would otherwise throw on `.icon` and blank
                 // the whole overview.
-                const status = statusConfig[normalizedStatus as StatusConfigKey] ?? statusConfig.warning;
+                const mapped = statusConfig[normalizedStatus as StatusConfigKey];
+                if (!mapped) {
+                  // Survivable, but not silent: an unmapped key means
+                  // resolveJobStatus and statusConfig have drifted apart, and
+                  // the row would otherwise render as an anonymous "Warning".
+                  console.warn(`[BackupOverview] Unmapped backup job status "${normalizedStatus}" — rendering as Warning`);
+                }
+                const status = mapped ?? statusConfig.warning;
                 const StatusIcon = status.icon;
                 return (
                   <div

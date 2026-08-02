@@ -39,17 +39,25 @@ export const backupSystemStateManifestResultSchema = z
 export const backupCommandResultSchema = z.object({
   jobId: z.string().optional(),
   snapshotId: z.string().optional(),
-  // The agent's OWN terminal status (agent-side BackupJob.Status). The outer
-  // websocket CommandResult.status is only ever completed/failed — it is
-  // derived from a success bool — so this is the sole channel through which a
-  // `partial` run can be distinguished from a clean one (#3000).
+  // CAREFUL — this field means two different things depending on what is being
+  // parsed, because this schema is dual-use:
+  //   * over a RAW AGENT payload (agentWs's provider-backed and orphaned-result
+  //     handlers, hyperv.ts, mssql.ts) it is the agent's OWN terminal status
+  //     (agent-side BackupJob.Status). That is the sole channel through which a
+  //     `partial` run can be distinguished from a clean one (#3000), since the
+  //     outer websocket CommandResult.status is only ever completed/failed.
+  //   * over the QUEUE payload (backupWorker) it has already been overwritten
+  //     with that outer completed/failed value, and the agent's own status
+  //     rides the separate `agentStatus` key. See the NB in backupWorker.ts.
   //
   // Deliberately a permissive string rather than an enum: the agent's status
   // vocabulary is wider than the DB enum (it also emits `skipped`/`stopped`),
   // and an enum here would 400 the ENTIRE result — losing the snapshot id and
-  // counters — over a status value we do not care about. The mapping to a DB
-  // enum value is done explicitly in applyBackupCommandResultToJob, which
-  // treats anything it does not recognise as an ordinary completion.
+  // counters — over a status value we do not care about.
+  //
+  // NOTE: applyBackupCommandResultToJob does NOT read this field. Callers must
+  // forward it explicitly as the `agentStatus` argument, which is where the
+  // mapping to a DB enum value happens.
   status: z.string().optional(),
   filesBackedUp: z.number().int().nonnegative().optional(),
   bytesBackedUp: z.number().nonnegative().refine(Number.isInteger, 'expected integer').optional(),

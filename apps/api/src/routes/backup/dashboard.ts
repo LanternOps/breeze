@@ -8,6 +8,7 @@ import {
   backupJobs,
   backupSnapshots,
   devices,
+  RESTORABLE_BACKUP_JOB_STATUSES,
 } from '../../db/schema';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import { resolveBackupConfigForDevice, resolveAllBackupAssignedDevices } from '../../services/featureConfigResolver';
@@ -141,7 +142,10 @@ async function resolveAttentionItems(
               : `${deviceName}: ${consecutiveFailures} consecutive backup failures`
             : singularTitle,
         description: [reason, `Last unsuccessful ${lastFailureAt}`].filter(Boolean).join(' · '),
-        severity: consecutiveFailures >= 2 ? 'critical' : 'warning',
+        // `critical` requires a real failure in the streak: two consecutive
+        // partial runs are two consecutive restore points, degraded but usable,
+        // and escalating them like two hard failures would dilute the signal.
+        severity: consecutiveFailures >= 2 && !sawPartial ? 'critical' : 'warning',
         lastFailureAt,
       });
     }
@@ -376,6 +380,10 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
       jobsLast24h: {
         completed: last24hStats.completed,
         failed: last24hStats.failed,
+        // Must be serialized, not just counted: the web success-rate fraction
+        // reads `partial` off this object, and omitting it here silently makes
+        // that fix inert while every unit test still passes (#3000).
+        partial: last24hStats.partial,
         running: last24hStats.running,
         queued: last24hStats.pending,
       },
@@ -436,8 +444,12 @@ dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ
     .orderBy(desc(backupJobs.createdAt));
 
   const lastJob = jobs[0] ?? null;
+  // A partial run counts here for the same reason it counts for RPO: it left a
+  // real restore point. Reporting "last successful backup: never" for a device
+  // that demonstrably has a snapshot would be a worse lie than the one #3000
+  // set out to fix. Its degraded-ness is carried by the job's own status.
   const lastSuccess =
-    jobs.find((j) => j.status === 'completed') ?? null;
+    jobs.find((j) => (RESTORABLE_BACKUP_JOB_STATUSES as readonly string[]).includes(j.status)) ?? null;
   const lastFailure =
     jobs.find((j) => j.status === 'failed') ?? null;
 

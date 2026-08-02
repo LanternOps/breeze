@@ -819,6 +819,46 @@ describe('partial backup terminal status (#3000)', () => {
     expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
   });
 
+  it('collapses an unrecognized agent status LOUDLY, not silently', async () => {
+    // Silently greening a status we do not model is the #3000 bug class itself.
+    // We still record `completed` (a non-enum value would fail the UPDATE and
+    // lose the whole result) but it must be findable afterwards.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockSuccessPath();
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      agentStatus: 'some-future-status',
+      result: { snapshotId: 'provider-snap-1', filesBackedUp: 1 } as any,
+    });
+
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('some-future-status'));
+    expect(captureExceptionMock).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('does not warn for an ordinary completed run', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockSuccessPath();
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      agentStatus: 'completed',
+      result: { snapshotId: 'provider-snap-1', filesBackedUp: 1 } as any,
+    });
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
   it('keeps a failed result failed even if an agent status rides along', async () => {
     vi.mocked(db.update).mockReturnValueOnce(chainMock([{ id: 'job-1', configId: 'config-1' }]) as any);
 

@@ -339,6 +339,10 @@ async function handleProviderBackedBackupResult({ agentId, command, result, reso
             orgId: backupJob.orgId,
             deviceId: backupJob.deviceId,
             resultStatus: result.status,
+            // Provider-backed backups do not report `partial` today, but this
+            // path parses the agent's status and must not be the one place
+            // that silently discards it.
+            agentStatus: parsedBackup.data.status,
             result: {
               ...parsedBackup.data,
               error: result.error || result.stderr,

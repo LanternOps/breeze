@@ -14,6 +14,7 @@ import {
   backupJobs,
   recoveryReadiness,
   deviceGroupMemberships,
+  RESTORABLE_BACKUP_JOB_STATUSES,
 } from '../db/schema';
 import { eq, and, sql, isNull, desc, inArray } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
@@ -146,7 +147,7 @@ export async function checkCompliance(): Promise<{ checked: number; breaches: nu
             and(
               eq(backupJobs.orgId, config.orgId),
               eq(backupJobs.deviceId, deviceId),
-              eq(backupJobs.status, 'completed')
+              inArray(backupJobs.status, RESTORABLE_BACKUP_JOB_STATUSES)
             )
           )
           .orderBy(desc(backupJobs.completedAt))
@@ -204,7 +205,7 @@ export async function checkCompliance(): Promise<{ checked: number; breaches: nu
               and(
                 eq(backupJobs.orgId, config.orgId),
                 eq(backupJobs.deviceId, deviceId),
-                eq(backupJobs.status, 'completed'),
+                inArray(backupJobs.status, RESTORABLE_BACKUP_JOB_STATUSES),
                 sql`${backupJobs.completedAt} >= ${windowStart.toISOString()}::timestamptz`
               )
             )
@@ -327,7 +328,7 @@ async function resolveEvents(): Promise<{ resolved: number }> {
               and(
                 eq(backupJobs.orgId, event.orgId),
                 eq(backupJobs.deviceId, event.deviceId),
-                eq(backupJobs.status, 'completed'),
+                inArray(backupJobs.status, RESTORABLE_BACKUP_JOB_STATUSES),
                 sql`${backupJobs.completedAt} >= ${windowStart.toISOString()}::timestamptz`
               )
             )

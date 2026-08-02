@@ -13,11 +13,13 @@ package backup
 // one (#3000).
 //
 // 10% is a deliberately blunt round number, chosen against the two field cases
-// in #3000: 317 failures out of 123,600 files (0.26%) stays `completed`, while
-// 21 of 22 files / 85 bytes of 3.2 MB (>99%) becomes `partial`. It is a
-// constant rather than per-policy configuration on purpose — a tunable would
-// need a policy column, a UI and a fan-out story, and there is no evidence yet
-// that one threshold does not fit. Revisit if the field says otherwise.
+// on record. #3001's run (filesBackedUp=123284, errorCount=317 — ~0.26% of
+// files) stays `completed`; #3000's headline run, 21 of 22 files with 85 bytes
+// of 3.2 MB stored, becomes `partial` on both gates (95.5% of files, 99.997%
+// of bytes). It is a constant rather than per-policy configuration on purpose —
+// a tunable would need a policy column, a UI and a fan-out story, and there is
+// no evidence yet that one threshold does not fit. Revisit if the field says
+// otherwise.
 const partialFailureThreshold = 0.10
 
 // classifyCompletionStatus decides whether a run that produced a real snapshot
@@ -39,10 +41,15 @@ const partialFailureThreshold = 0.10
 // Both comparisons are strictly-greater-than, so a run sitting exactly on the
 // threshold keeps the status it had before this change.
 //
-// The function is total and never panics: zero denominators skip their gate,
-// and a protectedBytes larger than scannedBytes (defensive — it should not
-// happen) clamps to zero failed bytes rather than producing a negative ratio
-// that would suppress the other gate.
+// The function is total and never panics. Zero denominators skip their gate,
+// and the gates are independent: failing the byte gate always falls through to
+// the file gate — neither ever returns early on "not partial".
+//
+// protectedBytes should never exceed scannedBytes. If it somehow does,
+// failedBytes goes negative and the `failedBytes > 0` guard skips the byte gate
+// rather than dividing on a negative numerator. That guard is for readability,
+// not safety: a negative ratio would fail the threshold comparison anyway, and
+// the file gate runs either way.
 func classifyCompletionStatus(protectedBytes, scannedBytes int64, failedFiles, attemptedFiles int) string {
 	// Nothing failed: there is no proportion to judge. Short-circuited so a
 	// clean run can never be downgraded by byte arithmetic (reference/dedupe

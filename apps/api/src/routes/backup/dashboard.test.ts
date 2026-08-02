@@ -264,6 +264,43 @@ describe('backup dashboard routes', () => {
     });
     expect(body.data.attentionItems[0].title).toContain('only partially completed');
     expect(body.data.attentionItems[0].description).toContain('21 of 22 files failed to upload');
+    // The counter must be SERIALIZED, not merely computed. Omitting it from the
+    // response body made the web success-rate fix inert while every unit test
+    // still passed, because the web test hand-mocked a shape the API never sent.
+    expect(body.data.jobsLast24h).toMatchObject({ completed: 0, failed: 0, partial: 1 });
+  });
+
+  // Two consecutive partial runs are two degraded-but-usable restore points.
+  // They must not escalate to `critical` the way two hard failures do.
+  it('does not escalate consecutive partial runs to critical severity', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    const partialRow = (rn: number, day: string) => ({
+      deviceId: FAILING_DEVICE_ID,
+      status: 'partial',
+      errorLog: 'most files failed to upload',
+      completedAt: new Date(`2026-07-${day}T10:00:00.000Z`),
+      createdAt: new Date(`2026-07-${day}T09:55:00.000Z`),
+      rn,
+      deviceName: 'Finance Laptop',
+      deviceHostname: 'fin-laptop-01',
+    });
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ count: 2 }]))
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ completed: 0, failed: 0, partial: 2, running: 0, pending: 0 }]))
+      .mockReturnValueOnce(chainMock([{ totalBytes: 0, count: 0 }]))
+      .mockReturnValueOnce(chainMock([]))
+      .mockReturnValueOnce(chainMock([]))
+      .mockReturnValueOnce(chainMock([partialRow(1, '14'), partialRow(2, '13')]));
+
+    const res = await app.request('/backup/dashboard');
+    const body = await res.json();
+
+    expect(body.data.attentionItems).toHaveLength(1);
+    expect(body.data.attentionItems[0].severity).toBe('warning');
+    expect(body.data.attentionItems[0].title).toContain('consecutive unsuccessful backups');
+    expect(body.data.attentionItems[0].title).not.toContain('failures');
   });
 
   // A cancelled job is a user action, not a fault: it must NOT raise attention.

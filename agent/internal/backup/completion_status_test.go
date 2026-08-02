@@ -27,9 +27,11 @@ func TestClassifyCompletionStatus(t *testing.T) {
 		},
 		{
 			// The deliberate existing design: a handful of failures out of a
-			// large run is a warning, not a status change. This is the second
-			// field case from #3000 (errorCount 317 of 123,600 files).
-			name:           "field case 317 of 123600 stays completed",
+			// large run is a warning, not a status change. This is the field
+			// case reported in #3001 (filesBackedUp=123284, errorCount=317),
+			// which #3001 itself notes would still have landed green under the
+			// pre-#3000 behaviour.
+			name:           "field case 317 of ~123600 stays completed",
 			protectedBytes: 99_500_000,
 			scannedBytes:   100_000_000,
 			failedFiles:    317,
@@ -126,8 +128,8 @@ func TestClassifyCompletionStatus(t *testing.T) {
 		},
 		{
 			// Defensive: protected must never exceed scanned, but if it does
-			// the byte gate must not produce a negative ratio that silently
-			// suppresses the file gate.
+			// the run must still be judged on the file gate rather than
+			// dividing on a negative numerator.
 			name:           "protected exceeding scanned still honours the file gate",
 			protectedBytes: 2_000_000,
 			scannedBytes:   1_000_000,
@@ -256,20 +258,23 @@ func TestRunBackupContext_CleanRunStaysCompleted(t *testing.T) {
 }
 
 // The `partial` status has to survive the backup result payload's oversize
-// degradation tiers (#3001 / PR #3004). That degradation logic lives in
-// agent/cmd/breeze-backup/result_bounds.go, which is not on this branch, but it
-// preserves fields by SHAPE, not by an enumerated value list:
+// degradation tiers (#3001 / PR #3004). The tiers themselves are exercised
+// directly against the real implementation in
+// agent/cmd/breeze-backup/partial_status_bounds_test.go — that is the
+// authoritative proof. This test guards the PRODUCING side of the contract,
+// which lives here and which that package cannot reach:
 //
 //   - tier 3 (reduceToScalars) keeps every top-level key whose value is not a
 //     JSON container, and
-//   - tier 4 (lastResortStdout) keeps the keep-list {id, jobId, status,
-//     snapshotId}, unmarshalling each into a plain Go string.
+//   - tier 4 (lastResortStdout) keeps only the four-key list
+//     {id, jobId, status, snapshotId}, unmarshalling each into a plain string.
 //
-// So the property this change depends on is that `status` marshals as a
-// TOP-LEVEL JSON STRING SCALAR carrying the value verbatim. This test pins that
-// property on the producing side, where it can be enforced independently of
-// merge order. It also pins that the change adds NO new numeric wire field,
-// because tier 4's payload is a map[string]string and would silently drop one.
+// So `status` must marshal as a TOP-LEVEL JSON STRING SCALAR carrying the value
+// verbatim. It also pins that this change adds NO new wire field: tier 4 drops
+// everything outside its keep-list regardless of type, and being a
+// map[string]string it could not carry a numeric counter even if one were added
+// to that list — which is why the partial signal rides the existing `status`
+// and `errorCount` rather than a new counter.
 func TestBackupJobPartialStatusSurvivesResultDegradationShape(t *testing.T) {
 	job := &BackupJob{
 		ID:            "job-123",
@@ -323,7 +328,8 @@ func TestBackupJobPartialStatusSurvivesResultDegradationShape(t *testing.T) {
 }
 
 // isJSONContainerShape mirrors result_bounds.go's isJSONContainer for the shape
-// assertion above, so this test does not depend on that file existing yet.
+// assertion above. Duplicated rather than imported because that file is in
+// package main and cannot be referenced from here.
 func isJSONContainerShape(raw json.RawMessage) bool {
 	for _, b := range raw {
 		switch b {

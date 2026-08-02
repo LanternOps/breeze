@@ -437,11 +437,27 @@ export async function applyBackupCommandResultToJob(params: {
   // the agent's vocabulary includes `skipped`/`stopped`, which are not
   // backup_status enum values and would fail the UPDATE outright.
   const isSuccessResult = resultStatus === 'completed';
-  const terminalStatus = isSuccessResult
-    ? agentStatus === 'partial'
-      ? 'partial'
-      : 'completed'
-    : 'failed';
+  let terminalStatus: 'completed' | 'partial' | 'failed';
+  if (!isSuccessResult) {
+    terminalStatus = 'failed';
+  } else if (agentStatus === 'partial') {
+    terminalStatus = 'partial';
+  } else {
+    // Collapse LOUDLY. Silently greening an agent status we do not model is the
+    // #3000 bug class itself — `skipped` (a run that protected zero files)
+    // already reaches here as success:true, and a future `degraded`/`incomplete`
+    // would too. We still record `completed` (the alternative is a non-enum
+    // value that fails the UPDATE outright and loses the whole result), but an
+    // operator must be able to find it afterwards.
+    if (agentStatus && agentStatus !== 'completed') {
+      const msg =
+        `[BackupPersistence] Unrecognized agent terminal status "${agentStatus}" for job ${jobId} ` +
+        `(device ${deviceId}) recorded as 'completed' — the run may not be a good restore point.`;
+      console.warn(msg);
+      captureException(new Error(msg));
+    }
+    terminalStatus = 'completed';
+  }
 
   if (isSuccessResult) {
     updateData.status = terminalStatus;
