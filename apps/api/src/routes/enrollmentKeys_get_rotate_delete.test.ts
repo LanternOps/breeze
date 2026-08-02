@@ -266,6 +266,37 @@ describe('enrollment key routes — get, rotate, delete', () => {
       expect(body.usageCount).toBe(0);
     });
 
+    // #2992 review round 2 — a short_code marks an installer-link / invite
+    // CHILD key, whose bootstrap tokens are one-per-DOWNLOAD (`maxUsage: 1`
+    // hardcoded in serveInstaller), so Σ max_usage counts clicks rather than
+    // device slots. See reportsInstallerCapacity. The detail route must apply
+    // the same rule as the list route, or a caller gets a different answer
+    // depending on which endpoint it read the key from.
+    it('suppresses installer capacity for a short-link child key', async () => {
+      mockSelectFromWhereLimit([
+        makeEnrollmentKey({ shortCode: 'A1B2C3D4E5', maxUsage: 7, usageCount: 3 }),
+      ]);
+      // No groupBy mock: the aggregate must not be issued at all. Mutant
+      // killed — drop the reportsInstallerCapacity gate here and the savepoint
+      // opens and a second select fires (and, with a groupBy mock present, a
+      // meaningless `Installer devices 0 / 3` reaches the wire).
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.installerTokens).toBeNull();
+      expect(dbMock.transaction).not.toHaveBeenCalled();
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+      // The key's own counters — atomically claimed on every /s/:code
+      // download — still carry the real story.
+      expect(body.usageCount).toBe(3);
+      expect(body.maxUsage).toBe(7);
+    });
+
     it('returns 404 for nonexistent key', async () => {
       mockSelectFromWhereLimit([]);
 

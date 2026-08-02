@@ -25,12 +25,21 @@ interface EnrollmentKey {
   createdAt: string;
   /**
    * Device slots across the installers minted from this key, summed over its
-   * bootstrap tokens (#2992). null when the key never produced an installer.
+   * bootstrap tokens (#2992).
    *
    * A SEPARATE counter from usageCount/maxUsage, not a replacement: the modern
    * installer downloads mint no child enrollment key, so the device count the
    * operator chose lands here and nowhere else. Both get rendered; see the
    * usage cell below.
+   *
+   * null in TWO cases, and the API decides both — do not try to re-derive
+   * either here:
+   *   1. the key never produced an installer;
+   *   2. the key is a short-link / invite CHILD (it carries a shortCode), whose
+   *      bootstrap tokens are one-per-DOWNLOAD rather than one-per-device, so
+   *      the sum would count clicks and render a denominator that grows on
+   *      every click and never reaches the key's real budget. See
+   *      `reportsInstallerCapacity` in routes/enrollmentKeys.ts.
    */
   installerTokens?: { consumed: number; max: number } | null;
 }

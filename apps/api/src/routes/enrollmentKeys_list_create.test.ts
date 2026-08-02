@@ -270,6 +270,14 @@ describe('enrollment key routes — list & create', () => {
       mockSelectFromWhereOrderByLimitOffset([]);
       // Deliberately NO groupBy mock: an empty page must not issue the second
       // query at all (a bare `IN ()` is both wasteful and invalid SQL).
+      //
+      // Omitting the mock is NOT what proves that. Mutant: delete
+      // `if (keyIds.length === 0) return usage`. Then `tx.select()` returns
+      // undefined, `.from` throws a TypeError, fetchInstallerTokenUsage's
+      // blanket catch swallows it and returns an empty map, and `data` is STILL
+      // [] — the response assertion alone is green either way. The call counts
+      // below are the assertions that kill it: the route may issue exactly its
+      // two selects (count + page) and must never open the aggregate savepoint.
 
       const res = await app.request('/enrollment-keys', {
         method: 'GET',
@@ -279,6 +287,77 @@ describe('enrollment key routes — list & create', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data).toEqual([]);
+      expect(dbMock.transaction).not.toHaveBeenCalled();
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+    });
+
+    // ------------------------------------------------------------------
+    // #2992 review round 2 — short-link children report no installer line.
+    //
+    // `/s/:code` mints a `maxUsage: 1` bootstrap token per DOWNLOAD against the
+    // installer-link child key, so Σ max_usage there counts clicks, not device
+    // slots: a 7-device link clicked 3 times would render "3 / 7" over
+    // "Installer devices 0 / 3". See reportsInstallerCapacity.
+    // ------------------------------------------------------------------
+    it('suppresses the installer line for a short-link child even when the aggregate returns rows for it', async () => {
+      mockSelectFromWhere([{ count: 2 }]);
+      mockSelectFromWhereOrderByLimitOffset([
+        makeEnrollmentKey({ name: 'Add Device parent' }),
+        makeEnrollmentKey({
+          id: 'key-link',
+          name: 'Add Device parent (link x7)',
+          shortCode: 'A1B2C3D4E5',
+          maxUsage: 7,
+          usageCount: 3,
+        }),
+      ]);
+      // The aggregate deliberately hands back a row for the short-link child
+      // too. Suppression must not depend on the query having filtered it out:
+      // this kills the mutant that drops `.filter(reportsInstallerCapacity)`
+      // from the id list but leaves the `?? null` lookup intact.
+      mockSelectFromWhereGroupBy([
+        { parentEnrollmentKeyId: KEY_ID, consumed: 0, max: 5 },
+        { parentEnrollmentKeyId: 'key-link', consumed: 0, max: 3 },
+      ]);
+
+      const res = await app.request('/enrollment-keys', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // Add-Device parent (no short_code) still reports genuine capacity —
+      // kills the "suppress everything" mutant.
+      expect(body.data[0].installerTokens).toEqual({ consumed: 0, max: 5 });
+      expect(body.data[1].installerTokens).toBeNull();
+      // …and its own counters, which ARE atomically claimed on /s/:code, are
+      // left to tell the story.
+      expect(body.data[1].usageCount).toBe(3);
+      expect(body.data[1].maxUsage).toBe(7);
+    });
+
+    it('never issues the aggregate for a page of only short-link children', async () => {
+      mockSelectFromWhere([{ count: 1 }]);
+      mockSelectFromWhereOrderByLimitOffset([
+        makeEnrollmentKey({ shortCode: 'A1B2C3D4E5' }),
+      ]);
+      // No groupBy mock, and no aggregate is allowed to run: filtering happens
+      // on the ID LIST, so an all-short-link page hits the empty-ids
+      // early-return. Mutant killed: filtering the RESULT map instead (the
+      // response would look identical, but the savepoint + third select would
+      // fire).
+
+      const res = await app.request('/enrollment-keys', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].installerTokens).toBeNull();
+      expect(dbMock.transaction).not.toHaveBeenCalled();
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
     });
 
     it('lists enrollment keys for org-scoped user', async () => {

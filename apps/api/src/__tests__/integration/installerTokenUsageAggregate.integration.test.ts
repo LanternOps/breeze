@@ -92,8 +92,10 @@ describe('installer token usage aggregate (#2992, real Postgres)', () => {
           })
           .returning({ id: enrollmentKeys.id });
 
-        // withoutTokens: a plain key (CLI / short-link flavour) that must come
-        // back absent from the map so the UI falls back to its own counters.
+        // withoutTokens: a plain key (CLI flavour) that must come back absent
+        // from the map so the UI falls back to its own counters. Short-link
+        // children never reach this function at all — the routes drop them
+        // from the id list up front (see reportsInstallerCapacity).
         const [withoutTokens] = await db
           .insert(enrollmentKeys)
           .values({

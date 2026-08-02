@@ -563,6 +563,9 @@ function sanitizeEnrollmentKey(
  *
  * Counts DEVICE SLOTS, not installers: a key that produced two 5-device
  * downloads reports max 10, not 2.
+ *
+ * NOT reported for every key — see `reportsInstallerCapacity`, which is the
+ * gate both read routes run before asking for this at all.
  */
 export interface InstallerTokenUsage {
   /** Σ consumed_count — devices that have actually redeemed an installer. */
@@ -572,7 +575,61 @@ export interface InstallerTokenUsage {
 }
 
 /**
+ * Whether a key's installer figure is a DEVICE-SLOT CAPACITY at all, and so
+ * may be surfaced as `installerTokens` (#2992 review round 2).
+ *
+ * Two flows parent `installer_bootstrap_tokens`, and they mean different
+ * things:
+ *
+ *   (a) Add Device / guided setup — mints ONE token off a fresh parent key
+ *       whose `max_usage` IS the device count the operator picked. Σ max_usage
+ *       is a real budget; this is the case the whole feature exists for.
+ *   (b) Short-link / installer-link — POST /:id/installer-link creates a CHILD
+ *       key carrying the device count in its OWN `max_usage` plus a
+ *       `short_code`, and then EVERY public download (`/s/:code`, and the
+ *       handle-based `public-download` route that shares serveInstaller) mints
+ *       a hardcoded `maxUsage: 1` token against that child. Σ max_usage there
+ *       is "downloads so far", not capacity: a 7-device link clicked 3 times
+ *       renders `3 / 7` from the key row and `Installer devices 0 / 3`
+ *       underneath it — a second, smaller-looking N/M that grows on every
+ *       click and never reaches 7. Worse, the `3` in each line means something
+ *       different (claims vs downloads).
+ *
+ * So: suppress (b). A `short_code` is the discriminator because it is written
+ * ONLY by the three child-minting paths — POST /:id/installer-link, the legacy
+ * macOS installer download, and mintChildEnrollmentKey (MCP invites) — and
+ * never by POST /enrollment-keys or by the Add-Device parent. Nothing is lost
+ * on the short-link row: `usage_count` is atomically claimed against the child
+ * on that same `/s/:code` path, so the key's own first line already tells the
+ * true story and the installer line was pure redundancy.
+ *
+ * Suppressed API-side, not in the UI, deliberately: the wire field should only
+ * ever be populated when it genuinely denotes device-slot capacity, so a second
+ * consumer (portal, AI tool, export) can't rediscover the same confusion. Both
+ * read routes gate on this helper for the same reason — a UI-only fix would
+ * have to be re-derived per consumer, and the list and detail routes would be
+ * free to disagree.
+ *
+ * KNOWN EDGE CASE, accepted: the authenticated `/:id/installer/:platform` and
+ * `/:id/bootstrap-token` routes take ANY key id the caller can reach, including
+ * an installer-link child (it's a visible row on the Enrollment Keys page). An
+ * operator who builds an installer FROM a short-link child therefore gets a
+ * `max_usage > 1` token under a short_code-bearing key, and this suppresses a
+ * figure that was real. Not worth contorting the design for: it needs a
+ * deliberate second download off a child row, the alternative (SUM over a mix
+ * of one N-device token and K download tokens) is a number with no meaning at
+ * all, and an absent line beats a confidently wrong denominator.
+ */
+export function reportsInstallerCapacity(key: { shortCode?: string | null }): boolean {
+  return !key.shortCode;
+}
+
+/**
  * Batched lookup of installer capacity for the keys on one list page.
+ *
+ * Callers MUST pre-filter with `reportsInstallerCapacity` — this function
+ * aggregates whatever ids it is handed and cannot tell a capacity token from a
+ * per-download one.
  *
  * Deliberately a SECOND query rather than a leftJoin onto the list select:
  * `installer_bootstrap_tokens` is 1:N per parent key (nothing constrains it to
@@ -737,8 +794,16 @@ enrollmentKeyRoutes.get(
     // join. `null` for a key that never minted an installer, so the UI can fall
     // back to the key's own counters (correct for CLI / plain keys, where
     // usage_count is what actually gets claimed).
+    //
+    // Short-link children are excluded from the aggregate entirely rather than
+    // filtered out of the result — see reportsInstallerCapacity. Excluding at
+    // the id list means a page of nothing but short-link rows skips the query
+    // altogether (keyIds.length === 0 early-return), and there is no second
+    // place where a suppressed key could leak back in.
     const installerUsage = await fetchInstallerTokenUsage(
-      keyList.map((keyRecord) => keyRecord.id),
+      keyList
+        .filter((keyRecord) => reportsInstallerCapacity(keyRecord))
+        .map((keyRecord) => keyRecord.id),
       c,
     );
 
@@ -987,8 +1052,14 @@ enrollmentKeyRoutes.get(
     }
 
     // Same shape as the list route so a caller doesn't have to special-case
-    // which endpoint it read the key from (#2992).
-    const installerUsage = await fetchInstallerTokenUsage([enrollmentKey.id], c);
+    // which endpoint it read the key from (#2992) — including the short-link
+    // suppression (reportsInstallerCapacity). Passing [] rather than branching
+    // around the call keeps the two routes on one code path: the empty-ids
+    // early-return does the skipping, exactly as it does for an empty page.
+    const installerUsage = await fetchInstallerTokenUsage(
+      reportsInstallerCapacity(enrollmentKey) ? [enrollmentKey.id] : [],
+      c,
+    );
 
     return c.json({
       ...sanitizeEnrollmentKey(enrollmentKey),
