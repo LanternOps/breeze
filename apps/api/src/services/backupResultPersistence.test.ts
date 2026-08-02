@@ -1321,4 +1321,17 @@ describe('sanitizeVssMetadata (#3027)', () => {
 
     expect(JSON.stringify(sanitized)).not.toContain('MIIabc');
   });
+
+  it('redacts on the pathological tier too — every exit must be redacted', () => {
+    // This tier reads fields off the pre-redaction working object, so it is the
+    // one path that could persist agent text raw. A guarantee with an exception
+    // is not a guarantee.
+    const leaked = '-----BEGIN RSA PRIVATE KEY-----\nMIIsecret\n-----END RSA PRIVATE KEY-----';
+    const sanitized = sanitizeVssMetadata({
+      unprotectedVolumes: [leaked, ...Array.from({ length: 23 }, () => '🔥'.repeat(512))],
+      warnings: Array.from({ length: 24 }, () => '🔥'.repeat(512)),
+    } as any) as Record<string, unknown>;
+
+    expect(JSON.stringify(sanitized)).not.toContain('MIIsecret');
+  });
 });

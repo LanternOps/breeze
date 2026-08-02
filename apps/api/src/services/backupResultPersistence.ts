@@ -273,13 +273,19 @@ export function sanitizeVssMetadata(
   // Even here, keep `unprotectedVolumes`: discarding it is the one loss that
   // turns a degraded snapshot back into a clean-looking one, which is the
   // entire bug class this function guards.
+  //
+  // Redacted like every other return: `out` holds pre-redaction values (finish()
+  // returns a redacted COPY and leaves `out` untouched), so reading fields off it
+  // here without redacting would make this the one path that persists agent text
+  // raw. Every exit from this function must be redacted, or the guarantee is not
+  // a guarantee.
   const survivingVolumes = Array.isArray(out.unprotectedVolumes)
     ? (out.unprotectedVolumes as string[]).slice(0, MAX_VSS_ARRAY_ENTRIES)
     : [];
-  return {
+  return redactSecretsDeep({
     ...(survivingVolumes.length > 0 ? { unprotectedVolumes: survivingVolumes } : {}),
     warnings: ['VSS metadata was discarded: the reported payload exceeded the size limit'],
-  };
+  }) as Record<string, unknown>;
 }
 
 function resolveSnapshotEncryptionKeyId(metadata: Record<string, unknown>): string | null {
