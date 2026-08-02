@@ -107,7 +107,7 @@ describe('extension route and AI lifecycle', () => {
   it('stages, advertises, validates, executes, replaces, and withdraws one active snapshot', async () => {
     const registry = new ExtensionContributionRegistry();
     const app = new Hono();
-    mountExtensionGateway(app, registry, async () => true);
+    mountExtensionGateway(app, registry, async () => true, async () => false);
     registry.activate(stage(
       registry,
       makeManifest(),

@@ -305,6 +305,7 @@ import { initializeDatabaseForStartup } from './db/databaseStartup';
 import { loadSourceExtensions } from './extensions/loader';
 import { extensionContributionRegistry } from './extensions/contributionRegistry';
 import { mountExtensionGateway } from './extensions/gateway';
+import { createOrgInstalledReader } from './extensions/orgInstallGate';
 import { join as joinPath } from 'node:path';
 import { reconcileExtensions } from './extensions/reconciler';
 import { resolveExtensionsRoot } from './extensions/discovery';
@@ -1009,7 +1010,12 @@ api.route('/extensions', extensionsWebRoutes);
 // installed_extensions.enabled on EVERY dispatched extension request (no cache)
 // so an admin disabling an extension takes effect fleet-wide on the next request.
 const extensionStateStore = createExtensionStateStore();
-mountExtensionGateway(app, extensionContributionRegistry, createEnabledGate(extensionStateStore));
+mountExtensionGateway(
+  app,
+  extensionContributionRegistry,
+  createEnabledGate(extensionStateStore),
+  createOrgInstalledReader(),
+);
 
 app.route('/api/v1', api);
 

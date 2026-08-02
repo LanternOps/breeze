@@ -12,7 +12,7 @@ vi.mock('../middleware/auth', () => ({
     c: { set(key: string, value: unknown): void },
     next: () => Promise<void>,
   ) => {
-    c.set('auth', { user: { id: 'user-1' } });
+    c.set('auth', { user: { id: 'user-1' }, orgId: 'org-1', scope: 'organization' });
     await authLifetime.run('user', next);
   }),
 }));
@@ -67,6 +67,7 @@ import { setExtensionMetricsRecorder } from './metrics';
 import { authMiddleware } from '../middleware/auth';
 import { agentAuthMiddleware } from '../middleware/agentAuth';
 import { helperAuth } from '../middleware/helperAuth';
+import type { OrgInstalledReader } from './orgInstallGate';
 
 // `helperRoutes` is a legacy-manifest flag carried on the staged manifest for
 // the gateway guard; it is not part of the v1 wire schema yet (see the TODO in
@@ -112,6 +113,7 @@ function makeGatewayFixture(options: {
   manifest?: ExtensionManifestV1;
   isEnabled?: (name: string) => Promise<boolean>;
   routeApp?: Hono;
+  isInstalledForOrg?: OrgInstalledReader;
 } = {}) {
   const app = new Hono();
   const registry = new ExtensionContributionRegistry();
@@ -126,8 +128,15 @@ function makeGatewayFixture(options: {
     deviceId: (c.get('agent') as { deviceId: string }).deviceId,
     authLifetime: authLifetime.getStore(),
   }));
+  routeApp.get('/agent/:id/ping', (c) => c.json({ ok: true }));
+  routeApp.get('/helper/ping', (c) => c.json({ ok: true }));
   activateRoute(registry, routeApp, options.manifest);
-  mountExtensionGateway(app, registry, options.isEnabled ?? (async () => true));
+  mountExtensionGateway(
+    app,
+    registry,
+    options.isEnabled ?? (async () => true),
+    options.isInstalledForOrg ?? vi.fn(async () => false),
+  );
   return { app, registry };
 }
 
@@ -346,7 +355,7 @@ describe('mountExtensionGateway', () => {
     const registry = new ExtensionContributionRegistry();
     const session = registry.begin(makeManifest());
     registry.activate(session.finish());
-    mountExtensionGateway(app, registry, async () => true);
+    mountExtensionGateway(app, registry, async () => true, async () => false);
 
     const response = await app.request('/api/v1/ext/demo/missing');
 
@@ -412,7 +421,7 @@ describe('mountExtensionGateway', () => {
     const app = new Hono();
     const registry = new ExtensionContributionRegistry();
     activateRoute(registry, routeApp);
-    mountExtensionGateway(app, registry, async () => true);
+    mountExtensionGateway(app, registry, async () => true, async () => false);
     app.onError((error, c) => c.json({ outerError: error.message }, 502));
 
     const response = await app.request('/api/v1/ext/demo/explode');
@@ -528,5 +537,98 @@ describe('extension gateway route metric labels', () => {
     expect(metrics.requests).toEqual([
       { extension: 'demo', route: EXTENSION_ROUTE_LABEL_UNAVAILABLE, status: 503 },
     ]);
+  });
+});
+
+describe('org install scoping (L1)', () => {
+  const orgScoped = () => makeManifest({
+    tenancy: {
+      orgCascadeDeleteTables: [],
+      deviceCascadeDeleteTables: [],
+      deviceOrgDenormalizedTables: [],
+      installScope: 'org',
+    },
+  });
+
+  it('server-scoped extension never consults the install reader', async () => {
+    const isInstalledForOrg = vi.fn(async () => false);
+    const { app } = makeGatewayFixture({ isInstalledForOrg });
+    const res = await app.request('/api/v1/ext/demo/health');
+    expect(res.status).toBe(200);
+    expect(isInstalledForOrg).not.toHaveBeenCalled();
+  });
+
+  it('non-installed org: 404 on the CANONICAL user path', async () => {
+    const { app } = makeGatewayFixture({
+      manifest: orgScoped(), isInstalledForOrg: async () => false,
+    });
+    const res = await app.request('/api/v1/ext/demo/health');
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'not found' });
+  });
+
+  it('non-installed org: 404 on the legacy ALIAS user path', async () => {
+    const { app } = makeGatewayFixture({
+      manifest: orgScoped(), isInstalledForOrg: async () => false,
+    });
+    const res = await app.request('/api/v1/demo/health');
+    expect(res.status).toBe(404);
+  });
+
+  it('installed org: 200 on both paths', async () => {
+    const { app } = makeGatewayFixture({
+      manifest: orgScoped(), isInstalledForOrg: async () => true,
+    });
+    expect((await app.request('/api/v1/ext/demo/health')).status).toBe(200);
+    expect((await app.request('/api/v1/demo/health')).status).toBe(200);
+  });
+
+  it('agent path: install gate runs AFTER agent auth — missing credentials 401, not 404', async () => {
+    const isInstalledForOrg = vi.fn(async () => false);
+    const { app } = makeGatewayFixture({ manifest: orgScoped(), isInstalledForOrg });
+    // No Authorization header: agent auth must reject first.
+    const res = await app.request('/api/v1/ext/demo/agent/dev-1/ping');
+    expect(res.status).toBe(401);
+    expect(isInstalledForOrg).not.toHaveBeenCalled();
+  });
+
+  it('agent path: authenticated agent of a non-installed org gets 404 (both entry paths)', async () => {
+    const { app } = makeGatewayFixture({
+      manifest: orgScoped(), isInstalledForOrg: async () => false,
+    });
+    const headers = { Authorization: 'Bearer token' };
+    expect((await app.request('/api/v1/ext/demo/agent/dev-1/ping', { headers })).status).toBe(404);
+    expect((await app.request('/api/v1/demo/agent/dev-1/ping', { headers })).status).toBe(404);
+  });
+
+  it('agent path: install gate runs AFTER availability — disabled extension 503s even for a non-installed org', async () => {
+    const { app } = makeGatewayFixture({
+      manifest: orgScoped(),
+      isEnabled: async () => false,
+      isInstalledForOrg: async () => false,
+    });
+    const res = await app.request('/api/v1/ext/demo/agent/dev-1/ping', {
+      headers: { Authorization: 'Bearer token' },
+    });
+    expect(res.status).toBe(503);
+  });
+
+  it('helper path: authenticated helper of a non-installed org gets 404', async () => {
+    const { app } = makeGatewayFixture({
+      manifest: { ...orgScoped(), helperRoutes: true } as ExtensionManifestV1,
+      isInstalledForOrg: async () => false,
+    });
+    const res = await app.request('/api/v1/ext/demo/helper/ping', {
+      headers: { Authorization: 'Bearer token' },
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('public route on an org-scoped extension fails closed with 404 (no resolvable org)', async () => {
+    const { app } = makeGatewayFixture({
+      manifest: { ...orgScoped(), publicRoutes: ['/health'] },
+      isInstalledForOrg: async () => true,
+    });
+    expect((await app.request('/api/v1/ext/demo/health')).status).toBe(404);
   });
 });
