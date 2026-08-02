@@ -590,8 +590,8 @@ func TestConnSendStalledDoesNotStarveOtherWriter(t *testing.T) {
 // json.Marshal and never exercises a size check at all.
 func TestConnSendOversizedPayloadRejectedBeforeLock(t *testing.T) {
 	serverConn, clientConn := createSocketPair(t)
-	defer serverConn.Close()
-	defer clientConn.Close()
+	defer func() { _ = serverConn.Close() }()
+	defer func() { _ = clientConn.Close() }()
 
 	server := NewConn(serverConn)
 	client := NewConn(clientConn)
