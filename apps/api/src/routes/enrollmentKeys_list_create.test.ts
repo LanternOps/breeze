@@ -312,9 +312,14 @@ describe('enrollment key routes — list & create', () => {
         }),
       ]);
       // The aggregate deliberately hands back a row for the short-link child
-      // too. Suppression must not depend on the query having filtered it out:
-      // this kills the mutant that drops `.filter(reportsInstallerCapacity)`
-      // from the id list but leaves the `?? null` lookup intact.
+      // too — the shape you get if the WHERE predicate is ever wrong or a
+      // future caller widens the id set. Suppression must not depend on the
+      // QUERY having filtered it out, so this kills the mutant that drops the
+      // `reportsInstallerCapacity` gate on the READ and leaves only the id-list
+      // filter. (It caught exactly that: the first cut of this fix gated only
+      // the id list, and the `.get()` reattached the figure from this row.)
+      // The id-list filter is killed separately, by the transaction assertion
+      // in the all-short-link test below.
       mockSelectFromWhereGroupBy([
         { parentEnrollmentKeyId: KEY_ID, consumed: 0, max: 5 },
         { parentEnrollmentKeyId: 'key-link', consumed: 0, max: 3 },

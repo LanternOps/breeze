@@ -795,11 +795,17 @@ enrollmentKeyRoutes.get(
     // back to the key's own counters (correct for CLI / plain keys, where
     // usage_count is what actually gets claimed).
     //
-    // Short-link children are excluded from the aggregate entirely rather than
-    // filtered out of the result — see reportsInstallerCapacity. Excluding at
-    // the id list means a page of nothing but short-link rows skips the query
-    // altogether (keyIds.length === 0 early-return), and there is no second
-    // place where a suppressed key could leak back in.
+    // Short-link children are gated TWICE against reportsInstallerCapacity,
+    // and both gates earn their place:
+    //
+    //   - on the ID LIST, so a page of nothing but short-link rows never issues
+    //     the query at all (it hits the keyIds.length === 0 early-return);
+    //   - on the READ below, because the id list only narrows a WHERE clause.
+    //     Suppression that lives solely in the predicate is suppression the
+    //     response layer is trusting the database to have performed — one
+    //     `inArray` typo, or any future caller that widens the id set, and the
+    //     `.get()` silently reattaches the figure. The response must not be
+    //     able to state something the gate forbids, whatever the query did.
     const installerUsage = await fetchInstallerTokenUsage(
       keyList
         .filter((keyRecord) => reportsInstallerCapacity(keyRecord))
@@ -810,7 +816,9 @@ enrollmentKeyRoutes.get(
     return c.json({
       data: keyList.map((keyRecord) => ({
         ...sanitizeEnrollmentKey(keyRecord),
-        installerTokens: installerUsage.get(keyRecord.id) ?? null,
+        installerTokens: reportsInstallerCapacity(keyRecord)
+          ? (installerUsage.get(keyRecord.id) ?? null)
+          : null,
       })),
       pagination: { page, limit, total },
     });
@@ -1053,17 +1061,21 @@ enrollmentKeyRoutes.get(
 
     // Same shape as the list route so a caller doesn't have to special-case
     // which endpoint it read the key from (#2992) — including the short-link
-    // suppression (reportsInstallerCapacity). Passing [] rather than branching
-    // around the call keeps the two routes on one code path: the empty-ids
-    // early-return does the skipping, exactly as it does for an empty page.
+    // suppression, gated on both the id list and the read for the same reasons
+    // spelled out there. Passing [] rather than branching around the call keeps
+    // the two routes on one code path: the empty-ids early-return does the
+    // skipping, exactly as it does for an empty page.
+    const reportsCapacity = reportsInstallerCapacity(enrollmentKey);
     const installerUsage = await fetchInstallerTokenUsage(
-      reportsInstallerCapacity(enrollmentKey) ? [enrollmentKey.id] : [],
+      reportsCapacity ? [enrollmentKey.id] : [],
       c,
     );
 
     return c.json({
       ...sanitizeEnrollmentKey(enrollmentKey),
-      installerTokens: installerUsage.get(enrollmentKey.id) ?? null,
+      installerTokens: reportsCapacity
+        ? (installerUsage.get(enrollmentKey.id) ?? null)
+        : null,
     });
   },
 );
