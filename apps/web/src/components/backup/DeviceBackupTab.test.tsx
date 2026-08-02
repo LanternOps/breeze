@@ -430,4 +430,47 @@ describe('DeviceBackupTab', () => {
     // Not styled as the emerald/success banner.
     expect(banner.className).not.toMatch(/emerald/);
   });
+
+  it('labels a partial job "Partial", never "Pending"', async () => {
+    // The `?? jobStatusConfig.pending` fallback silently mislabels any status
+    // missing from the map — a finished-but-degraded run read as still queued.
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+
+      if (url === '/backup/status/device-1') {
+        return makeJsonResponse({ data: { protected: true } });
+      }
+
+      if (url === '/backup/jobs?deviceId=device-1') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'job-partial',
+              deviceId: 'device-1',
+              type: 'file',
+              status: 'partial',
+              startedAt: '2026-03-30T00:00:00Z',
+              completedAt: '2026-03-30T00:10:00Z',
+              totalSize: 1024,
+              errorCount: 21,
+            },
+          ],
+        });
+      }
+
+      if (url === '/backup/snapshots?deviceId=device-1' && method === 'GET') {
+        return makeJsonResponse({ data: [] });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceBackupTab deviceId="device-1" />);
+
+    const jobHistoryTable = (await screen.findByText('Job History')).parentElement?.querySelector('table');
+    expect(jobHistoryTable).toBeTruthy();
+    expect(within(jobHistoryTable as HTMLTableElement).getByText('Partial')).toBeTruthy();
+    expect(within(jobHistoryTable as HTMLTableElement).queryByText('Pending')).toBeNull();
+  });
 });

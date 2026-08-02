@@ -42,6 +42,10 @@ export async function closeBackupQueue(): Promise<void> {
 
 export interface ProcessResultsResult {
   status: string;
+  // The agent's own terminal status (`completed` | `partial` | …), distinct
+  // from `status` above which is the outer completed/failed command status.
+  // See backupProcessResultSchema — a `partial` run rides only this key.
+  agentStatus?: string;
   jobId?: string;
   snapshotId?: string;
   filesBackedUp?: number;

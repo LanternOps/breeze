@@ -21,7 +21,9 @@ import AlphaBadge from '../shared/AlphaBadge';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 
-type BackupJobStatus = 'completed' | 'running' | 'failed' | 'pending' | 'cancelled';
+// `partial` is terminal but degraded: a restorable snapshot exists while a large
+// share of the data did not make it. Warning severity — never green, never red.
+type BackupJobStatus = 'completed' | 'running' | 'failed' | 'pending' | 'cancelled' | 'partial';
 type VssWriterState = 'stable' | 'failed' | 'waiting' | string;
 
 type VssWriter = {
@@ -78,6 +80,7 @@ const jobStatusConfig: Record<BackupJobStatus, { icon: typeof CheckCircle2; clas
   completed: { icon: CheckCircle2, className: 'text-success bg-success/10', label: 'Completed' },
   running: { icon: Clock, className: 'text-primary bg-primary/10', label: 'Running' },
   failed: { icon: XCircle, className: 'text-destructive bg-destructive/10', label: 'Failed' },
+  partial: { icon: AlertTriangle, className: 'text-warning bg-warning/10', label: 'Partial' },
   pending: { icon: Clock, className: 'text-muted-foreground bg-muted', label: 'Pending' },
   cancelled: { icon: XCircle, className: 'text-muted-foreground bg-muted', label: 'Cancelled' },
 };

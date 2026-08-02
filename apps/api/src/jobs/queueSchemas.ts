@@ -28,6 +28,11 @@ const backupSnapshotSummarySchema = z.object({
 
 export const backupProcessResultSchema = z.object({
   status: z.string().min(1),
+  // The AGENT's own terminal status, as opposed to `status` above which is the
+  // outer command-result status (completed/failed, derived from a success
+  // bool). Kept as a separate key precisely because the two collide by name:
+  // `partial` can only ever arrive on this one (#3000).
+  agentStatus: z.string().min(1).optional(),
   jobId: z.string().min(1).optional(),
   snapshotId: z.string().min(1).optional(),
   filesBackedUp: z.number().int().nonnegative().optional(),

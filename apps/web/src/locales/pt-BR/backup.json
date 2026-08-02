@@ -19,6 +19,7 @@
     "running": "Em execução",
     "failed": "Falhou",
     "completed": "Concluído",
+    "partial": "Parcial",
     "queued": "Na fila",
     "cancelled": "Cancelado",
     "filterByConfig": "Filtrar por configuração",
@@ -48,7 +49,10 @@
     "errorLog": "Log de erros",
     "savings": "{{protected}} protegidos — {{uploaded}} enviados",
     "errorCount_one": "{{count}} erro",
-    "errorCount_other": "{{count}} erros"
+    "errorCount_other": "{{count}} erros",
+    "failedCount_one": "{{count}} com falha",
+    "failedCount_other": "{{count}} com falha",
+    "failedFilesTooltip": "Arquivos que falharam durante este backup"
   },
   "backupOverviewContent": {
     "noProviderTimelineAvailableYet": "Nenhuma linha do tempo de provedor disponível ainda.",

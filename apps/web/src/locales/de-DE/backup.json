@@ -19,6 +19,7 @@
     "running": "Wird ausgeführt",
     "failed": "Fehlgeschlagen",
     "completed": "Abgeschlossen",
+    "partial": "Teilweise",
     "queued": "In der Warteschlange",
     "cancelled": "Abgesagt",
     "filterByConfig": "Nach Konfiguration filtern",
@@ -48,7 +49,10 @@
     "errorLog": "Fehlerprotokoll",
     "savings": "{{protected}} gesichert — {{uploaded}} hochgeladen",
     "errorCount_one": "{{count}} Fehler",
-    "errorCount_other": "{{count}} Fehler"
+    "errorCount_other": "{{count}} Fehler",
+    "failedCount_one": "{{count}} fehlgeschlagen",
+    "failedCount_other": "{{count}} fehlgeschlagen",
+    "failedFilesTooltip": "Dateien, die bei dieser Sicherung fehlgeschlagen sind"
   },
   "backupOverviewContent": {
     "noProviderTimelineAvailableYet": "Noch keine Anbieter-Zeitleiste verfügbar.",

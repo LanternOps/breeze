@@ -35,6 +35,12 @@ const (
 	jobStatusFailed    = "failed"
 	jobStatusSkipped   = "skipped"
 	jobStatusStopped   = "stopped"
+	// jobStatusPartial is a terminal status for a run that produced a real,
+	// restorable snapshot but lost a disproportionate share of the work to
+	// per-file failures. Distinct from jobStatusFailed on purpose: the
+	// snapshot exists and can be restored from, so anything that treats it as
+	// "no backup happened" would be wrong. See classifyCompletionStatus.
+	jobStatusPartial = "partial"
 )
 
 var errBackupStopped = errors.New("backup stopped")
@@ -619,16 +625,24 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// BackupJob.Error marshals to `{}` and the server never reads it (see the
 	// Error field's doc comment). Success path only: on a hard failure scanErr
 	// already rides job.Error alongside the fatal error above.
-	if scanFailures := flattenJoinedErrors(scanErr); len(scanFailures) > 0 {
+	scanFailures := flattenJoinedErrors(scanErr)
+	if len(scanFailures) > 0 {
 		job.ErrorCount += len(scanFailures)
 		scanWarning := summarizeScanErrors(scanFailures)
 		appendWarning(job, scanWarning)
 		log.Warn("snapshot completed with scan failures", "warning", scanWarning)
 	}
 
-	job.Status = jobStatusCompleted
+	// Proportionality gate (#3000). The failures above are already visible via
+	// Warning/ErrorCount, but until now a run that stored essentially nothing
+	// carried the same terminal status as a clean one. classifyCompletionStatus
+	// downgrades only a DISPROPORTIONATE loss to `partial`; a handful of
+	// failures in a large run still completes, preserving the deliberate
+	// partial-success design above.
+	job.Status = classifyCompletionStatus(job.BytesBackedUp, totalScannedBytes(files), job.ErrorCount, len(files)+len(scanFailures))
 	job.Error = errors.Join(scanErr, retentionErr)
-	log.Info("backup run completed",
+	log.Info("backup run finished",
+		"status", job.Status,
 		"jobId", job.ID,
 		"snapshotId", snapshotID(snapshot),
 		"filesBackedUp", job.FilesBackedUp,

@@ -713,6 +713,10 @@ async function processResults(
     orgId: data.orgId,
     deviceId: data.deviceId,
     resultStatus,
+    // NB: NOT `result.status` — backupCommandResultSchema parsed `data.result`,
+    // whose `status` is the OUTER command status. The agent's own terminal
+    // status rides the distinct `agentStatus` key (see backupProcessResultSchema).
+    agentStatus: data.result.agentStatus,
     result: {
       ...result,
       error: data.result.error,
@@ -720,7 +724,11 @@ async function processResults(
   });
 
   console.log(
-    `[BackupWorker] Job ${data.jobId} result processed: ${resultStatus}`
+    // Include the agent's own status: `resultStatus` is only ever
+    // completed/failed, so without this a `partial` run is invisible in the
+    // API logs even though the DB row records it (#3000).
+    `[BackupWorker] Job ${data.jobId} result processed: ${resultStatus}` +
+    (data.result.agentStatus ? ` (agent: ${data.result.agentStatus})` : '')
   );
   return { processed: true };
 }
@@ -854,4 +862,8 @@ export async function shutdownBackupWorker(): Promise<void> {
 // skips). Internal helper, not part of the worker's public surface.
 export const __testOnly = {
   processCheckSchedules,
+  // Exposed so the agentStatus hop can be tested: this function is the only
+  // thing carrying a `partial` run from the queue payload into persistence, and
+  // dropping that one argument silently reverts #3000 with nothing going red.
+  processResults,
 };

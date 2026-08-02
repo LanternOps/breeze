@@ -58,6 +58,26 @@ export const backupStatusEnum = pgEnum('backup_status', [
 export const IN_FLIGHT_BACKUP_JOB_STATUSES = ['pending', 'running'] as const;
 
 /**
+ * The terminal `backup_status` values that left behind a usable restore point.
+ *
+ * `partial` belongs here (#3000). A partial run lost a disproportionate share
+ * of its data — which is why it is not `completed` and why it raises a
+ * dashboard attention item — but it DID produce a real, restorable snapshot
+ * with a backup_snapshots row. Anything asking "does this device have a recent
+ * restore point?" (RPO/SLA, recovery readiness, verification eligibility,
+ * last-successful-backup reporting) must therefore count it.
+ *
+ * The distinction matters most in the negative: excluding `partial` here would
+ * make the SLA worker raise `missed_backup` — whose text asserts that no
+ * successful backup completed in the window — for a device that demonstrably
+ * has a snapshot, AND leave that breach permanently unresolvable, because
+ * breach auto-resolution keys on the very same query. Use the job's own status
+ * (or attentionItems) to express "degraded"; do not express it by pretending
+ * no backup exists.
+ */
+export const RESTORABLE_BACKUP_JOB_STATUSES = ['completed', 'partial'] as const;
+
+/**
  * Marker the stale-backup-job reaper (jobs/staleCommandReaper.ts) stamps into a
  * reaped job's `error_log`. The result-persistence path reads it to distinguish
  * a "failed-because-reaped" job from a user `cancelled` job or a genuine

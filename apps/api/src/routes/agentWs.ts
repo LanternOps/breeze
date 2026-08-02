@@ -339,6 +339,10 @@ async function handleProviderBackedBackupResult({ agentId, command, result, reso
             orgId: backupJob.orgId,
             deviceId: backupJob.deviceId,
             resultStatus: result.status,
+            // Provider-backed backups do not report `partial` today, but this
+            // path parses the agent's status and must not be the one place
+            // that silently discards it.
+            agentStatus: parsedBackup.data.status,
             result: {
               ...parsedBackup.data,
               error: result.error || result.stderr,
@@ -1599,6 +1603,10 @@ export async function processOrphanedCommandResult(
             // path below). Without this, a truncated/invalid system_image
             // result completes green and the parse error is discarded.
             status: result.status === 'completed' && parsedBackup.success ? 'completed' : 'failed',
+            // The agent's own terminal status, carried alongside (not instead
+            // of) the outer one — `partial` cannot be expressed by the outer
+            // completed/failed pair (#3000).
+            agentStatus: backupData?.status,
             snapshotId: backupData?.snapshotId,
             filesBackedUp: backupData?.filesBackedUp,
             bytesBackedUp: backupData?.bytesBackedUp,
@@ -1624,6 +1632,7 @@ export async function processOrphanedCommandResult(
           orgId: backupJob.orgId,
           deviceId: backupJob.deviceId,
           resultStatus: result.status === 'completed' && parsedBackup.success ? 'completed' : 'failed',
+          agentStatus: backupData?.status,
           result: {
             ...(backupData ?? {}),
             error: malformedPayloadError || result.error || result.stderr,

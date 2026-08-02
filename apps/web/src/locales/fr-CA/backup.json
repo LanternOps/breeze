@@ -19,6 +19,7 @@
     "running": "En cours",
     "failed": "Échec",
     "completed": "Terminée",
+    "partial": "Partielle",
     "queued": "En file d’attente",
     "cancelled": "Annulé",
     "filterByConfig": "Filtrer par configuration",
@@ -48,7 +49,10 @@
     "errorLog": "Journal d’erreurs",
     "savings": "{{protected}} protégés — {{uploaded}} téléversés",
     "errorCount_one": "{{count}} erreur",
-    "errorCount_other": "{{count}} erreurs"
+    "errorCount_other": "{{count}} erreurs",
+    "failedCount_one": "{{count}} en échec",
+    "failedCount_other": "{{count}} en échec",
+    "failedFilesTooltip": "Fichiers en échec lors de cette sauvegarde"
   },
   "backupOverviewContent": {
     "noProviderTimelineAvailableYet": "Aucun délai de fournisseur n’est encore disponible.",

@@ -338,3 +338,25 @@ describe('fdb adjacency schema (Phase 2)', () => {
     expect(parsed.fdb).toEqual([]);
   });
 });
+
+// #3000: backupProcessResultSchema is .strict(), so the agent's own terminal
+// status must be declared or the whole queue job fails validation and the
+// backup result is lost. It rides a DISTINCT key because `status` on this
+// payload already means the outer completed/failed command status.
+describe('backupProcessResultSchema — agentStatus (#3000)', () => {
+  it('carries agentStatus alongside the outer status', () => {
+    const parsed = backupProcessResultSchema.parse({
+      status: 'completed',
+      agentStatus: 'partial',
+      snapshotId: 'snap-1',
+      errorCount: 21,
+    });
+    expect(parsed.status).toBe('completed');
+    expect(parsed.agentStatus).toBe('partial');
+  });
+
+  it('stays valid when a legacy agent sends no agentStatus', () => {
+    const parsed = backupProcessResultSchema.parse({ status: 'completed', snapshotId: 'snap-1' });
+    expect(parsed.agentStatus).toBeUndefined();
+  });
+});

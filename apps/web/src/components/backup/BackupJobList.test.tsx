@@ -43,6 +43,27 @@ const runningJob = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+// A run the agent finished as `partial`: a restorable snapshot exists but most
+// of the files failed (issue #3000 — 21 of 22 files failed, job still green).
+const partialJob = (overrides: Record<string, unknown> = {}) => ({
+  id: 'job-partial',
+  type: 'file',
+  deviceId: 'device-2',
+  configId: 'config-1',
+  deviceName: 'Gamma Laptop',
+  configName: 'Nightly',
+  status: 'partial',
+  startedAt: '2026-04-01T18:00:00.000Z',
+  completedAt: '2026-04-01T18:05:00.000Z',
+  createdAt: '2026-04-01T17:59:00.000Z',
+  totalSize: 3_355_443,
+  fileCount: 1,
+  totalFiles: 22,
+  errorCount: 21,
+  errorLog: 'access denied: C:\\Users\\a\\Documents',
+  ...overrides,
+});
+
 // Flush the microtask queue (fetch → json → setState) without relying on
 // timer-based async helpers, which do not compose with fake timers.
 const flush = async () => {
@@ -710,6 +731,110 @@ describe('BackupJobList', () => {
     const rowAfterPoll = screen.getByText('Beta Server').closest('tr') as HTMLElement;
     expect(within(rowAfterPoll).getByText('Completed')).toBeTruthy();
     expect(within(rowAfterPoll).queryByText('Cancelled')).toBeNull();
+  });
+
+  it('renders a partial job with its own status and never as "Queued"', async () => {
+    // normalizeStatus() used to have no branch for `partial`, so it fell through
+    // to "queued" — a finished backup showed a clock and looked stuck forever.
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input) === '/backup/jobs') {
+        return makeJsonResponse({ data: [partialJob()] });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+
+    // Scope to the job row — "Queued"/"Partial" also appear as filter options.
+    const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+    expect(within(row).getByText('Partial')).toBeTruthy();
+    expect(within(row).queryByText('Queued')).toBeNull();
+    expect(within(row).queryByText('Completed')).toBeNull();
+  });
+
+  it('shows the failed file count on the collapsed row without expanding details', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input) === '/backup/jobs') {
+        return makeJsonResponse({ data: [partialJob()] });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+
+    const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+    const failed = within(row).getByTestId('backup-job-failed-count');
+    expect(failed.textContent).toContain('21');
+    // The count must come from the list payload, not a details fetch.
+    expect(fetchMock).not.toHaveBeenCalledWith('/backup/jobs/job-partial');
+  });
+
+  it('shows the failed file count for a completed job that had file errors', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input) === '/backup/jobs') {
+        return makeJsonResponse({
+          data: [partialJob({ status: 'completed', errorCount: 3 })],
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+
+    const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+    expect(within(row).getByText('Completed')).toBeTruthy();
+    expect(within(row).getByTestId('backup-job-failed-count').textContent).toContain('3');
+  });
+
+  it('shows no failed-count indicator for a clean job', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input) === '/backup/jobs') {
+        return makeJsonResponse({
+          data: [partialJob({ status: 'completed', errorCount: 0, errorLog: null })],
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+
+    await screen.findByText('Gamma Laptop');
+    expect(screen.queryByTestId('backup-job-failed-count')).toBeNull();
+  });
+
+  it('shows the incremental savings line for a partial job with referencedSize', async () => {
+    // A partial run still produced a restorable snapshot, so the dedup detail is
+    // as meaningful as it is for a completed one.
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/jobs') {
+        return makeJsonResponse({ data: [partialJob({ totalSize: 10_485_760 })] });
+      }
+      if (url === '/backup/jobs/job-partial') {
+        return makeJsonResponse({
+          id: 'job-partial',
+          type: 'file',
+          deviceId: 'device-2',
+          configId: 'config-1',
+          status: 'partial',
+          createdAt: '2026-04-01T17:59:00.000Z',
+          updatedAt: '2026-04-01T18:05:00.000Z',
+          totalSize: 10_485_760,
+          referencedSize: 4_194_304,
+          fileCount: 1,
+          errorLog: 'access denied',
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+    await screen.findByText('Gamma Laptop');
+    fireEvent.click(screen.getByRole('button', { name: /View details for Gamma Laptop backup/i }));
+
+    const savings = await screen.findByTestId('backup-job-savings');
+    expect(savings.textContent).toContain('10.0 MB');
+    expect(savings.textContent).toContain('6.00 MB');
   });
 
   it('labels the running-job action button "Stop"', async () => {

@@ -409,6 +409,14 @@ export async function applyBackupCommandResultToJob(params: {
   orgId: string;
   deviceId: string;
   resultStatus: string;
+  /**
+   * The AGENT's own terminal status for the run, when it reported one. Passed
+   * separately from `resultStatus` (which is the outer, binary
+   * completed/failed command status) because the two collide by name on the
+   * queue payload — see backupProcessResultSchema. `partial` can only ever
+   * arrive here (#3000).
+   */
+  agentStatus?: string;
   result: ParsedBackupCommandResult & { error?: string };
   /**
    * Where this "result" came from. `'agent'` (the default) is a real terminal
@@ -429,7 +437,7 @@ export async function applyBackupCommandResultToJob(params: {
   snapshotDbId: string | null;
   providerSnapshotId: string | null;
 }> {
-  const { jobId, orgId, deviceId, resultStatus, result, source = 'agent' } = params;
+  const { jobId, orgId, deviceId, resultStatus, agentStatus, result, source = 'agent' } = params;
   const providerSnapshotId = result.snapshot?.id ?? result.snapshotId ?? null;
   const metadata = normalizeMetadata(result.metadata);
   const now = new Date();
@@ -439,8 +447,42 @@ export async function applyBackupCommandResultToJob(params: {
     completedAt: now,
   };
 
-  if (resultStatus === 'completed') {
-    updateData.status = 'completed';
+  // The outer resultStatus is binary (completed/failed) — it is derived from
+  // the agent's success bool, not from the agent's own terminal status. A run
+  // that produced a real snapshot but lost a disproportionate share of its work
+  // reports success:true with an inner status of `partial` (#3000), and MUST
+  // still take the whole success path below: the snapshot is real, restorable
+  // and has to get its backup_snapshots row. The ONLY difference is the status
+  // value written to the job.
+  //
+  // Any inner status other than `partial` collapses to `completed` on purpose:
+  // the agent's vocabulary includes `skipped`/`stopped`, which are not
+  // backup_status enum values and would fail the UPDATE outright.
+  const isSuccessResult = resultStatus === 'completed';
+  let terminalStatus: 'completed' | 'partial' | 'failed';
+  if (!isSuccessResult) {
+    terminalStatus = 'failed';
+  } else if (agentStatus === 'partial') {
+    terminalStatus = 'partial';
+  } else {
+    // Collapse LOUDLY. Silently greening an agent status we do not model is the
+    // #3000 bug class itself — `skipped` (a run that protected zero files)
+    // already reaches here as success:true, and a future `degraded`/`incomplete`
+    // would too. We still record `completed` (the alternative is a non-enum
+    // value that fails the UPDATE outright and loses the whole result), but an
+    // operator must be able to find it afterwards.
+    if (agentStatus && agentStatus !== 'completed') {
+      const msg =
+        `[BackupPersistence] Unrecognized agent terminal status "${agentStatus}" for job ${jobId} ` +
+        `(device ${deviceId}) recorded as 'completed' — the run may not be a good restore point.`;
+      console.warn(msg);
+      captureException(new Error(msg));
+    }
+    terminalStatus = 'completed';
+  }
+
+  if (isSuccessResult) {
+    updateData.status = terminalStatus;
     updateData.fileCount = result.filesBackedUp ?? null;
     updateData.totalSize = result.bytesBackedUp ?? null;
     updateData.backupType = result.backupType ?? null;
@@ -492,7 +534,7 @@ export async function applyBackupCommandResultToJob(params: {
       updateData.referencedFiles = result.referencedFiles;
     }
   } else {
-    updateData.status = 'failed';
+    updateData.status = terminalStatus;
     updateData.errorLog = redactSecretsFromOutput(result.error ?? result.warning ?? 'Unknown error');
     if (result.backupType) {
       updateData.backupType = result.backupType;
@@ -528,7 +570,6 @@ export async function applyBackupCommandResultToJob(params: {
   // is a deliberate decision, and a `partial` job already recorded its own
   // outcome. (backupStatusEnum is pending|running|completed|failed|cancelled|
   // partial — all six are accounted for here.)
-  const isCompletedResult = resultStatus === 'completed';
   const terminalJobGuard =
     source === 'reconcile'
       ? inArray(backupJobs.status, ['failed', 'completed'])
@@ -536,7 +577,7 @@ export async function applyBackupCommandResultToJob(params: {
           eq(backupJobs.status, 'failed'),
           like(backupJobs.errorLog, `%${STALE_BACKUP_REAP_MARKER}%`)
         );
-  const statusGuard = isCompletedResult
+  const statusGuard = isSuccessResult
     ? or(inArray(backupJobs.status, IN_FLIGHT_BACKUP_JOB_STATUSES), terminalJobGuard)
     : inArray(backupJobs.status, IN_FLIGHT_BACKUP_JOB_STATUSES);
 
@@ -552,7 +593,7 @@ export async function applyBackupCommandResultToJob(params: {
     });
 
   if (!updatedJob) {
-    if (isCompletedResult && providerSnapshotId) {
+    if (isSuccessResult && providerSnapshotId) {
       // A late terminal-success we could NOT record: the job was user-cancelled,
       // already terminal by other means, or genuinely failed without the reaper
       // marker. The snapshot exists in storage but now has no backup_snapshots
@@ -577,7 +618,11 @@ export async function applyBackupCommandResultToJob(params: {
     };
   }
 
-  if (resultStatus !== 'completed' || !providerSnapshotId) {
+  // NB: isSuccessResult, not `terminalStatus === 'completed'` — a `partial` run
+  // produced a genuine snapshot and must still get its backup_snapshots row.
+  // Gating this on the narrower status would strand a restorable snapshot in
+  // the bucket with no DB row, the exact failure mode FIX 7 above exists for.
+  if (!isSuccessResult || !providerSnapshotId) {
     return {
       applied: true,
       snapshotDbId: null,

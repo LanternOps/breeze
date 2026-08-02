@@ -245,6 +245,17 @@ vi.mock('../services/agentWorkExpectation', () => ({
   refreshDispatchedExpectation: vi.fn(),
 }));
 
+// #3000: the Redis-available branch of the backup-result handler enqueues
+// instead of persisting inline. Mocked so both transports can be asserted —
+// previously the queued branch had no coverage at all.
+vi.mock('../jobs/backupEnqueue', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../jobs/backupEnqueue')>();
+  return {
+    ...actual,
+    enqueueBackupResults: vi.fn(async () => 'queued-job-1'),
+  };
+});
+
 vi.mock('../services/backupResultPersistence', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/backupResultPersistence')>();
   return {
@@ -305,6 +316,7 @@ import {
   refreshDispatchedExpectation,
 } from '../services/agentWorkExpectation';
 import { applyBackupCommandResultToJob } from '../services/backupResultPersistence';
+import { enqueueBackupResults } from '../jobs/backupEnqueue';
 
 function wsMock() {
   return {
@@ -1904,6 +1916,87 @@ describe('backup command_result non-terminal guards (guard ordering integration)
       })
     );
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  // #3000 wire plumbing, Redis-DOWN (inline) path. The agent reports a partial
+  // run as success:true with an inner status of `partial`; the outer status
+  // stays `completed`, so `agentStatus` is the ONLY carrier. Deleting that one
+  // argument makes the whole feature a silent no-op, which is why it is
+  // asserted explicitly rather than via objectContaining on `result`.
+  it('forwards the agent partial status inline when Redis is unavailable', async () => {
+    vi.mocked(isRedisAvailable).mockReturnValue(false);
+    const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([backupJobRow]) as any);
+
+    vi.mocked(consumeDispatchedExpectation).mockResolvedValue({ ok: true });
+    vi.mocked(applyBackupCommandResultToJob).mockResolvedValue({
+      applied: true,
+      snapshotDbId: 'snap-db-1',
+      providerSnapshotId: 'snap-1',
+    });
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: jobId,
+        status: 'completed',
+        result: JSON.stringify({
+          snapshotId: 'snap-1',
+          status: 'partial',
+          filesBackedUp: 1,
+          bytesBackedUp: 85,
+          errorCount: 21,
+        }),
+      })
+    } as any, ws as any);
+
+    expect(applyBackupCommandResultToJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId,
+        resultStatus: 'completed',
+        agentStatus: 'partial',
+      })
+    );
+  });
+
+  // Same, Redis-UP (queued) path. This one also pins the two-key design: the
+  // outer `status` must stay `completed` while the agent's own status rides
+  // `agentStatus`. Collapsing them into one key would make `partial`
+  // unreachable through the queue.
+  it('enqueues the agent partial status alongside the outer status when Redis is up', async () => {
+    vi.mocked(isRedisAvailable).mockReturnValue(true);
+    const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([backupJobRow]) as any);
+
+    vi.mocked(consumeDispatchedExpectation).mockResolvedValue({ ok: true });
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: jobId,
+        status: 'completed',
+        result: JSON.stringify({
+          snapshotId: 'snap-1',
+          status: 'partial',
+          filesBackedUp: 1,
+          errorCount: 21,
+        }),
+      })
+    } as any, ws as any);
+
+    expect(enqueueBackupResults).toHaveBeenCalledWith(
+      jobId,
+      'org-123',
+      'device-123',
+      expect.objectContaining({ status: 'completed', agentStatus: 'partial' }),
+      expect.anything()
+    );
   });
 });
 

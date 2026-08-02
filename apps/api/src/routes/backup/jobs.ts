@@ -14,6 +14,13 @@ import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services
 import { resolveScopedOrgId } from './helpers';
 import { jobListSchema } from './schemas';
 
+// Legacy `?status=` spellings this API has always accepted, mapped to the real
+// backup_status enum values. See the note at the use site in the list route.
+const BACKUP_JOB_STATUS_ALIASES: Record<string, string> = {
+  queued: 'pending',
+  canceled: 'cancelled',
+};
+
 export const jobsRoutes = new Hono();
 
 function canAccessDeviceSite(device: { siteId?: string | null }, permissions: UserPermissions | undefined): boolean {
@@ -64,7 +71,12 @@ jobsRoutes.get('/jobs', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMIS
   const conditions = [eq(backupJobs.orgId, orgId)];
 
   if (query.status) {
-    conditions.push(eq(backupJobs.status, query.status as any));
+    // jobListSchema still accepts two legacy misspellings. They are NOT
+    // backup_status members, so passing one straight through makes Postgres
+    // raise `invalid input value for enum backup_status` — a 500 on what is
+    // really a client mistake. Map them to the real values instead.
+    const status = BACKUP_JOB_STATUS_ALIASES[query.status] ?? query.status;
+    conditions.push(eq(backupJobs.status, status as any));
   }
 
   if (deviceFilter) {

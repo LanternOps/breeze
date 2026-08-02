@@ -19,6 +19,7 @@
     "running": "In esecuzione",
     "failed": "Non riuscito",
     "completed": "Completato",
+    "partial": "Parziale",
     "queued": "In coda",
     "cancelled": "Annullato",
     "filterByConfig": "Filtra per configurazione",
@@ -48,7 +49,10 @@
     "errorLog": "Log errori",
     "savings": "{{protected}} protetti - {{uploaded}} caricati",
     "errorCount_one": "{{count}} errore",
-    "errorCount_other": "{{count}} errori"
+    "errorCount_other": "{{count}} errori",
+    "failedCount_one": "{{count}} non riuscito",
+    "failedCount_other": "{{count}} non riusciti",
+    "failedFilesTooltip": "File non riusciti durante questo backup"
   },
   "backupOverviewContent": {
     "noProviderTimelineAvailableYet": "Nessuna cronologia provider ancora disponibile.",
