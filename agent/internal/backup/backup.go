@@ -354,12 +354,14 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 
 	// System state collection: gather OS config, hardware profile, etc.
 	var systemStateErr error
-	// systemStateStagingDir/systemStateStagingIdx let us recover, after any
-	// VSS rewrite below, whichever staging-root value was ACTUALLY walked —
-	// see the assignment right after the VSS rewrite for why the raw
-	// stagingDir returned here isn't necessarily it.
+	// systemStateStagingIdx marks the staging dir's slot in backupPaths so the
+	// VSS rewrite below can leave it alone — it is created after the snapshot
+	// and therefore only exists on the live volume (#3026). Because it is never
+	// rewritten, systemStateStagingDir is simply the path collectSystemState
+	// returned, and it is the same prefix collectBackupFilesFromPaths produces
+	// for markSystemStateFiles to match on.
 	var systemStateStagingDir string
-	systemStateStagingIdx := -1
+	systemStateStagingIdx := noStagingIdx
 	if m.config.SystemStateEnabled {
 		if err := runCtx.Err(); err != nil {
 			return stopBackupRun()
@@ -381,6 +383,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			}
 			// Append staging dir to backup paths so artifacts are included in snapshot
 			systemStateStagingIdx = len(backupPaths)
+			systemStateStagingDir = stagingDir
 			backupPaths = append(backupPaths, stagingDir)
 			defer func() {
 				if removeErr := os.RemoveAll(stagingDir); removeErr != nil {
@@ -393,7 +396,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// Rewrite paths to shadow copy device paths when VSS is active
 	if vssSession != nil {
 		var unmappedIdx []int
-		backupPaths, unmappedIdx = rewritePathsForVSS(backupPaths, vssSession.ShadowPaths)
+		backupPaths, unmappedIdx = rewritePathsForVSS(backupPaths, vssSession.ShadowPaths, systemStateStagingIdx)
 		if liveReads := reportableLiveReads(backupPaths, unmappedIdx, systemStateStagingIdx); len(liveReads) > 0 {
 			shadowedVolumes := make([]string, 0, len(vssSession.ShadowPaths))
 			for vol := range vssSession.ShadowPaths {
@@ -421,16 +424,6 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			// only VSS signal that reaches the server today.
 			appendWarning(job, "read from the live volume, not the VSS shadow copy: "+summary)
 		}
-	}
-	if systemStateStagingIdx >= 0 && systemStateStagingIdx < len(backupPaths) {
-		// The staging dir's OS temp volume commonly coincides with a
-		// VSS-shadowed backup volume, so rewritePathsForVSS above may have
-		// rewritten it too — capture whichever value was actually walked
-		// (this index in the possibly-rewritten backupPaths) rather than
-		// the pre-rewrite path from collectSystemState, so
-		// markSystemStateFiles below compares against the same sourcePath
-		// prefix collectBackupFilesFromPaths actually produced.
-		systemStateStagingDir = backupPaths[systemStateStagingIdx]
 	}
 
 	if err := runCtx.Err(); err != nil {
@@ -1015,26 +1008,21 @@ func extractVolumes(paths []string) []string {
 	return volumes
 }
 
-// rewritePathsForVSS rewrites source paths to use VSS shadow copy device paths.
-// e.g., "C:\\Users\\data" with shadow "C:" -> "\\\\?\\GLOBALROOT\\...\\Users\\data"
-//
-// The second return value holds the indices of paths that found no shadow root
-// and were left pointing at the live volume. That fallback is deliberate — a
-// volume whose snapshot failed is still worth a best-effort read — but it is
-// also indistinguishable, from the walk onward, from a successful VSS backup.
-// It is how a shadowPaths key-format change would silently reintroduce #2999,
-// so the caller reports it rather than letting it pass unnoticed. Indices, not
-// paths, so the caller can exclude the system-state staging dir it wrote
-// itself (see the call site).
+// noStagingIdx is the stagingIdx sentinel for a run with no system-state
+// staging directory: no index is excluded from the VSS rewrite or from the
+// live-read warning.
+const noStagingIdx = -1
+
 // reportableLiveReads selects, from rewritePathsForVSS's unmapped indices, the paths
 // actually worth reporting.
 //
 // Two exclusions, both deliberate:
 //
 //   - stagingIdx, the system-state staging dir. The agent creates it itself
-//     during this run, so it can only ever be read live. (It is created AFTER
-//     the snapshot, which is a separate problem for the case where it IS
-//     mapped — see the systemStateStagingIdx block in RunBackupContext.)
+//     during this run, after the snapshot, so it is excluded from the rewrite
+//     and can only ever be read live (see rewritePathsForVSS). That makes it an
+//     expected member of the unmapped set on every system_image run, not a
+//     symptom of anything.
 //   - Anything whose volume is not a local drive letter. VSS cannot snapshot a
 //     UNC share, and filepath.VolumeName yields "" for a relative or
 //     drive-rooted path, which extractVolumes never even requests. Reporting
@@ -1079,18 +1067,41 @@ func summarizeLiveReads(paths []string) string {
 		fmt.Sprintf(" (+%d more)", len(paths)-maxUploadFailureDetails)
 }
 
-func rewritePathsForVSS(paths []string, shadowPaths map[string]string) ([]string, []int) {
+// rewritePathsForVSS rewrites source paths to use VSS shadow copy device paths.
+// e.g., "C:\\Users\\data" with shadow "C:" -> "\\\\?\\GLOBALROOT\\...\\Users\\data"
+//
+// stagingIdx (noStagingIdx when the run has none) is the index of the
+// system-state staging directory, which is excluded from the rewrite. It is
+// created by collectSystemState AFTER the shadow copy was taken, so it does
+// not exist inside that point-in-time image — but %TEMP% normally sits on C:,
+// normally one of the shadowed backup volumes, so rewriting it would map it
+// onto a snapshot path that is simply absent. The walk then finds nothing,
+// markSystemStateFiles matches zero files, and the job still reports success
+// with SystemStateManifest set: silent, partial data loss in the default
+// configuration (#3026). The live volume is the only place those artifacts
+// exist, so that is where the path must keep pointing.
+//
+// The second return value holds the indices of paths left pointing at the live
+// volume — those that found no shadow root, plus stagingIdx. The no-shadow-root
+// fallback is deliberate — a volume whose snapshot failed is still worth a
+// best-effort read — but it is also indistinguishable, from the walk onward,
+// from a successful VSS backup. It is how a shadowPaths key-format change would
+// silently reintroduce #2999, so the caller reports it rather than letting it
+// pass unnoticed. Indices, not paths, so the caller can tell an unshadowed user
+// volume (worth a warning) apart from the staging dir it wrote itself (never
+// worth one) — see reportableLiveReads.
+func rewritePathsForVSS(paths []string, shadowPaths map[string]string, stagingIdx int) ([]string, []int) {
 	rewritten := make([]string, len(paths))
 	var unmapped []int
 	for i, p := range paths {
 		vol := filepath.VolumeName(p)
-		if shadow, ok := shadowPaths[vol]; ok {
-			rest := p[len(vol):]
-			rewritten[i] = shadow + rest
-		} else {
+		shadow, ok := shadowPaths[vol]
+		if !ok || i == stagingIdx {
 			rewritten[i] = p // fallback: use original path
 			unmapped = append(unmapped, i)
+			continue
 		}
+		rewritten[i] = shadow + p[len(vol):]
 	}
 	return rewritten, unmapped
 }

@@ -170,10 +170,14 @@ func isUnderDir(p, dir string) bool {
 
 // markSystemStateFiles flags every file in files whose sourcePath falls
 // under stagingDir (the run's system-state staging root — see
-// collectSystemState's call site in RunBackupContext, and note it may have
-// been VSS-rewritten by the time it's passed here; pass whichever value was
-// ACTUALLY walked) as backupFile.systemState = true, so decideFile always
-// uploads them.
+// collectSystemState's call site in RunBackupContext) as
+// backupFile.systemState = true, so decideFile always uploads them.
+//
+// stagingDir is always the live path collectSystemState returned, never a VSS
+// shadow-device path: rewritePathsForVSS deliberately skips the staging index
+// because the dir is created after the snapshot is taken (#3026). That is what
+// keeps this prefix comparable to the sourcePaths collectBackupFilesFromPaths
+// actually produced.
 //
 // This exclusion is defense-in-depth, not strictly load-bearing for
 // correctness in production: CollectSystemState creates a fresh
