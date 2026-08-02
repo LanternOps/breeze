@@ -245,7 +245,7 @@ export const backupJobs = pgTable(
     startedAtIdx: index('backup_jobs_started_at_idx').on(table.startedAt),
     // #3006: probed by the mid-run registration path and by the cross-tenant
     // claim lookup in backupSnapshotReconcile. Partial index — see
-    // migrations/2026-08-06-g-backup-jobs-snapshot-id-index.sql.
+    // migrations/2026-08-09-backup-jobs-snapshot-id-index.sql.
     snapshotIdIdx: index('backup_jobs_snapshot_id_idx')
       .on(table.snapshotId)
       .where(sql`snapshot_id IS NOT NULL`),
