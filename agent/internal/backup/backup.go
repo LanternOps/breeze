@@ -392,7 +392,35 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 
 	// Rewrite paths to shadow copy device paths when VSS is active
 	if vssSession != nil {
-		backupPaths = rewritePathsForVSS(backupPaths, vssSession.ShadowPaths)
+		var unmappedIdx []int
+		backupPaths, unmappedIdx = rewritePathsForVSS(backupPaths, vssSession.ShadowPaths)
+		// The system-state staging dir is content this agent just wrote, so
+		// reading it from the live volume is correct and not worth reporting.
+		var liveReads []string
+		for _, idx := range unmappedIdx {
+			if idx == systemStateStagingIdx {
+				continue
+			}
+			liveReads = append(liveReads, backupPaths[idx])
+		}
+		if len(liveReads) > 0 {
+			shadowedVolumes := make([]string, 0, len(vssSession.ShadowPaths))
+			for vol := range vssSession.ShadowPaths {
+				shadowedVolumes = append(shadowedVolumes, vol)
+			}
+			sort.Strings(shadowedVolumes)
+			// Not redundant with the provider's own UnprotectedVolumes warning:
+			// this fires at the point of consequence and also covers the case
+			// where VSS reported total success but the path never matched a
+			// shadow root, which the provider cannot see.
+			log.Warn("VSS is active but some backup paths are NOT routed through the shadow copy; "+
+				"they will be read from the live volume, where in-use files can fail or be captured torn",
+				"jobId", job.ID,
+				"unmappedPathCount", len(liveReads),
+				"paths", strings.Join(liveReads, "; "),
+				"shadowedVolumes", strings.Join(shadowedVolumes, ", "),
+			)
+		}
 	}
 	if systemStateStagingIdx >= 0 && systemStateStagingIdx < len(backupPaths) {
 		// The staging dir's OS temp volume commonly coincides with a
@@ -989,8 +1017,18 @@ func extractVolumes(paths []string) []string {
 
 // rewritePathsForVSS rewrites source paths to use VSS shadow copy device paths.
 // e.g., "C:\\Users\\data" with shadow "C:" -> "\\\\?\\GLOBALROOT\\...\\Users\\data"
-func rewritePathsForVSS(paths []string, shadowPaths map[string]string) []string {
+//
+// The second return value holds the indices of paths that found no shadow root
+// and were left pointing at the live volume. That fallback is deliberate — a
+// volume whose snapshot failed is still worth a best-effort read — but it is
+// also indistinguishable, from the walk onward, from a successful VSS backup.
+// It is how a shadowPaths key-format change would silently reintroduce #2999,
+// so the caller reports it rather than letting it pass unnoticed. Indices, not
+// paths, so the caller can exclude the system-state staging dir it wrote
+// itself (see the call site).
+func rewritePathsForVSS(paths []string, shadowPaths map[string]string) ([]string, []int) {
 	rewritten := make([]string, len(paths))
+	var unmapped []int
 	for i, p := range paths {
 		vol := filepath.VolumeName(p)
 		if shadow, ok := shadowPaths[vol]; ok {
@@ -998,9 +1036,10 @@ func rewritePathsForVSS(paths []string, shadowPaths map[string]string) []string 
 			rewritten[i] = shadow + rest
 		} else {
 			rewritten[i] = p // fallback: use original path
+			unmapped = append(unmapped, i)
 		}
 	}
-	return rewritten
+	return rewritten, unmapped
 }
 
 // originalPathsForVSS sets backupFile.originalPath for every file whose
