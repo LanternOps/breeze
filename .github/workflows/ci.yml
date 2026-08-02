@@ -1134,11 +1134,30 @@ jobs:
       # here. It is deliberately NOT added to the race step below: the Windows
       # tests it adds are the platform log-open/rotate helpers, and the race
       # step's cgo requirement is not something this change verified.
+      #
+      # ./internal/ipc was missing entirely (issue #3007). Unlike eventlog and
+      # logging this adds no previously-unrun test — ipc has no //go:build
+      # windows test files, and its tests use TCP loopback rather than the named
+      # pipe it uses in production, so this does NOT close a named-pipe coverage
+      # gap. It earns its place differently: ipc is the concurrency-critical
+      # framing layer every helper writes through, its Send path is guarded by a
+      # single mutex, and none of that had ever been exercised on the Windows
+      # scheduler and net stack. Adding it also gets auth_windows.go compiled by
+      # a test binary. Verified the same way as logging: with GOOS=windows
+      # GOARCH=amd64 CGO_ENABLED=0 it vets, its test binary compiles, and its
+      # GOOS=windows dependency graph contains no remote/desktop and no cgo.
+      #
+      # It IS added to the race step below (unlike logging) because it is a
+      # shared-mutex concurrency package worth detector coverage on the OS it
+      # ships to, and ipc is already compiled under cgo there as a dependency of
+      # sessionbroker. Note the #3007 bug itself was NOT a data race — sendSeq
+      # was already atomic — so -race would not have caught it; the regression
+      # test asserts receiver-visible ordering instead.
       - name: Run Windows Go tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/logging ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
 
       # internal/backup is the third instance of the same gap: its
       # upload_error_class_codes_windows_test.go pins the Win32 permanent-error
@@ -1177,7 +1196,7 @@ jobs:
       # the one that most needs the detector on the OS it actually ships to.
       - name: Run Windows race tests
         working-directory: agent
-        run: go test -race ./internal/sessionbroker ./internal/eventlog ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
+        run: go test -race ./internal/sessionbroker ./internal/eventlog ./internal/ipc ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
 
   # ─── Go agent lint ────────────────────────────────────────────────────
   # The `lint` job above is JS/TS + compose guards only; the Go agent was

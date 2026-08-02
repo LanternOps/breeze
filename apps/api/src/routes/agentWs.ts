@@ -2575,15 +2575,31 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               });
               if (!applied.applied) {
                 // agent-mismatch is a real anomaly (an agent pinging another
-                // device's job) and stays at warn. Everything else is routine
-                // traffic — restore progress reuses this WS type with a
-                // commandId that matches no backup job (not-found), a garbage
-                // or non-UUID commandId is dropped pre-DB
-                // (invalid-command-id), and terminal-status is a benign
-                // completion race — so those drop quietly at debug.
-                const dropLog = applied.reason === 'agent-mismatch' ? console.warn : console.debug;
+                // device's job) and stays at warn. invalid-payload joins it:
+                // since #3006 it means an agent is sending progress this server
+                // cannot understand, which starves last_progress_at and gets
+                // healthy uploads reaped. Everything else is routine traffic —
+                // restore progress reuses this WS type with a commandId that
+                // matches no backup job (not-found), a garbage or non-UUID
+                // commandId is dropped pre-DB (invalid-command-id), and
+                // terminal-status is a benign completion race — so those drop
+                // quietly at debug.
+                const dropLog =
+                  applied.reason === 'agent-mismatch' || applied.reason === 'invalid-payload'
+                    ? console.warn
+                    : console.debug;
                 dropLog(
                   `[AgentWs] Dropping backup_progress for ${progressMessage.commandId} from agent ${agentId}: reason=${applied.reason}`
+                );
+              } else if (applied.snapshotIdDropped) {
+                // #3006 mid-run snapshot registration is inert for this agent:
+                // if its terminal result is lost, the uploaded objects will be
+                // stranded exactly as before the fix. A snapshot-id format that
+                // outgrew the column would do this fleet-wide, so it must be
+                // louder than a debug line nobody greps.
+                console.warn(
+                  `[AgentWs] backup_progress for ${progressMessage.commandId} from agent ${agentId} carried an ` +
+                    `unusable snapshotId — mid-run snapshot registration is not working for this agent version.`
                 );
               }
             });

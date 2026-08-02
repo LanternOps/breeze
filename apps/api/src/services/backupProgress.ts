@@ -2,6 +2,10 @@ import { z } from 'zod';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { backupJobs, devices, IN_FLIGHT_BACKUP_JOB_STATUSES } from '../db/schema';
+// Imported from the leaf module, not the `../db/schema` barrel: that barrel is
+// vi.mock'd with hand-written factories across dozens of suites, so a new named
+// export there breaks them all at import time. See backupConstants.ts.
+import { BACKUP_SNAPSHOT_ID_MAX_LENGTH } from '../db/schema/backupConstants';
 import { UUID_REGEX } from '../utils/uuid';
 import { refreshDispatchedExpectation } from './agentWorkExpectation';
 
@@ -11,6 +15,12 @@ import { refreshDispatchedExpectation } from './agentWorkExpectation';
  * agent/internal/websocket/client.go). `current`/`total` are BYTES;
  * `filesDone`/`filesTotal` are counts. `phase` is always "uploading" today —
  * treat it as an opaque optional string, never branch on it.
+ *
+ * `snapshotId` (#3006) is the snapshot the agent is currently writing. It is
+ * absent on emissions that predate snapshot creation (the pre-scan keepalive
+ * and the "scanning done" totals notice) and on restore progress. Bounded to
+ * the width of backup_jobs.snapshot_id so an over-long value cannot raise a
+ * Postgres 22001 out of a fire-and-forget WS handler.
  */
 export const backupProgressPayloadSchema = z.object({
   phase: z.string().optional(),
@@ -18,16 +28,65 @@ export const backupProgressPayloadSchema = z.object({
   total: z.number().nonnegative().optional(),
   filesDone: z.number().nonnegative().optional(),
   filesTotal: z.number().nonnegative().optional(),
+  snapshotId: z.string().min(1).max(BACKUP_SNAPSHOT_ID_MAX_LENGTH).optional(),
 });
 
 export type BackupProgressPayload = z.infer<typeof backupProgressPayloadSchema>;
 
 export type ApplyBackupProgressResult =
-  | { applied: true }
+  | {
+      applied: true;
+      /**
+       * The payload carried a `snapshotId` this server could not store, so the
+       * counters were applied without it and the #3006 mid-run registration is
+       * inert for this run. Callers should surface this loudly — see
+       * `parseBackupProgressPayload`.
+       */
+      snapshotIdDropped?: true;
+    }
   | {
       applied: false;
       reason: 'invalid-command-id' | 'invalid-payload' | 'not-found' | 'agent-mismatch' | 'terminal-status';
     };
+
+/**
+ * Parse a progress payload, degrading gracefully when only `snapshotId` is
+ * unusable.
+ *
+ * `snapshotId` is best-effort recovery metadata; `current`/`filesDone` and the
+ * `lastProgressAt` bump they carry are load-bearing for job liveness — the
+ * stale reaper kills a job whose `last_progress_at` goes cold, and
+ * `refreshDispatchedExpectation` keeps the eventual terminal result from being
+ * dropped as a replay. Letting the optional field veto the load-bearing ones
+ * would invert that priority: a snapshot-id format change that outgrew the
+ * column would reap every in-flight backup fleet-wide AND suppress the very
+ * registration this field exists to provide — reproducing #3006 at scale.
+ *
+ * So a bad `snapshotId` is dropped, not the payload. Same rule as
+ * `reconcileManifestSchema` and the per-file `modTime` sanitizing in
+ * backupSnapshotReconcile.ts: one malformed optional field must never cost the
+ * whole record.
+ */
+function parseBackupProgressPayload(
+  progress: unknown
+): { ok: true; payload: BackupProgressPayload; snapshotIdDropped: boolean } | { ok: false } {
+  const parsed = backupProgressPayloadSchema.safeParse(progress);
+  if (parsed.success) {
+    return { ok: true, payload: parsed.data, snapshotIdDropped: false };
+  }
+
+  if (progress && typeof progress === 'object' && !Array.isArray(progress)) {
+    const retry = backupProgressPayloadSchema.safeParse({
+      ...(progress as Record<string, unknown>),
+      snapshotId: undefined,
+    });
+    if (retry.success) {
+      return { ok: true, payload: retry.data, snapshotIdDropped: true };
+    }
+  }
+
+  return { ok: false };
+}
 
 /**
  * Apply an in-flight `backup_progress` WS message from the agent to the
@@ -52,11 +111,11 @@ export async function applyBackupProgress(params: {
     return { applied: false, reason: 'invalid-command-id' };
   }
 
-  const parsed = backupProgressPayloadSchema.safeParse(params.progress);
-  if (!parsed.success) {
+  const parsed = parseBackupProgressPayload(params.progress);
+  if (!parsed.ok) {
     return { applied: false, reason: 'invalid-payload' };
   }
-  const progress = parsed.data;
+  const progress = parsed.payload;
 
   const [job] = await db
     .select({
@@ -101,6 +160,22 @@ export async function applyBackupProgress(params: {
   if (progress.filesTotal !== undefined) {
     updateSet.totalFiles = progress.filesTotal;
   }
+  // #3006: record the snapshot ID the moment the agent reports it, instead of
+  // waiting for the terminal result. A result lost in transit (#3001 oversized
+  // payload, #2998 helper death) used to leave the job with snapshot_id NULL,
+  // so the objects already uploaded to the customer's bucket had nothing
+  // linking them to a restore point — neither restorable nor visible to
+  // retention. With the ID on the row, the reconcile path can adopt them.
+  //
+  // The agent is authoritative for the run it is currently executing (its
+  // identity was verified above) and a run keeps ONE snapshot ID for its whole
+  // life — including across a journal resume — so a later value simply
+  // overwrites an earlier one. The UPDATE below is guarded on the job still
+  // being in-flight, so this can never clobber an ID written by a terminal
+  // result.
+  if (progress.snapshotId !== undefined) {
+    updateSet.snapshotId = progress.snapshotId;
+  }
 
   const updated = await db
     .update(backupJobs)
@@ -117,7 +192,7 @@ export async function applyBackupProgress(params: {
   // expectation's TTL: refresh it on every progress signal.
   await refreshDispatchedExpectation('backup', job.deviceId, job.id);
 
-  return { applied: true };
+  return parsed.snapshotIdDropped ? { applied: true, snapshotIdDropped: true } : { applied: true };
 }
 
 // --- non-terminal `command_result` guards ---------------------------------

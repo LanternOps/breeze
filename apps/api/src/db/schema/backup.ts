@@ -19,6 +19,7 @@ import { devices, deviceCommands } from './devices';
 import { users } from './users';
 import { configPolicyFeatureLinks, backupModeEnum } from './configurationPolicies';
 import { storageEncryptionKeys } from './storageEncryption';
+import { BACKUP_SNAPSHOT_ID_MAX_LENGTH } from './backupConstants';
 
 export const backupProviderEnum = pgEnum('backup_provider', [
   'local',
@@ -86,6 +87,8 @@ export const RESTORABLE_BACKUP_JOB_STATUSES = ['completed', 'partial'] as const;
  * metacharacters (`%` / `_`) so it is safe to match with a plain `LIKE`.
  */
 export const STALE_BACKUP_REAP_MARKER = '[stale-backup-reaper]';
+
+export { BACKUP_SNAPSHOT_ID_MAX_LENGTH } from './backupConstants';
 
 export const backupJobTypeEnum = pgEnum('backup_job_type', [
   'scheduled',
@@ -237,7 +240,7 @@ export const backupJobs = pgTable(
     fileCount: integer('file_count'),
     errorCount: integer('error_count'),
     errorLog: text('error_log'),
-    snapshotId: varchar('snapshot_id', { length: 200 }),
+    snapshotId: varchar('snapshot_id', { length: BACKUP_SNAPSHOT_ID_MAX_LENGTH }),
     vssMetadata: jsonb('vss_metadata'),
     backupType: backupTypeEnum('backup_type').default('file'),
     // Live-progress columns (stall detection + UI progress/speed). Set on
@@ -260,6 +263,12 @@ export const backupJobs = pgTable(
     deviceIdIdx: index('backup_jobs_device_id_idx').on(table.deviceId),
     statusIdx: index('backup_jobs_status_idx').on(table.status),
     startedAtIdx: index('backup_jobs_started_at_idx').on(table.startedAt),
+    // #3006: probed by the mid-run registration path and by the cross-tenant
+    // claim lookup in backupSnapshotReconcile. Partial index — see
+    // migrations/2026-08-09-backup-jobs-snapshot-id-index.sql.
+    snapshotIdIdx: index('backup_jobs_snapshot_id_idx')
+      .on(table.snapshotId)
+      .where(sql`snapshot_id IS NOT NULL`),
     createdAtIdx: index('backup_jobs_created_at_idx').on(table.createdAt),
   })
 );
@@ -278,7 +287,7 @@ export const backupSnapshots = pgTable(
       .notNull()
       .references(() => devices.id),
     configId: uuid('config_id').references(() => backupConfigs.id),
-    snapshotId: varchar('snapshot_id', { length: 200 }).notNull(),
+    snapshotId: varchar('snapshot_id', { length: BACKUP_SNAPSHOT_ID_MAX_LENGTH }).notNull(),
     label: varchar('label', { length: 200 }),
     location: text('location'),
     timestamp: timestamp('timestamp').defaultNow().notNull(),
