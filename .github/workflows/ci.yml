@@ -1134,11 +1134,22 @@ jobs:
       # here. It is deliberately NOT added to the race step below: the Windows
       # tests it adds are the platform log-open/rotate helpers, and the race
       # step's cgo requirement is not something this change verified.
+      #
+      # ./internal/ipc was missing entirely (issue #3007). It is the framing
+      # layer every helper talks over — on Windows that is a named pipe, and
+      # auth_windows.go is a platform-specific peer-auth path — yet none of its
+      # tests had ever run on Windows. Verified the same way as logging: with
+      # GOOS=windows GOARCH=amd64 CGO_ENABLED=0 it vets, its test binary
+      # compiles, and its GOOS=windows dependency graph contains no
+      # remote/desktop and no cgo. Unlike logging it IS added to the race step:
+      # the bug that prompted this (concurrent Send racing the write lock) is
+      # precisely what the detector catches, and ipc is already compiled under
+      # cgo on Windows there as a dependency of sessionbroker.
       - name: Run Windows Go tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/logging ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
 
       # -race requires cgo, which remote/desktop cannot satisfy on Windows, so
       # this covers only packages that do not import it (heartbeat and agentapp
@@ -1148,7 +1159,7 @@ jobs:
       # the one that most needs the detector on the OS it actually ships to.
       - name: Run Windows race tests
         working-directory: agent
-        run: go test -race ./internal/sessionbroker ./internal/eventlog ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
+        run: go test -race ./internal/sessionbroker ./internal/eventlog ./internal/ipc ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
 
   # ─── Go agent lint ────────────────────────────────────────────────────
   # The `lint` job above is JS/TS + compose guards only; the Go agent was
