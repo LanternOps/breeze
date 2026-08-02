@@ -13,26 +13,39 @@ const ORG_BAD = 'not-a-uuid';
 
 const ACCESSIBLE_ORG_IDS = [ORG_OK, ORG_OK_2];
 
-vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn(async (c: { set(key: string, value: unknown): void }, next: () => Promise<void>) => {
-    c.set('auth', {
-      user: { id: 'user-1', email: 'admin@partner.example', name: 'Admin', isPlatformAdmin: false },
-      scope: 'partner',
-      orgId: null,
-      partnerId: 'partner-1',
-      accessibleOrgIds: ACCESSIBLE_ORG_IDS,
-      canAccessOrg: (orgId: string) => ACCESSIBLE_ORG_IDS.includes(orgId),
-    });
-    await next();
-  }),
-  requireScope: vi.fn(() => async (_c: unknown, next: () => Promise<void>) => next()),
-}));
+// Preserve every other real export via importOriginal rather than a bare
+// replacement object: the composition-level describe block below imports the
+// REAL `mountExtensionGateway` (extensions/gateway.ts), whose transitive
+// dependency graph (agentAuth -> ... -> routes/monitors.ts) calls
+// `requirePermission(...)` at module scope. A hand-written replacement would
+// need to keep re-guessing every export that graph touches; importOriginal
+// keeps everything else (requirePermission, requireMfa, etc.) genuinely real
+// and only swaps the two exports this suite actually needs to control.
+vi.mock('../middleware/auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../middleware/auth')>();
+  return {
+    ...actual,
+    authMiddleware: vi.fn(async (c: { set(key: string, value: unknown): void }, next: () => Promise<void>) => {
+      c.set('auth', {
+        user: { id: 'user-1', email: 'admin@partner.example', name: 'Admin', isPlatformAdmin: false },
+        scope: 'partner',
+        orgId: null,
+        partnerId: 'partner-1',
+        accessibleOrgIds: ACCESSIBLE_ORG_IDS,
+        canAccessOrg: (orgId: string) => ACCESSIBLE_ORG_IDS.includes(orgId),
+      });
+      await next();
+    }),
+    requireScope: vi.fn(() => async (_c: unknown, next: () => Promise<void>) => next()),
+  };
+});
 
 vi.mock('../services/auditService', () => ({
   createAuditLogAsync: vi.fn(),
   createAuditLog: vi.fn(),
 }));
 
+import { Hono } from 'hono';
 import {
   createExtensionOrgInstallRoutes,
   type ExtensionOrgInstallListEntry,
@@ -40,6 +53,8 @@ import {
   type ExtensionOrgInstallRoutesDeps,
 } from './extensionOrgInstalls';
 import type { ExtensionStateRecord } from '../extensions/stateStore';
+import { mountExtensionGateway } from '../extensions/gateway';
+import { ExtensionContributionRegistry } from '../extensions/contributionRegistry';
 
 interface InstallRow extends ExtensionOrgInstallListEntry {
   extensionName: string;
@@ -221,5 +236,56 @@ describe('extensionOrgInstalls routes', () => {
   it('malformed orgId: 404 (non-disclosure, and it cannot exist)', async () => {
     const res = await app.request(`/demo/orgs/${ORG_BAD}`, { method: 'PUT' });
     expect(res.status).toBe(404);
+  });
+});
+
+/**
+ * Composition-level pin: this router is reachable through the exact app
+ * shape index.ts builds — mountExtensionGateway on the ROOT app first
+ * (registering the `/api/v1/:routeNamespace/*` catch-all directly on it, per
+ * gateway.ts), THEN `app.route('/api/v1', api)` merging in this router
+ * mounted at '/extensions'. Registration order alone would suggest the
+ * gateway's catch-all "wins" for `/api/v1/extensions/*` — the real reason it
+ * doesn't is (a) an empty/normal registry can never resolve an active
+ * extension for the reserved 'extensions' namespace, so (b) the gateway's
+ * dispatchAlias middleware calls `next()` (pass-through) instead of
+ * responding, letting the composed Hono handler chain reach this router's
+ * own routes regardless of which app registered them first. See the
+ * docstring at the top of extensionOrgInstalls.ts and the mount comment in
+ * index.ts.
+ */
+describe('extensionOrgInstalls composition with mountExtensionGateway (index.ts app shape)', () => {
+  it('a request to /api/v1/extensions/:name/orgs/:orgId reaches this router, not the gateway catch-all', async () => {
+    const rootApp = new Hono();
+    // No extension is activated in this registry, so it can never resolve a
+    // routeNamespace of 'extensions' (that namespace is also unreachable in
+    // production — see RESERVED_ROUTE_NAMESPACES). This mirrors index.ts:
+    // mountExtensionGateway runs on the root app BEFORE the '/api/v1' merge.
+    mountExtensionGateway(
+      rootApp,
+      new ExtensionContributionRegistry(),
+      async () => true,
+      async () => false,
+    );
+
+    const stateStore = makeStateStore();
+    const installs = makeInMemoryInstalls();
+    const orgInstallRoutes = createExtensionOrgInstallRoutes({ stateStore, installs });
+
+    const api = new Hono();
+    api.route('/extensions', orgInstallRoutes);
+    // Merged in AFTER mountExtensionGateway already registered its catch-all
+    // on rootApp — the ordering index.ts actually uses (index.ts:~1013 vs.
+    // ~1020 mountExtensionGateway vs. ~1027 `app.route('/api/v1', api)`).
+    rootApp.route('/api/v1', api);
+
+    // A malformed orgId deterministically produces this router's own
+    // `notFound` body (`{ error: 'not found' }`), distinct from both Hono's
+    // default 404 (`{ error: 'Not Found', path }`) and the gateway's 503
+    // (`{ error: 'extension unavailable' }`) — so a 200/503/generic-404
+    // response here would mean the request never reached this handler.
+    const res = await rootApp.request(`/api/v1/extensions/demo/orgs/${ORG_BAD}`, { method: 'PUT' });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'not found' });
   });
 });

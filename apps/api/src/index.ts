@@ -1007,9 +1007,17 @@ api.route('/admin', accountDeletionAdminRoutes);
 api.route('/extensions', extensionsWebRoutes);
 // Partner management surface for tenant-scoped extension installs (L1):
 // partner/system-scope callers activate/deactivate/list an extension's
-// per-org installs. 'extensions' is a reserved route namespace (no extension
-// routeNamespace can shadow it), and this mount, like the two above,
-// precedes the gateway catch-all registration below.
+// per-org installs. Safe to mount at '/extensions' alongside the gateway's
+// `/api/v1/:routeNamespace/*` catch-all (registered on the root `app` below,
+// BEFORE this `api` sub-app is merged in via `app.route('/api/v1', api)`) for
+// two independent reasons, not registration order: (a) 'extensions' is in
+// RESERVED_ROUTE_NAMESPACES (packages/extension-sdk/src/manifest.ts), so no
+// extension manifest's routeNamespace can ever validate as 'extensions' —
+// `registry.getByRouteNamespace('extensions')` can never resolve an active
+// extension; (b) the gateway's dispatchAlias middleware (gateway.ts) calls
+// `next()` — a genuine pass-through, not a response — whenever no active
+// extension resolves for the namespace, so the request keeps flowing through
+// Hono's composed handler chain to this router's own routes.
 api.route('/extensions', extensionOrgInstallRoutes);
 
 // One system-scoped state store, shared by the per-request enabled gate, the

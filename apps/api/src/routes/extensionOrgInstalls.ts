@@ -1,8 +1,15 @@
 /**
  * Partner management surface for tenant-scoped extension installs (L1).
- * Mounted at /api/v1/extensions ('extensions' is in RESERVED_ROUTE_NAMESPACES,
- * so no extension routeNamespace can shadow it, and core route registration
- * precedes the gateway catch-alls).
+ * Mounted at /api/v1/extensions. Reachable safely alongside the extension
+ * gateway's `/api/v1/:routeNamespace/*` catch-all for two reasons — NOT
+ * mount/registration order on the Hono app (see the fuller note at the
+ * `/extensions` mounts in index.ts): (a) 'extensions' is in
+ * RESERVED_ROUTE_NAMESPACES (packages/extension-sdk/src/manifest.ts), so no
+ * extension manifest's routeNamespace can ever be 'extensions' — the gateway
+ * can never resolve an active extension for this namespace; (b) the
+ * gateway's dispatchAlias middleware calls `next()` (a pass-through) rather
+ * than responding whenever no active extension resolves, so unmatched
+ * `/api/v1/extensions/*` traffic always continues on to this router.
  *
  * Access model: partner/system-scope callers; per-org authorization is the
  * explicit canAccessOrg check (404 on failure — the non-disclosure stance of
