@@ -148,8 +148,12 @@ describe('sentry service', () => {
     }));
 
     expect(setTagMock).toHaveBeenCalledWith('pg_code', 'CONNECT_TIMEOUT');
-    expect(setTagMock).toHaveBeenCalledWith('connect_timeout_cause', expect.any(String));
-    expect(setTagMock).toHaveBeenCalledWith('event_loop_lag_bucket', expect.any(String));
+    // Assert the VALUES, not just that some string arrived. No monitor is
+    // started in this suite, so the honest verdict is 'unknown' — and
+    // `expect.any(String)` would pass just as happily on a regression that
+    // reported a confident 'connectivity' with no evidence behind it.
+    expect(setTagMock).toHaveBeenCalledWith('connect_timeout_cause', 'unknown');
+    expect(setTagMock).toHaveBeenCalledWith('event_loop_lag_bucket', 'unknown');
     setConnectTimeoutClassifier(null);
   });
 

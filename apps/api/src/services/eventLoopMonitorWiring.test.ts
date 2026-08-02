@@ -39,7 +39,25 @@ describe('event-loop monitor bootstrap wiring (index.ts)', () => {
     // drag the event-loop monitor into the graph of every error-reporting
     // module). That inversion only works if boot actually performs the
     // injection — otherwise the tags are silently never set.
-    expect(indexSource).toMatch(/setConnectTimeoutClassifier\s*\(\s*diagnoseConnectTimeout\s*\)/);
+    // The SAFE variant specifically: this classifier runs on error paths, and
+    // in Hono's onError a throw would cost the request its 500 and stop the
+    // original error reaching Sentry.
+    expect(indexSource).toMatch(
+      /setConnectTimeoutClassifier\s*\(\s*safeDiagnoseConnectTimeout\s*\)/,
+    );
+    expect(indexSource).not.toMatch(/setConnectTimeoutClassifier\s*\(\s*diagnoseConnectTimeout\s*\)/);
+  });
+
+  it('uses the never-throwing classifier inside app.onError', () => {
+    expect(indexSource).toMatch(/const connectTimeout = safeDiagnoseConnectTimeout\(err\)/);
+  });
+
+  it('announces at boot whether the monitor is running', () => {
+    // A monitor that never starts is otherwise completely silent: diagnoses
+    // degrade to "unknown" and nothing says why. The log also prints the
+    // effective interval, which is what makes a misparsed env var visible.
+    expect(indexSource).toMatch(/\[event-loop\] Lag monitor started/);
+    expect(indexSource).toMatch(/\[event-loop\] Lag monitor DISABLED/);
   });
 
   it('stops the monitor on graceful shutdown', () => {
@@ -56,8 +74,16 @@ describe('event-loop monitor bootstrap wiring (index.ts)', () => {
     );
     expect(readyBlock.length).toBeGreaterThan(0);
     expect(readyBlock).toContain('eventLoop');
-    // `allOk` is computed from `checks` only.
-    expect(readyBlock).toMatch(/const allOk = Object\.values\(checks\)/);
-    expect(readyBlock).not.toMatch(/allOk\s*&&\s*.*starved/);
+    // `allOk` must be computed from `checks` alone, and the lag stats must be
+    // read AFTER it — so no future edit can fold starvation into `checks`
+    // (e.g. `checks.eventLoop = stats.starved ? 'error' : 'ok'`) and silently
+    // start shedding traffic from a merely-busy instance. Ordering is the
+    // structural guarantee; a keyword blocklist is not.
+    const allOkAt = readyBlock.indexOf('const allOk = Object.values(checks)');
+    const statsAt = readyBlock.indexOf('getEventLoopLagStats(');
+    expect(allOkAt).toBeGreaterThan(-1);
+    expect(statsAt).toBeGreaterThan(allOkAt);
+    expect(readyBlock).not.toMatch(/checks\.\w*[eE]vent[lL]oop/);
+    expect(readyBlock).not.toMatch(/starved/);
   });
 });

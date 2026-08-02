@@ -6,6 +6,7 @@ import {
   POSTGRES_CONNECT_TIMEOUT_SECONDS,
   diagnoseConnectTimeout,
   isPostgresConnectTimeout,
+  safeDiagnoseConnectTimeout,
 } from './postgresConnectTimeout';
 import type { EventLoopLagReading } from './eventLoopMonitor';
 
@@ -28,6 +29,7 @@ function reading(overrides: Partial<EventLoopLagReading> = {}): EventLoopLagRead
   const worstLagMs = overrides.worstLagMs ?? 0;
   return {
     monitored: true,
+    coversWindow: true,
     sampledMaxLagMs: worstLagMs,
     inFlightLagMs: 0,
     worstLagMs,
@@ -117,15 +119,39 @@ describe('diagnoseConnectTimeout', () => {
 
     expect(d.cause).toBe('unknown');
     expect(d.lagBucket).toBe('unknown');
-    expect(d.message).toMatch(/could not be ruled in or out/);
+    expect(d.message).toMatch(/neither ruled in nor out/);
     expect(d.message).not.toMatch(/handshake itself failed/);
   });
 
-  it('honours a tuned starvation threshold', () => {
+  it('honours a tuned starvation threshold below the connect window', () => {
     process.env.EVENT_LOOP_STARVATION_WARN_MS = '5000';
     const d = diagnoseConnectTimeout(connectTimeoutError(), reading({ worstLagMs: 2_000 }))!;
     expect(d.cause).toBe('connectivity');
     expect(d.starvationThresholdMs).toBe(5_000);
+  });
+
+  it('caps the threshold at the connect window so a full-window stall can never read as connectivity', () => {
+    // EVENT_LOOP_STARVATION_WARN_MS is a warning-volume knob. An operator
+    // quieting a noisy instance must not be able to make a 12s stall — which
+    // alone consumed the whole 10s budget — report "the event loop stayed
+    // healthy, check database reachability".
+    process.env.EVENT_LOOP_STARVATION_WARN_MS = '15000';
+    const d = diagnoseConnectTimeout(connectTimeoutError(), reading({ worstLagMs: 12_000 }))!;
+    expect(d.cause).toBe('event-loop-starvation');
+    expect(d.starvationThresholdMs).toBe(10_000);
+  });
+
+  it('reports "unknown" when a running monitor cannot vouch for the whole window', () => {
+    // monitored: true but coversWindow: false — the monitor booted less than
+    // 10s ago, or samples more coarsely than the window is wide. Its zero means
+    // "not observed", and must never be read as "the loop was fine".
+    const d = diagnoseConnectTimeout(
+      connectTimeoutError(),
+      reading({ monitored: true, coversWindow: false, worstLagMs: 0 }),
+    )!;
+    expect(d.cause).toBe('unknown');
+    expect(d.lagBucket).toBe('unknown');
+    expect(d.message).not.toMatch(/handshake itself failed/);
   });
 
   it('diagnoses a Drizzle-wrapped timeout identically', () => {
@@ -180,5 +206,24 @@ describe('connect_timeout drift guard', () => {
     const match = source.match(/connect_timeout:\s*(\d+)\s*,/);
     expect(match, 'connect_timeout not found in db/index.ts pool config').not.toBeNull();
     expect(Number(match![1])).toBe(POSTGRES_CONNECT_TIMEOUT_SECONDS);
+  });
+});
+
+describe('safeDiagnoseConnectTimeout', () => {
+  it('returns null instead of throwing when the error resists inspection', () => {
+    // Both production call sites run while an error is already in flight; in
+    // Hono's onError a throw would cost the request its JSON 500 AND stop the
+    // original error from ever reaching Sentry.
+    const hostile = {
+      get code(): string { throw new Error('exploding getter'); },
+    };
+    expect(() => safeDiagnoseConnectTimeout(hostile)).not.toThrow();
+    expect(safeDiagnoseConnectTimeout(hostile)).toBeNull();
+  });
+
+  it('agrees with diagnoseConnectTimeout on well-behaved errors', () => {
+    const err = connectTimeoutError();
+    expect(safeDiagnoseConnectTimeout(err)?.cause).toBe(diagnoseConnectTimeout(err)?.cause);
+    expect(safeDiagnoseConnectTimeout(new Error('unrelated'))).toBeNull();
   });
 });

@@ -107,6 +107,22 @@ export interface EventLoopLagReading {
    * remove.
    */
   monitored: boolean;
+  /**
+   * False when a monitor IS running but cannot vouch for the whole window, so a
+   * lag of 0 means "not observed" rather than "did not happen". Two reachable
+   * cases, and `monitored` alone catches neither:
+   *
+   *   1. The monitor has been up for less than `windowMs` — every diagnosis in
+   *      the first 10s after boot or after a restart of the singleton.
+   *   2. `sampleIntervalMs > windowMs`. Sampling coarser than the window leaves
+   *      a blind spot exactly one interval wide: a stall that ends before the
+   *      next sample is not recorded, and `inFlightLagMs` (which subtracts a
+   *      full interval) still reads 0. A 12s stall under a 30s interval is
+   *      invisible.
+   *
+   * Treat false the same as `monitored: false` — unknown, never healthy.
+   */
+  coversWindow: boolean;
   /** Worst lag recorded by a completed sample inside the window, in ms. */
   sampledMaxLagMs: number;
   /**
@@ -140,6 +156,7 @@ export interface EventLoopLagStats {
 
 const UNMONITORED_READING: EventLoopLagReading = Object.freeze({
   monitored: false,
+  coversWindow: false,
   sampledMaxLagMs: 0,
   inFlightLagMs: 0,
   worstLagMs: 0,
@@ -180,6 +197,8 @@ export class EventLoopLagMonitor {
   private histogram: IntervalHistogram | null = null;
   private timer: NodeJS.Timeout | null = null;
   private samples: EventLoopLagSample[] = [];
+  /** Wall clock at start(), so read() can tell how much window it can vouch for. */
+  private startedAtMs = 0;
   /**
    * When the current (not yet recorded) sampling interval began. Seeded at
    * `start()` so in-flight lag is meaningful before the first sample lands.
@@ -200,12 +219,18 @@ export class EventLoopLagMonitor {
     return this.histogram !== null;
   }
 
+  /** Effective sampling interval, for the boot log. */
+  get intervalMs(): number {
+    return this.sampleIntervalMs;
+  }
+
   /** Idempotent. Safe to call from a boot path that may run twice. */
   start(): void {
     if (this.histogram) return;
     this.histogram = this.createHistogram({ resolution: this.resolutionMs });
     this.histogram.enable();
     this.intervalStartedAtMs = this.now();
+    this.startedAtMs = this.intervalStartedAtMs;
     this.samples = [];
 
     // `unref()` so the monitor never holds the process open during shutdown —
@@ -226,6 +251,7 @@ export class EventLoopLagMonitor {
     }
     this.samples = [];
     this.intervalStartedAtMs = 0;
+    this.startedAtMs = 0;
   }
 
   /**
@@ -286,10 +312,54 @@ export class EventLoopLagMonitor {
     const inFlightLagMs = this.inFlightLagMs(nowMs);
     return {
       monitored: true,
+      coversWindow: this.coversWindow(nowMs, windowMs),
       sampledMaxLagMs,
       inFlightLagMs,
       worstLagMs: Math.max(sampledMaxLagMs, inFlightLagMs),
       sampleCount,
+    };
+  }
+
+  /**
+   * Whether this monitor can account for the whole of the last `windowMs`.
+   *
+   * Requires both that it has been running at least that long, and that it
+   * samples at least as often as the window is wide — sampling coarser than the
+   * window leaves an interval-wide hole that neither a recorded sample nor the
+   * in-flight figure can fill. Callers must degrade to "unknown" when this is
+   * false rather than reading the accompanying zeros as health.
+   */
+  private coversWindow(nowMs: number, windowMs: number): boolean {
+    if (this.startedAtMs === 0) return false;
+    if (this.sampleIntervalMs > windowMs) return false;
+    return nowMs - this.startedAtMs >= windowMs;
+  }
+
+  /**
+   * Lag attributable to the most recent completed sampling interval, folded with
+   * any stall still in flight.
+   *
+   * This is the *instantaneous* figure, as distinct from `stats()`, which is a
+   * high-water mark over the whole retained window. Prometheus wants this one:
+   * a gauge fed from a 120s high-water mark keeps reporting a 1.2s blip for two
+   * minutes after the loop recovered, so `starved == 1 for 1m` fires on a
+   * momentary spike and `max_over_time` counts the same stall repeatedly.
+   */
+  latest(): EventLoopLagReading {
+    if (!this.histogram) return UNMONITORED_READING;
+    const nowMs = this.now();
+    const last = this.samples[this.samples.length - 1];
+    const sampledMaxLagMs = last?.maxLagMs ?? 0;
+    const inFlightLagMs = this.inFlightLagMs(nowMs);
+    return {
+      monitored: true,
+      // One interval is by definition covered once a sample exists; before the
+      // first sample only the in-flight figure speaks, so say so.
+      coversWindow: last !== undefined,
+      sampledMaxLagMs,
+      inFlightLagMs,
+      worstLagMs: Math.max(sampledMaxLagMs, inFlightLagMs),
+      sampleCount: last ? 1 : 0,
     };
   }
 
@@ -413,12 +483,22 @@ export function readEventLoopLag(windowMs: number): EventLoopLagReading {
   return monitor?.read(windowMs) ?? UNMONITORED_READING;
 }
 
+/**
+ * Instantaneous lag (last completed interval + any in-flight stall). Use for
+ * Prometheus gauges; use getEventLoopLagStats for the retained-window summary.
+ */
+export function readLatestEventLoopLag(): EventLoopLagReading {
+  return monitor?.latest() ?? UNMONITORED_READING;
+}
+
 /** Retained-window summary for health/diagnostic endpoints. */
 export function getEventLoopLagStats(): EventLoopLagStats {
   if (monitor) return monitor.stats();
   return {
     monitored: false,
-    windowMs: 0,
+    // Same windowMs the running path reports, so consumers of /health/ready see
+    // a stable field shape rather than a 0 that looks like a distinct state.
+    windowMs: DEFAULT_RETENTION_MS,
     sampleCount: 0,
     maxLagMs: 0,
     meanLagMs: 0,

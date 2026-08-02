@@ -279,8 +279,11 @@ export function captureException(
     // a request — in the original incident the loudest signature in Sentry was
     // the patch scheduler, not any route. captureException is the one chokepoint
     // every path already goes through, so tagging it here covers all of them.
-    // Best-effort: diagnosis never throws, but a telemetry helper must not be
-    // able to swallow the exception it was called to report.
+    // The injected classifier is expected to be the never-throwing
+    // `safeDiagnoseConnectTimeout`, but this is the last line before an error
+    // report is emitted, so it is guarded here too: a classifier fault must cost
+    // two tags, never the report itself. `Sentry.captureException` below is
+    // deliberately outside the try.
     try {
       const diagnosis = connectTimeoutClassifier?.(err) ?? null;
       if (diagnosis) {

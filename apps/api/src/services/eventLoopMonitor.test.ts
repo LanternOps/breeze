@@ -198,6 +198,51 @@ describe('EventLoopLagMonitor', () => {
     expect(monitor.read(10_000).inFlightLagMs).toBe(0);
   });
 
+  it('coversWindow is false until the monitor has run for the full window', () => {
+    // The bug this guards: `monitored: true` with a lag of 0 during the first
+    // 10s after boot means "not observed", not "did not happen". Reading it as
+    // health produces a confident, WRONG connectivity verdict.
+    const { monitor, setNow } = makeMonitor({ sampleIntervalMs: 1_000 });
+    monitor.start(); // t = 1_000_000
+
+    setNow(1_009_999);
+    expect(monitor.read(10_000).coversWindow).toBe(false);
+
+    setNow(1_010_000);
+    expect(monitor.read(10_000).coversWindow).toBe(true);
+  });
+
+  it('coversWindow is false when sampling is coarser than the window', () => {
+    // A 12s stall under a 30s interval is invisible: no sample records it, and
+    // inFlightLagMs subtracts a full 30s interval and reads 0.
+    const { monitor, setNow } = makeMonitor({ sampleIntervalMs: 30_000 });
+    monitor.start();
+
+    setNow(1_600_000); // long uptime — only the interval width disqualifies it
+    const reading = monitor.read(10_000);
+    expect(reading.monitored).toBe(true);
+    expect(reading.coversWindow).toBe(false);
+  });
+
+  it('latest() reports the last completed interval, not the retained high-water mark', () => {
+    const { monitor, histogram, setNow } = makeMonitor({ sampleIntervalMs: 1_000 });
+    monitor.start();
+
+    histogram.setLagMs(9_000);
+    setNow(1_001_000);
+    monitor.sampleNow();
+
+    histogram.setLagMs(4);
+    setNow(1_002_000);
+    monitor.sampleNow();
+
+    setNow(1_002_500);
+    // The 9s spike is still the window high-water mark...
+    expect(monitor.stats().worstLagMs).toBe(9_000);
+    // ...but the loop has recovered, and the instantaneous gauge must say so.
+    expect(monitor.latest().worstLagMs).toBe(4);
+  });
+
   it('prunes samples beyond the retention window', () => {
     const { monitor, histogram, setNow } = makeMonitor({ retentionMs: 5_000 });
     monitor.start();
@@ -277,16 +322,70 @@ describe('EventLoopLagMonitor', () => {
     monitor.stop();
   });
 
-  it('start() is idempotent and does not replace a running histogram', () => {
-    const { monitor, histogram } = makeMonitor();
+  it('start() is idempotent and does not build a second histogram', () => {
+    // The factory MUST mint a fresh instance per call. Returning one shared fake
+    // makes this test vacuous: `histogram.max` survives a rebuild, so deleting
+    // the idempotence guard still passes while production silently discards
+    // recorded data and leaks a second setInterval that stop() never clears.
+    const built: FakeHistogram[] = [];
+    let now = 1_000_000;
+    const monitor = new EventLoopLagMonitor({
+      sampleIntervalMs: 1_000,
+      now: () => now,
+      createHistogram: () => {
+        const h = new FakeHistogram();
+        built.push(h);
+        return h.asIntervalHistogram();
+      },
+    });
+    activeMonitors.push(monitor);
+
     monitor.start();
-    histogram.setLagMs(1_234);
+    built[0]!.setLagMs(1_234);
+    monitor.start();
     monitor.start();
 
-    // A second start() that rebuilt the histogram would silently discard
-    // whatever the loop had already recorded.
-    expect(histogram.max).toBe(1_234 * NS_PER_MS);
+    expect(built).toHaveLength(1);
+    expect(built[0]!.max).toBe(1_234 * NS_PER_MS);
     expect(monitor.running).toBe(true);
+  });
+
+  it('stats() reports starvation from an in-flight stall alone', () => {
+    // The path the Prometheus gauge and /health/ready both take. read() has its
+    // own in-flight coverage; stats() computes its own max independently, and a
+    // scrape landing mid-stall is exactly the one that must not read healthy.
+    process.env.EVENT_LOOP_STARVATION_WARN_MS = '1000';
+    const { monitor, histogram, setNow } = makeMonitor({ sampleIntervalMs: 1_000 });
+    monitor.start();
+
+    histogram.setLagMs(5);
+    setNow(1_001_000);
+    monitor.sampleNow();
+    expect(monitor.stats().starved).toBe(false);
+
+    // Loop blocks; no further sample can be recorded.
+    setNow(1_009_000);
+    const stats = monitor.stats();
+    expect(stats.maxLagMs).toBe(5);
+    expect(stats.inFlightLagMs).toBe(7_000);
+    expect(stats.worstLagMs).toBe(7_000);
+    expect(stats.starved).toBe(true);
+  });
+
+  it.each([
+    [1_000, 0],
+    [1_001, 1],
+    [1_600, 600],
+  ])('in-flight lag at exactly %ims since the last sample is %ims', (elapsed, expected) => {
+    // Boundary: inFlight must be 0 at exactly one interval and 1 at one ms past.
+    // An off-by-one skews every mid-stall reading in the same direction.
+    const { monitor, histogram, setNow } = makeMonitor({ sampleIntervalMs: 1_000 });
+    monitor.start();
+    histogram.setLagMs(0);
+    setNow(1_001_000);
+    monitor.sampleNow();
+    setNow(1_001_000 + elapsed);
+    expect(monitor.read(10_000).inFlightLagMs).toBe(expected);
   });
 });
 
@@ -376,6 +475,21 @@ describe('module singleton', () => {
     expect(started).not.toBeNull();
     expect(readEventLoopLag(10_000).monitored).toBe(true);
     expect(getEventLoopLagStats().monitored).toBe(true);
+  });
+
+  it('EVENT_LOOP_MONITOR_DISABLED accepts every documented truthy spelling', () => {
+    for (const value of ['1', 'true', 'YES', ' on ']) {
+      process.env.EVENT_LOOP_MONITOR_DISABLED = value;
+      expect(startEventLoopMonitor(), `value ${value}`).toBeNull();
+    }
+    process.env.EVENT_LOOP_MONITOR_DISABLED = 'false';
+    expect(startEventLoopMonitor()).not.toBeNull();
+  });
+
+  it('startEventLoopMonitor is idempotent across calls', () => {
+    const first = startEventLoopMonitor({ sampleIntervalMs: 50 });
+    const second = startEventLoopMonitor({ sampleIntervalMs: 50 });
+    expect(second).toBe(first);
   });
 
   it('honours EVENT_LOOP_STARVATION_WARN_MS and falls back on a bad value', () => {

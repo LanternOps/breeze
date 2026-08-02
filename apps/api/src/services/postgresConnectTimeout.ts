@@ -103,13 +103,31 @@ export function diagnoseConnectTimeout(
 
   const windowMs = POSTGRES_CONNECT_TIMEOUT_SECONDS * 1_000;
   const lag = reading ?? readEventLoopLag(windowMs);
-  const starvationThresholdMs = getEventLoopStarvationThresholdMs();
   const worstLagMs = Math.round(lag.worstLagMs);
 
-  // Fail to 'unknown', never to 'connectivity'. Without a monitor there is no
-  // evidence either way, and quietly asserting "the database was unreachable"
-  // is precisely the misdirection this module exists to remove.
-  const cause: ConnectTimeoutCause = !lag.monitored
+  // Capped at the connect budget on purpose. EVENT_LOOP_STARVATION_WARN_MS is a
+  // *warning volume* knob — an operator quieting a noisy instance may raise it
+  // freely, and has no reason to think that touches error attribution. Used
+  // uncapped it does: at 15000 a 12s stall that demonstrably consumed the entire
+  // 10s budget would be reported as `connectivity` — "the event loop stayed
+  // healthy, check database reachability" — which is the precise misdirection
+  // this module exists to remove, restated with the authority of a verdict.
+  //
+  // A stall at least as long as the window is sufficient on its own to explain
+  // the timeout, so no configuration may classify it as anything else.
+  const starvationThresholdMs = Math.min(getEventLoopStarvationThresholdMs(), windowMs);
+
+  // Fail to 'unknown', never to 'connectivity'. Without evidence covering the
+  // window, quietly asserting "the database was unreachable" is precisely the
+  // misdirection this module exists to remove.
+  //
+  // `coversWindow` matters as much as `monitored` here: a monitor that is
+  // running but has been up for less than the connect budget — or that samples
+  // more coarsely than the budget is wide — reports a lag of 0 meaning "not
+  // observed", not "did not happen". Reading that as health would produce a
+  // confident, wrong verdict with MORE authority than the bare driver error.
+  const evidence = lag.monitored && lag.coversWindow;
+  const cause: ConnectTimeoutCause = !evidence
     ? 'unknown'
     : worstLagMs >= starvationThresholdMs
       ? 'event-loop-starvation'
@@ -120,7 +138,7 @@ export function diagnoseConnectTimeout(
     worstLagMs,
     windowMs,
     starvationThresholdMs,
-    lagBucket: bucketEventLoopLag(worstLagMs, lag.monitored),
+    lagBucket: bucketEventLoopLag(worstLagMs, evidence),
     message: describe(cause, worstLagMs, windowMs, starvationThresholdMs),
   };
 }
@@ -150,9 +168,31 @@ function describe(
       );
     case 'unknown':
       return (
-        `${prefix} No event-loop monitor was running, so starvation could not be ruled in or `
-        + `out. Enable it (unset EVENT_LOOP_MONITOR_DISABLED) before concluding this was a `
-        + `database fault.`
+        `${prefix} No event-loop measurement covers that window — the monitor is disabled, has `
+        + `not been running for a full ${windowMs}ms yet, is shutting down, or samples more `
+        + `coarsely than the window is wide (EVENT_LOOP_MONITOR_INTERVAL_MS). Starvation could `
+        + `be neither ruled in nor out, so do NOT conclude this was a database fault.`
       );
+  }
+}
+
+/**
+ * Never-throwing wrapper. Both production call sites — `services/sentry.ts`'s
+ * captureException and the Hono `app.onError` handler — run while an error is
+ * already in flight, and in `onError` a throw would cost the request its JSON
+ * 500 AND prevent the original error from ever reaching Sentry. `pgErrorCode`
+ * walks `.cause` and reads `.code` off arbitrary objects, so a hostile or exotic
+ * error with a throwing getter is not purely hypothetical.
+ *
+ * Use this, not `diagnoseConnectTimeout`, anywhere the caller is itself an
+ * error path.
+ */
+export function safeDiagnoseConnectTimeout(err: unknown): ConnectTimeoutDiagnosis | null {
+  try {
+    return diagnoseConnectTimeout(err);
+  } catch {
+    // Diagnosis is commentary on someone else's failure; it must never become
+    // the failure. Silence here costs two Sentry tags and a log line.
+    return null;
   }
 }

@@ -174,7 +174,7 @@ import {
   stopEventLoopMonitor,
 } from './services/eventLoopMonitor';
 import { createStarvationReporter } from './services/eventLoopStarvationReporter';
-import { diagnoseConnectTimeout } from './services/postgresConnectTimeout';
+import { safeDiagnoseConnectTimeout } from './services/postgresConnectTimeout';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
@@ -1060,7 +1060,11 @@ app.onError((err, c) => {
   // byte-identical error. Console-side only (the Sentry tags are set in
   // captureException) so the explanation is present even when Sentry is
   // disabled, which is the self-hosted default.
-  const connectTimeout = diagnoseConnectTimeout(err);
+  //
+  // Must be the never-throwing variant: this runs INSIDE onError and ahead of
+  // captureException, so a throw here would cost the request its JSON 500 and
+  // stop the original error from ever being reported.
+  const connectTimeout = safeDiagnoseConnectTimeout(err);
   if (connectTimeout) {
     console.error(connectTimeout.message);
   }
@@ -1683,19 +1687,36 @@ async function bootstrap(): Promise<void> {
   // no per-request work. Reports go to the console always, and to Sentry on a
   // throttle (a single stall produces a run of breaching samples, and this repo
   // has twice had an unthrottled recurring warning exhaust the event quota).
-  startEventLoopMonitor({
+  const eventLoopMonitor = startEventLoopMonitor({
     onSample: createStarvationReporter({
       thresholdMs: getEventLoopStarvationThresholdMs,
       capture: (message, tags) => captureMessage(message, 'warning', undefined, tags),
     }),
   });
+  // Say whether the instance can see its own loop, and at what settings. Without
+  // this line a disabled or mistuned monitor is completely silent: every
+  // CONNECT_TIMEOUT diagnosis degrades to "unknown" and the only other evidence
+  // is a Prometheus series nobody is alerting on yet. Printing the effective
+  // interval also makes a misparsed env var (parseInt('2s') === 2) visible.
+  if (eventLoopMonitor) {
+    console.log(
+      `[event-loop] Lag monitor started (interval ${eventLoopMonitor.intervalMs}ms, `
+      + `starvation threshold ${getEventLoopStarvationThresholdMs()}ms)`,
+    );
+  } else {
+    console.warn(
+      '[event-loop] Lag monitor DISABLED via EVENT_LOOP_MONITOR_DISABLED — Postgres '
+      + 'CONNECT_TIMEOUT errors will report cause "unknown" because starvation can be '
+      + 'neither ruled in nor out (#3022).',
+    );
+  }
 
   // Inject the CONNECT_TIMEOUT classifier into the Sentry layer. It is wired
   // here rather than imported by services/sentry.ts so that module stays a leaf
   // — see setConnectTimeoutClassifier for the import-graph reason. Must follow
   // startEventLoopMonitor: before the monitor runs, every diagnosis correctly
   // reports 'unknown' rather than guessing.
-  setConnectTimeoutClassifier(diagnoseConnectTimeout);
+  setConnectTimeoutClassifier(safeDiagnoseConnectTimeout);
 
   // Validate configuration before anything else — fail fast on missing/insecure secrets.
   // The validated config is stored as a singleton; retrieve later via getConfig().
