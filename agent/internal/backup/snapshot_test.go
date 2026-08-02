@@ -383,13 +383,10 @@ func TestSnapshotProgressCarriesSnapshotIDFromFirstEmission(t *testing.T) {
 	}
 
 	// The first emission is the forced registration one: the ID is already
-	// known, nothing has uploaded yet.
+	// known before any upload. (Deliberately no assertion on the counters here
+	// — on a resumed run they are pre-seeded, see the resume test below.)
 	if got[0].snapshotID != snapshot.ID {
 		t.Fatalf("first emission must carry the snapshot ID %q, got %q", snapshot.ID, got[0].snapshotID)
-	}
-	if got[0].filesDone != 0 || got[0].bytesDone != 0 {
-		t.Fatalf("registration emission must report zero progress, got filesDone=%d bytesDone=%d",
-			got[0].filesDone, got[0].bytesDone)
 	}
 
 	for i, e := range got {
@@ -907,6 +904,68 @@ func TestCreateSnapshotWithProgress_ResumeAfterInterruption(t *testing.T) {
 	// Success: the journal is gone.
 	if _, err := os.Stat(journal1.path); !os.IsNotExist(err) {
 		t.Fatalf("expected the journal to be removed after run 2 completes successfully, stat err = %v", err)
+	}
+}
+
+// #3006: on a RESUMED run the forced snapshot-registration emission must
+// report the pre-seeded resume counters, not zeros. Emitting before the resume
+// seed would make progress appear to go backwards to 0 and then jump — exactly
+// what the counters are not allowed to do (a server-side reaper reads them as
+// liveness), and sticky if the resumed run dies right after registering.
+func TestSnapshotRegistrationEmissionReportsResumedCounters(t *testing.T) {
+	restore := setProgressThrottleForTest(0)
+	defer restore()
+
+	provider := newMockProvider()
+	tmpDir := t.TempDir()
+	modTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	journalDir := t.TempDir()
+	journal, _, err := openSnapshotJournal(journalDir, "test-resume-progress", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	resumedPath := createTempFile(t, tmpDir, "resumed.txt", "already-uploaded")
+	resumedSize := int64(len("already-uploaded"))
+	if err := journal.Record(SnapshotFile{
+		SourcePath: resumedPath, Size: resumedSize, ModTime: modTime, Checksum: "resumed",
+	}); err != nil {
+		t.Fatalf("Record failed: %v", err)
+	}
+
+	files := []backupFile{
+		{sourcePath: resumedPath, snapshotPath: "path_0/resumed.txt", size: resumedSize, modTime: modTime},
+		{sourcePath: createTempFile(t, tmpDir, "pending.txt", "todo"), snapshotPath: "path_0/pending.txt", size: 4, modTime: modTime},
+	}
+
+	type emission struct {
+		filesDone  int
+		bytesDone  int64
+		snapshotID string
+	}
+	var got []emission
+	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files,
+		func(fd, ft int, bd, bt int64, snapshotID string) {
+			got = append(got, emission{filesDone: fd, bytesDone: bd, snapshotID: snapshotID})
+		}, journal, nil)
+	if err != nil {
+		t.Fatalf("createSnapshotWithProgress failed: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("no progress emissions")
+	}
+	if got[0].snapshotID != snapshot.ID {
+		t.Fatalf("first emission must carry the snapshot ID %q, got %q", snapshot.ID, got[0].snapshotID)
+	}
+	if got[0].filesDone != 1 || got[0].bytesDone != resumedSize {
+		t.Fatalf("registration emission must report the resumed counters (1 file, %d bytes), got filesDone=%d bytesDone=%d",
+			resumedSize, got[0].filesDone, got[0].bytesDone)
+	}
+	// And nothing ever regresses.
+	for i := 1; i < len(got); i++ {
+		if got[i].filesDone < got[i-1].filesDone || got[i].bytesDone < got[i-1].bytesDone {
+			t.Fatalf("progress went backwards at emission %d: %+v -> %+v", i, got[i-1], got[i])
+		}
 	}
 }
 

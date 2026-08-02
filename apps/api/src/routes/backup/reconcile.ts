@@ -2,9 +2,15 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { zValidator } from '../../lib/validation';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext } from '../../db';
 import { devices } from '../../db/schema';
-import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
+import {
+  dbAccessContextFromAuth,
+  requireMfa,
+  requirePermission,
+  requireScope,
+  type AuthContext,
+} from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import {
@@ -15,6 +21,19 @@ import {
 import { resolveScopedOrgId } from './helpers';
 
 export const reconcileRoutes = new Hono();
+
+/**
+ * One short request-scoped DB context per phase.
+ *
+ * This route is registered in SELF_MANAGED_DB_CONTEXT_ROUTES (#1448), so the
+ * auth middleware does NOT wrap the handler in a request transaction: the
+ * handler pages a whole S3 bucket listing and fetches multi-MB manifests from a
+ * tenant-controlled endpoint host, and pinning a pooled connection idle across
+ * that is the #1105 pool-poison class against a 25-connection prod pool.
+ */
+function withReconcileDbContext<T>(auth: AuthContext, fn: () => Promise<T>): Promise<T> {
+  return runOutsideDbContext(() => withDbAccessContext(dbAccessContextFromAuth(auth), fn));
+}
 
 const reconcileRequestSchema = z.object({
   /** The destination to enumerate. Must belong to the caller's org. */
@@ -67,12 +86,14 @@ reconcileRoutes.post(
     const auth = c.get('auth');
     const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) {
-      return c.json({ error: 'orgId is required for this scope' }, 400);
+      return c.json({ error: 'orgId is required for this scope', code: 'org_scope_required' }, 400);
     }
 
     const body = c.req.valid('json');
     const perms = c.get('permissions') as UserPermissions | undefined;
-    const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, perms);
+    const allowedDeviceIds = await withReconcileDbContext(auth, () =>
+      resolveSiteAllowedDeviceIds(orgId, perms)
+    );
 
     let result;
     try {
@@ -82,13 +103,16 @@ reconcileRoutes.post(
         dryRun: body.dryRun,
         limit: body.limit,
         allowedDeviceIds,
+        runInDbContext: (fn) => withReconcileDbContext(auth, fn),
       });
     } catch (error) {
       if (error instanceof BackupReconcileError) {
-        return c.json(
-          { error: error.message, code: error.code },
-          error.code === 'config_not_found' ? 404 : 400
-        );
+        // A destination we cannot read is an upstream/credential failure, not a
+        // malformed request — 502 so clients and monitoring can tell it apart
+        // from `provider_unsupported`, which really is the caller's problem.
+        const status =
+          error.code === 'config_not_found' ? 404 : error.code === 'destination_unreadable' ? 502 : 400;
+        return c.json({ error: error.message, code: error.code }, status);
       }
       throw error;
     }
@@ -106,6 +130,11 @@ reconcileRoutes.post(
         snapshotsInStorage: result.snapshotsInStorage,
         adopted: result.adopted,
         remaining: result.remaining,
+        // Without these, a run that recovered nothing from 50 stranded
+        // snapshots leaves an audit record indistinguishable from a run
+        // against a healthy destination.
+        skipped: result.skipped,
+        skippedByReason: result.skippedByReason,
         adoptedSnapshotIds: result.candidates.filter((x) => x.adopted).map((x) => x.snapshotId),
       },
     });

@@ -1,4 +1,4 @@
-import { and, eq, inArray, like, or } from 'drizzle-orm';
+import { and, eq, inArray, like, or, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
   backupJobs,
@@ -38,6 +38,14 @@ type SnapshotProtectionSettings = {
 };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * Prefix stamped onto a job's pre-existing `error_log` when a #3006 reconcile
+ * adoption flips it to `completed`. The run really did fail as far as the
+ * agent was concerned; the objects merely survived. Keeping the original text
+ * (rather than nulling it, as the agent path does) preserves why.
+ */
+export const RECONCILE_PRIOR_ERROR_PREFIX = '[reconciled-from-storage] prior failure: ';
 
 function normalizeMetadata(
   metadata: ParsedBackupCommandResult['metadata']
@@ -440,6 +448,19 @@ export async function applyBackupCommandResultToJob(params: {
       // #2434: warning/error are agent-supplied free text surfaced in the
       // backup UI — redact secrets before persisting to errorLog.
       updateData.errorLog = redactSecretsFromOutput(result.warning);
+    } else if (source === 'reconcile') {
+      // #3006: a reconcile adoption may flip a job the AGENT genuinely failed
+      // (no reaper marker). Nulling error_log there would destroy the only
+      // record of why the run reported failure — the exact forensic trail
+      // someone needs to explain a snapshot attributed by write time alone.
+      // Preserve it, marked as historical, instead of clearing it.
+      updateData.errorLog = sql`
+        CASE
+          WHEN ${backupJobs.errorLog} IS NULL THEN NULL
+          WHEN ${backupJobs.errorLog} LIKE ${`%${STALE_BACKUP_REAP_MARKER}%`} THEN NULL
+          ELSE ${RECONCILE_PRIOR_ERROR_PREFIX} || ${backupJobs.errorLog}
+        END
+      `;
     } else {
       // FIX 7: clear any prior error_log so a job that ultimately SUCCEEDED
       // doesn't keep showing a leftover error — in particular the stale-reaper
@@ -484,23 +505,32 @@ export async function applyBackupCommandResultToJob(params: {
   // `cancelled` job and a genuine, non-reaper agent `failed` are NOT resurrected
   // (they carry no marker / a different status).
   //
-  // #3006: a reconcile-sourced completion widens the `failed` half of that
-  // guard to ANY failed job, dropping the marker requirement. The evidence is
-  // stronger here than for a late agent result: the caller has already read
-  // `snapshots/<id>/manifest.json` out of the destination bucket, so the
-  // upload demonstrably finished no matter which code path failed the job.
-  // `cancelled` and `completed` are still excluded — a user cancel is a
-  // deliberate decision, and a completed job already owns its restore point.
+  // #3006: a reconcile-sourced completion widens the terminal half of that
+  // guard to ANY `failed` job (dropping the marker requirement) plus
+  // `completed`. The evidence is stronger here than for a late agent result:
+  // the caller has already read `snapshots/<id>/manifest.json` out of the
+  // destination bucket, so the upload demonstrably finished no matter which
+  // code path failed the job. `completed` is included because this write is not
+  // atomic — the job UPDATE below commits before the backup_snapshots insert,
+  // so a crash between them leaves a completed job with no restore point, and
+  // reconcile only ever passes such a job after confirming no row exists. The
+  // snapshot write is an upsert keyed on (jobId, snapshotId), so a repeat is a
+  // no-op.
+  //
+  // `cancelled` and `partial` remain excluded under BOTH sources: a user cancel
+  // is a deliberate decision, and a `partial` job already recorded its own
+  // outcome. (backupStatusEnum is pending|running|completed|failed|cancelled|
+  // partial — all six are accounted for here.)
   const isCompletedResult = resultStatus === 'completed';
-  const failedJobGuard =
+  const terminalJobGuard =
     source === 'reconcile'
-      ? eq(backupJobs.status, 'failed')
+      ? inArray(backupJobs.status, ['failed', 'completed'])
       : and(
           eq(backupJobs.status, 'failed'),
           like(backupJobs.errorLog, `%${STALE_BACKUP_REAP_MARKER}%`)
         );
   const statusGuard = isCompletedResult
-    ? or(inArray(backupJobs.status, IN_FLIGHT_BACKUP_JOB_STATUSES), failedJobGuard)
+    ? or(inArray(backupJobs.status, IN_FLIGHT_BACKUP_JOB_STATUSES), terminalJobGuard)
     : inArray(backupJobs.status, IN_FLIGHT_BACKUP_JOB_STATUSES);
 
   const [updatedJob] = await db
@@ -522,9 +552,14 @@ export async function applyBackupCommandResultToJob(params: {
       // row — surface it loudly so it is recoverable rather than silently
       // orphaned (FIX 7 fallback for the non-flippable cases).
       const orphanMsg =
-        `[BackupPersistence] Dropped a late completed backup result for job ${jobId} ` +
-        `(device ${deviceId}): snapshot ${providerSnapshotId} may be orphaned in storage ` +
-        `with no backup_snapshots row (job was not in-flight and not reaper-failed).`;
+        source === 'reconcile'
+          ? `[BackupPersistence] Reconcile could not adopt snapshot ${providerSnapshotId} into job ${jobId} ` +
+            `(device ${deviceId}): the job was no longer in an adoptable status (cancelled/partial, or it ` +
+            `changed underneath the reconcile run). The snapshot remains in storage with no ` +
+            `backup_snapshots row.`
+          : `[BackupPersistence] Dropped a late completed backup result for job ${jobId} ` +
+            `(device ${deviceId}): snapshot ${providerSnapshotId} may be orphaned in storage ` +
+            `with no backup_snapshots row (job was not in-flight and not reaper-failed).`;
       console.error(orphanMsg);
       captureException(new Error(orphanMsg));
     }
@@ -750,6 +785,21 @@ export async function applyBackupCommandResultToJob(params: {
         err instanceof Error ? err.message : err
       );
     }
+  }
+
+  if (!snapshot) {
+    // The job row was flipped to `completed` and stamped with the snapshot id,
+    // but neither the UPDATE nor the INSERT above returned a row — a concurrent
+    // delete of the row selected at `existingSnapshot`, most plausibly. The
+    // caller would otherwise read `applied: true` and count this as a restore
+    // point that does not exist, which is exactly the #3006 silent-orphan
+    // shape. Surface it.
+    const missingSnapshotMsg =
+      `[BackupPersistence] Job ${jobId} (device ${deviceId}) was marked completed for snapshot ` +
+      `${providerSnapshotId} but no backup_snapshots row was written (source: ${source}); the ` +
+      `snapshot is in storage with no restore point.`;
+    console.error(missingSnapshotMsg);
+    captureException(new Error(missingSnapshotMsg));
   }
 
   return {

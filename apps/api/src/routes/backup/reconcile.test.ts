@@ -20,10 +20,16 @@ function chainMock(resolvedValue: unknown = []) {
 
 const selectMock = vi.fn(() => chainMock([]));
 
+const withDbAccessContextMock = vi.fn(
+  async (_ctx: unknown, fn: () => Promise<unknown>) => fn()
+);
+
 vi.mock('../../db', () => ({
   db: { select: (...args: unknown[]) => selectMock(...(args as [])) },
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => Promise<unknown>) => fn(),
+  withDbAccessContext: (ctx: unknown, fn: () => Promise<unknown>) =>
+    withDbAccessContextMock(ctx, fn),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -62,9 +68,22 @@ vi.mock('../../middleware/auth', () => ({
   requirePermission: vi.fn(() => (_c: any, next: any) => next()),
   requireScope: vi.fn(() => (_c: any, next: any) => next()),
   requireMfa: vi.fn(() => (_c: any, next: any) => next()),
+  dbAccessContextFromAuth: vi.fn((auth: any) => ({ scope: auth.scope, orgId: auth.orgId })),
 }));
 
-import { authMiddleware } from '../../middleware/auth';
+import {
+  authMiddleware,
+  requireMfa,
+  requirePermission,
+  requireScope,
+} from '../../middleware/auth';
+
+// The middleware factories run at MODULE IMPORT time, so their arguments have
+// to be captured before any beforeEach clears the mocks — otherwise deleting
+// requireMfa() from an endpoint that writes to customer buckets fails nothing.
+const registeredMfaCalls = vi.mocked(requireMfa).mock.calls.length;
+const registeredPermissions = vi.mocked(requirePermission).mock.calls.map((c) => c.join(':'));
+const registeredScopes = vi.mocked(requireScope).mock.calls.map((c) => c.join(','));
 import { BackupReconcileError } from '../../services/backupSnapshotReconcile';
 import { reconcileRoutes } from './reconcile';
 
@@ -77,6 +96,8 @@ function reconcileResult(overrides: Record<string, unknown> = {}) {
     snapshotsInStorage: 1,
     adopted: 1,
     remaining: 0,
+    skipped: 0,
+    skippedByReason: {},
     candidates: [
       {
         snapshotId: 'snap-1',
@@ -191,6 +212,38 @@ describe('POST /backup/reconcile', () => {
     expect((await res.json()).code).toBe('provider_unsupported');
   });
 
+  it('502s an unreadable destination — an upstream failure, not a bad request', async () => {
+    // A wrong secret key, a deleted bucket, or a provider 5xx is not the
+    // caller's fault, and 400 would make it indistinguishable from
+    // provider_unsupported for clients and monitoring alike.
+    reconcileMock.mockRejectedValue(
+      new BackupReconcileError('destination_unreadable', 'Could not list the backup destination: AccessDenied')
+    );
+
+    const res = await post({ configId: CONFIG_ID });
+
+    expect(res.status).toBe(502);
+    expect((await res.json()).code).toBe('destination_unreadable');
+  });
+
+  it('is gated by MFA, backup:write and an org/partner/system scope', async () => {
+    // Captured at import time — see the note by the constants.
+    expect(registeredMfaCalls).toBeGreaterThan(0);
+    expect(registeredPermissions).toContain('backup:write');
+    expect(registeredScopes).toContain('organization,partner,system');
+  });
+
+  it('runs its DB work in short self-managed contexts, not one held transaction', async () => {
+    // The route opts out of the auto request-transaction (#1448) because it
+    // pages a whole bucket listing and fetches multi-MB manifests from a
+    // tenant-controlled host; pinning a pooled connection across that is the
+    // #1105 pool-poison class.
+    await post({ configId: CONFIG_ID });
+
+    expect(withDbAccessContextMock).toHaveBeenCalled();
+    expect(typeof reconcileMock.mock.calls[0]![0].runInDbContext).toBe('function');
+  });
+
   it('passes the site-allowed device ids for a site-restricted caller', async () => {
     permissionsState = { allowedSiteIds: [SITE_A] };
     selectMock.mockReturnValueOnce(
@@ -219,6 +272,26 @@ describe('POST /backup/reconcile', () => {
       resourceId: CONFIG_ID,
     });
     expect(event.details.adoptedSnapshotIds).toEqual(['snap-1']);
+  });
+
+  it('audits why nothing was adopted, not just that nothing was', async () => {
+    // Without the per-reason breakdown, a run that recovered nothing from 50
+    // stranded snapshots leaves a trail indistinguishable from a run against a
+    // healthy destination.
+    reconcileMock.mockResolvedValue(
+      reconcileResult({
+        adopted: 0,
+        skipped: 50,
+        skippedByReason: { 'shared-destination-ambiguous': 50 },
+        candidates: [],
+      })
+    );
+
+    await post({ configId: CONFIG_ID });
+
+    const details = writeRouteAuditMock.mock.calls[0]![1].details;
+    expect(details.skipped).toBe(50);
+    expect(details.skippedByReason).toEqual({ 'shared-destination-ambiguous': 50 });
   });
 
   it('audits a dry run under its own action', async () => {

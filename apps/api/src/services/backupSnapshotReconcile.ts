@@ -5,6 +5,7 @@ import { backupConfigs, backupJobs, backupSnapshots } from '../db/schema';
 import { normalizeStorageIdentity } from '../jobs/backupRetention';
 import type { ParsedBackupCommandResult } from '../routes/backup/resultSchemas';
 import { applyBackupCommandResultToJob } from './backupResultPersistence';
+import { captureException, captureMessage } from './sentry';
 import {
   BACKUP_SNAPSHOT_MANIFEST_KEY,
   BACKUP_SNAPSHOT_ROOT_DIR,
@@ -51,8 +52,37 @@ import {
  *     `backup_jobs.snapshot_id` matches (which are unambiguous) are adopted.
  */
 
-/** Job statuses a storage snapshot may be adopted into. */
-const ADOPTABLE_JOB_STATUSES = ['pending', 'running', 'failed'] as const;
+/**
+ * Job statuses a storage snapshot may be adopted into via an EXACT
+ * `backup_jobs.snapshot_id` match.
+ *
+ * `completed` is included for one narrow, self-healing reason: adoption is not
+ * atomic (`applyBackupCommandResultToJob` commits the job UPDATE before
+ * inserting `backup_snapshots`), so a crash in between leaves a `completed`
+ * job carrying a snapshot id with NO restore point — the #3006 failure mode
+ * recurring inside its own fix, and unreachable forever if reconcile refused
+ * to look at it again. A `completed` job is only ever treated as adoptable
+ * when the snapshot has no `backup_snapshots` row at all (see the candidate
+ * loop), which is precisely that half-written state; the write itself is an
+ * upsert keyed on (jobId, snapshotId), so re-running is idempotent.
+ *
+ * `cancelled` and `partial` are deliberately absent: a user cancel is a
+ * decision to respect, and a `partial` job already recorded its own outcome.
+ */
+const ADOPTABLE_JOB_STATUSES = ['pending', 'running', 'failed', 'completed'] as const;
+
+/**
+ * Job statuses eligible for the WEAKER time-window matcher.
+ *
+ * Narrower than the exact-match set on purpose. `pending` is excluded because
+ * a pending job was never dispatched to an agent (backupWorker sets
+ * `running` + `started_at` at dispatch), so it cannot have written a snapshot
+ * — and with both `started_at` and `completed_at` NULL its window would
+ * degenerate to "everything ever written to this destination". `completed` is
+ * excluded because without an exact id there is nothing to prove the
+ * half-written state, so adopting would be a guess.
+ */
+const TIME_WINDOW_JOB_STATUSES = ['running', 'failed'] as const;
 
 /**
  * Tolerance applied to both ends of a job's [startedAt, completedAt] window
@@ -60,6 +90,14 @@ const ADOPTABLE_JOB_STATUSES = ['pending', 'running', 'failed'] as const;
  * the gap between the last upload and the reaper stamping completedAt.
  */
 export const RECONCILE_TIME_WINDOW_SKEW_MS = 60 * 60 * 1000;
+
+/**
+ * Ceiling on an open-ended run window. A job still `running` has no
+ * `completed_at`, and treating "now" as the end would let a job that hung
+ * three weeks ago claim a snapshot written yesterday. The stale reaper kills
+ * silent jobs long before this, so anything older is not a live run.
+ */
+export const RECONCILE_MAX_OPEN_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * How many snapshots one call may adopt. Adoption re-indexes the manifest's
@@ -99,10 +137,14 @@ export type ReconcileSkipReason =
   | 'no-matching-job'
   /** More than one job matches its write time — refusing to guess. */
   | 'ambiguous-job-match'
-  /** The owning job is cancelled or already completed. */
+  /** The owning job is cancelled/partial, or went terminal underneath us. */
   | 'job-not-adoptable'
+  /** The owning job belongs to a different destination than the one scanned. */
+  | 'job-on-another-config'
   /** The manifest could not be fetched, parsed, or did not match. */
   | 'manifest-unreadable'
+  /** The manifest read fine but the restore-point write failed. */
+  | 'adoption-failed'
   /** Adoption was skipped because the per-call limit was reached. */
   | 'limit-reached';
 
@@ -132,6 +174,14 @@ export type ReconcileResult = {
   adopted: number;
   /** Adoptable snapshots left over because the per-call limit was hit. */
   remaining: number;
+  /**
+   * Snapshots this call did NOT adopt for a reason other than the limit.
+   * Reported separately from `remaining` so "reconcile ran and recovered
+   * nothing from 50 stranded snapshots" is a visible fact rather than
+   * something an operator has to infer from an empty `adopted` count.
+   */
+  skipped: number;
+  skippedByReason: Partial<Record<ReconcileSkipReason, number>>;
   candidates: ReconcileCandidate[];
 };
 
@@ -139,7 +189,9 @@ type ClaimingJob = {
   jobId: string;
   orgId: string;
   deviceId: string;
+  configId: string | null;
   status: string;
+  createdAt: Date | null;
 };
 
 type SnapshotClaims = {
@@ -205,6 +257,41 @@ function toIsoOrNull(value: Date | null | undefined): string | null {
   return value ? value.toISOString() : null;
 }
 
+function getStringValue(record: Record<string, unknown>, key: string): string {
+  const value = record[key];
+  return typeof value === 'string' ? value : '';
+}
+
+/**
+ * A deliberately CRUDER destination key than `normalizeStorageIdentity`:
+ * provider + bucket, ignoring the endpoint entirely.
+ *
+ * `normalizeStorageIdentity` only canonicalises the default AWS endpoint, so
+ * two orgs pointed at the same Wasabi/MinIO/B2 bucket through different but
+ * equivalent hostnames (`s3.wasabisys.com` vs `s3.us-east-2.wasabisys.com`,
+ * `host:9000` vs `host`) produce two different identities. For GC that only
+ * costs efficiency, and backupRetention.ts already carries a fail-closed
+ * backstop for it. Here it would be a tenancy hole: a false "not shared"
+ * re-enables the time-window matcher on a bucket another tenant is writing to.
+ *
+ * So sharing is asserted if EITHER key matches. A false "shared" merely
+ * disables the weaker matcher (exact id matches still work); a false "not
+ * shared" is a cross-tenant adoption. The asymmetry decides the design.
+ */
+function coarseStorageIdentity(provider: string, providerConfig: Record<string, unknown>): string {
+  if (provider === 'local') {
+    // Local paths have no endpoint ambiguity — normalizeStorageIdentity's
+    // path.resolve is already the canonical form.
+    return normalizeStorageIdentity(provider, providerConfig);
+  }
+  const bucket = (
+    getStringValue(providerConfig, 'bucket') || getStringValue(providerConfig, 'bucketName')
+  )
+    .trim()
+    .toLowerCase();
+  return `${provider}::${bucket}`;
+}
+
 /**
  * Extract the snapshot IDs that own a `snapshots/<id>/manifest.json` object,
  * mapped to that manifest's last-modified time. A prefix without a manifest is
@@ -249,9 +336,10 @@ function extractManifestBearingSnapshots(
 async function loadClaimsAndSharing(params: {
   orgId: string;
   storageIdentity: string;
+  coarseIdentity: string;
   snapshotIds: string[];
 }): Promise<{ claims: SnapshotClaims; sharedDestination: boolean }> {
-  const { orgId, storageIdentity, snapshotIds } = params;
+  const { orgId, storageIdentity, coarseIdentity, snapshotIds } = params;
 
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
@@ -267,24 +355,44 @@ async function loadClaimsAndSharing(params: {
           restorable.set(row.snapshotId, row.orgId);
         }
 
+        // NOT filtered by config or org: seeing ANOTHER tenant's claim is the
+        // entire point (a filtered query would make their snapshot look
+        // unclaimed and adoptable). Config/org are checked per-candidate below.
         const jobRows = await db
           .select({
             id: backupJobs.id,
             orgId: backupJobs.orgId,
             deviceId: backupJobs.deviceId,
+            configId: backupJobs.configId,
             status: backupJobs.status,
+            createdAt: backupJobs.createdAt,
             snapshotId: backupJobs.snapshotId,
           })
           .from(backupJobs)
           .where(inArray(backupJobs.snapshotId, batch));
         for (const row of jobRows) {
           if (!row.snapshotId) continue;
-          jobs.set(row.snapshotId, {
+          const claim: ClaimingJob = {
             jobId: row.id,
             orgId: row.orgId,
             deviceId: row.deviceId,
+            configId: row.configId ?? null,
             status: row.status,
-          });
+            createdAt: row.createdAt ?? null,
+          };
+          // Duplicates are now normal: a journal resume reuses the SAME
+          // snapshot id under a NEW backup_jobs row, and mid-run registration
+          // records it on both. Pick the newest deterministically rather than
+          // letting scan order decide which run owns the objects.
+          const existing = jobs.get(row.snapshotId);
+          if (
+            !existing ||
+            (claim.createdAt?.getTime() ?? 0) > (existing.createdAt?.getTime() ?? 0) ||
+            ((claim.createdAt?.getTime() ?? 0) === (existing.createdAt?.getTime() ?? 0) &&
+              claim.jobId > existing.jobId)
+          ) {
+            jobs.set(row.snapshotId, claim);
+          }
         }
       }
 
@@ -296,11 +404,14 @@ async function loadClaimsAndSharing(params: {
         })
         .from(backupConfigs);
 
-      const sharedDestination = otherConfigs.some(
-        (row) =>
-          row.orgId !== orgId &&
-          normalizeStorageIdentity(row.provider, asRecord(row.providerConfig)) === storageIdentity
-      );
+      const sharedDestination = otherConfigs.some((row) => {
+        if (row.orgId === orgId) return false;
+        const rowConfig = asRecord(row.providerConfig);
+        return (
+          normalizeStorageIdentity(row.provider, rowConfig) === storageIdentity ||
+          coarseStorageIdentity(row.provider, rowConfig) === coarseIdentity
+        );
+      });
 
       return { claims: { restorable, jobs }, sharedDestination };
     })
@@ -321,7 +432,7 @@ async function loadUnattributedJobs(params: {
     eq(backupJobs.orgId, params.orgId),
     eq(backupJobs.configId, params.configId),
     isNull(backupJobs.snapshotId),
-    inArray(backupJobs.status, [...ADOPTABLE_JOB_STATUSES]),
+    inArray(backupJobs.status, [...TIME_WINDOW_JOB_STATUSES]),
   ];
   if (params.allowedDeviceIds) {
     if (params.allowedDeviceIds.length === 0) {
@@ -373,7 +484,9 @@ function jobCoversWriteTime(job: AdoptableJob, writtenAt: Date, now: Date): bool
   if (!start) {
     return false;
   }
-  const end = job.completedAt ?? now;
+  // An open-ended (still `running`) window is capped so an old hung job cannot
+  // claim a recent snapshot — see RECONCILE_MAX_OPEN_WINDOW_MS.
+  const end = job.completedAt ?? new Date(Math.min(now.getTime(), start.getTime() + RECONCILE_MAX_OPEN_WINDOW_MS));
   return (
     writtenAt.getTime() >= start.getTime() - RECONCILE_TIME_WINDOW_SKEW_MS &&
     writtenAt.getTime() <= end.getTime() + RECONCILE_TIME_WINDOW_SKEW_MS
@@ -453,22 +566,36 @@ export async function reconcileOrphanedBackupSnapshots(params: {
    * applied here explicitly. `null` means unrestricted.
    */
   allowedDeviceIds?: string[] | null;
+  /**
+   * Runs one DB phase inside a caller-supplied access context. The route
+   * registers `/backup/reconcile` in SELF_MANAGED_DB_CONTEXT_ROUTES (#1448),
+   * so there is NO ambient request transaction — pinning one across a
+   * full-bucket S3 listing plus multi-MB manifest fetches would be the #1105
+   * pool-poison class on a tenant-controlled endpoint host. Each DB phase
+   * therefore opens its own short context, and the storage I/O happens between
+   * them. Defaults to a pass-through for callers that already hold a context.
+   */
+  runInDbContext?: <T>(fn: () => Promise<T>) => Promise<T>;
 }): Promise<ReconcileResult> {
   const dryRun = params.dryRun ?? false;
   const limit = Math.min(params.limit ?? RECONCILE_DEFAULT_LIMIT, RECONCILE_MAX_LIMIT);
   const allowedDeviceIds = params.allowedDeviceIds ?? null;
+  const allowedDeviceIdSet = allowedDeviceIds ? new Set(allowedDeviceIds) : null;
+  const runInDbContext = params.runInDbContext ?? (<T>(fn: () => Promise<T>) => fn());
 
   // Defence 1: the destination must belong to the CALLER's org. Nothing below
   // can reach a bucket the caller does not already own a config for.
-  const [config] = await db
-    .select({
-      id: backupConfigs.id,
-      provider: backupConfigs.provider,
-      providerConfig: backupConfigs.providerConfig,
-    })
-    .from(backupConfigs)
-    .where(and(eq(backupConfigs.id, params.configId), eq(backupConfigs.orgId, params.orgId)))
-    .limit(1);
+  const [config] = await runInDbContext(() =>
+    db
+      .select({
+        id: backupConfigs.id,
+        provider: backupConfigs.provider,
+        providerConfig: backupConfigs.providerConfig,
+      })
+      .from(backupConfigs)
+      .where(and(eq(backupConfigs.id, params.configId), eq(backupConfigs.orgId, params.orgId)))
+      .limit(1)
+  );
 
   if (!config) {
     throw new BackupReconcileError('config_not_found', 'Backup destination not found');
@@ -488,19 +615,28 @@ export async function reconcileOrphanedBackupSnapshots(params: {
       prefix: backupSnapshotRootPrefix(),
     });
   } catch (error) {
-    throw new BackupReconcileError(
-      'destination_unreadable',
-      `Could not list the backup destination: ${error instanceof Error ? error.message : String(error)}`
+    // A bad credential, a deleted bucket, or a provider 5xx is an upstream
+    // failure, not a malformed request — and it is invisible unless it is
+    // logged here: nothing else in this path records it, and there is no UI
+    // reading the response body.
+    const message = `Could not list the backup destination: ${error instanceof Error ? error.message : String(error)}`;
+    console.error(
+      `[BackupReconcile] Destination listing failed for config ${params.configId} (org ${params.orgId}): ${message}`
     );
+    captureException(error instanceof Error ? error : new Error(message));
+    throw new BackupReconcileError('destination_unreadable', message);
   }
 
   const storageSnapshots = extractManifestBearingSnapshots(listing);
   const snapshotIds = [...storageSnapshots.keys()];
 
-  const storageIdentity = normalizeStorageIdentity(config.provider, asRecord(config.providerConfig));
+  const providerConfigRecord = asRecord(config.providerConfig);
+  const storageIdentity = normalizeStorageIdentity(config.provider, providerConfigRecord);
+  const coarseIdentity = coarseStorageIdentity(config.provider, providerConfigRecord);
   const { claims, sharedDestination } = await loadClaimsAndSharing({
     orgId: params.orgId,
     storageIdentity,
+    coarseIdentity,
     snapshotIds,
   });
 
@@ -558,11 +694,24 @@ export async function reconcileOrphanedBackupSnapshots(params: {
         skip('claimed-by-another-organization');
         continue;
       }
+      // The claim lookup is destination-blind by necessity (it must see other
+      // tenants), so the config check lands here. Adopting a job that targets a
+      // DIFFERENT destination would stamp the restore point with a config whose
+      // bucket does not hold the objects — and object GC, which groups by
+      // storage identity, would then not see them as live.
+      if (claimingJob.configId !== params.configId) {
+        skip('job-on-another-config');
+        continue;
+      }
+      // `completed` is in ADOPTABLE_JOB_STATUSES only for the half-written
+      // case, and reaching here PROVES it: `claims.restorable` had no row for
+      // this snapshot, so a completed job carrying its id is a job whose
+      // restore-point insert never landed.
       if (!ADOPTABLE_JOB_STATUSES.includes(claimingJob.status as (typeof ADOPTABLE_JOB_STATUSES)[number])) {
         skip('job-not-adoptable');
         continue;
       }
-      if (allowedDeviceIds && !allowedDeviceIds.includes(claimingJob.deviceId)) {
+      if (allowedDeviceIdSet && !allowedDeviceIdSet.has(claimingJob.deviceId)) {
         skip('no-matching-job');
         continue;
       }
@@ -590,11 +739,13 @@ export async function reconcileOrphanedBackupSnapshots(params: {
     }
 
     if (unattributedJobs === null) {
-      unattributedJobs = await loadUnattributedJobs({
-        orgId: params.orgId,
-        configId: params.configId,
-        allowedDeviceIds,
-      });
+      unattributedJobs = await runInDbContext(() =>
+        loadUnattributedJobs({
+          orgId: params.orgId,
+          configId: params.configId,
+          allowedDeviceIds,
+        })
+      );
     }
 
     const matches = unattributedJobs.filter(
@@ -657,44 +808,106 @@ export async function reconcileOrphanedBackupSnapshots(params: {
       error: null,
     };
 
+    // Phase 1 — READ. Only storage/parse failures may be reported as
+    // 'manifest-unreadable'. Keeping the write out of this try is the whole
+    // point: a DB failure mislabelled as a storage problem sends the operator
+    // to look at a bucket that is perfectly fine.
+    let result: ParsedBackupCommandResult;
     try {
       const manifestText = await fetchBackupObjectText({
         provider: config.provider,
         providerConfig: config.providerConfig,
         key: backupSnapshotManifestKey(entry.snapshotId),
       });
-      const result = manifestToCommandResult({
+      result = manifestToCommandResult({
         snapshotId: entry.snapshotId,
         manifestText,
         matchedBy: entry.matchedBy,
       });
-      candidate.fileCount = result.filesBackedUp ?? null;
-      candidate.size = result.bytesBackedUp ?? null;
+    } catch (error) {
+      candidate.skipReason = 'manifest-unreadable';
+      candidate.error = error instanceof Error ? error.message : String(error);
+      candidates.push(candidate);
+      continue;
+    }
 
-      if (!dryRun) {
-        const applied = await applyBackupCommandResultToJob({
+    candidate.fileCount = result.filesBackedUp ?? null;
+    candidate.size = result.bytesBackedUp ?? null;
+
+    if (dryRun) {
+      candidates.push(candidate);
+      continue;
+    }
+
+    // Phase 2 — WRITE.
+    try {
+      const applied = await runInDbContext(() =>
+        applyBackupCommandResultToJob({
           jobId: entry.jobId,
           orgId: params.orgId,
           deviceId: entry.deviceId,
           resultStatus: 'completed',
           result,
           source: 'reconcile',
-        });
-        if (!applied.applied) {
-          // The job changed status underneath us (cancelled, or a real result
-          // landed first). Report it rather than claiming an adoption.
-          candidate.skipReason = 'job-not-adoptable';
-        } else {
-          candidate.adopted = true;
-          adopted += 1;
-        }
+        })
+      );
+      if (!applied.applied) {
+        // The job changed status underneath us (cancelled, or a real result
+        // landed first). Report it rather than claiming an adoption.
+        candidate.skipReason = 'job-not-adoptable';
+        candidate.error = 'job was no longer adoptable';
+      } else if (!applied.snapshotDbId) {
+        // Job flipped but no restore-point row came back — the snapshot is
+        // still not restorable, so this is NOT an adoption.
+        candidate.skipReason = 'adoption-failed';
+        candidate.error = 'job was updated but no restore point row was written';
+      } else {
+        candidate.adopted = true;
+        adopted += 1;
       }
     } catch (error) {
-      candidate.skipReason = 'manifest-unreadable';
+      // applyBackupCommandResultToJob commits the job UPDATE before inserting
+      // backup_snapshots, so a throw in between can leave the job terminal
+      // with no restore point. That is #3006 recurring inside its own fix and
+      // must reach Sentry, not a field in a response body nobody reads. (The
+      // next reconcile run CAN recover it — a `completed` job whose snapshot
+      // has no row is treated as adoptable — but the failure still needs to be
+      // seen.)
+      candidate.skipReason = 'adoption-failed';
       candidate.error = error instanceof Error ? error.message : String(error);
+      const message =
+        `[BackupReconcile] Adoption write failed for snapshot ${entry.snapshotId} ` +
+        `(job ${entry.jobId}, device ${entry.deviceId}, org ${params.orgId}). The job row may now be ` +
+        `terminal with no backup_snapshots row.`;
+      console.error(message, error);
+      captureException(error instanceof Error ? error : new Error(message));
     }
 
     candidates.push(candidate);
+  }
+
+  const skippedByReason: Partial<Record<ReconcileSkipReason, number>> = {};
+  let skipped = 0;
+  for (const candidate of candidates) {
+    if (candidate.adopted || !candidate.skipReason || candidate.skipReason === 'limit-reached') {
+      continue;
+    }
+    skipped += 1;
+    skippedByReason[candidate.skipReason] = (skippedByReason[candidate.skipReason] ?? 0) + 1;
+  }
+
+  // The one skip reason no rerun will ever clear on its own: customer data this
+  // feature has deliberately decided it cannot attribute. Surface it rather
+  // than leaving it in a response body.
+  const ambiguousCount = skippedByReason['shared-destination-ambiguous'] ?? 0;
+  if (ambiguousCount > 0) {
+    const message =
+      `[BackupReconcile] ${ambiguousCount} snapshot(s) in the destination for config ${params.configId} ` +
+      `(org ${params.orgId}) cannot be attributed: another organization's backup config targets the same ` +
+      `bucket, so time-window matching is disabled. These snapshots stay stranded until their jobs carry a ` +
+      `snapshot id.`;
+    console.warn(message);
+    captureMessage(message, 'warning');
   }
 
   return {
@@ -705,6 +918,8 @@ export async function reconcileOrphanedBackupSnapshots(params: {
     snapshotsInStorage: snapshotIds.length,
     adopted,
     remaining,
+    skipped,
+    skippedByReason,
     candidates,
   };
 }

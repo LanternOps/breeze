@@ -702,12 +702,50 @@ describe('backup result persistence', () => {
 
     const agentGuard = await guardFor('agent');
     expect(agentGuard).toContain('[stale-backup-reaper]');
+    expect(agentGuard).toContain('failed');
+    expect(agentGuard).not.toContain('cancelled');
+    expect(agentGuard).not.toContain('partial');
 
     vi.mocked(db.update).mockReset();
     const reconcileGuard = await guardFor('reconcile');
     expect(reconcileGuard).not.toContain('[stale-backup-reaper]');
-    // Still status-scoped: a cancelled/completed job must remain untouchable.
     expect(reconcileGuard).toContain('failed');
+    // `completed` is allowed ONLY so a half-written adoption (job flipped, but
+    // the backup_snapshots insert never landed) stays recoverable; reconcile
+    // only ever passes such a job after confirming no restore point exists.
+    expect(reconcileGuard).toContain('completed');
+    // A user cancel is a deliberate decision, and a `partial` job already
+    // recorded its own outcome — neither may ever be resurrected.
+    expect(reconcileGuard).not.toContain('cancelled');
+    expect(reconcileGuard).not.toContain('partial');
+  });
+
+  // #3006: a reconcile adoption can flip a job the AGENT genuinely failed (no
+  // reaper marker). Nulling error_log there would destroy the only record of
+  // why the run reported failure — the forensic trail behind a snapshot that
+  // may have been attributed by write time alone.
+  it('preserves a genuine agent failure message when reconcile adopts the job', async () => {
+    vi.mocked(db.update).mockReturnValue(chainMock([]) as any);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: { snapshotId: 'provider-snap-1', filesBackedUp: 1 },
+      source: 'reconcile',
+    });
+
+    const setArg = vi.mocked(db.update).mock.results[0]!.value.set.mock.calls[0][0] as Record<
+      string,
+      unknown
+    >;
+    expect(setArg.errorLog).not.toBeNull();
+    const errorLogSql = JSON.stringify(setArg.errorLog);
+    expect(errorLogSql).toContain('[reconciled-from-storage] prior failure: ');
+    // The stale-reaper note is noise, not evidence — that one still clears.
+    expect(errorLogSql).toContain('[stale-backup-reaper]');
   });
 
   it('FIX 7 fallback: logs + captureException when a late success cannot be recorded (user-cancelled / already-terminal job) so the snapshot is not silently orphaned', async () => {

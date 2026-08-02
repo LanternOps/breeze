@@ -6,6 +6,23 @@ const CONFIG_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const DEVICE_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 /**
+ * Every WHERE predicate the service builds, in issue order.
+ *
+ * Recorded because the drizzle operators are mocked into inert plain objects:
+ * without capturing them, deleting `eq(backupConfigs.orgId, …)` — Defence 1 —
+ * or the site-scope `inArray(backupJobs.deviceId, …)` changes nothing the
+ * suite can see. Site scope in particular has NO RLS backstop (it is an
+ * app-layer-only axis), so a test that cannot see the predicate cannot claim
+ * the isolation holds.
+ */
+const whereArgs: unknown[] = [];
+
+/** All recorded predicates, serialized — for substring assertions. */
+function wherePredicates(): string[] {
+  return whereArgs.map((arg) => JSON.stringify(arg));
+}
+
+/**
  * A drizzle chain stand-in: every builder method returns the same
  * promise-shaped object, so `.from(...).where(...).limit(1)` and a bare
  * `.from(...)` both await to the same rows.
@@ -13,7 +30,10 @@ const DEVICE_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
   for (const method of ['from', 'where', 'limit', 'orderBy']) {
-    chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
+    chain[method] = vi.fn((...args: unknown[]) => {
+      if (method === 'where') whereArgs.push(args[0]);
+      return Object.assign(Promise.resolve(resolvedValue), chain);
+    });
   }
   return Object.assign(Promise.resolve(resolvedValue), chain);
 }
@@ -83,6 +103,13 @@ vi.mock('./backupResultPersistence', () => ({
     applyBackupCommandResultToJobMock(...(args as [])),
 }));
 
+const captureExceptionMock = vi.fn();
+const captureMessageMock = vi.fn();
+vi.mock('./sentry', () => ({
+  captureException: (...args: unknown[]) => captureExceptionMock(...(args as [])),
+  captureMessage: (...args: unknown[]) => captureMessageMock(...(args as [])),
+}));
+
 import {
   BackupReconcileError,
   reconcileOrphanedBackupSnapshots,
@@ -119,15 +146,46 @@ function manifest(snapshotId: string, files = 2) {
  */
 function queueSelects(rowSets: unknown[][]) {
   selectMock.mockReset();
+  whereArgs.length = 0;
   for (const rows of rowSets) {
     selectMock.mockReturnValueOnce(chainMock(rows) as any);
   }
   selectMock.mockImplementation(() => chainMock([]) as any);
 }
 
+/** The four selects a run issues before any time-window work. */
+function baseSelects(claimJobs: unknown[] = [], restorable: unknown[] = [], otherConfigs?: unknown[]) {
+  return [
+    [CONFIG_ROW],
+    restorable,
+    claimJobs,
+    otherConfigs ?? [{ orgId: ORG_ID, provider: 's3', providerConfig: CONFIG_ROW.providerConfig }],
+  ];
+}
+
+function claimingJob(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'job-1',
+    orgId: ORG_ID,
+    deviceId: DEVICE_ID,
+    configId: CONFIG_ID,
+    status: 'failed',
+    createdAt: new Date('2026-08-01T08:00:00Z'),
+    snapshotId: 'snap-1',
+    ...overrides,
+  };
+}
+
+function oneManifest(snapshotId = 'snap-1', writtenAt = '2026-08-01T10:20:00Z') {
+  listBackupObjectsUnderPrefixMock.mockResolvedValue([
+    { key: `snapshots/${snapshotId}/manifest.json`, lastModified: new Date(writtenAt) },
+  ]);
+}
+
 describe('reconcileOrphanedBackupSnapshots', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    whereArgs.length = 0;
     listBackupObjectsUnderPrefixMock.mockReset();
     fetchBackupObjectTextMock.mockReset();
     applyBackupCommandResultToJobMock.mockReset();
@@ -165,7 +223,7 @@ describe('reconcileOrphanedBackupSnapshots', () => {
     queueSelects([
       [CONFIG_ROW],
       [], // no backup_snapshots row → not restorable yet
-      [{ id: 'job-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'failed', snapshotId: 'snap-1' }],
+      [claimingJob()],
       [{ orgId: ORG_ID, provider: 's3', providerConfig: CONFIG_ROW.providerConfig }],
     ]);
 
@@ -280,8 +338,101 @@ describe('reconcileOrphanedBackupSnapshots', () => {
       adopted: false,
     });
     expect(applyBackupCommandResultToJobMock).not.toHaveBeenCalled();
-    // The job lookup must not even run — nothing is attributable.
-    expect(selectMock).toHaveBeenCalledTimes(4);
+    // The unattributed-job lookup must not even run — nothing is attributable.
+    expect(wherePredicates().some((p) => p.includes('backup_jobs.config_id'))).toBe(false);
+  });
+
+  it('treats a bucket shared via an equivalent-but-different endpoint as shared', async () => {
+    // normalizeStorageIdentity only canonicalises the default AWS endpoint, so
+    // two orgs on the same Wasabi bucket via different regional hostnames get
+    // different identities. A coarse provider+bucket backstop must still catch
+    // it — a false "not shared" is a cross-tenant adoption.
+    oneManifest();
+    queueSelects(
+      baseSelects([], [], [
+        { orgId: ORG_ID, provider: 's3', providerConfig: CONFIG_ROW.providerConfig },
+        {
+          orgId: OTHER_ORG_ID,
+          provider: 's3',
+          providerConfig: { bucket: 'Customer-Bucket', endpoint: 'https://s3.us-east-2.wasabisys.com' },
+        },
+      ])
+    );
+
+    const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+    expect(result.sharedDestination).toBe(true);
+    expect(result.candidates[0]!.skipReason).toBe('shared-destination-ambiguous');
+  });
+
+  it('still adopts an EXACT snapshot-id match on a shared destination', async () => {
+    // The doc promises exact matches keep working when the bucket is shared —
+    // they are unambiguous. Without this, reconcile could be silently disabled
+    // for every shared-bucket tenant and nothing would notice.
+    oneManifest();
+    fetchBackupObjectTextMock.mockResolvedValue(manifest('snap-1'));
+    queueSelects(
+      baseSelects([claimingJob()], [], [
+        { orgId: ORG_ID, provider: 's3', providerConfig: CONFIG_ROW.providerConfig },
+        {
+          orgId: OTHER_ORG_ID,
+          provider: 's3',
+          providerConfig: { bucket: 'customer-bucket', endpoint: '' },
+        },
+      ])
+    );
+
+    const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+    expect(result.sharedDestination).toBe(true);
+    expect(result.adopted).toBe(1);
+  });
+
+  it('refuses a claiming job that belongs to a different destination', async () => {
+    // The claim lookup is destination-blind (it must see other tenants), so the
+    // config check is per-candidate. Adopting here would stamp the restore
+    // point with a config whose bucket does not hold the objects.
+    oneManifest();
+    queueSelects(baseSelects([claimingJob({ configId: 'ffffffff-ffff-4fff-8fff-ffffffffffff' })]));
+
+    const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+    expect(result.candidates[0]!.skipReason).toBe('job-on-another-config');
+    expect(applyBackupCommandResultToJobMock).not.toHaveBeenCalled();
+  });
+
+  it('prefers the newest job when a journal resume left two rows on one snapshot id', async () => {
+    // A resumed run reuses the SAME snapshot id under a NEW backup_jobs row,
+    // and mid-run registration records it on both — so duplicates are now a
+    // normal outcome, not a corruption. Scan order must not decide the winner.
+    oneManifest();
+    fetchBackupObjectTextMock.mockResolvedValue(manifest('snap-1'));
+    queueSelects(
+      baseSelects([
+        claimingJob({ id: 'job-newer', createdAt: new Date('2026-08-01T09:00:00Z') }),
+        claimingJob({ id: 'job-older', createdAt: new Date('2026-08-01T07:00:00Z') }),
+      ])
+    );
+
+    const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+    expect(result.adopted).toBe(1);
+    expect(applyBackupCommandResultToJobMock.mock.calls[0]![0].jobId).toBe('job-newer');
+  });
+
+  it('adopts a half-written completed job that never got its restore point', async () => {
+    // Adoption is not atomic: the job UPDATE commits before the
+    // backup_snapshots insert. A crash between them leaves a completed job with
+    // no restore point, which must stay recoverable rather than being locked
+    // out as "already completed" forever.
+    oneManifest();
+    fetchBackupObjectTextMock.mockResolvedValue(manifest('snap-1'));
+    queueSelects(baseSelects([claimingJob({ status: 'completed' })]));
+
+    const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+    expect(result.adopted).toBe(1);
+    expect(applyBackupCommandResultToJobMock.mock.calls[0]![0].source).toBe('reconcile');
   });
 
   it('does not adopt onto a device outside a site-restricted caller\u2019s sites', async () => {
@@ -291,7 +442,7 @@ describe('reconcileOrphanedBackupSnapshots', () => {
     queueSelects([
       [CONFIG_ROW],
       [],
-      [{ id: 'job-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'failed', snapshotId: 'snap-1' }],
+      [claimingJob()],
       [{ orgId: ORG_ID, provider: 's3', providerConfig: CONFIG_ROW.providerConfig }],
     ]);
 
@@ -429,7 +580,7 @@ describe('reconcileOrphanedBackupSnapshots', () => {
     queueSelects([
       [CONFIG_ROW],
       [],
-      [{ id: 'job-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'failed', snapshotId: 'snap-1' }],
+      [claimingJob()],
       [{ orgId: ORG_ID, provider: 's3', providerConfig: CONFIG_ROW.providerConfig }],
     ]);
 
@@ -457,8 +608,8 @@ describe('reconcileOrphanedBackupSnapshots', () => {
       [CONFIG_ROW],
       [],
       [
-        { id: 'job-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'failed', snapshotId: 'snap-1' },
-        { id: 'job-2', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'failed', snapshotId: 'snap-2' },
+        claimingJob(),
+        claimingJob({ id: 'job-2', snapshotId: 'snap-2' }),
       ],
       [{ orgId: ORG_ID, provider: 's3', providerConfig: CONFIG_ROW.providerConfig }],
     ]);
@@ -485,7 +636,7 @@ describe('reconcileOrphanedBackupSnapshots', () => {
     queueSelects([
       [CONFIG_ROW],
       [],
-      [{ id: 'job-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'failed', snapshotId: 'snap-1' }],
+      [claimingJob()],
       [{ orgId: ORG_ID, provider: 's3', providerConfig: CONFIG_ROW.providerConfig }],
     ]);
 
@@ -519,7 +670,7 @@ describe('reconcileOrphanedBackupSnapshots', () => {
     queueSelects([
       [CONFIG_ROW],
       [],
-      [{ id: 'job-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'failed', snapshotId: 'snap-1' }],
+      [claimingJob()],
       [{ orgId: ORG_ID, provider: 's3', providerConfig: CONFIG_ROW.providerConfig }],
     ]);
 
@@ -547,7 +698,7 @@ describe('reconcileOrphanedBackupSnapshots', () => {
     queueSelects([
       [CONFIG_ROW],
       [],
-      [{ id: 'job-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'running', snapshotId: 'snap-1' }],
+      [claimingJob({ status: 'running' })],
       [{ orgId: ORG_ID, provider: 's3', providerConfig: CONFIG_ROW.providerConfig }],
     ]);
 
@@ -564,7 +715,7 @@ describe('reconcileOrphanedBackupSnapshots', () => {
     queueSelects([
       [CONFIG_ROW],
       [],
-      [{ id: 'job-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'cancelled', snapshotId: 'snap-1' }],
+      [claimingJob({ status: 'cancelled' })],
       [{ orgId: ORG_ID, provider: 's3', providerConfig: CONFIG_ROW.providerConfig }],
     ]);
 
@@ -589,6 +740,236 @@ describe('reconcileOrphanedBackupSnapshots', () => {
 
     expect(result.candidates[0]!.skipReason).toBe('already-restorable');
     expect(applyBackupCommandResultToJobMock).not.toHaveBeenCalled();
+  });
+
+  // --- the SQL-level filters the tenancy claims actually rest on -----------
+  //
+  // These predicates are the only thing standing between one tenant and
+  // another's data on the site-scope axis (RLS does not defend site scope), so
+  // they are asserted directly rather than inferred from returned rows — a
+  // mock that ignores WHERE would otherwise pass with the filters deleted.
+
+  it('scopes the destination lookup to the caller org', async () => {
+    oneManifest();
+    queueSelects(baseSelects([claimingJob()]));
+    fetchBackupObjectTextMock.mockResolvedValue(manifest('snap-1'));
+
+    await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+    const configPredicate = wherePredicates()[0]!;
+    expect(configPredicate).toContain('backup_configs.org_id');
+    expect(configPredicate).toContain(ORG_ID);
+    expect(configPredicate).toContain(CONFIG_ID);
+  });
+
+  it('scopes the time-window job lookup by org, config, site devices and status', async () => {
+    oneManifest('snap-legacy');
+    queueSelects([
+      ...baseSelects(),
+      [
+        {
+          id: 'job-legacy',
+          deviceId: 'device-in',
+          startedAt: new Date('2026-08-01T08:00:00Z'),
+          completedAt: new Date('2026-08-01T11:00:00Z'),
+          createdAt: new Date('2026-08-01T08:00:00Z'),
+        },
+      ],
+      [],
+    ]);
+    fetchBackupObjectTextMock.mockResolvedValue(manifest('snap-legacy'));
+
+    await reconcileOrphanedBackupSnapshots({
+      orgId: ORG_ID,
+      configId: CONFIG_ID,
+      allowedDeviceIds: ['device-in'],
+    });
+
+    const jobPredicate = wherePredicates().find((p) => p.includes('backup_jobs.config_id'));
+    expect(jobPredicate).toBeDefined();
+    expect(jobPredicate).toContain('backup_jobs.org_id');
+    expect(jobPredicate).toContain(ORG_ID);
+    expect(jobPredicate).toContain(CONFIG_ID);
+    // Site scope — no RLS backstop, so this predicate is load-bearing.
+    expect(jobPredicate).toContain('backup_jobs.device_id');
+    expect(jobPredicate).toContain('device-in');
+    // Never attribute to a snapshot-bearing or non-dispatched job.
+    expect(jobPredicate).toContain('isNull');
+    expect(jobPredicate).toContain('running');
+    expect(jobPredicate).toContain('failed');
+    expect(jobPredicate).not.toContain('pending');
+  });
+
+  it('issues no job query at all when a site-restricted caller can see no devices', async () => {
+    oneManifest('snap-legacy');
+    queueSelects(baseSelects());
+
+    const result = await reconcileOrphanedBackupSnapshots({
+      orgId: ORG_ID,
+      configId: CONFIG_ID,
+      allowedDeviceIds: [],
+    });
+
+    expect(result.candidates[0]!.skipReason).toBe('no-matching-job');
+    expect(wherePredicates().some((p) => p.includes('backup_jobs.config_id'))).toBe(false);
+  });
+
+  // --- time-window boundaries ----------------------------------------------
+
+  it.each([
+    ['inside the leading skew', '2026-08-01T07:01:00Z', true],
+    ['outside the leading skew', '2026-08-01T06:59:00Z', false],
+    ['inside the trailing skew', '2026-08-01T11:59:00Z', true],
+    ['outside the trailing skew', '2026-08-01T12:01:00Z', false],
+  ])('write time %s is %s', async (_label, writtenAt, shouldAdopt) => {
+    oneManifest('snap-legacy', writtenAt);
+    fetchBackupObjectTextMock.mockResolvedValue(manifest('snap-legacy'));
+    queueSelects([
+      ...baseSelects(),
+      [
+        {
+          id: 'job-legacy',
+          deviceId: DEVICE_ID,
+          startedAt: new Date('2026-08-01T08:00:00Z'),
+          completedAt: new Date('2026-08-01T11:00:00Z'),
+          createdAt: new Date('2026-08-01T08:00:00Z'),
+        },
+      ],
+      [],
+    ]);
+
+    const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+    expect(result.adopted).toBe(shouldAdopt ? 1 : 0);
+  });
+
+  it('caps an open-ended window so a long-hung job cannot claim a recent snapshot', async () => {
+    // A `running` job has no completedAt. Treating "now" as the end would let a
+    // job that hung months ago adopt anything written since.
+    oneManifest('snap-legacy', new Date().toISOString());
+    queueSelects([
+      ...baseSelects(),
+      [
+        {
+          id: 'job-hung',
+          deviceId: DEVICE_ID,
+          startedAt: new Date('2026-01-01T00:00:00Z'),
+          completedAt: null,
+          createdAt: new Date('2026-01-01T00:00:00Z'),
+        },
+      ],
+      [],
+    ]);
+
+    const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+    expect(result.candidates[0]!.skipReason).toBe('no-matching-job');
+  });
+
+  it('never attributes two snapshots to the same job', async () => {
+    listBackupObjectsUnderPrefixMock.mockResolvedValue([
+      { key: 'snapshots/snap-a/manifest.json', lastModified: new Date('2026-08-01T09:00:00Z') },
+      { key: 'snapshots/snap-b/manifest.json', lastModified: new Date('2026-08-01T09:10:00Z') },
+    ]);
+    fetchBackupObjectTextMock.mockImplementation((input: any) =>
+      Promise.resolve(manifest(input.key.split('/')[1]))
+    );
+    queueSelects([
+      ...baseSelects(),
+      [
+        {
+          id: 'job-only',
+          deviceId: DEVICE_ID,
+          startedAt: new Date('2026-08-01T08:00:00Z'),
+          completedAt: new Date('2026-08-01T11:00:00Z'),
+          createdAt: new Date('2026-08-01T08:00:00Z'),
+        },
+      ],
+      [],
+    ]);
+
+    const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+    expect(result.adopted).toBe(1);
+    expect(result.candidates.find((c) => c.snapshotId === 'snap-b')!.skipReason).toBe(
+      'no-matching-job'
+    );
+  });
+
+  it('skips a snapshot whose manifest has no last-modified time', async () => {
+    listBackupObjectsUnderPrefixMock.mockResolvedValue([
+      { key: 'snapshots/snap-legacy/manifest.json', lastModified: null },
+    ]);
+    queueSelects(baseSelects());
+
+    const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+    expect(result.candidates[0]!.skipReason).toBe('no-matching-job');
+  });
+
+  // --- failure reporting ----------------------------------------------------
+
+  it('reports a failed adoption WRITE as adoption-failed, not manifest-unreadable, and escalates it', async () => {
+    // The manifest read fine. Mislabelling a DB failure as a storage problem
+    // sends the operator to inspect a bucket that is perfectly healthy — and
+    // the job row may already be terminal with no restore point, which is
+    // #3006 recurring inside its own fix.
+    oneManifest();
+    fetchBackupObjectTextMock.mockResolvedValue(manifest('snap-1'));
+    applyBackupCommandResultToJobMock.mockRejectedValue(new Error('statement timeout'));
+    queueSelects(baseSelects([claimingJob()]));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+    expect(result.adopted).toBe(0);
+    expect(result.candidates[0]).toMatchObject({
+      skipReason: 'adoption-failed',
+      error: 'statement timeout',
+      adopted: false,
+    });
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    errorSpy.mockRestore();
+  });
+
+  it('does not count an adoption whose restore-point row never came back', async () => {
+    oneManifest();
+    fetchBackupObjectTextMock.mockResolvedValue(manifest('snap-1'));
+    applyBackupCommandResultToJobMock.mockResolvedValue({
+      applied: true,
+      snapshotDbId: null,
+      providerSnapshotId: 'snap-1',
+    });
+    queueSelects(baseSelects([claimingJob()]));
+
+    const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+    expect(result.adopted).toBe(0);
+    expect(result.candidates[0]!.skipReason).toBe('adoption-failed');
+  });
+
+  it('counts skips by reason so a run that recovered nothing is visible', async () => {
+    listBackupObjectsUnderPrefixMock.mockResolvedValue([
+      { key: 'snapshots/snap-a/manifest.json', lastModified: new Date('2026-08-01T09:00:00Z') },
+      { key: 'snapshots/snap-b/manifest.json', lastModified: new Date('2026-08-01T09:10:00Z') },
+    ]);
+    queueSelects(
+      baseSelects([], [], [
+        { orgId: ORG_ID, provider: 's3', providerConfig: CONFIG_ROW.providerConfig },
+        { orgId: OTHER_ORG_ID, provider: 's3', providerConfig: { bucket: 'customer-bucket', endpoint: '' } },
+      ])
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await reconcileOrphanedBackupSnapshots({ orgId: ORG_ID, configId: CONFIG_ID });
+
+    expect(result.adopted).toBe(0);
+    expect(result.remaining).toBe(0);
+    expect(result.skipped).toBe(2);
+    expect(result.skippedByReason).toEqual({ 'shared-destination-ambiguous': 2 });
+    // Unattributable customer data no rerun will ever clear — must be loud.
+    expect(captureMessageMock).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
   });
 
   it('surfaces an unreadable destination as a typed error', async () => {

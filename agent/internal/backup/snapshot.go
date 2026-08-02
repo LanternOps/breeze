@@ -387,15 +387,6 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		}()
 	}
 
-	// Register the snapshot ID with the server BEFORE the first byte is
-	// uploaded (#3006). Every later emission carries it too, but this forced
-	// one guarantees it is sent even if the run dies during the very first
-	// file — and it is the only emission that is not subject to the throttle
-	// window, so the server learns the ID immediately rather than up to
-	// progressThrottle later. Counters are still all-zero here, which is
-	// exactly the state the upload loop starts from.
-	emitProgress(true)
-
 	// Resume matching: build the full matched set up front (rather than
 	// deciding file-by-file inside the loop below) so filesDone/bytesDone
 	// can be pre-seeded with the resumed totals and reported in one jump
@@ -416,9 +407,23 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 				"resumedFiles", len(resumedFiles),
 				"resumedBytes", resumedBytes,
 			)
-			emitProgress(true)
+			// The forced registration emit below reports these seeded counters,
+			// so no separate emission is needed here.
 		}
 	}
+
+	// Register the snapshot ID with the server BEFORE the first byte is
+	// uploaded (#3006). Every later emission carries it too, but this forced
+	// one guarantees it is sent even if the run dies during the very first
+	// file — and it is the only emission not subject to the throttle window,
+	// so the server learns the ID immediately rather than up to
+	// progressThrottle later.
+	//
+	// Placed AFTER the resume pre-seed on purpose: emitting first would report
+	// filesDone/bytesDone as 0 on a resumed run and then jump up, and progress
+	// that appears to go backwards is precisely what the counters are not
+	// allowed to do (see startRunKeepalive in backup.go).
+	emitProgress(true)
 
 	// abortStopped is the single exit point for every errBackupStopped
 	// return. See the journal parameter doc above for why cleanup is
