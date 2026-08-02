@@ -13,6 +13,7 @@ import { db } from '../db';
 import { deviceMetrics, devices, metricRollups, recoveryReadiness as recoveryReadinessTable, remoteSessions } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
+import { getEventLoopLagStats, readLatestEventLoopLag } from '../services/eventLoopMonitor';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { BACKUP_LOW_READINESS_THRESHOLD } from './backup/constants';
 import {
@@ -389,6 +390,65 @@ const nodejsVersionInfoGauge = new Gauge({
   registers: [register]
 });
 
+// #3022 — event-loop lag as a scrapable series. This is the metric whose
+// absence made the original incident a manual investigation: three unrelated
+// Sentry signatures, all downstream of a stalled main thread, and nothing in
+// the dashboards that showed the stall itself.
+//
+// Seconds, per Prometheus base-unit convention. The `breeze_` prefix is
+// deliberate — prom-client's `collectDefaultMetrics()` is not called anywhere in
+// this API, so there is no upstream `nodejs_eventloop_lag_*` series to collide
+// with or to inherit alert rules from. These are ours and are named as such.
+//
+// `_lag_max_seconds` is INSTANTANEOUS (last completed sampling interval plus any
+// in-flight stall), matching upstream's reset-per-collection semantics. Feeding
+// it from the retained high-water mark instead would keep a 1.2s blip elevated
+// for the full retention window, so `starved == 1 for 1m` would fire on a
+// momentary spike and `max_over_time` would count one stall many times. The
+// high-water mark is still published, under a name that says so.
+const eventLoopLagMaxGauge = new Gauge({
+  name: 'breeze_nodejs_eventloop_lag_max_seconds',
+  help: 'Event-loop delay over the last completed sampling interval, including any in-flight stall',
+  registers: [register]
+});
+
+const eventLoopLagWindowMaxGauge = new Gauge({
+  name: 'breeze_nodejs_eventloop_lag_window_max_seconds',
+  help: 'Worst event-loop delay retained across the whole sampling window (high-water mark)',
+  registers: [register]
+});
+
+// Named `_window_` to match its time base. It summarises the retained window,
+// while `_lag_max_seconds` is instantaneous — leaving it as a bare `_lag_mean_`
+// made the two read as a matched max/mean pair that they are not, and a
+// recovered loop could publish a max BELOW its mean (0.005 vs 0.011), which on
+// a dashboard reads as an instrumentation bug.
+const eventLoopLagWindowMeanGauge = new Gauge({
+  name: 'breeze_nodejs_eventloop_lag_window_mean_seconds',
+  help: 'Mean event-loop delay across the retained sampling window',
+  registers: [register]
+});
+
+// Derived from the INSTANTANEOUS lag so it clears as soon as the loop recovers.
+// Exposed as its own series rather than left to a `> threshold` alert
+// expression so the API's own starvation threshold — configurable via
+// EVENT_LOOP_STARVATION_WARN_MS — stays the single definition of "starved",
+// instead of being restated (and drifting) in the alerting rules.
+const eventLoopStarvedGauge = new Gauge({
+  name: 'breeze_nodejs_eventloop_starved',
+  help: '1 when the current event-loop lag is at or above the configured starvation threshold, else 0',
+  registers: [register]
+});
+
+// 0 whenever the monitor is disabled or not yet started. Without this, the
+// gauges above sit at 0 in exactly that case and read as a perfectly healthy
+// loop — alert on `monitored == 0` to catch a blind instance.
+const eventLoopMonitoredGauge = new Gauge({
+  name: 'breeze_nodejs_eventloop_monitored',
+  help: '1 when event-loop lag instrumentation is running, else 0',
+  registers: [register]
+});
+
 function initializeMetricDefaults(): void {
   httpRequestsInFlight.set(0);
   devicesActiveGauge.set(0);
@@ -423,6 +483,13 @@ function initializeMetricDefaults(): void {
   extensionJobsTotal.labels('unknown', 'unknown').inc(0);
   extensionJobOutcomeTotal.labels('unknown', 'unknown', 'success').inc(0);
   nodejsVersionInfoGauge.labels(process.version).set(1);
+  // Publish the event-loop series from process start so a dashboard or alert
+  // rule referencing them is never querying a metric that does not exist yet.
+  eventLoopMonitoredGauge.set(0);
+  eventLoopLagMaxGauge.set(0);
+  eventLoopLagWindowMaxGauge.set(0);
+  eventLoopLagWindowMeanGauge.set(0);
+  eventLoopStarvedGauge.set(0);
 }
 
 initializeMetricDefaults();
@@ -472,6 +539,29 @@ function normalizeMetricLabel(value: string, fallback: string): string {
 
 function updateProcessMetrics(): void {
   processStartTimeGauge.set(Math.floor(Date.now() / 1000 - process.uptime()));
+  updateEventLoopMetrics();
+}
+
+function updateEventLoopMetrics(): void {
+  const stats = getEventLoopLagStats();
+  const latest = readLatestEventLoopLag();
+  eventLoopMonitoredGauge.set(stats.monitored ? 1 : 0);
+  // `worstLagMs` on both, rather than the sampled max: it folds in a stall that
+  // is still in flight and has therefore not been recorded as a sample yet. A
+  // scrape landing mid-stall must not report the loop as healthy.
+  eventLoopLagMaxGauge.set(latest.worstLagMs / 1000);
+  eventLoopLagWindowMaxGauge.set(stats.worstLagMs / 1000);
+  eventLoopLagWindowMeanGauge.set(stats.meanLagMs / 1000);
+  // Uses the RAW EVENT_LOOP_STARVATION_WARN_MS, not the connect-window cap that
+  // services/postgresConnectTimeout.ts applies. Deliberate: this gauge tracks
+  // "is the loop unhealthy by the operator's own definition", whereas the cap
+  // exists solely so a raised warn threshold cannot mis-attribute a specific
+  // Postgres timeout. With EVENT_LOOP_STARVATION_WARN_MS above 10s the two can
+  // disagree for the same stall — the gauge reads 0 while Sentry says
+  // event-loop-starvation — and that is the intended reading of each.
+  eventLoopStarvedGauge.set(
+    latest.monitored && latest.worstLagMs >= stats.starvationThresholdMs ? 1 : 0,
+  );
 }
 
 function upsertCounterState(state: Map<string, CounterValue>, labels: Record<string, string>, amount = 1): void {

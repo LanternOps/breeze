@@ -131,6 +131,62 @@ describe('sentry service', () => {
     expect(setTagMock).toHaveBeenCalledWith('prior_status', 'failed:server-timeout');
   });
 
+  // #3022: a CONNECT_TIMEOUT already arrives tagged `pg_code:CONNECT_TIMEOUT`,
+  // but that bucket mixes two unrelated failures — a handshake that really
+  // failed, and a main thread too busy to run the socket callbacks. These tags
+  // split it. Like the BREEZE-X pair above they are gated TWICE (setTag here,
+  // pickAllowedTags in the beforeSend scrubber), so both gates are asserted.
+  it('captureException tags a Postgres CONNECT_TIMEOUT with its likely cause', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureException, setConnectTimeoutClassifier } = await import('./sentry');
+    const { diagnoseConnectTimeout } = await import('./postgresConnectTimeout');
+    initSentry();
+    setConnectTimeoutClassifier(diagnoseConnectTimeout);
+
+    captureException(Object.assign(new Error('write CONNECT_TIMEOUT db:5432'), {
+      code: 'CONNECT_TIMEOUT',
+    }));
+
+    expect(setTagMock).toHaveBeenCalledWith('pg_code', 'CONNECT_TIMEOUT');
+    // Assert the VALUES, not just that some string arrived. No monitor is
+    // started in this suite, so the honest verdict is 'unknown' — and
+    // `expect.any(String)` would pass just as happily on a regression that
+    // reported a confident 'connectivity' with no evidence behind it.
+    expect(setTagMock).toHaveBeenCalledWith('connect_timeout_cause', 'unknown');
+    expect(setTagMock).toHaveBeenCalledWith('event_loop_lag_bucket', 'unknown');
+    setConnectTimeoutClassifier(null);
+  });
+
+  it('captureException leaves non-timeout errors untagged by the #3022 classifier', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureException, setConnectTimeoutClassifier } = await import('./sentry');
+    const { diagnoseConnectTimeout } = await import('./postgresConnectTimeout');
+    initSentry();
+    setConnectTimeoutClassifier(diagnoseConnectTimeout);
+
+    captureException(Object.assign(new Error('duplicate key'), { code: '23505' }));
+
+    expect(setTagMock).toHaveBeenCalledWith('pg_code', '23505');
+    expect(setTagMock).not.toHaveBeenCalledWith('connect_timeout_cause', expect.anything());
+    expect(setTagMock).not.toHaveBeenCalledWith('event_loop_lag_bucket', expect.anything());
+    setConnectTimeoutClassifier(null);
+  });
+
+  it('captureException omits the #3022 tags when no classifier is registered', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureException } = await import('./sentry');
+    initSentry();
+
+    // The classifier is injected at boot (index.ts). Until then the tags are
+    // omitted rather than guessed — an unwired process must not claim a cause.
+    captureException(Object.assign(new Error('write CONNECT_TIMEOUT db:5432'), {
+      code: 'CONNECT_TIMEOUT',
+    }));
+
+    expect(setTagMock).toHaveBeenCalledWith('pg_code', 'CONNECT_TIMEOUT');
+    expect(setTagMock).not.toHaveBeenCalledWith('connect_timeout_cause', expect.anything());
+  });
+
   it('captureMessage sets no tags when none are passed (existing callers unaffected)', async () => {
     process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
     const { initSentry, captureMessage } = await import('./sentry');
@@ -345,6 +401,8 @@ describe('scrubEvent', () => {
         partner_id: 'p-1',
         cas_label: 'device_commands.ws_result_terminal_cas',
         prior_status: 'failed:server-timeout',
+        connect_timeout_cause: 'event-loop-starvation',
+        event_loop_lag_bucket: 'over-10s',
         path: '/public/quotes/raw-capability',
         arbitrary: 'raw-capability',
       },
@@ -392,6 +450,11 @@ describe('scrubEvent', () => {
       // BREEZE-X: must survive the scrubber too, not just setCallerTags.
       cas_label: 'device_commands.ws_result_terminal_cas',
       prior_status: 'failed:server-timeout',
+      // #3022: same double gate — a CONNECT_TIMEOUT tagged in captureException
+      // but dropped here would leave the starvation-vs-connectivity split
+      // invisible in Sentry, which is the entire point of adding it.
+      connect_timeout_cause: 'event-loop-starvation',
+      event_loop_lag_bucket: 'over-10s',
     });
     expect(out.exception).toEqual({
       values: [{
