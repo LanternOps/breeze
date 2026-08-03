@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/pkg/api"
 )
 
 var errNoBootstrapInput = errors.New("no bootstrap token from filename or properties")
@@ -98,6 +100,36 @@ func redeemBootstrapToken(server, token string) (*bootstrapResult, error) {
 	return &out, nil
 }
 
+// cancelBootstrapIfRefundable calls POST /installer/bootstrap/cancel with
+// the child key's own enrollment secret when cat is a definitive 4xx
+// rejection (enrollErrCategory.isRefundable4xx) — the bootstrap-redeemed
+// slot behind childSecret is provably unused and safe to refund. Does
+// nothing for any other category (catNetwork/catServer/catConfig/
+// catUnknown): the enroll request may have reached the server and created
+// a device despite the failure the agent observed, and refunding then
+// could double-free a slot that now backs a live device.
+//
+// This is a best-effort courtesy call: any error from CancelBootstrap
+// itself (network failure, non-2xx, bad JSON) is logged and swallowed,
+// never fatal — matching enrollError's existing "never returns without
+// exiting" contract. Worst case on failure is one stranded bootstrap-token
+// slot, which is recoverable (the token still has other uses left, or it
+// simply expires) and must never additionally block an install that is
+// already failing.
+func cancelBootstrapIfRefundable(cat enrollErrCategory, server, childSecret string, bsLog *slog.Logger) {
+	if !cat.isRefundable4xx() {
+		return
+	}
+	res, err := api.CancelBootstrap(server, childSecret)
+	if err != nil {
+		bsLog.Warn("bootstrap slot cancel failed after rejected enrollment; slot may be stranded until it expires",
+			"error", err.Error())
+		return
+	}
+	bsLog.Info("bootstrap slot cancel completed after rejected enrollment",
+		"refunded", res.Refunded, "reason", res.Reason)
+}
+
 // runBootstrap resolves enrollment inputs, redeems the token, and enrolls.
 // Soft-exits 0 when there is genuinely no token (manual install with no token
 // and no properties), so the install completes with an unenrolled agent that
@@ -151,5 +183,19 @@ func runBootstrap() {
 	serverURL = res.ServerURL
 	backupServerURL = res.BackupServerURL
 	enrollmentSecret = res.EnrollmentSecret
+
+	// Wire the bootstrap-cancel hook for the duration of this enrollDevice
+	// call only (Task 6, #2764): if the enroll it's about to attempt gets
+	// rejected with a definitive 4xx, enrollError calls this closure — which
+	// closes over the child key's own secret — immediately before exiting.
+	// Cleared unconditionally afterward so a stale hook (with a now-stale
+	// secret) can never leak into a later enrollDevice call in the same
+	// process — reachable only in tests, since enrollError's osExit never
+	// returns in production.
+	cancelBootstrapOnEnrollFailure = func(cat enrollErrCategory) {
+		cancelBootstrapIfRefundable(cat, res.ServerURL, res.EnrollmentSecret, bsLog)
+	}
+	defer func() { cancelBootstrapOnEnrollFailure = nil }()
+
 	enrollDevice(res.EnrollmentKey)
 }
