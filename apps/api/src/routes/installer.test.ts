@@ -862,3 +862,174 @@ describe("POST /api/v1/installer/bootstrap — trusted client IP (SR2-16)", () =
     expect((capturedSet as any).consumedFromIp).toBe("203.0.113.5");
   });
 });
+
+// Recursively collects string leaves out of a Drizzle `sql` template object's
+// queryChunks tree (mirrors the identical helper in discovery.test.ts). Lets
+// us assert the DECREMENT update actually uses GREATEST(... - 1, 0) rather
+// than a plain `consumedCount - 1` that could go negative.
+function collectSqlLeafStrings(node: unknown, seen = new Set<unknown>(), acc: string[] = []): string[] {
+  if (typeof node === "string") {
+    acc.push(node);
+    return acc;
+  }
+  if (node === null || typeof node !== "object" || seen.has(node)) return acc;
+  seen.add(node);
+  if (Array.isArray(node)) {
+    for (const item of node) collectSqlLeafStrings(item, seen, acc);
+    return acc;
+  }
+  const queryChunks = (node as { queryChunks?: unknown[] }).queryChunks;
+  if (Array.isArray(queryChunks)) {
+    for (const item of queryChunks) collectSqlLeafStrings(item, seen, acc);
+  }
+  // Drizzle's raw SQL text segments are StringChunk instances shaped
+  // `{ value: string[] }`, not bare strings — unwrap those too.
+  const value = (node as { value?: unknown }).value;
+  if (Array.isArray(value)) {
+    for (const item of value) collectSqlLeafStrings(item, seen, acc);
+  }
+  return acc;
+}
+
+describe("POST /api/v1/installer/bootstrap/cancel (#2764)", () => {
+  function mockChildLookup(child: Record<string, unknown> | null) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: () => ({
+        where: () => ({ limit: () => Promise.resolve(child ? [child] : []) }),
+      }),
+    } as any);
+  }
+
+  it("1. unused linked child: deletes the child row AND decrements consumed_count (refunded:true)", async () => {
+    const child = {
+      id: "child-1",
+      orgId: "o1",
+      usageCount: 0,
+      bootstrapTokenId: "tok-1",
+    };
+    mockChildLookup(child);
+
+    let deleteWhereArgs: unknown = null;
+    vi.mocked(db.delete).mockReturnValue({
+      where: (arg: unknown) => {
+        deleteWhereArgs = arg;
+        return { returning: () => Promise.resolve([{ id: "child-1" }]) };
+      },
+    } as any);
+
+    let capturedSet: Record<string, unknown> | null = null;
+    let updateWhereArgs: unknown = null;
+    vi.mocked(db.update).mockReturnValue({
+      set: (vals: Record<string, unknown>) => {
+        capturedSet = vals;
+        return {
+          where: (arg: unknown) => {
+            updateWhereArgs = arg;
+            return Promise.resolve([]);
+          },
+        };
+      },
+    } as any);
+
+    const app = makeApp();
+    const res = await app.request("/api/v1/installer/bootstrap/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enrollmentSecret: "raw-child-secret-1" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ refunded: true });
+    expect(deleteWhereArgs).not.toBeNull();
+
+    // The decrement must be GREATEST(consumed_count - 1, 0), never a bare
+    // `consumedCount - 1` that could underflow below zero.
+    expect(capturedSet).not.toBeNull();
+    const consumedCountExpr = (capturedSet as any).consumedCount;
+    expect(typeof consumedCountExpr).toBe("object");
+    const leaves = collectSqlLeafStrings(consumedCountExpr).join("");
+    expect(leaves).toContain("GREATEST(");
+    expect(leaves).toContain("- 1, 0)");
+    expect(updateWhereArgs).not.toBeNull();
+  });
+
+  it("2. child with usage_count > 0: nothing deleted, no decrement (refunded:false, already_used)", async () => {
+    const child = {
+      id: "child-2",
+      orgId: "o1",
+      usageCount: 1,
+      bootstrapTokenId: "tok-2",
+    };
+    mockChildLookup(child);
+
+    const app = makeApp();
+    const res = await app.request("/api/v1/installer/bootstrap/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enrollmentSecret: "raw-child-secret-2" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      refunded: false,
+      reason: "already_used",
+    });
+    expect(db.delete).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("3. second cancel of the same child (child row gone): 404, no decrement — farming regression", async () => {
+    // The first cancel already deleted the child row; this simulates the
+    // second call finding nothing by secret hash. Cancel must NEVER be able
+    // to yield both a usable child key AND a second freed slot — so the
+    // second call must neither delete anything (nothing left to delete) nor
+    // decrement the token again.
+    mockChildLookup(null);
+
+    const app = makeApp();
+    const res = await app.request("/api/v1/installer/bootstrap/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enrollmentSecret: "raw-child-secret-3" }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(db.delete).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("4. child with bootstrap_token_id NULL (pre-migration key): refunded:false, not_linked, no delete", async () => {
+    const child = {
+      id: "child-4",
+      orgId: "o1",
+      usageCount: 0,
+      bootstrapTokenId: null,
+    };
+    mockChildLookup(child);
+
+    const app = makeApp();
+    const res = await app.request("/api/v1/installer/bootstrap/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enrollmentSecret: "raw-child-secret-4" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      refunded: false,
+      reason: "not_linked",
+    });
+    expect(db.delete).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when enrollmentSecret is missing", async () => {
+    const app = makeApp();
+    const res = await app.request("/api/v1/installer/bootstrap/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+  });
+});
