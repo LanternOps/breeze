@@ -1,6 +1,14 @@
 # Test Docker Compose - Ephemeral services for integration testing
 # Usage: docker compose -f docker-compose.test.yml up -d
 # Cleanup: docker compose -f docker-compose.test.yml down -v
+#
+# Concurrent worktrees (#3066): the BREEZE_TEST_* variables below let
+# `pnpm test-stack up` (scripts/dev/test-stack) run a PRIVATE copy of this
+# stack per git worktree — its own compose project, ephemeral host ports, and
+# per-project container/network names — so two sessions never TRUNCATE each
+# other's database. Every variable defaults to the historical fixed value, so
+# plain `docker compose -f docker-compose.test.yml up -d` (CI, single-session
+# local) behaves exactly as before.
 
 services:
   # PostgreSQL Database for Tests
@@ -8,13 +16,21 @@ services:
     # pgvector/pgvector is the official postgres image + the vector extension
     # (drop-in superset of postgres:16).
     image: pgvector/pgvector:pg16
-    container_name: breeze-postgres-test
+    container_name: ${BREEZE_TEST_PG_CONTAINER:-breeze-postgres-test}
+    # Durability is pointless for a throwaway tmpfs test DB, and the
+    # integration suite's per-test TRUNCATE ... CASCADE makes thousands of
+    # commits per run — fsync/synchronous_commit off keeps unattended local
+    # runs from crawling (and does nothing worse than lose data we delete
+    # on `down -v` anyway).
+    command: postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off
     environment:
       POSTGRES_USER: breeze_test
       POSTGRES_PASSWORD: breeze_test
       POSTGRES_DB: breeze_test
     ports:
-      - "5433:5432"  # Different port to avoid conflicts with dev
+      # Different port to avoid conflicts with dev. `pnpm test-stack` passes 0
+      # to get an ephemeral host port for per-worktree isolation.
+      - "${BREEZE_TEST_PG_PORT:-5433}:5432"
     tmpfs:
       - /var/lib/postgresql/data  # Use tmpfs for speed, data is ephemeral
     networks:
@@ -29,10 +45,12 @@ services:
   # Redis for Tests
   redis-test:
     image: redis:7-alpine
-    container_name: breeze-redis-test
+    container_name: ${BREEZE_TEST_REDIS_CONTAINER:-breeze-redis-test}
     command: redis-server --appendonly no --save ""  # No persistence for speed
     ports:
-      - "6380:6379"  # Different port to avoid conflicts with dev
+      # Different port to avoid conflicts with dev. `pnpm test-stack` passes 0
+      # to get an ephemeral host port for per-worktree isolation.
+      - "${BREEZE_TEST_REDIS_PORT:-6380}:6379"
     networks:
       - breeze-test-network
     healthcheck:
@@ -45,4 +63,7 @@ services:
 networks:
   breeze-test-network:
     driver: bridge
-    name: breeze-test-network
+    # Must be unique per compose project: docker refuses to reuse a named
+    # network created by a different project ("incorrect label" error), so
+    # `pnpm test-stack` derives a per-project name here.
+    name: ${BREEZE_TEST_NETWORK:-breeze-test-network}
