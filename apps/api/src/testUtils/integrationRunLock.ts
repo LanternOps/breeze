@@ -19,6 +19,8 @@
  */
 import type { Sql } from 'postgres';
 
+import { isEnvFlagEnabled } from './envFlag';
+
 // Arbitrary but fixed (namespace, key) pair for pg_advisory_lock's two-int
 // form. 3066 = the issue that motivated this lock.
 export const INTEGRATION_LOCK_NS = 0x425a; // 'BZ'
@@ -39,7 +41,7 @@ export async function acquireIntegrationRunLock(client: Sql, dbTarget: string): 
   `;
   if (locked) return;
 
-  if (process.env[LOCK_NOWAIT_ENV]) {
+  if (isEnvFlagEnabled(process.env[LOCK_NOWAIT_ENV])) {
     throw new Error(
       `Integration run refused: another session is already running the integration suite against ${dbTarget} `
       + `(advisory lock held) and ${LOCK_NOWAIT_ENV} is set. `
@@ -58,5 +60,18 @@ export async function acquireIntegrationRunLock(client: Sql, dbTarget: string): 
 }
 
 export async function releaseIntegrationRunLock(client: Sql): Promise<void> {
-  await client`SELECT pg_advisory_unlock(${INTEGRATION_LOCK_NS}, ${INTEGRATION_LOCK_KEY})`;
+  const [{ unlocked }] = await client<[{ unlocked: boolean }]>`
+    SELECT pg_advisory_unlock(${INTEGRATION_LOCK_NS}, ${INTEGRATION_LOCK_KEY}) AS unlocked
+  `;
+  if (!unlocked) {
+    // `false` means THIS session didn't hold the lock — i.e. the lock
+    // connection was recycled/dropped mid-run and the mutex silently expired,
+    // so a concurrent session could have barged in. Don't fail the (already
+    // finished) run, but say it loudly: if this run saw weird failures, this
+    // is why.
+    console.warn(
+      '[integration global-setup] pg_advisory_unlock returned false — the run lock was NOT held at teardown. '
+      + 'The lock connection must have been dropped mid-run, so cross-session exclusion was not guaranteed for this run.',
+    );
+  }
 }

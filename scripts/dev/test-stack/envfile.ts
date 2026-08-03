@@ -16,6 +16,16 @@ export function isGeneratedEnvTest(content: string): boolean {
   return content.startsWith(GENERATED_MARKER);
 }
 
+/**
+ * Recover the compose project a generated .env.test was written for. `down`
+ * must tear down the project `up` CREATED — re-deriving from the current
+ * branch silently no-ops (and orphans the stack) if the branch was switched
+ * or renamed in between, so the file itself is the source of truth.
+ */
+export function parseProjectFromEnvTest(content: string): string | undefined {
+  return content.match(/^# compose project: (\S+)/mu)?.[1];
+}
+
 export function renderEnvTest(opts: { pgPort: number; redisPort: number; project: string }): string {
   const { pgPort, redisPort, project } = opts;
   return [

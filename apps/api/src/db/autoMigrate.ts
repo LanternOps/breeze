@@ -430,7 +430,12 @@ export async function autoMigrate(): Promise<void> {
     let allFiles: string[];
     try {
       allFiles = await discoverCoreMigrationFilenames();
-    } catch {
+    } catch (error) {
+      // Only a genuinely absent migrations directory is a benign "nothing to
+      // do". EACCES/ENOTDIR/etc. must fail loudly — swallowing them here used
+      // to let the process continue against an unmigrated database and fail
+      // later with confusing missing-table errors.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       console.log('[auto-migrate] No migration files found, skipping');
       return;
     }

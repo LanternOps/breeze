@@ -77,6 +77,12 @@ jobs:
       - name: Run ESLint
         run: pnpm lint
 
+      # scripts/dev is outside the pnpm workspace, so `turbo run test` never
+      # reaches these suites (wt-stack shipped with the same blind spot).
+      # Runs in <1s; uses @breeze/api's vitest since the root has none.
+      - name: Test dev tooling scripts (wt-stack / test-stack)
+        run: pnpm test:dev-scripts
+
       - name: Check for schema drift
         working-directory: apps/api
         continue-on-error: true

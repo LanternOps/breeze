@@ -18,8 +18,8 @@
 // path — CI provisions its own isolated runner, so it never needs this).
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { deriveTestProjectName, envTestPath, stackEnv } from './project';
-import { GENERATED_MARKER, isGeneratedEnvTest, renderEnvTest } from './envfile';
+import { deriveTestProjectName, envTestPath, parsePublishedPort, stackEnv } from './project';
+import { GENERATED_MARKER, isGeneratedEnvTest, parseProjectFromEnvTest, renderEnvTest } from './envfile';
 
 const ROOT = process.cwd();
 
@@ -51,15 +51,16 @@ function dockerInherit(project: string, args: string[]): void {
   });
 }
 
-export function parsePublishedPort(output: string): number {
-  const line = output.split('\n').map((l) => l.trim()).find(Boolean);
-  const m = line?.match(/:(\d+)$/);
-  if (!m) throw new Error(`Could not find a published port in compose output: ${JSON.stringify(output)} (no published port)`);
-  return Number(m[1]);
-}
-
 function publishedPort(project: string, service: string, containerPort: number): number {
   return parsePublishedPort(docker(project, ['port', service, String(containerPort)]));
+}
+
+/** The generated .env.test's contents, or undefined when absent/hand-written. */
+function generatedEnvTest(): string | undefined {
+  const p = envTestPath(ROOT);
+  if (!existsSync(p)) return undefined;
+  const content = readFileSync(p, 'utf8');
+  return isGeneratedEnvTest(content) ? content : undefined;
 }
 
 function refuseForeignEnvTest(force: boolean): void {
@@ -76,6 +77,16 @@ function refuseForeignEnvTest(force: boolean): void {
 function up(force: boolean): void {
   const project = deriveTestProjectName({ worktreePath: ROOT, branch: currentBranch() });
   refuseForeignEnvTest(force);
+  // Branch switched/renamed since the last `up`? The old stack is still
+  // running under the old project name and about to lose its only pointer.
+  const recorded = parseProjectFromEnvTest(generatedEnvTest() ?? '');
+  if (recorded && recorded !== project) {
+    console.warn(
+      `[test-stack] .env.test was generated for project ${recorded}, which may still be running. `
+      + `Tear it down with: docker compose -p ${recorded} -f docker-compose.test.yml down -v `
+      + '(or check `pnpm test-stack ls`).',
+    );
+  }
   console.log(`[test-stack] project=${project}`);
   dockerInherit(project, ['up', '-d', '--wait', '--wait-timeout', '120']);
   const pgPort = publishedPort(project, 'postgres-test', 5432);
@@ -92,7 +103,16 @@ function up(force: boolean): void {
 }
 
 function down(): void {
-  const project = deriveTestProjectName({ worktreePath: ROOT, branch: currentBranch() });
+  const derived = deriveTestProjectName({ worktreePath: ROOT, branch: currentBranch() });
+  // Tear down the project `up` RECORDED in .env.test, not the one the current
+  // branch derives to — after a branch switch/rename those differ, and
+  // `compose down` against the wrong name exits 0 having removed nothing
+  // (silently orphaning the real stack).
+  const recorded = parseProjectFromEnvTest(generatedEnvTest() ?? '');
+  const project = recorded ?? derived;
+  if (recorded && recorded !== derived) {
+    console.warn(`[test-stack] branch changed since 'up' — tearing down recorded project ${recorded} (not ${derived})`);
+  }
   dockerInherit(project, ['down', '-v']);
   // Remove OUR .env.test so the next plain run falls back to the shared :5433
   // defaults instead of dialing dead ephemeral ports. Never touch a
@@ -109,7 +129,10 @@ function info(): void {
 }
 
 function ls(): void {
-  const out = execFileSync('docker', ['compose', 'ls', '--format', 'json'], { encoding: 'utf8' });
+  // --all: stopped-but-not-removed stacks (host reboot, OOM kill) still own
+  // their containers/network and will collide with a future `up`; the
+  // orphan-discovery tool must see them.
+  const out = execFileSync('docker', ['compose', 'ls', '--all', '--format', 'json'], { encoding: 'utf8' });
   const projects = (JSON.parse(out) as Array<{ Name: string; Status: string }>)
     .filter((pr) => pr.Name.startsWith('breeze-test-') || pr.Name === 'breeze');
   if (!projects.length) { console.log('No breeze test stacks running.'); return; }

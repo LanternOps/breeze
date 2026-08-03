@@ -46,3 +46,18 @@ export function stackEnv(project: string): Record<string, string> {
 export function envTestPath(worktreePath: string): string {
   return path.join(worktreePath, '.env.test');
 }
+
+/**
+ * Parse the host port out of `docker compose port <service> <port>` output.
+ * Docker may emit an IPv4 line (`0.0.0.0:54321`), an IPv6 line
+ * (`[::]:54321`), or both — the port is the same, so the first non-empty
+ * line wins. Throws on anything unrecognizable rather than writing a garbage
+ * port into .env.test (which would only surface one layer later as a vitest
+ * connection error).
+ */
+export function parsePublishedPort(output: string): number {
+  const line = output.split('\n').map((l) => l.trim()).find(Boolean);
+  const m = line?.match(/:(\d+)$/);
+  if (!m) throw new Error(`Could not find a published port in compose output: ${JSON.stringify(output)} (no published port)`);
+  return Number(m[1]);
+}

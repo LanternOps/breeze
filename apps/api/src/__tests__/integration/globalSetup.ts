@@ -28,6 +28,7 @@ import './loadEnv';
 import postgres from 'postgres';
 
 import { autoMigrate, discoverCoreMigrationFilenames, MIGRATION_TABLE } from '../../db/autoMigrate';
+import { isEnvFlagEnabled } from '../../testUtils/envFlag';
 import { assertTestDatabaseUrlSafe } from '../../testUtils/integrationDatabaseSafety';
 import {
   acquireIntegrationRunLock,
@@ -67,7 +68,7 @@ async function assertLedgerMatchesCheckout(client: postgres.Sql, dbTarget: strin
   if (unknown.length === 0) return;
 
   const message = formatLedgerDriftError(unknown, dbTarget);
-  if (process.env[LEDGER_DRIFT_BYPASS_ENV]) {
+  if (isEnvFlagEnabled(process.env[LEDGER_DRIFT_BYPASS_ENV])) {
     console.warn(`[integration global-setup] ${LEDGER_DRIFT_BYPASS_ENV} set — proceeding despite ledger drift:\n${message}`);
     return;
   }
@@ -90,7 +91,17 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   const dbTarget = describeDbTarget(databaseUrl);
   // max: 1 — advisory locks are session-scoped, so the lock must live on one
   // pinned connection, held open for the entire run and closed in teardown.
-  const lockClient = postgres(databaseUrl, { max: 1, onnotice: () => {} });
+  // max_lifetime: null — postgres.js defaults to recycling connections after
+  // a randomized 30–60 min EVEN WHEN IDLE, which would drop the session and
+  // silently release the advisory lock mid-run (long local runs exceed that);
+  // the pool would then transparently reconnect for teardown and unlock a
+  // lock it never held. The connection must live exactly as long as the run.
+  // (idle_timeout is left at its default, null = disabled.)
+  const lockClient = postgres(databaseUrl, {
+    max: 1,
+    max_lifetime: null,
+    onnotice: () => {},
+  });
   try {
     await acquireIntegrationRunLock(lockClient, dbTarget);
     await assertLedgerMatchesCheckout(lockClient, dbTarget);
