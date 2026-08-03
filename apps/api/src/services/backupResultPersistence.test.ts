@@ -1,20 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // #3036: the diagnostic re-read runs on a NESTED transaction (a postgres.js
-// SAVEPOINT) and must issue its query on the `tx` handed to the callback, never
-// the ambient proxy. Hoisted so the `vi.mock` factory below can close over it
-// and hand the callback a `tx` whose `select` is the same spy the tests drive —
-// which also means a test that stubs `db.select` still controls the re-read,
-// while `expect(db.transaction).toHaveBeenCalled()` proves the savepoint wrap.
-const dbSelect = vi.hoisted(() => vi.fn());
+// SAVEPOINT) and MUST issue its query on the `tx` handed to the callback rather
+// than the ambient `db` proxy — the ambient proxy resolves to the OUTER
+// transaction's sql instance, whose handler records the error in the outer
+// scope and reintroduces the exact clobber the savepoint exists to prevent (see
+// the file header of dbSavepointErrorIsolation.integration.test.ts, #2189).
+//
+// So `tx.select` is a DISTINCT spy from `db.select`. That distinction is the
+// point: were the implementation to call the ambient `db.select` from inside
+// the transaction callback, `txSelect` would go uncalled and the assertions
+// below would fail. A shared spy would make that mistake invisible.
+const txSelect = vi.hoisted(() => vi.fn());
 
 vi.mock('../db', () => ({
   db: {
     update: vi.fn(),
-    select: dbSelect,
+    select: vi.fn(),
     insert: vi.fn(),
     delete: vi.fn(),
-    transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({ select: dbSelect })),
+    transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({ select: txSelect })),
   },
 
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -111,6 +116,7 @@ import { db } from '../db';
 import {
   applyBackupCommandResultToJob,
   markBackupJobFailedIfInFlight,
+  __resetBackupPredicateMissDiagnosticGuardForTests,
 } from './backupResultPersistence';
 import {
   applyGfsTagsToSnapshot,
@@ -132,6 +138,9 @@ describe('backup result persistence', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     resolveBackupProtectionForDeviceMock.mockReset();
+    // The diagnostic-failure capture is one-shot per process (#3036); without
+    // this the "captures once" assertion would depend on test ordering.
+    __resetBackupPredicateMissDiagnosticGuardForTests();
   });
 
   it('ignores stale backup job results when the job is no longer in flight', async () => {
@@ -144,7 +153,7 @@ describe('backup result persistence', () => {
     } as any);
     // #3036 diagnostic re-read: the job exists and belongs to the reporting
     // device, so the status guard is what rejected it — the routine case.
-    vi.mocked(db.select).mockReturnValueOnce(
+    vi.mocked(txSelect).mockReturnValueOnce(
       chainMock([{ deviceId: 'device-1', orgId: 'org-1', status: 'cancelled' }]) as any
     );
 
@@ -189,8 +198,8 @@ describe('backup result persistence', () => {
     it('binds the reporting device into the job UPDATE predicate', async () => {
       const { where, chain } = updateChainCapturingWhere([]);
       vi.mocked(db.update).mockReturnValue(chain);
-      vi.mocked(db.select).mockReturnValueOnce(
-        chainMock([{ deviceId: 'device-1', orgId: 'org-1', status: 'cancelled' }]) as any
+      vi.mocked(txSelect).mockReturnValueOnce(
+      chainMock([{ deviceId: 'device-1', orgId: 'org-1', status: 'cancelled' }]) as any
       );
 
       await applyBackupCommandResultToJob({
@@ -216,8 +225,8 @@ describe('backup result persistence', () => {
       vi.mocked(db.update).mockReturnValue(
         updateChainCapturingWhere([]).chain
       );
-      vi.mocked(db.select).mockReturnValueOnce(
-        chainMock([{ deviceId: 'other-device', orgId: 'other-org', status: 'running' }]) as any
+      vi.mocked(txSelect).mockReturnValueOnce(
+      chainMock([{ deviceId: 'other-device', orgId: 'other-org', status: 'running' }]) as any
       );
 
       const result = await applyBackupCommandResultToJob({
@@ -239,7 +248,7 @@ describe('backup result persistence', () => {
       vi.mocked(db.update).mockReturnValue(
         updateChainCapturingWhere([]).chain
       );
-      vi.mocked(db.select).mockReturnValueOnce(chainMock([]) as any);
+      vi.mocked(txSelect).mockReturnValueOnce(chainMock([]) as any);
 
       await applyBackupCommandResultToJob({
         jobId: 'job-1',
@@ -268,8 +277,8 @@ describe('backup result persistence', () => {
       vi.mocked(db.update).mockReturnValue(
         updateChainCapturingWhere([]).chain
       );
-      vi.mocked(db.select).mockReturnValueOnce(
-        chainMock([{ deviceId: 'device-1', orgId: 'org-1', status: 'cancelled' }]) as any
+      vi.mocked(txSelect).mockReturnValueOnce(
+      chainMock([{ deviceId: 'device-1', orgId: 'org-1', status: 'cancelled' }]) as any
       );
 
       await applyBackupCommandResultToJob({
@@ -289,11 +298,14 @@ describe('backup result persistence', () => {
       // Load-bearing (#2189): every caller runs inside a postgres.js `sql.begin`
       // scope, where a statement failing on the ambient proxy both aborts the
       // outer transaction and is re-thrown at commit — a bare try/catch cannot
-      // prevent either. The savepoint gives the re-read its own error scope.
+      // prevent either. The savepoint gives the re-read its own error scope,
+      // but ONLY if the query goes through the callback's `tx`: issuing it on
+      // the ambient `db` proxy from inside the callback still records the error
+      // in the outer scope and reintroduces the clobber. Assert both halves.
       vi.mocked(db.update).mockReturnValue(
         updateChainCapturingWhere([]).chain
       );
-      vi.mocked(db.select).mockReturnValueOnce(chainMock([]) as any);
+      vi.mocked(txSelect).mockReturnValueOnce(chainMock([]) as any);
 
       await applyBackupCommandResultToJob({
         jobId: 'job-1',
@@ -304,13 +316,18 @@ describe('backup result persistence', () => {
       });
 
       expect(db.transaction).toHaveBeenCalledTimes(1);
+      // The re-read went through the tx…
+      expect(txSelect).toHaveBeenCalledTimes(1);
+      // …and NOT through the ambient proxy. This is the assertion that fails if
+      // someone "simplifies" the body back to `db.select` inside the callback.
+      expect(db.select).not.toHaveBeenCalled();
     });
 
     it('does not let a failing diagnostic re-read mask the dropped result', async () => {
       vi.mocked(db.update).mockReturnValue(
         updateChainCapturingWhere([]).chain
       );
-      vi.mocked(db.select).mockImplementationOnce(() => {
+      vi.mocked(txSelect).mockImplementationOnce(() => {
         throw new Error('db down');
       });
 
@@ -331,6 +348,35 @@ describe('backup result persistence', () => {
       // must not be invisible.
       expect(captureExceptionMock).toHaveBeenCalledTimes(1);
       expect((captureExceptionMock.mock.calls[0]![0] as Error).message).toContain('db down');
+    });
+
+    it('captures a persistently failing diagnostic ONCE, not once per dropped result', async () => {
+      // The condition that breaks the re-read breaks it for every result, and
+      // BullMQ retries multiply that. Logs stay complete; Sentry gets one.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.mocked(db.update).mockReturnValue(
+        updateChainCapturingWhere([]).chain
+      );
+      vi.mocked(txSelect).mockImplementation(() => {
+        throw new Error('db down');
+      });
+
+      for (let i = 0; i < 3; i += 1) {
+        await applyBackupCommandResultToJob({
+          jobId: `job-${i}`,
+          orgId: 'org-1',
+          deviceId: 'device-1',
+          resultStatus: 'failed',
+          result: { error: 'boom' },
+        });
+      }
+
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+      // …but every occurrence is still in the logs.
+      expect(
+        warn.mock.calls.filter((call) => String(call[0]).includes('Could not diagnose'))
+      ).toHaveLength(3);
+      warn.mockRestore();
     });
 
     it('stamps the snapshot with the job row org, not a stale caller org', async () => {
@@ -987,7 +1033,7 @@ describe('backup result persistence', () => {
     vi.mocked(db.update).mockReturnValue(chainMock([]) as any);
     // #3036 diagnostic re-read: same device, non-adoptable status — the routine
     // case, which must not add a second capture on top of the orphan warning.
-    vi.mocked(db.select).mockReturnValueOnce(
+    vi.mocked(txSelect).mockReturnValueOnce(
       chainMock([{ deviceId: 'device-1', orgId: 'org-1', status: 'cancelled' }]) as any
     );
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});

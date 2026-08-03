@@ -200,19 +200,22 @@ runDb('rejects a result reported for a device that does not own the job', async 
   });
 });
 
-runDb('the 0-row diagnostic re-read leaves the caller transaction healthy', async () => {
-  // #2189 regression guard. The diagnostic runs INSIDE the caller's
-  // `withDbAccessContext`/`withSystemDbAccessContext`, i.e. a postgres.js
-  // `sql.begin` scope. A statement issued on the ambient `db` proxy that fails
-  // aborts the whole outer transaction (25P02 on every later statement) AND is
-  // re-thrown at commit — which a try/catch cannot prevent, which is why the
-  // re-read runs on a nested transaction (SAVEPOINT). On the hyperv/mssql
-  // routes the very next statement is the `markBackupJobFailedIfInFlight` in
-  // their catch, so a poisoned transaction there leaves the job stuck
-  // `running` and 500s the route.
+runDb('the caller transaction survives the 0-row diagnostic re-read and keeps working', async () => {
+  // SCOPE, stated honestly: this drives the real 0-row + diagnostic path
+  // against Postgres and proves the caller's transaction is still usable
+  // afterwards and commits cleanly. It does NOT force the re-read to fail, so
+  // it is not by itself proof that the SAVEPOINT isolates an error — the
+  // mechanism is proved by dbSavepointErrorIsolation.integration.test.ts
+  // (#2189), which has both the savepoint case and the poisoning control, and
+  // the "query goes through `tx`, not the ambient proxy" half is enforced in
+  // the unit suite.
   //
-  // Drive the whole 0-row + diagnostic path and then keep using the SAME
-  // context, exactly as those routes do.
+  // What it does buy: the nested transaction is a real extra statement pair
+  // (SAVEPOINT / RELEASE) issued mid-context, and this asserts that adding it
+  // did not break the callers that keep using the context afterwards. On the
+  // hyperv/mssql routes the very next statement is the
+  // `markBackupJobFailedIfInFlight` in their catch, so a broken context there
+  // leaves the job stuck `running` and 500s the route.
   const victim = await withSystemDbAccessContext(() => seedTenant('healthy'));
   const other = await withSystemDbAccessContext(() => seedTenant('healthyb'));
   const jobId = await withSystemDbAccessContext(() => seedRunningJob(victim));
@@ -227,8 +230,8 @@ runDb('the 0-row diagnostic re-read leaves the caller transaction healthy', asyn
     });
     expect(applied.applied).toBe(false);
 
-    // Would raise 25P02 ("current transaction is aborted") if the diagnostic had
-    // poisoned this transaction.
+    // Raises 25P02 ("current transaction is aborted") if the diagnostic left
+    // this transaction in a bad state.
     const rows = await db
       .update(backupJobs)
       .set({ lastProgressAt: new Date() })
@@ -346,9 +349,12 @@ runDb('creates the MSSQL chain under the job row org, not the stale caller org',
       .select()
       .from(backupChains)
       .where(eq(backupChains.deviceId, origin.deviceId));
+    // Register for teardown BEFORE asserting: backup_chains FKs
+    // backup_snapshots.full_snapshot_id, so an unregistered chain row turns a
+    // real assertion failure into a confusing FK violation in afterAll.
+    for (const chain of chains) createdChainIds.push(chain.id);
     expect(chains).toHaveLength(1);
     expect(chains[0]!.orgId).toBe(destination.orgId);
     expect(chains[0]!.orgId).not.toBe(origin.orgId);
-    createdChainIds.push(chains[0]!.id);
   });
 });

@@ -405,6 +405,20 @@ async function reconcileMssqlBackupChain(params: {
 }
 
 /**
+ * #3036 — one-shot guard for the diagnostic re-read's own failure capture. The
+ * condition that breaks the re-read (renamed column, statement timeout) breaks
+ * it for EVERY dropped result, and BullMQ retries multiply that, so Sentry gets
+ * the first occurrence and `console.warn` keeps the rest. Same shape as
+ * `reportedContextlessSites` in db/index.ts.
+ */
+let predicateMissDiagnosticFailureReported = false;
+
+/** Test-only reset so the one-shot guard cannot leak across cases. */
+export function __resetBackupPredicateMissDiagnosticGuardForTests(): void {
+  predicateMissDiagnosticFailureReported = false;
+}
+
+/**
  * #3036 — explain a 0-row backup-job UPDATE.
  *
  * The write predicate is `id = jobId AND device_id = deviceId AND <status
@@ -470,7 +484,10 @@ async function reportBackupJobPredicateMiss(params: {
         `[BackupPersistence] Backup result for job ${jobId} (reported device ${deviceId}, source: ${source}) ` +
         `matched no job row — the job was deleted, or is not visible in this tenant context.`;
       console.warn(msg);
-      captureMessage(msg, 'warning');
+      captureMessage(msg, 'warning', undefined, {
+        backup_result_drop: 'job-not-found',
+        backup_result_source: source,
+      });
       return;
     }
 
@@ -491,15 +508,28 @@ async function reportBackupJobPredicateMiss(params: {
       `the job is in status "${row.status}", which the result's status guard does not admit.`
     );
   } catch (err) {
-    // Reached only if the savepoint itself fails (the outer transaction is
-    // restored by the rollback-to-savepoint, so the caller's drop still lands
-    // cleanly). Captured rather than warn-only: a diagnostic that fails 100% of
-    // the time — a column rename, a statement timeout — is otherwise invisible.
+    // The re-read failed. Normally the savepoint's rollback has already restored
+    // the outer transaction, so the caller's drop still lands cleanly. (Not an
+    // unconditional guarantee: if the outer transaction were ALREADY aborted on
+    // entry, `savepoint sN` fails before postgres.js's try block and nothing is
+    // rolled back — but that caller is doomed regardless.)
+    //
+    // Captured, because a diagnostic that fails 100% of the time — a renamed
+    // column, a statement timeout — is otherwise invisible forever. But captured
+    // ONCE: that same always-failing condition fires per dropped result times
+    // BullMQ retries, and this repo has burned its Sentry quota on exactly that
+    // shape before (see reportContextlessWrite's per-site dedup and the
+    // held-context throttle in db/index.ts). Logs stay complete either way.
     console.warn(
       `[BackupPersistence] Could not diagnose why the backup result for job ${jobId} matched no row:`,
       err instanceof Error ? err.message : err
     );
-    captureException(err instanceof Error ? err : new Error(String(err)));
+    if (!predicateMissDiagnosticFailureReported) {
+      predicateMissDiagnosticFailureReported = true;
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        backup_predicate_miss_diagnostic: 'true',
+      });
+    }
   }
 }
 
@@ -803,7 +833,10 @@ export async function applyBackupCommandResultToJob(params: {
       `flight, or the caller passed an org that was never this job's. Attributing the snapshot to ` +
       `${effectiveOrgId} (the job row's current owner).`;
     console.warn(msg);
-    captureMessage(msg, 'warning');
+    captureMessage(msg, 'warning', undefined, {
+      backup_result_org_divergence: 'true',
+      backup_result_source: source,
+    });
   }
 
   // NB: isSuccessResult, not `terminalStatus === 'completed'` — a `partial` run
