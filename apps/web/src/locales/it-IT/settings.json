@@ -543,6 +543,8 @@
     "deleteExpired": "Elimina scadute",
     "shortCode": "Codice breve",
     "installerUsage": "Dispositivi del programma di installazione {{consumed}} / {{max}}",
+    "installerUsageExpired": "Dispositivi del programma di installazione {{consumed}} / {{max}} (scaduto)",
+    "installerUsageMixed": "Dispositivi del programma di installazione {{liveConsumed}} / {{liveMax}} attivi · {{expired}} scaduti",
     "usage": "Utilizzo",
     "expires": "Scade",
     "empty": "Nessuna chiave di registrazione trovata. Creane una per iniziare.",

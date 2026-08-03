@@ -543,6 +543,8 @@
     "deleteExpired": "Excluir expiradas",
     "shortCode": "Código curto",
     "installerUsage": "Dispositivos do instalador {{consumed}} / {{max}}",
+    "installerUsageExpired": "Dispositivos do instalador {{consumed}} / {{max}} (expirado)",
+    "installerUsageMixed": "Dispositivos do instalador {{liveConsumed}} / {{liveMax}} ativos · {{expired}} expirados",
     "usage": "Uso",
     "expires": "Expira",
     "empty": "Nenhuma chave de registro encontrada. Crie uma para começar.",

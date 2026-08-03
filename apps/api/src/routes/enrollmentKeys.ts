@@ -599,6 +599,30 @@ export interface InstallerTokenUsage {
   consumed: number;
   /** Σ max_usage — total device slots those installers were minted for. */
   max: number;
+  /**
+   * Σ consumed_count over UNEXPIRED tokens only (`expires_at > now()`).
+   * Additive (#3039) — `consumed`/`max` keep their all-tokens semantics so
+   * existing consumers are untouched.
+   */
+  liveConsumed: number;
+  /**
+   * Σ max_usage over UNEXPIRED tokens only. Together with `liveConsumed` this
+   * carries token liveness without a second query:
+   *
+   *   - `liveMax === 0`               → every installer from this key is dead
+   *     (a "0 / 7" total is seven slots nothing can ever redeem again);
+   *   - `liveConsumed < liveMax`      → at least one live, unexhausted token —
+   *     the EXACT predicate `services/enrollmentKeyPurgeGuards.ts` uses to
+   *     spare a key from the purge (per-token `consumed_count` never exceeds
+   *     `max_usage`, so the sum comparison and the per-row EXISTS agree);
+   *   - `liveConsumed >= liveMax > 0` → unexpired installers exist but every
+   *     slot is claimed.
+   *
+   * The UI derives the row's effective status from these instead of the
+   * transient parent key's own expiry (an Add-Device parent lives 60 minutes;
+   * the installer minted from it can live a year).
+   */
+  liveMax: number;
 }
 
 /**
@@ -672,12 +696,15 @@ export function reportsInstallerCapacity(key: { shortCode?: string | null }): bo
  * would otherwise silently flip back to the parent's own "0 / 1" the moment the
  * token aged out, even though those three devices really did enroll.
  *
- * KNOWN LIMIT — this reports slots USED of slots MINTED, and deliberately does
- * not claim the installer is still redeemable. Do not read the row's status
- * badge as covering it: a bootstrap token gets a fresh lifetime independent of
- * its parent (see installerBootstrapTokenIssuance), and the Add-Device parent
- * is a 60-minute container, so an installer routinely outlives the key it was
- * minted from. Surfacing per-token expiry on this line is a separate change.
+ * The totals report slots USED of slots MINTED and make no redeemability
+ * claim; the live* pair (#3039) carries that claim separately, as FILTERed
+ * sums over unexpired tokens in the same grouped query. Both are needed: a
+ * bootstrap token gets a fresh lifetime independent of its parent (see
+ * installerBootstrapTokenIssuance), and the Add-Device parent is a 60-minute
+ * container, so an installer routinely outlives the key it was minted from —
+ * without the live pair a fully-expired installer's "0 / 7" reads as seven
+ * usable slots, and the row badge (parent expiry) contradicts the capacity
+ * line.
  *
  * RLS: `installer_bootstrap_tokens` is a shape-1 (direct org_id) table with
  * enabled + forced policies (`2026-04-19-a-installer-bootstrap-tokens.sql`), so
@@ -714,6 +741,12 @@ export async function fetchInstallerTokenUsage(
           parentEnrollmentKeyId: installerBootstrapTokens.parentEnrollmentKeyId,
           consumed: sql<number>`coalesce(sum(${installerBootstrapTokens.consumedCount}), 0)`,
           max: sql<number>`coalesce(sum(${installerBootstrapTokens.maxUsage}), 0)`,
+          // Liveness cut (#3039): same sums restricted to unexpired tokens.
+          // `expires_at` is NOT NULL on this table, so `> now()` is the whole
+          // predicate — see InstallerTokenUsage for how the pair encodes the
+          // purge-guard's live-token condition.
+          liveConsumed: sql<number>`coalesce(sum(${installerBootstrapTokens.consumedCount}) filter (where ${installerBootstrapTokens.expiresAt} > now()), 0)`,
+          liveMax: sql<number>`coalesce(sum(${installerBootstrapTokens.maxUsage}) filter (where ${installerBootstrapTokens.expiresAt} > now()), 0)`,
         })
         .from(installerBootstrapTokens)
         .where(inArray(installerBootstrapTokens.parentEnrollmentKeyId, keyIds))
@@ -724,6 +757,8 @@ export async function fetchInstallerTokenUsage(
       usage.set(row.parentEnrollmentKeyId, {
         consumed: Number(row.consumed),
         max: Number(row.max),
+        liveConsumed: Number(row.liveConsumed),
+        liveMax: Number(row.liveMax),
       });
     }
   } catch (err) {

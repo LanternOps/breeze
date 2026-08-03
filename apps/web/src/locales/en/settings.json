@@ -543,6 +543,8 @@
     "deleteExpired": "Delete expired",
     "shortCode": "Short code",
     "installerUsage": "Installer devices {{consumed}} / {{max}}",
+    "installerUsageExpired": "Installer devices {{consumed}} / {{max}} (expired)",
+    "installerUsageMixed": "Installer devices {{liveConsumed}} / {{liveMax}} live · {{expired}} expired",
     "usage": "Usage",
     "expires": "Expires",
     "empty": "No enrollment keys found. Create one to get started.",

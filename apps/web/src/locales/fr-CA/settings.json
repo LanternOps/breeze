@@ -543,6 +543,8 @@
     "deleteExpired": "Supprimer les clés expirées",
     "shortCode": "Code court",
     "installerUsage": "Appareils de l’installateur {{consumed}} / {{max}}",
+    "installerUsageExpired": "Appareils de l’installateur {{consumed}} / {{max}} (expiré)",
+    "installerUsageMixed": "Appareils de l’installateur {{liveConsumed}} / {{liveMax}} actifs · {{expired}} expirés",
     "usage": "Utilisation",
     "expires": "Expiration",
     "empty": "Aucune clé d’inscription trouvée. Créez-en un pour commencer.",
