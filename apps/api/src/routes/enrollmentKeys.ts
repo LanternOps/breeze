@@ -140,6 +140,32 @@ function parentKeyTooCloseToExpiry(expiresAt: Date | null): boolean {
   return remainingMs < INSTALLER_PARENT_MIN_REMAINING_SECONDS * 1000;
 }
 
+/**
+ * Bootstrap-token TTL derived from an installer link's remaining lifetime
+ * (#3038). A Windows MSI downloaded from a share link embeds a bootstrap
+ * token, and that token — not the link — is what the eventual install
+ * redeems. Minting it with the 24h base while the link the admin configured
+ * lives for 30 days silently discards the admin's expiry choice: installs
+ * from a day-1 download die after hour 24 with an unexplained 404 (the same
+ * silent-discard trap as #2775, resurfaced on the download path).
+ *
+ * So: the token inherits the link's remaining lifetime at download time —
+ * never MORE than the link has left (floored to minutes, minimum 1 so the
+ * `expires_at > created_at` CHECK on installer_bootstrap_tokens always
+ * holds), and clamped to the partner's `maxEnrollmentLinkTtlMinutes` cap
+ * inside issueBootstrapTokenForKey. A link with no expiry returns undefined
+ * → the conservative 24h base, NOT an unbounded token.
+ */
+function installerLinkRemainingTtlMinutes(
+  linkExpiresAt: Date | null,
+): number | undefined {
+  if (!linkExpiresAt) return undefined;
+  const remainingMinutes = Math.floor(
+    (linkExpiresAt.getTime() - Date.now()) / 60_000,
+  );
+  return Math.max(1, remainingMinutes);
+}
+
 function getPagination(query: { page?: string; limit?: string }) {
   const page = Math.max(1, Number.parseInt(query.page ?? "1", 10) || 1);
   const limit = Math.min(
@@ -2102,6 +2128,12 @@ export async function checkInstallerSignSpend(
 // per-(short-code OR enrollment-key id) signing budget (i.e. the /s/:code
 // path debited against the short code before the atomic claim). When false
 // (public-download path), we debit here using `keyRow.id` as the bucket key.
+// `linkExpiresAt` — the expiry of the installer LINK the requester followed,
+// which bounds the Windows bootstrap token's lifetime (#3038). Defaults to
+// `keyRow.expiresAt` because on the public-download path `keyRow` IS the
+// installer-link child key; the /s/:code path must pass the short-link row's
+// expiry explicitly, since its `keyRow` is a freshly-minted download key
+// whose 24h TTL says nothing about the link the admin configured.
 async function serveInstaller(
   c: Context,
   keyRow: typeof enrollmentKeys.$inferSelect,
@@ -2109,6 +2141,7 @@ async function serveInstaller(
   rawToken: string,
   cleanupOnFailure = false,
   signSpendBucketChecked = false,
+  linkExpiresAt: Date | null = keyRow.expiresAt,
 ): Promise<Response> {
   // Use getTrustedClientIp so spoofed `X-Forwarded-For` from untrusted
   // clients does not let an attacker open unlimited rate-limit buckets.
@@ -2215,12 +2248,14 @@ async function serveInstaller(
         // insert with `invalid input syntax for type uuid: ""` (500 on /s/:code).
         createdByUserId: keyRow.createdBy ?? null,
         maxUsage: 1,
-        // Short-link downloads carry no per-request picker (the link was
-        // generated once, by an admin who already chose a TTL for the CHILD
-        // key at /installer-link time). There is no ttlMinutes in scope here
-        // to forward, so the bootstrap token deliberately takes the 24h base
-        // rather than inheriting a stale selection. Deliberate — not an
-        // oversight (#2775).
+        // The token inherits the installer link's remaining lifetime (#3038).
+        // This path has no per-request TTL picker — the admin already chose
+        // the expiry when the link was generated, and the token minted into
+        // the downloaded MSI must honor that choice, not silently fall back
+        // to the 24h base (which killed every install after hour 24 of a
+        // 30-day link). undefined (no link expiry) keeps the 24h base;
+        // issueBootstrapTokenForKey clamps to the partner cap either way.
+        ttlMinutes: installerLinkRemainingTtlMinutes(linkExpiresAt),
         installerPlatform: "windows",
       });
     } catch (err) {
@@ -2506,6 +2541,11 @@ publicShortLinkRoutes.get("/:code", async (c) => {
       rawToken,
       true,
       true, // signSpendBucketChecked — debited against short code above
+      // The SHORT-LINK row's expiry, not downloadKey's: the download key is a
+      // fresh 24h transport container, while `row` is the link the admin
+      // configured — its remaining lifetime is what the Windows bootstrap
+      // token must inherit (#3038).
+      row.expiresAt,
     );
   });
 });
