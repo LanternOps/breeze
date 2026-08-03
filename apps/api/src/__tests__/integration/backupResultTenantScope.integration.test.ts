@@ -12,6 +12,7 @@ import {
   partners,
   sites,
 } from '../../db/schema';
+import { backupChains } from '../../db/schema/applicationBackup';
 import { applyBackupCommandResultToJob } from '../../services/backupResultPersistence';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -119,9 +120,14 @@ beforeEach(() => {
 // place that deliberately drives a device org move, so clean up behind it
 // rather than leaving a suite-ordering landmine.
 const createdJobIds: string[] = [];
+const createdChainIds: string[] = [];
 afterAll(async () => {
   if (!process.env.DATABASE_URL || createdJobIds.length === 0) return;
   await withSystemDbAccessContext(async () => {
+    // backup_chains FKs backup_snapshots.full_snapshot_id, so it goes first.
+    if (createdChainIds.length > 0) {
+      await db.delete(backupChains).where(inArray(backupChains.id, createdChainIds));
+    }
     await db.delete(backupSnapshots).where(inArray(backupSnapshots.jobId, createdJobIds));
     await db.delete(backupJobs).where(inArray(backupJobs.id, createdJobIds));
   });
@@ -194,6 +200,47 @@ runDb('rejects a result reported for a device that does not own the job', async 
   });
 });
 
+runDb('the 0-row diagnostic re-read leaves the caller transaction healthy', async () => {
+  // #2189 regression guard. The diagnostic runs INSIDE the caller's
+  // `withDbAccessContext`/`withSystemDbAccessContext`, i.e. a postgres.js
+  // `sql.begin` scope. A statement issued on the ambient `db` proxy that fails
+  // aborts the whole outer transaction (25P02 on every later statement) AND is
+  // re-thrown at commit — which a try/catch cannot prevent, which is why the
+  // re-read runs on a nested transaction (SAVEPOINT). On the hyperv/mssql
+  // routes the very next statement is the `markBackupJobFailedIfInFlight` in
+  // their catch, so a poisoned transaction there leaves the job stuck
+  // `running` and 500s the route.
+  //
+  // Drive the whole 0-row + diagnostic path and then keep using the SAME
+  // context, exactly as those routes do.
+  const victim = await withSystemDbAccessContext(() => seedTenant('healthy'));
+  const other = await withSystemDbAccessContext(() => seedTenant('healthyb'));
+  const jobId = await withSystemDbAccessContext(() => seedRunningJob(victim));
+
+  const followUp = await withSystemDbAccessContext(async () => {
+    const applied = await applyBackupCommandResultToJob({
+      jobId,
+      orgId: other.orgId,
+      deviceId: other.deviceId,
+      resultStatus: 'failed',
+      result: { error: 'boom' },
+    });
+    expect(applied.applied).toBe(false);
+
+    // Would raise 25P02 ("current transaction is aborted") if the diagnostic had
+    // poisoned this transaction.
+    const rows = await db
+      .update(backupJobs)
+      .set({ lastProgressAt: new Date() })
+      .where(eq(backupJobs.id, jobId))
+      .returning({ id: backupJobs.id });
+    return rows.length;
+  });
+  // Reaching here at all also proves the context COMMITTED cleanly: postgres.js
+  // rethrows a recorded error at commit even when the callback resolved.
+  expect(followUp).toBe(1);
+});
+
 runDb('attributes the snapshot to the job row org when the device moved orgs mid-flight', async () => {
   const origin = await withSystemDbAccessContext(() => seedTenant('origin'));
   const destination = await withSystemDbAccessContext(() => seedTenant('dest'));
@@ -252,5 +299,56 @@ runDb('attributes the snapshot to the job row org when the device moved orgs mid
     // path fails in THIS file rather than as a confusing cross-suite failure.
     const [device] = await db.select().from(devices).where(eq(devices.id, origin.deviceId));
     expect(snapshot!.orgId).toBe(device!.orgId);
+  });
+});
+
+runDb('creates the MSSQL chain under the job row org, not the stale caller org', async () => {
+  // backup_snapshots is not the only row the stale org reached:
+  // reconcileMssqlBackupChain looks up the chain by (orgId, deviceId, configId,
+  // …) and inserts one when it misses. Fed a stale org it would both miss the
+  // device's real chain and fork a duplicate under the org the device left.
+  // This drives a genuinely MSSQL-shaped result so that function actually runs
+  // — a file-type result early-returns and leaves the line uncovered.
+  const origin = await withSystemDbAccessContext(() => seedTenant('chainorig'));
+  const destination = await withSystemDbAccessContext(() => seedTenant('chaindest'));
+  const jobId = await withSystemDbAccessContext(() => seedRunningJob(origin));
+
+  await withSystemDbAccessContext(async () => {
+    await db.update(backupJobs).set({ orgId: destination.orgId }).where(eq(backupJobs.id, jobId));
+    await db
+      .update(devices)
+      .set({ orgId: destination.orgId, siteId: destination.siteId })
+      .where(eq(devices.id, origin.deviceId));
+  });
+
+  const applied = await withSystemDbAccessContext(() =>
+    applyBackupCommandResultToJob({
+      jobId,
+      orgId: origin.orgId, // stale
+      deviceId: origin.deviceId,
+      resultStatus: 'completed',
+      result: {
+        snapshotId: `mssql-${jobId}`,
+        filesBackedUp: 1,
+        metadata: {
+          backupKind: 'mssql_database',
+          instance: 'MSSQLSERVER',
+          database: 'payroll',
+          backupSubtype: 'full',
+        },
+      },
+    })
+  );
+  expect(applied.applied).toBe(true);
+
+  await withSystemDbAccessContext(async () => {
+    const chains = await db
+      .select()
+      .from(backupChains)
+      .where(eq(backupChains.deviceId, origin.deviceId));
+    expect(chains).toHaveLength(1);
+    expect(chains[0]!.orgId).toBe(destination.orgId);
+    expect(chains[0]!.orgId).not.toBe(origin.orgId);
+    createdChainIds.push(chains[0]!.id);
   });
 });

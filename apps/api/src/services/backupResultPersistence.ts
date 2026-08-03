@@ -10,7 +10,7 @@ import {
   IN_FLIGHT_BACKUP_JOB_STATUSES,
   STALE_BACKUP_REAP_MARKER,
 } from '../db/schema';
-import { captureException } from './sentry';
+import { captureException, captureMessage } from './sentry';
 import { backupChains } from '../db/schema/applicationBackup';
 import {
   applyGfsTagsToSnapshot,
@@ -408,20 +408,37 @@ async function reconcileMssqlBackupChain(params: {
  * #3036 — explain a 0-row backup-job UPDATE.
  *
  * The write predicate is `id = jobId AND device_id = deviceId AND <status
- * guard>`. Two very different things produce no row: the job is not in an
- * adoptable status (routine — a user cancel, an already-terminal job, a
- * duplicate result) or the caller named a device that does not own the job
- * (never expected; a bug or a genuine cross-tenant attempt). Collapsing both
+ * guard>`. Three different things produce no row: the job is not in an adoptable
+ * status (routine — a user cancel, an already-terminal job, a duplicate result);
+ * the caller named a device that does not own the job (never expected; a bug or
+ * a genuine cross-tenant attempt); or the job is gone/invisible. Collapsing them
  * into one "job was not in-flight" log is how a narrowed predicate becomes a
  * silent no-op, so re-read the row and say which it was.
  *
- * Diagnostic only: the result is dropped either way. Deliberately swallows its
- * own errors — the caller is already on a failure path and must not have the
- * drop masked by a diagnostic that threw.
+ * Every branch emits a line, including the routine status-guard case: the
+ * caller's pre-existing orphan warning only fires for `isSuccessResult &&
+ * providerSnapshotId`, so a dropped FAILED result (or a success with no snapshot
+ * id, e.g. the `skipped` zero-file run) would otherwise leave no trace anywhere —
+ * and `backupWorker.processResults` discards this function's return value and
+ * logs "result processed" regardless.
  *
- * Note the re-read is subject to the ambient RLS context, which is the useful
- * behaviour: under an org-scoped caller a job belonging to another tenant reads
- * back as absent, which is reported as such rather than leaking that it exists.
+ * Diagnostic only: the result is dropped either way.
+ *
+ * The re-read runs in a NESTED `db.transaction`, i.e. a postgres.js SAVEPOINT
+ * with its own `uncaughtError` scope. This is load-bearing, not cosmetic. Every
+ * caller runs inside `withDbAccessContext`/`withSystemDbAccessContext`, which is
+ * `sql.begin`; a statement that fails on the ambient `db` proxy both aborts the
+ * outer transaction (every later statement then gets 25P02 — on the hyperv/mssql
+ * routes that is the `markBackupJobFailedIfInFlight` in their catch, leaving the
+ * job stuck `running`) and is re-thrown at commit even though we handled it. A
+ * bare try/catch here cannot prevent either. See
+ * `__tests__/integration/dbSavepointErrorIsolation.integration.test.ts` (#2189);
+ * per its caveat the query MUST be issued on `tx`, not the ambient proxy.
+ *
+ * The re-read is subject to the ambient RLS context. Under the org-scoped
+ * callers that means another tenant's job reads back as absent — but the path
+ * that motivated this change (agent → BullMQ → backupWorker) runs system-scoped,
+ * where RLS hides nothing, so do not treat that as the control.
  */
 async function reportBackupJobPredicateMiss(params: {
   jobId: string;
@@ -430,41 +447,59 @@ async function reportBackupJobPredicateMiss(params: {
 }): Promise<void> {
   const { jobId, deviceId, source } = params;
   try {
-    const [row] = await db
-      .select({
-        deviceId: backupJobs.deviceId,
-        orgId: backupJobs.orgId,
-        status: backupJobs.status,
-      })
-      .from(backupJobs)
-      .where(eq(backupJobs.id, jobId))
-      .limit(1);
+    const [row] = await db.transaction((tx) =>
+      tx
+        .select({
+          deviceId: backupJobs.deviceId,
+          orgId: backupJobs.orgId,
+          status: backupJobs.status,
+        })
+        .from(backupJobs)
+        .where(eq(backupJobs.id, jobId))
+        .limit(1)
+    );
 
     if (!row) {
-      // Either the job genuinely does not exist, or it is invisible under the
-      // caller's RLS context. Both are worth a line; neither is routine.
+      // The job does not exist, or is invisible under the caller's RLS context.
+      // NOT an error-level event: `backup_jobs` is in both the device and org
+      // cascade lists, so offboarding a device (or erasing an org) with a result
+      // still in the BullMQ queue reaches here legitimately, and BullMQ retries
+      // would multiply it. Warning level keeps it findable without burying a
+      // real cross-tenant miss.
       const msg =
         `[BackupPersistence] Backup result for job ${jobId} (reported device ${deviceId}, source: ${source}) ` +
-        `matched no job row — the job does not exist or is not visible in this tenant context.`;
+        `matched no job row — the job was deleted, or is not visible in this tenant context.`;
       console.warn(msg);
-      captureException(new Error(msg));
+      captureMessage(msg, 'warning');
       return;
     }
 
     if (row.deviceId !== deviceId) {
       const msg =
         `[BackupPersistence] Rejected a backup result for job ${jobId} (source: ${source}): reported by device ` +
-        `${deviceId} but the job belongs to device ${row.deviceId} (org ${row.orgId}). The result was dropped.`;
+        `${deviceId} but the job belongs to device ${row.deviceId}. The result was dropped.`;
       console.error(msg);
       captureException(new Error(msg));
+      return;
     }
-    // Device matches ⇒ the status guard is what rejected this, which the
-    // existing branches below already describe. No extra noise.
+
+    // Device matches ⇒ the status guard rejected this. Routine, so log-only —
+    // but log it, because for a failed result this is the ONLY signal produced.
+    // `row.status` is the status at diagnosis time, read after the UPDATE.
+    console.warn(
+      `[BackupPersistence] Dropped a backup result for job ${jobId} (device ${deviceId}, source: ${source}): ` +
+      `the job is in status "${row.status}", which the result's status guard does not admit.`
+    );
   } catch (err) {
+    // Reached only if the savepoint itself fails (the outer transaction is
+    // restored by the rollback-to-savepoint, so the caller's drop still lands
+    // cleanly). Captured rather than warn-only: a diagnostic that fails 100% of
+    // the time — a column rename, a statement timeout — is otherwise invisible.
     console.warn(
       `[BackupPersistence] Could not diagnose why the backup result for job ${jobId} matched no row:`,
       err instanceof Error ? err.message : err
     );
+    captureException(err instanceof Error ? err : new Error(String(err)));
   }
 }
 
@@ -654,15 +689,21 @@ export async function applyBackupCommandResultToJob(params: {
   // enqueues the result to BullMQ and jobs/backupWorker.ts runs the write under
   // `withSystemDbAccessContext`, where `breeze_has_org_access` short-circuits to
   // TRUE. On that leg the app-layer predicate is the ONLY tenant control there
-  // is. (The five other call sites do run org/request-scoped, where RLS holds.)
+  // is. (The six other call sites do run org/request-scoped, where RLS holds:
+  // agentWs.ts:327, :337 and :1631; routes/backup/hyperv.ts; routes/backup/
+  // mssql.ts; services/backupSnapshotReconcile.ts.)
   //
   // The two identifiers are deliberately treated DIFFERENTLY, because they have
   // different mutability:
   //
   // - `device_id` is immutable for the life of a job — a job is created against
   //   one device and stays there; moveOrg rewrites org_id *keyed on* device_id
-  //   (routes/devices/core.ts), it never rewrites device_id. All six callers
-  //   pass the value they read off this very row. So binding it into the
+  //   (routes/devices/core.ts), it never rewrites device_id, and no UPDATE in
+  //   apps/api/src ever targets backup_jobs.device_id. Of the seven call sites,
+  //   five pass a deviceId they read off this very row (backupWorker via the
+  //   Zod-required queue payload copied from it; agentWs x3; reconcile) and the
+  //   two route sites (hyperv, mssql) pass the same `payload.deviceId` they
+  //   INSERTed the job with two statements earlier. So binding it into the
   //   predicate cannot turn a legitimate write into a 0-row no-op, and it is the
   //   strongest available assertion: this result belongs to the device that was
   //   asked to run it.
@@ -749,16 +790,20 @@ export async function applyBackupCommandResultToJob(params: {
   // creates a restore point owned by a tenant the device has left. Under the
   // worker's system context RLS would not have stopped that row either.
   //
-  // A divergence is legitimate (a supported admin action just happened) but rare
-  // and worth seeing in the record, so report it without failing the write.
+  // A divergence has two possible causes and this branch is the only place that
+  // would ever notice EITHER, so name both rather than filing a wrong caller
+  // under "org move" and never investigating it. Warning level, not error: an
+  // org move is a supported admin action, and a bulk move with several in-flight
+  // jobs would emit one of these per job.
   const effectiveOrgId = updatedJob.orgId;
   if (effectiveOrgId !== orgId) {
     const msg =
       `[BackupPersistence] Job ${jobId} (device ${deviceId}) was reported for org ${orgId} but the job row ` +
-      `now belongs to org ${effectiveOrgId} — the device most likely moved organizations while this result ` +
-      `was in flight. Attributing the snapshot to ${effectiveOrgId} (the job row's current owner).`;
+      `belongs to org ${effectiveOrgId} — either the device moved organizations while this result was in ` +
+      `flight, or the caller passed an org that was never this job's. Attributing the snapshot to ` +
+      `${effectiveOrgId} (the job row's current owner).`;
     console.warn(msg);
-    captureException(new Error(msg));
+    captureMessage(msg, 'warning');
   }
 
   // NB: isSuccessResult, not `terminalStatus === 'completed'` — a `partial` run
