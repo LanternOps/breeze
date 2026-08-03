@@ -12,14 +12,31 @@
  *     SOFTWARE_UPLOAD_SESSION_MAX_AGE_HOURS (default 24) REGARDLESS of
  *     activity, so a client that keeps a session warm forever cannot pin
  *     disk indefinitely.
- * Each session's temp file is unlinked first (best-effort: ENOENT after a
- * restart that cleared tmp is fine).
+ * The DELETE re-checks the SAME idle/absolute cutoff predicates (computed
+ * once, reused verbatim) rather than deleting unconditionally by id: between
+ * the SELECT and the DELETE, a legitimate chunk append can bump
+ * last_activity_at past the idle cutoff, resuming a session that looked
+ * abandoned a moment earlier. Repeating the predicate means a row that
+ * revived in that window simply doesn't come back in the DELETE's
+ * `RETURNING` set and is left alone — including its temp file, which is only
+ * ever unlinked for rows the DELETE actually removed (delete-then-unlink,
+ * not unlink-then-delete, so an unlink is never attempted for a session that
+ * turned out to still be live).
+ *
+ * Unlink failures are triaged: ENOENT (temp file already gone, e.g. after a
+ * restart that cleared tmp) is success, not an error, and stays silent. Any
+ * other unlink error (EACCES, EBUSY, disk fault, ...) is reported via
+ * captureException before moving on — the row is still deleted either way
+ * (a stuck row would count against the per-org/per-user session caps and
+ * lock out legitimate users, which is worse than an unattributed orphaned
+ * file), but silently swallowing a non-ENOENT failure would destroy the only
+ * record of where that file lives with no operator visibility into the leak.
  *
  * Only files named by the sessions' own temp_path are ever touched — the
  * legacy multipart route's `<uuid>.upload` staging files in the same
  * directory are invisible here. This job never globs or sweeps the
  * breeze-uploads directory; it only unlinks paths read from the temp_path
- * column of a row it is about to delete.
+ * column of a row it just deleted.
  *
  * Every /complete failure path in routes/softwareUploads.ts deliberately
  * leaves the temp file and session row in place so the client can retry
@@ -36,7 +53,7 @@
  *      SOFTWARE_UPLOAD_SESSION_MAX_AGE_HOURS (default 24).
  */
 import { Queue, Worker, Job } from 'bullmq';
-import { inArray, lt, or } from 'drizzle-orm';
+import { and, inArray, lt, or } from 'drizzle-orm';
 import { unlink } from 'node:fs/promises';
 import { db, withSystemDbAccessContext } from '../db';
 import { softwareUploadSessions } from '../db/schema';
@@ -99,37 +116,63 @@ export function createSoftwareUploadSessionCleanupWorker(): Worker {
         const maxAgeCutoff = new Date(Date.now() - maxAgeHours * 3_600_000);
 
         // Two independent ceilings, OR'd: idle (no chunk activity) and
-        // absolute lifetime (created too long ago, however warm).
+        // absolute lifetime (created too long ago, however warm). Built once
+        // and reused verbatim in the DELETE below so the SELECT and DELETE
+        // agree on exactly the same cutoffs.
+        const reapCondition = or(
+          lt(softwareUploadSessions.lastActivityAt, idleCutoff),
+          lt(softwareUploadSessions.createdAt, maxAgeCutoff),
+        );
+
         const stale = await db
           .select({
             id: softwareUploadSessions.id,
             tempPath: softwareUploadSessions.tempPath,
           })
           .from(softwareUploadSessions)
-          .where(or(
-            lt(softwareUploadSessions.lastActivityAt, idleCutoff),
-            lt(softwareUploadSessions.createdAt, maxAgeCutoff),
-          ));
+          .where(reapCondition);
 
         if (stale.length === 0) {
           return { deletedCount: 0, durationMs: Date.now() - startedAt };
         }
 
-        // Unlink first: once the row is gone the path is unrecoverable, so a
-        // failed unlink would strand the file forever. ENOENT is fine — the
-        // file is already gone, which counts as success, not an error.
-        for (const session of stale) {
-          await unlink(session.tempPath).catch(() => {});
-        }
-        await db
+        // Re-apply the SAME cutoff predicates in the DELETE itself (narrow
+        // race guard): a row that revived between the SELECT and here
+        // (last_activity_at bumped by a legitimate chunk append) no longer
+        // matches and is excluded from `RETURNING` — it survives untouched.
+        const deletedRows = await db
           .delete(softwareUploadSessions)
-          .where(inArray(softwareUploadSessions.id, stale.map((s) => s.id)));
+          .where(and(
+            inArray(softwareUploadSessions.id, stale.map((s) => s.id)),
+            reapCondition,
+          ))
+          .returning({
+            id: softwareUploadSessions.id,
+            tempPath: softwareUploadSessions.tempPath,
+          });
+
+        // Unlink only rows we actually deleted, and only after the delete —
+        // a session that survived the conditional DELETE above must never
+        // have its temp file touched.
+        for (const session of deletedRows) {
+          try {
+            await unlink(session.tempPath);
+          } catch (err) {
+            const code = (err as NodeJS.ErrnoException)?.code;
+            if (code === 'ENOENT') continue; // already gone — success, not an error
+            console.error(
+              `[SoftwareUploadSessionCleanup] Failed to unlink temp file for session ${session.id} at ${session.tempPath}:`,
+              err,
+            );
+            captureException(err);
+          }
+        }
 
         const durationMs = Date.now() - startedAt;
         console.log(
-          `[SoftwareUploadSessionCleanup] Deleted ${stale.length} stale upload session(s) (idle>${idleTtlHours}h or age>${maxAgeHours}h) in ${durationMs}ms`,
+          `[SoftwareUploadSessionCleanup] Deleted ${deletedRows.length} stale upload session(s) (idle>${idleTtlHours}h or age>${maxAgeHours}h) in ${durationMs}ms`,
         );
-        return { deletedCount: stale.length, durationMs };
+        return { deletedCount: deletedRows.length, durationMs };
       });
     },
     { connection: getBullMQConnection(), concurrency: 1 },

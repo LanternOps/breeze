@@ -61,6 +61,7 @@ vi.mock('../db/schema', () => ({
   },
 }));
 
+import { captureException } from '../services/sentry';
 import {
   initializeSoftwareUploadSessionCleanupWorker,
   __testOnly,
@@ -94,7 +95,7 @@ describe('softwareUploadSessionCleanup', () => {
     expect(addMock).not.toHaveBeenCalled();
   });
 
-  it('unlinks each stale temp file then deletes the rows, at system scope', async () => {
+  it('deletes the stale rows (conditionally) then unlinks each returned temp file, at system scope', async () => {
     await initializeSoftwareUploadSessionCleanupWorker();
     const stale = [
       { id: 's-1', tempPath: '/tmp/breeze-uploads/session-s-1.part' },
@@ -104,7 +105,7 @@ describe('softwareUploadSessionCleanup', () => {
       from: () => ({ where: () => Promise.resolve(stale) }),
     });
     deleteMock.mockReturnValueOnce({
-      where: () => Promise.resolve(undefined),
+      where: () => ({ returning: () => Promise.resolve(stale) }),
     });
 
     const result = await capturedWorkerProcessor.current!({ name: __testOnly.JOB_NAME });
@@ -113,6 +114,71 @@ describe('softwareUploadSessionCleanup', () => {
     expect(unlinkMock).toHaveBeenCalledWith('/tmp/breeze-uploads/session-s-1.part');
     expect(deleteMock).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ deletedCount: 2 });
+    // The SELECT and the DELETE share the same computed reap condition
+    // (built once, reused) rather than each calling or(...) independently.
+    expect(or).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a non-ENOENT unlink failure via captureException but still deletes the row', async () => {
+    await initializeSoftwareUploadSessionCleanupWorker();
+    const stale = [{ id: 's-1', tempPath: '/tmp/breeze-uploads/session-s-1.part' }];
+    selectMock.mockReturnValueOnce({
+      from: () => ({ where: () => Promise.resolve(stale) }),
+    });
+    deleteMock.mockReturnValueOnce({
+      where: () => ({ returning: () => Promise.resolve(stale) }),
+    });
+    const eacces = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    unlinkMock.mockRejectedValueOnce(eacces);
+
+    const result = await capturedWorkerProcessor.current!({ name: __testOnly.JOB_NAME });
+
+    expect(captureException).toHaveBeenCalledWith(eacces);
+    expect(deleteMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ deletedCount: 1 });
+  });
+
+  it('a missing temp file (ENOENT) is treated as success, not reported', async () => {
+    await initializeSoftwareUploadSessionCleanupWorker();
+    const stale = [{ id: 's-1', tempPath: '/tmp/breeze-uploads/session-s-1.part' }];
+    selectMock.mockReturnValueOnce({
+      from: () => ({ where: () => Promise.resolve(stale) }),
+    });
+    deleteMock.mockReturnValueOnce({
+      where: () => ({ returning: () => Promise.resolve(stale) }),
+    });
+    const enoent = Object.assign(new Error('no such file or directory'), { code: 'ENOENT' });
+    unlinkMock.mockRejectedValueOnce(enoent);
+
+    const result = await capturedWorkerProcessor.current!({ name: __testOnly.JOB_NAME });
+
+    expect(captureException).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ deletedCount: 1 });
+  });
+
+  it('a session revived between SELECT and DELETE (conditional delete matches fewer rows) is neither deleted nor unlinked for the survivor', async () => {
+    await initializeSoftwareUploadSessionCleanupWorker();
+    const stale = [
+      { id: 's-1', tempPath: '/tmp/breeze-uploads/session-s-1.part' },
+      { id: 's-2', tempPath: '/tmp/breeze-uploads/session-s-2.part' },
+    ];
+    selectMock.mockReturnValueOnce({
+      from: () => ({ where: () => Promise.resolve(stale) }),
+    });
+    // s-2's last_activity_at advanced past the idle cutoff between the
+    // SELECT and the DELETE (a legitimate chunk append resumed it) — the
+    // conditional DELETE's repeated cutoff predicate excludes it from the
+    // returned rows, simulating that race.
+    deleteMock.mockReturnValueOnce({
+      where: () => ({ returning: () => Promise.resolve([stale[0]]) }),
+    });
+
+    const result = await capturedWorkerProcessor.current!({ name: __testOnly.JOB_NAME });
+
+    expect(unlinkMock).toHaveBeenCalledTimes(1);
+    expect(unlinkMock).toHaveBeenCalledWith('/tmp/breeze-uploads/session-s-1.part');
+    expect(unlinkMock).not.toHaveBeenCalledWith('/tmp/breeze-uploads/session-s-2.part');
+    expect(result).toMatchObject({ deletedCount: 1 });
   });
 
   it('reaps on BOTH ceilings independently: idle (2h, last_activity_at) OR absolute age (24h, created_at)', async () => {
