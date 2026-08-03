@@ -89,7 +89,7 @@ func TestRewritePathsForVSS_RoutesPathsThroughShadowRoot(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, _ := rewritePathsForVSS([]string{tt.in}, shadowPaths)
+			got, _ := rewritePathsForVSS([]string{tt.in}, shadowPaths, noStagingIdx)
 			if got[0] != tt.want {
 				t.Errorf("rewritePathsForVSS(%q) = %q, want %q", tt.in, got[0], tt.want)
 			}
@@ -129,7 +129,7 @@ func TestRewritePathsForVSS_KeyFormatMatchesExtractVolumes(t *testing.T) {
 		shadowPaths[vol] = `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy` + strconv.Itoa(i+1)
 	}
 
-	rewritten, unmapped := rewritePathsForVSS(paths, shadowPaths)
+	rewritten, unmapped := rewritePathsForVSS(paths, shadowPaths, noStagingIdx)
 	if len(unmapped) != 0 {
 		t.Fatalf("every path should route through a shadow copy, but %d fell back to the live volume: %v",
 			len(unmapped), unmapped)
@@ -150,7 +150,7 @@ func TestRewritePathsForVSS_KeyFormatMatchesExtractVolumes(t *testing.T) {
 func TestRewritePathsForVSS_MountPointKeyedShadowMapIsReportedUnmapped(t *testing.T) {
 	shadowPaths := map[string]string{`C:\`: `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1`}
 
-	rewritten, unmapped := rewritePathsForVSS([]string{`C:\Users\data`}, shadowPaths)
+	rewritten, unmapped := rewritePathsForVSS([]string{`C:\Users\data`}, shadowPaths, noStagingIdx)
 
 	if len(unmapped) != 1 || unmapped[0] != 0 {
 		t.Fatalf("a mount-point-keyed shadow map must leave the path unmapped and reported, got unmapped=%v", unmapped)
@@ -170,7 +170,7 @@ func TestRewritePathsForVSS_RoundTripsThroughOriginalPathsForVSS(t *testing.T) {
 	shadowPaths := map[string]string{"C:": shadowRoot}
 	originals := []string{`C:\Users\data\f.txt`, `C:\`, `C:`}
 
-	rewritten, unmapped := rewritePathsForVSS(originals, shadowPaths)
+	rewritten, unmapped := rewritePathsForVSS(originals, shadowPaths, noStagingIdx)
 	if len(unmapped) != 0 {
 		t.Fatalf("unmapped = %v, want none", unmapped)
 	}
@@ -196,7 +196,7 @@ func TestRewritePathsForVSS_ReportsUnmappedPathsRatherThanFailingSilently(t *tes
 	shadowPaths := map[string]string{"C:": `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1`}
 	paths := []string{`C:\shadowed`, `D:\live`, `E:\also-live`}
 
-	rewritten, unmapped := rewritePathsForVSS(paths, shadowPaths)
+	rewritten, unmapped := rewritePathsForVSS(paths, shadowPaths, noStagingIdx)
 
 	if len(unmapped) != 2 {
 		t.Fatalf("unmapped = %v, want the two unshadowed volumes reported", unmapped)
@@ -216,14 +216,162 @@ func TestRewritePathsForVSS_ReportsUnmappedPathsRatherThanFailingSilently(t *tes
 	}
 }
 
-// reportableLiveReads is the only new decision this change makes: which
-// unmapped paths an operator actually hears about. The caller that uses it
+// TestRewritePathsForVSS_LeavesSystemStateStagingDirUnrewritten pins #3026.
+//
+// The staging dir is created by collectSystemState AFTER CreateShadowCopy has
+// already taken the point-in-time image, so it cannot exist inside the
+// snapshot. %TEMP% normally sits on C:, normally a shadowed backup volume, so
+// before the fix the rewrite happily mapped the staging dir onto
+// \\?\GLOBALROOT\...\Windows\Temp\breeze-systemstate-XXXX — a path that is not
+// in the snapshot. The walk then found nothing, the stat failure was folded
+// into the aggregate "backup file scan completed with errors" warning, and a
+// run that also had configured file paths still reported success with
+// SystemStateManifest set. (A system-state-only run fails on the len(files)==0
+// guard instead.) Reachable whenever VSS and system-state collection are both
+// enabled for the same run; server-dispatched system_image runs default VSS
+// off, so it is opt-in rather than universal.
+//
+// The index is therefore excluded from the rewrite itself, not merely from the
+// operator warning: the path must keep pointing at the live volume, which is
+// the only place those artifacts exist.
+func TestRewritePathsForVSS_LeavesSystemStateStagingDirUnrewritten(t *testing.T) {
+	const shadowRoot = `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1`
+	const staging = `C:\Windows\Temp\breeze-systemstate-1234`
+
+	tests := []struct {
+		name        string
+		paths       []string
+		shadowPaths map[string]string
+		stagingIdx  int
+		want        []string
+		wantUnmap   []int
+	}{
+		{
+			// The bug: staging on the SAME volume the snapshot covers.
+			name:        "staging dir on a shadowed volume stays live while user paths are rewritten",
+			paths:       []string{`C:\Users\data`, staging},
+			shadowPaths: map[string]string{"C:": shadowRoot},
+			stagingIdx:  1,
+			want:        []string{shadowRoot + `\Users\data`, staging},
+			wantUnmap:   []int{1},
+		},
+		{
+			// Already correct before the fix, and must stay that way.
+			name:        "staging dir on an unshadowed volume stays live",
+			paths:       []string{`C:\Users\data`, `D:\Temp\breeze-systemstate-1234`},
+			shadowPaths: map[string]string{"C:": shadowRoot},
+			stagingIdx:  1,
+			want:        []string{shadowRoot + `\Users\data`, `D:\Temp\breeze-systemstate-1234`},
+			wantUnmap:   []int{1},
+		},
+		{
+			// A system-state-only run (SystemStateEnabled, no configured
+			// paths) puts the staging dir at index 0, so 0 must be a real
+			// index here and never a second sentinel.
+			name:        "staging dir at index 0 is excluded like any other",
+			paths:       []string{staging},
+			shadowPaths: map[string]string{"C:": shadowRoot},
+			stagingIdx:  0,
+			want:        []string{staging},
+			wantUnmap:   []int{0},
+		},
+		{
+			name:        "no staging dir this run leaves every path eligible for rewrite",
+			paths:       []string{`C:\Users\data`, `C:\Logs`},
+			shadowPaths: map[string]string{"C:": shadowRoot},
+			stagingIdx:  noStagingIdx,
+			want:        []string{shadowRoot + `\Users\data`, shadowRoot + `\Logs`},
+			wantUnmap:   nil,
+		},
+		{
+			// Defensive: a stale index must not silently skip a real user path.
+			name:        "an out-of-range staging index excludes nothing",
+			paths:       []string{`C:\Users\data`},
+			shadowPaths: map[string]string{"C:": shadowRoot},
+			stagingIdx:  7,
+			want:        []string{shadowRoot + `\Users\data`},
+			wantUnmap:   nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, unmapped := rewritePathsForVSS(tt.paths, tt.shadowPaths, tt.stagingIdx)
+			if len(got) != len(tt.want) {
+				t.Fatalf("rewritePathsForVSS returned %d paths, want %d", len(got), len(tt.want))
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("path %d = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+			if len(unmapped) != len(tt.wantUnmap) {
+				t.Fatalf("unmapped = %v, want %v", unmapped, tt.wantUnmap)
+			}
+			for i := range unmapped {
+				if unmapped[i] != tt.wantUnmap[i] {
+					t.Errorf("unmapped = %v, want %v", unmapped, tt.wantUnmap)
+				}
+			}
+		})
+	}
+}
+
+// TestRewritePathsForVSS_StagingDirStaysMatchableByMarkSystemStateFiles encodes
+// the downstream symptom of #3026 rather than only the rewrite itself.
+//
+// RunBackupContext passes the walked staging root to markSystemStateFiles,
+// which prefix-matches it against each collected file's sourcePath. Files under
+// the staging dir only ever exist on the live volume, so a shadow-rewritten
+// root matched zero of them — SystemStateManifest was set on a snapshot that
+// carried none of the artifacts it described. Leaving the index unrewritten is
+// what keeps the two ends of that comparison on the same volume.
+func TestRewritePathsForVSS_StagingDirStaysMatchableByMarkSystemStateFiles(t *testing.T) {
+	const shadowRoot = `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1`
+	const staging = `C:\Windows\Temp\breeze-systemstate-1234`
+	shadowPaths := map[string]string{"C:": shadowRoot}
+
+	rewritten, _ := rewritePathsForVSS([]string{`C:\Users\data`, staging}, shadowPaths, 1)
+	walkedStagingRoot := rewritten[1]
+
+	// The artifact as it exists on disk — collectSystemState wrote it to the
+	// live volume moments ago, after the snapshot was already taken.
+	files := []backupFile{{sourcePath: filepath.Join(staging, "registry", "SOFTWARE.hiv")}}
+	markSystemStateFiles(files, walkedStagingRoot)
+
+	if !files[0].systemState {
+		t.Fatalf("system-state artifact %q was not matched against walked staging root %q — "+
+			"the manifest would be recorded with the artifacts missing (#3026)",
+			files[0].sourcePath, walkedStagingRoot)
+	}
+}
+
+// The exclusion must not trade silent data loss for a warning that fires on
+// every system_image backup. The staging dir is genuinely a live read, so
+// rewritePathsForVSS reports it as unmapped; reportableLiveReads is the layer
+// that knows the agent wrote it itself and drops it from the operator-facing
+// message. This pins that the two compose.
+func TestRewritePathsForVSS_StagingDirIsNotWarnedAsALiveRead(t *testing.T) {
+	const shadowRoot = `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1`
+	shadowPaths := map[string]string{"C:": shadowRoot}
+	paths := []string{`C:\Users\data`, `C:\Windows\Temp\breeze-systemstate-1234`}
+
+	rewritten, unmapped := rewritePathsForVSS(paths, shadowPaths, 1)
+
+	if got := reportableLiveReads(rewritten, unmapped, 1); len(got) != 0 {
+		t.Errorf("reportableLiveReads = %v, want nothing — the staging dir is an expected live read", got)
+	}
+}
+
+// reportableLiveReads decides which unmapped paths an operator actually hears
+// about — the new decision #3025 introduced, alongside the rewrite-side
+// exclusion #3026 added above. The caller that uses it
 // needs an elevated Windows box and a real VSS provider to reach, so this is
 // the level at which that logic can be tested at all. Windows-gated because
 // isLocalVolumePath rests on filepath.VolumeName, which is "" for everything
 // off-Windows — a portable version would assert nothing.
 func TestReportableLiveReads_Selection(t *testing.T) {
-	const noStaging = -1
+	const noStaging = noStagingIdx
 
 	tests := []struct {
 		name       string
@@ -383,7 +531,7 @@ func TestLive_RewrittenShadowPathReadsExclusivelyLockedFile(t *testing.T) {
 	defer p.ReleaseShadowCopy(session) //nolint:errcheck
 
 	// The production rewrite — not a hand-rolled copy of it.
-	rewritten, unmapped := rewritePathsForVSS([]string{target}, session.ShadowPaths)
+	rewritten, unmapped := rewritePathsForVSS([]string{target}, session.ShadowPaths, noStagingIdx)
 	if len(unmapped) != 0 {
 		t.Fatalf("the backup path fell back to the live volume despite an active shadow copy "+
 			"(ShadowPaths=%v) — this is the silent #2999 failure mode", session.ShadowPaths)
