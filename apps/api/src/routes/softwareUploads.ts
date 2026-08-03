@@ -273,6 +273,175 @@ softwareUploadRoutes.post(
   },
 );
 
+class ChunkTooLargeError extends Error {}
+
+// Non-retryable instance-ownership failure text (also used by /complete).
+// Covers BOTH causes of a new PROCESS_INSTANCE_ID: an API restart (in-flight
+// sessions cannot survive it — the temp file's ownership is process-scoped)
+// and a second replica behind a non-sticky load balancer.
+const INSTANCE_MISMATCH_MESSAGE =
+  'This upload belongs to a different API process (the API restarted, or the request reached another replica). ' +
+  'Start the upload again; if this recurs behind a load balancer, enable session affinity (sticky sessions) ' +
+  'for /api/v1/software or run a single API replica.';
+
+// ---------------------------------------------------------------------------
+// PUT /catalog/:id/versions/uploads/:uploadId/chunks?offset=N — append chunk
+//
+// Contract (what makes per-chunk retry safe):
+//   offset === bytesReceived  -> truncate any garbage tail, append, CAS-advance
+//   offset  <  bytesReceived  -> duplicate delivery: idempotent no-op, 200
+//   offset  >  bytesReceived  -> gap: 409 carrying authoritative bytesReceived
+//   owner_instance_id !== PROCESS_INSTANCE_ID -> 409 upload_instance_mismatch,
+//     checked BEFORE the lock/filesystem — terminal for the client (Task 10).
+// ---------------------------------------------------------------------------
+softwareUploadRoutes.put(
+  '/catalog/:id/versions/uploads/:uploadId/chunks',
+  requireScope('organization', 'partner', 'system'),
+  requireSoftwareWrite,
+  requireMfa(),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
+    const catalogId = c.req.param('id')!;
+    const uploadId = c.req.param('uploadId')!;
+
+    const offsetRaw = c.req.query('offset');
+    const offset = Number(offsetRaw);
+    if (offsetRaw === undefined || !Number.isSafeInteger(offset) || offset < 0) {
+      return c.json({ error: 'offset query parameter must be a non-negative integer' }, 400);
+    }
+    const body = c.req.raw.body;
+    if (!body) return c.json({ error: 'Chunk body is empty' }, 400);
+
+    // Instance-ownership guard — BEFORE the lock and any filesystem work.
+    // The temp file lives on the process that created the session; another
+    // process can never append to it. Fail fast and non-retryably instead of
+    // letting the client burn its 409-resync budget on an unwinnable loop.
+    const [owned] = await db.select().from(softwareUploadSessions).where(and(
+      eq(softwareUploadSessions.id, uploadId),
+      eq(softwareUploadSessions.orgId, orgId),
+      eq(softwareUploadSessions.catalogId, catalogId),
+    ));
+    if (!owned) return c.json({ error: 'Upload session not found' }, 404);
+    if (owned.ownerInstanceId !== PROCESS_INSTANCE_ID) {
+      return c.json(
+        {
+          error: 'upload_instance_mismatch',
+          message: INSTANCE_MISMATCH_MESSAGE,
+          bytesReceived: owned.bytesReceived,
+        },
+        409,
+      );
+    }
+
+    return withSessionLock(uploadId, async () => {
+      // Re-read INSIDE the lock so bytesReceived reflects the previous append.
+      const [session] = await db.select().from(softwareUploadSessions).where(and(
+        eq(softwareUploadSessions.id, uploadId),
+        eq(softwareUploadSessions.orgId, orgId),
+        eq(softwareUploadSessions.catalogId, catalogId),
+      ));
+      if (!session) return c.json({ error: 'Upload session not found' }, 404);
+      if (session.status !== 'active') {
+        return c.json(
+          { error: 'Upload session is not active', bytesReceived: session.bytesReceived },
+          409,
+        );
+      }
+
+      if (offset < session.bytesReceived) {
+        // Duplicate of an already-consumed chunk (the client retried after a
+        // lost response). Idempotent no-op — report authoritative state.
+        return c.json({ data: { bytesReceived: session.bytesReceived } });
+      }
+      if (offset > session.bytesReceived) {
+        return c.json(
+          { error: 'Chunk offset does not match received bytes', bytesReceived: session.bytesReceived },
+          409,
+        );
+      }
+
+      await mkdir(dirname(session.tempPath), { recursive: true });
+      // Discard any garbage tail a previously-failed append left past the
+      // recorded offset — the CAS below only ever advances from clean state.
+      try {
+        await truncate(session.tempPath, offset);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+        if (offset > 0) {
+          // DB says bytes exist but the temp file is gone — a tmp cleaner
+          // (e.g. systemd-tmpfiles) removed it under a LIVE process. (A
+          // restarted process never reaches here: its new PROCESS_INSTANCE_ID
+          // trips the pre-lock instance guard first.) Reset so the client
+          // restarts from 0.
+          await db.update(softwareUploadSessions)
+            .set({ bytesReceived: 0, lastActivityAt: new Date() })
+            .where(eq(softwareUploadSessions.id, uploadId));
+          return c.json({ error: 'Upload state lost; restart from offset 0', bytesReceived: 0 }, 409);
+        }
+        // offset 0 with no file yet: normal first chunk.
+      }
+
+      const maxChunkBytes = Math.min(session.chunkSize, session.fileSize - offset);
+      let written = 0;
+      const counter = new Transform({
+        transform(chunk: Buffer, _enc, cb) {
+          written += chunk.length;
+          if (written > maxChunkBytes) {
+            cb(new ChunkTooLargeError());
+            return;
+          }
+          cb(null, chunk);
+        },
+      });
+
+      try {
+        await pipeline(
+          Readable.fromWeb(body as Parameters<typeof Readable.fromWeb>[0]),
+          counter,
+          createWriteStream(session.tempPath, { flags: 'a' }),
+        );
+      } catch (err) {
+        // Roll the file back so disk and DB agree on bytesReceived.
+        await truncate(session.tempPath, offset).catch(() => {});
+        if (err instanceof ChunkTooLargeError) {
+          return c.json({ error: `Chunk exceeds allowed size (max ${maxChunkBytes} bytes)` }, 413);
+        }
+        captureException(err, c);
+        return c.json({ error: 'Failed to store chunk' }, 500);
+      }
+      if (written === 0) return c.json({ error: 'Chunk body is empty' }, 400);
+
+      const newBytesReceived = offset + written;
+      // CAS: only advance from the offset we validated against. Under the
+      // in-process lock this can only lose to an out-of-band write (should
+      // never happen single-instance) — roll back the file and resync.
+      const [updated] = await db.update(softwareUploadSessions)
+        .set({ bytesReceived: newBytesReceived, lastActivityAt: new Date() })
+        .where(and(
+          eq(softwareUploadSessions.id, uploadId),
+          eq(softwareUploadSessions.bytesReceived, offset),
+        ))
+        .returning({ bytesReceived: softwareUploadSessions.bytesReceived });
+      if (!updated) {
+        await truncate(session.tempPath, offset).catch(() => {});
+        const [fresh] = await db
+          .select({ bytesReceived: softwareUploadSessions.bytesReceived })
+          .from(softwareUploadSessions)
+          .where(eq(softwareUploadSessions.id, uploadId));
+        return c.json(
+          { error: 'Concurrent write detected', bytesReceived: fresh?.bytesReceived ?? 0 },
+          409,
+        );
+      }
+
+      return c.json({ data: { bytesReceived: updated.bytesReceived } });
+    });
+  },
+);
+
 // ---------------------------------------------------------------------------
 // GET /catalog/:id/versions/uploads/:uploadId — resume status
 // ---------------------------------------------------------------------------

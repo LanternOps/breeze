@@ -395,6 +395,166 @@ describe('software upload-session routes', () => {
     });
   });
 
+  describe('PUT /software/catalog/:id/versions/uploads/:uploadId/chunks', () => {
+    const chunkUrl = (offset: number) =>
+      `/software/catalog/${CATALOG_ID}/versions/uploads/${UPLOAD_ID}/chunks?offset=${offset}`;
+
+    const putChunk = (offset: number, body: string) =>
+      app.request(chunkUrl(offset), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body,
+      });
+
+    // NB: every request that passes the pre-lock instance-ownership guard
+    // consumes TWO db.select results — the guard's pre-read, then the
+    // authoritative re-read inside the session lock.
+
+    it('appends a first chunk at offset 0 and advances bytesReceived', async () => {
+      selectQueue([makeSession()], [makeSession()]);
+      vi.mocked(db.update).mockReturnValueOnce(chainMock([{ bytesReceived: 5 }]) as any);
+
+      const res = await putChunk(0, 'hello');
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toEqual({ bytesReceived: 5 });
+
+      const written = await readFile(uploadSessionTempPath(UPLOAD_ID), 'utf8');
+      expect(written).toBe('hello');
+    });
+
+    it('appends a follow-up chunk at the recorded offset', async () => {
+      await mkdir(dirname(uploadSessionTempPath(UPLOAD_ID)), { recursive: true });
+      await writeFile(uploadSessionTempPath(UPLOAD_ID), 'hello');
+      selectQueue([makeSession({ bytesReceived: 5 })], [makeSession({ bytesReceived: 5 })]);
+      vi.mocked(db.update).mockReturnValueOnce(chainMock([{ bytesReceived: 10 }]) as any);
+
+      const res = await putChunk(5, 'world');
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toEqual({ bytesReceived: 10 });
+      expect(await readFile(uploadSessionTempPath(UPLOAD_ID), 'utf8')).toBe('helloworld');
+    });
+
+    it('treats a duplicate chunk at an already-consumed offset as an idempotent no-op', async () => {
+      await mkdir(dirname(uploadSessionTempPath(UPLOAD_ID)), { recursive: true });
+      await writeFile(uploadSessionTempPath(UPLOAD_ID), 'hello');
+      selectQueue([makeSession({ bytesReceived: 5 })], [makeSession({ bytesReceived: 5 })]);
+
+      const res = await putChunk(0, 'hello');
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toEqual({ bytesReceived: 5 });
+      // Nothing was written and no CAS update ran.
+      expect(await readFile(uploadSessionTempPath(UPLOAD_ID), 'utf8')).toBe('hello');
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('409s with the authoritative bytesReceived on an offset gap', async () => {
+      selectQueue([makeSession({ bytesReceived: 5 })], [makeSession({ bytesReceived: 5 })]);
+
+      const res = await putChunk(9, 'x');
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.bytesReceived).toBe(5);
+    });
+
+    it('discards a garbage tail beyond bytesReceived before appending (truncate)', async () => {
+      // A previous append died after writing 3 extra bytes past the recorded 5.
+      await mkdir(dirname(uploadSessionTempPath(UPLOAD_ID)), { recursive: true });
+      await writeFile(uploadSessionTempPath(UPLOAD_ID), 'helloGAR');
+      selectQueue([makeSession({ bytesReceived: 5 })], [makeSession({ bytesReceived: 5 })]);
+      vi.mocked(db.update).mockReturnValueOnce(chainMock([{ bytesReceived: 10 }]) as any);
+
+      const res = await putChunk(5, 'world');
+      expect(res.status).toBe(200);
+      expect(await readFile(uploadSessionTempPath(UPLOAD_ID), 'utf8')).toBe('helloworld');
+    });
+
+    it('409s and resets to 0 when the temp file vanished but the DB says bytes exist', async () => {
+      // No temp file on disk (tmp cleaned under a live process), bytesReceived = 5.
+      selectQueue([makeSession({ bytesReceived: 5 })], [makeSession({ bytesReceived: 5 })]);
+      vi.mocked(db.update).mockReturnValueOnce(chainMock([]) as any); // reset update
+
+      const res = await putChunk(5, 'world');
+      expect(res.status).toBe(409);
+      expect((await res.json()).bytesReceived).toBe(0);
+    });
+
+    it('413s a chunk that exceeds the allowed size and rolls the file back', async () => {
+      // chunkSize 5, so a 6-byte body at offset 0 overruns.
+      selectQueue([makeSession()], [makeSession()]);
+
+      const res = await putChunk(0, 'toobig'); // 6 bytes > chunkSize 5
+      expect(res.status).toBe(413);
+      // File rolled back to the offset (empty).
+      const content = await readFile(uploadSessionTempPath(UPLOAD_ID), 'utf8').catch(() => '');
+      expect(content).toBe('');
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('400s a missing offset', async () => {
+      const res = await app.request(
+        `/software/catalog/${CATALOG_ID}/versions/uploads/${UPLOAD_ID}/chunks`,
+        { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: 'x' },
+      );
+      expect(res.status).toBe(400);
+    });
+
+    it('409s upload_instance_mismatch for a session owned by another process — before any write', async () => {
+      // Pre-lock guard fires on the FIRST read; no second read, no fs work.
+      selectQueue([makeSession({ ownerInstanceId: 'some-other-process' })]);
+
+      const res = await putChunk(0, 'hello');
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe('upload_instance_mismatch');
+      expect(body.message).toMatch(/session affinity|single API/i);
+      // Non-retryable signal: nothing was written or updated.
+      expect(db.update).not.toHaveBeenCalled();
+      await expect(readFile(uploadSessionTempPath(UPLOAD_ID))).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+    });
+
+    it('409s "Concurrent write detected" with the fresh bytesReceived when the CAS loses', async () => {
+      // Offset matches bytesReceived (0), the write succeeds, but the CAS
+      // update matches zero rows (simulating a lost race) — the route must
+      // roll the file back and resync the client rather than silently
+      // reporting success.
+      selectQueue([makeSession()], [makeSession()]);
+      vi.mocked(db.update).mockReturnValueOnce(chainMock([]) as any); // CAS matched nothing
+      vi.mocked(db.select).mockReturnValueOnce(chainMock([{ bytesReceived: 7 }]) as any); // fresh re-read
+
+      const res = await putChunk(0, 'hello');
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe('Concurrent write detected');
+      expect(body.bytesReceived).toBe(7);
+      // Rolled back to offset 0 — the write is not left half-applied on disk.
+      const content = await readFile(uploadSessionTempPath(UPLOAD_ID), 'utf8').catch(() => '');
+      expect(content).toBe('');
+    });
+
+    // Tenant isolation: guessing another org's uploadId must never reach that
+    // session. Asserting only on the HTTP outcome can't prove this — the mock
+    // DB never actually filters, so a route that dropped the orgId/catalogId
+    // predicates would still pass every test above (the queued row is
+    // returned regardless of what `.where(...)` contains). This inspects the
+    // actual predicate built for BOTH reads (the pre-lock guard and the
+    // in-lock re-read), which are separate query-building call sites in the
+    // route and could drift independently.
+    it('scopes both the pre-lock guard read and the in-lock re-read by org AND catalog', async () => {
+      const guardCapture = captureChain([makeSession()]);
+      const lockCapture = captureChain([makeSession()]);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(guardCapture.chain)
+        .mockReturnValueOnce(lockCapture.chain);
+      vi.mocked(db.update).mockReturnValueOnce(chainMock([{ bytesReceived: 5 }]) as any);
+
+      const res = await putChunk(0, 'hello');
+      expect(res.status).toBe(200);
+      expectScopedByOrgAndCatalog(guardCapture.calls, 'org-123', CATALOG_ID);
+      expectScopedByOrgAndCatalog(lockCapture.calls, 'org-123', CATALOG_ID);
+    });
+  });
+
   describe('GET /software/catalog/:id/versions/uploads/:uploadId (status)', () => {
     it('returns bytesReceived/fileSize/status, scoped by org AND catalog (not uploadId alone)', async () => {
       const capture = captureChain([makeSession({ bytesReceived: 5 })]);
