@@ -67,12 +67,21 @@ import { detectionRulesSchema } from '@breeze/shared';
 export const softwareUploadRoutes = new Hono();
 
 // Mounted into softwareRoutes AFTER its own `use('*', authMiddleware)` (see
-// routes/software.ts), so this is redundant in production — but every other
-// sub-router in this codebase applies its own authMiddleware too (pattern:
-// routes/devices/moveOrg.ts), which is what makes the module testable in
-// isolation via `app.route('/software', softwareUploadRoutes)` without first
-// wiring a parent auth chain. authMiddleware is idempotent, so re-running it
-// on an already-authed context is harmless.
+// routes/software.ts), so in production this middleware sees an already-authed
+// context. That's safe — not merely "harmless" — because authMiddleware
+// (middleware/auth.ts:426-431) early-returns as soon as `c.get('auth')` is
+// already populated, so there is no second token verification and no added
+// per-request/per-chunk cost. It's still needed here (rather than relying
+// solely on the parent's `use`) so this router is independently mountable and
+// testable in isolation via `app.route('/software', softwareUploadRoutes)`
+// without first wiring a parent auth chain (pattern: routes/devices/moveOrg.ts).
+//
+// WARNING: `softwareRoutes.route('/', softwareUploadRoutes)` in software.ts
+// MUST stay the final registration in that file. Hono attaches a mounted
+// sub-router's wildcard middleware to sibling routes registered AFTER it on
+// the same parent (the hazard documented at routes/devices/index.ts:35-39) —
+// mounting this router earlier would silently run its (redundant but
+// non-trivial) middleware chain against unrelated /software/* routes below it.
 softwareUploadRoutes.use('*', authMiddleware);
 
 const requireSoftwareWrite = requirePermission(
@@ -157,6 +166,11 @@ const createUploadSessionSchema = uploadVersionMetadataSchema.extend({
   chunkSize: z.number().int().min(MIN_CHUNK_SIZE).max(MAX_CHUNK_SIZE),
 });
 
+// Mirrors software.ts's own `catalogIdParamSchema` — duplicated rather than
+// imported to avoid the routes/software.ts <-> routes/softwareUploads.ts
+// cycle (see module docblock).
+const catalogIdParamSchema = z.object({ id: z.string().guid() });
+
 const uploadParamSchema = z.object({
   id: z.string().guid(),
   uploadId: z.string().guid(),
@@ -170,6 +184,7 @@ softwareUploadRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requireSoftwareWrite,
   requireMfa(),
+  zValidator('param', catalogIdParamSchema),
   zValidator('json', createUploadSessionSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -191,7 +206,7 @@ softwareUploadRoutes.post(
       return c.json({ error: 'S3 storage is not configured' }, 503);
     }
 
-    const catalogId = c.req.param('id')!;
+    const { id: catalogId } = c.req.valid('param');
     const [catalogItem] = await db.select().from(softwareCatalog)
       .where(and(eq(softwareCatalog.id, catalogId), eq(softwareCatalog.orgId, orgId)));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
@@ -205,10 +220,18 @@ softwareUploadRoutes.post(
     // disk for hours, so concurrency is bounded before the row is inserted.
     // One aggregate over the org's active sessions; pg returns count()/sum()
     // as strings, hence the Number() coercions.
+    // `IS NOT DISTINCT FROM` (not `=`) for the per-user predicate: `auth.userId`
+    // is null for system-scope/service-principal callers (requireScope admits
+    // 'system'), and `created_by = NULL` is never true in SQL — a plain `=`
+    // would silently exempt every null-user caller from
+    // MAX_ACTIVE_UPLOAD_SESSIONS_PER_USER, defeating the local-disk-exhaustion
+    // guard for exactly the tokens least likely to be a human clicking
+    // "cancel". `IS NOT DISTINCT FROM` treats NULL = NULL as true, so all
+    // null-user sessions in an org share one bucket and are still capped.
     const [usage] = await db
       .select({
         orgActive: sql<number>`count(*)`,
-        userActive: sql<number>`count(*) filter (where ${softwareUploadSessions.createdBy} = ${auth.userId ?? null})`,
+        userActive: sql<number>`count(*) filter (where ${softwareUploadSessions.createdBy} is not distinct from ${auth.userId ?? null})`,
         orgBytes: sql<number>`coalesce(sum(${softwareUploadSessions.fileSize}), 0)`,
       })
       .from(softwareUploadSessions)

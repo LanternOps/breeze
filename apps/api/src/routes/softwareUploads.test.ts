@@ -101,6 +101,7 @@ import {
   MAX_ACTIVE_UPLOAD_BYTES_PER_ORG,
 } from './softwareUploads';
 import { db } from '../db';
+import { authMiddleware } from '../middleware/auth';
 import { insertLatestSoftwareVersion } from '../services/softwareVersionShared';
 import { uploadBinary, isS3Configured, S3OperationError } from '../services/s3Storage';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -139,6 +140,45 @@ function selectQueue(...results: unknown[][]) {
   }
 }
 
+/**
+ * Like `chainMock`, but records every chained call's arguments so tests can
+ * assert on what was actually built — the `.values(...)` payload passed to
+ * insert, or the `.where(...)` predicate passed to select — instead of only
+ * the terminal resolved value.
+ */
+function captureChain(terminalValue: any) {
+  const calls: Record<string, any[][]> = {};
+  const p: any = new Proxy(() => p, {
+    get: (_t, prop) => {
+      if (prop === 'then') return (resolve: any) => resolve(terminalValue);
+      return (...args: any[]) => {
+        (calls[String(prop)] ??= []).push(args);
+        return p;
+      };
+    },
+  });
+  return { chain: p, calls };
+}
+
+/**
+ * software_upload_sessions lookups must always be scoped by BOTH orgId and
+ * catalogId (never uploadId alone) — a user in another org must not be able
+ * to touch this session by guessing its UUID. Asserting only on the (mocked,
+ * non-filtering) return value would pass even if the scoping predicate were
+ * deleted from the route entirely, so this inspects the actual `.where(...)`
+ * argument — built from real drizzle-orm `and`/`eq` calls — and asserts the
+ * org/catalog columns AND the caller-supplied values are present in it.
+ */
+function expectScopedByOrgAndCatalog(calls: Record<string, any[][]>, orgId: string, catalogId: string) {
+  const whereArg = calls.where?.[0]?.[0];
+  expect(whereArg).toBeDefined();
+  const json = JSON.stringify(whereArg);
+  expect(json).toContain('sus_org_id');
+  expect(json).toContain(orgId);
+  expect(json).toContain('sus_catalog_id');
+  expect(json).toContain(catalogId);
+}
+
 describe('software upload-session routes', () => {
   let app: Hono;
 
@@ -163,9 +203,8 @@ describe('software upload-session routes', () => {
 
     it('creates a session and returns uploadId + bytesReceived 0', async () => {
       selectQueue([catalogRow], [makeUsage()]); // catalog lookup, then cap usage
-      vi.mocked(db.insert).mockReturnValueOnce(
-        chainMock([{ id: UPLOAD_ID, chunkSize: validBody.chunkSize }]) as any,
-      );
+      const insertCapture = captureChain([{ id: UPLOAD_ID, chunkSize: validBody.chunkSize }]);
+      vi.mocked(db.insert).mockReturnValueOnce(insertCapture.chain);
 
       const res = await app.request(`/software/catalog/${CATALOG_ID}/versions/uploads`, {
         method: 'POST',
@@ -179,6 +218,23 @@ describe('software upload-session routes', () => {
       expect(body.data.bytesReceived).toBe(0);
       expect(body.data.chunkSize).toBe(5 * 1024 * 1024);
       expect(db.insert).toHaveBeenCalledTimes(1);
+
+      // The inserted row is the actual contract Tasks 6/7 build on — assert
+      // it directly rather than only the HTTP response.
+      const inserted = insertCapture.calls.values?.[0]?.[0];
+      expect(inserted).toBeDefined();
+      expect(inserted.ownerInstanceId).toBe(PROCESS_INSTANCE_ID);
+      // Server-generated, not client-derived from fileName (path-traversal guard).
+      expect(inserted.tempPath).toBe(uploadSessionTempPath(inserted.id));
+      expect(inserted.tempPath).toMatch(/breeze-uploads[\\/]session-[0-9a-fA-F-]{36}\.part$/);
+      expect(inserted.orgId).toBe('org-123');
+      expect(inserted.catalogId).toBe(CATALOG_ID);
+      expect(inserted.fileName).toBe(validBody.fileName);
+      expect(inserted.fileSize).toBe(validBody.fileSize);
+      expect(inserted.chunkSize).toBe(5 * 1024 * 1024);
+      expect(inserted.bytesReceived).toBe(0);
+      expect(inserted.status).toBe('active');
+      expect(inserted.versionMetadata).toEqual({ version: '1.2.3', architecture: 'x64' });
     });
 
     describe('session caps (local-disk DoS guard)', () => {
@@ -240,6 +296,57 @@ describe('software upload-session routes', () => {
         );
         expect(db.insert).not.toHaveBeenCalled();
       });
+
+      // requireScope('organization', 'partner', 'system') admits system-scope /
+      // service-principal tokens, which carry auth.userId === null. A naive
+      // `created_by = $userId` predicate is never true when $userId is NULL in
+      // SQL, so every null-user caller would silently skip
+      // MAX_ACTIVE_UPLOAD_SESSIONS_PER_USER and be bounded only by the org cap
+      // — defeating the local-disk-exhaustion guard for exactly the automated
+      // callers most likely to fire many creates back-to-back. The route uses
+      // `IS NOT DISTINCT FROM` instead, which treats NULL = NULL as true so all
+      // null-user sessions in an org share one bucket and are still capped.
+      it('still binds the per-user cap for a null-user (system-scope) caller', async () => {
+        vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+          c.set('auth', {
+            user: { id: null, email: 'svc@example.com', name: 'Service Principal' },
+            userId: null,
+            scope: 'system',
+            orgId: null,
+            partnerId: null,
+          });
+          return next();
+        });
+
+        selectQueue(
+          [catalogRow],
+          [makeUsage({ userActive: MAX_ACTIVE_UPLOAD_SESSIONS_PER_USER })],
+        );
+
+        const res = await app.request(
+          `/software/catalog/${CATALOG_ID}/versions/uploads?orgId=org-123`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(validBody),
+          },
+        );
+
+        expect(res.status).toBe(429);
+        expect((await res.json()).error).toBe(
+          'Too many concurrent package uploads for this user',
+        );
+        expect(db.insert).not.toHaveBeenCalled();
+
+        // Structural guard: the aggregate's per-user predicate must compare
+        // via IS NOT DISTINCT FROM against created_by, not `=`.
+        const usageProjection = vi.mocked(db.select).mock.calls[1]?.[0] as
+          | Record<string, unknown>
+          | undefined;
+        const userActiveSql = JSON.stringify(usageProjection?.userActive);
+        expect(userActiveSql).toContain('is not distinct from');
+        expect(userActiveSql).toContain('created_by');
+      });
     });
 
     it('rejects a disallowed extension up front (before any bytes move)', async () => {
@@ -272,11 +379,27 @@ describe('software upload-session routes', () => {
       });
       expect(res.status).toBe(404);
     });
+
+    // GET/DELETE validate `:id` as a UUID (uploadParamSchema); create must too
+    // — otherwise a non-UUID catalog id reaches a `uuid` column unvalidated
+    // and surfaces as a 500 instead of a clean 400.
+    it('400s for a malformed (non-UUID) catalog id, never reaching the DB', async () => {
+      const res = await app.request('/software/catalog/not-a-uuid/versions/uploads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(validBody),
+      });
+      expect(res.status).toBe(400);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
   });
 
   describe('GET /software/catalog/:id/versions/uploads/:uploadId (status)', () => {
-    it('returns bytesReceived/fileSize/status', async () => {
-      selectQueue([makeSession({ bytesReceived: 5 })]);
+    it('returns bytesReceived/fileSize/status, scoped by org AND catalog (not uploadId alone)', async () => {
+      const capture = captureChain([makeSession({ bytesReceived: 5 })]);
+      vi.mocked(db.select).mockReturnValueOnce(capture.chain);
+
       const res = await app.request(
         `/software/catalog/${CATALOG_ID}/versions/uploads/${UPLOAD_ID}`,
       );
@@ -287,23 +410,32 @@ describe('software upload-session routes', () => {
         fileSize: 10,
         status: 'active',
       });
+      // A cross-tenant caller must not be able to reach a session by guessing
+      // its UUID: the query has to filter by orgId AND catalogId too. Queueing
+      // a return value alone can't prove this (the mock DB never actually
+      // filters), so this asserts on the WHERE predicate the route built.
+      expectScopedByOrgAndCatalog(capture.calls, 'org-123', CATALOG_ID);
     });
 
-    it('404s for an unknown session', async () => {
-      selectQueue([]);
+    it('404s for an unknown session, having still queried scoped by org AND catalog', async () => {
+      const capture = captureChain([]);
+      vi.mocked(db.select).mockReturnValueOnce(capture.chain);
+
       const res = await app.request(
         `/software/catalog/${CATALOG_ID}/versions/uploads/${UPLOAD_ID}`,
       );
       expect(res.status).toBe(404);
+      expectScopedByOrgAndCatalog(capture.calls, 'org-123', CATALOG_ID);
     });
   });
 
   describe('DELETE /software/catalog/:id/versions/uploads/:uploadId (abort)', () => {
-    it('removes the temp file and the session row', async () => {
+    it('removes the temp file and the session row, scoped by org AND catalog', async () => {
       const tempPath = uploadSessionTempPath(UPLOAD_ID);
       await mkdir(dirname(tempPath), { recursive: true });
       await writeFile(tempPath, 'partial');
-      selectQueue([makeSession()]);
+      const capture = captureChain([makeSession()]);
+      vi.mocked(db.select).mockReturnValueOnce(capture.chain);
 
       const res = await app.request(
         `/software/catalog/${CATALOG_ID}/versions/uploads/${UPLOAD_ID}`,
@@ -313,6 +445,20 @@ describe('software upload-session routes', () => {
       expect(await res.json()).toEqual({ success: true });
       expect(db.delete).toHaveBeenCalledTimes(1);
       await expect(readFile(tempPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      expectScopedByOrgAndCatalog(capture.calls, 'org-123', CATALOG_ID);
+    });
+
+    it('404s for an unknown session, having still queried scoped by org AND catalog', async () => {
+      const capture = captureChain([]);
+      vi.mocked(db.select).mockReturnValueOnce(capture.chain);
+
+      const res = await app.request(
+        `/software/catalog/${CATALOG_ID}/versions/uploads/${UPLOAD_ID}`,
+        { method: 'DELETE' },
+      );
+      expect(res.status).toBe(404);
+      expect(db.delete).not.toHaveBeenCalled();
+      expectScopedByOrgAndCatalog(capture.calls, 'org-123', CATALOG_ID);
     });
   });
 });
