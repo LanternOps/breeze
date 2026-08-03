@@ -3,6 +3,7 @@ import { AlertTriangle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 
@@ -43,6 +44,13 @@ type PossibleReplacementBannerProps = {
  * out, but a fetch can still race a deletion or land on a row the viewer's
  * site scope hides. In that case the banner still renders (the collision is
  * real and worth surfacing) with a generic label and no action.
+ *
+ * Decommission is IRREVERSIBLE from the user's point of view — server-side it
+ * force-disconnects the agent WebSocket and tears down live remote sessions —
+ * so it goes through the same `ConfirmDialog` every other decommission trigger
+ * in the app uses (`DeviceActions.tsx`), reusing that component's copy keys
+ * verbatim rather than paraphrasing them. A single-click DELETE here would be
+ * the only unconfirmed path to that endpoint in the web app.
  */
 export default function PossibleReplacementBanner({
   possibleReplacementOfDeviceId,
@@ -53,6 +61,7 @@ export default function PossibleReplacementBanner({
   const [oldDevice, setOldDevice] = useState<OldDeviceSummary | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -90,6 +99,7 @@ export default function PossibleReplacementBanner({
     setOldDevice(null);
     setUnavailable(false);
     setBusy(false);
+    setConfirmOpen(false);
     void fetchOldDevice();
   }, [fetchOldDevice]);
 
@@ -116,13 +126,20 @@ export default function PossibleReplacementBanner({
       // thrown-before-transport bug and still needs a toast. Anything else was
       // already toasted inside runAction.
       handleActionError(err, t('possibleReplacementBanner.decommissionFailed'));
-      if (mountedRef.current) setBusy(false);
+      // Leave the dialog closed but the button live so the user can retry.
+      if (mountedRef.current) {
+        setBusy(false);
+        setConfirmOpen(false);
+      }
       return;
     }
     // Re-read the old row so the banner reflects its new state (the action
     // retires, the resolved note takes its place) without a page reload.
     await fetchOldDevice();
-    if (mountedRef.current) setBusy(false);
+    if (mountedRef.current) {
+      setBusy(false);
+      setConfirmOpen(false);
+    }
   };
 
   return (
@@ -153,7 +170,7 @@ export default function PossibleReplacementBanner({
             <button
               type="button"
               data-testid="possible-replacement-decommission"
-              onClick={() => void handleDecommission()}
+              onClick={() => setConfirmOpen(true)}
               disabled={busy}
               className="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1 text-sm font-medium text-destructive hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -178,6 +195,26 @@ export default function PossibleReplacementBanner({
           )}
         </div>
       </div>
+      {confirmOpen && (
+        // Same dialog, same copy keys, same `destructive` variant as every
+        // other decommission trigger (DeviceActions.tsx). Reused rather than
+        // paraphrased so the two can never drift apart in any locale.
+        <ConfirmDialog
+          open
+          onClose={() => {
+            if (!busy) setConfirmOpen(false);
+          }}
+          onConfirm={() => void handleDecommission()}
+          title={t('deviceActions.confirm.decommission.title')}
+          message={t('deviceActions.confirm.decommission.message', {
+            hostname: label,
+          })}
+          confirmLabel={t('deviceActions.confirm.decommission.confirm')}
+          variant="destructive"
+          isLoading={busy}
+          confirmTestId="possible-replacement-confirm"
+        />
+      )}
     </div>
   );
 }

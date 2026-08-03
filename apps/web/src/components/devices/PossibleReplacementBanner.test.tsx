@@ -1,6 +1,6 @@
 import '@/lib/i18n';
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import PossibleReplacementBanner from './PossibleReplacementBanner';
@@ -87,6 +87,52 @@ describe('PossibleReplacementBanner (#2764)', () => {
     expect(fetchWithAuthMock).toHaveBeenCalledWith(`/devices/${OLD_DEVICE_ID}`);
   });
 
+  // Decommission force-disconnects the agent WS and tears down live remote
+  // sessions server-side. Every other trigger in the app confirms first
+  // (DeviceActions.tsx); this banner must not be the one unguarded path.
+  it('opens a confirm dialog on click and sends NO request until confirmed', async () => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(oldDevicePayload()));
+
+    render(<PossibleReplacementBanner possibleReplacementOfDeviceId={OLD_DEVICE_ID} />);
+
+    fireEvent.click(await screen.findByTestId('possible-replacement-decommission'));
+
+    expect(await screen.findByTestId('possible-replacement-confirm')).toBeInTheDocument();
+    // Hostname-specific destructive copy, shared verbatim with DeviceActions.
+    // Scoped to the dialog — the banner body names the host too.
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText(/OLD-LAPTOP-01/)).toBeInTheDocument();
+    // The confirm button carries DeviceActions' own label, not a paraphrase.
+    expect(screen.getByTestId('possible-replacement-confirm')).toHaveTextContent(
+      'Decommission',
+    );
+    // Only the initial summary GET — no DELETE has gone out.
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+  });
+
+  it('sends nothing and closes the dialog when the confirm is cancelled', async () => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(oldDevicePayload()));
+
+    render(<PossibleReplacementBanner possibleReplacementOfDeviceId={OLD_DEVICE_ID} />);
+
+    fireEvent.click(await screen.findByTestId('possible-replacement-decommission'));
+    await screen.findByTestId('possible-replacement-confirm');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('possible-replacement-confirm')).toBeNull(),
+    );
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+    expect(showToastMock).not.toHaveBeenCalled();
+    // The action stays available for a deliberate second attempt.
+    expect(screen.getByTestId('possible-replacement-decommission')).toBeEnabled();
+  });
+
   it('decommissions the old device through runAction and re-fetches it afterwards', async () => {
     fetchWithAuthMock
       // initial summary fetch
@@ -98,8 +144,8 @@ describe('PossibleReplacementBanner (#2764)', () => {
 
     render(<PossibleReplacementBanner possibleReplacementOfDeviceId={OLD_DEVICE_ID} />);
 
-    const button = await screen.findByTestId('possible-replacement-decommission');
-    fireEvent.click(button);
+    fireEvent.click(await screen.findByTestId('possible-replacement-decommission'));
+    fireEvent.click(await screen.findByTestId('possible-replacement-confirm'));
 
     await waitFor(() =>
       expect(fetchWithAuthMock).toHaveBeenCalledWith(`/devices/${OLD_DEVICE_ID}`, {
@@ -133,6 +179,7 @@ describe('PossibleReplacementBanner (#2764)', () => {
     render(<PossibleReplacementBanner possibleReplacementOfDeviceId={OLD_DEVICE_ID} />);
 
     fireEvent.click(await screen.findByTestId('possible-replacement-decommission'));
+    fireEvent.click(await screen.findByTestId('possible-replacement-confirm'));
 
     await waitFor(() =>
       expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })),
@@ -148,6 +195,7 @@ describe('PossibleReplacementBanner (#2764)', () => {
     render(<PossibleReplacementBanner possibleReplacementOfDeviceId={OLD_DEVICE_ID} />);
 
     fireEvent.click(await screen.findByTestId('possible-replacement-decommission'));
+    fireEvent.click(await screen.findByTestId('possible-replacement-confirm'));
 
     await waitFor(() =>
       expect(screen.getByTestId('possible-replacement-decommission')).toBeEnabled(),
