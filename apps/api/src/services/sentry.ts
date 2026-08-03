@@ -203,6 +203,52 @@ export function scrubEvent<T extends Record<string, any>>(event: T): T {
   return event;
 }
 
+/**
+ * #3077: the same rebuild for TRANSACTION events, which `beforeSend` never sees.
+ *
+ * `@sentry/core` dispatches the two hooks by event type — `beforeSend` for error
+ * events, `beforeSendTransaction` for transactions — so `scrubEvent` above ran on
+ * exactly half the outbound traffic. Meanwhile `requestDataIntegration()` is a
+ * default node integration whose `processEvent` fires on EVERY event type and
+ * copies the request header bag verbatim into `event.request.headers`; the SDK's
+ * own `SENSITIVE_KEY_SNIPPETS` deny list (which would have caught `x-api-key`)
+ * is only applied on the span-attribute path, not to the event body. So a
+ * sampled transaction on an api-key route shipped a live `brz_` credential with
+ * no error involved at all — and `.env.example` ships
+ * `SENTRY_TRACES_SAMPLE_RATE=0.1`, so sampling is on for anyone who copies it.
+ *
+ * This deliberately does NOT reuse `scrubEvent`: that one deletes `contexts`,
+ * and a transaction event without `contexts.trace` is invalid — reusing it would
+ * silently disable tracing rather than secure it. Instead `contexts` is narrowed
+ * to `trace` alone, which is the field the event format requires and the only one
+ * carrying no host or tenant detail (`nodeContextIntegration` fills the rest with
+ * server metadata).
+ *
+ * `event.spans[].data` is left alone: those attributes already pass through the
+ * SDK's `filterKeyValueData` + `SENSITIVE_KEY_SNIPPETS` in
+ * `httpHeadersToSpanAttributes`, so header values arrive pre-redacted there.
+ */
+export function scrubTransactionEvent<T extends Record<string, any>>(event: T): T {
+  const mutableEvent = event as Record<string, any>;
+  // Same allowlist rebuild as scrubEvent: drops headers, url, query_string and
+  // the request body in one move rather than denying known-bad header names.
+  mutableEvent.request =
+    typeof mutableEvent.request?.method === 'string'
+      ? { method: mutableEvent.request.method }
+      : undefined;
+  delete mutableEvent.extra;
+  delete mutableEvent.breadcrumbs;
+  const trace = mutableEvent.contexts?.trace;
+  mutableEvent.contexts = trace ? { trace } : undefined;
+  mutableEvent.tags = pickAllowedTags(mutableEvent.tags);
+  mutableEvent.user =
+    typeof mutableEvent.user?.id === 'string' &&
+    isBoundedTagValue(mutableEvent.user.id)
+      ? { id: mutableEvent.user.id }
+      : undefined;
+  return event;
+}
+
 function parseSampleRate(raw: string | undefined): number {
   if (!raw) return 0;
   const parsed = Number(raw);
@@ -232,7 +278,8 @@ export function initSentry(): void {
     release: API_VERSION,
     tracesSampleRate,
     profilesSampleRate: parseSampleRate(process.env.SENTRY_PROFILES_SAMPLE_RATE),
-    beforeSend: (event) => scrubEvent(event)
+    beforeSend: (event) => scrubEvent(event),
+    beforeSendTransaction: (event) => scrubTransactionEvent(event)
   });
 
   initialized = true;
