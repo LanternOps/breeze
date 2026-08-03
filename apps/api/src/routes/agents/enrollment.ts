@@ -440,10 +440,23 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
 
     // The row this enrollment is measured against: the one the agent proved
     // possession of, else the ONLINE collider (the live lookalike an operator
-    // needs pointed at), else the oldest.
+    // needs pointed at), else any LIVE collider, else the oldest.
+    //
+    // The "any live collider" rung is load-bearing. A decommissioned row is a
+    // dead record an admin already retired; letting it win over a live sibling
+    // would (a) route a plain collision into the #914 decom bypass — losing
+    // the replacement linkage, the collision audit and the alert — and (b) if
+    // that dead row also carried a probe suspension, resurrect the
+    // `existing_decommissioned_row_has_suspended_token` 409 against a
+    // perfectly healthy host, i.e. exactly the permanently-un-enrollable
+    // failure this change exists to remove. Reachable in the field: a
+    // collision mints row2, an operator then decommissions row1, and row2's
+    // machine reinstalls. Decom-bypass therefore fires only when EVERY
+    // collider is decommissioned.
     const existingDevice =
       authenticatedDevice ??
       collidingDevices.find((candidate) => candidate.status === 'online') ??
+      collidingDevices.find((candidate) => candidate.status !== 'decommissioned') ??
       collidingDevices[0];
 
     // Containment can never be escaped by re-enrolling. When the agent proved

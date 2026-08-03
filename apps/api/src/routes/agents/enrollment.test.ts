@@ -1007,6 +1007,275 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     expect(tx.deviceInsertValues).toHaveLength(0);
   });
 
+  it('a DECOMMISSIONED collider never shadows a live one: collision path fires, not decom-bypass', async () => {
+    // Sequence that made this reachable: a collision minted row2; the operator
+    // then decommissioned row1; row2's machine reinstalls with no token. The
+    // oldest collider is row1 (decommissioned), but the enrollment is plainly
+    // a replacement of the LIVE row2 — taking the decom bypass here would skip
+    // linkage, the collision audit and the alert entirely.
+    mockKeyLookup({
+      id: 'key-decom-shadow',
+      orgId: 'org-decom-shadow',
+      siteId: 'site-decom-shadow',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-decom-shadow' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([
+      {
+        id: 'device-decommissioned-oldest',
+        status: 'decommissioned',
+        agentTokenHash: 'dead-hash',
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        agentTokenSuspendedAt: null,
+      },
+      {
+        id: 'device-live-offline',
+        status: 'offline',
+        agentTokenHash: 'live-hash',
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        agentTokenSuspendedAt: null,
+      },
+    ]);
+
+    const tx = mockTransaction({
+      id: 'device-decom-shadow-fresh',
+      orgId: 'org-decom-shadow',
+      siteId: 'site-decom-shadow',
+      hostname: 'host-1',
+    }, 'key-decom-shadow');
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+    // Linked to the LIVE row, not the decommissioned one.
+    expect(tx.deviceInsertValues[0]).toMatchObject({
+      possibleReplacementOfDeviceId: 'device-live-offline',
+    });
+    // No decom-bypass: the prior row was NOT renamed.
+    expect(tx.updatedTables).not.toContain(devicesTable);
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        resourceId: 'device-decom-shadow-fresh',
+        details: expect.objectContaining({
+          reason: 'hostname_collision_enrolled_fresh_row',
+          possibleReplacementOfDeviceId: 'device-live-offline',
+          collidingDeviceIds: ['device-decommissioned-oldest', 'device-live-offline'],
+        }),
+      }),
+    );
+    expect(writeAuditEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({
+          reason: 'decommissioned_row_reenrolled_fresh_id',
+        }),
+      }),
+    );
+  });
+
+  it('a decommissioned+SUSPENDED collider alongside a live one does not resurrect the un-enrollable 409', async () => {
+    // Same shape as above but the dead row also carries a probe suspension.
+    // Selecting it would return `existing_decommissioned_row_has_suspended_token`
+    // and make a perfectly healthy host permanently un-enrollable — precisely
+    // the failure this whole change exists to remove. The 409 stays reachable
+    // only when EVERY collider is decommissioned (pinned separately below).
+    mockKeyLookup({
+      id: 'key-decom-susp-shadow',
+      orgId: 'org-decom-susp-shadow',
+      siteId: 'site-decom-susp-shadow',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-decom-susp-shadow' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([
+      {
+        id: 'device-decom-suspended',
+        status: 'decommissioned',
+        agentTokenHash: 'dead-hash',
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        agentTokenSuspendedAt: new Date('2026-05-25T12:00:00Z'),
+      },
+      {
+        id: 'device-live-online',
+        status: 'online',
+        agentTokenHash: 'live-hash',
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        agentTokenSuspendedAt: null,
+      },
+    ]);
+
+    const tx = mockTransaction({
+      id: 'device-decom-susp-fresh',
+      orgId: 'org-decom-susp-shadow',
+      siteId: 'site-decom-susp-shadow',
+      hostname: 'host-1',
+    }, 'key-decom-susp-shadow');
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+    expect(tx.deviceInsertValues[0]).toMatchObject({
+      possibleReplacementOfDeviceId: 'device-live-online',
+    });
+    expect(writeAuditEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({
+          reason: 'existing_decommissioned_row_has_suspended_token',
+        }),
+      }),
+    );
+  });
+
+  it('an unauthenticated enrollment is refused when ANY collider is quarantined', async () => {
+    // Containment must not be sidestepped by the collision path: without a
+    // credential there is nothing distinguishing this agent from the
+    // quarantined row itself, so any quarantined collider blocks.
+    mockKeyLookup({
+      id: 'key-q-multi',
+      orgId: 'org-q-multi',
+      siteId: 'site-q-multi',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-q-multi' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([
+      {
+        id: 'device-q-clean-oldest',
+        status: 'offline',
+        agentTokenHash: 'clean-hash',
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        agentTokenSuspendedAt: null,
+      },
+      {
+        id: 'device-q-quarantined',
+        status: 'quarantined',
+        agentTokenHash: 'quarantined-hash',
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        agentTokenSuspendedAt: null,
+      },
+    ]);
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(403);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.reason).toBe('device_quarantined');
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        resourceId: 'device-q-quarantined',
+        result: 'denied',
+        details: expect.objectContaining({
+          reason: 'quarantined_device_reenroll_refused',
+        }),
+      }),
+    );
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('a quarantined SIBLING does not block an agent that authenticated to its own clean row', async () => {
+    // The agent proved possession of a non-quarantined row's credential —
+    // quarantine of some other row sharing the hostname is not a claim over
+    // this device, and refusing here would break re-enrollment idempotency.
+    const validToken = 'clean-row-token';
+    const validHash = createHash('sha256').update(validToken).digest('hex');
+
+    mockKeyLookup({
+      id: 'key-q-sibling',
+      orgId: 'org-q-sibling',
+      siteId: 'site-q-sibling',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-q-sibling' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([
+      {
+        id: 'device-q-sibling-quarantined',
+        status: 'quarantined',
+        agentTokenHash: 'not-ours',
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        agentTokenSuspendedAt: null,
+      },
+      {
+        id: 'device-q-sibling-clean',
+        status: 'offline',
+        agentTokenHash: validHash,
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        agentTokenSuspendedAt: null,
+      },
+    ]);
+
+    const tx = mockTransaction({
+      id: 'device-q-sibling-clean',
+      orgId: 'org-q-sibling',
+      siteId: 'site-q-sibling',
+      hostname: 'host-1',
+    }, 'key-q-sibling');
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-agent-reenrollment-token': validToken,
+      },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.deviceId).toBe('device-q-sibling-clean');
+    // In-place re-enroll of the agent's own row; no fresh row minted.
+    expect(tx.updatedTables).toContain(devicesTable);
+    expect(tx.deviceInsertValues).toHaveLength(0);
+    expect(writeAuditEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({
+          reason: 'quarantined_device_reenroll_refused',
+        }),
+      }),
+    );
+  });
+
   it('allows re-enrollment without the existing-device token when the existing row is decommissioned (mints a fresh device.id — #914)', async () => {
     // Real-world scenario (Trevor-Legion, 2026-05-25):
     // 1. Admin calls DELETE /api/v1/devices/<id> — soft-deletes, status=decommissioned
