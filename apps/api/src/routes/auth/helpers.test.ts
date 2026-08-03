@@ -355,6 +355,19 @@ function disableProxyTrustEnv(): void {
 }
 
 describe('isRequestConnectionSecure (#1618 — Secure flag tracks real transport)', () => {
+  // These tests assert on the "auto" trust-mode default (non-production ==
+  // trusted), which a gitignored repo-root .env setting TRUST_PROXY_HEADERS=false
+  // for local dev silently overrides via dotenv injection at test-run time. CI
+  // has no .env file so it never sees this; pin the var explicitly so the
+  // suite is deterministic regardless of the machine's ambient environment.
+  beforeEach(() => {
+    vi.stubEnv('TRUST_PROXY_HEADERS', 'true');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('true when X-Forwarded-Proto is https (Caddy behind TLS)', () => {
     expect(isRequestConnectionSecure(makeCookieContext({ forwardedProto: 'https' }).c)).toBe(true);
   });
