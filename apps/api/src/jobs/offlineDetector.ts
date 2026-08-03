@@ -8,7 +8,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { devices, alertRules, alertTemplates, alerts } from '../db/schema';
-import { eq, and, lt, gt, asc, inArray, or } from 'drizzle-orm';
+import { eq, and, lt, gt, asc, inArray, or, isNull } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { publishEvent } from '../services/eventBus';
 import { createAlert, evaluateDeviceAlertsFromPolicy, alertRuleOwnershipConditionForOrg } from '../services/alertService';
@@ -17,6 +17,8 @@ import { resolveReevalHorizonMinutes } from '../services/alertConditions/offline
 import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
 import { envInt } from '../utils/envInt';
+import { createAuditLogAsync } from '../services/auditService';
+import { ANONYMOUS_ACTOR_ID } from '../services/auditEvents';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -33,6 +35,24 @@ let offlineQueue: Queue | null = null;
 
 // Default offline threshold in minutes
 const DEFAULT_OFFLINE_THRESHOLD_MINUTES = 5;
+
+// Task 5 (#2764) — how long an uninstall-intent stamp (devices.uninstall_intent_at,
+// set by POST /agents/:id/uninstall-intent) may sit with no heartbeat before the
+// reaper decommissions the row. A heartbeat clears the stamp unconditionally
+// (routes/agents/heartbeat.ts), so this window is purely "did the uninstall
+// actually happen" slack — long enough to tolerate a slow/failed uninstall
+// retry, short enough that a genuinely-removed device drops off the active
+// fleet count within about a day.
+const DEFAULT_UNINSTALL_INTENT_DECOMMISSION_HOURS = 24;
+// How often the reaper sweep runs. Independent of the reeval gate — a stuck
+// uninstall-intent stamp is a fleet-count correctness issue, not an optional
+// alert, so this always runs. 15 minutes gives ample granularity against an
+// hours-scale decommission window.
+const DEFAULT_UNINSTALL_INTENT_REAP_INTERVAL_MS = 15 * 60 * 1000;
+
+function getUninstallIntentDecommissionHours(): number {
+  return envInt('UNINSTALL_INTENT_DECOMMISSION_HOURS', DEFAULT_UNINSTALL_INTENT_DECOMMISSION_HOURS);
+}
 
 // Re-evaluation sweep (issue #1982): how far back a device may have last been
 // seen and still be re-evaluated for longer-duration offline rules. Bounds the
@@ -106,11 +126,18 @@ interface ReevaluateOfflineJobData {
   orgId: string;
 }
 
+// Task 5 (#2764): periodic sweep decommissioning devices whose uninstall
+// intent has aged out with no intervening heartbeat.
+interface ReapUninstallIntentJobData {
+  type: 'reap-uninstall-intent';
+}
+
 type OfflineJobData =
   | DetectOfflineJobData
   | MarkOfflineJobData
   | ReevaluateOfflineSweepJobData
-  | ReevaluateOfflineJobData;
+  | ReevaluateOfflineJobData
+  | ReapUninstallIntentJobData;
 
 /**
  * Create the offline detection worker
@@ -132,6 +159,9 @@ export function createOfflineWorker(): Worker<OfflineJobData> {
 
           case 'reevaluate-offline':
             return await processReevaluateOffline(job.data);
+
+          case 'reap-uninstall-intent':
+            return await processReapUninstallIntent();
 
           default:
             throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
@@ -606,6 +636,117 @@ export async function processReevaluateOfflineSweep(): Promise<{
 }
 
 /**
+ * Task 5 (#2764) — sweep and decommission devices whose uninstall-intent
+ * stamp has aged past UNINSTALL_INTENT_DECOMMISSION_HOURS (default 24) with
+ * no heartbeat since the stamp was written.
+ *
+ * Predicate (binding, spec #2764):
+ *   uninstall_intent_at < now() - interval
+ *   AND (last_seen_at IS NULL OR last_seen_at < uninstall_intent_at)
+ *
+ * A device that heartbeats after stamping intent is NEVER touched: the
+ * heartbeat route clears uninstall_intent_at unconditionally on every beat
+ * (routes/agents/heartbeat.ts), which both drops the row out of the partial
+ * index this predicate reads and — belt-and-suspenders — the second half of
+ * the predicate itself would already exclude any row whose lastSeenAt caught
+ * up to (or passed) the stamp, in the window before that clearing write
+ * lands.
+ *
+ * Chunked cursor scan mirrors processDetectOffline's batch-scan shape. The
+ * per-candidate UPDATE re-applies the SAME predicate in its WHERE clause —
+ * closing the TOCTOU window between the SELECT and the write: a heartbeat
+ * landing in between already nulled uninstall_intent_at, so the guarded
+ * UPDATE matches 0 rows there and is correctly skipped (same shape as the
+ * terminal-status guard on heartbeat.ts's own device UPDATE). Decommission
+ * writes the EXACT field set the admin decommission route writes
+ * (routes/devices/core.ts's `DELETE /:id` — `status: 'decommissioned'` +
+ * `updatedAt`; there is no `decommissionedAt` column in this schema), plus
+ * one `device.decommission` audit event per row with
+ * `details.reason: 'uninstall_intent_reaped'` so the trail distinguishes a
+ * reaped device from a human-initiated decommission.
+ */
+export async function processReapUninstallIntent(): Promise<{
+  decommissioned: number;
+  durationMs: number;
+}> {
+  const startTime = Date.now();
+  const hours = getUninstallIntentDecommissionHours();
+  const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000);
+
+  // Env tunables — same shape as the other sweeps. cap=0 means unlimited per run.
+  const cap = envInt('UNINSTALL_INTENT_REAP_MAX_DEVICES_PER_RUN', 5000);
+  const chunkSize = Math.max(1, envInt('UNINSTALL_INTENT_REAP_CHUNK_SIZE', 500));
+
+  let totalDecommissioned = 0;
+  let cursor: string | null = null;
+
+  while (true) {
+    const remaining = cap > 0 ? Math.max(0, cap - totalDecommissioned) : chunkSize;
+    if (cap > 0 && remaining === 0) {
+      console.warn(`[OfflineDetector] Hit UNINSTALL_INTENT_REAP_MAX_DEVICES_PER_RUN=${cap}; remainder will be picked up next run`);
+      break;
+    }
+
+    const limit = Math.min(chunkSize, remaining || chunkSize);
+
+    const reapPredicate = [
+      lt(devices.uninstallIntentAt, cutoff),
+      or(isNull(devices.lastSeenAt), lt(devices.lastSeenAt, devices.uninstallIntentAt))
+    ];
+    const selectConditions = [...reapPredicate];
+    if (cursor) selectConditions.push(gt(devices.id, cursor));
+
+    const chunk = await db
+      .select({
+        id: devices.id,
+        orgId: devices.orgId,
+        hostname: devices.hostname,
+        displayName: devices.displayName
+      })
+      .from(devices)
+      .where(and(...selectConditions))
+      .orderBy(asc(devices.id))
+      .limit(limit);
+
+    if (chunk.length === 0) break;
+
+    for (const candidate of chunk) {
+      const [updated] = await db
+        .update(devices)
+        .set({ status: 'decommissioned', updatedAt: new Date() })
+        .where(and(eq(devices.id, candidate.id), ...reapPredicate))
+        .returning({ id: devices.id });
+
+      if (!updated) continue; // Re-heartbeated between SELECT and UPDATE — skip.
+
+      totalDecommissioned++;
+
+      createAuditLogAsync({
+        orgId: candidate.orgId,
+        actorType: 'system',
+        actorId: ANONYMOUS_ACTOR_ID,
+        action: 'device.decommission',
+        resourceType: 'device',
+        resourceId: candidate.id,
+        resourceName: candidate.hostname ?? candidate.displayName ?? candidate.id,
+        details: { reason: 'uninstall_intent_reaped' },
+        result: 'success',
+        initiatedBy: 'schedule'
+      });
+    }
+
+    cursor = chunk[chunk.length - 1]!.id;
+    if (chunk.length < limit) break;
+  }
+
+  if (totalDecommissioned > 0) {
+    console.log(`[OfflineDetector] Reaped ${totalDecommissioned} device(s) with expired uninstall intent`);
+  }
+
+  return { decommissioned: totalDecommissioned, durationMs: Date.now() - startTime };
+}
+
+/**
  * Schedule repeatable offline detection jobs
  */
 export async function scheduleOfflineJobs(): Promise<void> {
@@ -651,6 +792,26 @@ export async function scheduleOfflineJobs(): Promise<void> {
     );
     console.log(`[OfflineDetector] Scheduled offline re-evaluation sweep every ${reevalIntervalMs}ms`);
   }
+
+  // Task 5 (#2764) — always on (unlike the reeval sweep, this isn't an
+  // optional alerting feature: a stuck uninstall-intent stamp is a fleet-count
+  // correctness bug).
+  const uninstallIntentReapIntervalMs = Math.max(
+    60_000,
+    envInt('UNINSTALL_INTENT_REAP_INTERVAL_MS', DEFAULT_UNINSTALL_INTENT_REAP_INTERVAL_MS)
+  );
+  await queue.add(
+    'reap-uninstall-intent',
+    { type: 'reap-uninstall-intent' },
+    {
+      repeat: {
+        every: uninstallIntentReapIntervalMs
+      },
+      removeOnComplete: { count: 10 },
+      removeOnFail: { count: 50 }
+    }
+  );
+  console.log(`[OfflineDetector] Scheduled uninstall-intent reap sweep every ${uninstallIntentReapIntervalMs}ms`);
 
   console.log('[OfflineDetector] Scheduled repeatable offline detection jobs');
 }
