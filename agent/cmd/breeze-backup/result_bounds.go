@@ -392,14 +392,15 @@ func reduceToScalars(stdout string) (string, bool) {
 			}
 		}
 	}
-	if len(containers) > 0 {
-		sort.Strings(containers)
-		kept["warning"] = mustRawString(appendResultWarning(kept["warning"], fmt.Sprintf(
-			"detail field(s) omitted (%s): the result exceeded the %d byte agent IPC limit",
-			strings.Join(containers, ", "), ipc.MaxMessageSize)))
-	}
 	// A pathological scalar (e.g. a megabyte-long snapshot id) would keep this
 	// tier over budget; bound every retained string.
+	//
+	// This runs BEFORE the omitted-fields note is appended, mirroring tier 2's
+	// order (boundObjectWarning, then the appends). truncateText keeps the HEAD,
+	// so clamping after the append would cut the note off the tail — and cut it
+	// precisely when the warning is already at maxResultTextBytes, which tier 2
+	// guarantees it is by the time this tier runs. The server would then record
+	// a truncated warning with no indication that a field was dropped at all.
 	for key, raw := range kept {
 		var s string
 		if err := json.Unmarshal(raw, &s); err != nil {
@@ -408,6 +409,12 @@ func reduceToScalars(stdout string) (string, bool) {
 		if bounded, dropped := truncateText(s, maxResultTextBytes); dropped > 0 {
 			kept[key] = mustRawString(bounded)
 		}
+	}
+	if len(containers) > 0 {
+		sort.Strings(containers)
+		kept["warning"] = mustRawString(appendResultWarning(kept["warning"], fmt.Sprintf(
+			"detail field(s) omitted (%s): the result exceeded the %d byte agent IPC limit",
+			strings.Join(containers, ", "), ipc.MaxMessageSize)))
 	}
 	return encodeStdoutObject(kept, stdout), true
 }
@@ -432,8 +439,19 @@ func oversizeFailureResult(result backupipc.BackupCommandResult) backupipc.Backu
 
 // lastResortStdout builds a minimal terminal-status object from whatever can
 // still be recovered from stdout. Every field is bounded by construction.
+//
+// `warning` is carried over rather than rebuilt. It is the ONLY channel the
+// backup path has for operator-facing degradation signals — appendWarning in
+// internal/backup/backup.go joins the live-volume-read note (#3025/#3027), the
+// uncaptured-system-state-artifacts note (#3029), the VSS health note (#3030)
+// and the partial-upload summary into it, and the server persists it to the
+// job's errorLog. Replacing it here would turn a degraded restore point into a
+// clean-looking one on exactly the runs most likely to be degraded, since a
+// large run is what reaches this tier at all. The tier may truncate the warning
+// and must append its own note to it; it must never substitute for it.
 func lastResortStdout(stdout string) string {
 	minimal := map[string]string{}
+	var existingWarning json.RawMessage
 	if obj, ok := decodeStdoutObject(stdout); ok {
 		for _, key := range []string{"id", "jobId", "status", "snapshotId"} {
 			var s string
@@ -449,10 +467,17 @@ func lastResortStdout(stdout string) string {
 				minimal["snapshotId"], _ = truncateText(snap.ID, maxLastResortFieldBytes)
 			}
 		}
+		existingWarning = obj["warning"]
 	}
-	minimal["warning"] = fmt.Sprintf(
+	// appendResultWarning clamps the recovered text to maxResultTextBytes before
+	// joining, so the note always lands at the tail intact and the field is
+	// bounded whatever stdout carried — the "always fits" postcondition holds.
+	// The warning gets the same allowance as tiers 2 and 3 rather than
+	// maxLastResortFieldBytes: 8 KiB against a ~16 MiB budget is free, and
+	// clipping an operator signal to 1 KiB would defeat the point of keeping it.
+	minimal["warning"] = appendResultWarning(existingWarning, fmt.Sprintf(
 		"backup result exceeded the %d byte agent IPC limit and was reduced to a terminal status; detail was dropped",
-		ipc.MaxMessageSize)
+		ipc.MaxMessageSize))
 	data, err := json.Marshal(minimal)
 	if err != nil {
 		return `{"warning":"backup result could not be encoded"}`
