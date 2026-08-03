@@ -737,6 +737,23 @@ export async function processReapUninstallIntent(): Promise<{
 
       if (!updated) continue; // Re-heartbeated between SELECT and UPDATE — skip.
 
+      // Same resolution the admin decommission route performs (#2764): a
+      // newer device carrying possible_replacement_of_device_id = <this row>
+      // is showing a human a "review possible replacement" prompt. Reaping
+      // the old device answers that question, so clear the linkage or the
+      // banner/badge persists forever with nothing left to compare against.
+      // Scoped to the reaped device's own org, matching the surrounding
+      // per-candidate write pattern.
+      await db
+        .update(devices)
+        .set({ possibleReplacementOfDeviceId: null, updatedAt: new Date() })
+        .where(
+          and(
+            eq(devices.possibleReplacementOfDeviceId, candidate.id),
+            eq(devices.orgId, candidate.orgId)
+          )
+        );
+
       totalDecommissioned++;
 
       createAuditLogAsync({

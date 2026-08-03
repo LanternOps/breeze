@@ -150,7 +150,10 @@ describe('enrollment idempotency — real Postgres (#2764)', () => {
     // 2. Signal uninstall intent (token-resolved write — device auth is faked,
     // matching patches.integration.test.ts's agentAuthMiddleware stand-in).
     const uiApp = uninstallIntentApp(deviceId);
-    const uiRes = await withDbAccessContext(agentRequestContext(org.id), () =>
+    // `async` is load-bearing: Hono's app.request() is typed
+    // `Response | Promise<Response>`, but withDbAccessContext's callback must
+    // return a Promise — a bare arrow fails tsc with TS2322.
+    const uiRes = await withDbAccessContext(agentRequestContext(org.id), async () =>
       uiApp.request(`/agents/${deviceId}/uninstall-intent`, { method: 'POST' }),
     );
     expect(uiRes.status).toBe(200);

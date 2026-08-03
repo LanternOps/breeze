@@ -47,6 +47,7 @@ vi.mock('../db/schema', () => ({
     status: 'devices.status',
     lastSeenAt: 'devices.lastSeenAt',
     uninstallIntentAt: 'devices.uninstallIntentAt',
+    possibleReplacementOfDeviceId: 'devices.possibleReplacementOfDeviceId',
   },
   alertRules: {},
   alertTemplates: {},
@@ -343,5 +344,46 @@ describe('processReapUninstallIntent — predicate + decommission (#2764)', () =
 
     expect(result.decommissioned).toBe(0);
     expect(createAuditLogAsyncMock).not.toHaveBeenCalled();
+  });
+
+  // #2764: reaping the old device answers the "is this new device a
+  // replacement for it?" question the web banner/badge asks, so the linkage on
+  // the OTHER (newer) rows must be cleared or the prompt persists forever.
+  describe('replacement-linkage resolution', () => {
+    it('clears possible_replacement_of_device_id on rows pointing at each reaped device, scoped to its org', async () => {
+      selectFleetState.fleet = [{ id: 'dev-stale', orgId: 'org-42', hostname: 'host-stale', displayName: null }];
+
+      await processReapUninstallIntent();
+
+      // Second write of the pair: status flip, then linkage clear.
+      expect(updateSetMock).toHaveBeenCalledTimes(2);
+      expect(updateSetMock).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ possibleReplacementOfDeviceId: null, updatedAt: expect.any(Date) })
+      );
+
+      const whereArg = updateWhereMock.mock.calls[1]![0] as { op: string; args: unknown[] };
+      expect(whereArg.op).toBe('and');
+      expect(whereArg.args).toContainEqual({
+        op: 'eq',
+        col: 'devices.possibleReplacementOfDeviceId',
+        val: 'dev-stale',
+      });
+      // Same org scoping as the surrounding per-candidate writes.
+      expect(whereArg.args).toContainEqual({ op: 'eq', col: 'devices.orgId', val: 'org-42' });
+    });
+
+    it('does not clear linkage for a row the TOCTOU guard skipped', async () => {
+      selectFleetState.fleet = [{ id: 'dev-recovered', orgId: 'org-1', hostname: 'host-recovered', displayName: null }];
+      updateReturns.set('dev-recovered', []);
+
+      await processReapUninstallIntent();
+
+      // Only the (0-row) status-flip attempt ran; no linkage write followed.
+      expect(updateSetMock).toHaveBeenCalledTimes(1);
+      expect(updateSetMock).not.toHaveBeenCalledWith(
+        expect.objectContaining({ possibleReplacementOfDeviceId: null })
+      );
+    });
   });
 });

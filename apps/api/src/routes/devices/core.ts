@@ -1374,6 +1374,27 @@ coreRoutes.delete(
       .where(eq(devices.id, deviceId))
       .returning();
 
+    // Resolve any "possible replacement of THIS device" linkage now that the
+    // old device is decommissioned (#2764). The banner/badge on the newer
+    // device asks a human "is this a replacement for <old device>?"; retiring
+    // the old device IS that answer, so the question must stop being asked —
+    // otherwise the prompt persists forever with no way to dismiss it.
+    //
+    // This writes OTHER devices' rows, not the enrollment path's own row, so
+    // it does not violate the "never write existing device rows at enrollment
+    // time" invariant — it is decommission-triggered, human-initiated, and
+    // runs in the same request DB context (and therefore the same RLS scope)
+    // as the decommission UPDATE above.
+    await db
+      .update(devices)
+      .set({ possibleReplacementOfDeviceId: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(devices.possibleReplacementOfDeviceId, deviceId),
+          eq(devices.orgId, device.orgId)
+        )
+      );
+
     // Cut any live remote-control session to the device being decommissioned —
     // device `status` is only checked at session connect time, so an in-flight
     // desktop/terminal session would otherwise survive the offboarding. Never
