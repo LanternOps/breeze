@@ -156,9 +156,11 @@ export const softwareInventory = pgTable('software_inventory', {
 export const softwareUploadSessions = pgTable('software_upload_sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
-  // ON DELETE CASCADE is load-bearing for the GDPR org cascade:
-  // software_catalog sorts BEFORE software_upload_sessions in
-  // CORE_ORG_CASCADE_DELETE_ORDER, so the parent is deleted first.
+  // ON DELETE CASCADE so a direct `DELETE FROM software_catalog` outside the
+  // org-erasure path cannot strand sessions. It is NOT needed for the org
+  // cascade itself: deleteOrgCascade runs topologicalCascadeOrder(), which
+  // recomputes an FK-safe order from pg_constraint, so sessions are always
+  // deleted before the catalog regardless of alphabetical list position.
   catalogId: uuid('catalog_id').notNull().references(() => softwareCatalog.id, { onDelete: 'cascade' }),
   fileName: varchar('file_name', { length: 500 }).notNull(),
   fileSize: bigint('file_size', { mode: 'number' }).notNull(),

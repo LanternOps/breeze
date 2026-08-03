@@ -15,13 +15,15 @@
 -- breeze_has_org_access(org_id) policies in this same migration (never
 -- deferred).
 --
--- FK direction (deliberate): catalog_id -> software_catalog ON DELETE CASCADE.
--- 'software_catalog' sorts before 'software_upload_sessions' in
--- CORE_ORG_CASCADE_DELETE_ORDER (children-before-parents contract), so the org
--- erasure deletes the PARENT first; the cascade makes that safe instead of an
--- FK violation. org_id -> organizations ON DELETE CASCADE for the same reason
--- (organizations is deleted last). created_by -> users ON DELETE SET NULL: a
--- deleted user must not strand an in-flight upload row behind an FK error.
+-- FK direction (deliberate): catalog_id -> software_catalog ON DELETE CASCADE,
+-- org_id -> organizations ON DELETE CASCADE. These guard a direct DELETE on
+-- either parent outside the org-erasure path. They are NOT required by the org
+-- cascade itself: deleteOrgCascade calls topologicalCascadeOrder(), which
+-- recomputes an FK-safe order from the live pg_constraint catalog, so this
+-- table is always deleted before both parents no matter where it sits
+-- alphabetically in CORE_ORG_CASCADE_DELETE_ORDER. created_by -> users ON
+-- DELETE SET NULL: a deleted user must not strand an in-flight upload row
+-- behind an FK error.
 --
 -- Idempotent: CREATE TABLE IF NOT EXISTS, guarded DO block for constraints,
 -- CREATE INDEX IF NOT EXISTS, DROP POLICY IF EXISTS before each CREATE POLICY.
