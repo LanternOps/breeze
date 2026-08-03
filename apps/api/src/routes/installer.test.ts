@@ -863,13 +863,22 @@ describe("POST /api/v1/installer/bootstrap — trusted client IP (SR2-16)", () =
   });
 });
 
-// Recursively collects string leaves out of a Drizzle `sql` template object's
-// queryChunks tree (mirrors the identical helper in discovery.test.ts). Lets
-// us assert the DECREMENT update actually uses GREATEST(... - 1, 0) rather
-// than a plain `consumedCount - 1` that could go negative.
+// Recursively collects string leaves out of a Drizzle `sql`/`and`/`eq` query
+// tree (mirrors the identical helper in discovery.test.ts, extended to also
+// unwrap bound Param values and Column names). Lets us assert:
+//   - the DECREMENT update actually uses GREATEST(... - 1, 0) rather than a
+//     plain `consumedCount - 1` that could go negative;
+//   - the DELETE's WHERE predicate actually references both `id` (pinned to
+//     the looked-up child's id) AND `usage_count = 0` — a column reference
+//     has no `.queryChunks`/`.value` array, so it's pinned by `.name`
+//     instead (the underlying Column object itself is not asserted).
 function collectSqlLeafStrings(node: unknown, seen = new Set<unknown>(), acc: string[] = []): string[] {
   if (typeof node === "string") {
     acc.push(node);
+    return acc;
+  }
+  if (typeof node === "number" || typeof node === "boolean") {
+    acc.push(String(node));
     return acc;
   }
   if (node === null || typeof node !== "object" || seen.has(node)) return acc;
@@ -881,12 +890,26 @@ function collectSqlLeafStrings(node: unknown, seen = new Set<unknown>(), acc: st
   const queryChunks = (node as { queryChunks?: unknown[] }).queryChunks;
   if (Array.isArray(queryChunks)) {
     for (const item of queryChunks) collectSqlLeafStrings(item, seen, acc);
+    return acc;
   }
   // Drizzle's raw SQL text segments are StringChunk instances shaped
-  // `{ value: string[] }`, not bare strings — unwrap those too.
+  // `{ value: string[] }` — unwrap those.
   const value = (node as { value?: unknown }).value;
   if (Array.isArray(value)) {
     for (const item of value) collectSqlLeafStrings(item, seen, acc);
+    return acc;
+  }
+  // Bound query parameters are Param instances shaped `{ value: <scalar> }`.
+  if (typeof value === "string" || typeof value === "number") {
+    acc.push(String(value));
+    return acc;
+  }
+  // Column references (e.g. enrollmentKeys.id) have neither queryChunks nor
+  // value — pin what's pinnable: the column's SQL name, not the object.
+  const columnName = (node as { name?: unknown }).name;
+  const columnType = (node as { columnType?: unknown }).columnType;
+  if (typeof columnName === "string" && typeof columnType === "string") {
+    acc.push(columnName);
   }
   return acc;
 }
@@ -901,6 +924,8 @@ describe("POST /api/v1/installer/bootstrap/cancel (#2764)", () => {
   }
 
   it("1. unused linked child: deletes the child row AND decrements consumed_count (refunded:true)", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const RAW_SECRET = "raw-child-secret-1";
     const child = {
       id: "child-1",
       orgId: "o1",
@@ -935,12 +960,21 @@ describe("POST /api/v1/installer/bootstrap/cancel (#2764)", () => {
     const res = await app.request("/api/v1/installer/bootstrap/cancel", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enrollmentSecret: "raw-child-secret-1" }),
+      body: JSON.stringify({ enrollmentSecret: RAW_SECRET }),
     });
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ refunded: true });
     expect(deleteWhereArgs).not.toBeNull();
+
+    // Pin the DELETE's WHERE shape: it must reference BOTH `id = <this
+    // child's id>` AND `usage_count = 0` — not just "some predicate". A
+    // guard that dropped the usage_count=0 half (or the id half) would
+    // still make this test's `deleteWhereArgs).not.toBeNull()` pass, which
+    // is exactly the untested-guard gap this pins.
+    const deleteWhereText = collectSqlLeafStrings(deleteWhereArgs).join("");
+    expect(deleteWhereText).toMatch(/\bid\s*=\s*child-1\b/);
+    expect(deleteWhereText).toMatch(/usage_count\s*=\s*0\b/);
 
     // The decrement must be GREATEST(consumed_count - 1, 0), never a bare
     // `consumedCount - 1` that could underflow below zero.
@@ -951,6 +985,61 @@ describe("POST /api/v1/installer/bootstrap/cancel (#2764)", () => {
     expect(leaves).toContain("GREATEST(");
     expect(leaves).toContain("- 1, 0)");
     expect(updateWhereArgs).not.toBeNull();
+
+    // Forensic trail: the successful refund is logged with the child/token
+    // ids, and the raw secret never appears in any logged argument.
+    const allArgs = logSpy.mock.calls.flat().map((a) =>
+      typeof a === "string" ? a : JSON.stringify(a),
+    );
+    expect(allArgs.some((s) => s.includes("refunded"))).toBe(true);
+    expect(allArgs.some((s) => s.includes("child-1"))).toBe(true);
+    expect(allArgs.some((s) => s.includes("tok-1"))).toBe(true);
+    for (const s of allArgs) expect(s).not.toContain(RAW_SECRET);
+
+    logSpy.mockRestore();
+  });
+
+  it("1b. lost race on DELETE (returning() → []): no decrement (refunded:false, already_used)", async () => {
+    // The read at the top of the handler saw usage_count = 0 and a linked
+    // token, but between that read and the DELETE a concurrent enroll (or a
+    // concurrent cancel) already claimed/removed the row — the atomic
+    // `WHERE id = X AND usage_count = 0 RETURNING id` guard is what this
+    // pins: a 0-row DELETE must NOT fall through to the decrement. Without
+    // the `!deletedChild` check, this exact scenario would double-refund.
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const child = {
+      id: "child-1b",
+      orgId: "o1",
+      usageCount: 0,
+      bootstrapTokenId: "tok-1b",
+    };
+    mockChildLookup(child);
+
+    vi.mocked(db.delete).mockReturnValue({
+      where: () => ({ returning: () => Promise.resolve([]) }),
+    } as any);
+
+    const app = makeApp();
+    const res = await app.request("/api/v1/installer/bootstrap/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enrollmentSecret: "raw-child-secret-1b" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      refunded: false,
+      reason: "already_used",
+    });
+    // The DELETE itself was attempted (that's how the race is lost), but the
+    // decrement UPDATE must never run off a 0-row DELETE result.
+    expect(db.update).not.toHaveBeenCalled();
+
+    const allArgs = logSpy.mock.calls.flat().map((a) =>
+      typeof a === "string" ? a : JSON.stringify(a),
+    );
+    expect(allArgs.some((s) => s.includes("already_used"))).toBe(true);
+    logSpy.mockRestore();
   });
 
   it("2. child with usage_count > 0: nothing deleted, no decrement (refunded:false, already_used)", async () => {
@@ -984,18 +1073,27 @@ describe("POST /api/v1/installer/bootstrap/cancel (#2764)", () => {
     // to yield both a usable child key AND a second freed slot — so the
     // second call must neither delete anything (nothing left to delete) nor
     // decrement the token again.
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const RAW_SECRET = "raw-child-secret-3";
     mockChildLookup(null);
 
     const app = makeApp();
     const res = await app.request("/api/v1/installer/bootstrap/cancel", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enrollmentSecret: "raw-child-secret-3" }),
+      body: JSON.stringify({ enrollmentSecret: RAW_SECRET }),
     });
 
     expect(res.status).toBe(404);
     expect(db.delete).not.toHaveBeenCalled();
     expect(db.update).not.toHaveBeenCalled();
+
+    const allArgs = errSpy.mock.calls.flat().map((a) =>
+      typeof a === "string" ? a : JSON.stringify(a),
+    );
+    expect(allArgs.some((s) => s.includes("unknown_secret"))).toBe(true);
+    for (const s of allArgs) expect(s).not.toContain(RAW_SECRET);
+    errSpy.mockRestore();
   });
 
   it("4. child with bootstrap_token_id NULL (pre-migration key): refunded:false, not_linked, no delete", async () => {

@@ -366,8 +366,17 @@ type CancelResult =
  * rows in that case, which is fine — the slot is moot once the token no
  * longer exists, and this still counts as `refunded: true` because the
  * child key itself is gone.
+ *
+ * Forensic logging: this is an unauthenticated endpoint that DELETEs an
+ * enrollment key and mutates a token counter under a system RLS context, so
+ * every outcome branch is logged (id/reason/ip only) — mirroring
+ * redeemBootstrapToken's console.error/console.log calls above — so a
+ * farming or revocation probe leaves a trail. The raw secret (and any hash
+ * of it) is NEVER logged, same discipline as the 404 path above.
  */
 installerRoutes.post("/bootstrap/cancel", async (c) => {
+  const ip = getTrustedClientIp(c, c.env?.incoming?.socket?.remoteAddress ?? "unknown");
+
   const requestBody = (await c.req.json().catch(() => null)) as
     | { enrollmentSecret?: unknown }
     | null;
@@ -391,6 +400,10 @@ installerRoutes.post("/bootstrap/cancel", async (c) => {
       .limit(1);
 
     if (!child) {
+      console.error("[installer] bootstrap cancel 404", {
+        reason: "unknown_secret",
+        ip,
+      });
       return { status: 404 };
     }
 
@@ -398,6 +411,12 @@ installerRoutes.post("/bootstrap/cancel", async (c) => {
       // Already enrolled a device with this key — cancelling now would
       // double-spend the slot: the device stays live AND the token would
       // get refunded.
+      console.log("[installer] bootstrap cancel", {
+        reason: "already_used",
+        childKeyId: child.id,
+        tokenId: child.bootstrapTokenId,
+        ip,
+      });
       return {
         status: 200,
         body: { refunded: false, reason: "already_used" },
@@ -408,6 +427,11 @@ installerRoutes.post("/bootstrap/cancel", async (c) => {
       // Pre-migration key (minted before Task 2 started stamping the
       // token id), or never minted via bootstrap redemption at all —
       // nothing to refund.
+      console.log("[installer] bootstrap cancel", {
+        reason: "not_linked",
+        childKeyId: child.id,
+        ip,
+      });
       return { status: 200, body: { refunded: false, reason: "not_linked" } };
     }
 
@@ -423,6 +447,13 @@ installerRoutes.post("/bootstrap/cancel", async (c) => {
 
     if (!deletedChild) {
       // Lost the race — a concurrent enroll or cancel got here first.
+      console.log("[installer] bootstrap cancel", {
+        reason: "already_used",
+        childKeyId: child.id,
+        tokenId: child.bootstrapTokenId,
+        lostRace: true,
+        ip,
+      });
       return {
         status: 200,
         body: { refunded: false, reason: "already_used" },
@@ -436,6 +467,12 @@ installerRoutes.post("/bootstrap/cancel", async (c) => {
       })
       .where(eq(installerBootstrapTokens.id, child.bootstrapTokenId));
 
+    console.log("[installer] bootstrap cancel", {
+      reason: "refunded",
+      childKeyId: child.id,
+      tokenId: child.bootstrapTokenId,
+      ip,
+    });
     return { status: 200, body: { refunded: true } };
   });
 
