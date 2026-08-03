@@ -17,7 +17,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  */
 
 const mocks = vi.hoisted(() => ({
-  executeCommand: vi.fn(async () => ({ status: 'completed' })),
+  executeCommand: vi.fn(async (..._args: unknown[]) => ({ status: 'completed' })),
 }));
 const { executeCommand } = mocks;
 
