@@ -542,6 +542,7 @@
     "hideExpired": "Abgelaufene ausblenden",
     "deleteExpired": "Abgelaufene löschen",
     "shortCode": "Kurzcode",
+    "installerUsage": "Installer-Geräte {{consumed}} / {{max}}",
     "usage": "Nutzung",
     "expires": "Läuft ab",
     "empty": "Keine Registrierungsschlüssel gefunden. Erstellen Sie zunächst einen Schlüssel.",
@@ -575,7 +576,7 @@
     "rotateConfirm": "„{{name}}“ jetzt rotieren? Bestehende Registrierungen funktionieren weiterhin, neue Registrierungen müssen jedoch den neuen Schlüssel verwenden.",
     "rotateKey": "Schlüssel rotieren",
     "deleteExpiredTitle": "Abgelaufene Registrierungsschlüssel löschen",
-    "deleteExpiredConfirm": "Alle abgelaufenen Registrierungsschlüssel löschen? Dies kann nicht rückgängig gemacht werden."
+    "deleteExpiredConfirm": "Alle abgelaufenen Registrierungsschlüssel löschen? Schlüssel, die noch einen aktiven Installer-Downloadlink versorgen, bleiben erhalten. Dies kann nicht rückgängig gemacht werden."
   },
   "inboundEmail": {
     "saveError": "Die Einstellungen für eingehende E-Mails konnten nicht gespeichert werden – Ihre Sitzung erfordert möglicherweise eine erneute Bestätigung für MFA. Wiederholen.",

@@ -49,6 +49,15 @@ export const backupProcessResultSchema = z.object({
   // still must be declared here or the whole job fails validation.
   backupType: z.enum(['file', 'system_image', 'database', 'application']).optional(),
   systemStateManifest: z.record(z.string(), z.unknown()).nullish(),
+  // Windows VSS diagnostics (#3027), forwarded so persistence can write
+  // backup_jobs.vss_metadata. `z.unknown()` rather than a record for the same
+  // reason as the ingress schema (routes/backup/resultSchemas.ts): this parse
+  // runs inside enqueueBackupResults and THROWS BEFORE queue.add, so a shape
+  // assertion here would discard the entire terminal result — snapshot id,
+  // counters and all — over a diagnostics blob. Validation and bounding happen
+  // in sanitizeVssMetadata at the write. Note the .strict() rule still applies:
+  // the TOP-LEVEL key has to be declared right here or the job dead-letters.
+  vssMetadata: z.unknown().optional(),
   snapshot: backupSnapshotSummarySchema.optional(),
   error: z.string().min(1).optional(),
 }).strict();

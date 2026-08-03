@@ -34,6 +34,11 @@ type VssWriter = {
 
 type VssMetadata = {
   writers?: VssWriter[] | null;
+  // Requested volumes that got NO shadow copy and were therefore read live —
+  // in-use files on them may have been skipped or captured torn. A non-empty
+  // value means the run is NOT a clean snapshot even when it reports success.
+  unprotectedVolumes?: string[] | null;
+  warnings?: string[] | null;
 } | VssWriter[];
 
 type BackupJob = {
@@ -46,6 +51,11 @@ type BackupJob = {
   totalSize?: number | null;
   errorCount?: number | null;
   vssMetadata?: VssMetadata | null;
+  // Despite the name this is the run's DIAGNOSTIC channel, not strictly errors:
+  // a successful-but-degraded run writes its warning here (e.g. VSS could not
+  // be created, so paths were read live). Rendered accordingly below — labelled
+  // by the job's own status rather than always as an error.
+  errorLog?: string | null;
 };
 
 type Snapshot = {
@@ -145,6 +155,15 @@ function getVssWriters(vssMetadata: VssMetadata | null | undefined): VssWriter[]
   if (!vssMetadata) return [];
   if (Array.isArray(vssMetadata)) return vssMetadata;
   return Array.isArray(vssMetadata.writers) ? vssMetadata.writers : [];
+}
+
+function getVssStringList(
+  vssMetadata: VssMetadata | null | undefined,
+  key: 'unprotectedVolumes' | 'warnings'
+): string[] {
+  if (!vssMetadata || Array.isArray(vssMetadata)) return [];
+  const value = vssMetadata[key];
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
 }
 
 function normalizeVssState(state: string | null | undefined): keyof typeof vssStateConfig {
@@ -377,6 +396,14 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
   const latestVssWriters = getVssWriters(status?.lastJob?.vssMetadata);
   const showVssStatus = status?.lastJob?.vssMetadata != null;
   const hasVssWarnings = latestVssWriters.some((writer) => normalizeVssState(writer.state) !== 'stable');
+  const unprotectedVolumes = getVssStringList(status?.lastJob?.vssMetadata, 'unprotectedVolumes');
+  const vssWarnings = getVssStringList(status?.lastJob?.vssMetadata, 'warnings');
+  // The run's diagnostic text. On a job that did NOT fail this is a degradation
+  // note, not an error — and it is the only channel a total VSS failure has,
+  // since that outcome produces no vssMetadata at all. This tab used to ignore
+  // errorLog entirely, so such a run displayed as a clean green backup.
+  const lastJobDiagnostic = lastJob?.errorLog?.trim() || null;
+  const lastJobFailed = lastJobStatus === 'failed';
   const selectedSnapshot = snapshots.find((snapshot) => snapshot.id === selectedSnapshotId) ?? snapshots[0] ?? null;
   // Prefer the API-reported device zone; fall back to the already-validated
   // zone passed by the parent (never an invalid IANA id). formatDateTime
@@ -545,6 +572,34 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
         )}
       </div>
 
+      {/* Latest-run diagnostic. Rendered whether or not there is VSS metadata:
+          a run whose shadow copy could not be created reports its degradation
+          ONLY here, and that is precisely the run that would otherwise look
+          clean. Styled by the job's real status — a completed-but-degraded run
+          is a warning, not an error (the job list's blanket "error log" framing
+          is what made these easy to dismiss). */}
+      {lastJobDiagnostic && (
+        <div
+          className={cn(
+            'flex items-start gap-2 rounded-lg border p-4 text-sm',
+            lastJobFailed
+              ? 'border-destructive/40 bg-destructive/10 text-destructive'
+              : 'border-warning/40 bg-warning/10 text-warning'
+          )}
+          data-testid="backup-last-job-diagnostic"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <p className="font-medium">
+              {lastJobFailed
+                ? t('deviceBackupTab.lastBackupFailed')
+                : t('deviceBackupTab.lastBackupCompletedWithWarnings')}
+            </p>
+            <p className="mt-1 break-words opacity-90">{lastJobDiagnostic}</p>
+          </div>
+        </div>
+      )}
+
       {/* VSS Status */}
       {showVssStatus && (
         <div className="rounded-lg border bg-card p-5 shadow-xs">
@@ -553,11 +608,40 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
             <span className="text-xs text-muted-foreground">{t('deviceBackupTab.latestBackupJob')}</span>
           </div>
 
+          {/* Unprotected volumes outrank the writer states: a writer in a
+              non-stable state MAY have degraded the snapshot, but a volume with
+              no shadow copy definitely was read live. Show it first and loudest. */}
+          {unprotectedVolumes.length > 0 && (
+            <div
+              className="mt-4 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              data-testid="backup-vss-unprotected-volumes"
+            >
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>
+                {t('deviceBackupTab.vssUnprotectedVolumes', { volumes: unprotectedVolumes.join(', ') })}
+              </span>
+            </div>
+          )}
+
           {hasVssWarnings && (
             <div className="mt-4 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
               <span>{t('deviceBackupTab.oneOrMoreVssWritersAreNotStable')}</span>
             </div>
+          )}
+
+          {vssWarnings.length > 0 && (
+            <ul
+              className="mt-4 space-y-1 text-sm text-warning"
+              data-testid="backup-vss-warnings"
+            >
+              {vssWarnings.map((warning, index) => (
+                <li key={`${warning}-${index}`} className="flex items-start gap-2">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>{warning}</span>
+                </li>
+              ))}
+            </ul>
           )}
 
           {latestVssWriters.length > 0 ? (

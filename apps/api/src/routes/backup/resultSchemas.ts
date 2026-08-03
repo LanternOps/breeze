@@ -76,6 +76,26 @@ export const backupCommandResultSchema = z.object({
   referencedFiles: z.number().int().nonnegative().optional(),
   backupType: z.enum(['file', 'system_image', 'database', 'application']).optional(),
   systemStateManifest: backupSystemStateManifestResultSchema.optional(),
+  // Windows VSS diagnostics (#3027), persisted to backup_jobs.vss_metadata.
+  // Absent on non-Windows, on a run with VSS disabled, and on any run whose VSS
+  // session failed to start outright — so absence is NOT evidence of a clean
+  // snapshot. Shape as the agent emits it (vss.VSSMetadata, agent/internal/
+  // backup/vss/types.go):
+  //   { shadowCopyId, creationTime, writers: [{name,id,state,lastError}],
+  //     exposedPaths: {volume: shadowPath}, unprotectedVolumes: [volume],
+  //     warnings: [string], durationMs }
+  //
+  // DELIBERATELY `z.unknown()` rather than a modeled object. This field is pure
+  // diagnostics riding the SAME payload as the snapshot id, and this schema's
+  // parse outcome decides whether the whole run is recorded completed or failed
+  // (`result.status === 'completed' && parsedBackup.success` in routes/agentWs.ts).
+  // A typed schema here would let one malformed diagnostics field fail a backup
+  // that actually succeeded — a strictly worse F13 than the one the manifest
+  // comment above describes, because it flips the job status rather than merely
+  // dropping a column. The shape is therefore validated, bounded and redacted
+  // one hop later, field by field, where a bad value can only cost the bad
+  // value: sanitizeVssMetadata in services/backupResultPersistence.ts.
+  vssMetadata: z.unknown().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
   snapshot: backupSnapshotResultSchema.optional(),
 });

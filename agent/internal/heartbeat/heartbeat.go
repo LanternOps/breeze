@@ -932,9 +932,18 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 		if backupResult.Success {
 			result.Status = "completed"
 		}
+		// Error and body are set INDEPENDENTLY, not as an either/or (#3027).
+		// This is the async path every modern backup_run takes, and the old
+		// `else if` meant a failed run delivered its stderr and nothing else —
+		// discarding the job body that marshalBackupRunResult populates
+		// precisely so a failure keeps its VSS diagnostics, warning text and
+		// partial counters. Status is already decided above from
+		// backupResult.Success, and the server reads the job's terminal status
+		// from that field alone, so attaching a body cannot green a failed run.
 		if backupResult.Stderr != "" {
 			result.Error = backupResult.Stderr
-		} else if backupResult.Stdout != "" {
+		}
+		if backupResult.Stdout != "" {
 			var parsed any
 			if err := json.Unmarshal([]byte(backupResult.Stdout), &parsed); err == nil {
 				result.Result = parsed

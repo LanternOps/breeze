@@ -41,15 +41,20 @@ export function childEnrollmentKeyTtlMinutes(): number {
  *
  * Revocation is unaffected: installer_bootstrap_tokens.parent_enrollment_key_id
  * is ON DELETE CASCADE, so deleting the parent destroys outstanding tokens
- * before they can ever reach this function. A deliberate admin delete is the
- * ONLY thing that does this — the scheduled `enrollmentKeyCleanup` sweep job
- * (jobs/enrollmentKeyCleanup.ts) that hard-purges long-expired enrollment
- * keys is NOT a second silent ceiling on this TTL: it explicitly exempts any
- * parent key that still has a live, unexhausted bootstrap token, so a
- * 30-day/1-year token cannot be cascade-deleted out from under itself by
- * that job before its own expiry (or full consumption). If you're reading
- * this because you found that job and are wondering whether it re-clamps
- * this TTL, it doesn't — see its header comment for the exemption predicate.
+ * before they can ever reach this function. A deliberate admin delete of a
+ * SPECIFIC key (DELETE /enrollment-keys/:id) is the ONLY thing that does this.
+ * Neither bulk purge path is a second silent ceiling on this TTL: both the
+ * scheduled `enrollmentKeyCleanup` sweep job (jobs/enrollmentKeyCleanup.ts)
+ * and the on-demand `POST /enrollment-keys/purge-expired` route behind the
+ * web UI's "Delete expired" button share the exemption predicate in
+ * services/enrollmentKeyPurgeGuards.ts, which skips any parent key that still
+ * has a live, unexhausted bootstrap token. So a 30-day/1-year token cannot be
+ * cascade-deleted out from under itself by either before its own expiry (or
+ * full consumption). If you're reading this because you found one of those
+ * purges and are wondering whether it re-clamps this TTL, it doesn't — see
+ * that shared guard's docblock for the predicate. (The route was missing the
+ * guard until #2832; it is the faster of the two paths, since it applies no
+ * grace period on top of the parent's 60-minute expiry.)
  *
  * `ttlMinutes`, when supplied, overrides the env default — used to pass an
  * already partner-cap-clamped value (fix round 3, #2776; see the call site

@@ -329,16 +329,17 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 				"elapsedMs", time.Since(vssStart).Milliseconds(),
 				"error", vssErr.Error(),
 			)
+			// #3027: the worst VSS outcome used to be the quietest one. When the
+			// session never starts there is no VSSMetadata to send, so without
+			// this the run reaches the server indistinguishable from a clean
+			// VSS-backed backup — every path read live, every locked file at
+			// risk of being skipped, and nothing anywhere saying so. The
+			// per-path warning further down only fires when a session DID
+			// start, so it cannot cover this branch.
+			appendWarning(job, vssCreationFailureWarning(vssErr))
 		} else {
 			vssSession = session
-			job.VSSMetadata = &vss.VSSMetadata{
-				ShadowCopyID: session.ID,
-				CreationTime: session.CreatedAt,
-				Writers:      session.Writers,
-				ExposedPaths: session.ShadowPaths,
-				Warnings:     session.Warnings,
-				DurationMs:   time.Since(vssStart).Milliseconds(),
-			}
+			job.VSSMetadata = buildVSSMetadata(session, time.Since(vssStart).Milliseconds())
 			if len(session.Warnings) > 0 {
 				log.Warn("VSS completed with warnings",
 					"warningCount", len(session.Warnings),
@@ -394,12 +395,20 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			// ...) — surface them as a completion warning so a degraded capture
 			// is visible without discarding an otherwise-usable backup.
 			if len(manifest.IncompleteSteps) > 0 {
-				// appendWarning, not a raw assignment: this used to be the
+				// appendWarning, NOT a raw assignment: this used to be the
 				// first and only writer of job.Warning, but it is now one of
 				// several (the collection-failure note above, the live-read
 				// note and the uncaptured-artifacts note below). A raw
 				// assignment here silently discards whichever of those ran
 				// first.
+				//
+				// The VSS note is the one that mattered most: the VSS block
+				// above runs first, and a wedged VSS/writer subsystem is
+				// exactly what tends to leave system state incomplete too, so
+				// the two co-occur. Overwriting here destroyed that note on
+				// the one run where both mattered — and when the session never
+				// started there is no VSSMetadata, so job.Warning is the only
+				// channel that outcome has.
 				incomplete := fmt.Sprintf("system state collection incomplete: %v failed", manifest.IncompleteSteps)
 				appendWarning(job, incomplete)
 				log.Warn("system state collection incomplete", "warning", incomplete)
@@ -442,11 +451,16 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 				"paths", summary,
 				"shadowedVolumes", strings.Join(shadowedVolumes, ", "),
 			)
-			// The log line alone is endpoint-local. job.VSSMetadata looks like
-			// the richer channel but does not survive the trip: the API's
-			// result schema has no vssMetadata key, so it is stripped at parse,
-			// and the vss_metadata column is never written. job.Warning is the
-			// only VSS signal that reaches the server today.
+			// The log line alone is endpoint-local. Both server-visible channels
+			// are used, deliberately, because they carry different things:
+			// job.VSSMetadata (#3027) is the structured record — per-writer
+			// state, unprotected volumes, shadow paths — persisted to
+			// backup_jobs.vss_metadata for the device tab's VSS panel, while
+			// this warning is the loud, always-rendered summary that survives
+			// even when the IPC bounding drops vssMetadata as a bulk field
+			// (result_bounds.go). The warning also uniquely covers the case
+			// the VSS provider cannot see: VSS reported total success but the
+			// path never matched a shadow root, so UnprotectedVolumes is empty.
 			appendWarning(job, "read from the live volume, not the VSS shadow copy: "+summary)
 		}
 	}
@@ -807,6 +821,44 @@ func flattenJoinedErrors(err error) []error {
 
 // appendWarning appends fragment to job.Warning, joining with "; " when the
 // job already carries an earlier warning (e.g. a partial system-state note).
+// buildVSSMetadata converts a live VSS session into the metadata block the
+// server persists to backup_jobs.vss_metadata (#3027).
+//
+// Extracted from RunBackupContext's Windows-gated branch so it is directly
+// callable from a portable test — the original inline struct literal copied
+// five of the session's six diagnostic fields and silently dropped
+// UnprotectedVolumes, and nothing could reach it to notice.
+func buildVSSMetadata(session *vss.VSSSession, durationMs int64) *vss.VSSMetadata {
+	if session == nil {
+		return nil
+	}
+	return &vss.VSSMetadata{
+		ShadowCopyID: session.ID,
+		CreationTime: session.CreatedAt,
+		Writers:      session.Writers,
+		ExposedPaths: session.ShadowPaths,
+		// Copied, not derived: ExposedPaths lists only the volumes that
+		// SUCCEEDED, so a volume with no shadow device is indistinguishable
+		// from one that was never requested. Omitting this was how a
+		// partially-snapshotted run reached the server looking clean.
+		UnprotectedVolumes: session.UnprotectedVolumes,
+		Warnings:           session.Warnings,
+		DurationMs:         durationMs,
+	}
+}
+
+// vssCreationFailureWarning is the server-visible note for the worst VSS
+// outcome, which used to be the quietest one: when CreateShadowCopy fails
+// outright there is no VSSMetadata to send at all, so without this the run
+// reaches the server indistinguishable from a clean VSS-backed backup — every
+// path read live, every locked file at risk of being skipped, and nothing
+// anywhere saying so. The per-path warning raised after the shadow-path
+// rewrite only fires when a session DID start, so it cannot cover this branch.
+func vssCreationFailureWarning(vssErr error) string {
+	return "VSS shadow copy could not be created, so every path was read from the live volume, " +
+		"where in-use files can be skipped or captured torn: " + vssErr.Error()
+}
+
 func appendWarning(job *BackupJob, fragment string) {
 	if fragment == "" {
 		return

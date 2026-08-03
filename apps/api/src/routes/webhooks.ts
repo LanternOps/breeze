@@ -103,7 +103,7 @@ function decryptWebhookUrl(webhook: typeof webhooksTable.$inferSelect): string {
   }
 }
 
-function toWorkerWebhookConfig(webhook: typeof webhooksTable.$inferSelect): WorkerWebhookConfig {
+export function toWorkerWebhookConfig(webhook: typeof webhooksTable.$inferSelect): WorkerWebhookConfig {
   const retryPolicy = (webhook.retryPolicy ?? undefined) as WorkerWebhookConfig['retryPolicy'];
   let secret: string | undefined;
   if (webhook.secret) {

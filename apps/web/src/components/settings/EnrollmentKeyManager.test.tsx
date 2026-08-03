@@ -78,6 +78,7 @@ interface Row {
   expiresAt: string | null;
   createdBy: string | null;
   createdAt: string;
+  installerTokens?: { consumed: number; max: number } | null;
 }
 
 const PAST = new Date(Date.now() - 86_400_000).toISOString();
@@ -297,5 +298,94 @@ describe('EnrollmentKeyManager — create form site selector', () => {
     await screen.findByText(EMPTY);
     fireEvent.click(screen.getByText('Create Key'));
     expect(screen.getByTestId('enrollment-key-org-select')).toBeTruthy();
+  });
+
+  // ------------------------------------------------------------------
+  // #2992 — installer capacity in the usage cell.
+  //
+  // The Add-Device / guided-setup download paths mint no child enrollment key,
+  // so the device count the operator chose lives only on the bootstrap token.
+  // The key's own usage_count is inert on that path, which is why the row read
+  // "0 / 1" for an installer built for 7 devices.
+  // ------------------------------------------------------------------
+  describe('installer usage (#2992)', () => {
+    it('shows the installer device budget alongside the key\'s own counters', async () => {
+      routeFetch([
+        makeRow({
+          id: 'k-installer',
+          usageCount: 0,
+          maxUsage: 1,
+          installerTokens: { consumed: 0, max: 7 },
+        }),
+      ]);
+      render(<EnrollmentKeyManager />);
+
+      const installerCell = await screen.findByTestId('key-installer-usage-k-installer');
+      expect(installerCell.textContent).toContain('0');
+      expect(installerCell.textContent).toContain('7');
+
+      // The key's own budget is still rendered — it is a real, separately
+      // enforced counter, not something the installer figure replaces.
+      expect(screen.getByTestId('key-usage-k-installer').textContent).toContain('0 / 1');
+    });
+
+    it('counts up as devices redeem the installer', async () => {
+      routeFetch([
+        makeRow({
+          id: 'k-partial',
+          usageCount: 0,
+          maxUsage: 1,
+          installerTokens: { consumed: 3, max: 7 },
+        }),
+      ]);
+      render(<EnrollmentKeyManager />);
+
+      const cell = await screen.findByTestId('key-installer-usage-k-partial');
+      expect(cell.textContent).toContain('3');
+      expect(cell.textContent).toContain('7');
+    });
+
+    // The design's justification for TWO lines rather than a replacement: some
+    // keys carry both counters live (an installer-link child key accrues
+    // usage_count from direct enrollments AND parents bootstrap tokens issued
+    // by the one-time public-download route). Collapsing them would hide a real
+    // budget, so both must render with their own numbers.
+    it('renders both counters when a key has real usage AND installers', async () => {
+      routeFetch([
+        makeRow({
+          id: 'k-both',
+          usageCount: 4,
+          maxUsage: 10,
+          installerTokens: { consumed: 2, max: 3 },
+        }),
+      ]);
+      render(<EnrollmentKeyManager />);
+
+      expect((await screen.findByTestId('key-usage-k-both')).textContent).toContain('4 / 10');
+      const installer = screen.getByTestId('key-installer-usage-k-both');
+      expect(installer.textContent).toContain('2');
+      expect(installer.textContent).toContain('3');
+      // The two must stay distinct — neither folded into nor replacing the other.
+      expect(installer.textContent).not.toContain('10');
+    });
+
+    it('renders nothing extra for a key that never minted an installer', async () => {
+      routeFetch([makeRow({ id: 'k-plain', usageCount: 2, maxUsage: 10, installerTokens: null })]);
+      render(<EnrollmentKeyManager />);
+
+      await screen.findByTestId('key-usage-k-plain');
+      expect(screen.queryByTestId('key-installer-usage-k-plain')).toBeNull();
+      expect(screen.getByTestId('key-usage-k-plain').textContent).toContain('2 / 10');
+    });
+
+    // A response from an API that predates this field must not crash or render
+    // a bare "/" — the property is optional on the wire.
+    it('tolerates a list response with no installerTokens field at all', async () => {
+      routeFetch([makeRow({ id: 'k-legacy', usageCount: 1, maxUsage: 5 })]);
+      render(<EnrollmentKeyManager />);
+
+      await screen.findByTestId('key-usage-k-legacy');
+      expect(screen.queryByTestId('key-installer-usage-k-legacy')).toBeNull();
+    });
   });
 });
