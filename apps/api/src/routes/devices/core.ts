@@ -612,6 +612,12 @@ coreRoutes.get(
         uptimeSeconds: devices.uptimeSeconds,
         isHeadless: devices.isHeadless,
         pendingReboot: devices.pendingReboot,
+        // Collision enrollment (#2764): non-null when this row was created
+        // because an agent presented a hostname that already existed in the
+        // org. The list renders a "Possible duplicate" badge from it so the
+        // review surface is discoverable from the fleet view, not only from
+        // the device page a tech happens to open.
+        possibleReplacementOfDeviceId: devices.possibleReplacementOfDeviceId,
         batteryStatus: devices.batteryStatus,
         activeVpns: devices.activeVpns,
         // Linked multi-boot profiles (#2138): null => unlinked. The web list
@@ -797,6 +803,10 @@ coreRoutes.get(
         lastUser: d.lastUser,
         uptimeSeconds: d.uptimeSeconds,
         isHeadless: d.isHeadless,
+        // Selected above but historically the mapper is where list fields get
+        // silently dropped (#800/#1273/#2138) — asserted by
+        // core.list-response-shape.test.ts.
+        possibleReplacementOfDeviceId: d.possibleReplacementOfDeviceId ?? null,
         batteryStatus: d.batteryStatus ?? null,
         activeVpns: d.activeVpns ?? null,
         linkGroupId: d.linkGroupId ?? null,
@@ -1363,6 +1373,27 @@ coreRoutes.delete(
       })
       .where(eq(devices.id, deviceId))
       .returning();
+
+    // Resolve any "possible replacement of THIS device" linkage now that the
+    // old device is decommissioned (#2764). The banner/badge on the newer
+    // device asks a human "is this a replacement for <old device>?"; retiring
+    // the old device IS that answer, so the question must stop being asked —
+    // otherwise the prompt persists forever with no way to dismiss it.
+    //
+    // This writes OTHER devices' rows, not the enrollment path's own row, so
+    // it does not violate the "never write existing device rows at enrollment
+    // time" invariant — it is decommission-triggered, human-initiated, and
+    // runs in the same request DB context (and therefore the same RLS scope)
+    // as the decommission UPDATE above.
+    await db
+      .update(devices)
+      .set({ possibleReplacementOfDeviceId: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(devices.possibleReplacementOfDeviceId, deviceId),
+          eq(devices.orgId, device.orgId)
+        )
+      );
 
     // Cut any live remote-control session to the device being decommissioned —
     // device `status` is only checked at session connect time, so an in-flight

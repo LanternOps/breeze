@@ -1,10 +1,14 @@
 import { Hono, type Context } from "hono";
-import { and, eq, lt, sql } from "drizzle-orm";
+import type { HttpBindings } from "@hono/node-server";
+import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
 import { db, withSystemDbAccessContext } from "../db";
 import { installerBootstrapTokens } from "../db/schema/installerBootstrapTokens";
 import { enrollmentKeys, organizations } from "../db/schema/orgs";
-import { hashEnrollmentKey } from "../services/enrollmentKeySecurity";
+import {
+  hashEnrollmentKey,
+  hashEnrollmentKeyCandidates,
+} from "../services/enrollmentKeySecurity";
 import { BOOTSTRAP_TOKEN_PATTERN } from "../services/installerBootstrapToken";
 import { getTrustedClientIp } from "../services/clientIp";
 import { clampTtlToCap } from "../services/enrollmentDefaults";
@@ -90,7 +94,7 @@ function allowLegacyGetBootstrap(): boolean {
   return value === "1" || value === "true" || value === "yes" || value === "on";
 }
 
-export const installerRoutes = new Hono();
+export const installerRoutes = new Hono<{ Bindings: HttpBindings }>();
 
 /**
  * Public bootstrap endpoint. The token IS the auth — no JWT, no API key,
@@ -210,6 +214,9 @@ async function redeemBootstrapToken(c: Context, token: string) {
         expiresAt: childExpiresAt,
         createdBy: row.createdBy,
         installerPlatform: row.installerPlatform ?? "macos",
+        // Links the child key back to the redeeming bootstrap token so a
+        // later cancel/uninstall can find and refund the token (#2764).
+        bootstrapTokenId: row.id,
       })
       .returning();
 
@@ -320,4 +327,163 @@ installerRoutes.get("/bootstrap/:token", async (c) => {
     return c.json(INVALID_TOKEN_RESPONSE.body, INVALID_TOKEN_RESPONSE.status);
   }
   return redeemBootstrapToken(c, c.req.param("token"));
+});
+
+type CancelResult =
+  | { status: 404 }
+  | { status: 200; body: { refunded: true } }
+  | {
+      status: 200;
+      body: { refunded: false; reason: "already_used" | "not_linked" };
+    };
+
+/**
+ * Public capability endpoint: the raw child enrollment key IS the auth — no
+ * JWT, no API key, no session, same trust level as redeem/enroll (possession
+ * of the secret authorizes the action). Body: `{ enrollmentSecret: string }`
+ * — despite the name, this is the raw child enrollment KEY handed back by
+ * `/bootstrap` as `enrollmentKey`, not the separate global
+ * `AGENT_ENROLLMENT_SECRET`.
+ *
+ * Safely refunds an unused bootstrap-token slot when a redeemed child key
+ * never actually got used to enroll a device (Task 6's agent calls this
+ * best-effort on a non-retryable 4xx from `/agents/enroll`).
+ *
+ * SECURITY (farming): cancel must NEVER be able to leave both a still-usable
+ * child key AND a refunded slot — that would let an attacker mint installers
+ * indefinitely by redeeming then immediately cancelling. The exactly-once
+ * guard is `DELETE ... WHERE id = X AND usage_count = 0 RETURNING id`: the
+ * consumed_count decrement only runs if that DELETE actually removed a row,
+ * i.e. this call is the one — and only one — call that atomically flips the
+ * child from "exists, unused" to "gone". A concurrent cancel or a concurrent
+ * enrollment that bumped usage_count between the read below and the delete
+ * makes this a no-op 0-row delete, which reports `already_used` rather than
+ * refunding.
+ *
+ * Everything runs inside the single transaction withSystemDbAccessContext
+ * already opens for RLS context injection — no nested BEGIN needed, same
+ * reasoning as redeemBootstrapToken's C1 comment above.
+ *
+ * `bootstrapTokenId` has deliberately no FK to installer_bootstrap_tokens
+ * (see migrations/2026-08-11-enrollment-idempotency.sql — a reverse FK would
+ * create a two-table cascade cycle tenantCascade.ts can't order). So the
+ * token row may already be gone (e.g. the parent enrollment key was deleted
+ * and cascaded the token away); the decrement UPDATE below simply matches 0
+ * rows in that case, which is fine — the slot is moot once the token no
+ * longer exists, and this still counts as `refunded: true` because the
+ * child key itself is gone.
+ *
+ * Forensic logging: this is an unauthenticated endpoint that DELETEs an
+ * enrollment key and mutates a token counter under a system RLS context, so
+ * every outcome branch is logged (id/reason/ip only) — mirroring
+ * redeemBootstrapToken's console.error/console.log calls above — so a
+ * farming or revocation probe leaves a trail. The raw secret (and any hash
+ * of it) is NEVER logged, same discipline as the 404 path above.
+ */
+installerRoutes.post("/bootstrap/cancel", async (c) => {
+  const ip = getTrustedClientIp(c, c.env?.incoming?.socket?.remoteAddress ?? "unknown");
+
+  const requestBody = (await c.req.json().catch(() => null)) as
+    | { enrollmentSecret?: unknown }
+    | null;
+  const rawSecret =
+    typeof requestBody?.enrollmentSecret === "string"
+      ? requestBody.enrollmentSecret
+      : "";
+  if (!rawSecret) {
+    return c.json({ error: "missing enrollmentSecret" }, 400);
+  }
+
+  const result: CancelResult = await withSystemDbAccessContext(async () => {
+    // Same lookup pattern as the public installer download / enroll routes:
+    // try primary + legacy pepper hashes so keys created before
+    // ENROLLMENT_KEY_PEPPER was mandatory still resolve.
+    const keyHashCandidates = hashEnrollmentKeyCandidates(rawSecret);
+    const [child] = await db
+      .select()
+      .from(enrollmentKeys)
+      .where(inArray(enrollmentKeys.key, keyHashCandidates))
+      .limit(1);
+
+    if (!child) {
+      console.error("[installer] bootstrap cancel 404", {
+        reason: "unknown_secret",
+        ip,
+      });
+      return { status: 404 };
+    }
+
+    if (child.usageCount !== 0) {
+      // Already enrolled a device with this key — cancelling now would
+      // double-spend the slot: the device stays live AND the token would
+      // get refunded.
+      console.log("[installer] bootstrap cancel", {
+        reason: "already_used",
+        childKeyId: child.id,
+        tokenId: child.bootstrapTokenId,
+        ip,
+      });
+      return {
+        status: 200,
+        body: { refunded: false, reason: "already_used" },
+      };
+    }
+
+    if (child.bootstrapTokenId === null) {
+      // Pre-migration key (minted before Task 2 started stamping the
+      // token id), or never minted via bootstrap redemption at all —
+      // nothing to refund.
+      console.log("[installer] bootstrap cancel", {
+        reason: "not_linked",
+        childKeyId: child.id,
+        ip,
+      });
+      return { status: 200, body: { refunded: false, reason: "not_linked" } };
+    }
+
+    const [deletedChild] = await db
+      .delete(enrollmentKeys)
+      .where(
+        and(
+          eq(enrollmentKeys.id, child.id),
+          eq(enrollmentKeys.usageCount, 0),
+        ),
+      )
+      .returning({ id: enrollmentKeys.id });
+
+    if (!deletedChild) {
+      // Lost the race — a concurrent enroll or cancel got here first.
+      console.log("[installer] bootstrap cancel", {
+        reason: "already_used",
+        childKeyId: child.id,
+        tokenId: child.bootstrapTokenId,
+        lostRace: true,
+        ip,
+      });
+      return {
+        status: 200,
+        body: { refunded: false, reason: "already_used" },
+      };
+    }
+
+    await db
+      .update(installerBootstrapTokens)
+      .set({
+        consumedCount: sql`GREATEST(${installerBootstrapTokens.consumedCount} - 1, 0)`,
+      })
+      .where(eq(installerBootstrapTokens.id, child.bootstrapTokenId));
+
+    console.log("[installer] bootstrap cancel", {
+      reason: "refunded",
+      childKeyId: child.id,
+      tokenId: child.bootstrapTokenId,
+      ip,
+    });
+    return { status: 200, body: { refunded: true } };
+  });
+
+  if (result.status === 404) {
+    return c.json({ error: "not found" }, 404);
+  }
+  return c.json(result.body, result.status);
 });

@@ -47,7 +47,11 @@ const defaultSelectChain = () => ({
   from: vi.fn(() => ({
     where: vi.fn(() => Object.assign(Promise.resolve([]), {
       limit: vi.fn(() => Promise.resolve([])),
-      orderBy: vi.fn(() => ({
+      // `.orderBy()` must be BOTH awaitable and `.limit()`-chainable: the
+      // enrollment colliding-device lookup (#2764) awaits `.orderBy(...)`
+      // directly (it deliberately has no `.limit`), while other resolvers
+      // still order-then-limit.
+      orderBy: vi.fn(() => Object.assign(Promise.resolve([]), {
         limit: vi.fn(() => Promise.resolve([]))
       }))
     }))
@@ -339,11 +343,14 @@ describe('agent routes', () => {
         })
       } as any);
 
-      // Then checks for existing device: db.select().from(devices).where(...).limit(1)
+      // Then checks for colliding devices:
+      // db.select().from(devices).where(...).orderBy(devices.createdAt) — every
+      // match, oldest first, no `.limit` (#2764).
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue(Object.assign(Promise.resolve([]), {
-            limit: vi.fn().mockResolvedValue([])
+            limit: vi.fn().mockResolvedValue([]),
+            orderBy: vi.fn().mockResolvedValue([])
           }))
         })
       } as any);
@@ -466,10 +473,12 @@ describe('agent routes', () => {
         })
       } as any);
 
+      // Colliding-device lookup: `.orderBy(devices.createdAt)`, no `.limit` (#2764).
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue(Object.assign(Promise.resolve([]), {
-            limit: vi.fn().mockResolvedValue([])
+            limit: vi.fn().mockResolvedValue([]),
+            orderBy: vi.fn().mockResolvedValue([])
           }))
         })
       } as any);
@@ -824,7 +833,7 @@ describe('agent routes', () => {
       const rowsChain = (rows: unknown[]) => ({
         where: vi.fn(() => Object.assign(Promise.resolve(rows), {
           limit: vi.fn(() => Promise.resolve(rows)),
-          orderBy: vi.fn(() => ({
+          orderBy: vi.fn(() => Object.assign(Promise.resolve(rows), {
             limit: vi.fn(() => Promise.resolve(rows))
           }))
         }))

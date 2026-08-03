@@ -360,6 +360,112 @@ func (c *Client) Enroll(req *EnrollRequest) (*EnrollResponse, error) {
 	return &enrollResp, nil
 }
 
+// CancelBootstrapResponse mirrors the server's POST
+// /installer/bootstrap/cancel 200 response body.
+type CancelBootstrapResponse struct {
+	Refunded bool   `json:"refunded"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// CancelBootstrap posts the RAW CHILD ENROLLMENT KEY (the `enrollmentKey`
+// field of the /installer/bootstrap redeem response — NOT the org-shared
+// `enrollmentSecret`, which is frequently null) to
+// /api/v1/installer/bootstrap/cancel, refunding a bootstrap-token slot
+// behind a redeemed-but-never-enrolled child key (Task 6, #2764). The server
+// hashes the value and looks it up against enrollment_keys.key, so only the
+// child key resolves; the wire field is nonetheless still named
+// `enrollmentSecret` for compatibility with already-shipped agents. Unlike
+// every other call in this file, the raw key IS the auth for this
+// endpoint — no bearer token, matching the trust level of bootstrap
+// redemption itself (see redeemBootstrapToken in internal/agentapp/bootstrap.go).
+//
+// Called from the enroll-failure path (enrollError, via
+// cancelBootstrapOnEnrollFailure) only for a definitive 4xx rejection where
+// the slot is provably unused — see enrollErrCategory.isRefundable4xx. A
+// dedicated 5-second timeout keeps a slow/unreachable server from adding
+// meaningfully to an install that is already failing and about to roll
+// back; the caller treats any error here as non-fatal and logs it.
+func CancelBootstrap(serverURL, childEnrollmentKey string) (*CancelBootstrapResponse, error) {
+	url := strings.TrimRight(serverURL, "/") + "/api/v1/installer/bootstrap/cancel"
+	// Wire field name is a wart: it carries the child KEY, not a secret.
+	body, err := json.Marshal(map[string]string{"enrollmentSecret": childEnrollmentKey})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal cancel-bootstrap request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cancel-bootstrap request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: refuseUntrustedRedirect}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send cancel-bootstrap request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read cancel-bootstrap response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &ErrHTTPStatus{StatusCode: resp.StatusCode, Body: string(bodyBytes)}
+	}
+
+	var result CancelBootstrapResponse
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return nil, fmt.Errorf("failed to decode cancel-bootstrap response: %w", err)
+	}
+	return &result, nil
+}
+
+// UninstallIntentResponse mirrors the server's POST
+// /agents/:id/uninstall-intent 200 response body.
+type UninstallIntentResponse struct {
+	Acknowledged bool `json:"acknowledged"`
+}
+
+// UninstallIntent posts the uninstaller's best-effort "I'm about to be
+// removed" signal (Task 6, #2764) before secrets.yaml is deleted. Device-
+// token authenticated like every other agent route. A dedicated 5-second
+// timeout — the caller (runUninstallNotify, internal/agentapp/main.go)
+// always exits 0 regardless of the outcome, including a network error or
+// the 403 tenant_offboarding drain response, so this call must never
+// meaningfully delay an uninstall.
+func (c *Client) UninstallIntent() (*UninstallIntentResponse, error) {
+	url := fmt.Sprintf("%s/api/v1/agents/%s/uninstall-intent", c.baseURL, c.agentID)
+	req, err := http.NewRequest(http.MethodPost, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create uninstall-intent request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.authToken)
+
+	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: refuseUntrustedRedirect}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send uninstall-intent request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read uninstall-intent response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &ErrHTTPStatus{StatusCode: resp.StatusCode, Body: string(bodyBytes)}
+	}
+
+	var result UninstallIntentResponse
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return nil, fmt.Errorf("failed to decode uninstall-intent response: %w", err)
+	}
+	return &result, nil
+}
+
 func (c *Client) SubmitCommandResult(commandID string, result interface{}) error {
 	body, err := json.Marshal(result)
 	if err != nil {

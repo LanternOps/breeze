@@ -31,6 +31,10 @@ import {
   type ManifestKeyDelegation,
 } from '../../services/manifestSigning';
 import { captureException } from '../../services/sentry';
+import {
+  raiseDeviceIdentityCollisionAlert,
+  type DeviceIdentityCollisionAlertInput,
+} from '../../services/deviceIdentityCollisionAlert';
 
 export const enrollmentRoutes = new Hono();
 const ENROLLMENT_RATE_LIMIT = 10;
@@ -115,7 +119,12 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
   // this block resolves and the pooled connection is released, mirroring
   // reliabilityWorker.ts's processScanOrgs (#2640).
   const enrollmentOutcome = await withSystemDbAccessContext(async (): Promise<
-    Response | { deviceId: string; responseBody: Record<string, unknown> }
+    | Response
+    | {
+        deviceId: string;
+        collision?: DeviceIdentityCollisionAlertInput;
+        responseBody: Record<string, unknown>;
+      }
   > => {
     // Re-validated in the UPDATE WHERE below to close the TOCTOU window between
     // this initial lookup and the usage_count bump.
@@ -384,7 +393,11 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     // lgtm[js/insufficient-password-hash]
     const helperTokenHash = createHash('sha256').update(helperApiKey).digest('hex');
 
-    const [existingDevice] = await db
+    // #2764: every colliding row, oldest first — not `.limit(1)`. Collisions
+    // are no longer refused, so more than one row can legitimately share a
+    // hostname and the audit trail must name all of them. Ordering makes the
+    // selection deterministic (the old `.limit(1)` was not).
+    const collidingDevices = await db
       .select({
         id: devices.id,
         status: devices.status,
@@ -401,7 +414,58 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
           eq(devices.siteId, siteId)
         )
       )
-      .limit(1);
+      .orderBy(devices.createdAt);
+
+    const enrollNow = new Date();
+    const presentedExistingDeviceToken = getProvidedExistingDeviceToken(c);
+    // Match the presented credential against EVERY colliding row, not just the
+    // first. With multiple rows sharing a hostname (only possible post-#2764),
+    // checking one arbitrary row would fail to recognize the agent's own row
+    // and mint yet another fresh row on every reinstall — an unbounded device-
+    // row leak on the exact path this feature exists to make idempotent.
+    // A suspended row can never authenticate (suspension binds its credential).
+    const authenticatedDevice = presentedExistingDeviceToken
+      ? collidingDevices.find(
+          (candidate) =>
+            !candidate.agentTokenSuspendedAt &&
+            (tokenHashMatches(candidate.agentTokenHash, presentedExistingDeviceToken, enrollNow) ||
+              tokenHashMatches(
+                candidate.previousTokenHash,
+                presentedExistingDeviceToken,
+                enrollNow,
+                candidate.previousTokenExpiresAt,
+              ))
+        )
+      : undefined;
+
+    // The row this enrollment is measured against: the one the agent proved
+    // possession of, else the ONLINE collider (the live lookalike an operator
+    // needs pointed at), else any LIVE collider, else the oldest.
+    //
+    // The "any live collider" rung is load-bearing. A decommissioned row is a
+    // dead record an admin already retired; letting it win over a live sibling
+    // would (a) route a plain collision into the #914 decom bypass — losing
+    // the replacement linkage, the collision audit and the alert — and (b) if
+    // that dead row also carried a probe suspension, resurrect the
+    // `existing_decommissioned_row_has_suspended_token` 409 against a
+    // perfectly healthy host, i.e. exactly the permanently-un-enrollable
+    // failure this change exists to remove. Reachable in the field: a
+    // collision mints row2, an operator then decommissions row1, and row2's
+    // machine reinstalls. Decom-bypass therefore fires only when EVERY
+    // collider is decommissioned.
+    const existingDevice =
+      authenticatedDevice ??
+      collidingDevices.find((candidate) => candidate.status === 'online') ??
+      collidingDevices.find((candidate) => candidate.status !== 'decommissioned') ??
+      collidingDevices[0];
+
+    // Containment can never be escaped by re-enrolling. When the agent proved
+    // possession of a colliding row's credential, only THAT row's quarantine
+    // status can block it; otherwise any quarantined collider blocks (strictly
+    // at least as strict as the pre-#2764 single-row check).
+    const quarantineBlocker = authenticatedDevice
+      ? (authenticatedDevice.status === 'quarantined' ? authenticatedDevice : undefined)
+      : collidingDevices.find((candidate) => candidate.status === 'quarantined');
 
     let existingDeviceAuthenticated = false;
     // Set true on the decom-bypass path so the transaction below renames
@@ -411,6 +475,10 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     // key + secret + a known-decommissioned hostname could silently adopt
     // the prior device's audit history (agent_logs, alerts, etc.).
     let decomBypassFreshRow = false;
+    // #2764 hostname-collision path: INSERT a fresh row exactly like the
+    // decom bypass, but WITHOUT its hostname rename — the colliding rows now
+    // coexist and no existing row is written at enrollment time.
+    let collisionFreshRow = false;
     if (existingDevice) {
       // Containment guard: a quarantined device must NOT be able to clear its
       // own containment by re-enrolling. Even with a valid existing-device
@@ -422,13 +490,13 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       // status back to 'online', resuming heartbeat/commands/remote-desktop
       // with no operator approval and leaving stale quarantinedAt/Reason
       // columns that mask the bypass in the UI.
-      if (existingDevice.status === 'quarantined') {
+      if (quarantineBlocker) {
         writeAuditEvent(c, {
           orgId: key.orgId,
           actorType: 'system',
           action: 'agent.enroll',
           resourceType: 'device',
-          resourceId: existingDevice.id,
+          resourceId: quarantineBlocker.id,
           resourceName: data.hostname,
           details: {
             reason: 'quarantined_device_reenroll_refused',
@@ -495,44 +563,60 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
           result: 'success',
         });
       } else {
-        const now = new Date();
-        const existingDeviceToken = getProvidedExistingDeviceToken(c);
-        existingDeviceAuthenticated =
-          tokenHashMatches(existingDevice.agentTokenHash, existingDeviceToken, now) ||
-          tokenHashMatches(existingDevice.previousTokenHash, existingDeviceToken, now, existingDevice.previousTokenExpiresAt);
+        // The presented credential was already matched against every
+        // colliding row above; this row is authenticated iff it is the one
+        // that matched.
+        existingDeviceAuthenticated = authenticatedDevice?.id === existingDevice.id;
       }
 
       if (!existingDeviceAuthenticated) {
-        const isSuspendedDecom = tokenSuspended && existingDevice.status === 'decommissioned';
-        const reason = isSuspendedDecom
-          ? 'existing_decommissioned_row_has_suspended_token'
-          : 'hostname_collision_requires_existing_device_token';
-        const errorMessage = isSuspendedDecom
-          ? 'Re-enrollment refused: existing device is decommissioned but its agent token was suspended (cross-tenant probe alarm). Clear agent_token_suspended_at on the device row before re-enrolling.'
-          : 'Enrollment attempted to replace an existing hostname without the existing device token';
-
-        writeAuditEvent(c, {
-          orgId: key.orgId,
-          actorType: 'system',
-          action: 'agent.enroll',
-          resourceType: 'device',
-          resourceId: existingDevice.id,
-          resourceName: data.hostname,
-          details: {
+        if (tokenSuspended && existingDevice.status === 'decommissioned') {
+          // UNCHANGED refusal — deliberate ops alarm. A probe-suspended token
+          // on a decommissioned row means an operator must consciously clear
+          // agent_token_suspended_at before that hostname re-enrolls.
+          const reason = 'existing_decommissioned_row_has_suspended_token';
+          writeAuditEvent(c, {
+            orgId: key.orgId,
+            actorType: 'system',
+            action: 'agent.enroll',
+            resourceType: 'device',
+            resourceId: existingDevice.id,
+            resourceName: data.hostname,
+            details: {
+              reason,
+              siteId,
+            },
+            result: 'denied',
+            errorMessage:
+              'Re-enrollment refused: existing device is decommissioned but its agent token was suspended (cross-tenant probe alarm). Clear agent_token_suspended_at on the device row before re-enrolling.',
+          });
+          return c.json({
+            error: 'Re-enrollment refused: existing device row is decommissioned and has a suspended agent token. An operator must clear the suspension flag before re-enrollment.',
             reason,
-            siteId,
-          },
-          result: 'denied',
-          errorMessage,
-        });
-        return c.json({
-          error: isSuspendedDecom
-            ? 'Re-enrollment refused: existing device row is decommissioned and has a suspended agent token. An operator must clear the suspension flag before re-enrollment.'
-            : 'A device with this hostname already exists and re-enrollment requires the existing device token or an admin-approved replacement workflow',
-          reason,
-        }, 409);
+          }, 409);
+        }
+
+        // #2764: the former `hostname_collision_requires_existing_device_token`
+        // 409 is GONE. A reimaged or reinstalled machine structurally cannot
+        // hold the prior row's token, so the refusal made the host permanently
+        // un-enrollable and rolled back the whole MSI install — while
+        // preventing nothing, since the hostname is self-attested and an
+        // attacker with a valid key can already enroll under any other name.
+        //
+        // Prevention is replaced by DETECTION: a fresh row linked back to the
+        // row it may be replacing, an audit trail naming every collider, and
+        // (when the collider is live) an operator alert. Deliberately NOT
+        // done here: renaming, decommissioning, adopting or otherwise writing
+        // the existing row. Staleness is not authorization, and hardware
+        // identifiers are self-attested so they gate nothing.
+        collisionFreshRow = true;
       }
     }
+
+    // Both fresh-row paths take the INSERT branch below; only the decom
+    // bypass additionally renames the row it replaces.
+    const insertFreshRow = !existingDevice || decomBypassFreshRow || collisionFreshRow;
+    const collisionReplacedDeviceId = collisionFreshRow && existingDevice ? existingDevice.id : null;
 
     // Pre-#914 a top-level auto-restore UPDATE flipped a decommissioned
     // existingDevice back to status='offline' before the in-transaction
@@ -555,7 +639,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       // (#914) is going to INSERT a new active row — both grow net active
       // count by 1. Skipped on the normal UPDATE-in-place re-enroll path,
       // which is count-neutral.
-      if (maxDevices != null && deviceLimitPartnerId && (!existingDevice || decomBypassFreshRow)) {
+      if (maxDevices != null && deviceLimitPartnerId && insertFreshRow) {
         const partnerOrgIds = tx
           .select({ id: organizations.id })
           .from(organizations)
@@ -632,7 +716,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       }
 
       let dev;
-      if (existingDevice && !decomBypassFreshRow) {
+      if (!insertFreshRow && existingDevice) {
         [dev] = await tx
           .update(devices)
           .set({
@@ -697,6 +781,10 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             virtualizationPlatform: data.virtualizationPlatform ?? null,
             status: 'online',
             lastSeenAt: new Date(),
+            // #2764: forensic + UI linkage back to the row this enrollment may
+            // be replacing. Set on the collision path only — the decom bypass
+            // records its own linkage in the audit trail (#914).
+            possibleReplacementOfDeviceId: collisionReplacedDeviceId,
             tags: []
           })
           .returning();
@@ -835,6 +923,16 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         ...(decomBypassFreshRow && existingDevice
           ? { decomBypassPriorDeviceId: existingDevice.id }
           : {}),
+        // #2764: the hostname collision that used to be a 409. Names the row
+        // the fresh one may be replacing plus every colliding id, so the
+        // forensic chain is queryable in one step.
+        ...(collisionReplacedDeviceId
+          ? {
+              reason: 'hostname_collision_enrolled_fresh_row',
+              possibleReplacementOfDeviceId: collisionReplacedDeviceId,
+              collidingDeviceIds: collidingDevices.map((candidate) => candidate.id),
+            }
+          : {}),
       },
     });
 
@@ -886,6 +984,22 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
 
     return {
       deviceId: device.id,
+      // #2764: raised AFTER this context closes (see below). Only when the
+      // colliding row is currently ONLINE — that is the lookalike signal;
+      // a stale offline row is the ordinary reimage case and would be pure
+      // noise. Status column, not the in-process websocket map, which is not
+      // cluster-authoritative.
+      collision:
+        collisionReplacedDeviceId && existingDevice?.status === 'online'
+          ? {
+              orgId: key.orgId,
+              siteId,
+              hostname: data.hostname,
+              newDeviceId: device.id,
+              existingDeviceId: collisionReplacedDeviceId,
+              collidingDeviceIds: collidingDevices.map((candidate) => candidate.id),
+            }
+          : undefined,
       responseBody: {
         agentId: agentId,
         deviceId: device.id,
@@ -918,6 +1032,21 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
   queueWarrantySyncForDevice(enrollmentOutcome.deviceId).catch((err) => {
     console.error('[Enrollment] Failed to queue warranty sync:', err instanceof Error ? err.message : err);
   });
+
+  // #2764 identity-collision alert. Best-effort and strictly fire-and-forget:
+  // an alerting failure must never fail an enrollment that already committed.
+  // Runs in its OWN system DB context, after the enrollment context released
+  // its pooled connection — createAlert does Redis/BullMQ/event-bus work that
+  // must not be held inside the enrollment transaction (#1105).
+  const collision = enrollmentOutcome.collision;
+  if (collision) {
+    withSystemDbAccessContext(() => raiseDeviceIdentityCollisionAlert(collision)).catch((err) => {
+      console.error(
+        `[Enrollment] Failed to raise identity-collision alert for device ${collision.newDeviceId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    });
+  }
 
   return c.json(enrollmentOutcome.responseBody, 201);
 });

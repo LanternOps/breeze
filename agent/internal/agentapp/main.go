@@ -256,6 +256,20 @@ var statusCmd = &cobra.Command{
 	},
 }
 
+// uninstallNotifyCmd is the WiX uninstall CA's target (Return="ignore" —
+// see installer/breeze.wxs). It is intentionally NOT wired through
+// enrollError/osExit: unlike every other enroll/bootstrap path in this
+// package, a failure here must never fail the process. See
+// runUninstallNotify.
+var uninstallNotifyCmd = &cobra.Command{
+	Use:    "uninstall-notify",
+	Short:  "Best-effort notify the server that this agent is about to be uninstalled (used by the uninstaller)",
+	Hidden: true,
+	Run: func(cmd *cobra.Command, args []string) {
+		runUninstallNotify()
+	},
+}
+
 var userHelperCmd = &cobra.Command{
 	Use:   "user-helper",
 	Short: "Run as a per-user session helper (started automatically by the system)",
@@ -295,6 +309,7 @@ func init() {
 	rootCmd.AddCommand(bootstrapCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(uninstallNotifyCmd)
 	rootCmd.AddCommand(userHelperCmd)
 	rootCmd.AddCommand(desktopHelperCmd)
 }
@@ -1502,6 +1517,49 @@ func checkStatus() {
 	fmt.Printf("Heartbeat Interval: %d seconds\n", cfg.HeartbeatIntervalSeconds)
 	fmt.Printf("Metrics Interval: %d seconds\n", cfg.MetricsIntervalSeconds)
 	fmt.Printf("Enabled Collectors: %v\n", cfg.EnabledCollectors)
+}
+
+// runUninstallNotify posts the best-effort uninstall-intent signal (Task 6,
+// #2764) — POST /agents/:id/uninstall-intent — before the MSI's RemoveFiles
+// standard action deletes secrets.yaml (see the UninstallNotify CA,
+// installer/breeze.wxs, sequenced Before="RemoveFiles"). This is a
+// diagnostic courtesy to the server (it lets the offline-detector reaper
+// distinguish "cleanly uninstalled" from "just went dark"), never a
+// precondition for uninstalling.
+//
+// Every branch below returns without calling osExit at all, let alone with
+// a nonzero code: no readable config, an unenrolled config, a network
+// error, and a non-2xx response (including the 403 tenant_offboarding
+// drain response returned while the device's org is mid-offboarding) are
+// all treated identically — logged, then return. Combined with the WiX
+// CA's own Return="ignore", this is belt-and-suspenders: the process must
+// exit 0 even if some future edit here forgets that contract.
+func runUninstallNotify() {
+	cfg, err := config.Load(cfgFile)
+	if err != nil {
+		cfg = config.Default()
+	}
+	initEnrollLogging(cfg, true)
+	uLog := logging.L("uninstall-notify")
+
+	if !config.IsEnrolled(cfg) {
+		// Covers both "never enrolled" and "secrets.yaml already gone" —
+		// IsEnrolled requires AuthToken, which only ever lives in
+		// secrets.yaml. Nothing to notify either way.
+		uLog.Info("uninstall-notify: agent is not enrolled (or secrets.yaml is missing); nothing to notify")
+		return
+	}
+
+	client := api.NewClient(cfg.ServerURL, cfg.AuthToken, cfg.AgentID)
+	resp, err := client.UninstallIntent()
+	if err != nil {
+		// Includes the 403 tenant_offboarding drain response and any
+		// network/timeout error — both are expected/benign here and must
+		// never block or slow down the uninstall.
+		uLog.Info("uninstall-notify: server call failed (non-fatal, uninstall proceeds)", "error", err.Error())
+		return
+	}
+	uLog.Info("uninstall-notify: acknowledged by server", "acknowledged", resp.Acknowledged)
 }
 
 // runUserHelper starts the per-user session helper process.
