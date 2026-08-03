@@ -621,3 +621,17 @@ export async function autoMigrate(): Promise<void> {
     await client.end();
   }
 }
+
+// Run if executed directly (`pnpm db:migrate`). Without this guard the package
+// script merely imports the module and exits 0 having applied nothing (#3065).
+// process.exit is required: seed() (step 8) opens the shared pool from
+// ./index, which would otherwise hold the event loop open forever.
+const isMainModule = import.meta.url === `file://${process.argv[1]}`;
+if (isMainModule) {
+  autoMigrate()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error('[auto-migrate] Migration failed:', err);
+      process.exit(1);
+    });
+}
