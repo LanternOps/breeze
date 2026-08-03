@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { sql } from 'drizzle-orm';
 
 // Shared mutable gates so individual tests can flip MFA/permission denial at
 // request time — the route registers `requireMfa()` / `requirePermission()`
@@ -43,6 +44,16 @@ vi.mock('../db/schema', () => ({
     expiresAt: 'enrollmentKeys.expiresAt',
     createdAt: 'enrollmentKeys.createdAt',
     createdBy: 'enrollmentKeys.createdBy',
+  },
+  // Referenced by the #2832 purge exemption
+  // (services/enrollmentKeyPurgeGuards.ts), which the purge-expired route
+  // pulls into its DELETE predicate.
+  installerBootstrapTokens: {
+    id: 'installerBootstrapTokens.id',
+    parentEnrollmentKeyId: 'installerBootstrapTokens.parentEnrollmentKeyId',
+    expiresAt: 'installerBootstrapTokens.expiresAt',
+    consumedCount: 'installerBootstrapTokens.consumedCount',
+    maxUsage: 'installerBootstrapTokens.maxUsage',
   },
 }));
 
@@ -204,6 +215,55 @@ function mockDeleteWhereReturningCapture(rows: any[]): () => any {
     }),
   } as any);
   return () => captured;
+}
+
+/**
+ * Flattens a drizzle condition to its static text. The existing purge tests
+ * assert via `JSON.stringify`, which cannot see inside the #2832 exemption:
+ * `notExists()` embeds the subquery as an opaque `SQLWrapper` (an object whose
+ * only own property is a `getSQL` function), and JSON.stringify renders that
+ * as `{}`. Recursing through `getSQL()` is what makes the subquery's columns
+ * assertable. Same approach as jobs/enrollmentKeyCleanup.test.ts's `sqlText`.
+ */
+function sqlText(q: unknown): string {
+  if (q == null) return '';
+  if (typeof q === 'string') return q;
+  if (q instanceof Date) return q.toISOString();
+  const obj = q as {
+    queryChunks?: unknown[];
+    value?: unknown;
+    getSQL?: () => unknown;
+  };
+  if (Array.isArray(obj.queryChunks)) return obj.queryChunks.map(sqlText).join(' ');
+  if (Array.isArray(obj.value)) return (obj.value as unknown[]).map(sqlText).join('');
+  if (obj.value instanceof Date) return obj.value.toISOString();
+  if (typeof obj.value === 'string' || typeof obj.value === 'number') return String(obj.value);
+  if (typeof obj.getSQL === 'function') return sqlText(obj.getSQL());
+  return '';
+}
+
+/**
+ * The #2832 exemption builds a correlated NOT EXISTS subquery via
+ * `db.select(...).from(...).where(...)`. It never executes here (no Postgres
+ * in this suite) — it only has to satisfy drizzle's `SQLWrapper` duck-typing
+ * (a `getSQL()` method) so `notExists(...)` can embed it. Wrapping the REAL
+ * condition production code built (via the unmocked drizzle `and`/`eq`/`gt`/
+ * `lt`) means the captured WHERE genuinely reflects the generated predicate
+ * rather than a canned stand-in. Mirrors the identical stub in
+ * jobs/enrollmentKeyCleanup.test.ts.
+ *
+ * Registered with `mockReturnValue` (not `...Once`) so it stays in place for
+ * however many times the guard is built, and does not consume the
+ * `mockReturnValueOnce` queue the single-record `db.select` helpers rely on.
+ */
+function mockBootstrapTokenExemptionSubquery() {
+  vi.mocked(db.select).mockReturnValue({
+    from: () => ({
+      where: (cond: unknown) => ({
+        getSQL: () => sql`select 1 from installer_bootstrap_tokens where ${cond}`,
+      }),
+    }),
+  } as any);
 }
 
 describe('enrollment key routes — get, rotate, delete', () => {
@@ -495,6 +555,10 @@ describe('enrollment key routes — get, rotate, delete', () => {
   // POST /purge-expired — Bulk-delete expired enrollment keys in caller scope
   // ============================================
   describe('POST /enrollment-keys/purge-expired', () => {
+    beforeEach(() => {
+      mockBootstrapTokenExemptionSubquery();
+    });
+
     it('purges expired keys within the org-scoped caller\'s org and returns the count', async () => {
       const getCaptured = mockDeleteWhereReturningCapture([
         { id: 'key-1' },
@@ -646,6 +710,40 @@ describe('enrollment key routes — get, rotate, delete', () => {
       // No org-scoping column present — only the expired condition.
       expect(conditionJson).not.toContain('enrollmentKeys.orgId');
       expect(conditionJson).toContain('enrollmentKeys.expiresAt');
+    });
+
+    // #2832: the nightly sweep got the live-bootstrap-token exemption in
+    // #2775; this route — the on-demand counterpart behind the web UI's
+    // "Delete expired" button — did not, and is the FASTER path to the same
+    // data loss (no grace period at all vs. the sweep's 7 days).
+    //
+    // This is a SQL-shape assertion: with `db` mocked there is no Postgres to
+    // evaluate the correlated NOT EXISTS per row. Proof that Postgres actually
+    // spares the right rows lives in
+    // routes/enrollmentKeysPurgeExpired.integration.test.ts. What is
+    // meaningfully verifiable here is that the predicate reaches the DELETE at
+    // all and correlates on the right columns.
+    it('exempts keys still backing a live, unexhausted installer bootstrap token (#2832)', async () => {
+      const getCaptured = mockDeleteWhereReturningCapture([{ id: 'key-1' }]);
+
+      const res = await app.request('/enrollment-keys/purge-expired', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const text = sqlText(getCaptured());
+
+      expect(text).toContain('not exists');
+      // Correlated on the outer enrollment_keys row...
+      expect(text).toContain('installerBootstrapTokens.parentEnrollmentKeyId');
+      expect(text).toContain('enrollmentKeys.id');
+      // ...and both liveness arms are present: unexpired AND unexhausted.
+      // Dropping either would silently re-open the cascade for half the
+      // token population.
+      expect(text).toContain('installerBootstrapTokens.expiresAt');
+      expect(text).toContain('installerBootstrapTokens.consumedCount');
+      expect(text).toContain('installerBootstrapTokens.maxUsage');
     });
 
     it('is blocked without MFA (requireMfa)', async () => {
