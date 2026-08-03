@@ -501,6 +501,192 @@ softwareUploadRoutes.get(
 );
 
 // ---------------------------------------------------------------------------
+// POST /catalog/:id/versions/uploads/:uploadId/complete — finalize
+//
+// Preserves the legacy multipart route's tail verbatim (software.ts
+// ~1023-1096): uploadBinary -> insertLatestSoftwareVersion -> writeRouteAudit
+// -> temp cleanup, including the #2794 S3ConfigError->503 / S3OperationError->502
+// mapping. sha256 is computed by streaming the assembled temp file once here
+// (design choice: no in-process hash state; an API restart mid-upload can
+// never yield a checksum over the wrong bytes — see module docblock).
+// ---------------------------------------------------------------------------
+softwareUploadRoutes.post(
+  '/catalog/:id/versions/uploads/:uploadId/complete',
+  requireScope('organization', 'partner', 'system'),
+  requireSoftwareWrite,
+  requireMfa(),
+  zValidator('param', uploadParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const { orgId } = orgResult;
+    const { id: catalogId, uploadId } = c.req.valid('param');
+
+    // Instance-ownership guard — BEFORE the lock and before any S3/db work
+    // (same contract as the chunk route; complete reads the temp file, which
+    // only exists on the owning process).
+    const [owned] = await db.select().from(softwareUploadSessions).where(and(
+      eq(softwareUploadSessions.id, uploadId),
+      eq(softwareUploadSessions.orgId, orgId),
+      eq(softwareUploadSessions.catalogId, catalogId),
+    ));
+    if (!owned) return c.json({ error: 'Upload session not found' }, 404);
+    if (owned.ownerInstanceId !== PROCESS_INSTANCE_ID) {
+      return c.json(
+        { error: 'upload_instance_mismatch', message: INSTANCE_MISMATCH_MESSAGE },
+        409,
+      );
+    }
+
+    return withSessionLock(uploadId, async () => {
+      // Re-read INSIDE the lock so bytesReceived reflects the last append.
+      const [session] = await db.select().from(softwareUploadSessions).where(and(
+        eq(softwareUploadSessions.id, uploadId),
+        eq(softwareUploadSessions.orgId, orgId),
+        eq(softwareUploadSessions.catalogId, catalogId),
+      ));
+      if (!session) return c.json({ error: 'Upload session not found' }, 404);
+      if (session.status !== 'active') {
+        return c.json({ error: 'Upload session is not active' }, 409);
+      }
+      if (session.bytesReceived !== session.fileSize) {
+        return c.json(
+          {
+            error: 'Upload is incomplete',
+            bytesReceived: session.bytesReceived,
+            fileSize: session.fileSize,
+          },
+          409,
+        );
+      }
+      if (!isS3Configured()) {
+        return c.json({ error: 'S3 storage is not configured' }, 503);
+      }
+
+      const [catalogItem] = await db.select().from(softwareCatalog)
+        .where(and(eq(softwareCatalog.id, catalogId), eq(softwareCatalog.orgId, orgId)));
+      if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+
+      // Hash the SAME bytes that get uploaded: stream the assembled temp file
+      // exactly once, here, after bytesReceived === fileSize is confirmed
+      // above. There is no client-supplied checksum to cross-check against —
+      // this hash IS the integrity record agents verify downloads against —
+      // so it must be computed from the file on disk, never derived from
+      // per-chunk state (see #2951 Task 6: a short temp file NUL-extended to
+      // the right length would hash "correctly" and ship corrupt).
+      let checksum: string;
+      try {
+        const hash = createHash('sha256');
+        await pipeline(createReadStream(session.tempPath), hash);
+        checksum = hash.digest('hex');
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+          await db.update(softwareUploadSessions)
+            .set({ bytesReceived: 0, lastActivityAt: new Date() })
+            .where(eq(softwareUploadSessions.id, uploadId));
+          return c.json({ error: 'Upload state lost; restart from offset 0', bytesReceived: 0 }, 409);
+        }
+        captureException(err, c);
+        return c.json({ error: 'Failed to read uploaded package' }, 500);
+      }
+
+      // version_metadata was validated at create; re-parse defensively so a
+      // hand-edited row can't smuggle unvalidated data into the version insert.
+      const parsedMeta = uploadVersionMetadataSchema.safeParse(session.versionMetadata);
+      if (!parsedMeta.success) {
+        return c.json({ error: 'Stored version metadata is invalid' }, 500);
+      }
+      const meta = parsedMeta.data;
+
+      const fileType = getFileExtension(session.fileName).slice(1);
+      // Auto-detect MSI silent args (parity with the legacy multipart route).
+      let silentInstallArgs = meta.silentInstallArgs ?? null;
+      let silentUninstallArgs = meta.silentUninstallArgs ?? null;
+      if (fileType === 'msi' && !silentInstallArgs) {
+        silentInstallArgs = 'msiexec /i "{file}" /qn /norestart';
+      }
+      if (fileType === 'msi' && !silentUninstallArgs) {
+        silentUninstallArgs = 'msiexec /x "{file}" /qn /norestart';
+      }
+
+      const versionId = randomUUID();
+      const s3Key = `software/${orgId}/${catalogId}/${versionId}/${session.fileName}`;
+
+      // Map object-storage faults to a status that says whose problem it is
+      // (#2794): S3ConfigError->503 via clientMessage (never `.message`,
+      // which can quote a raw S3_ENDPOINT carrying inline credentials);
+      // S3OperationError->502 with the curated failureCode; anything else
+      // (network fault before a request was even sent) ->502 generic. The
+      // session row is left untouched on any of these so the client can
+      // retry /complete without re-uploading.
+      try {
+        await uploadBinary(session.tempPath, s3Key, checksum);
+      } catch (err) {
+        captureException(err, c);
+        if (err instanceof S3ConfigError) {
+          return c.json({ error: err.clientMessage }, 503);
+        }
+        if (err instanceof S3OperationError) {
+          return c.json({ error: err.message, storageFailure: err.failureCode }, 502);
+        }
+        return c.json(
+          {
+            error:
+              'Upload to object storage failed before the request was sent. Check the API server logs for details.',
+          },
+          502,
+        );
+      }
+
+      const versionRecord = await insertLatestSoftwareVersion(catalogId, {
+        id: versionId,
+        version: meta.version,
+        releaseDate: new Date(),
+        releaseNotes: meta.releaseNotes ?? null,
+        downloadUrl: meta.downloadUrl ?? null,
+        s3Key,
+        fileType,
+        originalFileName: session.fileName,
+        checksum,
+        fileSize: session.fileSize,
+        supportedOs: meta.supportedOs ?? null,
+        architecture: meta.architecture ?? null,
+        silentInstallArgs,
+        silentUninstallArgs,
+        preInstallScript: meta.preInstallScript ?? null,
+        postInstallScript: meta.postInstallScript ?? null,
+        detectionRules: meta.detectionRules ?? null,
+      });
+      if (!versionRecord) {
+        return c.json({ error: 'Failed to create uploaded software version' }, 500);
+      }
+
+      writeRouteAudit(c, {
+        orgId,
+        action: 'software.catalog.version.upload',
+        resourceType: 'software_version',
+        resourceId: versionRecord.id,
+        resourceName: catalogItem.name,
+        details: {
+          version: meta.version,
+          fileType,
+          fileSize: session.fileSize,
+          checksum,
+          uploadId,
+        },
+      });
+
+      await db.delete(softwareUploadSessions)
+        .where(eq(softwareUploadSessions.id, uploadId));
+      await unlink(session.tempPath).catch(() => {});
+
+      return c.json({ data: versionRecord }, 201);
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
 // DELETE /catalog/:id/versions/uploads/:uploadId — abort + cleanup
 // ---------------------------------------------------------------------------
 softwareUploadRoutes.delete(

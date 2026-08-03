@@ -103,7 +103,7 @@ import {
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { insertLatestSoftwareVersion } from '../services/softwareVersionShared';
-import { uploadBinary, isS3Configured, S3OperationError } from '../services/s3Storage';
+import { uploadBinary, isS3Configured, S3ConfigError, S3OperationError } from '../services/s3Storage';
 import { writeRouteAudit } from '../services/auditEvents';
 
 const CATALOG_ID = '11111111-1111-4111-8111-111111111111';
@@ -690,6 +690,212 @@ describe('software upload-session routes', () => {
       expect(res.status).toBe(404);
       expect(db.delete).not.toHaveBeenCalled();
       expectScopedByOrgAndCatalog(capture.calls, 'org-123', CATALOG_ID);
+    });
+  });
+
+  describe('POST /software/catalog/:id/versions/uploads/:uploadId/complete', () => {
+    const completeUrl = `/software/catalog/${CATALOG_ID}/versions/uploads/${UPLOAD_ID}/complete`;
+
+    async function seedTempFile(content: string) {
+      const p = uploadSessionTempPath(UPLOAD_ID);
+      await mkdir(dirname(p), { recursive: true });
+      await writeFile(p, content);
+      return p;
+    }
+
+    it('uploads to S3, inserts the version, audits, and cleans up', async () => {
+      const tempPath = await seedTempFile('helloworld'); // 10 bytes
+      // select #1: instance-guard pre-read; #2: session (inside lock); #3: catalog item.
+      selectQueue(
+        [makeSession({ bytesReceived: 10 })],
+        [makeSession({ bytesReceived: 10 })],
+        [catalogRow],
+      );
+      const versionRow = { id: 'ver-1', version: '1.2.3', isLatest: true };
+      vi.mocked(insertLatestSoftwareVersion).mockResolvedValueOnce(versionRow as any);
+
+      const res = await app.request(completeUrl, { method: 'POST' });
+      expect(res.status).toBe(201);
+      expect((await res.json()).data).toEqual(versionRow);
+
+      // sha256('helloworld')
+      expect(uploadBinary).toHaveBeenCalledWith(
+        tempPath,
+        expect.stringMatching(new RegExp(`^software/org-123/${CATALOG_ID}/[0-9a-f-]{36}/big\\.msi$`)),
+        '936a185caaa266bb9cbe981e9e05cb78cd732b0b3280eb944412bb6f8f8f07af',
+      );
+      const insertArgs = vi.mocked(insertLatestSoftwareVersion).mock.calls[0];
+      expect(insertArgs[0]).toBe(CATALOG_ID);
+      expect(insertArgs[1]).toMatchObject({
+        version: '1.2.3',
+        fileType: 'msi',
+        originalFileName: 'big.msi',
+        fileSize: 10,
+        // MSI defaults applied server-side, same as the legacy route:
+        silentInstallArgs: 'msiexec /i "{file}" /qn /norestart',
+        silentUninstallArgs: 'msiexec /x "{file}" /qn /norestart',
+      });
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'software.catalog.version.upload',
+        orgId: 'org-123',
+      }));
+      expect(db.delete).toHaveBeenCalledTimes(1); // session row removed
+      await expect(readFile(tempPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+
+    it('409s when bytesReceived !== fileSize', async () => {
+      selectQueue([makeSession({ bytesReceived: 4 })], [makeSession({ bytesReceived: 4 })]);
+      const res = await app.request(completeUrl, { method: 'POST' });
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.bytesReceived).toBe(4);
+      expect(body.fileSize).toBe(10);
+      expect(uploadBinary).not.toHaveBeenCalled();
+    });
+
+    it('maps S3OperationError to 502 with the curated message (contract from #2794)', async () => {
+      await seedTempFile('helloworld');
+      selectQueue(
+        [makeSession({ bytesReceived: 10 })],
+        [makeSession({ bytesReceived: 10 })],
+        [catalogRow],
+      );
+      vi.mocked(uploadBinary).mockRejectedValueOnce(
+        new S3OperationError(
+          'uploadBinary',
+          { code: 'access_denied', message: 'Object storage rejected the upload' },
+          new Error('AccessDenied'),
+        ),
+      );
+
+      const res = await app.request(completeUrl, { method: 'POST' });
+      expect(res.status).toBe(502);
+      const body = await res.json();
+      expect(body.error).toBe('Object storage rejected the upload');
+      expect(body.storageFailure).toBe('access_denied');
+      // Session survives so the client may retry complete.
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('maps S3ConfigError to 503 using clientMessage, never the raw message', async () => {
+      await seedTempFile('helloworld');
+      selectQueue(
+        [makeSession({ bytesReceived: 10 })],
+        [makeSession({ bytesReceived: 10 })],
+        [catalogRow],
+      );
+      // `message` carries the raw offending value (credential-bearing in
+      // production); the response body must use `clientMessage` instead,
+      // which never echoes it (#2794).
+      vi.mocked(uploadBinary).mockRejectedValueOnce(
+        new S3ConfigError(
+          'Invalid S3_ENDPOINT env var: s3://AKIAIOSFODNN7EXAMPLE:secret@host is not a valid URL.',
+          'The S3_ENDPOINT env var is not a valid URL.',
+        ),
+      );
+
+      const res = await app.request(completeUrl, { method: 'POST' });
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.error).toBe('The S3_ENDPOINT env var is not a valid URL.');
+      expect(JSON.stringify(body)).not.toMatch(/AKIAIOSFODNN7EXAMPLE/);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('maps a non-S3-typed storage error to a generic 502', async () => {
+      await seedTempFile('helloworld');
+      selectQueue(
+        [makeSession({ bytesReceived: 10 })],
+        [makeSession({ bytesReceived: 10 })],
+        [catalogRow],
+      );
+      vi.mocked(uploadBinary).mockRejectedValueOnce(new Error('ECONNRESET'));
+
+      const res = await app.request(completeUrl, { method: 'POST' });
+      expect(res.status).toBe(502);
+      const body = await res.json();
+      expect(body.error).toMatch(/before the request was sent/i);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('503s when S3 is not configured', async () => {
+      selectQueue([makeSession({ bytesReceived: 10 })], [makeSession({ bytesReceived: 10 })]);
+      vi.mocked(isS3Configured).mockReturnValue(false);
+      const res = await app.request(completeUrl, { method: 'POST' });
+      expect(res.status).toBe(503);
+    });
+
+    it('409s upload_instance_mismatch for a session owned by another process — before any S3/db work', async () => {
+      selectQueue([makeSession({ bytesReceived: 10, ownerInstanceId: 'some-other-process' })]);
+
+      const res = await app.request(completeUrl, { method: 'POST' });
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe('upload_instance_mismatch');
+      expect(body.message).toMatch(/session affinity|single API/i);
+      expect(uploadBinary).not.toHaveBeenCalled();
+      expect(insertLatestSoftwareVersion).not.toHaveBeenCalled();
+      expect(db.delete).not.toHaveBeenCalled();
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+    });
+
+    it('404s for an unknown upload session, scoped by org AND catalog', async () => {
+      const capture = captureChain([]);
+      vi.mocked(db.select).mockReturnValueOnce(capture.chain);
+
+      const res = await app.request(completeUrl, { method: 'POST' });
+      expect(res.status).toBe(404);
+      expectScopedByOrgAndCatalog(capture.calls, 'org-123', CATALOG_ID);
+      expect(uploadBinary).not.toHaveBeenCalled();
+    });
+
+    it('404s for a catalog item outside the caller org, after the session checks out', async () => {
+      selectQueue(
+        [makeSession({ bytesReceived: 10 })],
+        [makeSession({ bytesReceived: 10 })],
+        [], // catalog lookup finds nothing (e.g. deleted mid-upload)
+      );
+      const res = await app.request(completeUrl, { method: 'POST' });
+      expect(res.status).toBe(404);
+      expect(uploadBinary).not.toHaveBeenCalled();
+    });
+
+    // GET/DELETE/chunks all validate `:id`/`:uploadId` as UUIDs; complete must
+    // too — otherwise a malformed id reaches `eq()` against a `uuid` column
+    // unvalidated and surfaces as an unhandled Postgres error instead of a
+    // clean 400.
+    it('400s for a malformed (non-UUID) upload id, never reaching the DB', async () => {
+      const res = await app.request(
+        `/software/catalog/${CATALOG_ID}/versions/uploads/not-a-uuid/complete`,
+        { method: 'POST' },
+      );
+      expect(res.status).toBe(400);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('400s for a malformed (non-UUID) catalog id, never reaching the DB', async () => {
+      const res = await app.request(
+        `/software/catalog/not-a-uuid/versions/uploads/${UPLOAD_ID}/complete`,
+        { method: 'POST' },
+      );
+      expect(res.status).toBe(400);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('scopes both the pre-lock guard read and the in-lock re-read by org AND catalog', async () => {
+      await seedTempFile('helloworld');
+      const guardCapture = captureChain([makeSession({ bytesReceived: 10 })]);
+      const lockCapture = captureChain([makeSession({ bytesReceived: 10 })]);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(guardCapture.chain)
+        .mockReturnValueOnce(lockCapture.chain)
+        .mockReturnValueOnce(chainMock([catalogRow]) as any);
+      vi.mocked(insertLatestSoftwareVersion).mockResolvedValueOnce({ id: 'ver-1' } as any);
+
+      const res = await app.request(completeUrl, { method: 'POST' });
+      expect(res.status).toBe(201);
+      expectScopedByOrgAndCatalog(guardCapture.calls, 'org-123', CATALOG_ID);
+      expectScopedByOrgAndCatalog(lockCapture.calls, 'org-123', CATALOG_ID);
     });
   });
 });
