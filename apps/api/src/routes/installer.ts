@@ -205,6 +205,9 @@ async function redeemBootstrapToken(c: Context, token: string) {
         expiresAt: childExpiresAt,
         createdBy: row.createdBy,
         installerPlatform: row.installerPlatform ?? "macos",
+        // Links the child key back to the redeeming bootstrap token so a
+        // later cancel/uninstall can find and refund the token (#2764).
+        bootstrapTokenId: row.id,
       })
       .returning();
 

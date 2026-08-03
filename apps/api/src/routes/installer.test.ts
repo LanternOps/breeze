@@ -576,6 +576,12 @@ describe("POST /api/v1/installer/bootstrap", () => {
     expect(
       (capturedChildKeyValues as unknown as Record<string, unknown>).maxUsage,
     ).toBe(1);
+    // The child key must carry the redeeming token's id so Task 3's cancel
+    // endpoint can find and refund the token (#2764).
+    expect(
+      (capturedChildKeyValues as unknown as Record<string, unknown>)
+        .bootstrapTokenId,
+    ).toBe(tokenRow.id);
   });
 
   it("lost race / exhausted-on-consume: deletes the pre-inserted child key and 404s", async () => {
