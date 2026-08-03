@@ -71,6 +71,13 @@ export default defineConfig({
       // the mocked `changes.test.ts` unit suite, so this drives the real
       // `changesRoutes` handler + RLS insert/select policies against Postgres.
       'src/routes/agents/changes.integration.test.ts',
+      // Co-located real-DB integration test for enrollment idempotency (#2764):
+      // hostname-collision fresh-row enrollment leaving the colliding row
+      // byte-identical, the uninstall-intent -> reap -> re-enroll lifecycle,
+      // and the bootstrap-cancel exactly-once refund guard under concurrency
+      // — none of which the mocked unit suites can prove (see the file's own
+      // header comment for the per-property rationale).
+      'src/routes/agents/enrollmentCollision.integration.test.ts',
       // Co-located real-DB integration test for #2725 (installed inventory must
       // not erase pending third-party rows): proves the raw-SQL CASE guard in
       // upsertInstalledPatches against the real device_patch_status enum and
