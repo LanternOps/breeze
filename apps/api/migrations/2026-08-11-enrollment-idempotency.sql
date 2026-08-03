@@ -9,12 +9,15 @@ DO $$ BEGIN
     FOREIGN KEY (possible_replacement_of_device_id) REFERENCES devices(id) ON DELETE SET NULL;
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
+-- No FK here on purpose: installer_bootstrap_tokens.parent_enrollment_key_id
+-- already references enrollment_keys(id) (2026-04-19-a migration), so a
+-- reverse FK from enrollment_keys.bootstrap_token_id back to
+-- installer_bootstrap_tokens would create a two-table cycle that
+-- topologicalCascadeOrder() (tenantCascade.ts) cannot order, breaking org
+-- cascade-delete for every org. Integrity is app-side; a dangling id after
+-- the token row is deleted is harmless — the cancel/refund flow's decrement
+-- UPDATE simply matches 0 rows.
 ALTER TABLE enrollment_keys ADD COLUMN IF NOT EXISTS bootstrap_token_id uuid;
-DO $$ BEGIN
-  ALTER TABLE enrollment_keys
-    ADD CONSTRAINT enrollment_keys_bootstrap_token_fk
-    FOREIGN KEY (bootstrap_token_id) REFERENCES installer_bootstrap_tokens(id) ON DELETE SET NULL;
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- Reaper scan path (Task 5): intent-stamped, not-yet-decommissioned rows.
 CREATE INDEX IF NOT EXISTS idx_devices_uninstall_intent
