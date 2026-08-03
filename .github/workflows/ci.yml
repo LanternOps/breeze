@@ -1194,7 +1194,7 @@ jobs:
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
-          if ($passes -ne 11) { throw "expected exactly 11 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          if ($passes -ne 14) { throw "expected exactly 14 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # -race requires cgo, which remote/desktop cannot satisfy on Windows, so
       # this covers only packages that do not import it (heartbeat and agentapp
