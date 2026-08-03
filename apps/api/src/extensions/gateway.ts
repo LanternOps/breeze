@@ -169,7 +169,14 @@ function createSnapshotWrapper(
   wrapper.use('*', buildExtensionAuthGuard(mountPrefix, active.manifest));
   // L1 install scoping — MUST run after the auth guard: the caller's org is
   // only established once auth has run, and a non-installed org gets the same
-  // 404 the wrapper's notFound emits (default-deny, no existence oracle).
+  // 404 the wrapper's notFound emits (default-deny). Within THIS wrapper the
+  // 404 is not distinguishable from "wrong path" — but it is not quite true
+  // that no existence oracle exists anywhere in the dispatch stack: an
+  // UNRESOLVED extension name never reaches this wrapper at all — it's
+  // rejected earlier by `dispatchCanonical`'s own 503 "extension unavailable"
+  // (see below) — so a caller who gets a 404 here has already learned the
+  // extension name resolves to something registered and enabled. Tracked as
+  // a spec note (404-vs-503 distinguishability), not treated as a fix here.
   wrapper.use('*', buildOrgInstallGuard({
     extension: active.name,
     installScope: installScopeOf(active.manifest),

@@ -132,6 +132,7 @@ vi.mock('../modules/mcpInvites', () => ({
 import {
   __handleToolsListForTests as handleToolsList,
   __handleToolsCallForTests as handleToolsCall,
+  __handleJsonRpcForTests as handleJsonRpc,
 } from './mcpServer';
 
 const CORE_TOOL = 'list_devices';
@@ -288,6 +289,82 @@ describe('tools/call org-install non-disclosure gate (Task 7b, finding 1)', () =
     // (that chain is exhaustively covered by mcpServer.test.ts already).
     await handleToolsCall(1, { name: EXT_TOOL, arguments: {} }, makeAuth(), ['ai:read']);
 
+    expect(routeMocks.installReader).not.toHaveBeenCalled();
+  });
+});
+
+describe('reader failures fail closed, never a silent filtered-list/show-all/success (pre-merge review, finding 4)', () => {
+  it('tools/list: a rejecting install reader surfaces as a -32000 JSON-RPC error, not a filtered or show-all list', async () => {
+    routeMocks.findAiToolOwner.mockImplementation((name: string) => (name === EXT_TOOL ? 'org-ext' : undefined));
+    routeMocks.registryGet.mockImplementation((owner: string) =>
+      owner === 'org-ext' ? { manifest: { tenancy: { installScope: 'org' } } } : undefined,
+    );
+    routeMocks.installReader.mockRejectedValue(new Error('db down'));
+
+    const res: any = await handleJsonRpc(
+      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+      makeAuth(),
+      ['ai:read'],
+    );
+
+    expect(res.result).toBeUndefined();
+    expect(res.error).toBeDefined();
+    expect(res.error.code).toBe(-32000);
+  });
+
+  it('tools/call on an org-scoped tool: a rejecting install reader surfaces as a -32000 JSON-RPC error, and the tool handler never runs', async () => {
+    routeMocks.findAiToolOwner.mockImplementation((name: string) => (name === EXT_TOOL ? 'org-ext' : undefined));
+    routeMocks.registryGet.mockImplementation((owner: string) =>
+      owner === 'org-ext' ? { manifest: { tenancy: { installScope: 'org' } } } : undefined,
+    );
+    routeMocks.installReader.mockRejectedValue(new Error('db down'));
+
+    const res: any = await handleJsonRpc(
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: EXT_TOOL, arguments: {} } },
+      makeAuth(),
+      ['ai:read'],
+    );
+
+    expect(res.result).toBeUndefined();
+    expect(res.error).toBeDefined();
+    expect(res.error.code).toBe(-32000);
+    expect(routeMocks.executeTool).not.toHaveBeenCalled();
+  });
+});
+
+describe('missing manifest fails closed (pre-merge review, finding 3)', () => {
+  it('tools/list: an owner that resolves but has no registry entry excludes the tool, rather than treating it as unscoped', async () => {
+    routeMocks.findAiToolOwner.mockImplementation((name: string) => (name === EXT_TOOL ? 'ghost-ext' : undefined));
+    // registryGet returns undefined for 'ghost-ext' — an anomalous state
+    // (findAiToolOwner resolved an owner the registry itself can't produce a
+    // manifest for). Previously this fell through to "not org-scoped" and
+    // showed the tool; it must now be excluded.
+    routeMocks.registryGet.mockReturnValue(undefined);
+
+    const res = await handleToolsList(1, ['ai:read'], makeAuth());
+    const names = toolNamesFrom(res);
+
+    expect(names).toContain(CORE_TOOL);
+    expect(names).not.toContain(EXT_TOOL);
+    expect(routeMocks.installReader).not.toHaveBeenCalled();
+  });
+
+  it('tools/call: an owner that resolves but has no registry entry is denied in the same shape as an unknown tool', async () => {
+    routeMocks.findAiToolOwner.mockImplementation((name: string) => (name === EXT_TOOL ? 'ghost-ext' : undefined));
+    routeMocks.registryGet.mockReturnValue(undefined);
+
+    const deniedRes: any = await handleToolsCall(1, { name: EXT_TOOL, arguments: {} }, makeAuth(), ['ai:read']);
+    const unknownRes: any = await handleToolsCall(
+      2,
+      { name: 'definitely_not_a_registered_tool', arguments: {} },
+      makeAuth(),
+      ['ai:read'],
+    );
+
+    expect(deniedRes.result).toBeUndefined();
+    expect(deniedRes.error).toBeDefined();
+    expect(deniedRes.error.code).toBe(unknownRes.error.code);
+    expect(routeMocks.executeTool).not.toHaveBeenCalled();
     expect(routeMocks.installReader).not.toHaveBeenCalled();
   });
 });

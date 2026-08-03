@@ -3,6 +3,7 @@ import {
   createExtensionOrgInstallStore,
   type ExtensionOrgInstallStore,
 } from './orgInstallStore';
+import { recordExtensionOrgInstallDeny } from './metrics';
 
 /**
  * L1 install-scoping gate (authorization, not containment).
@@ -10,10 +11,13 @@ import {
  * Registered inside every extension dispatch wrapper AFTER that wrapper's auth
  * guard — both gateway entry points (`/api/v1/ext/:extension/*` and the legacy
  * `/api/v1/:routeNamespace/*` alias) funnel through the wrappers, so the alias
- * is covered by construction. The client-ai surface wrapper (unmerged W4 branch)
- * must register this same guard when it lands — until then that surface does not
- * exist on this branch. On the agent path it additionally runs after the post-auth
- * availability middleware, mirroring the existing gateway.ts ordering comment.
+ * is covered by construction. The live `/client-ai/*` routes (routes/clientAi/*)
+ * are a SEPARATE, non-extension surface — they are not dispatched through these
+ * wrappers and so are not covered by this guard today. What's actually absent
+ * on this branch is the client-ai EXTENSION wrapper (the unmerged W4 branch);
+ * that wrapper must register this same guard when it lands. On the agent path
+ * it additionally runs after the post-auth availability middleware, mirroring
+ * the existing gateway.ts ordering comment.
  *
  * Deny is 404 — matching each surface's own not-found shape — so a
  * non-installed org cannot distinguish "not installed for you" from "does not
@@ -54,12 +58,27 @@ export function buildOrgInstallGuard(options: {
   if (options.installScope !== 'org') {
     return (_c, next) => next();
   }
+  const logDeny = (orgId: string | null): void => {
+    console.warn('[extensions] org-install denied', {
+      extension: options.extension,
+      orgId: orgId ?? null,
+      reason: orgId ? 'not_installed' : 'no_org',
+      surface: 'gateway',
+    });
+    recordExtensionOrgInstallDeny(options.extension, 'gateway');
+  };
   return async (c, next) => {
     const orgId = resolveCallerOrgId(c);
-    if (!orgId) return deny(c);
+    if (!orgId) {
+      logDeny(null);
+      return deny(c);
+    }
     // Reader errors PROPAGATE to the app's onError (500): an unreadable
     // install set must be an error, never a silent allow or a silent 404.
-    if (!(await options.isInstalled(options.extension, orgId))) return deny(c);
+    if (!(await options.isInstalled(options.extension, orgId))) {
+      logDeny(orgId);
+      return deny(c);
+    }
     await next();
   };
 }

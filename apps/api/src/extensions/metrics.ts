@@ -15,6 +15,9 @@
 
 export type ExtensionJobOutcome = 'success' | 'failure';
 
+/** Which production dispatch path denied an org-install-scoped request. */
+export type ExtensionOrgInstallDenySurface = 'gateway' | 'ai-tool' | 'mcp';
+
 export interface ExtensionMetricsRecorder {
   /**
    * A dispatched extension request completed. `status` drives the error counter;
@@ -28,6 +31,14 @@ export interface ExtensionMetricsRecorder {
     outcome: ExtensionJobOutcome,
     durationSeconds: number,
   ): void;
+  /**
+   * The org-install gate denied a request for an org-scoped extension —
+   * either "no resolvable org" or "org not installed" (never disclosed to
+   * the caller, but observable here so an operator can see the deny rate).
+   * `extension` + `surface` only — never `orgId` — same bounded-label
+   * discipline as {@link onRequest}/{@link onJob}.
+   */
+  onOrgInstallDeny(extension: string, surface: ExtensionOrgInstallDenySurface): void;
 }
 
 let recorder: ExtensionMetricsRecorder | null = null;
@@ -53,4 +64,11 @@ export function recordExtensionJob(
   durationSeconds: number,
 ): void {
   recorder?.onJob(extension, job, outcome, durationSeconds);
+}
+
+export function recordExtensionOrgInstallDeny(
+  extension: string,
+  surface: ExtensionOrgInstallDenySurface,
+): void {
+  recorder?.onOrgInstallDeny(extension, surface);
 }

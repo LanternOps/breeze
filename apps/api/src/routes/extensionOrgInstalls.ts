@@ -11,12 +11,18 @@
  * than responding whenever no active extension resolves, so unmatched
  * `/api/v1/extensions/*` traffic always continues on to this router.
  *
- * Access model: partner/system-scope callers; per-org authorization is the
- * explicit canAccessOrg check (404 on failure — the non-disclosure stance of
- * the dispatch gate: a caller must not learn whether an extension or an org
- * exists outside its reach). Persistence runs in the AMBIENT REQUEST CONTEXT,
- * so the org-axis RLS on extension_org_installs bounds it a second time —
- * deliberately unlike the gateway's system-scope read (orgInstallStore.ts).
+ * Access model: partner/system-scope callers. PUT/DELETE (activate/deactivate)
+ * additionally require the `organizations:write` capability (requirePermission)
+ * — scope alone does not imply a caller may mutate installs, only that they
+ * are the right kind of principal to be considered. Per-org authorization is
+ * the explicit canAccessOrg check on PUT/DELETE (404 on failure — the
+ * non-disclosure stance of the dispatch gate: a caller must not learn whether
+ * an extension or an org exists outside its reach); GET carries no separate
+ * canAccessOrg check — it relies on the org-axis RLS on extension_org_installs
+ * to row-filter the list to the caller's accessible orgs instead. Persistence
+ * runs in the AMBIENT REQUEST CONTEXT, so that same RLS bounds PUT/DELETE a
+ * second time too — deliberately unlike the gateway's system-scope read
+ * (orgInstallStore.ts).
  *
  * The provisioning existence check is host-owned and system-scoped
  * (ExtensionStateStore.get): whether a bundle is provisioned is not a tenant
@@ -28,11 +34,12 @@
 import { Hono, type Context } from 'hono';
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { db } from '../db';
 import { extensionOrgInstalls } from '../db/schema/extensions';
 import { createExtensionStateStore, type ExtensionStateStore } from '../extensions/stateStore';
 import { createAuditLogAsync } from '../services/auditService';
+import { PERMISSIONS } from '../services/permissions';
 
 const uuidSchema = z.string().uuid();
 
@@ -83,7 +90,14 @@ export function createExtensionOrgInstallRoutes(deps: ExtensionOrgInstallRoutesD
     return { name, orgId: parsed.data };
   }
 
-  routes.put('/:name/orgs/:orgId', async (c) => {
+  // PUT/DELETE mutate tenant state, so scope alone (requireScope above) is not
+  // enough — a capability check is required too, same as every other
+  // partner-management write route in this codebase (e.g. webhooks.ts,
+  // orgs.ts). GET stays scope+RLS-bounded only: it is a read, and per-org
+  // filtering already happens at the RLS layer (see the docstring above).
+  const requireOrgInstallWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
+
+  routes.put('/:name/orgs/:orgId', requireOrgInstallWrite, async (c) => {
     const gated = await gate(c, { requireOrg: true });
     if (gated instanceof Response) return gated;
     const auth = c.get('auth') as AuthContext;
@@ -101,7 +115,7 @@ export function createExtensionOrgInstallRoutes(deps: ExtensionOrgInstallRoutesD
     return c.json({ extension: gated.name, orgId: gated.orgId, enabled: true });
   });
 
-  routes.delete('/:name/orgs/:orgId', async (c) => {
+  routes.delete('/:name/orgs/:orgId', requireOrgInstallWrite, async (c) => {
     const gated = await gate(c, { requireOrg: true });
     if (gated instanceof Response) return gated;
     const auth = c.get('auth') as AuthContext;

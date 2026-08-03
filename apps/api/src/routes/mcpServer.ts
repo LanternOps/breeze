@@ -26,6 +26,7 @@ import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAu
 import { bearerTokenAuthMiddleware, resolvePartnerAccessibleOrgIds } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
 import type { OrgInstalledReader } from '../extensions/orgInstallGate';
+import { recordExtensionOrgInstallDeny } from '../extensions/metrics';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement } from '../services/aiGuardrails';
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
@@ -913,7 +914,16 @@ async function handleToolsList(
       continue;
     }
     const manifest = registry.get(owner)?.manifest;
-    if (!manifest || installScopeOf(manifest) !== 'org') {
+    if (!manifest) {
+      // Fail CLOSED, deliberately: an owner that findAiToolOwner resolved but
+      // whose registry entry carries no manifest is an anomalous state (the
+      // manifest field is non-optional on a real staged snapshot — see
+      // contributionRegistry.ts). Mirrors executeTool's own defensive
+      // fail-closed throw (aiTools.ts) rather than the previous behavior of
+      // treating a missing manifest as "not org-scoped" and showing the tool.
+      continue;
+    }
+    if (installScopeOf(manifest) !== 'org') {
       filteredTools.push(tool);
       continue;
     }
@@ -1014,8 +1024,23 @@ async function handleToolsCall(
     const owner = registry.findAiToolOwner(toolName);
     if (owner) {
       const manifest = registry.get(owner)?.manifest;
-      if (manifest && installScopeOf(manifest) === 'org') {
+      if (!manifest) {
+        // Fail CLOSED, deliberately — same anomalous-state reasoning as the
+        // tools/list filter above and executeTool's defensive throw
+        // (aiTools.ts): an owner without a resolvable manifest must never
+        // fall through to dispatch. Deny in the SAME shape as a genuinely
+        // unknown tool name (see the non-disclosure note above).
+        return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
+      }
+      if (installScopeOf(manifest) === 'org') {
         if (!auth.orgId || !(await reader(owner, auth.orgId))) {
+          console.warn('[extensions] org-install denied', {
+            extension: owner,
+            orgId: auth.orgId ?? null,
+            reason: auth.orgId ? 'not_installed' : 'no_org',
+            surface: 'mcp',
+          });
+          recordExtensionOrgInstallDeny(owner, 'mcp');
           return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
         }
       }
@@ -1178,6 +1203,17 @@ async function handleToolsCall(
  */
 export const __handleToolsListForTests = handleToolsList;
 export const __handleToolsCallForTests = handleToolsCall;
+/**
+ * Test-only direct access to `handleJsonRpc` itself (rather than a single
+ * handler) — needed to observe its top-level try/catch, which is what turns
+ * an org-install reader's rejection into the -32000 JSON-RPC envelope a real
+ * client receives. `__handleToolsListForTests`/`__handleToolsCallForTests`
+ * above call the handler directly and so, deliberately, let a reader
+ * rejection propagate as a rejected promise instead (see the "PROPAGATE"
+ * comments at the org-install gates above) — this export is for the tests
+ * that need to see the CAUGHT, client-facing shape instead.
+ */
+export const __handleJsonRpcForTests = handleJsonRpc;
 
 function writeMcpToolAuditEvent(
   c: Context | undefined,

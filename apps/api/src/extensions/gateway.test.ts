@@ -437,6 +437,7 @@ describe('extension gateway route metric labels', () => {
     setExtensionMetricsRecorder({
       onRequest: (extension, route, status) => { requests.push({ extension, route, status }); },
       onJob: () => {},
+      onOrgInstallDeny: () => {},
     });
     return {
       requests,

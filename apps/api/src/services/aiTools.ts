@@ -25,6 +25,7 @@ import {
   installScopeOf,
   type OrgInstalledReader,
 } from '../extensions/orgInstallGate';
+import { recordExtensionOrgInstallDeny } from '../extensions/metrics';
 
 // Pre-existing domain modules
 import { registerAgentLogTools } from './aiToolsAgentLogs';
@@ -477,6 +478,13 @@ export async function executeTool(
       // throw at the top of this function — a non-installed org cannot
       // distinguish "not installed for you" from "does not exist".
       if (!orgId || !(await installReader(owner, orgId))) {
+        console.warn('[extensions] org-install denied', {
+          extension: owner,
+          orgId: orgId ?? null,
+          reason: orgId ? 'not_installed' : 'no_org',
+          surface: 'ai-tool',
+        });
+        recordExtensionOrgInstallDeny(owner, 'ai-tool');
         throw new Error(`Unknown tool: ${toolName}`);
       }
     }

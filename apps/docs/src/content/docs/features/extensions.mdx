@@ -41,15 +41,28 @@ authorization record per organization. Partner admins manage activations
 - `DELETE /api/v1/extensions/:name/orgs/:orgId` — deactivate
 - `GET /api/v1/extensions/:name/orgs` — list activations the caller may see
 
-A non-activated organization receives **404** on every request surface, on both
-`/api/v1/ext/<name>/…` and the legacy `/api/v1/<routeNamespace>/…` alias. This
-includes extension-contributed AI tools — a non-activated org's callers never
-see the tool in an MCP `tools/list`, and a direct `tools/call` against it fails
-the same non-disclosure way as an HTTP 404, without revealing whether the tool
-or the org is the reason. Background jobs read the activation set via
-`context.tenancy.installedOrgs()`, so scheduled and reconciler work only
-touches organizations that are currently enabled — an empty install set means
-"no orgs enabled," not "install state unavailable."
+A non-activated organization receives **404** on both `/api/v1/ext/<name>/…`
+and the legacy `/api/v1/<routeNamespace>/…` request dispatch, and the same
+non-disclosure treatment on extension-contributed AI tools — a non-activated
+org's callers never see the tool in an MCP `tools/list`, and a direct
+`tools/call` against it fails the same non-disclosure way as an HTTP 404,
+without revealing whether the tool or the org is the reason.
+
+<Aside type="caution">
+  The **web slice** is not yet org-filtered: the `/api/v1/extensions/registry`
+  listing and its digest-addressed web asset serving gate only on the
+  extension's fleet-wide enabled flag, not on per-org install state. Any
+  authenticated user can see a `tenancy: "org"` extension in that registry and
+  fetch its web assets regardless of whether their org is activated for it.
+  This is deferred to the web slice's own org-filtering work, not covered by
+  this L1 install-scoping layer.
+</Aside>
+
+Background jobs are **not** host-enforced to the install set — the host does
+not intercept or filter job execution. An extension's own job handler is
+responsible for reading `context.tenancy.installedOrgs()` and scoping its own
+work to that set; a job that ignores it will run against every organization
+on the server regardless of activation.
 
 This is install **scoping** (authorization), not sandboxing: it decides which
 tenants an extension serves, not what its code can access.

@@ -1,10 +1,16 @@
-// Stub authMiddleware/requireScope so the suite can inject its own partner-
-// scope auth context, the same pattern extensionsAdmin.test.ts uses for
-// platformAdminMiddleware. requireScope is a pass-through here — its own
-// scope-gating logic is covered by middleware/auth.test.ts; this suite
+// Stub authMiddleware/requireScope/requirePermission so the suite can inject
+// its own partner-scope auth context, the same pattern extensionsAdmin.test.ts
+// uses for platformAdminMiddleware. requireScope is a pass-through here — its
+// own scope-gating logic is covered by middleware/auth.test.ts; this suite
 // exercises the route's own canAccessOrg / provisioning / non-disclosure
-// logic against an already-authenticated partner-scope caller.
+// logic against an already-authenticated partner-scope caller. requirePermission
+// is a toggleable pass-through (see `permissionState` below) — enforcing
+// exactly one thing here: that the route wires the middleware in at all and
+// short-circuits on rejection (the real resource/action-matching logic is
+// covered by middleware/auth.test.ts and services/permissions.test.ts).
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+
+const permissionState = vi.hoisted(() => ({ denied: false }));
 
 const ORG_OK = '11111111-1111-4111-8111-111111111111';
 const ORG_OK_2 = '22222222-2222-4222-8222-222222222222';
@@ -37,6 +43,14 @@ vi.mock('../middleware/auth', async (importOriginal) => {
       await next();
     }),
     requireScope: vi.fn(() => async (_c: unknown, next: () => Promise<void>) => next()),
+    requirePermission: vi.fn(
+      () => async (c: { json(body: unknown, status: number): Response }, next: () => Promise<void>) => {
+        if (permissionState.denied) {
+          return c.json({ error: 'Permission denied' }, 403);
+        }
+        await next();
+      },
+    ),
   };
 });
 
@@ -109,6 +123,14 @@ function makeStateStore(): ExtensionOrgInstallRoutesDeps['stateStore'] {
     get: vi.fn(async (name: string) => (name === 'demo' ? ({ name } as ExtensionStateRecord) : null)),
   };
 }
+
+// File-level reset: `permissionState` is a module-scope singleton the mocked
+// requirePermission reads, so a test that sets `denied = true` must not leak
+// into a LATER describe block (e.g. the composition suite below, which never
+// touches `permissionState` itself and expects the default allow-through).
+beforeEach(() => {
+  permissionState.denied = false;
+});
 
 describe('extensionOrgInstalls routes', () => {
   let installs: ReturnType<typeof makeInMemoryInstalls>;
@@ -236,6 +258,38 @@ describe('extensionOrgInstalls routes', () => {
   it('malformed orgId: 404 (non-disclosure, and it cannot exist)', async () => {
     const res = await app.request(`/demo/orgs/${ORG_BAD}`, { method: 'PUT' });
     expect(res.status).toBe(404);
+  });
+
+  it('PUT: a caller failing the permission check gets the middleware rejection, port never touched', async () => {
+    permissionState.denied = true;
+    const res = await app.request(`/demo/orgs/${ORG_OK}`, { method: 'PUT' });
+    expect(res.status).toBe(403);
+    expect(installs.rows).toHaveLength(0);
+  });
+
+  it('DELETE: a caller failing the permission check gets the middleware rejection, port never touched', async () => {
+    installs.rows.push({
+      extensionName: 'demo',
+      orgId: ORG_OK,
+      enabled: true,
+      installedBy: 'user-1',
+      installedAt: new Date('2026-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+    permissionState.denied = true;
+
+    const res = await app.request(`/demo/orgs/${ORG_OK}`, { method: 'DELETE' });
+    expect(res.status).toBe(403);
+    // The row is untouched — still enabled, still exactly one row.
+    expect(installs.rows).toEqual([
+      expect.objectContaining({ extensionName: 'demo', orgId: ORG_OK, enabled: true }),
+    ]);
+  });
+
+  it('GET is not gated by requirePermission: a denied permission check still lists (scope+RLS bounded only)', async () => {
+    permissionState.denied = true;
+    const res = await app.request('/demo/orgs');
+    expect(res.status).toBe(200);
   });
 });
 
