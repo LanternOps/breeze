@@ -10,7 +10,7 @@ import {
   IN_FLIGHT_BACKUP_JOB_STATUSES,
   STALE_BACKUP_REAP_MARKER,
 } from '../db/schema';
-import { captureException } from './sentry';
+import { captureException, captureMessage } from './sentry';
 import { backupChains } from '../db/schema/applicationBackup';
 import {
   applyGfsTagsToSnapshot,
@@ -637,6 +637,135 @@ async function reconcileMssqlBackupChain(params: {
   });
 }
 
+/**
+ * #3036 — one-shot guard for the diagnostic re-read's own failure capture. The
+ * condition that breaks the re-read (renamed column, statement timeout) breaks
+ * it for EVERY dropped result, and BullMQ retries multiply that, so Sentry gets
+ * the first occurrence and `console.warn` keeps the rest. Same shape as
+ * `reportedContextlessSites` in db/index.ts.
+ */
+let predicateMissDiagnosticFailureReported = false;
+
+/** Test-only reset so the one-shot guard cannot leak across cases. */
+export function __resetBackupPredicateMissDiagnosticGuardForTests(): void {
+  predicateMissDiagnosticFailureReported = false;
+}
+
+/**
+ * #3036 — explain a 0-row backup-job UPDATE.
+ *
+ * The write predicate is `id = jobId AND device_id = deviceId AND <status
+ * guard>`. Three different things produce no row: the job is not in an adoptable
+ * status (routine — a user cancel, an already-terminal job, a duplicate result);
+ * the caller named a device that does not own the job (never expected; a bug or
+ * a genuine cross-tenant attempt); or the job is gone/invisible. Collapsing them
+ * into one "job was not in-flight" log is how a narrowed predicate becomes a
+ * silent no-op, so re-read the row and say which it was.
+ *
+ * Every branch emits a line, including the routine status-guard case: the
+ * caller's pre-existing orphan warning only fires for `isSuccessResult &&
+ * providerSnapshotId`, so a dropped FAILED result (or a success with no snapshot
+ * id, e.g. the `skipped` zero-file run) would otherwise leave no trace anywhere —
+ * and `backupWorker.processResults` discards this function's return value and
+ * logs "result processed" regardless.
+ *
+ * Diagnostic only: the result is dropped either way.
+ *
+ * The re-read runs in a NESTED `db.transaction`, i.e. a postgres.js SAVEPOINT
+ * with its own `uncaughtError` scope. This is load-bearing, not cosmetic. Every
+ * caller runs inside `withDbAccessContext`/`withSystemDbAccessContext`, which is
+ * `sql.begin`; a statement that fails on the ambient `db` proxy both aborts the
+ * outer transaction (every later statement then gets 25P02 — on the hyperv/mssql
+ * routes that is the `markBackupJobFailedIfInFlight` in their catch, leaving the
+ * job stuck `running`) and is re-thrown at commit even though we handled it. A
+ * bare try/catch here cannot prevent either. See
+ * `__tests__/integration/dbSavepointErrorIsolation.integration.test.ts` (#2189);
+ * per its caveat the query MUST be issued on `tx`, not the ambient proxy.
+ *
+ * The re-read is subject to the ambient RLS context. Under the org-scoped
+ * callers that means another tenant's job reads back as absent — but the path
+ * that motivated this change (agent → BullMQ → backupWorker) runs system-scoped,
+ * where RLS hides nothing, so do not treat that as the control.
+ */
+async function reportBackupJobPredicateMiss(params: {
+  jobId: string;
+  deviceId: string;
+  source: 'agent' | 'reconcile';
+}): Promise<void> {
+  const { jobId, deviceId, source } = params;
+  try {
+    const [row] = await db.transaction((tx) =>
+      tx
+        .select({
+          deviceId: backupJobs.deviceId,
+          orgId: backupJobs.orgId,
+          status: backupJobs.status,
+        })
+        .from(backupJobs)
+        .where(eq(backupJobs.id, jobId))
+        .limit(1)
+    );
+
+    if (!row) {
+      // The job does not exist, or is invisible under the caller's RLS context.
+      // NOT an error-level event: `backup_jobs` is in both the device and org
+      // cascade lists, so offboarding a device (or erasing an org) with a result
+      // still in the BullMQ queue reaches here legitimately, and BullMQ retries
+      // would multiply it. Warning level keeps it findable without burying a
+      // real cross-tenant miss.
+      const msg =
+        `[BackupPersistence] Backup result for job ${jobId} (reported device ${deviceId}, source: ${source}) ` +
+        `matched no job row — the job was deleted, or is not visible in this tenant context.`;
+      console.warn(msg);
+      captureMessage(msg, 'warning', undefined, {
+        backup_result_drop: 'job-not-found',
+        backup_result_source: source,
+      });
+      return;
+    }
+
+    if (row.deviceId !== deviceId) {
+      const msg =
+        `[BackupPersistence] Rejected a backup result for job ${jobId} (source: ${source}): reported by device ` +
+        `${deviceId} but the job belongs to device ${row.deviceId}. The result was dropped.`;
+      console.error(msg);
+      captureException(new Error(msg));
+      return;
+    }
+
+    // Device matches ⇒ the status guard rejected this. Routine, so log-only —
+    // but log it, because for a failed result this is the ONLY signal produced.
+    // `row.status` is the status at diagnosis time, read after the UPDATE.
+    console.warn(
+      `[BackupPersistence] Dropped a backup result for job ${jobId} (device ${deviceId}, source: ${source}): ` +
+      `the job is in status "${row.status}", which the result's status guard does not admit.`
+    );
+  } catch (err) {
+    // The re-read failed. Normally the savepoint's rollback has already restored
+    // the outer transaction, so the caller's drop still lands cleanly. (Not an
+    // unconditional guarantee: if the outer transaction were ALREADY aborted on
+    // entry, `savepoint sN` fails before postgres.js's try block and nothing is
+    // rolled back — but that caller is doomed regardless.)
+    //
+    // Captured, because a diagnostic that fails 100% of the time — a renamed
+    // column, a statement timeout — is otherwise invisible forever. But captured
+    // ONCE: that same always-failing condition fires per dropped result times
+    // BullMQ retries, and this repo has burned its Sentry quota on exactly that
+    // shape before (see reportContextlessWrite's per-site dedup and the
+    // held-context throttle in db/index.ts). Logs stay complete either way.
+    console.warn(
+      `[BackupPersistence] Could not diagnose why the backup result for job ${jobId} matched no row:`,
+      err instanceof Error ? err.message : err
+    );
+    if (!predicateMissDiagnosticFailureReported) {
+      predicateMissDiagnosticFailureReported = true;
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        backup_predicate_miss_diagnostic: 'true',
+      });
+    }
+  }
+}
+
 export async function applyBackupCommandResultToJob(params: {
   jobId: string;
   orgId: string;
@@ -851,18 +980,84 @@ export async function applyBackupCommandResultToJob(params: {
     ? or(inArray(backupJobs.status, IN_FLIGHT_BACKUP_JOB_STATUSES), terminalJobGuard)
     : inArray(backupJobs.status, IN_FLIGHT_BACKUP_JOB_STATUSES);
 
+  // #3036 — tenant scoping of this write.
+  //
+  // Until now the predicate was `id = jobId AND <status guard>` and nothing
+  // else, even though `orgId`/`deviceId` are both parameters and both get
+  // stamped onto the derived rows below (backup_snapshots, backup_chains).
+  // RLS does NOT backstop that on the busiest path: the agent WS handler
+  // enqueues the result to BullMQ and jobs/backupWorker.ts runs the write under
+  // `withSystemDbAccessContext`, where `breeze_has_org_access` short-circuits to
+  // TRUE. On that leg the app-layer predicate is the ONLY tenant control there
+  // is. (The six other call sites do run org/request-scoped, where RLS holds:
+  // agentWs.ts:327, :337 and :1631; routes/backup/hyperv.ts; routes/backup/
+  // mssql.ts; services/backupSnapshotReconcile.ts.)
+  //
+  // The two identifiers are deliberately treated DIFFERENTLY, because they have
+  // different mutability:
+  //
+  // - `device_id` is immutable for the life of a job — a job is created against
+  //   one device and stays there; moveOrg rewrites org_id *keyed on* device_id
+  //   (routes/devices/core.ts), it never rewrites device_id, and no UPDATE in
+  //   apps/api/src ever targets backup_jobs.device_id. Of the seven call sites,
+  //   five pass a deviceId they read off this very row (backupWorker via the
+  //   Zod-required queue payload copied from it; agentWs x3; reconcile) and the
+  //   two route sites (hyperv, mssql) pass the same `payload.deviceId` they
+  //   INSERTed the job with two statements earlier. So binding it into the
+  //   predicate cannot turn a legitimate write into a 0-row no-op, and it is the
+  //   strongest available assertion: this result belongs to the device that was
+  //   asked to run it.
+  //
+  // - `org_id` is MUTABLE and must NOT be bound here. `backup_jobs` is in
+  //   CORE_DEVICE_ORG_DENORMALIZED_TABLES, so moving a device to another
+  //   organization rewrites org_id in place with no drain of in-flight jobs.
+  //   The worker's `orgId` is a snapshot serialized into the queue payload
+  //   minutes earlier, so an org move mid-flight makes it stale. Binding a stale
+  //   org_id would silently drop a real, completed backup — the "silent 0-row
+  //   write" class this repo keeps re-learning, and here it would strand a
+  //   restorable snapshot with no backup_snapshots row (the #3006 shape).
+  //   Instead the AUTHORITATIVE org_id is read back off the updated row and used
+  //   for everything derived from it (see `effectiveOrgId` below). That is what
+  //   actually fixes the cross-tenant outcome: previously the stale value was
+  //   written straight into backup_snapshots.org_id, producing a restore point
+  //   attributed to the org the device no longer belongs to.
+  //
+  // Reviewed alternative (declined): bind org_id too and REJECT the write on
+  // drift, on the grounds that the run was produced under the old org's config
+  // and storage. Declined because moveOrg *already* re-tenants this device's
+  // entire backup history — backup_jobs, backup_snapshots, backup_chains and
+  // backup_verifications are all in CORE_DEVICE_ORG_DENORMALIZED_TABLES — so
+  // "backup history follows the device" is a decision the product has already
+  // made, and every one of that device's older snapshots was likewise produced
+  // under the previous org's config. Singling out the one run that happened to
+  // be in flight would be inconsistent with that, and rejecting does not undo
+  // the backup: the agent has already uploaded the objects, so the only effect
+  // would be to leave them with no restore point in either org.
+  //
+  // Known residual (not closed here): a move landing BETWEEN this UPDATE and the
+  // backup_snapshots insert below still misattributes, because this function
+  // deliberately is not one transaction (it makes S3 calls). This change shrinks
+  // that window from enqueue-to-write (minutes) to a few statements.
   const [updatedJob] = await db
     .update(backupJobs)
     .set(updateData)
-    .where(and(eq(backupJobs.id, jobId), statusGuard))
+    .where(and(eq(backupJobs.id, jobId), eq(backupJobs.deviceId, deviceId), statusGuard))
     .returning({
       id: backupJobs.id,
+      orgId: backupJobs.orgId,
       configId: backupJobs.configId,
       backupType: backupJobs.backupType,
       backupMode: backupJobs.backupMode,
     });
 
   if (!updatedJob) {
+    // Narrowing the predicate above means a 0-row result now has one more
+    // possible cause, so disambiguate it rather than letting a device mismatch
+    // hide inside the pre-existing "not in an adoptable status" path. Diagnostic
+    // only — the outcome (drop the result) is unchanged either way, and a
+    // failure here must not mask the drop itself.
+    await reportBackupJobPredicateMiss({ jobId, deviceId, source });
+
     if (isSuccessResult && providerSnapshotId) {
       // A late terminal-success we could NOT record: the job was user-cancelled,
       // already terminal by other means, or genuinely failed without the reaper
@@ -886,6 +1081,32 @@ export async function applyBackupCommandResultToJob(params: {
       snapshotDbId: null,
       providerSnapshotId,
     };
+  }
+
+  // #3036 — the org this result is actually attributed to. Read back off the row
+  // we just updated, NOT taken from the caller: an org move that lands between
+  // enqueue and this write leaves the caller's `orgId` pointing at the device's
+  // FORMER organization, and stamping that onto backup_snapshots/backup_chains
+  // creates a restore point owned by a tenant the device has left. Under the
+  // worker's system context RLS would not have stopped that row either.
+  //
+  // A divergence has two possible causes and this branch is the only place that
+  // would ever notice EITHER, so name both rather than filing a wrong caller
+  // under "org move" and never investigating it. Warning level, not error: an
+  // org move is a supported admin action, and a bulk move with several in-flight
+  // jobs would emit one of these per job.
+  const effectiveOrgId = updatedJob.orgId;
+  if (effectiveOrgId !== orgId) {
+    const msg =
+      `[BackupPersistence] Job ${jobId} (device ${deviceId}) was reported for org ${orgId} but the job row ` +
+      `belongs to org ${effectiveOrgId} — either the device moved organizations while this result was in ` +
+      `flight, or the caller passed an org that was never this job's. Attributing the snapshot to ` +
+      `${effectiveOrgId} (the job row's current owner).`;
+    console.warn(msg);
+    captureMessage(msg, 'warning', undefined, {
+      backup_result_org_divergence: 'true',
+      backup_result_source: source,
+    });
   }
 
   // NB: isSuccessResult, not `terminalStatus === 'completed'` — a `partial` run
@@ -920,7 +1141,7 @@ export async function applyBackupCommandResultToJob(params: {
   const snapshotLabel = buildSnapshotLabel(snapshotMetadata, timestamp);
 
   const snapshotValues = {
-    orgId,
+    orgId: effectiveOrgId,
     jobId,
     deviceId,
     configId: updatedJob.configId ?? null,
@@ -1077,7 +1298,9 @@ export async function applyBackupCommandResultToJob(params: {
 
     try {
       await reconcileMssqlBackupChain({
-        orgId,
+        // #3036: the job row's org, not the caller's — a stale value here would
+        // miss the device's real chain and fork a duplicate under the old org.
+        orgId: effectiveOrgId,
         deviceId,
         configId: updatedJob.configId ?? null,
         snapshotDbId: snapshot.id,
