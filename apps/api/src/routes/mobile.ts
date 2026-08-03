@@ -27,6 +27,11 @@ import { dispatchWake } from '../services/wakeOnLan';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { emitAlertStateFeedback } from '../services/mlFeedbackEmitters';
 import { UUID_REGEX } from '../utils/uuid';
+// Shared with the web device routes rather than re-declared locally. This file
+// used to carry a byte-identical private copy, which is precisely why the #2968
+// uuid guard — added to the shared helper — silently did not apply to
+// POST /mobile/devices/:id/actions. One definition, one guard.
+import { getDeviceWithOrgCheck } from './devices/helpers';
 
 export const mobileRoutes = new Hono();
 const requireMobileAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
@@ -125,28 +130,6 @@ async function getOrgIdsForAuth(
   }
 
   return { orgIds: null };
-}
-
-async function getDeviceWithOrgCheck(
-  deviceId: string,
-  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
-) {
-  const [device] = await db
-    .select()
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
-
-  if (!device) {
-    return null;
-  }
-
-  const hasAccess = await ensureOrgAccess(device.orgId, auth);
-  if (!hasAccess) {
-    return null;
-  }
-
-  return device;
 }
 
 // Resolve an alert and enforce BOTH tenancy axes (mirrors the web helper in

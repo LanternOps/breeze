@@ -855,12 +855,17 @@ describe('device routes', () => {
         })
       } as any);
 
-      const res = await app.request('/devices/missing', {
+      // Deliberately a well-formed uuid that simply has no row. The id must pass
+      // the #2968 guard so this still exercises the ordinary "queried, found
+      // nothing" branch — a malformed id here would short-circuit at the guard
+      // and this test would silently become a duplicate of helpers.test.ts.
+      const res = await app.request('/devices/99999999-8888-4777-8666-555555555555', {
         method: 'GET',
         headers: { Authorization: 'Bearer token' }
       });
 
       expect(res.status).toBe(404);
+      expect(db.select).toHaveBeenCalled();
     });
   });
 

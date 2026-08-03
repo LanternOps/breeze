@@ -86,8 +86,10 @@ export async function getDeviceWithOrgCheck(
 ) {
   // `devices.id` is uuid-typed, so a malformed path param reaches Postgres as a
   // 22P02 and surfaces through the global error handler as a 500 (plus a Sentry
-  // event) instead of a 404. Reject it here, on the same not-found path callers
-  // already translate to 404 (#2968, authenticated twin of #2914).
+  // event) instead of a 404. Reject it here, on the same not-found (`null`) path
+  // callers already handle — a 404 for the single-device routes, a typed
+  // TARGET_NOT_FOUND failure entry for the bulk command/wake endpoints in
+  // commands.ts (#2968, authenticated twin of #2914).
   if (!PG_UUID_REGEX.test(deviceId)) {
     return null;
   }
@@ -164,8 +166,11 @@ export async function getDeviceWithOrgAndSiteCheck(
   // branches. JS module mocking doesn't intercept intra-module calls, so
   // delegating would force every caller to mock both helpers.
 
-  // Same uuid guard as `getDeviceWithOrgCheck` — duplicated for the same
-  // mocking reason (#2968).
+  // Same uuid guard as `getDeviceWithOrgCheck`, inlined to sit above the
+  // duplicated query body rather than delegating (#2968). Note the mocking
+  // rationale above applies to the `db.select` chain, NOT to this check — the
+  // regex touches no mocked binding, so factoring it into a shared private
+  // helper would be safe if the duplication ever becomes a nuisance.
   if (!PG_UUID_REGEX.test(deviceId)) {
     return null;
   }
