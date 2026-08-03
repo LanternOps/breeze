@@ -9,11 +9,20 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 // halves of the predicate independently: a stale intent gets reaped, and a
 // post-intent heartbeat is spared.
 
+interface FleetDevice {
+  id: string;
+  orgId: string;
+  hostname: string;
+  displayName: string | null;
+  /** Defaults to 'online' when omitted — matches a live, non-terminal device. */
+  status?: string;
+}
+
 const { createAuditLogAsyncMock, updateSetMock, updateWhereMock, selectFleetState, warnSpy } = vi.hoisted(() => ({
   createAuditLogAsyncMock: vi.fn(),
   updateSetMock: vi.fn(),
   updateWhereMock: vi.fn(),
-  selectFleetState: { fleet: [] as { id: string; orgId: string; hostname: string; displayName: string | null }[], chunkCalls: 0 },
+  selectFleetState: { fleet: [] as { id: string; orgId: string; hostname: string; displayName: string | null; status?: string }[], chunkCalls: 0 },
   warnSpy: vi.fn(),
 }));
 
@@ -26,6 +35,7 @@ vi.mock('drizzle-orm', () => ({
   asc: (col: unknown) => ({ op: 'asc', col }),
   inArray: (col: unknown, vals: unknown[]) => ({ op: 'inArray', col, vals }),
   isNull: (col: unknown) => ({ op: 'isNull', col }),
+  notInArray: (col: unknown, vals: unknown[]) => ({ op: 'notInArray', col, vals }),
 }));
 
 vi.mock('../db/schema', () => ({
@@ -48,15 +58,38 @@ vi.mock('../db/schema', () => ({
 // that re-heartbeated between SELECT and UPDATE).
 const updateReturns = new Map<string, { id: string }[]>();
 
+/**
+ * Walks a mocked and()/notInArray() condition tree to find the status
+ * exclusion list, so the SELECT mock can apply it for real — proving the
+ * status filter actually excludes already-terminal rows, not just asserting
+ * on the WHERE shape.
+ */
+function findNotInArrayVals(condition: unknown, col: string): string[] | null {
+  if (!condition || typeof condition !== 'object') return null;
+  const c = condition as { op?: string; col?: unknown; vals?: unknown; args?: unknown[] };
+  if (c.op === 'notInArray' && c.col === col) return c.vals as string[];
+  if (c.op === 'and' && Array.isArray(c.args)) {
+    for (const arg of c.args) {
+      const found = findNotInArrayVals(arg, col);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 vi.mock('../db', () => ({
   db: {
     select: () => ({
       from: () => ({
-        where: () => ({
+        where: (condition: unknown) => ({
           orderBy: () => ({
             limit: (limit: number) => {
+              const excludedStatuses = findNotInArrayVals(condition, 'devices.status') ?? [];
+              const eligible = selectFleetState.fleet.filter(
+                (d) => !excludedStatuses.includes(d.status ?? 'online')
+              );
               const start = selectFleetState.chunkCalls * limit;
-              const slice = selectFleetState.fleet.slice(start, start + limit);
+              const slice = eligible.slice(start, start + limit);
               selectFleetState.chunkCalls++;
               return Promise.resolve(slice);
             },
@@ -168,19 +201,28 @@ describe('processReapUninstallIntent — predicate + decommission (#2764)', () =
     expect(Object.keys(setArg).sort()).toEqual(['status', 'updatedAt']);
   });
 
-  it('the guarded UPDATE WHERE clause carries the exact binding predicate (both halves)', async () => {
+  it('the guarded UPDATE WHERE clause carries the exact binding predicate (both halves) plus the status exclusion', async () => {
+    const before = Date.now();
     selectFleetState.fleet = [{ id: 'dev-stale', orgId: 'org-1', hostname: 'host-stale', displayName: null }];
 
     await processReapUninstallIntent();
+    const after = Date.now();
 
     const whereArg = updateWhereMock.mock.calls[0]![0] as { op: string; args: unknown[] };
     expect(whereArg.op).toBe('and');
     // eq(devices.id, candidate.id)
     expect(whereArg.args).toContainEqual({ op: 'eq', col: 'devices.id', val: 'dev-stale' });
     // lt(uninstall_intent_at, cutoff) — first half of the binding predicate.
-    expect(whereArg.args).toContainEqual(
-      expect.objectContaining({ op: 'lt', col: 'devices.uninstallIntentAt' })
-    );
+    // Asserts the ACTUAL cutoff value, not just that some Date was passed —
+    // catches the hours→ms math being wrong (e.g. minutes instead of hours,
+    // or a hardcoded 24 that ignores the env override).
+    const ltCond = whereArg.args.find(
+      (a) => (a as { op: string; col: unknown }).op === 'lt' && (a as { col: unknown }).col === 'devices.uninstallIntentAt'
+    ) as { val: Date } | undefined;
+    expect(ltCond).toBeDefined();
+    const expectedCutoffMs = 24 * 60 * 60 * 1000;
+    expect(ltCond!.val.getTime()).toBeGreaterThanOrEqual(before - expectedCutoffMs - 1000);
+    expect(ltCond!.val.getTime()).toBeLessThanOrEqual(after - expectedCutoffMs + 1000);
     // or(isNull(last_seen_at), lt(last_seen_at, uninstall_intent_at)) — second half.
     expect(whereArg.args).toContainEqual({
       op: 'or',
@@ -189,6 +231,55 @@ describe('processReapUninstallIntent — predicate + decommission (#2764)', () =
         { op: 'lt', col: 'devices.lastSeenAt', val: 'devices.uninstallIntentAt' },
       ],
     });
+    // status exclusion — NOT part of the spec's binding predicate, but
+    // required so an already-decommissioned row can't be re-reaped forever
+    // (finding #1, review round).
+    expect(whereArg.args).toContainEqual({
+      op: 'notInArray',
+      col: 'devices.status',
+      vals: ['decommissioned', 'quarantined'],
+    });
+  });
+
+  it('respects UNINSTALL_INTENT_DECOMMISSION_HOURS in the actual cutoff math (not hardcoded 24)', async () => {
+    process.env.UNINSTALL_INTENT_DECOMMISSION_HOURS = '48';
+    const before = Date.now();
+    selectFleetState.fleet = [{ id: 'dev-1', orgId: 'org-1', hostname: 'h', displayName: null }];
+
+    await processReapUninstallIntent();
+    const after = Date.now();
+
+    const whereArg = updateWhereMock.mock.calls[0]![0] as { op: string; args: unknown[] };
+    const ltCond = whereArg.args.find(
+      (a) => (a as { op: string; col: unknown }).op === 'lt' && (a as { col: unknown }).col === 'devices.uninstallIntentAt'
+    ) as { val: Date } | undefined;
+    expect(ltCond).toBeDefined();
+    const expectedCutoffMs = 48 * 60 * 60 * 1000;
+    expect(ltCond!.val.getTime()).toBeGreaterThanOrEqual(before - expectedCutoffMs - 1000);
+    expect(ltCond!.val.getTime()).toBeLessThanOrEqual(after - expectedCutoffMs + 1000);
+  });
+
+  it('excludes an already-decommissioned row from the scan entirely (real filtering, not just WHERE shape) — never re-reaped/re-audited', async () => {
+    selectFleetState.fleet = [
+      { id: 'dev-already-gone', orgId: 'org-1', hostname: 'host-gone', displayName: null, status: 'decommissioned' },
+    ];
+
+    const result = await processReapUninstallIntent();
+
+    expect(result.decommissioned).toBe(0);
+    expect(updateSetMock).not.toHaveBeenCalled();
+    expect(createAuditLogAsyncMock).not.toHaveBeenCalled();
+  });
+
+  it('excludes an already-quarantined row from the scan', async () => {
+    selectFleetState.fleet = [
+      { id: 'dev-quarantined', orgId: 'org-1', hostname: 'host-q', displayName: null, status: 'quarantined' },
+    ];
+
+    const result = await processReapUninstallIntent();
+
+    expect(result.decommissioned).toBe(0);
+    expect(updateSetMock).not.toHaveBeenCalled();
   });
 
   it('never reaps a row with a post-intent heartbeat (TOCTOU guard: 0-row UPDATE is skipped)', async () => {
@@ -230,15 +321,6 @@ describe('processReapUninstallIntent — predicate + decommission (#2764)', () =
     await processReapUninstallIntent();
 
     expect(createAuditLogAsyncMock).not.toHaveBeenCalled();
-  });
-
-  it('respects UNINSTALL_INTENT_DECOMMISSION_HOURS override', async () => {
-    process.env.UNINSTALL_INTENT_DECOMMISSION_HOURS = '48';
-    selectFleetState.fleet = [{ id: 'dev-1', orgId: 'org-1', hostname: 'h', displayName: null }];
-
-    const result = await processReapUninstallIntent();
-
-    expect(result.decommissioned).toBe(1);
   });
 
   it('paginates through multiple chunks when candidates exceed chunkSize', async () => {

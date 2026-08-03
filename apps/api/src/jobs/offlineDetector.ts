@@ -8,7 +8,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { devices, alertRules, alertTemplates, alerts } from '../db/schema';
-import { eq, and, lt, gt, asc, inArray, or, isNull } from 'drizzle-orm';
+import { eq, and, lt, gt, asc, inArray, or, isNull, notInArray } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { publishEvent } from '../services/eventBus';
 import { createAlert, evaluateDeviceAlertsFromPolicy, alertRuleOwnershipConditionForOrg } from '../services/alertService';
@@ -644,6 +644,20 @@ export async function processReevaluateOfflineSweep(): Promise<{
  *   uninstall_intent_at < now() - interval
  *   AND (last_seen_at IS NULL OR last_seen_at < uninstall_intent_at)
  *
+ * PLUS a status exclusion (`status NOT IN ('decommissioned', 'quarantined')`,
+ * same guard list heartbeat.ts's own device UPDATE uses) that is NOT part of
+ * the spec's two-clause predicate but is required for correctness: an already
+ * -decommissioned row keeps its (now-irrelevant) uninstall_intent_at stamp
+ * forever — it can never heartbeat again to clear it (agentAuthMiddleware
+ * 403s decommissioned/quarantined devices, and heartbeat's own UPDATE guards
+ * on status) — so without this exclusion every sweep would re-select and
+ * re-"decommission" (no-op status-wise, but still a fresh `updatedAt` write
+ * and a fresh audit event) the SAME already-dead row forever: one duplicate
+ * `device.decommission` audit row every sweep interval, per historically
+ * reaped device, into an append-only audit table. It also protects the
+ * chunk's cursor scan from starving on old dead rows once the fleet
+ * accumulates more reaped devices than UNINSTALL_INTENT_REAP_MAX_DEVICES_PER_RUN.
+ *
  * A device that heartbeats after stamping intent is NEVER touched: the
  * heartbeat route clears uninstall_intent_at unconditionally on every beat
  * (routes/agents/heartbeat.ts), which both drops the row out of the partial
@@ -691,7 +705,11 @@ export async function processReapUninstallIntent(): Promise<{
 
     const reapPredicate = [
       lt(devices.uninstallIntentAt, cutoff),
-      or(isNull(devices.lastSeenAt), lt(devices.lastSeenAt, devices.uninstallIntentAt))
+      or(isNull(devices.lastSeenAt), lt(devices.lastSeenAt, devices.uninstallIntentAt)),
+      // Already-terminal rows can never heartbeat again to clear their stamp —
+      // exclude them so a reaped device isn't re-selected (and re-audited)
+      // forever. Same guard list as heartbeat.ts's own device UPDATE.
+      notInArray(devices.status, ['decommissioned', 'quarantined'])
     ];
     const selectConditions = [...reapPredicate];
     if (cursor) selectConditions.push(gt(devices.id, cursor));
