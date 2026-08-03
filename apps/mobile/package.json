@@ -46,7 +46,7 @@
     "react-redux": "^9.3.0"
   },
   "devDependencies": {
-    "@types/react": "~19.2.17",
+    "@types/react": "~19.2.18",
     "typescript": "~5.9.2",
     "vitest": "^4.1.10"
   },
