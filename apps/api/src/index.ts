@@ -215,6 +215,10 @@ import {
   initializeEnrollmentKeyCleanupWorker,
   shutdownEnrollmentKeyCleanupWorker,
 } from './jobs/enrollmentKeyCleanup';
+import {
+  initializeSoftwareUploadSessionCleanupWorker,
+  shutdownSoftwareUploadSessionCleanupWorker,
+} from './jobs/softwareUploadSessionCleanup';
 import { initializeAuditRetentionWorker, shutdownAuditRetentionWorker } from './jobs/auditRetention';
 import {
   initializeAuditChainVerifyWorker,
@@ -1300,6 +1304,7 @@ async function initializeWorkers(): Promise<void> {
     // Undo-send window: fires the delayed quote dispatch (jobs/quoteSendQueue).
     ['quoteSendWorker', async () => { initializeQuoteSendWorker(); }],
     ['enrollmentKeyCleanup', initializeEnrollmentKeyCleanupWorker],
+    ['softwareUploadSessionCleanup', initializeSoftwareUploadSessionCleanupWorker],
     ['auditRetention', initializeAuditRetentionWorker],
     ['extensionJobHost', () => initializeExtensionJobHost(extensionContributionRegistry, extensionStateStore)],
     ['auditChainVerify', initializeAuditChainVerifyWorker],
@@ -1511,6 +1516,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownAuthEmailWorker,
     shutdownQuoteSendWorker,
     shutdownEnrollmentKeyCleanupWorker,
+    shutdownSoftwareUploadSessionCleanupWorker,
     shutdownAuditRetentionWorker,
     shutdownExtensionJobHost,
     shutdownAuditChainVerifyWorker,
