@@ -542,6 +542,7 @@
     "hideExpired": "Abgelaufene ausblenden",
     "deleteExpired": "Abgelaufene löschen",
     "shortCode": "Kurzcode",
+    "installerUsage": "Installer-Geräte {{consumed}} / {{max}}",
     "usage": "Nutzung",
     "expires": "Läuft ab",
     "empty": "Keine Registrierungsschlüssel gefunden. Erstellen Sie zunächst einen Schlüssel.",

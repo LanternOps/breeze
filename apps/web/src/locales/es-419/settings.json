@@ -542,6 +542,7 @@
     "hideExpired": "Ocultar caducado",
     "deleteExpired": "Eliminar caducado",
     "shortCode": "código corto",
+    "installerUsage": "Dispositivos del instalador {{consumed}} / {{max}}",
     "usage": "Uso",
     "expires": "Vence",
     "empty": "No se encontraron claves de inscripción. Cree uno para comenzar.",

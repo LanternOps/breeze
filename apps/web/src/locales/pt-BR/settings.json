@@ -542,6 +542,7 @@
     "hideExpired": "Ocultar expiradas",
     "deleteExpired": "Excluir expiradas",
     "shortCode": "Código curto",
+    "installerUsage": "Dispositivos do instalador {{consumed}} / {{max}}",
     "usage": "Uso",
     "expires": "Expira",
     "empty": "Nenhuma chave de registro encontrada. Crie uma para começar.",

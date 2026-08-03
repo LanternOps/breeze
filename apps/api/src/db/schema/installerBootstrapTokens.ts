@@ -61,5 +61,15 @@ export const installerBootstrapTokens = pgTable(
   },
   (t) => ({
     expiresIdx: index("idx_installer_bootstrap_tokens_expires").on(t.expiresAt),
+    /**
+     * Read path: the Enrollment Keys list aggregates installer capacity by
+     * parent key (#2992). Without this the grouped SELECT seq-scans the table
+     * on every page load, evaluating the RLS org qual per row before the IN
+     * filter narrows anything. Also serves the parent's ON DELETE CASCADE and
+     * the cleanup job's NOT EXISTS.
+     */
+    parentIdx: index("idx_installer_bootstrap_tokens_parent").on(
+      t.parentEnrollmentKeyId,
+    ),
   }),
 );

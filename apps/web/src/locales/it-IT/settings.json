@@ -542,6 +542,7 @@
     "hideExpired": "Nascondi scadute",
     "deleteExpired": "Elimina scadute",
     "shortCode": "Codice breve",
+    "installerUsage": "Dispositivi del programma di installazione {{consumed}} / {{max}}",
     "usage": "Utilizzo",
     "expires": "Scade",
     "empty": "Nessuna chiave di registrazione trovata. Creane una per iniziare.",
