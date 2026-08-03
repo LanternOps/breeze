@@ -166,4 +166,8 @@ export const enrollmentKeys = pgTable('enrollment_keys', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   shortCode: varchar('short_code', { length: 12 }),
   installerPlatform: varchar('installer_platform', { length: 16 }),
+  // Enrollment idempotency (#2764): set when this key was minted to redeem a
+  // bootstrap token (Task 2), so a later cancel/refund (Task 3) can find and
+  // release the originating token's slot.
+  bootstrapTokenId: uuid('bootstrap_token_id'),
 });
