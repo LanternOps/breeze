@@ -9,12 +9,27 @@
 // https://docs.sentry.io/platforms/react-native/sourcemaps/uploading/expo/
 import * as Sentry from '@sentry/react-native';
 
+const SENTRY_DSN = process.env.EXPO_PUBLIC_SENTRY_DSN;
+
 Sentry.init({
-  dsn: process.env.EXPO_PUBLIC_SENTRY_DSN,
-  enabled: !!process.env.EXPO_PUBLIC_SENTRY_DSN && !__DEV__,
+  dsn: SENTRY_DSN,
+  enabled: !!SENTRY_DSN && !__DEV__,
   tracesSampleRate: 0.1,
   enableNative: true,
 });
+
+// A release build with no DSN reports nothing, and does so silently — which is
+// how a TestFlight build ended up with zero telemetry while code all over the
+// app was dutifully calling `Sentry.captureMessage` for failures that are
+// invisible in the UI. There is no console to read in TestFlight, so the only
+// place this can be caught is at build time: `scripts/preflight.mjs` (pnpm
+// preflight) fails a DSN-less release build. This warning covers the dev loop.
+if (!SENTRY_DSN && __DEV__) {
+  console.warn(
+    '[breeze] EXPO_PUBLIC_SENTRY_DSN is not set — crash and error reporting is disabled. ' +
+      'Fine for local dev; a release build without it ships blind. See .env.example.'
+  );
+}
 
 // Initialize PostHog after Sentry so any throw inside analytics setup is
 // captured by Sentry. The analytics module gates itself on
@@ -31,20 +46,35 @@ import { initAnalytics, track } from './src/lib/analytics';
 initAnalytics();
 track('app_opened');
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import * as Font from 'expo-font';
+import * as SplashScreen from 'expo-splash-screen';
 import { Provider as ReduxProvider, useDispatch, useSelector } from 'react-redux';
 import { Provider as PaperProvider, MD3DarkTheme, MD3LightTheme } from 'react-native-paper';
-import { ActivityIndicator, useColorScheme, View } from 'react-native';
+import { useColorScheme } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { store, type AppDispatch, type RootState } from './src/store';
 import { RootNavigator } from './src/navigation/RootNavigator';
+import { AppLockGate } from './src/navigation/AppLockGate';
 import { registerForPushNotifications } from './src/services/notifications';
 import { setPushRegistration } from './src/store/authSlice';
-import { palette } from './src/theme';
+
+// Hold the native splash until the first real screen is ready to paint.
+// Without this the splash vanishes the instant React Native mounts, leaving the
+// user on a bare spinner for the whole auth bootstrap — which reads as a hang.
+// `RootNavigator` calls `hideAsync()` once its first frame is renderable; the
+// catch here is required because the call rejects (harmlessly) if the splash has
+// already auto-hidden, e.g. on a fast reload.
+SplashScreen.preventAutoHideAsync().catch(() => {});
+
+// The Geist faces are embedded natively by the `expo-font` config plugin (see
+// app.json), so they are registered by the time the first frame paints. Their
+// PostScript names are exactly the family names in `theme/typography.ts`
+// (`Geist-Regular`, `GeistMono-Medium`, …), so no runtime `Font.loadAsync` — and
+// no font-blocking spinner — is needed. Changing a font FILE without checking
+// its PostScript name would silently fall back to San Francisco.
 
 const customLightTheme = {
   ...MD3LightTheme,
@@ -99,27 +129,6 @@ function PushRegistrationGate() {
 function App() {
   const colorScheme = useColorScheme();
   const theme = colorScheme === 'dark' ? customDarkTheme : customLightTheme;
-  const [fontsReady, setFontsReady] = useState(false);
-
-  useEffect(() => {
-    Font.loadAsync({
-      'Geist-Regular':     require('./assets/fonts/Geist-Regular.otf'),
-      'Geist-Medium':      require('./assets/fonts/Geist-Medium.otf'),
-      'Geist-SemiBold':    require('./assets/fonts/Geist-SemiBold.otf'),
-      'GeistMono-Regular': require('./assets/fonts/GeistMono-Regular.otf'),
-      'GeistMono-Medium':  require('./assets/fonts/GeistMono-Medium.otf'),
-    })
-      .catch((err) => console.warn('Font load failed:', err))
-      .finally(() => setFontsReady(true));
-  }, []);
-
-  if (!fontsReady) {
-    return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: palette.dark.bg0 }}>
-        <ActivityIndicator color={palette.brand.base} />
-      </View>
-    );
-  }
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -128,7 +137,12 @@ function App() {
           <SafeAreaProvider>
             <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
             <PushRegistrationGate />
-            <RootNavigator />
+            {/* AppLockGate wraps the navigator so the privacy overlay and the
+                locked screen cover EVERY authenticated surface, including the
+                ApprovalScreen takeover that ApprovalGate renders. */}
+            <AppLockGate>
+              <RootNavigator />
+            </AppLockGate>
           </SafeAreaProvider>
         </PaperProvider>
       </ReduxProvider>

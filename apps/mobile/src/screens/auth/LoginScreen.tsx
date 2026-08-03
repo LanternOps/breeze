@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -87,6 +87,7 @@ export function LoginScreen({ navigation }: Props) {
   const [showPassword, setShowPassword] = useState(false);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [serverUrl, setServerUrlState] = useState<string | null>(null);
+  const passwordRef = useRef<TextInput>(null);
 
   useEffect(() => {
     checkBiometricAvailability().then(setBiometricAvailable);
@@ -167,9 +168,16 @@ export function LoginScreen({ navigation }: Props) {
                   onChangeText={setEmail}
                   keyboardType="email-address"
                   autoCapitalize="none"
-                  autoComplete="email"
+                  // `autoComplete` drives ANDROID autofill; iOS reads
+                  // `textContentType`. Only setting the former is why 1Password
+                  // and iCloud Keychain never offered a credential here.
+                  autoComplete="username"
+                  textContentType="username"
                   autoCorrect={false}
                   spellCheck={false}
+                  returnKeyType="next"
+                  submitBehavior="submit"
+                  onSubmitEditing={() => passwordRef.current?.focus()}
                   placeholder="you@company.com"
                   placeholderTextColor={theme.textLo}
                   style={[
@@ -199,13 +207,19 @@ export function LoginScreen({ navigation }: Props) {
                 ]}
               >
                 <TextInput
+                  ref={passwordRef}
                   value={password}
                   onChangeText={setPassword}
                   secureTextEntry={!showPassword}
                   autoCapitalize="none"
                   autoComplete="password"
+                  textContentType="password"
                   autoCorrect={false}
                   spellCheck={false}
+                  returnKeyType="go"
+                  onSubmitEditing={() => {
+                    if (canSubmit && !isLoading) void handleLogin();
+                  }}
                   placeholder="Your password"
                   placeholderTextColor={theme.textLo}
                   style={[

@@ -1,6 +1,7 @@
 import * as SecureStore from 'expo-secure-store';
 
 import { getServerUrl } from './serverConfig';
+import { fetchWithTimeout } from './fetchWithTimeout';
 
 const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const API_CORE_PREFIX = '/api/v1';
@@ -42,7 +43,10 @@ async function authedFetch(
   if (init.method && init.method !== 'GET') headers['x-breeze-csrf'] = '1';
   if (init.stream) headers['Accept'] = 'text/event-stream';
 
-  return fetch(url, { ...init, headers, credentials: 'include' });
+  // Safe for SSE: fetchWithTimeout bounds only the wait for response
+  // HEADERS and clears its timer once they arrive, so an open stream body is
+  // never aborted mid-flight.
+  return fetchWithTimeout(url, { ...init, headers, credentials: 'include' });
 }
 
 export async function createAiSession(input: CreateSessionPayload = {}): Promise<AiSessionSummary> {
