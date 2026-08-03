@@ -305,6 +305,26 @@ export default function AddPackageModal({
           ),
         });
         createdCatalogId.current = item.id;
+        // The cancel affordance opens BEFORE the transfer it cancels: a Cancel
+        // during step 1 ran handleClose while this id was still null, so that
+        // branch could not surface the package and the catalog row would be
+        // exactly the invisible orphan it exists to prevent. Report it here
+        // instead, and don't start an upload the user already walked away from.
+        // No `await` separates the assignment above from this check, so a click
+        // handler cannot interleave between them — either handleClose saw the
+        // id (and reported it) or this does. onCreated fires exactly once.
+        if (wasUserCancelled(controller)) {
+          onCreated({
+            id: item.id,
+            name: form.name.trim(),
+            vendor: form.vendor.trim(),
+            category: form.category,
+            description: form.description.trim(),
+            createdAt: new Date().toISOString(),
+            versionCount: 0,
+          });
+          return;
+        }
       }
       const catalogId = createdCatalogId.current;
       if (!catalogId)

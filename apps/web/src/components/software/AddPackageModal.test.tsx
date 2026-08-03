@@ -407,6 +407,81 @@ describe('AddPackageModal', () => {
       });
     });
 
+    it('surfaces the created package (0 versions) when cancelled during the catalog create', async () => {
+      // The cancel affordance opens with `saving`, i.e. BEFORE the transfer it
+      // cancels — so a cancel can land while step 1 (catalog create) is still
+      // in flight, when handleClose has no id to report yet. The catalog row
+      // must still reach the user, or they re-create the same package by name.
+      const onCreated = vi.fn();
+      const catalogGate = deferred<Response>();
+      fetchMock.mockImplementation((url: string, opts?: RequestInit) => {
+        if (url.startsWith('/custom-fields')) return Promise.resolve(jsonResponse({ data: [] }));
+        if (url === '/software/catalog' && opts?.method === 'POST') return catalogGate.promise;
+        return Promise.resolve(jsonResponse({}, false, 404));
+      });
+
+      render(<AddPackageModal open onClose={() => {}} onCreated={onCreated} />);
+      fillFileForm();
+      await submitCreate();
+      await waitFor(() =>
+        expect(
+          fetchMock.mock.calls.some(
+            ([u, o]) => u === '/software/catalog' && (o as RequestInit)?.method === 'POST',
+          ),
+        ).toBe(true),
+      );
+
+      // Cancel while the catalog item is still being created.
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+      await act(async () => {
+        catalogGate.resolve(jsonResponse({ data: { id: 'cat-1' } }));
+        await catalogGate.promise;
+      });
+
+      expect(onCreated).toHaveBeenCalledTimes(1);
+      expect(onCreated).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'cat-1', name: 'Big App', versionCount: 0 }),
+      );
+      // …and the upload the user walked away from is never started.
+      expect(uploadMock).not.toHaveBeenCalled();
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    });
+
+    it('leaves Cancel and Esc disabled while the download-URL (metadata-only) save runs', async () => {
+      // Nothing to abort on this path, so it must keep its previous
+      // blocked-while-saving behaviour exactly.
+      const onClose = vi.fn();
+      const versionGate = deferred<Response>();
+      fetchMock.mockImplementation((url: string, opts?: RequestInit) => {
+        if (url.startsWith('/custom-fields')) return Promise.resolve(jsonResponse({ data: [] }));
+        if (url === '/software/catalog' && opts?.method === 'POST') {
+          return Promise.resolve(jsonResponse({ data: { id: 'cat-1' } }));
+        }
+        if (/\/versions$/.test(url) && opts?.method === 'POST') return versionGate.promise;
+        return Promise.resolve(jsonResponse({}, false, 404));
+      });
+
+      render(<AddPackageModal open onClose={onClose} onCreated={() => {}} />);
+      fillMinimum();
+      await submitCreate();
+
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled(),
+      );
+      expect(screen.queryByTestId('package-upload-progress')).not.toBeInTheDocument();
+      fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+      expect(onClose).not.toHaveBeenCalled();
+
+      await act(async () => {
+        versionGate.resolve(jsonResponse({ data: { id: 'ver-1' } }));
+        await versionGate.promise;
+      });
+      // Once the save finishes, closing works again.
+      await waitFor(() => expect(onClose).toHaveBeenCalled());
+    });
+
     it('still reports a genuine failure after an earlier upload was cancelled', async () => {
       const gate = deferred<Response>();
       routeMock({});
