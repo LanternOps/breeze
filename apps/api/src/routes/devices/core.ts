@@ -612,6 +612,12 @@ coreRoutes.get(
         uptimeSeconds: devices.uptimeSeconds,
         isHeadless: devices.isHeadless,
         pendingReboot: devices.pendingReboot,
+        // Collision enrollment (#2764): non-null when this row was created
+        // because an agent presented a hostname that already existed in the
+        // org. The list renders a "Possible duplicate" badge from it so the
+        // review surface is discoverable from the fleet view, not only from
+        // the device page a tech happens to open.
+        possibleReplacementOfDeviceId: devices.possibleReplacementOfDeviceId,
         batteryStatus: devices.batteryStatus,
         activeVpns: devices.activeVpns,
         // Linked multi-boot profiles (#2138): null => unlinked. The web list
@@ -797,6 +803,10 @@ coreRoutes.get(
         lastUser: d.lastUser,
         uptimeSeconds: d.uptimeSeconds,
         isHeadless: d.isHeadless,
+        // Selected above but historically the mapper is where list fields get
+        // silently dropped (#800/#1273/#2138) — asserted by
+        // core.list-response-shape.test.ts.
+        possibleReplacementOfDeviceId: d.possibleReplacementOfDeviceId ?? null,
         batteryStatus: d.batteryStatus ?? null,
         activeVpns: d.activeVpns ?? null,
         linkGroupId: d.linkGroupId ?? null,

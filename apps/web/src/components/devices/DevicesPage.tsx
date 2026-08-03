@@ -389,6 +389,15 @@ export default function DevicesPage() {
           architecture: d.architecture as string | undefined,
           isHeadless: typeof d.isHeadless === 'boolean' ? d.isHeadless : undefined,
           pendingReboot: d.pendingReboot === true,
+          // Collision enrollment (#2764). A non-null uuid means this row may be
+          // replacing an earlier device with the same hostname; the list shows
+          // a "Possible duplicate" badge and the device page a review banner.
+          // Anything non-string degrades to null so a malformed value can never
+          // light the badge.
+          possibleReplacementOfDeviceId:
+            typeof d.possibleReplacementOfDeviceId === 'string'
+              ? d.possibleReplacementOfDeviceId
+              : null,
           batteryStatus: (d.batteryStatus as Device['batteryStatus']) ?? null,
           activeVpns: (d.activeVpns as Device['activeVpns']) ?? null,
           // Linked multi-boot profiles (#2138): grouping is computed

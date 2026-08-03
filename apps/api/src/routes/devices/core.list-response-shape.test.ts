@@ -168,6 +168,7 @@ describe('GET /devices — response shape', () => {
         reliabilityScore: 42,
         reliabilityTrend: 'degrading',
         helperLifecycleMode: 'on-demand',
+        possibleReplacementOfDeviceId: '55555555-5555-4555-8555-555555555555',
       },
       ],
       [{ device_id: '33333333-3333-4333-8333-333333333333', ip_address: '10.20.30.40' }],
@@ -207,6 +208,15 @@ describe('GET /devices — response shape', () => {
     // to catch being dropped between the query and the response body.
     expect(row).toHaveProperty('wanIp', '198.51.100.24');
     expect(row).toHaveProperty('lanIp', '10.20.30.40');
+    // #2764 — collision-enrollment link. The web list renders the "Possible
+    // duplicate" badge from this field alone; drop it in the mapper and every
+    // duplicate row looks ordinary while the device page still shows the
+    // review banner (the detail route returns the whole row), so nothing else
+    // would go red.
+    expect(row).toHaveProperty(
+      'possibleReplacementOfDeviceId',
+      '55555555-5555-4555-8555-555555555555',
+    );
   });
 
   it('returns null watchdogStatus / mainAgentSilentSince for healthy rows (still present in shape)', async () => {

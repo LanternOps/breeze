@@ -103,6 +103,15 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         displayName: data.displayName ?? undefined,
         isHeadless: data.isHeadless ?? undefined,
         pendingReboot: data.pendingReboot === true,
+        // Collision enrollment (#2764) — the ONLY input to the review banner.
+        // The detail endpoint spreads the whole row (the column is not in
+        // SENSITIVE_DEVICE_FIELDS), but this transform is an explicit
+        // whitelist, so omitting it here silently kills the banner while every
+        // other test stays green — the #800/#1273/#2138 dropped-field mode.
+        possibleReplacementOfDeviceId:
+          typeof data.possibleReplacementOfDeviceId === "string"
+            ? data.possibleReplacementOfDeviceId
+            : null,
         desktopAccess: data.desktopAccess ?? undefined,
         remoteAccessPolicy: data.remoteAccessPolicy ?? undefined,
         // Link-group membership (#2138/#2308). Carried through so the detail

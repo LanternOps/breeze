@@ -174,6 +174,15 @@ export type Device = {
    * responses from older API versions.
    */
   pendingReboot?: boolean;
+  /**
+   * Set when this row was created by a hostname-collision enrollment and may
+   * be replacing an earlier device record (#2764,
+   * `devices.possible_replacement_of_device_id`). Null/absent on every
+   * ordinary device — a non-null value is a prompt for a human to review the
+   * old row and retire it. Drives the list badge and the review banner on the
+   * device page.
+   */
+  possibleReplacementOfDeviceId?: string | null;
   desktopAccess?: DesktopAccessState | null;
   remoteAccessPolicy?: RemoteAccessPolicy | null;
   /**
@@ -1346,6 +1355,20 @@ export default function DeviceList({
               >
                 {t("deviceList.agentSilent")}{" "}
                 {formatSilentDuration(device.mainAgentSilentSince!)}
+              </span>
+            )}
+            {/* Collision enrollment (#2764): this row may be replacing an
+                earlier device with the same hostname. Unlike pending-reboot
+                below it is NOT suppressed on an offline row — the duplicate
+                still needs a human decision, and an offline collider is the
+                likeliest one to be the stale record. */}
+            {device.possibleReplacementOfDeviceId && (
+              <span
+                data-testid={`device-${device.id}-possible-duplicate-badge`}
+                title={t("deviceList.possibleDuplicateTitle")}
+                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
+              >
+                {t("deviceList.possibleDuplicate")}
               </span>
             )}
             {/* Pending-reboot is only actionable while the box is reachable. On an
