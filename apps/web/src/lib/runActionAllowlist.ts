@@ -3,6 +3,7 @@
 export const RUN_ACTION_ALLOWLIST: ReadonlyArray<{ file: string; reason: string }> = [
   { file: 'apps/web/src/services/deviceActions.ts', reason: 'typed Wake service (WakeCommandError) — the pattern runAction generalizes' },
   { file: 'apps/web/src/stores/auth.ts', reason: 'transport/auth store, not a UI action handler' },
+  { file: 'apps/web/src/lib/softwarePackageUpload.ts', reason: 'typed multi-request chunked-upload driver — outcome surfacing owned by callers (runAction in AddPackageModal, inline error UI in SoftwareVersionManager)' },
 ];
 
 // KNOWN UNMIGRATED — pre-existing components with mutating fetchWithAuth NOT yet
