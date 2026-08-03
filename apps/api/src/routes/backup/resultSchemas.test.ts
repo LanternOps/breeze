@@ -109,3 +109,64 @@ describe('backupCommandResultSchema — agent terminal status (#3000)', () => {
     expect(parsed.status).toBeUndefined();
   });
 });
+
+describe('backupCommandResultSchema — VSS metadata (#3027)', () => {
+  it('keeps the agent-reported vssMetadata instead of stripping it', () => {
+    // Regression: the schema had no vssMetadata key, so zod's default strip
+    // behaviour silently discarded the field at the first server-side parse and
+    // backup_jobs.vss_metadata stayed an orphan column forever.
+    const parsed = backupCommandResultSchema.parse({
+      snapshotId: 'snap-1',
+      status: 'completed',
+      vssMetadata: {
+        shadowCopyId: '{11111111-2222-3333-4444-555555555555}',
+        creationTime: '2026-08-02T00:00:00Z',
+        writers: [
+          { name: 'SqlServerWriter', id: 'w-1', state: 'stable' },
+          { name: 'NTDS', id: 'w-2', state: 'failed', lastError: 'timed out' },
+        ],
+        exposedPaths: { 'C:\\': '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1' },
+        unprotectedVolumes: ['D:\\'],
+        warnings: ['volume D:\\ has no shadow copy'],
+        durationMs: 4200,
+      },
+    });
+
+    const vss = parsed.vssMetadata as Record<string, unknown>;
+    expect(vss.shadowCopyId).toBe('{11111111-2222-3333-4444-555555555555}');
+    expect(vss.writers).toHaveLength(2);
+    expect(vss.unprotectedVolumes).toEqual(['D:\\']);
+    expect(vss.durationMs).toBe(4200);
+  });
+
+  it('NEVER fails the result over a malformed vssMetadata — that would flip a good backup to failed', () => {
+    // agentWs gates the recorded job status on this parse succeeding
+    // (`result.status === 'completed' && parsedBackup.success`), so rejecting a
+    // diagnostics blob would mark a backup that genuinely succeeded as failed
+    // and strand its snapshot. Every shape must parse; validation happens in
+    // sanitizeVssMetadata, one hop later.
+    for (const vssMetadata of [
+      { writers: 'not-an-array' },
+      'a bare string',
+      42,
+      [],
+      null,
+      { writers: [{ name: { nested: 'object' } }] },
+    ]) {
+      const parsed = backupCommandResultSchema.safeParse({
+        snapshotId: 'snap-1',
+        bytesBackedUp: 42,
+        vssMetadata,
+      });
+      expect(parsed.success).toBe(true);
+      // The fields that matter still survive.
+      expect(parsed.success && parsed.data.snapshotId).toBe('snap-1');
+      expect(parsed.success && parsed.data.bytesBackedUp).toBe(42);
+    }
+  });
+
+  it('leaves vssMetadata undefined for a non-Windows / VSS-disabled run', () => {
+    const parsed = backupCommandResultSchema.parse({ snapshotId: 'snap-1', filesBackedUp: 3 });
+    expect(parsed.vssMetadata).toBeUndefined();
+  });
+});

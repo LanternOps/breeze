@@ -466,6 +466,19 @@ dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ
             status: lastJob.status,
             createdAt: lastJob.createdAt.toISOString(),
             completedAt: lastJob.completedAt?.toISOString() ?? null,
+            // #3027: the device tab's VSS panel keys off this. Bounded and
+            // secret-redacted at write time (sanitizeVssMetadata), and only
+            // ever present on Windows runs that actually started a VSS
+            // session — null on every other run, which is why the panel is
+            // hidden rather than shown empty.
+            vssMetadata: lastJob.vssMetadata ?? null,
+            // #3027: the companion channel, and the ONLY one that exists for
+            // the worst VSS outcome — when the shadow copy could not be created
+            // at all there is no vssMetadata to send, so the degradation rides
+            // the run's warning text into error_log. Without this the device
+            // tab showed a clean, green backup for a run that read every file
+            // off the live volume. Already secret-redacted at write time.
+            errorLog: lastJob.errorLog ?? null,
           }
         : null,
       lastSuccessAt: lastSuccess?.completedAt?.toISOString() ?? null,
