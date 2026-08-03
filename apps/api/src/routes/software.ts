@@ -38,6 +38,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { softwareUploadRoutes } from './softwareUploads';
 import {
   buildAndDispatchSoftwareInstalls,
   createSoftwareDeployment,
@@ -2091,3 +2092,9 @@ softwareRoutes.put(
     return c.json({ data: result.effective });
   }
 );
+
+// ---------------------------------------------------------------------------
+// Chunked upload sessions (issue #2951). Mounted after `use('*',
+// authMiddleware)` above, so the sub-router's handlers run behind auth.
+// ---------------------------------------------------------------------------
+softwareRoutes.route('/', softwareUploadRoutes);
