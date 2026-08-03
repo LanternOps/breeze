@@ -14,6 +14,7 @@ import { showToast } from "../shared/Toast";
 import { fetchWithAuth } from "../../stores/auth";
 import { runAction, ActionError } from "../../lib/runAction";
 import { findUnknownTokens } from "@/lib/installerVariables";
+import { uploadPackageVersion } from "../../lib/softwarePackageUpload";
 import DetectionRulesEditor from "./DetectionRulesEditor";
 import VariableInput, { type DeviceCustomField } from "./VariableInput";
 import { useTranslation } from "react-i18next";
@@ -46,6 +47,21 @@ const CATEGORIES = [
   "security",
 ] as const;
 const OS_OPTIONS = ["Windows", "macOS", "Linux"] as const;
+/**
+ * Server-acknowledged bytes → a percentage safe to render as a CSS width.
+ *
+ * Progress from the chunked uploader is NOT monotonic: a lost-state resync
+ * legitimately reports 0 bytes and the transfer restarts. That regression is
+ * real and worth showing, so it is deliberately not clamped up to a high-water
+ * mark — but it must never yield a negative width, and a zero/unknown total
+ * must never yield `NaN%`. (Same helper as SoftwareVersionManager; duplicated
+ * locally rather than exported, per the repo's shared-helper guidance.)
+ */
+function toPercent(sentBytes: number, totalBytes: number): number {
+  if (!Number.isFinite(sentBytes) || !Number.isFinite(totalBytes)) return 0;
+  if (totalBytes <= 0) return 0;
+  return Math.min(100, Math.max(0, Math.round((sentBytes / totalBytes) * 100)));
+}
 const blankForm = {
   name: "",
   vendor: "",
@@ -72,12 +88,31 @@ export default function AddPackageModal({
   const [form, setForm] = useState(blankForm);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [customFields, setCustomFields] = useState<DeviceCustomField[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // If the catalog item was created but the version write failed, keep its id so
   // a retry continues from the version step instead of creating a duplicate.
   const createdCatalogId = useRef<string | null>(null);
+  // Owns the in-flight chunked upload so Cancel/close (and unmount) can actually
+  // stop it. A ref, not state: it must survive re-renders without causing one.
+  const uploadAbortRef = useRef<AbortController | null>(null);
   const titleId = useId();
+  // Closing the modal's owner mid-upload must not leave the chunk loop running.
+  useEffect(
+    () => () => {
+      uploadAbortRef.current?.abort();
+      uploadAbortRef.current = null;
+    },
+    [],
+  );
+  /** True only when OUR controller aborted — i.e. the user cancelled/closed, or
+   *  the modal unmounted. The uploader arms its own per-phase
+   *  `AbortSignal.timeout` ceilings (30s create, 5min chunk, 10min complete);
+   *  those abort a DIFFERENT signal and must stay visible as real failures, so
+   *  ownership — not `err.name === 'AbortError'` — is what discriminates. */
+  const wasUserCancelled = (controller: AbortController | null) =>
+    controller !== null && controller.signal.aborted;
   useEffect(() => {
     if (!open) return;
     setForm(blankForm);
@@ -162,6 +197,7 @@ export default function AddPackageModal({
     !saving;
   const buildVersionRequest = (
     catalogId: string,
+    controller: AbortController | null,
   ): (() => Promise<Response>) => {
     const shared = {
       version: form.version.trim(),
@@ -174,26 +210,35 @@ export default function AddPackageModal({
         form.detectionRules.length > 0 ? form.detectionRules : undefined,
     };
     if (form.source === "file" && form.file) {
-      const fd = new FormData();
-      fd.append("file", form.file);
-      fd.append("version", shared.version);
-      fd.append("architecture", shared.architecture);
-      if (shared.releaseNotes) fd.append("releaseNotes", shared.releaseNotes);
-      if (shared.silentInstallArgs)
-        fd.append("silentInstallArgs", shared.silentInstallArgs);
-      if (shared.silentUninstallArgs)
-        fd.append("silentUninstallArgs", shared.silentUninstallArgs);
-      if (shared.supportedOs)
-        fd.append("supportedOs", JSON.stringify(shared.supportedOs));
-      if (shared.detectionRules)
-        fd.append("detectionRules", JSON.stringify(shared.detectionRules));
-      if (form.downloadUrl.trim())
-        fd.append("downloadUrl", form.downloadUrl.trim());
+      const file = form.file;
+      // Chunked upload (#2951): each chunk is its own short request with a fresh
+      // access token, so a multi-hundred-MB transfer can never outlive the token
+      // TTL, and progress is real acknowledged bytes rather than a placeholder.
+      // uploadPackageVersion RESOLVES with a Response (the /complete response,
+      // or the first unrecoverable failing one), so it drops straight into
+      // runAction's request slot — runAction keeps ownership of parsing the
+      // body, deciding success vs failure, and toasting either way.
       return () =>
-        fetchWithAuth(`/software/catalog/${catalogId}/versions/upload`, {
-          method: "POST",
-          body: fd,
-          headers: {},
+        uploadPackageVersion({
+          catalogId,
+          file,
+          metadata: {
+            ...shared,
+            downloadUrl: form.downloadUrl.trim() || undefined,
+          },
+          onProgress: (sent, total) => setUploadProgress(toPercent(sent, total)),
+          signal: controller?.signal,
+        }).catch((err: unknown) => {
+          // The uploader REJECTS on abort, and runAction toasts on ANY rejection
+          // from its request thunk — which would put a red "upload failed" toast
+          // on a cancel the user asked for. Resolve a 204 instead: runAction's
+          // success path becomes a no-op (empty body, and successMessage returns
+          // '' for a cancelled controller so nothing is toasted), and
+          // handleSubmit's ownership guard returns before onCreated. Anything
+          // NOT owned by our controller — including the uploader's own timeout
+          // ceilings — still propagates and is surfaced by runAction.
+          if (wasUserCancelled(controller)) return new Response(null, { status: 204 });
+          throw err;
         });
     }
     return () =>
@@ -208,7 +253,15 @@ export default function AddPackageModal({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmit) return;
+    // A FRESH controller per submit: a retry after a cancelled attempt must not
+    // inherit the previous (already aborted) signal, or the next genuine failure
+    // would be silently swallowed as "the user cancelled". Only the file branch
+    // is abortable; the metadata-only POST is a single short request and keeps
+    // its previous behaviour exactly.
+    const controller = form.source === "file" && form.file ? new AbortController() : null;
+    uploadAbortRef.current = controller;
     setSaving(true);
+    setUploadProgress(0);
     try {
       // Step 1 — create the catalog item (skip if a prior attempt already did).
       if (!createdCatalogId.current) {
@@ -261,12 +314,22 @@ export default function AddPackageModal({
       // Step 2 — add the first version. Success toast lands here so the user is
       // only told "added" once the package is actually deployable.
       await runAction({
-        request: buildVersionRequest(catalogId),
+        request: buildVersionRequest(catalogId, controller),
         errorFallback: i18n.t(
           "policies:software.addPackageModal.packageCreatedButAddingTheFirstVersion",
         ),
-        successMessage: `Added ${form.name.trim()} — v${form.version.trim()}`,
+        // A cancel is not an "Added" event. runAction skips the toast for an
+        // empty message, which is how the cancel path stays silent without
+        // taking success/failure surfacing away from runAction.
+        successMessage: () =>
+          wasUserCancelled(controller)
+            ? ""
+            : `Added ${form.name.trim()} — v${form.version.trim()}`,
       });
+      // A completion that lands after the user cancelled must not resurrect the
+      // package they believe they abandoned (handleClose already reported it as
+      // a 0-version item and closed the modal).
+      if (wasUserCancelled(controller)) return;
       onCreated({
         id: catalogId,
         name: form.name.trim(),
@@ -278,6 +341,8 @@ export default function AddPackageModal({
       });
       onClose();
     } catch (err) {
+      // A cancel the user asked for is not a failure — exit quietly.
+      if (wasUserCancelled(controller)) return;
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
       if (!(err instanceof ActionError)) {
         showToast({
@@ -288,10 +353,17 @@ export default function AddPackageModal({
       // Non-401 ActionError already toasted by runAction. Modal stays open; if the
       // catalog item was created, createdCatalogId retries from the version step.
     } finally {
+      if (uploadAbortRef.current === controller) uploadAbortRef.current = null;
       setSaving(false);
+      setUploadProgress(0);
     }
   };
   const handleClose = () => {
+    // Abort BEFORE closing: closing unmounts the progress bar, so without this
+    // the chunk loop would keep running invisibly against a modal the user
+    // believes they dismissed.
+    uploadAbortRef.current?.abort();
+    uploadAbortRef.current = null;
     // If step 1 (catalog) succeeded but the version write never did, surface the
     // created package (0 versions) so it isn't an invisible orphan the user would
     // re-create by adding the same name — they can then add a version or delete it.
@@ -308,13 +380,18 @@ export default function AddPackageModal({
     }
     onClose();
   };
+  const uploadInFlight = saving && form.source === "file" && form.file !== null;
+  // Backdrop/Esc close is live during a chunked upload because handleClose
+  // aborts the transfer; the short metadata-only save stays blocked as before.
+  const dialogCloseHandler =
+    saving && !uploadInFlight ? () => {} : handleClose;
   const labelCls = "text-xs font-semibold uppercase text-muted-foreground";
   const inputCls =
     "mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring";
   return (
     <Dialog
       open={open}
-      onClose={saving ? () => {} : handleClose}
+      onClose={dialogCloseHandler}
       title={i18n.t("policies:software.addPackageModal.addSoftwarePackage")}
       labelledBy={titleId}
       maxWidth="2xl"
@@ -663,10 +740,33 @@ export default function AddPackageModal({
 
         {/* Sticky footer */}
         <div className="flex items-center justify-end gap-2 border-t px-6 py-4">
+          {/* Shown for the whole file transfer, including at 0%. Gating on
+              `uploadProgress > 0` would make the bar VANISH whenever the server
+              resets progress on a lost-state resync — precisely the moment the
+              user most needs to see something is still happening (it is what
+              made the original 222MB upload read as a stall). */}
+          {uploadInFlight && (
+            <div
+              data-testid="package-upload-progress"
+              className="mr-auto flex items-center gap-2 text-xs text-muted-foreground"
+            >
+              <div className="h-1.5 w-24 overflow-hidden rounded-full bg-muted">
+                <div
+                  data-testid="package-upload-progress-bar"
+                  className="h-full rounded-full bg-primary transition-all"
+                  style={{ width: `${uploadProgress}%` }}
+                />
+              </div>
+              {uploadProgress}%
+            </div>
+          )}
           <button
             type="button"
             onClick={handleClose}
-            disabled={saving}
+            // Cancel stays live during a chunked upload — it aborts the transfer
+            // (handleClose). The short metadata-only save keeps its previous
+            // disabled-while-saving behaviour: there is nothing to abort.
+            disabled={saving && !uploadInFlight}
             className="inline-flex h-9 items-center justify-center rounded-md border bg-background px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
           >
             {i18n.t("common:actions.cancel")}
