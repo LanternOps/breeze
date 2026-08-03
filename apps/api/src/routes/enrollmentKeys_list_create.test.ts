@@ -143,7 +143,9 @@ function mockSelectFromWhereOrderByLimitOffset(rows: any[]) {
 /**
  * Mock for db.select().from().where().groupBy() — the batched installer
  * bootstrap-token aggregate the list/detail routes run after loading keys
- * (#2992). Rows are `{ parentEnrollmentKeyId, consumed, max }`.
+ * (#2992). Rows are `{ parentEnrollmentKeyId, consumed, max, liveConsumed,
+ * liveMax }` — the live pair being the same sums FILTERed to unexpired tokens
+ * (#3039).
  */
 function mockSelectFromWhereGroupBy(rows: any[]) {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -221,7 +223,7 @@ describe('enrollment key routes — list & create', () => {
         makeEnrollmentKey({ id: 'key-2', name: 'Plain key' }),
       ]);
       mockSelectFromWhereGroupBy([
-        { parentEnrollmentKeyId: KEY_ID, consumed: 3, max: 7 },
+        { parentEnrollmentKeyId: KEY_ID, consumed: 3, max: 7, liveConsumed: 3, liveMax: 7 },
       ]);
 
       const res = await app.request('/enrollment-keys', {
@@ -235,7 +237,12 @@ describe('enrollment key routes — list & create', () => {
       expect(body.data).toHaveLength(2);
       expect(body.pagination.total).toBe(2);
 
-      expect(body.data[0].installerTokens).toEqual({ consumed: 3, max: 7 });
+      expect(body.data[0].installerTokens).toEqual({
+        consumed: 3,
+        max: 7,
+        liveConsumed: 3,
+        liveMax: 7,
+      });
       // A key that never minted an installer reports null, so the UI keeps
       // showing its own usage_count — which IS claimed for short-link and
       // MCP-invite keys.
@@ -253,7 +260,7 @@ describe('enrollment key routes — list & create', () => {
       // Postgres SUM() comes back as a string over the wire; the route must
       // coerce or the UI renders "12" as "0"+"12" style garbage.
       mockSelectFromWhereGroupBy([
-        { parentEnrollmentKeyId: KEY_ID, consumed: '4', max: '12' },
+        { parentEnrollmentKeyId: KEY_ID, consumed: '4', max: '12', liveConsumed: '1', liveMax: '7' },
       ]);
 
       const res = await app.request('/enrollment-keys', {
@@ -262,7 +269,41 @@ describe('enrollment key routes — list & create', () => {
       });
 
       const body = await res.json();
-      expect(body.data[0].installerTokens).toEqual({ consumed: 4, max: 12 });
+      expect(body.data[0].installerTokens).toEqual({
+        consumed: 4,
+        max: 12,
+        liveConsumed: 1,
+        liveMax: 7,
+      });
+    });
+
+    // ------------------------------------------------------------------
+    // #3039 — the liveness cut rides the same aggregate row. A key whose
+    // installers have all expired reports liveMax 0 so the UI can stop
+    // rendering "0 / 7" as seven usable slots (and can derive the row's
+    // effective status from token liveness instead of the transient parent).
+    // ------------------------------------------------------------------
+    it('reports zero live capacity for a key whose installers have all expired', async () => {
+      mockSelectFromWhere([{ count: 1 }]);
+      mockSelectFromWhereOrderByLimitOffset([makeEnrollmentKey()]);
+      mockSelectFromWhereGroupBy([
+        { parentEnrollmentKeyId: KEY_ID, consumed: 3, max: 7, liveConsumed: 0, liveMax: 0 },
+      ]);
+
+      const res = await app.request('/enrollment-keys', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      const body = await res.json();
+      // The historical totals survive (those three devices really enrolled);
+      // the live pair is what withdraws the capacity claim.
+      expect(body.data[0].installerTokens).toEqual({
+        consumed: 3,
+        max: 7,
+        liveConsumed: 0,
+        liveMax: 0,
+      });
     });
 
     it('skips the aggregate query entirely when the page is empty', async () => {
@@ -321,8 +362,8 @@ describe('enrollment key routes — list & create', () => {
       // The id-list filter is killed separately, by the transaction assertion
       // in the all-short-link test below.
       mockSelectFromWhereGroupBy([
-        { parentEnrollmentKeyId: KEY_ID, consumed: 0, max: 5 },
-        { parentEnrollmentKeyId: 'key-link', consumed: 0, max: 3 },
+        { parentEnrollmentKeyId: KEY_ID, consumed: 0, max: 5, liveConsumed: 0, liveMax: 5 },
+        { parentEnrollmentKeyId: 'key-link', consumed: 0, max: 3, liveConsumed: 0, liveMax: 3 },
       ]);
 
       const res = await app.request('/enrollment-keys', {
@@ -334,7 +375,12 @@ describe('enrollment key routes — list & create', () => {
       const body = await res.json();
       // Add-Device parent (no short_code) still reports genuine capacity —
       // kills the "suppress everything" mutant.
-      expect(body.data[0].installerTokens).toEqual({ consumed: 0, max: 5 });
+      expect(body.data[0].installerTokens).toEqual({
+        consumed: 0,
+        max: 5,
+        liveConsumed: 0,
+        liveMax: 5,
+      });
       expect(body.data[1].installerTokens).toBeNull();
       // …and its own counters, which ARE atomically claimed on /s/:code, are
       // left to tell the story.

@@ -309,7 +309,9 @@ describe('enrollment key routes — get, rotate, delete', () => {
     it('reports installer bootstrap-token capacity when the key has minted one', async () => {
       mockSelectFromWhereLimit([makeEnrollmentKey()]);
       mockSelectFromWhereGroupBy([
-        { parentEnrollmentKeyId: KEY_ID, consumed: 3, max: 7 },
+        // liveConsumed/liveMax (#3039): same sums FILTERed to unexpired
+        // tokens, carried through verbatim next to the all-token totals.
+        { parentEnrollmentKeyId: KEY_ID, consumed: 3, max: 7, liveConsumed: 1, liveMax: 4 },
       ]);
 
       const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
@@ -319,7 +321,12 @@ describe('enrollment key routes — get, rotate, delete', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.installerTokens).toEqual({ consumed: 3, max: 7 });
+      expect(body.installerTokens).toEqual({
+        consumed: 3,
+        max: 7,
+        liveConsumed: 1,
+        liveMax: 4,
+      });
       // The key's own budget is reported unchanged — the installer figure is a
       // separate counter, not a rewrite of it.
       expect(body.maxUsage).toBe(10);

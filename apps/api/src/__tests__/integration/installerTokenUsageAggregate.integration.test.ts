@@ -161,7 +161,17 @@ describe('installer token usage aggregate (#2992, real Postgres)', () => {
         // become two rows.
         expect(usage.size).toBe(1);
 
-        expect(usage.get(ids.withTokensId)).toEqual({ consumed: 4, max: 12 });
+        // Totals span both tokens; the live pair (#3039) is FILTERed to the
+        // unexpired one (token A: 3 / 7). The expired token B (1 / 5) must be
+        // in the totals — the figure stays stable as installers age out — but
+        // OUT of the live cut, or a dead installer reads as free capacity.
+        // Same asymmetry rationale: no swap of the four sources can coincide.
+        expect(usage.get(ids.withTokensId)).toEqual({
+          consumed: 4,
+          max: 12,
+          liveConsumed: 3,
+          liveMax: 7,
+        });
         // A key that never minted an installer is absent, so the route maps it
         // to null and the UI keeps showing usage_count / max_usage.
         expect(usage.get(ids.withoutTokensId)).toBeUndefined();
