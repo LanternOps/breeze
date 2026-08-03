@@ -16,7 +16,7 @@
     "dotenv": "^17.4.2"
   },
   "devDependencies": {
-    "@playwright/test": "^1.62.0",
+    "@playwright/test": "^1.62.1",
     "@types/node": "^26.1.2",
     "@types/pg": "^8.20.0",
     "pg": "^8.22.0",
