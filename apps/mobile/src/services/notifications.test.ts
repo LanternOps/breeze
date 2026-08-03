@@ -25,6 +25,9 @@ const notif = vi.hoisted(() => ({
   getDevicePushTokenAsync: vi.fn(),
   getExpoPushTokenAsync: vi.fn(),
   setNotificationChannelAsync: vi.fn(),
+  getPresentedNotificationsAsync: vi.fn(),
+  dismissNotificationAsync: vi.fn(),
+  setBadgeCountAsync: vi.fn(),
   AndroidImportance: { MAX: 5 },
 }));
 vi.mock('expo-notifications', () => notif);
@@ -32,7 +35,11 @@ vi.mock('expo-notifications', () => notif);
 const api = vi.hoisted(() => ({ registerPushToken: vi.fn() }));
 vi.mock('./api', () => ({ registerPushToken: (...a: unknown[]) => api.registerPushToken(...a) }));
 
-import { registerForPushNotifications } from './notifications';
+import {
+  registerForPushNotifications,
+  reconcileApprovalNotifications,
+  staleApprovalNotificationIds,
+} from './notifications';
 
 beforeEach(() => {
   platform.OS = 'ios';
@@ -111,5 +118,64 @@ describe('registerForPushNotifications', () => {
       status: 'failed',
       reason: 'APNs unavailable',
     });
+  });
+});
+
+/**
+ * A request approved in the web UI leaves its push banner sitting in
+ * Notification Center on the phone. Clearing it is the visible half of "the
+ * approval dismissed itself"; alert banners must survive the sweep.
+ */
+function presented(identifier: string, data: Record<string, unknown> | null) {
+  return { request: { identifier, content: { data } } };
+}
+
+describe('staleApprovalNotificationIds', () => {
+  it('selects approval banners whose request is no longer pending', () => {
+    const list = [
+      presented('n1', { type: 'approval', approvalId: 'a' }),
+      presented('n2', { type: 'approval', approvalId: 'b' }),
+    ];
+    expect(staleApprovalNotificationIds(list, ['b'])).toEqual(['n1']);
+  });
+
+  it('never touches alert banners or payload-less notifications', () => {
+    const list = [
+      presented('n1', { type: 'alert', alertId: 'x', eventType: 'alert.triggered' }),
+      presented('n2', null),
+      presented('n3', { type: 'approval', approvalId: 'gone' }),
+    ];
+    expect(staleApprovalNotificationIds(list, [])).toEqual(['n3']);
+  });
+
+  it('returns nothing when every delivered approval is still pending', () => {
+    const list = [presented('n1', { type: 'approval', approvalId: 'a' })];
+    expect(staleApprovalNotificationIds(list, ['a', 'b'])).toEqual([]);
+  });
+});
+
+describe('reconcileApprovalNotifications', () => {
+  beforeEach(() => {
+    notif.getPresentedNotificationsAsync.mockReset().mockResolvedValue([]);
+    notif.dismissNotificationAsync.mockReset().mockResolvedValue(undefined);
+    notif.setBadgeCountAsync.mockReset().mockResolvedValue(undefined);
+  });
+
+  it('dismisses resolved approval banners and syncs the badge', async () => {
+    notif.getPresentedNotificationsAsync.mockResolvedValue([
+      presented('n1', { type: 'approval', approvalId: 'decided-in-browser' }),
+      presented('n2', { type: 'approval', approvalId: 'still-waiting' }),
+    ]);
+
+    await reconcileApprovalNotifications(['still-waiting']);
+
+    expect(notif.dismissNotificationAsync).toHaveBeenCalledTimes(1);
+    expect(notif.dismissNotificationAsync).toHaveBeenCalledWith('n1');
+    expect(notif.setBadgeCountAsync).toHaveBeenCalledWith(1);
+  });
+
+  it('degrades quietly when the notification APIs throw', async () => {
+    notif.getPresentedNotificationsAsync.mockRejectedValue(new Error('no permission'));
+    await expect(reconcileApprovalNotifications([])).resolves.toBeUndefined();
   });
 });

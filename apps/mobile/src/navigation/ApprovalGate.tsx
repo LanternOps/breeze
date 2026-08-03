@@ -19,6 +19,7 @@ import {
   removeNotificationSubscription,
 } from '../services/notifications';
 import { ApprovalScreen } from '../screens/approvals/ApprovalScreen';
+import { useApprovalQueueSync } from '../screens/approvals/useApprovalQueueSync';
 import { useApprovalTheme, type, spacing, radii } from '../theme';
 
 interface Props {
@@ -41,6 +42,11 @@ export function ApprovalGate({ children }: Props) {
   // with a permanent overlay they cannot act on until their next sign-in.
   const [dismissedPush, setDismissedPush] = useState(false);
   const [dismissedApprover, setDismissedApprover] = useState(false);
+
+  // Keeps `pending` in step with decisions made off this phone (browser, second
+  // device, server-side expiry). Without it the queue only ever shrank when
+  // THIS phone decided something.
+  useApprovalQueueSync();
 
   useEffect(() => {
     dispatch(hydrateFromCache());

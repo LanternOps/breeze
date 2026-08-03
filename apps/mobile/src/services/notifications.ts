@@ -239,3 +239,60 @@ export function parseApprovalNotification(
   }
   return null;
 }
+
+/**
+ * Minimal shape of a delivered notification needed to decide whether to
+ * dismiss it. Structural so the pure selector below can be tested without an
+ * expo-notifications runtime.
+ */
+export interface PresentedApprovalNotification {
+  request: {
+    identifier: string;
+    content: { data?: Record<string, unknown> | null };
+  };
+}
+
+/**
+ * Pick the delivered notifications that should be cleared from Notification
+ * Center: every approval push whose request is no longer pending.
+ *
+ * Non-approval notifications (alerts) are never touched — dismissing the whole
+ * tray would eat alert banners the technician has not read.
+ */
+export function staleApprovalNotificationIds(
+  presented: readonly PresentedApprovalNotification[],
+  pendingApprovalIds: readonly string[]
+): string[] {
+  const stillPending = new Set(pendingApprovalIds);
+  const stale: string[] = [];
+  for (const n of presented) {
+    const data = n.request.content.data;
+    if (!data || data.type !== 'approval' || typeof data.approvalId !== 'string') continue;
+    if (stillPending.has(data.approvalId)) continue;
+    stale.push(n.request.identifier);
+  }
+  return stale;
+}
+
+/**
+ * Clear delivered approval banners for requests that are no longer pending —
+ * e.g. approved in the web UI, or denied from another device.
+ *
+ * Best-effort: a failure here is cosmetic (a stale banner), never a decision
+ * correctness problem, so it degrades to a warning rather than surfacing.
+ */
+export async function reconcileApprovalNotifications(
+  pendingApprovalIds: readonly string[]
+): Promise<void> {
+  try {
+    const presented = await Notifications.getPresentedNotificationsAsync();
+    const stale = staleApprovalNotificationIds(
+      presented as unknown as PresentedApprovalNotification[],
+      pendingApprovalIds
+    );
+    await Promise.all(stale.map((id) => Notifications.dismissNotificationAsync(id)));
+    await Notifications.setBadgeCountAsync(pendingApprovalIds.length);
+  } catch (err) {
+    console.warn('[notifications] approval reconcile failed', err);
+  }
+}
