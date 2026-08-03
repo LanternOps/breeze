@@ -471,11 +471,42 @@ describe('software upload-session routes', () => {
     it('409s and resets to 0 when the temp file vanished but the DB says bytes exist', async () => {
       // No temp file on disk (tmp cleaned under a live process), bytesReceived = 5.
       selectQueue([makeSession({ bytesReceived: 5 })], [makeSession({ bytesReceived: 5 })]);
-      vi.mocked(db.update).mockReturnValueOnce(chainMock([]) as any); // reset update
+      // Assert the reset actually happened, not just the response shape — a
+      // route that dropped the `bytes_received: 0` UPDATE entirely would
+      // still produce this exact 200... er, 409 body from the mock alone.
+      const resetCapture = captureChain([]);
+      vi.mocked(db.update).mockReturnValueOnce(resetCapture.chain);
 
       const res = await putChunk(5, 'world');
       expect(res.status).toBe(409);
       expect((await res.json()).bytesReceived).toBe(0);
+      expect(resetCapture.calls.set?.[0]?.[0]).toMatchObject({ bytesReceived: 0 });
+    });
+
+    it('409s and resets to 0 when the temp file EXISTS but is SHORTER than the recorded offset', async () => {
+      // A previous append recorded bytesReceived=5 in the DB, but the file on
+      // disk somehow only has 3 bytes. Blindly truncate()-ing to offset 5
+      // would EXTEND (not shrink) the 3-byte file, padding it with NUL bytes
+      // rather than erroring — silently corrupting the package (it would end
+      // up exactly fileSize bytes once later chunks land, so no downstream
+      // length/hash check would ever catch the zero-padding). This must take
+      // the same reset-to-0 path as a fully-missing file, never a truncate.
+      await mkdir(dirname(uploadSessionTempPath(UPLOAD_ID)), { recursive: true });
+      await writeFile(uploadSessionTempPath(UPLOAD_ID), 'abc'); // 3 bytes < offset 5
+      selectQueue([makeSession({ bytesReceived: 5 })], [makeSession({ bytesReceived: 5 })]);
+      const resetCapture = captureChain([]);
+      vi.mocked(db.update).mockReturnValueOnce(resetCapture.chain);
+
+      const res = await putChunk(5, 'world');
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe('Upload state lost; restart from offset 0');
+      expect(body.bytesReceived).toBe(0);
+      expect(resetCapture.calls.set?.[0]?.[0]).toMatchObject({ bytesReceived: 0 });
+      // The file was NOT truncate()-extended with NUL padding — it's
+      // untouched (still 3 bytes), not silently grown to 5.
+      const content = await readFile(uploadSessionTempPath(UPLOAD_ID), 'utf8');
+      expect(content).toBe('abc');
     });
 
     it('413s a chunk that exceeds the allowed size and rolls the file back', async () => {
@@ -496,6 +527,46 @@ describe('software upload-session routes', () => {
         { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: 'x' },
       );
       expect(res.status).toBe(400);
+    });
+
+    it('400s an empty offset (Number(\'\') coerces to 0 and must not sneak through)', async () => {
+      const res = await app.request(
+        `/software/catalog/${CATALOG_ID}/versions/uploads/${UPLOAD_ID}/chunks?offset=`,
+        { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: 'x' },
+      );
+      expect(res.status).toBe(400);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('400s a non-decimal offset (hex/scientific notation that Number() would still parse)', async () => {
+      const res = await app.request(
+        `/software/catalog/${CATALOG_ID}/versions/uploads/${UPLOAD_ID}/chunks?offset=1e3`,
+        { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: 'x' },
+      );
+      expect(res.status).toBe(400);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    // GET/DELETE both validate `:id`/`:uploadId` as UUIDs; this route must
+    // too — otherwise a malformed id reaches `eq()` against a `uuid` column
+    // unvalidated and surfaces as an unhandled Postgres 22P02 (500) instead
+    // of a clean 400.
+    it('400s for a malformed (non-UUID) catalog id, never reaching the DB', async () => {
+      const res = await app.request(
+        `/software/catalog/not-a-uuid/versions/uploads/${UPLOAD_ID}/chunks?offset=0`,
+        { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: 'x' },
+      );
+      expect(res.status).toBe(400);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('400s for a malformed (non-UUID) upload id, never reaching the DB', async () => {
+      const res = await app.request(
+        `/software/catalog/${CATALOG_ID}/versions/uploads/not-a-uuid/chunks?offset=0`,
+        { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: 'x' },
+      );
+      expect(res.status).toBe(400);
+      expect(db.select).not.toHaveBeenCalled();
     });
 
     it('409s upload_instance_mismatch for a session owned by another process — before any write', async () => {

@@ -38,7 +38,7 @@ import { z } from 'zod';
 import { and, eq, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, truncate, unlink } from 'node:fs/promises';
+import { mkdir, stat, truncate, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Readable, Transform } from 'node:stream';
@@ -299,17 +299,24 @@ softwareUploadRoutes.put(
   requireScope('organization', 'partner', 'system'),
   requireSoftwareWrite,
   requireMfa(),
+  zValidator('param', uploadParamSchema),
   async (c) => {
     const auth = c.get('auth');
     const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
     const { orgId } = orgResult;
-    const catalogId = c.req.param('id')!;
-    const uploadId = c.req.param('uploadId')!;
+    const { id: catalogId, uploadId } = c.req.valid('param');
 
+    // Validate the RAW string, not just the coerced number: `Number('')` is
+    // 0 and `Number('0x10')`/`Number('1e3')` both parse, so a client bug
+    // (e.g. an empty query param) would otherwise silently pass as offset 0
+    // and read back as a normal idempotent duplicate instead of a 400.
     const offsetRaw = c.req.query('offset');
+    if (offsetRaw === undefined || !/^\d+$/.test(offsetRaw)) {
+      return c.json({ error: 'offset query parameter must be a non-negative integer' }, 400);
+    }
     const offset = Number(offsetRaw);
-    if (offsetRaw === undefined || !Number.isSafeInteger(offset) || offset < 0) {
+    if (!Number.isSafeInteger(offset)) {
       return c.json({ error: 'offset query parameter must be a non-negative integer' }, 400);
     }
     const body = c.req.raw.body;
@@ -366,23 +373,41 @@ softwareUploadRoutes.put(
       await mkdir(dirname(session.tempPath), { recursive: true });
       // Discard any garbage tail a previously-failed append left past the
       // recorded offset — the CAS below only ever advances from clean state.
+      //
+      // Stat before truncating: POSIX truncate() on a file SHORTER than the
+      // target offset does NOT error — it EXTENDS the file, padding the gap
+      // with NUL bytes. If we blindly truncated to `offset`, a temp file
+      // that's fallen behind bytesReceived (e.g. after an out-of-band
+      // shrink/corruption) would come out padded with zeros. Once later
+      // chunks land, bytesReceived === fileSize exactly as expected, so no
+      // downstream length check catches it — and /complete computes its
+      // sha256 by hashing this same temp file with no client-supplied
+      // checksum to compare against, so the corrupt bytes would ship as a
+      // "verified" package. So "file exists but is shorter than the offset"
+      // must take the SAME reset path as "file missing", never a truncate.
+      let existingSize: number | undefined;
       try {
-        await truncate(session.tempPath, offset);
+        existingSize = (await stat(session.tempPath)).size;
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+      if (existingSize === undefined || existingSize < offset) {
         if (offset > 0) {
-          // DB says bytes exist but the temp file is gone — a tmp cleaner
-          // (e.g. systemd-tmpfiles) removed it under a LIVE process. (A
-          // restarted process never reaches here: its new PROCESS_INSTANCE_ID
-          // trips the pre-lock instance guard first.) Reset so the client
-          // restarts from 0.
+          // DB says bytes exist but the temp file is gone (a tmp cleaner,
+          // e.g. systemd-tmpfiles, removed it under a LIVE process — a
+          // restarted process never reaches here: its new
+          // PROCESS_INSTANCE_ID trips the pre-lock instance guard first) or
+          // is shorter than recorded. Reset so the client restarts from 0.
           await db.update(softwareUploadSessions)
             .set({ bytesReceived: 0, lastActivityAt: new Date() })
             .where(eq(softwareUploadSessions.id, uploadId));
           return c.json({ error: 'Upload state lost; restart from offset 0', bytesReceived: 0 }, 409);
         }
-        // offset 0 with no file yet: normal first chunk.
+        // offset 0 with no file yet (or an empty one): normal first chunk.
+      } else if (existingSize > offset) {
+        await truncate(session.tempPath, offset);
       }
+      // existingSize === offset: already exactly where we want it, no-op.
 
       const maxChunkBytes = Math.min(session.chunkSize, session.fileSize - offset);
       let written = 0;
