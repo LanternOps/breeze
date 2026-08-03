@@ -500,7 +500,15 @@ describe('MCP transport integration', () => {
     expect(rateLimiter).toHaveBeenCalledWith({}, 'mcp:msg:oauth-grant:grant-stable-1', 120, 60);
   });
 
-  it('production defaults to requiring ai:execute_admin for tier-3 MCP calls', async () => {
+  // Reversed 2026-08-02: ALL Tier 3 MCP calls are now unconditionally
+  // approval-required (MCP_APPROVAL_REQUIRED), fired before the
+  // ai:execute_admin production check below ever runs — the prod
+  // execute_admin requirement still exists in the code (defense-in-depth,
+  // and it still gates tools/list + bootstrap auth tools), but tools/call can
+  // no longer reach it for a Tier 3 tool. This test now pins that the NEW
+  // gate — not the old admin-scope message — is what a production ai:execute
+  // (non-admin) caller actually sees.
+  it('production: a Tier 3 MCP call is gated (MCP_APPROVAL_REQUIRED), not the old ai:execute_admin message', async () => {
     delete process.env.IS_HOSTED;
     process.env.NODE_ENV = 'production';
     delete process.env.MCP_REQUIRE_EXECUTE_ADMIN;
@@ -514,28 +522,6 @@ describe('MCP transport integration', () => {
     testState.aiTools = new Map([['execute_command', { deviceArgs: ['deviceId'] }]]);
     testState.redis = { get: vi.fn(async () => null) };
 
-    const ledgerInsertValues: any[] = [];
-    const ledgerUpdateSet = vi.fn();
-    testState.db = {
-        select: () => ({
-          from: () => ({
-            where: () => ({ limit: async () => [{ partnerId: 'partner-1' }] }),
-          }),
-        }),
-        insert: () => ({
-          values: (value: any) => {
-            ledgerInsertValues.push(value);
-            return { returning: async () => [{ id: 'mcp-exec-1' }] };
-          },
-        }),
-        update: () => ({
-          set: (value: any) => {
-            ledgerUpdateSet(value);
-            return { where: async () => undefined };
-          },
-        }),
-      };
-
     const res = await mcpServerRoutes.request('/message', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
@@ -549,11 +535,18 @@ describe('MCP transport integration', () => {
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.error?.message).toBe('Tool "execute_command" requires ai:execute_admin scope in production');
+    expect(body.result.isError).toBe(true);
+    const payload = JSON.parse(body.result.content[0].text);
+    expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
     expect(executeTool).not.toHaveBeenCalled();
   });
 
-  it('production can explicitly opt out of the execute-admin requirement while keeping the allowlist gate', async () => {
+  // Reversed 2026-08-02: MCP_REQUIRE_EXECUTE_ADMIN=false used to let a Tier 3
+  // tool auto-execute (still subject to the allowlist). It no longer can —
+  // the interactive-approval-only gate is unconditional and does not consult
+  // this env var at all, so opting out of the admin requirement must NOT
+  // resurrect Tier 3 execution over MCP.
+  it('production: opting out of the execute-admin requirement does NOT resurrect Tier 3 execution — still gated', async () => {
     delete process.env.IS_HOSTED;
     process.env.NODE_ENV = 'production';
     process.env.MCP_REQUIRE_EXECUTE_ADMIN = 'false';
@@ -567,28 +560,6 @@ describe('MCP transport integration', () => {
     testState.aiTools = new Map([['execute_command', { deviceArgs: ['deviceId'] }]]);
     testState.redis = { get: vi.fn(async () => null) };
 
-    const ledgerInsertValues: any[] = [];
-    const ledgerUpdateSet = vi.fn();
-    testState.db = {
-        select: () => ({
-          from: () => ({
-            where: () => ({ limit: async () => [{ partnerId: 'partner-1' }] }),
-          }),
-        }),
-        insert: () => ({
-          values: (value: any) => {
-            ledgerInsertValues.push(value);
-            return { returning: async () => [{ id: 'mcp-exec-1' }] };
-          },
-        }),
-        update: () => ({
-          set: (value: any) => {
-            ledgerUpdateSet(value);
-            return { where: async () => undefined };
-          },
-        }),
-      };
-
     const res = await mcpServerRoutes.request('/message', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
@@ -602,15 +573,23 @@ describe('MCP transport integration', () => {
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.error).toBeUndefined();
-    expect(executeTool).toHaveBeenCalledWith(
-      'execute_command',
-      {},
-      expect.objectContaining({ partnerId: 'partner-1', orgId: 'org-1' }),
-    );
+    expect(body.result.isError).toBe(true);
+    const payload = JSON.parse(body.result.content[0].text);
+    expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
+    expect(executeTool).not.toHaveBeenCalled();
   });
 
-  it('writes a sanitized tool-level audit event for successful tier-3 MCP calls', async () => {
+  // Reversed 2026-08-02: this test exercises the audit sanitization pipeline
+  // (writeMcpToolAuditEvent / sanitizeAuditPayload), which runs unconditionally
+  // for every tier. It used to run execute_command at (its real) Tier 3, but a
+  // Tier 3 call no longer reaches this pipeline at all (see
+  // mcpServer.approvalGate.test.ts for that gate). Pinned to a synthetic
+  // Tier 2 here so the sanitization mechanics this test actually cares about
+  // keep real coverage. NOTE: the execution LEDGER (as opposed to the audit
+  // event) only fires for tier>=3 (see runTier3ToolLifecycle), so unlike
+  // before this reversal, this test no longer asserts on ledger rows — that
+  // path is exercised at tier 2 nowhere in this suite because it cannot fire.
+  it('writes a sanitized tool-level audit event for a successful Tier 2 MCP call', async () => {
     delete process.env.IS_HOSTED;
     process.env.NODE_ENV = 'development';
 
@@ -618,7 +597,7 @@ describe('MCP transport integration', () => {
 
     routeMocks.getToolDefinitions.mockReturnValue([{ name: 'execute_command', description: '', input_schema: {} }]);
     routeMocks.executeTool.mockResolvedValue(JSON.stringify({ status: 'completed', stdout: 'token=raw-secret' }));
-    routeMocks.getToolTier.mockImplementation((name: string) => (name === 'execute_command' ? 3 : undefined));
+    routeMocks.getToolTier.mockImplementation((name: string) => (name === 'execute_command' ? 2 : undefined));
     testState.aiTools = new Map([['execute_command', { deviceArgs: ['deviceId'] }]]);
     testState.redis = { get: vi.fn(async () => null) };
     const ledgerInsertValues: any[] = [];
@@ -682,7 +661,7 @@ describe('MCP transport integration', () => {
         result: 'success',
         details: expect.objectContaining({
           toolName: 'execute_command',
-          tier: 3,
+          tier: 2,
           oauthGrantId: 'grant-1',
           target: expect.objectContaining({ deviceId: 'device-1' }),
           arguments: expect.objectContaining({ token: '[REDACTED]' }),
@@ -697,48 +676,25 @@ describe('MCP transport integration', () => {
     expect(JSON.stringify(writeAuditEvent.mock.calls)).not.toContain('raw-token');
     expect(JSON.stringify(writeAuditEvent.mock.calls)).not.toContain('raw-secret');
     // MED-1 regression: the attacker-forged sessionId must not have landed
-    // in the audit or ledger payloads.
+    // in the audit payload.
     expect(JSON.stringify(writeAuditEvent.mock.calls)).not.toContain('mcp-attacker-forged');
-    expect(JSON.stringify(ledgerInsertValues)).not.toContain('mcp-attacker-forged');
-    expect(ledgerInsertValues[1]).toMatchObject({
-      toolName: 'execute_command',
-      status: 'executing',
-      toolInput: expect.objectContaining({
-        source: 'mcp',
-        orgId: 'org-1',
-        toolName: 'execute_command',
-        tier: 3,
-        principal: expect.objectContaining({
-          type: 'api_key',
-          apiKeyId: 'key-1',
-          oauthGrantId: 'grant-1',
-          partnerId: 'partner-1',
-        }),
-        target: expect.objectContaining({ deviceId: 'device-1' }),
-      }),
-    });
-    expect(ledgerUpdateSet).toHaveBeenCalledWith(expect.objectContaining({
-      status: 'completed',
-      toolOutput: expect.objectContaining({
-        source: 'mcp',
-        status: 'success',
-        result: expect.objectContaining({
-          resultKeys: expect.arrayContaining(['status', 'stdout']),
-        }),
-      }),
-    }));
-    expect(JSON.stringify(ledgerInsertValues)).not.toContain('raw-token');
-    expect(JSON.stringify(ledgerUpdateSet.mock.calls)).not.toContain('raw-secret');
+    // No execution ledger at Tier 2 (see the block comment above this test —
+    // beginMcpToolExecutionLedger only fires for tier>=3).
+    expect(ledgerInsertValues).toEqual([]);
+    expect(ledgerUpdateSet).not.toHaveBeenCalled();
   });
 
-  it('writes a failed tool-level audit event when tier-3 MCP execution throws', async () => {
+  // Reversed 2026-08-02: same rationale as the successful-call sanitization
+  // test above — pinned to Tier 2 since a Tier 3 call no longer reaches this
+  // pipeline (executeTool throwing) at all over MCP.
+  it('writes a failed tool-level audit event when a Tier 2 MCP execution throws', async () => {
     delete process.env.IS_HOSTED;
     process.env.NODE_ENV = 'development';
 
     setTestApiKey({ scopes: ['ai:read', 'ai:execute'] });
     routeMocks.getToolDefinitions.mockReturnValue([{ name: 'execute_command', description: '', input_schema: {} }]);
     routeMocks.executeTool.mockRejectedValue(new TypeError('boom with token=raw-secret'));
-    routeMocks.getToolTier.mockImplementation((name: string) => (name === 'execute_command' ? 3 : undefined));
+    routeMocks.getToolTier.mockImplementation((name: string) => (name === 'execute_command' ? 2 : undefined));
     testState.aiTools = new Map([['execute_command', { deviceArgs: ['deviceId'] }]]);
     testState.redis = { get: vi.fn(async () => null) };
     const ledgerInsertValues: any[] = [];
@@ -801,28 +757,11 @@ describe('MCP transport integration', () => {
     );
     expect(JSON.stringify(writeAuditEvent.mock.calls)).not.toContain('hunter2');
     expect(JSON.stringify(writeAuditEvent.mock.calls)).not.toContain('raw-secret');
-    expect(ledgerInsertValues[1]).toMatchObject({
-      toolName: 'execute_command',
-      status: 'executing',
-      toolInput: expect.objectContaining({
-        source: 'mcp',
-        orgId: 'org-1',
-        toolName: 'execute_command',
-        tier: 3,
-        target: expect.objectContaining({ deviceId: 'device-1' }),
-      }),
-    });
-    expect(ledgerUpdateSet).toHaveBeenCalledWith(expect.objectContaining({
-      status: 'failed',
-      errorMessage: 'boom with token=[REDACTED]',
-      toolOutput: expect.objectContaining({
-        source: 'mcp',
-        status: 'failure',
-        errorClass: 'TypeError',
-      }),
-    }));
-    expect(JSON.stringify(ledgerInsertValues)).not.toContain('hunter2');
-    expect(JSON.stringify(ledgerUpdateSet.mock.calls)).not.toContain('raw-secret');
+    // No execution ledger at Tier 2 (beginMcpToolExecutionLedger only fires
+    // for tier>=3 — see the block comment on the successful-call sibling test
+    // above).
+    expect(ledgerInsertValues).toEqual([]);
+    expect(ledgerUpdateSet).not.toHaveBeenCalled();
   });
 
   it('enforces stream-byte limit even when content-length is missing/lying', async () => {
@@ -1188,17 +1127,21 @@ describe('MCP transport integration', () => {
     testState.redis = { get: vi.fn(async () => null) };
   }
 
-  it('C2: escalated tier-3 action NOT in the prod allowlist is denied', async () => {
+  // Reversed 2026-08-02: MCP_EXECUTE_TOOL_ALLOWLIST gates whether a Tier 3
+  // tool can auto-execute in production — a check that no longer matters for
+  // an escalated-to-tier-3 action, because the interactive-approval-only gate
+  // denies it first regardless of allowlist membership. This test now proves
+  // that supersession: even a WILDCARD-permissioned, allowlisted-or-not
+  // caller gets MCP_APPROVAL_REQUIRED, never the old allowlist message.
+  it('C2: an escalated-to-tier-3 action is gated (MCP_APPROVAL_REQUIRED) regardless of the prod allowlist', async () => {
     delete process.env.IS_HOSTED;
     process.env.NODE_ENV = 'production';
     mockKeyWithScopes(['ai:read', 'ai:execute', 'ai:execute_admin']);
     // SR2-15 (Task 3, scope re-clamp): this key's stored scopes include
-    // ai:execute_admin (requires the wildcard ADMIN_ALL grant). The default
-    // getUserPermissions mock deliberately withholds that grant (so the
-    // "key lacks ai:execute_admin" test below stays a real denial); override
-    // it here with a wildcard-permissioned creator so the coarse scope
-    // re-clamp passes and this test can exercise the ACTUAL concern under
-    // test — the MCP_EXECUTE_TOOL_ALLOWLIST gate, not scope delegation.
+    // ai:execute_admin (requires the wildcard ADMIN_ALL grant). Override with
+    // a wildcard-permissioned creator so the coarse scope re-clamp passes —
+    // this test's concern is the interactive-approval-only gate, not scope
+    // delegation.
     routeMocks.getUserPermissions.mockResolvedValue(WILDCARD_PERMISSIONS);
     mockRealGuardrailsWithEscalatedTier1Tools();
 
@@ -1214,10 +1157,16 @@ describe('MCP transport integration', () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.error?.message).toContain('not in MCP_EXECUTE_TOOL_ALLOWLIST');
+    expect(body.result.isError).toBe(true);
+    const payload = JSON.parse(body.result.content[0].text);
+    expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
+    expect(routeMocks.executeTool).not.toHaveBeenCalled();
   });
 
-  it('C2: escalated tier-3 action in the allowlist but key lacks ai:execute_admin is denied', async () => {
+  // Reversed 2026-08-02: same supersession as above — the ai:execute_admin
+  // requirement no longer matters for an escalated-to-tier-3 action, since
+  // the interactive-approval-only gate denies it first regardless of scope.
+  it('C2: an escalated-to-tier-3 action is gated (MCP_APPROVAL_REQUIRED) regardless of the ai:execute_admin requirement', async () => {
     delete process.env.IS_HOSTED;
     process.env.NODE_ENV = 'production';
     delete process.env.MCP_REQUIRE_EXECUTE_ADMIN;
@@ -1236,7 +1185,10 @@ describe('MCP transport integration', () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.error?.message).toContain('requires ai:execute_admin');
+    expect(body.result.isError).toBe(true);
+    const payload = JSON.parse(body.result.content[0].text);
+    expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
+    expect(routeMocks.executeTool).not.toHaveBeenCalled();
   });
 
   // -------------------------------------------------------------------------

@@ -391,6 +391,16 @@ export function registerDnsTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
+      // Site axis (app-layer only; RLS does NOT enforce it). DNS policy is
+      // org-wide, and full site-scoping semantics for org-level DNS
+      // integrations is deliberately deferred — fail closed instead of
+      // letting a site-restricted caller write org-wide policy (unlike every
+      // sibling write tool, this handler has no per-row site check to fall
+      // back on).
+      if (auth.allowedSiteIds && auth.canAccessSite) {
+        return JSON.stringify({ error: 'DNS policy management requires full-organization access' });
+      }
+
       const integrationId = input.integrationId as string;
       const action = input.action as 'add_block' | 'remove_block' | 'add_allow' | 'remove_allow';
       const domainsInput = Array.isArray(input.domains) ? input.domains : [];
