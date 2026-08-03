@@ -314,16 +314,20 @@ const opsAlertDeliveriesTotal = new Counter({
   registers: [register]
 });
 
-// Proxy-trust misconfiguration signal (#2364). Counts occurrences (not unique
-// requests — client-IP resolution can run more than once per request) of
-// forwarded-ip headers arriving from a TCP peer outside TRUSTED_PROXY_CIDRS
-// while proxy-header trust is enabled. A nonzero rate in production means the
-// pinned proxy CIDR is stale and per-IP limits/audit attribution are pooling
-// onto the proxy IP. `services/clientIp.ts` holds the thin recorder (same
-// import-cycle rationale as `abuseMetrics.ts`).
+// Proxy-trust misconfiguration signal (#2364, extended by #2987/TRANSPORT-001).
+// Counts occurrences (not unique requests — the trust gate is evaluated more
+// than once per request: FORCE_HTTPS scheme checks, auth-cookie Secure-flag
+// resolution, mTLS header binding, and client-IP resolution each consult it,
+// so a broken deploy increments this 2-4x per request) of trust-gated forwarded
+// headers (CF-Connecting-IP/X-Forwarded-For/X-Real-IP/X-Forwarded-Proto)
+// arriving from a TCP peer outside TRUSTED_PROXY_CIDRS while proxy-header
+// trust is enabled. A nonzero rate in production means the pinned proxy CIDR
+// is stale: per-IP limits/audit attribution pool onto the proxy IP, and under
+// FORCE_HTTPS every non-health route 308-loops. `services/clientIp.ts` holds
+// the thin recorder (same import-cycle rationale as `abuseMetrics.ts`).
 const proxyTrustUntrustedPeerTotal = new Counter({
   name: 'breeze_proxy_trust_untrusted_peer_total',
-  help: 'Forwarded-ip headers seen from a peer outside TRUSTED_PROXY_CIDRS while proxy trust is enabled (stale-pin signal)',
+  help: 'Trust-gated forwarded headers (client-IP headers or X-Forwarded-Proto) seen from a peer outside TRUSTED_PROXY_CIDRS while proxy trust is enabled (stale-pin signal; increments per gate evaluation, not per request)',
   registers: [register]
 });
 

@@ -291,9 +291,11 @@ describe('clientIp', () => {
 
     // TRANSPORT-001 regression: the FORCE_HTTPS redirect calls
     // trustsForwardedHeadersFrom and then short-circuits with a 308, so no
-    // handler downstream ever reaches getTrustedClientIp. Before this, a stale
-    // TRUSTED_PROXY_CIDRS produced a total outage (every non-health route 308s,
-    // /health exempt and still 200) with no log line naming the cause.
+    // handler downstream ever reaches getTrustedClientIp. A stale
+    // TRUSTED_PROXY_CIDRS produces a total outage (every non-health route 308s,
+    // /health exempt and still 200) — that fail-closed behavior is intentional
+    // and unchanged; what this adds is the log line naming the cause, which
+    // previously never fired on this path.
     it('warns when trustsForwardedHeadersFrom rejects an untrusted peer carrying X-Forwarded-Proto', () => {
       const trusted = trustsForwardedHeadersFrom(
         makeContext({ 'x-forwarded-proto': 'https' }, '172.30.0.44'),
@@ -323,6 +325,62 @@ describe('clientIp', () => {
       expect(
         trustsForwardedHeadersFrom(makeContext({ 'x-forwarded-proto': 'https' }, '172.30.0.11')),
       ).toBe(true);
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('shares per-peer suppression between trustsForwardedHeadersFrom and getTrustedClientIp', () => {
+      const onForwardedHeadersFromUntrustedPeer = vi.fn();
+      setProxyTrustMetricsRecorder({ onForwardedHeadersFromUntrustedPeer });
+
+      // The real production sequence: middleware trust check first, handler
+      // client-IP resolution second — one log line, both metric increments.
+      trustsForwardedHeadersFrom(makeContext({ 'x-forwarded-for': '198.51.100.1' }, '172.30.0.44'));
+      getTrustedClientIp(
+        makeContext({ 'x-forwarded-for': '198.51.100.1' }, '172.30.0.44'),
+        '172.30.0.44',
+      );
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(onForwardedHeadersFromUntrustedPeer).toHaveBeenCalledTimes(2);
+    });
+
+    it('increments the metrics recorder on every trustsForwardedHeadersFrom rejection, even when the log line is suppressed', () => {
+      const onForwardedHeadersFromUntrustedPeer = vi.fn();
+      setProxyTrustMetricsRecorder({ onForwardedHeadersFromUntrustedPeer });
+      const ctx = () => makeContext({ 'x-forwarded-proto': 'https' }, '172.30.0.44');
+
+      trustsForwardedHeadersFrom(ctx());
+      trustsForwardedHeadersFrom(ctx());
+      trustsForwardedHeadersFrom(ctx());
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(onForwardedHeadersFromUntrustedPeer).toHaveBeenCalledTimes(3);
+    });
+
+    // The TRUST_PROXY_HEADERS=false half of the same outage (#2987): a proxy in
+    // front with trust disabled produces the identical 308 loop, so it gets its
+    // own warning variant — without the untrusted-peer metric, whose meaning
+    // ("peer outside TRUSTED_PROXY_CIDRS while trust is enabled") is unchanged.
+    it('warns when trust is disabled entirely but the request carried proxy-forwarded headers', () => {
+      process.env.TRUST_PROXY_HEADERS = 'false';
+      const onForwardedHeadersFromUntrustedPeer = vi.fn();
+      setProxyTrustMetricsRecorder({ onForwardedHeadersFromUntrustedPeer });
+
+      expect(
+        trustsForwardedHeadersFrom(makeContext({ 'x-forwarded-proto': 'https' }, '172.30.0.44')),
+      ).toBe(false);
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const message = String(warnSpy.mock.calls[0]?.[0]);
+      expect(message).toContain('[proxy-trust]');
+      expect(message).toContain('TRUST_PROXY_HEADERS');
+      expect(message).toContain('172.30.0.44');
+      expect(onForwardedHeadersFromUntrustedPeer).not.toHaveBeenCalled();
+    });
+
+    it('stays silent when trust is disabled and the request carried no forwarded headers', () => {
+      process.env.TRUST_PROXY_HEADERS = 'false';
+      expect(trustsForwardedHeadersFrom(makeContext({}, '172.30.0.44'))).toBe(false);
       expect(warnSpy).not.toHaveBeenCalled();
     });
 
