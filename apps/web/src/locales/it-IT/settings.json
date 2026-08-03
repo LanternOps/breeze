@@ -542,6 +542,7 @@
     "hideExpired": "Nascondi scadute",
     "deleteExpired": "Elimina scadute",
     "shortCode": "Codice breve",
+    "installerUsage": "Dispositivi del programma di installazione {{consumed}} / {{max}}",
     "usage": "Utilizzo",
     "expires": "Scade",
     "empty": "Nessuna chiave di registrazione trovata. Creane una per iniziare.",
@@ -575,7 +576,7 @@
     "rotateConfirm": "Ruotare \"{{name}}\" ora? Le registrazioni esistenti continueranno a funzionare, ma le nuove registrazioni dovranno usare la nuova chiave.",
     "rotateKey": "Ruota chiave",
     "deleteExpiredTitle": "Elimina chiavi di registrazione scadute",
-    "deleteExpiredConfirm": "Eliminare tutte le chiavi di registrazione scadute? Questa operazione non può essere annullata."
+    "deleteExpiredConfirm": "Eliminare tutte le chiavi di registrazione scadute? Le chiavi che alimentano ancora un link di download del programma di installazione attivo vengono conservate. Questa operazione non può essere annullata."
   },
   "inboundEmail": {
     "saveError": "Impossibile salvare le impostazioni email in ingresso: la sessione potrebbe richiedere una nuova verifica MFA. Riprova.",

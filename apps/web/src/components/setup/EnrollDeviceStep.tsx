@@ -106,7 +106,13 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
     setDownloadSuccess(false);
 
     try {
-      // Create enrollment key scoped to the setup site
+      // Create enrollment key scoped to the setup site. maxUsage is
+      // deliberately left unset — it is an enforced enrollment budget, not a
+      // display label. See the note in AddDeviceModal.handleDownload (#2992);
+      // on Windows and the macOS app-bundle path the installer's real
+      // device-count cap lives on the bootstrap token (on the legacy macOS zip
+      // fallback it lives on a child key), and the Enrollment Keys list now
+      // reads the former.
       const keyRes = await fetchWithAuth('/enrollment-keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -323,9 +329,10 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
             </label>
             <input
               id="setup-device-count"
+              data-testid="setup-device-count"
               type="number"
               value={deviceCount}
-              onChange={(e) => setDeviceCount(Math.min(1000, Math.max(1, Number(e.target.value) || 1)))}
+              onChange={(e) => setDeviceCount(Math.min(1000, Math.max(1, Math.round(Number(e.target.value)) || 1)))}
               min={1}
               max={1000}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -338,6 +345,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
           {/* Download button */}
           <button
             type="button"
+            data-testid="setup-download-installer"
             onClick={handleDownload}
             disabled={downloading}
             className="w-full h-10 rounded-md bg-primary text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"

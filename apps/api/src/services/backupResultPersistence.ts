@@ -23,7 +23,7 @@ import {
   checkBackupProviderCapabilities,
 } from './backupSnapshotStorage';
 import { resolveBackupProtectionForDevice } from './featureConfigResolver';
-import { redactSecretsFromOutput } from './secretRedaction';
+import { redactSecretsDeep, redactSecretsFromOutput } from './secretRedaction';
 
 type SnapshotImmutabilityEnforcement = 'application' | 'provider';
 
@@ -53,6 +53,239 @@ function normalizeMetadata(
   return metadata && typeof metadata === 'object' && !Array.isArray(metadata)
     ? { ...metadata }
     : {};
+}
+
+/**
+ * Bounds on the agent-supplied VSS diagnostics blob persisted to
+ * `backup_jobs.vss_metadata` (#3027).
+ *
+ * The result schema is deliberately permissive (an unmodeled field must never
+ * fail the parse and take the snapshot id down with it — the F13 lesson), so
+ * the bounding lives HERE, at the last hop before the column. It has to: the
+ * only ceiling on the way in is the 5 MB `stdout` cap in agentWs's
+ * `commandResultSchema`, which `backup_run` rides because it is not a
+ * "critical family" and so never reaches the 512 KB structured cap in
+ * `ensureCriticalResultSizeLimits`.
+ *
+ * Real-world size is tiny — a Windows box registers a few dozen VSS writers —
+ * so any result anywhere near these limits is a bug or a hostile agent, and
+ * truncating it is strictly better than storing it.
+ */
+const MAX_VSS_METADATA_BYTES = 64 * 1024;
+const MAX_VSS_STRING_LENGTH = 1024;
+/**
+ * Deliberately small enough that the two string arrays cannot, together, blow
+ * the total budget: 2 × 24 × (1024 + overhead) stays well under 64 KiB. An
+ * earlier 200 let `unprotectedVolumes` alone reach ~205 KB, which forced the
+ * pathological tier and threw away the very field the tier above it exists to
+ * preserve. 24 is also far more than any real machine reports — a box with 24
+ * unprotected volumes has a bigger problem than a truncated list.
+ */
+const MAX_VSS_ARRAY_ENTRIES = 24;
+
+/** Actual jsonb cost. `String.length` counts UTF-16 code units, so a non-ASCII
+ *  volume label or writer name can be 3× its length in bytes. */
+function jsonByteLength(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value) ?? '', 'utf8');
+}
+
+function boundVssString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  return value.length > MAX_VSS_STRING_LENGTH
+    ? `${value.slice(0, MAX_VSS_STRING_LENGTH)}…[truncated]`
+    : value;
+}
+
+/**
+ * Bound a string array, reporting BOTH loss modes separately: entries past the
+ * cap, and entries removed because they were not strings.
+ *
+ * The second is the one that matters. `unprotectedVolumes: [{volume:'D:\\'}]`
+ * from a future or buggy agent would otherwise reduce to `[]`, the UI's
+ * `length > 0` check would read "no unprotected volumes", and a degraded
+ * snapshot would present as clean — #3027's exact failure mode, reintroduced a
+ * layer up. Silence is the bug; a note is the fix.
+ */
+function boundVssStringArray(
+  value: unknown,
+): { entries: string[]; dropped: number; illTyped: number } | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const strings = value.filter((entry): entry is string => typeof entry === 'string');
+  return {
+    entries: strings
+      .slice(0, MAX_VSS_ARRAY_ENTRIES)
+      .map((entry) => boundVssString(entry) as string),
+    dropped: Math.max(0, strings.length - MAX_VSS_ARRAY_ENTRIES),
+    illTyped: value.length - strings.length,
+  };
+}
+
+/**
+ * Normalize + bound + redact the agent's `vssMetadata` before it becomes a
+ * jsonb column value. Returns `undefined` when there is nothing to persist, so
+ * a legacy agent (which omits the field entirely) leaves the column untouched
+ * rather than overwriting a previously-recorded value with NULL.
+ *
+ * Rebuilt field-by-field rather than stored verbatim: the field arrives as
+ * `z.unknown()` at both validation boundaries (deliberately — see the schema
+ * comments), so nothing upstream has constrained its shape or size at all.
+ * Handing an arbitrary agent-authored object straight to jsonb would persist
+ * exactly the unbounded surface these caps exist to remove.
+ *
+ * Unmodeled TOP-LEVEL keys survive only when scalar — the same "keep scalars,
+ * drop containers" rule the agent's own IPC bounding uses (`reduceToScalars`,
+ * agent/cmd/breeze-backup/result_bounds.go), so a future agent field is
+ * forward-compatible without reopening the hole.
+ *
+ * NOTHING IS DROPPED SILENTLY. Every loss — count caps, type mismatches,
+ * unmodeled containers, size tiers — is named in the persisted `warnings`
+ * array, which the UI renders. That is not tidiness: this whole issue exists
+ * because a degraded backup reached the server looking clean, and a sanitizer
+ * that quietly reduces `unprotectedVolumes` to `[]` would recreate it here.
+ */
+export function sanitizeVssMetadata(
+  raw: ParsedBackupCommandResult['vssMetadata'],
+): Record<string, unknown> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+
+  const source = raw as Record<string, unknown>;
+  const notes: string[] = [];
+  const out: Record<string, unknown> = {};
+  const MODELED_KEYS = new Set([
+    'shadowCopyId', 'creationTime', 'writers', 'exposedPaths',
+    'unprotectedVolumes', 'warnings', 'durationMs',
+  ]);
+
+  // Unmodeled scalars are kept; unmodeled containers are dropped — but NAMED,
+  // so a new agent field that silently does nothing in production is findable
+  // instead of a mystery. Modeled keys are handled below and skipped here so a
+  // modeled key can never be shadowed by this pass.
+  const droppedContainers: string[] = [];
+  for (const [key, value] of Object.entries(source)) {
+    if (MODELED_KEYS.has(key)) continue;
+    if (value === null || typeof value === 'boolean' || typeof value === 'number') {
+      out[key] = value;
+    } else if (typeof value === 'string') {
+      out[key] = boundVssString(value);
+    } else if (value !== undefined) {
+      droppedContainers.push(key);
+    }
+  }
+  if (droppedContainers.length > 0) {
+    notes.push(`unmodeled VSS field(s) dropped: ${droppedContainers.sort().join(', ')}`);
+  }
+
+  const shadowCopyId = boundVssString(source.shadowCopyId);
+  if (shadowCopyId !== undefined) out.shadowCopyId = shadowCopyId;
+  const creationTime = boundVssString(source.creationTime);
+  if (creationTime !== undefined) out.creationTime = creationTime;
+  if (typeof source.durationMs === 'number' && Number.isFinite(source.durationMs)) {
+    out.durationMs = source.durationMs;
+  }
+
+  if (Array.isArray(source.writers)) {
+    const writers = source.writers.filter(
+      (writer): writer is Record<string, unknown> =>
+        Boolean(writer) && typeof writer === 'object' && !Array.isArray(writer),
+    );
+    out.writers = writers.slice(0, MAX_VSS_ARRAY_ENTRIES).map((writer) => {
+      const bounded: Record<string, unknown> = {};
+      for (const field of ['name', 'id', 'state', 'lastError'] as const) {
+        const value = boundVssString(writer[field]);
+        if (value !== undefined) bounded[field] = value;
+      }
+      return bounded;
+    });
+    if (writers.length > MAX_VSS_ARRAY_ENTRIES) {
+      notes.push(`${writers.length - MAX_VSS_ARRAY_ENTRIES} additional VSS writer entries were dropped`);
+    }
+    if (source.writers.length > writers.length) {
+      notes.push(`${source.writers.length - writers.length} VSS writer entries were dropped: not objects`);
+    }
+  } else if (source.writers !== undefined && source.writers !== null) {
+    notes.push('VSS writer detail was dropped: the agent did not report it as a list');
+  }
+
+  const unprotected = boundVssStringArray(source.unprotectedVolumes);
+  if (unprotected) {
+    out.unprotectedVolumes = unprotected.entries;
+    if (unprotected.dropped > 0) {
+      notes.push(`${unprotected.dropped} additional unprotected-volume entries were dropped`);
+    }
+    if (unprotected.illTyped > 0) {
+      // Load-bearing: an empty unprotectedVolumes reads as "clean snapshot".
+      notes.push(`${unprotected.illTyped} unprotected-volume entries were dropped: not strings — this run may have read volumes live`);
+    }
+  } else if (source.unprotectedVolumes !== undefined && source.unprotectedVolumes !== null) {
+    notes.push('unprotected-volume detail was dropped: the agent did not report it as a list — this run may have read volumes live');
+  }
+
+  if (source.exposedPaths && typeof source.exposedPaths === 'object' && !Array.isArray(source.exposedPaths)) {
+    const all = Object.entries(source.exposedPaths as Record<string, unknown>);
+    const entries = all.filter((entry): entry is [string, string] => typeof entry[1] === 'string');
+    out.exposedPaths = Object.fromEntries(
+      entries.slice(0, MAX_VSS_ARRAY_ENTRIES).map(([volume, path]) => [volume, boundVssString(path) as string]),
+    );
+    if (entries.length > MAX_VSS_ARRAY_ENTRIES) {
+      notes.push(`${entries.length - MAX_VSS_ARRAY_ENTRIES} additional shadow-path entries were dropped`);
+    }
+    if (all.length > entries.length) {
+      notes.push(`${all.length - entries.length} shadow-path entries were dropped: not strings`);
+    }
+  }
+
+  const warnings = boundVssStringArray(source.warnings);
+  const warningEntries = warnings ? [...warnings.entries] : [];
+  if (warnings) {
+    if (warnings.dropped > 0) {
+      notes.push(`${warnings.dropped} additional VSS warnings were dropped`);
+    }
+    if (warnings.illTyped > 0) {
+      notes.push(`${warnings.illTyped} VSS warnings were dropped: not strings`);
+    }
+  } else if (typeof source.warnings === 'string') {
+    // A scalar `warnings` used to be copied by the unmodeled-scalar pass and
+    // then ERASED by finish()'s delete. Keep the text — it is a warning.
+    warningEntries.push(boundVssString(source.warnings) as string);
+  } else if (source.warnings !== undefined && source.warnings !== null) {
+    notes.push('VSS warning text was dropped: the agent did not report it as a list');
+  }
+
+  const finish = (extraNotes: string[]): Record<string, unknown> => {
+    const combined = [...warningEntries, ...notes, ...extraNotes];
+    if (combined.length > 0) out.warnings = combined;
+    else delete out.warnings;
+    return redactSecretsDeep(out) as Record<string, unknown>;
+  };
+
+  let result = finish([]);
+  if (jsonByteLength(result) <= MAX_VSS_METADATA_BYTES) return result;
+
+  // Still oversize: drop the bulk containers, keeping the scalars and the
+  // unprotected-volume list (the field that actually says "this snapshot is
+  // incomplete"). Mirrors the agent's tier-2 bulk-field drop.
+  delete out.writers;
+  delete out.exposedPaths;
+  result = finish(['VSS writer and shadow-path detail was dropped: the reported metadata exceeded the size limit']);
+  if (jsonByteLength(result) <= MAX_VSS_METADATA_BYTES) return result;
+
+  // Pathological — only reachable if the caps above were somehow not enough.
+  // Even here, keep `unprotectedVolumes`: discarding it is the one loss that
+  // turns a degraded snapshot back into a clean-looking one, which is the
+  // entire bug class this function guards.
+  //
+  // Redacted like every other return: `out` holds pre-redaction values (finish()
+  // returns a redacted COPY and leaves `out` untouched), so reading fields off it
+  // here without redacting would make this the one path that persists agent text
+  // raw. Every exit from this function must be redacted, or the guarantee is not
+  // a guarantee.
+  const survivingVolumes = Array.isArray(out.unprotectedVolumes)
+    ? (out.unprotectedVolumes as string[]).slice(0, MAX_VSS_ARRAY_ENTRIES)
+    : [];
+  return redactSecretsDeep({
+    ...(survivingVolumes.length > 0 ? { unprotectedVolumes: survivingVolumes } : {}),
+    warnings: ['VSS metadata was discarded: the reported payload exceeded the size limit'],
+  }) as Record<string, unknown>;
 }
 
 function resolveSnapshotEncryptionKeyId(metadata: Record<string, unknown>): string | null {
@@ -535,7 +768,20 @@ export async function applyBackupCommandResultToJob(params: {
     }
   } else {
     updateData.status = terminalStatus;
-    updateData.errorLog = redactSecretsFromOutput(result.error ?? result.warning ?? 'Unknown error');
+    // Both, not either. `error` is the failure reason; `warning` is the run's
+    // degradation note — on a Windows run that is where "VSS shadow copy could
+    // not be created, every path was read live" lives, and there is no
+    // vssMetadata on that branch to carry it instead. The old `??` chain always
+    // picked `error` (it is populated on every failure path) and discarded the
+    // warning entirely, so the one diagnostic explaining WHY the run was
+    // degraded never reached the UI.
+    const failureParts = [result.error, result.warning].filter(
+      (part): part is string => typeof part === 'string' && part.length > 0
+    );
+    updateData.errorLog = redactSecretsFromOutput(
+      // Dedupe: some paths route the same text to both fields.
+      [...new Set(failureParts)].join('; ') || 'Unknown error'
+    );
     if (result.backupType) {
       updateData.backupType = result.backupType;
     }
@@ -543,6 +789,30 @@ export async function applyBackupCommandResultToJob(params: {
 
   if (providerSnapshotId) {
     updateData.snapshotId = providerSnapshotId;
+  }
+
+  // #3027: VSS diagnostics land on BOTH the success and failure branches, on
+  // purpose. A failed run's writer states are the more valuable of the two —
+  // "which writer wedged" is the question you ask about a failure — and a
+  // *successful* run whose volumes were read live is precisely the
+  // "backed up, but every locked file was skipped" case that motivated this.
+  // Only written when the agent reported it: a legacy agent omits the key
+  // entirely, and the column must keep whatever it already held rather than be
+  // overwritten with NULL.
+  const vssMetadata = sanitizeVssMetadata(result.vssMetadata);
+  if (vssMetadata !== undefined) {
+    updateData.vssMetadata = vssMetadata;
+  } else if (result.vssMetadata !== undefined && result.vssMetadata !== null) {
+    // The agent sent SOMETHING and it was unusable (a bare string, a number, an
+    // array). `z.unknown()` at both boundaries means nothing upstream rejected
+    // it, which is correct — but absent and present-but-broken must not look
+    // identical, or a fleet-wide agent regression that malformed this field is
+    // invisible forever. Same treatment as an unmodeled terminal status above.
+    const msg =
+      `[BackupPersistence] Agent sent unusable vssMetadata (${Array.isArray(result.vssMetadata) ? 'array' : typeof result.vssMetadata}) ` +
+      `for job ${jobId} (device ${deviceId}); VSS diagnostics discarded for this run.`;
+    console.warn(msg);
+    captureException(new Error(msg));
   }
 
   // FIX 7: a genuinely-successful backup whose result lands AFTER the stale

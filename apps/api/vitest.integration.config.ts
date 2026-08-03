@@ -161,6 +161,13 @@ export default defineConfig({
       // Queue/Worker classes are mocked; imports
       // `__tests__/integration/setup` (real postgres pool + autoMigrate).
       'src/jobs/enrollmentKeyCleanup.integration.test.ts',
+      // Co-located real-DB integration test for the ON-DEMAND enrollment-key
+      // purge route (#2832): drives the real POST /enrollment-keys/purge-expired
+      // (real JWT + authMiddleware + breeze_app RLS) to prove Postgres spares
+      // keys still backing a live, unexhausted installer bootstrap token. The
+      // mocked route suite can only assert the predicate's shape and cannot
+      // see the ON DELETE CASCADE at all.
+      'src/routes/enrollmentKeysPurgeExpired.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;

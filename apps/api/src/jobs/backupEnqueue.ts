@@ -61,6 +61,11 @@ export interface ProcessResultsResult {
   // forward them or the snapshot loses its type label + BMR restore manifest.
   backupType?: 'file' | 'system_image' | 'database' | 'application';
   systemStateManifest?: Record<string, unknown> | null;
+  // Windows VSS diagnostics (#3027). Must ride the queue payload for the same
+  // reason the manifest does: the persistence layer only writes what arrives
+  // here, and dropping it leaves backup_jobs.vss_metadata permanently NULL.
+  // Typed `unknown` on purpose — see backupProcessResultSchema.
+  vssMetadata?: unknown;
   snapshot?: {
     id: string;
     timestamp?: string;

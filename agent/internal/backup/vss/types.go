@@ -43,14 +43,25 @@ type VSSSession struct {
 	CreatedAt time.Time      `json:"createdAt"`
 }
 
-// VSSMetadata is the metadata block persisted alongside a backup snapshot.
+// VSSMetadata is the metadata block persisted alongside a backup snapshot. It
+// rides the backup command result's `vssMetadata` key and is persisted to
+// backup_jobs.vss_metadata (see apps/api/src/routes/backup/resultSchemas.ts —
+// the two shapes are pinned together by backupAgentContract.test.ts).
 type VSSMetadata struct {
 	ShadowCopyID string            `json:"shadowCopyId"`
 	CreationTime time.Time         `json:"creationTime"`
 	Writers      []WriterStatus    `json:"writers"`
 	ExposedPaths map[string]string `json:"exposedPaths"`
-	Warnings     []string          `json:"warnings,omitempty"`
-	DurationMs   int64             `json:"durationMs"`
+
+	// UnprotectedVolumes mirrors VSSSession.UnprotectedVolumes and MUST be
+	// carried here: it is the only field that says the snapshot is incomplete.
+	// ExposedPaths alone cannot — it lists what succeeded, never what was
+	// requested, so a volume that resolved no shadow device is simply absent
+	// and reads identically to a volume that was never asked for.
+	UnprotectedVolumes []string `json:"unprotectedVolumes,omitempty"`
+
+	Warnings   []string `json:"warnings,omitempty"`
+	DurationMs int64    `json:"durationMs"`
 }
 
 // Config holds VSS provider configuration.

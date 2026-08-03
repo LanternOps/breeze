@@ -23,6 +23,25 @@ interface EnrollmentKey {
   expiresAt: string | null;
   createdBy: string | null;
   createdAt: string;
+  /**
+   * Device slots across the installers minted from this key, summed over its
+   * bootstrap tokens (#2992).
+   *
+   * A SEPARATE counter from usageCount/maxUsage, not a replacement: the modern
+   * installer downloads mint no child enrollment key, so the device count the
+   * operator chose lands here and nowhere else. Both get rendered; see the
+   * usage cell below.
+   *
+   * null in TWO cases, and the API decides both — do not try to re-derive
+   * either here:
+   *   1. the key never produced an installer;
+   *   2. the key is a short-link / invite CHILD (it carries a shortCode), whose
+   *      bootstrap tokens are one-per-DOWNLOAD rather than one-per-device, so
+   *      the sum would count clicks and render a denominator that grows on
+   *      every click and never reaches the key's real budget. See
+   *      `reportsInstallerCapacity` in routes/enrollmentKeys.ts.
+   */
+  installerTokens?: { consumed: number; max: number } | null;
 }
 
 interface CreateFormValues {
@@ -532,7 +551,34 @@ export default function EnrollmentKeyManager() {
                         </span>
                       </td>
                       <td className="px-4 py-3 tabular-nums">
-                        {key.usageCount}{key.maxUsage !== null ? ` / ${key.maxUsage}` : ''}
+                        <div data-testid={`key-usage-${key.id}`}>
+                          {key.usageCount}{key.maxUsage !== null ? ` / ${key.maxUsage}` : ''}
+                        </div>
+                        {/*
+                          #2992 — device slots across the installers minted from
+                          this key. A second line rather than a replacement for
+                          the numbers above, because the two count different
+                          things and neither can be folded into the other:
+                          usageCount is enrollments claimed against THIS key,
+                          while this is redemptions of bootstrap tokens parented
+                          to it. No row is guaranteed to carry both — for the
+                          Add-Device / guided-setup parents (the case the bug was
+                          reported against) usageCount is inert and this line is
+                          the only true statement about the installer, whereas a
+                          CLI or MCP-invite key has no tokens at all and only the
+                          line above means anything.
+                        */}
+                        {key.installerTokens && (
+                          <div
+                            className="text-xs text-muted-foreground"
+                            data-testid={`key-installer-usage-${key.id}`}
+                          >
+                            {t('enrollmentKeys.installerUsage', {
+                              consumed: key.installerTokens.consumed,
+                              max: key.installerTokens.max,
+                            })}
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">
                         {key.expiresAt

@@ -99,6 +99,7 @@ import { db } from '../db';
 import {
   applyBackupCommandResultToJob,
   markBackupJobFailedIfInFlight,
+  sanitizeVssMetadata,
 } from './backupResultPersistence';
 import {
   applyGfsTagsToSnapshot,
@@ -945,5 +946,392 @@ describe('partial backup terminal status (#3000)', () => {
 
     expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
     expect(db.insert).not.toHaveBeenCalled();
+  });
+});
+
+describe('VSS metadata persistence (#3027)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    resolveBackupProtectionForDeviceMock.mockReset();
+  });
+
+  function mockSuccessPath() {
+    vi.mocked(db.update)
+      .mockReturnValueOnce(chainMock([{ id: 'job-1', configId: 'config-1', backupType: 'file', backupMode: 'file' }]) as any)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([]) as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([{ featureLinkId: null, policyId: null, deviceId: 'device-1' }]) as any);
+    vi.mocked(db.insert).mockReturnValueOnce(chainMock([{
+      id: 'snapshot-db-1',
+      jobId: 'job-1',
+      snapshotId: 'provider-snap-1',
+    }]) as any);
+    vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+    vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+    vi.mocked(computeExpiresAt).mockReturnValue(null);
+  }
+
+  function setArgs() {
+    return vi.mocked(db.update).mock.results[0]?.value?.set;
+  }
+
+  it('writes vss_metadata on a SUCCESSFUL run — a green job whose volumes were read live is the whole point', async () => {
+    mockSuccessPath();
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: {
+        snapshotId: 'provider-snap-1',
+        filesBackedUp: 4,
+        vssMetadata: {
+          shadowCopyId: 'set-1',
+          writers: [{ name: 'NTDS', id: 'w-1', state: 'failed', lastError: 'timed out' }],
+          unprotectedVolumes: ['D:\\'],
+          durationMs: 900,
+        },
+      } as any,
+    });
+
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({
+      vssMetadata: expect.objectContaining({
+        shadowCopyId: 'set-1',
+        unprotectedVolumes: ['D:\\'],
+        writers: [{ name: 'NTDS', id: 'w-1', state: 'failed', lastError: 'timed out' }],
+      }),
+    }));
+  });
+
+  it('writes vss_metadata on a FAILED run too — writer state is what explains the failure', async () => {
+    vi.mocked(db.update).mockReturnValueOnce(chainMock([{ id: 'job-1', configId: 'config-1' }]) as any);
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'failed',
+      result: {
+        error: 'snapshot creation failed',
+        vssMetadata: { shadowCopyId: 'set-2', writers: [{ name: 'SqlServerWriter', state: 'failed' }] },
+      } as any,
+    });
+
+    expect(setArgs()).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'failed',
+      vssMetadata: expect.objectContaining({ shadowCopyId: 'set-2' }),
+    }));
+  });
+
+  it('leaves the column untouched for a legacy agent that reports no vssMetadata', async () => {
+    mockSuccessPath();
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: { snapshotId: 'provider-snap-1', filesBackedUp: 4 } as any,
+    });
+
+    // NOT `vssMetadata: null` — overwriting a previously-recorded blob with NULL
+    // on a retry would destroy the diagnostics we are here to keep.
+    expect(setArgs()).toHaveBeenCalledWith(
+      expect.not.objectContaining({ vssMetadata: expect.anything() }),
+    );
+  });
+
+  it('escalates when an agent sends an UNUSABLE vssMetadata instead of dropping it silently', async () => {
+    // `z.unknown()` at both boundaries means nothing upstream rejects garbage —
+    // correct, but absent and present-but-broken must not look identical, or a
+    // fleet-wide agent regression that malformed this field is invisible forever.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockSuccessPath();
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: { snapshotId: 'provider-snap-1', vssMetadata: 'not-an-object' } as any,
+    });
+
+    expect(setArgs()).toHaveBeenCalledWith(
+      expect.not.objectContaining({ vssMetadata: expect.anything() }),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('unusable vssMetadata'));
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('unusable vssMetadata') }),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('keeps the degradation warning alongside the failure reason in errorLog', async () => {
+    // A total VSS failure produces NO vssMetadata, so job.Warning is its only
+    // channel. The old `error ?? warning` chain always picked `error` (which is
+    // set on every failure path), so the note explaining WHY the run was
+    // degraded never reached the UI.
+    vi.mocked(db.update).mockReturnValueOnce(chainMock([{ id: 'job-1', configId: 'config-1' }]) as any);
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'failed',
+      result: {
+        error: 'upload destination unreachable',
+        warning: 'VSS shadow copy could not be created, so every path was read from the live volume',
+      } as any,
+    });
+
+    const errorLog = vi.mocked(db.update).mock.results[0]?.value?.set.mock.calls[0][0].errorLog as string;
+    expect(errorLog).toContain('upload destination unreachable');
+    expect(errorLog).toContain('read from the live volume');
+  });
+
+  it('does not duplicate the text when error and warning are identical', async () => {
+    vi.mocked(db.update).mockReturnValueOnce(chainMock([{ id: 'job-1', configId: 'config-1' }]) as any);
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'failed',
+      result: { error: 'disk full', warning: 'disk full' } as any,
+    });
+
+    const errorLog = vi.mocked(db.update).mock.results[0]?.value?.set.mock.calls[0][0].errorLog as string;
+    expect(errorLog).toBe('disk full');
+  });
+
+  it('still falls back to the warning alone when there is no error text', async () => {
+    vi.mocked(db.update).mockReturnValueOnce(chainMock([{ id: 'job-1', configId: 'config-1' }]) as any);
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'failed',
+      result: { warning: 'VSS shadow copy could not be created' } as any,
+    });
+
+    const errorLog = vi.mocked(db.update).mock.results[0]?.value?.set.mock.calls[0][0].errorLog as string;
+    expect(errorLog).toBe('VSS shadow copy could not be created');
+  });
+});
+
+describe('sanitizeVssMetadata (#3027)', () => {
+  it('returns undefined for absent / non-object input so the column is not written', () => {
+    expect(sanitizeVssMetadata(undefined)).toBeUndefined();
+    expect(sanitizeVssMetadata(null)).toBeUndefined();
+    expect(sanitizeVssMetadata([] as any)).toBeUndefined();
+  });
+
+  it('keeps the modeled fields verbatim when the payload is ordinary', () => {
+    const sanitized = sanitizeVssMetadata({
+      shadowCopyId: 'set-1',
+      creationTime: '2026-08-02T00:00:00Z',
+      writers: [{ name: 'NTDS', id: 'w-1', state: 'stable' }],
+      exposedPaths: { 'C:\\': '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1' },
+      unprotectedVolumes: ['D:\\'],
+      warnings: ['volume D:\\ has no shadow copy'],
+      durationMs: 4200,
+    } as any);
+
+    expect(sanitized).toEqual({
+      shadowCopyId: 'set-1',
+      creationTime: '2026-08-02T00:00:00Z',
+      writers: [{ name: 'NTDS', id: 'w-1', state: 'stable' }],
+      exposedPaths: { 'C:\\': '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1' },
+      unprotectedVolumes: ['D:\\'],
+      warnings: ['volume D:\\ has no shadow copy'],
+      durationMs: 4200,
+    });
+  });
+
+  it('keeps an unmodeled SCALAR, drops an unmodeled CONTAINER, and NAMES the drop', () => {
+    // Same rule the agent's own IPC bounding uses (reduceToScalars): a future
+    // agent field stays forward-compatible without reopening the unbounded hole.
+    // Naming it matters — otherwise a new agent field appears to work in dev
+    // (where you read the agent log) and silently does nothing in production.
+    const sanitized = sanitizeVssMetadata({
+      shadowCopyId: 'set-1',
+      providerVersion: '10.0.0',
+      snapshotAttempts: 3,
+      hugeFutureBlob: Array.from({ length: 10 }, (_, i) => `entry-${i}`),
+      futureObject: { a: 1 },
+    } as any) as Record<string, unknown>;
+
+    expect(sanitized.providerVersion).toBe('10.0.0');
+    expect(sanitized.snapshotAttempts).toBe(3);
+    expect(sanitized.hugeFutureBlob).toBeUndefined();
+    expect(sanitized.futureObject).toBeUndefined();
+    expect(sanitized.warnings).toEqual([
+      'unmodeled VSS field(s) dropped: futureObject, hugeFutureBlob',
+    ]);
+  });
+
+  it('caps oversized arrays and NAMES what it dropped in warnings', () => {
+    const sanitized = sanitizeVssMetadata({
+      shadowCopyId: 'set-1',
+      writers: Array.from({ length: 500 }, (_, i) => ({ name: `w-${i}`, state: 'stable' })),
+      unprotectedVolumes: Array.from({ length: 500 }, (_, i) => `V${i}:\\`),
+    } as any) as Record<string, unknown>;
+
+    expect((sanitized.writers as unknown[]).length).toBe(24);
+    expect((sanitized.unprotectedVolumes as unknown[]).length).toBe(24);
+    // Truncation is never silent.
+    expect(sanitized.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('476 additional VSS writer entries were dropped'),
+      expect.stringContaining('476 additional unprotected-volume entries were dropped'),
+    ]));
+  });
+
+  it('NAMES ill-typed unprotectedVolumes rather than silently reporting a clean snapshot', () => {
+    // The nastiest regression this function can cause: a future agent sends
+    // [{volume:'D:\\'}], the filter reduces it to [], the UI's length check
+    // reads "no unprotected volumes", and a degraded snapshot presents as
+    // clean — #3027's exact failure mode one layer up.
+    const sanitized = sanitizeVssMetadata({
+      shadowCopyId: 'set-1',
+      unprotectedVolumes: [{ volume: 'D:\\' }, { volume: 'E:\\' }],
+    } as any) as Record<string, unknown>;
+
+    expect(sanitized.unprotectedVolumes).toEqual([]);
+    expect(sanitized.warnings).toEqual([
+      expect.stringContaining('2 unprotected-volume entries were dropped: not strings'),
+    ]);
+    expect(String((sanitized.warnings as string[])[0])).toContain('may have read volumes live');
+  });
+
+  it('NAMES a non-list unprotectedVolumes / writers instead of dropping them quietly', () => {
+    const sanitized = sanitizeVssMetadata({
+      shadowCopyId: 'set-1',
+      unprotectedVolumes: 'D:\\',
+      writers: 'SqlServerWriter',
+    } as any) as Record<string, unknown>;
+
+    expect(sanitized.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('unprotected-volume detail was dropped'),
+      expect.stringContaining('VSS writer detail was dropped'),
+    ]));
+  });
+
+  it('NAMES ill-typed writer and shadow-path entries', () => {
+    const sanitized = sanitizeVssMetadata({
+      shadowCopyId: 'set-1',
+      writers: ['SqlServerWriter', 'NTDS', { name: 'Registry', state: 'stable' }],
+      exposedPaths: { 'C:\\': '\\\\?\\GLOBALROOT\\x', 'D:\\': 42 },
+    } as any) as Record<string, unknown>;
+
+    expect((sanitized.writers as unknown[]).length).toBe(1);
+    expect(sanitized.exposedPaths).toEqual({ 'C:\\': '\\\\?\\GLOBALROOT\\x' });
+    expect(sanitized.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('2 VSS writer entries were dropped: not objects'),
+      expect.stringContaining('1 shadow-path entries were dropped: not strings'),
+    ]));
+  });
+
+  it('keeps a scalar `warnings` string instead of erasing it', () => {
+    // It used to be copied by the unmodeled-scalar pass and then deleted by the
+    // warnings merge — the text was not ignored, it was destroyed.
+    const sanitized = sanitizeVssMetadata({
+      shadowCopyId: 'set-1',
+      warnings: 'volume D:\\ has no shadow copy',
+    } as any) as Record<string, unknown>;
+
+    expect(sanitized.warnings).toEqual(['volume D:\\ has no shadow copy']);
+  });
+
+  it('drops the bulk containers but KEEPS unprotectedVolumes when the blob is still oversize', async () => {
+    // Writers each carrying a max-length lastError blows the byte budget.
+    const sanitized = sanitizeVssMetadata({
+      shadowCopyId: 'set-1',
+      writers: Array.from({ length: 24 }, (_, i) => ({
+        name: `w-${i}`,
+        state: 'failed',
+        lastError: 'x'.repeat(1024),
+      })),
+      exposedPaths: Object.fromEntries(
+        Array.from({ length: 24 }, (_, i) => [`V${i}:\\`, 'y'.repeat(1024)]),
+      ),
+      unprotectedVolumes: ['D:\\'],
+      warnings: Array.from({ length: 24 }, () => 'z'.repeat(1024)),
+    } as any) as Record<string, unknown>;
+
+    expect(sanitized.writers).toBeUndefined();
+    expect(sanitized.exposedPaths).toBeUndefined();
+    // The field that actually says "this snapshot is incomplete" survives.
+    expect(sanitized.unprotectedVolumes).toEqual(['D:\\']);
+    expect(sanitized.shadowCopyId).toBe('set-1');
+    expect(sanitized.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('exceeded the size limit'),
+    ]));
+  });
+
+  it('measures the size cap in BYTES, not UTF-16 code units', () => {
+    // A multi-byte payload that is comfortably under the cap by `String.length`
+    // but over it in actual jsonb bytes must still be bounded. Each emoji is
+    // 4 UTF-8 bytes but 2 UTF-16 units.
+    const sanitized = sanitizeVssMetadata({
+      shadowCopyId: 'set-1',
+      writers: Array.from({ length: 24 }, (_, i) => ({
+        name: `w-${i}`,
+        lastError: '🔥'.repeat(512),
+      })),
+      exposedPaths: Object.fromEntries(
+        Array.from({ length: 24 }, (_, i) => [`V${i}:\\`, '🔥'.repeat(512)]),
+      ),
+      unprotectedVolumes: Array.from({ length: 24 }, () => '🔥'.repeat(512)),
+      warnings: Array.from({ length: 24 }, () => '🔥'.repeat(512)),
+    } as any);
+
+    expect(Buffer.byteLength(JSON.stringify(sanitized), 'utf8')).toBeLessThanOrEqual(64 * 1024);
+  });
+
+  it('keeps a bounded unprotectedVolumes even in the pathological last-resort tier', () => {
+    // Discarding it is the one loss that turns a degraded snapshot back into a
+    // clean-looking one, so even the last resort must not.
+    const sanitized = sanitizeVssMetadata({
+      unprotectedVolumes: Array.from({ length: 24 }, () => '🔥'.repeat(512)),
+      warnings: Array.from({ length: 24 }, () => '🔥'.repeat(512)),
+    } as any) as Record<string, unknown>;
+
+    expect(Array.isArray(sanitized.unprotectedVolumes)).toBe(true);
+    expect((sanitized.unprotectedVolumes as unknown[]).length).toBeGreaterThan(0);
+  });
+
+  it('truncates a pathologically long string rather than storing it', () => {
+    const sanitized = sanitizeVssMetadata({
+      shadowCopyId: 'z'.repeat(50_000),
+    } as any) as Record<string, unknown>;
+
+    expect((sanitized.shadowCopyId as string).length).toBeLessThan(1_200);
+    expect(sanitized.shadowCopyId).toContain('[truncated]');
+  });
+
+  it('redacts a secret an agent leaked into a VSS warning', () => {
+    const sanitized = sanitizeVssMetadata({
+      shadowCopyId: 'set-1',
+      warnings: ['writer failed: -----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----'],
+    } as any) as Record<string, unknown>;
+
+    expect(JSON.stringify(sanitized)).not.toContain('MIIabc');
+  });
+
+  it('redacts on the pathological tier too — every exit must be redacted', () => {
+    // This tier reads fields off the pre-redaction working object, so it is the
+    // one path that could persist agent text raw. A guarantee with an exception
+    // is not a guarantee.
+    const leaked = '-----BEGIN RSA PRIVATE KEY-----\nMIIsecret\n-----END RSA PRIVATE KEY-----';
+    const sanitized = sanitizeVssMetadata({
+      unprotectedVolumes: [leaked, ...Array.from({ length: 23 }, () => '🔥'.repeat(512))],
+      warnings: Array.from({ length: 24 }, () => '🔥'.repeat(512)),
+    } as any) as Record<string, unknown>;
+
+    expect(JSON.stringify(sanitized)).not.toContain('MIIsecret');
   });
 });

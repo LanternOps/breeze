@@ -459,7 +459,24 @@ export default function AddDeviceModal({
     let parentKeyId: string | undefined;
 
     try {
-      // Step 1: Create parent enrollment key (template — child key handles actual enrollment count)
+      // Step 1: Create the parent enrollment key. The installer downloaded in
+      // step 2 carries a *bootstrap token* issued from this parent — whose own
+      // max_usage IS the device count, redeemable once per device — not the
+      // parent key itself (only the legacy macOS zip embeds a real child
+      // enrollment key).
+      //
+      // maxUsage is deliberately NOT set from deviceCount (#2992). It is
+      // tempting — the Enrollment Keys page renders usage_count / max_usage,
+      // so an unset maxUsage takes the API's `?? 1` default and the row reads
+      // "0 / 1" for an installer minted for X devices. But max_usage is an
+      // enforced enrollment budget, not a label: /agents/enroll matches any key
+      // with usage_count < max_usage, and the short-link and MCP-invite paths
+      // atomically claim usage_count against it. Widening it here would hand
+      // this key N direct-enrollment slots to fix a display bug, and would make
+      // the same column mean different things depending on which flow minted
+      // the key. The real device-count cap lives on the installer_bootstrap_
+      // tokens row; the Enrollment Keys list now reads it (see
+      // EnrollmentKeyManager's usage cell).
       const keyRes = await fetchWithAuth("/enrollment-keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -798,11 +815,19 @@ export default function AddDeviceModal({
                     data-testid="device-count"
                     type="number"
                     value={deviceCount}
+                    // Round: the field has no `step` and isn't in a <form>, so
+                    // "2.5" is reachable. Both routes this value reaches bound
+                    // it to an int — `?count=` on the installer download and
+                    // `count` on the installer-link POST — so a fraction 400s
+                    // with a wire field name the operator has never seen. Clamp
+                    // it to something valid here instead. (The CLI tab's own
+                    // count field is a different input on a route that
+                    // truncates rather than rejects.)
                     onChange={(e) =>
                       setDeviceCount(
                         Math.min(
                           1000,
-                          Math.max(1, Number(e.target.value) || 1),
+                          Math.max(1, Math.round(Number(e.target.value)) || 1),
                         ),
                       )
                     }

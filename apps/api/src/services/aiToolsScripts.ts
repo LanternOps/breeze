@@ -46,6 +46,32 @@ async function getCommandQueue() {
 // Shared helpers
 // ============================================
 
+// Known registry hive tokens the agent accepts (internal/remote/tools/registry_windows.go
+// resolveRegistryRoot), long forms first so a long-form prefix isn't mistaken
+// for a truncated short form.
+const REGISTRY_HIVE_PREFIXES = [
+  'HKEY_LOCAL_MACHINE', 'HKEY_CURRENT_USER', 'HKEY_CLASSES_ROOT', 'HKEY_USERS', 'HKEY_CURRENT_CONFIG',
+  'HKLM', 'HKCU', 'HKCR', 'HKU', 'HKCC',
+];
+
+/**
+ * Split a `registry_operations` tool `keyPath` (e.g.
+ * "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion") into the {hive, path}
+ * shape the agent's registry handlers actually read. Defaults to hive "HKLM"
+ * when the path carries no recognized hive prefix, mirroring the agent's own
+ * `GetPayloadString(payload, "hive", "HKLM")` default.
+ */
+export function splitRegistryKeyPath(keyPath: string): { hive: string; path: string } {
+  const upper = keyPath.toUpperCase();
+  for (const prefix of REGISTRY_HIVE_PREFIXES) {
+    if (upper === prefix || upper.startsWith(`${prefix}\\`) || upper.startsWith(`${prefix}:`)) {
+      const rest = keyPath.slice(prefix.length).replace(/^[\\:]+/, '');
+      return { hive: prefix, path: rest };
+    }
+  }
+  return { hive: 'HKLM', path: keyPath };
+}
+
 async function verifyDeviceAccess(
   deviceId: string,
   auth: AuthContext,
@@ -710,17 +736,20 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_scheduled_tasks',
-      description: 'List, run, enable, disable, or delete Windows scheduled tasks on a device.',
+      description: 'List, run, enable, or disable Windows scheduled tasks on a device.',
       input_schema: {
         type: 'object' as const,
         properties: {
           deviceId: { type: 'string', description: 'The device UUID' },
           action: {
             type: 'string',
-            enum: ['list', 'run', 'disable', 'enable', 'delete'],
+            enum: ['list', 'run', 'disable', 'enable'],
             description: 'Action to perform on scheduled tasks'
           },
-          taskName: { type: 'string', description: 'Task name (required for run/disable/enable/delete)' },
+          taskName: {
+            type: 'string',
+            description: 'Full scheduled-task path (e.g. \\Microsoft\\Windows\\...\\TaskName) — required for run/disable/enable'
+          },
           search: { type: 'string', description: 'Filter task list by name (only for list action)' }
         },
         required: ['deviceId', 'action']
@@ -733,13 +762,12 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
 
-      const { executeCommand } = await getCommandQueue();
+      const { executeCommand, CommandTypes } = await getCommandQueue();
       const commandTypeMap: Record<string, string> = {
-        list: 'scheduled_tasks_list',
-        run: 'scheduled_tasks_run',
-        disable: 'scheduled_tasks_disable',
-        enable: 'scheduled_tasks_enable',
-        delete: 'scheduled_tasks_delete'
+        list: CommandTypes.TASKS_LIST,
+        run: CommandTypes.TASK_RUN,
+        disable: CommandTypes.TASK_DISABLE,
+        enable: CommandTypes.TASK_ENABLE,
       };
 
       const commandType = commandTypeMap[action];
@@ -750,7 +778,8 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         if (input.search) payload.search = input.search;
       } else {
         if (!input.taskName) return JSON.stringify({ error: 'taskName is required for this action' });
-        payload.taskName = input.taskName;
+        // Agent reads the full Task Scheduler path from `path`, not `taskName`.
+        payload.path = input.taskName;
       }
 
       const result = await executeCommand(deviceId, commandType, payload, {
@@ -803,26 +832,29 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
 
-      const { executeCommand } = await getCommandQueue();
+      const { executeCommand, CommandTypes } = await getCommandQueue();
 
       const commandTypeMap: Record<string, string> = {
-        read_key: 'registry_read_key',
-        get_value: 'registry_get_value',
-        set_value: 'registry_set_value',
-        create_key: 'registry_create_key',
-        delete_key: 'registry_delete_key',
+        read_key: CommandTypes.REGISTRY_VALUES,
+        get_value: CommandTypes.REGISTRY_GET,
+        set_value: CommandTypes.REGISTRY_SET,
+        create_key: CommandTypes.REGISTRY_KEY_CREATE,
+        delete_key: CommandTypes.REGISTRY_KEY_DELETE,
       };
 
       const commandType = commandTypeMap[action];
       if (!commandType) return JSON.stringify({ error: `Unknown action: ${action}` });
 
-      const payload: Record<string, unknown> = {
-        keyPath: input.keyPath,
-      };
+      // Agent reads {hive, path, name, type, data} (internal/remote/tools/registry.go),
+      // not a single keyPath/valueName/valueData/valueType shape. Split the
+      // tool's keyPath into hive + path so the payload matches what the agent
+      // actually parses.
+      const { hive, path } = splitRegistryKeyPath(input.keyPath as string);
+      const payload: Record<string, unknown> = { hive, path };
 
-      if (input.valueName) payload.valueName = input.valueName;
-      if (input.valueData !== undefined) payload.valueData = input.valueData;
-      if (input.valueType) payload.valueType = input.valueType;
+      if (input.valueName) payload.name = input.valueName;
+      if (input.valueData !== undefined) payload.data = input.valueData;
+      if (input.valueType) payload.type = input.valueType;
 
       const result = await executeCommand(deviceId, commandType, payload, {
         userId: auth.user.id,

@@ -192,7 +192,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_services (start/stop/restart)', description: 'Mutate device services', category: 'Services & Processes' },
       { name: 'manage_processes (kill)', description: 'Terminate a running process', category: 'Services & Processes' },
       { name: 'manage_startup_items (enable/disable)', description: 'Manage startup items', category: 'Services & Processes' },
-      { name: 'manage_scheduled_tasks (run/disable/enable/delete)', description: 'Mutate scheduled tasks', category: 'Services & Processes' },
+      { name: 'manage_scheduled_tasks (run/disable/enable)', description: 'Mutate scheduled tasks', category: 'Services & Processes' },
       // Remote Access & Control
       { name: 'execute_command', description: 'Execute system commands on device', category: 'Remote Access & Control' },
       { name: 'run_script', description: 'Run scripts on up to 10 devices', category: 'Remote Access & Control' },
@@ -351,7 +351,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   // Services & startup
   manage_services: 'devices.execute',
   manage_startup_items: 'devices.execute',
-  manage_scheduled_tasks: { list: 'devices.read', run: 'devices.execute', disable: 'devices.execute', enable: 'devices.execute', delete: 'devices.execute' },
+  manage_scheduled_tasks: { list: 'devices.read', run: 'devices.execute', disable: 'devices.execute', enable: 'devices.execute' },
   // Security
   security_scan: { scan: 'devices.execute', status: 'devices.execute', quarantine: 'devices.execute', remove: 'devices.execute', restore: 'devices.execute', vulnerabilities: 'devices.read' },
   get_security_posture: 'devices.read',

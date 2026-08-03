@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { sql } from 'drizzle-orm';
 
 // Shared mutable gates so individual tests can flip MFA/permission denial at
 // request time — the route registers `requireMfa()` / `requirePermission()`
@@ -10,16 +11,25 @@ const { mfaGate, permissionGate } = vi.hoisted(() => ({
   permissionGate: { deny: false },
 }));
 
-vi.mock('../db', () => ({
-  runOutsideDbContext: vi.fn((fn) => fn()),
-  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  db: {
+// `db.transaction` is mocked to invoke its callback with the SAME object, so a
+// nested savepoint (used by the installer-usage aggregate, #2992) routes
+// straight back to the `db.select` mocks these tests already configure.
+const dbMock = vi.hoisted(() => {
+  const m: Record<string, any> = {
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
-  },
+  };
+  m.transaction = vi.fn(async (fn: (tx: unknown) => unknown) => fn(m));
+  return m;
+});
+
+vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn) => fn()),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  db: dbMock,
 }));
 
 vi.mock('../db/schema', () => ({
@@ -34,6 +44,16 @@ vi.mock('../db/schema', () => ({
     expiresAt: 'enrollmentKeys.expiresAt',
     createdAt: 'enrollmentKeys.createdAt',
     createdBy: 'enrollmentKeys.createdBy',
+  },
+  // Referenced by the #2832 purge exemption
+  // (services/enrollmentKeyPurgeGuards.ts), which the purge-expired route
+  // pulls into its DELETE predicate.
+  installerBootstrapTokens: {
+    id: 'installerBootstrapTokens.id',
+    parentEnrollmentKeyId: 'installerBootstrapTokens.parentEnrollmentKeyId',
+    expiresAt: 'installerBootstrapTokens.expiresAt',
+    consumedCount: 'installerBootstrapTokens.consumedCount',
+    maxUsage: 'installerBootstrapTokens.maxUsage',
   },
 }));
 
@@ -136,6 +156,20 @@ function makeEnrollmentKey(overrides: Record<string, any> = {}) {
   };
 }
 
+/**
+ * Mock for db.select().from().where().groupBy() — the installer bootstrap-token
+ * aggregate GET /:id runs after loading the key (#2992).
+ */
+function mockSelectFromWhereGroupBy(rows: any[]) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        groupBy: vi.fn().mockResolvedValue(rows),
+      }),
+    }),
+  } as any);
+}
+
 /** Mock for db.select().from().where().limit() — single-record lookups */
 function mockSelectFromWhereLimit(rows: any[]) {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -183,6 +217,55 @@ function mockDeleteWhereReturningCapture(rows: any[]): () => any {
   return () => captured;
 }
 
+/**
+ * Flattens a drizzle condition to its static text. The existing purge tests
+ * assert via `JSON.stringify`, which cannot see inside the #2832 exemption:
+ * `notExists()` embeds the subquery as an opaque `SQLWrapper` (an object whose
+ * only own property is a `getSQL` function), and JSON.stringify renders that
+ * as `{}`. Recursing through `getSQL()` is what makes the subquery's columns
+ * assertable. Same approach as jobs/enrollmentKeyCleanup.test.ts's `sqlText`.
+ */
+function sqlText(q: unknown): string {
+  if (q == null) return '';
+  if (typeof q === 'string') return q;
+  if (q instanceof Date) return q.toISOString();
+  const obj = q as {
+    queryChunks?: unknown[];
+    value?: unknown;
+    getSQL?: () => unknown;
+  };
+  if (Array.isArray(obj.queryChunks)) return obj.queryChunks.map(sqlText).join(' ');
+  if (Array.isArray(obj.value)) return (obj.value as unknown[]).map(sqlText).join('');
+  if (obj.value instanceof Date) return obj.value.toISOString();
+  if (typeof obj.value === 'string' || typeof obj.value === 'number') return String(obj.value);
+  if (typeof obj.getSQL === 'function') return sqlText(obj.getSQL());
+  return '';
+}
+
+/**
+ * The #2832 exemption builds a correlated NOT EXISTS subquery via
+ * `db.select(...).from(...).where(...)`. It never executes here (no Postgres
+ * in this suite) — it only has to satisfy drizzle's `SQLWrapper` duck-typing
+ * (a `getSQL()` method) so `notExists(...)` can embed it. Wrapping the REAL
+ * condition production code built (via the unmocked drizzle `and`/`eq`/`gt`/
+ * `lt`) means the captured WHERE genuinely reflects the generated predicate
+ * rather than a canned stand-in. Mirrors the identical stub in
+ * jobs/enrollmentKeyCleanup.test.ts.
+ *
+ * Registered with `mockReturnValue` (not `...Once`) so it stays in place for
+ * however many times the guard is built, and does not consume the
+ * `mockReturnValueOnce` queue the single-record `db.select` helpers rely on.
+ */
+function mockBootstrapTokenExemptionSubquery() {
+  vi.mocked(db.select).mockReturnValue({
+    from: () => ({
+      where: (cond: unknown) => ({
+        getSQL: () => sql`select 1 from installer_bootstrap_tokens where ${cond}`,
+      }),
+    }),
+  } as any);
+}
+
 describe('enrollment key routes — get, rotate, delete', () => {
   let app: Hono;
 
@@ -204,6 +287,7 @@ describe('enrollment key routes — get, rotate, delete', () => {
   describe('GET /enrollment-keys/:id', () => {
     it('returns enrollment key details without raw key', async () => {
       mockSelectFromWhereLimit([makeEnrollmentKey()]);
+      mockSelectFromWhereGroupBy([]);
 
       const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
         method: 'GET',
@@ -215,6 +299,62 @@ describe('enrollment key routes — get, rotate, delete', () => {
       expect(body.id).toBe(KEY_ID);
       expect(body.name).toBe('Test Key');
       expect(body.key).toBeUndefined();
+      // Key with no installers → null, so the UI falls back to the key's own
+      // counters (#2992).
+      expect(body.installerTokens).toBeNull();
+    });
+
+    // #2992 — the detail route carries the same installer aggregate as the
+    // list route, so a caller doesn't have to know which endpoint it read from.
+    it('reports installer bootstrap-token capacity when the key has minted one', async () => {
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+      mockSelectFromWhereGroupBy([
+        { parentEnrollmentKeyId: KEY_ID, consumed: 3, max: 7 },
+      ]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.installerTokens).toEqual({ consumed: 3, max: 7 });
+      // The key's own budget is reported unchanged — the installer figure is a
+      // separate counter, not a rewrite of it.
+      expect(body.maxUsage).toBe(10);
+      expect(body.usageCount).toBe(0);
+    });
+
+    // #2992 review round 2 — a short_code marks an installer-link / invite
+    // CHILD key, whose bootstrap tokens are one-per-DOWNLOAD (`maxUsage: 1`
+    // hardcoded in serveInstaller), so Σ max_usage counts clicks rather than
+    // device slots. See reportsInstallerCapacity. The detail route must apply
+    // the same rule as the list route, or a caller gets a different answer
+    // depending on which endpoint it read the key from.
+    it('suppresses installer capacity for a short-link child key', async () => {
+      mockSelectFromWhereLimit([
+        makeEnrollmentKey({ shortCode: 'A1B2C3D4E5', maxUsage: 7, usageCount: 3 }),
+      ]);
+      // No groupBy mock: the aggregate must not be issued at all. Mutant
+      // killed — drop the reportsInstallerCapacity gate here and the savepoint
+      // opens and a second select fires (and, with a groupBy mock present, a
+      // meaningless `Installer devices 0 / 3` reaches the wire).
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.installerTokens).toBeNull();
+      expect(dbMock.transaction).not.toHaveBeenCalled();
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+      // The key's own counters — atomically claimed on every /s/:code
+      // download — still carry the real story.
+      expect(body.usageCount).toBe(3);
+      expect(body.maxUsage).toBe(7);
     });
 
     it('returns 404 for nonexistent key', async () => {
@@ -415,6 +555,10 @@ describe('enrollment key routes — get, rotate, delete', () => {
   // POST /purge-expired — Bulk-delete expired enrollment keys in caller scope
   // ============================================
   describe('POST /enrollment-keys/purge-expired', () => {
+    beforeEach(() => {
+      mockBootstrapTokenExemptionSubquery();
+    });
+
     it('purges expired keys within the org-scoped caller\'s org and returns the count', async () => {
       const getCaptured = mockDeleteWhereReturningCapture([
         { id: 'key-1' },
@@ -566,6 +710,40 @@ describe('enrollment key routes — get, rotate, delete', () => {
       // No org-scoping column present — only the expired condition.
       expect(conditionJson).not.toContain('enrollmentKeys.orgId');
       expect(conditionJson).toContain('enrollmentKeys.expiresAt');
+    });
+
+    // #2832: the nightly sweep got the live-bootstrap-token exemption in
+    // #2775; this route — the on-demand counterpart behind the web UI's
+    // "Delete expired" button — did not, and is the FASTER path to the same
+    // data loss (no grace period at all vs. the sweep's 7 days).
+    //
+    // This is a SQL-shape assertion: with `db` mocked there is no Postgres to
+    // evaluate the correlated NOT EXISTS per row. Proof that Postgres actually
+    // spares the right rows lives in
+    // routes/enrollmentKeysPurgeExpired.integration.test.ts. What is
+    // meaningfully verifiable here is that the predicate reaches the DELETE at
+    // all and correlates on the right columns.
+    it('exempts keys still backing a live, unexhausted installer bootstrap token (#2832)', async () => {
+      const getCaptured = mockDeleteWhereReturningCapture([{ id: 'key-1' }]);
+
+      const res = await app.request('/enrollment-keys/purge-expired', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const text = sqlText(getCaptured());
+
+      expect(text).toContain('not exists');
+      // Correlated on the outer enrollment_keys row...
+      expect(text).toContain('installerBootstrapTokens.parentEnrollmentKeyId');
+      expect(text).toContain('enrollmentKeys.id');
+      // ...and both liveness arms are present: unexpired AND unexhausted.
+      // Dropping either would silently re-open the cascade for half the
+      // token population.
+      expect(text).toContain('installerBootstrapTokens.expiresAt');
+      expect(text).toContain('installerBootstrapTokens.consumedCount');
+      expect(text).toContain('installerBootstrapTokens.maxUsage');
     });
 
     it('is blocked without MFA (requireMfa)', async () => {

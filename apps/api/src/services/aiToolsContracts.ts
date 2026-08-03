@@ -18,7 +18,8 @@
  * resume/cancel are approval-gated Tier 3 actions.
  */
 
-import type { ContractLineInput, CreateContractInput, UpdateContractInput } from '@breeze/shared';
+import { z } from 'zod';
+import { createContractSchema, updateContractSchema, contractLineInputSchema } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool, AiToolTier } from './aiTools';
 import {
@@ -68,6 +69,17 @@ function serviceErrorToJson(err: unknown): string | null {
   }
   return null;
 }
+
+// Payload parsers wrap the value under its param name so ZodError paths are
+// self-describing ("input.billingTiming: ...", "line.lineType: ..."). These
+// are the SAME schemas the HTTP contract routes validate with — one source of
+// truth. Without this, a malformed manage_contracts call skipped validation
+// entirely (the type-cast reached contractService with no Zod layer at all)
+// and died as an opaque DB NOT NULL/constraint 500 instead of a structured
+// VALIDATION_ERROR the model could act on.
+const createPayload = z.object({ input: createContractSchema });
+const patchPayload = z.object({ patch: updateContractSchema });
+const linePayload = z.object({ line: contractLineInputSchema });
 
 export function registerContractTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('list_contracts', {
@@ -186,11 +198,14 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
       try {
         switch (action) {
           case 'create_draft':
-            return JSON.stringify(await createContract(input.input as CreateContractInput, actor));
+            return JSON.stringify(await createContract(
+              createPayload.parse({ input: input.input }).input,
+              actor
+            ));
           case 'update':
             return JSON.stringify(await updateContract(
               String(input.contractId),
-              input.patch as UpdateContractInput,
+              patchPayload.parse({ patch: input.patch }).patch,
               actor
             ));
           case 'delete_draft':
@@ -199,7 +214,7 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
           case 'add_line':
             return JSON.stringify(await addContractLineToContract(
               String(input.contractId),
-              input.line as ContractLineInput,
+              linePayload.parse({ line: input.line }).line,
               actor
             ));
           case 'remove_line':

@@ -12,11 +12,12 @@
  */
 
 import { and, asc, eq, ilike, or, sql } from 'drizzle-orm';
-import type {
-  BundleComponentInput,
-  CreateCatalogItemInput,
-  OrgPriceOverrideInput,
-  UpdateCatalogItemInput
+import { z } from 'zod';
+import {
+  createCatalogItemSchema,
+  updateCatalogItemSchema,
+  orgPriceOverrideSchema,
+  setBundleComponentsSchema
 } from '@breeze/shared';
 import { db } from '../db';
 import { catalogItems, catalogBundleComponents } from '../db/schema';
@@ -64,6 +65,17 @@ function serviceErrorToJson(err: unknown): string | null {
   }
   return null;
 }
+
+// Payload parsers wrap the value under its param name so ZodError paths are
+// self-describing ("item.unitPrice: ...", "override.unitPrice: ..."). These
+// are the SAME schemas the HTTP catalog routes validate with — one source of
+// truth. Without this, a malformed manage_catalog call skipped validation
+// entirely (the type-cast reached catalogService with no Zod layer at all)
+// and died as an opaque DB constraint 500 instead of a structured
+// VALIDATION_ERROR the model could act on.
+const createItemPayload = z.object({ item: createCatalogItemSchema });
+const updateItemPayload = z.object({ item: updateCatalogItemSchema });
+const overridePayload = z.object({ override: orgPriceOverrideSchema });
 
 type CatalogItemRow = typeof catalogItems.$inferSelect;
 
@@ -434,11 +446,14 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
       try {
         switch (action) {
           case 'create_item':
-            return JSON.stringify(await createCatalogItem(input.item as CreateCatalogItemInput, actor));
+            return JSON.stringify(await createCatalogItem(
+              createItemPayload.parse({ item: input.item }).item,
+              actor
+            ));
           case 'update_item':
             return JSON.stringify(await updateCatalogItem(
               String(input.catalogId),
-              input.item as UpdateCatalogItemInput,
+              updateItemPayload.parse({ item: input.item }).item,
               actor
             ));
           case 'archive_item':
@@ -447,7 +462,7 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
             return JSON.stringify(await setOrgPriceOverride(
               String(input.catalogId),
               String(input.orgId),
-              input.override as OrgPriceOverrideInput,
+              overridePayload.parse({ override: input.override }).override,
               actor
             ));
           case 'remove_org_price':
@@ -459,7 +474,7 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
           case 'set_bundle_components':
             return JSON.stringify(await setBundleComponents(
               String(input.catalogId),
-              (input.components ?? []) as BundleComponentInput[],
+              setBundleComponentsSchema.parse({ components: input.components ?? [] }).components,
               actor
             ));
           default:
