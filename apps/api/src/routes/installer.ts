@@ -1,4 +1,5 @@
 import { Hono, type Context } from "hono";
+import type { HttpBindings } from "@hono/node-server";
 import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
 import { db, withSystemDbAccessContext } from "../db";
@@ -88,7 +89,7 @@ function allowLegacyGetBootstrap(): boolean {
   return value === "1" || value === "true" || value === "yes" || value === "on";
 }
 
-export const installerRoutes = new Hono();
+export const installerRoutes = new Hono<{ Bindings: HttpBindings }>();
 
 /**
  * Public bootstrap endpoint. The token IS the auth — no JWT, no API key,
