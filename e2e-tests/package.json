@@ -24,7 +24,7 @@
     "tsx": "^4.23.1",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10",
-    "werift": "^0.24.1"
+    "werift": "^0.24.2"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
