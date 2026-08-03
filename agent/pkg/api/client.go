@@ -404,7 +404,7 @@ func CancelBootstrap(serverURL, childEnrollmentKey string) (*CancelBootstrapResp
 	if err != nil {
 		return nil, fmt.Errorf("failed to send cancel-bootstrap request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if err != nil {
@@ -448,7 +448,7 @@ func (c *Client) UninstallIntent() (*UninstallIntentResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to send uninstall-intent request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if err != nil {

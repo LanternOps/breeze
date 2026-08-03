@@ -277,7 +277,7 @@ func TestRunBootstrap_CancelsSlotOn4xxEnrollRejection(t *testing.T) {
 	t.Cleanup(func() { osExit = origExit })
 
 	defer func() {
-		recover() // swallow the test-exit panic
+		_ = recover() // swallow the test-exit panic
 		if !cancelCalled {
 			t.Fatal("cancel endpoint was not called after a 4xx enroll rejection")
 		}
