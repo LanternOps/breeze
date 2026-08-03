@@ -367,10 +367,15 @@ type CancelBootstrapResponse struct {
 	Reason   string `json:"reason,omitempty"`
 }
 
-// CancelBootstrap posts the child enrollment key's secret to
+// CancelBootstrap posts the RAW CHILD ENROLLMENT KEY (the `enrollmentKey`
+// field of the /installer/bootstrap redeem response — NOT the org-shared
+// `enrollmentSecret`, which is frequently null) to
 // /api/v1/installer/bootstrap/cancel, refunding a bootstrap-token slot
-// behind a redeemed-but-never-enrolled child key (Task 6, #2764). Unlike
-// every other call in this file, the raw secret IS the auth for this
+// behind a redeemed-but-never-enrolled child key (Task 6, #2764). The server
+// hashes the value and looks it up against enrollment_keys.key, so only the
+// child key resolves; the wire field is nonetheless still named
+// `enrollmentSecret` for compatibility with already-shipped agents. Unlike
+// every other call in this file, the raw key IS the auth for this
 // endpoint — no bearer token, matching the trust level of bootstrap
 // redemption itself (see redeemBootstrapToken in internal/agentapp/bootstrap.go).
 //
@@ -380,9 +385,10 @@ type CancelBootstrapResponse struct {
 // dedicated 5-second timeout keeps a slow/unreachable server from adding
 // meaningfully to an install that is already failing and about to roll
 // back; the caller treats any error here as non-fatal and logs it.
-func CancelBootstrap(serverURL, enrollmentSecret string) (*CancelBootstrapResponse, error) {
+func CancelBootstrap(serverURL, childEnrollmentKey string) (*CancelBootstrapResponse, error) {
 	url := strings.TrimRight(serverURL, "/") + "/api/v1/installer/bootstrap/cancel"
-	body, err := json.Marshal(map[string]string{"enrollmentSecret": enrollmentSecret})
+	// Wire field name is a wart: it carries the child KEY, not a secret.
+	body, err := json.Marshal(map[string]string{"enrollmentSecret": childEnrollmentKey})
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal cancel-bootstrap request: %w", err)
 	}

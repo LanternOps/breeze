@@ -156,7 +156,9 @@ func TestRedeemBootstrapToken(t *testing.T) {
 
 // TestCancelBootstrapIfRefundable is the Step 1 bootstrap-side contract from
 // the task brief: on a 4xx enroll-failure category, cancelBootstrap is
-// called with the child secret; on a network-error (or any other
+// called with whatever child credential it was handed (the raw child
+// enrollment KEY in production — see TestRunBootstrap_CancelsSlotOn4xx…);
+// on a network-error (or any other
 // non-definite-4xx) category, it is NOT called. Table-driven over every
 // enrollErrCategory so a future category addition must make an explicit
 // choice here rather than silently inheriting a default.
@@ -192,7 +194,7 @@ func TestCancelBootstrapIfRefundable(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			cancelBootstrapIfRefundable(tt.cat, srv.URL, "child-secret-123", logging.L("test"))
+			cancelBootstrapIfRefundable(tt.cat, srv.URL, "child-key-123", logging.L("test"))
 
 			if called != tt.wantCalled {
 				t.Fatalf("cancel endpoint called = %v, want %v", called, tt.wantCalled)
@@ -203,8 +205,8 @@ func TestCancelBootstrapIfRefundable(t *testing.T) {
 			if gotPath != "/api/v1/installer/bootstrap/cancel" {
 				t.Errorf("path = %q, want /api/v1/installer/bootstrap/cancel", gotPath)
 			}
-			if gotSecret != "child-secret-123" {
-				t.Errorf("enrollmentSecret sent = %q, want %q", gotSecret, "child-secret-123")
+			if gotSecret != "child-key-123" {
+				t.Errorf("enrollmentSecret sent = %q, want %q", gotSecret, "child-key-123")
 			}
 		})
 	}
@@ -222,18 +224,22 @@ func TestCancelBootstrapIfRefundable_CallFailureIsNonFatal(t *testing.T) {
 	}))
 	srv.Close() // immediately unreachable
 
-	cancelBootstrapIfRefundable(catAuth, srv.URL, "child-secret-123", logging.L("test"))
+	cancelBootstrapIfRefundable(catAuth, srv.URL, "child-key-123", logging.L("test"))
 }
 
 // TestRunBootstrap_CancelsSlotOn4xxEnrollRejection is an end-to-end check of
 // the hook wiring itself: runBootstrap installs cancelBootstrapOnEnrollFailure
 // around its enrollDevice call, and a 4xx from /agents/enroll must reach
-// /installer/bootstrap/cancel with the SAME child secret that was redeemed —
-// not a stale or wrong value — and the hook must be cleared again once
-// enrollDevice's failure path (enrollError -> osExit) unwinds.
+// /installer/bootstrap/cancel carrying the redeemed child enrollment KEY —
+// NOT the response's `enrollmentSecret`, which the server cannot resolve
+// against enrollment_keys.key (that mix-up made the refund a silent no-op in
+// production). The mocked redeem response therefore returns two distinct
+// values so the assertion below actually discriminates between them. The
+// hook must also be cleared again once enrollDevice's failure path
+// (enrollError -> osExit) unwinds.
 func TestRunBootstrap_CancelsSlotOn4xxEnrollRejection(t *testing.T) {
 	var cancelCalled bool
-	var cancelSecret string
+	var cancelCredential string
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/installer/bootstrap", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -249,7 +255,7 @@ func TestRunBootstrap_CancelsSlotOn4xxEnrollRejection(t *testing.T) {
 			EnrollmentSecret string `json:"enrollmentSecret"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		cancelSecret = body.EnrollmentSecret
+		cancelCredential = body.EnrollmentSecret
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"refunded":true}`))
 	})
@@ -275,8 +281,9 @@ func TestRunBootstrap_CancelsSlotOn4xxEnrollRejection(t *testing.T) {
 		if !cancelCalled {
 			t.Fatal("cancel endpoint was not called after a 4xx enroll rejection")
 		}
-		if cancelSecret != "child-secret-xyz" {
-			t.Fatalf("cancel secret = %q, want %q (the redeemed child key's own secret)", cancelSecret, "child-secret-xyz")
+		if cancelCredential != "child-key-abc" {
+			t.Fatalf("cancel body enrollmentSecret = %q, want %q (the redeemed child enrollment KEY, not the response's enrollmentSecret %q)",
+				cancelCredential, "child-key-abc", "child-secret-xyz")
 		}
 		if exitCode != catAuth.exitCode() {
 			t.Fatalf("exit code = %d, want %d (catAuth)", exitCode, catAuth.exitCode())

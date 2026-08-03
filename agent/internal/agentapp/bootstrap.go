@@ -101,9 +101,13 @@ func redeemBootstrapToken(server, token string) (*bootstrapResult, error) {
 }
 
 // cancelBootstrapIfRefundable calls POST /installer/bootstrap/cancel with
-// the child key's own enrollment secret when cat is a definitive 4xx
-// rejection (enrollErrCategory.isRefundable4xx) — the bootstrap-redeemed
-// slot behind childSecret is provably unused and safe to refund. Does
+// the RAW CHILD ENROLLMENT KEY (the `enrollmentKey` field of the redeem
+// response) when cat is a definitive 4xx rejection
+// (enrollErrCategory.isRefundable4xx) — the bootstrap-redeemed slot behind
+// childKey is provably unused and safe to refund. The server hashes what it
+// receives and looks it up against enrollment_keys.key, so the child key —
+// NOT the org-shared `enrollmentSecret` (which is frequently null and is
+// never a key row) — is the only value that resolves. Does
 // nothing for any other category (catNetwork/catServer/catConfig/
 // catUnknown): the enroll request may have reached the server and created
 // a device despite the failure the agent observed, and refunding then
@@ -116,11 +120,11 @@ func redeemBootstrapToken(server, token string) (*bootstrapResult, error) {
 // slot, which is recoverable (the token still has other uses left, or it
 // simply expires) and must never additionally block an install that is
 // already failing.
-func cancelBootstrapIfRefundable(cat enrollErrCategory, server, childSecret string, bsLog *slog.Logger) {
+func cancelBootstrapIfRefundable(cat enrollErrCategory, server, childKey string, bsLog *slog.Logger) {
 	if !cat.isRefundable4xx() {
 		return
 	}
-	res, err := api.CancelBootstrap(server, childSecret)
+	res, err := api.CancelBootstrap(server, childKey)
 	if err != nil {
 		bsLog.Warn("bootstrap slot cancel failed after rejected enrollment; slot may be stranded until it expires",
 			"error", err.Error())
@@ -187,13 +191,21 @@ func runBootstrap() {
 	// Wire the bootstrap-cancel hook for the duration of this enrollDevice
 	// call only (Task 6, #2764): if the enroll it's about to attempt gets
 	// rejected with a definitive 4xx, enrollError calls this closure — which
-	// closes over the child key's own secret — immediately before exiting.
+	// closes over the raw child enrollment KEY — immediately before exiting.
 	// Cleared unconditionally afterward so a stale hook (with a now-stale
-	// secret) can never leak into a later enrollDevice call in the same
+	// key) can never leak into a later enrollDevice call in the same
 	// process — reachable only in tests, since enrollError's osExit never
 	// returns in production.
+	//
+	// res.EnrollmentKey, NOT res.EnrollmentSecret: the cancel endpoint hashes
+	// the value it receives and looks it up against enrollment_keys.key, so
+	// only the child key resolves. (Naming wart: the server's request body
+	// field is still called `enrollmentSecret` even though it carries the
+	// child KEY — see the doc comment on POST /installer/bootstrap/cancel in
+	// apps/api/src/routes/installer.ts. Renaming the wire field would break
+	// already-shipped agents, so the wart stays for now.)
 	cancelBootstrapOnEnrollFailure = func(cat enrollErrCategory) {
-		cancelBootstrapIfRefundable(cat, res.ServerURL, res.EnrollmentSecret, bsLog)
+		cancelBootstrapIfRefundable(cat, res.ServerURL, res.EnrollmentKey, bsLog)
 	}
 	defer func() { cancelBootstrapOnEnrollFailure = nil }()
 
