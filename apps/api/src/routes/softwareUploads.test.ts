@@ -80,6 +80,10 @@ vi.mock('../services/s3Storage', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/s3Storage')>();
   return {
     uploadBinary: vi.fn(),
+    // Default resolves so `deleteBinary(s3Key).catch(...)` call sites never
+    // throw on a bare `undefined` return; `vi.clearAllMocks()` in `beforeEach`
+    // clears call history but not this implementation (that's `resetAllMocks`).
+    deleteBinary: vi.fn(async () => undefined),
     getPresignedUrl: vi.fn(),
     isS3Configured: vi.fn(() => true),
     S3ConfigError: actual.S3ConfigError,
@@ -103,7 +107,7 @@ import {
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { insertLatestSoftwareVersion } from '../services/softwareVersionShared';
-import { uploadBinary, isS3Configured, S3ConfigError, S3OperationError } from '../services/s3Storage';
+import { uploadBinary, deleteBinary, isS3Configured, S3ConfigError, S3OperationError } from '../services/s3Storage';
 import { writeRouteAudit } from '../services/auditEvents';
 
 const CATALOG_ID = '11111111-1111-4111-8111-111111111111';
@@ -753,6 +757,31 @@ describe('software upload-session routes', () => {
       expect(uploadBinary).not.toHaveBeenCalled();
     });
 
+    // The DB row can claim bytesReceived === fileSize while the file on disk
+    // says otherwise (a tmp cleaner truncating it, or a rollback truncate()
+    // at the chunk route that itself silently failed). Hashing/uploading the
+    // file as-is here would stamp `fileSize: session.fileSize` (the DECLARED
+    // size) onto a version whose sha256 actually certifies the SHORT bytes —
+    // the same corruption Task 6 closed at the chunk boundary. This must be
+    // caught here, before any hash or S3 call.
+    it('409s when the on-disk file size does not match the session fileSize, without hashing or uploading', async () => {
+      await seedTempFile('short'); // 5 bytes, but the session below claims 10
+      selectQueue(
+        [makeSession({ bytesReceived: 10 })],
+        [makeSession({ bytesReceived: 10 })],
+        [catalogRow],
+      );
+
+      const res = await app.request(completeUrl, { method: 'POST' });
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe('Uploaded file on disk does not match the expected size');
+      expect(body.onDiskSize).toBe(5);
+      expect(body.fileSize).toBe(10);
+      expect(uploadBinary).not.toHaveBeenCalled();
+      expect(insertLatestSoftwareVersion).not.toHaveBeenCalled();
+    });
+
     it('maps S3OperationError to 502 with the curated message (contract from #2794)', async () => {
       await seedTempFile('helloworld');
       selectQueue(
@@ -896,6 +925,61 @@ describe('software upload-session routes', () => {
       expect(res.status).toBe(201);
       expectScopedByOrgAndCatalog(guardCapture.calls, 'org-123', CATALOG_ID);
       expectScopedByOrgAndCatalog(lockCapture.calls, 'org-123', CATALOG_ID);
+    });
+
+    // By the time insertLatestSoftwareVersion fails, uploadBinary has already
+    // written the object to S3/MinIO. Without a compensating delete, every
+    // failed insert strands another orphaned object — no reaper ever
+    // reclaims S3 objects (Task 8's reaper covers session rows/temp files
+    // only), so this is unbounded growth on self-hosted MinIO.
+    describe('orphaned S3 object cleanup when the version insert fails', () => {
+      async function completeUpToInsert() {
+        await seedTempFile('helloworld');
+        selectQueue(
+          [makeSession({ bytesReceived: 10 })],
+          [makeSession({ bytesReceived: 10 })],
+          [catalogRow],
+        );
+      }
+
+      it('deletes the just-uploaded S3 object when insertLatestSoftwareVersion returns null', async () => {
+        await completeUpToInsert();
+        vi.mocked(insertLatestSoftwareVersion).mockResolvedValueOnce(null as any);
+
+        const res = await app.request(completeUrl, { method: 'POST' });
+        expect(res.status).toBe(500);
+        expect((await res.json()).error).toBe('Failed to create uploaded software version');
+
+        expect(uploadBinary).toHaveBeenCalledTimes(1);
+        const uploadedKey = vi.mocked(uploadBinary).mock.calls[0]![1];
+        expect(deleteBinary).toHaveBeenCalledWith(uploadedKey);
+        // The orphaned object is cleaned up, but the session row/temp file
+        // survive so /complete can be retried (client didn't cause this).
+        expect(db.delete).not.toHaveBeenCalled();
+      });
+
+      it('deletes the just-uploaded S3 object when insertLatestSoftwareVersion throws', async () => {
+        await completeUpToInsert();
+        vi.mocked(insertLatestSoftwareVersion).mockRejectedValueOnce(new Error('db connection lost'));
+
+        const res = await app.request(completeUrl, { method: 'POST' });
+        expect(res.status).toBe(500);
+        expect((await res.json()).error).toBe('Failed to create uploaded software version');
+
+        const uploadedKey = vi.mocked(uploadBinary).mock.calls[0]![1];
+        expect(deleteBinary).toHaveBeenCalledWith(uploadedKey);
+      });
+
+      it('still returns the original insert failure when the compensating delete itself fails', async () => {
+        await completeUpToInsert();
+        vi.mocked(insertLatestSoftwareVersion).mockResolvedValueOnce(null as any);
+        vi.mocked(deleteBinary).mockRejectedValueOnce(new Error('bucket unreachable'));
+
+        const res = await app.request(completeUrl, { method: 'POST' });
+        expect(res.status).toBe(500);
+        expect((await res.json()).error).toBe('Failed to create uploaded software version');
+        expect(deleteBinary).toHaveBeenCalledTimes(1);
+      });
     });
   });
 });

@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { coerceS3EndpointUrl } from '@breeze/shared';
 import { createReadStream, statSync } from 'node:fs';
@@ -404,6 +404,24 @@ export async function uploadBinary(localPath: string, s3Key: string, checksum?: 
     // handler as an opaque 500 (#2794). Classify + log here so both the API
     // caller and `docker logs breeze-api` get something actionable.
     throw wrapS3Failure('uploadBinary', bucket, s3Key, err);
+  }
+}
+
+/**
+ * Best-effort compensating delete for a key that was successfully uploaded
+ * but whose owning DB row never got created (e.g. the chunked-upload
+ * `/complete` route's version insert fails after `uploadBinary` already
+ * wrote the object). Callers should not let a failure here mask the
+ * original error — log it (captureException) and still surface the
+ * original fault to the client.
+ */
+export async function deleteBinary(s3Key: string): Promise<void> {
+  const bucket = requireBucket();
+  const client = getS3Client();
+  try {
+    await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: s3Key }));
+  } catch (err) {
+    throw wrapS3Failure('deleteBinary', bucket, s3Key, err);
   }
 }
 

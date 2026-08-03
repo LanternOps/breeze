@@ -51,6 +51,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { captureException } from '../services/sentry';
 import {
   uploadBinary,
+  deleteBinary,
   isS3Configured,
   S3ConfigError,
   S3OperationError,
@@ -568,13 +569,47 @@ softwareUploadRoutes.post(
         .where(and(eq(softwareCatalog.id, catalogId), eq(softwareCatalog.orgId, orgId)));
       if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
 
+      // Verify the FILE, not just the DB counter, before hashing anything.
+      // `bytesReceived === fileSize` above only proves the row thinks the
+      // upload is done; it says nothing about what's actually on disk. If
+      // the temp file diverged out-of-band (a tmp cleaner truncating it, or
+      // a chunk-route rollback `truncate()` at the offset that itself
+      // silently failed), hashing and uploading it as-is would stamp the
+      // DECLARED `session.fileSize` onto a version row whose sha256
+      // certifies the WRONG (short) bytes — exactly the corruption Task 6
+      // closed at the chunk boundary, reopened here if this check is
+      // skipped. No client-supplied checksum exists to catch it after the
+      // fact, so this is the last point it can be caught.
+      let onDiskSize: number;
+      try {
+        onDiskSize = (await stat(session.tempPath)).size;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+          await db.update(softwareUploadSessions)
+            .set({ bytesReceived: 0, lastActivityAt: new Date() })
+            .where(eq(softwareUploadSessions.id, uploadId));
+          return c.json({ error: 'Upload state lost; restart from offset 0', bytesReceived: 0 }, 409);
+        }
+        captureException(err, c);
+        return c.json({ error: 'Failed to read uploaded package' }, 500);
+      }
+      if (onDiskSize !== session.fileSize) {
+        return c.json(
+          {
+            error: 'Uploaded file on disk does not match the expected size',
+            onDiskSize,
+            fileSize: session.fileSize,
+          },
+          409,
+        );
+      }
+
       // Hash the SAME bytes that get uploaded: stream the assembled temp file
-      // exactly once, here, after bytesReceived === fileSize is confirmed
-      // above. There is no client-supplied checksum to cross-check against —
-      // this hash IS the integrity record agents verify downloads against —
-      // so it must be computed from the file on disk, never derived from
-      // per-chunk state (see #2951 Task 6: a short temp file NUL-extended to
-      // the right length would hash "correctly" and ship corrupt).
+      // exactly once, here, now that the on-disk size is confirmed to match
+      // fileSize. This hash IS the integrity record agents verify downloads
+      // against — there is no client-supplied checksum to cross-check it
+      // against — so it must be computed from the file on disk, never
+      // derived from per-chunk state.
       let checksum: string;
       try {
         const hash = createHash('sha256');
@@ -582,6 +617,7 @@ softwareUploadRoutes.post(
         checksum = hash.digest('hex');
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+          // Vanished in the gap between the stat() above and this read.
           await db.update(softwareUploadSessions)
             .set({ bytesReceived: 0, lastActivityAt: new Date() })
             .where(eq(softwareUploadSessions.id, uploadId));
@@ -639,26 +675,40 @@ softwareUploadRoutes.post(
         );
       }
 
-      const versionRecord = await insertLatestSoftwareVersion(catalogId, {
-        id: versionId,
-        version: meta.version,
-        releaseDate: new Date(),
-        releaseNotes: meta.releaseNotes ?? null,
-        downloadUrl: meta.downloadUrl ?? null,
-        s3Key,
-        fileType,
-        originalFileName: session.fileName,
-        checksum,
-        fileSize: session.fileSize,
-        supportedOs: meta.supportedOs ?? null,
-        architecture: meta.architecture ?? null,
-        silentInstallArgs,
-        silentUninstallArgs,
-        preInstallScript: meta.preInstallScript ?? null,
-        postInstallScript: meta.postInstallScript ?? null,
-        detectionRules: meta.detectionRules ?? null,
-      });
+      let versionRecord: Awaited<ReturnType<typeof insertLatestSoftwareVersion>> | null = null;
+      try {
+        versionRecord = await insertLatestSoftwareVersion(catalogId, {
+          id: versionId,
+          version: meta.version,
+          releaseDate: new Date(),
+          releaseNotes: meta.releaseNotes ?? null,
+          downloadUrl: meta.downloadUrl ?? null,
+          s3Key,
+          fileType,
+          originalFileName: session.fileName,
+          checksum,
+          fileSize: session.fileSize,
+          supportedOs: meta.supportedOs ?? null,
+          architecture: meta.architecture ?? null,
+          silentInstallArgs,
+          silentUninstallArgs,
+          preInstallScript: meta.preInstallScript ?? null,
+          postInstallScript: meta.postInstallScript ?? null,
+          detectionRules: meta.detectionRules ?? null,
+        });
+      } catch (err) {
+        captureException(err, c);
+      }
       if (!versionRecord) {
+        // `uploadBinary` above already wrote the object at s3Key — without a
+        // compensating delete, every failed insert (thrown OR a null
+        // return) strands another orphaned S3/MinIO object with no version
+        // row pointing at it. Unlike the session's temp file, nothing ever
+        // reaps this — Task 8's reaper only covers upload-session rows and
+        // temp files, not S3 objects. Best-effort: if the cleanup delete
+        // itself fails, log it but still surface the ORIGINAL failure to
+        // the caller rather than letting a cleanup fault mask it.
+        await deleteBinary(s3Key).catch((cleanupErr) => captureException(cleanupErr, c));
         return c.json({ error: 'Failed to create uploaded software version' }, 500);
       }
 
@@ -677,6 +727,11 @@ softwareUploadRoutes.post(
         },
       });
 
+      // DELETE the row rather than setting status='completed': a completed
+      // session has no further use (the version row is now the durable
+      // record) and leaving it around would need its own reaper exemption.
+      // The 'completed' CHECK value stays available for a future audit/
+      // history use case but is intentionally unused today.
       await db.delete(softwareUploadSessions)
         .where(eq(softwareUploadSessions.id, uploadId));
       await unlink(session.tempPath).catch(() => {});
