@@ -14,6 +14,7 @@ import type { DetectionRule } from "@breeze/shared";
 import { cn } from "@/lib/utils";
 import { fetchWithAuth } from "../../stores/auth";
 import { findUnknownTokens } from "@/lib/installerVariables";
+import { uploadPackageVersion } from "../../lib/softwarePackageUpload";
 import DetectionRulesEditor from "./DetectionRulesEditor";
 import VariableInput, { type DeviceCustomField } from "./VariableInput";
 import { useTranslation } from "react-i18next";
@@ -67,6 +68,20 @@ function normalizeVersion(
     notes,
     isLatest: Boolean(raw.isLatest ?? raw.is_latest ?? false),
   };
+}
+/**
+ * Server-acknowledged bytes → a percentage safe to render as a CSS width.
+ *
+ * Progress from the chunked uploader is NOT monotonic: a lost-state resync
+ * legitimately reports `bytesReceived: 0` and the transfer restarts from the
+ * beginning. That regression is real and worth showing, so it is deliberately
+ * not clamped upward to a high-water mark — but it must never produce a
+ * negative width, and a zero/unknown total must never produce `NaN%`.
+ */
+function toPercent(sentBytes: number, totalBytes: number): number {
+  if (!Number.isFinite(sentBytes) || !Number.isFinite(totalBytes)) return 0;
+  if (totalBytes <= 0) return 0;
+  return Math.min(100, Math.max(0, Math.round((sentBytes / totalBytes) * 100)));
 }
 interface SoftwareVersionManagerProps {
   timezone?: string;
@@ -270,35 +285,35 @@ export default function SoftwareVersionManager({
       setSaving(true);
       setUploadProgress(0);
       if (formState.file) {
-        // File upload path
-        const formData = new FormData();
-        formData.append("file", formState.file);
-        formData.append("version", formState.version.trim());
-        formData.append("architecture", formState.architecture);
-        if (formState.notes) formData.append("releaseNotes", formState.notes);
-        if (formState.silentInstallArgs)
-          formData.append("silentInstallArgs", formState.silentInstallArgs);
-        if (formState.silentUninstallArgs)
-          formData.append("silentUninstallArgs", formState.silentUninstallArgs);
-        if (formState.downloadUrl)
-          formData.append("downloadUrl", formState.downloadUrl);
-        if (formState.supportedOs.length > 0)
-          formData.append("supportedOs", JSON.stringify(formState.supportedOs));
-        if (formState.detectionRules.length > 0)
-          formData.append(
-            "detectionRules",
-            JSON.stringify(formState.detectionRules),
-          );
-        setUploadProgress(10);
-        const response = await fetchWithAuth(
-          `/software/catalog/${catalogId}/versions/upload`,
-          {
-            method: "POST",
-            body: formData,
-            headers: {}, // Let browser set Content-Type with boundary
+        // Chunked upload (#2951): each chunk is its own short request with a
+        // fresh token, so a slow multi-hundred-MB upload can never outlive the
+        // access-token TTL. Progress is real bytes acknowledged by the server —
+        // the previous 10/90/100 placeholders made a 222MB transfer sit at
+        // "10%" for its entire duration, which users read as a stall.
+        const response = await uploadPackageVersion({
+          catalogId,
+          file: formState.file,
+          metadata: {
+            version: formState.version.trim(),
+            architecture: formState.architecture,
+            releaseNotes: formState.notes || undefined,
+            silentInstallArgs: formState.silentInstallArgs || undefined,
+            silentUninstallArgs: formState.silentUninstallArgs || undefined,
+            downloadUrl: formState.downloadUrl || undefined,
+            supportedOs:
+              formState.supportedOs.length > 0
+                ? formState.supportedOs
+                : undefined,
+            detectionRules:
+              formState.detectionRules.length > 0
+                ? formState.detectionRules
+                : undefined,
           },
-        );
-        setUploadProgress(90);
+          onProgress: (sent, total) => setUploadProgress(toPercent(sent, total)),
+        });
+        // A resolved promise is NOT success: the uploader resolves with the
+        // first unrecoverable failing Response so callers keep their own
+        // response.ok handling (including the #2794 status suffix below).
         if (!response.ok) {
           const errData = await response.json().catch(() => ({}));
           // Always show the status. Every API failure path returns a JSON body
@@ -306,10 +321,17 @@ export default function SoftwareVersionManager({
           // not JSON at all — a reverse-proxy 413/502/504 HTML page or a
           // truncated connection. Including the status makes that case
           // distinguishable from an API-level failure at a glance (#2794).
+          // `error` also carries the uploader's own terminal messages (e.g.
+          // upload_instance_mismatch, which names load-balancer session
+          // affinity as the fix) — pass it through verbatim, never replace it
+          // with a generic string, or a self-hoster loses the only actionable
+          // hint they get.
           const detail =
             typeof errData.error === "string"
               ? errData.error
-              : "Failed to upload version";
+              : typeof errData.message === "string"
+                ? errData.message
+                : "Failed to upload version";
           throw new Error(`${detail} (HTTP ${response.status})`);
         }
         const newVersionData = await response.json();
@@ -320,7 +342,6 @@ export default function SoftwareVersionManager({
         setVersions((prev) => [newVersion, ...prev]);
         setLatestId(newVersion.id);
         setSelectedVersionId(newVersion.id);
-        setUploadProgress(100);
       } else {
         // JSON metadata-only path
         const response = await fetchWithAuth(
@@ -669,10 +690,15 @@ export default function SoftwareVersionManager({
             />
           </div>
 
-          {saving && uploadProgress > 0 && (
-            <div className="mt-4">
+          {/* Shown for the whole file transfer, including at 0%. The old
+              `uploadProgress > 0` gate would make the bar vanish whenever the
+              server reset progress to 0 on a lost-state resync — precisely the
+              moment the user most needs to see something is still happening. */}
+          {saving && formState.file !== null && (
+            <div className="mt-4" data-testid="version-upload-progress">
               <div className="h-2 w-full rounded-full bg-muted">
                 <div
+                  data-testid="version-upload-progress-bar"
                   className="h-2 rounded-full bg-primary transition-all duration-300"
                   style={{ width: `${uploadProgress}%` }}
                 />
