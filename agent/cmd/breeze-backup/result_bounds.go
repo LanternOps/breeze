@@ -46,7 +46,62 @@ const (
 	// maxLastResortFieldBytes bounds every string in the last-resort result so
 	// the "always fits" postcondition is total, not merely likely.
 	maxLastResortFieldBytes = 1024
+
+	// maxResultNoteBytes caps ONE bounding note. dropBulkFields renders
+	// strings.Join(<every dropped key>, ", ") into its note, which is bounded by
+	// nothing on a wide body — so the notes need a cap of their own rather than
+	// inheriting whatever is left of the warning's.
+	maxResultNoteBytes = 512
+
+	// maxResultNotesBytes is the tail of the warning reserved for bounding
+	// notes. Tiers 2-4 emit at most four (snapshot index, bulk fields, tier-3
+	// containers, tier-4 last resort), so this is several times the realizable
+	// total; it is a backstop, not a working limit.
+	maxResultNotesBytes = 4 * 1024
+
+	// maxTruncationSuffixBytes is the worst-case length of the marker
+	// truncateText appends ("… (+N bytes truncated)" with N at its widest).
+	maxTruncationSuffixBytes = 48
+
+	// maxResultWarningTextBytes is the budget for the RUN's own warning text.
+	// Splitting the budget is what makes "clamp the text" and "keep every note"
+	// independent operations.
+	//
+	// The subtractions are what make the split TOTAL rather than merely roomy:
+	// text + marker + notes, each with its truncation suffix, comes to at most
+	// maxResultTextBytes. So a composed warning can never exceed the generic
+	// free-text cap, and no other clamp in this file can bite it and take the
+	// notes with it. Left as slack instead, the arithmetic would silently stop
+	// holding the day someone raised a cap or added a fifth note.
+	maxResultWarningTextBytes = maxResultTextBytes - maxResultNotesBytes -
+		2*maxTruncationSuffixBytes - len(resultNoteMarker)
 )
+
+// resultNoteLabel introduces the bounding notes; resultNoteMarker is the form
+// used when the run also has warning text of its own, and neutralizedNoteLabel
+// is what the label is rewritten to when it appears in that text.
+//
+// The label doubles as the marker's tail so that neutralising ONE string
+// defangs both forms — a single rule, rather than two that can drift apart.
+const (
+	resultNoteLabel      = "bounded: "
+	resultNoteMarker     = " || " + resultNoteLabel
+	neutralizedNoteLabel = "bounded : "
+)
+
+// The marker separates the run's own warning text from the bounding notes these
+// tiers append to it.
+//
+// Without a boundary the warning is one opaque string, and every clamp is
+// forced to head-truncate the whole thing — which evicts the notes, because
+// notes are always at the tail. That is not hypothetical: tier 2 appends twice
+// (emptySnapshotFiles then dropBulkFields), so on a warning already at the cap
+// the second append silently deleted the first one's note, and the
+// snapshot-file-index note is the single most consequential signal in this file
+// (it is the only thing distinguishing "this snapshot has no files" from "we
+// deleted the index to fit a frame"). The marker lets composeResultWarning
+// clamp the text and the notes against separate budgets so neither can evict
+// the other.
 
 // snapshotIdentityKeys are the snapshot fields kept when the per-file index is
 // dropped: enough for the server to record a usable restore point
@@ -259,22 +314,26 @@ func encodeStdoutObject(obj map[string]json.RawMessage, fallback string) string 
 	return string(data)
 }
 
-// boundObjectWarning truncates the object's `warning` field in place, returning
+// boundObjectWarning truncates the run's own warning text in place, returning
 // how many bytes were dropped.
+//
+// This is the first tier to touch the field, so the whole of it is still the
+// run's own text — no note has been appended yet. Composing it here with no
+// notes is therefore both the clamp AND the point at which any marker literal
+// in the run's text is neutralised, which is what lets every later split read
+// the first marker as the real boundary.
 func boundObjectWarning(obj map[string]json.RawMessage) int {
 	raw, present := obj["warning"]
 	if !present {
 		return 0
 	}
-	var warning string
-	if err := json.Unmarshal(raw, &warning); err != nil {
+	original := decodeResultWarning(raw)
+	composed := composeResultWarning(original, "")
+	if composed == original {
 		return 0
 	}
-	truncated, dropped := truncateText(warning, maxResultTextBytes)
-	if dropped == 0 {
-		return 0
-	}
-	obj["warning"] = mustRawString(truncated)
+	obj["warning"] = mustRawString(composed)
+	_, dropped := truncateText(original, maxResultWarningTextBytes)
 	return dropped
 }
 
@@ -392,14 +451,13 @@ func reduceToScalars(stdout string) (string, bool) {
 			}
 		}
 	}
-	if len(containers) > 0 {
-		sort.Strings(containers)
-		kept["warning"] = mustRawString(appendResultWarning(kept["warning"], fmt.Sprintf(
-			"detail field(s) omitted (%s): the result exceeded the %d byte agent IPC limit",
-			strings.Join(containers, ", "), ipc.MaxMessageSize)))
-	}
 	// A pathological scalar (e.g. a megabyte-long snapshot id) would keep this
 	// tier over budget; bound every retained string.
+	//
+	// `warning` needs no special case here only because composeResultWarning's
+	// budget is total: a composed warning is already at most maxResultTextBytes,
+	// so this clamp cannot bite it and take its bounding notes (which live at
+	// the tail, where a head-keeping clamp cuts) with it.
 	for key, raw := range kept {
 		var s string
 		if err := json.Unmarshal(raw, &s); err != nil {
@@ -408,6 +466,12 @@ func reduceToScalars(stdout string) (string, bool) {
 		if bounded, dropped := truncateText(s, maxResultTextBytes); dropped > 0 {
 			kept[key] = mustRawString(bounded)
 		}
+	}
+	if len(containers) > 0 {
+		sort.Strings(containers)
+		kept["warning"] = mustRawString(appendResultWarning(kept["warning"], fmt.Sprintf(
+			"detail field(s) omitted (%s): the result exceeded the %d byte agent IPC limit",
+			strings.Join(containers, ", "), ipc.MaxMessageSize)))
 	}
 	return encodeStdoutObject(kept, stdout), true
 }
@@ -432,8 +496,19 @@ func oversizeFailureResult(result backupipc.BackupCommandResult) backupipc.Backu
 
 // lastResortStdout builds a minimal terminal-status object from whatever can
 // still be recovered from stdout. Every field is bounded by construction.
+//
+// `warning` is carried over rather than rebuilt. It is the ONLY channel the
+// backup path has for operator-facing degradation signals — appendWarning in
+// internal/backup/backup.go joins the live-volume-read note (#3025/#3027), the
+// uncaptured-system-state-artifacts note (#3029), the VSS health note (#3030)
+// and the partial-upload summary into it, and the server persists it to the
+// job's errorLog. Replacing it here would turn a degraded restore point into a
+// clean-looking one on exactly the runs most likely to be degraded, since a
+// large run is what reaches this tier at all. The tier may truncate the warning
+// and must append its own note to it; it must never substitute for it.
 func lastResortStdout(stdout string) string {
 	minimal := map[string]string{}
+	var existingWarning json.RawMessage
 	if obj, ok := decodeStdoutObject(stdout); ok {
 		for _, key := range []string{"id", "jobId", "status", "snapshotId"} {
 			var s string
@@ -449,10 +524,17 @@ func lastResortStdout(stdout string) string {
 				minimal["snapshotId"], _ = truncateText(snap.ID, maxLastResortFieldBytes)
 			}
 		}
+		existingWarning = obj["warning"]
 	}
-	minimal["warning"] = fmt.Sprintf(
+	// appendResultWarning bounds the text and the notes against their own
+	// budgets, so the field comes out under maxResultTextBytes whatever stdout
+	// carried and the note lands intact — the "always fits" postcondition holds.
+	// The warning gets the same allowance as tiers 2 and 3 rather than
+	// maxLastResortFieldBytes: 8 KiB against a ~16 MiB budget is free, and
+	// clipping an operator signal to 1 KiB would defeat the point of keeping it.
+	minimal["warning"] = appendResultWarning(existingWarning, fmt.Sprintf(
 		"backup result exceeded the %d byte agent IPC limit and was reduced to a terminal status; detail was dropped",
-		ipc.MaxMessageSize)
+		ipc.MaxMessageSize))
 	data, err := json.Marshal(minimal)
 	if err != nil {
 		return `{"warning":"backup result could not be encoded"}`
@@ -460,18 +542,88 @@ func lastResortStdout(stdout string) string {
 	return string(data)
 }
 
-// appendResultWarning appends fragment to an existing JSON-encoded warning,
-// joining with "; " — mirroring the agent-side appendWarning convention.
-func appendResultWarning(existing json.RawMessage, fragment string) string {
+// decodeResultWarning recovers the warning text from a JSON-encoded field.
+//
+// A `warning` that is present but not a JSON string is carried through in its
+// encoded form rather than dropped. These tiers are deliberately shape-agnostic
+// about command bodies, so assuming this one field's type and silently
+// discarding it when the assumption fails would be the same class of data loss
+// they exist to make explicit.
+func decodeResultWarning(existing json.RawMessage) string {
+	if len(existing) == 0 {
+		return ""
+	}
 	var current string
-	if len(existing) > 0 {
-		_ = json.Unmarshal(existing, &current)
+	if err := json.Unmarshal(existing, &current); err != nil {
+		return string(existing)
 	}
-	if current == "" {
-		return fragment
+	return current
+}
+
+// splitResultWarning splits a composed warning into the run's own text and the
+// bounding notes appended by these tiers. A warning that has never been through
+// appendResultWarning is all text and no notes.
+func splitResultWarning(warning string) (text, notes string) {
+	if i := strings.Index(warning, resultNoteMarker); i >= 0 {
+		return warning[:i], warning[i+len(resultNoteMarker):]
 	}
-	bounded, _ := truncateText(current, maxResultTextBytes)
-	return bounded + "; " + fragment
+	// The label alone is the all-notes form, emitted when the run had no
+	// warning of its own. It has to be recognised here or a second append would
+	// read the first note back as run text and start appending after it —
+	// putting the notes on the wrong side of the budget split.
+	if rest, ok := strings.CutPrefix(warning, resultNoteLabel); ok {
+		return "", rest
+	}
+	return warning, ""
+}
+
+// composeResultWarning re-joins a warning's text and notes, bounding each
+// against its OWN budget. This is the only function that bounds a warning: a
+// plain truncateText over the composed string would keep the head and drop the
+// notes, which are what say the result was degraded at all.
+//
+// The marker is neutralised inside the text so that splitResultWarning ∘
+// composeResultWarning round-trips by construction. Without that, a run whose
+// own warning happened to contain the marker literal would have its text past
+// that point read back as "notes", overflowing the note reserve and evicting
+// the real notes off its tail — reinstating, from untrusted input, exactly the
+// failure this split exists to make impossible.
+func composeResultWarning(text, notes string) string {
+	text, _ = truncateText(neutralizeNoteMarker(text), maxResultWarningTextBytes)
+	notes, _ = truncateText(notes, maxResultNotesBytes)
+	switch {
+	case notes == "":
+		return text
+	case text == "":
+		// The common case for a clean run: no signals of its own, only the
+		// tiers' account of what they dropped. The bare label reads as an
+		// ordinary prefix, where the full marker would leave the warning
+		// starting with dangling punctuation in the UI.
+		return resultNoteLabel + notes
+	}
+	return text + resultNoteMarker + notes
+}
+
+// neutralizeNoteMarker defangs the note label — and with it the marker, which
+// ends in the label — where it occurs in a run's own warning text, keeping the
+// text readable while making it no longer parse as the text/notes boundary.
+func neutralizeNoteMarker(s string) string {
+	return strings.ReplaceAll(s, resultNoteLabel, neutralizedNoteLabel)
+}
+
+// appendResultWarning appends fragment to an existing JSON-encoded warning as a
+// bounding note, joining notes with "; " — mirroring the agent-side
+// appendWarning convention. The fragment is clamped first so one note can never
+// consume the reserve the other notes need.
+func appendResultWarning(existing json.RawMessage, fragment string) string {
+	text, notes := splitResultWarning(decodeResultWarning(existing))
+	fragment, _ = truncateText(fragment, maxResultNoteBytes)
+	if notes == "" {
+		notes = fragment
+	} else {
+		notes += "; " + fragment
+	}
+	return composeResultWarning(text, notes)
 }
 
 // mustRawString encodes s as a JSON string. json.Marshal of a string cannot
