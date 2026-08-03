@@ -168,6 +168,29 @@ describe('processReapUninstallIntent — predicate + decommission (#2764)', () =
     expect(Object.keys(setArg).sort()).toEqual(['status', 'updatedAt']);
   });
 
+  it('the guarded UPDATE WHERE clause carries the exact binding predicate (both halves)', async () => {
+    selectFleetState.fleet = [{ id: 'dev-stale', orgId: 'org-1', hostname: 'host-stale', displayName: null }];
+
+    await processReapUninstallIntent();
+
+    const whereArg = updateWhereMock.mock.calls[0]![0] as { op: string; args: unknown[] };
+    expect(whereArg.op).toBe('and');
+    // eq(devices.id, candidate.id)
+    expect(whereArg.args).toContainEqual({ op: 'eq', col: 'devices.id', val: 'dev-stale' });
+    // lt(uninstall_intent_at, cutoff) — first half of the binding predicate.
+    expect(whereArg.args).toContainEqual(
+      expect.objectContaining({ op: 'lt', col: 'devices.uninstallIntentAt' })
+    );
+    // or(isNull(last_seen_at), lt(last_seen_at, uninstall_intent_at)) — second half.
+    expect(whereArg.args).toContainEqual({
+      op: 'or',
+      args: [
+        { op: 'isNull', col: 'devices.lastSeenAt' },
+        { op: 'lt', col: 'devices.lastSeenAt', val: 'devices.uninstallIntentAt' },
+      ],
+    });
+  });
+
   it('never reaps a row with a post-intent heartbeat (TOCTOU guard: 0-row UPDATE is skipped)', async () => {
     // SELECT still returned the candidate (chunk built before a very recent
     // re-heartbeat), but the guarded UPDATE's WHERE re-check matches 0 rows —
