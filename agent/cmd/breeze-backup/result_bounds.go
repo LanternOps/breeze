@@ -77,8 +77,20 @@ const (
 		2*maxTruncationSuffixBytes - len(resultNoteMarker)
 )
 
-// resultNoteMarker separates the run's own warning text from the bounding notes
-// these tiers append to it.
+// resultNoteLabel introduces the bounding notes; resultNoteMarker is the form
+// used when the run also has warning text of its own, and neutralizedNoteLabel
+// is what the label is rewritten to when it appears in that text.
+//
+// The label doubles as the marker's tail so that neutralising ONE string
+// defangs both forms — a single rule, rather than two that can drift apart.
+const (
+	resultNoteLabel      = "bounded: "
+	resultNoteMarker     = " || " + resultNoteLabel
+	neutralizedNoteLabel = "bounded : "
+)
+
+// The marker separates the run's own warning text from the bounding notes these
+// tiers append to it.
 //
 // Without a boundary the warning is one opaque string, and every clamp is
 // forced to head-truncate the whole thing — which evicts the notes, because
@@ -90,7 +102,6 @@ const (
 // deleted the index to fit a frame"). The marker lets composeResultWarning
 // clamp the text and the notes against separate budgets so neither can evict
 // the other.
-const resultNoteMarker = " || bounded: "
 
 // snapshotIdentityKeys are the snapshot fields kept when the per-file index is
 // dropped: enough for the server to record a usable restore point
@@ -303,20 +314,26 @@ func encodeStdoutObject(obj map[string]json.RawMessage, fallback string) string 
 	return string(data)
 }
 
-// boundObjectWarning truncates the run's own text in the object's `warning`
-// field in place, returning how many bytes were dropped. Any bounding notes
-// already on the field are preserved — only the free text is clamped.
+// boundObjectWarning truncates the run's own warning text in place, returning
+// how many bytes were dropped.
+//
+// This is the first tier to touch the field, so the whole of it is still the
+// run's own text — no note has been appended yet. Composing it here with no
+// notes is therefore both the clamp AND the point at which any marker literal
+// in the run's text is neutralised, which is what lets every later split read
+// the first marker as the real boundary.
 func boundObjectWarning(obj map[string]json.RawMessage) int {
 	raw, present := obj["warning"]
 	if !present {
 		return 0
 	}
-	text, notes := splitResultWarning(decodeResultWarning(raw))
-	_, dropped := truncateText(text, maxResultWarningTextBytes)
-	if dropped == 0 {
+	original := decodeResultWarning(raw)
+	composed := composeResultWarning(original, "")
+	if composed == original {
 		return 0
 	}
-	obj["warning"] = mustRawString(composeResultWarning(text, notes))
+	obj["warning"] = mustRawString(composed)
+	_, dropped := truncateText(original, maxResultWarningTextBytes)
 	return dropped
 }
 
@@ -550,6 +567,13 @@ func splitResultWarning(warning string) (text, notes string) {
 	if i := strings.Index(warning, resultNoteMarker); i >= 0 {
 		return warning[:i], warning[i+len(resultNoteMarker):]
 	}
+	// The label alone is the all-notes form, emitted when the run had no
+	// warning of its own. It has to be recognised here or a second append would
+	// read the first note back as run text and start appending after it —
+	// putting the notes on the wrong side of the budget split.
+	if rest, ok := strings.CutPrefix(warning, resultNoteLabel); ok {
+		return "", rest
+	}
 	return warning, ""
 }
 
@@ -557,13 +581,34 @@ func splitResultWarning(warning string) (text, notes string) {
 // against its OWN budget. This is the only function that bounds a warning: a
 // plain truncateText over the composed string would keep the head and drop the
 // notes, which are what say the result was degraded at all.
+//
+// The marker is neutralised inside the text so that splitResultWarning ∘
+// composeResultWarning round-trips by construction. Without that, a run whose
+// own warning happened to contain the marker literal would have its text past
+// that point read back as "notes", overflowing the note reserve and evicting
+// the real notes off its tail — reinstating, from untrusted input, exactly the
+// failure this split exists to make impossible.
 func composeResultWarning(text, notes string) string {
-	text, _ = truncateText(text, maxResultWarningTextBytes)
+	text, _ = truncateText(neutralizeNoteMarker(text), maxResultWarningTextBytes)
 	notes, _ = truncateText(notes, maxResultNotesBytes)
-	if notes == "" {
+	switch {
+	case notes == "":
 		return text
+	case text == "":
+		// The common case for a clean run: no signals of its own, only the
+		// tiers' account of what they dropped. The bare label reads as an
+		// ordinary prefix, where the full marker would leave the warning
+		// starting with dangling punctuation in the UI.
+		return resultNoteLabel + notes
 	}
 	return text + resultNoteMarker + notes
+}
+
+// neutralizeNoteMarker defangs the note label — and with it the marker, which
+// ends in the label — where it occurs in a run's own warning text, keeping the
+// text readable while making it no longer parse as the text/notes boundary.
+func neutralizeNoteMarker(s string) string {
+	return strings.ReplaceAll(s, resultNoteLabel, neutralizedNoteLabel)
 }
 
 // appendResultWarning appends fragment to an existing JSON-encoded warning as a

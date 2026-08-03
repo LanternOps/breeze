@@ -269,7 +269,7 @@ func TestTier4BoundsThePreservedWarning(t *testing.T) {
 	})
 
 	assertTerminalTier(t, degraded, tier4Note)
-	if len(warning) > maxResultTextBytes+len(resultNoteMarker)+maxResultNoteBytes {
+	if len(warning) > maxResultTextBytes {
 		t.Errorf("tier 4 left the warning unbounded at %d bytes", len(warning))
 	}
 	if !strings.Contains(warning, "IPC limit") {
@@ -306,7 +306,7 @@ func TestBoundingNotesAreIndividuallyCapped(t *testing.T) {
 	})
 
 	assertTerminalTier(t, degraded, tier4Note)
-	if len(warning) > maxResultTextBytes+len(resultNoteMarker)+maxResultNoteBytes {
+	if len(warning) > maxResultTextBytes {
 		t.Errorf("the omitted-fields note is unbounded: warning is %d bytes", len(warning))
 	}
 	if !strings.Contains(warning, "read from the live volume") {
@@ -314,6 +314,64 @@ func TestBoundingNotesAreIndividuallyCapped(t *testing.T) {
 	}
 	if !strings.Contains(warning, "IPC limit") {
 		t.Errorf("an oversized earlier note crowded the last tier's note out of the reserve; warning = %.400q", warning)
+	}
+}
+
+// TestCleanRunWarningIsJustTheNotes covers the majority case these tests
+// otherwise all miss: a run with NO warning of its own, degraded only by the
+// bounding. Every other fixture seeds a warning, so nothing here would notice
+// the composed field acquiring a dangling boundary marker where the run's text
+// should have been — which lands verbatim in the job's errorLog and the UI.
+func TestCleanRunWarningIsJustTheNotes(t *testing.T) {
+	warning, degraded := fittedWarning(t, backupCommandResultFixture{
+		commandID: "cmd-clean-run",
+		stdout:    tier2Stdout(""),
+	})
+
+	assertTerminalTier(t, degraded, tier2IndexNote, tier3ScalarNote, tier4Note)
+	if !strings.HasPrefix(warning, resultNoteLabel+"snapshot file index omitted") {
+		t.Errorf("a clean run's warning should be the label and its notes, got %.200q", warning)
+	}
+	// The full marker separates text from notes. With no text there is nothing
+	// to separate, so emitting it would leave the warning opening on dangling
+	// punctuation in the UI.
+	if strings.Contains(warning, resultNoteMarker) {
+		t.Errorf("a clean run's warning carries a boundary marker with no text on either side: %.200q", warning)
+	}
+	// Both of tier 2's notes still have to be there: the all-notes form is only
+	// safe if a second append can still find the boundary.
+	if !strings.Contains(warning, "failedFiles") {
+		t.Errorf("the second append read the first note back as run text; warning = %.300q", warning)
+	}
+}
+
+// TestRunWarningContainingTheMarkerCannotEvictNotes closes the one input-driven
+// escape hatch from the split. The marker is a plain string, and the run's own
+// warning embeds file paths and provider error text — so if a run's text ever
+// contained the literal, splitResultWarning would read everything past it as
+// "notes", overflow the note reserve, and clamp the real notes off the tail.
+// That is precisely the failure the split exists to prevent, reintroduced from
+// untrusted input, so it has to be neutralised rather than assumed away.
+func TestRunWarningContainingTheMarkerCannotEvictNotes(t *testing.T) {
+	hostile := "vss snapshot failed" + resultNoteMarker + strings.Repeat("payload ", 1024)
+
+	warning, degraded := fittedWarning(t, backupCommandResultFixture{
+		commandID: "cmd-marker-collision",
+		stdout:    tier2Stdout(hostile),
+	})
+
+	assertTerminalTier(t, degraded, tier2IndexNote, tier3ScalarNote, tier4Note)
+	if !strings.Contains(warning, "snapshot file index omitted") {
+		t.Errorf("a marker in the run's own text evicted tier 2's index note; warning = %.400q", warning)
+	}
+	if !strings.Contains(warning, "failedFiles") {
+		t.Errorf("a marker in the run's own text evicted tier 2's bulk-field note; warning = %.400q", warning)
+	}
+	if !strings.Contains(warning, "vss snapshot failed") {
+		t.Errorf("the run's own signal was lost; warning = %.400q", warning)
+	}
+	if len(warning) > maxResultTextBytes {
+		t.Errorf("composed warning is %d bytes, over the %d total budget", len(warning), maxResultTextBytes)
 	}
 }
 
