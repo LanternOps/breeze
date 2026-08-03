@@ -209,6 +209,120 @@ describe('SoftwareVersionManager chunked upload path', () => {
     expect(screen.getByText(/session affinity/)).toHaveTextContent('(HTTP 409)');
   });
 
+  describe('cancelling an in-flight upload', () => {
+    /** Start an upload and hand back the pieces needed to drive it. */
+    async function startUpload() {
+      const gate = deferred<Response>();
+      let signal: AbortSignal | undefined;
+      uploadMock.mockImplementation((opts) => {
+        signal = opts.signal;
+        return gate.promise;
+      });
+
+      await renderLoaded();
+      const fileInput = fillUploadForm();
+      submit(fileInput);
+      await waitFor(() => expect(uploadMock).toHaveBeenCalledTimes(1));
+      expect(signal).toBeInstanceOf(AbortSignal);
+      expect(signal!.aborted).toBe(false);
+      return { gate, signal: signal! };
+    }
+
+    it('aborts the uploader signal when Cancel is pressed mid-upload', async () => {
+      const { signal } = await startUpload();
+
+      fireEvent.click(screen.getByTestId('version-form-cancel'));
+
+      expect(signal.aborted).toBe(true);
+      expect(screen.queryByTestId('version-upload-progress')).not.toBeInTheDocument();
+    });
+
+    it('shows no error banner when the abort rejection arrives', async () => {
+      const { gate, signal } = await startUpload();
+      fireEvent.click(screen.getByTestId('version-form-cancel'));
+      expect(signal.aborted).toBe(true);
+
+      // uploadPackageVersion rejects on abort.
+      await act(async () => {
+        gate.resolve(
+          Promise.reject(
+            new DOMException('The operation was aborted.', 'AbortError'),
+          ) as unknown as Response,
+        );
+        await Promise.resolve();
+      });
+
+      expect(screen.queryByText(/aborted/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/failed to create version/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/failed to upload version/i)).not.toBeInTheDocument();
+      expect(document.querySelector('.text-destructive')).toBeNull();
+    });
+
+    it('does not add a version when a completion lands after Cancel', async () => {
+      const { gate } = await startUpload();
+      fireEvent.click(screen.getByTestId('version-form-cancel'));
+
+      // The chunk loop had already finished; /complete resolves 201 anyway.
+      await act(async () => {
+        gate.resolve(
+          jsonResponse({ data: { id: 'ver-9', version: '2.0.0', isLatest: true } }, true, 201),
+        );
+        await gate.promise;
+      });
+
+      // The version-history table still lists only the pre-existing row.
+      expect(screen.queryByRole('button', { name: 'v2.0.0' })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'v1.0.0' })).toBeInTheDocument();
+      expect(document.querySelector('.text-destructive')).toBeNull();
+    });
+
+    it('aborts the upload when the component unmounts', async () => {
+      const gate = deferred<Response>();
+      let signal: AbortSignal | undefined;
+      uploadMock.mockImplementation((opts) => {
+        signal = opts.signal;
+        return gate.promise;
+      });
+
+      const view = render(<SoftwareVersionManager catalogId="cat-1" embedded />);
+      await waitFor(() =>
+        expect(screen.queryByText(/loading software versions/i)).not.toBeInTheDocument(),
+      );
+      const fileInput = fillUploadForm();
+      submit(fileInput);
+      await waitFor(() => expect(uploadMock).toHaveBeenCalledTimes(1));
+
+      view.unmount();
+
+      expect(signal!.aborted).toBe(true);
+      await act(async () => {
+        gate.resolve(jsonResponse({ data: { id: 'ver-9' } }, true, 201));
+        await gate.promise;
+      });
+    });
+
+    it('still reports a genuine failure after a previous upload was cancelled', async () => {
+      const { signal } = await startUpload();
+      fireEvent.click(screen.getByTestId('version-form-cancel'));
+      expect(signal.aborted).toBe(true);
+
+      // A fresh submission gets a fresh controller — the stale aborted one must
+      // not swallow a real error.
+      uploadMock.mockReset();
+      uploadMock.mockResolvedValueOnce(
+        jsonResponse({ error: 'Object storage rejected the upload' }, false, 502),
+      );
+      const fileInput = fillUploadForm();
+      submit(fileInput);
+
+      await waitFor(() =>
+        expect(
+          screen.getByText(/Object storage rejected the upload \(HTTP 502\)/),
+        ).toBeInTheDocument(),
+      );
+    });
+  });
+
   it('leaves the metadata-only branch on the plain JSON endpoint', async () => {
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if (String(url).startsWith('/custom-fields')) {

@@ -108,6 +108,10 @@ export default function SoftwareVersionManager({
   const [catalogId, setCatalogId] = useState(propCatalogId ?? "");
   const [customFields, setCustomFields] = useState<DeviceCustomField[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Owns the in-flight chunked upload so Cancel (and unmount) can actually stop
+  // it. A ref, not state: it must survive re-renders without causing one, and
+  // the progress bar already re-renders on every acknowledged chunk.
+  const uploadAbortRef = useRef<AbortController | null>(null);
   const [formState, setFormState] = useState({
     version: "",
     architecture: "x64" as Architecture,
@@ -277,10 +281,29 @@ export default function SoftwareVersionManager({
     },
     [catalogId, fetchVersions, latestId],
   );
+  // Navigating away mid-upload must not leave the chunk loop running against a
+  // component that no longer exists.
+  useEffect(
+    () => () => {
+      uploadAbortRef.current?.abort();
+      uploadAbortRef.current = null;
+    },
+    [],
+  );
+  /** True only when OUR controller aborted — i.e. the user pressed Cancel or
+   *  the component unmounted. The uploader's internal per-phase
+   *  `AbortSignal.timeout` ceilings abort a different signal and surface as
+   *  real failures, which is what we want: a timeout is not a cancel. */
+  const wasUserCancelled = (controller: AbortController | null) =>
+    controller !== null && controller.signal.aborted;
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!formState.version.trim()) return;
     if (!catalogId) return;
+    // Only the file branch is abortable; the metadata-only POST is a single
+    // short request and keeps its previous behaviour exactly.
+    const controller = formState.file ? new AbortController() : null;
+    uploadAbortRef.current = controller;
     try {
       setSaving(true);
       setUploadProgress(0);
@@ -310,7 +333,13 @@ export default function SoftwareVersionManager({
                 : undefined,
           },
           onProgress: (sent, total) => setUploadProgress(toPercent(sent, total)),
+          signal: controller?.signal,
         });
+        // A completion that lands after the user cancelled must not resurrect
+        // the version they believe they abandoned. (The uploader rejects on
+        // abort, but a chunk loop that finished in the same tick as the click
+        // can still resolve.)
+        if (wasUserCancelled(controller)) return;
         // A resolved promise is NOT success: the uploader resolves with the
         // first unrecoverable failing Response so callers keep their own
         // response.ok handling (including the #2794 status suffix below).
@@ -396,12 +425,25 @@ export default function SoftwareVersionManager({
       if (fileInputRef.current) fileInputRef.current.value = "";
       setIsFormOpen(false);
     } catch (err) {
+      // uploadPackageVersion REJECTS on abort. A cancel the user asked for is
+      // not a failure — exit quietly, leaving `versions` untouched and no
+      // scary red banner behind.
+      if (wasUserCancelled(controller)) return;
       console.error("Failed to create version:", err);
       setError(err instanceof Error ? err.message : "Failed to create version");
     } finally {
+      if (uploadAbortRef.current === controller) uploadAbortRef.current = null;
       setSaving(false);
       setUploadProgress(0);
     }
+  };
+  const handleCancelForm = () => {
+    // Aborting BEFORE closing matters: closing unmounts the progress bar, so
+    // without this the chunk loop would keep running invisibly and still push
+    // a version into the list the user thinks they cancelled.
+    uploadAbortRef.current?.abort();
+    uploadAbortRef.current = null;
+    setIsFormOpen(false);
   };
   if (loading) {
     return (
@@ -713,7 +755,8 @@ export default function SoftwareVersionManager({
           <div className="mt-4 flex items-center justify-end gap-2">
             <button
               type="button"
-              onClick={() => setIsFormOpen(false)}
+              data-testid="version-form-cancel"
+              onClick={handleCancelForm}
               className="inline-flex h-9 items-center justify-center rounded-md border bg-background px-3 text-sm font-medium hover:bg-muted"
             >
               {i18n.t("common:actions.cancel")}
