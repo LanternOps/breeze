@@ -1,5 +1,65 @@
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { canonicalHttpsRedirect, effectiveRequestScheme, isCanonicalRequestHost } from '../services/requestTransport';
+import { getImmediatePeerIpOrUndefined, trustsForwardedHeadersFrom } from '../services/clientIp';
+
+/**
+ * TRANSPORT-001 (#3047): warn at the 308 itself, not only at the trust gate.
+ *
+ * `clientIp.ts` warns when a peer is NOT trusted. That misses the variant where
+ * a *trusted* proxy simply never sends `X-Forwarded-Proto`: the trust gate
+ * passes, `effectiveRequestScheme` falls back to the internal plain-HTTP
+ * proxy->API hop and reports `http`, and under FORCE_HTTPS every non-health
+ * route 308s while `/health` (exempt) keeps returning 200. No warning branch in
+ * the trust gate is reachable, because from its point of view nothing is wrong.
+ *
+ * Logging here covers that case and both cases clientIp.ts already handles —
+ * one line at the point of user-visible impact rather than three warnings that
+ * each have to anticipate a different cause.
+ *
+ * Suppressed per peer so a redirect storm (every request from the proxy) cannot
+ * flood the log, matching the discipline in `clientIp.ts`.
+ */
+const REDIRECT_WARN_INTERVAL_MS = 15 * 60 * 1000;
+const REDIRECT_WARN_MAX_TRACKED = 32;
+const redirectLastWarnAt = new Map<string, number>();
+
+/** Test seam: reset the per-peer suppression state. */
+export function _resetForceHttpsRedirectWarnStateForTests(): void {
+  redirectLastWarnAt.clear();
+}
+
+function warnForceHttpsRedirect(c: Context, canonicalHost: boolean): void {
+  const peerIp = getImmediatePeerIpOrUndefined(c) ?? 'unknown';
+  const now = Date.now();
+
+  const lastWarnAt = redirectLastWarnAt.get(peerIp);
+  if (lastWarnAt !== undefined && now - lastWarnAt < REDIRECT_WARN_INTERVAL_MS) {
+    return;
+  }
+  // Bound the map: evict entries whose window has already elapsed before
+  // admitting a new peer, so a spray of distinct source IPs cannot grow it
+  // without limit. An unbounded burst still warns — it just isn't tracked.
+  if (!redirectLastWarnAt.has(peerIp) && redirectLastWarnAt.size >= REDIRECT_WARN_MAX_TRACKED) {
+    for (const [trackedPeer, at] of redirectLastWarnAt) {
+      if (now - at >= REDIRECT_WARN_INTERVAL_MS) redirectLastWarnAt.delete(trackedPeer);
+    }
+  }
+  if (redirectLastWarnAt.has(peerIp) || redirectLastWarnAt.size < REDIRECT_WARN_MAX_TRACKED) {
+    redirectLastWarnAt.set(peerIp, now);
+  }
+
+  const trusted = trustsForwardedHeadersFrom(c);
+  const forwardedProto = c.req.header('x-forwarded-proto') ?? c.req.header('X-Forwarded-Proto');
+
+  console.warn(
+    `[force-https] FORCE_HTTPS is redirecting (or rejecting) traffic because the request scheme resolved to http. `
+    + `peer=${peerIp} trustedProxy=${trusted} xForwardedProto=${forwardedProto ?? '(absent)'} canonicalHost=${canonicalHost}. `
+    + `If this peer is your reverse proxy, agents and the web UI are being 308'd fleet-wide while /health (exempt) still returns 200. `
+    + `trustedProxy=false means TRUSTED_PROXY_CIDRS does not list this peer, or TRUST_PROXY_HEADERS is off; `
+    + `trustedProxy=true with xForwardedProto=(absent) means the proxy is not sending the header at all. `
+    + `Suppressed for this peer for ${REDIRECT_WARN_INTERVAL_MS / 60000} minutes.`,
+  );
+}
 
 /**
  * Security middleware for Breeze API.
@@ -147,7 +207,12 @@ export function securityMiddleware(options?: SecurityMiddlewareOptions): Middlew
     // --- HTTP -> HTTPS redirect ---
     if (isForceHttps && publicApiUrl && !HEALTH_CHECK_PATHS.has(path)) {
       if (effectiveRequestScheme(c) === 'http') {
-        if (!isCanonicalRequestHost(c, publicApiUrl)) {
+        const canonicalHost = isCanonicalRequestHost(c, publicApiUrl);
+        // Warn before returning either way: the 400 branch is the same
+        // misconfiguration seen through a non-canonical Host, and it is just as
+        // silent (#3047).
+        warnForceHttpsRedirect(c, canonicalHost);
+        if (!canonicalHost) {
           // Never reflect an unrecognized Host into a redirect — reject
           // instead of redirecting to a domain the client didn't ask for.
           return c.text('Bad Request', 400);

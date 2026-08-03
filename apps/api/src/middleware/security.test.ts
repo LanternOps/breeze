@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { securityMiddleware } from './security';
+import { securityMiddleware, _resetForceHttpsRedirectWarnStateForTests } from './security';
 
 function createApp(options?: Parameters<typeof securityMiddleware>[0]) {
   const app = new Hono();
@@ -270,5 +270,83 @@ describe('securityMiddleware', () => {
       const csp = res.headers.get('Content-Security-Policy');
       expect(csp).toContain("script-src 'self' 'unsafe-inline'");
     });
+  });
+});
+
+// #3047: the FORCE_HTTPS redirect used to return without logging under any
+// condition, so a proxy misconfiguration produced a fleet-wide 308 storm with
+// no signal anywhere — /health is exempt and kept returning 200 throughout.
+describe('FORCE_HTTPS redirect warning (#3047)', () => {
+  const opts = { forceHttps: 'true', publicApiUrl: 'https://api.example.com' };
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    _resetForceHttpsRedirectWarnStateForTests();
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    _resetForceHttpsRedirectWarnStateForTests();
+  });
+
+  it('warns when a redirect fires, naming the symptom and the two config causes', async () => {
+    const res = await createApp(opts).request('http://api.example.com/test', {
+      headers: { host: 'api.example.com' },
+    });
+
+    expect(res.status).toBe(308);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const msg = String(warnSpy.mock.calls[0]?.[0]);
+    expect(msg).toContain('[force-https]');
+    expect(msg).toContain('trustedProxy=');
+    expect(msg).toContain('xForwardedProto=');
+    expect(msg).toContain('TRUSTED_PROXY_CIDRS');
+  });
+
+  // The variant #2988 could not catch: trust gate passes, no scheme header, so
+  // no warning branch in clientIp.ts is reachable.
+  it('reports xForwardedProto=(absent) when the proxy never sends the header', async () => {
+    await createApp(opts).request('http://api.example.com/test', {
+      headers: { host: 'api.example.com' },
+    });
+
+    const msg = String(warnSpy.mock.calls[0]?.[0]);
+    expect(msg).toContain('xForwardedProto=(absent)');
+  });
+
+  it('also warns on the 400 branch, which is the same fault via a non-canonical Host', async () => {
+    const res = await createApp(opts).request('http://wrong-host.example.net/test', {
+      headers: { host: 'wrong-host.example.net' },
+    });
+
+    expect(res.status).toBe(400);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(String(warnSpy.mock.calls[0]?.[0])).toContain('canonicalHost=false');
+  });
+
+  it('suppresses repeats per peer so a redirect storm cannot flood the log', async () => {
+    const app = createApp(opts);
+    for (let i = 0; i < 5; i++) {
+      await app.request('http://api.example.com/test', { headers: { host: 'api.example.com' } });
+    }
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not warn for health probes, which are exempt from the redirect', async () => {
+    const app = createApp(opts);
+    for (const p of ['/health', '/health/live', '/health/ready', '/ready']) {
+      await app.request(`http://api.example.com${p}`, { headers: { host: 'api.example.com' } });
+    }
+
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not warn when FORCE_HTTPS is off', async () => {
+    await createApp({ publicApiUrl: 'https://api.example.com' }).request(
+      'http://api.example.com/test', { headers: { host: 'api.example.com' } });
+
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 });
