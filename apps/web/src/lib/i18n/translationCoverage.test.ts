@@ -34,7 +34,9 @@ const namespaceDuplicateBaselines = {
     'devices.json': 159,
     'discovery.json': 17,
     'integrations.json': 23,
-    'patches.json': 22,
+    // +1: updateRingList.badges.manual — "Manual" is spelled identically in
+    // pt-BR.
+    'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 357,
     'portal.json': 3,
@@ -67,7 +69,9 @@ const namespaceDuplicateBaselines = {
     'devices.json': 115,
     'discovery.json': 17,
     'integrations.json': 31,
-    'patches.json': 15,
+    // +1: updateRingList.badges.manual — "Manual" is spelled identically in
+    // es-419.
+    'patches.json': 16,
     'peripherals.json': 4,
     'policies.json': 241,
     'portal.json': 4,
@@ -168,7 +172,9 @@ const namespaceDuplicateBaselines = {
     'devices.json': 146,
     'discovery.json': 26,
     'integrations.json': 43,
-    'patches.json': 22,
+    // +1: updateRingList.badges.os — "OS: {{severities}}" is an acronym plus an
+    // interpolation; German uses the same "OS" acronym.
+    'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 205,
     'portal.json': 4,

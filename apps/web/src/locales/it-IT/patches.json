@@ -462,7 +462,13 @@
       "devices": "Dispositivi",
       "compliance": "Conformità",
       "updated": "Aggiornato",
-      "actions": "Azioni"
+      "actions": "Azioni",
+      "autoApprove": "Approvazione automatica"
+    },
+    "badges": {
+      "manual": "Manuale",
+      "os": "SO: {{severities}}",
+      "thirdParty": "App di terze parti"
     }
   }
 }

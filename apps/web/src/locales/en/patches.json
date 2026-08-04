@@ -462,7 +462,13 @@
       "devices": "Devices",
       "compliance": "Compliance",
       "updated": "Updated",
-      "actions": "Actions"
+      "actions": "Actions",
+      "autoApprove": "Auto-approve"
+    },
+    "badges": {
+      "manual": "Manual",
+      "os": "OS: {{severities}}",
+      "thirdParty": "3rd-party apps"
     }
   }
 }
