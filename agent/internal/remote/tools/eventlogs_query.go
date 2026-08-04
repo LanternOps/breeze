@@ -27,42 +27,41 @@ func eventLogSelectClause(extra string) string {
 
 // buildEventLogQueryScript builds the PowerShell pipeline for event_logs_query.
 //
-// When xpathQuery is set, the query runs through Get-WinEvent -FilterXPath with
-// -ErrorAction Stop inside try/catch: an invalid XPath exits non-zero with the
-// error on stderr (so the caller gets an explicit failure instead of silently
-// unfiltered results — issue #3092), while the not-an-error "no matching
-// events" case (matched by its locale-independent FullyQualifiedErrorId)
-// produces empty output and a zero exit.
+// Both paths run Get-WinEvent with -ErrorAction Stop inside try/catch: any
+// query failure (invalid XPath, unknown log name, access denied, parse error)
+// exits non-zero with the message on stderr, so the caller gets an explicit
+// failure instead of silently unfiltered or empty results — issue #3092. The
+// not-an-error "no matching events" case (matched by its locale-independent
+// FullyQualifiedErrorId) produces empty output and a zero exit.
 //
-// When xpathQuery is empty, the legacy -FilterHashtable path is used with its
-// existing -ErrorAction SilentlyContinue semantics.
-func buildEventLogQueryScript(logName, level, source, xpathQuery string, eventID, maxEvents int) string {
-	selectClause := eventLogSelectClause("")
-
+// When xpathQuery is set, it is applied via -FilterXPath; otherwise the
+// level/source/eventId filters build a -FilterHashtable (entries MUST be
+// ';'-separated — a previous ' and '-joined form was a PowerShell parse error
+// that made every filtered query silently return zero events).
+func buildEventLogQueryScript(logName, source, xpathQuery string, levelNum, eventID, maxEvents int) string {
+	var getCmd string
 	if xpathQuery != "" {
-		return fmt.Sprintf(
-			`try { Get-WinEvent -LogName '%s' -FilterXPath '%s' -MaxEvents %d -ErrorAction Stop | `+
-				`Select-Object %s | ConvertTo-Json -Depth 2 } catch { `+
-				`if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') { '' } else { `+
-				`[Console]::Error.WriteLine($_.Exception.Message); exit 1 } }`,
-			escapePowerShellSingleQuoted(logName), escapePowerShellSingleQuoted(xpathQuery), maxEvents, selectClause)
-	}
-
-	filter := fmt.Sprintf("LogName='%s'", escapePowerShellSingleQuoted(logName))
-	if level != "" {
-		if levelNum := levelToNumber(level); levelNum > 0 {
-			filter += fmt.Sprintf(" and Level=%d", levelNum)
+		getCmd = fmt.Sprintf(`Get-WinEvent -LogName '%s' -FilterXPath '%s' -MaxEvents %d -ErrorAction Stop`,
+			escapePowerShellSingleQuoted(logName), escapePowerShellSingleQuoted(xpathQuery), maxEvents)
+	} else {
+		filter := fmt.Sprintf("LogName='%s'", escapePowerShellSingleQuoted(logName))
+		if levelNum > 0 {
+			filter += fmt.Sprintf("; Level=%d", levelNum)
 		}
-	}
-	if source != "" {
-		filter += fmt.Sprintf(" and ProviderName='%s'", escapePowerShellSingleQuoted(source))
-	}
-	if eventID > 0 {
-		filter += fmt.Sprintf(" and Id=%d", eventID)
+		if source != "" {
+			filter += fmt.Sprintf("; ProviderName='%s'", escapePowerShellSingleQuoted(source))
+		}
+		if eventID > 0 {
+			filter += fmt.Sprintf("; Id=%d", eventID)
+		}
+		getCmd = fmt.Sprintf(`Get-WinEvent -FilterHashtable @{%s} -MaxEvents %d -ErrorAction Stop`, filter, maxEvents)
 	}
 
-	return fmt.Sprintf(`Get-WinEvent -FilterHashtable @{%s} -MaxEvents %d -ErrorAction SilentlyContinue | `+
-		`Select-Object %s | ConvertTo-Json -Depth 2`, filter, maxEvents, selectClause)
+	return fmt.Sprintf(
+		`try { %s | Select-Object %s | ConvertTo-Json -Depth 2 } catch { `+
+			`if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') { '' } else { `+
+			`[Console]::Error.WriteLine($_.Exception.Message); exit 1 } }`,
+		getCmd, eventLogSelectClause(""))
 }
 
 // buildEventLogGetEntryScript builds the PowerShell pipeline for event_log_get.
@@ -120,42 +119,6 @@ func parseEventLogTime(val string) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
-}
-
-func parseEventLogList(output string) []EventLog {
-	// Basic parsing - in production, use proper JSON parsing
-	var logs []EventLog
-
-	// Parse lines for log names
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.Contains(line, "LogName") {
-			// Extract log name
-			parts := strings.Split(line, ":")
-			if len(parts) >= 2 {
-				name := strings.TrimSpace(parts[1])
-				name = strings.Trim(name, `",`)
-				if name != "" {
-					logs = append(logs, EventLog{
-						Name:        name,
-						DisplayName: name,
-					})
-				}
-			}
-		}
-	}
-
-	// Return default logs if parsing failed
-	if len(logs) == 0 {
-		return []EventLog{
-			{Name: "System", DisplayName: "System"},
-			{Name: "Application", DisplayName: "Application"},
-			{Name: "Security", DisplayName: "Security"},
-		}
-	}
-
-	return logs
 }
 
 func parseEventLogEntries(output string) []EventLogEntry {

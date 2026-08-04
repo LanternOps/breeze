@@ -42,8 +42,21 @@ const (
 	maxUninstallErrorBytes      = 32 * 1024
 )
 
+// powerShellSingleQuoteChars are every character PowerShell's tokenizer
+// treats as a single-quote delimiter: a string literal opened with an ASCII
+// apostrophe can be CLOSED by any of the Unicode quote lookalikes
+// (U+2018 LEFT / U+2019 RIGHT SINGLE QUOTATION MARK, U+201A SINGLE LOW-9,
+// U+201B SINGLE HIGH-REVERSED-9). Escaping only the ASCII form leaves a
+// command-injection breakout via the lookalikes. Doubling any of these
+// characters embeds it literally (the same rule PowerShell uses for a
+// doubled ASCII apostrophe).
+var powerShellSingleQuoteChars = []string{"'", "‘", "’", "‚", "‛"}
+
 func escapePowerShellSingleQuoted(value string) string {
-	return strings.ReplaceAll(value, "'", "''")
+	for _, q := range powerShellSingleQuoteChars {
+		value = strings.ReplaceAll(value, q, q+q)
+	}
+	return value
 }
 
 func truncateStringBytes(value string, max int) (string, bool) {
