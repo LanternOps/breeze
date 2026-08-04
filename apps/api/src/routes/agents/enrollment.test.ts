@@ -43,6 +43,7 @@ vi.mock('../../db/schema', () => ({
     expiresAt: 'expiresAt',
     maxUsage: 'maxUsage',
     usageCount: 'usageCount',
+    supportSessionId: 'supportSessionId',
   },
   devices: {
     id: 'id',
@@ -57,11 +58,18 @@ vi.mock('../../db/schema', () => ({
     possibleReplacementOfDeviceId: 'possibleReplacementOfDeviceId',
     enrollmentIp: 'enrollment_ip',
     createdAt: 'createdAt',
+    isEphemeral: 'devices.isEphemeral',
   },
   deviceHardware: { deviceId: 'deviceId', serialNumber: 'serialNumber' },
   deviceNetwork: { deviceId: 'deviceId', macAddress: 'macAddress' },
   organizations: { id: 'id', partnerId: 'partnerId' },
   partners: { id: 'id', maxDevices: 'maxDevices' },
+  supportSessions: {
+    id: 'supportSessions.id',
+    status: 'supportSessions.status',
+    hardExpiresAt: 'supportSessions.hardExpiresAt',
+    deviceId: 'supportSessions.deviceId',
+  },
 }));
 
 vi.mock('../../services/auditEvents', () => ({
@@ -125,7 +133,7 @@ import * as manifestSigning from '../../services/manifestSigning';
 import { getTrustedClientIp } from '../../services/clientIp';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
 import { raiseDeviceIdentityCollisionAlert } from '../../services/deviceIdentityCollisionAlert';
-import { devices as devicesTable } from '../../db/schema';
+import { devices as devicesTable, supportSessions as supportSessionsTable } from '../../db/schema';
 import { enrollmentRoutes } from './enrollment';
 
 function buildApp(): Hono {
@@ -2767,5 +2775,235 @@ describe('POST /agents/enroll — enrollment IP persistence', () => {
     expect(deviceInsertValues).toHaveBeenCalledWith(
       expect.objectContaining({ enrollmentIp: null }),
     );
+  });
+});
+
+describe('POST /agents/enroll — Quick Support ephemeral enrollment', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    process.env.NODE_ENV = 'test';
+  });
+
+  interface SupportTxSpy {
+    /** values() handed to tx.insert(devices). */
+    deviceInsertValues: Record<string, unknown>[];
+    /** Every tx.update(...) as [table, setPayload]. */
+    updates: Array<{ table: unknown; values: Record<string, unknown> }>;
+    /** where() conditions handed to the in-transaction licence count. */
+    countWhere: unknown[];
+  }
+
+  function mockSupportTransaction(countAtCap = 0): SupportTxSpy {
+    const spy: SupportTxSpy = { deviceInsertValues: [], updates: [], countWhere: [] };
+
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+      const fakeTx = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn((cond: unknown) => {
+              spy.countWhere.push(cond);
+              return Promise.resolve([{ count: countAtCap }]);
+            }),
+          }),
+        }),
+        insert: vi.fn((table: unknown) => ({
+          values: vi.fn((values: Record<string, unknown>) => {
+            if (table === devicesTable) spy.deviceInsertValues.push(values);
+            return {
+              returning: vi.fn().mockResolvedValue([
+                { id: 'device-support', orgId: 'org-support', siteId: 'site-support', hostname: 'host-1' },
+              ]),
+              onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+            };
+          }),
+        })),
+        update: vi.fn((table: unknown) => ({
+          set: vi.fn((values: Record<string, unknown>) => {
+            spy.updates.push({ table, values });
+            return {
+              where: vi.fn(() => Object.assign(
+                Promise.resolve(undefined) as any,
+                { returning: vi.fn().mockResolvedValue([{ id: 'key-support' }]) },
+              )),
+            };
+          }),
+        })),
+        delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+      };
+      return fn(fakeTx);
+    });
+
+    return spy;
+  }
+
+  /**
+   * The two db.select calls a REJECTED support enrollment consumes: the key
+   * lookup and the support-session lookup. Queueing only what the handler
+   * actually reads matters — `mockReturnValueOnce` entries survive
+   * `clearAllMocks`, so an over-queued rejection test corrupts the next one.
+   * `session: null` stands in for a purged session row.
+   */
+  function arrangeSupportKey(session: { status: string; hardExpiresAt: Date } | null) {
+    mockKeyLookup({
+      id: 'key-support',
+      orgId: 'org-support',
+      siteId: 'site-support',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 1,
+      usageCount: 0,
+      supportSessionId: 'session-1',
+    });
+    mockSelectRows(session ? [session] : []); // support-session lookup
+  }
+
+  /** Full select sequence for an accepted support enrollment. */
+  function arrangeSupportEnroll(
+    session: { status: string; hardExpiresAt: Date },
+    maxDevices: number | null = null,
+  ) {
+    arrangeSupportKey(session);
+    mockSelectRows([{ partnerId: 'partner-support' }]); // org lookup
+    mockSelectRows([{ maxDevices }]); // partner.maxDevices
+    mockSelectRows([]); // no colliding device
+  }
+
+  function enroll() {
+    return buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+  }
+
+  it('marks the device ephemeral and binds it to the claimed session in the same transaction', async () => {
+    arrangeSupportEnroll({ status: 'claimed', hardExpiresAt: new Date(Date.now() + 3600_000) });
+    const spy = mockSupportTransaction();
+
+    const resp = await enroll();
+
+    expect(resp.status).toBe(201);
+    expect(spy.deviceInsertValues[0]).toEqual(
+      expect.objectContaining({ isEphemeral: true }),
+    );
+    // The session must learn its device id, or the technician's session never
+    // becomes connectable.
+    expect(spy.updates).toContainEqual({
+      table: supportSessionsTable,
+      values: { deviceId: 'device-support' },
+    });
+  });
+
+  it.each(['ended', 'expired', 'pending'])(
+    'rejects a support key whose session is %s, with the generic expired-key shape',
+    async (status) => {
+      arrangeSupportKey({ status, hardExpiresAt: new Date(Date.now() + 3600_000) });
+      const spy = mockSupportTransaction();
+
+      const resp = await enroll();
+
+      expect(resp.status).toBe(401);
+      const body = (await resp.json()) as Record<string, unknown>;
+      expect(body.reason).toBe('enrollment_key_expired');
+      expect(spy.deviceInsertValues).toHaveLength(0);
+      expect(writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          result: 'denied',
+          details: expect.objectContaining({
+            reason: 'support_session_not_claimable',
+            supportSessionId: 'session-1',
+            sessionStatus: status,
+          }),
+        }),
+      );
+    },
+  );
+
+  it('rejects a claimed session that has passed its hard expiry', async () => {
+    arrangeSupportKey({ status: 'claimed', hardExpiresAt: new Date(Date.now() - 1_000) });
+    const spy = mockSupportTransaction();
+
+    const resp = await enroll();
+
+    expect(resp.status).toBe(401);
+    expect(spy.deviceInsertValues).toHaveLength(0);
+  });
+
+  it('rejects a support key whose session row no longer exists', async () => {
+    arrangeSupportKey(null);
+    const spy = mockSupportTransaction();
+
+    const resp = await enroll();
+
+    expect(resp.status).toBe(401);
+    expect(spy.deviceInsertValues).toHaveLength(0);
+  });
+
+  it('enrolls even when the partner is at its device limit — a support session is not a licensed endpoint', async () => {
+    arrangeSupportEnroll({ status: 'claimed', hardExpiresAt: new Date(Date.now() + 3600_000) }, 2);
+    const spy = mockSupportTransaction(2); // fleet already at the cap
+
+    const resp = await enroll();
+
+    expect(resp.status).toBe(201);
+    // The cap block is skipped wholesale, so the count query never runs.
+    expect(spy.countWhere).toHaveLength(0);
+    expect(spy.deviceInsertValues[0]).toEqual(
+      expect.objectContaining({ isEphemeral: true }),
+    );
+  });
+
+  it('leaves an ordinary enrollment non-ephemeral and touches no support session', async () => {
+    mockKeyLookup({
+      id: 'key-normal',
+      orgId: 'org-normal',
+      siteId: 'site-normal',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+      supportSessionId: null,
+    });
+    mockSelectRows([{ partnerId: 'partner-normal' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([]);
+    const spy = mockSupportTransaction();
+
+    const resp = await enroll();
+
+    expect(resp.status).toBe(201);
+    expect(spy.deviceInsertValues[0]).toEqual(
+      expect.objectContaining({ isEphemeral: false }),
+    );
+    expect(spy.updates.some((u) => u.table === supportSessionsTable)).toBe(false);
+  });
+
+  it('excludes ephemeral rows from the partner licence count', async () => {
+    mockKeyLookup({
+      id: 'key-count',
+      orgId: 'org-count',
+      siteId: 'site-count',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+      supportSessionId: null,
+    });
+    mockSelectRows([{ partnerId: 'partner-count' }]);
+    mockSelectRows([{ maxDevices: 5 }]); // cap set, so the count actually runs
+    mockSelectRows([]);
+    const spy = mockSupportTransaction(1);
+
+    const resp = await enroll();
+
+    expect(resp.status).toBe(201);
+    // [0] is the partnerOrgIds subquery's where, [1] the fleet count itself.
+    expect(spy.countWhere).toHaveLength(2);
+    // The mocked schema names the column 'devices.isEphemeral', so its presence
+    // in the serialized condition proves the exclusion reached the SQL — a
+    // regression here silently re-bills every Quick Support session.
+    expect(JSON.stringify(spy.countWhere[1])).toContain('devices.isEphemeral');
   });
 });
