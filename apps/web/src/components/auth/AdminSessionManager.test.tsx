@@ -5,7 +5,8 @@ import AdminSessionManager from './AdminSessionManager';
 import {
   apiLogout,
   fetchWithAuth,
-  restoreAccessTokenFromCookie,
+  handleSessionExpired,
+  restoreAccessTokenFromCookieDetailed,
   useAuthStore
 } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -14,7 +15,10 @@ import { navigateTo } from '../../lib/navigation';
 vi.mock('../../stores/auth', () => ({
   apiLogout: vi.fn().mockResolvedValue(undefined),
   fetchWithAuth: vi.fn(),
-  restoreAccessTokenFromCookie: vi.fn().mockResolvedValue(false),
+  handleSessionExpired: vi.fn(),
+  // Default 'transient' mirrors the old default-false mock: no side effects
+  // (no stamp, no eviction) unless a test overrides it.
+  restoreAccessTokenFromCookieDetailed: vi.fn().mockResolvedValue('transient'),
   useAuthStore: vi.fn()
 }));
 
@@ -31,6 +35,8 @@ const apiLogoutMock = vi.mocked(apiLogout);
 const navigateToMock = vi.mocked(navigateTo);
 const useAuthStoreMock = vi.mocked(useAuthStore);
 const useOrgStoreMock = vi.mocked(useOrgStore);
+const restoreAccessTokenFromCookieDetailedMock = vi.mocked(restoreAccessTokenFromCookieDetailed);
+const handleSessionExpiredMock = vi.mocked(handleSessionExpired);
 
 const ORG_ID = 'org-123';
 
@@ -432,5 +438,117 @@ describe('AdminSessionManager scope switching (#2348 / #2429)', () => {
 
     expect(apiLogoutMock).toHaveBeenCalledTimes(1);
     expect(navigateToMock).toHaveBeenCalledWith('/login', { replace: true });
+  });
+});
+
+// Task 3: the 5-minute keepalive heartbeat now reacts to the detailed
+// restore outcome instead of discarding it — a dead refresh cookie must be
+// caught proactively instead of surfacing only the next time the user
+// clicks something.
+describe('AdminSessionManager heartbeat refresh outcomes (Task 3)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    useAuthStoreMock.mockImplementation((selector: any) => selector({ isAuthenticated: true }));
+    // All Organizations mode, long partner timeout — keeps idle-logout well
+    // out of range so these tests isolate the refresh-outcome behavior.
+    useOrgStoreMock.mockImplementation((selector: any) => selector({ currentOrgId: null }));
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({ settings: { security: { sessionTimeout: 1440 } } })
+    );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // NOTE on call counts below: the heartbeat effect depends on `idleTimeoutMs`
+  // (unrelated to Task 3), which flips once the async partner-settings fetch
+  // resolves — that remounts the effect and fires a second immediate
+  // `runHeartbeat()` in the same settle window. For 'restored'/'auth-failed'
+  // that second call is short-circuited (by the freshly-stamped
+  // lastRefreshAtRef, and by idleLogoutInFlightRef, respectively) so only one
+  // real refresh call lands; 'transient' stamps nothing and isn't guarded, so
+  // both immediate calls go through. Assertions below capture the
+  // post-settle baseline rather than hardcoding an absolute count, so they
+  // assert the Task 3 behavior (retry vs. not) without being coupled to that
+  // incidental double-mount.
+
+  it("'restored' stamps lastRefreshAtRef so the next heartbeat inside the interval does not re-fetch", async () => {
+    restoreAccessTokenFromCookieDetailedMock.mockResolvedValue('restored');
+
+    render(<AdminSessionManager />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const callsAfterSettle = restoreAccessTokenFromCookieDetailedMock.mock.calls.length;
+    expect(callsAfterSettle).toBeGreaterThanOrEqual(1);
+
+    // Well within the 5-minute refresh interval — must not re-fetch.
+    await act(async () => {
+      vi.advanceTimersByTime(4 * 60_000);
+      await Promise.resolve();
+    });
+
+    expect(restoreAccessTokenFromCookieDetailedMock).toHaveBeenCalledTimes(callsAfterSettle);
+    expect(handleSessionExpiredMock).not.toHaveBeenCalled();
+    expect(apiLogoutMock).not.toHaveBeenCalled();
+  });
+
+  it("'auth-failed' calls handleSessionExpired and stands the heartbeat down permanently", async () => {
+    restoreAccessTokenFromCookieDetailedMock.mockResolvedValue('auth-failed');
+
+    render(<AdminSessionManager />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(handleSessionExpiredMock).toHaveBeenCalledTimes(1);
+    expect(handleSessionExpiredMock).toHaveBeenCalledWith('session-expired');
+    const callsAfterSettle = restoreAccessTokenFromCookieDetailedMock.mock.calls.length;
+    expect(callsAfterSettle).toBeGreaterThanOrEqual(1);
+
+    // Further ticks must not retry the refresh or call handleSessionExpired
+    // again — idleLogoutInFlightRef stood the heartbeat down permanently,
+    // same as the idle-timeout eviction path.
+    await act(async () => {
+      vi.advanceTimersByTime(30 * 60_000);
+      await Promise.resolve();
+    });
+
+    expect(restoreAccessTokenFromCookieDetailedMock).toHaveBeenCalledTimes(callsAfterSettle);
+    expect(handleSessionExpiredMock).toHaveBeenCalledTimes(1);
+    // Distinct from the heartbeat's own idle-logout path (apiLogout) — a dead
+    // refresh cookie is handled via handleSessionExpired instead.
+    expect(apiLogoutMock).not.toHaveBeenCalled();
+  });
+
+  it("'transient' does nothing — no eviction, no stamp, the next heartbeat retries", async () => {
+    restoreAccessTokenFromCookieDetailedMock.mockResolvedValue('transient');
+
+    render(<AdminSessionManager />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const callsAfterSettle = restoreAccessTokenFromCookieDetailedMock.mock.calls.length;
+    expect(callsAfterSettle).toBeGreaterThanOrEqual(1);
+    expect(handleSessionExpiredMock).not.toHaveBeenCalled();
+
+    // lastRefreshAtRef was never stamped, so a later 30s heartbeat tick
+    // retries rather than waiting out the full 5-minute interval — an
+    // offline user (e.g. on a plane) must not be logged out.
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+      await Promise.resolve();
+    });
+
+    expect(restoreAccessTokenFromCookieDetailedMock.mock.calls.length).toBeGreaterThan(callsAfterSettle);
+    expect(handleSessionExpiredMock).not.toHaveBeenCalled();
+    expect(apiLogoutMock).not.toHaveBeenCalled();
   });
 });

@@ -282,6 +282,16 @@ export function resolveApiOrigin(): string {
   return '';
 }
 
+// The verdict requestTokenRefresh/requestTokenRefreshShared reach, threaded
+// through to callers that need to distinguish "no verdict yet, retry later"
+// (transient) from "verdict reached, session is dead" (auth-failed) — see
+// restoreAccessTokenFromCookieDetailed below. Internal callers in this file
+// that only care about the tokens collapse this back to Tokens | null.
+type RefreshOutcome =
+  | { kind: 'restored'; tokens: Tokens }
+  | { kind: 'auth-failed' }
+  | { kind: 'transient' };
+
 const REFRESH_LOCK_NAME = 'breeze-token-refresh';
 
 // One low-level /auth/refresh attempt. Returns the new tokens on success, or a
@@ -367,12 +377,12 @@ async function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
 const MAX_TRANSIENT_REFRESH_RETRIES = 2;
 const TRANSIENT_REFRESH_BASE_DELAY_MS = 300;
 
-async function requestTokenRefresh(): Promise<Tokens | null> {
+async function requestTokenRefresh(): Promise<RefreshOutcome> {
   return withRefreshLock(async () => {
     let transientRetries = 0;
     for (;;) {
       const result = await refreshFetchOnce();
-      if (result.tokens) return result.tokens;
+      if (result.tokens) return { kind: 'restored', tokens: result.tokens };
 
       if (result.raced) {
         // Benign race (#1107): a sibling context won the rotation. Give the
@@ -380,19 +390,19 @@ async function requestTokenRefresh(): Promise<Tokens | null> {
         // retry exactly once. The retry sends the now-current cookie.
         await new Promise((resolve) => setTimeout(resolve, 200));
         const retry = await refreshFetchOnce();
-        if (retry.tokens) return retry.tokens;
+        if (retry.tokens) return { kind: 'restored', tokens: retry.tokens };
         // If the race-retry itself hit a transient blip, fall through to the
         // backoff path below; otherwise the session is genuinely gone.
-        if (!retry.transient) return null;
+        if (!retry.transient) return { kind: 'auth-failed' };
       } else if (!result.transient) {
         // Hard failure (expired/reused refresh cookie, real 401/403): the
         // session is unrecoverable — evict.
-        return null;
+        return { kind: 'auth-failed' };
       }
 
       // Transient gateway/network failure. Retry with bounded exponential
       // backoff before giving up and letting the caller evict the session.
-      if (transientRetries >= MAX_TRANSIENT_REFRESH_RETRIES) return null;
+      if (transientRetries >= MAX_TRANSIENT_REFRESH_RETRIES) return { kind: 'transient' };
       const delay = TRANSIENT_REFRESH_BASE_DELAY_MS * 2 ** transientRetries;
       transientRetries += 1;
       await new Promise((resolve) => setTimeout(resolve, delay));
@@ -400,9 +410,9 @@ async function requestTokenRefresh(): Promise<Tokens | null> {
   });
 }
 
-let tokenRefreshInFlight: Promise<Tokens | null> | null = null;
+let tokenRefreshInFlight: Promise<RefreshOutcome> | null = null;
 
-async function requestTokenRefreshShared(): Promise<Tokens | null> {
+async function requestTokenRefreshShared(): Promise<RefreshOutcome> {
   if (tokenRefreshInFlight) {
     return tokenRefreshInFlight;
   }
@@ -440,15 +450,31 @@ export async function waitForPendingRefresh(): Promise<void> {
   }
 }
 
-export async function restoreAccessTokenFromCookie(): Promise<boolean> {
+/**
+ * Like `restoreAccessTokenFromCookie`, but surfaces WHY a refresh didn't
+ * restore a session instead of collapsing everything to `false`. Callers that
+ * need to react differently to "session is dead" vs. "couldn't reach a
+ * verdict, try again later" (the AdminSessionManager heartbeat, #Task-3) use
+ * this; callers that only care about restored-or-not keep using the boolean
+ * wrapper below.
+ */
+export async function restoreAccessTokenFromCookieDetailed(): Promise<'restored' | 'auth-failed' | 'transient'> {
   try {
-    const tokens = await requestTokenRefreshShared();
-    if (!tokens) return false;
-    useAuthStore.getState().setTokens(tokens);
-    return true;
+    const outcome = await requestTokenRefreshShared();
+    if (outcome.kind === 'restored') {
+      useAuthStore.getState().setTokens(outcome.tokens);
+    }
+    return outcome.kind;
   } catch {
-    return false;
+    // Unexpected throw, not a verdict from the server — treat as transient so
+    // callers retry rather than treat an unrelated exception as proof the
+    // session is dead.
+    return 'transient';
   }
+}
+
+export async function restoreAccessTokenFromCookie(): Promise<boolean> {
+  return (await restoreAccessTokenFromCookieDetailed()) === 'restored';
 }
 
 /**
@@ -467,8 +493,9 @@ export async function restoreAccessTokenFromCookie(): Promise<boolean> {
  * caller should fall back to the regular login form).
  */
 export async function bootstrapFromCfAccessRedirect(): Promise<boolean> {
-  const tokens = await requestTokenRefreshShared();
-  if (!tokens?.accessToken) return false;
+  const outcome = await requestTokenRefreshShared();
+  if (outcome.kind !== 'restored' || !outcome.tokens.accessToken) return false;
+  const tokens = outcome.tokens;
 
   let meResponse: Response;
   try {
@@ -591,10 +618,10 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
   // in-memory access token is always gone and enrollment depends entirely on
   // this refresh succeeding here.
   if (!tokens?.accessToken && isAuthenticated) {
-    const restoredTokens = await requestTokenRefreshShared();
-    if (restoredTokens) {
-      setTokens(restoredTokens);
-      tokens = restoredTokens;
+    const outcome = await requestTokenRefreshShared();
+    if (outcome.kind === 'restored') {
+      setTokens(outcome.tokens);
+      tokens = outcome.tokens;
     } else {
       // The session claims to be authenticated but the refresh cookie can no
       // longer mint an access token (rotated/revoked/expired, or — as seen in
@@ -651,12 +678,12 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
   // If unauthorized, attempt cookie-backed refresh once (unless the caller's
   // body is single-use and must never be replayed — see skipUnauthorizedRetry).
   if (response.status === 401 && !options.skipUnauthorizedRetry) {
-    const newTokens = await requestTokenRefreshShared();
-    if (newTokens) {
-      setTokens(newTokens);
+    const outcome = await requestTokenRefreshShared();
+    if (outcome.kind === 'restored') {
+      setTokens(outcome.tokens);
 
       // Retry original request with new token
-      headers.set('Authorization', `Bearer ${newTokens.accessToken}`);
+      headers.set('Authorization', `Bearer ${outcome.tokens.accessToken}`);
       response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include' });
     } else {
       // If another in-flight request already refreshed state, retry once with latest token.

@@ -14,6 +14,7 @@ import {
   handleSessionExpired,
   resolveApiOrigin,
   restoreAccessTokenFromCookie,
+  restoreAccessTokenFromCookieDetailed,
   useAuthStore,
   waitForPendingRefresh
 } from './auth';
@@ -735,6 +736,101 @@ describe('refresh rotation-race recovery (#1107)', () => {
         Object.defineProperty(navigator, 'locks', { value: prevLocks, configurable: true });
       }
     }
+  });
+});
+
+describe('restoreAccessTokenFromCookieDetailed (Task 3 — proactive keepalive)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.removeItem('breeze-auth');
+    document.cookie = 'breeze_csrf_token=csrf-test-token; path=/';
+    useAuthStore.setState({
+      user: baseUser,
+      tokens: null,
+      isAuthenticated: true,
+      isLoading: false,
+      mfaPending: false,
+      mfaTempToken: null
+    });
+  });
+
+  it("returns 'restored' and stores the tokens on a 200", async () => {
+    const refreshed: Tokens = { accessToken: 'access-restored', expiresInSeconds: 3600 };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({ tokens: refreshed }, true, 200)));
+
+    const outcome = await restoreAccessTokenFromCookieDetailed();
+
+    expect(outcome).toBe('restored');
+    expect(useAuthStore.getState().tokens?.accessToken).toBe('access-restored');
+  });
+
+  it("returns 'auth-failed' on a hard 401 (expired/reused refresh cookie) without storing tokens", async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(makeResponse({ error: 'Invalid refresh token' }, false, 401))
+    );
+
+    const outcome = await restoreAccessTokenFromCookieDetailed();
+
+    expect(outcome).toBe('auth-failed');
+    expect(useAuthStore.getState().tokens).toBeNull();
+  });
+
+  it("returns 'auth-failed' when a raced retry lands on a hard failure", async () => {
+    const racedResponse = (): Response =>
+      ({
+        ok: false,
+        status: 401,
+        json: vi.fn().mockResolvedValue({ error: 'Refresh already in progress', reason: 'refresh_raced' })
+      }) as unknown as Response;
+
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(racedResponse())
+        .mockResolvedValueOnce(makeResponse({ error: 'Invalid refresh token' }, false, 401))
+    );
+
+    const outcome = await restoreAccessTokenFromCookieDetailed();
+
+    expect(outcome).toBe('auth-failed');
+  });
+
+  it("returns 'transient' once a 5xx exhausts the retry budget — no verdict on the cookie", async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({ error: 'bad gateway' }, false, 502)));
+
+    const outcome = await restoreAccessTokenFromCookieDetailed();
+
+    expect(outcome).toBe('transient');
+    // Initial attempt + MAX_TRANSIENT_REFRESH_RETRIES (2) = 3 refresh calls.
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
+    expect(useAuthStore.getState().tokens).toBeNull();
+  });
+
+  it("returns 'restored' once a transient 5xx recovers within the retry budget", async () => {
+    const refreshed: Tokens = { accessToken: 'access-after-502', expiresInSeconds: 3600 };
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(makeResponse({ error: 'bad gateway' }, false, 502))
+        .mockResolvedValueOnce(makeResponse({ tokens: refreshed }, true, 200))
+    );
+
+    const outcome = await restoreAccessTokenFromCookieDetailed();
+
+    expect(outcome).toBe('restored');
+    expect(useAuthStore.getState().tokens?.accessToken).toBe('access-after-502');
+  });
+
+  it("restoreAccessTokenFromCookie still returns a plain boolean (thin wrapper)", async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(makeResponse({ error: 'Invalid refresh token' }, false, 401))
+    );
+
+    await expect(restoreAccessTokenFromCookie()).resolves.toBe(false);
   });
 });
 

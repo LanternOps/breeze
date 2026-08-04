@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { apiLogout, fetchWithAuth, restoreAccessTokenFromCookie, useAuthStore } from '../../stores/auth';
+import {
+  apiLogout,
+  fetchWithAuth,
+  handleSessionExpired,
+  restoreAccessTokenFromCookieDetailed,
+  useAuthStore
+} from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '../../lib/navigation';
 
@@ -208,10 +214,19 @@ export default function AdminSessionManager() {
 
       refreshInFlightRef.current = true;
       try {
-        const restored = await restoreAccessTokenFromCookie();
-        if (restored) {
+        const outcome = await restoreAccessTokenFromCookieDetailed();
+        if (outcome === 'restored') {
           lastRefreshAtRef.current = Date.now();
+        } else if (outcome === 'auth-failed') {
+          // The refresh endpoint reached a verdict: the session is
+          // unrecoverable. Stand the heartbeat down before evicting so no
+          // later tick fires a redundant refresh against a dead cookie.
+          idleLogoutInFlightRef.current = true;
+          handleSessionExpired('session-expired');
         }
+        // 'transient': no verdict on the cookie (network/5xx blip) — do
+        // nothing. lastRefreshAtRef stays stale so the next 30s heartbeat
+        // retries; an offline user (e.g. on a plane) must NOT be logged out.
       } finally {
         refreshInFlightRef.current = false;
       }
