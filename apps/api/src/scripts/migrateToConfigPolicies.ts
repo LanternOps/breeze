@@ -492,6 +492,10 @@ async function migratePatchPoliciesLive(
   // never consumed by the approval path) — default to ['os'] rather than
   // reading it, so this one-shot script isn't the last remaining reader of
   // that column once its writers are gone.
+  // Acceptable only because this script is retained as a one-shot, not a
+  // repeatable sync: re-running it for a legacy partner whose ring already
+  // opted in to third-party auto-approve would silently drop that opt-in
+  // by re-writing sources to ['os'] here.
   const sources: string[] = ['os'];
 
   await tx.insert(configPolicyPatchSettings).values({

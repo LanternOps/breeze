@@ -37,10 +37,24 @@ BEGIN
   -- 2) Rings with an autoApprove:true third_party_app category rule: turn on
   --    the ring-level toggle (carrying the rule's deferral override) and strip
   --    the rule. Preserves intent: those rings wanted 3P auto-approved.
+  --    Accepted narrowing: an {enabled:true, severities:[]} ring with a 3P
+  --    rule loses its rule-based 3P behavior — statement 1 runs first and
+  --    stamps thirdPartyApps:false (no recognized severities), so this
+  --    statement's "lacks thirdPartyApps" guard then skips it, and statement
+  --    3 strips the now-inert rule. Fail-closed; 0 known rows.
   UPDATE patch_policies p
   SET auto_approve =
         (CASE WHEN jsonb_typeof(p.auto_approve) = 'object' THEN p.auto_approve ELSE '{}'::jsonb END)
         || jsonb_build_object('enabled', true, 'thirdPartyApps', true)
+        -- The pre-image's OS auto-approve state must survive this ring-level
+        -- enable: if the ring wasn't already boolean-true enabled, its
+        -- severities (if any) belonged to a disabled state and must not
+        -- silently start applying now that 'enabled' flips to true. Compare
+        -- against the jsonb boolean (not ->>'enabled' = 'true' text, which a
+        -- malformed {"enabled":"true"} string row would also fail — and we
+        -- want that case cleared too).
+        || CASE WHEN p.auto_approve->'enabled' = 'true'::jsonb THEN '{}'::jsonb
+                ELSE jsonb_build_object('severities', '[]'::jsonb) END
         || COALESCE(
              (SELECT CASE WHEN (r.rule->>'deferralDaysOverride') ~ '^\d{1,3}$'
                            AND (r.rule->>'deferralDaysOverride')::int <= 365
