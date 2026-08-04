@@ -6,8 +6,8 @@ import type { SellerSnapshot } from '../invoiceTypes';
 export type { SellerSnapshot } from '../invoiceTypes';
 export { sellerLines } from '../invoiceTypes';
 import { STATUS_PILL, type StatusPillRole } from '../invoiceTypes';
-import type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable } from '@breeze/shared';
-export type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable } from '@breeze/shared';
+import type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable, Pax8SubmitState } from '@breeze/shared';
+export type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable, Pax8SubmitState } from '@breeze/shared';
 // Type-only (erased at compile time), so this pulls no runtime dep on the API
 // client into the types module.
 import type { QuoteSendEmailReason } from '../../../lib/api/quotes';
@@ -254,7 +254,7 @@ export interface QuoteDetail {
   pax8Order?: {
     id: string;
     status: string;
-    lines: { sourceQuoteLineId: string | null; submitState: string; quantity: string | null }[];
+    lines: { sourceQuoteLineId: string | null; submitState: Pax8SubmitState; quantity: string | null }[];
   } | null;
 }
 

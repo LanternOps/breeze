@@ -903,6 +903,7 @@
         "pax8Badge": {
           "failed": "Échec Pax8",
           "ordered": "Commandé via Pax8",
+          "reconcile": "Pax8 à vérifier",
           "staged": "Préparé dans Pax8"
         },
         "table": {

@@ -202,6 +202,48 @@ describe('QuoteDetail — breakdown Pax8 cross-reference badges', () => {
     expect(screen.getByTestId('quote-order-breakdown-pax8-l-1')).toHaveTextContent('Pax8 failed');
   });
 
+  it('shows the failed badge (not ordered) when the order status is failed but this line reads succeeded', async () => {
+    // Synthetic/defensive combination: deriveOrderStatus only sets order-level
+    // 'failed' when EVERY line failed (apps/api/src/services/pax8OrderSubmitRepository.ts),
+    // so a real order can't pair status:'failed' with a succeeded line — but the
+    // badge precedence must still resolve to failed if it ever did.
+    render(<QuoteDetail detail={acceptedDetail(
+      [line({ id: 'l-1', sku: 'LT-100' })],
+      'converted',
+      { id: 'order-1', status: 'failed', lines: [
+        { sourceQuoteLineId: 'l-1', submitState: 'succeeded', quantity: '1.00' },
+      ] },
+    )} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-order-breakdown-pax8-l-1')).toHaveTextContent('Pax8 failed');
+  });
+
+  it('shows a warning-toned "Pax8 needs review" badge for a needs_reconcile submit state', async () => {
+    render(<QuoteDetail detail={acceptedDetail(
+      [line({ id: 'l-1', sku: 'LT-100' })],
+      'converted',
+      { id: 'order-1', status: 'awaiting_details', lines: [
+        { sourceQuoteLineId: 'l-1', submitState: 'needs_reconcile', quantity: '1.00' },
+      ] },
+    )} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+    const badge = screen.getByTestId('quote-order-breakdown-pax8-l-1');
+    expect(badge).toHaveTextContent('Pax8 needs review');
+    expect(badge.className).toContain('warning');
+  });
+
+  it('shows "Staged in Pax8" for an in_flight submission — not yet a confirmed order', async () => {
+    render(<QuoteDetail detail={acceptedDetail(
+      [line({ id: 'l-1', sku: 'LT-100' })],
+      'converted',
+      { id: 'order-1', status: 'submitting', lines: [
+        { sourceQuoteLineId: 'l-1', submitState: 'in_flight', quantity: '1.00' },
+      ] },
+    )} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-order-breakdown-pax8-l-1')).toHaveTextContent('Staged in Pax8');
+  });
+
   it('renders no badges when the quote has no staged Pax8 order', async () => {
     render(<QuoteDetail detail={acceptedDetail([line({ id: 'l-1', sku: 'LT-100' })], 'converted')} />);
     await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());

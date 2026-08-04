@@ -21,23 +21,37 @@ type Pax8OrderLine = Pax8Order['lines'][number];
 
 /** Cross-reference state for a single order line against its staged/converted
  *  Pax8 order — never a blanket "fulfilled"; the label is state-accurate.
- *  Precedence (checked in order): a failure (either the line's own submit
- *  outcome, or an order-wide failure) always wins; then an actually-submitted
- *  line reads as ordered even if the order as a whole is still gathering
- *  details for other lines; only then does the order's own awaiting/draft
- *  status fall back to "staged". A line with no matching Pax8 order line, or
- *  one that's merely pending, gets no badge. */
-export function pax8BadgeState(order: Pax8Order, line: Pax8OrderLine): 'staged' | 'ordered' | 'failed' | null {
+ *  `line.submitState` is typed `Pax8SubmitState` (packages/shared/src/types/pax8-enums.ts:
+ *  `pending | in_flight | succeeded | failed | needs_reconcile`), so this switches
+ *  on the full real enum — a future member added there is a compile error here,
+ *  not a silent fall-through to no badge.
+ *  Precedence (checked in order):
+ *   1. failed — the line's own submit outcome, OR an order-wide failure. Highest
+ *      precedence. Order-level `status === 'failed'` is set by
+ *      `deriveOrderStatus` (apps/api/src/services/pax8OrderSubmitRepository.ts)
+ *      only when EVERY line failed, so pairing it with a `succeeded` line
+ *      shouldn't occur in practice — checking it here anyway is defensive, not
+ *      a case this UI expects to hit.
+ *   2. needs_reconcile — the state a technician most needs to see (an unknown
+ *      write against Pax8 that wasn't confirmed either way).
+ *   3. ordered — only a CONFIRMED `succeeded` submit reads as ordered.
+ *   4. staged (catch-all) — `pending`/`in_flight`: submission hasn't been
+ *      confirmed ordered yet, regardless of the order's own status (an
+ *      in-flight submission for THIS line is still "staged" from the tech's
+ *      point of view even if the order record itself has moved past
+ *      awaiting_details/draft for other lines). */
+export function pax8BadgeState(order: Pax8Order, line: Pax8OrderLine): 'staged' | 'ordered' | 'failed' | 'reconcile' {
   if (line.submitState === 'failed' || order.status === 'failed') return 'failed';
-  if (line.submitState === 'submitted' || line.submitState === 'succeeded') return 'ordered';
-  if (order.status === 'awaiting_details' || order.status === 'draft') return 'staged';
-  return null;
+  if (line.submitState === 'needs_reconcile') return 'reconcile';
+  if (line.submitState === 'succeeded') return 'ordered';
+  return 'staged'; // remaining Pax8SubmitState values: 'pending' | 'in_flight'
 }
 
-const PAX8_BADGE_ROLE: Record<'staged' | 'ordered' | 'failed', StatusPillRole> = {
+const PAX8_BADGE_ROLE: Record<'staged' | 'ordered' | 'failed' | 'reconcile', StatusPillRole> = {
   staged: 'info',
   ordered: 'success',
   failed: 'danger',
+  reconcile: 'warning',
 };
 
 /** Lines the MSP actually has to procure once the quote is won: anything
