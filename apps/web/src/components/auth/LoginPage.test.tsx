@@ -318,3 +318,56 @@ describe('LoginPage navigation after MFA verify', () => {
     expect(navigateTo).toHaveBeenCalledWith('/');
   });
 });
+
+// Session-expiry polish: handleSessionExpired() redirects an expired session to
+// /login?next=…&reason=<code>. Without a notice the user lands on a bare sign-in
+// form with no explanation of why they were kicked out.
+describe('LoginPage session-expiry notice', () => {
+  function withSearch(search: string, run: () => Promise<void>): Promise<void> {
+    const realLocation = window.location;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...realLocation, search },
+    });
+    return run().finally(() => {
+      Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
+    });
+  }
+
+  it.each([
+    ['session-expired', /Your session expired\. Please sign in again to continue\./i],
+    ['idle', /You were signed out due to inactivity\./i],
+  ])('renders the notice for ?reason=%s', async (reason, copy) =>
+    withSearch(`?next=%2Fdevices&reason=${reason}`, async () => {
+      render(<LoginPage />);
+
+      const notice = await screen.findByTestId('login-session-expired-notice');
+      expect(notice).toHaveTextContent(copy);
+    }));
+
+  it('renders nothing for an unrecognized reason', async () =>
+    withSearch('?reason=made-up-code', async () => {
+      render(<LoginPage />);
+
+      await waitFor(() => screen.getByLabelText(/email/i));
+      expect(screen.queryByTestId('login-session-expired-notice')).not.toBeInTheDocument();
+    }));
+
+  it('renders nothing when no reason param is present', async () =>
+    withSearch('', async () => {
+      render(<LoginPage />);
+
+      await waitFor(() => screen.getByLabelText(/email/i));
+      expect(screen.queryByTestId('login-session-expired-notice')).not.toBeInTheDocument();
+    }));
+
+  // An SSO bounce carries the more actionable copy, so the two must not stack.
+  it('lets an SSO ?error= win when both params are present', async () =>
+    withSearch('?error=sso_link_required&reason=session-expired', async () => {
+      render(<LoginPage />);
+
+      const notice = await screen.findByRole('alert');
+      expect(notice).toHaveTextContent(/This account already has a password/i);
+      expect(screen.queryByTestId('login-session-expired-notice')).not.toBeInTheDocument();
+    }));
+});

@@ -26,7 +26,7 @@ function consumeCfAccessLoginParam(): boolean {
 
 export default function AuthOverlay() {
   const { t } = useTranslation('auth');
-  const { isAuthenticated, isLoading, tokens } = useAuthStore();
+  const { isAuthenticated, isLoading, tokens, sessionExpiredReason } = useAuthStore();
   const [isChecking, setIsChecking] = useState(true);
   const [isRecovering, setIsRecovering] = useState(false);
   const [recoverAttempted, setRecoverAttempted] = useState(false);
@@ -123,6 +123,31 @@ export default function AuthOverlay() {
       requestAnimationFrame(() => setFadeState('fading'));
     }
   }, [shouldHide, fadeState]);
+
+  // Session expiry mask. Checked BEFORE the `fadeState === 'hidden'` early
+  // return: by the time a session expires the overlay has long since faded out
+  // and unmounted itself, and `handleSessionExpired()` has already gutted the
+  // store — without this branch the user stares at an empty sidebar and blank
+  // widgets until the browser finishes the redirect. Purely cosmetic: the
+  // navigation is `window.location.replace` inside `handleSessionExpired`, this
+  // component must never navigate on its own.
+  if (sessionExpiredReason) {
+    return (
+      <div
+        data-testid="session-expired-overlay"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-background"
+      >
+        <div className="text-center">
+          <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary" />
+          <p className="mt-4 text-sm text-muted-foreground">
+            {t('common.sessionExpiredRedirecting', {
+              defaultValue: 'Your session has expired — redirecting to sign in…',
+            })}
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (fadeState === 'hidden') {
     return null;
