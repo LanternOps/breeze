@@ -4,7 +4,7 @@
  * Single approval/filtering gate for patch job execution. For each device it
  * resolves the set of pending patches a job is allowed to install, covering:
  *  - manual approvals (partner-wide or ring-scoped)
- *  - ring category rules (including the virtual 'third_party_app' category)
+ *  - ring category rules (exact OS category match; terminal on match)
  *  - ring-level auto-approve (enabled + severities + deferral window) — #1317
  *  - ring-less policy-level auto-approve (severity list + deferral window)
  *  - policy source filtering ('os' vs 'third_party', ...)
@@ -24,8 +24,11 @@ import { and, eq, inArray } from 'drizzle-orm';
 export interface CategoryRule {
   category: string;
   autoApprove: boolean;
+  /** Severity allowlist — the canonical field name the route/UI write (updateRings.ts categoryRuleSchema). */
+  autoApproveSeverities?: string[];
+  /** @deprecated Legacy stored alias for autoApproveSeverities (rows/snapshots written before 2026-08). Read-only. */
   severityFilter?: string[];
-  deferralDaysOverride?: number;
+  deferralDaysOverride?: number | null;
 }
 
 /**
@@ -527,31 +530,33 @@ function evaluatePatchApproval(
     return null;
   }
 
-  // Priority 2: Category rule.
-  // 'third_party_app' is a virtual category — agents report inconsistent
-  // category strings for app updates (application/homebrew/homebrew-cask/...),
-  // so it matches by patch source instead. An exact category rule wins.
-  let rule = patch.category ? categoryRuleMap.get(canonicalizePatchCategory(patch.category)) : undefined;
-  if (!rule && isThirdPartyPatchSource(patch.source)) {
-    rule = categoryRuleMap.get('third_party_app');
-  }
-  if (rule && rule.autoApprove) {
-    // Check severity filter. When a non-empty filter is set, a patch whose
-    // severity is null cannot satisfy it and must NOT auto-approve — same
-    // fail-closed posture as the policy and ring paths. (Previously a
-    // null-severity patch short-circuited the filter and fell through.)
-    if (rule.severityFilter && rule.severityFilter.length > 0) {
-      if (!patch.severity || !rule.severityFilter.includes(patch.severity)) {
-        return null; // Severity null, or not in allowed list
+  // Priority 2: Category rule (OS categories only). The virtual
+  // 'third_party_app' category was removed — third-party auto-approval is the
+  // ring-level thirdPartyApps toggle (Priority 3); stored third_party_app rules
+  // were migrated to it by the 2026-08-13 backfill. A matching rule is
+  // TERMINAL either way: autoApprove:false means "needs manual approval" (the
+  // UI's words) and must not fall through to ring-level auto-approve.
+  const rule = patch.category
+    ? categoryRuleMap.get(canonicalizePatchCategory(patch.category))
+    : undefined;
+  if (rule) {
+    if (!rule.autoApprove) {
+      return null;
+    }
+    // Severity allowlist. Canonical name is autoApproveSeverities (what the
+    // route/UI write); severityFilter is honored as a legacy stored alias —
+    // before 2026-08 the evaluator ONLY read severityFilter, which the writers
+    // never produced, so chips were silently unenforced (fail-open).
+    const severityAllowlist = rule.autoApproveSeverities ?? rule.severityFilter;
+    if (severityAllowlist && severityAllowlist.length > 0) {
+      if (!patch.severity || !severityAllowlist.includes(patch.severity)) {
+        return null;
       }
     }
-
-    // Check deferral period
     const deferralDays = rule.deferralDaysOverride ?? ringConfig.deferralDays;
     if (isHeldByDeferral(patch, deferralDays, now, 'category')) {
       return null;
     }
-
     return 'category_rule';
   }
 

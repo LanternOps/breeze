@@ -387,8 +387,8 @@ describe('app rules in resolveApprovedPatchesForDevice', () => {
   it('applies an app block rule under a linked ring too', async () => {
     mockPendingAndApprovals(
       [
-        pendingRow({ patchId: P1, devicePatchId: 'dp-1', source: 'third_party', category: 'homebrew', packageId: 'Mozilla.Firefox', version: '121.0' }),
-        pendingRow({ patchId: P2, devicePatchId: 'dp-2', source: 'third_party', category: 'homebrew', packageId: 'VideoLAN.VLC', version: '3.0.20' }),
+        pendingRow({ patchId: P1, devicePatchId: 'dp-1', source: 'third_party', category: 'third_party_app', packageId: 'Mozilla.Firefox', version: '121.0' }),
+        pendingRow({ patchId: P2, devicePatchId: 'dp-2', source: 'third_party', category: 'third_party_app', packageId: 'VideoLAN.VLC', version: '3.0.20' }),
       ],
       []
     );
@@ -520,7 +520,7 @@ describe('ring-less path: only manual approvals apply', () => {
   });
 });
 
-describe('third_party_app category rule', () => {
+describe('"third_party_app" as a literal category (virtual source-matching removed, #spec 2026-08-04)', () => {
   beforeEach(() => {
     vi.mocked(db.select).mockReset();
   });
@@ -532,7 +532,7 @@ describe('third_party_app category rule', () => {
     deferralDays: 0,
   };
 
-  it('auto-approves a third_party-source patch regardless of its category string', async () => {
+  it('no longer matches a third_party-source patch whose category is not literally "third_party_app"', async () => {
     mockPendingAndApprovals(
       [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000010', source: 'third_party', category: 'homebrew-cask' })],
       []
@@ -540,11 +540,10 @@ describe('third_party_app category rule', () => {
 
     const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, ringWithThirdPartyRule);
 
-    expect(approved).toHaveLength(1);
-    expect(approved[0]?.approvalReason).toBe('category_rule');
+    expect(approved).toHaveLength(0);
   });
 
-  it('does not apply the third_party_app rule to OS-source patches', async () => {
+  it('does not match an OS-source patch whose category is not literally "third_party_app"', async () => {
     mockPendingAndApprovals(
       [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000011', source: 'microsoft', category: 'application' })],
       []
@@ -555,7 +554,7 @@ describe('third_party_app category rule', () => {
     expect(approved).toHaveLength(0);
   });
 
-  it('prefers an exact category rule over the third_party_app fallback', async () => {
+  it('an exact category rule governs; an unrelated third_party_app rule never applies to it (no virtual fallback)', async () => {
     mockPendingAndApprovals(
       [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000012', source: 'third_party', category: 'homebrew', severity: 'low' })],
       []
@@ -572,9 +571,9 @@ describe('third_party_app category rule', () => {
     expect(approved).toHaveLength(0);
   });
 
-  it('applies the severity filter on the third_party_app rule', async () => {
+  it('applies the severity filter on a literal "third_party_app" category rule', async () => {
     mockPendingAndApprovals(
-      [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000013', source: 'third_party', category: 'homebrew', severity: 'low' })],
+      [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000013', source: 'third_party', category: 'third_party_app', severity: 'low' })],
       []
     );
 
@@ -586,11 +585,11 @@ describe('third_party_app category rule', () => {
     expect(approved).toHaveLength(0);
   });
 
-  it('does NOT auto-approve a null-severity patch under a category severity filter', async () => {
+  it('does NOT auto-approve a null-severity patch under a literal "third_party_app" category severity filter', async () => {
     // Mirrors the ring/policy fail-closed posture: a null-severity patch must
     // not slip past a non-empty category severityFilter.
     mockPendingAndApprovals(
-      [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-00000000001a', source: 'third_party', category: 'homebrew', severity: null })],
+      [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-00000000001a', source: 'third_party', category: 'third_party_app', severity: null })],
       []
     );
 
@@ -602,10 +601,10 @@ describe('third_party_app category rule', () => {
     expect(approved).toHaveLength(0);
   });
 
-  it('applies the deferral window on the third_party_app rule', async () => {
+  it('applies the deferral window on a literal "third_party_app" category rule', async () => {
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     mockPendingAndApprovals(
-      [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000014', source: 'third_party', category: 'homebrew', releaseDate: yesterday })],
+      [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000014', source: 'third_party', category: 'third_party_app', releaseDate: yesterday })],
       []
     );
 
@@ -621,7 +620,7 @@ describe('third_party_app category rule', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       mockPendingAndApprovals(
-        [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000019', source: 'third_party', category: 'homebrew', releaseDate: null })],
+        [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000019', source: 'third_party', category: 'third_party_app', releaseDate: null })],
         []
       );
 
@@ -639,7 +638,7 @@ describe('third_party_app category rule', () => {
     }
   });
 
-  it('matches the third_party_app rule when the patch category is null', async () => {
+  it('does not match the third_party_app rule when the patch category is null (no virtual source-fallback)', async () => {
     mockPendingAndApprovals(
       [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000015', source: 'third_party', category: null })],
       []
@@ -647,11 +646,10 @@ describe('third_party_app category rule', () => {
 
     const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, ringWithThirdPartyRule);
 
-    expect(approved).toHaveLength(1);
-    expect(approved[0]?.approvalReason).toBe('category_rule');
+    expect(approved).toHaveLength(0);
   });
 
-  it('an exact category rule with autoApprove false suppresses the third_party_app fallback', async () => {
+  it('a matching autoApprove:false category rule blocks approval regardless of an unrelated third_party_app rule', async () => {
     mockPendingAndApprovals(
       [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000016', source: 'third_party', category: 'homebrew' })],
       []
@@ -668,7 +666,7 @@ describe('third_party_app category rule', () => {
     expect(approved).toHaveLength(0);
   });
 
-  it('combines source filtering with the third_party_app rule (headline flow)', async () => {
+  it('source filtering still applies; a same-source patch with a different category no longer matches a third_party_app rule', async () => {
     mockPendingAndApprovals(
       [
         pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000017', source: 'microsoft', category: 'security' }),
@@ -682,7 +680,93 @@ describe('third_party_app category rule', () => {
       sources: ['third_party'],
     });
 
-    expect(approved.map((p) => p.patchId)).toEqual(['aaaaaaaa-0000-0000-0000-000000000018']);
+    expect(approved).toEqual([]);
+  });
+});
+
+describe('category rules — repaired semantics (#spec 2026-08-04)', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  it('enforces autoApproveSeverities written by the route/UI (was silently ignored)', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, category: 'security', severity: 'moderate' })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [{ category: 'security', autoApprove: true, autoApproveSeverities: ['critical'] }],
+      autoApprove: {},
+      deferralDays: 0,
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it('still honors legacy stored severityFilter as a read alias', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, category: 'security', severity: 'critical' })],
+      []
+    );
+
+    const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [{ category: 'security', autoApprove: true, severityFilter: ['critical'] }],
+      autoApprove: {},
+      deferralDays: 0,
+    });
+
+    expect(approved.map((r) => r.patchId)).toEqual([P1]);
+    expect(approved[0]?.approvalReason).toBe('category_rule');
+
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, category: 'security', severity: 'low' })],
+      []
+    );
+
+    const notApproved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [{ category: 'security', autoApprove: true, severityFilter: ['critical'] }],
+      autoApprove: {},
+      deferralDays: 0,
+    });
+
+    expect(notApproved).toEqual([]);
+  });
+
+  it('treats a matching autoApprove:false rule as terminal — no fall-through to ring auto-approve', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, category: 'security', severity: 'critical' })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [{ category: 'security', autoApprove: false }],
+      autoApprove: { enabled: true, severities: ['critical'] },
+      deferralDays: 0,
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it('no longer matches third-party patches to a third_party_app rule', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'third_party', category: 'application', severity: 'critical' })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [{ category: 'third_party_app', autoApprove: true }],
+      autoApprove: { enabled: false, severities: [] },
+      deferralDays: 0,
+      sources: ['os', 'third_party'],
+    });
+
+    expect(result).toEqual([]);
   });
 });
 
@@ -1411,10 +1495,10 @@ describe('deferral first-seen fallback for third-party patches (#2218)', () => {
     }
   });
 
-  it('applies the first-seen fallback on a third_party_app category deferral too', async () => {
+  it('applies the first-seen fallback on a literal "third_party_app" category deferral too', async () => {
     const yesterday = new Date(Date.now() - 24 * 3600 * 1000);
     mockPendingAndApprovals(
-      [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: null, firstSeenAt: yesterday, category: 'homebrew' })],
+      [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: null, firstSeenAt: yesterday, category: 'third_party_app' })],
       []
     );
 
@@ -1429,7 +1513,7 @@ describe('deferral first-seen fallback for third-party patches (#2218)', () => {
 
     const tenDaysAgo = new Date(Date.now() - 10 * 24 * 3600 * 1000);
     mockPendingAndApprovals(
-      [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: null, firstSeenAt: tenDaysAgo, category: 'homebrew' })],
+      [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: null, firstSeenAt: tenDaysAgo, category: 'third_party_app' })],
       []
     );
 
