@@ -41,7 +41,7 @@
  */
 import './setup';
 import { describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import {
   db,
   withDbAccessContext,
@@ -158,6 +158,23 @@ async function seedFixture(): Promise<Fixture> {
 }
 
 describe('quote_orders / quote_order_lines RLS + constraint forge (breeze_app)', () => {
+  // (0) Non-vacuity guard: the pool that code-under-test runs on inside
+  // withDbAccessContext must be the unprivileged breeze_app role with
+  // rolbypassrls=f. If this is ever a BYPASSRLS connection (e.g. a
+  // misconfigured DATABASE_URL_APP), every forge assertion below would pass
+  // even with broken policies — so fail loudly here first. Mirrors
+  // quotes-rls.integration.test.ts's case (0).
+  runDb('code-under-test runs as a non-BYPASSRLS role (guards against vacuous RLS)', async () => {
+    const fx = await seedFixture();
+    const rows = await withDbAccessContext(fx.orgAContext, () =>
+      db.execute(sql`SELECT current_user AS who, rolbypassrls
+                     FROM pg_roles WHERE rolname = current_user`)
+    );
+    const row = (rows as unknown as Array<{ who: string; rolbypassrls: boolean }>)[0];
+    expect(row?.who).toBe('breeze_app');
+    expect(row?.rolbypassrls).toBe(false);
+  });
+
   // (1) Cross-tenant INSERT denied + positive control. Under an orgA-scoped
   // breeze_app context, inserting a quote_orders row for orgB's real quote is
   // rejected by the INSERT WITH CHECK policy (quoteB/orgB are real seeded
