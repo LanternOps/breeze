@@ -13,7 +13,7 @@ const full = {
 
 describe('toCustomerLines', () => {
   it('emits exactly the customer allowlist — never cost or vendor identity', () => {
-    const [line] = toCustomerLines([full]);
+    const line = toCustomerLines([full])[0]!;
     expect(line).not.toHaveProperty('unitCost');
     expect(line).not.toHaveProperty('procurementSource');
     expect(line).not.toHaveProperty('vendorSku');
