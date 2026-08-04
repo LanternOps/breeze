@@ -714,7 +714,7 @@ async function decideHandler(
   if (updated?.executionId) {
     const aiStatus = status === 'approved' ? 'approved' : 'rejected';
     try {
-      await db
+      const mirrored = await db
         .update(aiToolExecutions)
         .set({ status: aiStatus, approvedBy: userId, approvedAt: new Date() })
         // Guarded on 'pending' (#3089): a settled approval wait marks the
@@ -726,7 +726,19 @@ async function decideHandler(
         .where(and(
           eq(aiToolExecutions.id, updated.executionId),
           eq(aiToolExecutions.status, 'pending'),
-        ));
+        ))
+        .returning({ id: aiToolExecutions.id });
+      if (mirrored.length === 0) {
+        // Lost the race, not a query failure: the execution row was already
+        // closed out (settled/timed out) between the approval_requests CAS
+        // above and this mirror — same first-wins posture as the elevation
+        // and intent mirrors below. approval_requests is still the source of
+        // truth for the mobile UI and correctly records this approver's
+        // decision, but the underlying tool call is already gone and will
+        // NOT run despite the 'approved' response below — worth a distinct
+        // log line so this isn't mistaken for the mirror simply failing.
+        console.warn('[approvals] ai_tool_executions mirror lost the race (execution already settled):', updated.executionId);
+      }
     } catch (err) {
       console.error('[approvals] Failed to mirror status to ai_tool_executions:', err);
       // Non-fatal: the approval_request row is the source of truth for the

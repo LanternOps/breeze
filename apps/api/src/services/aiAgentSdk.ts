@@ -147,8 +147,29 @@ export async function waitForTurnToSettle(session: ActiveSession, timeoutMs: num
 /**
  * How long the shared route helper below waits for a settled turn to conclude
  * (covers the model emitting its closing message) before giving up.
+ *
+ * KNOWN GAP (#1105-class, flagged in review): all four callers below run
+ * inside the request's ambient withDbAccessContext transaction (set up by
+ * authMiddleware / clientAiAuthMiddleware / helperAuth), and none of the four
+ * routes is registered in middleware/selfManagedDbContextRoutes.ts. This wait
+ * does no DB work itself, but it still pins that transaction's pooled
+ * connection idle-in-transaction for its full duration — runOutsideDbContext
+ * cannot release it (it only re-routes NEW queries to the pool; the
+ * connection itself stays checked out by the outer `baseDb.transaction(...)`
+ * callback until the whole handler returns). A client that keeps resending
+ * a message while a session sits blocked on approval can hold one pooled
+ * connection per in-flight request for up to this long — against the prod
+ * 25-connection ceiling, that's a real amplification risk under the same
+ * class this codebase already fixed for the OIDC/SFTP/notification-test
+ * routes (see selfManagedDbContextRoutes.ts). The correct fix is the same
+ * one: register these four routes as self-managed and have each wrap its own
+ * DB calls in short-lived withDbAccessContext blocks around this wait — out
+ * of scope for this change (touches auth/RLS context on four hot routes,
+ * needs its own dedicated PR + tests). Kept intentionally short here as an
+ * interim bound on the worst case; do not raise this back toward the
+ * original 15s without doing that conversion first.
  */
-export const TURN_SETTLE_WAIT_MS = 15_000;
+export const TURN_SETTLE_WAIT_MS = 3_000;
 
 export type BlockedTurnSettleResult =
   /** Waits were settled and the turn concluded — retry tryTransitionToProcessing. */
@@ -518,6 +539,29 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           helperApprovalWait.end();
         }
         if (!approved) {
+          // Mirrors the tier-2/tier-3 close-out below: on an early settle
+          // (abort signal), waitForApproval returns WITHOUT marking the row,
+          // so a later PAM decision (decideHelperToolAction/pamToolActionGovernance)
+          // would otherwise CAS this still-'pending' row to 'approved' with
+          // nothing left listening on it — a stranded approval that silently
+          // never executes. Guarded on status='pending' so a genuine
+          // reject/timeout (already marked) is a no-op.
+          try {
+            await withDbAccessContext(
+              { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+              () =>
+                db
+                  .update(aiToolExecutions)
+                  .set({ status: 'rejected', errorMessage: 'Approval wait ended before a decision was made' })
+                  .where(and(
+                    eq(aiToolExecutions.id, helperExec!.id),
+                    eq(aiToolExecutions.status, 'pending'),
+                  ))
+            );
+          } catch (err) {
+            captureException(err instanceof Error ? err : new Error(String(err)));
+            console.error('[AI-SDK] Failed to close out settled helper approval record:', helperExec.id, err);
+          }
           return {
             allowed: false,
             error: 'Tool execution was rejected or timed out awaiting administrator approval',
@@ -1227,7 +1271,14 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // regardless.
           try {
             await withDbAccessContext(
-              { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+              // userId is REQUIRED here, not just orgId: approval_requests is
+              // Shape-6 (user-id-scoped RLS — see routes/approvals.ts's
+              // system-scope note), so without it breeze_current_user_id()
+              // is NULL and the approvalRequests UPDATE below silently
+              // matches zero rows under FORCE RLS — leaving the mobile card
+              // 'pending' so a late mobile Approve can still race past
+              // decideHandler's CAS after this ledger row has already closed.
+              { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId], userId: session.auth.user.id },
               async () => {
                 await db
                   .update(aiToolExecutions)
