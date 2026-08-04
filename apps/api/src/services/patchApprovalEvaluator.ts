@@ -659,54 +659,76 @@ function isHeldByDeferral(
 interface RingAutoApproveConfig {
   enabled: boolean;
   severities: string[];
-  /**
-   * Deferral window in days for the ring auto-approve gate (#1317). 0 = no
-   * deferral. A patch whose release date is within this window is held, not
-   * approved, mirroring the policy-level / category deferral semantics.
-   */
+  /** Deferral window (days) for OS ring auto-approve. 0 = no deferral. */
   deferralDays: number;
+  /** Third-party source-level auto-approve toggle (dual consent with policy sources). */
+  thirdPartyApps: boolean;
+  /** Third-party hold override; null = inherit deferralDays. First-seen anchored (#2218). */
+  thirdPartyDeferralDays: number | null;
 }
+
+const RECOGNIZED_RING_SEVERITIES = new Set(['critical', 'important', 'moderate', 'low']);
+
+const DISABLED_RING_AUTO_APPROVE: RingAutoApproveConfig = {
+  enabled: false,
+  severities: [],
+  deferralDays: 0,
+  thirdPartyApps: false,
+  thirdPartyDeferralDays: null,
+};
 
 /**
  * Parse a ring's `autoApprove` JSONB into a typed config. Tolerant of every
- * historical shape so already-stored rings keep working after #1317:
- *  - boolean `true`  → enabled, EMPTY severity set, no deferral
- *  - `{ enabled: true, severities: [...] }` (no deferralDays) → deferral 0
- *  - `{ enabled: true, severities: [...], deferralDays: N }` → typed shape
- * Anything else (missing, `{}`, malformed) fails closed to disabled.
- *
- * NOTE: this parser is deliberately permissive about SHAPE but the approval
- * decision is fail-closed about MEANING. `enabled` with an empty severity set
- * (the legacy boolean `true`, an AI-tool-written `{ enabled: true }`, etc.)
- * auto-approves NOTHING — evaluatePatchApproval requires a non-empty severity
- * set before it will return 'ring_auto_approve'. This matches the write-side
- * Zod refinement (ringAutoApproveSchema) so the read path cannot become more
- * permissive than the writer, regardless of who wrote the row.
+ * historical shape, but FAIL-CLOSED about meaning:
+ *  - boolean `true` → enabled, no severities, no third-party → approves nothing
+ *  - missing/`{}`/malformed → disabled
+ *  - unrecognized severity strings are dropped (never matched anyway; dropping
+ *    them keeps the thirdPartyApps compatibility rule honest)
+ *  - a PRESENT but invalid `deferralDays` disables the row entirely — the old
+ *    coerce-to-0 turned a malformed hold into "no hold", which is fail-open
+ *  - `thirdPartyApps` absent (pre-2026-08 rows and job snapshots frozen before
+ *    the backfill): derived as `severities.length > 0`, which reproduces the
+ *    old #2218 severity-exemption behavior for rows the write schema accepted,
+ *    while keeping malformed `{enabled:true}` rows inert. Present non-boolean
+ *    (AI-tool or hand-written rows) → false.
  */
-function parseRingAutoApprove(autoApprove: unknown): RingAutoApproveConfig {
-  // Boolean `true` shorthand: enabled but no explicit severities. Because the
-  // read boundary fails closed on an empty severity set, this approves nothing.
+export function parseRingAutoApprove(autoApprove: unknown): RingAutoApproveConfig {
   if (autoApprove === true) {
-    return { enabled: true, severities: [], deferralDays: 0 };
+    return { ...DISABLED_RING_AUTO_APPROVE, enabled: true };
   }
 
   if (!autoApprove || typeof autoApprove !== 'object') {
-    return { enabled: false, severities: [], deferralDays: 0 };
+    return DISABLED_RING_AUTO_APPROVE;
   }
 
   const config = autoApprove as Record<string, unknown>;
-
-  if (config.enabled === true) {
-    const severities = Array.isArray(config.severities)
-      ? config.severities.filter((s): s is string => typeof s === 'string')
-      : [];
-    const rawDeferral = config.deferralDays;
-    const deferralDays =
-      typeof rawDeferral === 'number' && Number.isInteger(rawDeferral) && rawDeferral > 0
-        ? rawDeferral
-        : 0;
-    return { enabled: true, severities, deferralDays };
+  if (config.enabled !== true) {
+    return DISABLED_RING_AUTO_APPROVE;
   }
 
-  return { enabled: false, severities: [], deferralDays: 0 };
+  const severities = Array.isArray(config.severities)
+    ? config.severities.filter(
+        (s): s is string => typeof s === 'string' && RECOGNIZED_RING_SEVERITIES.has(s)
+      )
+    : [];
+
+  let deferralDays = 0;
+  if (config.deferralDays !== undefined) {
+    const raw = config.deferralDays;
+    if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) {
+      return DISABLED_RING_AUTO_APPROVE;
+    }
+    deferralDays = raw;
+  }
+
+  const thirdPartyApps =
+    'thirdPartyApps' in config ? config.thirdPartyApps === true : severities.length > 0;
+
+  const rawTp = config.thirdPartyDeferralDays;
+  const thirdPartyDeferralDays =
+    typeof rawTp === 'number' && Number.isInteger(rawTp) && rawTp >= 0 && rawTp <= 365
+      ? rawTp
+      : null;
+
+  return { enabled: true, severities, deferralDays, thirdPartyApps, thirdPartyDeferralDays };
 }

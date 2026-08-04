@@ -24,6 +24,7 @@ import {
   comparePatchVersions,
   evaluateAppRule,
   isCategoryAllowed,
+  parseRingAutoApprove,
   resolveApprovedPatchesForDevice,
   THIRD_PARTY_PATCH_SOURCES,
   type ApprovalEvaluationConfig,
@@ -1441,5 +1442,43 @@ describe('deferral first-seen fallback for third-party patches (#2218)', () => {
     });
     expect(approved).toHaveLength(1);
     expect(approved[0]?.approvalReason).toBe('category_rule');
+  });
+});
+
+describe('parseRingAutoApprove — thirdPartyApps compatibility (#spec 2026-08-04)', () => {
+  it('derives thirdPartyApps=true for a legacy enabled row with recognized severities', () => {
+    const cfg = parseRingAutoApprove({ enabled: true, severities: ['critical'], deferralDays: 3 });
+    expect(cfg).toEqual({ enabled: true, severities: ['critical'], deferralDays: 3, thirdPartyApps: true, thirdPartyDeferralDays: null });
+  });
+
+  it('derives thirdPartyApps=false for legacy enabled rows with no recognized severities', () => {
+    expect(parseRingAutoApprove({ enabled: true, severities: [] }).thirdPartyApps).toBe(false);
+    expect(parseRingAutoApprove({ enabled: true, severities: ['bogus'] }).thirdPartyApps).toBe(false);
+    expect(parseRingAutoApprove(true).thirdPartyApps).toBe(false);
+  });
+
+  it('honors an explicit thirdPartyApps boolean and treats malformed as false', () => {
+    expect(parseRingAutoApprove({ enabled: true, severities: [], thirdPartyApps: true }).thirdPartyApps).toBe(true);
+    expect(parseRingAutoApprove({ enabled: true, severities: ['critical'], thirdPartyApps: false }).thirdPartyApps).toBe(false);
+    expect(parseRingAutoApprove({ enabled: true, severities: ['critical'], thirdPartyApps: 'yes' }).thirdPartyApps).toBe(false);
+  });
+
+  it('drops unrecognized severity strings', () => {
+    expect(parseRingAutoApprove({ enabled: true, severities: ['critical', 'bogus', 7] }).severities).toEqual(['critical']);
+  });
+
+  it('disables the row on a present-but-invalid deferralDays instead of coercing to 0', () => {
+    expect(parseRingAutoApprove({ enabled: true, severities: ['critical'], deferralDays: 'soon' }).enabled).toBe(false);
+    expect(parseRingAutoApprove({ enabled: true, severities: ['critical'], deferralDays: -1 }).enabled).toBe(false);
+    expect(parseRingAutoApprove({ enabled: true, severities: ['critical'], deferralDays: 1.5 }).enabled).toBe(false);
+    // absent stays fine
+    expect(parseRingAutoApprove({ enabled: true, severities: ['critical'] })).toMatchObject({ enabled: true, deferralDays: 0 });
+  });
+
+  it('parses thirdPartyDeferralDays: valid int kept, malformed/absent/null → null', () => {
+    expect(parseRingAutoApprove({ enabled: true, severities: [], thirdPartyApps: true, thirdPartyDeferralDays: 14 }).thirdPartyDeferralDays).toBe(14);
+    expect(parseRingAutoApprove({ enabled: true, severities: [], thirdPartyApps: true, thirdPartyDeferralDays: null }).thirdPartyDeferralDays).toBeNull();
+    expect(parseRingAutoApprove({ enabled: true, severities: [], thirdPartyApps: true, thirdPartyDeferralDays: 999 }).thirdPartyDeferralDays).toBeNull();
+    expect(parseRingAutoApprove({ enabled: true, severities: [], thirdPartyApps: true }).thirdPartyDeferralDays).toBeNull();
   });
 });
