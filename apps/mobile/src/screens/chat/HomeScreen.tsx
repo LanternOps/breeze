@@ -191,8 +191,10 @@ export function HomeScreen() {
           track('chat_session_created');
         } catch (err) {
           dispatch(setStatus('error'));
-          const errMsg = err instanceof Error ? err.message : 'Could not start a session.';
-          dispatch(failAssistantMessage({ id: userMessageId, error: errMsg }));
+          // The raw message is internal (function name + HTTP status) — report it
+          // to Sentry and show the user a static string instead (issue #3141).
+          Sentry.captureException(err, { tags: { area: 'ai-session-create' } });
+          dispatch(failAssistantMessage({ id: userMessageId, error: 'Could not start a session.' }));
           return;
         }
       }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, Text, View } from 'react-native';
+import * as Sentry from '@sentry/react-native';
 
 import {
   getDeviceMetrics,
@@ -171,7 +172,10 @@ export function DeviceDetailScreen({ route }: Props) {
         if (mounted) setMetrics(data);
       })
       .catch((err: Error) => {
-        if (mounted) setMetricsError(err.message);
+        // The raw message is internal (function name + HTTP status) — report it
+        // to Sentry and keep only a static string in UI state (issue #3141).
+        Sentry.captureException(err, { tags: { area: 'device-metrics' } });
+        if (mounted) setMetricsError('Could not load metrics.');
       })
       .finally(() => {
         if (mounted) setLoadingMetrics(false);

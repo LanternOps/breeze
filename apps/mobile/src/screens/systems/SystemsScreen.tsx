@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import Svg, { Circle, Line } from 'react-native-svg';
+import * as Sentry from '@sentry/react-native';
 
 import { useApprovalTheme, palette, spacing, type } from '../../theme';
 import type { Alert, Device } from '../../services/api';
@@ -207,7 +208,10 @@ export function SystemsScreen() {
         const parent = navigation.getParent<NativeStackNavigationProp<MainTabParamList>>();
         if (parent) parent.navigate('HomeTab');
       } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Could not load conversation.';
+        // The raw message is internal (function name + HTTP status) — report it
+        // to Sentry and show the user a static string instead (issue #3141).
+        Sentry.captureException(err, { tags: { area: 'ai-sessions-history' } });
+        const msg = 'Could not load that conversation.';
         dispatch(setChatError(msg));
         setToast({ kind: 'error', text: msg });
       }
