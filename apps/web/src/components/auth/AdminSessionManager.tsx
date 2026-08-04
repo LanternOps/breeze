@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   apiLogout,
   fetchWithAuth,
@@ -7,7 +7,7 @@ import {
   useAuthStore
 } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
-import { navigateTo } from '../../lib/navigation';
+import IdleWarningDialog from './IdleWarningDialog';
 
 const DEFAULT_IDLE_TIMEOUT_MINUTES = 60;
 const DEFAULT_REFRESH_INTERVAL_MINUTES = 5;
@@ -26,14 +26,24 @@ const REFRESH_INTERVAL_MINUTES = Number.isFinite(rawRefreshIntervalMinutes) && r
 const DEFAULT_IDLE_TIMEOUT_MS = Math.max(1, IDLE_TIMEOUT_MINUTES) * 60 * 1000;
 const REFRESH_INTERVAL_MS = Math.max(1, REFRESH_INTERVAL_MINUTES) * 60 * 1000;
 const HEARTBEAT_INTERVAL_MS = 30 * 1000;
+const IDLE_WARNING_LEAD_MS = 2 * 60 * 1000;
+const COUNTDOWN_TICK_MS = 1000;
 
-const ACTIVITY_EVENTS: ReadonlyArray<keyof WindowEventMap> = [
+// Passive signals keep an unattended session alive during normal use, but once
+// the warning is up they must not answer it on the user's behalf: a drifting
+// mouse, an auto-scrolling page or a tab regaining focus is not a person at the
+// keyboard. Only deliberate input (or the modal's button) may extend the
+// session from that point.
+const PASSIVE_ACTIVITY_EVENTS: ReadonlyArray<keyof WindowEventMap> = [
   'mousemove',
+  'scroll',
+  'focus'
+];
+
+const DELIBERATE_ACTIVITY_EVENTS: ReadonlyArray<keyof WindowEventMap> = [
   'mousedown',
   'keydown',
-  'scroll',
-  'touchstart',
-  'focus'
+  'touchstart'
 ];
 
 export default function AdminSessionManager() {
@@ -47,11 +57,65 @@ export default function AdminSessionManager() {
   const lastRefreshAtRef = useRef<number>(0);
   const refreshInFlightRef = useRef(false);
   const idleLogoutInFlightRef = useRef(false);
+  const [warningVisible, setWarningVisible] = useState(false);
+  const [warningRemainingMs, setWarningRemainingMs] = useState(0);
+  const [signingOut, setSigningOut] = useState(false);
+  // Mirrors `warningVisible` for the window event handlers, which are
+  // registered once per authenticated session and would otherwise close over a
+  // stale value.
+  const warningVisibleRef = useRef(false);
+
+  /** Keepalive refresh. Shared by the heartbeat and the "Stay signed in" path. */
+  const refreshAccessToken = useCallback(async () => {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+    try {
+      const outcome = await restoreAccessTokenFromCookieDetailed();
+      if (outcome === 'restored') {
+        lastRefreshAtRef.current = Date.now();
+      } else if (outcome === 'auth-failed') {
+        // The refresh endpoint reached a verdict: the session is
+        // unrecoverable. Stand the heartbeat down before evicting so no
+        // later tick fires a redundant refresh against a dead cookie.
+        idleLogoutInFlightRef.current = true;
+        handleSessionExpired('session-expired');
+      }
+      // 'transient': no verdict on the cookie (network/5xx blip) — do
+      // nothing. lastRefreshAtRef stays stale so the next 30s heartbeat
+      // retries; an offline user (e.g. on a plane) must NOT be logged out.
+    } finally {
+      refreshInFlightRef.current = false;
+    }
+  }, []);
+
+  const runIdleLogout = useCallback(async () => {
+    if (idleLogoutInFlightRef.current) return;
+    idleLogoutInFlightRef.current = true;
+    setSigningOut(true);
+    // Order matters: apiLogout revokes the refresh-token family server-side and
+    // needs the Bearer/localStorage state that handleSessionExpired's logout()
+    // clears.
+    await apiLogout();
+    handleSessionExpired('idle');
+  }, []);
+
+  const dismissWarning = useCallback(() => {
+    if (!warningVisibleRef.current || idleLogoutInFlightRef.current) return;
+    warningVisibleRef.current = false;
+    setWarningVisible(false);
+    lastActivityAtRef.current = Date.now();
+    // The access token has been sitting untouched for most of the idle budget;
+    // make it fresh again the moment the user reclaims the session.
+    void refreshAccessToken();
+  }, [refreshAccessToken]);
 
   useEffect(() => {
     if (!isAuthenticated) {
       lastActivityAtRef.current = Date.now();
       lastRefreshAtRef.current = 0;
+      warningVisibleRef.current = false;
+      setWarningVisible(false);
+      setSigningOut(false);
       return;
     }
 
@@ -59,18 +123,37 @@ export default function AdminSessionManager() {
       lastActivityAtRef.current = Date.now();
     };
 
-    for (const eventName of ACTIVITY_EVENTS) {
-      window.addEventListener(eventName, markActivity, { passive: true });
+    const handlePassiveActivity = () => {
+      if (warningVisibleRef.current) return;
+      markActivity();
+    };
+
+    const handleDeliberateActivity = () => {
+      if (warningVisibleRef.current) {
+        dismissWarning();
+        return;
+      }
+      markActivity();
+    };
+
+    for (const eventName of PASSIVE_ACTIVITY_EVENTS) {
+      window.addEventListener(eventName, handlePassiveActivity, { passive: true });
     }
-    document.addEventListener('visibilitychange', markActivity);
+    for (const eventName of DELIBERATE_ACTIVITY_EVENTS) {
+      window.addEventListener(eventName, handleDeliberateActivity, { passive: true });
+    }
+    document.addEventListener('visibilitychange', handlePassiveActivity);
 
     return () => {
-      for (const eventName of ACTIVITY_EVENTS) {
-        window.removeEventListener(eventName, markActivity);
+      for (const eventName of PASSIVE_ACTIVITY_EVENTS) {
+        window.removeEventListener(eventName, handlePassiveActivity);
       }
-      document.removeEventListener('visibilitychange', markActivity);
+      for (const eventName of DELIBERATE_ACTIVITY_EVENTS) {
+        window.removeEventListener(eventName, handleDeliberateActivity);
+      }
+      document.removeEventListener('visibilitychange', handlePassiveActivity);
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, dismissWarning]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -192,12 +275,17 @@ export default function AdminSessionManager() {
       const idleMs = now - lastActivityAtRef.current;
 
       if (idleMs >= idleTimeoutMs) {
-        idleLogoutInFlightRef.current = true;
-        await apiLogout();
-        if (!cancelled) {
-          await navigateTo('/login', { replace: true });
-        }
+        await runIdleLogout();
         return;
+      }
+
+      // Never warn for more than half the budget: a 2-minute org policy would
+      // otherwise raise the modal the moment the session starts.
+      const leadMs = Math.min(IDLE_WARNING_LEAD_MS, idleTimeoutMs / 2);
+      if (idleMs >= idleTimeoutMs - leadMs) {
+        warningVisibleRef.current = true;
+        setWarningVisible(true);
+        setWarningRemainingMs(idleTimeoutMs - idleMs);
       }
 
       if (document.visibilityState !== 'visible') {
@@ -208,28 +296,7 @@ export default function AdminSessionManager() {
         return;
       }
 
-      if (refreshInFlightRef.current) {
-        return;
-      }
-
-      refreshInFlightRef.current = true;
-      try {
-        const outcome = await restoreAccessTokenFromCookieDetailed();
-        if (outcome === 'restored') {
-          lastRefreshAtRef.current = Date.now();
-        } else if (outcome === 'auth-failed') {
-          // The refresh endpoint reached a verdict: the session is
-          // unrecoverable. Stand the heartbeat down before evicting so no
-          // later tick fires a redundant refresh against a dead cookie.
-          idleLogoutInFlightRef.current = true;
-          handleSessionExpired('session-expired');
-        }
-        // 'transient': no verdict on the cookie (network/5xx blip) — do
-        // nothing. lastRefreshAtRef stays stale so the next 30s heartbeat
-        // retries; an offline user (e.g. on a plane) must NOT be logged out.
-      } finally {
-        refreshInFlightRef.current = false;
-      }
+      await refreshAccessToken();
     };
 
     void runHeartbeat();
@@ -241,7 +308,34 @@ export default function AdminSessionManager() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [isAuthenticated, idleTimeoutMs]);
+  }, [isAuthenticated, idleTimeoutMs, refreshAccessToken, runIdleLogout]);
 
-  return null;
+  // The 30s heartbeat raises the warning; this drives the visible countdown and
+  // owns expiry, so the logout lands on the second the countdown shows 0:00
+  // rather than up to a heartbeat later.
+  useEffect(() => {
+    if (!warningVisible) return;
+
+    const tick = () => {
+      if (idleLogoutInFlightRef.current) return;
+      const remainingMs = idleTimeoutMs - (Date.now() - lastActivityAtRef.current);
+      setWarningRemainingMs(Math.max(0, remainingMs));
+      if (remainingMs <= 0) {
+        void runIdleLogout();
+      }
+    };
+
+    const timer = window.setInterval(tick, COUNTDOWN_TICK_MS);
+    return () => window.clearInterval(timer);
+  }, [warningVisible, idleTimeoutMs, runIdleLogout]);
+
+  if (!warningVisible) return null;
+
+  return (
+    <IdleWarningDialog
+      remainingMs={warningRemainingMs}
+      signingOut={signingOut}
+      onStay={dismissWarning}
+    />
+  );
 }

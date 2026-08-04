@@ -1,4 +1,4 @@
-import { act, render } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AdminSessionManager from './AdminSessionManager';
@@ -10,7 +10,6 @@ import {
   useAuthStore
 } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
-import { navigateTo } from '../../lib/navigation';
 
 vi.mock('../../stores/auth', () => ({
   apiLogout: vi.fn().mockResolvedValue(undefined),
@@ -26,13 +25,8 @@ vi.mock('../../stores/orgStore', () => ({
   useOrgStore: vi.fn()
 }));
 
-vi.mock('../../lib/navigation', () => ({
-  navigateTo: vi.fn().mockResolvedValue(undefined)
-}));
-
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const apiLogoutMock = vi.mocked(apiLogout);
-const navigateToMock = vi.mocked(navigateTo);
 const useAuthStoreMock = vi.mocked(useAuthStore);
 const useOrgStoreMock = vi.mocked(useOrgStore);
 const restoreAccessTokenFromCookieDetailedMock = vi.mocked(restoreAccessTokenFromCookieDetailed);
@@ -107,7 +101,7 @@ describe('AdminSessionManager idle timeout source', () => {
     });
 
     expect(apiLogoutMock).toHaveBeenCalledTimes(1);
-    expect(navigateToMock).toHaveBeenCalledWith('/login', { replace: true });
+    expect(handleSessionExpiredMock).toHaveBeenCalledWith('idle');
   });
 
   it('keeps the 60-minute default when effective settings omit sessionTimeout', async () => {
@@ -220,7 +214,7 @@ describe('AdminSessionManager All Organizations mode (#2347)', () => {
       await Promise.resolve();
     });
     expect(apiLogoutMock).toHaveBeenCalledTimes(1);
-    expect(navigateToMock).toHaveBeenCalledWith('/login', { replace: true });
+    expect(handleSessionExpiredMock).toHaveBeenCalledWith('idle');
   });
 
   it('keeps the default timeout when the partner record cannot be loaded', async () => {
@@ -362,7 +356,7 @@ describe('AdminSessionManager scope switching (#2348 / #2429)', () => {
     });
 
     expect(apiLogoutMock).toHaveBeenCalledTimes(1);
-    expect(navigateToMock).toHaveBeenCalledWith('/login', { replace: true });
+    expect(handleSessionExpiredMock).toHaveBeenCalledWith('idle');
   });
 
   it('does not RELAX a strict budget to the 60-minute default when the next lookup fails', async () => {
@@ -437,7 +431,7 @@ describe('AdminSessionManager scope switching (#2348 / #2429)', () => {
     });
 
     expect(apiLogoutMock).toHaveBeenCalledTimes(1);
-    expect(navigateToMock).toHaveBeenCalledWith('/login', { replace: true });
+    expect(handleSessionExpiredMock).toHaveBeenCalledWith('idle');
   });
 });
 
@@ -550,5 +544,173 @@ describe('AdminSessionManager heartbeat refresh outcomes (Task 3)', () => {
     expect(restoreAccessTokenFromCookieDetailedMock.mock.calls.length).toBeGreaterThan(callsAfterSettle);
     expect(handleSessionExpiredMock).not.toHaveBeenCalled();
     expect(apiLogoutMock).not.toHaveBeenCalled();
+  });
+});
+
+// Task 4: the idle budget now ends with a warning modal instead of a silent
+// eviction. Passive signals must not answer it on the user's behalf.
+describe('AdminSessionManager idle warning modal (Task 4)', () => {
+  const ACTIVITY_EVENT_NAMES = ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart', 'focus'];
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    useAuthStoreMock.mockImplementation((selector: any) => selector({ isAuthenticated: true }));
+    useOrgStoreMock.mockImplementation((selector: any) => selector({ currentOrgId: null }));
+    // 10-minute budget → lead = min(2 min, 5 min) = 2 min, so the modal is due
+    // at 8 minutes idle.
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({ settings: { security: { sessionTimeout: 10 } } })
+    );
+    restoreAccessTokenFromCookieDetailedMock.mockResolvedValue('restored');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Render and let the partner-settings fetch apply the 10-minute budget. */
+  const renderSettled = async () => {
+    const result = render(<AdminSessionManager />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    return result;
+  };
+
+  const advance = async (ms: number) => {
+    await act(async () => {
+      vi.advanceTimersByTime(ms);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  };
+
+  it('raises the warning at idleTimeoutMs minus the lead and counts down in m:ss', async () => {
+    await renderSettled();
+
+    await advance(7 * 60_000);
+    expect(screen.queryByTestId('idle-warning-dialog')).toBeNull();
+
+    await advance(60_000);
+    const dialog = screen.getByTestId('idle-warning-dialog');
+    expect(dialog).toHaveAttribute('role', 'dialog');
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(screen.getByTestId('idle-warning-body')).toHaveTextContent('2:00');
+
+    await advance(30_000);
+    expect(screen.getByTestId('idle-warning-body')).toHaveTextContent('1:30');
+  });
+
+  it('does not dismiss or extend the session on passive mousemove while visible', async () => {
+    await renderSettled();
+    await advance(8 * 60_000);
+    expect(screen.getByTestId('idle-warning-dialog')).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.mouseMove(window);
+      fireEvent.scroll(window);
+    });
+    await advance(30_000);
+
+    // Still up, and still counting down from the ORIGINAL deadline — a drifting
+    // mouse must not stand in for the user.
+    expect(screen.getByTestId('idle-warning-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('idle-warning-body')).toHaveTextContent('1:30');
+  });
+
+  it('dismisses, marks activity and refreshes the token when "Stay signed in" is clicked', async () => {
+    await renderSettled();
+    await advance(8 * 60_000);
+    const refreshCallsBeforeStay = restoreAccessTokenFromCookieDetailedMock.mock.calls.length;
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('idle-warning-stay'));
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByTestId('idle-warning-dialog')).toBeNull();
+    expect(restoreAccessTokenFromCookieDetailedMock.mock.calls.length).toBeGreaterThan(
+      refreshCallsBeforeStay
+    );
+
+    // Activity was marked, so the old deadline is gone: no re-warn, no logout.
+    await advance(5 * 60_000);
+    expect(screen.queryByTestId('idle-warning-dialog')).toBeNull();
+    expect(apiLogoutMock).not.toHaveBeenCalled();
+    expect(handleSessionExpiredMock).not.toHaveBeenCalled();
+  });
+
+  it('dismisses on deliberate keydown while the warning is visible', async () => {
+    await renderSettled();
+    await advance(8 * 60_000);
+    const refreshCallsBeforeKey = restoreAccessTokenFromCookieDetailedMock.mock.calls.length;
+
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'a' });
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByTestId('idle-warning-dialog')).toBeNull();
+    expect(restoreAccessTokenFromCookieDetailedMock.mock.calls.length).toBeGreaterThan(
+      refreshCallsBeforeKey
+    );
+  });
+
+  it('calls apiLogout before handleSessionExpired("idle") when the countdown expires', async () => {
+    await renderSettled();
+    await advance(8 * 60_000);
+    expect(screen.getByTestId('idle-warning-dialog')).toBeInTheDocument();
+
+    await advance(2 * 60_000);
+
+    expect(apiLogoutMock).toHaveBeenCalledTimes(1);
+    expect(handleSessionExpiredMock).toHaveBeenCalledTimes(1);
+    expect(handleSessionExpiredMock).toHaveBeenCalledWith('idle');
+    // apiLogout revokes the refresh-token family and needs the Bearer state
+    // that handleSessionExpired's logout() clears — order is load-bearing.
+    expect(apiLogoutMock.mock.invocationCallOrder[0]).toBeLessThan(
+      handleSessionExpiredMock.mock.invocationCallOrder[0]
+    );
+    expect(screen.getByTestId('idle-warning-body')).toHaveTextContent('Signing you out');
+  });
+
+  it('never raises the warning while the user keeps interacting', async () => {
+    await renderSettled();
+
+    for (let minute = 0; minute < 20; minute += 1) {
+      await advance(60_000);
+      await act(async () => {
+        fireEvent.keyDown(window, { key: 'a' });
+      });
+      expect(screen.queryByTestId('idle-warning-dialog')).toBeNull();
+    }
+
+    expect(apiLogoutMock).not.toHaveBeenCalled();
+    expect(handleSessionExpiredMock).not.toHaveBeenCalled();
+  });
+
+  it('survives an Astro client-side navigation without duplicating activity listeners', async () => {
+    const addEventListenerSpy = vi.spyOn(window, 'addEventListener');
+    const activityRegistrations = () =>
+      addEventListenerSpy.mock.calls.filter(([name]) =>
+        ACTIVITY_EVENT_NAMES.includes(name as string)
+      ).length;
+
+    const { rerender } = await renderSettled();
+    const registeredAfterMount = activityRegistrations();
+    expect(registeredAfterMount).toBe(ACTIVITY_EVENT_NAMES.length);
+
+    // The island is `transition:persist`-mounted, so a navigation re-renders it
+    // rather than remounting it: the listener set must not grow.
+    rerender(<AdminSessionManager />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(activityRegistrations()).toBe(registeredAfterMount);
+
+    await advance(8 * 60_000);
+    expect(screen.getByTestId('idle-warning-dialog')).toBeInTheDocument();
   });
 });
