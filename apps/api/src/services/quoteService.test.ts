@@ -423,13 +423,24 @@ describe('quoteService deposits', () => {
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', taxRate: null, depositType: 'none', depositPercent: null }]);
     queueResult([]); // blocks
     queueResult([]); // quote lines
-    queueResult([{ pax8OrderId: 'order-1' }]);
-    queueResult([{ count: 3 }]);
+    queueResult([{ pax8OrderId: 'order-1', status: 'awaiting_details' }]);
+    queueResult([
+      { sourceQuoteLineId: 'ql-1', submitState: 'pending', quantity: '1.00' },
+      { sourceQuoteLineId: 'ql-2', submitState: 'pending', quantity: '2.00' },
+    ]);
 
     const detail = await svc.getQuote('q1', actor);
 
     expect(detail.pax8OrderId).toBe('order-1');
-    expect(detail.pax8OrderLineCount).toBe(3);
+    expect(detail.pax8OrderLineCount).toBe(2);
+    expect(detail.pax8Order).toEqual({
+      id: 'order-1',
+      status: 'awaiting_details',
+      lines: [
+        { sourceQuoteLineId: 'ql-1', submitState: 'pending', quantity: '1.00' },
+        { sourceQuoteLineId: 'ql-2', submitState: 'pending', quantity: '2.00' },
+      ],
+    });
   });
 
   it('getQuote returns a null staged-order summary when acceptance staged no Pax8 order', async () => {
@@ -442,6 +453,7 @@ describe('quoteService deposits', () => {
 
     expect(detail.pax8OrderId).toBeNull();
     expect(detail.pax8OrderLineCount).toBe(0);
+    expect(detail.pax8Order).toBeNull();
   });
 
   it('getQuote returns a SENT quote bill-to from the frozen snapshot, never the live org', async () => {

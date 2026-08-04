@@ -1,4 +1,4 @@
-import { and, count, desc, eq, inArray, lt, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt, or, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteLines, quoteBlocks, quoteImages } from '../db/schema/quotes';
@@ -503,13 +503,23 @@ export async function getQuote(id: string, actor: QuoteActor) {
   // reload or open the converted quote later. Keep discoverability in the quote
   // read model itself. The quote access check runs first, and the lookup repeats
   // the partner + org axes in addition to relying on the tables' forced RLS.
-  const [pax8OrderSummary] = await db.select({ pax8OrderId: pax8Orders.id }).from(pax8Orders).where(and(
+  const [pax8OrderSummary] = await db.select({
+    pax8OrderId: pax8Orders.id,
+    status: pax8Orders.status,
+  }).from(pax8Orders).where(and(
     eq(pax8Orders.sourceQuoteId, id),
     eq(pax8Orders.partnerId, q.partnerId),
     eq(pax8Orders.orgId, q.orgId),
   )).orderBy(desc(pax8Orders.createdAt)).limit(1);
-  const [pax8OrderLineSummary] = pax8OrderSummary
-    ? await db.select({ count: count(pax8OrderLines.id) }).from(pax8OrderLines).where(and(
+  // Line-level detail (not just a count) so the order breakdown can cross-
+  // reference each quote line against its own submit outcome — a partially
+  // failed order must not read as uniformly "staged" or "ordered".
+  const pax8LineRows = pax8OrderSummary
+    ? await db.select({
+        sourceQuoteLineId: pax8OrderLines.sourceQuoteLineId,
+        submitState: pax8OrderLines.submitState,
+        quantity: pax8OrderLines.quantity,
+      }).from(pax8OrderLines).where(and(
         eq(pax8OrderLines.orderId, pax8OrderSummary.pax8OrderId),
         eq(pax8OrderLines.partnerId, q.partnerId),
         eq(pax8OrderLines.orgId, q.orgId),
@@ -584,7 +594,10 @@ export async function getQuote(id: string, actor: QuoteActor) {
     lines,
     billTo,
     pax8OrderId: pax8OrderSummary?.pax8OrderId ?? null,
-    pax8OrderLineCount: Number(pax8OrderLineSummary?.count ?? 0),
+    pax8OrderLineCount: pax8LineRows.length,
+    pax8Order: pax8OrderSummary
+      ? { id: pax8OrderSummary.pax8OrderId, status: pax8OrderSummary.status, lines: pax8LineRows }
+      : null,
   };
 }
 

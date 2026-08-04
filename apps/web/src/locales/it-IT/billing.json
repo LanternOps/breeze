@@ -900,6 +900,11 @@
         "itemCount_other": "{{count}} articoli",
         "missingCost_one": "{{count}} articolo senza costo registrato",
         "missingCost_other": "{{count}} articoli senza costo registrato",
+        "pax8Badge": {
+          "failed": "Pax8 non riuscito",
+          "ordered": "Ordinato via Pax8",
+          "staged": "Preparato in Pax8"
+        },
         "table": {
           "extCost": "Costo esteso",
           "item": "Elemento",

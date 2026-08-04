@@ -900,6 +900,11 @@
         "itemCount_other": "{{count}} articles",
         "missingCost_one": "{{count}} article sans coût saisi",
         "missingCost_other": "{{count}} articles sans coût saisi",
+        "pax8Badge": {
+          "failed": "Échec Pax8",
+          "ordered": "Commandé via Pax8",
+          "staged": "Préparé dans Pax8"
+        },
         "table": {
           "extCost": "Coût étendu",
           "item": "Article",

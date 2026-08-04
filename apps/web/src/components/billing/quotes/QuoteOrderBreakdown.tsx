@@ -12,7 +12,33 @@ import { formatPercent } from '@/lib/i18n/format';
 import { rowsToCsv, rowsToTsv } from '@/lib/csvExport';
 import { downloadBlob } from '@/lib/downloadBlob';
 import { showToast } from '../../shared/Toast';
-import { type QuoteLine, formatMoney, formatQuantity, lineTitle } from './quoteTypes';
+import { type QuoteDetail, type QuoteLine, formatMoney, formatQuantity, lineTitle } from './quoteTypes';
+import { StatusPill } from '../shared/StatusPill';
+import type { StatusPillRole } from '../shared/statusPillRoles';
+
+type Pax8Order = NonNullable<QuoteDetail['pax8Order']>;
+type Pax8OrderLine = Pax8Order['lines'][number];
+
+/** Cross-reference state for a single order line against its staged/converted
+ *  Pax8 order — never a blanket "fulfilled"; the label is state-accurate.
+ *  Precedence (checked in order): a failure (either the line's own submit
+ *  outcome, or an order-wide failure) always wins; then an actually-submitted
+ *  line reads as ordered even if the order as a whole is still gathering
+ *  details for other lines; only then does the order's own awaiting/draft
+ *  status fall back to "staged". A line with no matching Pax8 order line, or
+ *  one that's merely pending, gets no badge. */
+export function pax8BadgeState(order: Pax8Order, line: Pax8OrderLine): 'staged' | 'ordered' | 'failed' | null {
+  if (line.submitState === 'failed' || order.status === 'failed') return 'failed';
+  if (line.submitState === 'submitted' || line.submitState === 'succeeded') return 'ordered';
+  if (order.status === 'awaiting_details' || order.status === 'draft') return 'staged';
+  return null;
+}
+
+const PAX8_BADGE_ROLE: Record<'staged' | 'ordered' | 'failed', StatusPillRole> = {
+  staged: 'info',
+  ordered: 'success',
+  failed: 'danger',
+};
 
 /** Lines the MSP actually has to procure once the quote is won: anything
  *  carrying a distributor identifier (SKU / part number), plus hardware-typed
@@ -94,13 +120,17 @@ export function exportRows(
 // `showCost` rides the same persisted "Show cost & margin" toggle as the rest
 // of the billing UI, so "no margin on screen" holds here too: with it off the
 // table still lists what to order (item/SKU/qty) but drops the economics.
-export default function QuoteOrderBreakdown({ lines, currency, showCost, quoteNumber }: {
+export default function QuoteOrderBreakdown({ lines, currency, showCost, quoteNumber, pax8Order }: {
   lines: QuoteLine[];
   currency: string;
   showCost: boolean;
   /** Used only to name the downloaded file; a quote without a number yet still
    *  exports (the filename just falls back to the generic form). */
   quoteNumber: string | null;
+  /** The same quote's staged/converted Pax8 order, if any — cross-referenced
+   *  against each line below by `sourceQuoteLineId` to render a state-accurate
+   *  badge. Optional/nullable: a won quote may have no Pax8 order at all. */
+  pax8Order?: QuoteDetail['pax8Order'];
 }) {
   const { t } = useTranslation('billing');
   // Same cents math as the pricing tables (computeLineTotal/toCents) so the
@@ -116,6 +146,14 @@ export default function QuoteOrderBreakdown({ lines, currency, showCost, quoteNu
     [lines],
   );
   const missingCostCount = useMemo(() => lines.filter((l) => l.unitCost === null).length, [lines]);
+  // Keyed by sourceQuoteLineId so the item cell can look up this line's own
+  // Pax8 submit outcome in O(1). Lines with a null sourceQuoteLineId (shouldn't
+  // happen for a quote-sourced order, but defensive) are excluded rather than
+  // colliding on a shared `null` key.
+  const pax8ByLine = useMemo(
+    () => new Map((pax8Order?.lines ?? []).filter((l) => l.sourceQuoteLineId).map((l) => [l.sourceQuoteLineId as string, l])),
+    [pax8Order],
+  );
   const na = '—';
   const groups = useMemo(() => groupByVendor(lines), [lines]);
   // A single group is just "the table" — a lone header row would be noise.
@@ -221,6 +259,8 @@ export default function QuoteOrderBreakdown({ lines, currency, showCost, quoteNu
               )}
               {group.lines.map((l) => {
                 const mk = markupPct(l.unitPrice, l.unitCost);
+                const pax8Line = pax8Order ? pax8ByLine.get(l.id) : undefined;
+                const pax8Badge = pax8Line ? pax8BadgeState(pax8Order!, pax8Line) : null;
                 return (
                 <tr key={l.id} className="border-t" data-testid={`quote-order-breakdown-line-${l.id}`}>
                   <td className="px-3 py-2">
@@ -229,6 +269,14 @@ export default function QuoteOrderBreakdown({ lines, currency, showCost, quoteNu
                       <span className="ml-2 inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-foreground/70 dark:text-muted-foreground">
                         {t(/* i18n-dynamic */ `quotes.recurrence.${l.recurrence}`)}
                       </span>
+                    )}
+                    {pax8Badge && (
+                      <StatusPill
+                        role={PAX8_BADGE_ROLE[pax8Badge]}
+                        label={t(/* i18n-dynamic */ `quotes.detail.orderBreakdown.pax8Badge.${pax8Badge}`)}
+                        className="ml-2"
+                        testId={`quote-order-breakdown-pax8-${l.id}`}
+                      />
                     )}
                   </td>
                   <td className="px-3 py-2 text-muted-foreground">

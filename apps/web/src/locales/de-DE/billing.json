@@ -900,6 +900,11 @@
         "itemCount_other": "{{count}} Artikel",
         "missingCost_one": "Für {{count}} Artikel sind keine Kosten erfasst",
         "missingCost_other": "Für {{count}} Artikel sind keine Kosten erfasst",
+        "pax8Badge": {
+          "failed": "Pax8 fehlgeschlagen",
+          "ordered": "Über Pax8 bestellt",
+          "staged": "In Pax8 vorgemerkt"
+        },
         "table": {
           "extCost": "Kosten gesamt",
           "item": "Artikel",

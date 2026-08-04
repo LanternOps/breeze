@@ -247,6 +247,15 @@ export interface QuoteDetail {
    * read model so technicians can discover the order after a reload. */
   pax8OrderId?: string | null;
   pax8OrderLineCount?: number;
+  /** Line-level detail for the same staged/converted Pax8 order, additive next
+   *  to `pax8OrderId`/`pax8OrderLineCount` above (which stay for the rail
+   *  card). Lets the order breakdown cross-reference each quote line against
+   *  its own submit outcome instead of a single order-wide count. */
+  pax8Order?: {
+    id: string;
+    status: string;
+    lines: { sourceQuoteLineId: string | null; submitState: string; quantity: string | null }[];
+  } | null;
 }
 
 export const STATUS_LABELS: Record<QuoteStatus, string> = {

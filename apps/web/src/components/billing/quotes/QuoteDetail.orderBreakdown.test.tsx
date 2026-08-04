@@ -34,7 +34,11 @@ function line(overrides: Partial<QuoteLine>): QuoteLine {
   };
 }
 
-function acceptedDetail(lines: QuoteLine[], status = 'accepted'): QuoteDetailData {
+function acceptedDetail(
+  lines: QuoteLine[],
+  status = 'accepted',
+  pax8Order?: QuoteDetailData['pax8Order'],
+): QuoteDetailData {
   return {
     quote: {
       id: 'q-1', quoteNumber: 'Q-1', partnerId: 'p-1', orgId: 'org-1', siteId: null,
@@ -49,6 +53,7 @@ function acceptedDetail(lines: QuoteLine[], status = 'accepted'): QuoteDetailDat
     },
     blocks: [],
     lines,
+    pax8Order,
   };
 }
 
@@ -130,6 +135,77 @@ describe('QuoteDetail — to-be-ordered breakdown', () => {
     await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
     expect(screen.getByTestId('quote-order-breakdown-missing-cost')).toHaveTextContent('1 item has no cost recorded');
     expect(screen.getByTestId('quote-order-breakdown-cost-total')).toHaveTextContent('$900.00');
+  });
+});
+
+describe('QuoteDetail — breakdown Pax8 cross-reference badges', () => {
+  it('shows "Staged in Pax8" for a line matched to an awaiting_details order', async () => {
+    render(<QuoteDetail detail={acceptedDetail(
+      [line({ id: 'l-1', sku: 'LT-100' })],
+      'converted',
+      { id: 'order-1', status: 'awaiting_details', lines: [
+        { sourceQuoteLineId: 'l-1', submitState: 'pending', quantity: '1.00' },
+      ] },
+    )} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-order-breakdown-pax8-l-1')).toHaveTextContent('Staged in Pax8');
+  });
+
+  it('renders no badge for a line with no matching Pax8 order line', async () => {
+    render(<QuoteDetail detail={acceptedDetail(
+      [line({ id: 'l-1', sku: 'LT-100' }), line({ id: 'l-2', sku: 'KB-5', name: 'Keyboard' })],
+      'converted',
+      { id: 'order-1', status: 'awaiting_details', lines: [
+        { sourceQuoteLineId: 'l-1', submitState: 'pending', quantity: '1.00' },
+      ] },
+    )} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-order-breakdown-pax8-l-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('quote-order-breakdown-pax8-l-2')).not.toBeInTheDocument();
+  });
+
+  it('shows "Ordered via Pax8" once the line has actually submitted, even while other order lines are still pending', async () => {
+    render(<QuoteDetail detail={acceptedDetail(
+      [line({ id: 'l-1', sku: 'LT-100' })],
+      'converted',
+      { id: 'order-1', status: 'awaiting_details', lines: [
+        { sourceQuoteLineId: 'l-1', submitState: 'succeeded', quantity: '1.00' },
+      ] },
+    )} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-order-breakdown-pax8-l-1')).toHaveTextContent('Ordered via Pax8');
+  });
+
+  it('shows a danger-toned "Pax8 failed" badge, taking precedence over a staged order status', async () => {
+    render(<QuoteDetail detail={acceptedDetail(
+      [line({ id: 'l-1', sku: 'LT-100' })],
+      'converted',
+      { id: 'order-1', status: 'awaiting_details', lines: [
+        { sourceQuoteLineId: 'l-1', submitState: 'failed', quantity: '1.00' },
+      ] },
+    )} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+    const badge = screen.getByTestId('quote-order-breakdown-pax8-l-1');
+    expect(badge).toHaveTextContent('Pax8 failed');
+    expect(badge.className).toContain('destructive');
+  });
+
+  it('shows the failed badge for a line still pending when the order itself failed', async () => {
+    render(<QuoteDetail detail={acceptedDetail(
+      [line({ id: 'l-1', sku: 'LT-100' })],
+      'converted',
+      { id: 'order-1', status: 'failed', lines: [
+        { sourceQuoteLineId: 'l-1', submitState: 'pending', quantity: '1.00' },
+      ] },
+    )} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-order-breakdown-pax8-l-1')).toHaveTextContent('Pax8 failed');
+  });
+
+  it('renders no badges when the quote has no staged Pax8 order', async () => {
+    render(<QuoteDetail detail={acceptedDetail([line({ id: 'l-1', sku: 'LT-100' })], 'converted')} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+    expect(screen.queryByTestId('quote-order-breakdown-pax8-l-1')).not.toBeInTheDocument();
   });
 });
 
