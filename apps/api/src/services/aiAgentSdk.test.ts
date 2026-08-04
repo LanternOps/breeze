@@ -164,7 +164,7 @@ vi.mock('./sentry', () => ({
 
 type TestAuth = {
   user: { id: string; email: string; name: string };
-  orgId: string;
+  orgId: string | null; // null for partner-scope logins — the real AuthContext.orgId type
   scope: string;
   accessibleOrgIds: string[];
   canAccessOrg: (orgId: string) => boolean;
