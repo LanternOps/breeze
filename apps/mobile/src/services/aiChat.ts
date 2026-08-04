@@ -2,6 +2,8 @@ import * as SecureStore from 'expo-secure-store';
 
 import { getServerUrl } from './serverConfig';
 import { fetchWithTimeout } from './fetchWithTimeout';
+import { refreshToken } from './api';
+import { storeToken } from './auth';
 
 const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const API_CORE_PREFIX = '/api/v1';
@@ -27,12 +29,48 @@ async function getToken(): Promise<string | null> {
   }
 }
 
-async function authedFetch(
+// Single-flight guard so N concurrent 401s trigger one /auth/refresh, not N.
+// Cleared once the refresh settles; callers that grabbed the promise still
+// receive its result.
+let refreshInFlight: Promise<string | null> | null = null;
+
+/**
+ * Refresh the access token via the shared `refreshToken()` helper (api.ts) and
+ * persist it so every service reading `breeze_auth_token` picks it up.
+ * Returns the new token, or null when refresh failed (e.g. the refresh cookie
+ * itself expired) — callers then surface the original 401.
+ */
+async function refreshAccessToken(): Promise<string | null> {
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      try {
+        const { token } = await refreshToken();
+        try {
+          await storeToken(token);
+        } catch {
+          // Persisting failed (locked keychain, etc.) — the in-memory token is
+          // still valid for the retry, and storeToken already reported the
+          // failure. Don't turn a usable refresh into a hard failure.
+        }
+        return token;
+      } catch {
+        // Refresh itself failed — the session is genuinely over. Callers
+        // return the original 401 so the UI's existing auth handling fires.
+        return null;
+      } finally {
+        refreshInFlight = null;
+      }
+    })();
+  }
+  return refreshInFlight;
+}
+
+async function doAuthedFetch(
   path: string,
-  init: RequestInit & { stream?: boolean } = {},
+  init: RequestInit & { stream?: boolean },
+  token: string | null,
 ): Promise<Response> {
   const baseUrl = (await getServerUrl()) || FALLBACK_API_BASE_URL;
-  const token = await getToken();
   const url = `${baseUrl}${API_CORE_PREFIX}${path}`;
 
   const headers: Record<string, string> = {
@@ -47,6 +85,25 @@ async function authedFetch(
   // HEADERS and clears its timer once they arrive, so an open stream body is
   // never aborted mid-flight.
   return fetchWithTimeout(url, { ...init, headers, credentials: 'include' });
+}
+
+// Access tokens live 15 minutes (ACCESS_TOKEN_EXPIRY, apps/api/src/services/jwt.ts)
+// and this wrapper reads whatever is in SecureStore, so any call made >15m
+// after login starts with an expired bearer. On 401, refresh once via the same
+// token lifecycle the rest of the mobile services use, then retry the request
+// a single time (#3114). Bodies here are always JSON strings, so re-sending
+// `init` unchanged is safe.
+async function authedFetch(
+  path: string,
+  init: RequestInit & { stream?: boolean } = {},
+): Promise<Response> {
+  const res = await doAuthedFetch(path, init, await getToken());
+  if (res.status !== 401) return res;
+
+  const newToken = await refreshAccessToken();
+  if (!newToken) return res;
+
+  return doAuthedFetch(path, init, newToken);
 }
 
 export async function createAiSession(input: CreateSessionPayload = {}): Promise<AiSessionSummary> {
