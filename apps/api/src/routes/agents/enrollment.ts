@@ -14,7 +14,7 @@ import {
 } from '../../db/schema';
 import { getActiveOrgTenant } from '../../services/tenantStatus';
 import { writeAuditEvent } from '../../services/auditEvents';
-import { hashEnrollmentKeyCandidates } from '../../services/enrollmentKeySecurity';
+import { hashEnrollmentKeyCandidates, hashEnrollmentSecret } from '../../services/enrollmentKeySecurity';
 import { getTrustedClientIp } from '../../services/clientIp';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
@@ -59,10 +59,6 @@ function timingSafeStringEqual(left: string, right: string): boolean {
   const leftBuf = Buffer.from(left);
   const rightBuf = Buffer.from(right);
   return leftBuf.length === rightBuf.length && timingSafeEqual(leftBuf, rightBuf);
-}
-
-function hashEnrollmentSecret(secret: string): string {
-  return createHash('sha256').update(secret).digest('hex');
 }
 
 export function getGlobalEnrollmentSecret(): string | null {

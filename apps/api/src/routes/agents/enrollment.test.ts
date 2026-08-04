@@ -68,10 +68,18 @@ vi.mock('../../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
 }));
 
-vi.mock('../../services/enrollmentKeySecurity', () => ({
-  hashEnrollmentKey: vi.fn((k: string) => `hashed:${k}`),
-  hashEnrollmentKeyCandidates: vi.fn((k: string) => [`hashed:${k}`]),
-}));
+vi.mock('../../services/enrollmentKeySecurity', async () => {
+  // Dynamic import: vi.mock factories are hoisted above the file's imports.
+  const { createHash: sha } = await import('node:crypto');
+  return {
+    hashEnrollmentKey: vi.fn((k: string) => `hashed:${k}`),
+    hashEnrollmentKeyCandidates: vi.fn((k: string) => [`hashed:${k}`]),
+    // Real implementation, not a stub: the secret-comparison branches assert
+    // on actual digests, and stubbing would make the invalid-secret denials
+    // vacuous.
+    hashEnrollmentSecret: vi.fn((s: string) => sha('sha256').update(s).digest('hex')),
+  };
+});
 
 vi.mock('../../services/clientIp', () => ({
   getTrustedClientIp: vi.fn(() => '127.0.0.1'),
