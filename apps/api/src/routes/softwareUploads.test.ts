@@ -351,6 +351,77 @@ describe('software upload-session routes', () => {
         expect(userActiveSql).toContain('is not distinct from');
         expect(userActiveSql).toContain('created_by');
       });
+
+      // #2951 final review Finding 1: a session already past the reaper's
+      // idle TTL (2h default) is about to be hard-deleted by
+      // softwareUploadSessionCleanup — it must not count against ANY of the
+      // three cap dimensions (org count, user count, org byte budget), or a
+      // couple of cancelled/failed uploads lock the user/org out until the
+      // next hourly reap. Asserting only the HTTP outcome can't prove this —
+      // the mock DB never actually filters — so this inspects the actual
+      // `.where(...)` predicate the route built for the usage aggregate.
+      describe('staleness filter (idle-TTL exclusion)', () => {
+        it('filters the usage aggregate by last_activity_at, not just orgId/status', async () => {
+          vi.mocked(db.select).mockReturnValueOnce(chainMock([catalogRow]) as any);
+          const usageCapture = captureChain([makeUsage()]);
+          vi.mocked(db.select).mockReturnValueOnce(usageCapture.chain);
+          vi.mocked(db.insert).mockReturnValueOnce(chainMock([{ id: UPLOAD_ID }]) as any);
+
+          const res = await createReq();
+          expect(res.status).toBe(201);
+
+          const whereArg = usageCapture.calls.where?.[0]?.[0];
+          expect(whereArg).toBeDefined();
+          const json = JSON.stringify(whereArg);
+          expect(json).toContain('last_activity_at');
+          // "not stale" means last_activity_at is AT OR AFTER the cutoff —
+          // the exact logical complement of the reaper's `lt(...)` staleness
+          // predicate — so this must be `>=`, never `<` or `>`.
+          expect(json).toContain(' >= ');
+
+          // The embedded cutoff must be ~DEFAULT_IDLE_TTL_HOURS (2h) in the
+          // past, not some other unrelated duration.
+          const isoMatches = json.match(/"\d{4}-\d{2}-\d{2}T[\d:.]+Z"/g) ?? [];
+          expect(isoMatches.length).toBeGreaterThan(0);
+          const cutoffMs = new Date(JSON.parse(isoMatches[0]!)).getTime();
+          const expectedMs = Date.now() - 2 * 3_600_000;
+          expect(Math.abs(cutoffMs - expectedMs)).toBeLessThan(10_000);
+        });
+
+        it('derives the idle cutoff from the SAME env-configurable TTL the reaper uses, not a hardcoded duplicate', async () => {
+          vi.mocked(db.select).mockReturnValueOnce(chainMock([catalogRow]) as any);
+          const defaultCapture = captureChain([makeUsage()]);
+          vi.mocked(db.select).mockReturnValueOnce(defaultCapture.chain);
+          vi.mocked(db.insert).mockReturnValueOnce(chainMock([{ id: UPLOAD_ID }]) as any);
+          await createReq();
+
+          const prevEnv = process.env.SOFTWARE_UPLOAD_SESSION_IDLE_TTL_HOURS;
+          process.env.SOFTWARE_UPLOAD_SESSION_IDLE_TTL_HOURS = '99';
+          try {
+            vi.mocked(db.select).mockReturnValueOnce(chainMock([catalogRow]) as any);
+            const overrideCapture = captureChain([makeUsage()]);
+            vi.mocked(db.select).mockReturnValueOnce(overrideCapture.chain);
+            vi.mocked(db.insert).mockReturnValueOnce(chainMock([{ id: UPLOAD_ID }]) as any);
+            await createReq();
+
+            const defaultJson = JSON.stringify(defaultCapture.calls.where?.[0]?.[0]);
+            const overrideJson = JSON.stringify(overrideCapture.calls.where?.[0]?.[0]);
+            // If the route hardcoded its own copy of the TTL instead of
+            // importing getIdleTtlHours() from the reaper job, this env
+            // override would have no effect and the two predicates would be
+            // identical.
+            expect(overrideJson).not.toBe(defaultJson);
+
+            const overrideIso = overrideJson.match(/"\d{4}-\d{2}-\d{2}T[\d:.]+Z"/g) ?? [];
+            const overrideCutoffMs = new Date(JSON.parse(overrideIso[0]!)).getTime();
+            const expectedOverrideMs = Date.now() - 99 * 3_600_000;
+            expect(Math.abs(overrideCutoffMs - expectedOverrideMs)).toBeLessThan(10_000);
+          } finally {
+            if (prevEnv === undefined) delete process.env.SOFTWARE_UPLOAD_SESSION_IDLE_TTL_HOURS;
+            else process.env.SOFTWARE_UPLOAD_SESSION_IDLE_TTL_HOURS = prevEnv;
+          }
+        });
+      });
     });
 
     it('rejects a disallowed extension up front (before any bytes move)', async () => {

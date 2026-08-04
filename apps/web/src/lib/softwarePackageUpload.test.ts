@@ -139,7 +139,7 @@ describe('uploadPackageVersion', () => {
     expect(res).toBe(failing);
   });
 
-  it('treats upload_instance_mismatch as terminal: one attempt, no retries, actionable message', async () => {
+  it('treats upload_instance_mismatch as terminal: one attempt, no retries, actionable message, and releases the session', async () => {
     const file = makeFile(10);
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ data: { uploadId: 'u-1', bytesReceived: 0, chunkSize: UPLOAD_CHUNK_SIZE } }, true, 201))
@@ -149,19 +149,23 @@ describe('uploadPackageVersion', () => {
           false,
           409,
         ),
-      );
+      )
+      .mockResolvedValueOnce(jsonResponse({ success: true })); // session-release DELETE
 
     const res = await uploadPackageVersion({ catalogId: CATALOG_ID, file, metadata: baseMeta });
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.code).toBe('upload_instance_mismatch');
     expect(body.error).toMatch(/session affinity|sticky|single/i);
-    // Exactly create + ONE chunk attempt — no retry burn, no resync loop,
-    // and /complete was never called.
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // create + ONE chunk attempt + the best-effort session-release DELETE —
+    // no retry burn, no resync loop, and /complete was never called.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const [deleteUrl, deleteOpts] = fetchMock.mock.calls[2];
+    expect(deleteUrl).toBe(`/software/catalog/${CATALOG_ID}/versions/uploads/u-1`);
+    expect(deleteOpts!.method).toBe('DELETE');
   });
 
-  it('gives up after repeated 409s that do not advance (stall guard)', async () => {
+  it('gives up after repeated 409s that do not advance (stall guard), and releases the session', async () => {
     const file = makeFile(10);
     const stuck = () => jsonResponse({ error: 'offset mismatch', bytesReceived: 0 }, false, 409);
     fetchMock
@@ -169,10 +173,15 @@ describe('uploadPackageVersion', () => {
       .mockResolvedValueOnce(stuck())
       .mockResolvedValueOnce(stuck())
       .mockResolvedValueOnce(stuck())
-      .mockResolvedValueOnce(stuck());
+      .mockResolvedValueOnce(stuck())
+      .mockResolvedValueOnce(jsonResponse({ success: true })); // session-release DELETE
 
     const res = await uploadPackageVersion({ catalogId: CATALOG_ID, file, metadata: baseMeta });
     expect(res.status).toBe(409);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    const [deleteUrl, deleteOpts] = fetchMock.mock.calls[5];
+    expect(deleteUrl).toBe(`/software/catalog/${CATALOG_ID}/versions/uploads/u-1`);
+    expect(deleteOpts!.method).toBe('DELETE');
   });
 
   // --- Fix round 1 (review findings) -------------------------------------
@@ -224,21 +233,141 @@ describe('uploadPackageVersion', () => {
     await expect(promise).rejects.toThrow();
   });
 
-  it('does not pre-consume a malformed 200 chunk ack (runAction must still be able to read its body)', async () => {
+  // --- Fix round 2 (final pre-merge review, #2951) -----------------------
+
+  it('Fix 2: synthesizes a non-ok Response when a 200 chunk ack has a malformed body', async () => {
     const file = makeFile(10);
     const malformedAck = jsonResponse({ data: {} }, true, 200); // ok, but missing bytesReceived
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ data: { uploadId: 'u-1', bytesReceived: 0, chunkSize: UPLOAD_CHUNK_SIZE } }, true, 201))
-      .mockResolvedValueOnce(malformedAck);
+      .mockResolvedValueOnce(malformedAck)
+      .mockResolvedValueOnce(jsonResponse({ success: true })); // session-release DELETE
 
     const res = await uploadPackageVersion({ catalogId: CATALOG_ID, file, metadata: baseMeta });
-    expect(res).toBe(malformedAck);
-    // Simulates runAction reading the body itself. With the old bug (the
-    // implementation consumed the body directly instead of via clone()) this
-    // second read would throw "body already read" — or, with the OLD sloppy
-    // test fake, silently return null, which `isApiFailure(null, 200)` reads
-    // as success. Neither is acceptable.
-    await expect(res.json()).resolves.toEqual({ data: {} });
+    // Must NOT be the raw 200 ack: SoftwareVersionManager gates only on
+    // `!response.ok`, and AddPackageModal hands the body to
+    // `isApiFailure(data, 200)` — both would read a bare 200 as SUCCESS and
+    // report a phantom completed upload (the bug this fix closes).
+    expect(res).not.toBe(malformedAck);
+    expect(res.ok).toBe(false);
+    expect(res.status).not.toBe(200);
+    const body = await res.json();
+    expect(typeof body.error).toBe('string');
+    expect(body.error.length).toBeGreaterThan(0);
+  });
+
+  it('releases the session after a malformed-200 chunk ack (it is a terminal failure)', async () => {
+    const file = makeFile(10);
+    const malformedAck = jsonResponse({ data: {} }, true, 200);
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ data: { uploadId: 'u-1', bytesReceived: 0, chunkSize: UPLOAD_CHUNK_SIZE } }, true, 201))
+      .mockResolvedValueOnce(malformedAck)
+      .mockResolvedValueOnce(jsonResponse({ success: true }));
+
+    await uploadPackageVersion({ catalogId: CATALOG_ID, file, metadata: baseMeta });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const [deleteUrl, deleteOpts] = fetchMock.mock.calls[2];
+    expect(deleteUrl).toBe(`/software/catalog/${CATALOG_ID}/versions/uploads/u-1`);
+    expect(deleteOpts!.method).toBe('DELETE');
+  });
+
+  // --- Fix round 3 (final pre-merge review, #2951, Finding 1) -------------
+  // A cancelled or failed upload must release its server-side session so it
+  // doesn't pin a slot against MAX_ACTIVE_UPLOAD_SESSIONS_PER_USER for hours.
+
+  it('releases the upload session on a caller abort, without the aborted signal on the DELETE', async () => {
+    const file = makeFile(10);
+    const callerController = new AbortController();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ data: { uploadId: 'u-1', bytesReceived: 0, chunkSize: UPLOAD_CHUNK_SIZE } }, true, 201))
+      .mockImplementationOnce(
+        (_url, options) =>
+          new Promise((_resolve, reject) => {
+            const abortErr = new DOMException('Aborted', 'AbortError');
+            const sig = (options as { signal?: AbortSignal } | undefined)?.signal;
+            // Handle both orderings: the signal is already aborted by the
+            // time this executor runs (no future 'abort' event will ever
+            // fire again), or it aborts later while this fetch is pending.
+            if (sig?.aborted) {
+              reject(abortErr);
+              return;
+            }
+            sig?.addEventListener('abort', () => reject(abortErr));
+          }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ success: true })); // session-release DELETE
+
+    const promise = uploadPackageVersion({
+      catalogId: CATALOG_ID,
+      file,
+      metadata: baseMeta,
+      signal: callerController.signal,
+    });
+    // Defer the abort to a macrotask so it lands AFTER the create call has
+    // resolved and the chunk PUT (whose listener we depend on above) has
+    // actually been issued — a synchronous abort() here would fire before
+    // the chunk fetch is even called.
+    setTimeout(() => callerController.abort(), 0);
+
+    await expect(promise).rejects.toThrow();
+    // create, the aborted chunk PUT, and the release DELETE.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const [deleteUrl, deleteOpts] = fetchMock.mock.calls[2];
+    expect(deleteUrl).toBe(`/software/catalog/${CATALOG_ID}/versions/uploads/u-1`);
+    expect(deleteOpts!.method).toBe('DELETE');
+    // The already-aborted caller signal must NOT be reused for the DELETE —
+    // reusing it would abort the release request before it ever reaches the
+    // network, defeating the whole point of the release.
+    expect(deleteOpts!.signal).not.toBe(callerController.signal);
+    expect((deleteOpts!.signal as AbortSignal | undefined)?.aborted).toBe(false);
+  });
+
+  it('does not change the caller-visible outcome when the release DELETE itself fails (best-effort)', async () => {
+    const file = makeFile(10);
+    const failing = jsonResponse({ error: 'Upload session not found' }, false, 404);
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ data: { uploadId: 'u-1', bytesReceived: 0, chunkSize: UPLOAD_CHUNK_SIZE } }, true, 201))
+      .mockResolvedValueOnce(failing)
+      .mockRejectedValueOnce(new Error('network blip during session release'));
+
+    const res = await uploadPackageVersion({ catalogId: CATALOG_ID, file, metadata: baseMeta });
+    // The caller still gets the ORIGINAL unrecoverable chunk failure, not an
+    // error surfaced from the (fully swallowed) release attempt.
+    expect(res).toBe(failing);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not issue a DELETE after a successful complete', async () => {
+    const file = makeFile(10);
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ data: { uploadId: 'u-1', bytesReceived: 0, chunkSize: UPLOAD_CHUNK_SIZE } }, true, 201))
+      .mockResolvedValueOnce(jsonResponse({ data: { bytesReceived: 10 } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { id: 'ver-1' } }, true, 201));
+
+    const res = await uploadPackageVersion({ catalogId: CATALOG_ID, file, metadata: baseMeta });
+    expect(res.status).toBe(201);
+    // Exactly create + chunk + complete — the server already deletes the
+    // session row inside /complete, so a second DELETE here would be
+    // harmless but pointless.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls.some(([, opts]) => opts?.method === 'DELETE')).toBe(false);
+  });
+
+  it('releases the session when /complete itself returns a failing response', async () => {
+    const file = makeFile(10);
+    const completeFailure = jsonResponse({ error: 'S3 upload failed', storageFailure: 'boom' }, false, 502);
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ data: { uploadId: 'u-1', bytesReceived: 0, chunkSize: UPLOAD_CHUNK_SIZE } }, true, 201))
+      .mockResolvedValueOnce(jsonResponse({ data: { bytesReceived: 10 } }))
+      .mockResolvedValueOnce(completeFailure)
+      .mockResolvedValueOnce(jsonResponse({ success: true })); // session-release DELETE
+
+    const res = await uploadPackageVersion({ catalogId: CATALOG_ID, file, metadata: baseMeta });
+    expect(res).toBe(completeFailure);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    const [deleteUrl, deleteOpts] = fetchMock.mock.calls[3];
+    expect(deleteUrl).toBe(`/software/catalog/${CATALOG_ID}/versions/uploads/u-1`);
+    expect(deleteOpts!.method).toBe('DELETE');
   });
 
   it('gives up on an alternating high/low resync pattern that a naive consecutive-only counter would never catch', async () => {
@@ -251,12 +380,17 @@ describe('uploadPackageVersion', () => {
       .mockResolvedValueOnce(resync(0)) // regresses — "lost state" style
       .mockResolvedValueOnce(resync(100)) // back to the same high-water mark — NOT a new high
       .mockResolvedValueOnce(resync(0)) // regresses again
-      .mockResolvedValueOnce(resync(100)); // 4th non-advancing resync in a row by high-water accounting — bail
+      .mockResolvedValueOnce(resync(100)) // 4th non-advancing resync in a row by high-water accounting — bail
+      .mockResolvedValueOnce(jsonResponse({ success: true })); // session-release DELETE
 
     const res = await uploadPackageVersion({ catalogId: CATALOG_ID, file, metadata: baseMeta });
     expect(res.status).toBe(409);
-    // create + 5 chunk attempts — /complete is never reached.
-    expect(fetchMock).toHaveBeenCalledTimes(6);
+    // create + 5 chunk attempts + the session-release DELETE — /complete is
+    // never reached.
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+    const [deleteUrl, deleteOpts] = fetchMock.mock.calls[6];
+    expect(deleteUrl).toBe(`/software/catalog/${CATALOG_ID}/versions/uploads/u-1`);
+    expect(deleteOpts!.method).toBe('DELETE');
   });
 
   it('adopts the server-returned chunkSize instead of hardcoding the local constant', async () => {

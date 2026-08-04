@@ -82,7 +82,13 @@ function readPositiveIntEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function getIdleTtlHours(): number {
+// Exported (not just via __testOnly): routes/softwareUploads.ts's create-route
+// session cap reuses this exact TTL so a session already past the idle cutoff
+// — about to be reaped by this job — never counts against
+// MAX_ACTIVE_UPLOAD_SESSIONS_PER_ORG/USER/BYTES. Two independently-tuned
+// copies of the same env var would silently drift (#2951 final review
+// Finding 1); this is the single source of truth for "idle" duration.
+export function getIdleTtlHours(): number {
   return readPositiveIntEnv('SOFTWARE_UPLOAD_SESSION_IDLE_TTL_HOURS', DEFAULT_IDLE_TTL_HOURS);
 }
 

@@ -12,6 +12,23 @@
  *    message);
  *  - rejects only on network failure (after per-chunk retries) or abort.
  *
+ * Session release (#2951 final review Finding 1): every exit path EXCEPT a
+ * successful /complete best-effort DELETEs the server-side upload session
+ * before resolving/rejecting. Without this, a cancelled or failed upload
+ * leaves its session row `active` until the hourly reaper's idle TTL catches
+ * up — and MAX_ACTIVE_UPLOAD_SESSIONS_PER_USER (2, see softwareUploads.ts)
+ * then locks a user out of their own feature for hours after two cancels or
+ * two failed attempts. The release call:
+ *  - never uses the caller's AbortSignal (already aborted on a user cancel —
+ *    passing it would abort the DELETE before it reaches the network); it
+ *    gets its own short independent timeout instead;
+ *  - is fully best-effort: any failure is swallowed, and the function still
+ *    resolves/rejects with exactly what it would have without the release
+ *    attempt;
+ *  - is skipped entirely after a SUCCESSFUL /complete, which already deletes
+ *    the row server-side — a second DELETE there would 404 harmlessly but
+ *    pointlessly.
+ *
  * Recovery:
  *  - transient failures (network error, 429/5xx) retry a chunk up to
  *    MAX_CHUNK_ATTEMPTS with linear backoff;
@@ -130,16 +147,31 @@ async function sendChunk(
     }
 
     if (response.ok) {
-      // clone(): leave `response` itself unconsumed. If the body turns out to
-      // be malformed we return `response` as the FAILED outcome, and the
-      // caller (runAction) must still be able to read its body — reading it
-      // here directly would hand back an already-consumed Response and a
-      // genuine failure would be reported to the user as success.
-      const body = (await response.clone().json().catch(() => null)) as
+      const body = (await response.json().catch(() => null)) as
         | { data?: { bytesReceived?: number } }
         | null;
       const bytesReceived = body?.data?.bytesReceived;
-      if (typeof bytesReceived !== 'number') return { kind: 'failed', response };
+      if (typeof bytesReceived !== 'number') {
+        // A 200 with no usable `bytesReceived` is never a genuine chunk ack
+        // from this API — every real success path returns one. It's what an
+        // intermediary (a proxy error page, a captive portal) looks like: a
+        // non-JSON or shape-mismatched 200. Returning `response` itself here
+        // would be a LIVE FOOTGUN: SoftwareVersionManager only gates on
+        // `!response.ok`, and AddPackageModal hands the body to
+        // `isApiFailure(data, 200)`, which also reads a 200 as success either
+        // way — a malformed ack would report SUCCESS and push a phantom
+        // version into the UI. Synthesize a non-2xx Response instead, same
+        // pattern as `stalledResponse` below.
+        return {
+          kind: 'failed',
+          response: new Response(
+            JSON.stringify({
+              error: 'Upload chunk was acknowledged with an unexpected response body (expected bytesReceived); the upload cannot continue',
+            }),
+            { status: 502, headers: { 'Content-Type': 'application/json' } },
+          ),
+        };
+      }
       return { kind: 'advanced', bytesReceived, resynced: false };
     }
     if (response.status === 409) {
@@ -194,6 +226,31 @@ function stalledResponse(message: string): Response {
   });
 }
 
+// Short and independent: this is a best-effort cleanup call, not part of the
+// upload's own generous timeout ceilings, and it deliberately never inherits
+// the caller's AbortSignal (see module docblock — that signal is already
+// aborted on the one path we're MOST relying on this call for).
+const RELEASE_TIMEOUT_MS = 10_000;
+
+/**
+ * Best-effort release of a chunked-upload session that will never be
+ * completed by this call: the caller aborted, or the upload hit a
+ * terminal/unrecoverable failure. Never throws — a failed release must not
+ * change what `uploadPackageVersion` resolves/rejects with (see docblock).
+ */
+async function releaseUploadSession(catalogId: string, uploadId: string): Promise<void> {
+  try {
+    await fetchWithAuth(`/software/catalog/${catalogId}/versions/uploads/${uploadId}`, {
+      method: 'DELETE',
+      signal: AbortSignal.timeout(RELEASE_TIMEOUT_MS),
+    });
+  } catch {
+    // Network failure, timeout, or the session was already gone (reaped, or
+    // raced against a concurrent complete/delete) — nothing else to do here;
+    // the idle-TTL reaper is still the backstop if this never lands.
+  }
+}
+
 export async function uploadPackageVersion(
   opts: UploadPackageVersionOptions,
 ): Promise<Response> {
@@ -236,45 +293,56 @@ export async function uploadPackageVersion(
   let stalledResyncs = 0;
   let totalResyncs = 0;
 
-  while (offset < file.size) {
-    const chunk = file.slice(offset, Math.min(offset + chunkSize, file.size));
-    const outcome = await sendChunk(catalogId, uploadId, chunk, offset, signal);
-    if (outcome.kind === 'failed') return outcome.response;
+  // From here on a session row exists server-side. `completed` gates the
+  // ONE exit path that must NOT release it (a successful /complete already
+  // deletes the row) — every other return or throw below runs the `finally`
+  // with `completed` still false, so it always fires the best-effort DELETE.
+  let completed = false;
+  try {
+    while (offset < file.size) {
+      const chunk = file.slice(offset, Math.min(offset + chunkSize, file.size));
+      const outcome = await sendChunk(catalogId, uploadId, chunk, offset, signal);
+      if (outcome.kind === 'failed') return outcome.response;
 
-    if (outcome.resynced) {
-      totalResyncs += 1;
-      if (totalResyncs > MAX_TOTAL_RESYNCS) {
-        return stalledResponse(
-          'Upload could not make progress after repeated resyncs; please retry',
-        );
+      if (outcome.resynced) {
+        totalResyncs += 1;
+        if (totalResyncs > MAX_TOTAL_RESYNCS) {
+          return stalledResponse(
+            'Upload could not make progress after repeated resyncs; please retry',
+          );
+        }
       }
+
+      if (outcome.bytesReceived > highWaterMark) {
+        highWaterMark = outcome.bytesReceived;
+        stalledResyncs = 0;
+      } else {
+        // Doesn't move the high-water mark forward — including a regression
+        // (server reports fewer bytes than it previously acknowledged, e.g.
+        // "Upload state lost; restart from offset 0"). A few of these can be
+        // normal after a lost response; endless or ping-ponging ones mean the
+        // server can never durably accept our progress — bail out with a
+        // synthetic 409 the caller can surface.
+        stalledResyncs += 1;
+        if (stalledResyncs > MAX_STALLED_RESYNCS) {
+          return stalledResponse('Upload could not make progress; please retry');
+        }
+      }
+      offset = outcome.bytesReceived;
+      onProgress?.(offset, file.size);
     }
 
-    if (outcome.bytesReceived > highWaterMark) {
-      highWaterMark = outcome.bytesReceived;
-      stalledResyncs = 0;
-    } else {
-      // Doesn't move the high-water mark forward — including a regression
-      // (server reports fewer bytes than it previously acknowledged, e.g.
-      // "Upload state lost; restart from offset 0"). A few of these can be
-      // normal after a lost response; endless or ping-ponging ones mean the
-      // server can never durably accept our progress — bail out with a
-      // synthetic 409 the caller can surface.
-      stalledResyncs += 1;
-      if (stalledResyncs > MAX_STALLED_RESYNCS) {
-        return stalledResponse('Upload could not make progress; please retry');
-      }
-    }
-    offset = outcome.bytesReceived;
-    onProgress?.(offset, file.size);
+    const completeResponse = await fetchWithAuth(
+      `/software/catalog/${catalogId}/versions/uploads/${uploadId}/complete`,
+      {
+        method: 'POST',
+        body: JSON.stringify({}),
+        signal: combineSignals(signal, AbortSignal.timeout(COMPLETE_TIMEOUT_MS)),
+      },
+    );
+    completed = completeResponse.ok;
+    return completeResponse;
+  } finally {
+    if (!completed) await releaseUploadSession(catalogId, uploadId);
   }
-
-  return fetchWithAuth(
-    `/software/catalog/${catalogId}/versions/uploads/${uploadId}/complete`,
-    {
-      method: 'POST',
-      body: JSON.stringify({}),
-      signal: combineSignals(signal, AbortSignal.timeout(COMPLETE_TIMEOUT_MS)),
-    },
-  );
 }

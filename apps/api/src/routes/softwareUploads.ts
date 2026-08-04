@@ -35,7 +35,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, gte, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, stat, truncate, unlink } from 'node:fs/promises';
@@ -45,6 +45,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { db } from '../db';
 import { softwareCatalog, softwareUploadSessions } from '../db/schema';
+import { getIdleTtlHours } from '../jobs/softwareUploadSessionCleanup';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -229,6 +230,16 @@ softwareUploadRoutes.post(
     // guard for exactly the tokens least likely to be a human clicking
     // "cancel". `IS NOT DISTINCT FROM` treats NULL = NULL as true, so all
     // null-user sessions in an org share one bucket and are still capped.
+    //
+    // Staleness filter (#2951 final review Finding 1): a session whose
+    // last_activity_at is already past the reaper's idle TTL is about to be
+    // deleted by softwareUploadSessionCleanup — it must not count against
+    // ANY of the three cap dimensions below, or a couple of cancelled/failed
+    // uploads (whose rows sit idle until the next hourly reap) lock a user or
+    // org out of the feature for up to (idle TTL + cron latency) hours.
+    // `getIdleTtlHours()` is imported from the reaper job itself so the two
+    // can never drift apart into independently-tuned copies of the same knob.
+    const idleCutoff = new Date(Date.now() - getIdleTtlHours() * 3_600_000);
     const [usage] = await db
       .select({
         orgActive: sql<number>`count(*)`,
@@ -239,6 +250,7 @@ softwareUploadRoutes.post(
       .where(and(
         eq(softwareUploadSessions.orgId, orgId),
         eq(softwareUploadSessions.status, 'active'),
+        gte(softwareUploadSessions.lastActivityAt, idleCutoff),
       ));
     if (Number(usage?.orgActive ?? 0) >= MAX_ACTIVE_UPLOAD_SESSIONS_PER_ORG) {
       return c.json({ error: 'Too many concurrent package uploads for this organization' }, 429);
