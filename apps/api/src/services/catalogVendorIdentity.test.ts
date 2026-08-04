@@ -42,4 +42,37 @@ describe('vendorIdentityFromAttributes', () => {
     expect(out.manufacturer!.length).toBe(255);
     expect(out.vendorSku!.length).toBe(100);
   });
+
+  it('rejects whitespace-only strings as null', () => {
+    const empty = { procurementSource: null, vendorSku: null, manufacturer: null, mfgPartNo: null };
+    expect(vendorIdentityFromAttributes({
+      pax8: { vendorName: '   ', vendorSku: '\t\n  ' },
+    })).toEqual(empty);
+    expect(vendorIdentityFromAttributes({
+      distributor: { source: 'td_synnex_ec_express', synnexSku: '  ', mfgPartNo: null, raw: { manufacturer: '' } },
+    })).toEqual(empty);
+  });
+
+  it('rejects non-string values in vendor fields as null', () => {
+    const empty = { procurementSource: null, vendorSku: null, manufacturer: null, mfgPartNo: null };
+    expect(vendorIdentityFromAttributes({
+      pax8: { vendorName: 12345, vendorSku: ['array'] },
+    })).toEqual(empty);
+    expect(vendorIdentityFromAttributes({
+      distributor: { source: 'td_synnex_ec_express', synnexSku: null, mfgPartNo: { object: true }, raw: { manufacturer: 42 } },
+    })).toEqual(empty);
+    expect(vendorIdentityFromAttributes({
+      distributor: { provider: 'td_synnex_digital_bridge', sku: undefined, vendor: false, manufacturerPartNumber: 99.9 },
+    })).toEqual(empty);
+  });
+
+  it('rejects arrays as containers and returns all-null', () => {
+    const empty = { procurementSource: null, vendorSku: null, manufacturer: null, mfgPartNo: null };
+    expect(vendorIdentityFromAttributes({
+      pax8: ['not', 'an', 'object'],
+    })).toEqual(empty);
+    expect(vendorIdentityFromAttributes({
+      distributor: ['also', 'not', 'an', 'object'],
+    })).toEqual(empty);
+  });
 });

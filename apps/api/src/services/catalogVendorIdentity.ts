@@ -29,34 +29,48 @@ export function vendorIdentityFromAttributes(attributes: unknown): VendorIdentit
 
   const pax8 = rec(attrs.pax8);
   if (pax8) {
-    return {
-      procurementSource: 'pax8',
-      vendorSku: str(pax8.vendorSku, 100),
-      manufacturer: str(pax8.vendorName, 255),
-      mfgPartNo: null,
-    };
+    const vendorSku = str(pax8.vendorSku, 100);
+    const manufacturer = str(pax8.vendorName, 255);
+    if (vendorSku || manufacturer) {
+      return {
+        procurementSource: 'pax8',
+        vendorSku,
+        manufacturer,
+        mfgPartNo: null,
+      };
+    }
   }
 
   const dist = rec(attrs.distributor);
   if (!dist) return EMPTY;
 
   if (typeof dist.provider === 'string' && dist.provider === 'td_synnex_digital_bridge') {
-    return {
-      procurementSource: 'td_synnex',
-      vendorSku: str(dist.sku, 100),
-      manufacturer: str(dist.vendor, 255),
-      mfgPartNo: str(dist.manufacturerPartNumber, 100),
-    };
+    const vendorSku = str(dist.sku, 100);
+    const manufacturer = str(dist.vendor, 255);
+    const mfgPartNo = str(dist.manufacturerPartNumber, 100);
+    if (vendorSku || manufacturer || mfgPartNo) {
+      return {
+        procurementSource: 'td_synnex',
+        vendorSku,
+        manufacturer,
+        mfgPartNo,
+      };
+    }
   }
 
   if (typeof dist.source === 'string' && dist.source.startsWith('td_synnex')) {
     const raw = rec(dist.raw);
-    return {
-      procurementSource: 'td_synnex',
-      vendorSku: str(dist.synnexSku, 100),
-      manufacturer: str(dist.manufacturer, 255) ?? (raw ? str(raw.manufacturer, 255) : null),
-      mfgPartNo: str(dist.mfgPartNo, 100),
-    };
+    const vendorSku = str(dist.synnexSku, 100);
+    const manufacturer = str(dist.manufacturer, 255) ?? (raw ? str(raw.manufacturer, 255) : null);
+    const mfgPartNo = str(dist.mfgPartNo, 100);
+    if (vendorSku || manufacturer || mfgPartNo) {
+      return {
+        procurementSource: 'td_synnex',
+        vendorSku,
+        manufacturer,
+        mfgPartNo,
+      };
+    }
   }
   return EMPTY;
 }
