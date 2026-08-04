@@ -924,6 +924,26 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           }
 
           if (decisionStatus === 'pending_approval') {
+            // The row can still READ `pending_approval` here even though the
+            // intent's own deadline has already passed: `jobs/intentExpiryReaper.ts`
+            // flips it to `expired` on a 30s sweep, and this wait's own local
+            // timeout (above) is calibrated to ~the same duration as
+            // `intent.expiresAt` — so giving up here routinely races the sweep
+            // by up to ~30s. Trust wall-clock time against the intent's own
+            // deadline instead of the possibly-stale DB read, so a genuinely
+            // expired approval isn't reported as "still pending" (#3090): that
+            // was false on both counts — not pending, and never going to
+            // complete, since re-approving an expired intent does nothing.
+            if (Date.now() >= intent.expiresAt.getTime()) {
+              return await failMatchedPlanStep(
+                {
+                  allowed: false,
+                  error:
+                    'Approval request expired before a decision was made; the action was not executed. Re-issue the tool call if it is still needed.',
+                },
+                ' The plan has been stopped.',
+              );
+            }
             return await failMatchedPlanStep(
               {
                 allowed: false,
