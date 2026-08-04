@@ -32,7 +32,6 @@ vi.mock('../db/schema/patches', () => ({
     gracePeriodHours: 'patchPolicies.gracePeriodHours',
     categories: 'patchPolicies.categories',
     excludeCategories: 'patchPolicies.excludeCategories',
-    sources: 'patchPolicies.sources',
   },
 }));
 vi.mock('../db/schema/softwarePolicies', () => ({ softwarePolicies: {} }));
@@ -348,6 +347,23 @@ describe('manage_update_rings autoApprove fail-closed write boundary (#1317)', (
     const parsed = JSON.parse(output);
     expect(parsed.error).toMatch(/severity|third-party/i);
     expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('manage_update_rings get strips the deprecated sources column from the response', async () => {
+    mockSelectReturns({
+      id: RING_ID,
+      partnerId: PARTNER_ID,
+      name: 'Ring A',
+      kind: 'ring',
+      sources: ['microsoft'],
+    });
+    const tool = getTool();
+    const output = await tool.handler({ action: 'get', ringId: RING_ID }, makeAuth());
+
+    const parsed = JSON.parse(output);
+    expect(parsed.ring).toBeDefined();
+    expect(parsed.ring).not.toHaveProperty('sources');
+    expect(parsed.ring.id).toBe(RING_ID);
   });
 });
 

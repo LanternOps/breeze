@@ -235,7 +235,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
 
         const [ring] = await db.select().from(patchPolicies).where(and(...conditions)).limit(1);
         if (!ring) return JSON.stringify({ error: 'Update ring not found or access denied' });
-        return JSON.stringify({ ring });
+        // `sources` is deprecated (never consumed by the approval path) and must
+        // not leak into ring responses, matching the REST detail endpoint.
+        const { sources: _sources, ...ringWithoutSources } = ring;
+        return JSON.stringify({ ring: ringWithoutSources });
       }
 
       if (action === 'create') {
