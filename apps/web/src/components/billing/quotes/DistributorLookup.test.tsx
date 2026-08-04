@@ -14,7 +14,7 @@ import DistributorLookup from './DistributorLookup';
 import type { EcProduct, SftpProduct } from '../../../lib/api/distributors';
 
 const product: EcProduct = {
-  source: 'td_synnex_ec_express', synnexSku: 'ABC123', mfgPartNo: 'MFG-1', status: 'Active',
+  source: 'td_synnex_ec_express', synnexSku: 'ABC123', mfgPartNo: 'MFG-1', manufacturer: 'HPE Aruba', status: 'Active',
   name: 'Widget', description: 'A widget', currency: 'USD', cost: 80, msrp: 100, discount: null,
   totalQty: 5, warehouses: [], weight: null, parcelShippable: null, raw: {},
 };
@@ -50,6 +50,9 @@ describe('DistributorLookup — EC Express (exact lookup)', () => {
     fireEvent.click(screen.getByTestId('quote-distributor-search-btn-b1'));
     await waitFor(() => screen.getByTestId('quote-distributor-result-ABC123'));
     expect((screen.getByTestId('quote-distributor-price-ABC123') as HTMLInputElement).value).toBe('100.00');
+    // Manufacturer now comes from the top-level EC product field (a live lookup
+    // has no nightly `row`, so this couldn't render before the field existed).
+    expect(screen.getByTestId('quote-distributor-result-ABC123').textContent).toContain('HPE Aruba');
     // The default source must stay EC Express — the live lookup is not debounced.
     expect(tdSynnexSftpProducts).not.toHaveBeenCalled();
   });
@@ -186,6 +189,7 @@ describe('DistributorLookup — nightly catalog (keyword search)', () => {
         source: 'td_synnex_price_file',
         synnexSku: 'NF001',
         name: 'Lenovo ThinkPad Dock',
+        manufacturer: 'LENOVO',
         cost: 210.5,
         msrp: 299.99,
         totalQty: 12,

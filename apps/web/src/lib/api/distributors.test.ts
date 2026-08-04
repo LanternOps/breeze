@@ -7,7 +7,7 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchW
 import { ecExpressStatus, ecExpressLookup, ecExpressImport, sellPriceDefault, type EcProduct } from './distributors';
 
 const product: EcProduct = {
-  source: 'td_synnex_ec_express', synnexSku: 'ABC123', mfgPartNo: 'MFG-1', status: 'Active',
+  source: 'td_synnex_ec_express', synnexSku: 'ABC123', mfgPartNo: 'MFG-1', manufacturer: null, status: 'Active',
   name: 'Widget', description: 'A widget', currency: 'USD', cost: 80, msrp: 100, discount: null,
   totalQty: 5, warehouses: [], weight: null, parcelShippable: null, raw: {},
 };
