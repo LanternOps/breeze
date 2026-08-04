@@ -47,7 +47,7 @@ describe('computeHeuristicSignals', () => {
     expect(signals.some((x) => x.signalKey === 'rmm.enrollment_velocity')).toBe(true);
   });
 
-  it('weighs fast enroll-to-remote sessions heavily', () => {
+  it('weighs fast enroll-to-remote sessions, but only to watch tier', () => {
     const signals = computeHeuristicSignals(
       [agg({ deviceCount: 5, sessions7d: 12, fastRemoteSessions7d: 5 })],
       SIGNAL_DEFAULTS,
@@ -55,7 +55,23 @@ describe('computeHeuristicSignals', () => {
     );
     const s = signals.find((x) => x.signalKey === 'rmm.session_intensity');
     expect(s).toBeDefined();
-    expect(s!.severity).toBe('alert');
+    expect(s!.severity).toBe('watch');
+  });
+
+  // Session shape corroborates but never accuses — no input, however extreme,
+  // may reach alert on its own. Shapes below are drawn from real reviewed
+  // accounts on both sides of the call, which scored identically here.
+  it.each([
+    ['single device, few sessions', { deviceCount: 1, sessions7d: 5, fastRemoteSessions7d: 5 }],
+    ['single device, more sessions', { deviceCount: 1, sessions7d: 9, fastRemoteSessions7d: 9 }],
+    ['absurd volume', { deviceCount: 1, sessions7d: 5000, fastRemoteSessions7d: 5000 }],
+  ])('never alerts on session shape alone (%s)', (_label, shape) => {
+    const s = computeHeuristicSignals([agg(shape)], SIGNAL_DEFAULTS, now).find(
+      (x) => x.signalKey === 'rmm.session_intensity',
+    );
+    expect(s).toBeDefined();
+    expect(s!.score).toBeLessThan(SIGNAL_DEFAULTS['severity.alert_score']);
+    expect(s!.severity).not.toBe('alert');
   });
 
   it('fires enrollment_ip_spread when nearly every device came from a distinct IP', () => {

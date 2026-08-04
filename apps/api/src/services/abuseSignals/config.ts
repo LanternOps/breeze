@@ -15,6 +15,14 @@ export const SIGNAL_DEFAULTS = {
   'rmm.enrollment_velocity.devices_24h': 10,
   'rmm.session_intensity.fast_remote_count_7d': 3,
   'rmm.session_intensity.sessions_per_device_7d': 5,
+  // Connecting repeatedly to a newly-enrolled device is also just what an
+  // operator does while trialling the product, and remote_sessions carries no
+  // field that separates the two intents — session rows look the same either
+  // way. So this corroborates rather than accuses: it caps below
+  // severity.alert_score and needs a second signal to reach alert. Same rule as
+  // cardholder_name_mismatch and card_testing below. Do not raise past
+  // severity.alert_score without a discriminator that actually exists.
+  'rmm.session_intensity.max_score': 65,
   'rmm.enrollment_ip_spread.min_devices': 8,
   'rmm.enrollment_ip_spread.distinct_ratio': 0.8,
   'rmm.device_ip_scatter.min_devices': 8,

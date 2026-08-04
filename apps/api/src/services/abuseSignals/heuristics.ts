@@ -287,14 +287,16 @@ export function computeHeuristicSignals(
       });
     }
 
-    // rmm.session_intensity — fast enroll-to-remote is the scammer fingerprint.
+    // rmm.session_intensity — fast enroll-to-remote. Corroborating only, never
+    // an alert on its own; see the max_score note in config.ts.
     const fastThreshold = cfg['rmm.session_intensity.fast_remote_count_7d'];
     const perDeviceThreshold = cfg['rmm.session_intensity.sessions_per_device_7d'];
     const perDevice = a.deviceCount > 0 ? a.sessions7d / a.deviceCount : 0;
     if (a.fastRemoteSessions7d >= fastThreshold || perDevice >= perDeviceThreshold) {
       const fastScore = (a.fastRemoteSessions7d / fastThreshold) * 70;
       const volumeScore = (perDevice / perDeviceThreshold) * 40;
-      push('rmm.session_intensity', Math.max(fastScore, volumeScore), {
+      const capped = Math.min(cfg['rmm.session_intensity.max_score'], Math.max(fastScore, volumeScore));
+      push('rmm.session_intensity', capped, {
         sessions7d: a.sessions7d,
         fastRemoteSessions7d: a.fastRemoteSessions7d,
         deviceCount: a.deviceCount,
