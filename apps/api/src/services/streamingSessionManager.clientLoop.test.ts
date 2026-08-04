@@ -166,6 +166,37 @@ describe('result handling — usage-bearing done + recordExtraUsage', () => {
       usage: { inputTokens: 100, outputTokens: 50, costCents: 3 },
     });
   });
+
+  it('records usage against the session org for a partner-scope login (auth.orgId is null) — #3087 regression guard', async () => {
+    // Partner tokens never carry an orgId. Before #3087, the result handler
+    // used `auth.orgId` for usage recording, which silently skipped it
+    // entirely for partner-scope logins. It must use the canonical
+    // session.orgId (dbSession.orgId) instead.
+    const gate = deferred();
+    mockSdkQuery([RESULT_MSG], gate.promise);
+
+    const PARTNER_AUTH = {
+      orgId: null,
+      scope: 'partner',
+      partnerId: '1a1a1a1a-1111-4222-8333-444455556666',
+      accessibleOrgIds: [ORG],
+      user: { id: 'beefbeef-1111-4222-8333-444455556666', email: 'partner.tech@contoso.com' },
+    } as unknown as AuthContext;
+
+    const session = await manager.getOrCreate(
+      'sess-partner-usage', DB_SESSION, PARTNER_AUTH, undefined, 'BASE PROMPT', undefined,
+      undefined, undefined, { injectApprovalModeInstructions: false },
+    );
+
+    gate.resolve();
+    await session.processorPromise;
+
+    expect(recordUsageMock).toHaveBeenCalledWith(
+      'sess-partner-usage',
+      ORG, // session.orgId (dbSession.orgId) — NOT auth.orgId, which is null here
+      expect.objectContaining({ total_cost_usd: 0.03 }),
+    );
+  });
 });
 
 // ============================================

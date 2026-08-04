@@ -501,10 +501,14 @@ export class StreamingSessionManager {
     if (existing && existing.state !== 'closed') {
       // Update per-request context. Device-bound sessions re-narrow the fresh
       // request auth to the session org every time (#3087) — `toolAuth` must
-      // never revert to the raw login scope on a follow-up message.
+      // never revert to the raw login scope on a follow-up message. Narrow
+      // against the freshly-loaded `dbSession.orgId`, not the possibly-stale
+      // `existing.orgId` snapshot captured at session creation — this is the
+      // current DB value, so it survives the device being moved to a
+      // different org mid-session.
       existing.auth = auth;
       existing.toolAuth = existing.deviceId
-        ? buildDeviceBoundSessionAuth(auth, existing.orgId)
+        ? buildDeviceBoundSessionAuth(auth, dbSession.orgId)
         : auth;
       existing.auditSnapshot = snapshot;
       existing.allowedTools = allowedTools;
