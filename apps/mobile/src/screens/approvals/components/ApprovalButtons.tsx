@@ -1,12 +1,16 @@
 import { useRef, useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Linking, Platform, Pressable, Text, View } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { useApprovalTheme, type, spacing, radii, palette } from '../../../theme';
 import { haptic } from '../../../lib/motion';
 import { HoldToConfirm } from './HoldToConfirm';
 import { DenyReasonSheet } from './DenyReasonSheet';
 import { captureRequestId, type CapturedRequestId } from '../decisionTarget';
-import { classifyAuthFailure } from '../authOutcome';
+import {
+  classifyAuthFailure,
+  classifyPreAuth,
+  type AuthFailureKind,
+} from '../authOutcome';
 
 interface Props {
   // The approval the user is looking at right now (live prop). We snapshot
@@ -40,6 +44,9 @@ export function ApprovalButtons({
   const theme = useApprovalTheme('dark');
   const [denyOpen, setDenyOpen] = useState(false);
   const [authMessage, setAuthMessage] = useState<string | null>(null);
+  // Kind of the last auth failure — drives the extra "open settings" action
+  // for the no-authenticator case (issue #3117).
+  const [authKind, setAuthKind] = useState<AuthFailureKind | null>(null);
   // Snapshot of the request id at the moment Deny was tapped — the deny
   // reason sheet stays open across re-renders, so reading the live prop in
   // its onSubmit would have the same focus-swap hazard as approve.
@@ -58,16 +65,34 @@ export function ApprovalButtons({
     const target = captureRequestId(requestId);
     haptic.tap();
     setAuthMessage(null);
+    setAuthKind(null);
 
     let hasHw = false;
     let enrolled = false;
+    // null = probe failed; don't block the attempt on a probe error — the
+    // prompt's own error code (classifyAuthFailure) is the backstop.
+    let enrolledLevel: number | null = null;
     try {
       hasHw = await LocalAuthentication.hasHardwareAsync();
       enrolled = await LocalAuthentication.isEnrolledAsync();
+      enrolledLevel = await LocalAuthentication.getEnrolledLevelAsync();
     } catch (err) {
       console.warn('[ApprovalButtons] biometric hardware probe failed', err);
       hasHw = false;
       enrolled = false;
+      enrolledLevel = null;
+    }
+
+    // No authenticator enrolled at all (no biometric, no PIN/pattern/
+    // password): the prompt is doomed — Android fails it immediately with
+    // "Authentication failed. Try again.", which misreads a permanent
+    // configuration state as a transient failure (issue #3117). Skip the
+    // prompt and show setup guidance instead.
+    const preAuth = classifyPreAuth(enrolledLevel);
+    if (preAuth) {
+      setAuthMessage(preAuth.message);
+      setAuthKind(preAuth.kind);
+      return;
     }
 
     // authenticateAsync / authenticateWithPasscode can REJECT (another
@@ -102,6 +127,7 @@ export function ApprovalButtons({
     } catch (err) {
       console.warn('[ApprovalButtons] biometric auth threw', err);
       setAuthMessage('Authentication failed. Try again.');
+      setAuthKind('failed');
     }
   }
 
@@ -111,8 +137,25 @@ export function ApprovalButtons({
     // mid-confirmation) now surface an actionable retry instead of being
     // swallowed (#746 Issue 2). Classification is unit-tested in
     // authOutcome.test.ts.
-    const { message } = classifyAuthFailure((result as { error?: string }).error);
+    const { kind, message } = classifyAuthFailure((result as { error?: string }).error);
     setAuthMessage(message);
+    setAuthKind(message === null ? null : kind);
+  }
+
+  async function openSecuritySettings() {
+    // Android exposes the lock-screen setup screen directly. There is no
+    // public iOS equivalent (App-Prefs: URLs are private API), so the link
+    // is Android-only — iOS gets the plain guidance copy.
+    try {
+      await Linking.sendIntent('android.settings.SECURITY_SETTINGS');
+    } catch (err) {
+      console.warn('[ApprovalButtons] could not open security settings', err);
+      try {
+        await Linking.openSettings();
+      } catch (settingsErr) {
+        console.warn('[ApprovalButtons] could not open app settings either', settingsErr);
+      }
+    }
   }
 
   return (
@@ -126,6 +169,17 @@ export function ApprovalButtons({
         >
           {authMessage}
         </Text>
+      ) : null}
+      {authMessage && authKind === 'no_authenticator' && Platform.OS === 'android' ? (
+        <Pressable
+          onPress={openSecuritySettings}
+          hitSlop={8}
+          style={{ paddingHorizontal: spacing[6], marginBottom: spacing[2], alignSelf: 'flex-start' }}
+        >
+          <Text style={[type.meta, { color: theme.textHi, textDecorationLine: 'underline' }]}>
+            Open security settings
+          </Text>
+        </Pressable>
       ) : null}
       <View style={{ flexDirection: 'row', paddingHorizontal: spacing[6], gap: spacing[3] }}>
         <Pressable
