@@ -439,6 +439,8 @@ describe('quoteService deposits', () => {
     queueResult([]); // blocks
     queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false, itemType: 'hardware' }]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // listQuoteOrders — order headers
+    queueResult([]); // listQuoteOrders — order lines
 
     const { quote } = await svc.getQuote('q1', actor);
 

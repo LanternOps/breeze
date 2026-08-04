@@ -12,7 +12,7 @@ import { computeLineTotal, resolveEffectiveTaxRate } from './invoiceMath';
 import { vendorIdentityFromAttributes } from './catalogVendorIdentity';
 import { buildBillToAddress, type BillToAddress } from './sellerSnapshot';
 import { computeQuoteTotals, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
-import { QuoteServiceError, type QuoteActor } from './quoteTypes';
+import { QuoteServiceError, assertOrg, assertSite, assertQuoteAccess, type QuoteActor } from './quoteTypes';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
 import { sanitizeRichTextHtml } from './richTextSanitize';
 import type {
@@ -103,38 +103,6 @@ function resolvePartner(actor: QuoteActor): string {
     throw new QuoteServiceError('Partner could not be resolved', 403, 'PARTNER_UNRESOLVABLE');
   }
   return actor.partnerId;
-}
-
-function assertOrg(actor: QuoteActor, orgId: string): void {
-  if (actor.accessibleOrgIds !== null && !actor.accessibleOrgIds.includes(orgId)) {
-    throw new QuoteServiceError('Organization access denied', 403, 'ORG_DENIED');
-  }
-}
-
-/**
- * Site-axis guard mirroring `siteAccessCheck` (middleware/auth.ts). An actor with
- * no `allowedSiteIds` (undefined) is unrestricted — a no-op, so partner/system
- * callers and all-sites org users are unaffected. A site-restricted actor may only
- * touch a siteId in its allowlist; a null/undefined siteId (an org-level quote) is
- * DENIED, exactly as the auth closure denies a restricted caller for a null site.
- */
-function assertSite(actor: QuoteActor, siteId: string | null | undefined): void {
-  if (!actor.allowedSiteIds) return; // unrestricted
-  if (!siteId || !actor.allowedSiteIds.includes(siteId)) {
-    throw new QuoteServiceError('Site access denied', 403, 'SITE_DENIED');
-  }
-}
-
-/**
- * Org + site guard for a loaded quote row. The single authorization chokepoint for
- * every quote path (CRUD via loadDraft, getQuote, and the pay-link path in
- * quotePay). Exported so quotePay can enforce the same site restriction that was
- * previously bypassable (org is enforced downstream in createInvoicePayLink; site
- * was not enforced anywhere on the quote).
- */
-export function assertQuoteAccess(actor: QuoteActor, quote: { orgId: string; siteId: string | null }): void {
-  assertOrg(actor, quote.orgId);
-  assertSite(actor, quote.siteId);
 }
 
 /**

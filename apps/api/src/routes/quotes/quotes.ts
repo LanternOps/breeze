@@ -30,7 +30,7 @@ import {
 } from '../../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 import { PdfMergeError } from '../../services/pdfMerge';
-import { writeAuditEvent } from '../../services/auditEvents';
+import { writeRouteAudit } from '../../services/auditEvents';
 
 export const quoteCrudRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
@@ -170,11 +170,16 @@ quoteCrudRoutes.delete('/:id/lines/:lineId', scopes, writePerm, zValidator('para
 // necessarily record real-world purchase orders against it (and vice versa).
 quoteCrudRoutes.post('/:id/orders', scopes, fulfillPerm, zValidator('param', idParam), zValidator('json', createQuoteOrderSchema), async (c) => {
   try {
-    const order = await createQuoteOrder(c.req.valid('param').id, c.req.valid('json'), quoteActorFrom(c));
-    writeAuditEvent(c, {
-      orgId: order.orgId, action: 'quote_order_created', resourceType: 'quote',
-      resourceId: order.quoteId, details: { orderId: order.id, lineCount: order.lines.length },
-    });
+    const { created, ...order } = await createQuoteOrder(c.req.valid('param').id, c.req.valid('json'), quoteActorFrom(c));
+    // Only audit an actual creation — a deduped retry (same clientRequestId)
+    // did no write this call, so logging quote_order_created again would be
+    // noise attributing a second "creation" to a request that changed nothing.
+    if (created) {
+      writeRouteAudit(c, {
+        orgId: order.orgId, action: 'quote_order_created', resourceType: 'quote',
+        resourceId: order.quoteId, details: { orderId: order.id, lineCount: order.lines.length },
+      });
+    }
     return c.json({ data: order });
   } catch (err) { return handleServiceError(c, err); }
 });
@@ -182,7 +187,7 @@ quoteCrudRoutes.patch('/:id/orders/:orderId', scopes, fulfillPerm, zValidator('p
   try {
     const p = c.req.valid('param');
     const order = await updateQuoteOrder(p.id, p.orderId, c.req.valid('json'), quoteActorFrom(c));
-    writeAuditEvent(c, {
+    writeRouteAudit(c, {
       orgId: order.orgId, action: 'quote_order_updated', resourceType: 'quote',
       resourceId: order.quoteId, details: { orderId: order.id },
     });
@@ -193,16 +198,20 @@ quoteCrudRoutes.patch('/:id/orders/:orderId/lines/:lineId', scopes, fulfillPerm,
   try {
     const p = c.req.valid('param');
     const body = c.req.valid('json');
-    const line = await updateQuoteOrderLine(p.id, p.orderId, p.lineId, body, quoteActorFrom(c));
-    writeAuditEvent(c, {
-      orgId: line.orgId, action: 'quote_order_line_updated', resourceType: 'quote',
-      resourceId: line.quoteId,
-      details: {
-        orderId: line.orderId, lineId: line.id,
-        ...(body.cancelled !== undefined ? { cancelled: body.cancelled } : {}),
-        ...(body.receivedQty !== undefined ? { receivedQty: body.receivedQty } : {}),
-      },
-    });
+    const { changed, ...line } = await updateQuoteOrderLine(p.id, p.orderId, p.lineId, body, quoteActorFrom(c));
+    // Skip the audit on the no-op early-return path (an empty/all-undefined
+    // patch) — nothing changed, so there's nothing to attribute.
+    if (changed) {
+      writeRouteAudit(c, {
+        orgId: line.orgId, action: 'quote_order_line_updated', resourceType: 'quote',
+        resourceId: line.quoteId,
+        details: {
+          orderId: line.orderId, lineId: line.id,
+          ...(body.cancelled !== undefined ? { cancelled: body.cancelled } : {}),
+          ...(body.receivedQty !== undefined ? { receivedQty: body.receivedQty } : {}),
+        },
+      });
+    }
     return c.json({ data: line });
   } catch (err) { return handleServiceError(c, err); }
 });

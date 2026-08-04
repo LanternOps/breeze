@@ -23,9 +23,10 @@ vi.mock('../../services/permissions', async (importActual) => {
 });
 
 // The service layer is what does the real work (idempotency, access checks,
-// the receivedQty<=orderedQty guard) — it has its own coverage. Here we only
-// assert the route's wiring: param/body validation, permission gating, error
-// mapping, and the audit event shape.
+// the receivedQty<=orderedQty guard) — it has its own coverage (plus a real-DB
+// integration suite for the idempotent-insert race). Here we only assert the
+// route's wiring: param/body validation, permission gating, error mapping, and
+// the audit event shape/gating.
 vi.mock('../../services/quoteOrderService', () => ({
   createQuoteOrder: vi.fn(),
   updateQuoteOrder: vi.fn(),
@@ -48,8 +49,8 @@ vi.mock('../../services/contractTemplateRender', () => ({
   renderContractBlocksForClient: vi.fn(), loadContractPdfInputs: vi.fn(),
   loadContractBlockAuthoring: vi.fn(), attachContractAuthoring: vi.fn(),
 }));
-const audit = vi.hoisted(() => ({ writeAuditEvent: vi.fn() }));
-vi.mock('../../services/auditEvents', () => ({ writeAuditEvent: audit.writeAuditEvent }));
+const audit = vi.hoisted(() => ({ writeRouteAudit: vi.fn() }));
+vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: audit.writeRouteAudit }));
 
 import { quoteCrudRoutes } from './quotes';
 import { createQuoteOrder, updateQuoteOrder, updateQuoteOrderLine } from '../../services/quoteOrderService';
@@ -92,6 +93,7 @@ describe('POST /:id/orders', () => {
       vendorName: 'Acme Distributor', orderRef: null, procurementSource: null, notes: null,
       orderedBy: 'u1', orderedAt: new Date().toISOString(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       lines: [{ id: LINE_ID, orderId: ORDER_ID, quoteId: QUOTE_ID, orgId: 'org-1', quoteLineId: QUOTE_LINE_ID, orderedQty: '5.00', receivedQty: '0.00' }],
+      created: true,
     };
     vi.mocked(createQuoteOrder).mockResolvedValue(orderRow as never);
 
@@ -105,20 +107,25 @@ describe('POST /:id/orders', () => {
     const body = await res.json();
     expect(body.data.id).toBe(ORDER_ID);
     expect(body.data.lines).toHaveLength(1);
+    // `created` is an internal signal for the audit gate, not part of the
+    // public order shape.
+    expect(body.data.created).toBeUndefined();
     expect(createQuoteOrder).toHaveBeenCalledWith(
       QUOTE_ID,
       expect.objectContaining({ clientRequestId: CLIENT_REQUEST_ID, lines: [{ quoteLineId: QUOTE_LINE_ID, orderedQty: 5 }] }),
       expect.objectContaining({ userId: 'u1' }),
     );
+    expect(audit.writeRouteAudit).toHaveBeenCalledTimes(1);
   });
 
-  it('is idempotent — the same clientRequestId submitted twice returns the SAME order id', async () => {
-    const orderRow = { id: ORDER_ID, quoteId: QUOTE_ID, orgId: 'org-1', clientRequestId: CLIENT_REQUEST_ID, lines: [] };
-    // The service (not the route) is what dedupes on the 23505 from
-    // quote_orders_client_request_uq and re-reads the committed row — a static
-    // mock stands in for that: whatever the caller sends, the service always
-    // resolves the ONE committed order for this clientRequestId.
-    vi.mocked(createQuoteOrder).mockResolvedValue(orderRow as never);
+  it('is idempotent — the same clientRequestId submitted twice returns the SAME order id, and only the FIRST call is audited', async () => {
+    // The service dedupes on the no-abort ON CONFLICT DO NOTHING insert (see
+    // quoteOrderService's real coverage + the integration suite) and reports
+    // `created: false` on a deduped retry. A static mock stands in for that
+    // per-call outcome here.
+    vi.mocked(createQuoteOrder)
+      .mockResolvedValueOnce({ id: ORDER_ID, quoteId: QUOTE_ID, orgId: 'org-1', clientRequestId: CLIENT_REQUEST_ID, lines: [], created: true } as never)
+      .mockResolvedValueOnce({ id: ORDER_ID, quoteId: QUOTE_ID, orgId: 'org-1', clientRequestId: CLIENT_REQUEST_ID, lines: [], created: false } as never);
 
     const body = jsonReq({ clientRequestId: CLIENT_REQUEST_ID, lines: [{ quoteLineId: QUOTE_LINE_ID, orderedQty: 5 }] });
     const app = appWith('partner', PERMS);
@@ -131,6 +138,9 @@ describe('POST /:id/orders', () => {
     const secondBody = await second.json();
     expect(firstBody.data.id).toBe(secondBody.data.id);
     expect(createQuoteOrder).toHaveBeenCalledTimes(2);
+    // Only the first (actually-created) call writes quote_order_created — the
+    // deduped retry did no write, so auditing it again would be noise.
+    expect(audit.writeRouteAudit).toHaveBeenCalledTimes(1);
   });
 
   it('403s without quotes:fulfill even when the caller holds quotes:write', async () => {
@@ -152,6 +162,7 @@ describe('POST /:id/orders', () => {
     }));
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ code: 'QUOTE_NOT_FULFILLABLE' });
+    expect(audit.writeRouteAudit).not.toHaveBeenCalled();
   });
 
   it('400s when a quoteLineId belongs to another quote', async () => {
@@ -172,10 +183,10 @@ describe('POST /:id/orders', () => {
     expect(createQuoteOrder).not.toHaveBeenCalled();
   });
 
-  it('writes an audit event with IDs + counts only — never tracking numbers, refs, or notes', async () => {
+  it('writes an audit event attributed to the acting user, with IDs + counts only — never tracking numbers, refs, or notes', async () => {
     const orderRow = {
       id: ORDER_ID, quoteId: QUOTE_ID, orgId: 'org-1', clientRequestId: CLIENT_REQUEST_ID,
-      orderRef: 'PO-SECRET-REF', notes: 'internal notes',
+      orderRef: 'PO-SECRET-REF', notes: 'internal notes', created: true,
       lines: [
         { id: LINE_ID, orderId: ORDER_ID, quoteId: QUOTE_ID, quoteLineId: QUOTE_LINE_ID, orderedQty: '5.00', trackingNumber: '1Z999AA10123456784' },
       ],
@@ -189,8 +200,13 @@ describe('POST /:id/orders', () => {
       lines: [{ quoteLineId: QUOTE_LINE_ID, orderedQty: 5 }],
     }));
 
-    expect(audit.writeAuditEvent).toHaveBeenCalledTimes(1);
-    const [, event] = audit.writeAuditEvent.mock.calls[0]!;
+    expect(audit.writeRouteAudit).toHaveBeenCalledTimes(1);
+    // writeRouteAudit attributes the actor from `c.get('auth')` itself (not a
+    // caller-supplied actorId) — asserting the call went through the real
+    // helper (not the anonymous-actor writeAuditEvent) is the attribution proof;
+    // the auth-context wiring itself is exercised by writeRouteAudit's own unit
+    // coverage in auditEvents.test.ts.
+    const [, event] = audit.writeRouteAudit.mock.calls[0]!;
     expect(event).toMatchObject({ action: 'quote_order_created', resourceType: 'quote', resourceId: QUOTE_ID });
     expect(event.details).toEqual({ orderId: ORDER_ID, lineCount: 1 });
     const serialized = JSON.stringify(event);
@@ -213,6 +229,7 @@ describe('PATCH /:id/orders/:orderId', () => {
     });
     expect(res.status).toBe(200);
     expect(updateQuoteOrder).toHaveBeenCalledWith(QUOTE_ID, ORDER_ID, { vendorName: 'New Vendor' }, expect.anything());
+    expect(audit.writeRouteAudit).toHaveBeenCalledTimes(1);
   });
 
   it('404s an orderId that does not belong to this quote', async () => {
@@ -233,7 +250,7 @@ describe('PATCH /:id/orders/:orderId/lines/:lineId', () => {
     const cancelledAt = new Date().toISOString();
     vi.mocked(updateQuoteOrderLine).mockResolvedValue({
       id: LINE_ID, orderId: ORDER_ID, quoteId: QUOTE_ID, orgId: 'org-1', quoteLineId: QUOTE_LINE_ID,
-      orderedQty: '5.00', receivedQty: '0.00', cancelledAt,
+      orderedQty: '5.00', receivedQty: '0.00', cancelledAt, changed: true,
     } as never);
 
     const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/orders/${ORDER_ID}/lines/${LINE_ID}`, {
@@ -243,7 +260,23 @@ describe('PATCH /:id/orders/:orderId/lines/:lineId', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.cancelledAt).toBe(cancelledAt);
+    expect(body.data.changed).toBeUndefined();
     expect(updateQuoteOrderLine).toHaveBeenCalledWith(QUOTE_ID, ORDER_ID, LINE_ID, { cancelled: true }, expect.anything());
+    expect(audit.writeRouteAudit).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the audit on a no-op patch (nothing changed)', async () => {
+    vi.mocked(updateQuoteOrderLine).mockResolvedValue({
+      id: LINE_ID, orderId: ORDER_ID, quoteId: QUOTE_ID, orgId: 'org-1', quoteLineId: QUOTE_LINE_ID,
+      orderedQty: '5.00', receivedQty: '0.00', cancelledAt: null, changed: false,
+    } as never);
+
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/orders/${ORDER_ID}/lines/${LINE_ID}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(200);
+    expect(audit.writeRouteAudit).not.toHaveBeenCalled();
   });
 
   it('400s a receivedQty above orderedQty with a clean message (not a raw DB error)', async () => {
@@ -257,6 +290,17 @@ describe('PATCH /:id/orders/:orderId/lines/:lineId', () => {
     const body = await res.json();
     expect(body.error).toBe('Received quantity cannot exceed ordered quantity');
     expect(body.code).toBe('RECEIVED_QTY_EXCEEDS_ORDERED');
+  });
+
+  it('400s a receipt against a cancelled allocation', async () => {
+    vi.mocked(updateQuoteOrderLine).mockRejectedValue(
+      new QuoteServiceError('Cannot record a receipt against a cancelled allocation', 400, 'QUOTE_ORDER_LINE_CANCELLED')
+    );
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/orders/${ORDER_ID}/lines/${LINE_ID}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ receivedQty: 1 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'QUOTE_ORDER_LINE_CANCELLED' });
   });
 
   it('403s without quotes:fulfill even when the caller holds quotes:write', async () => {
