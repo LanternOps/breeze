@@ -35,7 +35,37 @@ const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
 const EVICTION_INTERVAL_MS = 60 * 1000; // Check every 60s
 const MAX_ACTIVE_SESSIONS = 200;
 const EVENT_RING_BUFFER_SIZE = 100;
-const SDK_TURN_TIMEOUT_MS = 6 * 60 * 1000; // 6 min per-turn timeout (accounts for tool approval waits up to 5 min)
+/**
+ * 6 min per-turn timeout. Sized to accept a single approval wait
+ * (`waitForApproval`, aiAgentSdk.ts, 300_000ms = 5 min) plus headroom for
+ * execution — but the two are NOT bounded to fit together, and this handler
+ * does not reach into the pending call to stop it.
+ *
+ * #3096 review (raising the vision-tool budget in toolTimeouts.ts to 120s):
+ * approval-wait fully resolves BEFORE `withToolTimeout` starts
+ * (aiAgentSdkTools.ts onPreToolUse vs. the executeTool wrapper), so the two
+ * budgets stack rather than overlap. Worst case for a tier-3 vision/desktop
+ * tool call is now approval wait (up to 5 min) + execution (up to 120s) =
+ * up to 7 min — past this 6-min ceiling.
+ *
+ * When that happens today, `startTurnTimeout`'s callback (below) publishes
+ * `error` + `done` and sets `state = 'idle'`, but does NOT abort
+ * `session.abortController` or otherwise unblock the in-flight
+ * `waitForApproval` poll — only `remove()` does that. `runBackgroundProcessor`'s
+ * `for await` loop only stops on `state === 'closing' | 'closed'`, so once the
+ * approval/tool call eventually settles, its SDK messages (tool_result,
+ * closing assistant text, `result`) still get processed and published into a
+ * turn the client was already told had ended.
+ *
+ * This is a known gap, not a new one from #3091/#3096 — the same overlap
+ * already existed for two stacked ordinary approval waits before the vision
+ * budget was ever raised. It has a proper fix in progress: PR #3104 (Closes
+ * #3089) introduces a shared per-cycle `APPROVAL_WAIT_BUDGET_MS` that resets
+ * at the same `message_start` point as this timeout, so cumulative approval
+ * blocking is bounded to fit inside the turn window. That PR is not merged as
+ * of this comment — do not assume the overlap is handled until it lands.
+ */
+const SDK_TURN_TIMEOUT_MS = 6 * 60 * 1000;
 const MCP_PREFIX = 'mcp__breeze__';
 // Use the directly-imported runOutsideDbContext (see commandQueue.ts for explanation).
 const runOutsideDbContextSafe = runOutsideDbContext;
