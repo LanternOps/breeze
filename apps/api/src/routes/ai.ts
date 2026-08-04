@@ -23,7 +23,7 @@ import {
   resolveDefaultModel,
   sanitizeErrorForClient,
 } from '../services/aiAgent';
-import { runPreFlightChecks, abortActivePlan } from '../services/aiAgentSdk';
+import { runPreFlightChecks, abortActivePlan, settleBlockedTurnForNewMessage } from '../services/aiAgentSdk';
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { getUsageSummary, updateBudget, getSessionHistory, recordUsage } from '../services/aiCostTracker';
@@ -626,7 +626,23 @@ aiRoutes.post(
 
     // Concurrent message guard — atomic check-and-set
     if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
-      return c.json({ error: 'A message is already being processed for this session' }, 409);
+      // #3089: when the in-flight turn is blocked ONLY on pending tool
+      // approvals, the assistant used to go mute — the user's message bounced
+      // with a 409 while the model sat waiting up to 5 minutes per approval.
+      // Settle those waits instead: the blocked tool calls return promptly
+      // with an approval-pending result (tier-3 intents stay pending and are
+      // executed by the durable release worker once decided), the model
+      // concludes the turn, and this message then proceeds normally. If the
+      // session is busy for any other reason (model actively working), or the
+      // turn doesn't conclude in time, fall back to a 409 as before.
+      const settle = await settleBlockedTurnForNewMessage(activeSession);
+      if (settle !== 'concluded' || !streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+        return c.json({
+          error: settle === 'not_blocked_on_approvals'
+            ? 'A message is already being processed for this session'
+            : 'The assistant is wrapping up the previous turn — please try again in a moment',
+        }, 409);
+      }
     }
 
     writeRouteAudit(c, {

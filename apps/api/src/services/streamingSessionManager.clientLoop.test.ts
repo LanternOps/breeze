@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 
-const { queryMock, recordUsageMock, capturedQueryArgs } = vi.hoisted(() => ({
+const { queryMock, recordUsageMock, capturedQueryArgs, settleApprovalWaitsMock } = vi.hoisted(() => ({
   queryMock: vi.fn(),
   recordUsageMock: vi.fn(() => Promise.resolve()),
   capturedQueryArgs: [] as Array<{ prompt: unknown; options: Record<string, unknown> }>,
+  settleApprovalWaitsMock: vi.fn(() => false),
 }));
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
@@ -37,6 +38,7 @@ vi.mock('./aiAgentSdkTools', () => ({
 vi.mock('./aiAgentSdk', () => ({
   createSessionPreToolUse: vi.fn(() => vi.fn()),
   createSessionPostToolUse: vi.fn(() => vi.fn()),
+  settleApprovalWaits: settleApprovalWaitsMock,
 }));
 vi.mock('./aiToolOutput', () => ({ redactAiToolOutputText: (s: string) => s }));
 vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
@@ -163,5 +165,84 @@ describe('result handling — usage-bearing done + recordExtraUsage', () => {
       type: 'done',
       usage: { inputTokens: 100, outputTokens: 50, costCents: 3 },
     });
+  });
+});
+
+// ============================================
+// #3089 — approval-wait budget lifecycle
+// ============================================
+
+describe('approval-wait budget lifecycle (#3089)', () => {
+  async function createSession(id: string) {
+    const gate = deferred();
+    mockSdkQuery([], gate.promise);
+    const session = await manager.getOrCreate(id, DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined);
+    return { session, gate };
+  }
+
+  it('initializes the approval-wait fields on a new session', async () => {
+    const { session, gate } = await createSession('sess-wait-init');
+    expect(session.approvalWaitDeadline).toBeNull();
+    expect(session.approvalWaitAbort).toBeNull();
+    expect(session.pendingApprovalWaits).toBe(0);
+    gate.resolve();
+    await session.processorPromise;
+  });
+
+  it('startTurnTimeout resets the shared budget when no wait is in flight', async () => {
+    const { session, gate } = await createSession('sess-wait-reset');
+    session.approvalWaitDeadline = Date.now() + 100_000;
+    session.approvalWaitAbort = new AbortController();
+    session.pendingApprovalWaits = 0;
+
+    manager.startTurnTimeout(session);
+
+    expect(session.approvalWaitDeadline).toBeNull();
+    expect(session.approvalWaitAbort).toBeNull();
+    gate.resolve();
+    await session.processorPromise;
+  });
+
+  it('startTurnTimeout preserves a live budget while a wait is still in flight', async () => {
+    const { session, gate } = await createSession('sess-wait-preserve');
+    const deadline = Date.now() + 100_000;
+    const abort = new AbortController();
+    session.approvalWaitDeadline = deadline;
+    session.approvalWaitAbort = abort;
+    session.pendingApprovalWaits = 1;
+
+    manager.startTurnTimeout(session);
+
+    expect(session.approvalWaitDeadline).toBe(deadline);
+    expect(session.approvalWaitAbort).toBe(abort);
+    gate.resolve();
+    await session.processorPromise;
+  });
+
+  it('startTurnTimeout resets an EXHAUSTED budget even with a wait mid-settle, so later cycles are not poisoned to zero', async () => {
+    const { session, gate } = await createSession('sess-wait-exhausted');
+    session.approvalWaitDeadline = Date.now() - 1_000;
+    session.approvalWaitAbort = new AbortController();
+    session.pendingApprovalWaits = 1;
+
+    manager.startTurnTimeout(session);
+
+    expect(session.approvalWaitDeadline).toBeNull();
+    expect(session.approvalWaitAbort).toBeNull();
+    gate.resolve();
+    await session.processorPromise;
+  });
+
+  it('interrupt() settles in-flight approval waits before interrupting the SDK query', async () => {
+    const { session, gate } = await createSession('sess-wait-interrupt');
+    session.state = 'processing';
+
+    const result = await manager.interrupt('sess-wait-interrupt');
+
+    expect(result.interrupted).toBe(true);
+    expect(settleApprovalWaitsMock).toHaveBeenCalledWith(session);
+    expect(session.query.interrupt).toHaveBeenCalled();
+    gate.resolve();
+    await session.processorPromise;
   });
 });

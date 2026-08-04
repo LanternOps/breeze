@@ -24,7 +24,7 @@ import { recordUsageFromSdkResult } from './aiCostTracker';
 import { sanitizeErrorForClient } from './aiAgent';
 import { captureException } from './sentry';
 import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
-import { createSessionPreToolUse, createSessionPostToolUse } from './aiAgentSdk';
+import { createSessionPreToolUse, createSessionPostToolUse, settleApprovalWaits } from './aiAgentSdk';
 import type { RequestLike } from './auditEvents';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
@@ -269,6 +269,22 @@ export interface ActiveSession {
   readonly processorPromise: Promise<void>;
   /** Timer for per-turn timeout; cleared when 'result' arrives */
   turnTimeoutId: ReturnType<typeof setTimeout> | null;
+  /**
+   * Epoch-ms deadline SHARED by every approval wait in the current assistant
+   * cycle (#3089) — set by the first wait of the cycle (beginApprovalWait in
+   * aiAgentSdk.ts), reset to null at each message_start via startTurnTimeout.
+   * Guarantees cumulative approval blocking per cycle stays under the turn
+   * timeout so the model can always conclude the turn.
+   */
+  approvalWaitDeadline: number | null;
+  /**
+   * Aborts in-flight approval waits early WITHOUT tearing down the session
+   * (settleApprovalWaits in aiAgentSdk.ts) — fired when a new user message or
+   * an interrupt arrives while the turn is blocked on approvals.
+   */
+  approvalWaitAbort: AbortController | null;
+  /** Count of approval waits currently blocked inside preToolUse. */
+  pendingApprovalWaits: number;
   /** Approval mode for this session (loaded from org's aiBudgets) */
   approvalMode: AiApprovalMode;
   /** Optional MCP allowlist for restricted sessions such as helper chat. */
@@ -411,6 +427,9 @@ export class StreamingSessionManager {
       toolUseIdQueue: [],
       processorPromise: Promise.resolve(),
       turnTimeoutId: null,
+      approvalWaitDeadline: null,
+      approvalWaitAbort: null,
+      pendingApprovalWaits: 0,
       approvalMode,
       allowedTools,
       isPaused: false,
@@ -546,6 +565,11 @@ export class StreamingSessionManager {
     }
 
     try {
+      // Settle any in-flight approval waits first: while a preToolUse approval
+      // wait is blocking an MCP tool handler, query.interrupt() alone cannot
+      // conclude the turn (#3089). The tier-3 intents stay pending_approval
+      // and are still executed by the durable release worker once decided.
+      settleApprovalWaits(session);
       await session.query.interrupt();
       return { interrupted: true };
     } catch (err) {
@@ -573,9 +597,31 @@ export class StreamingSessionManager {
   /** Start the per-turn timeout. Publishes error + done if SDK hangs. */
   startTurnTimeout(session: ActiveSession): void {
     this.clearTurnTimeout(session);
+    // New assistant cycle: reset the shared approval-wait budget (#3089) at
+    // the same point this turn timeout resets, preserving the invariant that
+    // a cycle's approval waits (<= 5 min total) always leave headroom for the
+    // model to emit its closing message before the 6-min timeout fires.
+    // Guarded: never reset while a wait is actually in flight (waits only run
+    // in the tool phase, between assistant messages) — EXCEPT when the
+    // deadline is already exhausted, where an in-flight wait is settling
+    // within milliseconds anyway and skipping the reset would poison every
+    // later cycle with a permanently zero budget.
+    if (
+      session.pendingApprovalWaits === 0
+      || (session.approvalWaitDeadline ?? Infinity) <= Date.now()
+    ) {
+      session.approvalWaitDeadline = null;
+      session.approvalWaitAbort = null;
+    }
     session.turnTimeoutId = setTimeout(() => {
       if (session.state === 'processing') {
         console.error('[StreamingSessionManager] Turn timeout for session:', session.breezeSessionId);
+        // The timeout can fire while approval waits are still blocked (e.g.
+        // long-running sibling tools delayed the first wait's start past the
+        // headroom window). Settle them so the SDK turn can actually conclude
+        // in the background instead of holding the subprocess for the rest of
+        // the 5-minute wait (#3089).
+        settleApprovalWaits(session);
         session.eventBus.publish({ type: 'error', message: 'AI request timed out. Please try again.' });
         session.eventBus.publish({ type: 'done' });
         session.state = 'idle';

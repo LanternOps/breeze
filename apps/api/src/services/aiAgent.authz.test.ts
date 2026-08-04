@@ -146,7 +146,8 @@ describe('handleApproval owner-binding (SR5-10)', () => {
       { id: 'exec-1', status: 'pending', sessionId: 's1' },
       { id: 's1', orgId: 'org-1', userId: 'victim' },
     );
-    const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    const returningSpy = vi.fn().mockResolvedValue([{ id: 'exec-1' }]);
+    const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: returningSpy }) });
     updateMock.mockReturnValue({ set: setSpy });
 
     const ok = await handleApproval('exec-1', true, auth('victim'), 's1');
@@ -155,6 +156,24 @@ describe('handleApproval owner-binding (SR5-10)', () => {
     expect(setSpy).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'approved', approvedBy: 'victim' }),
     );
+  });
+
+  it('returns false when the CAS updates zero rows (row settled/decided concurrently — #3089)', async () => {
+    // The pre-check SELECT saw 'pending', but by the time the guarded UPDATE
+    // ran, a settle (or the waitForApproval timeout writer) had already moved
+    // the row out of 'pending'. Reporting true here would tell the UI an
+    // action was approved that nothing will ever execute.
+    stubExecutionThenSession(
+      { id: 'exec-1', status: 'pending', sessionId: 's1' },
+      { id: 's1', orgId: 'org-1', userId: 'victim' },
+    );
+    const returningSpy = vi.fn().mockResolvedValue([]);
+    const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: returningSpy }) });
+    updateMock.mockReturnValue({ set: setSpy });
+
+    const ok = await handleApproval('exec-1', true, auth('victim'), 's1');
+
+    expect(ok).toBe(false);
   });
 });
 
