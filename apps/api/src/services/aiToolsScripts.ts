@@ -104,7 +104,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'execute_command',
-      description: 'Execute a system command on a device. Requires user approval. Use for process management, service control, file operations, etc. List commands support paging/filtering via payload: list_processes and event_logs_query accept { page, limit (max 500), search }; file_list accepts { path, limit (max 5000) }. Large results are compacted for chat — if the result carries stdoutTruncation/_chat metadata, fetch the rest by paging or narrowing the payload rather than repeating the same call.',
+      description: 'Execute a system command on a device. Requires user approval. Use for process management, service control, file operations, etc. Paging/filter payload params: list_processes { page, limit (max 500; larger values reset to 50), search, sortBy, sortDesc }; event_logs_query (Windows only) { page (max 20), limit (max 500), logName, level, source, eventId }; file_list { path, limit (max 5000) } — no paging, narrow the path to see more. Large results are compacted for chat — if the result carries stdoutTruncation/_chat metadata, page or narrow the payload rather than repeating the same call.',
       input_schema: {
         type: 'object' as const,
         properties: {
