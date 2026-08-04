@@ -1,6 +1,8 @@
 import { render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import userEvent from '@testing-library/user-event';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { showToast } from '../../shared/Toast';
 import QuoteDetail from './QuoteDetail';
 import { _resetShowMarginMemoryForTests, SHOW_INTERNAL_MARGIN_KEY } from '../billingUi';
 import type { QuoteDetail as QuoteDetailData, QuoteLine } from './quoteTypes';
@@ -128,5 +130,133 @@ describe('QuoteDetail — to-be-ordered breakdown', () => {
     await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
     expect(screen.getByTestId('quote-order-breakdown-missing-cost')).toHaveTextContent('1 item has no cost recorded');
     expect(screen.getByTestId('quote-order-breakdown-cost-total')).toHaveTextContent('$900.00');
+  });
+});
+
+describe('QuoteDetail — breakdown vendor grouping', () => {
+  it('groups lines by vendor with Unknown last, preserving sort order within groups', async () => {
+    render(<QuoteDetail detail={acceptedDetail([
+      line({ id: 'l-1', sku: 'A', procurementSource: 'td_synnex', sortOrder: 1 }),
+      line({ id: 'l-2', sku: 'B', procurementSource: null, sortOrder: 0 }),
+      line({ id: 'l-3', sku: 'C', procurementSource: 'pax8', sortOrder: 2 }),
+    ])} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+
+    // Lines are sorted by sortOrder first (l-2, l-1, l-3), so first-appearance
+    // vendor order is unknown → td_synnex → pax8; 'unknown' is forced last.
+    const headers = screen.getAllByTestId(/^quote-order-breakdown-group-/).map((el) => el.dataset.testid);
+    expect(headers).toEqual([
+      'quote-order-breakdown-group-td_synnex',
+      'quote-order-breakdown-group-pax8',
+      'quote-order-breakdown-group-unknown',
+    ]);
+    expect(screen.getByTestId('quote-order-breakdown-group-td_synnex')).toHaveTextContent('TD SYNNEX');
+    expect(screen.getByTestId('quote-order-breakdown-group-unknown')).toHaveTextContent('Other / unknown vendor');
+
+    // Every line still renders, in group order.
+    const rendered = Array.from(
+      screen.getByTestId('quote-order-breakdown-table').querySelectorAll('tbody tr[data-testid^="quote-order-breakdown-line-"]'),
+    ).map((el) => el.getAttribute('data-testid'));
+    expect(rendered).toEqual([
+      'quote-order-breakdown-line-l-1',
+      'quote-order-breakdown-line-l-3',
+      'quote-order-breakdown-line-l-2',
+    ]);
+  });
+
+  it('suppresses group headers when every line shares one vendor', async () => {
+    render(<QuoteDetail detail={acceptedDetail([
+      line({ id: 'l-1', sku: 'A', procurementSource: 'td_synnex' }),
+      line({ id: 'l-2', sku: 'B', procurementSource: 'td_synnex' }),
+    ])} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+    expect(screen.queryAllByTestId(/^quote-order-breakdown-group-/)).toHaveLength(0);
+  });
+
+  it('keeps the cost total spanning every line, not one per group', async () => {
+    localStorage.setItem(SHOW_INTERNAL_MARGIN_KEY, '1');
+    render(<QuoteDetail detail={acceptedDetail([
+      line({ id: 'l-1', sku: 'A', procurementSource: 'td_synnex', quantity: '2.00', unitCost: '450.00' }),
+      line({ id: 'l-2', sku: 'B', procurementSource: null, quantity: '1.00', unitCost: '100.00' }),
+    ])} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+    expect(screen.getAllByTestId('quote-order-breakdown-cost-total')).toHaveLength(1);
+    expect(screen.getByTestId('quote-order-breakdown-cost-total')).toHaveTextContent('$1,000.00');
+  });
+});
+
+describe('QuoteDetail — breakdown export', () => {
+  const blobs: Blob[] = [];
+  const originalCreateObjectURL = URL.createObjectURL;
+  const originalRevokeObjectURL = URL.revokeObjectURL;
+
+  beforeEach(() => {
+    blobs.length = 0;
+    // jsdom has no object-URL implementation; capture the Blob downloadBlob makes.
+    URL.createObjectURL = vi.fn((b: Blob) => { blobs.push(b); return 'blob:x'; });
+    URL.revokeObjectURL = vi.fn();
+  });
+  afterEach(() => {
+    URL.createObjectURL = originalCreateObjectURL;
+    URL.revokeObjectURL = originalRevokeObjectURL;
+  });
+
+  it('downloads CSV without cost columns when the margin toggle is off', async () => {
+    render(<QuoteDetail detail={acceptedDetail([
+      line({ id: 'l-1', name: 'Laptop', sku: 'LT-100', procurementSource: 'td_synnex', unitCost: '450.00' }),
+    ])} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+
+    await userEvent.click(screen.getByTestId('quote-order-breakdown-export-csv'));
+    expect(blobs).toHaveLength(1);
+    const text = await blobs[0]!.text();
+    expect(text).not.toContain('450.00');
+    expect(text).toContain('LT-100');
+    expect(text).toContain('Laptop');
+    expect(text).not.toContain('unitCost');
+  });
+
+  it('includes cost columns in the CSV when the margin toggle is on', async () => {
+    localStorage.setItem(SHOW_INTERNAL_MARGIN_KEY, '1');
+    render(<QuoteDetail detail={acceptedDetail([
+      line({ id: 'l-1', name: 'Laptop', sku: 'LT-100', quantity: '2.00', unitCost: '450.00' }),
+    ])} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+
+    await userEvent.click(screen.getByTestId('quote-order-breakdown-export-csv'));
+    const text = await blobs[0]!.text();
+    expect(text).toContain('unitCost');
+    expect(text).toContain('450.00');
+    expect(text).toContain('900.00'); // extended cost 2 × 450
+    expect(text).toContain('USD');
+  });
+
+  it('copies TSV to the clipboard and confirms with a toast', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    render(<QuoteDetail detail={acceptedDetail([
+      line({ id: 'l-1', name: 'Laptop', sku: 'LT-100', manufacturer: 'HPE Aruba' }),
+    ])} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+
+    await userEvent.click(screen.getByTestId('quote-order-breakdown-copy-tsv'));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const tsv = writeText.mock.calls[0]![0] as string;
+    expect(tsv.split('\n')[0]).toContain('\t');
+    expect(tsv).toContain('LT-100');
+    expect(tsv).toContain('HPE Aruba');
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
+  it('surfaces an error toast when the clipboard write is rejected', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'));
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    render(<QuoteDetail detail={acceptedDetail([line({ id: 'l-1', sku: 'LT-100' })])} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+
+    await userEvent.click(screen.getByTestId('quote-order-breakdown-copy-tsv'));
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })),
+    );
   });
 });

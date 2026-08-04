@@ -891,7 +891,11 @@
         "viewed": "Viewed"
       },
       "orderBreakdown": {
+        "copied": "Copied",
+        "copyFailed": "Could not copy to the clipboard.",
+        "copyTsv": "Copy for spreadsheet",
         "costTotal": "Total cost",
+        "exportCsv": "Download CSV",
         "itemCount_one": "{{count}} item",
         "itemCount_other": "{{count}} items",
         "missingCost_one": "{{count}} item has no cost recorded",
@@ -906,7 +910,8 @@
           "unitCost": "Unit cost",
           "vendor": "Vendor"
         },
-        "title": "To be ordered"
+        "title": "To be ordered",
+        "unknownVendor": "Other / unknown vendor"
       },
       "pax8Order": {
         "message_one": "This quote staged a Pax8 order ({{count}} item) awaiting provisioning details",

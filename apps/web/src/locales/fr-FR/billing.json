@@ -891,7 +891,11 @@
         "viewed": "Vu"
       },
       "orderBreakdown": {
+        "copied": "Copié",
+        "copyFailed": "Impossible de copier dans le presse-papiers.",
+        "copyTsv": "Copier pour tableur",
         "costTotal": "Coût total",
+        "exportCsv": "Télécharger le CSV",
         "itemCount_one": "{{count}} article",
         "itemCount_other": "{{count}} articles",
         "missingCost_one": "{{count}} article sans coût saisi",
@@ -906,7 +910,8 @@
           "unitCost": "Coût unitaire",
           "vendor": "Fournisseur"
         },
-        "title": "À commander"
+        "title": "À commander",
+        "unknownVendor": "Autre / fournisseur inconnu"
       },
       "pax8Order": {
         "message_one": "Ce devis a préparé une commande Pax8 ({{count}} article) en attente des détails de provisionnement",

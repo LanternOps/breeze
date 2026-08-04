@@ -891,7 +891,11 @@
         "viewed": "Visualizzato"
       },
       "orderBreakdown": {
+        "copied": "Copiato",
+        "copyFailed": "Impossibile copiare negli appunti.",
+        "copyTsv": "Copia per foglio di calcolo",
         "costTotal": "Costo totale",
+        "exportCsv": "Scarica CSV",
         "itemCount_one": "{{count}} articolo",
         "itemCount_other": "{{count}} articoli",
         "missingCost_one": "{{count}} articolo senza costo registrato",
@@ -906,7 +910,8 @@
           "unitCost": "Costo unitario",
           "vendor": "Fornitore"
         },
-        "title": "Da ordinare"
+        "title": "Da ordinare",
+        "unknownVendor": "Altro / fornitore sconosciuto"
       },
       "pax8Order": {
         "message_one": "Questo preventivo ha preparato un ordine Pax8 ({{count}} elemento) in attesa dei dettagli di provisioning",
