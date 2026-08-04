@@ -890,6 +890,73 @@
         "sent": "Sent",
         "viewed": "Viewed"
       },
+      "orderBreakdown": {
+        "copied": "Copied",
+        "copyFailed": "Could not copy to the clipboard.",
+        "copyTsv": "Copy for spreadsheet",
+        "costTotal": "Total cost",
+        "exportCsv": "Download CSV",
+        "fulfillment": {
+          "allocation": {
+            "cancelled": "Cancelled",
+            "eta": "Arriving {{date}}",
+            "ordered": "Ordered {{qty}}",
+            "received": "received {{qty}}",
+            "tracking": "Tracking {{number}}"
+          },
+          "cancel": "Cancel line",
+          "cancelError": "Could not cancel this order line.",
+          "cancelSuccess": "Order line cancelled",
+          "dialog": {
+            "cancel": "Cancel",
+            "empty": "Everything selected is already on order.",
+            "error": "Could not record the order.",
+            "eta": "Expected arrival",
+            "notes": "Notes",
+            "orderRef": "Order reference",
+            "qtyAria": "Quantity to order for {{item}}",
+            "submit": "Record order",
+            "success": "Order recorded",
+            "title": "Mark items ordered",
+            "tracking": "Tracking number",
+            "vendor": "Vendor"
+          },
+          "markOrdered": "Mark ordered",
+          "receive": "Mark received",
+          "receiveQtyAria": "Quantity received",
+          "receiveError": "Could not update this order line.",
+          "receiveSuccess": "Marked received",
+          "select": "Select {{item}}",
+          "selectColumn": "Select for ordering",
+          "status": {
+            "ordered": "Ordered",
+            "partiallyReceived": "Partly received",
+            "received": "Received"
+          }
+        },
+        "itemCount_one": "{{count}} item",
+        "itemCount_other": "{{count}} items",
+        "missingCost_one": "{{count}} item has no cost recorded",
+        "missingCost_other": "{{count}} items have no cost recorded",
+        "pax8Badge": {
+          "failed": "Pax8 failed",
+          "ordered": "Ordered via Pax8",
+          "reconcile": "Pax8 needs review",
+          "staged": "Staged in Pax8"
+        },
+        "table": {
+          "extCost": "Ext. cost",
+          "item": "Item",
+          "markup": "Markup",
+          "partNumber": "Part #",
+          "qty": "Qty",
+          "sku": "SKU",
+          "unitCost": "Unit cost",
+          "vendor": "Vendor"
+        },
+        "title": "To be ordered",
+        "unknownVendor": "Other / unknown vendor"
+      },
       "pax8Order": {
         "message_one": "This quote staged a Pax8 order ({{count}} item) awaiting provisioning details",
         "message_other": "This quote staged a Pax8 order ({{count}} items) awaiting provisioning details",

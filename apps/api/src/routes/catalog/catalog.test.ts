@@ -600,6 +600,7 @@ describe('catalog EC Express distributor routes', () => {
     source: 'td_synnex_ec_express',
     synnexSku: '8938995',
     mfgPartNo: 'DOCK-1',
+    manufacturer: 'HPE Aruba',
     status: 'ACTIVE',
     name: 'TD Dock',
     description: 'A dock',
@@ -629,6 +630,34 @@ describe('catalog EC Express distributor routes', () => {
     expect(ecSvc.importEcExpressCatalogItem).toHaveBeenCalledOnce();
     const body = await res.json();
     expect(body.data.id).toBe('catalog-ec-1');
+  });
+
+  it('POST /distributors/td-synnex-ec/import preserves manufacturer through ecProductSchema (not stripped as an unknown key)', async () => {
+    (ecSvc.importEcExpressCatalogItem as any).mockResolvedValue({ id: 'catalog-ec-2', name: 'TD Dock' });
+    const res = await app().request('/distributors/td-synnex-ec/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        product: validEcProduct,
+        item: { name: 'TD Dock', sku: '8938995', unitPrice: 125.00, costBasis: 100.00, taxable: true }
+      })
+    });
+    expect(res.status).toBe(200);
+    const call = (ecSvc.importEcExpressCatalogItem as any).mock.calls.at(-1)![0];
+    expect(call.product.manufacturer).toBe('HPE Aruba');
+  });
+
+  it('POST /distributors/td-synnex-ec/import rejects manufacturer longer than 255 chars with 400', async () => {
+    const res = await app().request('/distributors/td-synnex-ec/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        product: { ...validEcProduct, manufacturer: 'x'.repeat(256) },
+        item: { name: 'TD Dock', sku: '8938995', unitPrice: 125.00, costBasis: 100.00, taxable: true }
+      })
+    });
+    expect(res.status).toBe(400);
+    expect(ecSvc.importEcExpressCatalogItem).not.toHaveBeenCalled();
   });
 
   it('POST /distributors/td-synnex-ec/import rejects invalid item (missing name) with 400', async () => {
