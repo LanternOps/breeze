@@ -12,6 +12,7 @@ import {
   hashSupportCode,
 } from '../../services/quickSupportCode';
 import { getTrustedClientIp } from '../../services/clientIp';
+import { endSupportSession } from '../../services/quickSupportEnd';
 import { logSessionAudit } from './helpers';
 
 export const supportSessionRoutes = new Hono();
@@ -173,6 +174,51 @@ supportSessionRoutes.get('/support-sessions', async (c) => {
       !!s.deviceId && liveSessionDeviceIds.has(s.deviceId),
     )),
   });
+});
+
+/**
+ * End a session: self-destruct the client, revoke its credentials, drop its
+ * socket. The session is loaded under the normal RLS context first, so a
+ * caller who cannot see the session cannot end it either.
+ *
+ * No extra guard is needed to stop a lingering client being reconnected to:
+ * endSupportSession decommissions the device, and POST /remote/sessions
+ * already rejects any device whose status is not 'online'.
+ */
+supportSessionRoutes.post('/support-sessions/:id/end', async (c) => {
+  const auth = c.get('auth');
+  const id = c.req.param('id');
+
+  const [session] = await db
+    .select()
+    .from(supportSessions)
+    .where(eq(supportSessions.id, id))
+    .limit(1) as SupportSessionRow[];
+
+  if (!session) return c.json({ error: 'Support session not found' }, 404);
+  if (session.status === 'ended' || session.status === 'expired') {
+    return c.json({ error: 'Support session already ended' }, 409);
+  }
+
+  const result = await endSupportSession(id, 'tech');
+
+  await logSessionAudit(
+    'support_session_ended',
+    auth.user.id,
+    session.orgId,
+    {
+      sessionId: id,
+      reason: 'tech',
+      // Recorded rather than collapsed into success: a 'close-failed' socket
+      // plausibly stayed live after revocation, and a lost command means the
+      // client only converges via its dead-man switch.
+      agentDisconnect: result.disconnect,
+      commandDelivered: result.commandDelivered,
+    },
+    getTrustedClientIp(c, 'unknown'),
+  );
+
+  return c.json({ success: true });
 });
 
 supportSessionRoutes.get('/support-sessions/:id', async (c) => {

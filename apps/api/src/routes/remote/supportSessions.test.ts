@@ -16,7 +16,14 @@ const { getOrCreateQuickSupportOrg, logSessionAudit, getTrustedClientIp } = vi.h
   getTrustedClientIp: vi.fn(() => '203.0.113.7'),
 }));
 
+const { endSupportSession } = vi.hoisted(() => ({
+  endSupportSession: vi.fn(() => Promise.resolve({
+    ended: true, disconnect: 'closed' as const, commandDelivered: true,
+  })),
+}));
+
 vi.mock('../../services/quickSupportOrg', () => ({ getOrCreateQuickSupportOrg }));
+vi.mock('../../services/quickSupportEnd', () => ({ endSupportSession }));
 vi.mock('./helpers', () => ({ logSessionAudit }));
 vi.mock('../../services/clientIp', () => ({ getTrustedClientIp }));
 
@@ -256,6 +263,69 @@ describe('GET /support-sessions/:id', () => {
     selectResults.push([]);
     const res = await buildApp().request('/support-sessions/nope');
     expect(res.status).toBe(404);
+  });
+});
+
+describe('POST /support-sessions/:id/end', () => {
+  function end(id = 'sess-1') {
+    return buildApp().request(`/support-sessions/${id}/end`, { method: 'POST' });
+  }
+
+  it('ends a live session and audits the outcome', async () => {
+    selectResults.push([{ ...SESSION_ROW, status: 'ready', deviceId: 'dev-1' }]);
+
+    const res = await end();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true });
+    expect(endSupportSession).toHaveBeenCalledWith('sess-1', 'tech');
+    expect(logSessionAudit).toHaveBeenCalledWith(
+      'support_session_ended',
+      'user-1',
+      'qs-org',
+      expect.objectContaining({ sessionId: 'sess-1', reason: 'tech' }),
+      '203.0.113.7',
+    );
+  });
+
+  it('records a failed socket close in the audit instead of implying success', async () => {
+    endSupportSession.mockResolvedValueOnce({
+      ended: true, disconnect: 'close-failed', commandDelivered: false,
+    });
+    selectResults.push([{ ...SESSION_ROW, status: 'ready', deviceId: 'dev-1' }]);
+
+    await end();
+    expect(logSessionAudit).toHaveBeenCalledWith(
+      'support_session_ended',
+      'user-1',
+      'qs-org',
+      expect.objectContaining({ agentDisconnect: 'close-failed', commandDelivered: false }),
+      '203.0.113.7',
+    );
+  });
+
+  it('409s an already-ended session without re-running teardown', async () => {
+    selectResults.push([{ ...SESSION_ROW, status: 'ended' }]);
+    const res = await end();
+    expect(res.status).toBe(409);
+    expect(endSupportSession).not.toHaveBeenCalled();
+  });
+
+  it('409s an expired session', async () => {
+    selectResults.push([{ ...SESSION_ROW, status: 'expired' }]);
+    expect((await end()).status).toBe(409);
+  });
+
+  it('404s a session the caller cannot see', async () => {
+    selectResults.push([]); // RLS returned nothing
+    const res = await end('someone-elses');
+    expect(res.status).toBe(404);
+    expect(endSupportSession).not.toHaveBeenCalled();
+  });
+
+  it('ends a pending session that never enrolled a device', async () => {
+    selectResults.push([SESSION_ROW]); // pending, deviceId null
+    expect((await end()).status).toBe(200);
+    expect(endSupportSession).toHaveBeenCalledWith('sess-1', 'tech');
   });
 });
 
