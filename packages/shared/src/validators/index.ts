@@ -942,6 +942,7 @@ export * from './timeEntries';
 export * from './portal';
 export * from './ticketConfig';
 export * from './clientAiDlp';
+export * from './quickSupport';
 
 // ============================================
 // Backup Target Validators
