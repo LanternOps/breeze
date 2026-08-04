@@ -40,7 +40,10 @@ import {
   reconcileApprovalNotifications,
   staleApprovalNotificationIds,
 } from './notifications';
-import { pushUnavailableCopy } from '../screens/chat/components/pushUnavailableCopy';
+import {
+  notificationsRowCopy,
+  pushUnavailableCopy,
+} from '../screens/chat/components/pushUnavailableCopy';
 
 beforeEach(() => {
   platform.OS = 'ios';
@@ -126,6 +129,21 @@ describe('registerForPushNotifications', () => {
       status: 'failed',
       reason: 'permission_denied',
     });
+  });
+
+  it("permission-denied failure maps to the Settings-actionable row copy (#3143)", async () => {
+    // Pins the reason-string contract for the FAILED branch, same as the
+    // unsupported pin above: rename 'permission_denied' here and the Settings
+    // sheet silently falls back to the generic "sign in again to retry" copy
+    // (no Settings deep-link) with both sides' own tests still green.
+    notif.getPermissionsAsync.mockResolvedValue({ status: 'denied' });
+    notif.requestPermissionsAsync.mockResolvedValue({ status: 'denied' });
+
+    const out = await registerForPushNotifications();
+    if (out.status !== 'failed') throw new Error('expected failed');
+    const copy = notificationsRowCopy(out.status, out.reason);
+    expect(copy.opensSystemSettings).toBe(true);
+    expect(copy.description).toMatch(/turned off for Breeze in Settings/);
   });
 
   it('reports failed when the token call throws', async () => {

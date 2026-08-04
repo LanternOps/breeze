@@ -10,7 +10,6 @@ import {
   Text,
   View,
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, {
   useAnimatedStyle,
@@ -43,7 +42,7 @@ import { ease, duration } from '../../../lib/motion';
 import { track } from '../../../lib/analytics';
 import { relativeTime } from '../../../lib/relativeTime';
 import { Toast } from '../../../components/Toast';
-import { pushUnavailableCopy } from './pushUnavailableCopy';
+import { notificationsRowCopy, type NotificationsRowCopy } from './pushUnavailableCopy';
 import { Avatar } from './Avatar';
 import { ChangePasswordSheet } from './ChangePasswordSheet';
 import type { PairedMobileDevice } from '../../../services/mobileDevices';
@@ -54,8 +53,6 @@ interface Props {
   onCancel: () => void;
 }
 
-const NOTIF_KEY = 'notificationsEnabled';
-const NOTIF_CRITICAL_ONLY_KEY = 'notificationsCriticalOnly';
 const TERMS_URL = 'https://breezermm.com/legal/terms-of-service/';
 const PRIVACY_URL = 'https://breezermm.com/legal/privacy-policy/';
 
@@ -82,13 +79,14 @@ export function SettingsSheet({ visible, onCancel }: Props) {
   const activeAppCount = useAppSelector(selectActiveConnectedAppsCount);
   const pendingDeviceId = useAppSelector((s) => s.lifecycle.pendingDeviceId);
   const pendingAppId = useAppSelector((s) => s.lifecycle.pendingAppId);
-  // 'unsupported' is a deliberate "push not built / not possible here" state
-  // (e.g. android_push_not_configured) — the sheet must not show an ON toggle
-  // asserting a capability the build doesn't have. 'failed' keeps the normal
-  // toggle: ApprovalGate already surfaces failures with its own banner. #3118
+  // The Notifications row is a status READOUT, not a control (#3118, #3143).
+  // The old Notifications / Critical-only toggles only wrote AsyncStorage keys
+  // nothing consumed, and 'failed' relied on ApprovalGate's banner — which is
+  // dismissible, after which the ON toggle was the only (wrong) signal left.
+  // Every registration state now renders honest copy here, and the row links
+  // to system Settings when that's the real control.
   const pushRegistration = useAppSelector((s) => s.auth.pushRegistration);
   const pushRegistrationReason = useAppSelector((s) => s.auth.pushRegistrationReason);
-  const pushUnavailable = pushRegistration === 'unsupported';
 
   const screenWidth = Dimensions.get('window').width;
   const sheetWidth = Math.min(screenWidth * 0.84, 420);
@@ -98,8 +96,6 @@ export function SettingsSheet({ visible, onCancel }: Props) {
 
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [biometricOn, setBiometricOn] = useState(false);
-  const [notificationsOn, setNotificationsOn] = useState(true);
-  const [criticalOnly, setCriticalOnly] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [toast, setToast] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
 
@@ -116,10 +112,6 @@ export function SettingsSheet({ visible, onCancel }: Props) {
       const avail = await checkBiometricAvailability();
       setBiometricAvailable(avail);
       if (avail) setBiometricOn(await isBiometricEnabled());
-      const stored = await AsyncStorage.getItem(NOTIF_KEY);
-      if (stored !== null) setNotificationsOn(stored === 'true');
-      const critical = await AsyncStorage.getItem(NOTIF_CRITICAL_ONLY_KEY);
-      if (critical !== null) setCriticalOnly(critical === 'true');
     })();
 
     // Refresh both lifecycle lists every time the sheet opens (tab focus
@@ -205,14 +197,12 @@ export function SettingsSheet({ visible, onCancel }: Props) {
     }
   }
 
-  async function onToggleNotifications(next: boolean) {
-    setNotificationsOn(next);
-    await AsyncStorage.setItem(NOTIF_KEY, String(next));
-  }
-
-  async function onToggleCriticalOnly(next: boolean) {
-    setCriticalOnly(next);
-    await AsyncStorage.setItem(NOTIF_CRITICAL_ONLY_KEY, String(next));
+  async function onPressNotificationSettings() {
+    try {
+      await Linking.openSettings();
+    } catch {
+      Alert.alert('Cannot open Settings', 'Open your phone’s Settings app and find Breeze.');
+    }
   }
 
   function onPressChangePassword() {
@@ -292,18 +282,14 @@ export function SettingsSheet({ visible, onCancel }: Props) {
             insetBottom={insets.bottom}
             biometricAvailable={biometricAvailable}
             biometricOn={biometricOn}
-            notificationsOn={notificationsOn}
-            criticalOnly={criticalOnly}
-            pushUnavailable={pushUnavailable}
-            pushUnavailableReason={pushRegistrationReason}
+            pushCopy={notificationsRowCopy(pushRegistration, pushRegistrationReason)}
             buildVersion={buildVersion}
             pairedDevices={pairedDevices}
             connectedApps={connectedApps}
             pendingDeviceId={pendingDeviceId}
             pendingAppId={pendingAppId}
             onToggleBiometric={onToggleBiometric}
-            onToggleNotifications={onToggleNotifications}
-            onToggleCriticalOnly={onToggleCriticalOnly}
+            onPressNotificationSettings={onPressNotificationSettings}
             onPressChangePassword={onPressChangePassword}
             onPressTerms={() => safeOpen(TERMS_URL)}
             onPressPrivacy={() => safeOpen(PRIVACY_URL)}
@@ -340,18 +326,14 @@ function SheetBody({
   insetBottom,
   biometricAvailable,
   biometricOn,
-  notificationsOn,
-  criticalOnly,
-  pushUnavailable,
-  pushUnavailableReason,
+  pushCopy,
   buildVersion,
   pairedDevices,
   connectedApps,
   pendingDeviceId,
   pendingAppId,
   onToggleBiometric,
-  onToggleNotifications,
-  onToggleCriticalOnly,
+  onPressNotificationSettings,
   onPressChangePassword,
   onPressTerms,
   onPressPrivacy,
@@ -366,18 +348,14 @@ function SheetBody({
   insetBottom: number;
   biometricAvailable: boolean;
   biometricOn: boolean;
-  notificationsOn: boolean;
-  criticalOnly: boolean;
-  pushUnavailable: boolean;
-  pushUnavailableReason: string | null;
+  pushCopy: NotificationsRowCopy;
   buildVersion: string;
   pairedDevices: PairedMobileDevice[];
   connectedApps: ConnectedApp[];
   pendingDeviceId: string | null;
   pendingAppId: string | null;
   onToggleBiometric: (v: boolean) => void;
-  onToggleNotifications: (v: boolean) => void;
-  onToggleCriticalOnly: (v: boolean) => void;
+  onPressNotificationSettings: () => void;
   onPressChangePassword: () => void;
   onPressTerms: () => void;
   onPressPrivacy: () => void;
@@ -386,7 +364,6 @@ function SheetBody({
   onRevokeDevice: (device: PairedMobileDevice) => void;
   onRevokeApp: (app: ConnectedApp) => void;
 }) {
-  const pushCopy = pushUnavailable ? pushUnavailableCopy(pushUnavailableReason) : null;
   return (
     <View style={{ flex: 1 }}>
       <ScrollView
@@ -432,34 +409,11 @@ function SheetBody({
           />
         ) : null}
 
-        {pushCopy ? (
-          <ToggleRow
-            label="Notifications"
-            description={pushCopy.notificationsRow}
-            value={false}
-            disabled
-            onChange={() => {}}
-            theme={theme}
-          />
-        ) : (
-          <ToggleRow
-            label="Notifications"
-            description="Approval pushes and alerts"
-            value={notificationsOn}
-            onChange={onToggleNotifications}
-            theme={theme}
-          />
-        )}
-
-        {!pushCopy && notificationsOn ? (
-          <ToggleRow
-            label="Critical only"
-            description="Quiet pushes for medium and warning alerts"
-            value={criticalOnly}
-            onChange={onToggleCriticalOnly}
-            theme={theme}
-          />
-        ) : null}
+        <NotificationsRow
+          copy={pushCopy}
+          onPress={onPressNotificationSettings}
+          theme={theme}
+        />
 
         <SectionDivider color={theme.border} />
 
@@ -477,9 +431,8 @@ function SheetBody({
         {pairedDevices.length === 0 ? (
           <EmptyHint
             text={
-              pushCopy
-                ? pushCopy.pairedDevicesHint
-                : 'No paired devices yet. Sign in on another phone to see it here.'
+              pushCopy.pairedDevicesHint ??
+              'No paired devices yet. Sign in on another phone to see it here.'
             }
             theme={theme}
           />
@@ -739,14 +692,12 @@ function ToggleRow({
   label,
   description,
   value,
-  disabled,
   onChange,
   theme,
 }: {
   label: string;
   description?: string;
   value: boolean;
-  disabled?: boolean;
   onChange: (v: boolean) => void;
   theme: ReturnType<typeof useApprovalTheme>;
 }) {
@@ -760,10 +711,7 @@ function ToggleRow({
       }}
     >
       <View style={{ flex: 1, marginRight: spacing[3] }}>
-        {/* Only the label and Switch signal "disabled" — the description stays
-            at full contrast because for a disabled row it carries the
-            explanation the user must be able to read (#3118). */}
-        <Text style={[type.bodyMd, { color: disabled ? theme.textLo : theme.textHi }]}>{label}</Text>
+        <Text style={[type.bodyMd, { color: theme.textHi }]}>{label}</Text>
         {description ? (
           <Text style={[type.meta, { color: theme.textMd, marginTop: spacing[1] }]}>
             {description}
@@ -772,12 +720,67 @@ function ToggleRow({
       </View>
       <Switch
         value={value}
-        disabled={disabled}
         onValueChange={onChange}
         trackColor={{ false: theme.bg3, true: palette.brand.deep }}
         thumbColor={value ? palette.brand.base : theme.textMd}
-        style={disabled ? { opacity: 0.55 } : undefined}
       />
     </View>
+  );
+}
+
+/**
+ * Status readout for push notifications (#3118, #3143). Not a toggle: the app
+ * has no code path that could honor an in-app on/off or "critical only"
+ * preference (background pushes are presented by the OS), so the row reports
+ * the actual registration state and, when the OS permission is the lever,
+ * opens system Settings on tap.
+ */
+function NotificationsRow({
+  copy,
+  onPress,
+  theme,
+}: {
+  copy: NotificationsRowCopy;
+  onPress: () => void;
+  theme: ReturnType<typeof useApprovalTheme>;
+}) {
+  const body = (
+    <View style={{ flex: 1, marginRight: spacing[3] }}>
+      <Text style={[type.bodyMd, { color: theme.textHi }]}>Notifications</Text>
+      <Text style={[type.meta, { color: theme.textMd, marginTop: spacing[1] }]}>
+        {copy.description}
+      </Text>
+    </View>
+  );
+
+  if (!copy.opensSystemSettings) {
+    return (
+      <View
+        style={{
+          paddingHorizontal: spacing[6],
+          paddingVertical: spacing[3],
+          flexDirection: 'row',
+          alignItems: 'center',
+        }}
+      >
+        {body}
+      </View>
+    );
+  }
+
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      style={({ pressed }) => ({
+        paddingHorizontal: spacing[6],
+        paddingVertical: spacing[3],
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: pressed ? theme.bg2 : 'transparent',
+      })}
+    >
+      {body}
+    </Pressable>
   );
 }
