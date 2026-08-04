@@ -6,7 +6,7 @@ import { createHash } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
 import { commandCasPriorStatusTags } from '../services/commandCasDiagnostics';
-import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, remoteSessions, backupJobs, restoreJobs, tunnelSessions } from '../db/schema';
+import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, remoteSessions, backupJobs, restoreJobs, tunnelSessions, supportSessions } from '../db/schema';
 import {
   handleTerminalOutput,
   getActiveTerminalSession,
@@ -2157,7 +2157,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
       if (agentDb) {
         try {
           const [deviceInfo] = await runWithAgentDbAccess('agentWs.onOpen.loadDevice', async () =>
-            db.select({ id: devices.id, siteId: devices.siteId, hostname: devices.hostname, agentVersion: devices.agentVersion })
+            db.select({ id: devices.id, siteId: devices.siteId, hostname: devices.hostname, agentVersion: devices.agentVersion, isEphemeral: devices.isEphemeral })
               .from(devices)
               .where(eq(devices.agentId, agentId))
               .limit(1)
@@ -2172,6 +2172,37 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               console.error('[AgentWs] Failed to publish device.online:', err);
               captureException(err);
             });
+          }
+
+          // Quick Support: this socket coming up is the only signal that the
+          // ephemeral agent actually installed and reached us, so it is what
+          // moves the claimed session to 'ready' for the tech waiting on it.
+          //
+          // The isEphemeral guard is load-bearing for throughput, not just
+          // tidiness: onOpen runs on EVERY agent reconnect across a 10k-device
+          // fleet, and a normal device must pay zero extra queries here. The
+          // flag is already on the row we just loaded, so the guard costs
+          // nothing. The agent's context org IS the hidden Quick Support org
+          // that owns the support_sessions row, so org RLS passes.
+          if (deviceInfo?.isEphemeral) {
+            // Own try/catch: sharing the enclosing one would file this under
+            // "failed to query device for online event" and misdirect whoever
+            // debugs a session stuck at 'claimed'. Failure is not fatal — the
+            // reaper expires claimed-limbo sessions after 20 minutes — so log
+            // and let the connection proceed.
+            try {
+              await runWithAgentDbAccess('agentWs.onOpen.supportSessionReady', async () =>
+                db.update(supportSessions)
+                  .set({ status: 'ready' })
+                  .where(and(
+                    eq(supportSessions.deviceId, deviceInfo.id),
+                    eq(supportSessions.status, 'claimed'),
+                  ))
+              );
+            } catch (err) {
+              console.error('[AgentWs] Failed to mark quick support session ready:', err);
+              captureException(err instanceof Error ? err : new Error(String(err)));
+            }
           }
         } catch (err) {
           console.error('[AgentWs] Failed to query device for online event:', err);
