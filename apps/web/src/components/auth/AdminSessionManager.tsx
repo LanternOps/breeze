@@ -116,6 +116,12 @@ export default function AdminSessionManager() {
       warningVisibleRef.current = false;
       setWarningVisible(false);
       setSigningOut(false);
+      // Currently unreachable-harmful: every eviction path (idle logout,
+      // session-expired) ends in a full-page location.replace, so this ref
+      // never survives to be read stale. Reset anyway so a future eviction
+      // path that stays client-side-only isn't silently blocked from
+      // retrying idle logout.
+      idleLogoutInFlightRef.current = false;
       return;
     }
 

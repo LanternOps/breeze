@@ -9,7 +9,7 @@ import {
   type RegistrationResponseJSON
 } from '@simplewebauthn/browser';
 import { extractApiError } from '@/lib/apiError';
-import { getSafeNext } from '@/lib/authNext';
+import { getSafeNext, loginPathWithNext } from '@/lib/authNext';
 import {
   applyAppearancePreferences,
   applyResolvedLocalePreferences,
@@ -546,15 +546,6 @@ export class AuthSessionExpiredError extends Error {
     super(message);
     this.name = 'AuthSessionExpiredError';
   }
-}
-
-// Duplicated (not imported) from lib/authScope.ts's loginPathWithNext:
-// authScope.ts imports useAuthStore from this module, so importing it back
-// here would create a cycle. Keep the ?next= contract in sync with that copy.
-function loginPathWithNext(): string {
-  if (typeof window === 'undefined') return '/login';
-  const here = window.location.pathname + window.location.search + window.location.hash;
-  return here && here !== '/' ? `/login?next=${encodeURIComponent(here)}` : '/login';
 }
 
 /**

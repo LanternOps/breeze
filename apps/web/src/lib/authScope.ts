@@ -1,4 +1,7 @@
 import { useAuthStore } from '../stores/auth';
+import { loginPathWithNext } from './authNext';
+
+export { loginPathWithNext };
 
 export interface JwtClaims {
   scope: 'system' | 'partner' | 'organization' | null;
@@ -31,11 +34,4 @@ export function getJwtClaims(): JwtClaims {
   } catch {
     return NO_CLAIMS;
   }
-}
-
-/** Login URL that round-trips the current location through LoginPage's ?next= handling. */
-export function loginPathWithNext(): string {
-  if (typeof window === 'undefined') return '/login';
-  const here = window.location.pathname + window.location.search + window.location.hash;
-  return here && here !== '/' ? `/login?next=${encodeURIComponent(here)}` : '/login';
 }

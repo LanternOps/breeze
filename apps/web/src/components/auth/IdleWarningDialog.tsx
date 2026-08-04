@@ -28,13 +28,14 @@ export default function IdleWarningDialog({ remainingMs, signingOut, onStay }: I
         role="dialog"
         aria-modal="true"
         aria-labelledby="idle-warning-title"
+        aria-describedby="idle-warning-body"
         data-testid="idle-warning-dialog"
         className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs"
       >
         <h2 id="idle-warning-title" className="text-lg font-semibold">
           {t('idleWarning.title')}
         </h2>
-        <p className="mt-2 text-sm text-muted-foreground" data-testid="idle-warning-body">
+        <p id="idle-warning-body" className="mt-2 text-sm text-muted-foreground" data-testid="idle-warning-body">
           {signingOut
             ? t('idleWarning.signingOut')
             : t('idleWarning.body', { countdown: formatCountdown(remainingMs) })}
@@ -42,6 +43,7 @@ export default function IdleWarningDialog({ remainingMs, signingOut, onStay }: I
         <div className="mt-6 flex justify-end">
           <button
             type="button"
+            autoFocus
             onClick={onStay}
             disabled={signingOut}
             data-testid="idle-warning-stay"
