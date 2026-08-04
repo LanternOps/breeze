@@ -89,14 +89,14 @@ describe('getOrCreateQuickSupportOrg', () => {
     const result = await getOrCreateQuickSupportOrg(PARTNER_ID);
 
     expect(result).toEqual({ orgId: 'org-new', siteId: 'site-new' });
-    expect(insertCalls[0].table).toBe('organizations');
-    expect(insertCalls[0].values).toMatchObject({
+    expect(insertCalls[0]?.table).toBe('organizations');
+    expect(insertCalls[0]?.values).toMatchObject({
       partnerId: PARTNER_ID,
       type: 'quick_support',
       status: 'active',
     });
-    expect(insertCalls[1].table).toBe('sites');
-    expect(insertCalls[1].values).toMatchObject({ orgId: 'org-new' });
+    expect(insertCalls[1]?.table).toBe('sites');
+    expect(insertCalls[1]?.values).toMatchObject({ orgId: 'org-new' });
   });
 
   it('slugs with the full partner uuid so slugs cannot collide across partners', async () => {
@@ -107,7 +107,7 @@ describe('getOrCreateQuickSupportOrg', () => {
 
     await getOrCreateQuickSupportOrg(PARTNER_ID);
 
-    expect(insertCalls[0].values).toMatchObject({ slug: `quick-support-${PARTNER_ID}` });
+    expect(insertCalls[0]?.values).toMatchObject({ slug: `quick-support-${PARTNER_ID}` });
   });
 
   it('lets the re-select win when a concurrent create took the unique index', async () => {

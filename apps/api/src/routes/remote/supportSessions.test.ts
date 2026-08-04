@@ -78,13 +78,16 @@ type AuthOverrides = {
 function buildApp(overrides: AuthOverrides = {}) {
   const app = new Hono();
   app.use('*', async (c, next) => {
+    // Partial AuthContext: these routes read only user.id, scope, partnerId and
+    // accessibleOrgIds. Cast rather than construct the full context so the test
+    // does not have to track unrelated middleware fields.
     c.set('auth', {
-      user: { id: 'user-1', email: 't@example.com', name: 'Tech' },
+      user: { id: 'user-1', email: 't@example.com', name: 'Tech', isPlatformAdmin: false },
       scope: overrides.scope ?? 'partner',
       partnerId: overrides.partnerId === undefined ? 'partner-1' : overrides.partnerId,
       accessibleOrgIds:
         overrides.accessibleOrgIds === undefined ? ['org-a', 'qs-org'] : overrides.accessibleOrgIds,
-    });
+    } as never);
     await next();
   });
   app.route('/', supportSessionRoutes);

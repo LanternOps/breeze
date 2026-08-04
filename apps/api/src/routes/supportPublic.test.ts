@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * Public Quick Support endpoints. The code IS the auth, so the tests that
@@ -17,6 +17,19 @@ vi.mock('../services/rate-limit', () => ({ rateLimiter }));
 vi.mock('../services/redis', () => ({ getRedis }));
 vi.mock('./remote/helpers', () => ({ logSessionAudit }));
 vi.mock('../services/clientIp', () => ({ getTrustedClientIp }));
+
+// Binary resolution is stubbed so the download tests never touch the network.
+const { getBinarySource, getGithubAgentUrl, isS3Configured, getPresignedUrl, isS3NotFound } =
+  vi.hoisted(() => ({
+    getBinarySource: vi.fn((): 'github' | 'local' => 'github'),
+    getGithubAgentUrl: vi.fn((os: string, arch: string) => `https://gh.test/breeze-agent-${os}-${arch}.exe`),
+    isS3Configured: vi.fn(() => false),
+    getPresignedUrl: vi.fn(() => Promise.resolve('https://s3.test/agent.exe')),
+    isS3NotFound: vi.fn(() => false),
+  }));
+
+vi.mock('../services/binarySource', () => ({ getBinarySource, getGithubAgentUrl }));
+vi.mock('../services/s3Storage', () => ({ isS3Configured, getPresignedUrl, isS3NotFound }));
 
 vi.mock('../services/enrollmentKeySecurity', async () => {
   const { createHash } = await import('node:crypto');
@@ -101,6 +114,14 @@ function redeem(body: Record<string, unknown> = {}) {
   });
 }
 
+/** Stands in for the ~60 MB agent asset — a real body, three bytes long. */
+const fetchMock = vi.fn(() => Promise.resolve(
+  new Response(new Uint8Array([0x4d, 0x5a, 0x90]), {
+    status: 200,
+    headers: { 'content-length': '3' },
+  }),
+));
+
 beforeEach(() => {
   selectResults.length = 0;
   updateResults.length = 0;
@@ -109,7 +130,20 @@ beforeEach(() => {
   vi.clearAllMocks();
   rateLimiter.mockResolvedValue({ allowed: true, currentCount: 1 });
   getTrustedClientIp.mockReturnValue('203.0.113.9');
+  getBinarySource.mockReturnValue('github');
+  getGithubAgentUrl.mockImplementation((os: string, arch: string) => `https://gh.test/breeze-agent-${os}-${arch}.exe`);
+  isS3Configured.mockReturnValue(false);
+  fetchMock.mockResolvedValue(new Response(new Uint8Array([0x4d, 0x5a, 0x90]), {
+    status: 200,
+    headers: { 'content-length': '3' },
+  }));
+  vi.stubGlobal('fetch', fetchMock);
   process.env.PUBLIC_API_URL = 'https://us.2breeze.app';
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  delete process.env.API_URL;
 });
 
 describe('GET /check/:code', () => {
@@ -271,5 +305,132 @@ describe('POST /redeem', () => {
     selectResults.push([]);
     await redeem();
     expect(hashSupportCode(CODE)).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe('GET /download/:platform', () => {
+  function download(platform = 'windows', query = `?code=${CODE}`) {
+    return supportPublicRoutes.request(`/download/${platform}${query}`);
+  }
+
+  it('serves the agent binary named after the code and API host', async () => {
+    selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
+
+    const res = await download();
+    expect(res.status).toBe(200);
+    // Exact wire format — the Go client parses this filename (Task 12).
+    expect(res.headers.get('Content-Disposition'))
+      .toBe('attachment; filename="breeze-support-KTM4H7P2X-us.2breeze.app.exe"');
+    expect(res.headers.get('Content-Type')).toBe('application/octet-stream');
+    // The code is in the filename, so the response must never be cached.
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([0x4d, 0x5a, 0x90]));
+  });
+
+  it('proxies the release asset rather than redirecting to it', async () => {
+    selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
+    const res = await download();
+    // A 302 would hand the browser GitHub's filename and lose the code.
+    expect(res.status).toBe(200);
+    expect(getGithubAgentUrl).toHaveBeenCalledWith('windows', 'amd64');
+    expect(fetchMock).toHaveBeenCalledWith('https://gh.test/breeze-agent-windows-amd64.exe');
+  });
+
+  it('normalizes the human-formatted code into the filename', async () => {
+    selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
+    const res = await download('windows', '?code=ktm-4h7-p2x');
+    expect(res.headers.get('Content-Disposition'))
+      .toBe('attachment; filename="breeze-support-KTM4H7P2X-us.2breeze.app.exe"');
+  });
+
+  it('encodes a nonstandard port as host_PORT, never host:PORT', async () => {
+    // `:` is illegal in a Windows filename and gets silently rewritten by the
+    // browser at save time, which is how #2341 shipped un-enrollable installers.
+    process.env.PUBLIC_API_URL = 'https://breeze.example.com:8443';
+    selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
+    const res = await download();
+    expect(res.headers.get('Content-Disposition'))
+      .toBe('attachment; filename="breeze-support-KTM4H7P2X-breeze.example.com_8443.exe"');
+  });
+
+  it('404s an unknown code', async () => {
+    selectResults.push([]);
+    const res = await download();
+    expect(res.status).toBe(404);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('404s an already-claimed code', async () => {
+    selectResults.push([{ status: 'claimed', codeExpiresAt: FUTURE }]);
+    expect((await download()).status).toBe(404);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('404s an expired code', async () => {
+    selectResults.push([{ status: 'pending', codeExpiresAt: PAST }]);
+    expect((await download()).status).toBe(404);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('404s a malformed or missing code without touching the database', async () => {
+    expect((await download('windows', '?code=not-a-code')).status).toBe(404);
+    expect((await download('windows', '')).status).toBe(404);
+    expect(selectResults).toHaveLength(0); // nothing was consumed
+  });
+
+  it('400s macOS with the coming-soon message and no DB work', async () => {
+    const res = await download('macos');
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'macOS support client coming soon' });
+    expect(selectResults).toHaveLength(0);
+  });
+
+  it('400s an unknown platform', async () => {
+    const res = await download('linux');
+    expect(res.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('429s when rate limited before any DB or upstream work', async () => {
+    rateLimiter.mockResolvedValue({ allowed: false, currentCount: 99 });
+    expect((await download()).status).toBe(429);
+    expect(selectResults).toHaveLength(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('shares the /check rate-limit bucket', async () => {
+    selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
+    await download();
+    expect(rateLimiter).toHaveBeenCalledWith(expect.anything(), 'support-check:203.0.113.9', 30, 60);
+  });
+
+  it('503s rather than serving a partial download when the upstream fails', async () => {
+    selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
+    fetchMock.mockResolvedValue(new Response('nope', { status: 404 }));
+    const res = await download();
+    expect(res.status).toBe(503);
+  });
+
+  it('503s when PUBLIC_API_URL cannot produce a filename host', async () => {
+    // A filename with no host yields a client that can never phone home.
+    process.env.PUBLIC_API_URL = '';
+    process.env.API_URL = '';
+    selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
+    const res = await download();
+    expect(res.status).toBe(503);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('proxies the S3 object in local mode instead of redirecting', async () => {
+    getBinarySource.mockReturnValue('local');
+    isS3Configured.mockReturnValue(true);
+    selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
+
+    const res = await download();
+    expect(res.status).toBe(200);
+    expect(getPresignedUrl).toHaveBeenCalledWith('agent/breeze-agent-windows-amd64.exe');
+    expect(fetchMock).toHaveBeenCalledWith('https://s3.test/agent.exe');
+    expect(res.headers.get('Content-Disposition'))
+      .toBe('attachment; filename="breeze-support-KTM4H7P2X-us.2breeze.app.exe"');
   });
 });

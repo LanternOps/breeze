@@ -62,6 +62,9 @@ export async function getOrCreateQuickSupportOrg(
         .values({ orgId: org.id, name: 'Quick Support', timezone: 'UTC' })
         .returning({ id: sites.id });
     }
+    // Enrollment keys require a site_id, so a missing site here would surface
+    // much later as an opaque redeem failure. Fail at the source instead.
+    if (!site) throw new Error('quick support site provisioning failed');
 
     return { orgId: org.id, siteId: site.id };
   }));

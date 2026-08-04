@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { createSupportSessionSchema, formatSupportCode } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -84,7 +84,7 @@ supportSessionRoutes.post(
 
     // System context: when the hidden org was just created it is not in this
     // request's accessible_org_ids yet, so the RLS INSERT policy would reject.
-    const [session] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+    const [created] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
       db.insert(supportSessions).values({
         orgId,
         createdByUserId: auth.user.id,
@@ -95,6 +95,12 @@ supportSessionRoutes.post(
         attributionLabel: data.attributionLabel ?? null,
       }).returning()
     ));
+
+    // RETURNING on a single-row INSERT always yields a row; narrow it so a
+    // future refactor that makes the insert conditional fails loudly here
+    // rather than emitting `undefined` into the response body.
+    if (!created) return c.json({ error: 'Failed to create support session' }, 500);
+    const session = created;
 
     await logSessionAudit(
       'support_session_created',
