@@ -6,6 +6,7 @@ import { useOrgStore } from '../../../stores/orgStore';
 import { quoteImageUrl } from '../../../lib/api/quotes';
 import { useAuthedImage } from './useQuoteImage';
 import QuoteActions, { QuoteSendOutcomeBanners } from './QuoteActions';
+import QuoteOrderBreakdown, { orderableLines } from './QuoteOrderBreakdown';
 import { RecurringBillingNote, MarginPanel, MarginToggle, useShowMargin } from '../billingUi';
 import { computeQuoteProfit, type QuoteProfit } from '@breeze/shared';
 import {
@@ -86,6 +87,12 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
   // table so nothing is dropped from the view.
   const looseLines = useMemo(() => linesForBlock(null), [linesForBlock]);
 
+  // Once the quote is won (accepted or converted — the enum has no separate
+  // "completed"), the Detail tab grows a procurement view of the SKU-bearing
+  // lines so the tech can order without re-deriving a PO from the pricing tables.
+  const orderLines = useMemo(() => orderableLines(lines), [lines]);
+  const quoteWon = quote.status === 'accepted' || quote.status === 'converted';
+
   const hasRecurring =
     Number(quote.monthlyRecurringTotal) > 0 || Number(quote.annualRecurringTotal) > 0;
   // Show the per-line Tax column only when this quote carries tax (mirrors the
@@ -139,6 +146,14 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
 
           {looseLines.length > 0 && (
             <LineTable lines={looseLines} currency={currency} label={t('quotes.document.additionalItems')} testId="quote-detail-loose-lines" taxRate={quote.taxRate} showTax={showTax} />
+          )}
+
+          {quoteWon && orderLines.length > 0 && (
+            <QuoteOrderBreakdown
+              lines={orderLines}
+              currency={currency}
+              showCost={canSeeMargin && showMargin}
+            />
           )}
         </div>
 

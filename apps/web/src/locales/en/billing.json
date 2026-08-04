@@ -890,6 +890,23 @@
         "sent": "Sent",
         "viewed": "Viewed"
       },
+      "orderBreakdown": {
+        "costTotal": "Total cost",
+        "itemCount_one": "{{count}} item",
+        "itemCount_other": "{{count}} items",
+        "missingCost_one": "{{count}} item has no cost recorded",
+        "missingCost_other": "{{count}} items have no cost recorded",
+        "table": {
+          "extCost": "Ext. cost",
+          "item": "Item",
+          "markup": "Markup",
+          "partNumber": "Part #",
+          "qty": "Qty",
+          "sku": "SKU",
+          "unitCost": "Unit cost"
+        },
+        "title": "To be ordered"
+      },
       "pax8Order": {
         "message_one": "This quote staged a Pax8 order ({{count}} item) awaiting provisioning details",
         "message_other": "This quote staged a Pax8 order ({{count}} items) awaiting provisioning details",

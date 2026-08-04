@@ -890,6 +890,23 @@
         "sent": "Enviado",
         "viewed": "Visualizado"
       },
+      "orderBreakdown": {
+        "costTotal": "Custo total",
+        "itemCount_one": "{{count}} item",
+        "itemCount_other": "{{count}} itens",
+        "missingCost_one": "{{count}} item sem custo registrado",
+        "missingCost_other": "{{count}} itens sem custo registrado",
+        "table": {
+          "extCost": "Custo ext.",
+          "item": "Item",
+          "markup": "Margem",
+          "partNumber": "N.º da peça",
+          "qty": "Qtd.",
+          "sku": "SKU",
+          "unitCost": "Custo unitário"
+        },
+        "title": "A encomendar"
+      },
       "pax8Order": {
         "message_one": "Esta cotação preparou um pedido da Pax8 ({{count}} item) aguardando os detalhes de provisionamento",
         "message_other": "Esta cotação preparou um pedido da Pax8 ({{count}} itens) aguardando os detalhes de provisionamento",
