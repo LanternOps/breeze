@@ -149,12 +149,14 @@ export function ApprovalButtons({
     try {
       await Linking.sendIntent('android.settings.SECURITY_SETTINGS');
     } catch (err) {
+      // Some OEM ROMs / work profiles don't resolve this intent. Don't
+      // fall back to Linking.openSettings() — that opens Breeze's own
+      // app-info page, which has no lock-screen setup and would silently
+      // send the user to the wrong place. Surface manual guidance instead.
       console.warn('[ApprovalButtons] could not open security settings', err);
-      try {
-        await Linking.openSettings();
-      } catch (settingsErr) {
-        console.warn('[ApprovalButtons] could not open app settings either', settingsErr);
-      }
+      setAuthMessage(
+        'Could not open settings. Open your device Settings > Security to set up a screen lock, then try again.',
+      );
     }
   }
 
