@@ -372,6 +372,7 @@
     "validation": {
       "selectCategory": "Kategorie auswählen",
       "selectSeverity": "Mindestens einen Schweregrad für die automatische Freigabe auswählen.",
+      "selectSeverityOrThirdParty": "Mindestens einen Schweregrad auswählen oder die automatische Genehmigung für Drittanbieter-Apps aktivieren.",
       "nameRequired": "Ringname ist erforderlich"
     },
     "categories": {
@@ -379,7 +380,6 @@
       "feature": "Funktionsupdates",
       "firmware": "Firmware",
       "driver": "Treiber",
-      "thirdPartyApp": "Drittanbieter-Apps",
       "definitions": "Definitionsupdates"
     },
     "severities": {
@@ -421,10 +421,15 @@
       "description": "Legt fest, welche Patches in diesem Ring automatisch freigegeben und wie lange sie nach der Veröffentlichung durch den Anbieter zurückgehalten werden. Der Standard gilt für jede Kategorie; mit einer Überschreibung kann eine Kategorie abweichend behandelt werden.",
       "allCategories": "Alle Kategorien",
       "default": "Standard",
-      "severityNote": "Schweregrade gelten für Betriebssystemupdates. Updates von Drittanbieter-Apps (winget, Homebrew) haben keinen vom Anbieter festgelegten Schweregrad – wenn eine Richtlinie andere Softwarequellen aktiviert, werden sie unabhängig von den hier ausgewählten Schweregraden nach dem Zeitplan dieses Rings automatisch freigegeben.",
+      "severityNote": "Schweregrade gelten nur für Betriebssystem-Updates. Drittanbieter-App-Updates werden über den Schalter unten gesteuert — sie sind nicht schweregradbasiert.",
       "manualDefault": "Jeder Patch in diesem Ring muss manuell freigegeben werden.",
       "manualCategory": "Patches in dieser Kategorie müssen manuell freigegeben werden.",
       "noOverrides": "Alle Kategorien verwenden den Standard. Mit einer Überschreibung kann eine Kategorie abweichend behandelt werden."
+    },
+    "thirdParty": {
+      "title": "Drittanbieter-Anwendungen",
+      "description": "App-Updates aus winget, Chocolatey und Homebrew automatisch genehmigen. App-Sperr-/Pin-Regeln gelten weiterhin; die Wartezeit zählt ab der ersten Meldung des Updates durch das Gerät.",
+      "policyNote": "Gilt nur für Geräte, deren Konfigurationsrichtlinie Software-Updates von Drittanbietern einschließt (Patch-Einstellungen der Richtlinie)."
     },
     "usage": {
       "messageOne": "Dieser Ring gilt für {{count}} Gerät. Änderungen werden bei dessen nächster Rückmeldung wirksam.",

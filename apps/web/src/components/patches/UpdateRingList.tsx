@@ -26,6 +26,11 @@ export type RingAutoApprove = {
   enabled: boolean;
   severities: Array<'critical' | 'important' | 'moderate' | 'low'>;
   deferralDays: number;
+  /** Third-party app updates auto-approve independently of severity. Absent on
+   *  rings saved before the gate existed. */
+  thirdPartyApps?: boolean;
+  /** null = inherit the ring's hold. */
+  thirdPartyDeferralDays?: number | null;
 };
 
 export type UpdateRingItem = {

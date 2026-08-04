@@ -372,6 +372,7 @@
     "validation": {
       "selectCategory": "Seleccione una categoría",
       "selectSeverity": "Seleccione al menos una gravedad para la aprobación automática.",
+      "selectSeverityOrThirdParty": "Selecciona al menos una severidad o habilita la aprobación automática de apps de terceros.",
       "nameRequired": "El nombre del anillo es obligatorio."
     },
     "categories": {
@@ -379,7 +380,6 @@
       "feature": "Actualizaciones de funciones",
       "firmware": "firmware",
       "driver": "Controladores",
-      "thirdPartyApp": "Aplicaciones de terceros",
       "definitions": "Actualizaciones de definiciones"
     },
     "severities": {
@@ -421,10 +421,15 @@
       "description": "Qué se aprueba automáticamente en este anillo y durante cuánto tiempo se debe retener un parche después del lanzamiento del proveedor. El valor predeterminado se aplica a todas las categorías; agregue una anulación para tratar uno de manera diferente.",
       "allCategories": "Todas las categorias",
       "default": "Por defecto",
-      "severityNote": "Se aplican gravedades a las actualizaciones de OS. Las actualizaciones de aplicaciones de terceros (winget, Homebrew) no tienen gravedad de proveedor: cuando una política habilita otras fuentes de software, se aprueban automáticamente según la cadencia de este anillo, independientemente de las gravedades seleccionadas aquí.",
+      "severityNote": "Las severidades aplican solo a las actualizaciones del sistema operativo. Las actualizaciones de apps de terceros se controlan con el interruptor de abajo — no se controlan por severidad.",
       "manualDefault": "Cada parche de este anillo necesita aprobación manual.",
       "manualCategory": "Los parches de esta categoría necesitan aprobación manual.",
       "noOverrides": "Todas las categorías siguen el valor predeterminado. Agregue una anulación para tratar uno de manera diferente."
+    },
+    "thirdParty": {
+      "title": "Aplicaciones de terceros",
+      "description": "Aprueba automáticamente actualizaciones de apps de winget, Chocolatey y Homebrew. Las reglas de bloqueo/fijado de apps siguen aplicando; la espera se mide desde que cada dispositivo reporta la actualización por primera vez.",
+      "policyNote": "Aplica solo a dispositivos cuya política de configuración incluye actualizaciones de software de terceros (ajustes de parches de la política)."
     },
     "usage": {
       "messageOne": "Este anillo se aplica al dispositivo {{count}}. Los cambios entran en vigor en su próximo check-in.",
