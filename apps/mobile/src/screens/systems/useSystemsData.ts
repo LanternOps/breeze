@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import * as Sentry from '@sentry/react-native';
+
+import { reportInternalError } from '../../lib/errorReporting';
 
 import type { Alert, Device } from '../../services/api';
 import { getAlerts, getDevices } from '../../services/api';
@@ -105,7 +106,7 @@ export function useSystemsData() {
     } catch (err) {
       // The raw message is internal (function name + HTTP status) — report it
       // to Sentry and keep only a static string in UI state (issue #3141).
-      Sentry.captureException(err, { tags: { area: 'systems-data' } });
+      reportInternalError(err, 'systems-data');
       setData((d) => ({
         ...d,
         loading: false,

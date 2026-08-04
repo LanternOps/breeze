@@ -37,6 +37,7 @@ import {
 import { fetchAlerts } from '../../store/alertsSlice';
 import { fetchOne as fetchApprovalOne, setFocus as setApprovalFocus } from '../../store/approvalsSlice';
 import { track } from '../../lib/analytics';
+import { reportInternalError } from '../../lib/errorReporting';
 import { ChatHeader } from './components/ChatHeader';
 import { ColdOpenChips } from './components/ColdOpenChips';
 import { Composer } from './components/Composer';
@@ -193,7 +194,7 @@ export function HomeScreen() {
           dispatch(setStatus('error'));
           // The raw message is internal (function name + HTTP status) — report it
           // to Sentry and show the user a static string instead (issue #3141).
-          Sentry.captureException(err, { tags: { area: 'ai-session-create' } });
+          reportInternalError(err, 'ai-session-create');
           dispatch(failAssistantMessage({ id: userMessageId, error: 'Could not start a session.' }));
           return;
         }
