@@ -157,6 +157,16 @@ Ships as a signed + notarized **`.app` wrapper** — TCC attributes Screen Recor
 - Creating support sessions requires partner-scope (or system) tokens in v1 — org-scoped tokens can't reach the hidden org through RLS.
 - Tier 2 elevation in v1 = "Run as administrator" relaunch installs the temporary service; a mid-session elevation request is Phase 3.
 
+### 2026-07-17 plan-review adjustments
+
+- The schema migration is split into `-a-`/`-b-` files: the partial hidden-org index uses the new enum value, which Postgres forbids in the transaction that adds it (autoMigrate wraps each file in one transaction).
+- `endSupportSession` force-closes the agent WS after revoking tokens, so a lost `support_end` converges via the 10-min dead-man switch instead of lingering to the 8h cap; `POST /remote/sessions` must reject decommissioned devices.
+- Tier 2's consent guarantee is service-side: the temporary service watches the console monitor's process handle (`--monitor-pid`) and tears itself down when the monitor dies — closing or killing the console must always stop sharing.
+- The served client must be Authenticode-signed (SmartScreen); per-session filename renames don't affect signature or reputation. Landing-page copy states the expected publisher and never coaches past an unsigned-binary warning.
+- All Quick Support UI, including the public `/quick` page, is localized (locale-parity CI gate).
+- The reaper also expires claimed-but-never-enrolled sessions 20 min after claim.
+- Phase 1 ships as **Milestone A** (Tier 1 end-to-end, plan Tasks 1–13 + 15–18) with Tier 2 as **Milestone B** (Task 14), quarantining the helper-path and service-lifecycle unknowns.
+
 ## Out of scope (v1)
 
 - User-generated codes / anonymous session queue (TeamViewer-style).

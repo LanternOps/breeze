@@ -18,6 +18,8 @@
 - v1 requires `auth.scope === 'partner'` (or `system`) to create support sessions — org-scoped tokens can't reach the hidden org (documented limitation).
 - BullMQ job ids: use `-`, never `:`.
 - Never derive Zod enums from Drizzle `pgEnum.enumValues` (breaks schema mocks).
+- All new web UI strings go through the i18n layer (literal-key `t()`); every new key lands in en AND all other locale catalogs in the same commit — the locale-parity test reds main otherwise. Applies to the public `/quick` page too (it's consumer-facing).
+- The served support client MUST be Authenticode-signed (see Task 11 Step 2b). Per-session filename renames do NOT invalidate the signature or SmartScreen reputation — both key on content hash + cert — but an *unsigned* exe is a SmartScreen wall for consumers.
 
 ## Deviations from spec (implementation adaptations — spec updated alongside this plan)
 
@@ -28,12 +30,23 @@
 5. Landing URL is `/quick?code=<CODE>` (Astro static pages can't do dynamic `/quick/:code` paths without SSR).
 6. End-user-initiated stop is detected via agent-offline (reaper marks `ended/end_user` after 5 min offline) rather than a dedicated API call — no new agent-auth surface in v1.
 
+## Review adjustments (2026-07-17 review — spec implementation notes updated to match)
+
+7. **Migration split (`-a-`/`-b-`):** the partial index `WHERE type = 'quick_support'` cannot live in the same file as `ALTER TYPE ... ADD VALUE 'quick_support'` — Postgres rejects any *use* of an enum value added in the current transaction (`55P04 unsafe use of new value`), and autoMigrate wraps each file in one transaction. As originally written, Task 1's migration failed on first run, rolled back, and would retry forever.
+8. **End-path hardening:** `endSupportSession` force-closes the device's agent WS after revoking tokens. Without it, a lost `support_end` on a healthy WS lingers until the 8h hard cap (the client is online, so the offline dead-man never fires). With it: close → reconnect → re-auth fails → dead-man cleans up in ≤10 min. Also verify `POST /remote/sessions` rejects decommissioned devices.
+9. **Tier 2 consent guarantee moved service-side:** the temporary service watches the console monitor's process handle and self-tears-down when it dies. Closing the console with X (~5s SIGTERM grace) or killing it from Task Manager must never leave a SYSTEM service silently sharing the screen.
+10. **Claimed-limbo reaping:** `claimed` sessions with no device 20 min after `claimed_at` → `expired` (client crashed between redeem and enroll; otherwise the tech's panel shows "Client connecting…" until the 8h cap).
+11. **i18n is mandatory** (see Global Constraints) — the plan originally predated the literal-key `t()` gate and locale-parity CI checks.
+12. **Signing/SmartScreen:** the served exe must be Authenticode-signed; release-blocking check in Task 11 Step 2b, honest publisher copy in Task 16.
+13. **Milestones:** **A = Tasks 1–13 + 15–18** (Tier 1, shippable end-to-end); **B = Task 14** (Tier 2 — quarantines the two riskiest unknowns: helper-binary path resolution and service lifecycle). Run Task 18's Tier-2 checks only with B.
+
 ---
 
 ### Task 1: DB migration + Drizzle schema
 
 **Files:**
-- Create: `apps/api/migrations/2026-07-06-quick-support-sessions.sql`
+- Create: `apps/api/migrations/2026-07-06-a-quick-support-sessions.sql` (date both files with the actual implementation date; keep the `-a-`/`-b-` infix)
+- Create: `apps/api/migrations/2026-07-06-b-quick-support-org-index.sql`
 - Create: `apps/api/src/db/schema/supportSessions.ts`
 - Modify: `apps/api/src/db/schema/orgs.ts` (orgTypeEnum ~line 8)
 - Modify: `apps/api/src/db/schema/devices.ts` (devices table)
@@ -43,23 +56,24 @@
 **Interfaces:**
 - Produces: `supportSessions` table object, `supportSessionStatusEnum` (values `['pending','claimed','ready','ended','expired']`), `devices.isEphemeral: boolean`, `enrollmentKeys.supportSessionId: uuid | null`, org type value `'quick_support'`.
 
-- [ ] **Step 1: Write the migration**
+- [ ] **Step 1: Write the migrations — TWO files; the split is load-bearing**
+
+File `2026-07-06-a-quick-support-sessions.sql`:
 
 ```sql
--- 2026-07-06: Quick Support — one-time code ad-hoc sessions.
+-- 2026-07-06-a: Quick Support — one-time code ad-hoc sessions.
 -- Spec: docs/superpowers/specs/2026-07-06-one-off-support-session-design.md
 -- support_sessions is RLS Shape 1 (direct org_id) — auto-discovered by the
 -- rls-coverage integration test, no allowlist entry needed.
 -- Fully idempotent. NOTE: no BEGIN/COMMIT — autoMigrate wraps the file.
 
 -- New org type for the hidden per-partner Quick Support org.
--- PG12+: ADD VALUE is allowed inside a transaction as long as the new value
--- is not used later in the SAME transaction — nothing below uses it.
+-- PG12+ allows ADD VALUE inside a transaction, but the new value cannot be
+-- USED in the same transaction (55P04 "unsafe use of new value") — and
+-- autoMigrate wraps each file in ONE transaction. That is why the partial
+-- index on type = 'quick_support' lives in the -b- file. Nothing in THIS
+-- file may reference the new value.
 ALTER TYPE org_type ADD VALUE IF NOT EXISTS 'quick_support';
-
--- Exactly one hidden org per partner.
-CREATE UNIQUE INDEX IF NOT EXISTS organizations_partner_quick_support_uniq
-  ON organizations(partner_id) WHERE type = 'quick_support';
 
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS is_ephemeral BOOLEAN NOT NULL DEFAULT FALSE;
 
@@ -113,6 +127,19 @@ CREATE POLICY breeze_org_isolation_delete ON support_sessions
   FOR DELETE USING (public.breeze_has_org_access(org_id));
 ```
 
+File `2026-07-06-b-quick-support-org-index.sql`:
+
+```sql
+-- 2026-07-06-b: Quick Support — partial unique index on the new enum value.
+-- MUST be a separate file from -a-: Postgres forbids using an enum value added
+-- in the current transaction (55P04), and autoMigrate wraps each file in ONE
+-- transaction. File -a- commits the value; this file may use it.
+
+-- Exactly one hidden org per partner.
+CREATE UNIQUE INDEX IF NOT EXISTS organizations_partner_quick_support_uniq
+  ON organizations(partner_id) WHERE type = 'quick_support';
+```
+
 - [ ] **Step 2: Drizzle schema file `supportSessions.ts`**
 
 ```ts
@@ -148,7 +175,7 @@ export const supportSessions = pgTable('support_sessions', {
 
 - [ ] **Step 3: Modify existing schema files**
 
-In `orgs.ts`: `orgTypeEnum` becomes `pgEnum('org_type', ['customer', 'internal', 'quick_support'])`. In `enrollmentKeys` add `supportSessionId: uuid('support_session_id')` (plain uuid — no `.references()` to avoid a circular import with `supportSessions.ts`; FK lives in SQL). In `devices.ts` add `isEphemeral: boolean('is_ephemeral').notNull().default(false)` right after `status`. Export `supportSessions` + `supportSessionStatusEnum` from `schema/index.ts`.
+In `orgs.ts`: `orgTypeEnum` becomes `pgEnum('org_type', ['customer', 'internal', 'quick_support'])`. In `enrollmentKeys` add `supportSessionId: uuid('support_session_id')` (plain uuid — no `.references()` to avoid a circular import with `supportSessions.ts`; FK lives in SQL). In `devices.ts` add `isEphemeral: boolean('is_ephemeral').notNull().default(false)` right after `status`. Export `supportSessions` + `supportSessionStatusEnum` from `schema/index.ts`. If `pnpm db:check-drift` flags the partial unique index, mirror it in the orgs.ts table extras: `uniqueIndex('organizations_partner_quick_support_uniq').on(t.partnerId).where(sql`type = 'quick_support'`)`.
 
 - [ ] **Step 4: Verify drift + migration test**
 
@@ -247,7 +274,7 @@ API test: generated code matches `SUPPORT_CODE_PATTERN`; 1000 generations all di
 - Consumes: `db, withSystemDbAccessContext, runOutsideDbContext` from `../db`; `organizations, sites` from `../db/schema`.
 - Produces: `getOrCreateQuickSupportOrg(partnerId: string): Promise<{ orgId: string; siteId: string }>`.
 
-- [ ] **Step 1: Failing tests** — mock `../db` (mirror an existing service test, e.g. whatever `partnerCreate`-adjacent tests do): (a) existing quick_support org + site → returned without insert; (b) none → inserts org `{ partnerId, name: 'Quick Support', slug: 'quick-support-<partnerId8>', type: 'quick_support', status: 'active' }` then site `{ orgId, name: 'Quick Support', timezone: 'UTC' }`; (c) insert conflict (unique partial index) → re-select wins (no throw).
+- [ ] **Step 1: Failing tests** — mock `../db` (mirror an existing service test, e.g. whatever `partnerCreate`-adjacent tests do): (a) existing quick_support org + site → returned without insert; (b) none → inserts org `{ partnerId, name: 'Quick Support', slug: 'quick-support-<full partnerId>', type: 'quick_support', status: 'active' }` then site `{ orgId, name: 'Quick Support', timezone: 'UTC' }`; (c) insert conflict (unique partial index) → re-select wins (no throw).
 
 - [ ] **Step 2: Implement**
 
@@ -275,7 +302,9 @@ export async function getOrCreateQuickSupportOrg(partnerId: string): Promise<{ o
       await db.insert(organizations).values({
         partnerId,
         name: 'Quick Support',
-        slug: `quick-support-${partnerId.slice(0, 8)}`,
+        // Full uuid in the slug — an 8-char prefix can collide across partners
+        // if slugs are globally unique, which would make provisioning throw.
+        slug: `quick-support-${partnerId}`,
         type: 'quick_support',
         status: 'active',
       }).onConflictDoNothing();
@@ -319,6 +348,7 @@ Note: `.onConflictDoNothing()` needs the target — if Drizzle requires it for p
   - create: partner-scope auth → 201, body has formatted code matching `/^[A-Z2-9]{3}-[A-Z2-9]{3}-[A-Z2-9]{3}$/`, `landingUrl` ends `/quick?code=<raw>`; DB insert received `codeHash` = sha256 of raw code, `orgId` from provisioning.
   - create with `attributedOrgId` not in `auth.accessibleOrgIds` → 403.
   - create with org-scope auth (`auth.scope === 'organization'`) → 403.
+  - create with a system-scope token that has no `partnerId` → 403 (the hidden org is per-partner; provisioning would otherwise crash).
   - get: session whose device has a live `remote_sessions` row (status `active`) → `status: 'active'` (derived); device row `status==='online'` → `deviceOnline: true`.
   - list: returns sessions ordered `createdAt desc`.
   - Audit: create emits `logSessionAudit('support_session_created', ...)`.
@@ -346,6 +376,10 @@ supportSessionRoutes.post('/support-sessions', zValidator('json', createSupportS
   const auth = c.get('auth');
   if (auth.scope !== 'partner' && auth.scope !== 'system') {
     return c.json({ error: 'Quick Support requires partner scope' }, 403);
+  }
+  if (!auth.partnerId) {
+    // system tokens may carry no partner context — the hidden org is per-partner
+    return c.json({ error: 'Quick Support requires a partner context' }, 403);
   }
   const data = c.req.valid('json');
   if (data.attributedOrgId && auth.accessibleOrgIds !== null
@@ -410,7 +444,7 @@ async function toView(session: typeof supportSessions.$inferSelect) {
 }
 ```
 
-Never return `codeHash`. List caps `limit` at 100, default 50, `orderBy(desc(supportSessions.createdAt))`.
+Never return `codeHash`. List caps `limit` at 100, default 50, `orderBy(desc(supportSessions.createdAt))`. For the list endpoint don't call `toView` per row (N+1 — ~100 queries at limit 50): batch-load device statuses and live `remote_sessions` with two `inArray(deviceId, [...])` queries over the page's device ids, then map.
 
 - [ ] **Step 3: Mount in `remote/index.ts`** after the existing sub-routes:
 
@@ -514,7 +548,9 @@ supportPublicRoutes.post('/redeem', zValidator('json', redeemSupportSessionSchem
 });
 ```
 
-Audit the claim via `logSessionAudit('support_session_claimed', row.createdByUserId, row.orgId, { sessionId: row.id }, ip)` after the claim succeeds.
+Audit the claim via `logSessionAudit('support_session_claimed', row.createdByUserId, row.orgId, { sessionId: row.id, actor: 'end_user' }, ip)` after the claim succeeds — the userId is the session *creator's* (audit rows need one); the real actor is the anonymous end user, so say so in the details.
+
+Before shipping: confirm the public installer redemption flow really does return `AGENT_ENROLLMENT_SECRET` to code-authenticated callers (`installer.ts`) — this endpoint must match existing exposure, not create new exposure. If installer.ts does NOT return it, neither do we (and the Go client falls back to prompt-free enrollment without a secret only if the server allows it).
 
 - [ ] **Step 3: Run tests → PASS. Commit** — `feat(api): public quick support check/redeem endpoints`
 
@@ -619,10 +655,10 @@ Guarded on `isEphemeral` so the 10k-device fleet pays zero extra queries on reco
 - Test: extend `apps/api/src/routes/remote/supportSessions.test.ts`
 
 **Interfaces:**
-- Consumes: `sendCommandToAgent(agentId, command)` from `../agentWs` (returns `boolean`).
+- Consumes: `sendCommandToAgent(agentId, command)` from `../agentWs` (returns `boolean`), plus a WS force-close helper — grep `agentWs.ts` for the per-agent connection registry and export `closeAgentConnection(agentId: string)` if it isn't already.
 - Produces: `POST /remote/support-sessions/:id/end` → `200 { success: true }`; wire command `{ id: 'support-end-<sessionId>', type: 'support_end', payload: { sessionId } }` (Go side consumes this exact shape in Task 13). Exported helper `endSupportSession(sessionId, reason, actorId | null): Promise<boolean>` in a new `apps/api/src/services/quickSupportEnd.ts` so the reaper (Task 9) reuses it.
 
-- [ ] **Step 1: Failing tests** — end a `ready` session: command sent with the device's `agentId`; device row updated `{ agentTokenHash: null, watchdogTokenHash: null, helperTokenHash: null, status: 'decommissioned' }`; session `{ status: 'ended', endedReason: 'tech', endedAt set }`; audit `support_session_ended`. Ending an already-`ended` session → 409. Ending a `pending` session (never claimed) → 200, no command attempted.
+- [ ] **Step 1: Failing tests** — end a `ready` session: command sent with the device's `agentId`; device row updated `{ agentTokenHash: null, watchdogTokenHash: null, helperTokenHash: null, status: 'decommissioned' }`; the device's agent WS force-closed after revocation; session `{ status: 'ended', endedReason: 'tech', endedAt set }`; audit `support_session_ended`. Ending an already-`ended` session → 409. Ending a `pending` session (never claimed) → 200, no command attempted.
 
 - [ ] **Step 2: Implement service `quickSupportEnd.ts`**
 
@@ -630,7 +666,7 @@ Guarded on `isEphemeral` so the 10k-device fleet pays zero extra queries on reco
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { devices, supportSessions } from '../db/schema';
-import { sendCommandToAgent } from '../routes/agentWs';
+import { sendCommandToAgent, closeAgentConnection } from '../routes/agentWs';
 
 export async function endSupportSession(
   sessionId: string,
@@ -645,8 +681,11 @@ export async function endSupportSession(
       const [dev] = await db.select({ agentId: devices.agentId }).from(devices)
         .where(eq(devices.id, session.deviceId)).limit(1);
       if (dev) {
-        // Best-effort: deliver self-destruct before revoking (WS stays up either way;
-        // revocation only blocks re-auth). Client dead-man switch covers non-delivery.
+        // Deliver self-destruct first (WS is still up), then revoke, then
+        // force-close the WS. The close is load-bearing: if support_end is
+        // lost, a healthy WS would otherwise linger until the 8h hard cap
+        // (client online → offline dead-man never fires). Close → reconnect
+        // → re-auth fails → dead-man cleans up within ~10 min.
         sendCommandToAgent(dev.agentId, {
           id: `support-end-${sessionId}`,
           type: 'support_end',
@@ -656,6 +695,7 @@ export async function endSupportSession(
           agentTokenHash: null, watchdogTokenHash: null, helperTokenHash: null,
           status: 'decommissioned',
         }).where(eq(devices.id, session.deviceId));
+        closeAgentConnection(dev.agentId);
       }
     }
 
@@ -670,6 +710,8 @@ export async function endSupportSession(
 ```
 
 (Cast/typing: match the actual `AgentCommand` type from agentWs instead of `as never`.) Route handler: load session under normal RLS context (proves the caller can see it), 409 if terminal, then call `endSupportSession(id, 'tech')`, then `logSessionAudit('support_session_ended', auth.userId, session.orgId, { sessionId: id, reason: 'tech' }, ip)`.
+
+Also verify `POST /remote/sessions` rejects devices with `status === 'decommissioned'` — if there's no such guard, add one here (an ended-but-still-lingering client must not be connectable); assert it in Task 17's chain test.
 
 - [ ] **Step 3: Run → PASS. Commit** — `feat(api): end quick support session with agent self-destruct + token revocation`
 
@@ -689,6 +731,7 @@ export async function endSupportSession(
 
 - [ ] **Step 1: Failing tests** for the pure `reapOnce()` function (export it for tests; the worker just calls it):
   - `pending` past `codeExpiresAt` → `expired`.
+  - `claimed` with no `deviceId` and `claimedAt` older than 20 min → `expired` (client crashed between redeem and enroll — the child key is long dead; don't leave the tech's panel on "Client connecting…" for 8 h).
   - `claimed`/`ready` past `hardExpiresAt` → `endSupportSession(id, 'expired')` called.
   - `ready` session whose device `status='offline'` and `lastSeenAt` older than 5 min → `endSupportSession(id, 'end_user')` (deviation #6: end-user stop detection).
   - ended/expired sessions with `deviceId` and `endedAt` older than 6 h → device purged and `supportSessions.deviceId` nulled (FK `ON DELETE SET NULL`).
@@ -700,6 +743,14 @@ export async function reapOnce(): Promise<void> {
   // 1. Expire unredeemed codes
   await db.update(supportSessions).set({ status: 'expired', endedAt: new Date(), endedReason: 'expired' })
     .where(and(eq(supportSessions.status, 'pending'), lt(supportSessions.codeExpiresAt, new Date())));
+
+  // 1b. Claimed-but-never-enrolled limbo (client crashed between redeem and enroll)
+  await db.update(supportSessions).set({ status: 'expired', endedAt: new Date(), endedReason: 'error' })
+    .where(and(
+      eq(supportSessions.status, 'claimed'),
+      isNull(supportSessions.deviceId),
+      lt(supportSessions.claimedAt, new Date(Date.now() - 20 * 60_000)),
+    ));
 
   // 2. Hard-cap enforcement
   const overdue = await db.select({ id: supportSessions.id }).from(supportSessions)
@@ -759,6 +810,10 @@ For each hit, decide: **user-facing org enumeration or device count → exclude*
 
 **DO NOT touch `computeAccessibleOrgIds` (`apps/api/src/middleware/auth.ts:208`) or its `bearerTokenAuth.ts` twin** — the hidden org MUST stay in `accessibleOrgIds` or RLS blocks all tech access to `support_sessions`. Add a comment there saying exactly that.
 
+**DO NOT exclude ephemeral devices from the status-upkeep path** — whatever job/logic flips `devices.status` to `offline` by `lastSeenAt` must keep processing ephemeral devices, or Task 9's end-user-stop detection silently never fires.
+
+Sweep beyond enumeration too: alert/monitor *evaluation* paths that apply to all devices at the code level regardless of policy rows (e.g. default event-log monitoring), and billing/usage rollup queries — an ephemeral device must never page anyone or appear on an invoice.
+
 - [ ] **Step 2: Failing tests** — org list endpoint response omits a seeded `type='quick_support'` org; devices list omits an `isEphemeral` device; both still returned when queried directly by id (detail routes untouched).
 
 - [ ] **Step 3: Apply filters, run the full API unit suite (`pnpm test --filter=@breeze/api`) → PASS. Commit** — `feat(api): hide quick support org + ephemeral devices from listings`
@@ -778,6 +833,8 @@ For each hit, decide: **user-facing org enumeration or device count → exclude*
 - [ ] **Step 1: Failing tests** — valid pending code + platform windows → 200 with `Content-Disposition: attachment; filename="breeze-support-<CODE>-<host>.exe"`; invalid/claimed code → 404; platform `macos` → 400 `{ error: 'macOS support client coming soon' }`; rate limited per IP (reuse `support-check` limiter budget).
 
 - [ ] **Step 2: Implement** — soft-validate the code (same query as `/check`); resolve the agent binary: `getBinarySource() === 'github'` → `fetch(getGithubAgentUrl('windows', 'amd64'))` and stream the response body through with our Content-Disposition (a redirect would lose the filename; note the ~60 MB proxy cost as acceptable v1); `local`/S3 → mirror `viewers/download.ts` disk/presign logic but force the filename. Build `<apiHost>` via `new URL(process.env.PUBLIC_API_URL ?? '').host`.
+
+- [ ] **Step 2b: Signing / SmartScreen check (release-blocking).** Verify the binary this route serves is Authenticode-signed (pull a GitHub-release `breeze-agent.exe`, check with `Get-AuthenticodeSignature`). Per-session filename renames do NOT invalidate the signature or SmartScreen reputation — both key on content hash + cert — but serving an *unsigned* exe puts consumers in front of a "Windows protected your PC" wall at the scariest possible moment, and AV/EDR heuristics pile on (renamed binary from Downloads installing a temp service). If unsigned, extend the MSI signing pipeline to sign the raw exe before this task ships, record the signer name for Task 16's landing copy, and expect a reputation ramp for a newly-signed binary.
 
 - [ ] **Step 3: Run → PASS. Commit** — `feat(api): quick support client download with code-embedded filename`
 
@@ -808,10 +865,12 @@ func TestResolveSupportInput(t *testing.T) {
 		{"flags win", "breeze-agent.exe", "KTM-4H7-P2X", "https://eu.2breeze.app", "KTM4H7P2X", "https://eu.2breeze.app", false},
 		{"filename parsed", "breeze-support-KTM4H7P2X-us.2breeze.app.exe", "", "", "KTM4H7P2X", "https://us.2breeze.app", false},
 		{"browser copy suffix", "breeze-support-KTM4H7P2X-us.2breeze.app (1).exe", "", "", "KTM4H7P2X", "https://us.2breeze.app", false},
+		{"firefox copy suffix (no space)", "breeze-support-KTM4H7P2X-us.2breeze.app(1).exe", "", "", "KTM4H7P2X", "https://us.2breeze.app", false},
 		{"case insensitive", "Breeze-Support-ktm4h7p2x-us.2breeze.app.exe", "", "", "KTM4H7P2X", "https://us.2breeze.app", false},
 		{"nothing embedded, no flags", "breeze-agent.exe", "", "", "", "", true}, // caller falls back to prompt
 	}
-	// filename regex: (?i)^breeze-support-([a-z2-9]{9})-(.+?)(?: \(\d+\))?\.exe$
+	// filename regex: (?i)^breeze-support-([a-z2-9]{9})-(.+?)(?:\s?\(\d+\))?\.exe$
+	// (space before "(1)" optional — Chrome/Edge insert one, Firefox doesn't)
 }
 ```
 
@@ -846,13 +905,18 @@ var supportCmd = &cobra.Command{
 ```
 
   Print state changes ("Technician connected." / "Technician disconnected.") by setting `h.desktopMgr.OnSessionStarted/OnSessionStopped` style callbacks (OnSessionStopped already exists for direct mode — `heartbeat.go:570`; add OnSessionStarted symmetrically if absent).
-7. Signal handling: on Ctrl+C/SIGTERM → `supportCleanup(dir)` (Task 13) then exit.
-8. Dead-man switch goroutine: if the WS client reports disconnected continuously for 10 min, or `time.Now()` passes `HardExpiresAt` → print notice, `supportCleanup(dir)`, exit.
+7. Signal handling: on Ctrl+C/SIGTERM → `supportCleanup(dir)` (Task 13) then exit. (A console X-close arrives as SIGTERM with a ~5s grace budget on Windows — keep cleanup free of network waits.)
+8. Dead-man switch goroutine: if the WS client reports disconnected continuously for 10 min, or `time.Now()` passes `HardExpiresAt` → print notice, `supportCleanup(dir)`, exit. (Server-side end force-closes the WS after revoking tokens — Task 8 — so even a lost `support_end` converges here in ≤10 min: reconnect attempts fail re-auth and the client counts as disconnected.)
 
 `Main()` basename dispatch (next to the `breeze-desktop-helper` special case at `main.go:309`):
 
 ```go
-if strings.HasPrefix(strings.ToLower(filepath.Base(os.Args[0])), "breeze-support") {
+// Second condition guards the Tier 2 service copy (breeze-support-svc.exe),
+// which is launched with an explicit `support --service-run ...` argv —
+// without it the prefix dispatch would prepend a SECOND "support" and cobra
+// would parse the duplicate as a positional arg.
+if strings.HasPrefix(strings.ToLower(filepath.Base(os.Args[0])), "breeze-support") &&
+	(len(os.Args) < 2 || os.Args[1] != "support") {
 	rootCmd.SetArgs(append([]string{"support"}, os.Args[1:]...))
 }
 ```
@@ -897,7 +961,7 @@ func handleSupportEnd(h *Heartbeat, cmd Command) tools.CommandResult {
 
 ---
 
-### Task 14: Go agent — Tier 2 (elevated temporary service)
+### Task 14: Go agent — Tier 2 (elevated temporary service) — **Milestone B**
 
 **Files:**
 - Create: `agent/internal/agentapp/support_service_windows.go` (build tag `windows`)
@@ -906,19 +970,20 @@ func handleSupportEnd(h *Heartbeat, cmd Command) tools.CommandResult {
 
 **Interfaces:**
 - Consumes: `golang.org/x/sys/windows/svc` + `svc/mgr` (service create/start/stop/delete), elevation check via `windows.Token.IsElevated()`, existing service-mode startup (`runAsService`, `service_windows.go:106`), SYSTEM desktop-helper spawn machinery (works when `IsService=true`).
-- Produces: when the support process is launched **elevated** (user right-clicked → Run as administrator, or accepts the UAC prompt on our re-launch offer), it installs a temporary service `BreezeQuickSupport` running `<tempdir>\breeze-support-svc.exe support --service-run --config <tempdir>\agent.yaml`, starts it, and the console process becomes a monitor. Teardown removes service + files.
+- Produces: when the support process is launched **elevated** (user right-clicked → Run as administrator, or accepts the UAC prompt on our re-launch offer), it installs a temporary service `BreezeQuickSupport` running `<tempdir>\breeze-support-svc.exe support --service-run --config <tempdir>\agent.yaml --monitor-pid <console pid>`, starts it, and the console process becomes a monitor. The service watches the monitor PID and self-tears-down when it dies. Teardown removes service + files.
 
 - [ ] **Step 1: Flow to implement**
 
 1. In `runSupportSession()` after redeem+enroll: if `isElevated()` → Tier 2 path; else print `TIP: for full control (admin prompts), close this and re-run as administrator.` and continue Tier 1. (No forced UAC prompt in v1 — "Run as administrator" is the documented path; a mid-session elevation request is Phase 3.)
 2. Tier 2 setup: copy own exe into the temp workspace twice — `breeze-support-svc.exe` (service binary) and `breeze-desktop-helper.exe`. **Investigation sub-step:** find how `sessionbroker.SpawnHelperInSession` / `spawnHelperForDesktop` (`handlers_desktop_helper.go:481,589`) resolves the desktop-helper binary path; if it assumes the Program Files install dir, add a fallback to "directory of the running executable" (benefits dev builds too). This is the riskiest line in the Go work — timebox it and, if the resolution is tangled, ship Tier 2 as service-without-helper (secure-desktop capture degraded) and file a follow-up issue.
-3. Install: `mgr.Connect()` → `m.CreateService("BreezeQuickSupport", svcExe, mgr.Config{DisplayName: "Breeze Quick Support (temporary)", StartType: mgr.StartManual}, "support", "--service-run", "--config", cfgFile)` → `s.Start()`. Fail → warn and fall back to Tier 1 inline.
+3. Install: `mgr.Connect()` → `m.CreateService("BreezeQuickSupport", svcExe, mgr.Config{DisplayName: "Breeze Quick Support (temporary)", StartType: mgr.StartManual}, "support", "--service-run", "--config", cfgFile, "--monitor-pid", strconv.Itoa(os.Getpid()))` → `s.Start()`. Fail → warn and fall back to Tier 1 inline.
 4. `--service-run` (hidden flag): sets `cfg.SupportMode` from the loaded config dir and enters the existing `runAsService` path (SCM). Service loads the already-enrolled temp config; `IsService=true` → broker + SYSTEM desktop helper → UAC/secure-desktop capture works.
-5. Console monitor: polls service status; Ctrl+C → stop+delete service, cleanup. `supportCleanup` on the service side (support_end command) must also `sc stop/delete BreezeQuickSupport` — reuse the `sc.exe stop/delete` invocation pattern from `selfUninstallWindows` (`handlers_uninstall.go:209`) with the temp service name, then delete both copied exes via the trampoline.
+5. **Service-side monitor watchdog — THE consent guarantee.** In Tier 2 the console is only an indicator; capture runs in the SYSTEM service. If the user closes the console with X (~5s SIGTERM grace — `sc stop` may not finish) or kills it from Task Manager (no grace at all), the service must not keep sharing the screen with no visible indicator. So on start the service opens the `--monitor-pid` process handle (`windows.OpenProcess(SYNCHRONIZE, ...)`) and a goroutine `WaitForSingleObject`s on it; when the monitor dies for ANY reason → full teardown (stop desktop sessions, `sc delete` self, trampoline-delete both exes, exit). Never rely on the monitor's own close handling for teardown — that path is best-effort UX only. Missing/dead `--monitor-pid` at service start → refuse to start (fail safe).
+6. Console monitor: polls service status; Ctrl+C → stop+delete service, cleanup (best-effort — the watchdog in step 5 is the guarantee). `supportCleanup` on the service side (support_end command) must also `sc stop/delete BreezeQuickSupport` — reuse the `sc.exe stop/delete` invocation pattern from `selfUninstallWindows` (`handlers_uninstall.go:209`) with the temp service name, then delete both copied exes via the trampoline.
 
 - [ ] **Step 2: Unit-test the pure parts** (service args builder, `isElevated` wrapper injectable). `go build ./... && go test -race ./...` → PASS.
 
-- [ ] **Step 3: Manual verification on the Windows test VM:** run elevated → temp service appears (`sc query BreezeQuickSupport`), desktop session shows UAC prompts; end session → service gone, files gone. Commit** — `feat(agent): quick support tier 2 temporary service (elevated)`
+- [ ] **Step 3: Manual verification on the Windows test VM:** run elevated → temp service appears (`sc query BreezeQuickSupport`), desktop session shows UAC prompts; end session → service gone, files gone; **kill the console monitor from Task Manager mid-session → service self-tears-down within seconds (`sc query` gone, capture stops)** — this is the consent-guarantee check, do not skip it. Commit** — `feat(agent): quick support tier 2 temporary service (elevated)`
 
 ---
 
@@ -936,9 +1001,9 @@ func handleSupportEnd(h *Heartbeat, cmd Command) tools.CommandResult {
 
 - [ ] **Step 1: Failing component tests** (Vitest + jsdom, mirror a sibling like `EnrollmentKeyManager` tests): create → code displayed in `XXX-XXX-XXX` format + copy-link button writes `landingUrl` to clipboard; status polling transitions render "Waiting for user" (`pending`) → "User connected — ready" (`ready` + `deviceOnline`) → Connect button appears; End calls `POST .../end` via `runAction`; list renders recent sessions with attribution label.
 
-- [ ] **Step 2: Implement.** Create dialog: attribution org select (options from existing org store / `GET /organizations` — hidden org is already server-filtered by Task 10) + label input; submit via `runAction({ request: () => fetchWithAuth('/remote/support-sessions', { method: 'POST', body: JSON.stringify(payload) }), errorFallback: 'Failed to create support session', successMessage: () => 'Support session created' })`. After create, show the code big + copyable link, and poll `GET /remote/support-sessions/:id` every 3 s (recursive `setTimeout` in a `useRef`, cleared on unmount — the `ConnectDesktopButton.tsx:399` pattern; stop polling on terminal states). When `deviceId && deviceOnline`, render `<ConnectDesktopButton deviceId={session.deviceId} deviceName={session.attributionLabel ?? 'Quick Support device'} deviceOs="windows" />` plus the End button (runAction, 401 → return, non-ActionError → toast). Status copy: pending → "Waiting for the user to run the client…", claimed → "Client connecting…", ready → "Ready to connect", active → "Session in progress", ended/expired → terminal badge.
+- [ ] **Step 2: Implement.** Create dialog: attribution org select (options from existing org store / `GET /organizations` — hidden org is already server-filtered by Task 10) + label input; submit via `runAction({ request: () => fetchWithAuth('/remote/support-sessions', { method: 'POST', body: JSON.stringify(payload) }), errorFallback: 'Failed to create support session', successMessage: () => 'Support session created' })`. After create, show the code big + copyable link, and poll `GET /remote/support-sessions/:id` every 3 s (recursive `setTimeout` in a `useRef`, cleared on unmount — the `ConnectDesktopButton.tsx:399` pattern; stop polling on terminal states). When `deviceId && deviceOnline`, render `<ConnectDesktopButton deviceId={session.deviceId} deviceName={session.attributionLabel ?? 'Quick Support device'} deviceOs="windows" />` plus the End button (runAction, 401 → return, non-ActionError → toast). Status copy: pending → "Waiting for the user to run the client…", claimed → "Client connecting…", ready → "Ready to connect", active → "Session in progress", ended/expired → terminal badge. All user-visible strings via the i18n layer (literal-key `t()` — mirror a recently-added sibling component), with every new key added to en AND all other locale catalogs in the same commit.
 
-- [ ] **Step 3: `pnpm test --filter=@breeze/web -- QuickSupport` → PASS; `pnpm astro check` clean (types in tests count). Commit** — `feat(web): quick support page`
+- [ ] **Step 3: `pnpm test --filter=@breeze/web -- QuickSupport` → PASS; i18n literal-key + locale-parity suites → PASS; `pnpm astro check` clean (types in tests count). Commit** — `feat(web): quick support page`
 
 ---
 
@@ -957,6 +1022,8 @@ func handleSupportEnd(h *Heartbeat, cmd Command) tools.CommandResult {
 
 - [ ] **Step 2: Implement.** Read code from `location.search` on mount; validate via `/support/check`; render entry-form vs landing states. Download = plain `<a href>` (browser download, no fetch). Include the manual-fallback instruction under the button: "If the download prompts for a code, enter: **XXX-XXX-XXX**."
 
+This page is consumer-facing: localize it first-class (same i18n rules as Task 15). Set honest expectations for the Windows prompt — show the expected publisher from the Authenticode cert recorded in Task 11 Step 2b ("You'll see a Windows prompt — the publisher should read *<signer>*"). Do NOT ship copy that coaches users past an unsigned-binary warning; if the signing check fails, this page is blocked on it.
+
 - [ ] **Step 3: Run tests → PASS. Verify CSP: the page fetches the API origin — confirm `apps/web/src/middleware.ts` CSP `connect-src` already allows it (it must, all islands do). Commit** — `feat(web): public quick support landing page`
 
 ---
@@ -972,7 +1039,7 @@ func handleSupportEnd(h *Heartbeat, cmd Command) tools.CommandResult {
 
 - [ ] **Step 1: RLS suite** — as `breeze_app` with partner-A context: SELECT partner-B's support_sessions → 0 rows; forged INSERT into partner-B's hidden org → fails `42501` (assert the error code — don't let a memoized fixture make it vacuous); rls-coverage contract test still green (Shape 1 auto-discovery: `pnpm vitest run -c vitest.config.rls.ts`).
 
-- [ ] **Step 2: Chain suite** — seed partner + tech user; `POST /remote/support-sessions` → code; `POST /support/redeem` → child key; `POST /agents/enroll` with it → device `is_ephemeral=true`, session `deviceId` linked, status `claimed`; second redeem of same code → 404; enroll at maxDevices=0 partner limit → still succeeds for support key, fails for a normal key; `endSupportSession(id,'tech')` → device tokens nulled + status decommissioned; `reapOnce()` after faking `endedAt` 7 h back → device row gone, `supportSessions.deviceId` null.
+- [ ] **Step 2: Chain suite** — seed partner + tech user; `POST /remote/support-sessions` → code; `POST /support/redeem` → child key; `POST /agents/enroll` with it → device `is_ephemeral=true`, session `deviceId` linked, status `claimed`; second redeem of same code → 404; enroll at maxDevices=0 partner limit → still succeeds for support key, fails for a normal key; `endSupportSession(id,'tech')` → device tokens nulled + status decommissioned; creating a remote session against that decommissioned device → rejected; `reapOnce()` after faking `endedAt` 7 h back → device row gone, `supportSessions.deviceId` null.
 
 - [ ] **Step 3: Run integration suite locally against the docker Postgres → PASS. Commit** — `test(api): quick support RLS + end-to-end chain integration tests`
 
@@ -983,6 +1050,9 @@ func handleSupportEnd(h *Heartbeat, cmd Command) tools.CommandResult {
 - [ ] `pnpm test` (all workspaces), `cd agent && go test -race ./...`, `pnpm astro check`, `pnpm db:check-drift` — all green.
 - [ ] Type Check includes tests + site-scope contract (CI parity — run `pnpm typecheck` if defined).
 - [ ] Manual e2e via the `worktree-stack` skill: full happy path from create → landing page → client on Windows VM → viewer connect → end → self-delete. Verify as `breeze_app` in psql: forge a cross-tenant support_session insert → RLS rejection.
+- [ ] Verify the served support binary is Authenticode-signed (Task 11 Step 2b) and the landing-page publisher copy matches the cert.
+- [ ] End a session while the client WS is healthy and confirm the client exits promptly (support_end path) — then repeat with the command handler artificially disabled and confirm the WS force-close → dead-man path converges in ≤10 min.
+- [ ] Milestone B only: the Task Manager–kill teardown check from Task 14 Step 3.
 - [ ] Grep sweep from Task 10 recorded in PR description; confirm no `support_sessions` consumer bypasses the status guards (`grep -rn "supportSessions" apps/api/src --include='*.ts' | grep -v test`).
 - [ ] Update `apps/docs` remote-access page with a Quick Support section (brief; full docs pass at release via the release skill).
 - [ ] Commit any stragglers; run `superpowers:requesting-code-review` / open PR.
@@ -994,3 +1064,4 @@ func handleSupportEnd(h *Heartbeat, cmd Command) tools.CommandResult {
 - **Spec coverage:** flows (T4/5/11/12/15/16), lifecycle+states (T1/5/7/8/9), data model (T1), hidden org (T3/T10), enrollment guards (T6), reaper 3-layer cleanup (T9/T13 dead-man/T8 cooperative), security (rate limits T5/T11, revocation T8, forged-command guard T13, RLS T1/T17), audit (T4/5/8), UI (T15/16), Tier 2 (T14), testing standards (each task + T17). Consent posture needs no code: sessions on ephemeral devices use the default prompt config; running the client is consent (spec) — the hidden org has no `config_policy_remote_access_settings`, so `resolveRemoteSessionPromptConfig` falls back to defaults; verify during T18 manual e2e that the default doesn't hard-block (if default is `consent` + `block`, add a support-mode bypass in the offer path — check `remoteAccessPolicy.ts` defaults during T4).
 - **Known risks, called out in-task:** desktop-helper binary path resolution for Tier 2 (T14, timeboxed with degrade path); GitHub-mode 60 MB proxy streaming (T11); org-exclusion sweep completeness (T10 grep checklist + PR record).
 - Types/names used across tasks were cross-checked: `endSupportSession(sessionId, reason)` (T8→T9), redeem response `{serverUrl, enrollmentKey, enrollmentSecret, sessionId, hardExpiresAt}` (T5→T12), command `support_end` + payload (T8→T13), filename format (T11→T12), `SupportSessionView.deviceOnline` (T4→T15).
+- **2026-07-17 review pass (items 7–13 above):** migration split (`-a-`/`-b-` enum-use rule — the original single file failed on first run); WS force-close on end (dead-man convergence ≤10 min instead of the 8h cap) + decommissioned-device connect guard; Tier 2 service-side monitor watchdog (the consent guarantee — console kill must always stop sharing); claimed-limbo reaping; full-uuid org slug; system-token `partnerId` guard; batched list view (N+1); Firefox rename tolerance; basename-dispatch double-`support` guard for the svc binary; i18n + signing/SmartScreen made explicit; Milestone A/B split so Tier 1 can ship without waiting on the Tier 2 unknowns.
