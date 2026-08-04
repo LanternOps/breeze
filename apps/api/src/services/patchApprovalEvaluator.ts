@@ -560,48 +560,42 @@ function evaluatePatchApproval(
     return 'category_rule';
   }
 
-  // Priority 3: Ring-level auto-approve (#1317). The ring now owns approval, so
-  // this honors the configured severities AND a deferral window (held, not
-  // approved, until the patch ages past it) — consistent with the policy-level
-  // and category deferral semantics.
-  //
-  // FAIL-CLOSED at the read boundary (mirrors the write-side Zod refinement in
-  // ringAutoApproveSchema): auto-approval requires an explicit, non-empty
-  // severity set AND a patch severity that is in it. We must NOT trust that the
-  // stored row went through the route schema — the manage_update_rings AI tool
-  // and legacy boolean `true` rows can both produce `enabled` with empty
-  // severities, which previously fell through and auto-approved EVERY pending
-  // patch (auto-approve-all). A null-severity patch likewise never auto-approves
-  // under a restricted list, matching the policy path above.
+  // Priority 3: Ring-level auto-approve (#1317). Severity gates OS candidates;
+  // third-party candidates are gated by the explicit thirdPartyApps toggle
+  // (#2218 exemption replaced by spec 2026-08-04) under DUAL CONSENT:
+  //  - the POLICY must have opted into third-party sources ('third_party' in
+  //    the snapshotted sources; the default is ['os']). This stays even though
+  //    buildAllowedPatchSources filters upstream, because ABSENT sources mean
+  //    "no filtering" for legacy job snapshots — without this literal check, a
+  //    legacy snapshot plus a permissive ring would silently widen to 3P.
+  //  - the RING's autoApprove.thirdPartyApps must be true.
+  // NOTE: the literal 'third_party' selection vs the expanded patch-source
+  // bucket ('third_party'|'custom') stay in lockstep because
+  // buildAllowedPatchSources only admits 'custom' rows via the 'third_party'
+  // selection (or an explicit 'custom' entry) — if that expansion table ever
+  // changes, revisit this check too.
   if (ringAutoApprove.enabled) {
+    if (isThirdPartyPatchSource(patch.source)) {
+      if (!(ringConfig.sources ?? []).includes('third_party')) {
+        return null;
+      }
+      if (!ringAutoApprove.thirdPartyApps) {
+        return null;
+      }
+      const hold = ringAutoApprove.thirdPartyDeferralDays ?? ringAutoApprove.deferralDays;
+      if (isHeldByDeferral(patch, hold, now, 'ring')) {
+        return null;
+      }
+      return 'ring_auto_approve';
+    }
+
+    // OS path: unchanged fail-closed severity gating. Enabled with an empty
+    // severity set approves no OS patches (legacy boolean `true` and malformed
+    // `{enabled:true}` rows stay inert here).
     if (ringAutoApprove.severities.length === 0) {
-      // Enabled but no severities selected = approve nothing (fail-closed).
       return null;
     }
-    // Third-party severity exemption (#2218): winget/chocolatey/homebrew
-    // updates have no vendor severity concept — the agent/API ingest them with
-    // severity='unknown' — so requiring membership in the ring's severity set
-    // made third-party auto-approval dead configuration. When the policy has
-    // EXPLICITLY opted into third-party sources ('third_party' in sources; the
-    // default is ['os']) and this candidate is a third-party patch, skip the
-    // severity MEMBERSHIP check only. Everything else stays fail-closed: the
-    // empty-severities kill-switch above still approves nothing (a malformed
-    // `{ enabled: true }` row stays inert), OS patches keep full severity
-    // gating, and the source, category, app-rule, and deferral gates all still
-    // apply to third-party candidates.
-    // NOTE: this reads the RAW policy sources array for the literal
-    // 'third_party' selection, while isThirdPartyPatchSource matches the
-    // expanded patch-source bucket ('third_party' | 'custom'). The two stay in
-    // lockstep because buildAllowedPatchSources only admits 'custom' rows via
-    // the 'third_party' selection (or an explicit 'custom' entry) — if that
-    // expansion table ever changes, revisit this line too.
-    const severityExempt =
-      isThirdPartyPatchSource(patch.source) &&
-      (ringConfig.sources ?? []).includes('third_party');
-    if (
-      !severityExempt &&
-      (!patch.severity || !ringAutoApprove.severities.includes(patch.severity))
-    ) {
+    if (!patch.severity || !ringAutoApprove.severities.includes(patch.severity)) {
       return null;
     }
     if (isHeldByDeferral(patch, ringAutoApprove.deferralDays, now, 'ring')) {

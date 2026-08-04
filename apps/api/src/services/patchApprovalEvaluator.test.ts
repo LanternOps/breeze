@@ -264,7 +264,13 @@ describe('resolveApprovedPatchesForDevice source filtering', () => {
     expect(approved.map((p) => p.patchId)).toEqual(['aaaaaaaa-0000-0000-0000-000000000003']);
   });
 
-  it('applies no source filtering when sources is absent (legacy jobs)', async () => {
+  it('applies no source filtering to OS patches when sources is absent (legacy jobs), but still refuses third-party (dual consent, #spec 2026-08-04)', async () => {
+    // buildAllowedPatchSources itself does not gate on absent sources (legacy
+    // "no filtering" jobs), but the ring-level dual-consent check in
+    // evaluatePatchApproval requires the literal 'third_party' selection
+    // regardless — an absent policy sources array can never satisfy that, so
+    // the third-party patch stays unapproved even though its severity matches
+    // the ring's OS severity list.
     mockPendingAndApprovals(
       [
         pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000001', source: 'microsoft' }),
@@ -275,7 +281,7 @@ describe('resolveApprovedPatchesForDevice source filtering', () => {
 
     const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, baseRing);
 
-    expect(approved).toHaveLength(2);
+    expect(approved.map((p) => p.patchId)).toEqual(['aaaaaaaa-0000-0000-0000-000000000001']);
   });
 
   it('source filter also gates manually approved patches', async () => {
@@ -1526,6 +1532,154 @@ describe('deferral first-seen fallback for third-party patches (#2218)', () => {
     });
     expect(approved).toHaveLength(1);
     expect(approved[0]?.approvalReason).toBe('category_rule');
+  });
+});
+
+// ---- Ring auto-approve: third-party dual consent (#spec 2026-08-04) ----
+describe('ring auto-approve — third-party dual consent (#spec 2026-08-04)', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  it('approves a third-party patch only with BOTH policy sources third_party AND ring thirdPartyApps', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: null })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: [], thirdPartyApps: true, deferralDays: 0 },
+      deferralDays: 0,
+      sources: ['os', 'third_party'],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('does not approve third-party when the ring toggle is off, even with policy consent', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: null })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: ['critical'], thirdPartyApps: false, deferralDays: 0 },
+      deferralDays: 0,
+      sources: ['os', 'third_party'],
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it('does not approve third-party when policy sources are absent (legacy snapshot) even with the toggle on', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: null })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: [], thirdPartyApps: true, deferralDays: 0 },
+      deferralDays: 0,
+      sources: undefined,
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it('supports a third-party-only ring: empty severities approves 3P and no OS patches', async () => {
+    mockPendingAndApprovals(
+      [
+        pendingRow({ patchId: P1, devicePatchId: 'dp-1', source: 'third_party', severity: 'unknown', releaseDate: null }),
+        pendingRow({ patchId: P2, devicePatchId: 'dp-2', source: 'microsoft', severity: 'critical' }),
+      ],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: [], thirdPartyApps: true, deferralDays: 0 },
+      deferralDays: 0,
+      sources: ['os', 'third_party'],
+    });
+
+    expect(result.map((r) => r.patchId)).toEqual([P1]);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('treats custom-source patches as third-party for the toggle', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'custom', severity: 'unknown', releaseDate: null })],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: [], thirdPartyApps: true, deferralDays: 0 },
+      deferralDays: 0,
+      sources: ['os', 'third_party'],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('applies thirdPartyDeferralDays over deferralDays for 3P, anchored on firstSeenAt', async () => {
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 3600 * 1000);
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: null, firstSeenAt: threeDaysAgo })],
+      []
+    );
+
+    const held = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: [], thirdPartyApps: true, deferralDays: 0, thirdPartyDeferralDays: 7 },
+      deferralDays: 0,
+      sources: ['os', 'third_party'],
+    });
+    expect(held).toEqual([]);
+
+    const eightDaysAgo = new Date(Date.now() - 8 * 24 * 3600 * 1000);
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: null, firstSeenAt: eightDaysAgo })],
+      []
+    );
+
+    const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: [], thirdPartyApps: true, deferralDays: 0, thirdPartyDeferralDays: 7 },
+      deferralDays: 0,
+      sources: ['os', 'third_party'],
+    });
+    expect(approved).toHaveLength(1);
+    expect(approved[0]?.approvalReason).toBe('ring_auto_approve');
+
+    // null thirdPartyDeferralDays inherits deferralDays: with deferralDays:7 the
+    // same 3-day-old first-seen timestamp is still held.
+    const threeDaysAgo2 = new Date(Date.now() - 3 * 24 * 3600 * 1000);
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: null, firstSeenAt: threeDaysAgo2 })],
+      []
+    );
+
+    const heldViaInherit = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: [], thirdPartyApps: true, deferralDays: 7, thirdPartyDeferralDays: null },
+      deferralDays: 0,
+      sources: ['os', 'third_party'],
+    });
+    expect(heldViaInherit).toEqual([]);
   });
 });
 
