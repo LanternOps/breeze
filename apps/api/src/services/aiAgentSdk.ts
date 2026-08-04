@@ -145,6 +145,37 @@ export async function waitForTurnToSettle(session: ActiveSession, timeoutMs: num
 }
 
 /**
+ * How long the shared route helper below waits for a settled turn to conclude
+ * (covers the model emitting its closing message) before giving up.
+ */
+export const TURN_SETTLE_WAIT_MS = 15_000;
+
+export type BlockedTurnSettleResult =
+  /** Waits were settled and the turn concluded — retry tryTransitionToProcessing. */
+  | 'concluded'
+  /** No approval wait was in flight — the session is busy doing real work. */
+  | 'not_blocked_on_approvals'
+  /** Waits were settled but the turn is still concluding — retry shortly. */
+  | 'still_processing';
+
+/**
+ * Shared handler for every chat surface's concurrent-message 409 guard
+ * (#3089): when tryTransitionToProcessing fails, call this to settle a turn
+ * that is blocked only on approval waits and give it a moment to conclude, so
+ * the assistant can answer the new message instead of going mute behind the
+ * approval. Used by routes/ai.ts, routes/clientAi/sessions.ts,
+ * routes/scriptAi.ts, and routes/helper/index.ts — keep them in sync through
+ * this helper, not four hand-rolled copies.
+ */
+export async function settleBlockedTurnForNewMessage(
+  session: ActiveSession,
+  timeoutMs = TURN_SETTLE_WAIT_MS,
+): Promise<BlockedTurnSettleResult> {
+  if (!settleApprovalWaits(session)) return 'not_blocked_on_approvals';
+  return (await waitForTurnToSettle(session, timeoutMs)) ? 'concluded' : 'still_processing';
+}
+
+/**
  * Tracks the action_intents.id an inline Tier-3 execution is running under,
  * so createSessionPostToolUse can CAS it `executing -> completed|failed` once
  * the tool actually finishes (see the coordination invariant in the T3 block
@@ -471,12 +502,21 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         }
 
         // Block until PAM decides (an auto-approved elevation has already
-        // flipped the row, so this returns on the first poll).
-        const approved = await waitForApproval(
-          helperExec.id,
-          300_000,
-          session.abortController.signal,
-        );
+        // flipped the row, so this returns on the first poll). Draws from the
+        // same shared per-cycle approval-wait budget as the tier-2/tier-3
+        // flows (#3089) so stacked helper approvals can't outlive the turn
+        // timeout, and settleApprovalWaits can conclude a blocked helper turn.
+        const helperApprovalWait = beginApprovalWait(session);
+        let approved: boolean;
+        try {
+          approved = await waitForApproval(
+            helperExec.id,
+            helperApprovalWait.timeoutMs,
+            helperApprovalWait.signal,
+          );
+        } finally {
+          helperApprovalWait.end();
+        }
         if (!approved) {
           return {
             allowed: false,
@@ -1039,92 +1079,129 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           }
         } catch { /* non-fatal: fall back to default description */ }
         const riskSummary = m365Summary ?? (description.length > 500 ? `${description.slice(0, 497)}...` : description);
-        const expiresAt = new Date(Date.now() + APPROVAL_WAIT_BUDGET_MS); // matches the max approval wait
 
+        // Begin the (shared-budget) approval wait BEFORE the approval
+        // ceremony: with zero budget left, this legacy bridge would
+        // self-reject instantly (waitForApproval's poll loop never runs on a
+        // 0 timeout), so creating the approval_requests row, dispatching the
+        // mobile push, and rendering the UI card first would advertise an
+        // approval that was already dead on arrival — and unlike tier 3
+        // there is no durable worker on this path to honor a late Approve.
+        // Close out the ledger row honestly and return instead (#3089).
+        const approvalWait = beginApprovalWait(session);
         let approvalRequestId: string | undefined;
+        let approved: boolean;
         try {
-          const [approvalRow] = await withDbAccessContext(
-            {
-              scope: 'organization',
-              orgId: session.orgId,
-              accessibleOrgIds: [session.orgId],
-              userId: session.auth.user.id,
-            },
-            () =>
-              db
-                .insert(approvalRequests)
-                .values({
-                  userId: session.auth.user.id,
-                  executionId: approvalExec!.id,
-                  requestingClientLabel: 'Breeze AI',
-                  requestingMachineLabel: null,
-                  actionLabel,
-                  actionToolName: stripMcpPrefix(toolName),
-                  actionArguments: input as Record<string, unknown>,
-                  riskTier,
-                  riskSummary,
-                  status: 'pending',
-                  // The chat session's originating OAuth client is not yet
-                  // tracked on aiSessions; until that lands, the AI-agent
-                  // path can't be a self-loop with the mobile push target.
-                  // (deriveIsRecursive() with a null requestingClientId
-                  // returns false — explicit here for documentation.)
-                  isRecursive: false,
-                  expiresAt,
-                })
-                .returning({ id: approvalRequests.id })
-          );
-          approvalRequestId = approvalRow?.id;
-        } catch (err) {
-          console.error('[AI-SDK] Failed to create mobile approval_request row:', err);
-          // Non-fatal: SSE approval flow still works for in-app web UI even
-          // without the mobile-readable row. The approve/deny handler simply
-          // won't have an executionId to resolve back to.
-        }
+          if (approvalWait.timeoutMs <= 0) {
+            try {
+              await withDbAccessContext(
+                { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+                () =>
+                  db
+                    .update(aiToolExecutions)
+                    .set({
+                      status: 'rejected',
+                      errorMessage: "Approval not requested — this turn's approval wait budget was already exhausted",
+                    })
+                    .where(and(
+                      eq(aiToolExecutions.id, approvalExec!.id),
+                      eq(aiToolExecutions.status, 'pending'),
+                    ))
+              );
+            } catch (err) {
+              captureException(err instanceof Error ? err : new Error(String(err)));
+              console.error('[AI-SDK] Failed to close out zero-budget approval record:', approvalExec.id, err);
+            }
+            return await failMatchedPlanStep({
+              allowed: false,
+              error: 'This action needs approval, but the approval window for this turn has ended; it was not requested. The user can ask again in a new message.',
+            });
+          }
 
-        // Best-effort push notification to the user's mobile device(s).
-        if (approvalRequestId) {
+          // The mobile card's countdown reflects the wait that will actually
+          // happen — the REMAINING shared budget, not a flat 5 minutes.
+          const expiresAt = new Date(Date.now() + approvalWait.timeoutMs);
+
           try {
-            // Token read happens INSIDE the org DB context; the push network
-            // sends run AFTER it closes so we never hold the transaction open
-            // across the round-trip (#1105). dispatchApprovalPushToTokens fans
-            // out across every provider (Expo relay + native APNs).
-            const tokens = await withDbAccessContext(
+            const [approvalRow] = await withDbAccessContext(
               {
                 scope: 'organization',
                 orgId: session.orgId,
                 accessibleOrgIds: [session.orgId],
                 userId: session.auth.user.id,
               },
-              () => getUserPushTokens(session.auth.user.id),
+              () =>
+                db
+                  .insert(approvalRequests)
+                  .values({
+                    userId: session.auth.user.id,
+                    executionId: approvalExec!.id,
+                    requestingClientLabel: 'Breeze AI',
+                    requestingMachineLabel: null,
+                    actionLabel,
+                    actionToolName: stripMcpPrefix(toolName),
+                    actionArguments: input as Record<string, unknown>,
+                    riskTier,
+                    riskSummary,
+                    status: 'pending',
+                    // The chat session's originating OAuth client is not yet
+                    // tracked on aiSessions; until that lands, the AI-agent
+                    // path can't be a self-loop with the mobile push target.
+                    // (deriveIsRecursive() with a null requestingClientId
+                    // returns false — explicit here for documentation.)
+                    isRecursive: false,
+                    expiresAt,
+                  })
+                  .returning({ id: approvalRequests.id })
             );
-            await dispatchApprovalPushToTokens(tokens, {
-              approvalId: approvalRequestId,
-              actionLabel,
-              requestingClientLabel: 'Breeze AI',
-            });
+            approvalRequestId = approvalRow?.id;
           } catch (err) {
-            console.error('[AI-SDK] Failed to dispatch approval push notification:', err);
+            console.error('[AI-SDK] Failed to create mobile approval_request row:', err);
+            // Non-fatal: SSE approval flow still works for in-app web UI even
+            // without the mobile-readable row. The approve/deny handler simply
+            // won't have an executionId to resolve back to.
           }
-        }
 
-        // Emit approval_required event via session event bus → UI shows Approve/Reject
-        session.eventBus.publish({
-          type: 'approval_required',
-          executionId: approvalExec.id,
-          approvalRequestId,
-          toolName,
-          input,
-          description,
-          deviceContext,
-        });
+          // Best-effort push notification to the user's mobile device(s).
+          if (approvalRequestId) {
+            try {
+              // Token read happens INSIDE the org DB context; the push network
+              // sends run AFTER it closes so we never hold the transaction open
+              // across the round-trip (#1105). dispatchApprovalPushToTokens fans
+              // out across every provider (Expo relay + native APNs).
+              const tokens = await withDbAccessContext(
+                {
+                  scope: 'organization',
+                  orgId: session.orgId,
+                  accessibleOrgIds: [session.orgId],
+                  userId: session.auth.user.id,
+                },
+                () => getUserPushTokens(session.auth.user.id),
+              );
+              await dispatchApprovalPushToTokens(tokens, {
+                approvalId: approvalRequestId,
+                actionLabel,
+                requestingClientLabel: 'Breeze AI',
+              });
+            } catch (err) {
+              console.error('[AI-SDK] Failed to dispatch approval push notification:', err);
+            }
+          }
 
-        // Block until user clicks Approve/Reject, the cycle's shared approval
-        // wait budget (up to 5 min) elapses, or the wait is settled early
-        // (session teardown / new user message / interrupt — #3089).
-        const approvalWait = beginApprovalWait(session);
-        let approved: boolean;
-        try {
+          // Emit approval_required event via session event bus → UI shows Approve/Reject
+          session.eventBus.publish({
+            type: 'approval_required',
+            executionId: approvalExec.id,
+            approvalRequestId,
+            toolName,
+            input,
+            description,
+            deviceContext,
+          });
+
+          // Block until user clicks Approve/Reject, the cycle's shared approval
+          // wait budget (up to 5 min) elapses, or the wait is settled early
+          // (session teardown / new user message / interrupt — #3089).
           approved = await waitForApproval(
             approvalExec.id,
             approvalWait.timeoutMs,
@@ -1141,21 +1218,37 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // nothing will ever execute (this legacy bridge has no durable
           // release worker). Guarded on status='pending' so a genuine reject
           // (row already 'rejected') or timeout (waitForApproval already
-          // marked it) is a no-op. Best-effort: the tool error below must
-          // surface regardless.
+          // marked it) is a no-op. The linked mobile approval_requests row is
+          // CAS'd out of 'pending' too — the mobile decide handler
+          // (routes/approvals.ts) only proceeds from 'pending', so this
+          // closes the mobile Approve → stranded-'approved' race at the
+          // source. Best-effort, but a failure here re-opens that race, so it
+          // is captured to Sentry — and the tool error below must surface
+          // regardless.
           try {
             await withDbAccessContext(
               { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
-              () =>
-                db
+              async () => {
+                await db
                   .update(aiToolExecutions)
                   .set({ status: 'rejected', errorMessage: 'Approval wait ended before a decision was made' })
                   .where(and(
                     eq(aiToolExecutions.id, approvalExec!.id),
                     eq(aiToolExecutions.status, 'pending'),
-                  ))
+                  ));
+                if (approvalRequestId) {
+                  await db
+                    .update(approvalRequests)
+                    .set({ status: 'expired' })
+                    .where(and(
+                      eq(approvalRequests.id, approvalRequestId),
+                      eq(approvalRequests.status, 'pending'),
+                    ));
+                }
+              }
             );
           } catch (err) {
+            captureException(err instanceof Error ? err : new Error(String(err)));
             console.error('[AI-SDK] Failed to close out settled approval record:', approvalExec.id, err);
           }
           // Not reachable with a non-null matchedPlanStepIndex today (both

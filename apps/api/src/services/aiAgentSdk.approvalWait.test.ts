@@ -40,7 +40,7 @@ vi.mock('../db/schema', () => ({
   aiActionPlans: {},
   devices: {},
   deviceSessions: {},
-  approvalRequests: { id: 'id' },
+  approvalRequests: { id: 'approval_requests.id', status: 'approval_requests.status' },
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -322,7 +322,7 @@ describe('settleApprovalWaits (#3089)', () => {
       description: 'Take screenshot',
     } as any);
     mockInsertReturning({ id: 'exec-4' });
-    const { set } = mockUpdateChain();
+    const { set, where } = mockUpdateChain();
     vi.mocked(waitForApproval).mockImplementation(
       (_id: string, _timeoutMs: number, signal?: AbortSignal) =>
         new Promise((resolve) => {
@@ -339,13 +339,85 @@ describe('settleApprovalWaits (#3089)', () => {
 
     const result = await resultPromise;
     expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
-    // The still-pending ledger row was closed out (guarded on status='pending')
-    // so a later Approve click cannot flip it to a stranded 'approved' this
-    // legacy bridge would never execute.
+    // The still-pending ledger row was closed out — WITH the status='pending'
+    // CAS guard, so a genuine reject/timeout row is never overwritten — and a
+    // later Approve click cannot flip it to a stranded 'approved' this legacy
+    // bridge would never execute.
     expect(set).toHaveBeenCalledWith({
       status: 'rejected',
       errorMessage: 'Approval wait ended before a decision was made',
     });
+    expect(where).toHaveBeenCalledWith({
+      _and: [{ _eq: ['id', 'exec-4'] }, { _eq: ['status', 'pending'] }],
+    });
+    // The linked mobile approval_requests row is CAS'd out of 'pending' too,
+    // closing the mobile decide → stranded-'approved' race at the source.
+    expect(set).toHaveBeenCalledWith({ status: 'expired' });
+    expect(where).toHaveBeenCalledWith({
+      _and: [
+        { _eq: ['approval_requests.id', 'exec-4'] },
+        { _eq: ['approval_requests.status', 'pending'] },
+      ],
+    });
+    expect(session.pendingApprovalWaits).toBe(0);
+  });
+
+  it('a zero-budget tier-2 approval never runs the ceremony (no mobile push, no UI card) and self-closes honestly', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 2,
+      requiresApproval: true,
+      description: 'Take screenshot',
+    } as any);
+    const { values } = mockInsertReturning({ id: 'exec-5' });
+    const { set, where } = mockUpdateChain();
+    // A sibling approval (or a settle) already exhausted this cycle's budget.
+    const session = makeActiveSession({ approvalWaitDeadline: Date.now() - 1_000 });
+
+    const result = await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' });
+
+    expect(result.allowed).toBe(false);
+    expect((result as { error: string }).error).toMatch(/approval window for this turn has ended/);
+    // No dead-on-arrival ceremony: only the ledger-row insert ran — no
+    // approval_requests row, no push, no approval_required card, no wait.
+    expect(values).toHaveBeenCalledTimes(1);
+    expect(mockDispatchApprovalPushToTokens).not.toHaveBeenCalled();
+    expect(session.eventBus.publish).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'approval_required' }),
+    );
+    expect(waitForApproval).not.toHaveBeenCalled();
+    // The ledger row is closed out honestly (CAS on status='pending').
+    expect(set).toHaveBeenCalledWith({
+      status: 'rejected',
+      errorMessage: "Approval not requested — this turn's approval wait budget was already exhausted",
+    });
+    expect(where).toHaveBeenCalledWith({
+      _and: [{ _eq: ['id', 'exec-5'] }, { _eq: ['status', 'pending'] }],
+    });
+    expect(session.pendingApprovalWaits).toBe(0);
+  });
+
+  it('helper/PAM approvals draw from the same shared budget (zero remaining → zero wait)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-h9' });
+    mockUpdateChain();
+    const { decideHelperToolAction } = await import('./pamToolActionGovernance');
+    vi.mocked(decideHelperToolAction).mockResolvedValue('prompt' as any);
+    vi.mocked(waitForApproval).mockResolvedValue(false);
+    const session = makeActiveSession({
+      auth: { ...makeAuth(), helperDeviceId: 'dev-9' },
+      approvalWaitDeadline: Date.now() - 1_000,
+    });
+
+    const result = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+    expect(result.allowed).toBe(false);
+    expect(waitForApproval).toHaveBeenCalledWith('exec-h9', 0, expect.any(AbortSignal));
     expect(session.pendingApprovalWaits).toBe(0);
   });
 });

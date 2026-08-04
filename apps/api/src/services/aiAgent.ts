@@ -439,16 +439,27 @@ export async function handleApproval(
     return false;
   }
 
-  await db
+  // CAS, not a blind update: the pre-check SELECT above races the settle
+  // paths (#3089 — settleApprovalWaits marks a settled wait's row 'rejected'
+  // the moment a new message/interrupt arrives) and the waitForApproval
+  // timeout writer. Without the status guard, an Approve click landing just
+  // after a settle would flip 'rejected' back to a stranded 'approved' that
+  // nothing will ever execute — while this function reports success to the
+  // UI. Zero rows updated means we lost such a race: report failure honestly.
+  const [updated] = await db
     .update(aiToolExecutions)
     .set({
       status: approved ? 'approved' : 'rejected',
       approvedBy: auth.user.id,
       approvedAt: new Date()
     })
-    .where(eq(aiToolExecutions.id, executionId));
+    .where(and(
+      eq(aiToolExecutions.id, executionId),
+      eq(aiToolExecutions.status, 'pending'),
+    ))
+    .returning({ id: aiToolExecutions.id });
 
-  return true;
+  return !!updated;
 }
 
 /**

@@ -601,15 +601,27 @@ export class StreamingSessionManager {
     // the same point this turn timeout resets, preserving the invariant that
     // a cycle's approval waits (<= 5 min total) always leave headroom for the
     // model to emit its closing message before the 6-min timeout fires.
-    // Guarded: never reset while a wait is actually in flight (shouldn't
-    // happen — waits only run in the tool phase, between assistant messages).
-    if (session.pendingApprovalWaits === 0) {
+    // Guarded: never reset while a wait is actually in flight (waits only run
+    // in the tool phase, between assistant messages) — EXCEPT when the
+    // deadline is already exhausted, where an in-flight wait is settling
+    // within milliseconds anyway and skipping the reset would poison every
+    // later cycle with a permanently zero budget.
+    if (
+      session.pendingApprovalWaits === 0
+      || (session.approvalWaitDeadline ?? Infinity) <= Date.now()
+    ) {
       session.approvalWaitDeadline = null;
       session.approvalWaitAbort = null;
     }
     session.turnTimeoutId = setTimeout(() => {
       if (session.state === 'processing') {
         console.error('[StreamingSessionManager] Turn timeout for session:', session.breezeSessionId);
+        // The timeout can fire while approval waits are still blocked (e.g.
+        // long-running sibling tools delayed the first wait's start past the
+        // headroom window). Settle them so the SDK turn can actually conclude
+        // in the background instead of holding the subprocess for the rest of
+        // the 5-minute wait (#3089).
+        settleApprovalWaits(session);
         session.eventBus.publish({ type: 'error', message: 'AI request timed out. Please try again.' });
         session.eventBus.publish({ type: 'done' });
         session.state = 'idle';

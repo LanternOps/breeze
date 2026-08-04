@@ -23,7 +23,7 @@ import {
   resolveDefaultModel,
   sanitizeErrorForClient,
 } from '../services/aiAgent';
-import { runPreFlightChecks, abortActivePlan, settleApprovalWaits, waitForTurnToSettle } from '../services/aiAgentSdk';
+import { runPreFlightChecks, abortActivePlan, settleBlockedTurnForNewMessage } from '../services/aiAgentSdk';
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { getUsageSummary, updateBudget, getSessionHistory, recordUsage } from '../services/aiCostTracker';
@@ -53,11 +53,6 @@ import { draftTicketFromTranscript, ThinTranscriptError } from '../services/aiTi
 import { createTicketFromChatSchema, type AiTicketDraft } from '@breeze/shared';
 import { deviceInSiteScope } from './tickets/siteScope';
 import { timeActorFrom } from './timeEntries/timeEntries';
-
-// How long a new message will wait for a turn that was blocked on approvals
-// to conclude after settleApprovalWaits() (#3089) — covers the model emitting
-// its closing message. Past this, fall back to the pre-existing 409.
-const TURN_SETTLE_WAIT_MS = 15_000;
 
 // Provider check that tolerates an unvalidated config: route unit tests never
 // call validateConfig(), and getConfig() throws in that state. Without a
@@ -639,11 +634,14 @@ aiRoutes.post(
       // executed by the durable release worker once decided), the model
       // concludes the turn, and this message then proceeds normally. If the
       // session is busy for any other reason (model actively working), or the
-      // turn doesn't conclude in time, fall back to the 409 as before.
-      const settled = settleApprovalWaits(activeSession);
-      const turnConcluded = settled && await waitForTurnToSettle(activeSession, TURN_SETTLE_WAIT_MS);
-      if (!turnConcluded || !streamingSessionManager.tryTransitionToProcessing(activeSession)) {
-        return c.json({ error: 'A message is already being processed for this session' }, 409);
+      // turn doesn't conclude in time, fall back to a 409 as before.
+      const settle = await settleBlockedTurnForNewMessage(activeSession);
+      if (settle !== 'concluded' || !streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+        return c.json({
+          error: settle === 'not_blocked_on_approvals'
+            ? 'A message is already being processed for this session'
+            : 'The assistant is wrapping up the previous turn — please try again in a moment',
+        }, 409);
       }
     }
 

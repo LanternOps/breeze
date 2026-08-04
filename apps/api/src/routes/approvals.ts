@@ -717,7 +717,16 @@ async function decideHandler(
       await db
         .update(aiToolExecutions)
         .set({ status: aiStatus, approvedBy: userId, approvedAt: new Date() })
-        .where(eq(aiToolExecutions.id, updated.executionId));
+        // Guarded on 'pending' (#3089): a settled approval wait marks the
+        // execution row 'rejected' without touching this approval_requests
+        // row first in every failure mode (the two writes aren't atomic), so
+        // a decide that squeaked past the approval_requests CAS must not
+        // resurrect a closed execution row as a stranded 'approved' that the
+        // legacy bridge (no durable worker) would never run.
+        .where(and(
+          eq(aiToolExecutions.id, updated.executionId),
+          eq(aiToolExecutions.status, 'pending'),
+        ));
     } catch (err) {
       console.error('[approvals] Failed to mirror status to ai_tool_executions:', err);
       // Non-fatal: the approval_request row is the source of truth for the
