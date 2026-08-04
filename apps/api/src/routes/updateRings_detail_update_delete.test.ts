@@ -248,6 +248,46 @@ describe('updateRings routes', () => {
 
       expect(res.status).toBe(400);
     });
+
+    it('no longer returns sources in ring detail responses', async () => {
+      vi.mocked(db.select)
+        // ring lookup — sources is deprecated but the row still carries it
+        // until the column is dropped; the route must strip it regardless.
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([makeRing({ sources: ['microsoft'] })])
+            })
+          })
+        } as any)
+        // approval counts
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any)
+        // recent jobs
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([])
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request(`/update-rings/${RING_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).not.toHaveProperty('sources');
+    });
   });
 
   // ----------------------------------------------------------------

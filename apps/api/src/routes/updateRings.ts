@@ -303,8 +303,16 @@ updateRingRoutes.get(
       .orderBy(desc(patchJobs.createdAt))
       .limit(5);
 
+    // `sources` is deprecated (never consumed by the approval path — see the
+    // schema comment on patchPolicies.sources) and must not leak into ring
+    // responses, matching the list endpoint. The detail query above is a
+    // bare full-row select (it also needs every other column for the
+    // response and the partnerId check above), so strip it here rather than
+    // hand-projecting all ~20 remaining columns.
+    const { sources: _sources, ...ringWithoutSources } = ring;
+
     return c.json({
-      ...ring,
+      ...ringWithoutSources,
       approvalSummary,
       recentJobs,
     });
