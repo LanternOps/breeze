@@ -156,7 +156,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Remote Access & Control
       { name: 'set_device_context', description: 'Set brain device context', category: 'Remote Access & Control' },
       { name: 'resolve_device_context', description: 'Resolve brain device context', category: 'Remote Access & Control' },
-      { name: 'execute_command (list_processes/list_services/file_list/event_logs_list/event_logs_query)', description: 'Read-only device commands (process/service lists, directory listings, event logs)', category: 'Remote Access & Control' },
+      { name: 'execute_command (list_processes/file_list/event_logs_list)', description: 'Read-only device commands (process list, directory listings, event log channel list)', category: 'Remote Access & Control' },
       // Files, Disk & Registry
       { name: 'file_operations (list)', description: 'List directory contents on device', category: 'Files, Disk & Registry' },
       // Logs & Audit
@@ -195,7 +195,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_startup_items (enable/disable)', description: 'Manage startup items', category: 'Services & Processes' },
       { name: 'manage_scheduled_tasks (run/disable/enable)', description: 'Mutate scheduled tasks', category: 'Services & Processes' },
       // Remote Access & Control
-      { name: 'execute_command (kill_process/start_service/stop_service/restart_service/file_read)', description: 'Mutating system commands and file reads on device', category: 'Remote Access & Control' },
+      { name: 'execute_command (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query)', description: 'Mutating system commands, file reads, and commands that can return unredacted credential/PII-bearing content (service binary paths, raw event log messages)', category: 'Remote Access & Control' },
       { name: 'run_script', description: 'Run scripts on up to 10 devices', category: 'Remote Access & Control' },
       { name: 'computer_control', description: 'Send input actions to device', category: 'Remote Access & Control' },
       { name: 'create_remote_session', description: 'Create remote terminal or file session', category: 'Remote Access & Control' },

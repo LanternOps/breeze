@@ -187,10 +187,8 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
   describe('execute_command commandType tiers (#3088)', () => {
     const readOnlyTypes = [
       'event_logs_list',
-      'event_logs_query',
       'file_list',
       'list_processes',
-      'list_services',
     ];
 
     it.each(readOnlyTypes.map((t) => [t]))(
@@ -214,6 +212,12 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       // file_read is a read but stays Tier 3 deliberately (SR5-01: arbitrary
       // file contents off a root/LocalSystem agent are exfiltratable).
       'file_read',
+      // list_services and event_logs_query are reads but stay Tier 3: both
+      // can return unredacted credential/PII-bearing content (service binary
+      // paths with embedded secrets; free-form-logName event queries whose
+      // raw Message can include a mistyped password from a failed logon).
+      'list_services',
+      'event_logs_query',
     ];
 
     it.each(mutatingTypes.map((t) => [t]))(

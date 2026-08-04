@@ -73,15 +73,29 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // explicit conservative allowlist keyed on commandType (the agent-side
   // handler discriminator — see TOOL_ACTION_INPUT_KEYS above); anything not
   // listed here, including an unknown or missing commandType, stays at the
-  // tool's base Tier 3. Deliberately NOT downgraded: file_read (arbitrary-file
-  // exfiltration off a root/LocalSystem agent — same SR5-01 rationale as
-  // file_operations read), kill_process, start/stop/restart_service.
+  // tool's base Tier 3.
+  //
+  // Deliberately NOT downgraded, despite being nominally "read" operations:
+  //   - file_read: arbitrary-file exfiltration off a root/LocalSystem agent
+  //     (same SR5-01 rationale as file_operations read).
+  //   - kill_process, start/stop/restart_service: mutating.
+  //   - list_services: agent/internal/remote/tools/services_{windows,linux}.go
+  //     populates ServiceInfo.Path from the service's full binary path/command
+  //     line (config.BinaryPathName / ExecStart), only length-truncated, never
+  //     credential-redacted. Legacy and third-party services routinely embed
+  //     secrets there (e.g. `-p <password>`, DB connection strings) — same
+  //     exfiltration class as file_read.
+  //   - event_logs_query: logName is a free-form, caller-controlled string
+  //     with no denylist excluding Security — combined with the raw, unredacted
+  //     Message field (agent/internal/remote/tools/eventlogs_windows.go), a
+  //     Security-log query can surface a mistyped password landing in a 4625
+  //     failed-logon Account Name, or any credential/PII another app logged.
+  // Both would let an AI actor pull that content into its context with zero
+  // human review under auto_approve session mode.
   execute_command: [
     'event_logs_list',
-    'event_logs_query',
     'file_list',
     'list_processes',
-    'list_services',
   ],
   // Fleet tools — Tier 2 actions (auto-execute + audit)
   manage_configuration_policy: ['activate', 'deactivate'],
