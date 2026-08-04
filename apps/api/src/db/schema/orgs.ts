@@ -8,7 +8,12 @@ export const partnerTypeEnum = pgEnum('partner_type', ['msp', 'enterprise', 'int
 export const partnerStatusEnum = pgEnum('partner_status', ['pending', 'active', 'suspended', 'churned', 'offboarding']);
 export type PartnerStatus = typeof partnerStatusEnum.enumValues[number];
 export const planTypeEnum = pgEnum('plan_type', ['free', 'starter', 'community', 'pro', 'enterprise', 'unlimited']);
-export const orgTypeEnum = pgEnum('org_type', ['customer', 'internal']);
+// 'quick_support' is the hidden per-partner org that holds ephemeral Quick
+// Support devices and support_sessions rows. Exactly one per partner
+// (organizations_partner_quick_support_uniq). It must stay inside
+// accessibleOrgIds so RLS lets techs reach their own support sessions, but it
+// is excluded from every user-facing org enumeration and device/billing count.
+export const orgTypeEnum = pgEnum('org_type', ['customer', 'internal', 'quick_support']);
 export const orgStatusEnum = pgEnum('org_status', ['active', 'suspended', 'trial', 'churned', 'offboarding']);
 
 export const partners = pgTable('partners', {
@@ -170,4 +175,8 @@ export const enrollmentKeys = pgTable('enrollment_keys', {
   // bootstrap token (Task 2), so a later cancel/refund (Task 3) can find and
   // release the originating token's slot.
   bootstrapTokenId: uuid('bootstrap_token_id'),
+  // Quick Support: set on the single-use child key minted by /support/redeem.
+  // Plain uuid — the FK lives in SQL to avoid a circular import with
+  // supportSessions.ts (which imports organizations from this file).
+  supportSessionId: uuid('support_session_id'),
 });

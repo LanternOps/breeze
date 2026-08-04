@@ -316,6 +316,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'sso_providers',
   'sso_verified_domains',
   'storage_encryption_keys',
+  // support_sessions (Quick Support): rows live in the partner's hidden
+  // 'quick_support' org. enrollment_keys carries an ON DELETE CASCADE FK to
+  // this table and sorts before it alphabetically, so the child is already
+  // deleted first — no manual reordering needed.
+  'support_sessions',
   'ticket_alert_links',
   // ticket_form_org_links (spec 2026-07-11): org allowlist for partner-wide
   // ticket_forms. Own org_id column is a direct FK to organizations (ON

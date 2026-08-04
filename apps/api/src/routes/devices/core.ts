@@ -76,7 +76,11 @@ export const DEVICE_LINKED_DEVICE_ID_TABLES = [
  * of cascade-deleting during permanent device deletion. Deviceless tickets
  * are first-class (tickets.device_id is nullable).
  */
-export const DEVICE_DETACH_DEVICE_ID_TABLES = ['tickets'] as const;
+// support_sessions (Quick Support) detaches rather than cascades: the session
+// row is the audit trail for an ad-hoc support session and must outlive the
+// ephemeral device the reaper purges 6h after the session ends. Its device_id
+// FK is declared ON DELETE SET NULL to match.
+export const DEVICE_DETACH_DEVICE_ID_TABLES = ['support_sessions', 'tickets'] as const;
 
 /**
  * Subset of {@link getDeviceCascadeDeleteTables} ∪
@@ -131,6 +135,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'sensitive_data_findings', 'sensitive_data_scans',
   'service_process_check_results',
   'software_inventory', 'software_policy_audit', 'sql_instances',
+  'support_sessions',
   'tickets', 'time_series_metrics', 'tunnel_sessions',
 ] as const;
 
