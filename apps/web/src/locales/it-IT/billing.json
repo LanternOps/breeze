@@ -903,7 +903,8 @@
           "partNumber": "N. parte",
           "qty": "Qtà",
           "sku": "SKU",
-          "unitCost": "Costo unitario"
+          "unitCost": "Costo unitario",
+          "vendor": "Fornitore"
         },
         "title": "Da ordinare"
       },

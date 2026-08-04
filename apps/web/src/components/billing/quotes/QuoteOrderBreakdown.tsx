@@ -21,6 +21,11 @@ export function orderableLines(lines: QuoteLine[]): QuoteLine[] {
     .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt));
 }
 
+// Distributor identifiers are stored as the API's snake_case source keys; the
+// breakdown shows the vendor's own branding. Unknown sources fall through to the
+// raw key rather than an em-dash — an unmapped distributor is still information.
+const SOURCE_LABELS: Record<string, string> = { td_synnex: 'TD SYNNEX', pax8: 'Pax8' };
+
 // `showCost` rides the same persisted "Show cost & margin" toggle as the rest
 // of the billing UI, so "no margin on screen" holds here too: with it off the
 // table still lists what to order (item/SKU/qty) but drops the economics.
@@ -61,10 +66,11 @@ export default function QuoteOrderBreakdown({ lines, currency, showCost }: {
         aria-label={t('quotes.detail.tableScrollAria', { label: t('quotes.detail.orderBreakdown.title') })}
         tabIndex={0}
       >
-        <table className="w-full min-w-[30rem] text-sm" data-testid="quote-order-breakdown-table">
+        <table className="w-full min-w-[36rem] text-sm" data-testid="quote-order-breakdown-table">
           <thead>
             <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
               <th className="px-3 py-2 font-medium">{t('quotes.detail.orderBreakdown.table.item')}</th>
+              <th className="px-3 py-2 font-medium">{t('quotes.detail.orderBreakdown.table.vendor')}</th>
               <th className="px-3 py-2 font-medium">{t('quotes.detail.orderBreakdown.table.sku')}</th>
               <th className="px-3 py-2 font-medium">{t('quotes.detail.orderBreakdown.table.partNumber')}</th>
               <th className="px-3 py-2 text-right font-medium">{t('quotes.detail.orderBreakdown.table.qty')}</th>
@@ -90,7 +96,13 @@ export default function QuoteOrderBreakdown({ lines, currency, showCost }: {
                       </span>
                     )}
                   </td>
-                  <td className="px-3 py-2 tabular-nums text-muted-foreground">{l.sku || na}</td>
+                  <td className="px-3 py-2 text-muted-foreground">
+                    {l.procurementSource ? (SOURCE_LABELS[l.procurementSource] ?? l.procurementSource) : na}
+                    {l.manufacturer && <div className="text-xs">{l.manufacturer}</div>}
+                  </td>
+                  {/* Vendor SKU is what the distributor's cart wants; the internal
+                      SKU is the fallback when the line wasn't sourced from one. */}
+                  <td className="px-3 py-2 tabular-nums text-muted-foreground">{l.vendorSku || l.sku || na}</td>
                   <td className="px-3 py-2 tabular-nums text-muted-foreground">{l.partNumber || na}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{formatQuantity(l.quantity)}</td>
                   {showCost && (
@@ -113,7 +125,9 @@ export default function QuoteOrderBreakdown({ lines, currency, showCost }: {
           {showCost && (
             <tfoot>
               <tr className="border-t">
-                <td colSpan={5} className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                {/* Item + Vendor + SKU + Part # + Qty + Unit cost = 6 cells before
+                    the Ext. cost figure; the trailing empty cell covers Markup. */}
+                <td colSpan={6} className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-muted-foreground">
                   {t('quotes.detail.orderBreakdown.costTotal')}
                 </td>
                 <td className="px-3 py-2 text-right font-semibold tabular-nums" data-testid="quote-order-breakdown-cost-total">

@@ -27,6 +27,7 @@ function line(overrides: Partial<QuoteLine>): QuoteLine {
     name: 'Laptop', description: null, quantity: '1.00', unitPrice: '600.00', taxable: false,
     customerVisible: true, lineTotal: '600.00', recurrence: 'one_time', itemType: 'hardware',
     termMonths: null, billingFrequency: null, sortOrder: 0, createdAt: '2026-07-13T00:00:00Z',
+    procurementSource: null, vendorSku: null, manufacturer: null,
     ...overrides,
   };
 }
@@ -105,6 +106,17 @@ describe('QuoteDetail — to-be-ordered breakdown', () => {
     ])} />);
     await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
     expect(screen.queryByTestId('quote-order-breakdown')).not.toBeInTheDocument();
+  });
+
+  it('shows vendor identity when snapshotted', async () => {
+    render(<QuoteDetail detail={acceptedDetail([
+      line({ id: 'l-1', sku: 'LT-100', procurementSource: 'td_synnex', vendorSku: '7724459', manufacturer: 'HPE Aruba' }),
+    ])} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+    const row = screen.getByTestId('quote-order-breakdown-line-l-1');
+    expect(row).toHaveTextContent('TD SYNNEX');
+    expect(row).toHaveTextContent('7724459'); // vendorSku wins over sku
+    expect(row).toHaveTextContent('HPE Aruba');
   });
 
   it('flags lines with no recorded cost and keeps them out of the cost total', async () => {

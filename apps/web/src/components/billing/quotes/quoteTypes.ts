@@ -168,6 +168,12 @@ export interface QuoteLine {
   unitCost: string | null;
   sku: string | null;
   partNumber: string | null;
+  /** Procurement identity snapshotted at add-time (distributor the line came
+   *  from, its vendor-side SKU, and the manufacturer). Optional so pre-column
+   *  fixtures/payloads stay assignable; the API always sends them. */
+  procurementSource?: string | null;
+  vendorSku?: string | null;
+  manufacturer?: string | null;
   name: string | null;
   description: string | null;
   quantity: string;

@@ -903,7 +903,8 @@
           "partNumber": "Part #",
           "qty": "Qty",
           "sku": "SKU",
-          "unitCost": "Unit cost"
+          "unitCost": "Unit cost",
+          "vendor": "Vendor"
         },
         "title": "To be ordered"
       },

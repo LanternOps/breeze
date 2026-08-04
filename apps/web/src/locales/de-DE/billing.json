@@ -903,7 +903,8 @@
           "partNumber": "Teilenr.",
           "qty": "Menge",
           "sku": "SKU",
-          "unitCost": "Stückkosten"
+          "unitCost": "Stückkosten",
+          "vendor": "Anbieter"
         },
         "title": "Zu bestellen"
       },
