@@ -13,6 +13,7 @@ const (
 	maxEventLogListEntries      = 256
 	maxEventLogFieldBytes       = 512
 	maxEventLogMessageBytes     = 4096
+	maxEventLogXPathBytes       = 4096
 	maxDriveListEntries         = 256
 	maxDriveFieldBytes          = 512
 	maxDriveMountPointBytes     = 1024
