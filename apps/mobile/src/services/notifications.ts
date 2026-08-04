@@ -28,21 +28,26 @@ export async function registerForPushNotifications(): Promise<PushRegistrationOu
     return { status: 'unsupported', reason: 'not_physical_device' };
   }
 
-  const { status: existingStatus } = await Notifications.getPermissionsAsync();
-  let finalStatus = existingStatus;
-
-  if (existingStatus !== 'granted') {
-    const { status } = await Notifications.requestPermissionsAsync();
-    finalStatus = status;
-  }
-
-  if (finalStatus !== 'granted') {
-    console.log('Push notification permission not granted');
-    return { status: 'failed', reason: 'permission_denied' };
-  }
-
+  // Everything from here on is inside one try/catch so the outcome contract is
+  // TOTAL: this function resolves to ok/unsupported/failed, never rejects.
+  // The permission calls used to run before the try — a throw there became an
+  // unhandled rejection in PushRegistrationGate and left the store stuck at
+  // 'idle' ("Checking push registration…" forever in Settings). #3143
   let token: string | null = null;
   try {
+    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    let finalStatus = existingStatus;
+
+    if (existingStatus !== 'granted') {
+      const { status } = await Notifications.requestPermissionsAsync();
+      finalStatus = status;
+    }
+
+    if (finalStatus !== 'granted') {
+      console.log('Push notification permission not granted');
+      return { status: 'failed', reason: 'permission_denied' };
+    }
+
     if (Platform.OS === 'ios') {
       // Native device push token: raw APNs token. Uses getDevicePushTokenAsync
       // — needs NO Expo projectId/account — so push works with a plain
@@ -80,31 +85,73 @@ export async function registerForPushNotifications(): Promise<PushRegistrationOu
   }
 
   if (Platform.OS === 'android') {
-    await Notifications.setNotificationChannelAsync('alerts', {
-      name: 'Alerts',
-      importance: Notifications.AndroidImportance.MAX,
-      vibrationPattern: [0, 250, 250, 250],
-      lightColor: '#FF231F7C',
-      sound: 'default',
-    });
+    // Best-effort: the token is already registered with the API at this point,
+    // so a channel-setup failure must not reject the promise (pre-#3143 it ran
+    // after the catch and did exactly that) nor flip the outcome to 'failed' —
+    // pushes still arrive, at worst with default channel presentation.
+    try {
+      await Notifications.setNotificationChannelAsync('alerts', {
+        name: 'Alerts',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#FF231F7C',
+        sound: 'default',
+      });
 
-    await Notifications.setNotificationChannelAsync('approvals', {
-      name: 'Approvals',
-      importance: Notifications.AndroidImportance.MAX,
-      vibrationPattern: [0, 200, 100, 200],
-      lightColor: '#1c8a9e',
-      sound: 'default',
-    });
+      await Notifications.setNotificationChannelAsync('approvals', {
+        name: 'Approvals',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 200, 100, 200],
+        lightColor: '#1c8a9e',
+        sound: 'default',
+      });
 
-    await Notifications.setNotificationChannelAsync('default', {
-      name: 'Default',
-      importance: Notifications.AndroidImportance.DEFAULT,
-      vibrationPattern: [0, 250],
-      lightColor: '#2563eb',
-    });
+      await Notifications.setNotificationChannelAsync('default', {
+        name: 'Default',
+        importance: Notifications.AndroidImportance.DEFAULT,
+        vibrationPattern: [0, 250],
+        lightColor: '#2563eb',
+      });
+    } catch (err) {
+      console.warn('[notifications] Android channel setup failed', err);
+    }
   }
 
   return { status: 'ok', token };
+}
+
+/**
+ * Re-evaluate push registration when the app returns to the foreground (#3143).
+ *
+ * iOS does not restart the app when the user flips the notification permission
+ * in Settings, and registration otherwise runs once per login — so without
+ * this, a user could tap the Settings sheet's Notifications row ("Tap to
+ * manage them in Settings"), revoke the permission, come back, and the row
+ * (and ApprovalGate's banner logic) would keep claiming pushes are delivered
+ * for the rest of the session.
+ *
+ * Returns the corrected outcome to dispatch, or null when the stored status is
+ * still accurate. Only the two permission-driven transitions are handled:
+ *   ok --permission revoked--> failed/permission_denied
+ *   failed/permission_denied --permission granted--> full re-registration
+ * `unsupported` and non-permission failures are resting states a foreground
+ * hop cannot change.
+ */
+export async function reconcilePushRegistration(
+  status: 'idle' | 'ok' | 'failed' | 'unsupported',
+  reason: string | null
+): Promise<PushRegistrationOutcome | null> {
+  if (status === 'ok') {
+    const { status: perm } = await Notifications.getPermissionsAsync();
+    if (perm === 'granted') return null;
+    return { status: 'failed', reason: 'permission_denied' };
+  }
+  if (status === 'failed' && reason === 'permission_denied') {
+    const { status: perm } = await Notifications.getPermissionsAsync();
+    if (perm !== 'granted') return null;
+    return registerForPushNotifications();
+  }
+  return null;
 }
 
 /**

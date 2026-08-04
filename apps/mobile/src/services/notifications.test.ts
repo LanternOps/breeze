@@ -38,6 +38,7 @@ vi.mock('./api', () => ({ registerPushToken: (...a: unknown[]) => api.registerPu
 import {
   registerForPushNotifications,
   reconcileApprovalNotifications,
+  reconcilePushRegistration,
   staleApprovalNotificationIds,
 } from './notifications';
 import {
@@ -131,6 +132,32 @@ describe('registerForPushNotifications', () => {
     });
   });
 
+  it('resolves failed instead of rejecting when the permission check itself throws (#3143)', async () => {
+    // Pre-#3143 the permission calls ran before the try/catch, so a throw here
+    // became an unhandled rejection in PushRegistrationGate and the store
+    // stayed at 'idle' — "Checking push registration…" forever in Settings.
+    notif.getPermissionsAsync.mockRejectedValue(new Error('boom'));
+
+    await expect(registerForPushNotifications()).resolves.toEqual({
+      status: 'failed',
+      reason: 'boom',
+    });
+  });
+
+  it('Android channel-setup failure does not reject or flip a registered token to failed (#3143)', async () => {
+    // The token is already registered with the API by the time channels are
+    // configured; a channel failure is a presentation nit, not a delivery
+    // failure. Pre-#3143 this ran after the catch and rejected the promise.
+    platform.OS = 'android';
+    constants.expoConfig = { extra: { eas: { projectId: 'proj-1' } } };
+    notif.setNotificationChannelAsync.mockRejectedValue(new Error('channel boom'));
+
+    await expect(registerForPushNotifications()).resolves.toEqual({
+      status: 'ok',
+      token: 'ExponentPushToken[x]',
+    });
+  });
+
   it("permission-denied failure maps to the Settings-actionable row copy (#3143)", async () => {
     // Pins the reason-string contract for the FAILED branch, same as the
     // unsupported pin above: rename 'permission_denied' here and the Settings
@@ -212,5 +239,52 @@ describe('reconcileApprovalNotifications', () => {
   it('degrades quietly when the notification APIs throw', async () => {
     notif.getPresentedNotificationsAsync.mockRejectedValue(new Error('no permission'));
     await expect(reconcileApprovalNotifications([])).resolves.toBeUndefined();
+  });
+});
+
+describe('reconcilePushRegistration (#3143)', () => {
+  it("'ok' with permission still granted needs no correction", async () => {
+    await expect(reconcilePushRegistration('ok', null)).resolves.toBeNull();
+  });
+
+  it("'ok' downgrades to failed/permission_denied when the user revoked permission in Settings", async () => {
+    // The exact sequence the Settings sheet's deep-link invites: tap row →
+    // system Settings → turn Breeze notifications off → return to the app.
+    // iOS does not restart the app, so without this the row keeps claiming
+    // "delivered" for the rest of the session.
+    notif.getPermissionsAsync.mockResolvedValue({ status: 'denied' });
+
+    await expect(reconcilePushRegistration('ok', null)).resolves.toEqual({
+      status: 'failed',
+      reason: 'permission_denied',
+    });
+  });
+
+  it("failed/permission_denied re-registers fully once permission is granted again", async () => {
+    const out = await reconcilePushRegistration('failed', 'permission_denied');
+
+    // Not just a status flip: the token must actually be (re)registered.
+    expect(out).toEqual({ status: 'ok', token: 'APNS-TOKEN' });
+    expect(api.registerPushToken).toHaveBeenCalledWith('APNS-TOKEN', 'ios');
+  });
+
+  it('failed/permission_denied stays put while permission remains denied', async () => {
+    notif.getPermissionsAsync.mockResolvedValue({ status: 'denied' });
+
+    await expect(reconcilePushRegistration('failed', 'permission_denied')).resolves.toBeNull();
+    expect(api.registerPushToken).not.toHaveBeenCalled();
+  });
+
+  it('non-permission failures and resting states are never touched by a foreground hop', async () => {
+    for (const [status, reason] of [
+      ['failed', 'some network error'],
+      ['failed', null],
+      ['unsupported', 'android_push_not_configured'],
+      ['idle', null],
+    ] as const) {
+      await expect(reconcilePushRegistration(status, reason)).resolves.toBeNull();
+    }
+    expect(notif.getPermissionsAsync).not.toHaveBeenCalled();
+    expect(api.registerPushToken).not.toHaveBeenCalled();
   });
 });

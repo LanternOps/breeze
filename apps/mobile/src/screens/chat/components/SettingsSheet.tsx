@@ -200,7 +200,8 @@ export function SettingsSheet({ visible, onCancel }: Props) {
   async function onPressNotificationSettings() {
     try {
       await Linking.openSettings();
-    } catch {
+    } catch (err) {
+      console.warn('[settings] openSettings failed', err);
       Alert.alert('Cannot open Settings', 'Open your phone’s Settings app and find Breeze.');
     }
   }
