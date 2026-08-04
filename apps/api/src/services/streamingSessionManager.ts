@@ -20,7 +20,7 @@ import { eq, and } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiStreamEvent, AiApprovalMode } from '@breeze/shared/types/ai';
 import { AsyncEventQueue } from '../utils/asyncQueue';
-import { recordUsageFromSdkResult } from './aiCostTracker';
+import { recordUsageFromSdkResult, calculateCostCents } from './aiCostTracker';
 import { sanitizeErrorForClient } from './aiAgent';
 import { captureException } from './sentry';
 import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
@@ -259,6 +259,22 @@ export class SessionEventBus {
 
 export type SessionState = 'initializing' | 'ready' | 'processing' | 'idle' | 'closing' | 'closed';
 
+/** Token usage accumulated across the model API calls of a single turn. */
+export interface PendingTurnUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+}
+
+function emptyPendingTurnUsage(): PendingTurnUsage {
+  return { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
+}
+
+function hasTokens(u: PendingTurnUsage): boolean {
+  return u.inputTokens > 0 || u.outputTokens > 0 || u.cacheReadInputTokens > 0 || u.cacheCreationInputTokens > 0;
+}
+
 /** Immutable audit snapshot extracted from the HTTP request context */
 export interface AuditSnapshot {
   ip: string | undefined;
@@ -295,6 +311,14 @@ export interface ActiveSession {
   mcpPrefix: string;
   /** FIFO queue of toolUseIds from content_block_start for postToolUse correlation */
   toolUseIdQueue: string[];
+  /**
+   * Per-turn usage accumulated from the SDK's `assistant` messages (one per
+   * underlying model API call). Used as the fallback token source when the
+   * `result` message arrives with missing/zero usage (#3095), and flushed if a
+   * turn is abandoned without ever producing a `result` (teardown, crash).
+   * Reset after every flush.
+   */
+  pendingTurnUsage: PendingTurnUsage;
   /** Promise that resolves when background processor finishes */
   readonly processorPromise: Promise<void>;
   /** Timer for per-turn timeout; cleared when 'result' arrives */
@@ -455,6 +479,7 @@ export class StreamingSessionManager {
       mcpServer: null as unknown as McpSdkServerConfigWithInstance, // set below
       mcpPrefix: MCP_PREFIX, // updated below if custom factory
       toolUseIdQueue: [],
+      pendingTurnUsage: emptyPendingTurnUsage(),
       processorPromise: Promise.resolve(),
       turnTimeoutId: null,
       approvalWaitDeadline: null,
@@ -747,6 +772,24 @@ export class StreamingSessionManager {
           }
 
           case 'assistant': {
+            // Accumulate per-API-call usage as the fallback token source for
+            // this turn's cost recording (#3095). Each SDK assistant message
+            // wraps one model API response whose `usage` is authoritative for
+            // that call; the turn's `result` message *should* aggregate these,
+            // but has been observed arriving with missing/zero usage.
+            const apiUsage = message.message.usage as {
+              input_tokens?: number;
+              output_tokens?: number;
+              cache_read_input_tokens?: number | null;
+              cache_creation_input_tokens?: number | null;
+            } | undefined;
+            if (apiUsage) {
+              session.pendingTurnUsage.inputTokens += apiUsage.input_tokens ?? 0;
+              session.pendingTurnUsage.outputTokens += apiUsage.output_tokens ?? 0;
+              session.pendingTurnUsage.cacheReadInputTokens += apiUsage.cache_read_input_tokens ?? 0;
+              session.pendingTurnUsage.cacheCreationInputTokens += apiUsage.cache_creation_input_tokens ?? 0;
+            }
+
             const assistantContent = message.message.content
               .filter((b: { type: string }) => b.type === 'text')
               .map((b: { type: string; text?: string }) => b.text ?? '')
@@ -819,7 +862,12 @@ export class StreamingSessionManager {
             this.clearTurnTimeout(session);
 
             const resultMsg = message as SDKResultMessage;
-            const orgId = session.auth.orgId;
+            // #3095: use the session's canonical org id (from the aiSessions DB
+            // row — always set), NOT `auth.orgId`, which is null for partner-
+            // and system-scoped users. The old guard on `auth.orgId` silently
+            // skipped usage recording for EVERY turn of every session run by a
+            // partner-scoped technician, leaving ai_sessions token counters at 0.
+            const orgId = session.orgId;
 
             if (!orgId) {
               console.warn('[StreamingSessionManager] Skipping usage recording — no orgId on session', session.breezeSessionId);
@@ -829,30 +877,48 @@ export class StreamingSessionManager {
             }
 
             // Extract usage with defensive checks — SDK types say usage is non-nullable
-            // but in practice it may be missing, leaving sessions with 0 tokens
+            // but in practice it may be missing/zero. Fall back to the usage
+            // accumulated from this turn's assistant messages (#3095).
+            const sdkUsage = resultMsg.usage as {
+              input_tokens?: number;
+              output_tokens?: number;
+              cache_read_input_tokens?: number | null;
+              cache_creation_input_tokens?: number | null;
+            } | undefined;
+            const sdkReported: PendingTurnUsage = {
+              inputTokens: sdkUsage?.input_tokens ?? 0,
+              outputTokens: sdkUsage?.output_tokens ?? 0,
+              // Cache tokens are billed separately (read ~0.1x input, write ~1.25x
+              // input). Capture them so the token-based fallback doesn't undercount
+              // cost on cached requests when the SDK reports $0.
+              cacheReadInputTokens: sdkUsage?.cache_read_input_tokens ?? 0,
+              cacheCreationInputTokens: sdkUsage?.cache_creation_input_tokens ?? 0,
+            };
+            const effectiveUsage = hasTokens(sdkReported) ? sdkReported : session.pendingTurnUsage;
+            // Consumed (or superseded by the SDK's own numbers) — reset for the next turn.
+            session.pendingTurnUsage = emptyPendingTurnUsage();
+
             const usageData = {
               total_cost_usd: resultMsg.total_cost_usd ?? 0,
               usage: {
-                input_tokens: resultMsg.usage?.input_tokens ?? 0,
-                output_tokens: resultMsg.usage?.output_tokens ?? 0,
-                // Cache tokens are billed separately (read ~0.1x input, write ~1.25x
-                // input). Capture them so the token-based fallback doesn't undercount
-                // cost on cached requests when the SDK reports $0.
-                cache_read_input_tokens: resultMsg.usage?.cache_read_input_tokens ?? 0,
-                cache_creation_input_tokens: resultMsg.usage?.cache_creation_input_tokens ?? 0,
+                input_tokens: effectiveUsage.inputTokens,
+                output_tokens: effectiveUsage.outputTokens,
+                cache_read_input_tokens: effectiveUsage.cacheReadInputTokens,
+                cache_creation_input_tokens: effectiveUsage.cacheCreationInputTokens,
               },
               num_turns: resultMsg.num_turns ?? 0,
               // Model id for token-based cost fallback when the SDK reports $0.
               model: session.model,
             };
 
-            if (!resultMsg.usage || (!resultMsg.usage.input_tokens && !resultMsg.usage.output_tokens)) {
-              console.warn('[StreamingSessionManager] Result message has no/empty usage:', {
+            if (!hasTokens(sdkReported)) {
+              console.warn('[StreamingSessionManager] Result message has no/empty usage — using accumulated assistant-message usage:', {
                 sessionId: session.breezeSessionId,
                 subtype: resultMsg.subtype,
                 hasUsage: !!resultMsg.usage,
                 totalCostUsd: resultMsg.total_cost_usd,
-                keys: Object.keys(resultMsg),
+                fallbackInputTokens: effectiveUsage.inputTokens,
+                fallbackOutputTokens: effectiveUsage.outputTokens,
               });
             }
 
@@ -930,6 +996,62 @@ export class StreamingSessionManager {
       session.eventBus.publish({ type: 'error', message: sanitizeErrorForClient(err) });
       session.eventBus.publish({ type: 'done' });
     } finally {
+      // Flush usage from a turn that never produced a `result` message
+      // (teardown mid-turn, subprocess crash, iterator error) so the tokens
+      // already spent on model API calls still land in the session counters
+      // and org cost aggregates (#3095). Zero after a normal turn — the
+      // accumulator is reset when each `result` is recorded.
+      if (hasTokens(session.pendingTurnUsage)) {
+        const abandoned = session.pendingTurnUsage;
+        session.pendingTurnUsage = emptyPendingTurnUsage();
+        // Awaited (not fire-and-forget): the most common abandoned-turn trigger
+        // is process shutdown (deploy/SIGTERM), where an untracked promise can
+        // be killed before it settles — silently, since even the .catch would
+        // never run. Awaiting ties the write into processorPromise so it can
+        // be drained; failures are logged, never re-credited (the underlying
+        // writes are non-idempotent += increments, retry would double-count).
+        try {
+          await withDbAccessContext(
+            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+            () => recordUsageFromSdkResult(session.breezeSessionId, session.orgId, {
+              total_cost_usd: 0,
+              usage: {
+                input_tokens: abandoned.inputTokens,
+                output_tokens: abandoned.outputTokens,
+                cache_read_input_tokens: abandoned.cacheReadInputTokens,
+                cache_creation_input_tokens: abandoned.cacheCreationInputTokens,
+              },
+              num_turns: 1,
+              model: session.model,
+            })
+          );
+        } catch (err) {
+          captureException(err);
+          console.error('[StreamingSessionManager] Failed to record abandoned-turn usage:', err);
+        }
+        // Mirror the result path's per-user hook (AI for Office): without this,
+        // abandoned-turn spend would reach the org ledger but never the
+        // client_ai_usage buckets that back per-user caps and invoicing.
+        if (session.recordExtraUsage) {
+          try {
+            await session.recordExtraUsage({
+              inputTokens: abandoned.inputTokens,
+              outputTokens: abandoned.outputTokens,
+              costCents: calculateCostCents(
+                session.model,
+                abandoned.inputTokens,
+                abandoned.outputTokens,
+                abandoned.cacheReadInputTokens,
+                abandoned.cacheCreationInputTokens
+              ),
+            });
+          } catch (err) {
+            captureException(err);
+            console.error('[StreamingSessionManager] recordExtraUsage failed for abandoned turn:', err);
+          }
+        }
+      }
+
       // Always clean up the session from the map after the processor exits
       this.clearTurnTimeout(session);
       if (this.sessions.has(session.breezeSessionId)) {
