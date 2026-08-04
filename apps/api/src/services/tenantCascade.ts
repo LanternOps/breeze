@@ -260,6 +260,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'quote_blocks',
   'quote_images',
   'quote_lines',
+  'quote_order_lines',
+  'quote_orders',
   'quote_recipients',
   'quotes',
   'recovery_boot_media_artifacts',

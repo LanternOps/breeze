@@ -216,6 +216,61 @@ export const quoteRecipients = pgTable('quote_recipients', {
   }).onDelete('cascade'),
 ]);
 
+export const quoteOrders = pgTable('quote_orders', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  quoteId: uuid('quote_id').notNull(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  procurementSource: varchar('procurement_source', { length: 40 }),
+  vendorName: varchar('vendor_name', { length: 255 }),
+  orderRef: varchar('order_ref', { length: 120 }),
+  orderedBy: uuid('ordered_by').references(() => users.id, { onDelete: 'set null' }),
+  orderedAt: timestamp('ordered_at').defaultNow().notNull(),
+  notes: text('notes'),
+  // Double-click / retry dedupe: the client sends a UUID per Mark-ordered submit.
+  clientRequestId: uuid('client_request_id'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (t) => [
+  index('quote_orders_quote_idx').on(t.quoteId),
+  index('quote_orders_org_idx').on(t.orgId),
+  uniqueIndex('quote_orders_id_quote_org_uq').on(t.id, t.quoteId, t.orgId),
+  uniqueIndex('quote_orders_client_request_uq').on(t.quoteId, t.clientRequestId)
+    .where(sql`${t.clientRequestId} IS NOT NULL`),
+  foreignKey({
+    columns: [t.quoteId, t.orgId], foreignColumns: [quotes.id, quotes.orgId],
+    name: 'quote_orders_quote_org_fkey',
+  }).onDelete('cascade'),
+]);
+
+export const quoteOrderLines = pgTable('quote_order_lines', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orderId: uuid('order_id').notNull(),
+  quoteId: uuid('quote_id').notNull(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  quoteLineId: uuid('quote_line_id').notNull(),
+  orderedQty: numeric('ordered_qty', { precision: 12, scale: 2 }).notNull(),
+  receivedQty: numeric('received_qty', { precision: 12, scale: 2 }).notNull().default('0'),
+  trackingNumber: varchar('tracking_number', { length: 120 }),
+  eta: date('eta'),
+  receivedAt: timestamp('received_at'),
+  cancelledAt: timestamp('cancelled_at'),
+  notes: text('notes'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  index('quote_order_lines_order_idx').on(t.orderId),
+  index('quote_order_lines_org_idx').on(t.orgId),
+  index('quote_order_lines_quote_line_idx').on(t.quoteLineId),
+  foreignKey({
+    columns: [t.orderId, t.quoteId, t.orgId],
+    foreignColumns: [quoteOrders.id, quoteOrders.quoteId, quoteOrders.orgId],
+    name: 'quote_order_lines_order_fkey',
+  }).onDelete('cascade'),
+  foreignKey({
+    columns: [t.quoteLineId, t.quoteId], foreignColumns: [quoteLines.id, quoteLines.quoteId],
+    name: 'quote_order_lines_quote_line_fkey',
+  }).onDelete('cascade'),
+]);
+
 export const partnerQuoteSequences = pgTable('partner_quote_sequences', {
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
   year: integer('year').notNull(),
