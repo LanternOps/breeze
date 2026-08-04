@@ -20,7 +20,7 @@ import { eq, and } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiStreamEvent, AiApprovalMode } from '@breeze/shared/types/ai';
 import { AsyncEventQueue } from '../utils/asyncQueue';
-import { recordUsageFromSdkResult } from './aiCostTracker';
+import { recordUsageFromSdkResult, calculateCostCents } from './aiCostTracker';
 import { sanitizeErrorForClient } from './aiAgent';
 import { captureException } from './sentry';
 import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
@@ -928,23 +928,52 @@ export class StreamingSessionManager {
       if (hasTokens(session.pendingTurnUsage)) {
         const abandoned = session.pendingTurnUsage;
         session.pendingTurnUsage = emptyPendingTurnUsage();
-        withDbAccessContext(
-          { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
-          () => recordUsageFromSdkResult(session.breezeSessionId, session.orgId, {
-            total_cost_usd: 0,
-            usage: {
-              input_tokens: abandoned.inputTokens,
-              output_tokens: abandoned.outputTokens,
-              cache_read_input_tokens: abandoned.cacheReadInputTokens,
-              cache_creation_input_tokens: abandoned.cacheCreationInputTokens,
-            },
-            num_turns: 1,
-            model: session.model,
-          })
-        ).catch((err) => {
+        // Awaited (not fire-and-forget): the most common abandoned-turn trigger
+        // is process shutdown (deploy/SIGTERM), where an untracked promise can
+        // be killed before it settles — silently, since even the .catch would
+        // never run. Awaiting ties the write into processorPromise so it can
+        // be drained; failures are logged, never re-credited (the underlying
+        // writes are non-idempotent += increments, retry would double-count).
+        try {
+          await withDbAccessContext(
+            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+            () => recordUsageFromSdkResult(session.breezeSessionId, session.orgId, {
+              total_cost_usd: 0,
+              usage: {
+                input_tokens: abandoned.inputTokens,
+                output_tokens: abandoned.outputTokens,
+                cache_read_input_tokens: abandoned.cacheReadInputTokens,
+                cache_creation_input_tokens: abandoned.cacheCreationInputTokens,
+              },
+              num_turns: 1,
+              model: session.model,
+            })
+          );
+        } catch (err) {
           captureException(err);
           console.error('[StreamingSessionManager] Failed to record abandoned-turn usage:', err);
-        });
+        }
+        // Mirror the result path's per-user hook (AI for Office): without this,
+        // abandoned-turn spend would reach the org ledger but never the
+        // client_ai_usage buckets that back per-user caps and invoicing.
+        if (session.recordExtraUsage) {
+          try {
+            await session.recordExtraUsage({
+              inputTokens: abandoned.inputTokens,
+              outputTokens: abandoned.outputTokens,
+              costCents: calculateCostCents(
+                session.model,
+                abandoned.inputTokens,
+                abandoned.outputTokens,
+                abandoned.cacheReadInputTokens,
+                abandoned.cacheCreationInputTokens
+              ),
+            });
+          } catch (err) {
+            captureException(err);
+            console.error('[StreamingSessionManager] recordExtraUsage failed for abandoned turn:', err);
+          }
+        }
       }
 
       // Always clean up the session from the map after the processor exits

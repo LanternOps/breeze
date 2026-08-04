@@ -11,9 +11,10 @@
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 
-const { queryMock, recordUsageMock } = vi.hoisted(() => ({
+const { queryMock, recordUsageMock, calculateCostCentsMock } = vi.hoisted(() => ({
   queryMock: vi.fn(),
   recordUsageMock: vi.fn(() => Promise.resolve()),
+  calculateCostCentsMock: vi.fn(() => 42),
 }));
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
@@ -34,7 +35,10 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
-vi.mock('./aiCostTracker', () => ({ recordUsageFromSdkResult: recordUsageMock }));
+vi.mock('./aiCostTracker', () => ({
+  recordUsageFromSdkResult: recordUsageMock,
+  calculateCostCents: calculateCostCentsMock,
+}));
 vi.mock('./aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./aiAgentSdkTools', () => ({
@@ -52,6 +56,7 @@ vi.mock('./aiToolOutput', () => ({
 vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
 
 import { StreamingSessionManager } from './streamingSessionManager';
+import { withDbAccessContext } from '../db';
 import type { AuthContext } from '../middleware/auth';
 
 const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
@@ -92,9 +97,10 @@ function resultMsg(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function mockSdkQuery(messages: unknown[]) {
+function mockSdkQuery(messages: unknown[], gate: Promise<void> = Promise.resolve()) {
   queryMock.mockImplementation(() => ({
     async *[Symbol.asyncIterator]() {
+      await gate;
       yield* messages as never[];
     },
     interrupt: vi.fn(),
@@ -131,6 +137,11 @@ describe('result usage recording — partner-scoped sessions (#3095)', () => {
       total_cost_usd: 0.03,
       usage: expect.objectContaining({ input_tokens: 100, output_tokens: 50 }),
     }));
+    // The RLS db-access context must also be built from the DB-row org, not auth.orgId (null).
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: 'organization', orgId: ORG }),
+      expect.any(Function),
+    );
   });
 
   it('records usage on error-subtype results too (turns that die on tool errors)', async () => {
@@ -207,6 +218,26 @@ describe('fallback accumulation from assistant messages', () => {
       usage: expect.objectContaining({ input_tokens: 500, output_tokens: 60 }),
       num_turns: 1,
     }));
+  });
+
+  it('feeds abandoned-turn usage to the per-user recordExtraUsage hook (client sessions)', async () => {
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((r) => (releaseGate = r));
+    mockSdkQuery([assistantMsg({ input_tokens: 500, output_tokens: 60 })], gate);
+
+    const session = await manager.getOrCreate('sess-abandoned-extra', DB_SESSION, PARTNER_AUTH, undefined, 'PROMPT', undefined);
+    const recordExtraUsage = vi.fn(() => Promise.resolve());
+    session.recordExtraUsage = recordExtraUsage;
+
+    releaseGate();
+    await session.processorPromise;
+
+    // Org ledger and per-user ledger both get the abandoned turn's tokens.
+    expect(recordUsageMock).toHaveBeenCalledWith('sess-abandoned-extra', ORG, expect.objectContaining({
+      usage: expect.objectContaining({ input_tokens: 500, output_tokens: 60 }),
+    }));
+    expect(recordExtraUsage).toHaveBeenCalledWith({ inputTokens: 500, outputTokens: 60, costCents: 42 });
+    expect(calculateCostCentsMock).toHaveBeenCalledWith('claude-sonnet-4-5-20250929', 500, 60, 0, 0);
   });
 
   it('does not double-record when a completed turn is followed by teardown', async () => {
