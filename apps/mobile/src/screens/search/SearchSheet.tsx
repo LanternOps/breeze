@@ -1,7 +1,9 @@
 import { useEffect, useRef } from 'react';
 import {
   FlatList,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   Text,
   TextInput,
@@ -200,143 +202,148 @@ export function SearchSheet({ visible, onCancel, onSelect }: Props) {
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onCancel}>
-      <Pressable
-        style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' }}
-        onPress={onCancel}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={{ flex: 1 }}
       >
         <Pressable
-          onPress={(e) => e.stopPropagation()}
-          style={{
-            backgroundColor: theme.bg1,
-            borderTopLeftRadius: radii.xl,
-            borderTopRightRadius: radii.xl,
-            paddingTop: spacing[5],
-            paddingBottom: spacing[10],
-            maxHeight: '80%',
-          }}
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' }}
+          onPress={onCancel}
         >
-          <View
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
             style={{
-              alignSelf: 'center',
-              width: 36,
-              height: 4,
-              borderRadius: 2,
-              backgroundColor: theme.bg3,
-              marginBottom: spacing[4],
+              backgroundColor: theme.bg1,
+              borderTopLeftRadius: radii.xl,
+              borderTopRightRadius: radii.xl,
+              paddingTop: spacing[5],
+              paddingBottom: spacing[10],
+              maxHeight: '80%',
             }}
-          />
-
-          <View style={{ paddingHorizontal: spacing[6] }}>
+          >
             <View
               style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                backgroundColor: theme.bg2,
-                borderRadius: radii.md,
-                paddingHorizontal: spacing[3],
-                height: 40,
+                alignSelf: 'center',
+                width: 36,
+                height: 4,
+                borderRadius: 2,
+                backgroundColor: theme.bg3,
+                marginBottom: spacing[4],
               }}
-            >
-              <SearchGlyph color={theme.textLo} />
-              <TextInput
-                ref={inputRef}
-                value={query}
-                onChangeText={setQuery}
-                placeholder="Search devices, alerts, conversations"
-                placeholderTextColor={theme.textLo}
-                autoCapitalize="none"
-                autoCorrect={false}
-                returnKeyType="search"
-                accessibilityLabel="Search"
-                style={[
-                  type.body,
-                  {
-                    flex: 1,
-                    marginLeft: spacing[2],
-                    color: theme.textHi,
-                    paddingVertical: 0,
-                  },
-                ]}
-              />
-              {trimmed ? (
-                <Pressable
-                  onPress={() => {
-                    setQuery('');
-                    inputRef.current?.focus();
-                  }}
-                  hitSlop={8}
-                  accessibilityLabel="Clear search"
-                >
-                  <Text style={[type.meta, { color: theme.textMd }]}>Clear</Text>
-                </Pressable>
-              ) : null}
-            </View>
-          </View>
-
-          {error ? (
-            <View
-              style={{
-                paddingHorizontal: spacing[6],
-                paddingTop: spacing[4],
-              }}
-            >
-              <Text style={[type.meta, { color: palette.deny.base }]}>
-                Couldn't search. Try again.
-              </Text>
-            </View>
-          ) : null}
-
-          {showEmptyHint ? (
-            <View
-              style={{
-                paddingHorizontal: spacing[6],
-                paddingTop: spacing[5],
-              }}
-            >
-              <Text style={[type.meta, { color: theme.textLo }]}>
-                Try a hostname, alert title, or chat snippet.
-              </Text>
-            </View>
-          ) : null}
-
-          {showSkeleton ? (
-            <View style={{ marginTop: spacing[4] }}>
-              <SkeletonRow borderColor={theme.border} bg={theme.bg2} />
-              <SkeletonRow borderColor={theme.border} bg={theme.bg2} />
-              <SkeletonRow borderColor={theme.border} bg={theme.bg2} />
-            </View>
-          ) : null}
-
-          {showNoMatches ? (
-            <View
-              style={{
-                paddingHorizontal: spacing[6],
-                paddingTop: spacing[5],
-              }}
-            >
-              <Text style={[type.meta, { color: theme.textLo }]}>
-                No matches yet. Keep typing.
-              </Text>
-            </View>
-          ) : null}
-
-          {results.length > 0 ? (
-            <FlatList
-              data={results}
-              keyExtractor={(r) => `${r.kind}:${r.id}`}
-              keyboardShouldPersistTaps="handled"
-              style={{ marginTop: spacing[3] }}
-              renderItem={({ item }) => (
-                <ResultRow
-                  result={item}
-                  borderColor={theme.border}
-                  onPress={() => handleSelect(item)}
-                />
-              )}
             />
-          ) : null}
+
+            <View style={{ paddingHorizontal: spacing[6] }}>
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  backgroundColor: theme.bg2,
+                  borderRadius: radii.md,
+                  paddingHorizontal: spacing[3],
+                  height: 40,
+                }}
+              >
+                <SearchGlyph color={theme.textLo} />
+                <TextInput
+                  ref={inputRef}
+                  value={query}
+                  onChangeText={setQuery}
+                  placeholder="Search devices, alerts, conversations"
+                  placeholderTextColor={theme.textLo}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  returnKeyType="search"
+                  accessibilityLabel="Search"
+                  style={[
+                    type.body,
+                    {
+                      flex: 1,
+                      marginLeft: spacing[2],
+                      color: theme.textHi,
+                      paddingVertical: 0,
+                    },
+                  ]}
+                />
+                {trimmed ? (
+                  <Pressable
+                    onPress={() => {
+                      setQuery('');
+                      inputRef.current?.focus();
+                    }}
+                    hitSlop={8}
+                    accessibilityLabel="Clear search"
+                  >
+                    <Text style={[type.meta, { color: theme.textMd }]}>Clear</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
+
+            {error ? (
+              <View
+                style={{
+                  paddingHorizontal: spacing[6],
+                  paddingTop: spacing[4],
+                }}
+              >
+                <Text style={[type.meta, { color: palette.deny.base }]}>
+                  Couldn't search. Try again.
+                </Text>
+              </View>
+            ) : null}
+
+            {showEmptyHint ? (
+              <View
+                style={{
+                  paddingHorizontal: spacing[6],
+                  paddingTop: spacing[5],
+                }}
+              >
+                <Text style={[type.meta, { color: theme.textLo }]}>
+                  Try a hostname, alert title, or chat snippet.
+                </Text>
+              </View>
+            ) : null}
+
+            {showSkeleton ? (
+              <View style={{ marginTop: spacing[4] }}>
+                <SkeletonRow borderColor={theme.border} bg={theme.bg2} />
+                <SkeletonRow borderColor={theme.border} bg={theme.bg2} />
+                <SkeletonRow borderColor={theme.border} bg={theme.bg2} />
+              </View>
+            ) : null}
+
+            {showNoMatches ? (
+              <View
+                style={{
+                  paddingHorizontal: spacing[6],
+                  paddingTop: spacing[5],
+                }}
+              >
+                <Text style={[type.meta, { color: theme.textLo }]}>
+                  No matches yet. Keep typing.
+                </Text>
+              </View>
+            ) : null}
+
+            {results.length > 0 ? (
+              <FlatList
+                data={results}
+                keyExtractor={(r) => `${r.kind}:${r.id}`}
+                keyboardShouldPersistTaps="handled"
+                style={{ marginTop: spacing[3] }}
+                renderItem={({ item }) => (
+                  <ResultRow
+                    result={item}
+                    borderColor={theme.border}
+                    onPress={() => handleSelect(item)}
+                  />
+                )}
+              />
+            ) : null}
+          </Pressable>
         </Pressable>
-      </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
