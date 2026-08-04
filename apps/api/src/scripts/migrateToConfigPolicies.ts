@@ -488,8 +488,11 @@ async function migratePatchPoliciesLive(
   if (!featureLink) throw new Error('Failed to create patch feature link');
   summary.featureLinksCreated++;
 
-  // sources is a patchSourceEnum[] on the legacy table, text[] on the target.
-  const sources: string[] = (primary.sources as string[] | null) ?? ['os'];
+  // The legacy patch_policies.sources column is deprecated (spec 2026-08-04,
+  // never consumed by the approval path) — default to ['os'] rather than
+  // reading it, so this one-shot script isn't the last remaining reader of
+  // that column once its writers are gone.
+  const sources: string[] = ['os'];
 
   await tx.insert(configPolicyPatchSettings).values({
     featureLinkId: featureLink.id,

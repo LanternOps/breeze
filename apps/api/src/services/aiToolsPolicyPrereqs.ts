@@ -180,8 +180,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           gracePeriodHours: { type: 'number', description: 'Hours after deadline before reboot is forced (default: 4)' },
           categories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to include (e.g. ["critical","important","security"])' },
           excludeCategories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to exclude' },
-          sources: { type: 'array', items: { type: 'string' }, description: 'Patch sources: ["microsoft","apple","linux","third_party","custom"]' },
-          autoApprove: { type: 'object', description: 'Auto-approval rules (e.g. { enabled: true, severities: ["critical","important"], deferralDays: 0 }). severities must be a subset of ["critical","important","moderate","low"]. If enabled is true you MUST list at least one severity — an enabled rule with an empty severity set is rejected (it would auto-approve nothing).' },
+          autoApprove: { type: 'object', description: 'Auto-approval rules, e.g. { enabled: true, severities: ["critical","important"], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null }. severities gate OS patches only and must be a subset of ["critical","important","moderate","low"]. thirdPartyApps auto-approves third-party app updates (winget/Chocolatey/Homebrew/custom) — it also requires the linked configuration policy to include third-party patch sources. If enabled is true you MUST set at least one severity OR thirdPartyApps: true.' },
           enabled: { type: 'boolean', description: 'Whether ring is active (for update)' },
           limit: { type: 'number', description: 'Max results for list (default 25)' },
         },
@@ -213,7 +212,6 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           deadlineDays: patchPolicies.deadlineDays,
           gracePeriodHours: patchPolicies.gracePeriodHours,
           categories: patchPolicies.categories,
-          sources: patchPolicies.sources,
           autoApprove: patchPolicies.autoApprove,
           ringOrder: patchPolicies.ringOrder,
           createdAt: patchPolicies.createdAt,
@@ -264,7 +262,6 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           gracePeriodHours: Number(input.gracePeriodHours) || 4,
           categories: (input.categories as string[]) ?? [],
           excludeCategories: (input.excludeCategories as string[]) ?? [],
-          sources: (input.sources as any[]) ?? undefined,
           autoApprove,
           createdBy: auth.user.id,
         }).returning();
@@ -296,7 +293,6 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (input.gracePeriodHours != null) updates.gracePeriodHours = Number(input.gracePeriodHours);
         if (input.categories) updates.categories = input.categories;
         if (input.excludeCategories) updates.excludeCategories = input.excludeCategories;
-        if (input.sources) updates.sources = input.sources;
         if (input.autoApprove != null) {
           // Fail-closed autoApprove (#1317): reject enabled-without-severity at
           // the write boundary, mirroring the route's ringAutoApproveSchema.
