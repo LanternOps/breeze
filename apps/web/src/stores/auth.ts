@@ -64,6 +64,11 @@ interface AuthState {
   isLoading: boolean;
   mfaPending: boolean;
   mfaTempToken: string | null;
+  // Set by handleSessionExpired() just before logout() so UI (the expiry
+  // overlay, login-page notice) can render a reason in the same tick the nav
+  // collapses. NOT persisted — see partialize below — a stale reason must
+  // never survive a reload.
+  sessionExpiredReason: 'session-expired' | 'idle' | null;
 
   // Actions
   setUser: (user: User | null) => void;
@@ -77,6 +82,11 @@ interface AuthState {
 
 type PersistedAuthState = Pick<AuthState, 'user' | 'isAuthenticated'>;
 
+// Guards handleSessionExpired() below against double-redirects when parallel
+// requests both 401 at once. Reset on login() so a later re-login (or a fresh
+// test) can trigger it again in the same JS context.
+let sessionExpiryInFlight = false;
+
 export const useAuthStore = create<AuthState>()(
   persist(
     (set) => ({
@@ -86,6 +96,7 @@ export const useAuthStore = create<AuthState>()(
       isLoading: true,
       mfaPending: false,
       mfaTempToken: null,
+      sessionExpiredReason: null,
 
       setUser: (user) => set({ user, isAuthenticated: !!user }),
 
@@ -98,14 +109,20 @@ export const useAuthStore = create<AuthState>()(
 
       setLoading: (loading) => set({ isLoading: loading }),
 
-      login: (user, tokens) => set({
-        user,
-        tokens,
-        isAuthenticated: true,
-        isLoading: false,
-        mfaPending: false,
-        mfaTempToken: null
-      }),
+      login: (user, tokens) => {
+        // Re-login clears any stale expiry state and re-arms
+        // handleSessionExpired for the new session.
+        sessionExpiryInFlight = false;
+        set({
+          user,
+          tokens,
+          isAuthenticated: true,
+          isLoading: false,
+          mfaPending: false,
+          mfaTempToken: null,
+          sessionExpiredReason: null
+        });
+      },
 
       logout: () => set({
         user: null,
@@ -504,6 +521,40 @@ export class AuthSessionExpiredError extends Error {
   }
 }
 
+// Duplicated (not imported) from lib/authScope.ts's loginPathWithNext:
+// authScope.ts imports useAuthStore from this module, so importing it back
+// here would create a cycle. Keep the ?next= contract in sync with that copy.
+function loginPathWithNext(): string {
+  if (typeof window === 'undefined') return '/login';
+  const here = window.location.pathname + window.location.search + window.location.hash;
+  return here && here !== '/' ? `/login?next=${encodeURIComponent(here)}` : '/login';
+}
+
+/**
+ * Single entry point for "the session is unrecoverable, evict and redirect."
+ * Both fetchWithAuth expiry paths (dead refresh cookie on bootstrap, and a
+ * 401 that survives a refresh-and-retry) funnel through here so idle-timeout
+ * and future callers get identical behavior.
+ *
+ * Idempotent: concurrent 401s from parallel requests must not double-redirect.
+ * The in-flight flag resets on login() so a later re-login (or the next test)
+ * can trigger it again.
+ */
+export function handleSessionExpired(reason: 'session-expired' | 'idle' = 'session-expired'): void {
+  if (sessionExpiryInFlight) return;
+  sessionExpiryInFlight = true;
+
+  // Set before logout() so UI (the expiry overlay) can render a mask in the
+  // same tick the nav state collapses.
+  useAuthStore.setState({ sessionExpiredReason: reason });
+  useAuthStore.getState().logout();
+
+  if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+    const url = loginPathWithNext();
+    window.location.replace(`${url}${url.includes('?') ? '&' : '?'}reason=${reason}`);
+  }
+}
+
 export interface FetchWithAuthOptions extends RequestInit {
   /**
    * Skip the automatic refresh-and-replay on a 401. Opt-in, for the rare
@@ -525,7 +576,7 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
     url = `${url}${separator}orgId=${orgId}`;
   }
 
-  const { tokens: initialTokens, isAuthenticated, logout, setTokens } = useAuthStore.getState();
+  const { tokens: initialTokens, isAuthenticated, setTokens } = useAuthStore.getState();
   let tokens = initialTokens;
   const previousAccessToken = tokens?.accessToken ?? null;
 
@@ -559,11 +610,7 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
       // does NOT weaken auth — protected endpoints (including /auth/mfa/setup)
       // still require a valid Bearer; we simply refuse to send a request we know
       // can't carry one.
-      logout();
-      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-        const returnTo = encodeURIComponent(window.location.pathname + window.location.search);
-        window.location.href = `/login?returnTo=${returnTo}`;
-      }
+      handleSessionExpired('session-expired');
       throw new AuthSessionExpiredError();
     }
   }
@@ -618,8 +665,10 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
         headers.set('Authorization', `Bearer ${latestToken}`);
         response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include' });
       } else {
-        // Refresh failed and no newer token exists; logout.
-        logout();
+        // Refresh failed and no newer token exists; the session is
+        // unrecoverable. Still return the 401 below — callers may inspect it,
+        // and the page is navigating away.
+        handleSessionExpired('session-expired');
       }
     }
   }

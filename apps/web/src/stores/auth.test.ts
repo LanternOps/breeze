@@ -11,6 +11,7 @@ import {
   AuthSessionExpiredError,
   fetchAndApplyPreferences,
   fetchWithAuth,
+  handleSessionExpired,
   resolveApiOrigin,
   restoreAccessTokenFromCookie,
   useAuthStore,
@@ -46,18 +47,41 @@ const baseTokens: Tokens = {
   expiresInSeconds: 3600
 };
 
+// jsdom doesn't allow assigning window.location directly, so swap in a
+// minimal stub for the pieces handleSessionExpired/loginPathWithNext read
+// (pathname/search/hash) and a spy for replace(), then restore the original.
+function mockLocation(pathname: string, search = '') {
+  const originalLocation = window.location;
+  const replace = vi.fn();
+  Object.defineProperty(window, 'location', {
+    configurable: true,
+    value: { pathname, search, hash: '', replace }
+  });
+  return {
+    replace,
+    restore: () => {
+      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+    }
+  };
+}
+
 describe('auth store fetchWithAuth', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.removeItem('breeze-auth');
     document.cookie = 'breeze_csrf_token=csrf-test-token; path=/';
+    // login() resets the module-level handleSessionExpired in-flight flag —
+    // call it first so a prior test's expiry redirect doesn't suppress this
+    // test's (the flag is a module singleton, not reset between tests).
+    useAuthStore.getState().login(baseUser, baseTokens);
     useAuthStore.setState({
       user: null,
       tokens: null,
       isAuthenticated: false,
       isLoading: false,
       mfaPending: false,
-      mfaTempToken: null
+      mfaTempToken: null,
+      sessionExpiredReason: null
     });
   });
 
@@ -276,7 +300,7 @@ describe('auth store fetchWithAuth', () => {
     expect(useAuthStore.getState().isAuthenticated).toBe(true);
   });
 
-  it('logs out when token refresh fails', async () => {
+  it('logs out, sets sessionExpiredReason, and redirects when token refresh fails (Path B)', async () => {
     useAuthStore.getState().login(baseUser, baseTokens);
 
     const fetchMock = vi
@@ -285,12 +309,24 @@ describe('auth store fetchWithAuth', () => {
       .mockResolvedValueOnce(makeResponse({ error: 'refresh denied' }, false, 401));
     vi.stubGlobal('fetch', fetchMock);
 
-    await fetchWithAuth('/devices');
+    const { replace, restore } = mockLocation('/devices');
+    let response: Response;
+    try {
+      response = await fetchWithAuth('/devices');
+    } finally {
+      restore();
+    }
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
     expect(useAuthStore.getState().tokens).toBeNull();
     expect(useAuthStore.getState().user).toBeNull();
+    // handleSessionExpired: reason is set before logout() collapses the nav,
+    // and the stale 401 is still returned — the caller may inspect it, and
+    // the page is navigating away regardless.
+    expect(useAuthStore.getState().sessionExpiredReason).toBe('session-expired');
+    expect(response!.status).toBe(401);
+    expect(replace).toHaveBeenCalledWith(`/login?next=${encodeURIComponent('/devices')}&reason=session-expired`);
   });
 
   // QA 2026-07-08: a single transient 502 on /auth/refresh must NOT boot the
@@ -331,7 +367,14 @@ describe('auth store fetchWithAuth', () => {
       .mockResolvedValue(makeResponse({ error: 'bad gateway' }, false, 502));      // every refresh 502s
     vi.stubGlobal('fetch', fetchMock);
 
-    await fetchWithAuth('/devices');
+    // Mocked so handleSessionExpired's redirect (fired via the same Path B
+    // eviction as the test above) doesn't attempt a real jsdom navigation.
+    const { restore } = mockLocation('/devices');
+    try {
+      await fetchWithAuth('/devices');
+    } finally {
+      restore();
+    }
 
     // Initial attempt + MAX_TRANSIENT_REFRESH_RETRIES (2) = 3 refresh calls, then evict.
     const refreshCalls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/auth/refresh'));
@@ -363,32 +406,14 @@ describe('auth store fetchWithAuth', () => {
       .mockResolvedValue(makeResponse({ error: 'unauthorized' }, false, 401));
     vi.stubGlobal('fetch', fetchMock);
 
-    const hrefSetter = vi.fn();
-    const originalLocation = window.location;
-    Object.defineProperty(window, 'location', {
-      configurable: true,
-      value: {
-        ...originalLocation,
-        pathname: '/auth/mfa/setup',
-        search: '?forced=1',
-        get href() {
-          return '';
-        },
-        set href(value: string) {
-          hrefSetter(value);
-        }
-      }
-    });
+    const { replace, restore } = mockLocation('/auth/mfa/setup', '?forced=1');
 
     try {
       await expect(fetchWithAuth('/auth/mfa/setup', { method: 'POST' })).rejects.toBeInstanceOf(
         AuthSessionExpiredError
       );
     } finally {
-      Object.defineProperty(window, 'location', {
-        configurable: true,
-        value: originalLocation
-      });
+      restore();
     }
 
     // The real endpoint (/auth/mfa/setup) was NEVER fetched — only the refresh
@@ -396,11 +421,13 @@ describe('auth store fetchWithAuth', () => {
     expect(
       fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/auth/mfa/setup'))
     ).toHaveLength(0);
-    // Session cleared and a /login redirect (with returnTo) was issued.
+    // Session cleared, sessionExpiredReason set before the collapse, and a
+    // /login redirect (via loginPathWithNext + ?reason=) was issued.
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
     expect(useAuthStore.getState().tokens).toBeNull();
-    expect(hrefSetter).toHaveBeenCalledWith(
-      `/login?returnTo=${encodeURIComponent('/auth/mfa/setup?forced=1')}`
+    expect(useAuthStore.getState().sessionExpiredReason).toBe('session-expired');
+    expect(replace).toHaveBeenCalledWith(
+      `/login?next=${encodeURIComponent('/auth/mfa/setup?forced=1')}&reason=session-expired`
     );
   });
 
@@ -436,6 +463,63 @@ describe('auth store fetchWithAuth', () => {
     expect(second.ok).toBe(true);
     expect(useAuthStore.getState().tokens?.accessToken).toBe(refreshedTokens.accessToken);
     expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/auth/refresh'))).toHaveLength(1);
+  });
+});
+
+describe('handleSessionExpired', () => {
+  beforeEach(() => {
+    // login() resets the module-level in-flight flag — see the comment in
+    // the fetchWithAuth describe's beforeEach above.
+    useAuthStore.getState().login(baseUser, baseTokens);
+    useAuthStore.setState({ sessionExpiredReason: null });
+  });
+
+  it('is idempotent: two concurrent expiries redirect exactly once', () => {
+    const { replace, restore } = mockLocation('/devices');
+    try {
+      handleSessionExpired('session-expired');
+      handleSessionExpired('session-expired');
+    } finally {
+      restore();
+    }
+
+    expect(replace).toHaveBeenCalledTimes(1);
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(useAuthStore.getState().sessionExpiredReason).toBe('session-expired');
+  });
+
+  it('does not attempt a redirect when already on /login', () => {
+    const { replace, restore } = mockLocation('/login');
+    try {
+      handleSessionExpired('idle');
+    } finally {
+      restore();
+    }
+
+    expect(replace).not.toHaveBeenCalled();
+    // Session is still evicted and the reason still set — only the redirect
+    // is skipped, since the login page has nowhere useful to bounce to.
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(useAuthStore.getState().sessionExpiredReason).toBe('idle');
+  });
+
+  it('login() resets the in-flight flag and clears sessionExpiredReason', () => {
+    const { replace, restore } = mockLocation('/devices');
+    try {
+      handleSessionExpired('session-expired');
+      expect(replace).toHaveBeenCalledTimes(1);
+      expect(useAuthStore.getState().sessionExpiredReason).toBe('session-expired');
+
+      useAuthStore.getState().login(baseUser, baseTokens);
+      expect(useAuthStore.getState().sessionExpiredReason).toBeNull();
+
+      // Flag was re-armed by login(); a fresh expiry redirects again instead
+      // of being swallowed as a stale in-flight duplicate.
+      handleSessionExpired('session-expired');
+      expect(replace).toHaveBeenCalledTimes(2);
+    } finally {
+      restore();
+    }
   });
 });
 
