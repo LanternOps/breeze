@@ -17,7 +17,9 @@ describe('ringAutoApproveSchema', () => {
     const result = ringAutoApproveSchema.safeParse({});
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data).toEqual({ enabled: false, severities: [], deferralDays: 0 });
+      expect(result.data).toEqual({
+        enabled: false, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null,
+      });
     }
   });
 
@@ -48,6 +50,31 @@ describe('ringAutoApproveSchema', () => {
   it('allows disabled with no severities (the default off state)', () => {
     const result = ringAutoApproveSchema.safeParse({ enabled: false, severities: [], deferralDays: 0 });
     expect(result.success).toBe(true);
+  });
+
+  it('accepts a third-party-only ring: enabled with empty severities but thirdPartyApps', () => {
+    const result = ringAutoApproveSchema.safeParse({
+      enabled: true, severities: [], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: null,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('still rejects enabled with empty severities and thirdPartyApps false', () => {
+    const result = ringAutoApproveSchema.safeParse({
+      enabled: true, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('defaults thirdPartyApps=false and thirdPartyDeferralDays=null when omitted', () => {
+    const result = ringAutoApproveSchema.parse({ enabled: true, severities: ['critical'], deferralDays: 0 });
+    expect(result.thirdPartyApps).toBe(false);
+    expect(result.thirdPartyDeferralDays).toBeNull();
+  });
+
+  it('rejects out-of-range thirdPartyDeferralDays', () => {
+    expect(ringAutoApproveSchema.safeParse({ enabled: true, severities: ['low'], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: 366 }).success).toBe(false);
+    expect(ringAutoApproveSchema.safeParse({ enabled: true, severities: ['low'], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: -1 }).success).toBe(false);
   });
 });
 

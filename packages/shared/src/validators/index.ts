@@ -616,8 +616,8 @@ export type PolicyAppRule = z.infer<typeof policyAppRuleSchema>;
  * Rings). The ring owns the WHAT-installs auto-approval gate: an enabled flag,
  * the severities that auto-approve, and a deferral window (days after a patch's
  * release before it is eligible to auto-approve). Empty `severities` while
- * `enabled` means "nothing auto-approves" (fail-closed) — auto-approval must
- * always be an explicit opt-in to a specific severity set.
+ * `enabled` approves no OS patches; `thirdPartyApps` independently opts
+ * third-party candidates in (dual consent with the policy's `sources`).
  *
  * The legacy/dormant `autoApprove` JSONB values (`{}`, `true`,
  * `{ enabled: true, severities: [...] }` without `deferralDays`) all still
@@ -632,12 +632,20 @@ export const ringAutoApproveSchema = z.object({
   enabled: z.boolean().default(false),
   severities: z.array(z.enum(['critical', 'important', 'moderate', 'low'])).default([]),
   deferralDays: z.number().int().min(0).max(365).default(0),
+  // Third-party (winget/Chocolatey/Homebrew + 'custom') auto-approval. Severity
+  // is not the control axis for these (they mostly ingest severity='unknown'),
+  // so this is a source-level toggle. Dual consent applies at evaluation: the
+  // config policy's `sources` must ALSO include 'third_party'.
+  thirdPartyApps: z.boolean().default(false),
+  // Hold for third-party candidates, anchored on first-seen (#2218). null =
+  // inherit deferralDays.
+  thirdPartyDeferralDays: z.number().int().min(0).max(365).nullable().default(null),
 }).superRefine((data, ctx) => {
-  if (data.enabled && data.severities.length === 0) {
+  if (data.enabled && data.severities.length === 0 && !data.thirdPartyApps) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['severities'],
-      message: 'Select at least one severity for auto-approval.',
+      message: 'Select at least one severity or enable third-party app auto-approval.',
     });
   }
 });
