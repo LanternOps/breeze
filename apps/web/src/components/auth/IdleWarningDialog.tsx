@@ -10,14 +10,26 @@ export function formatCountdown(remainingMs: number): string {
 
 type IdleWarningDialogProps = {
   remainingMs: number;
-  /** The countdown hit zero and the durable logout is in flight. */
+  /**
+   * A durable idle logout is in flight. Set by any `runIdleLogout()` — the
+   * countdown reaching zero, or the 30s heartbeat's own idle check crossing the
+   * budget while the modal is up.
+   */
   signingOut: boolean;
   onStay: () => void;
 };
 
 /**
- * Idle-timeout warning. There is no shared Dialog primitive in this app; this
- * follows the overlay pattern used by the settings confirm dialogs.
+ * Idle-timeout warning.
+ *
+ * The shared `Dialog` primitive (`../shared/Dialog.tsx`, focus trap + Escape +
+ * scroll lock) exists and is deliberately NOT used here. This modal is answered
+ * by AdminSessionManager's global deliberate-activity handler: any keydown,
+ * mousedown or touchstart ANYWHERE dismisses it and extends the session. A
+ * focus trap and an Escape-to-close binding have nothing to bind against under
+ * those semantics — every key is already a dismiss — and the dialog must render
+ * inside the `transition:persist` session island rather than a portal owned by
+ * a different tree. So it stays a plain overlay.
  */
 export default function IdleWarningDialog({ remainingMs, signingOut, onStay }: IdleWarningDialogProps) {
   const { t } = useTranslation('auth');

@@ -691,6 +691,74 @@ describe('AdminSessionManager idle warning modal (Task 4)', () => {
     expect(handleSessionExpiredMock).not.toHaveBeenCalled();
   });
 
+  it('clamps the warning lead to half the budget on a short (2-minute) policy', async () => {
+    // lead = min(IDLE_WARNING_LEAD_MS (2 min), budget / 2). With a 2-minute org
+    // budget that is 1 minute, so the modal is due at 1:00 idle — NOT at mount.
+    // Without the Math.min clamp the lead would be the full 2-minute budget and
+    // the warning would be up the instant the session starts.
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({ settings: { security: { sessionTimeout: 2 } } })
+    );
+
+    await renderSettled();
+
+    // Idle 0 — the immediate heartbeat must not raise it.
+    expect(screen.queryByTestId('idle-warning-dialog')).toBeNull();
+
+    // Just before the 1:00 crossing (heartbeat ticks at 30s granularity).
+    await advance(30_000);
+    expect(screen.queryByTestId('idle-warning-dialog')).toBeNull();
+
+    // Cross 1:00 idle — now it's due, with a full minute left on the clock.
+    await advance(30_000);
+    expect(screen.getByTestId('idle-warning-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('idle-warning-body')).toHaveTextContent('1:00');
+    expect(apiLogoutMock).not.toHaveBeenCalled();
+  });
+
+  it('skips the keepalive refresh on a hidden tab but still idle-evicts when the budget elapses', async () => {
+    const visibilitySpy = vi
+      .spyOn(document, 'visibilityState', 'get')
+      .mockReturnValue('hidden');
+    try {
+      await renderSettled();
+      const callsAfterSettle = restoreAccessTokenFromCookieDetailedMock.mock.calls.length;
+
+      // Well past the 5-minute keepalive interval: a visible tab would have
+      // refreshed by now. A hidden one must not — the heartbeat returns before
+      // reaching refreshAccessToken.
+      await advance(8 * 60_000);
+      expect(restoreAccessTokenFromCookieDetailedMock).toHaveBeenCalledTimes(callsAfterSettle);
+      // Idle enforcement is NOT visibility-gated — the warning still went up
+      // at budget minus the 2-minute lead.
+      expect(screen.getByTestId('idle-warning-dialog')).toBeInTheDocument();
+
+      // …and the eviction still fires at the end of the 10-minute budget.
+      await advance(2 * 60_000);
+      expect(apiLogoutMock).toHaveBeenCalledTimes(1);
+      expect(handleSessionExpiredMock).toHaveBeenCalledWith('idle');
+    } finally {
+      visibilitySpy.mockRestore();
+    }
+  });
+
+  it('does not dismiss the warning on a visibilitychange — tab focus is a passive signal', async () => {
+    await renderSettled();
+    await advance(8 * 60_000);
+    expect(screen.getByTestId('idle-warning-dialog')).toBeInTheDocument();
+
+    // Returning to the tab is not a person answering the modal.
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+      fireEvent.focus(window);
+    });
+    await advance(30_000);
+
+    expect(screen.getByTestId('idle-warning-dialog')).toBeInTheDocument();
+    // Still counting down from the ORIGINAL deadline.
+    expect(screen.getByTestId('idle-warning-body')).toHaveTextContent('1:30');
+  });
+
   it('survives an Astro client-side navigation without duplicating activity listeners', async () => {
     const addEventListenerSpy = vi.spyOn(window, 'addEventListener');
     const activityRegistrations = () =>

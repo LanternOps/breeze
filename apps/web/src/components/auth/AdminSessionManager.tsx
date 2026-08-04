@@ -104,8 +104,11 @@ export default function AdminSessionManager() {
     warningVisibleRef.current = false;
     setWarningVisible(false);
     lastActivityAtRef.current = Date.now();
-    // The access token has been sitting untouched for most of the idle budget;
-    // make it fresh again the moment the user reclaims the session.
+    // Belt-and-braces freshness on an explicit continue. The token has NOT
+    // necessarily gone stale — the 5-minute keepalive is visibility-gated, not
+    // activity-gated, so a visible-but-idle tab has been refreshing it all
+    // along; a backgrounded tab has not. Refresh unconditionally rather than
+    // reason about which case we're in.
     void refreshAccessToken();
   }, [refreshAccessToken]);
 

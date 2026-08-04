@@ -615,6 +615,49 @@ describe('auth API helpers', () => {
     expect(useAuthStore.getState().user).toBeNull();
   });
 
+  it('apiLogout resolves on its own 8s timeout when the logout request never settles', async () => {
+    // The idle-logout path awaits apiLogout() BEFORE handleSessionExpired('idle'):
+    // AdminSessionManager sets idleLogoutInFlightRef + "Signing you out…" first,
+    // so a hung /auth/logout would strand that modal forever and permanently
+    // gate the heartbeat and the countdown tick. The server-side revoke is
+    // best-effort; the client eviction must never wait on it.
+    vi.useFakeTimers();
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      let captured: AbortSignal | undefined;
+      const fetchMock = vi.fn().mockImplementation((_url: string, opts: RequestInit) => {
+        captured = opts.signal as AbortSignal;
+        // Mirror real fetch: reject when the abort fires, never otherwise.
+        return new Promise<Response>((_resolve, reject) => {
+          opts.signal?.addEventListener('abort', () =>
+            reject(new DOMException('The operation was aborted.', 'AbortError'))
+          );
+        });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      let settled = false;
+      const pending = apiLogout().then(() => {
+        settled = true;
+      });
+
+      await Promise.resolve();
+      expect(captured?.aborted).toBe(false);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(8000);
+      await pending;
+
+      expect(captured?.aborted).toBe(true);
+      expect(settled).toBe(true);
+      // And the client-side eviction actually happened.
+      expect(useAuthStore.getState().isAuthenticated).toBe(false);
+      expect(useAuthStore.getState().tokens).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('apiPreviewInvite sends the token in a POST body, not in the URL', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       makeResponse({ email: 'invitee@example.com', orgName: 'Acme' })

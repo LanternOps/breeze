@@ -47,6 +47,10 @@ export default function AuthOverlay() {
   useEffect(() => {
     const safetyTimer = setTimeout(() => {
       const state = useAuthStore.getState();
+      // CONSTRAINT: same invariant as the redirect branch below — once
+      // `handleSessionExpired` owns the navigation this must stay dormant, or
+      // its soft nav races the hard redirect and drops `next`/`reason`.
+      if (state.sessionExpiredReason) return;
       if (!state.isAuthenticated || !state.tokens?.accessToken) {
         redirectToLogin();
       }
@@ -107,12 +111,20 @@ export default function AuthOverlay() {
       return () => { cancelled = true; };
     }
 
-    if (!isAuthenticated) {
+    // CONSTRAINT: this is a SECOND redirect path, and it must stay dormant once
+    // `handleSessionExpired` owns the navigation. That helper flips
+    // `isAuthenticated` to false (via logout()) synchronously before its
+    // `window.location.replace('/login?next=…&reason=…')`, which re-runs this
+    // effect; an ungated soft `navigateTo('/login')` here races the hard
+    // redirect and, when it wins, lands the user on a bare /login with no
+    // notice and no deep link. `sessionExpiredReason` is the flag that the
+    // expiry flow is in progress — never drop this guard.
+    if (!isAuthenticated && !sessionExpiredReason) {
       redirectToLogin();
     }
 
     return () => { cancelled = true; };
-  }, [isAuthenticated, isLoading, isChecking, tokens, recoverAttempted, isRecovering, cfBootstrapAttempted]);
+  }, [isAuthenticated, isLoading, isChecking, tokens, recoverAttempted, isRecovering, cfBootstrapAttempted, sessionExpiredReason]);
 
   // Authenticated with token — fade out then unmount
   const shouldHide = !isChecking && !isLoading && isAuthenticated && !!tokens?.accessToken;
