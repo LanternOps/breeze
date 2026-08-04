@@ -218,23 +218,16 @@ const KNOWN_EVENT_TYPES = new Set([
 // platform-spotty; XHR's incremental `responseText` reads are reliable
 // across iOS/Android/Hermes. We track how many bytes we've already parsed
 // so each `onreadystatechange` (state 3 = LOADING) only handles new data.
+//
+// Auth mirrors authedFetch (#3114/#3140): the stored access token expires
+// after 15 minutes, so a stream opened with a stale token 401s before any
+// SSE data flows. On a 401 at stream open we refresh once through the same
+// single-flighted refreshAccessToken() and reopen the stream with the fresh
+// token; a second 401 (or a failed refresh) surfaces to the caller.
 export function streamChat(opts: SseStreamOptions): SseStreamHandle {
   let aborted = false;
-  let cursor = 0;
-  let buffered = '';
-
-  const xhr = new XMLHttpRequest();
   let didEmitDone = false;
-
-  const flushBuffered = () => {
-    let idx = buffered.indexOf('\n\n');
-    while (idx !== -1) {
-      const block = buffered.slice(0, idx);
-      buffered = buffered.slice(idx + 2);
-      handleSseBlock(block);
-      idx = buffered.indexOf('\n\n');
-    }
-  };
+  let currentXhr: XMLHttpRequest | null = null;
 
   const handleSseBlock = (block: string) => {
     if (!block.trim()) return;
@@ -262,49 +255,96 @@ export function streamChat(opts: SseStreamOptions): SseStreamHandle {
     }
   };
 
+  const emitHttpError = (xhr: XMLHttpRequest) => {
+    let msg = `HTTP ${xhr.status}`;
+    try {
+      const body = JSON.parse(xhr.responseText);
+      if (body && typeof body.error === 'string') msg = body.error;
+    } catch {
+      // keep generic message
+    }
+    opts.onError(new Error(msg));
+  };
+
+  // Opens one stream attempt. Parse state (cursor/buffered) is per-attempt so
+  // a retried stream never inherits the 401 attempt's response bytes.
+  const openStream = (url: string, token: string | null, canRetryAuth: boolean) => {
+    let cursor = 0;
+    let buffered = '';
+    const xhr = new XMLHttpRequest();
+    currentXhr = xhr;
+
+    const flushBuffered = () => {
+      let idx = buffered.indexOf('\n\n');
+      while (idx !== -1) {
+        const block = buffered.slice(0, idx);
+        buffered = buffered.slice(idx + 2);
+        handleSseBlock(block);
+        idx = buffered.indexOf('\n\n');
+      }
+    };
+
+    xhr.open('POST', url, true);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.setRequestHeader('Accept', 'text/event-stream');
+    xhr.setRequestHeader('x-breeze-csrf', '1');
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    xhr.withCredentials = true;
+
+    xhr.onreadystatechange = () => {
+      if (aborted) return;
+      // A 401 body is a JSON error, never SSE blocks — skip incremental
+      // parsing on an attempt we may retry so nothing leaks to callbacks.
+      const authRetryPending = xhr.status === 401 && canRetryAuth;
+      if (
+        !authRetryPending &&
+        xhr.readyState >= 3 &&
+        xhr.responseText &&
+        xhr.responseText.length > cursor
+      ) {
+        buffered += xhr.responseText.slice(cursor);
+        cursor = xhr.responseText.length;
+        flushBuffered();
+      }
+      if (xhr.readyState === 4) {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          if (!didEmitDone) opts.onDone();
+          return;
+        }
+        if (authRetryPending) {
+          // Stale access token (>15 min since login with no interim REST
+          // call). Refresh once via the shared single-flight helper and
+          // reopen; on refresh failure surface the original 401.
+          void (async () => {
+            const newToken = await refreshAccessToken();
+            if (aborted) return;
+            if (newToken) {
+              openStream(url, newToken, false);
+              return;
+            }
+            emitHttpError(xhr);
+          })();
+          return;
+        }
+        emitHttpError(xhr);
+      }
+    };
+
+    xhr.onerror = () => {
+      if (aborted) return;
+      opts.onError(new Error('Network error'));
+    };
+
+    xhr.send(JSON.stringify({ content: opts.content }));
+  };
+
   (async () => {
     try {
       const baseUrl = (await getServerUrl()) || FALLBACK_API_BASE_URL;
       const token = await getToken();
       const url = `${baseUrl}${API_CORE_PREFIX}/ai/sessions/${opts.sessionId}/messages`;
       if (aborted) return;
-
-      xhr.open('POST', url, true);
-      xhr.setRequestHeader('Content-Type', 'application/json');
-      xhr.setRequestHeader('Accept', 'text/event-stream');
-      xhr.setRequestHeader('x-breeze-csrf', '1');
-      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-      xhr.withCredentials = true;
-
-      xhr.onreadystatechange = () => {
-        if (aborted) return;
-        if (xhr.readyState >= 3 && xhr.responseText && xhr.responseText.length > cursor) {
-          buffered += xhr.responseText.slice(cursor);
-          cursor = xhr.responseText.length;
-          flushBuffered();
-        }
-        if (xhr.readyState === 4) {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            if (!didEmitDone) opts.onDone();
-            return;
-          }
-          let msg = `HTTP ${xhr.status}`;
-          try {
-            const body = JSON.parse(xhr.responseText);
-            if (body && typeof body.error === 'string') msg = body.error;
-          } catch {
-            // keep generic message
-          }
-          opts.onError(new Error(msg));
-        }
-      };
-
-      xhr.onerror = () => {
-        if (aborted) return;
-        opts.onError(new Error('Network error'));
-      };
-
-      xhr.send(JSON.stringify({ content: opts.content }));
+      openStream(url, token, true);
     } catch (err) {
       if (aborted) return;
       opts.onError(err instanceof Error ? err : new Error(String(err)));
@@ -314,7 +354,7 @@ export function streamChat(opts: SseStreamOptions): SseStreamHandle {
   return {
     abort: () => {
       aborted = true;
-      try { xhr.abort(); } catch { /* noop */ }
+      try { currentXhr?.abort(); } catch { /* noop */ }
     },
   };
 }
