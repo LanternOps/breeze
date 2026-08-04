@@ -1382,7 +1382,9 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     const safeOutput = compactToolResultForChat(toolName, output);
     const parsedOutput = safeParseJson(safeOutput);
     const sessionId = session.breezeSessionId;
-    const orgId = session.auth.orgId ?? undefined;
+    // Canonical session org (always set) — `auth.orgId` is null for partner-
+    // scope logins, which left tool audit rows without an org attribution.
+    const orgId = session.orgId;
     const guardrailCheck = checkGuardrails(toolName, input);
 
     // Script-builder "apply" tools deliver their payload (code / metadata) to
