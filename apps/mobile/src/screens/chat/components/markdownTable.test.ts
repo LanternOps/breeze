@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   extractCellText,
   parseMarkdownTable,
+  toDisplayRows,
   type MarkdownTableNode,
 } from './markdownTable';
 
@@ -104,6 +105,33 @@ describe('parseMarkdownTable', () => {
       node('thead', node('tr', node('th', textgroup(text('  Last '), text(' Seen  '))))),
     );
     expect(parseMarkdownTable(table).labels).toEqual(['Last Seen']);
+  });
+});
+
+describe('toDisplayRows', () => {
+  it('labels body rows when a header exists', () => {
+    expect(toDisplayRows({ labels: ['A', 'B'], rows: [['1', '2']] })).toEqual({
+      rows: [['1', '2']],
+      showLabels: true,
+    });
+  });
+
+  it('renders headerless rows without labels', () => {
+    expect(toDisplayRows({ labels: [], rows: [['1', '2']] })).toEqual({
+      rows: [['1', '2']],
+      showLabels: false,
+    });
+  });
+
+  it('turns a header-only table into one unlabelled row', () => {
+    expect(toDisplayRows({ labels: ['A', 'B'], rows: [] })).toEqual({
+      rows: [['A', 'B']],
+      showLabels: false,
+    });
+  });
+
+  it('renders nothing for an empty table', () => {
+    expect(toDisplayRows({ labels: [], rows: [] })).toEqual({ rows: [], showLabels: false });
   });
 });
 

@@ -40,7 +40,12 @@ function collectDescendants(
   return out;
 }
 
-/** Flatten a cell subtree to plain text (inline markup is dropped, content kept). */
+/**
+ * Flatten a cell subtree to plain text (inline markup is dropped, content
+ * kept). Note this is lossy by design: links keep their label but lose the
+ * href (they render as inert text inside tables), and images reduce to alt
+ * text.
+ */
 export function extractCellText(node: MarkdownTableNode): string {
   if (node.type === 'softbreak' || node.type === 'hardbreak') {
     return ' ';
@@ -85,4 +90,28 @@ export function parseMarkdownTable(table: MarkdownTableNode): ParsedMarkdownTabl
 
   const [labels = [], ...extraHeaderRows] = headerRows;
   return { labels, rows: [...extraHeaderRows, ...bodyRows] };
+}
+
+export interface MarkdownTableDisplay {
+  /** Rows to render, each as cell texts in column order. Empty → render nothing. */
+  rows: string[][];
+  /** Whether to prefix each value with its column label. */
+  showLabels: boolean;
+}
+
+/**
+ * Decide what the stacked renderer should draw:
+ * - Normal table → body rows, labelled.
+ * - Header-only table → the header cells as one plain row (no labels to pair).
+ * - Headerless table → body rows, unlabelled.
+ * - Empty table → nothing.
+ */
+export function toDisplayRows({ labels, rows }: ParsedMarkdownTable): MarkdownTableDisplay {
+  if (rows.length > 0) {
+    return { rows, showLabels: labels.length > 0 };
+  }
+  if (labels.length > 0) {
+    return { rows: [labels], showLabels: false };
+  }
+  return { rows: [], showLabels: false };
 }

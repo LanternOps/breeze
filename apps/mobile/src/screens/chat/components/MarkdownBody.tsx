@@ -3,7 +3,7 @@ import { Text, View } from 'react-native';
 import Markdown, { type RenderRules } from 'react-native-markdown-display';
 
 import { useApprovalTheme, fontFamily, radii, spacing } from '../../../theme';
-import { parseMarkdownTable } from './markdownTable';
+import { parseMarkdownTable, toDisplayRows } from './markdownTable';
 
 interface Props {
   content: string;
@@ -208,17 +208,14 @@ export function MarkdownBody({ content }: Props) {
     () => ({
       hr: () => null,
       table: (node) => {
-        const { labels, rows } = parseMarkdownTable(node);
-        // Header-only table: show the header cells as a plain row rather
-        // than dropping the content (no labels to pair them with).
-        const bodyRows = rows.length > 0 ? rows : labels.length > 0 ? [labels] : [];
-        if (bodyRows.length === 0) {
+        const parsed = parseMarkdownTable(node);
+        const { rows, showLabels } = toDisplayRows(parsed);
+        if (rows.length === 0) {
           return null;
         }
-        const showLabels = rows.length > 0;
         return (
           <View key={node.key} style={tableStyles.card}>
-            {bodyRows.map((cells, rowIndex) => (
+            {rows.map((cells, rowIndex) => (
               <View
                 key={rowIndex}
                 style={
@@ -226,11 +223,15 @@ export function MarkdownBody({ content }: Props) {
                 }
               >
                 {cells.map((value, cellIndex) => {
-                  const label = showLabels ? labels[cellIndex] : undefined;
+                  const label = showLabels ? parsed.labels[cellIndex] : undefined;
+                  if (!label && !value) {
+                    return null;
+                  }
                   return (
                     <Text key={cellIndex} style={tableStyles.line}>
                       {label ? <Text style={tableStyles.label}>{label}: </Text> : null}
-                      {value}
+                      {/* Em dash keeps a labelled blank cell legible ("OS: —"). */}
+                      {value || '—'}
                     </Text>
                   );
                 })}
