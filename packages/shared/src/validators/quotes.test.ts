@@ -397,4 +397,14 @@ describe('updateQuoteOrderLineSchema', () => {
     const parsed = updateQuoteOrderLineSchema.parse({});
     expect(parsed).toEqual({});
   });
+
+  it('accepts { receivedQty: 0 } — a correction back to zero, unlike positiveQty elsewhere', () => {
+    const result = updateQuoteOrderLineSchema.safeParse({ receivedQty: 0 });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.receivedQty).toBe(0);
+  });
+
+  it('rejects a negative receivedQty', () => {
+    expect(updateQuoteOrderLineSchema.safeParse({ receivedQty: -1 }).success).toBe(false);
+  });
 });

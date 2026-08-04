@@ -6,6 +6,10 @@ import { BULK_ID_LIMIT } from '../constants';
 // money/quantity ceiling in validators/catalog.ts.
 const money = z.number().nonnegative().max(9_999_999_999.99).multipleOf(0.01);
 const positiveQty = z.number().positive().max(9_999_999_999.99).multipleOf(0.01);
+// Same bound/precision as positiveQty but permits 0 — used where the value is a
+// running tally that can legitimately be corrected back to zero (received_qty),
+// unlike an ordered/line quantity which must always be > 0.
+const nonnegativeQty = z.number().nonnegative().max(9_999_999_999.99).multipleOf(0.01);
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'expected YYYY-MM-DD');
 const taxRate = z.number().min(0).max(1);
 
@@ -226,7 +230,10 @@ export const updateQuoteOrderSchema = z.object({
 });
 
 export const updateQuoteOrderLineSchema = z.object({
-  receivedQty: positiveQty.optional(),
+  // CONTROLLER RULING (deviation from positiveQty): a receipt correction back to
+  // zero is legitimate (e.g. an erroneous mark-received undone) and the DB CHECK
+  // allows it — positiveQty would reject a valid { receivedQty: 0 } patch.
+  receivedQty: nonnegativeQty.optional(),
   trackingNumber: z.string().max(120).nullable().optional(),
   eta: isoDate.nullable().optional(),
   cancelled: z.boolean().optional(),

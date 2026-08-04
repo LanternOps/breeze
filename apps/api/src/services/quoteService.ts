@@ -7,6 +7,7 @@ import { organizations, partners } from '../db/schema/orgs';
 import { contractTemplates, contractTemplateVersions } from '../db/schema/contractDocuments';
 import { catalogItems } from '../db/schema/catalog';
 import { pax8OrderLines, pax8Orders } from '../db/schema/pax8Orders';
+import { listQuoteOrders } from './quoteOrderService';
 import { computeLineTotal, resolveEffectiveTaxRate } from './invoiceMath';
 import { vendorIdentityFromAttributes } from './catalogVendorIdentity';
 import { buildBillToAddress, type BillToAddress } from './sellerSnapshot';
@@ -525,6 +526,10 @@ export async function getQuote(id: string, actor: QuoteActor) {
         eq(pax8OrderLines.orgId, q.orgId),
       ))
     : [];
+  // Procurement order tracking (Task 11): every PO header + its line-level
+  // allocations recorded against this quote, so the editor can show fulfillment
+  // status alongside the pax8 auto-order summary above.
+  const orders = await listQuoteOrders(id);
   // dueOnAcceptanceTotal is a derived (non-persisted) figure: the amount accept
   // actually invoices (one-time lines only — recurring is deferred to the Phase 4
   // contract). Computed from the canonical quoteMath so it stays penny-consistent
@@ -593,6 +598,7 @@ export async function getQuote(id: string, actor: QuoteActor) {
     blocks,
     lines,
     billTo,
+    orders,
     pax8OrderId: pax8OrderSummary?.pax8OrderId ?? null,
     pax8OrderLineCount: pax8LineRows.length,
     pax8Order: pax8OrderSummary

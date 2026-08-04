@@ -72,7 +72,16 @@ export type QuoteServiceErrorCode =
   // render data those blocks need to produce their executed-document snapshot.
   // An accept must never silently skip its legal snapshot, so this hard-fails
   // (500) and rolls the whole accept back rather than recording a bare acceptance.
-  | 'CONTRACT_RENDER_DATA_MISSING';
+  | 'CONTRACT_RENDER_DATA_MISSING'
+  // Order-tracking codes (quoteOrderService, Task 11): fulfillment can only be
+  // recorded against an accepted/converted quote, submitted allocations must
+  // reference lines on THAT quote, and a receipt can never exceed what was
+  // ordered — mirrored client-side so a 400 arrives before the DB CHECK does.
+  | 'QUOTE_NOT_FULFILLABLE'
+  | 'QUOTE_LINE_MISMATCH'
+  | 'QUOTE_ORDER_NOT_FOUND'
+  | 'QUOTE_ORDER_LINE_NOT_FOUND'
+  | 'RECEIVED_QTY_EXCEEDS_ORDERED';
 
 export class QuoteServiceError extends Error {
   constructor(
