@@ -923,6 +923,7 @@
           },
           "markOrdered": "Als bestellt markieren",
           "receive": "Als erhalten markieren",
+          "receiveQtyAria": "Erhaltene Menge",
           "receiveError": "Diese Bestellposition konnte nicht aktualisiert werden.",
           "receiveSuccess": "Als erhalten markiert",
           "select": "{{item}} auswählen",

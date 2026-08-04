@@ -295,7 +295,22 @@ export function QuoteOrderAllocationRow({
   const [pending, setPending] = useState(false);
   const pendingRef = useRef(false);
   const cancelled = Boolean(allocation.cancelledAt);
-  const fullyReceived = toCents(allocation.receivedQty) >= toCents(allocation.orderedQty);
+  const orderedCents = toCents(allocation.orderedQty);
+  const fullyReceived = toCents(allocation.receivedQty) >= orderedCents;
+  // `receivedQty` is an ABSOLUTE total on the server (it SETs received_qty and
+  // rejects anything above ordered_qty), not a delta — so the input holds the
+  // running total received and defaults to the quantity that completes the
+  // allocation. Normalised through fromCents/toCents so the default is always a
+  // clean 2dp string, never float noise.
+  const [receiveQty, setReceiveQty] = useState(() => fromCents(orderedCents));
+  const receiveCents = toCents(receiveQty);
+  // The DB CHECK enforces received_qty <= ordered_qty; refuse to fire a request
+  // the server would only bounce.
+  const receiveValid =
+    receiveQty.trim() !== '' &&
+    Number.isFinite(Number(receiveQty)) &&
+    receiveCents >= 0 &&
+    receiveCents <= orderedCents;
 
   const patch = useCallback(
     async (body: { receivedQty?: number; cancelled?: boolean }, errorFallback: string, successMessage: string) => {
@@ -353,19 +368,32 @@ export function QuoteOrderAllocationRow({
           {canFulfill && !cancelled && (
             <span className="ml-auto flex items-center gap-2">
               {!fullyReceived && (
-                <button
-                  type="button"
-                  disabled={pending}
-                  data-testid={`quote-order-breakdown-receive-${allocation.id}`}
-                  onClick={() => void patch(
-                    { receivedQty: Number(allocation.orderedQty) },
-                    t('quotes.detail.orderBreakdown.fulfillment.receiveError'),
-                    t('quotes.detail.orderBreakdown.fulfillment.receiveSuccess'),
-                  )}
-                  className="rounded-md border px-2 py-0.5 font-medium text-foreground hover:bg-muted disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-                >
-                  {t('quotes.detail.orderBreakdown.fulfillment.receive')}
-                </button>
+                <>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    inputMode="decimal"
+                    data-testid={`quote-order-breakdown-receive-qty-${allocation.id}`}
+                    aria-label={t('quotes.detail.orderBreakdown.fulfillment.receiveQtyAria')}
+                    className={`${INPUT_CLASS} w-20 py-0.5 text-right tabular-nums`}
+                    value={receiveQty}
+                    onChange={(e) => setReceiveQty(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    disabled={pending || !receiveValid}
+                    data-testid={`quote-order-breakdown-receive-${allocation.id}`}
+                    onClick={() => void patch(
+                      { receivedQty: Number(receiveQty) },
+                      t('quotes.detail.orderBreakdown.fulfillment.receiveError'),
+                      t('quotes.detail.orderBreakdown.fulfillment.receiveSuccess'),
+                    )}
+                    className="rounded-md border px-2 py-0.5 font-medium text-foreground hover:bg-muted disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                  >
+                    {t('quotes.detail.orderBreakdown.fulfillment.receive')}
+                  </button>
+                </>
               )}
               <button
                 type="button"

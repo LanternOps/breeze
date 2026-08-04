@@ -923,6 +923,7 @@
           },
           "markOrdered": "Segna come ordinato",
           "receive": "Segna come ricevuto",
+          "receiveQtyAria": "Quantità ricevuta",
           "receiveError": "Impossibile aggiornare questa riga d’ordine.",
           "receiveSuccess": "Segnato come ricevuto",
           "select": "Seleziona {{item}}",

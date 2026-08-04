@@ -923,6 +923,7 @@
           },
           "markOrdered": "Mark ordered",
           "receive": "Mark received",
+          "receiveQtyAria": "Quantity received",
           "receiveError": "Could not update this order line.",
           "receiveSuccess": "Marked received",
           "select": "Select {{item}}",

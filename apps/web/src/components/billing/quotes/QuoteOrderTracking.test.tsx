@@ -62,11 +62,53 @@ describe('QuoteOrderAllocationRow', () => {
   it('marks an allocation fully received and reloads the quote', async () => {
     const onChanged = renderRow(alloc({ orderedQty: '2.00', receivedQty: '0.00' }));
 
+    // The qty input defaults to the quantity that completes the allocation, so
+    // the untouched default is still a one-click full receipt.
+    expect(screen.getByLabelText('Quantity received')).toHaveValue(2);
     await userEvent.click(screen.getByTestId('quote-order-breakdown-receive-a-1'));
 
     await waitFor(() => expect(mocks.updateQuoteOrderLine).toHaveBeenCalledTimes(1));
     expect(mocks.updateQuoteOrderLine).toHaveBeenCalledWith('q-1', 'ord-1', 'a-1', { receivedQty: 2 });
     await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+  });
+
+  it('records a partial receipt from the qty input', async () => {
+    renderRow(alloc({ orderedQty: '2.00', receivedQty: '0.00' }));
+
+    // clear() first: jsdom cannot place a cursor inside a number input, so
+    // typing into a prefilled one appends garbage.
+    const qty = screen.getByTestId('quote-order-breakdown-receive-qty-a-1');
+    await userEvent.clear(qty);
+    await userEvent.type(qty, '1.5');
+    await userEvent.click(screen.getByTestId('quote-order-breakdown-receive-a-1'));
+
+    await waitFor(() => expect(mocks.updateQuoteOrderLine).toHaveBeenCalledTimes(1));
+    expect(mocks.updateQuoteOrderLine).toHaveBeenCalledWith('q-1', 'ord-1', 'a-1', { receivedQty: 1.5 });
+  });
+
+  it('blocks a receipt above the ordered quantity', async () => {
+    renderRow(alloc({ orderedQty: '2.00', receivedQty: '0.00' }));
+
+    const qty = screen.getByTestId('quote-order-breakdown-receive-qty-a-1');
+    await userEvent.clear(qty);
+    await userEvent.type(qty, '3');
+    // The DB CHECK would reject received_qty > ordered_qty — never send it.
+    expect(screen.getByTestId('quote-order-breakdown-receive-a-1')).toBeDisabled();
+
+    await userEvent.click(screen.getByTestId('quote-order-breakdown-receive-a-1'));
+    expect(mocks.updateQuoteOrderLine).not.toHaveBeenCalled();
+  });
+
+  it('blocks a receipt with an empty or negative quantity', async () => {
+    renderRow(alloc({ orderedQty: '2.00', receivedQty: '0.00' }));
+
+    const qty = screen.getByTestId('quote-order-breakdown-receive-qty-a-1');
+    await userEvent.clear(qty);
+    expect(screen.getByTestId('quote-order-breakdown-receive-a-1')).toBeDisabled();
+
+    await userEvent.type(qty, '-1');
+    expect(screen.getByTestId('quote-order-breakdown-receive-a-1')).toBeDisabled();
+    expect(mocks.updateQuoteOrderLine).not.toHaveBeenCalled();
   });
 
   it('cancels an allocation', async () => {
@@ -97,6 +139,7 @@ describe('QuoteOrderAllocationRow', () => {
   it('drops the receive action once the allocation is fully received', async () => {
     renderRow(alloc({ orderedQty: '2.00', receivedQty: '2.00', receivedAt: '2026-08-02T00:00:00Z' }));
     expect(screen.queryByTestId('quote-order-breakdown-receive-a-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quote-order-breakdown-receive-qty-a-1')).not.toBeInTheDocument();
     // Cancelling a received allocation is still a legitimate correction.
     expect(screen.getByTestId('quote-order-breakdown-cancel-a-1')).toBeInTheDocument();
   });
@@ -104,6 +147,7 @@ describe('QuoteOrderAllocationRow', () => {
   it('renders read-only without quotes:fulfill', async () => {
     renderRow(alloc(), false);
     expect(screen.queryByTestId('quote-order-breakdown-receive-a-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quote-order-breakdown-receive-qty-a-1')).not.toBeInTheDocument();
     expect(screen.queryByTestId('quote-order-breakdown-cancel-a-1')).not.toBeInTheDocument();
     expect(screen.getByTestId('quote-order-breakdown-allocation-a-1')).toHaveTextContent('TD SYNNEX');
   });

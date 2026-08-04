@@ -923,6 +923,7 @@
           },
           "markOrdered": "Marcar como pedido",
           "receive": "Marcar como recebido",
+          "receiveQtyAria": "Quantidade recebida",
           "receiveError": "Não foi possível atualizar esta linha do pedido.",
           "receiveSuccess": "Marcado como recebido",
           "select": "Selecionar {{item}}",
