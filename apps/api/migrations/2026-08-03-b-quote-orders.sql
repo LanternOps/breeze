@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS quote_order_lines (
 );
 CREATE INDEX IF NOT EXISTS quote_order_lines_order_idx ON quote_order_lines (order_id);
 CREATE INDEX IF NOT EXISTS quote_order_lines_org_idx ON quote_order_lines (org_id);
+CREATE INDEX IF NOT EXISTS quote_order_lines_quote_idx ON quote_order_lines (quote_id);
 CREATE INDEX IF NOT EXISTS quote_order_lines_quote_line_idx ON quote_order_lines (quote_line_id);
 
 -- Shape-1 org RLS, enabled + FORCED in the creating migration (never deferred).

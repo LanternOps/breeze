@@ -162,7 +162,8 @@ export const quoteLines = pgTable('quote_lines', {
   index('quote_lines_quote_sort_idx').on(t.quoteId, t.sortOrder),
   index('quote_lines_block_idx').on(t.blockId),
   index('quote_lines_org_idx').on(t.orgId),
-  index('quote_lines_image_idx').on(t.imageId)
+  index('quote_lines_image_idx').on(t.imageId),
+  uniqueIndex('quote_lines_id_quote_uq').on(t.id, t.quoteId)
 ]);
 
 export const quoteImages = pgTable('quote_images', {
@@ -259,6 +260,7 @@ export const quoteOrderLines = pgTable('quote_order_lines', {
 }, (t) => [
   index('quote_order_lines_order_idx').on(t.orderId),
   index('quote_order_lines_org_idx').on(t.orgId),
+  index('quote_order_lines_quote_idx').on(t.quoteId),
   index('quote_order_lines_quote_line_idx').on(t.quoteLineId),
   foreignKey({
     columns: [t.orderId, t.quoteId, t.orgId],
