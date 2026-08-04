@@ -23,7 +23,7 @@ import {
   resolveDefaultModel,
   sanitizeErrorForClient,
 } from '../services/aiAgent';
-import { runPreFlightChecks, abortActivePlan } from '../services/aiAgentSdk';
+import { runPreFlightChecks, abortActivePlan, settleApprovalWaits, waitForTurnToSettle } from '../services/aiAgentSdk';
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { getUsageSummary, updateBudget, getSessionHistory, recordUsage } from '../services/aiCostTracker';
@@ -53,6 +53,11 @@ import { draftTicketFromTranscript, ThinTranscriptError } from '../services/aiTi
 import { createTicketFromChatSchema, type AiTicketDraft } from '@breeze/shared';
 import { deviceInSiteScope } from './tickets/siteScope';
 import { timeActorFrom } from './timeEntries/timeEntries';
+
+// How long a new message will wait for a turn that was blocked on approvals
+// to conclude after settleApprovalWaits() (#3089) — covers the model emitting
+// its closing message. Past this, fall back to the pre-existing 409.
+const TURN_SETTLE_WAIT_MS = 15_000;
 
 // Provider check that tolerates an unvalidated config: route unit tests never
 // call validateConfig(), and getConfig() throws in that state. Without a
@@ -626,7 +631,20 @@ aiRoutes.post(
 
     // Concurrent message guard — atomic check-and-set
     if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
-      return c.json({ error: 'A message is already being processed for this session' }, 409);
+      // #3089: when the in-flight turn is blocked ONLY on pending tool
+      // approvals, the assistant used to go mute — the user's message bounced
+      // with a 409 while the model sat waiting up to 5 minutes per approval.
+      // Settle those waits instead: the blocked tool calls return promptly
+      // with an approval-pending result (tier-3 intents stay pending and are
+      // executed by the durable release worker once decided), the model
+      // concludes the turn, and this message then proceeds normally. If the
+      // session is busy for any other reason (model actively working), or the
+      // turn doesn't conclude in time, fall back to the 409 as before.
+      const settled = settleApprovalWaits(activeSession);
+      const turnConcluded = settled && await waitForTurnToSettle(activeSession, TURN_SETTLE_WAIT_MS);
+      if (!turnConcluded || !streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+        return c.json({ error: 'A message is already being processed for this session' }, 409);
+      }
     }
 
     writeRouteAudit(c, {

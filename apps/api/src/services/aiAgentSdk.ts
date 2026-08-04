@@ -43,6 +43,108 @@ const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 /**
+ * Total time a single assistant cycle (one assistant message's batch of tool
+ * calls) may spend blocked on approval waits, SHARED across every approval
+ * wait in that cycle (#3089). Matches the action-intent chat expiry (5 min).
+ *
+ * Why shared, not per-wait: the SDK executes sibling tool calls sequentially
+ * inside the same turn, so two pending approvals used to stack their 5-minute
+ * waits (10 min total) past the 6-minute turn timeout
+ * (streamingSessionManager.SDK_TURN_TIMEOUT_MS). The turn timeout then fired
+ * first, publishing error+done to the UI — and the model's eventual closing
+ * message was published into a turn the client had already ended, so sessions
+ * ended with raw approval-pending error rows and no closing assistant message.
+ * With one shared budget, cumulative approval blocking per cycle is <= 5 min,
+ * which always leaves the model headroom to conclude the turn gracefully.
+ * A wait that gives up leaves its tier-3 intent pending_approval — an approver
+ * can still decide it and the durable release worker executes it (spec §6.1).
+ */
+export const APPROVAL_WAIT_BUDGET_MS = 300_000;
+
+/**
+ * Begin an approval wait for this session's current assistant cycle.
+ *
+ * Returns the remaining shared budget as `timeoutMs` (0 when a sibling wait
+ * already exhausted it — callers pass it straight to waitForApproval /
+ * waitForIntentDecision, both of which return immediately on 0), plus a
+ * combined AbortSignal that settles the wait when EITHER the session is torn
+ * down OR settleApprovalWaits() fires (new user message / interrupt). Callers
+ * MUST invoke `end()` (in a finally) so the in-flight counter stays accurate.
+ *
+ * The per-cycle state lives on ActiveSession and is reset by
+ * StreamingSessionManager.startTurnTimeout() at each message_start — the same
+ * point the 6-minute turn timeout resets — preserving the invariant that a
+ * cycle's approval waits always end before the turn timeout fires.
+ */
+function beginApprovalWait(session: ActiveSession): {
+  timeoutMs: number;
+  signal: AbortSignal;
+  end: () => void;
+} {
+  const now = Date.now();
+  if (session.approvalWaitDeadline == null) {
+    session.approvalWaitDeadline = now + APPROVAL_WAIT_BUDGET_MS;
+  }
+  const timeoutMs = Math.max(0, session.approvalWaitDeadline - now);
+  if (!session.approvalWaitAbort) {
+    session.approvalWaitAbort = new AbortController();
+  }
+  const signal = AbortSignal.any([
+    session.abortController.signal,
+    session.approvalWaitAbort.signal,
+  ]);
+  session.pendingApprovalWaits = (session.pendingApprovalWaits ?? 0) + 1;
+  let ended = false;
+  return {
+    timeoutMs,
+    signal,
+    end: () => {
+      if (ended) return;
+      ended = true;
+      session.pendingApprovalWaits = Math.max(0, (session.pendingApprovalWaits ?? 1) - 1);
+    },
+  };
+}
+
+/**
+ * Settle every in-flight approval wait on this session so the current turn can
+ * conclude (#3089). The blocked preToolUse calls return promptly with their
+ * "approval still pending" tool error, the model gets to respond (and address
+ * whatever prompted the settle), and any tier-3 intent stays pending_approval
+ * for the durable release worker to execute once an approver decides.
+ *
+ * Also exhausts the cycle's remaining wait budget so a sibling tool call later
+ * in the SAME cycle cannot immediately re-block the turn — the budget resets
+ * at the next assistant cycle (startTurnTimeout).
+ *
+ * Returns false (and does nothing) when no approval wait is in flight — the
+ * session is busy for some other reason and callers should fall back to their
+ * existing behavior.
+ */
+export function settleApprovalWaits(session: ActiveSession): boolean {
+  if ((session.pendingApprovalWaits ?? 0) === 0) return false;
+  session.approvalWaitDeadline = Date.now();
+  session.approvalWaitAbort?.abort();
+  session.approvalWaitAbort = null;
+  return true;
+}
+
+/**
+ * Wait (bounded) for a session's current turn to conclude after
+ * settleApprovalWaits(). Resolves true once the session leaves 'processing'
+ * (the model emitted its closing message and the SDK published result/done);
+ * false if it is still processing when the timeout elapses.
+ */
+export async function waitForTurnToSettle(session: ActiveSession, timeoutMs: number): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (session.state !== 'processing') return true;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return session.state !== 'processing';
+}
+
+/**
  * Tracks the action_intents.id an inline Tier-3 execution is running under,
  * so createSessionPostToolUse can CAS it `executing -> completed|failed` once
  * the tool actually finishes (see the coordination invariant in the T3 block
@@ -716,18 +818,26 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             intentBacked: true,
           });
 
-          // Block until an approver decides, OR the chat wait window (still 300s
-          // — matches the intent's own 5-minute chat expiry) elapses. Unlike the
+          // Block until an approver decides, OR the cycle's SHARED approval-wait
+          // budget (up to 300s — matches the intent's own 5-minute chat expiry)
+          // elapses, OR the wait is settled early (session teardown, a new user
+          // message, or interrupt — see settleApprovalWaits, #3089). Unlike the
           // old waitForApproval, this NEVER mutates the intent on timeout: giving
           // up here leaves it pending_approval so an approver can still decide it
           // — and the durable release worker (jobs/intentReleaseWorker.ts) will
           // execute it — after this session has moved on or died. This is the
           // new durable capability the design adds (spec §6.1).
-          const decisionStatus = await waitForIntentDecision(
-            intent.id,
-            300_000,
-            session.abortController.signal,
-          );
+          const approvalWait = beginApprovalWait(session);
+          let decisionStatus: Awaited<ReturnType<typeof waitForIntentDecision>>;
+          try {
+            decisionStatus = await waitForIntentDecision(
+              intent.id,
+              approvalWait.timeoutMs,
+              approvalWait.signal,
+            );
+          } finally {
+            approvalWait.end();
+          }
 
           if (decisionStatus === 'pending_approval') {
             return await failMatchedPlanStep(
@@ -929,7 +1039,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           }
         } catch { /* non-fatal: fall back to default description */ }
         const riskSummary = m365Summary ?? (description.length > 500 ? `${description.slice(0, 497)}...` : description);
-        const expiresAt = new Date(Date.now() + 300_000); // matches waitForApproval timeout
+        const expiresAt = new Date(Date.now() + APPROVAL_WAIT_BUDGET_MS); // matches the max approval wait
 
         let approvalRequestId: string | undefined;
         try {
@@ -1009,14 +1119,45 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           deviceContext,
         });
 
-        // Block until user clicks Approve/Reject or 5-min timeout
-        const approved = await waitForApproval(
-          approvalExec.id,
-          300_000,
-          session.abortController.signal,
-        );
+        // Block until user clicks Approve/Reject, the cycle's shared approval
+        // wait budget (up to 5 min) elapses, or the wait is settled early
+        // (session teardown / new user message / interrupt — #3089).
+        const approvalWait = beginApprovalWait(session);
+        let approved: boolean;
+        try {
+          approved = await waitForApproval(
+            approvalExec.id,
+            approvalWait.timeoutMs,
+            approvalWait.signal,
+          );
+        } finally {
+          approvalWait.end();
+        }
 
         if (!approved) {
+          // The wait may have been settled early (abort signal), in which case
+          // waitForApproval returned WITHOUT marking the row — close it out so
+          // a later Approve click can't flip it to a stranded 'approved' that
+          // nothing will ever execute (this legacy bridge has no durable
+          // release worker). Guarded on status='pending' so a genuine reject
+          // (row already 'rejected') or timeout (waitForApproval already
+          // marked it) is a no-op. Best-effort: the tool error below must
+          // surface regardless.
+          try {
+            await withDbAccessContext(
+              { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+              () =>
+                db
+                  .update(aiToolExecutions)
+                  .set({ status: 'rejected', errorMessage: 'Approval wait ended before a decision was made' })
+                  .where(and(
+                    eq(aiToolExecutions.id, approvalExec!.id),
+                    eq(aiToolExecutions.status, 'pending'),
+                  ))
+            );
+          } catch (err) {
+            console.error('[AI-SDK] Failed to close out settled approval record:', approvalExec.id, err);
+          }
           // Not reachable with a non-null matchedPlanStepIndex today (both
           // secret-bearing tools are statically tier 3, so the only way to
           // land in this tier<3 legacy branch with a matched-but-declined
