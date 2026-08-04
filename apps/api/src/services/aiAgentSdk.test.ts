@@ -799,6 +799,45 @@ describe('createSessionPreToolUse', () => {
       expect(mockTransitionIntent).not.toHaveBeenCalled();
     });
 
+    // #3090: waitForIntentDecision can still read `pending_approval` from a
+    // stale DB row after the intent's own `expiresAt` has already passed —
+    // jobs/intentExpiryReaper.ts flips the row to `expired` on a 30s sweep,
+    // and the chat wait's own local timeout races that sweep by design. The
+    // tool result must say "expired", never "still pending", once wall-clock
+    // time is past the intent's deadline — the old message was false on both
+    // counts (not pending, and never completing on a later approval).
+    it('reports the approval as expired — not "still pending" — once the intent deadline has passed', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-5-expired' });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({
+          id: 'intent-5-expired',
+          approvalRequestIds: ['appr-5-expired'],
+          // Deadline already in the past — the sweep just hasn't caught up yet.
+          expiresAt: new Date(Date.now() - 1_000),
+        }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('pending_approval');
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      const result = await createSessionPreToolUse(session)('execute_command', {});
+
+      expect(result).toEqual({
+        allowed: false,
+        error:
+          'Approval request expired before a decision was made; the action was not executed. Re-issue the tool call if it is still needed.',
+      });
+      // Same durable-no-mutation contract as the still-pending case: giving
+      // up here must not touch the intent — an approver deciding it late (or
+      // the reaper's own sweep) is what actually resolves the row.
+      expect(mockTransitionIntent).not.toHaveBeenCalled();
+    });
+
     it('CASes the intent executing -> completed once the inline tool call finishes successfully', async () => {
       vi.mocked(checkGuardrails).mockReturnValue({
         allowed: true,
