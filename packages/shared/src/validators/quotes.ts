@@ -205,6 +205,33 @@ export const bulkQuoteIdsSchema = z.object({
   ids: z.array(z.string().guid()).min(1).max(BULK_ID_LIMIT),
 });
 
+export const createQuoteOrderSchema = z.object({
+  clientRequestId: z.string().guid(),
+  procurementSource: z.string().max(40).nullable().optional(),
+  vendorName: z.string().max(255).nullable().optional(),
+  orderRef: z.string().max(120).nullable().optional(),
+  notes: z.string().max(2000).nullable().optional(),
+  trackingNumber: z.string().max(120).nullable().optional(),
+  eta: isoDate.optional(),
+  lines: z.array(z.object({
+    quoteLineId: z.string().guid(),
+    orderedQty: positiveQty,
+  })).min(1).max(200),
+});
+
+export const updateQuoteOrderSchema = z.object({
+  vendorName: z.string().max(255).nullable().optional(),
+  orderRef: z.string().max(120).nullable().optional(),
+  notes: z.string().max(2000).nullable().optional(),
+});
+
+export const updateQuoteOrderLineSchema = z.object({
+  receivedQty: positiveQty.optional(),
+  trackingNumber: z.string().max(120).nullable().optional(),
+  eta: isoDate.nullable().optional(),
+  cancelled: z.boolean().optional(),
+});
+
 export type QuoteLineInput = z.infer<typeof quoteLineInputSchema>;
 export type QuoteBlockInput = z.infer<typeof quoteBlockInputSchema>;
 export type CreateQuoteInput = z.infer<typeof createQuoteSchema>;
@@ -213,3 +240,6 @@ export type UpdateQuoteInput = z.infer<typeof updateQuoteSchema>;
 export type ListQuotesQuery = z.infer<typeof listQuotesQuerySchema>;
 export type AcceptQuoteInput = z.infer<typeof acceptQuoteSchema>;
 export type DeclineQuoteInput = z.infer<typeof declineQuoteSchema>;
+export type CreateQuoteOrderInput = z.infer<typeof createQuoteOrderSchema>;
+export type UpdateQuoteOrderInput = z.infer<typeof updateQuoteOrderSchema>;
+export type UpdateQuoteOrderLineInput = z.infer<typeof updateQuoteOrderLineSchema>;

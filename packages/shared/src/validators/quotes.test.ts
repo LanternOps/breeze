@@ -5,6 +5,7 @@ import {
   updateQuoteSchema, reorderBlocksSchema, reorderLinesSchema,
   updateQuoteLineSchema, catalogQuoteLineSchema, moveQuoteLineSchema,
   quoteBlockTypeSchema, coverPageSchema,
+  createQuoteOrderSchema, updateQuoteOrderSchema, updateQuoteOrderLineSchema,
 } from './quotes';
 
 describe('quote validators', () => {
@@ -306,5 +307,94 @@ describe('coverPageSchema', () => {
     expect(updateQuoteSchema.parse({ coverPage: { enabled: false } }).coverPage).toEqual({ enabled: false, showPreparedBy: true });
     expect(updateQuoteSchema.parse({ coverPage: null }).coverPage).toBeNull();
     expect(updateQuoteSchema.parse({}).coverPage).toBeUndefined();
+  });
+});
+
+describe('createQuoteOrderSchema', () => {
+  const quoteLineId = '11111111-1111-1111-1111-111111111111';
+  const clientRequestId = '22222222-2222-2222-2222-222222222222';
+
+  it('accepts a happy-path payload with required fields', () => {
+    const parsed = createQuoteOrderSchema.parse({
+      clientRequestId,
+      lines: [{ quoteLineId, orderedQty: 5.5 }],
+    });
+    expect(parsed.clientRequestId).toBe(clientRequestId);
+    expect(parsed.lines).toHaveLength(1);
+  });
+
+  it('rejects an empty lines array', () => {
+    expect(createQuoteOrderSchema.safeParse({
+      clientRequestId,
+      lines: [],
+    }).success).toBe(false);
+  });
+
+  it('rejects a missing clientRequestId', () => {
+    expect(createQuoteOrderSchema.safeParse({
+      lines: [{ quoteLineId, orderedQty: 5 }],
+    }).success).toBe(false);
+  });
+
+  it('accepts optional fields like vendorName, orderRef, notes, trackingNumber, eta, procurementSource', () => {
+    const parsed = createQuoteOrderSchema.parse({
+      clientRequestId,
+      lines: [{ quoteLineId, orderedQty: 10 }],
+      vendorName: 'Acme Distributor',
+      orderRef: 'PO-12345',
+      notes: 'Rush delivery requested',
+      trackingNumber: 'TRACK-001',
+      eta: '2026-08-15',
+      procurementSource: 'td_synnex',
+    });
+    expect(parsed.vendorName).toBe('Acme Distributor');
+    expect(parsed.orderRef).toBe('PO-12345');
+    expect(parsed.notes).toBe('Rush delivery requested');
+    expect(parsed.trackingNumber).toBe('TRACK-001');
+    expect(parsed.eta).toBe('2026-08-15');
+    expect(parsed.procurementSource).toBe('td_synnex');
+  });
+});
+
+describe('updateQuoteOrderSchema', () => {
+  it('accepts optional vendorName, orderRef, and notes', () => {
+    const parsed = updateQuoteOrderSchema.parse({
+      vendorName: 'New Vendor',
+      orderRef: 'PO-54321',
+      notes: 'Updated notes',
+    });
+    expect(parsed.vendorName).toBe('New Vendor');
+    expect(parsed.orderRef).toBe('PO-54321');
+    expect(parsed.notes).toBe('Updated notes');
+  });
+
+  it('accepts an empty update payload', () => {
+    const parsed = updateQuoteOrderSchema.parse({});
+    expect(parsed).toEqual({});
+  });
+});
+
+describe('updateQuoteOrderLineSchema', () => {
+  it('accepts { cancelled: true }', () => {
+    const parsed = updateQuoteOrderLineSchema.parse({ cancelled: true });
+    expect(parsed.cancelled).toBe(true);
+  });
+
+  it('accepts optional receivedQty, trackingNumber, eta, and cancelled', () => {
+    const parsed = updateQuoteOrderLineSchema.parse({
+      receivedQty: 8.25,
+      trackingNumber: 'TRACK-002',
+      eta: '2026-08-18',
+      cancelled: false,
+    });
+    expect(parsed.receivedQty).toBe(8.25);
+    expect(parsed.trackingNumber).toBe('TRACK-002');
+    expect(parsed.eta).toBe('2026-08-18');
+    expect(parsed.cancelled).toBe(false);
+  });
+
+  it('accepts an empty update payload', () => {
+    const parsed = updateQuoteOrderLineSchema.parse({});
+    expect(parsed).toEqual({});
   });
 });
