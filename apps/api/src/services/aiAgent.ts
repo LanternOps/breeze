@@ -7,7 +7,7 @@
  */
 
 import { db, withSystemDbAccessContext } from '../db';
-import { aiSessions, aiMessages, aiToolExecutions, delegantM365Connections, devices } from '../db/schema';
+import { aiSessions, aiMessages, aiToolExecutions, approvalRequests, delegantM365Connections, devices } from '../db/schema';
 import { eq, and, desc, sql, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
@@ -459,7 +459,35 @@ export async function handleApproval(
     ))
     .returning({ id: aiToolExecutions.id });
 
-  return !!updated;
+  if (!updated) return false;
+
+  // Mirror the decision onto the mobile-bridge approval_requests row (#3094).
+  // The Tier-2 per_step flow creates BOTH ledgers (aiAgentSdk.ts
+  // createSessionPreToolUse): ai_tool_executions (which waitForApproval polls)
+  // and an approval_requests row for the mobile /approvals surface. The
+  // /approvals decide route mirrors its decision back onto ai_tool_executions,
+  // but this inline web-chat path historically flipped only ai_tool_executions
+  // — leaving the bridge row 'pending' until its 5-minute TTL lapsed, which
+  // reads as an unattended-expired approval next to a recorded success in any
+  // audit review. Best-effort: the execution row above is the source of truth
+  // the SDK poll unblocks on, so a mirror failure must not fail the decide.
+  try {
+    await db
+      .update(approvalRequests)
+      .set({
+        status: approved ? 'approved' : 'denied',
+        decidedAt: new Date(),
+        decisionReason: 'Decided inline in chat by the session owner',
+      })
+      .where(and(
+        eq(approvalRequests.executionId, executionId),
+        eq(approvalRequests.status, 'pending'),
+      ));
+  } catch (err) {
+    console.error('[AI] Failed to mirror chat approval onto approval_requests:', executionId, err);
+  }
+
+  return true;
 }
 
 /**
