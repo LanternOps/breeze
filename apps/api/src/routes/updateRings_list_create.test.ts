@@ -240,6 +240,36 @@ describe('updateRings routes', () => {
 
       expect(res.status).toBe(403);
     });
+
+    it('no longer returns sources in ring list responses', async () => {
+      // The list select no longer requests `sources`, so a real DB response
+      // (and thus this mock) has no `sources` key at all.
+      const { sources: _sources, ...ringWithoutSources } = makeRing({ name: 'Default', ringOrder: 0 });
+      const rings = [ringWithoutSources];
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockResolvedValue(rings)
+          })
+        })
+      } as any);
+
+      const res = await app.request('/update-rings', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.length).toBeGreaterThan(0);
+      for (const ring of body.data) {
+        expect(ring).not.toHaveProperty('sources');
+      }
+
+      // The select projection itself must not request the sources column.
+      const projection = vi.mocked(db.select).mock.calls[0]![0] as Record<string, unknown>;
+      expect(projection).not.toHaveProperty('sources');
+    });
   });
 
   // ----------------------------------------------------------------
@@ -401,6 +431,52 @@ describe('updateRings routes', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+
+    it('creates a third-party-only ring (empty severities + thirdPartyApps)', async () => {
+      const autoApprove = {
+        enabled: true,
+        severities: [] as string[],
+        deferralDays: 0,
+        thirdPartyApps: true,
+        thirdPartyDeferralDays: 14
+      };
+      const created = makeRing({ autoApprove });
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([created])
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/update-rings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Third Party Ring', autoApprove })
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.autoApprove).toEqual(autoApprove);
+
+      const insertValues = valuesMock.mock.calls[0]![0] as Record<string, unknown>;
+      expect(insertValues.autoApprove).toMatchObject({
+        thirdPartyApps: true,
+        thirdPartyDeferralDays: 14
+      });
+    });
+
+    it('rejects a third_party_app category rule with a helpful message', async () => {
+      const res = await app.request('/update-rings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Ring',
+          categoryRules: [{ category: 'third_party_app', autoApprove: true }]
+        })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(JSON.stringify(body)).toContain('thirdPartyApps');
     });
   });
 

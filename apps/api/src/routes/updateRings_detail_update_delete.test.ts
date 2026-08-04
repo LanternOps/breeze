@@ -355,6 +355,73 @@ describe('updateRings routes', () => {
 
       expect(res.status).toBe(400);
     });
+
+    it('PATCH persists thirdPartyApps and thirdPartyDeferralDays', async () => {
+      const autoApprove = {
+        enabled: true,
+        severities: [] as string[],
+        deferralDays: 0,
+        thirdPartyApps: true,
+        thirdPartyDeferralDays: 21
+      };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID }])
+          })
+        })
+      } as any);
+      const setMock = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([makeRing({ autoApprove })])
+        })
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: setMock } as any);
+
+      const res = await app.request(`/update-rings/${RING_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ autoApprove })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.autoApprove).toEqual(autoApprove);
+
+      const updateFields = setMock.mock.calls[0]![0] as Record<string, unknown>;
+      expect(updateFields.autoApprove).toMatchObject({
+        thirdPartyApps: true,
+        thirdPartyDeferralDays: 21
+      });
+    });
+
+    it('PATCH rejects a sources payload as an unknown field no-op', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID }])
+          })
+        })
+      } as any);
+      const setMock = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([makeRing()])
+        })
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: setMock } as any);
+
+      const res = await app.request(`/update-rings/${RING_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        // Zod strips unknown keys by default, so `sources` is silently dropped
+        // rather than rejected — assert the DB update call never sees it.
+        body: JSON.stringify({ sources: ['third_party'] })
+      });
+
+      expect(res.status).toBe(200);
+      const updateFields = setMock.mock.calls[0]![0] as Record<string, unknown>;
+      expect(updateFields).not.toHaveProperty('sources');
+    });
   });
 
   // ----------------------------------------------------------------

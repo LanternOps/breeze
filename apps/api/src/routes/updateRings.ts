@@ -19,7 +19,9 @@ import { ringAutoApproveSchema } from '@breeze/shared/validators';
 
 // Typed default for a ring's autoApprove JSONB (#1317). A freshly created or
 // auto-provisioned ring auto-approves nothing until an operator opts in.
-const DEFAULT_RING_AUTO_APPROVE = { enabled: false, severities: [], deferralDays: 0 } as const;
+const DEFAULT_RING_AUTO_APPROVE = {
+  enabled: false, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null,
+} as const;
 
 export const updateRingRoutes = new Hono();
 const requireUpdateRingRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -80,7 +82,9 @@ const listRingsSchema = z.object({
 });
 
 const categoryRuleSchema = z.object({
-  category: z.string().max(100),
+  category: z.string().max(100).refine((c) => c.trim().toLowerCase() !== 'third_party_app', {
+    message: "The 'third_party_app' category rule was replaced by autoApprove.thirdPartyApps on the ring.",
+  }),
   autoApprove: z.boolean(),
   autoApproveSeverities: z.array(z.enum(['critical', 'important', 'moderate', 'low'])).optional(),
   deferralDaysOverride: z.number().int().min(0).max(365).nullable().optional(),
@@ -98,7 +102,6 @@ const createRingSchema = z.object({
   categories: z.array(z.string().max(100)).optional(),
   excludeCategories: z.array(z.string().max(100)).optional(),
   categoryRules: z.array(categoryRuleSchema).optional(),
-  sources: z.array(z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom'])).optional(),
   // Ring-level auto-approval gate (#1317). Typed shape replaces the old
   // free-form record so the ring owns approval rules with validated severities.
   autoApprove: ringAutoApproveSchema.optional(),
@@ -116,7 +119,6 @@ const updateRingSchema = z.object({
   categories: z.array(z.string().max(100)).optional(),
   excludeCategories: z.array(z.string().max(100)).optional(),
   categoryRules: z.array(categoryRuleSchema).optional(),
-  sources: z.array(z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom'])).optional(),
   // Ring-level auto-approval gate (#1317). See createRingSchema.
   autoApprove: ringAutoApproveSchema.optional(),
   targets: z.record(z.string(), z.unknown()).optional(),
@@ -179,7 +181,6 @@ updateRingRoutes.get(
         gracePeriodHours: patchPolicies.gracePeriodHours,
         categories: patchPolicies.categories,
         excludeCategories: patchPolicies.excludeCategories,
-        sources: patchPolicies.sources,
         autoApprove: patchPolicies.autoApprove,
         categoryRules: patchPolicies.categoryRules,
         targets: patchPolicies.targets,
@@ -230,7 +231,6 @@ updateRingRoutes.post(
         gracePeriodHours: data.gracePeriodHours ?? 4,
         categories: data.categories ?? [],
         excludeCategories: data.excludeCategories ?? [],
-        sources: data.sources ?? null,
         autoApprove: data.autoApprove ?? DEFAULT_RING_AUTO_APPROVE,
         categoryRules: data.categoryRules ?? [],
         targets: data.targets ?? {},
@@ -345,7 +345,6 @@ updateRingRoutes.patch(
     if (data.gracePeriodHours !== undefined) updateFields.gracePeriodHours = data.gracePeriodHours;
     if (data.categories !== undefined) updateFields.categories = data.categories;
     if (data.excludeCategories !== undefined) updateFields.excludeCategories = data.excludeCategories;
-    if (data.sources !== undefined) updateFields.sources = data.sources;
     if (data.autoApprove !== undefined) updateFields.autoApprove = data.autoApprove;
     if (data.categoryRules !== undefined) updateFields.categoryRules = data.categoryRules;
     if (data.targets !== undefined) updateFields.targets = data.targets;
