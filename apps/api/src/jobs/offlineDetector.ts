@@ -313,8 +313,14 @@ async function processMarkOffline(data: MarkOfflineJobData): Promise<{
 
   console.log(`[OfflineDetector] Marked device ${data.deviceId} as offline`);
 
-  // Check for offline-type alert rules and create alerts
-  const alertCreated = await triggerOfflineAlerts(device);
+  // Check for offline-type alert rules and create alerts.
+  //
+  // Quick Support ephemeral devices are exempt from ALERTING but deliberately
+  // NOT from the status flip above: going offline is how an ad-hoc support
+  // session ends (the end user closed the client), and the reaper watches for
+  // exactly that transition to tear the session down. Alerting on it would
+  // page the on-call technician after every single support session.
+  const alertCreated = device.isEphemeral ? false : await triggerOfflineAlerts(device);
 
   return {
     deviceId: data.deviceId,
@@ -545,7 +551,10 @@ export async function processReevaluateOffline(data: ReevaluateOfflineJobData): 
   // Device is gone or has reconnected — nothing to re-evaluate. (The offline
   // handler keys off lastSeenAt and wouldn't fire for a reconnected device
   // anyway, but skipping here avoids needless evaluation work.)
-  if (!device || device.status !== 'offline') {
+  // Ephemeral Quick Support devices never alert (see processMarkOffline) — an
+  // ad-hoc session ending is not an incident. Checked here as well as at the
+  // sweep because jobs queued before this deploy may still be in flight.
+  if (!device || device.status !== 'offline' || device.isEphemeral) {
     return { deviceId: data.deviceId, alertCreated: false, durationMs: Date.now() - startTime };
   }
 
@@ -599,7 +608,11 @@ export async function processReevaluateOfflineSweep(): Promise<{
 
     const conditions = [
       eq(devices.status, 'offline'),
-      gt(devices.lastSeenAt, horizonTime)
+      gt(devices.lastSeenAt, horizonTime),
+      // Ephemeral Quick Support devices are alert-exempt, and this sweep only
+      // ever queues alert re-evaluation — filtering here avoids queueing jobs
+      // that would immediately no-op.
+      eq(devices.isEphemeral, false)
     ];
     if (cursor) conditions.push(gt(devices.id, cursor));
 
