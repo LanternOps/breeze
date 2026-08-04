@@ -156,6 +156,19 @@ describe('quote line cost/sku/partNumber', () => {
   it('catalog line accepts an optional partNumber override', () => {
     expect(catalogQuoteLineSchema.safeParse({ catalogItemId: '00000000-0000-0000-0000-000000000001', quantity: 1, partNumber: 'MPN-1' }).success).toBe(true);
   });
+  it('accepts vendor snapshot fields on manual lines and clamps lengths', () => {
+    const ok = quoteLineInputSchema.safeParse({
+      sourceType: 'manual', name: 'Switch', quantity: 1, unitPrice: 100, taxable: false,
+      procurementSource: 'td_synnex', vendorSku: '7724459', manufacturer: 'HPE Aruba',
+    });
+    expect(ok.success).toBe(true);
+    expect((ok as any).data.procurementSource).toBe('td_synnex');
+    const tooLong = quoteLineInputSchema.safeParse({
+      sourceType: 'manual', name: 'Switch', quantity: 1, unitPrice: 100, taxable: false,
+      procurementSource: 'x'.repeat(41),
+    });
+    expect(tooLong.success).toBe(false);
+  });
 });
 
 describe('moveQuoteLineSchema', () => {

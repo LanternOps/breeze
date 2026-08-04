@@ -8,6 +8,7 @@ import { contractTemplates, contractTemplateVersions } from '../db/schema/contra
 import { catalogItems } from '../db/schema/catalog';
 import { pax8OrderLines, pax8Orders } from '../db/schema/pax8Orders';
 import { computeLineTotal, resolveEffectiveTaxRate } from './invoiceMath';
+import { vendorIdentityFromAttributes } from './catalogVendorIdentity';
 import { buildBillToAddress, type BillToAddress } from './sellerSnapshot';
 import { computeQuoteTotals, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 import { QuoteServiceError, type QuoteActor } from './quoteTypes';
@@ -25,13 +26,22 @@ import type {
 // ---------------------------------------------------------------------------
 
 /**
- * Strip internal-only economics (unitCost/unit_cost) from quote lines before
- * returning them to customer-facing surfaces (public quote URL, portal, PDF).
- * sku and partNumber are acceptable on the customer document; unitCost is NOT,
- * and markup/net must never be derived from it on the customer side.
+ * Customer-facing projection of a quote line (public quote URL, portal, PDF).
+ * ALLOWLIST, not a strip: new internal columns (vendor identity, fulfillment,
+ * economics) are excluded by default. sku/partNumber stay customer-visible by
+ * design; unitCost and the procurement snapshot never leave the MSP surface.
  */
-export function toCustomerLines<T extends { unitCost: unknown }>(lines: T[]): Omit<T, 'unitCost'>[] {
-  return lines.map(({ unitCost: _cost, ...rest }) => rest as Omit<T, 'unitCost'>);
+const CUSTOMER_LINE_FIELDS = [
+  'id', 'quoteId', 'blockId', 'orgId', 'sourceType', 'catalogItemId', 'parentLineId',
+  'name', 'description', 'quantity', 'unitPrice', 'taxable', 'customerVisible',
+  'lineTotal', 'recurrence', 'termMonths', 'billingFrequency', 'depositEligible',
+  'itemType', 'sku', 'partNumber', 'imageId', 'sortOrder', 'createdAt',
+] as const;
+export type CustomerQuoteLine<T> = Pick<T & Record<string, unknown>, (typeof CUSTOMER_LINE_FIELDS)[number] & keyof T>;
+export function toCustomerLines<T extends Record<string, unknown>>(lines: T[]) {
+  return lines.map((line) => Object.fromEntries(
+    CUSTOMER_LINE_FIELDS.filter((f) => f in line).map((f) => [f, line[f]]),
+  ) as CustomerQuoteLine<T>);
 }
 
 /**
@@ -469,6 +479,9 @@ export async function cloneQuote(id: string, actor: QuoteActor, input: CloneQuot
         itemType: line.itemType,
         sku: line.sku,
         partNumber: line.partNumber,
+        procurementSource: line.procurementSource,
+        vendorSku: line.vendorSku,
+        manufacturer: line.manufacturer,
         imageId: line.imageId ? imageIds.get(line.imageId) ?? null : null,
         sortOrder: line.sortOrder,
       })));
@@ -921,6 +934,9 @@ export async function addManualLine(quoteId: string, input: QuoteLineInput, acto
     unitCost: input.unitCost != null ? Number(input.unitCost).toFixed(2) : null,
     sku: input.sku ?? null,
     partNumber: input.partNumber ?? null,
+    procurementSource: input.procurementSource ?? null,
+    vendorSku: input.vendorSku ?? null,
+    manufacturer: input.manufacturer ?? null,
     depositEligible: input.depositEligible ?? false,
     itemType: null,
     sortOrder,
@@ -957,6 +973,7 @@ export async function addCatalogLine(
     .where(and(eq(catalogItems.id, catalogItemId), eq(catalogItems.partnerId, q.partnerId)))
     .limit(1);
   if (!item) throw new QuoteServiceError('Catalog item not found', 404, 'CATALOG_ITEM_NOT_FOUND');
+  const vendor = vendorIdentityFromAttributes(item.attributes);
   // Phase 1 recurrence is monthly|annual only; quarterly is not offered (dropped
   // from the catalog Zod enum). The DB enum retains 'quarterly' for a future phase.
   const recurrence = item.billingType === 'recurring'
@@ -986,7 +1003,10 @@ export async function addCatalogLine(
     // catalog edit never mutates existing quote line cost/sku data.
     unitCost: item.costBasis ?? null,
     sku: item.sku ?? null,
-    partNumber: options?.partNumber ?? null,
+    partNumber: options?.partNumber ?? vendor.mfgPartNo,
+    procurementSource: vendor.procurementSource,
+    vendorSku: vendor.vendorSku,
+    manufacturer: vendor.manufacturer,
     // Deposit eligibility defaults from the catalog item's type — hardware is the
     // one category a deposit typically secures (custom order, restocking risk).
     // itemType is snapshotted at add-time so a later catalog recategorization
@@ -1008,6 +1028,7 @@ export async function updateLine(
     recurrence?: 'one_time' | 'monthly' | 'annual';
     termMonths?: number | null; sortOrder?: number;
     unitCost?: number | null; sku?: string | null; partNumber?: string | null;
+    procurementSource?: string | null; vendorSku?: string | null; manufacturer?: string | null;
     imageId?: string | null;
     depositEligible?: boolean;
   },
@@ -1036,6 +1057,9 @@ export async function updateLine(
   if (input.unitCost !== undefined) set.unitCost = input.unitCost != null ? Number(input.unitCost).toFixed(2) : null;
   if (input.sku !== undefined) set.sku = input.sku;
   if (input.partNumber !== undefined) set.partNumber = input.partNumber;
+  if (input.procurementSource !== undefined) set.procurementSource = input.procurementSource;
+  if (input.vendorSku !== undefined) set.vendorSku = input.vendorSku;
+  if (input.manufacturer !== undefined) set.manufacturer = input.manufacturer;
   if (input.depositEligible !== undefined) set.depositEligible = input.depositEligible;
   if (input.imageId !== undefined) {
     // Ownership check: the image must be a quote_images row on THIS quote, or a

@@ -65,6 +65,9 @@ export const quoteLineInputSchema = z.object({
   unitCost: money.nullable().optional(),
   sku: z.string().max(100).nullable().optional(),
   partNumber: z.string().max(100).nullable().optional(),
+  procurementSource: z.string().max(40).nullable().optional(),
+  vendorSku: z.string().max(100).nullable().optional(),
+  manufacturer: z.string().max(255).nullable().optional(),
   depositEligible: z.boolean().default(false),
 }).refine((d) => Boolean(d.name?.trim() || d.description?.trim()), {
   message: 'A line needs a name or a description', path: ['name'],
@@ -86,6 +89,9 @@ export const updateQuoteLineSchema = z.object({
   unitCost: money.nullable().optional(),
   sku: z.string().max(100).nullable().optional(),
   partNumber: z.string().max(100).nullable().optional(),
+  procurementSource: z.string().max(40).nullable().optional(),
+  vendorSku: z.string().max(100).nullable().optional(),
+  manufacturer: z.string().max(255).nullable().optional(),
   // Attach/replace (guid) or clear (null) the line's product image. Must be a
   // quote_images row on the same quote — the service enforces ownership.
   imageId: z.string().guid().nullable().optional(),
