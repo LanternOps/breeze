@@ -314,15 +314,23 @@ export function streamChat(opts: SseStreamOptions): SseStreamHandle {
         if (authRetryPending) {
           // Stale access token (>15 min since login with no interim REST
           // call). Refresh once via the shared single-flight helper and
-          // reopen; on refresh failure surface the original 401.
+          // reopen; on refresh failure surface the original 401. The whole
+          // body is guarded: a throw from the retried open (or from the
+          // refresh) must reach onError — an unhandled rejection here would
+          // leave the chat UI streaming forever with no error surfaced.
           void (async () => {
-            const newToken = await refreshAccessToken();
-            if (aborted) return;
-            if (newToken) {
-              openStream(url, newToken, false);
-              return;
+            try {
+              const newToken = await refreshAccessToken();
+              if (aborted) return;
+              if (newToken) {
+                openStream(url, newToken, false);
+                return;
+              }
+              emitHttpError(xhr);
+            } catch (err) {
+              if (aborted) return;
+              opts.onError(err instanceof Error ? err : new Error(String(err)));
             }
-            emitHttpError(xhr);
           })();
           return;
         }

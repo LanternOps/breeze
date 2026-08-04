@@ -212,7 +212,16 @@ class FakeXhr {
     this.headers[key] = value;
   }
 
+  // When set, the next send() throws synchronously (simulates platform-level
+  // XHR failures on RN/Hermes). One-shot: cleared on use.
+  static throwOnNextSend: Error | null = null;
+
   send(body: string): void {
+    if (FakeXhr.throwOnNextSend) {
+      const err = FakeXhr.throwOnNextSend;
+      FakeXhr.throwOnNextSend = null;
+      throw err;
+    }
     this.sentBody = body;
   }
 
@@ -255,6 +264,7 @@ function startStream() {
 describe('streamChat 401 refresh-and-reopen', () => {
   beforeEach(() => {
     FakeXhr.instances = [];
+    FakeXhr.throwOnNextSend = null;
     vi.stubGlobal('XMLHttpRequest', FakeXhr);
   });
 
@@ -288,7 +298,11 @@ describe('streamChat 401 refresh-and-reopen', () => {
     const { events, onError, onDone } = startStream();
     await flushAsync();
 
-    FakeXhr.instances[0].finish(401, '{"error":"Unauthorized"}');
+    // Real RN XHR delivers the 401 body incrementally at readyState 3
+    // (status is already set at HEADERS_RECEIVED) before DONE — mirror that
+    // sequence so the parse-skip guard is exercised where it matters.
+    FakeXhr.instances[0].emitChunk(401, '{"error":"Unauthorized"}');
+    FakeXhr.instances[0].finish(401);
     await flushAsync();
 
     expect(refreshMock).toHaveBeenCalledTimes(1);
@@ -376,6 +390,60 @@ describe('streamChat 401 refresh-and-reopen', () => {
 
     handle.abort();
     expect(FakeXhr.instances[1].abortCalled).toBe(true);
+  });
+
+  it('surfaces a throw from the retried open via onError instead of hanging', async () => {
+    refreshMock.mockResolvedValueOnce({ token: 'fresh-token' } as Awaited<ReturnType<typeof refreshToken>>);
+    const { onError, onDone } = startStream();
+    await flushAsync();
+
+    FakeXhr.throwOnNextSend = new Error('send exploded');
+    FakeXhr.instances[0].finish(401, '{"error":"Unauthorized"}');
+    await flushAsync();
+
+    // The retry attempt threw synchronously — the caller must still get an
+    // error callback rather than a permanently "streaming" chat.
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect((onError.mock.calls[0][0] as Error).message).toBe('send exploded');
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it('shares one single-flight refresh between a streamChat 401 and a concurrent authedFetch 401', async () => {
+    // Replaying a rotated refresh token revokes the whole token family, so a
+    // chat send racing a REST call at token expiry MUST coalesce into ONE
+    // /auth/refresh across both paths.
+    let resolveRefresh: (v: { token: string }) => void;
+    refreshMock.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveRefresh = resolve; }) as ReturnType<typeof refreshToken>,
+    );
+    fetchMock.mockImplementation(async (_url, init) => {
+      const headers = (init as RequestInit).headers as Record<string, string>;
+      return headers.Authorization === 'Bearer fresh-token'
+        ? jsonResponse(sessionsBody)
+        : jsonResponse({ error: 'Unauthorized' }, 401);
+    });
+
+    const { events, onDone } = startStream();
+    const listPromise = listAiSessions();
+    await flushAsync();
+
+    // Both paths hit their 401 and enter the shared refresh.
+    FakeXhr.instances[0].finish(401, '{"error":"Unauthorized"}');
+    await flushAsync();
+    resolveRefresh!({ token: 'fresh-token' });
+    await flushAsync();
+
+    expect(refreshMock).toHaveBeenCalledTimes(1);
+
+    // Both paths retried with the fresh token.
+    const sessions = await listPromise;
+    expect(sessions).toHaveLength(1);
+    expect(FakeXhr.instances).toHaveLength(2);
+    expect(FakeXhr.instances[1].headers.Authorization).toBe('Bearer fresh-token');
+
+    FakeXhr.instances[1].finish(200, 'event: done\ndata: {"type":"done"}\n\n');
+    expect(events).toEqual([{ type: 'done' }]);
+    expect(onDone).toHaveBeenCalledTimes(1);
   });
 
   it('non-401 HTTP failures surface immediately without refreshing', async () => {
