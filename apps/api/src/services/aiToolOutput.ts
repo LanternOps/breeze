@@ -16,6 +16,13 @@ type CompactConfig = {
   maxArrayItems: number;
   maxObjectKeys: number;
   maxDepth: number;
+  /**
+   * Char budget for `stdout` string leaves specifically. Command output is the
+   * payload the model is actually after (file listings, process lists), so it
+   * gets a larger budget than generic string leaves — the old shared 1.5–2K cap
+   * cut structured listings mid-JSON at ~2KB with no way to recover (#3093).
+   */
+  maxStdoutChars: number;
 };
 
 const DEFAULT_CONFIG: CompactConfig = {
@@ -23,10 +30,13 @@ const DEFAULT_CONFIG: CompactConfig = {
   maxArrayItems: 60,
   maxObjectKeys: 60,
   maxDepth: 6,
+  maxStdoutChars: 6_000,
 };
 
 const MAX_TOOL_RESULT_CHARS = 8_000;
 const RAW_PREVIEW_CHARS = 2_000;
+const STDOUT_TEXT_CHARS = 6_000;
+const STDERR_TEXT_CHARS = 1_200;
 const MAX_DISK_CANDIDATES = 60;
 const MAX_DISK_LIST_ROWS = 30;
 const REDACTED = '[REDACTED]';
@@ -92,7 +102,8 @@ function compactValue(
   value: unknown,
   stats: CompactStats,
   config: CompactConfig,
-  depth = 0
+  depth = 0,
+  keyHint = ''
 ): unknown {
   if (
     value === null ||
@@ -103,7 +114,10 @@ function compactValue(
   }
 
   if (typeof value === 'string') {
-    return truncateText(value, config.maxStringChars, stats);
+    // stdout carries the command output the model asked for — give it the
+    // dedicated (larger) budget instead of the generic leaf cap (#3093).
+    const maxChars = keyHint === 'stdout' ? config.maxStdoutChars : config.maxStringChars;
+    return truncateText(value, maxChars, stats);
   }
 
   if (depth >= config.maxDepth) {
@@ -130,7 +144,7 @@ function compactValue(
 
     const output: Record<string, unknown> = {};
     for (const [key, itemValue] of entries.slice(0, config.maxObjectKeys)) {
-      output[key] = compactValue(itemValue, stats, config, depth + 1);
+      output[key] = compactValue(itemValue, stats, config, depth + 1, key);
     }
     return output;
   }
@@ -236,6 +250,35 @@ function compactDiskCleanupPayload(payload: Record<string, unknown>, stats: Comp
   return output;
 }
 
+function mergeStats(target: CompactStats, source: CompactStats): void {
+  target.stringsTruncated += source.stringsTruncated;
+  target.arraysTruncated += source.arraysTruncated;
+  target.arrayItemsDropped += source.arrayItemsDropped;
+  target.objectsTruncated += source.objectsTruncated;
+  target.objectKeysDropped += source.objectKeysDropped;
+  target.depthLimited += source.depthLimited;
+  target.sensitiveFieldsOmitted += source.sensitiveFieldsOmitted;
+}
+
+function statsShowTruncation(stats: CompactStats): boolean {
+  return (
+    stats.stringsTruncated > 0 ||
+    stats.arraysTruncated > 0 ||
+    stats.objectsTruncated > 0 ||
+    stats.depthLimited > 0
+  );
+}
+
+/**
+ * Guidance appended to compacted command output so the model can actually
+ * recover the rest instead of re-issuing blind variants of the same command
+ * (#3093 — each retry costs a fresh approval, compounding approval fatigue).
+ */
+const COMMAND_PAGING_NOTE =
+  'Output was compacted to fit the chat budget. To fetch the rest, page or filter via payload: ' +
+  'list_processes and event_logs_query accept { page, limit (max 500), search/filter fields }; ' +
+  'file_list accepts { path, limit (max 5000) } — use a narrower path or a follow-up page instead of repeating the same call.';
+
 function compactCommandStylePayload(payload: Record<string, unknown>, stats: CompactStats): Record<string, unknown> {
   const output: Record<string, unknown> = {};
   for (const key of ['status', 'exitCode', 'durationMs', 'error']) {
@@ -243,12 +286,36 @@ function compactCommandStylePayload(payload: Record<string, unknown>, stats: Com
   }
 
   if (typeof payload.stdout === 'string') {
-    output.stdout = truncateText(redactAiToolOutputText(payload.stdout), 2_000, stats);
-    output.stdoutChars = payload.stdout.length;
+    // Structured commands (list_processes, file_list, event logs, services…)
+    // return their whole response as JSON in `stdout`. Blind char-truncation
+    // used to cut that JSON mid-string at ~2KB, destroying the trailing
+    // envelope fields (total/page/truncated) the model needed to page (#3093).
+    // Compact it structurally instead: keep the envelope, drop excess list
+    // items, and report exactly what was dropped plus how to fetch more.
+    const parsedStdout = tryParseJson(payload.stdout);
+    if (parsedStdout !== null && typeof parsedStdout === 'object') {
+      const stdoutStats = emptyStats();
+      const compactedStdout = compactValue(parsedStdout, stdoutStats, {
+        ...DEFAULT_CONFIG,
+        maxArrayItems: 50,
+      });
+      output.stdout = compactedStdout;
+      output.stdoutChars = payload.stdout.length;
+      if (statsShowTruncation(stdoutStats)) {
+        output.stdoutTruncation = {
+          itemsDropped: stdoutStats.arrayItemsDropped,
+          note: COMMAND_PAGING_NOTE,
+        };
+      }
+      mergeStats(stats, stdoutStats);
+    } else {
+      output.stdout = truncateText(redactAiToolOutputText(payload.stdout), STDOUT_TEXT_CHARS, stats);
+      output.stdoutChars = payload.stdout.length;
+    }
   }
 
   if (typeof payload.stderr === 'string') {
-    output.stderr = truncateText(redactAiToolOutputText(payload.stderr), 1_200, stats);
+    output.stderr = truncateText(redactAiToolOutputText(payload.stderr), STDERR_TEXT_CHARS, stats);
     output.stderrChars = payload.stderr.length;
   }
 
@@ -304,7 +371,17 @@ function sanitizeToolPayloadValue(
   if (typeof value === 'string') {
     const redacted = redactAiToolOutputText(value);
     if (['stdout', 'stderr'].includes(keyHint.toLowerCase())) {
-      return truncateText(redacted, keyHint.toLowerCase() === 'stderr' ? 1_200 : 2_000, stats);
+      // JSON stdout is structured command output — leave it whole here so
+      // compactCommandStylePayload can compact it structurally instead of
+      // cutting the JSON mid-string (#3093). It stays bounded either way:
+      // the compaction pipeline's compactValue pass caps stdout leaves at
+      // maxStdoutChars and the overall result at MAX_TOOL_RESULT_CHARS.
+      if (keyHint.toLowerCase() === 'stdout') {
+        const parsed = tryParseJson(redacted);
+        if (parsed !== null && typeof parsed === 'object') return redacted;
+        return truncateText(redacted, STDOUT_TEXT_CHARS, stats);
+      }
+      return truncateText(redacted, STDERR_TEXT_CHARS, stats);
     }
     return redacted;
   }
@@ -489,6 +566,7 @@ export function compactToolResultForChat(toolName: string, rawResult: string): s
     maxArrayItems: 20,
     maxObjectKeys: 20,
     maxDepth: 4,
+    maxStdoutChars: 2_000,
   });
   const aggressiveWithMeta = appendChatMeta(aggressivelyCompacted, secondaryStats, rawResult.length);
   serialized = safeStringify(aggressiveWithMeta);
