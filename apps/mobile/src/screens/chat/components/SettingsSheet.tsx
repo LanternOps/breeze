@@ -757,10 +757,12 @@ function ToggleRow({
         paddingVertical: spacing[3],
         flexDirection: 'row',
         alignItems: 'center',
-        opacity: disabled ? 0.55 : 1,
       }}
     >
       <View style={{ flex: 1, marginRight: spacing[3] }}>
+        {/* Only the label and Switch signal "disabled" — the description stays
+            at full contrast because for a disabled row it carries the
+            explanation the user must be able to read (#3118). */}
         <Text style={[type.bodyMd, { color: disabled ? theme.textLo : theme.textHi }]}>{label}</Text>
         {description ? (
           <Text style={[type.meta, { color: theme.textMd, marginTop: spacing[1] }]}>
@@ -774,6 +776,7 @@ function ToggleRow({
         onValueChange={onChange}
         trackColor={{ false: theme.bg3, true: palette.brand.deep }}
         thumbColor={value ? palette.brand.base : theme.textMd}
+        style={disabled ? { opacity: 0.55 } : undefined}
       />
     </View>
   );

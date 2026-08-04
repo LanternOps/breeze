@@ -40,6 +40,7 @@ import {
   reconcileApprovalNotifications,
   staleApprovalNotificationIds,
 } from './notifications';
+import { pushUnavailableCopy } from '../screens/chat/components/pushUnavailableCopy';
 
 beforeEach(() => {
   platform.OS = 'ios';
@@ -99,6 +100,22 @@ describe('registerForPushNotifications', () => {
       status: 'unsupported',
       reason: 'not_physical_device',
     });
+  });
+
+  it('emits reasons the Settings sheet maps to SPECIFIC copy, not the generic fallback (#3118)', async () => {
+    // Pins the string contract between this service and pushUnavailableCopy:
+    // if a reason is renamed here, the sheet silently falls through to generic
+    // "this device" copy with both sides' own tests still green.
+    platform.OS = 'android';
+    const android = await registerForPushNotifications();
+    if (android.status !== 'unsupported') throw new Error('expected unsupported');
+    expect(pushUnavailableCopy(android.reason).notificationsRow).toMatch(/Android/);
+
+    platform.OS = 'ios';
+    device.isDevice = false;
+    const sim = await registerForPushNotifications();
+    if (sim.status !== 'unsupported') throw new Error('expected unsupported');
+    expect(pushUnavailableCopy(sim.reason).notificationsRow).toMatch(/simulator/i);
   });
 
   it('reports failed when the user denies permission', async () => {
