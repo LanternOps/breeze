@@ -1,7 +1,9 @@
 import * as SecureStore from 'expo-secure-store';
+import * as Sentry from '@sentry/react-native';
 
 import { getServerUrl } from './serverConfig';
 import { fetchWithTimeout } from './fetchWithTimeout';
+import type { ApiError } from './api';
 import { refreshToken } from './api';
 import { storeToken } from './auth';
 
@@ -31,7 +33,11 @@ async function getToken(): Promise<string | null> {
 
 // Single-flight guard so N concurrent 401s trigger one /auth/refresh, not N.
 // Cleared once the refresh settles; callers that grabbed the promise still
-// receive its result.
+// receive its result. NOTE: /auth/refresh rotates the refresh cookie and
+// replaying a rotated token revokes the whole token family, so this guard is
+// only safe while aiChat is the sole mobile refresh caller — if another
+// service starts calling refreshToken(), move the single-flight into a shared
+// module.
 let refreshInFlight: Promise<string | null> | null = null;
 
 /**
@@ -47,15 +53,32 @@ async function refreshAccessToken(): Promise<string | null> {
         const { token } = await refreshToken();
         try {
           await storeToken(token);
-        } catch {
+        } catch (e) {
           // Persisting failed (locked keychain, etc.) — the in-memory token is
-          // still valid for the retry, and storeToken already reported the
-          // failure. Don't turn a usable refresh into a hard failure.
+          // still valid for the retry, so don't turn a usable refresh into a
+          // hard failure. But a phone that can't persist tokens will silently
+          // double every aiChat round-trip while all non-refreshing services
+          // hard-401, so make the real cause observable in production
+          // (console.* goes nowhere on release RN builds).
+          Sentry.captureException(e, {
+            tags: { area: 'aichat-token-refresh' },
+            extra: { stage: 'persist' },
+          });
         }
         return token;
-      } catch {
-        // Refresh itself failed — the session is genuinely over. Callers
-        // return the original 401 so the UI's existing auth handling fires.
+      } catch (e) {
+        // Refresh failed — expired refresh cookie, offline, or a
+        // /auth/refresh outage. We return null so the caller surfaces the
+        // original 401 to the UI either way, but record which failure mode it
+        // was: without this, "users see 401s" is undiagnosable in production.
+        Sentry.captureMessage('aiChat token refresh failed', {
+          level: 'warning',
+          tags: { area: 'aichat-token-refresh' },
+          extra: {
+            statusCode: (e as ApiError)?.statusCode,
+            message: (e as ApiError)?.message ?? String(e),
+          },
+        });
         return null;
       } finally {
         refreshInFlight = null;

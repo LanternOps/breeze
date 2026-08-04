@@ -1,12 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { listAiSessions } from './aiChat';
+import { createAiSession, listAiSessions } from './aiChat';
 import { refreshToken } from './api';
 import { storeToken } from './auth';
 import { fetchWithTimeout } from './fetchWithTimeout';
 
 vi.mock('./serverConfig', () => ({
   getServerUrl: vi.fn().mockResolvedValue('https://api.test'),
+}));
+
+vi.mock('@sentry/react-native', () => ({
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
 }));
 
 vi.mock('expo-secure-store', () => ({
@@ -107,6 +112,45 @@ describe('authedFetch 401 refresh-and-retry (via listAiSessions)', () => {
     expect(sessions).toHaveLength(1);
     const retryHeaders = (fetchMock.mock.calls[1][1] as RequestInit).headers as Record<string, string>;
     expect(retryHeaders.Authorization).toBe('Bearer fresh-token');
+  });
+
+  it('replays a POST retry with the same method, body, and CSRF header', async () => {
+    const created = { id: 's9', title: null, orgId: 'o1', createdAt: 'now' };
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: 'Unauthorized' }, 401))
+      .mockResolvedValueOnce(jsonResponse(created));
+    refreshMock.mockResolvedValueOnce({ token: 'fresh-token' });
+
+    const session = await createAiSession({ title: 'hello' });
+
+    expect(session.id).toBe('s9');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [firstUrl, firstInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [retryUrl, retryInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(retryUrl).toBe(firstUrl);
+    expect(retryInit.method).toBe('POST');
+    expect(retryInit.body).toBe(firstInit.body);
+    expect(retryInit.body).toBe(JSON.stringify({ title: 'hello' }));
+    const retryHeaders = retryInit.headers as Record<string, string>;
+    expect(retryHeaders['x-breeze-csrf']).toBe('1');
+    expect(retryHeaders.Authorization).toBe('Bearer fresh-token');
+  });
+
+  it('clears the single-flight guard after a failed refresh so a later 401 refreshes again', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'Unauthorized' }, 401));
+    refreshMock.mockRejectedValueOnce({ message: 'offline' });
+    await expect(listAiSessions()).rejects.toThrow('listAiSessions failed: 401');
+
+    // A transient failure must not poison the guard: the next 401 refreshes.
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: 'Unauthorized' }, 401))
+      .mockResolvedValueOnce(jsonResponse(sessionsBody));
+    refreshMock.mockResolvedValueOnce({ token: 'fresh-token' });
+
+    const sessions = await listAiSessions();
+
+    expect(sessions).toHaveLength(1);
+    expect(refreshMock).toHaveBeenCalledTimes(2);
   });
 
   it('single-flights concurrent 401s into one refresh call', async () => {
