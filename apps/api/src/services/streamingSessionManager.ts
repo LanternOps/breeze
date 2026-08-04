@@ -18,6 +18,7 @@ import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import { aiSessions, aiMessages, aiBudgets } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+import { buildOrgAccessClosures } from '../middleware/auth';
 import type { AiStreamEvent, AiApprovalMode } from '@breeze/shared/types/ai';
 import { AsyncEventQueue } from '../utils/asyncQueue';
 import { recordUsageFromSdkResult, calculateCostCents } from './aiCostTracker';
@@ -291,6 +292,13 @@ export interface ActiveSession {
    */
   readonly orgId: string;
   /**
+   * Bound device ID from the aiSessions DB row (null when the session is not
+   * device-bound). When set, `toolAuth` is narrowed to the session org via
+   * `buildDeviceBoundSessionAuth` so org-scoped tools query the DEVICE's org,
+   * not the login org (#3087).
+   */
+  readonly deviceId: string | null;
+  /**
    * Model id this session runs with (from the aiSessions row). Used to price
    * tokens for cost tracking when the SDK fails to report total_cost_usd.
    */
@@ -303,7 +311,20 @@ export interface ActiveSession {
   state: SessionState;
   lastActivityAt: number;
   readonly createdAt: number;
+  /**
+   * RAW login AuthContext from the latest request. Used for actor identity,
+   * RBAC (`checkToolPermission` resolves the login role from it — a partner
+   * tech keeps their partner role, matching the rest of the API), rate limits,
+   * and audit attribution. NOT for tool queries — see `toolAuth`.
+   */
   auth: AuthContext;
+  /**
+   * Effective AuthContext for TOOL EXECUTION (MCP handlers + their RLS DB
+   * context). For device-bound sessions this is `auth` narrowed to the
+   * session (device) org via `buildDeviceBoundSessionAuth` (#3087); otherwise
+   * it is `auth` itself. Refreshed alongside `auth` on every request.
+   */
+  toolAuth: AuthContext;
   /** Immutable audit data extracted from the latest request (avoids holding stale Hono context) */
   auditSnapshot: AuditSnapshot;
   mcpServer: McpSdkServerConfigWithInstance;
@@ -365,6 +386,51 @@ export interface ActiveSession {
   recordExtraUsage?: (usage: { inputTokens: number; outputTokens: number; costCents: number }) => Promise<void>;
 }
 
+/**
+ * Narrow a caller's AuthContext to a device-bound session's org (#3087).
+ *
+ * `ai_sessions.org_id` is anchored to the bound DEVICE's org at creation
+ * (services/aiAgent.ts createSession — gated on `auth.canAccessOrg` +
+ * `auth.canAccessSite`), but tool execution historically ran under the raw
+ * login AuthContext. For a partner-scope tech whose login org differs from the
+ * device's org, org-scoped tools (`getOrgId(auth)` → `accessibleOrgIds[0]`,
+ * `auth.orgCondition(...)` → whole partner) silently queried the WRONG org —
+ * e.g. `manage_patches` returned a sibling org's patches and `search_logs`
+ * returned empty for the device's own logs.
+ *
+ * The returned context pins the org axis to the session org:
+ * - `orgId` / `accessibleOrgIds` = the session (device) org only, with matching
+ *   `orgCondition` / `canAccessOrg` closures from `buildOrgAccessClosures`.
+ * - `scope` and `partnerId` are PRESERVED — collapsing a partner scope to
+ *   'organization' would drop `accessiblePartnerIds` from the derived RLS
+ *   context and black out partner-axis tables (scripts, alert templates,
+ *   update rings — the #2822 failure mode). Partner-wide config rows apply to
+ *   the device's org and must stay readable.
+ * - Site restrictions (`allowedSiteIds` / `canAccessSite`), `helperDeviceId`,
+ *   principal/user/token are preserved via spread — this narrows, never widens.
+ *
+ * Defensive: throws if the caller cannot access the session org. Unreachable
+ * in practice (`getSession` pre-filters by `auth.orgCondition`), but if auth
+ * ever regresses we must fail loudly rather than run tools cross-org.
+ */
+export function buildDeviceBoundSessionAuth(auth: AuthContext, sessionOrgId: string): AuthContext {
+  if (!auth.canAccessOrg(sessionOrgId)) {
+    throw new Error('Device-bound AI session org is not accessible to the caller');
+  }
+  const alreadyPinned =
+    auth.orgId === sessionOrgId &&
+    auth.accessibleOrgIds?.length === 1 &&
+    auth.accessibleOrgIds[0] === sessionOrgId;
+  if (alreadyPinned) return auth;
+
+  return {
+    ...auth,
+    orgId: sessionOrgId,
+    accessibleOrgIds: [sessionOrgId],
+    ...buildOrgAccessClosures([sessionOrgId]),
+  };
+}
+
 // ============================================
 // StreamingSessionManager (singleton)
 // ============================================
@@ -405,6 +471,13 @@ export class StreamingSessionManager {
       maxTurns: number;
       turnCount: number;
       systemPrompt: string | null;
+      /**
+       * Bound device from the aiSessions row. When set, the session's
+       * effective auth is narrowed to the session org (#3087). Callers whose
+       * middleware already pins the auth to one org (helper chat, client AI)
+       * may omit it — narrowing would be a no-op there.
+       */
+      deviceId?: string | null;
     },
     auth: AuthContext,
     requestContext: RequestLike | undefined,
@@ -426,8 +499,13 @@ export class StreamingSessionManager {
 
     const existing = this.sessions.get(breezeSessionId);
     if (existing && existing.state !== 'closed') {
-      // Update per-request context
+      // Update per-request context. Device-bound sessions re-narrow the fresh
+      // request auth to the session org every time (#3087) — `toolAuth` must
+      // never revert to the raw login scope on a follow-up message.
       existing.auth = auth;
+      existing.toolAuth = existing.deviceId
+        ? buildDeviceBoundSessionAuth(auth, existing.orgId)
+        : auth;
       existing.auditSnapshot = snapshot;
       existing.allowedTools = allowedTools;
       existing.lastActivityAt = Date.now();
@@ -459,12 +537,20 @@ export class StreamingSessionManager {
       console.error('[StreamingSessionManager] Failed to load approval mode, defaulting to per_step:', err);
     }
 
+    // Device-bound sessions execute tools under the DEVICE's org, not the
+    // login org (#3087). `toolAuth` (MCP tool handlers + their RLS context)
+    // is narrowed to the session org; `auth` stays raw so RBAC, rate limits,
+    // and audit attribution keep resolving the login identity/role.
+    const deviceId = dbSession.deviceId ?? null;
+    const toolAuth = deviceId ? buildDeviceBoundSessionAuth(auth, dbSession.orgId) : auth;
+
     // Build partial session object so callbacks can reference it.
     // query and processorPromise are filled in after creation.
     const now = Date.now();
     const session: ActiveSession = {
       breezeSessionId,
       orgId: dbSession.orgId,
+      deviceId,
       model: dbSession.model,
       sdkSessionId: dbSession.sdkSessionId,
       query: null as unknown as Query, // set below
@@ -475,6 +561,7 @@ export class StreamingSessionManager {
       lastActivityAt: now,
       createdAt: now,
       auth,
+      toolAuth,
       auditSnapshot: snapshot,
       mcpServer: null as unknown as McpSdkServerConfigWithInstance, // set below
       mcpPrefix: MCP_PREFIX, // updated below if custom factory
@@ -503,11 +590,11 @@ export class StreamingSessionManager {
     let mcpServer: McpSdkServerConfigWithInstance;
     let mcpServerName = 'breeze';
     if (mcpServerFactory) {
-      const custom = mcpServerFactory(() => session.auth, preToolUse, postToolUse, () => session);
+      const custom = mcpServerFactory(() => session.toolAuth, preToolUse, postToolUse, () => session);
       mcpServer = custom.server;
       mcpServerName = custom.name;
     } else {
-      mcpServer = createBreezeMcpServer(() => session.auth, preToolUse, postToolUse, () => session);
+      mcpServer = createBreezeMcpServer(() => session.toolAuth, preToolUse, postToolUse, () => session);
     }
     session.mcpServer = mcpServer;
     session.mcpPrefix = `mcp__${mcpServerName}__`;

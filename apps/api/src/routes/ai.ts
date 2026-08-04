@@ -617,6 +617,9 @@ aiRoutes.post(
         maxTurns: dbSession.maxTurns,
         turnCount: dbSession.turnCount,
         systemPrompt: dbSession.systemPrompt,
+        // Device-bound sessions narrow tool execution to the device's org
+        // (ai_sessions.org_id), not the login org (#3087).
+        deviceId: dbSession.deviceId,
       },
       auth,
       c,
