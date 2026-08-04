@@ -147,6 +147,12 @@ export const quoteLines = pgTable('quote_lines', {
   itemType: catalogItemTypeEnum('item_type'),
   sku: varchar('sku', { length: 100 }),
   partNumber: varchar('part_number', { length: 100 }),
+  // Vendor identity snapshotted at add-time from catalog_items.attributes
+  // (never joined live: the distributor price table is partner-axis RLS and the
+  // attributes jsonb has three incompatible shapes). NULL = unknown/manual.
+  procurementSource: varchar('procurement_source', { length: 40 }),
+  vendorSku: varchar('vendor_sku', { length: 100 }),
+  manufacturer: varchar('manufacturer', { length: 255 }),
   // Optional per-line product image (quote_images row on the SAME quote; the
   // service enforces that). Wins over the catalog item's image when both exist.
   imageId: uuid('image_id').references((): AnyPgColumn => quoteImages.id, { onDelete: 'set null' }),
