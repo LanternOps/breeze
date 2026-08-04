@@ -896,6 +896,43 @@
         "copyTsv": "Copiar para planilha",
         "costTotal": "Custo total",
         "exportCsv": "Baixar CSV",
+        "fulfillment": {
+          "allocation": {
+            "cancelled": "Cancelado",
+            "eta": "Chega em {{date}}",
+            "ordered": "{{qty}} pedidas",
+            "received": "{{qty}} recebidas",
+            "tracking": "Rastreio {{number}}"
+          },
+          "cancel": "Cancelar linha",
+          "cancelError": "Não foi possível cancelar esta linha do pedido.",
+          "cancelSuccess": "Linha do pedido cancelada",
+          "dialog": {
+            "cancel": "Cancelar",
+            "empty": "Tudo o que foi selecionado já está pedido.",
+            "error": "Não foi possível registrar o pedido.",
+            "eta": "Chegada prevista",
+            "notes": "Observações",
+            "orderRef": "Referência do pedido",
+            "qtyAria": "Quantidade a pedir de {{item}}",
+            "submit": "Registrar pedido",
+            "success": "Pedido registrado",
+            "title": "Marcar itens como pedidos",
+            "tracking": "Número de rastreio",
+            "vendor": "Fornecedor"
+          },
+          "markOrdered": "Marcar como pedido",
+          "receive": "Marcar como recebido",
+          "receiveError": "Não foi possível atualizar esta linha do pedido.",
+          "receiveSuccess": "Marcado como recebido",
+          "select": "Selecionar {{item}}",
+          "selectColumn": "Selecionar para pedido",
+          "status": {
+            "ordered": "Pedido",
+            "partiallyReceived": "Recebido em parte",
+            "received": "Recebido"
+          }
+        },
         "itemCount_one": "{{count}} item",
         "itemCount_other": "{{count}} itens",
         "missingCost_one": "{{count}} item sem custo registrado",

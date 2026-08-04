@@ -153,8 +153,11 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
               lines={orderLines}
               currency={currency}
               showCost={canSeeMargin && showMargin}
+              quoteId={quote.id}
               quoteNumber={quote.quoteNumber}
               pax8Order={detail.pax8Order}
+              orders={detail.orders}
+              onChanged={onChanged}
             />
           )}
         </div>

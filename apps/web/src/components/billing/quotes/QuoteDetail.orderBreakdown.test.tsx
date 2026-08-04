@@ -3,9 +3,15 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { showToast } from '../../shared/Toast';
+import { fetchWithAuth } from '../../../stores/auth';
 import QuoteDetail from './QuoteDetail';
 import { _resetShowMarginMemoryForTests, SHOW_INTERNAL_MARGIN_KEY } from '../billingUi';
-import type { QuoteDetail as QuoteDetailData, QuoteLine } from './quoteTypes';
+import type {
+  QuoteDetail as QuoteDetailData,
+  QuoteLine,
+  QuoteOrder,
+  QuoteOrderLine,
+} from './quoteTypes';
 
 type Perm = { resource: string; action: string };
 const state = vi.hoisted(() => ({ permissions: [{ resource: 'quotes', action: 'read' }] as Perm[] }));
@@ -34,10 +40,29 @@ function line(overrides: Partial<QuoteLine>): QuoteLine {
   };
 }
 
+function alloc(overrides: Partial<QuoteOrderLine> = {}): QuoteOrderLine {
+  return {
+    id: 'a-1', orderId: 'ord-1', quoteLineId: 'l-1', orderedQty: '1.00', receivedQty: '0.00',
+    trackingNumber: null, eta: null, receivedAt: null, cancelledAt: null, notes: null,
+    createdAt: '2026-08-01T00:00:00Z',
+    ...overrides,
+  };
+}
+
+function order(lines: QuoteOrderLine[], overrides: Partial<QuoteOrder> = {}): QuoteOrder {
+  return {
+    id: 'ord-1', quoteId: 'q-1', procurementSource: 'td_synnex', vendorName: 'TD SYNNEX',
+    orderRef: 'PO-9', orderedBy: null, orderedAt: '2026-08-01T00:00:00Z', notes: null,
+    lines,
+    ...overrides,
+  };
+}
+
 function acceptedDetail(
   lines: QuoteLine[],
   status = 'accepted',
   pax8Order?: QuoteDetailData['pax8Order'],
+  orders?: QuoteOrder[],
 ): QuoteDetailData {
   return {
     quote: {
@@ -54,6 +79,7 @@ function acceptedDetail(
     blocks: [],
     lines,
     pax8Order,
+    orders,
   };
 }
 
@@ -376,5 +402,143 @@ describe('QuoteDetail — breakdown export', () => {
     await waitFor(() =>
       expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })),
     );
+  });
+});
+
+describe('QuoteDetail — breakdown fulfillment (chips, mark ordered, receive/cancel)', () => {
+  const READ_AND_FULFILL: Perm[] = [
+    { resource: 'quotes', action: 'read' },
+    { resource: 'quotes', action: 'fulfill' },
+  ];
+
+  beforeEach(() => {
+    state.permissions = READ_AND_FULFILL;
+    vi.mocked(fetchWithAuth).mockResolvedValue(
+      new Response(JSON.stringify({ data: { id: 'ord-1' } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+  });
+
+  it('shows a "Received" chip for a line whose active allocations are fully received', async () => {
+    render(<QuoteDetail detail={acceptedDetail(
+      [
+        line({ id: 'l-1', sku: 'LT-100', quantity: '2.00' }),
+        line({ id: 'l-2', sku: 'KB-5', name: 'Keyboard', quantity: '1.00' }),
+      ],
+      'accepted',
+      undefined,
+      [order([
+        alloc({ id: 'a-1', quoteLineId: 'l-1', orderedQty: '2.00', receivedQty: '2.00', receivedAt: '2026-08-02T00:00:00Z' }),
+      ])],
+    )} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+
+    expect(screen.getByTestId('quote-order-breakdown-status-l-1')).toHaveTextContent('Received');
+    // A line with no allocation reads as not ordered by the ABSENCE of a chip.
+    expect(screen.queryByTestId('quote-order-breakdown-status-l-2')).not.toBeInTheDocument();
+  });
+
+  it('opens the dialog with every selected line prefilled to its unordered remainder', async () => {
+    render(<QuoteDetail detail={acceptedDetail(
+      [
+        line({ id: 'l-1', sku: 'LT-100', quantity: '3.00' }),
+        line({ id: 'l-2', sku: 'KB-5', name: 'Keyboard', quantity: '5.00' }),
+      ],
+      'accepted',
+      undefined,
+      [order([alloc({ id: 'a-1', quoteLineId: 'l-1', orderedQty: '1.00' })])],
+    )} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+
+    await userEvent.click(screen.getByTestId('quote-order-breakdown-select-l-1'));
+    await userEvent.click(screen.getByTestId('quote-order-breakdown-select-l-2'));
+    await userEvent.click(screen.getByTestId('quote-order-breakdown-mark-ordered'));
+
+    expect(screen.getByTestId('quote-order-tracking')).toBeInTheDocument();
+    // l-1 already has 1 of 3 on order → 2 remain; l-2 has nothing on order → 5.
+    expect(screen.getByTestId('quote-order-tracking-qty-l-1')).toHaveValue(2);
+    expect(screen.getByTestId('quote-order-tracking-qty-l-2')).toHaveValue(5);
+  });
+
+  it('POSTs the order once with a clientRequestId and the selected quote line ids', async () => {
+    render(<QuoteDetail detail={acceptedDetail(
+      [
+        line({ id: 'l-1', sku: 'LT-100', quantity: '3.00', procurementSource: 'td_synnex' }),
+        line({ id: 'l-2', sku: 'KB-5', name: 'Keyboard', quantity: '5.00', procurementSource: 'td_synnex' }),
+      ],
+    )} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+
+    await userEvent.click(screen.getByTestId('quote-order-breakdown-select-l-1'));
+    await userEvent.click(screen.getByTestId('quote-order-breakdown-select-l-2'));
+    await userEvent.click(screen.getByTestId('quote-order-breakdown-mark-ordered'));
+    // The Dialog autofocuses its first field on the next animation frame — let
+    // that land first, or it steals focus mid-type and the keystrokes go to the
+    // qty input instead of the order-ref field.
+    await waitFor(() => expect(screen.getByTestId('quote-order-tracking-qty-l-1')).toHaveFocus());
+    await userEvent.type(screen.getByTestId('quote-order-tracking-order-ref'), 'PO-42');
+    await userEvent.click(screen.getByTestId('quote-order-tracking-submit'));
+
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+    const [path, init] = vi.mocked(fetchWithAuth).mock.calls[0]!;
+    expect(path).toBe('/quotes/q-1/orders');
+    expect(init?.method).toBe('POST');
+    const body = JSON.parse(String(init?.body)) as {
+      clientRequestId: string;
+      orderRef?: string;
+      procurementSource?: string;
+      lines: { quoteLineId: string; orderedQty: number }[];
+    };
+    expect(body.clientRequestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    expect(body.orderRef).toBe('PO-42');
+    expect(body.procurementSource).toBe('td_synnex');
+    expect(body.lines).toEqual([
+      { quoteLineId: 'l-1', orderedQty: 3 },
+      { quoteLineId: 'l-2', orderedQty: 5 },
+    ]);
+  });
+
+  it('fires exactly one POST when the submit button is double-clicked', async () => {
+    // The request is held open so the second click lands while the first is
+    // still in flight — the exact double-submit a slow network produces.
+    let release!: (r: Response) => void;
+    vi.mocked(fetchWithAuth).mockReturnValueOnce(new Promise<Response>((resolve) => { release = resolve; }));
+
+    render(<QuoteDetail detail={acceptedDetail([line({ id: 'l-1', sku: 'LT-100', quantity: '2.00' })])} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+
+    await userEvent.click(screen.getByTestId('quote-order-breakdown-select-l-1'));
+    await userEvent.click(screen.getByTestId('quote-order-breakdown-mark-ordered'));
+
+    const submit = screen.getByTestId('quote-order-tracking-submit');
+    await userEvent.click(submit);
+    await userEvent.click(submit);
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+
+    release(new Response(JSON.stringify({ data: { id: 'ord-1' } }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }));
+    await waitFor(() => expect(screen.queryByTestId('quote-order-tracking')).not.toBeInTheDocument());
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides the selection checkboxes and the Mark-ordered button without quotes:fulfill', async () => {
+    state.permissions = [{ resource: 'quotes', action: 'read' }, { resource: 'quotes', action: 'write' }];
+    render(<QuoteDetail detail={acceptedDetail(
+      [line({ id: 'l-1', sku: 'LT-100', quantity: '2.00' })],
+      'accepted',
+      undefined,
+      [order([alloc({ id: 'a-1', quoteLineId: 'l-1', orderedQty: '2.00' })])],
+    )} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('quote-order-breakdown-mark-ordered')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quote-order-breakdown-select-l-1')).not.toBeInTheDocument();
+    // Read-only view still SHOWS the state, it just can't change it.
+    expect(screen.getByTestId('quote-order-breakdown-status-l-1')).toHaveTextContent('Ordered');
+    expect(screen.queryByTestId('quote-order-breakdown-receive-a-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quote-order-breakdown-cancel-a-1')).not.toBeInTheDocument();
   });
 });

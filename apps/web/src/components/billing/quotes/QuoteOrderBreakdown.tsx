@@ -3,16 +3,39 @@
 // customer: SKU / part number / qty plus the toggle-gated unit cost, extended
 // cost and markup. Internal Detail tab only; the portal/public documents never
 // receive unitCost (toCustomerLines strips it server-side).
-import { useCallback, useMemo } from 'react';
+import { Fragment, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, ClipboardCopy, Download } from 'lucide-react';
 import '../../../lib/i18n';
-import { computeLineTotal, fromCents, markupPct, toCents } from '@breeze/shared';
+import {
+  computeLineTotal,
+  deriveLineFulfillment,
+  fromCents,
+  markupPct,
+  toCents,
+  type QuoteLineFulfillmentStatus,
+} from '@breeze/shared';
 import { formatPercent } from '@/lib/i18n/format';
 import { rowsToCsv, rowsToTsv } from '@/lib/csvExport';
 import { downloadBlob } from '@/lib/downloadBlob';
+import { usePermissions } from '../../../lib/permissions';
 import { showToast } from '../../shared/Toast';
-import { type QuoteDetail, type QuoteLine, formatMoney, formatQuantity, lineTitle } from './quoteTypes';
+import {
+  type QuoteDetail,
+  type QuoteLine,
+  type QuoteOrder,
+  type QuoteOrderLine,
+  formatMoney,
+  formatQuantity,
+  lineTitle,
+  procurementSourceLabel,
+} from './quoteTypes';
+import {
+  QuoteOrderAllocationRow,
+  QuoteOrderTrackingDialog,
+  unorderedRemainder,
+  type QuoteOrderCandidate,
+} from './QuoteOrderTracking';
 import { StatusPill } from '../shared/StatusPill';
 import type { StatusPillRole } from '../shared/statusPillRoles';
 
@@ -64,19 +87,30 @@ export function orderableLines(lines: QuoteLine[]): QuoteLine[] {
     .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt));
 }
 
-// Distributor identifiers are stored as the API's snake_case source keys; the
-// breakdown shows the vendor's own branding. Unknown sources fall through to the
-// raw key rather than an em-dash — an unmapped distributor is still information.
-const SOURCE_LABELS: Record<string, string> = { td_synnex: 'TD SYNNEX', pax8: 'Pax8' };
-
 /** Bucket key for a line's distributor; identifier-less lines share 'unknown'. */
 const UNKNOWN_VENDOR = 'unknown';
 
 /** Vendor display text for a source key (raw key when unmapped — an unmapped
- *  distributor is still information). */
-function sourceLabel(source: string): string {
-  return SOURCE_LABELS[source] ?? source;
-}
+ *  distributor is still information). The map lives in quoteTypes so the
+ *  fulfillment dialog shares it without an import cycle. */
+const sourceLabel = procurementSourceLabel;
+
+/** Fulfillment status → pill role. `not_ordered` has no role because it renders
+ *  NO chip at all: the absence of a chip is what "not ordered yet" looks like,
+ *  and a row of grey "Not ordered" pills on a fresh quote is pure noise. */
+const FULFILLMENT_ROLE: Record<Exclude<QuoteLineFulfillmentStatus, 'not_ordered'>, StatusPillRole> = {
+  ordered: 'info',
+  partially_received: 'warning',
+  received: 'success',
+};
+
+/** i18n leaf for a fulfillment status (the enum is snake_case, the catalog is
+ *  camelCase — spelled out rather than transformed so keyUsage can see them). */
+const FULFILLMENT_LABEL_KEY: Record<Exclude<QuoteLineFulfillmentStatus, 'not_ordered'>, string> = {
+  ordered: 'quotes.detail.orderBreakdown.fulfillment.status.ordered',
+  partially_received: 'quotes.detail.orderBreakdown.fulfillment.status.partiallyReceived',
+  received: 'quotes.detail.orderBreakdown.fulfillment.status.received',
+};
 
 /**
  * Bucket the (already sorted) orderable lines by distributor so a tech can work
@@ -134,10 +168,13 @@ export function exportRows(
 // `showCost` rides the same persisted "Show cost & margin" toggle as the rest
 // of the billing UI, so "no margin on screen" holds here too: with it off the
 // table still lists what to order (item/SKU/qty) but drops the economics.
-export default function QuoteOrderBreakdown({ lines, currency, showCost, quoteNumber, pax8Order }: {
+export default function QuoteOrderBreakdown({ lines, currency, showCost, quoteId, quoteNumber, pax8Order, orders, onChanged }: {
   lines: QuoteLine[];
   currency: string;
   showCost: boolean;
+  /** The quote these lines belong to — the fulfillment routes are nested under
+   *  it (`/quotes/:quoteId/orders`). */
+  quoteId: string;
   /** Used only to name the downloaded file; a quote without a number yet still
    *  exports (the filename just falls back to the generic form). */
   quoteNumber: string | null;
@@ -145,8 +182,19 @@ export default function QuoteOrderBreakdown({ lines, currency, showCost, quoteNu
    *  against each line below by `sourceQuoteLineId` to render a state-accurate
    *  badge. Optional/nullable: a won quote may have no Pax8 order at all. */
   pax8Order?: QuoteDetail['pax8Order'];
+  /** Real-world purchase orders recorded against these lines. */
+  orders?: QuoteOrder[];
+  /** Reload the quote after a fulfillment mutation. */
+  onChanged?: () => void;
 }) {
   const { t } = useTranslation('billing');
+  const { can } = usePermissions();
+  // quotes:fulfill is deliberately separate from quotes:write: a tech who can
+  // edit a draft can't necessarily record real purchases against it. Without it
+  // the breakdown stays a read-only procurement view — statuses still show.
+  const canFulfill = can('quotes', 'fulfill');
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [dialogOpen, setDialogOpen] = useState(false);
   // Same cents math as the pricing tables (computeLineTotal/toCents) so the
   // cost total is penny-consistent with MarginPanel's cost figure.
   const costTotal = useMemo(
@@ -168,12 +216,64 @@ export default function QuoteOrderBreakdown({ lines, currency, showCost, quoteNu
     () => new Map((pax8Order?.lines ?? []).filter((l) => l.sourceQuoteLineId).map((l) => [l.sourceQuoteLineId as string, l])),
     [pax8Order],
   );
+  // Allocations keyed by the quote line they cover, so each row can derive its
+  // own fulfillment status and list its own allocations in O(1). Carries the
+  // owning order alongside each allocation — the row shows the vendor/order ref
+  // the allocation belongs to.
+  const allocationsByLine = useMemo(() => {
+    const map = new Map<string, { allocation: QuoteOrderLine; order: QuoteOrder }[]>();
+    for (const order of orders ?? []) {
+      for (const allocation of order.lines) {
+        const bucket = map.get(allocation.quoteLineId);
+        if (bucket) bucket.push({ allocation, order });
+        else map.set(allocation.quoteLineId, [{ allocation, order }]);
+      }
+    }
+    return map;
+  }, [orders]);
+
   const na = '—';
   const groups = useMemo(() => groupByVendor(lines), [lines]);
   // A single group is just "the table" — a lone header row would be noise.
   const showGroupHeaders = groups.length > 1;
-  // Item + Vendor + SKU + Part # + Qty (+ Unit cost + Ext. cost + Markup).
-  const columnCount = showCost ? 8 : 5;
+  // Item + Vendor + SKU + Part # + Qty (+ Unit cost + Ext. cost + Markup), plus
+  // the leading select box when the viewer may record orders.
+  const columnCount = (showCost ? 8 : 5) + (canFulfill ? 1 : 0);
+
+  const toggleLine = useCallback((lineId: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(lineId)) next.delete(lineId);
+      else next.add(lineId);
+      return next;
+    });
+  }, []);
+
+  // Lines the dialog can actually order: selected AND with something left to
+  // order. A fully-covered line is dropped rather than defaulted to a bogus
+  // quantity — the create schema rejects anything ≤ 0 anyway.
+  const candidates = useMemo<QuoteOrderCandidate[]>(
+    () =>
+      lines
+        .filter((l) => selected.has(l.id))
+        .map((l) => ({
+          lineId: l.id,
+          title: lineTitle(l),
+          remainder: unorderedRemainder(
+            l.quantity,
+            (allocationsByLine.get(l.id) ?? []).map((x) => x.allocation),
+          ),
+          procurementSource: l.procurementSource ?? null,
+        }))
+        .filter((c) => Number(c.remainder) > 0),
+    [lines, selected, allocationsByLine],
+  );
+
+  const closeDialog = useCallback(() => setDialogOpen(false), []);
+  const handleOrdered = useCallback(() => {
+    setSelected(new Set());
+    onChanged?.();
+  }, [onChanged]);
 
   const handleExportCsv = useCallback(() => {
     const csv = rowsToCsv(exportRows(lines, showCost, currency));
@@ -206,6 +306,17 @@ export default function QuoteOrderBreakdown({ lines, currency, showCost, quoteNu
           <span className="text-xs text-muted-foreground" data-testid="quote-order-breakdown-count">
             {t('quotes.detail.orderBreakdown.itemCount', { count: lines.length })}
           </span>
+          {canFulfill && (
+            <button
+              type="button"
+              disabled={selected.size === 0}
+              onClick={() => setDialogOpen(true)}
+              data-testid="quote-order-breakdown-mark-ordered"
+              className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            >
+              {t('quotes.detail.orderBreakdown.fulfillment.markOrdered')}
+            </button>
+          )}
           {/* Real <button>s with an accessible name (aria-label doubles as the
               hover tooltip via title) — icon-only, but tabbable and announced. */}
           <button
@@ -239,6 +350,11 @@ export default function QuoteOrderBreakdown({ lines, currency, showCost, quoteNu
         <table className="w-full min-w-[36rem] text-sm" data-testid="quote-order-breakdown-table">
           <thead>
             <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
+              {canFulfill && (
+                <th className="w-8 px-3 py-2 font-medium">
+                  <span className="sr-only">{t('quotes.detail.orderBreakdown.fulfillment.selectColumn')}</span>
+                </th>
+              )}
               <th className="px-3 py-2 font-medium">{t('quotes.detail.orderBreakdown.table.item')}</th>
               <th className="px-3 py-2 font-medium">{t('quotes.detail.orderBreakdown.table.vendor')}</th>
               <th className="px-3 py-2 font-medium">{t('quotes.detail.orderBreakdown.table.sku')}</th>
@@ -275,8 +391,23 @@ export default function QuoteOrderBreakdown({ lines, currency, showCost, quoteNu
                 const mk = markupPct(l.unitPrice, l.unitCost);
                 const pax8Line = pax8Order ? pax8ByLine.get(l.id) : undefined;
                 const pax8Badge = pax8Line ? pax8BadgeState(pax8Order!, pax8Line) : null;
+                const allocations = allocationsByLine.get(l.id) ?? [];
+                const fulfillment = deriveLineFulfillment(allocations.map((x) => x.allocation));
                 return (
-                <tr key={l.id} className="border-t" data-testid={`quote-order-breakdown-line-${l.id}`}>
+                <Fragment key={l.id}>
+                <tr className="border-t" data-testid={`quote-order-breakdown-line-${l.id}`}>
+                  {canFulfill && (
+                    <td className="px-3 py-2">
+                      <input
+                        type="checkbox"
+                        checked={selected.has(l.id)}
+                        onChange={() => toggleLine(l.id)}
+                        aria-label={t('quotes.detail.orderBreakdown.fulfillment.select', { item: lineTitle(l) })}
+                        data-testid={`quote-order-breakdown-select-${l.id}`}
+                        className="h-4 w-4 rounded border-border accent-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                      />
+                    </td>
+                  )}
                   <td className="px-3 py-2">
                     <span className="font-medium text-foreground">{lineTitle(l)}</span>
                     {l.recurrence !== 'one_time' && (
@@ -292,9 +423,19 @@ export default function QuoteOrderBreakdown({ lines, currency, showCost, quoteNu
                         testId={`quote-order-breakdown-pax8-${l.id}`}
                       />
                     )}
+                    {/* No chip for 'not_ordered' — the absence IS the state, and
+                        a grid of grey "Not ordered" pills on a fresh quote is noise. */}
+                    {fulfillment !== 'not_ordered' && (
+                      <StatusPill
+                        role={FULFILLMENT_ROLE[fulfillment]}
+                        label={t(/* i18n-dynamic */ FULFILLMENT_LABEL_KEY[fulfillment])}
+                        className="ml-2"
+                        testId={`quote-order-breakdown-status-${l.id}`}
+                      />
+                    )}
                   </td>
                   <td className="px-3 py-2 text-muted-foreground">
-                    {l.procurementSource ? (SOURCE_LABELS[l.procurementSource] ?? l.procurementSource) : na}
+                    {l.procurementSource ? sourceLabel(l.procurementSource) : na}
                     {l.manufacturer && <div className="text-xs">{l.manufacturer}</div>}
                   </td>
                   {/* Vendor SKU is what the distributor's cart wants; the internal
@@ -316,6 +457,19 @@ export default function QuoteOrderBreakdown({ lines, currency, showCost, quoteNu
                     </>
                   )}
                 </tr>
+                {allocations.map(({ allocation, order }) => (
+                  <QuoteOrderAllocationRow
+                    key={allocation.id}
+                    quoteId={quoteId}
+                    allocation={allocation}
+                    vendorLabel={order.vendorName ?? (order.procurementSource ? sourceLabel(order.procurementSource) : null)}
+                    orderRef={order.orderRef}
+                    colSpan={columnCount}
+                    canFulfill={canFulfill}
+                    onChanged={onChanged}
+                  />
+                ))}
+                </Fragment>
                 );
               })}
             </tbody>
@@ -324,8 +478,9 @@ export default function QuoteOrderBreakdown({ lines, currency, showCost, quoteNu
             <tfoot>
               <tr className="border-t">
                 {/* Item + Vendor + SKU + Part # + Qty + Unit cost = 6 cells before
-                    the Ext. cost figure; the trailing empty cell covers Markup. */}
-                <td colSpan={6} className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    the Ext. cost figure (7 with the leading select column); the
+                    trailing empty cell covers Markup. */}
+                <td colSpan={canFulfill ? 7 : 6} className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-muted-foreground">
                   {t('quotes.detail.orderBreakdown.costTotal')}
                 </td>
                 <td className="px-3 py-2 text-right font-semibold tabular-nums" data-testid="quote-order-breakdown-cost-total">
@@ -347,6 +502,17 @@ export default function QuoteOrderBreakdown({ lines, currency, showCost, quoteNu
           <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
           {t('quotes.detail.orderBreakdown.missingCost', { count: missingCostCount })}
         </p>
+      )}
+      {/* Mounted only while open so every attempt gets fresh state — including a
+          fresh idempotency key. */}
+      {dialogOpen && (
+        <QuoteOrderTrackingDialog
+          open
+          quoteId={quoteId}
+          candidates={candidates}
+          onClose={closeDialog}
+          onChanged={handleOrdered}
+        />
       )}
     </div>
   );

@@ -896,6 +896,43 @@
         "copyTsv": "Für Tabellenkalkulation kopieren",
         "costTotal": "Gesamtkosten",
         "exportCsv": "CSV herunterladen",
+        "fulfillment": {
+          "allocation": {
+            "cancelled": "Storniert",
+            "eta": "Ankunft {{date}}",
+            "ordered": "{{qty}} bestellt",
+            "received": "{{qty}} erhalten",
+            "tracking": "Sendungsnr. {{number}}"
+          },
+          "cancel": "Position stornieren",
+          "cancelError": "Diese Bestellposition konnte nicht storniert werden.",
+          "cancelSuccess": "Bestellposition storniert",
+          "dialog": {
+            "cancel": "Abbrechen",
+            "empty": "Alles Ausgewählte ist bereits bestellt.",
+            "error": "Die Bestellung konnte nicht erfasst werden.",
+            "eta": "Voraussichtliche Ankunft",
+            "notes": "Notizen",
+            "orderRef": "Bestellreferenz",
+            "qtyAria": "Zu bestellende Menge für {{item}}",
+            "submit": "Bestellung erfassen",
+            "success": "Bestellung erfasst",
+            "title": "Artikel als bestellt markieren",
+            "tracking": "Sendungsnummer",
+            "vendor": "Anbieter"
+          },
+          "markOrdered": "Als bestellt markieren",
+          "receive": "Als erhalten markieren",
+          "receiveError": "Diese Bestellposition konnte nicht aktualisiert werden.",
+          "receiveSuccess": "Als erhalten markiert",
+          "select": "{{item}} auswählen",
+          "selectColumn": "Für Bestellung auswählen",
+          "status": {
+            "ordered": "Bestellt",
+            "partiallyReceived": "Teilweise erhalten",
+            "received": "Erhalten"
+          }
+        },
         "itemCount_one": "{{count}} Artikel",
         "itemCount_other": "{{count}} Artikel",
         "missingCost_one": "Für {{count}} Artikel sind keine Kosten erfasst",

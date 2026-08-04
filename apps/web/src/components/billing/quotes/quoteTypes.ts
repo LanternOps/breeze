@@ -236,6 +236,51 @@ export interface QuoteBillTo {
   taxId: string | null;
 }
 
+// Distributor identifiers are stored as the API's snake_case source keys; the
+// UI shows the vendor's own branding. Unknown sources fall through to the raw
+// key rather than an em-dash — an unmapped distributor is still information.
+// Lives here (not in a component) so the order breakdown AND the fulfillment
+// dialog share one map without an import cycle between the two components.
+const SOURCE_LABELS: Record<string, string> = { td_synnex: 'TD SYNNEX', pax8: 'Pax8' };
+
+/** Vendor display text for a procurement-source key. */
+export function procurementSourceLabel(source: string): string {
+  return SOURCE_LABELS[source] ?? source;
+}
+
+/** One allocation of a purchase order against a single quote line. Quantities
+ *  arrive as numeric(12,2) strings, like every other quantity on the wire.
+ *  Deliberately has NO `updatedAt`: the table is append-plus-correct and the
+ *  meaningful timestamps are the outcome stamps (`receivedAt`, `cancelledAt`). */
+export interface QuoteOrderLine {
+  id: string;
+  orderId: string;
+  quoteLineId: string;
+  orderedQty: string;
+  receivedQty: string;
+  trackingNumber: string | null;
+  eta: string | null;
+  receivedAt: string | null;
+  cancelledAt: string | null;
+  notes: string | null;
+  createdAt: string;
+}
+
+/** A real-world purchase order recorded against a won quote, with its per-line
+ *  allocations. Separate from the Pax8 order above: that one is a staged
+ *  distributor cart, this is "what the tech actually bought". */
+export interface QuoteOrder {
+  id: string;
+  quoteId: string;
+  procurementSource: string | null;
+  vendorName: string | null;
+  orderRef: string | null;
+  orderedBy: string | null;
+  orderedAt: string;
+  notes: string | null;
+  lines: QuoteOrderLine[];
+}
+
 /** Shape of `GET /quotes/:id` — `{ data: { quote, blocks, lines, branding, billTo } }`. */
 export interface QuoteDetail {
   quote: Quote;
@@ -256,6 +301,10 @@ export interface QuoteDetail {
     status: string;
     lines: { sourceQuoteLineId: string | null; submitState: Pax8SubmitState; quantity: string | null }[];
   } | null;
+  /** Purchase orders recorded against this quote's lines (fulfillment
+   *  tracking). Optional: older payloads and list fixtures don't carry it, and
+   *  a quote nobody has ordered against yet gets an empty array. */
+  orders?: QuoteOrder[];
 }
 
 export const STATUS_LABELS: Record<QuoteStatus, string> = {
