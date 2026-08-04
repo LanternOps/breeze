@@ -17,9 +17,13 @@ const { getOrCreateQuickSupportOrg, logSessionAudit, getTrustedClientIp } = vi.h
 }));
 
 const { endSupportSession } = vi.hoisted(() => ({
-  endSupportSession: vi.fn(() => Promise.resolve({
-    ended: true, disconnect: 'closed' as const, commandDelivered: true,
-  })),
+  // Return type annotated so a test can script a 'close-failed' outcome; an
+  // inferred literal would narrow it to 'closed'.
+  endSupportSession: vi.fn((): Promise<{
+    ended: boolean;
+    disconnect: 'closed' | 'close-failed' | 'not-connected' | null;
+    commandDelivered: boolean;
+  }> => Promise.resolve({ ended: true, disconnect: 'closed', commandDelivered: true })),
 }));
 
 vi.mock('../../services/quickSupportOrg', () => ({ getOrCreateQuickSupportOrg }));

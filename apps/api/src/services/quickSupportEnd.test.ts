@@ -8,8 +8,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  */
 
 const { sendCommandToAgent, disconnectAgent } = vi.hoisted(() => ({
-  sendCommandToAgent: vi.fn(() => true),
-  disconnectAgent: vi.fn(() => 'closed' as const),
+  sendCommandToAgent: vi.fn((): boolean => true),
+  // Annotated with the full union, not inferred from the default return, so a
+  // test can script a failed close without fighting a narrowed literal type.
+  disconnectAgent: vi.fn((): 'closed' | 'close-failed' | 'not-connected' => 'closed'),
 }));
 
 vi.mock('../routes/agentWs', () => ({ sendCommandToAgent, disconnectAgent }));
@@ -96,7 +98,7 @@ describe('endSupportSession', () => {
 
     await endSupportSession('sess-1', 'tech');
 
-    expect(updates[0].values).toEqual({
+    expect(updates[0]?.values).toEqual({
       agentTokenHash: null,
       watchdogTokenHash: null,
       helperTokenHash: null,
@@ -133,7 +135,7 @@ describe('endSupportSession', () => {
 
     await endSupportSession('sess-1', 'expired');
 
-    expect(updates[1].values).toMatchObject({ status: 'expired', endedReason: 'expired' });
+    expect(updates[1]?.values).toMatchObject({ status: 'expired', endedReason: 'expired' });
   });
 
   it("records a non-expired reason as 'ended'", async () => {
@@ -142,7 +144,7 @@ describe('endSupportSession', () => {
 
     await endSupportSession('sess-1', 'end_user');
 
-    expect(updates[1].values).toMatchObject({ status: 'ended', endedReason: 'end_user' });
+    expect(updates[1]?.values).toMatchObject({ status: 'ended', endedReason: 'end_user' });
   });
 
   it('is idempotent — an already-ended session does nothing', async () => {

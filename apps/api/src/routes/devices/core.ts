@@ -41,6 +41,7 @@ import {
 } from './cursor';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
+import { deleteDeviceCascade } from '../../services/deviceDeletion';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
 import {
   resolveRemoteAccessLaunch,
@@ -1525,31 +1526,9 @@ coreRoutes.delete(
     // When adding new tables with device_id FK, add them here too.
     try {
       await db.transaction(async (tx) => {
-        // Transitive dependencies: tables that reference device-scoped records
-        // but don't have a direct device_id column.
-        const deviceAlertIds = sql`(SELECT id FROM alerts WHERE device_id = ${deviceId})`;
-        const deviceAiSessionIds = sql`(SELECT id FROM ai_sessions WHERE device_id = ${deviceId})`;
-
-        await tx.execute(sql`DELETE FROM ai_tool_executions WHERE session_id IN ${deviceAiSessionIds}`);
-        await tx.execute(sql`DELETE FROM ai_messages WHERE session_id IN ${deviceAiSessionIds}`);
-        await tx.execute(sql`DELETE FROM ai_action_plans WHERE session_id IN ${deviceAiSessionIds}`);
-        await tx.execute(sql`DELETE FROM alert_correlations WHERE parent_alert_id IN ${deviceAlertIds} OR child_alert_id IN ${deviceAlertIds}`);
-        await tx.execute(sql`DELETE FROM alert_notifications WHERE alert_id IN ${deviceAlertIds}`);
-        await tx.execute(sql`UPDATE log_correlations SET alert_id = NULL WHERE alert_id IN ${deviceAlertIds}`);
-        await tx.execute(sql`UPDATE network_change_events SET alert_id = NULL WHERE alert_id IN ${deviceAlertIds}`);
-        for (const linkedTable of DEVICE_LINKED_DEVICE_ID_TABLES) {
-          await tx.execute(sql`UPDATE ${sql.identifier(linkedTable)} SET linked_device_id = NULL WHERE linked_device_id = ${deviceId}`);
-        }
-        // Tenant business records (tickets): preserve history, detach the device.
-        for (const detachTable of DEVICE_DETACH_DEVICE_ID_TABLES) {
-          await tx.execute(sql`UPDATE ${sql.identifier(detachTable)} SET device_id = NULL WHERE device_id = ${deviceId}`);
-        }
-
-        const tables = getDeviceCascadeDeleteTables();
-        for (const table of tables) {
-          await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
-        }
-        await tx.delete(devices).where(eq(devices.id, deviceId));
+        // Shared with the Quick Support reaper's ephemeral-device purge — see
+        // services/deviceDeletion.ts for why this lives in one place.
+        await deleteDeviceCascade(tx, deviceId);
 
         // #2138 — the deleted device's link_group_id went with its row. If it
         // was a boot profile and the group now has a single lone survivor —
