@@ -279,20 +279,44 @@ describe('securityMiddleware', () => {
 describe('FORCE_HTTPS redirect warning (#3047)', () => {
   const opts = { forceHttps: 'true', publicApiUrl: 'https://api.example.com' };
   let warnSpy: ReturnType<typeof vi.spyOn>;
+  const originalCidrs = process.env.TRUSTED_PROXY_CIDRS;
 
   beforeEach(() => {
+    // Model a configured deployment. With TRUSTED_PROXY_CIDRS unset,
+    // `isTrustedProxySource` returns `NODE_ENV !== 'production'` — so under test
+    // every peer is trusted and the proxy-evidence gate can never be observed.
+    // Naming an explicit CIDR the test peer is not in reproduces the production
+    // semantics this suite is about.
+    process.env.TRUSTED_PROXY_CIDRS = '10.9.9.9/32';
     _resetForceHttpsRedirectWarnStateForTests();
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
+    if (originalCidrs === undefined) delete process.env.TRUSTED_PROXY_CIDRS;
+    else process.env.TRUSTED_PROXY_CIDRS = originalCidrs;
     warnSpy.mockRestore();
     _resetForceHttpsRedirectWarnStateForTests();
   });
 
-  it('warns when a redirect fires, naming the symptom and the two config causes', async () => {
+  // A direct plain-HTTP client with no forwarding headers at all is the redirect
+  // working as designed — a port-80 scanner, an uptime probe, or a deploy that
+  // intentionally runs without a reverse proxy. Warning there would emit a
+  // misconfiguration line per scanner IP on any internet-facing origin, and
+  // per-peer suppression is no defence because each source IP gets its own first
+  // warn. It must redirect silently.
+  it('stays silent for a direct client with no proxy evidence', async () => {
     const res = await createApp(opts).request('http://api.example.com/test', {
       headers: { host: 'api.example.com' },
+    });
+
+    expect(res.status).toBe(308);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('warns when a redirect fires, naming the symptom and the two config causes', async () => {
+    const res = await createApp(opts).request('http://api.example.com/test', {
+      headers: { host: 'api.example.com', 'x-forwarded-for': '203.0.113.9' },
     });
 
     expect(res.status).toBe(308);
@@ -307,8 +331,10 @@ describe('FORCE_HTTPS redirect warning (#3047)', () => {
   // The variant #2988 could not catch: trust gate passes, no scheme header, so
   // no warning branch in clientIp.ts is reachable.
   it('reports xForwardedProto=(absent) when the proxy never sends the header', async () => {
+    // Evidence of a proxy via the IP header, but no scheme header — exactly the
+    // variant #2988 could not catch.
     await createApp(opts).request('http://api.example.com/test', {
-      headers: { host: 'api.example.com' },
+      headers: { host: 'api.example.com', 'x-forwarded-for': '203.0.113.9' },
     });
 
     const msg = String(warnSpy.mock.calls[0]?.[0]);
@@ -317,7 +343,7 @@ describe('FORCE_HTTPS redirect warning (#3047)', () => {
 
   it('also warns on the 400 branch, which is the same fault via a non-canonical Host', async () => {
     const res = await createApp(opts).request('http://wrong-host.example.net/test', {
-      headers: { host: 'wrong-host.example.net' },
+      headers: { host: 'wrong-host.example.net', 'x-forwarded-for': '203.0.113.9' },
     });
 
     expect(res.status).toBe(400);
@@ -328,16 +354,23 @@ describe('FORCE_HTTPS redirect warning (#3047)', () => {
   it('suppresses repeats per peer so a redirect storm cannot flood the log', async () => {
     const app = createApp(opts);
     for (let i = 0; i < 5; i++) {
-      await app.request('http://api.example.com/test', { headers: { host: 'api.example.com' } });
+      await app.request('http://api.example.com/test', {
+        headers: { host: 'api.example.com', 'x-forwarded-for': '203.0.113.9' },
+      });
     }
 
     expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 
+  // Both negative cases below carry proxy evidence deliberately. Without it they
+  // would pass because the new gate silenced them, not because of the exemption
+  // they claim to test — green for the wrong reason.
   it('does not warn for health probes, which are exempt from the redirect', async () => {
     const app = createApp(opts);
     for (const p of ['/health', '/health/live', '/health/ready', '/ready']) {
-      await app.request(`http://api.example.com${p}`, { headers: { host: 'api.example.com' } });
+      await app.request(`http://api.example.com${p}`, {
+        headers: { host: 'api.example.com', 'x-forwarded-for': '203.0.113.9' },
+      });
     }
 
     expect(warnSpy).not.toHaveBeenCalled();
@@ -345,8 +378,22 @@ describe('FORCE_HTTPS redirect warning (#3047)', () => {
 
   it('does not warn when FORCE_HTTPS is off', async () => {
     await createApp({ publicApiUrl: 'https://api.example.com' }).request(
-      'http://api.example.com/test', { headers: { host: 'api.example.com' } });
+      'http://api.example.com/test',
+      { headers: { host: 'api.example.com', 'x-forwarded-for': '203.0.113.9' } });
 
     expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  // X-Forwarded-Proto alone is why hasTrustGatedForwardedHeaders exists as a
+  // superset of the IP-header check: a proxy that forwards only the scheme is
+  // still a proxy, and is precisely the TRANSPORT-001 shape.
+  it('treats a lone X-Forwarded-Proto as proxy evidence', async () => {
+    const res = await createApp(opts).request('http://api.example.com/test', {
+      headers: { host: 'api.example.com', 'x-forwarded-proto': 'http' },
+    });
+
+    expect(res.status).toBe(308);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(String(warnSpy.mock.calls[0]?.[0])).toContain('xForwardedProto=http');
   });
 });

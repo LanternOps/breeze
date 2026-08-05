@@ -1,6 +1,10 @@
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { canonicalHttpsRedirect, effectiveRequestScheme, isCanonicalRequestHost } from '../services/requestTransport';
-import { getImmediatePeerIpOrUndefined, trustsForwardedHeadersFrom } from '../services/clientIp';
+import {
+  getImmediatePeerIpOrUndefined,
+  hasTrustGatedForwardedHeaders,
+  trustsForwardedHeadersFrom,
+} from '../services/clientIp';
 
 /**
  * TRANSPORT-001 (#3047): warn at the 308 itself, not only at the trust gate.
@@ -18,6 +22,14 @@ import { getImmediatePeerIpOrUndefined, trustsForwardedHeadersFrom } from '../se
  *
  * Suppressed per peer so a redirect storm (every request from the proxy) cannot
  * flood the log, matching the discipline in `clientIp.ts`.
+ *
+ * GATED ON PROXY EVIDENCE. A plain HTTP client with no forwarding headers — a
+ * port-80 scanner, an uptime probe, any deploy that intentionally runs without a
+ * reverse proxy — is the redirect working as designed, not a misconfiguration,
+ * and must stay silent. Per-peer suppression is no defence there: distinct
+ * source IPs each get their own first warn (see the bounding note below, which
+ * only stops the MAP growing, not the warns). `clientIp.ts` gates its own warns
+ * on the same evidence for the same reason.
  */
 const REDIRECT_WARN_INTERVAL_MS = 15 * 60 * 1000;
 const REDIRECT_WARN_MAX_TRACKED = 32;
@@ -28,7 +40,14 @@ export function _resetForceHttpsRedirectWarnStateForTests(): void {
   redirectLastWarnAt.clear();
 }
 
-function warnForceHttpsRedirect(c: Context, canonicalHost: boolean): void {
+function warnForceHttpsRedirect(c: Context, canonicalHost: boolean, trusted: boolean): void {
+  // No proxy in the picture at all: a direct plain-HTTP client being redirected
+  // is the feature, not a fault. Bail before touching the suppression map so a
+  // scanner sweep cannot evict real proxy peers from it either.
+  if (!trusted && !hasTrustGatedForwardedHeaders(c)) {
+    return;
+  }
+
   const peerIp = getImmediatePeerIpOrUndefined(c) ?? 'unknown';
   const now = Date.now();
 
@@ -48,7 +67,6 @@ function warnForceHttpsRedirect(c: Context, canonicalHost: boolean): void {
     redirectLastWarnAt.set(peerIp, now);
   }
 
-  const trusted = trustsForwardedHeadersFrom(c);
   const forwardedProto = c.req.header('x-forwarded-proto') ?? c.req.header('X-Forwarded-Proto');
 
   console.warn(
@@ -210,8 +228,9 @@ export function securityMiddleware(options?: SecurityMiddlewareOptions): Middlew
         const canonicalHost = isCanonicalRequestHost(c, publicApiUrl);
         // Warn before returning either way: the 400 branch is the same
         // misconfiguration seen through a non-canonical Host, and it is just as
-        // silent (#3047).
-        warnForceHttpsRedirect(c, canonicalHost);
+        // silent (#3047). `effectiveRequestScheme` has already resolved trust to
+        // get here, so pass the answer down rather than recomputing it.
+        warnForceHttpsRedirect(c, canonicalHost, trustsForwardedHeadersFrom(c));
         if (!canonicalHost) {
           // Never reflect an unrecognized Host into a redirect — reject
           // instead of redirecting to a domain the client didn't ask for.

@@ -196,7 +196,7 @@ function hasForwardedIpHeaders(c: RequestLike): boolean {
  * alone — a proxy that forwards only the scheme would otherwise trip the
  * misconfiguration silently.
  */
-function hasTrustGatedForwardedHeaders(c: RequestLike): boolean {
+export function hasTrustGatedForwardedHeaders(c: RequestLike): boolean {
   return (
     hasForwardedIpHeaders(c)
     || Boolean(c.req.header('x-forwarded-proto') ?? c.req.header('X-Forwarded-Proto'))
