@@ -421,6 +421,67 @@ describe('command queue service', () => {
     expect(result).toEqual({ ...completed.result, commandId: completed.id });
   });
 
+  // #3112: the agent's helper-IPC path bounded its own wait with a hardcoded
+  // per-attempt timeout, so `timeoutMs` governed only how long the SERVER waited
+  // while the device gave up underneath on its own schedule. The budget now
+  // travels with the command as `timeoutSeconds`. These assert the value that
+  // actually reaches the insert, not a re-derivation of the expression.
+  it('publishes the caller timeout budget into the command payload', async () => {
+    const device = { id: 'dev-2', status: 'online', orgId: 'org-1', hostname: 'host-a', agentId: null };
+    const completed = { id: 'cmd-budget', status: 'completed', result: { status: 'completed' } };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([device]) })
+        })
+      } as any)
+      .mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([completed]) })
+        })
+      } as any);
+
+    const insertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([{ id: 'cmd-budget' }])
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    await executeCommand('dev-2', CommandTypes.TAKE_SCREENSHOT, { display: 0 }, { timeoutMs: 120_000 });
+
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+      payload: { display: 0, timeoutSeconds: 120 },
+    }));
+  });
+
+  it('does not clobber a timeoutSeconds the caller set explicitly', async () => {
+    const device = { id: 'dev-2', status: 'online', orgId: 'org-1', hostname: 'host-a', agentId: null };
+    const completed = { id: 'cmd-budget-2', status: 'completed', result: { status: 'completed' } };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([device]) })
+        })
+      } as any)
+      .mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([completed]) })
+        })
+      } as any);
+
+    const insertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([{ id: 'cmd-budget-2' }])
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    await executeCommand('dev-2', CommandTypes.TAKE_SCREENSHOT, { timeoutSeconds: 1500 }, { timeoutMs: 30_000 });
+
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+      payload: { timeoutSeconds: 1500 },
+    }));
+  });
+
   // Behavioral pin for AUDITED_COMMANDS membership: capture_pprof is a
   // privileged diagnostic, so dispatching it must write an audit_logs row.
   // AUDITED_COMMANDS is module-private, so removal of the entry would be

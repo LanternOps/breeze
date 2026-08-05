@@ -840,6 +840,31 @@ export async function executeCommand(
     // (no real user record exists). Detect this by checking if userId equals deviceId.
     const safeUserId = userId && userId !== deviceId ? userId : null;
 
+    // #3112: the caller's budget has to travel WITH the command, not merely bound
+    // the server-side wait below. The agent's helper-IPC path used a hardcoded
+    // per-attempt timeout, so raising `timeoutMs` here changed only how long the
+    // server waited while the device gave up on its own schedule underneath.
+    // Publishing it as `timeoutSeconds` — the key the agent's script path already
+    // reads — lets the device bound its own work by what the caller is waiting for.
+    //
+    // Never clobber an explicit value: callers that set their own `timeoutSeconds`
+    // (script execution, for one) carry the more specific intent.
+    //
+    // Agent-targeted only. The watchdog is a different consumer with no helper-IPC
+    // path to bound, and its callers are explicitly told to pass a LARGER
+    // timeoutMs than they would for an agent command (see the targetRole doc
+    // above) — publishing that inflated number into its payload would be
+    // misleading rather than useful.
+    const payloadWithBudget = (
+      targetRole === 'agent'
+      && payload
+      && typeof payload === 'object'
+      && !Array.isArray(payload)
+      && (payload as Record<string, unknown>).timeoutSeconds === undefined
+    )
+      ? { ...(payload as Record<string, unknown>), timeoutSeconds: Math.ceil(timeoutMs / 1000) }
+      : payload;
+
     // Insert command (device_commands — no RLS, but establish a system context
     // so it isn't a contextless bare-pool write under runOutsideDbContext, #1375).
     const [command] = await withSystemDbAccessContext(() =>
@@ -848,7 +873,7 @@ export async function executeCommand(
         .values({
           deviceId,
           type,
-          payload,
+          payload: payloadWithBudget,
           status: 'pending',
           createdBy: safeUserId,
           targetRole,
