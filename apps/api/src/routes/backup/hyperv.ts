@@ -336,6 +336,10 @@ hypervRoutes.post(
         orgId,
         deviceId: payload.deviceId,
         resultStatus: result.status,
+        // Forwarded even though hyperv never reports `partial` today: this
+        // schema now carries the agent's own status, and a path that parses it
+        // but drops it is a trap the moment the provider learns to report one.
+        agentStatus: parsedBackup.data.status,
         result: {
           ...parsedBackup.data,
           error: result.error,

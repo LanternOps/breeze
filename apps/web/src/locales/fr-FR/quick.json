@@ -1,0 +1,47 @@
+{
+  "page": {
+    "title": "Démarrer une session d’assistance",
+    "intro": "Une personne qui vous aide sur cet ordinateur vous a demandé d’ouvrir cette page. Rien ne se passe tant que vous n’avez pas téléchargé et lancé le programme vous-même."
+  },
+  "code": {
+    "heading": "Saisissez le code qui vous a été communiqué",
+    "help": "La personne qui vous aide va vous dicter un code de 9 lettres et chiffres, par exemple KTM-4H7-P2X. Les majuscules et les tirets n’ont pas d’importance.",
+    "label": "Code d’assistance",
+    "placeholder": "XXX-XXX-XXX",
+    "submit": "Continuer",
+    "formatError": "Ce code n’est pas encore complet. Un code comporte 9 lettres et chiffres, par exemple KTM-4H7-P2X."
+  },
+  "checking": "Vérification du code…",
+  "invalid": {
+    "title": "Ce code ne fonctionne plus",
+    "body": "Un code d’assistance expire peu de temps après sa création et ne peut servir qu’une seule fois. Demandez un nouveau code à la personne qui vous aide, puis saisissez-le ci-dessus."
+  },
+  "checkFailed": {
+    "title": "Impossible de vérifier ce code",
+    "body": "La connexion à Internet a peut-être été interrompue. Vérifiez votre connexion, puis réessayez avec le code.",
+    "retry": "Réessayer"
+  },
+  "ready": {
+    "title": "Votre code est valide",
+    "codeIntro": "Votre code est {{code}}."
+  },
+  "download": {
+    "windows": "Télécharger pour Windows",
+    "manualFallback": "Si le téléchargement demande un code, saisissez : {{code}}",
+    "macosLabel": "macOS (ordinateurs Mac)",
+    "macosBadge": "Bientôt disponible",
+    "macosBody": "Le programme n’est pas encore prêt pour les ordinateurs Mac. Demandez à la personne qui vous aide comment procéder à la place."
+  },
+  "windowsPrompt": {
+    "title": "Windows vous demandera confirmation",
+    "body": "À l’ouverture du fichier, Windows affiche une demande de confirmation avant de l’exécuter. Le fichier est signé numériquement : cette demande indique donc un éditeur, et il doit s’agir de {{publisher}}. S’il est indiqué que l’éditeur est inconnu, ou s’il s’agit d’un nom auquel vous ne vous attendiez pas, fermez la fenêtre et appelez la personne qui vous aide au lieu de poursuivre.",
+    "publisher": "l’éditeur de Breeze"
+  },
+  "trust": {
+    "title": "Ce que fait le programme",
+    "seeScreen": "Pendant la session, la personne qui vous aide peut voir votre écran.",
+    "temporary": "Le programme s’exécute une seule fois, puis se supprime. Rien ne reste installé sur cet ordinateur.",
+    "stopAnyTime": "Vous pouvez arrêter le partage à tout moment en fermant la fenêtre du programme.",
+    "onlyIfExpected": "Si vous ne vous attendiez pas à cette demande, ne lancez pas le programme. Fermez cette page et contactez votre interlocuteur habituel."
+  }
+}

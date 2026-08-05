@@ -46,6 +46,7 @@ const TARGET_GLOBS = [
   'src/components/devices/DeviceSoftwareInventory.tsx',
   'src/components/devices/DeviceLinkedProfilesTab.tsx',
   'src/components/devices/DeviceWarrantyCard.tsx',
+  'src/components/devices/PossibleReplacementBanner.tsx',
   'src/components/pam/PamRespondModal.tsx',
   'src/components/pam/PamRevokeModal.tsx',
   'src/components/pam/PamRuleModal.tsx',
@@ -122,6 +123,10 @@ const TARGET_GLOBS = [
   // page-level error banner was painted behind the scrim — an unrecoverable
   // silent failure, not merely an unguarded one.
   'src/components/configurationPolicies/ConfigurationPoliciesPage.tsx',
+  // Quick Support: the create/end mutations mint and revoke live remote-access
+  // codes, so a silent failure would leave a tech reading out a dead code or
+  // believing a session was torn down when it wasn't.
+  'src/components/remote/QuickSupportPage.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -313,7 +318,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(80);
+    expect(absoluteFiles.length).toBe(82);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

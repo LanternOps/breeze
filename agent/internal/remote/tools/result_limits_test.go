@@ -7,11 +7,31 @@ import (
 )
 
 func TestEscapePowerShellSingleQuoted(t *testing.T) {
-	input := "System'; Write-Output hacked; '"
-	got := escapePowerShellSingleQuoted(input)
-	want := "System''; Write-Output hacked; ''"
-	if got != want {
-		t.Fatalf("escapePowerShellSingleQuoted() = %q, want %q", got, want)
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "ascii apostrophe breakout",
+			input: "System'; Write-Output hacked; '",
+			want:  "System''; Write-Output hacked; ''",
+		},
+		// PowerShell's tokenizer closes a single-quoted literal on the Unicode
+		// quote lookalikes U+2018-U+201B too; leaving them unescaped is a
+		// command-injection breakout. Doubling embeds them literally.
+		{name: "right single quotation mark U+2019", input: "a’b", want: "a’’b"},
+		{name: "left single quotation mark U+2018", input: "a‘b", want: "a‘‘b"},
+		{name: "single low-9 U+201A", input: "a‚b", want: "a‚‚b"},
+		{name: "single high-reversed-9 U+201B", input: "a‛b", want: "a‛‛b"},
+		{name: "no quotes untouched", input: "plain*[System]", want: "plain*[System]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := escapePowerShellSingleQuoted(tt.input); got != tt.want {
+				t.Errorf("escapePowerShellSingleQuoted(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
 	}
 }
 

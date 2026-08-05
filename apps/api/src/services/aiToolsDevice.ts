@@ -67,6 +67,11 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       const orgCondition = auth.orgCondition(devices.orgId);
       if (orgCondition) conditions.push(orgCondition);
 
+      // Quick Support's hidden 'quick_support' org stays inside accessibleOrgIds
+      // (so RLS lets techs read their own sessions), so ephemeral devices are NOT
+      // filtered by the org axis — exclude them explicitly from model-visible lists.
+      conditions.push(eq(devices.isEphemeral, false));
+
       if (input.status) conditions.push(eq(devices.status, input.status as typeof devices.status.enumValues[number]));
       if (input.osType) conditions.push(eq(devices.osType, input.osType as typeof devices.osType.enumValues[number]));
       if (input.siteId) {
@@ -388,6 +393,10 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         const conditions: SQL[] = [];
         const orgCond = auth.orgCondition(devices.orgId);
         if (orgCond) conditions.push(orgCond);
+
+        // Ephemeral Quick Support devices live in an org the tech can still read,
+        // so exclude them explicitly or their tags leak into the tag vocabulary.
+        conditions.push(eq(devices.isEphemeral, false));
 
         // Site axis: a site-restricted caller may only enumerate tags from
         // devices in their allowed sites (RLS does NOT enforce site).

@@ -14,6 +14,9 @@ export type AlertRuleTarget = {
   names?: string[];
 };
 
+// `custom` is retained for DISPLAY only: it never had an evaluator handler and
+// is no longer creatable (#2948 removed it from the editor and blocked it at
+// the API), but rows stored before that still carry it and must render.
 export type AlertRuleConditionType = 'metric' | 'status' | 'custom';
 export type MetricType = 'cpu' | 'ram' | 'disk' | 'network';
 export type ComparisonOperator = 'gt' | 'lt' | 'gte' | 'lte' | 'eq' | 'neq';

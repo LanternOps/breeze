@@ -28,8 +28,19 @@ vi.mock('./backupRetention', () => ({
 const captureExceptionMock = vi.fn();
 vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
 
+const applyBackupCommandResultToJobMock = vi.fn(async () => ({
+  applied: true,
+  snapshotDbId: null,
+  providerSnapshotId: null,
+}));
+const markBackupJobFailedIfInFlightMock = vi.fn();
+vi.mock('../services/backupResultPersistence', () => ({
+  applyBackupCommandResultToJob: applyBackupCommandResultToJobMock,
+  markBackupJobFailedIfInFlight: markBackupJobFailedIfInFlightMock,
+}));
+
 // Must import AFTER mock so the module-level destructure picks up our mock
-const { resolveBackupTargets, processCleanupExpiredSnapshots } = await import('./backupWorker');
+const { resolveBackupTargets, processCleanupExpiredSnapshots, __testOnly } = await import('./backupWorker');
 
 describe('resolveBackupTargets', () => {
   beforeEach(() => {
@@ -388,5 +399,51 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
       gcSkippedIdentities: 0,
       gcBlockedIdentities: 0,
     });
+  });
+});
+
+// #3000: `processResults` is the queue-side hop that carries the agent's own
+// terminal status into persistence. `data.result.status` here is the OUTER
+// completed/failed status, so the agent's `partial` can only travel on the
+// separate `agentStatus` key — this pins that it is actually forwarded.
+describe('processResults — agent terminal status hop (#3000)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('forwards agentStatus to persistence alongside the outer result status', async () => {
+    await __testOnly.processResults({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      result: {
+        status: 'completed',
+        agentStatus: 'partial',
+        snapshotId: 'snap-1',
+        filesBackedUp: 1,
+        errorCount: 21,
+      },
+    } as any);
+
+    expect(applyBackupCommandResultToJobMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: 'job-1',
+        resultStatus: 'completed',
+        agentStatus: 'partial',
+      })
+    );
+  });
+
+  it('leaves agentStatus undefined for a legacy agent that sends none', async () => {
+    await __testOnly.processResults({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      result: { status: 'completed', snapshotId: 'snap-1' },
+    } as any);
+
+    expect(applyBackupCommandResultToJobMock).toHaveBeenCalledWith(
+      expect.objectContaining({ resultStatus: 'completed', agentStatus: undefined })
+    );
   });
 });

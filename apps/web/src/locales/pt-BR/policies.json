@@ -910,7 +910,8 @@
         "createUpdateRing": "Criar anel de atualização",
         "text2xl": "2xl",
         "saveChanges": "Salvar alterações",
-        "createRing": "Criar anel"
+        "createRing": "Criar anel",
+        "thirdPartyRingHint": "As regras de aprovação automática para atualizações de terceiros são configuradas no anel de atualização vinculado."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Vincular política de periféricos",

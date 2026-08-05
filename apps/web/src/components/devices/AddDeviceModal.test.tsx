@@ -210,6 +210,70 @@ describe('AddDeviceModal', () => {
     expect(String(dlCall[0])).toContain('ttlMinutes=1440');
   });
 
+  // #2992 — the parent key must NOT carry the device count. max_usage is an
+  // enforced enrollment budget (/agents/enroll matches on
+  // usage_count < max_usage; the short-link and MCP-invite paths atomically
+  // claim it), so writing the device count there would widen a live credential
+  // to fix a display string. The count belongs on the bootstrap token, which
+  // the Enrollment Keys list now reads. Pinned so the tempting one-line "fix"
+  // can't come back.
+  it('does NOT write the device count into the parent key budget', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/enrollment-keys') {
+        return makeJsonResponse({ id: 'key-123', key: 'raw-key-abc' }, true, 201);
+      }
+      if (url.startsWith('/enrollment-keys/key-123/installer/')) {
+        return makeJsonResponse(null, true);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+
+    fireEvent.change(screen.getByTestId('device-count'), { target: { value: '7' } });
+    fireEvent.click(getDownloadButton());
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
+    });
+
+    const createBody = JSON.parse(
+      (fetchWithAuthMock.mock.calls[0][1] as RequestInit).body as string,
+    );
+    expect(createBody.maxUsage).toBeUndefined();
+
+    // The count drives the installer (bootstrap token) cap, and only that.
+    expect(String(fetchWithAuthMock.mock.calls[1][0])).toContain('count=7');
+  });
+
+  // A fractional count is reachable (the input has no `step` and isn't inside
+  // a <form>). The download route bounds `count` to an int, so round before
+  // sending — otherwise the operator gets an opaque 400 naming a wire field.
+  it('rounds a fractional device count before it reaches the mint route', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/enrollment-keys') {
+        return makeJsonResponse({ id: 'key-123', key: 'raw-key-abc' }, true, 201);
+      }
+      if (url.startsWith('/enrollment-keys/key-123/installer/')) {
+        return makeJsonResponse(null, true);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+
+    fireEvent.change(screen.getByTestId('device-count'), { target: { value: '2.5' } });
+    fireEvent.click(getDownloadButton());
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
+    });
+
+    expect(String(fetchWithAuthMock.mock.calls[1][0])).toContain('count=3');
+  });
+
   it('sends the selected expiry to the installer download URL', async () => {
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
@@ -266,8 +330,11 @@ describe('AddDeviceModal', () => {
 
     // ttlMinutes goes on the installer-link (child) body, not the parent POST.
     const createCall = fetchWithAuthMock.mock.calls[0];
-    expect(JSON.parse((createCall[1] as RequestInit).body as string).ttlMinutes)
-      .toBeUndefined();
+    const createBody = JSON.parse((createCall[1] as RequestInit).body as string);
+    expect(createBody.ttlMinutes).toBeUndefined();
+    // Like the download path (#2992), the link path leaves maxUsage off its
+    // parent — max_usage is an enforced enrollment budget, not a display label.
+    expect(createBody.maxUsage).toBeUndefined();
     const linkCall = fetchWithAuthMock.mock.calls[1];
     expect(String(linkCall[0])).toBe('/enrollment-keys/key-456/installer-link');
     expect(JSON.parse((linkCall[1] as RequestInit).body as string).ttlMinutes)

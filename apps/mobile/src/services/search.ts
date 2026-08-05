@@ -1,6 +1,7 @@
 import * as SecureStore from 'expo-secure-store';
 
 import { getServerUrl } from './serverConfig';
+import { fetchWithTimeout } from './fetchWithTimeout';
 
 const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const API_PREFIX = '/api/v1/mobile';
@@ -92,7 +93,7 @@ export async function searchAll(
   };
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     method: 'GET',
     headers,
     credentials: 'include',

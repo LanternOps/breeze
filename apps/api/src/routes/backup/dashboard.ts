@@ -8,6 +8,7 @@ import {
   backupJobs,
   backupSnapshots,
   devices,
+  RESTORABLE_BACKUP_JOB_STATUSES,
 } from '../../db/schema';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import { resolveBackupConfigForDevice, resolveAllBackupAssignedDevices } from '../../services/featureConfigResolver';
@@ -40,6 +41,14 @@ type AttentionItem = {
 // a degraded/error state instead of implying an all-clear — F11's whole purpose
 // is surfacing failures, so a swallowed error must never render as "healthy".
 type AttentionItemsResult = { items: AttentionItem[]; error: boolean };
+
+// Terminal job statuses that mean "this device did NOT get a good backup".
+// `partial` belongs here alongside `failed` (#3000): a run that stored a
+// fraction of its data is not a success, and before this it was reported with
+// the same green status as a clean run, so nothing keyed on job status ever
+// fired for it. `cancelled` is deliberately absent — that one is a user action,
+// not a fault.
+const NEEDS_ATTENTION_JOB_STATUSES: ReadonlySet<string> = new Set(['failed', 'partial']);
 
 // A device needs attention when its most-recently created backup job
 // failed. Severity escalates to 'critical' once the two most recent jobs
@@ -99,27 +108,44 @@ async function resolveAttentionItems(
     for (const [deviceId, jobs] of byDevice) {
       const sorted = [...jobs].sort((a, b) => a.rn - b.rn);
       const latest = sorted[0];
-      if (!latest || latest.status !== 'failed') continue;
+      // #3000: `partial` counts as needing attention. A device whose latest run
+      // stored a sliver of its data is exactly the case the issue reported as
+      // invisible — it is not a success, and a dashboard that only surfaces
+      // hard failures never mentions it.
+      if (!latest || !NEEDS_ATTENTION_JOB_STATUSES.has(latest.status)) continue;
 
       let consecutiveFailures = 0;
       let reason: string | null = null;
+      // Wording only: a run of `partial` jobs is not a run of "failures", so
+      // the copy has to soften when any of the counted jobs was partial.
+      let sawPartial = false;
       for (const job of sorted) {
-        if (job.status !== 'failed') break;
+        if (!NEEDS_ATTENTION_JOB_STATUSES.has(job.status)) break;
         consecutiveFailures += 1;
+        if (job.status === 'partial') sawPartial = true;
         if (!reason && job.errorLog) reason = job.errorLog;
       }
 
       const deviceName = latest.deviceName ?? latest.deviceHostname ?? deviceId.slice(0, 8);
       const lastFailureAt = (latest.completedAt ?? latest.createdAt).toISOString();
+      const singularTitle =
+        latest.status === 'partial'
+          ? `${deviceName}: latest backup only partially completed`
+          : `${deviceName}: latest backup failed`;
 
       items.push({
         id: `backup-failing-${deviceId}`,
         title:
           consecutiveFailures > 1
-            ? `${deviceName}: ${consecutiveFailures} consecutive backup failures`
-            : `${deviceName}: latest backup failed`,
-        description: [reason, `Last failed ${lastFailureAt}`].filter(Boolean).join(' · '),
-        severity: consecutiveFailures >= 2 ? 'critical' : 'warning',
+            ? sawPartial
+              ? `${deviceName}: ${consecutiveFailures} consecutive unsuccessful backups`
+              : `${deviceName}: ${consecutiveFailures} consecutive backup failures`
+            : singularTitle,
+        description: [reason, `Last unsuccessful ${lastFailureAt}`].filter(Boolean).join(' · '),
+        // `critical` requires a real failure in the streak: two consecutive
+        // partial runs are two consecutive restore points, degraded but usable,
+        // and escalating them like two hard failures would dilute the signal.
+        severity: consecutiveFailures >= 2 && !sawPartial ? 'critical' : 'warning',
         lastFailureAt,
       });
     }
@@ -271,10 +297,14 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
         .from(backupSnapshots)
         .where(and(eq(backupSnapshots.orgId, orgId), snapshotDeviceScope))
         .then((r) => r[0]?.count ?? 0),
-      noSiteAllowedDevices ? Promise.resolve({ completed: 0, failed: 0, running: 0, pending: 0 }) : db
+      noSiteAllowedDevices ? Promise.resolve({ completed: 0, failed: 0, partial: 0, running: 0, pending: 0 }) : db
         .select({
           completed: sql<number>`count(*) filter (where ${backupJobs.status} = 'completed')::int`,
           failed: sql<number>`count(*) filter (where ${backupJobs.status} = 'failed')::int`,
+          // #3000: without its own counter a partial job vanishes from BOTH
+          // sides of the dashboard's success-rate fraction, so a device whose
+          // every run is partial reads as having no runs at all.
+          partial: sql<number>`count(*) filter (where ${backupJobs.status} = 'partial')::int`,
           running: sql<number>`count(*) filter (where ${backupJobs.status} = 'running')::int`,
           pending: sql<number>`count(*) filter (where ${backupJobs.status} = 'pending')::int`,
         })
@@ -286,7 +316,7 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
             jobDeviceScope
           )
         )
-        .then((r) => r[0] ?? { completed: 0, failed: 0, running: 0, pending: 0 }),
+        .then((r) => r[0] ?? { completed: 0, failed: 0, partial: 0, running: 0, pending: 0 }),
       noSiteAllowedDevices ? Promise.resolve({ totalBytes: 0, count: 0 }) : db
         .select({
           totalBytes: sql<number>`coalesce(sum(${backupSnapshots.size}), 0)::bigint`,
@@ -350,6 +380,10 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
       jobsLast24h: {
         completed: last24hStats.completed,
         failed: last24hStats.failed,
+        // Must be serialized, not just counted: the web success-rate fraction
+        // reads `partial` off this object, and omitting it here silently makes
+        // that fix inert while every unit test still passes (#3000).
+        partial: last24hStats.partial,
         running: last24hStats.running,
         queued: last24hStats.pending,
       },
@@ -410,8 +444,12 @@ dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ
     .orderBy(desc(backupJobs.createdAt));
 
   const lastJob = jobs[0] ?? null;
+  // A partial run counts here for the same reason it counts for RPO: it left a
+  // real restore point. Reporting "last successful backup: never" for a device
+  // that demonstrably has a snapshot would be a worse lie than the one #3000
+  // set out to fix. Its degraded-ness is carried by the job's own status.
   const lastSuccess =
-    jobs.find((j) => j.status === 'completed') ?? null;
+    jobs.find((j) => (RESTORABLE_BACKUP_JOB_STATUSES as readonly string[]).includes(j.status)) ?? null;
   const lastFailure =
     jobs.find((j) => j.status === 'failed') ?? null;
 
@@ -428,6 +466,19 @@ dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ
             status: lastJob.status,
             createdAt: lastJob.createdAt.toISOString(),
             completedAt: lastJob.completedAt?.toISOString() ?? null,
+            // #3027: the device tab's VSS panel keys off this. Bounded and
+            // secret-redacted at write time (sanitizeVssMetadata), and only
+            // ever present on Windows runs that actually started a VSS
+            // session — null on every other run, which is why the panel is
+            // hidden rather than shown empty.
+            vssMetadata: lastJob.vssMetadata ?? null,
+            // #3027: the companion channel, and the ONLY one that exists for
+            // the worst VSS outcome — when the shadow copy could not be created
+            // at all there is no vssMetadata to send, so the degradation rides
+            // the run's warning text into error_log. Without this the device
+            // tab showed a clean, green backup for a run that read every file
+            // off the live volume. Already secret-redacted at write time.
+            errorLog: lastJob.errorLog ?? null,
           }
         : null,
       lastSuccessAt: lastSuccess?.completedAt?.toISOString() ?? null,

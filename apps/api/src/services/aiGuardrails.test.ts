@@ -182,6 +182,97 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
     });
   });
 
+  // --- execute_command: commandType-keyed tier resolution (#3088) ---
+
+  describe('execute_command commandType tiers (#3088)', () => {
+    const readOnlyTypes = [
+      'event_logs_list',
+      'file_list',
+      'list_processes',
+    ];
+
+    it.each(readOnlyTypes.map((t) => [t]))(
+      'execute_command:%s → Tier 2 auto-execute + audit, no approval',
+      (commandType) => {
+        const result = checkGuardrails('execute_command', {
+          deviceId: '11111111-1111-1111-1111-111111111111',
+          commandType,
+        });
+        expect(result.tier).toBe(2);
+        expect(result.allowed).toBe(true);
+        expect(result.requiresApproval).toBe(false);
+      },
+    );
+
+    const mutatingTypes = [
+      'kill_process',
+      'start_service',
+      'stop_service',
+      'restart_service',
+      // file_read is a read but stays Tier 3 deliberately (SR5-01: arbitrary
+      // file contents off a root/LocalSystem agent are exfiltratable).
+      'file_read',
+      // list_services and event_logs_query are reads but stay Tier 3: both
+      // can return unredacted credential/PII-bearing content (service binary
+      // paths with embedded secrets; free-form-logName event queries whose
+      // raw Message can include a mistyped password from a failed logon).
+      'list_services',
+      'event_logs_query',
+    ];
+
+    it.each(mutatingTypes.map((t) => [t]))(
+      'execute_command:%s → Tier 3, approval required',
+      (commandType) => {
+        const result = checkGuardrails('execute_command', {
+          deviceId: '11111111-1111-1111-1111-111111111111',
+          commandType,
+        });
+        expect(result.tier).toBe(3);
+        expect(result.allowed).toBe(true);
+        expect(result.requiresApproval).toBe(true);
+      },
+    );
+
+    it('fails closed to Tier 3 when commandType is missing', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: '11111111-1111-1111-1111-111111111111',
+      });
+      expect(result.tier).toBe(3);
+      expect(result.requiresApproval).toBe(true);
+    });
+
+    it('fails closed to Tier 3 on an unknown commandType', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: '11111111-1111-1111-1111-111111111111',
+        commandType: 'definitely_not_a_command',
+      });
+      expect(result.tier).toBe(3);
+      expect(result.requiresApproval).toBe(true);
+    });
+
+    it('fails closed to Tier 3 on a non-string commandType', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: '11111111-1111-1111-1111-111111111111',
+        commandType: ['list_processes'],
+      });
+      expect(result.tier).toBe(3);
+      expect(result.requiresApproval).toBe(true);
+    });
+
+    it('ignores a spoofed `action` key — execute_command resolves on commandType only', () => {
+      // `action` is not execute_command's discriminator; a caller must not be
+      // able to downgrade the tier by passing action values from other tools'
+      // TIER1/TIER2 tables.
+      const result = checkGuardrails('execute_command', {
+        deviceId: '11111111-1111-1111-1111-111111111111',
+        action: 'list',
+        commandType: 'kill_process',
+      });
+      expect(result.tier).toBe(3);
+      expect(result.requiresApproval).toBe(true);
+    });
+  });
+
   // --- Unknown tool → Tier 4 (blocked) ---
 
   it('blocks unknown tools with Tier 4', () => {

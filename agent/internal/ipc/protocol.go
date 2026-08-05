@@ -47,9 +47,19 @@ type Conn struct {
 	conn       net.Conn
 	sessionKey []byte
 	keyMu      sync.RWMutex // protects sessionKey
-	sendSeq    atomic.Uint64
-	recvSeq    atomic.Uint64
-	mu         sync.Mutex // serializes writes
+	// sendSeq is the outbound sequence counter and the canonical statement of
+	// this type's ordering invariant: it must be advanced ONLY with mu held.
+	// The receiver enforces strict ordering, not just uniqueness, so a number
+	// handed out without the write lock can reach the socket after a higher one
+	// and be discarded as a replay (issue #3007). Atomicity alone does not buy
+	// that ordering — the type is atomic only so TestConnSendSeqAssignedUnder-
+	// WriteLock can observe the counter without racing it.
+	sendSeq atomic.Uint64
+	// recvSeq is the inbound counter. Recv load-then-stores it non-atomically
+	// with respect to other Recv calls, so a Conn must have a single reader;
+	// every caller today runs one Recv loop.
+	recvSeq atomic.Uint64
+	mu      sync.Mutex // serializes writes
 	// writeTimeoutNanos, when > 0, overrides the package-level writeTimeout for
 	// this Conn's Send() calls (see SetWriteTimeout). 0 means "use the default".
 	writeTimeoutNanos atomic.Int64
@@ -123,12 +133,59 @@ func (c *Conn) SetWriteDeadline(t time.Time) error {
 
 // Send marshals an Envelope and writes it as [4-byte BE length][JSON].
 // It computes the HMAC and sets the sequence number automatically.
+//
+// Send mutates env (Seq and HMAC), so a caller must not share one *Envelope
+// across concurrent Sends — build a fresh envelope per call, as SendTyped and
+// SendError do.
 func (c *Conn) Send(env *Envelope) error {
-	if c.writePoisoned.Load() {
-		if cause := c.firstWriteErr.Load(); cause != nil {
-			return fmt.Errorf("ipc: connection poisoned by prior write error: %w", *cause)
-		}
-		return fmt.Errorf("ipc: connection poisoned by prior write error")
+	// Fast path so an already-poisoned Conn fails without contending for the
+	// write lock. The authoritative check is repeated under c.mu below.
+	if err := c.poisonedErr(); err != nil {
+		return err
+	}
+
+	// Reject an oversized payload before taking the lock. The authoritative
+	// check is on the marshalled frame below, but that one runs inside the
+	// critical section, so without this a caller could hold c.mu across the
+	// hashing and marshalling of an arbitrarily large payload only to have it
+	// rejected — starving every other writer, including the keepalive pong
+	// whose absence gets the macOS user helper evicted (issue #2273). This
+	// bounds the in-lock work to roughly MaxMessageSize.
+	if len(env.Payload) > MaxMessageSize {
+		return fmt.Errorf("ipc: payload too large: %d > %d", len(env.Payload), MaxMessageSize)
+	}
+
+	// The sequence number, the HMAC that covers it, the marshal and the socket
+	// write all happen under c.mu. That is what makes the number a frame
+	// carries agree with the order it reaches the socket: Recv enforces strict
+	// monotonicity, so a number handed out before the lock let two concurrent
+	// senders take seq 1 and 2 and arrive as 2 then 1 (issue #3007). The loser
+	// is not merely dropped — every Recv caller treats the error as fatal, so
+	// one reordered frame tears down the whole IPC session, which is how a
+	// backup's terminal result goes missing.
+	//
+	// This widens the critical section to cover computeHMAC and json.Marshal.
+	// Both are pure CPU proportional to payload size and are now bounded by the
+	// pre-lock check above, against a lock that already covers two blocking
+	// socket writes sharing a 30s deadline. It does not reintroduce the #2273
+	// wedge, which was about *unbounded* blocking on a stalled peer: the only
+	// blocking call inside the lock is still the deadline-bounded write, and
+	// keyMu (taken by computeHMAC) is held only across a pointer read.
+	//
+	// An ordered handoff — seq under the lock, marshal outside, write in seq
+	// order via a ticket — was considered and rejected; see the commit message
+	// and PR for #3007. In short: writes are totally ordered anyway, so it only
+	// pipelines CPU against a single write, and it pays with an unbounded
+	// ticket wait that no deadline bounds.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Re-check under the lock. A Send that cleared the fast path may have
+	// queued behind a writer that poisoned the Conn in the meantime, and
+	// framing is length-prefixed, so appending a frame after a partial one
+	// desyncs the peer's stream.
+	if err := c.poisonedErr(); err != nil {
+		return err
 	}
 
 	env.Seq = c.sendSeq.Add(1)
@@ -139,12 +196,13 @@ func (c *Conn) Send(env *Envelope) error {
 		return fmt.Errorf("ipc: marshal envelope: %w", err)
 	}
 
+	// Catches an envelope whose framing overhead pushes a just-under-limit
+	// payload over. A rejected message still consumed a sequence number, which
+	// is fine: Recv requires each Seq to be greater than the last, not
+	// contiguous, so gaps are legal.
 	if len(data) > MaxMessageSize {
 		return fmt.Errorf("ipc: message too large: %d > %d", len(data), MaxMessageSize)
 	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	// Bound the blocking writes so a stalled socket can never wedge c.mu
 	// forever (issue #2273). Writes are serialized by c.mu, so clearing the
@@ -171,6 +229,18 @@ func (c *Conn) Send(env *Envelope) error {
 		return c.poison(fmt.Errorf("ipc: write payload: %w", err))
 	}
 	return nil
+}
+
+// poisonedErr reports the latched cause if a prior write poisoned this Conn,
+// or nil if it is still usable.
+func (c *Conn) poisonedErr() error {
+	if !c.writePoisoned.Load() {
+		return nil
+	}
+	if cause := c.firstWriteErr.Load(); cause != nil {
+		return fmt.Errorf("ipc: connection poisoned by prior write error: %w", *cause)
+	}
+	return fmt.Errorf("ipc: connection poisoned by prior write error")
 }
 
 // poison latches this Conn as unusable after a write error and records the

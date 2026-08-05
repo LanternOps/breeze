@@ -24,6 +24,16 @@ const BLOCKED_TOOLS = new Set<string>([
   // cross-org access is enforced by orgCondition in each handler
 ]);
 
+// Sub-operation discriminator key per tool. Most action-multiplexed tools
+// carry their sub-operation in `action`; execute_command multiplexes on
+// `commandType` (#3088) — that string selects the agent-side command handler,
+// so it is a real dispatch discriminator, not a heuristic over command text.
+// The TIER1/2/3_ACTIONS tables are indexed by the value found under this key.
+// Exported for the tier-parity contract tests (aiGuardrailsTierParity.shared.ts).
+export const TOOL_ACTION_INPUT_KEYS: Record<string, string> = {
+  execute_command: 'commandType',
+};
+
 // Actions that are Tier 2 (auto-execute + audit):
 //   manage_alerts: acknowledge/resolve/suppress are low-risk mutations
 //   manage_services: list is a read downgraded from the tool's base Tier 3
@@ -56,6 +66,37 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // file READ stays Tier 3 below: the agent runs as root/LocalSystem and an
   // unapproved read can exfiltrate any file's contents.
   file_operations: ['list'],
+  // #3088 approval-fatigue fix (2026-08-04): read-only execute_command
+  // commandTypes are non-mutating device reads and auto-execute with audit,
+  // consistent with their sibling tools (manage_processes list is Tier 1,
+  // manage_services list and file_operations list are Tier 2). This is an
+  // explicit conservative allowlist keyed on commandType (the agent-side
+  // handler discriminator — see TOOL_ACTION_INPUT_KEYS above); anything not
+  // listed here, including an unknown or missing commandType, stays at the
+  // tool's base Tier 3.
+  //
+  // Deliberately NOT downgraded, despite being nominally "read" operations:
+  //   - file_read: arbitrary-file exfiltration off a root/LocalSystem agent
+  //     (same SR5-01 rationale as file_operations read).
+  //   - kill_process, start/stop/restart_service: mutating.
+  //   - list_services: agent/internal/remote/tools/services_{windows,linux}.go
+  //     populates ServiceInfo.Path from the service's full binary path/command
+  //     line (config.BinaryPathName / ExecStart), only length-truncated, never
+  //     credential-redacted. Legacy and third-party services routinely embed
+  //     secrets there (e.g. `-p <password>`, DB connection strings) — same
+  //     exfiltration class as file_read.
+  //   - event_logs_query: logName is a free-form, caller-controlled string
+  //     with no denylist excluding Security — combined with the raw, unredacted
+  //     Message field (agent/internal/remote/tools/eventlogs_windows.go), a
+  //     Security-log query can surface a mistyped password landing in a 4625
+  //     failed-logon Account Name, or any credential/PII another app logged.
+  // Both would let an AI actor pull that content into its context with zero
+  // human review under auto_approve session mode.
+  execute_command: [
+    'event_logs_list',
+    'file_list',
+    'list_processes',
+  ],
   // Fleet tools — Tier 2 actions (auto-execute + audit)
   manage_configuration_policy: ['activate', 'deactivate'],
   manage_deployments: ['pause', 'resume'],
@@ -79,6 +120,44 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   manage_saved_filters: ['create', 'delete'],
 };
 
+// #3130: Tier-2 entries that are strictly READ-ONLY. Tier 2 as a whole means
+// "low-risk mutations + audit", so the per_step approval mode still prompts
+// for it — but a verified read has nothing to confirm, and prompting per list
+// call is exactly the approval-fatigue scenario #3088 measured (25 prompts in
+// 35 minutes). Entries here keep Tier 2 — and its ai_tool_executions
+// audit-ledger row; they are deliberately NOT demoted to Tier 1, which never
+// writes one (recon reads stay in the audit trail, SR5-01 precedent) — but
+// auto-execute under every session approval mode. A paused session still
+// prompts (aiAgentSdk.ts gates on !isPaused).
+//
+// CONTRACT (enforced by aiGuardrails.readonly.contract.test.ts): every pair
+// here must also be in TIER2_ACTIONS, and must be a pure read — no state
+// change on the device, the org, or any external system. When in doubt an
+// entry does not belong here; leaving a read out only costs one lightweight
+// prompt.
+export const TIER2_READONLY_ACTIONS: Record<string, string[]> = {
+  execute_command: ['event_logs_list', 'file_list', 'list_processes'],
+  file_operations: ['list'],
+  manage_services: ['list'],
+};
+
+// #3130 companion for whole tools: base-Tier-2 tools whose EVERY operation is
+// a read — single-purpose get/list/search tools with no action multiplexing
+// and no TIER3_ACTIONS escalation (both enforced by the contract test). Same
+// semantics as TIER2_READONLY_ACTIONS: keep the Tier-2 audit row, skip the
+// per-step prompt.
+export const TIER2_READONLY_TOOLS = new Set<string>([
+  'get_catalog_item',
+  'get_contract',
+  'get_invoice',
+  'get_quote',
+  'list_contracts',
+  'list_invoices',
+  'list_quotes',
+  'lookup_distributor_product',
+  'search_catalog',
+]);
+
 // Actions that downgrade to Tier 1 (auto-execute, no approval) even if the tool's base tier is higher
 // Exported for contract tests only — see the note on TIER2_ACTIONS.
 export const TIER1_ACTIONS: Record<string, string[]> = {
@@ -99,7 +178,7 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   security_scan: ['quarantine', 'remove', 'restore'],
   disk_cleanup: ['execute'],
   manage_startup_items: ['disable', 'enable'],
-  manage_scheduled_tasks: ['run', 'disable', 'enable', 'delete'],
+  manage_scheduled_tasks: ['run', 'disable', 'enable'],
   // Fleet tools — Tier 3 actions (require user approval)
   manage_configuration_policy: ['create', 'update', 'delete'],
   manage_deployments: ['create', 'start', 'cancel'],
@@ -273,7 +352,6 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     run: { resource: 'devices', action: 'execute' },
     disable: { resource: 'devices', action: 'execute' },
     enable: { resource: 'devices', action: 'execute' },
-    delete: { resource: 'devices', action: 'execute' },
   },
   take_screenshot: { resource: 'devices', action: 'execute' },
   analyze_screen: { resource: 'devices', action: 'execute' },
@@ -505,6 +583,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   manage_notification_channels: {
     list: { resource: 'alerts', action: 'read' },
     test: { resource: 'alerts', action: 'write' },
+    create: { resource: 'alerts', action: 'write' },
+    update: { resource: 'alerts', action: 'write' },
+    delete: { resource: 'alerts', action: 'write' },
   },
   // Saved filter tools
   manage_saved_filters: {
@@ -569,6 +650,99 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // permissions live in TOOL_EXTRA_PERMISSIONS below.
   send_deployment_invites: { resource: 'devices', action: 'write' },
   configure_defaults: { resource: 'organizations', action: 'write' },
+
+  // Registration-debt payoff: RBAC entries for tools that were registered in
+  // aiTools but had no TOOL_PERMISSIONS entry (legacyPermissionGaps in
+  // aiToolsRegistryParity.test.ts). See that file's history for context.
+  // Incidents (analogy: manage_dr_plan/sync_huntress_data org-write; get_dr_plan_details org-read)
+  create_incident: { resource: 'organizations', action: 'write' },
+  get_incident_timeline: { resource: 'organizations', action: 'read' },
+  generate_incident_report: { resource: 'organizations', action: 'read' },
+  // Device-execute (analogy: s1_isolate_device, execute_command; collect_evidence includes
+  // screenshot => privileged extraction like take_screenshot)
+  execute_containment: { resource: 'devices', action: 'execute' },
+  collect_evidence: { resource: 'devices', action: 'execute' },
+
+  // Policy-prereq family (analogy: manage_backup_profiles per-action map)
+  manage_update_rings: {
+    list: { resource: 'policies', action: 'read' },
+    get: { resource: 'policies', action: 'read' },
+    create: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+  },
+  manage_backup_configs: {
+    list: { resource: 'policies', action: 'read' },
+    get: { resource: 'policies', action: 'read' },
+    create: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+  },
+
+  // Device reads (analogy: analyze_boot_performance, query_change_log)
+  get_user_experience_metrics: { resource: 'devices', action: 'read' },
+  get_ip_history: { resource: 'devices', action: 'read' },
+  get_active_users: { resource: 'devices', action: 'read' },
+
+  // Security visibility (analogy: get_security_posture devices:read; PAM entries mirror
+  // routes/pam.ts requirePamRead/Execute)
+  get_dns_security: { resource: 'devices', action: 'read' },
+  manage_dns_policy: { resource: 'devices', action: 'write' },
+  get_browser_security: { resource: 'devices', action: 'read' },
+  manage_browser_policy: {
+    list: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
+    apply: { resource: 'devices', action: 'execute' },   // queues real deviceCommands (parity: apply_cis_remediation)
+  },
+  get_sensitive_data_overview: { resource: 'devices', action: 'read' },
+  remediate_sensitive_data: {
+    encrypt: { resource: 'devices', action: 'execute' },
+    quarantine: { resource: 'devices', action: 'execute' },
+    secure_delete: { resource: 'devices', action: 'execute' },
+    accept_risk: { resource: 'devices', action: 'write' },
+    false_positive: { resource: 'devices', action: 'write' },
+    mark_remediated: { resource: 'devices', action: 'write' },
+  },
+  request_elevation: { resource: 'devices', action: 'execute' },   // routes/pam.ts: respond gates on requirePamExecute; rule auto-approve makes this privilege-granting
+  revoke_elevation: { resource: 'devices', action: 'execute' },    // routes/pam.ts revoke gates on requirePamExecute
+  get_elevation_history: { resource: 'devices', action: 'read' },  // requirePamRead
+
+  // Compliance / software / peripheral (analogy: query_compliance_policies policies:read;
+  // manage_configuration_policy map)
+  get_software_compliance: { resource: 'policies', action: 'read' },
+  manage_software_policies: {
+    list: { resource: 'policies', action: 'read' },
+    get: { resource: 'policies', action: 'read' },
+    create: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+  },
+  manage_software_policy: {
+    list: { resource: 'policies', action: 'read' },
+    get: { resource: 'policies', action: 'read' },
+    create: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+    delete: { resource: 'policies', action: 'write' },
+  },
+  remediate_software_violation: { resource: 'devices', action: 'execute' },  // analogy: apply_cis_remediation
+  manage_peripheral_policies: {
+    list: { resource: 'policies', action: 'read' },
+    get: { resource: 'policies', action: 'read' },
+    create: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+  },
+  manage_peripheral_policy: {
+    create: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+    disable: { resource: 'policies', action: 'write' },
+    add_exception: { resource: 'policies', action: 'write' },
+    remove_exception: { resource: 'policies', action: 'write' },
+  },
+  get_peripheral_activity: { resource: 'devices', action: 'read' },
+
+  // Network (mirror backing REST routes: networkChanges.ts uses devices:read + alerts:acknowledge;
+  // networkBaselines.ts uses devices:write)
+  get_network_changes: { resource: 'devices', action: 'read' },
+  acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
+  configure_network_baseline: { resource: 'devices', action: 'write' },
 };
 
 const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string }[]> = {
@@ -676,12 +850,22 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   sync_huntress_data: { limit: 10, windowSeconds: 300 },
   // User risk tools
   assign_security_training: { limit: 10, windowSeconds: 300 },
+  // Registration-debt payoff: rate limits for newly-permissioned tools.
+  execute_containment: { limit: 5, windowSeconds: 600 },       // mirrors s1_isolate_device
+  collect_evidence: { limit: 10, windowSeconds: 300 },          // mirrors take_screenshot-class dispatch
+  remediate_software_violation: { limit: 10, windowSeconds: 600 }, // mirrors apply_cis_remediation
 };
 
 export interface GuardrailCheck {
   tier: AiToolTier;
   allowed: boolean;
   requiresApproval: boolean;
+  /**
+   * Set (true) only for Tier-2 resolutions on the #3130 read-only allowlists
+   * (TIER2_READONLY_ACTIONS / TIER2_READONLY_TOOLS): eligible to auto-execute
+   * — with the Tier-2 audit-ledger row — even under per_step approval mode.
+   */
+  readOnly?: boolean;
   reason?: string;
   description?: string;
 }
@@ -714,8 +898,13 @@ export function checkGuardrails(
     };
   }
 
-  // Check for action-based tier escalation
-  const action = input.action as string | undefined;
+  // Check for action-based tier escalation. The discriminator is `action` for
+  // most tools; a TOOL_ACTION_INPUT_KEYS entry overrides the key (#3088 —
+  // execute_command multiplexes on `commandType`). Non-string values resolve
+  // to undefined, which falls through to the base tier (fail-closed).
+  const actionKey = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
+  const actionValue = input[actionKey];
+  const action = typeof actionValue === 'string' ? actionValue : undefined;
 
   // Tier 1 downgrade: read-only actions on otherwise-high-tier tools
   if (action && TIER1_ACTIONS[toolName]?.includes(action)) {
@@ -741,6 +930,7 @@ export function checkGuardrails(
       tier: 2,
       allowed: true,
       requiresApproval: false,
+      ...(TIER2_READONLY_ACTIONS[toolName]?.includes(action) ? { readOnly: true } : {}),
       description: buildApprovalDescription(toolName, action, input)
     };
   }
@@ -759,7 +949,8 @@ export function checkGuardrails(
     tier: baseTier,
     allowed: true,
     requiresApproval: false,
-    description: buildApprovalDescription(toolName, input.action as string | undefined, input)
+    ...(baseTier === 2 && TIER2_READONLY_TOOLS.has(toolName) ? { readOnly: true } : {}),
+    description: buildApprovalDescription(toolName, action, input)
   };
 }
 

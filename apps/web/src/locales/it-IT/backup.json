@@ -19,6 +19,7 @@
     "running": "In esecuzione",
     "failed": "Non riuscito",
     "completed": "Completato",
+    "partial": "Parziale",
     "queued": "In coda",
     "cancelled": "Annullato",
     "filterByConfig": "Filtra per configurazione",
@@ -48,7 +49,10 @@
     "errorLog": "Log errori",
     "savings": "{{protected}} protetti - {{uploaded}} caricati",
     "errorCount_one": "{{count}} errore",
-    "errorCount_other": "{{count}} errori"
+    "errorCount_other": "{{count}} errori",
+    "failedCount_one": "{{count}} non riuscito",
+    "failedCount_other": "{{count}} non riusciti",
+    "failedFilesTooltip": "File non riusciti durante questo backup"
   },
   "backupOverviewContent": {
     "noProviderTimelineAvailableYet": "Nessuna cronologia provider ancora disponibile.",
@@ -168,6 +172,9 @@
     "vssStatus": "Stato VSS",
     "latestBackupJob": "Ultimo processo di backup",
     "oneOrMoreVssWritersAreNotStable": "Uno o più writer VSS non sono stabili. Rivedi gli ultimi stati dei writer prima della prossima esecuzione.",
+    "vssUnprotectedVolumes": "Letto dal volume attivo, non da una copia shadow VSS: {{volumes}}. I file in uso su questi volumi potrebbero essere stati ignorati o acquisiti in uno stato incoerente.",
+    "lastBackupFailed": "Ultimo backup non riuscito",
+    "lastBackupCompletedWithWarnings": "Ultimo backup completato con avvisi",
     "writer": "Writer",
     "state": "Stato",
     "noVssWriterDetailsWereReportedForThe": "Non sono stati riportati dettagli dei writer VSS per l'ultimo backup.",

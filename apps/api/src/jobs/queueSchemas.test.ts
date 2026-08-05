@@ -338,3 +338,52 @@ describe('fdb adjacency schema (Phase 2)', () => {
     expect(parsed.fdb).toEqual([]);
   });
 });
+
+// #3000: backupProcessResultSchema is .strict(), so the agent's own terminal
+// status must be declared or the whole queue job fails validation and the
+// backup result is lost. It rides a DISTINCT key because `status` on this
+// payload already means the outer completed/failed command status.
+describe('backupProcessResultSchema — agentStatus (#3000)', () => {
+  it('carries agentStatus alongside the outer status', () => {
+    const parsed = backupProcessResultSchema.parse({
+      status: 'completed',
+      agentStatus: 'partial',
+      snapshotId: 'snap-1',
+      errorCount: 21,
+    });
+    expect(parsed.status).toBe('completed');
+    expect(parsed.agentStatus).toBe('partial');
+  });
+
+  it('stays valid when a legacy agent sends no agentStatus', () => {
+    const parsed = backupProcessResultSchema.parse({ status: 'completed', snapshotId: 'snap-1' });
+    expect(parsed.agentStatus).toBeUndefined();
+  });
+
+  it('carries vssMetadata across the .strict() boundary (#3027)', () => {
+    // The schema is .strict(), so an undeclared top-level key throws inside
+    // enqueueBackupResults BEFORE queue.add — the whole terminal result would
+    // be lost, not just the diagnostics.
+    const parsed = backupProcessResultSchema.parse({
+      status: 'completed',
+      snapshotId: 'snap-1',
+      vssMetadata: { shadowCopyId: 'set-1', unprotectedVolumes: ['D:\\'] },
+    });
+    expect(parsed.vssMetadata).toEqual({ shadowCopyId: 'set-1', unprotectedVolumes: ['D:\\'] });
+  });
+
+  it('never rejects the queue payload over a malformed vssMetadata', () => {
+    // Same reasoning as the ingress schema: this parse throws before the job is
+    // enqueued, so a shape assertion here would discard the snapshot id and
+    // counters over a diagnostics blob. Bounding happens at the DB write.
+    for (const vssMetadata of [{ writers: 'not-an-array' }, 'bare string', 7, [], null]) {
+      const parsed = backupProcessResultSchema.safeParse({
+        status: 'completed',
+        snapshotId: 'snap-1',
+        vssMetadata,
+      });
+      expect(parsed.success).toBe(true);
+      expect(parsed.success && parsed.data.snapshotId).toBe('snap-1');
+    }
+  });
+});

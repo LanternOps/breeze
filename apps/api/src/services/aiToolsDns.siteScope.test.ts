@@ -99,3 +99,44 @@ describe('get_dns_security — site narrowing (cross-site enumeration)', () => {
     expect(parsed.source).toBe('raw');
   });
 });
+
+// D.4: manage_dns_policy had NO site-scope guard at all (unlike every sibling
+// write tool) — a site-restricted org user could write org-wide DNS policy.
+describe('manage_dns_policy — site-restricted callers are denied (D.4 fail-closed guard)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const ADD_BLOCK_INPUT = {
+    integrationId: '11111111-1111-1111-1111-111111111111',
+    action: 'add_block',
+    domains: ['bad.example'],
+  };
+
+  it('rejects a site-restricted caller without touching the database', async () => {
+    const r = await handlerFor('manage_dns_policy')(ADD_BLOCK_INPUT, makeAuth(['site-A']));
+    const parsed = JSON.parse(r);
+
+    expect(parsed.error).toMatch(/full-organization access/i);
+    expect(mockDb.select).not.toHaveBeenCalled();
+  });
+
+  it('unrestricted caller is unaffected (no regression) — proceeds past the guard', async () => {
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      // integration lookup
+      if (cols && typeof cols === 'object' && 'orgId' in (cols as object) && Object.keys(cols as object).length === 2) {
+        return chain([{ id: ADD_BLOCK_INPUT.integrationId, orgId: 'org-1' }]);
+      }
+      // policy lookup — none exists yet
+      return chain([]);
+    });
+    (db.insert as ReturnType<typeof vi.fn>).mockReturnValue({
+      values: () => ({ returning: () => Promise.resolve([{ id: 'policy-1', domains: [] }]) }),
+    });
+    (db.update as ReturnType<typeof vi.fn>).mockReturnValue({ set: () => ({ where: () => Promise.resolve(undefined) }) });
+
+    const r = await handlerFor('manage_dns_policy')(ADD_BLOCK_INPUT, makeAuth(undefined));
+    const parsed = JSON.parse(r);
+
+    expect(parsed.error).toBeUndefined();
+    expect(parsed.success).toBe(true);
+  });
+});

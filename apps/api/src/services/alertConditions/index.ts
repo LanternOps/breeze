@@ -281,6 +281,153 @@ export function validateConditions(conditions: unknown): string[] {
   return errors;
 }
 
+// Deepest nesting a conditions tree is walked to. Groups nest via
+// `{logic, conditions[]}`; anything past this is malformed or hostile and is
+// not worth recursing into.
+const MAX_CONDITION_DEPTH = 10;
+
+// Ceiling on how many nodes the walk will visit, so an oversized or hostile
+// payload can't turn this boundary check into a CPU sink. Exceeding it is
+// reported as `truncated` and rejected — never silently treated as clean.
+const MAX_CONDITION_NODES = 2000;
+
+/**
+ * Condition types that were once writable but have no evaluator behind them.
+ *
+ * **A denylist, deliberately — NOT "every type absent from `conditionRegistry`".**
+ * The registry is not the complete set of live condition types:
+ *   * `dns_threat` is a seeded built-in template (`db/seed.ts`) whose alerts are
+ *     raised directly by `services/dnsThreatAlerts.ts` off the
+ *     `dns.threat.blocked` event. That path inserts alerts itself and never
+ *     evaluates a condition, so the type is live despite having no handler —
+ *     and the seed documents narrowing it via the rule's
+ *     `override_settings.conditions.categories`, i.e. a plain PUT.
+ *   * The alert-template editor writes `type: 'event'` triggers.
+ * Rejecting "unregistered" types would 400 both of those working features.
+ *
+ * So the failure mode is chosen on purpose: this misses a hypothetical future
+ * dead type rather than breaking a live one. Add an entry here when a type is
+ * retired, alongside a cleanup migration for rows that already carry it.
+ */
+export const RETIRED_CONDITION_TYPES: ReadonlySet<string> = new Set([
+  // #2948 — offered by both alert-rule editors, never had a handler.
+  // `conditionRegistry.evaluate` answered "Unknown condition type: custom" with
+  // passed=false, and a root-level array is evaluated as an implicit AND
+  // (`evaluateConditions` wraps it in `{logic:'and'}`), so a rule carrying one
+  // could never fire. Inside an explicit `or` group it would not be fatal, but
+  // the write boundary rejects it there too: a type with no evaluator is a bug
+  // in the payload either way.
+  'custom',
+]);
+
+export interface RetiredConditionScan {
+  /** Retired type names found, deduped. */
+  retired: string[];
+  /**
+   * The walk hit its depth or node ceiling and did NOT finish. The result is
+   * therefore inconclusive, not clean — callers must reject rather than accept.
+   */
+  truncated: boolean;
+}
+
+/**
+ * Scan a conditions payload for retired condition types.
+ *
+ * The walk is structure-agnostic — it descends into every nested object and
+ * array rather than only `{logic, conditions[]}` groups — because the write
+ * paths accept several envelopes for the same data: a bare array
+ * (`POST /alerts/rules`), a `{logic, conditions[]}` group, a bare object, and
+ * the alert-template editor's `{triggers: [...], thresholdDefaults, ...}`
+ * (`z.record` on those routes, never an array). A structure-aware walk silently
+ * missed the last of those. Over-walking is safe *because* this is a denylist:
+ * the worst case is finding a retired type somewhere unexpected, which is still
+ * a type nobody can evaluate.
+ *
+ * Callers must pass the condition-bearing values only (see
+ * `conditionPayloadsFrom`), not whole override blobs — a rule targeting several
+ * thousand devices carries a `targetIds` array big enough to exhaust the node
+ * budget on its own, which would truncate the scan of a payload that is
+ * perfectly legitimate.
+ */
+export function findRetiredConditionTypes(conditions: unknown): RetiredConditionScan {
+  const retired = new Set<string>();
+  let visited = 0;
+  let truncated = false;
+
+  const walk = (node: unknown, depth: number): void => {
+    if (node === null || typeof node !== 'object') return;
+    if (depth > MAX_CONDITION_DEPTH || ++visited > MAX_CONDITION_NODES) {
+      truncated = true;
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      // Arrays don't add a nesting level: a `{logic, conditions[]}` group costs
+      // one level, matching the evaluator's own recursion in
+      // evaluateConditionRecursive. Primitives are skipped before the call so a
+      // long array of strings can't burn the node budget.
+      for (const child of node) {
+        if (child !== null && typeof child === 'object') walk(child, depth);
+      }
+      return;
+    }
+
+    const record = node as Record<string, unknown>;
+    if (typeof record.type === 'string' && RETIRED_CONDITION_TYPES.has(record.type)) {
+      retired.add(record.type);
+    }
+    for (const value of Object.values(record)) {
+      if (value !== null && typeof value === 'object') walk(value, depth + 1);
+    }
+  };
+
+  walk(conditions, 0);
+  return { retired: [...retired], truncated };
+}
+
+/**
+ * Pull the condition-bearing values out of an alert-rule overrides object.
+ *
+ * `overrideSettings` / `overrides` are `z.any()` passthroughs carrying targets,
+ * device id lists and notification bindings alongside the two keys the
+ * evaluator actually reads back (`conditions`, `autoResolveConditions` — see
+ * alertService). Handing the whole blob to the scanner both wastes the node
+ * budget and risks truncating on a large-but-legitimate `targetIds`.
+ */
+export function conditionPayloadsFrom(value: unknown): unknown[] {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return [];
+  const record = value as Record<string, unknown>;
+  return [record.conditions, record.autoResolveConditions].filter((v) => v !== undefined);
+}
+
+/**
+ * Boundary check for the alert-rule / alert-template write paths. Returns a
+ * user-facing error message when the payload carries a retired condition type
+ * — or when it was too large to scan conclusively — and null when it is safe.
+ *
+ * Fails CLOSED on truncation. An inconclusive scan reported as clean would
+ * re-open exactly the #2948 hole: a stored rule that is enabled, looks healthy,
+ * and can never fire.
+ */
+export function retiredConditionTypeError(conditions: unknown): string | null {
+  if (conditions === undefined || conditions === null) return null;
+
+  const { retired, truncated } = findRetiredConditionTypes(conditions);
+
+  if (retired.length > 0) {
+    return `Retired alert condition type(s): ${retired.join(', ')}. `
+      + 'These never had an evaluator behind them, so a rule containing one can never fire. '
+      + 'Remove or replace the condition.';
+  }
+
+  if (truncated) {
+    return 'Alert conditions are too large or too deeply nested to validate. '
+      + 'Simplify the conditions and try again.';
+  }
+
+  return null;
+}
+
 /**
  * Interpolate template strings with context values
  * Supports {{variable}} syntax

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1059,4 +1061,134 @@ func TestInitBootstrapLoggingUnsafeLogPathDisablesFileOutputOnly(t *testing.T) {
 	if info.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("expected log path to remain a symlink (never renamed away), got mode %v", info.Mode())
 	}
+}
+
+// withUninstallNotifyConfig points cfgFile at a temp agent.yaml (+
+// secrets.yaml, written by config.SaveTo) built from cfg, and restores the
+// package globals runUninstallNotify reads on cleanup.
+func withUninstallNotifyConfig(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+	if err := config.SaveTo(cfg, cfgPath); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	origCfg, origQuiet := cfgFile, quietEnroll
+	t.Cleanup(func() { cfgFile, quietEnroll = origCfg, origQuiet })
+	cfgFile, quietEnroll = cfgPath, true
+}
+
+// TestRunUninstallNotify_NoConfig_NoOp asserts the "missing secrets.yaml"
+// case from the Task 6 self-review checklist: config.Load errors (no
+// agent.yaml at all — the uninstaller ran after everything was already torn
+// down, or the agent was never installed at all), and runUninstallNotify
+// must return without panicking or attempting any HTTP call.
+func TestRunUninstallNotify_NoConfig_NoOp(t *testing.T) {
+	dir := t.TempDir()
+	origCfg, origQuiet := cfgFile, quietEnroll
+	t.Cleanup(func() { cfgFile, quietEnroll = origCfg, origQuiet })
+	cfgFile, quietEnroll = filepath.Join(dir, "does-not-exist.yaml"), true
+
+	runUninstallNotify() // must not panic
+}
+
+// TestRunUninstallNotify_UnenrolledConfig_NoOp covers an agent.yaml that
+// exists but was never enrolled (no secrets.yaml, so AuthToken is empty) —
+// config.IsEnrolled must gate the HTTP call.
+func TestRunUninstallNotify_UnenrolledConfig_NoOp(t *testing.T) {
+	var called bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := config.Default()
+	cfg.ServerURL = srv.URL // present, but no AgentID/AuthToken -> not enrolled
+	withUninstallNotifyConfig(t, cfg)
+
+	runUninstallNotify()
+
+	if called {
+		t.Fatal("uninstall-intent endpoint was called for an unenrolled config")
+	}
+}
+
+// TestRunUninstallNotify_Enrolled_PostsUninstallIntent is the happy path:
+// an enrolled config posts to /agents/<id>/uninstall-intent with the
+// device's bearer token.
+func TestRunUninstallNotify_Enrolled_PostsUninstallIntent(t *testing.T) {
+	var called bool
+	var gotPath, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"acknowledged":true}`))
+	}))
+	defer srv.Close()
+
+	cfg := config.Default()
+	cfg.AgentID = "0f0e0d0c-0b0a-4908-8706-050403020100"
+	cfg.AuthToken = "brz_token"
+	cfg.ServerURL = srv.URL
+	withUninstallNotifyConfig(t, cfg)
+
+	runUninstallNotify()
+
+	if !called {
+		t.Fatal("uninstall-intent endpoint was not called for an enrolled config")
+	}
+	if gotPath != "/api/v1/agents/0f0e0d0c-0b0a-4908-8706-050403020100/uninstall-intent" {
+		t.Errorf("path = %q, want /api/v1/agents/0f0e0d0c-0b0a-4908-8706-050403020100/uninstall-intent", gotPath)
+	}
+	if gotAuth != "Bearer brz_token" {
+		t.Errorf("Authorization = %q, want Bearer brz_token", gotAuth)
+	}
+}
+
+// TestRunUninstallNotify_ServerErrorIsNonFatal covers the self-review
+// checklist's "including ... the 403 drain response" requirement: neither a
+// 403 tenant_offboarding drain response nor any other non-2xx status may
+// panic or otherwise fail this call — always non-fatal.
+func TestRunUninstallNotify_ServerErrorIsNonFatal(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"tenant offboarding drain", http.StatusForbidden, `{"error":"tenant_offboarding"}`},
+		{"generic server error", http.StatusInternalServerError, `{"error":"boom"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			cfg := config.Default()
+			cfg.AgentID = "0f0e0d0c-0b0a-4908-8706-050403020100"
+			cfg.AuthToken = "brz_token"
+			cfg.ServerURL = srv.URL
+			withUninstallNotifyConfig(t, cfg)
+
+			runUninstallNotify() // must not panic
+		})
+	}
+}
+
+// TestRunUninstallNotify_NetworkErrorIsNonFatal covers the self-review
+// checklist's "network error" case: an unreachable server must not panic
+// or otherwise fail this call.
+func TestRunUninstallNotify_NetworkErrorIsNonFatal(t *testing.T) {
+	cfg := config.Default()
+	cfg.AgentID = "0f0e0d0c-0b0a-4908-8706-050403020100"
+	cfg.AuthToken = "brz_token"
+	cfg.ServerURL = "http://127.0.0.1:1" // nothing listening; connection refused
+	withUninstallNotifyConfig(t, cfg)
+
+	runUninstallNotify() // must not panic
 }

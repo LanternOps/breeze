@@ -1,10 +1,12 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AddPackageModal from './AddPackageModal';
 import { fetchWithAuth } from '../../stores/auth';
+import { uploadPackageVersion } from '../../lib/softwarePackageUpload';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../lib/softwarePackageUpload', () => ({ uploadPackageVersion: vi.fn() }));
 
 const showToast = vi.fn();
 vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
@@ -14,6 +16,7 @@ vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
 vi.mock('./DetectionRulesEditor', () => ({ default: () => null }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
+const uploadMock = vi.mocked(uploadPackageVersion);
 
 const jsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -51,9 +54,32 @@ const fillMinimum = () => {
   });
 };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+/** Fill the form with a file source instead of a download URL. */
+const fillFileForm = (): File => {
+  fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Big App' } });
+  fireEvent.change(screen.getByLabelText('Version'), { target: { value: '3.1.4' } });
+  fireEvent.click(screen.getByRole('tab', { name: /upload file/i }));
+  const file = new File([new Uint8Array(32)], 'bigapp.msi');
+  const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+  fireEvent.change(fileInput, { target: { files: [file] } });
+  return file;
+};
+
+const submitCreate = async () =>
+  fireEvent.click(await screen.findByRole('button', { name: 'Create package' }));
+
 describe('AddPackageModal', () => {
   beforeEach(() => {
     fetchMock.mockReset();
+    uploadMock.mockReset();
     showToast.mockReset();
   });
 
@@ -156,5 +182,341 @@ describe('AddPackageModal', () => {
     expect(onCreated).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'cat-1', name: 'Google Chrome', versionCount: 0 }),
     );
+  });
+
+  describe('chunked upload (file source)', () => {
+    it('routes the file source through the chunked uploader inside runAction', async () => {
+      const onCreated = vi.fn();
+      routeMock({});
+      uploadMock.mockResolvedValueOnce(jsonResponse({ data: { id: 'ver-1' } }, true, 201));
+
+      render(<AddPackageModal open onClose={() => {}} onCreated={onCreated} />);
+      const file = fillFileForm();
+      await submitCreate();
+
+      await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
+      expect(uploadMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          catalogId: 'cat-1',
+          file,
+          metadata: expect.objectContaining({ version: '3.1.4', architecture: 'x64' }),
+          onProgress: expect.any(Function),
+        }),
+      );
+      // The legacy single-request multipart endpoint is not used any more.
+      const legacyCall = fetchMock.mock.calls.find(([u]) =>
+        String(u).includes('/versions/upload'),
+      );
+      expect(legacyCall).toBeUndefined();
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    });
+
+    it('keeps the catalog id for retry when the chunked upload fails (runAction error path)', async () => {
+      const onCreated = vi.fn();
+      routeMock({});
+      uploadMock.mockResolvedValueOnce(jsonResponse({ error: 'Upload is incomplete' }, false, 409));
+
+      render(<AddPackageModal open onClose={() => {}} onCreated={onCreated} />);
+      fillFileForm();
+      await submitCreate();
+
+      // A resolved-but-failing Response is a FAILURE, not a silent success:
+      // runAction parses the body and toasts the server's message.
+      await waitFor(() =>
+        expect(showToast).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'error', message: 'Upload is incomplete' }),
+        ),
+      );
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+      expect(onCreated).not.toHaveBeenCalled();
+
+      // Catalog item created exactly once; the retry resumes at the version step.
+      const catalogCreates = fetchMock.mock.calls.filter(
+        ([u, o]) => u === '/software/catalog' && (o as RequestInit)?.method === 'POST',
+      );
+      expect(catalogCreates).toHaveLength(1);
+
+      uploadMock.mockResolvedValueOnce(jsonResponse({ data: { id: 'ver-1' } }, true, 201));
+      fireEvent.click(await screen.findByRole('button', { name: 'Retry adding version' }));
+      await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
+      expect(
+        fetchMock.mock.calls.filter(
+          ([u, o]) => u === '/software/catalog' && (o as RequestInit)?.method === 'POST',
+        ),
+      ).toHaveLength(1);
+      expect(uploadMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('surfaces the operator-actionable upload_instance_mismatch message', async () => {
+      const message =
+        'Upload cannot continue: it was started on a different API server instance ' +
+        '(the API restarted, or requests are load-balanced across replicas without ' +
+        'session affinity). Enable sticky sessions for the API — or run a single ' +
+        'replica — then start the upload again.';
+      routeMock({});
+      uploadMock.mockResolvedValueOnce(
+        jsonResponse({ error: message, code: 'upload_instance_mismatch' }, false, 409),
+      );
+
+      render(<AddPackageModal open onClose={() => {}} onCreated={() => {}} />);
+      fillFileForm();
+      await submitCreate();
+
+      await waitFor(() =>
+        expect(showToast).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'error', message }),
+        ),
+      );
+    });
+
+    it('renders real progress, including a lost-state resync back to 0%', async () => {
+      const gate = deferred<Response>();
+      let report: ((sent: number, total: number) => void) | undefined;
+      routeMock({});
+      uploadMock.mockImplementation((opts) => {
+        report = opts.onProgress;
+        return gate.promise;
+      });
+
+      render(<AddPackageModal open onClose={() => {}} onCreated={() => {}} />);
+      fillFileForm();
+      await submitCreate();
+      await waitFor(() => expect(uploadMock).toHaveBeenCalledTimes(1));
+
+      const label = () => screen.getByTestId('package-upload-progress').textContent ?? '';
+      const width = () => screen.getByTestId('package-upload-progress-bar').style.width;
+
+      // Visible from the start — never gated on `progress > 0`.
+      expect(width()).toBe('0%');
+
+      act(() => report!(250, 1000));
+      expect(width()).toBe('25%');
+      expect(label()).toContain('25%');
+
+      act(() => report!(750, 1000));
+      expect(width()).toBe('75%');
+
+      // Lost-state resync: the server legitimately restarts from zero. The bar
+      // must stay mounted, show the regression, and never go negative or NaN.
+      act(() => report!(0, 1000));
+      expect(screen.getByTestId('package-upload-progress')).toBeInTheDocument();
+      expect(width()).toBe('0%');
+      act(() => report!(400, 1000));
+      expect(width()).toBe('40%');
+      act(() => report!(5, 0));
+      expect(width()).toBe('0%');
+
+      await act(async () => {
+        gate.resolve(jsonResponse({ data: { id: 'ver-1' } }, true, 201));
+        await gate.promise;
+      });
+      await waitFor(() =>
+        expect(screen.queryByTestId('package-upload-progress')).not.toBeInTheDocument(),
+      );
+    });
+
+    it('aborts the in-flight upload on cancel and exits quietly (no error toast)', async () => {
+      const onCreated = vi.fn();
+      const onClose = vi.fn();
+      const gate = deferred<Response>();
+      let signal: AbortSignal | undefined;
+      routeMock({});
+      uploadMock.mockImplementation((opts) => {
+        signal = opts.signal;
+        return gate.promise;
+      });
+
+      render(<AddPackageModal open onClose={onClose} onCreated={onCreated} />);
+      fillFileForm();
+      await submitCreate();
+      await waitFor(() => expect(uploadMock).toHaveBeenCalledTimes(1));
+      expect(signal).toBeInstanceOf(AbortSignal);
+      expect(signal!.aborted).toBe(false);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      expect(signal!.aborted).toBe(true);
+      expect(onClose).toHaveBeenCalled();
+
+      // uploadPackageVersion REJECTS on abort — a cancel the user asked for must
+      // not toast, and must not resurrect the version they abandoned.
+      await act(async () => {
+        gate.resolve(
+          Promise.reject(
+            new DOMException('The operation was aborted.', 'AbortError'),
+          ) as unknown as Response,
+        );
+        await Promise.resolve();
+      });
+
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+      // The catalog item WAS created, so it is surfaced as a 0-version package
+      // rather than left as an invisible orphan.
+      expect(onCreated).toHaveBeenCalledTimes(1);
+      expect(onCreated).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'cat-1', versionCount: 0 }),
+      );
+    });
+
+    it('does not report success when a completion lands after the cancel', async () => {
+      const onCreated = vi.fn();
+      const gate = deferred<Response>();
+      routeMock({});
+      uploadMock.mockImplementation(() => gate.promise);
+
+      render(<AddPackageModal open onClose={() => {}} onCreated={onCreated} />);
+      fillFileForm();
+      await submitCreate();
+      await waitFor(() => expect(uploadMock).toHaveBeenCalledTimes(1));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+      // The chunk loop had already finished; /complete resolves 201 anyway.
+      await act(async () => {
+        gate.resolve(jsonResponse({ data: { id: 'ver-1' } }, true, 201));
+        await gate.promise;
+      });
+
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+      expect(onCreated).toHaveBeenCalledTimes(1);
+      expect(onCreated).toHaveBeenCalledWith(
+        expect.objectContaining({ versionCount: 0 }),
+      );
+    });
+
+    it('aborts the upload when the modal unmounts', async () => {
+      const gate = deferred<Response>();
+      let signal: AbortSignal | undefined;
+      routeMock({});
+      uploadMock.mockImplementation((opts) => {
+        signal = opts.signal;
+        return gate.promise;
+      });
+
+      const view = render(<AddPackageModal open onClose={() => {}} onCreated={() => {}} />);
+      fillFileForm();
+      await submitCreate();
+      await waitFor(() => expect(uploadMock).toHaveBeenCalledTimes(1));
+
+      view.unmount();
+      expect(signal!.aborted).toBe(true);
+
+      await act(async () => {
+        gate.resolve(jsonResponse({ data: { id: 'ver-1' } }, true, 201));
+        await gate.promise;
+      });
+    });
+
+    it('surfaces the created package (0 versions) when cancelled during the catalog create', async () => {
+      // The cancel affordance opens with `saving`, i.e. BEFORE the transfer it
+      // cancels — so a cancel can land while step 1 (catalog create) is still
+      // in flight, when handleClose has no id to report yet. The catalog row
+      // must still reach the user, or they re-create the same package by name.
+      const onCreated = vi.fn();
+      const catalogGate = deferred<Response>();
+      fetchMock.mockImplementation((url: string, opts?: RequestInit) => {
+        if (url.startsWith('/custom-fields')) return Promise.resolve(jsonResponse({ data: [] }));
+        if (url === '/software/catalog' && opts?.method === 'POST') return catalogGate.promise;
+        return Promise.resolve(jsonResponse({}, false, 404));
+      });
+
+      render(<AddPackageModal open onClose={() => {}} onCreated={onCreated} />);
+      fillFileForm();
+      await submitCreate();
+      await waitFor(() =>
+        expect(
+          fetchMock.mock.calls.some(
+            ([u, o]) => u === '/software/catalog' && (o as RequestInit)?.method === 'POST',
+          ),
+        ).toBe(true),
+      );
+
+      // Cancel while the catalog item is still being created.
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+      await act(async () => {
+        catalogGate.resolve(jsonResponse({ data: { id: 'cat-1' } }));
+        await catalogGate.promise;
+      });
+
+      expect(onCreated).toHaveBeenCalledTimes(1);
+      expect(onCreated).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'cat-1', name: 'Big App', versionCount: 0 }),
+      );
+      // …and the upload the user walked away from is never started.
+      expect(uploadMock).not.toHaveBeenCalled();
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    });
+
+    it('leaves Cancel and Esc disabled while the download-URL (metadata-only) save runs', async () => {
+      // Nothing to abort on this path, so it must keep its previous
+      // blocked-while-saving behaviour exactly.
+      const onClose = vi.fn();
+      const versionGate = deferred<Response>();
+      fetchMock.mockImplementation((url: string, opts?: RequestInit) => {
+        if (url.startsWith('/custom-fields')) return Promise.resolve(jsonResponse({ data: [] }));
+        if (url === '/software/catalog' && opts?.method === 'POST') {
+          return Promise.resolve(jsonResponse({ data: { id: 'cat-1' } }));
+        }
+        if (/\/versions$/.test(url) && opts?.method === 'POST') return versionGate.promise;
+        return Promise.resolve(jsonResponse({}, false, 404));
+      });
+
+      render(<AddPackageModal open onClose={onClose} onCreated={() => {}} />);
+      fillMinimum();
+      await submitCreate();
+
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled(),
+      );
+      expect(screen.queryByTestId('package-upload-progress')).not.toBeInTheDocument();
+      fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+      expect(onClose).not.toHaveBeenCalled();
+
+      await act(async () => {
+        versionGate.resolve(jsonResponse({ data: { id: 'ver-1' } }));
+        await versionGate.promise;
+      });
+      // Once the save finishes, closing works again.
+      await waitFor(() => expect(onClose).toHaveBeenCalled());
+    });
+
+    it('still reports a genuine failure after an earlier upload was cancelled', async () => {
+      const gate = deferred<Response>();
+      routeMock({});
+      uploadMock.mockImplementation(() => gate.promise);
+
+      render(<AddPackageModal open onClose={() => {}} onCreated={() => {}} />);
+      fillFileForm();
+      await submitCreate();
+      await waitFor(() => expect(uploadMock).toHaveBeenCalledTimes(1));
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      await act(async () => {
+        gate.resolve(
+          Promise.reject(
+            new DOMException('The operation was aborted.', 'AbortError'),
+          ) as unknown as Response,
+        );
+        await Promise.resolve();
+      });
+
+      // A fresh submit gets a FRESH controller — the stale aborted one must not
+      // swallow the next real failure.
+      uploadMock.mockReset();
+      uploadMock.mockResolvedValueOnce(
+        jsonResponse({ error: 'Object storage rejected the upload' }, false, 502),
+      );
+      fireEvent.click(await screen.findByRole('button', { name: 'Retry adding version' }));
+
+      await waitFor(() =>
+        expect(showToast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'error',
+            message: 'Object storage rejected the upload',
+          }),
+        ),
+      );
+    });
   });
 });

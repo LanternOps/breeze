@@ -46,6 +46,9 @@ partnerDeviceRoutes.get('/devices', requirePartnerApiScope('devices:read'), asyn
     )`.mapWith(devices.partnerExportUpdatedAt);
     const conditions = [
       inArray(devices.orgId, orgIds),
+      // Ephemeral Quick Support devices are transient internal artifacts; they
+      // must never appear in the public Partner API export.
+      eq(devices.isEphemeral, false),
       ...(parsed.siteId ? [eq(devices.siteId, parsed.siteId)] : []),
       ...paginationConditions({
         id: devices.id,

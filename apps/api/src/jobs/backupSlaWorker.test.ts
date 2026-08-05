@@ -12,6 +12,9 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
+  // Real value, not a placeholder: the worker passes it to drizzle's inArray,
+  // which throws on undefined and would fail every case with checked: 0.
+  RESTORABLE_BACKUP_JOB_STATUSES: ['completed', 'partial'] as const,
   backupSlaConfigs: {
     id: 'backup_sla_configs.id',
     orgId: 'backup_sla_configs.org_id',

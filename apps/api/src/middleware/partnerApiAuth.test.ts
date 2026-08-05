@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   dbExecute: vi.fn(),
   dbUpdate: vi.fn(),
   eq: vi.fn((left: unknown, right: unknown) => ({ left, right })),
+  ne: vi.fn((left: unknown, right: unknown) => ({ ne: [left, right] })),
   inArray: vi.fn((left: unknown, right: unknown) => ({ left, right })),
   rateLimiter: vi.fn(),
   getRedis: vi.fn(),
@@ -95,12 +96,14 @@ vi.mock('../db/schema', () => ({
     partnerId: 'organizations.partnerId',
     status: 'organizations.status',
     deletedAt: 'organizations.deletedAt',
+    type: 'organizations.type',
   },
 }));
 
 vi.mock('drizzle-orm', () => ({
   and: vi.fn((...conditions: unknown[]) => ({ conditions })),
   eq: mocks.eq,
+  ne: mocks.ne,
   inArray: mocks.inArray,
   isNull: vi.fn((value: unknown) => ({ isNull: value })),
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),

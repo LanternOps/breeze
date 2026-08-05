@@ -114,6 +114,9 @@ var allCommandTypes = []string{
 	// handlers_uninstall.go init()
 	tools.CmdSelfUninstall,
 
+	// handlers_support.go init()
+	tools.CmdSupportEnd,
+
 	// handlers_incident_response.go init()
 	tools.CmdCollectEvidence, tools.CmdExecuteContainment,
 

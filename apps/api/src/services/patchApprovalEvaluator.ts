@@ -4,7 +4,7 @@
  * Single approval/filtering gate for patch job execution. For each device it
  * resolves the set of pending patches a job is allowed to install, covering:
  *  - manual approvals (partner-wide or ring-scoped)
- *  - ring category rules (including the virtual 'third_party_app' category)
+ *  - ring category rules (exact OS category match; terminal on match)
  *  - ring-level auto-approve (enabled + severities + deferral window) — #1317
  *  - ring-less policy-level auto-approve (severity list + deferral window)
  *  - policy source filtering ('os' vs 'third_party', ...)
@@ -16,6 +16,7 @@
 import { db } from '../db';
 import { devicePatches, patches, patchApprovals, organizations, OUTSTANDING_DEVICE_PATCH_STATUSES } from '../db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
+import { captureException } from './sentry';
 
 // ============================================
 // Types
@@ -24,8 +25,11 @@ import { and, eq, inArray } from 'drizzle-orm';
 export interface CategoryRule {
   category: string;
   autoApprove: boolean;
+  /** Severity allowlist — the canonical field name the route/UI write (updateRings.ts categoryRuleSchema). */
+  autoApproveSeverities?: string[];
+  /** @deprecated Legacy stored alias for autoApproveSeverities (rows/snapshots written before 2026-08). Read-only. */
   severityFilter?: string[];
-  deferralDaysOverride?: number;
+  deferralDaysOverride?: number | null;
 }
 
 /**
@@ -457,7 +461,10 @@ export async function resolveApprovedPatchesForDevice(
 
   // 4. Parse ring-level auto-approve config (#1317): enabled + severities +
   //    deferral. Backward-compatible with the legacy boolean / no-deferral shapes.
-  const ringAutoApprove = parseRingAutoApprove(ringConfig.autoApprove);
+  const ringAutoApprove = parseRingAutoApprove(
+    ringConfig.autoApprove,
+    ringConfig.ringId ? `ring ${ringConfig.ringId}` : undefined
+  );
 
   const now = new Date();
   const approved: ApprovedPatch[] = [];
@@ -527,76 +534,88 @@ function evaluatePatchApproval(
     return null;
   }
 
-  // Priority 2: Category rule.
-  // 'third_party_app' is a virtual category — agents report inconsistent
-  // category strings for app updates (application/homebrew/homebrew-cask/...),
-  // so it matches by patch source instead. An exact category rule wins.
-  let rule = patch.category ? categoryRuleMap.get(canonicalizePatchCategory(patch.category)) : undefined;
-  if (!rule && isThirdPartyPatchSource(patch.source)) {
-    rule = categoryRuleMap.get('third_party_app');
-  }
-  if (rule && rule.autoApprove) {
-    // Check severity filter. When a non-empty filter is set, a patch whose
-    // severity is null cannot satisfy it and must NOT auto-approve — same
-    // fail-closed posture as the policy and ring paths. (Previously a
-    // null-severity patch short-circuited the filter and fell through.)
-    if (rule.severityFilter && rule.severityFilter.length > 0) {
-      if (!patch.severity || !rule.severityFilter.includes(patch.severity)) {
-        return null; // Severity null, or not in allowed list
+  // Priority 2: Category rule. The virtual 'third_party_app' category was
+  // removed — third-party auto-approval is the ring-level thirdPartyApps
+  // toggle (Priority 3); stored third_party_app rules were migrated to it by
+  // the 2026-08-13 backfill. A literal category rule can still match a
+  // third-party patch (winget emits e.g. 'application'), so an allow rule for
+  // a third-party candidate additionally requires the same dual consent as
+  // Priority 3 — otherwise a category rule would bypass both consent legs. A
+  // matching rule is TERMINAL either way: autoApprove:false means "needs
+  // manual approval" (the UI's words) and must not fall through to ring-level
+  // auto-approve, including for third-party patches (a per-category manual
+  // gate beats the ring-level 3P toggle).
+  const rule = patch.category
+    ? categoryRuleMap.get(canonicalizePatchCategory(patch.category))
+    : undefined;
+  if (rule) {
+    if (!rule.autoApprove) {
+      return null;
+    }
+    if (isThirdPartyPatchSource(patch.source)) {
+      // Dual consent (same legs as Priority 3): the policy must opt into
+      // third-party sources AND the ring's thirdPartyApps toggle must be on.
+      if (
+        !(ringConfig.sources ?? []).includes('third_party') ||
+        !ringAutoApprove.thirdPartyApps
+      ) {
+        return null;
       }
     }
-
-    // Check deferral period
+    // Severity allowlist. Canonical name is autoApproveSeverities (what the
+    // route/UI write); severityFilter is honored as a legacy stored alias —
+    // before 2026-08 the evaluator ONLY read severityFilter, which the writers
+    // never produced, so chips were silently unenforced (fail-open).
+    const severityAllowlist = rule.autoApproveSeverities ?? rule.severityFilter;
+    if (severityAllowlist && severityAllowlist.length > 0) {
+      if (!patch.severity || !severityAllowlist.includes(patch.severity)) {
+        return null;
+      }
+    }
     const deferralDays = rule.deferralDaysOverride ?? ringConfig.deferralDays;
     if (isHeldByDeferral(patch, deferralDays, now, 'category')) {
       return null;
     }
-
     return 'category_rule';
   }
 
-  // Priority 3: Ring-level auto-approve (#1317). The ring now owns approval, so
-  // this honors the configured severities AND a deferral window (held, not
-  // approved, until the patch ages past it) — consistent with the policy-level
-  // and category deferral semantics.
-  //
-  // FAIL-CLOSED at the read boundary (mirrors the write-side Zod refinement in
-  // ringAutoApproveSchema): auto-approval requires an explicit, non-empty
-  // severity set AND a patch severity that is in it. We must NOT trust that the
-  // stored row went through the route schema — the manage_update_rings AI tool
-  // and legacy boolean `true` rows can both produce `enabled` with empty
-  // severities, which previously fell through and auto-approved EVERY pending
-  // patch (auto-approve-all). A null-severity patch likewise never auto-approves
-  // under a restricted list, matching the policy path above.
+  // Priority 3: Ring-level auto-approve (#1317). Severity gates OS candidates;
+  // third-party candidates are gated by the explicit thirdPartyApps toggle
+  // (#2218 exemption replaced by spec 2026-08-04) under DUAL CONSENT:
+  //  - the POLICY must have opted into third-party sources ('third_party' in
+  //    the snapshotted sources; the default is ['os']). This stays even though
+  //    buildAllowedPatchSources filters upstream, because ABSENT sources mean
+  //    "no filtering" for legacy job snapshots — without this literal check, a
+  //    legacy snapshot plus a permissive ring would silently widen to 3P.
+  //  - the RING's autoApprove.thirdPartyApps must be true.
+  // NOTE: the literal 'third_party' check is deliberately NARROWER than the
+  // expanded patch-source bucket ('third_party'|'custom'): a policy whose
+  // sources are ONLY ['custom'] passes buildAllowedPatchSources for
+  // custom-source patches but does NOT grant ring-level 3P auto-approval —
+  // those patches stay manual-only. Fail-closed asymmetry, kept intentionally;
+  // if buildAllowedPatchSources' expansion table ever changes, revisit.
   if (ringAutoApprove.enabled) {
+    if (isThirdPartyPatchSource(patch.source)) {
+      if (!(ringConfig.sources ?? []).includes('third_party')) {
+        return null;
+      }
+      if (!ringAutoApprove.thirdPartyApps) {
+        return null;
+      }
+      const hold = ringAutoApprove.thirdPartyDeferralDays ?? ringAutoApprove.deferralDays;
+      if (isHeldByDeferral(patch, hold, now, 'ring')) {
+        return null;
+      }
+      return 'ring_auto_approve';
+    }
+
+    // OS path: unchanged fail-closed severity gating. Enabled with an empty
+    // severity set approves no OS patches (legacy boolean `true` and malformed
+    // `{enabled:true}` rows stay inert here).
     if (ringAutoApprove.severities.length === 0) {
-      // Enabled but no severities selected = approve nothing (fail-closed).
       return null;
     }
-    // Third-party severity exemption (#2218): winget/chocolatey/homebrew
-    // updates have no vendor severity concept — the agent/API ingest them with
-    // severity='unknown' — so requiring membership in the ring's severity set
-    // made third-party auto-approval dead configuration. When the policy has
-    // EXPLICITLY opted into third-party sources ('third_party' in sources; the
-    // default is ['os']) and this candidate is a third-party patch, skip the
-    // severity MEMBERSHIP check only. Everything else stays fail-closed: the
-    // empty-severities kill-switch above still approves nothing (a malformed
-    // `{ enabled: true }` row stays inert), OS patches keep full severity
-    // gating, and the source, category, app-rule, and deferral gates all still
-    // apply to third-party candidates.
-    // NOTE: this reads the RAW policy sources array for the literal
-    // 'third_party' selection, while isThirdPartyPatchSource matches the
-    // expanded patch-source bucket ('third_party' | 'custom'). The two stay in
-    // lockstep because buildAllowedPatchSources only admits 'custom' rows via
-    // the 'third_party' selection (or an explicit 'custom' entry) — if that
-    // expansion table ever changes, revisit this line too.
-    const severityExempt =
-      isThirdPartyPatchSource(patch.source) &&
-      (ringConfig.sources ?? []).includes('third_party');
-    if (
-      !severityExempt &&
-      (!patch.severity || !ringAutoApprove.severities.includes(patch.severity))
-    ) {
+    if (!patch.severity || !ringAutoApprove.severities.includes(patch.severity)) {
       return null;
     }
     if (isHeldByDeferral(patch, ringAutoApprove.deferralDays, now, 'ring')) {
@@ -659,54 +678,107 @@ function isHeldByDeferral(
 interface RingAutoApproveConfig {
   enabled: boolean;
   severities: string[];
-  /**
-   * Deferral window in days for the ring auto-approve gate (#1317). 0 = no
-   * deferral. A patch whose release date is within this window is held, not
-   * approved, mirroring the policy-level / category deferral semantics.
-   */
+  /** Deferral window (days) for OS ring auto-approve. 0 = no deferral. */
   deferralDays: number;
+  /** Third-party source-level auto-approve toggle (dual consent with policy sources). */
+  thirdPartyApps: boolean;
+  /**
+   * Third-party hold override; null = inherit deferralDays. Anchored on
+   * releaseDate when present, first-seen otherwise (#2218).
+   */
+  thirdPartyDeferralDays: number | null;
 }
+
+const RECOGNIZED_RING_SEVERITIES = new Set(['critical', 'important', 'moderate', 'low']);
+
+const DISABLED_RING_AUTO_APPROVE: RingAutoApproveConfig = {
+  enabled: false,
+  severities: [],
+  deferralDays: 0,
+  thirdPartyApps: false,
+  thirdPartyDeferralDays: null,
+};
 
 /**
  * Parse a ring's `autoApprove` JSONB into a typed config. Tolerant of every
- * historical shape so already-stored rings keep working after #1317:
- *  - boolean `true`  → enabled, EMPTY severity set, no deferral
- *  - `{ enabled: true, severities: [...] }` (no deferralDays) → deferral 0
- *  - `{ enabled: true, severities: [...], deferralDays: N }` → typed shape
- * Anything else (missing, `{}`, malformed) fails closed to disabled.
+ * historical shape, but FAIL-CLOSED about meaning:
+ *  - boolean `true` → enabled, no severities, no third-party → approves nothing
+ *  - missing/`{}`/malformed → disabled
+ *  - unrecognized severity strings are dropped (never writable through the
+ *    schema, and matching them would defeat the thirdPartyApps derivation)
+ *  - a PRESENT but invalid `deferralDays` or `thirdPartyDeferralDays` disables
+ *    the row entirely — the old coerce turned a malformed hold into "no hold"
+ *    (fail-open); disabling is loud (warn + Sentry) so the malformed row is
+ *    findable instead of silently approving nothing
+ *  - `thirdPartyApps` absent (pre-2026-08 rows and job snapshots frozen before
+ *    the backfill): derived as `severities.length > 0`, which reproduces the
+ *    old #2218 severity-exemption behavior for rows the write schema accepted,
+ *    while keeping malformed `{enabled:true}` rows inert. Present non-boolean
+ *    (AI-tool or hand-written rows) → false.
  *
- * NOTE: this parser is deliberately permissive about SHAPE but the approval
- * decision is fail-closed about MEANING. `enabled` with an empty severity set
- * (the legacy boolean `true`, an AI-tool-written `{ enabled: true }`, etc.)
- * auto-approves NOTHING — evaluatePatchApproval requires a non-empty severity
- * set before it will return 'ring_auto_approve'. This matches the write-side
- * Zod refinement (ringAutoApproveSchema) so the read path cannot become more
- * permissive than the writer, regardless of who wrote the row.
+ * `context` names the owning ring/job in the malformed-config logs.
  */
-function parseRingAutoApprove(autoApprove: unknown): RingAutoApproveConfig {
-  // Boolean `true` shorthand: enabled but no explicit severities. Because the
-  // read boundary fails closed on an empty severity set, this approves nothing.
+export function parseRingAutoApprove(autoApprove: unknown, context?: string): RingAutoApproveConfig {
   if (autoApprove === true) {
-    return { enabled: true, severities: [], deferralDays: 0 };
+    return { ...DISABLED_RING_AUTO_APPROVE, enabled: true };
   }
 
   if (!autoApprove || typeof autoApprove !== 'object') {
-    return { enabled: false, severities: [], deferralDays: 0 };
+    return DISABLED_RING_AUTO_APPROVE;
   }
 
   const config = autoApprove as Record<string, unknown>;
-
-  if (config.enabled === true) {
-    const severities = Array.isArray(config.severities)
-      ? config.severities.filter((s): s is string => typeof s === 'string')
-      : [];
-    const rawDeferral = config.deferralDays;
-    const deferralDays =
-      typeof rawDeferral === 'number' && Number.isInteger(rawDeferral) && rawDeferral > 0
-        ? rawDeferral
-        : 0;
-    return { enabled: true, severities, deferralDays };
+  if (config.enabled !== true) {
+    return DISABLED_RING_AUTO_APPROVE;
   }
 
-  return { enabled: false, severities: [], deferralDays: 0 };
+  const severities = Array.isArray(config.severities)
+    ? config.severities.filter(
+        (s): s is string => typeof s === 'string' && RECOGNIZED_RING_SEVERITIES.has(s)
+      )
+    : [];
+
+  let deferralDays = 0;
+  if (config.deferralDays !== undefined) {
+    const raw = config.deferralDays;
+    if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) {
+      return disabledForMalformedField('deferralDays', raw, context);
+    }
+    deferralDays = raw;
+  }
+
+  const thirdPartyApps =
+    'thirdPartyApps' in config ? config.thirdPartyApps === true : severities.length > 0;
+
+  // Same fail-closed posture as deferralDays: null/absent = inherit, but a
+  // present non-conforming value disables the row rather than silently
+  // inheriting (often 0 = approve immediately, the fail-open direction).
+  let thirdPartyDeferralDays: number | null = null;
+  const rawTp = config.thirdPartyDeferralDays;
+  if (rawTp !== undefined && rawTp !== null) {
+    if (typeof rawTp !== 'number' || !Number.isInteger(rawTp) || rawTp < 0 || rawTp > 365) {
+      return disabledForMalformedField('thirdPartyDeferralDays', rawTp, context);
+    }
+    thirdPartyDeferralDays = rawTp;
+  }
+
+  return { enabled: true, severities, deferralDays, thirdPartyApps, thirdPartyDeferralDays };
+}
+
+/**
+ * Malformed auto-approve config degrades to disabled (silently ENABLING
+ * auto-approval is the dangerous direction) — but loudly, mirroring the
+ * patchJobExecutor posture for malformed snapshot fields: a disabled-by-parse
+ * ring otherwise strands its devices in no_approved_patches with nothing
+ * pointing at the bad row.
+ */
+function disabledForMalformedField(
+  field: string,
+  value: unknown,
+  context?: string
+): RingAutoApproveConfig {
+  const message = `[PatchApproval] ${context ?? 'ring auto-approve config'} has malformed autoApprove.${field}; treating ring auto-approve as disabled`;
+  console.warn(`${message}:`, JSON.stringify(value));
+  captureException(new Error(message));
+  return DISABLED_RING_AUTO_APPROVE;
 }

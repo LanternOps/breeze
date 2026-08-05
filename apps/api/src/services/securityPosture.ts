@@ -554,7 +554,14 @@ async function loadDeviceInputsForOrg(orgId: string): Promise<DeviceInput[]> {
     })
     .from(devices)
     .leftJoin(securityStatus, eq(securityStatus.deviceId, devices.id))
-    .where(and(eq(devices.orgId, orgId), sql`${devices.status} <> 'decommissioned'`));
+    // Ephemeral Quick Support devices sit in the hidden 'quick_support' org that
+    // deliberately stays inside accessibleOrgIds for RLS — keep them out of the
+    // posture coverage denominator.
+    .where(and(
+      eq(devices.orgId, orgId),
+      eq(devices.isEphemeral, false),
+      sql`${devices.status} <> 'decommissioned'`,
+    ));
 
   if (baseRows.length === 0) return [];
 

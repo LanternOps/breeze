@@ -1,6 +1,7 @@
 package agentapp
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,6 +10,8 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+
+	"github.com/breeze-rmm/agent/internal/logging"
 )
 
 func TestResolveBootstrapInputs(t *testing.T) {
@@ -149,4 +152,146 @@ func TestRedeemBootstrapToken(t *testing.T) {
 	if res.EnrollmentKey != "deadbeef" || res.SiteID != "site1" {
 		t.Fatalf("unexpected result: %+v", res)
 	}
+}
+
+// TestCancelBootstrapIfRefundable is the Step 1 bootstrap-side contract from
+// the task brief: on a 4xx enroll-failure category, cancelBootstrap is
+// called with whatever child credential it was handed (the raw child
+// enrollment KEY in production — see TestRunBootstrap_CancelsSlotOn4xx…);
+// on a network-error (or any other
+// non-definite-4xx) category, it is NOT called. Table-driven over every
+// enrollErrCategory so a future category addition must make an explicit
+// choice here rather than silently inheriting a default.
+func TestCancelBootstrapIfRefundable(t *testing.T) {
+	tests := []struct {
+		name       string
+		cat        enrollErrCategory
+		wantCalled bool
+	}{
+		{"catAuth (401/403) is refundable", catAuth, true},
+		{"catNotFound (404) is refundable", catNotFound, true},
+		{"catRateLimit (429) is refundable", catRateLimit, true},
+		{"catIdentityConflict is refundable", catIdentityConflict, true},
+		{"catNetwork is NOT refundable — enroll may have reached the server", catNetwork, false},
+		{"catServer (5xx) is NOT refundable — ambiguous", catServer, false},
+		{"catConfig is NOT refundable — never reached the server", catConfig, false},
+		{"catUnknown is NOT refundable — ambiguous", catUnknown, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var called bool
+			var gotPath, gotSecret string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				gotPath = r.URL.Path
+				var body struct {
+					EnrollmentSecret string `json:"enrollmentSecret"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				gotSecret = body.EnrollmentSecret
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"refunded":true}`))
+			}))
+			defer srv.Close()
+
+			cancelBootstrapIfRefundable(tt.cat, srv.URL, "child-key-123", logging.L("test"))
+
+			if called != tt.wantCalled {
+				t.Fatalf("cancel endpoint called = %v, want %v", called, tt.wantCalled)
+			}
+			if !tt.wantCalled {
+				return
+			}
+			if gotPath != "/api/v1/installer/bootstrap/cancel" {
+				t.Errorf("path = %q, want /api/v1/installer/bootstrap/cancel", gotPath)
+			}
+			if gotSecret != "child-key-123" {
+				t.Errorf("enrollmentSecret sent = %q, want %q", gotSecret, "child-key-123")
+			}
+		})
+	}
+}
+
+// TestCancelBootstrapIfRefundable_CallFailureIsNonFatal asserts the other
+// half of the brief's contract: an error from the cancel call itself (here,
+// an unreachable server) must never panic or otherwise propagate — it is
+// logged and swallowed. There is nothing to assert on besides "did not
+// panic/crash"; logging.L("test") writes through the package's default
+// logger, which is safe to use without Init in tests.
+func TestCancelBootstrapIfRefundable_CallFailureIsNonFatal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	srv.Close() // immediately unreachable
+
+	cancelBootstrapIfRefundable(catAuth, srv.URL, "child-key-123", logging.L("test"))
+}
+
+// TestRunBootstrap_CancelsSlotOn4xxEnrollRejection is an end-to-end check of
+// the hook wiring itself: runBootstrap installs cancelBootstrapOnEnrollFailure
+// around its enrollDevice call, and a 4xx from /agents/enroll must reach
+// /installer/bootstrap/cancel carrying the redeemed child enrollment KEY —
+// NOT the response's `enrollmentSecret`, which the server cannot resolve
+// against enrollment_keys.key (that mix-up made the refund a silent no-op in
+// production). The mocked redeem response therefore returns two distinct
+// values so the assertion below actually discriminates between them. The
+// hook must also be cleared again once enrollDevice's failure path
+// (enrollError -> osExit) unwinds.
+func TestRunBootstrap_CancelsSlotOn4xxEnrollRejection(t *testing.T) {
+	var cancelCalled bool
+	var cancelCredential string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/installer/bootstrap", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"serverUrl":"","enrollmentKey":"child-key-abc","enrollmentSecret":"child-secret-xyz","siteId":"site1"}`))
+	})
+	mux.HandleFunc("/api/v1/agents/enroll", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"enrollment key not recognized"}`))
+	})
+	mux.HandleFunc("/api/v1/installer/bootstrap/cancel", func(w http.ResponseWriter, r *http.Request) {
+		cancelCalled = true
+		var body struct {
+			EnrollmentSecret string `json:"enrollmentSecret"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		cancelCredential = body.EnrollmentSecret
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"refunded":true}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	origCfg, origData, origQuiet := cfgFile, bootstrapInstallData, quietEnroll
+	t.Cleanup(func() { cfgFile, bootstrapInstallData, quietEnroll = origCfg, origData, origQuiet })
+	cfgFile, quietEnroll = filepath.Join(dir, "agent.yaml"), true
+	bootstrapInstallData = `C:\dl\breeze-agent.msi|TESTTOKEN1|` + srv.URL
+
+	origExit := osExit
+	var exitCode int
+	osExit = func(code int) {
+		exitCode = code
+		panic("test exit") // unwind so the deferred assertions below run
+	}
+	t.Cleanup(func() { osExit = origExit })
+
+	defer func() {
+		_ = recover() // swallow the test-exit panic
+		if !cancelCalled {
+			t.Fatal("cancel endpoint was not called after a 4xx enroll rejection")
+		}
+		if cancelCredential != "child-key-abc" {
+			t.Fatalf("cancel body enrollmentSecret = %q, want %q (the redeemed child enrollment KEY, not the response's enrollmentSecret %q)",
+				cancelCredential, "child-key-abc", "child-secret-xyz")
+		}
+		if exitCode != catAuth.exitCode() {
+			t.Fatalf("exit code = %d, want %d (catAuth)", exitCode, catAuth.exitCode())
+		}
+		if cancelBootstrapOnEnrollFailure != nil {
+			t.Fatal("cancelBootstrapOnEnrollFailure hook was not cleared after enrollDevice's failure path unwound")
+		}
+	}()
+
+	runBootstrap()
 }
