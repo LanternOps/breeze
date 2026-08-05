@@ -40,6 +40,9 @@ const namespaceDuplicateBaselines = {
     'peripherals.json': 4,
     'policies.json': 357,
     'portal.json': 3,
+    // +1: the input placeholder "XXX-XXX-XXX" is a code-shape mask, not
+    // wording — it is intentionally identical in every catalog.
+    'quick.json': 1,
     'remote.json': 12,
     'reports.json': 39,
     'scripts.json': 55,
@@ -74,6 +77,9 @@ const namespaceDuplicateBaselines = {
     'peripherals.json': 4,
     'policies.json': 241,
     'portal.json': 4,
+    // +1: the input placeholder "XXX-XXX-XXX" is a code-shape mask, not
+    // wording — it is intentionally identical in every catalog.
+    'quick.json': 1,
     'remote.json': 12,
     'reports.json': 32,
     'scripts.json': 57,
@@ -111,6 +117,9 @@ const namespaceDuplicateBaselines = {
     'peripherals.json': 9,
     'policies.json': 204,
     'portal.json': 4,
+    // +1: the input placeholder "XXX-XXX-XXX" is a code-shape mask, not
+    // wording — it is intentionally identical in every catalog.
+    'quick.json': 1,
     'remote.json': 18,
     'reports.json': 43,
     'scripts.json': 60,
@@ -144,6 +153,9 @@ const namespaceDuplicateBaselines = {
     'peripherals.json': 9,
     'policies.json': 204,
     'portal.json': 4,
+    // +1: the input placeholder "XXX-XXX-XXX" is a code-shape mask, not
+    // wording — it is intentionally identical in every catalog.
+    'quick.json': 1,
     'remote.json': 17,
     'reports.json': 43,
     'scripts.json': 60,
@@ -179,6 +191,9 @@ const namespaceDuplicateBaselines = {
     'peripherals.json': 4,
     'policies.json': 205,
     'portal.json': 4,
+    // +1: the input placeholder "XXX-XXX-XXX" is a code-shape mask, not
+    // wording — it is intentionally identical in every catalog.
+    'quick.json': 1,
     'remote.json': 14,
     'reports.json': 53,
     'scripts.json': 53,
@@ -207,6 +222,9 @@ const namespaceDuplicateBaselines = {
     'peripherals.json': 4,
     'policies.json': 363,
     'portal.json': 9,
+    // +1: the input placeholder "XXX-XXX-XXX" is a code-shape mask, not
+    // wording — it is intentionally identical in every catalog.
+    'quick.json': 1,
     'remote.json': 14,
     'reports.json': 51,
     'scripts.json': 57,
