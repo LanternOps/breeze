@@ -4960,12 +4960,18 @@ func (h *Heartbeat) handleTokenRotation() {
 	// The staged set is on disk and verified by readback. Only now is it safe to
 	// ask the server to promote it, authenticating WITH the new token — that is
 	// the proof of durable possession the server requires.
-	if !h.confirmTokenRotation(rotateResp.AuthToken) {
+	if confirmed, terminal := h.confirmTokenRotation(rotateResp.AuthToken); !confirmed {
 		// Confirmation failed. Both credential sets are on disk and both are
 		// accepted by the server while the staged set lives, so the agent keeps
 		// working either way. Startup reconciliation and the heartbeat
-		// confirmTokenRotation flag will retry the promotion.
-		log.Warn("rotation credentials persisted but confirmation failed; will retry — agent remains authenticated on its current credentials")
+		// confirmTokenRotation flag will retry the promotion — unless the server
+		// told us the staged set is dead, in which case it has just been
+		// discarded and saying "will retry" would be a lie.
+		if terminal {
+			log.Warn("rotation could not be confirmed and the staged credentials were discarded; agent remains authenticated on its current credentials")
+		} else {
+			log.Warn("rotation credentials persisted but confirmation failed; will retry — agent remains authenticated on its current credentials")
+		}
 		return
 	}
 
@@ -4980,27 +4986,36 @@ func (h *Heartbeat) handleTokenRotation() {
 // A failure here is safe by construction — the server keeps the agent's
 // previous credentials current until it succeeds — so the caller can simply
 // retry later rather than unwinding anything.
-func (h *Heartbeat) confirmTokenRotation(newAuthToken string) bool {
+func (h *Heartbeat) confirmTokenRotation(newAuthToken string) (confirmed bool, terminal bool) {
 	confirmClient := api.NewClient(h.serverURL(), newAuthToken, h.config.AgentID)
 	resp, err := confirmClient.ConfirmTokenRotation()
 	if err != nil {
-		if errors.Is(err, api.ErrPendingRotationExpired) {
-			// The staged set can never be promoted now. Drop it so startup
-			// reconciliation doesn't retry forever; the durable current
-			// credentials are untouched and still valid.
-			log.Warn("pending token rotation can no longer be promoted (expired or revoked); discarding staged credentials")
+		if api.IsRotationTerminal(err) {
+			// The staged set can never be promoted now — it expired, or the server
+			// told us (#2894) that it is neither the staged nor the current
+			// credential. Drop it so the per-tick retry and startup reconciliation
+			// stop asking; the durable current credentials are untouched and still
+			// valid. Every other failure — including a conflict the server marked
+			// retryable — leaves the staged set on disk to try again.
+			log.Warn("pending token rotation can no longer be promoted (expired, superseded or revoked); discarding staged credentials",
+				"reason", err.Error())
 			if clearErr := config.ClearPendingCredentials(); clearErr != nil {
+				// The staged set is still on disk, so leave the per-tick retry armed
+				// and let it re-attempt the clear. Report terminal=false so the
+				// caller does not log "discarded" about credentials that are still
+				// sitting in secrets.yaml — this log line is the only forensic
+				// record of the one irreversible action in this flow.
 				log.Error("failed to clear unusable staged credentials", "error", clearErr.Error())
-			} else {
-				h.pendingRotationOnDisk.Store(false)
+				return false, false
 			}
-			return false
+			h.pendingRotationOnDisk.Store(false)
+			return false, true
 		}
 		log.Error("agent token rotation confirmation failed", "error", err.Error())
-		return false
+		return false, false
 	}
 
-	return resp.Confirmed
+	return resp.Confirmed, false
 }
 
 // applyRotatedCredentials collapses a confirmed rotation into the agent's
@@ -5100,7 +5115,10 @@ func (h *Heartbeat) reconcilePendingRotation() {
 
 	log.Info("found an unconfirmed credential rotation on disk; resuming confirmation")
 
-	if !h.confirmTokenRotation(persisted.PendingAuthToken) {
+	if confirmed, _ := h.confirmTokenRotation(persisted.PendingAuthToken); !confirmed {
+		// Either the staged set was just discarded (terminal) or the failure is
+		// retryable and it is still on disk for the next tick. confirmTokenRotation
+		// has already logged which.
 		return
 	}
 

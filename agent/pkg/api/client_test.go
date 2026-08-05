@@ -618,6 +618,155 @@ func TestConfirmCertRenewalSendsProtocolVersion2AndBearerAuth(t *testing.T) {
 	}
 }
 
+// Issue #2894 — ConfirmTokenRotation must translate the server's conflict code
+// into a sentinel the caller can act on. The heartbeat discards its staged
+// credentials on a terminal error and retries on anything else, so a
+// misclassification here either strands the device or loops it until the
+// pending TTL expires.
+func TestConfirmTokenRotationMapsConflictCodes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		// wantSuccess: the call must return a confirmed response and no error.
+		// Everything else must return an error — the only question is whether
+		// IsRotationTerminal agrees it is safe to discard the staged set.
+		wantSuccess bool
+		// wantErr is the sentinel the caller must see; nil means "any error".
+		wantErr error
+		// wantTerminal is what IsRotationTerminal must report — the actual
+		// decision the heartbeat makes.
+		wantTerminal bool
+	}{
+		{
+			name:        "confirmed",
+			status:      http.StatusOK,
+			body:        `{"confirmed":true,"confirmedAt":"2026-07-31T00:00:00Z"}`,
+			wantSuccess: true,
+		},
+		{
+			// A captive portal / proxy answering 200 with HTML. Ignoring the
+			// decode error would yield a zero-valued result, and the heartbeat's
+			// `return resp.Confirmed` would report failure with NO error and NO
+			// log line — an invisible loop every tick until the TTL lapses.
+			name:   "200 with an undecodable body",
+			status: http.StatusOK,
+			body:   `<html><body>captive portal</body></html>`,
+		},
+		{
+			name:   "200 with an empty body",
+			status: http.StatusOK,
+			body:   ``,
+		},
+		{
+			name:   "200 that does not actually confirm",
+			status: http.StatusOK,
+			body:   `{"confirmed":false}`,
+		},
+		{
+			name:   "409 with a non-JSON body",
+			status: http.StatusConflict,
+			body:   `<html>WAF blocked</html>`,
+		},
+		{
+			name:         "expired pending rotation",
+			status:       http.StatusConflict,
+			body:         `{"error":"expired","code":"pending_rotation_expired"}`,
+			wantErr:      ErrPendingRotationExpired,
+			wantTerminal: true,
+		},
+		{
+			name:         "superseded staged set",
+			status:       http.StatusConflict,
+			body:         `{"error":"superseded","code":"rotation_unresolvable"}`,
+			wantErr:      ErrRotationUnresolvable,
+			wantTerminal: true,
+		},
+		{
+			name:         "staged token not accepted at all",
+			status:       http.StatusUnauthorized,
+			body:         `{"error":"unauthorized"}`,
+			wantErr:      ErrPendingRotationExpired,
+			wantTerminal: true,
+		},
+		{
+			// Retryable: the server may still be authenticating the device on
+			// this token, so the caller must keep it.
+			name:   "compare-and-swap conflict",
+			status: http.StatusConflict,
+			body:   `{"error":"conflict","code":"rotation_conflict"}`,
+		},
+		{
+			name:   "presented the current token",
+			status: http.StatusConflict,
+			body:   `{"error":"wrong token","code":"pending_token_required"}`,
+		},
+		{
+			// Fail safe: an unrecognised code must never be treated as terminal.
+			name:   "unknown code from a newer server",
+			status: http.StatusConflict,
+			body:   `{"error":"new","code":"rotation_some_future_code"}`,
+		},
+		{
+			name:   "bare 409 from a pre-#2894 server",
+			status: http.StatusConflict,
+			body:   `{"error":"Rotation confirm conflict; re-authenticate and retry"}`,
+		},
+		{
+			name:   "server error",
+			status: http.StatusInternalServerError,
+			body:   `{"error":"boom"}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/agents/agent-1/rotate-token/confirm" {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer ts.Close()
+
+			resp, err := NewClient(ts.URL, "brz_staged", "agent-1").ConfirmTokenRotation()
+
+			if tc.wantSuccess {
+				if err != nil {
+					t.Fatalf("ConfirmTokenRotation() error = %v, want nil", err)
+				}
+				if !resp.Confirmed {
+					t.Fatalf("Confirmed = false, want true")
+				}
+				if IsRotationTerminal(err) {
+					t.Fatalf("IsRotationTerminal(nil) = true")
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatalf("ConfirmTokenRotation() error = nil, want an error — a failure the caller " +
+					"cannot see becomes a silent confirm loop with no log line (#2894)")
+			}
+			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+				t.Fatalf("ConfirmTokenRotation() error = %v, want %v", err, tc.wantErr)
+			}
+			if got := IsRotationTerminal(err); got != tc.wantTerminal {
+				t.Fatalf("IsRotationTerminal(%v) = %v, want %v — a wrong verdict here either "+
+					"strands the device or loops it until the pending TTL expires (#2894)",
+					err, got, tc.wantTerminal)
+			}
+		})
+	}
+}
+
 // TestCancelBootstrap covers the Task 6 (#2764) client call: POST
 // /installer/bootstrap/cancel with the raw child key as the JSON
 // enrollmentSecret field, and no bearer auth — possession of the secret is

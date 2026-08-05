@@ -321,6 +321,7 @@ describe('agent token rotation route', () => {
     const body = (await response.json()) as Record<string, unknown>;
     expect(body).toEqual({
       error: 'Token rotation conflict; re-authenticate with the current token',
+      code: 'rotation_stale_current',
     });
 
     // The freshly-minted plaintext tokens were never persisted, so they must
@@ -435,6 +436,131 @@ describe('agent token rotation confirm route', () => {
     await expect(response.json()).resolves.toEqual({
       error: 'Confirm must be sent with the pending rotation token',
       code: 'pending_token_required',
+    });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  // Issue #2894 — the caller presents a token that is neither the staged set nor
+  // the current credential (a newer rotation, an admin reset or a re-enrollment
+  // moved past it). Nothing can ever promote it, and it is not the credential the
+  // device is authenticating with, so the agent is told to discard it. Without
+  // this code the agent re-confirmed on every tick until the pending TTL lapsed.
+  // The state agentAuth can actually produce here: `matchAgentTokenHash` admits
+  // exactly three shapes — current, pending-unexpired, and previous-in-grace. A
+  // token that is neither pending nor current therefore authenticated on the
+  // PREVIOUS hash, which sets agentTokenRotationRequired. Exercising the branch
+  // with that flag set is what makes this test reflect production rather than an
+  // impossible middleware state, and this is the one path where a wrong TERMINAL
+  // verdict would strand a device.
+  it('reports a superseded staged set as terminally unresolvable', async () => {
+    const response = await buildApp({
+      authTokenHash: 'previous-token-hash',
+      rotationRequired: true,
+    }).request('/agents/agent-123/rotate-token/confirm', { method: 'POST' });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: 'Staged rotation superseded; discard it and re-authenticate with the current token',
+      code: 'rotation_unresolvable',
+    });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  // Issue #2894 — nothing in the system ever nulls an EXPIRED pending hash
+  // (only promotion, re-enrollment and an admin reset clear the column, and
+  // there is no expiry sweeper). Gating idempotency on `!pendingTokenHash` alone
+  // therefore wedged this branch shut forever: an agent presenting its CURRENT
+  // token got `pending_token_required` on every tick indefinitely — not even
+  // bounded by the TTL, since that token keeps authenticating.
+  it('answers alreadyCurrent when the competing staged set has expired', async () => {
+    mockDevice({
+      agentTokenHash: 'promoted-token-hash',
+      pendingTokenHash: 'a-dead-staged-hash',
+      pendingTokenExpiresAt: new Date('2026-03-31T18:00:00.000Z'), // in the past
+    });
+
+    const response = await buildApp({ authTokenHash: 'promoted-token-hash' }).request(
+      '/agents/agent-123/rotate-token/confirm',
+      { method: 'POST' }
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      confirmed: true,
+      alreadyCurrent: true,
+    });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  // The safety half of #2894, and the reason `pending_token_required` is NOT
+  // terminal. Here the presented token IS the device's current credential while
+  // a different set is staged, so the agent's on-disk pending_* copy is the live
+  // token. Telling it to discard would strand the device (cf. #2772/#2773); it
+  // must retry, and the retry resolves once the competing staged set clears.
+  it('keeps the conflict retryable when the presented token is the current credential', async () => {
+    mockDevice({
+      agentTokenHash: 'promoted-token-hash',
+      // Still LIVE (the suite clock is 18:45, this expires at 19:45), so it
+      // legitimately blocks the idempotent answer — unlike the expired case above.
+      pendingTokenHash: 'a-newer-staged-hash',
+    });
+
+    const response = await buildApp({ authTokenHash: 'promoted-token-hash' }).request(
+      '/agents/agent-123/rotate-token/confirm',
+      { method: 'POST' }
+    );
+
+    expect(response.status).toBe(409);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.code).toBe('pending_token_required');
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  // Issue #2894 — the CAS lost a race with a concurrent promotion/reset. The
+  // presented token was still the staged hash when we read the row, so it may
+  // well be live; the next attempt re-reads and gets a precise answer. Marking
+  // this terminal would let the agent throw away a set a retry would promote.
+  it('reports a compare-and-swap miss as a retryable conflict', async () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn().mockResolvedValue([]),
+        })),
+      })),
+    } as any);
+
+    const response = await buildApp({ authTokenHash: PENDING_HASH }).request(
+      '/agents/agent-123/rotate-token/confirm',
+      { method: 'POST' }
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: 'Rotation confirm conflict; re-authenticate and retry',
+      code: 'rotation_conflict',
+    });
+    expect(writeAuditEvent).not.toHaveBeenCalled();
+
+    consoleWarn.mockRestore();
+  });
+
+  // Issue #2894 — no current hash to compare-and-swap against. Also retryable:
+  // the presented token is the live staged hash, i.e. the only credential this
+  // device can still authenticate with, so discarding it is strictly worse than
+  // retrying.
+  it('reports a missing current-token hash as a retryable conflict', async () => {
+    mockDevice({ agentTokenHash: null });
+
+    const response = await buildApp({ authTokenHash: PENDING_HASH }).request(
+      '/agents/agent-123/rotate-token/confirm',
+      { method: 'POST' }
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: 'Rotation confirm conflict; re-authenticate and retry',
+      code: 'rotation_conflict',
     });
     expect(db.update).not.toHaveBeenCalled();
   });

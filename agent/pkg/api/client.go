@@ -786,6 +786,28 @@ func (c *Client) RotateToken() (*RotateTokenResponse, error) {
 // credentials and start a fresh rotation.
 var ErrPendingRotationExpired = errors.New("pending rotation expired")
 
+// ErrRotationUnresolvable reports that the staged credential set is neither the
+// server's staged credential nor its current one — a newer rotation, an admin
+// token reset or a re-enrollment moved past it. Issue #2894: before the server
+// signalled this the agent could not tell it from a transient conflict, so it
+// re-confirmed on every heartbeat tick until the pending TTL expired.
+//
+// Like ErrPendingRotationExpired this is TERMINAL: the caller must discard the
+// staged set instead of retrying.
+var ErrRotationUnresolvable = errors.New("pending rotation can never be promoted")
+
+// IsRotationTerminal reports whether a ConfirmTokenRotation error means the
+// staged credential set is provably dead and must be discarded.
+//
+// The set is deliberately small and closed. A conflict the server marked
+// retryable, an unknown code from a newer server, a 5xx and a transport failure
+// all return false and therefore retry — discarding a staged set the server may
+// still be authenticating the device with is unrecoverable (#2772/#2773), while
+// retrying a dead one merely costs a request per tick until the TTL lapses.
+func IsRotationTerminal(err error) bool {
+	return errors.Is(err, ErrPendingRotationExpired) || errors.Is(err, ErrRotationUnresolvable)
+}
+
 // ConfirmTokenRotation completes phase two of a two-phase rotation. It MUST be
 // called on a client built with the NEW (staged) agent token — the server treats
 // possession of that token as the endpoint's proof that the credential was
@@ -811,25 +833,61 @@ func (c *Client) ConfirmTokenRotation() (*ConfirmTokenRotationResponse, error) {
 	}
 
 	var result ConfirmTokenRotationResponse
-	// Decode before the status check: the 409 body carries the machine-readable
-	// code that tells us whether retrying can ever succeed.
-	_ = json.Unmarshal(bodyBytes, &result)
 
-	if resp.StatusCode != http.StatusOK {
-		if result.Code == "pending_rotation_expired" {
-			return nil, ErrPendingRotationExpired
+	if resp.StatusCode == http.StatusOK {
+		// A 200 has to actually parse, and actually say confirmed. Ignoring the
+		// decode error here would turn a captive portal or proxy answering 200
+		// with HTML into a zero-valued result, and the caller's `return
+		// resp.Confirmed` would then report failure with NO error and NO log
+		// line — an invisible confirm loop running every tick until the pending
+		// TTL lapses. That is the #2894 symptom reproduced on the success path.
+		if err := json.Unmarshal(bodyBytes, &result); err != nil {
+			return nil, fmt.Errorf("rotate-token confirm returned 200 with an undecodable body (%d bytes): %w", len(bodyBytes), err)
 		}
-		// A 401 here means the server would not accept the STAGED token at all —
-		// it expired (auth rejects an expired pending hash before this route ever
-		// runs, so the code above is not reachable in that case), or it was
-		// revoked by an admin rotation or re-enrollment. Either way it can never
-		// be promoted, so treat it as expired and stop retrying. This is safe:
-		// the agent's current credentials are untouched by a failed confirm.
-		if resp.StatusCode == http.StatusUnauthorized {
-			return nil, ErrPendingRotationExpired
+		if !result.Confirmed {
+			return nil, fmt.Errorf("rotate-token confirm returned 200 without confirming: %s", string(bodyBytes))
 		}
-		return nil, fmt.Errorf("rotate-token confirm failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+		return &result, nil
 	}
 
-	return &result, nil
+	// Best-effort decode on an error status: only `code` matters, and a body
+	// that will not parse simply leaves it empty, which falls through to the
+	// retryable generic error below.
+	_ = json.Unmarshal(bodyBytes, &result)
+
+	// Issue #2894 — only these two codes are terminal. Every other code
+	// (including `rotation_conflict` and `pending_token_required`, which the
+	// server emits while the staged token may still be live) falls through to
+	// the generic error below and is retried.
+	//
+	// The sentinels are WRAPPED, never returned bare: discarding a credential set
+	// is the one irreversible action in this flow, and the log line the caller
+	// writes for it is the only forensic record. A bare sentinel would reduce it
+	// to a constant string and throw away the status, the code and the server's
+	// own explanation.
+	switch result.Code {
+	case "pending_rotation_expired":
+		return nil, fmt.Errorf("rotate-token confirm rejected (status %d, code %q): %s: %w",
+			resp.StatusCode, result.Code, result.Error, ErrPendingRotationExpired)
+	case "rotation_unresolvable":
+		return nil, fmt.Errorf("rotate-token confirm rejected (status %d, code %q): %s: %w",
+			resp.StatusCode, result.Code, result.Error, ErrRotationUnresolvable)
+	}
+	// A 401 here means the server would not accept the STAGED token at all — it
+	// expired, or it was revoked by an admin rotation or re-enrollment. Either
+	// way it can never be promoted, so treat it as expired and stop retrying.
+	// This is safe: the agent's current credentials are untouched by a failed
+	// confirm.
+	//
+	// This inference has to stay, and it is deliberately the ONE terminal verdict
+	// not driven by a code: an expired pending hash is rejected by agentAuth
+	// BEFORE this route runs, so a 401 is the only signal the agent can ever
+	// receive for the ordinary expiry case. Making it retryable would replace a
+	// TTL-bounded loop with an unbounded one. The body is carried into the error
+	// so an operator can tell an expiry from, say, a device suspension.
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("rotate-token confirm rejected with 401 (the staged token is not accepted at all): %s: %w",
+			string(bodyBytes), ErrPendingRotationExpired)
+	}
+	return nil, fmt.Errorf("rotate-token confirm failed with status %d: %s", resp.StatusCode, string(bodyBytes))
 }
