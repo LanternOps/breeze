@@ -25,6 +25,8 @@ import { MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { bearerTokenAuthMiddleware, resolvePartnerAccessibleOrgIds } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
+import type { OrgInstalledReader } from '../extensions/orgInstallGate';
+import { recordExtensionOrgInstallDeny } from '../extensions/metrics';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, TIER3_ACTIONS } from '../services/aiGuardrails';
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
@@ -800,7 +802,7 @@ async function handleJsonRpc(
         return jsonRpcResult(req.id, {});
 
       case 'tools/list':
-        return handleToolsList(req.id, scopes);
+        return await handleToolsList(req.id, scopes, auth);
 
       case 'tools/call':
         return await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c, sessionId);
@@ -944,7 +946,50 @@ function gatedActionsForTool(toolName: string, inputSchema: unknown): string[] {
 // tools/list
 // ============================================
 
-function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse {
+/**
+ * Task 7b, requirement 6 (disclosure-hardening, NOT the security boundary —
+ * `executeTool`'s org-install gate in aiTools.ts is): `auth` is already a
+ * parameter of the enclosing `handleJsonRpc`, so the caller's org is trivially
+ * available here. The in-product chat surface (aiAgentSdkTools.ts) advertises
+ * no extension tools today; its tool definitions are static core tools, and
+ * execution is gated by executeTool. If chat ever starts advertising registry
+ * tools, it will need this same tools/list filter.
+ *
+ * Loaded lazily via dynamic `import()`, NOT a static top-level import: several
+ * existing `tools/call`-only test files (mcpServer.creatorPermsNull.test.ts
+ * and siblings) mock `../services/aiTools` wholesale and never previously
+ * pulled in the extensions subsystem, so a static import here measurably grew
+ * their cold `vi.resetModules()` re-import cost past the default 5s test
+ * timeout. `tools/list` requests pay the one-time load cost instead; nothing
+ * that never calls `tools/list` does. Memoized after the first `tools/list`
+ * call, same "build once" discipline as the module-scope readers elsewhere
+ * (aiTools.ts's `defaultExtensionEnabledStore` / `defaultExtensionOrgInstallReader`).
+ */
+let mcpOrgInstallModules: {
+  registry: typeof import('../extensions/contributionRegistry')['extensionContributionRegistry'];
+  installScopeOf: typeof import('../extensions/orgInstallGate')['installScopeOf'];
+  reader: OrgInstalledReader;
+} | null = null;
+async function getMcpOrgInstallModules() {
+  if (!mcpOrgInstallModules) {
+    const [{ extensionContributionRegistry }, { installScopeOf, createOrgInstalledReader }] = await Promise.all([
+      import('../extensions/contributionRegistry'),
+      import('../extensions/orgInstallGate'),
+    ]);
+    mcpOrgInstallModules = {
+      registry: extensionContributionRegistry,
+      installScopeOf,
+      reader: createOrgInstalledReader(),
+    };
+  }
+  return mcpOrgInstallModules;
+}
+
+async function handleToolsList(
+  id: string | number,
+  scopes: string[],
+  auth: AuthContext,
+): Promise<JsonRpcResponse> {
   const allTools = getToolDefinitions();
   const hasExecute = scopes.includes('ai:execute');
   const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
@@ -952,7 +997,7 @@ function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse
   const hasWrite = hasExecute || scopes.includes('ai:write');
 
   // Filter tools based on API key scopes.
-  const filteredTools = allTools.filter((tool) => {
+  const scopedTools = allTools.filter((tool) => {
     // A wholly-gated tool (every possible invocation resolves to a gated
     // tier — see isToolWhollyGatedOverMcp) is never advertised: every call to
     // it would be denied by the tools/call gate below, so listing it is
@@ -973,6 +1018,42 @@ function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse
     // to reach the tools/call gate at all, same as before this payoff.)
     return hasExecute && (!requireExecuteAdmin || hasExecuteAdmin);
   });
+
+  // Org-install visibility filter: hide an org-scoped extension's tools from
+  // a caller whose org has no enabled install, so a non-installed org can't
+  // even see the tool exists. A core tool (no owner) always passes through
+  // untouched, so this adds no reader calls to the all-core-tools path. A
+  // caller with no single resolvable org (system/partner-scope keys) never
+  // sees an org-scoped extension's tools — fail closed the same way
+  // `executeTool` does. A reader failure PROPAGATES (never caught here) to
+  // `handleJsonRpc`'s catch, which reports a JSON-RPC error — never a silent
+  // show-all or hide-all.
+  const { registry, installScopeOf, reader } = await getMcpOrgInstallModules();
+  const filteredTools: typeof scopedTools = [];
+  for (const tool of scopedTools) {
+    const owner = registry.findAiToolOwner(tool.name);
+    if (!owner) {
+      filteredTools.push(tool);
+      continue;
+    }
+    const manifest = registry.get(owner)?.manifest;
+    if (!manifest) {
+      // Fail CLOSED, deliberately: an owner that findAiToolOwner resolved but
+      // whose registry entry carries no manifest is an anomalous state (the
+      // manifest field is non-optional on a real staged snapshot — see
+      // contributionRegistry.ts). Mirrors executeTool's own defensive
+      // fail-closed throw (aiTools.ts) rather than the previous behavior of
+      // treating a missing manifest as "not org-scoped" and showing the tool.
+      continue;
+    }
+    if (installScopeOf(manifest) !== 'org') {
+      filteredTools.push(tool);
+      continue;
+    }
+    if (auth.orgId && (await reader(owner, auth.orgId))) {
+      filteredTools.push(tool);
+    }
+  }
 
   const result = filteredTools.map((tool) => {
     // A mixed multiplexer (some but not all actions gated over MCP) stays
@@ -1050,6 +1131,52 @@ async function handleToolsCall(
   const baseTier = getToolTier(toolName);
   if (baseTier === undefined) {
     return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
+  }
+
+  // Org-install non-disclosure gate (Task 7b finding 1): without this, a
+  // named org-scoped extension tool sails past this early "Unknown tool"
+  // check (getToolTier IS defined for it) and only gets denied deep inside
+  // executeTool below — whose thrown error is caught by `execute()`'s
+  // try/catch and returned as a JSON-RPC SUCCESS envelope with `isError:
+  // true` content, a shape trivially distinguishable from THIS function's
+  // -32602 ERROR envelope for a truly-nonexistent tool name. That let a
+  // non-installed org detect the extension exists by the response shape
+  // alone, defeating the same non-disclosure contract `executeTool`'s own
+  // gate (aiTools.ts) upholds. Deny here, in the SAME shape as the
+  // baseTier-undefined branch above, before any guardrails/ledger/audit work.
+  // Reuses the tools/list filter's lazy-loaded registry/reader (see
+  // getMcpOrgInstallModules above) — same install-scope resolution, same
+  // fail-closed-on-no-org contract, same uncaught (propagating) reader-error
+  // behavior as executeTool's own gate. A DISABLED (not just non-installed)
+  // extension's tool is already covered by the baseTier-undefined branch
+  // above — `registry.findAiToolOwner`/`getAiTool` both skip disabled
+  // snapshots — so no separate handling is needed here for that case.
+  {
+    const { registry, installScopeOf, reader } = await getMcpOrgInstallModules();
+    const owner = registry.findAiToolOwner(toolName);
+    if (owner) {
+      const manifest = registry.get(owner)?.manifest;
+      if (!manifest) {
+        // Fail CLOSED, deliberately — same anomalous-state reasoning as the
+        // tools/list filter above and executeTool's defensive throw
+        // (aiTools.ts): an owner without a resolvable manifest must never
+        // fall through to dispatch. Deny in the SAME shape as a genuinely
+        // unknown tool name (see the non-disclosure note above).
+        return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
+      }
+      if (installScopeOf(manifest) === 'org') {
+        if (!auth.orgId || !(await reader(owner, auth.orgId))) {
+          console.warn('[extensions] org-install denied', {
+            extension: owner,
+            orgId: auth.orgId ?? null,
+            reason: auth.orgId ? 'not_installed' : 'no_org',
+            surface: 'mcp',
+          });
+          recordExtensionOrgInstallDeny(owner, 'mcp');
+          return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
+        }
+      }
+    }
   }
 
   // Run guardrails BEFORE the scope gates so the EFFECTIVE tier (which a
@@ -1216,6 +1343,27 @@ async function handleToolsCall(
     execute,
   );
 }
+
+/**
+ * Test-only direct access to the JSON-RPC `tools/list` / `tools/call`
+ * handlers, bypassing the HTTP + API-key/bearer transport layer entirely.
+ * Lets Task 7b's org-install-gate tests inject a controlled `AuthContext`
+ * without mocking the whole auth middleware stack — mirrors the existing
+ * `__loadMcpBootstrapForTests` test-only export above.
+ */
+export const __handleToolsListForTests = handleToolsList;
+export const __handleToolsCallForTests = handleToolsCall;
+/**
+ * Test-only direct access to `handleJsonRpc` itself (rather than a single
+ * handler) — needed to observe its top-level try/catch, which is what turns
+ * an org-install reader's rejection into the -32000 JSON-RPC envelope a real
+ * client receives. `__handleToolsListForTests`/`__handleToolsCallForTests`
+ * above call the handler directly and so, deliberately, let a reader
+ * rejection propagate as a rejected promise instead (see the "PROPAGATE"
+ * comments at the org-install gates above) — this export is for the tests
+ * that need to see the CAUGHT, client-facing shape instead.
+ */
+export const __handleJsonRpcForTests = handleJsonRpc;
 
 function writeMcpToolAuditEvent(
   c: Context | undefined,

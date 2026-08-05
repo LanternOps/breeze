@@ -1,0 +1,68 @@
+---
+title: Extensions
+description: Signed runtime bundles that extend Breeze with additional routes, AI tools, background jobs, and web surfaces.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Extensions are signed runtime bundles the operator provisions server-wide. Each
+extension declares a manifest (`name`, `routeNamespace`, migrations, and a
+`tenancy` block) that the host verifies, migrates, and activates at startup.
+Once active, an extension can contribute HTTP routes (mounted at
+`/api/v1/ext/<name>/…`, with a legacy alias at `/api/v1/<routeNamespace>/…`),
+AI tools exposed over the MCP server, and background jobs — all running
+in-process against the same request-scoped, RLS-bounded database handle core
+routes use.
+
+<Aside type="note">
+  This page covers the *runtime extension* system (`installed_extensions`,
+  manifest-declared bundles). It is unrelated to the separate, older
+  [Plugins](/features/plugins/) catalog (`plugin_catalog` /
+  `plugin_installations`).
+</Aside>
+
+---
+
+## Tenant-scoped installs
+
+By default an extension serves every organization on the server
+(`installScope: "server"`). An extension may opt in to per-tenant activation by
+declaring, in its manifest `tenancy` block:
+
+```json
+"tenancy": { "installScope": "org" }
+```
+
+The operator still provisions one bundle server-wide; activation is an
+authorization record per organization. Partner admins manage activations
+(bounded by their accessible organizations):
+
+- `PUT /api/v1/extensions/:name/orgs/:orgId` — activate
+- `DELETE /api/v1/extensions/:name/orgs/:orgId` — deactivate
+- `GET /api/v1/extensions/:name/orgs` — list activations the caller may see
+
+A non-activated organization receives **404** on both `/api/v1/ext/<name>/…`
+and the legacy `/api/v1/<routeNamespace>/…` request dispatch, and the same
+non-disclosure treatment on extension-contributed AI tools — a non-activated
+org's callers never see the tool in an MCP `tools/list`, and a direct
+`tools/call` against it fails the same non-disclosure way as an HTTP 404,
+without revealing whether the tool or the org is the reason.
+
+<Aside type="caution">
+  The **web slice** is not yet org-filtered: the `/api/v1/extensions/registry`
+  listing and its digest-addressed web asset serving gate only on the
+  extension's fleet-wide enabled flag, not on per-org install state. Any
+  authenticated user can see a `tenancy: "org"` extension in that registry and
+  fetch its web assets regardless of whether their org is activated for it.
+  This is deferred to the web slice's own org-filtering work, not covered by
+  this L1 install-scoping layer.
+</Aside>
+
+Background jobs are **not** host-enforced to the install set — the host does
+not intercept or filter job execution. An extension's own job handler is
+responsible for reading `context.tenancy.installedOrgs()` and scoping its own
+work to that set; a job that ignores it will run against every organization
+on the server regardless of activation.
+
+This is install **scoping** (authorization), not sandboxing: it decides which
+tenants an extension serves, not what its code can access.

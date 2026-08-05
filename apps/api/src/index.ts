@@ -159,6 +159,7 @@ import { drRoutes } from './routes/dr';
 import { adminRoutes } from './routes/admin';
 import { extensionsAdminRoutes } from './routes/extensionsAdmin';
 import { extensionsWebRoutes } from './routes/extensionsWeb';
+import { extensionOrgInstallRoutes } from './routes/extensionOrgInstalls';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
 import {
@@ -330,6 +331,7 @@ import { initializeDatabaseForStartup } from './db/databaseStartup';
 import { loadSourceExtensions } from './extensions/loader';
 import { extensionContributionRegistry } from './extensions/contributionRegistry';
 import { mountExtensionGateway } from './extensions/gateway';
+import { createOrgInstalledReader } from './extensions/orgInstallGate';
 import { join as joinPath } from 'node:path';
 import { reconcileExtensions } from './extensions/reconciler';
 import { resolveExtensionsRoot } from './extensions/discovery';
@@ -1129,13 +1131,32 @@ api.route('/admin', accountDeletionAdminRoutes);
 // asset serving. Distinct from `/admin/extensions` above (platform-admin
 // operations) — this is the tenant-facing surface a browser reads.
 api.route('/extensions', extensionsWebRoutes);
+// Partner management surface for tenant-scoped extension installs (L1):
+// partner/system-scope callers activate/deactivate/list an extension's
+// per-org installs. Safe to mount at '/extensions' alongside the gateway's
+// `/api/v1/:routeNamespace/*` catch-all (registered on the root `app` below,
+// BEFORE this `api` sub-app is merged in via `app.route('/api/v1', api)`) for
+// two independent reasons, not registration order: (a) 'extensions' is in
+// RESERVED_ROUTE_NAMESPACES (packages/extension-sdk/src/manifest.ts), so no
+// extension manifest's routeNamespace can ever validate as 'extensions' —
+// `registry.getByRouteNamespace('extensions')` can never resolve an active
+// extension; (b) the gateway's dispatchAlias middleware (gateway.ts) calls
+// `next()` — a genuine pass-through, not a response — whenever no active
+// extension resolves for the namespace, so the request keeps flowing through
+// Hono's composed handler chain to this router's own routes.
+api.route('/extensions', extensionOrgInstallRoutes);
 
 // One system-scoped state store, shared by the per-request enabled gate, the
 // startup reconciler, and the BullMQ job host. The gate checks
 // installed_extensions.enabled on EVERY dispatched extension request (no cache)
 // so an admin disabling an extension takes effect fleet-wide on the next request.
 const extensionStateStore = createExtensionStateStore();
-mountExtensionGateway(app, extensionContributionRegistry, createEnabledGate(extensionStateStore));
+mountExtensionGateway(
+  app,
+  extensionContributionRegistry,
+  createEnabledGate(extensionStateStore),
+  createOrgInstalledReader(),
+);
 
 app.route('/api/v1', api);
 

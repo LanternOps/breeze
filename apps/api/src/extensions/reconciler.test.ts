@@ -7,7 +7,7 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
-import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
+import type { ExtensionManifestV1, ExtensionRuntimeContext } from '@breeze/extension-sdk';
 import {
   defaultStageExtension,
   extractVerifiedPayload,
@@ -582,26 +582,35 @@ describe('extractVerifiedPayload — re-verifies bytes read after verification',
 });
 
 describe('defaultStageExtension (v1 contract)', () => {
-  const v1Manifest: ExtensionManifestV1 = {
-    apiVersion: 'breeze.extensions/v1',
-    name: 'demo',
-    version: '1.0.0',
-    routeNamespace: 'demo',
-    requires: { breeze: '>=0.1.0', serverSdk: '^1.0.0', capabilities: [] },
-    server: { entry: 'server/index.cjs' },
-    migrationsDir: 'migrations',
-    schemaCompatibilityFloor: '1.0.0',
-    publicRoutes: [],
-    agentRoutes: false,
-    jobs: [],
-    aiTools: [],
-    tenancy: {
-      orgCascadeDeleteTables: [],
-      deviceCascadeDeleteTables: [],
-      deviceOrgDenormalizedTables: [],
-      deviceOrgMoveDeleteTables: [],
-    },
-  } as unknown as ExtensionManifestV1;
+  // The three-empty-arrays tenancy literal every fixture manifest starts
+  // from; individual tests override just `installScope` on top of it.
+  const defaultTenancy = {
+    orgCascadeDeleteTables: [],
+    deviceCascadeDeleteTables: [],
+    deviceOrgDenormalizedTables: [],
+    deviceOrgMoveDeleteTables: [],
+  };
+
+  function makeManifest(overrides: Partial<ExtensionManifestV1> = {}): ExtensionManifestV1 {
+    return {
+      apiVersion: 'breeze.extensions/v1',
+      name: 'demo',
+      version: '1.0.0',
+      routeNamespace: 'demo',
+      requires: { breeze: '>=0.1.0', serverSdk: '^1.0.0', capabilities: [] },
+      server: { entry: 'server/index.cjs' },
+      migrationsDir: 'migrations',
+      schemaCompatibilityFloor: '1.0.0',
+      publicRoutes: [],
+      agentRoutes: false,
+      jobs: [],
+      aiTools: [],
+      tenancy: defaultTenancy,
+      ...overrides,
+    } as unknown as ExtensionManifestV1;
+  }
+
+  const v1Manifest = makeManifest();
 
   // THE regression this suite exists for: the reconciler must stage signed
   // bundles through the PUBLIC v1 SDK shape — register(registrar, context) —
@@ -650,5 +659,42 @@ describe('defaultStageExtension (v1 contract)', () => {
     };
     await expect(defaultStageExtension(module, v1Manifest, registry))
       .rejects.toThrow(/Undeclared AI tool registration/);
+  });
+
+  describe('runtime context tenancy.installedOrgs', () => {
+    it('org-scoped extension: returns the enabled install set from the store', async () => {
+      let captured: ExtensionRuntimeContext | undefined;
+      const module: BreezeExtensionV1 = {
+        register: (_registrar, context) => { captured = context; },
+      };
+      const manifest = makeManifest({ tenancy: { ...defaultTenancy, installScope: 'org' } });
+      await defaultStageExtension(module, manifest, new ExtensionContributionRegistry(), {
+        installedOrgs: async (name) => (name === manifest.name ? ['org-a', 'org-b'] : []),
+      });
+      await expect(captured!.tenancy.installedOrgs()).resolves.toEqual(['org-a', 'org-b']);
+    });
+
+    it('server-scoped extension: THROWS — no install set exists, and that must not read as empty', async () => {
+      let captured: ExtensionRuntimeContext | undefined;
+      const module: BreezeExtensionV1 = {
+        register: (_registrar, context) => { captured = context; },
+      };
+      await defaultStageExtension(module, makeManifest(), new ExtensionContributionRegistry(), {
+        installedOrgs: async () => [],
+      });
+      await expect(captured!.tenancy.installedOrgs()).rejects.toThrow(/server-scoped/);
+    });
+
+    it('store failure propagates: unreadable is distinguishable from empty', async () => {
+      let captured: ExtensionRuntimeContext | undefined;
+      const module: BreezeExtensionV1 = {
+        register: (_registrar, context) => { captured = context; },
+      };
+      const manifest = makeManifest({ tenancy: { ...defaultTenancy, installScope: 'org' } });
+      await defaultStageExtension(module, manifest, new ExtensionContributionRegistry(), {
+        installedOrgs: async () => { throw new Error('db down'); },
+      });
+      await expect(captured!.tenancy.installedOrgs()).rejects.toThrow('db down');
+    });
   });
 });

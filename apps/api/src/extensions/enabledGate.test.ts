@@ -59,7 +59,7 @@ function makeFixture(isEnabled: (name: string) => Promise<boolean>) {
   const session = registry.begin(makeManifest());
   session.registrar.mountRoute(routeApp);
   registry.activate(session.finish());
-  mountExtensionGateway(app, registry, isEnabled);
+  mountExtensionGateway(app, registry, isEnabled, async () => false);
   return app;
 }
 

@@ -62,7 +62,7 @@ import { __resetSkipPrefixesForTests, globalRateLimit } from '../middleware/glob
 
 async function mountExtensions(app: Hono, root: string): Promise<void> {
   const registry = new ExtensionContributionRegistry();
-  mountExtensionGateway(app, registry, async () => true);
+  mountExtensionGateway(app, registry, async () => true, async () => false);
   await loadSourceExtensions(registry, root);
 }
 
@@ -152,7 +152,7 @@ describe('mountExtensions', () => {
     scaffoldRuntimeExtension(root, { routeNamespace: 'legacy-alias' });
     const registry = new ExtensionContributionRegistry();
     const app = new Hono();
-    mountExtensionGateway(app, registry, async () => true);
+    mountExtensionGateway(app, registry, async () => true, async () => false);
 
     await loadSourceExtensions(registry, root);
 
@@ -233,7 +233,7 @@ describe('mountExtensions', () => {
     scaffoldRuntimeExtension(root);
     const app = new Hono();
     const registry = new ExtensionContributionRegistry();
-    mountExtensionGateway(app, registry, async () => true);
+    mountExtensionGateway(app, registry, async () => true, async () => false);
     await loadSourceExtensions(registry, root);
     const res = await app.request('/api/v1/ext/demo/health');
     expect(res.status).toBe(200);
@@ -311,7 +311,7 @@ describe('mountExtensions', () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const registry = new ExtensionContributionRegistry();
       const app = new Hono();
-      mountExtensionGateway(app, registry, async () => true);
+      mountExtensionGateway(app, registry, async () => true, async () => false);
 
       await loadSourceExtensions(registry, root);
 

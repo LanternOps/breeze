@@ -381,6 +381,18 @@ const extensionJobOutcomeTotal = new Counter({
   registers: [register],
 });
 
+// org-install (L1 tenant-scoped install) deny signal — bounded to extension +
+// surface only, NEVER orgId (that would blow up cardinality and, worse, leak
+// which orgs are probing which extensions into a metrics label). One counter
+// shared by all three production deny sites: the gateway's buildOrgInstallGuard,
+// executeTool's org-install gate, and the MCP tools/call gate.
+const extensionOrgInstallDeniesTotal = new Counter({
+  name: 'breeze_extension_org_install_denies_total',
+  help: 'Org-install gate denials by extension and dispatch surface',
+  labelNames: ['extension', 'surface'] as const,
+  registers: [register],
+});
+
 const processStartTimeGauge = new Gauge({
   name: 'process_start_time_seconds',
   help: 'Start time of the process since unix epoch in seconds',
@@ -486,6 +498,7 @@ function initializeMetricDefaults(): void {
   extensionRequestErrorsTotal.labels('unknown', 'unknown').inc(0);
   extensionJobsTotal.labels('unknown', 'unknown').inc(0);
   extensionJobOutcomeTotal.labels('unknown', 'unknown', 'success').inc(0);
+  extensionOrgInstallDeniesTotal.labels('unknown', 'gateway').inc(0);
   nodejsVersionInfoGauge.labels(process.version).set(1);
   // Publish the event-loop series from process start so a dashboard or alert
   // rule referencing them is never querying a metric that does not exist yet.
@@ -835,6 +848,14 @@ function recordExtensionJobMetric(
   extensionJobOutcomeTotal.labels(ext, jobLabel, outcome).inc();
 }
 
+function recordExtensionOrgInstallDenyMetric(
+  extension: string,
+  surface: 'gateway' | 'ai-tool' | 'mcp',
+): void {
+  const ext = normalizeMetricLabel(extension, 'unknown');
+  extensionOrgInstallDeniesTotal.labels(ext, surface).inc();
+}
+
 function bindMetricsRecorders(): void {
   setS1MetricsRecorder({
     onSyncRun: (job, outcome, durationMs) => {
@@ -878,6 +899,7 @@ function bindMetricsRecorders(): void {
   setExtensionMetricsRecorder({
     onRequest: recordExtensionRequestMetric,
     onJob: recordExtensionJobMetric,
+    onOrgInstallDeny: recordExtensionOrgInstallDenyMetric,
   });
 }
 

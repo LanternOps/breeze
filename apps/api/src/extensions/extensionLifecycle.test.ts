@@ -103,11 +103,22 @@ function enabledStore(enabled = true) {
   return { isEnabled: async () => enabled };
 }
 
+/**
+ * Task 7b: `executeTool`'s org-install reader (mirrors `enabledStore` above).
+ * Every test in this file exercises SERVER-scoped manifests except the
+ * `describe('org-install gate on executeTool')` block below, so an
+ * always-true reader keeps the rest of this file's calls behavior-identical
+ * to before Task 7b — a server-scoped tool never even reaches it.
+ */
+function installReader(installed = true) {
+  return vi.fn(async () => installed);
+}
+
 describe('extension route and AI lifecycle', () => {
   it('stages, advertises, validates, executes, replaces, and withdraws one active snapshot', async () => {
     const registry = new ExtensionContributionRegistry();
     const app = new Hono();
-    mountExtensionGateway(app, registry, async () => true);
+    mountExtensionGateway(app, registry, async () => true, async () => false);
     registry.activate(stage(
       registry,
       makeManifest(),
@@ -372,5 +383,176 @@ describe('extension route and AI lifecycle', () => {
 
     expect(() => extensionContributionRegistry.activate(rejected)).toThrow(/collision|reserved/i);
     expect(extensionContributionRegistry.get('reserved-collision-probe')).toBeUndefined();
+  });
+});
+
+/**
+ * Task 7b: `executeTool` is the fourth production dispatch path into
+ * extension code that the L1 install-scoping plan missed — the HTTP gateway
+ * wrappers (covered by orgInstallGate.test.ts / gateway.ts) gate the other
+ * three, but nothing upstream of `executeTool` checked per-org installs for
+ * AI-tool calls. These tests pin the gate this task adds: org-scoped
+ * extensions require an enabled `extension_org_installs` row for the caller's
+ * org before their handler runs; server-scoped extensions are unaffected and
+ * never consult the reader.
+ */
+function orgScopedManifest(overrides: Partial<ExtensionManifestV1> = {}) {
+  return makeManifest({
+    name: 'org-scoped-demo',
+    routeNamespace: 'org-scoped-legacy',
+    tenancy: {
+      installScope: 'org',
+      orgCascadeDeleteTables: [],
+      deviceCascadeDeleteTables: [],
+      deviceOrgDenormalizedTables: [],
+    },
+    ...overrides,
+  });
+}
+
+describe('org-install gate on executeTool (Task 7b)', () => {
+  it('denies an org-scoped tool for a non-installed org with the SAME shape as an unknown tool, and never runs the handler', async () => {
+    const registry = new ExtensionContributionRegistry();
+    const handler = vi.fn(async () => 'should-never-run');
+    registry.activate(stage(
+      registry,
+      orgScopedManifest(),
+      'v1',
+      makeTool('lifecycle_lookup_v1', 'v1', handler),
+    ));
+    const reader = installReader(false);
+
+    const baselineUnknown = await executeTool(
+      'definitely_not_a_registered_tool',
+      {},
+      makeAuth(),
+      registry,
+      enabledStore(),
+      reader,
+    ).then(
+      () => { throw new Error('expected executeTool to reject'); },
+      (err: Error) => err,
+    );
+
+    const orgGated = await executeTool(
+      'lifecycle_lookup_v1',
+      { query: 'hello' },
+      makeAuth(),
+      registry,
+      enabledStore(),
+      reader,
+    ).then(
+      () => { throw new Error('expected executeTool to reject'); },
+      (err: Error) => err,
+    );
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(reader).toHaveBeenCalledWith('org-scoped-demo', 'org-1');
+    // Non-disclosure: substituting the tool name into the baseline unknown-tool
+    // message reproduces the org-gated message exactly — same Error subtype,
+    // same template, no permission-flavored text — so a non-installed org
+    // cannot distinguish "not installed for you" from "does not exist".
+    expect(orgGated).toBeInstanceOf(baselineUnknown.constructor);
+    expect(orgGated.message).toBe(
+      baselineUnknown.message.replace(
+        'definitely_not_a_registered_tool',
+        'lifecycle_lookup_v1',
+      ),
+    );
+  });
+
+  it('runs the handler for an org-scoped tool when the caller org is installed', async () => {
+    const registry = new ExtensionContributionRegistry();
+    const handler = vi.fn(async () => 'ran-org-scoped');
+    registry.activate(stage(
+      registry,
+      orgScopedManifest(),
+      'v1',
+      makeTool('lifecycle_lookup_v1', 'v1', handler),
+    ));
+    const reader = installReader(true);
+
+    expect(await executeTool(
+      'lifecycle_lookup_v1',
+      { query: 'hello' },
+      makeAuth(),
+      registry,
+      enabledStore(),
+      reader,
+    )).toBe('ran-org-scoped');
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(reader).toHaveBeenCalledWith('org-scoped-demo', 'org-1');
+  });
+
+  it('never consults the org-install reader for a server-scoped extension (default installScope)', async () => {
+    const registry = new ExtensionContributionRegistry();
+    const handler = vi.fn(async () => 'ran-server-scoped');
+    registry.activate(stage(
+      registry,
+      makeManifest(), // no tenancy.installScope override -> defaults to 'server'
+      'v1',
+      makeTool('lifecycle_lookup_v1', 'v1', handler),
+    ));
+    // Even a reader that would deny must never be reached for a server-scoped
+    // extension — same bypass property as the gateway guard (orgInstallGate.ts).
+    const reader = installReader(false);
+
+    expect(await executeTool(
+      'lifecycle_lookup_v1',
+      { query: 'hello' },
+      makeAuth(),
+      registry,
+      enabledStore(),
+      reader,
+    )).toBe('ran-server-scoped');
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(reader).not.toHaveBeenCalled();
+  });
+
+  it('propagates an org-install reader failure and never runs the handler (fail closed, mirrors the enabled-gate store-failure contract)', async () => {
+    const registry = new ExtensionContributionRegistry();
+    const handler = vi.fn(async () => 'should-never-run');
+    registry.activate(stage(
+      registry,
+      orgScopedManifest(),
+      'v1',
+      makeTool('lifecycle_lookup_v1', 'v1', handler),
+    ));
+    const reader = vi.fn(async () => { throw new Error('org-install store down'); });
+
+    await expect(executeTool(
+      'lifecycle_lookup_v1',
+      { query: 'hello' },
+      makeAuth(),
+      registry,
+      enabledStore(),
+      reader,
+    )).rejects.toThrow(/org-install store down/);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the caller has no single resolvable org, without consulting the reader', async () => {
+    const registry = new ExtensionContributionRegistry();
+    const handler = vi.fn(async () => 'should-never-run');
+    registry.activate(stage(
+      registry,
+      orgScopedManifest(),
+      'v1',
+      makeTool('lifecycle_lookup_v1', 'v1', handler),
+    ));
+    // Even a reader that would allow must never be reached without a resolvable org.
+    const reader = installReader(true);
+    const noOrgAuth = { ...makeAuth(), orgId: null } as AuthContext;
+
+    await expect(executeTool(
+      'lifecycle_lookup_v1',
+      { query: 'hello' },
+      noOrgAuth,
+      registry,
+      enabledStore(),
+      reader,
+    )).rejects.toThrow(/unknown tool/i);
+    expect(handler).not.toHaveBeenCalled();
+    expect(reader).not.toHaveBeenCalled();
   });
 });

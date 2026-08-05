@@ -123,6 +123,13 @@ const tenancySchema = z.object({
    * past the RLS tripwire.
    */
   nonTenantTables: z.array(z.string()).optional(),
+  /**
+   * L1 install scoping (authorization, NOT containment — see the tenant-scoped
+   * install design). 'org': the host only dispatches requests / reveals the
+   * install set for orgs with an enabled extension_org_installs row. 'server'
+   * (default): today's behavior, no per-org gating.
+   */
+  installScope: z.enum(['server', 'org']).default('server'),
 });
 
 const manifestSchema = z
@@ -174,6 +181,7 @@ const manifestSchema = z
       orgExportColumns: {},
       deviceCascadeDeleteTables: [],
       deviceOrgDenormalizedTables: [],
+      installScope: 'server',
     }),
   })
   .superRefine((m, ctx) => {
@@ -214,8 +222,8 @@ const manifestSchema = z
 
 type ParsedExtensionTenancyDeclaration = z.infer<typeof tenancySchema>;
 export type ExtensionTenancyDeclaration =
-  Omit<ParsedExtensionTenancyDeclaration, 'orgExportColumns'>
-  & Partial<Pick<ParsedExtensionTenancyDeclaration, 'orgExportColumns'>>;
+  Omit<ParsedExtensionTenancyDeclaration, 'orgExportColumns' | 'installScope'>
+  & Partial<Pick<ParsedExtensionTenancyDeclaration, 'orgExportColumns' | 'installScope'>>;
 
 type ParsedLegacyExtensionManifest = z.infer<typeof manifestSchema>;
 export type LegacyExtensionManifest =

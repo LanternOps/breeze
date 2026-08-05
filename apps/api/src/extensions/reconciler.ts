@@ -71,6 +71,8 @@ import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { ExtensionIncompatibleError, RequiredExtensionError } from './errors';
 import { clearExtensionRoot, registerExtensionRoot } from './faultAttribution';
 import { clearExtensionWebAsset, registerExtensionWebAsset } from './webAssets';
+import { createExtensionOrgInstallStore, type ExtensionOrgInstallStore } from './orgInstallStore';
+import { installScopeOf } from './orgInstallGate';
 
 /** The ordered phases of the pipeline; doubles as the coarse failure category. */
 type ReconcilePhase =
@@ -453,6 +455,7 @@ export async function defaultStageExtension(
   module: BreezeExtensionV1,
   manifest: ExtensionManifestV1,
   registry: ExtensionContributionRegistry,
+  orgInstalls: Pick<ExtensionOrgInstallStore, 'installedOrgs'> = createExtensionOrgInstallStore(),
 ): Promise<StagedExtensionContributions> {
   const session = registry.begin(manifest);
 
@@ -499,6 +502,17 @@ export async function defaultStageExtension(
       else console.log(...args);
     },
     config: Object.freeze({}),
+    tenancy: {
+      installedOrgs: async () => {
+        if (installScopeOf(manifest) !== 'org') {
+          throw new Error(
+            `[extensions] "${manifest.name}" is server-scoped (installScope: "server"); `
+            + 'it has no per-org install set — declare installScope: "org" to use installedOrgs()',
+          );
+        }
+        return orgInstalls.installedOrgs(manifest.name);
+      },
+    },
   };
 
   await module.register(registrar, context);
