@@ -126,10 +126,25 @@ async function processRemediateDevice(data: RemediateDeviceJobData): Promise<{
   // policy (policy.orgId NULL) must carry the DEVICE's org so the org admin
   // can see them, alongside the policy's partnerId.
   const [deviceRow] = await db
-    .select({ orgId: devices.orgId })
+    .select({ orgId: devices.orgId, isEphemeral: devices.isEphemeral })
     .from(devices)
     .where(eq(devices.id, data.deviceId))
     .limit(1);
+
+  // Quick Support exclusion (defense in depth): ephemeral devices live in the
+  // hidden per-partner 'quick_support' org and are a stranger's personal machine
+  // borrowed for one ~20-minute session. The compliance evaluator already keeps
+  // them out of the remediation queue, but this worker installs and uninstalls
+  // software, so a stale or hand-enqueued job must not slip through either.
+  if (deviceRow?.isEphemeral) {
+    return {
+      policyId: data.policyId,
+      deviceId: data.deviceId,
+      commandsQueued: 0,
+      errors: 0,
+    };
+  }
+
   const auditOrgId = policy.orgId ?? deviceRow?.orgId ?? null;
 
   const [compliance] = await db

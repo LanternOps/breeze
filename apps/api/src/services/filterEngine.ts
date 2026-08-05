@@ -548,11 +548,14 @@ export async function evaluateFilter(
 
   // Note: In a real implementation, we'd add the joins here
   // For now, we'll handle simple device-table-only queries
+  // isEphemeral=false on every evaluation/preview query: Quick Support devices
+  // are reachable via accessibleOrgIds by design, and must never be swept into
+  // a dynamic device group.
   const results = await withFilterStatementTimeout(async (tx) =>
     tx
       .select({ id: devices.id })
       .from(devices)
-      .where(and(eq(devices.orgId, orgId), siteScope, filterSQL))
+      .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), siteScope, filterSQL))
   );
 
   return {
@@ -579,7 +582,7 @@ export async function evaluateFilterWithPreview(
     const [countResult] = await tx
       .select({ count: sql<number>`count(*)` })
       .from(devices)
-      .where(and(eq(devices.orgId, orgId), siteScope, filterSQL));
+      .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), siteScope, filterSQL));
 
     // Get preview devices
     const previewDevices = await tx
@@ -592,7 +595,7 @@ export async function evaluateFilterWithPreview(
         lastSeenAt: devices.lastSeenAt
       })
       .from(devices)
-      .where(and(eq(devices.orgId, orgId), siteScope, filterSQL))
+      .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), siteScope, filterSQL))
       .limit(previewLimit);
 
     return { countResult, previewDevices };

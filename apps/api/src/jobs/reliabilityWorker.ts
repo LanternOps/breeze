@@ -70,11 +70,17 @@ async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number 
   // Redis round-trip that must not run while a pooled Postgres connection sits
   // idle-in-transaction. Mirrors metricAnomalies.ts; the worker handler
   // deliberately does not wrap this job type.
+  // Quick Support exclusion: ephemeral devices (`devices.is_ephemeral`) live in
+  // the hidden per-partner 'quick_support' org and are a stranger's personal
+  // machine borrowed for one ~20-minute session. That org stays inside
+  // technicians' accessibleOrgIds for RLS reasons, so this fleet-wide sweep is
+  // NOT filtered for us; excluding the devices also drops the hidden org out of
+  // the fan-out entirely (it holds nothing but ephemeral devices).
   const orgRows = await runWithSystemDbAccess(async () =>
     db
       .select({ orgId: devices.orgId })
       .from(devices)
-      .where(sql`${devices.status} <> 'decommissioned'`)
+      .where(sql`${devices.status} <> 'decommissioned' AND ${devices.isEphemeral} = false`)
       .groupBy(devices.orgId)
   );
 

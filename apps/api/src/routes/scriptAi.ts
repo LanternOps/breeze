@@ -16,7 +16,7 @@ import {
   updateEditorContext,
   closeScriptBuilderSession,
 } from '../services/scriptBuilderService';
-import { runPreFlightChecks } from '../services/aiAgentSdk';
+import { runPreFlightChecks, settleBlockedTurnForNewMessage } from '../services/aiAgentSdk';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { handleApproval } from '../services/aiAgent';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -214,9 +214,18 @@ scriptAiRoutes.post(
       }),
     );
 
-    // Concurrent message guard - atomic check-and-set
+    // Concurrent message guard - atomic check-and-set. If the turn is blocked
+    // only on pending approval waits, settle them so the assistant can
+    // conclude and answer this message (#3089 — shared helper, see ai.ts).
     if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
-      return c.json({ error: 'A message is already being processed for this session' }, 409);
+      const settle = await settleBlockedTurnForNewMessage(activeSession);
+      if (settle !== 'concluded' || !streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+        return c.json({
+          error: settle === 'not_blocked_on_approvals'
+            ? 'A message is already being processed for this session'
+            : 'The assistant is wrapping up the previous turn — please try again in a moment',
+        }, 409);
+      }
     }
 
     writeRouteAudit(c, {

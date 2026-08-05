@@ -131,6 +131,62 @@ describe('sentry service', () => {
     expect(setTagMock).toHaveBeenCalledWith('prior_status', 'failed:server-timeout');
   });
 
+  // #3022: a CONNECT_TIMEOUT already arrives tagged `pg_code:CONNECT_TIMEOUT`,
+  // but that bucket mixes two unrelated failures — a handshake that really
+  // failed, and a main thread too busy to run the socket callbacks. These tags
+  // split it. Like the BREEZE-X pair above they are gated TWICE (setTag here,
+  // pickAllowedTags in the beforeSend scrubber), so both gates are asserted.
+  it('captureException tags a Postgres CONNECT_TIMEOUT with its likely cause', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureException, setConnectTimeoutClassifier } = await import('./sentry');
+    const { diagnoseConnectTimeout } = await import('./postgresConnectTimeout');
+    initSentry();
+    setConnectTimeoutClassifier(diagnoseConnectTimeout);
+
+    captureException(Object.assign(new Error('write CONNECT_TIMEOUT db:5432'), {
+      code: 'CONNECT_TIMEOUT',
+    }));
+
+    expect(setTagMock).toHaveBeenCalledWith('pg_code', 'CONNECT_TIMEOUT');
+    // Assert the VALUES, not just that some string arrived. No monitor is
+    // started in this suite, so the honest verdict is 'unknown' — and
+    // `expect.any(String)` would pass just as happily on a regression that
+    // reported a confident 'connectivity' with no evidence behind it.
+    expect(setTagMock).toHaveBeenCalledWith('connect_timeout_cause', 'unknown');
+    expect(setTagMock).toHaveBeenCalledWith('event_loop_lag_bucket', 'unknown');
+    setConnectTimeoutClassifier(null);
+  });
+
+  it('captureException leaves non-timeout errors untagged by the #3022 classifier', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureException, setConnectTimeoutClassifier } = await import('./sentry');
+    const { diagnoseConnectTimeout } = await import('./postgresConnectTimeout');
+    initSentry();
+    setConnectTimeoutClassifier(diagnoseConnectTimeout);
+
+    captureException(Object.assign(new Error('duplicate key'), { code: '23505' }));
+
+    expect(setTagMock).toHaveBeenCalledWith('pg_code', '23505');
+    expect(setTagMock).not.toHaveBeenCalledWith('connect_timeout_cause', expect.anything());
+    expect(setTagMock).not.toHaveBeenCalledWith('event_loop_lag_bucket', expect.anything());
+    setConnectTimeoutClassifier(null);
+  });
+
+  it('captureException omits the #3022 tags when no classifier is registered', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureException } = await import('./sentry');
+    initSentry();
+
+    // The classifier is injected at boot (index.ts). Until then the tags are
+    // omitted rather than guessed — an unwired process must not claim a cause.
+    captureException(Object.assign(new Error('write CONNECT_TIMEOUT db:5432'), {
+      code: 'CONNECT_TIMEOUT',
+    }));
+
+    expect(setTagMock).toHaveBeenCalledWith('pg_code', 'CONNECT_TIMEOUT');
+    expect(setTagMock).not.toHaveBeenCalledWith('connect_timeout_cause', expect.anything());
+  });
+
   it('captureMessage sets no tags when none are passed (existing callers unaffected)', async () => {
     process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
     const { initSentry, captureMessage } = await import('./sentry');
@@ -345,6 +401,8 @@ describe('scrubEvent', () => {
         partner_id: 'p-1',
         cas_label: 'device_commands.ws_result_terminal_cas',
         prior_status: 'failed:server-timeout',
+        connect_timeout_cause: 'event-loop-starvation',
+        event_loop_lag_bucket: 'over-10s',
         path: '/public/quotes/raw-capability',
         arbitrary: 'raw-capability',
       },
@@ -392,6 +450,11 @@ describe('scrubEvent', () => {
       // BREEZE-X: must survive the scrubber too, not just setCallerTags.
       cas_label: 'device_commands.ws_result_terminal_cas',
       prior_status: 'failed:server-timeout',
+      // #3022: same double gate — a CONNECT_TIMEOUT tagged in captureException
+      // but dropped here would leave the starvation-vs-connectivity split
+      // invisible in Sentry, which is the entire point of adding it.
+      connect_timeout_cause: 'event-loop-starvation',
+      event_loop_lag_bucket: 'over-10s',
     });
     expect(out.exception).toEqual({
       values: [{
@@ -416,6 +479,100 @@ describe('scrubEvent', () => {
     expect(() => scrubEvent({} as any)).not.toThrow();
     expect(() => scrubEvent({ request: {} } as any)).not.toThrow();
     expect(() => scrubEvent({ request: { headers: {} } } as any)).not.toThrow();
+  });
+});
+
+describe('scrubTransactionEvent (#3077)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    initMock.mockClear();
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  // A transaction event as `requestDataIntegration()` builds it: the SDK copies
+  // the request header bag verbatim onto EVERY event type, and only applies its
+  // own SENSITIVE_KEY_SNIPPETS deny list on the span-attribute path — so the
+  // event body is where a live `brz_` credential rides out.
+  const transactionEvent = () => ({
+    type: 'transaction',
+    release: '1.2.3',
+    transaction: 'GET /api/devices/:id',
+    request: {
+      method: 'GET',
+      url: 'https://example.test/api/devices/1?token=raw-capability',
+      query_string: 'token=raw-capability',
+      headers: {
+        'X-API-Key': 'brz_raw-capability',
+        Authorization: 'Bearer raw-capability',
+        COOKIE: 'session=raw-capability',
+        'user-agent': 'sdk',
+      },
+      data: { token: 'raw-capability' },
+      cookies: { session: 'raw-capability' },
+    },
+    contexts: {
+      trace: { trace_id: 'abc123', span_id: 'def456', op: 'http.server' },
+      runtime: { name: 'node', version: 'raw-capability' },
+      os: { name: 'raw-capability' },
+    },
+    breadcrumbs: [{ message: 'raw-capability' }],
+    extra: { apiKey: 'brz_raw-capability' },
+    tags: { method: 'GET', org_id: 'o-1', arbitrary: 'raw-capability' },
+    spans: [{ span_id: 'def456', op: 'db.query' }],
+  });
+
+  it('strips the api key (and every other header) from a sampled transaction', async () => {
+    const { scrubTransactionEvent } = await import('./sentry');
+    const out = scrubTransactionEvent(transactionEvent() as any);
+
+    expect(out.request).toEqual({ method: 'GET' });
+    expect(out.extra).toBeUndefined();
+    expect(out.breadcrumbs).toBeUndefined();
+    expect(out.tags).toEqual({ method: 'GET', org_id: 'o-1' });
+    expect(JSON.stringify(out)).not.toContain('raw-capability');
+    expect(JSON.stringify(out)).not.toContain('brz_');
+  });
+
+  it('keeps contexts.trace so the transaction stays a valid event', async () => {
+    // Reusing scrubEvent here would delete `contexts` outright and silently
+    // disable tracing rather than secure it — a transaction event without
+    // contexts.trace is rejected.
+    const { scrubTransactionEvent } = await import('./sentry');
+    const out = scrubTransactionEvent(transactionEvent() as any);
+
+    expect(out.contexts).toEqual({
+      trace: { trace_id: 'abc123', span_id: 'def456', op: 'http.server' },
+    });
+    expect(out.transaction).toBe('GET /api/devices/:id');
+    expect(out.spans).toEqual([{ span_id: 'def456', op: 'db.query' }]);
+  });
+
+  it('does not throw on sparse or trace-less events', async () => {
+    const { scrubTransactionEvent } = await import('./sentry');
+    expect(() => scrubTransactionEvent({} as any)).not.toThrow();
+    expect(() => scrubTransactionEvent({ request: {} } as any)).not.toThrow();
+    expect(scrubTransactionEvent({ contexts: {} } as any).contexts).toBeUndefined();
+  });
+
+  it('is wired as beforeSendTransaction, which beforeSend never covers', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry } = await import('./sentry');
+    initSentry();
+
+    const initArg = initMock.mock.calls[0]![0] as {
+      beforeSend?: (e: unknown) => unknown;
+      beforeSendTransaction?: (e: unknown) => unknown;
+    };
+    expect(typeof initArg.beforeSend).toBe('function');
+    expect(typeof initArg.beforeSendTransaction).toBe('function');
+
+    const scrubbed = initArg.beforeSendTransaction!(transactionEvent() as any) as any;
+    expect(scrubbed.request).toEqual({ method: 'GET' });
+    expect(JSON.stringify(scrubbed)).not.toContain('brz_');
   });
 });
 

@@ -1,0 +1,47 @@
+{
+  "page": {
+    "title": "Avvia una sessione di assistenza",
+    "intro": "Chi ti sta aiutando con questo computer ti ha chiesto di aprire questa pagina. Non succede nulla finché non scarichi e avvii tu stesso il programma."
+  },
+  "code": {
+    "heading": "Inserisci il codice che ti è stato dato",
+    "help": "La persona che ti sta aiutando ti detterà un codice di 9 lettere e numeri, ad esempio KTM-4H7-P2X. Maiuscole e trattini non fanno differenza.",
+    "label": "Codice di assistenza",
+    "placeholder": "XXX-XXX-XXX",
+    "submit": "Continua",
+    "formatError": "Questo codice non è ancora completo. Un codice è formato da 9 lettere e numeri, ad esempio KTM-4H7-P2X."
+  },
+  "checking": "Verifica del codice in corso…",
+  "invalid": {
+    "title": "Questo codice non è più valido",
+    "body": "Un codice di assistenza scade poco dopo essere stato creato e può essere usato una sola volta. Chiedi un nuovo codice alla persona che ti sta aiutando e digitalo qui sopra."
+  },
+  "checkFailed": {
+    "title": "Non è stato possibile verificare il codice",
+    "body": "La connessione a Internet potrebbe essersi interrotta. Controlla la connessione e riprova con il codice.",
+    "retry": "Riprova"
+  },
+  "ready": {
+    "title": "Il tuo codice è valido",
+    "codeIntro": "Il tuo codice è {{code}}."
+  },
+  "download": {
+    "windows": "Scarica per Windows",
+    "manualFallback": "Se durante lo scaricamento ti viene chiesto un codice, inserisci: {{code}}",
+    "macosLabel": "macOS (computer Mac)",
+    "macosBadge": "Presto disponibile",
+    "macosBody": "Il programma non è ancora pronto per i computer Mac. Chiedi alla persona che ti sta aiutando come procedere."
+  },
+  "windowsPrompt": {
+    "title": "Windows ti chiederà conferma",
+    "body": "Quando apri il file, Windows mostra una richiesta di conferma prima di eseguirlo. Il file è firmato digitalmente, quindi quella richiesta indica un autore: dovrebbe riportare {{publisher}}. Se indica che l’autore è sconosciuto, o riporta un nome che non ti aspetti, chiudi la finestra e chiama la persona che ti sta aiutando invece di proseguire.",
+    "publisher": "l’autore di Breeze"
+  },
+  "trust": {
+    "title": "Che cosa fa il programma",
+    "seeScreen": "Mentre la sessione è in corso, la persona che ti sta aiutando può vedere il tuo schermo.",
+    "temporary": "Il programma viene eseguito una sola volta e poi si rimuove da solo. Su questo computer non resta installato nulla.",
+    "stopAnyTime": "Puoi interrompere la condivisione quando vuoi chiudendo la finestra del programma.",
+    "onlyIfExpected": "Se non te lo aspettavi, non avviarlo. Chiudi questa pagina e contatta le persone dell’assistenza a cui ti rivolgi di solito."
+  }
+}

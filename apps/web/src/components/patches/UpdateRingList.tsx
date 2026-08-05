@@ -26,6 +26,11 @@ export type RingAutoApprove = {
   enabled: boolean;
   severities: Array<'critical' | 'important' | 'moderate' | 'low'>;
   deferralDays: number;
+  /** Third-party app updates auto-approve independently of severity. Absent on
+   *  rings saved before the gate existed. */
+  thirdPartyApps?: boolean;
+  /** null = inherit the ring's hold. */
+  thirdPartyDeferralDays?: number | null;
 };
 
 export type UpdateRingItem = {
@@ -78,6 +83,39 @@ function ComplianceBadge({ percent, t }: { percent?: number; t: TFunction<'patch
     >
       {percent}%
     </span>
+  );
+}
+
+// Summarizes the ring's auto-approval gate: OS severities and third-party apps
+// are independent switches, so a ring can auto-approve one, both, or neither.
+function AutoApproveBadges({ ring, t }: { ring: UpdateRingItem; t: TFunction<'patches'> }) {
+  const aa = ring.autoApprove;
+  const osOn = !!aa?.enabled && aa.severities.length > 0;
+  const tpOn = !!aa?.enabled && !!aa.thirdPartyApps;
+  if (!osOn && !tpOn) {
+    return <span className="text-muted-foreground">{t('updateRingList.badges.manual')}</span>;
+  }
+  return (
+    <div className="flex flex-wrap gap-1">
+      {osOn && (
+        <span
+          className="inline-flex items-center rounded-full border bg-muted/40 px-2 py-0.5 text-xs"
+          data-testid={`ring-badge-os-${ring.id}`}
+        >
+          {t('updateRingList.badges.os', {
+            severities: aa!.severities.map((s) => t(/* i18n-dynamic */ `updateRingForm.severities.${s}`)).join(', '),
+          })}
+        </span>
+      )}
+      {tpOn && (
+        <span
+          className="inline-flex items-center rounded-full border bg-muted/40 px-2 py-0.5 text-xs"
+          data-testid={`ring-badge-third-party-${ring.id}`}
+        >
+          {t('updateRingList.badges.thirdParty')}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -142,6 +180,7 @@ export default function UpdateRingList({
               <th className="px-4 py-3">{t('updateRingList.table.ring')}</th>
               <th className="px-4 py-3">{t('updateRingList.table.deferral')}</th>
               <th className="px-4 py-3">{t('updateRingList.table.deadline')}</th>
+              <th className="px-4 py-3">{t('updateRingList.table.autoApprove')}</th>
               <th className="px-4 py-3">{t('updateRingList.table.devices')}</th>
               <th className="px-4 py-3">{t('updateRingList.table.compliance')}</th>
               <th className="px-4 py-3">{t('updateRingList.table.updated')}</th>
@@ -152,7 +191,7 @@ export default function UpdateRingList({
             {paginatedRings.length === 0 ? (
               <tr>
                 <td
-                  colSpan={8}
+                  colSpan={9}
                   className="px-4 py-6 text-center text-sm text-muted-foreground"
                 >
                   {t('updateRingList.empty')}
@@ -191,6 +230,9 @@ export default function UpdateRingList({
                     {ring.deadlineDays == null
                       ? t('updateRingList.none')
                       : t('updateRingList.days', { count: ring.deadlineDays })}
+                  </td>
+                  <td className="px-4 py-3">
+                    <AutoApproveBadges ring={ring} t={t} />
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">
                     {ring.deviceCount ?? t('updateRingList.emptyValue')}

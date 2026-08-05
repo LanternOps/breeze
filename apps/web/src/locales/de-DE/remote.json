@@ -13,6 +13,10 @@
     "sessions": {
       "title": "Sitzungsverlauf",
       "description": "Vergangene Sitzungen anzeigen"
+    },
+    "quickSupport": {
+      "title": "Schnellsupport",
+      "description": "Einmalcode für spontanen Support"
     }
   },
   "connectDesktopButton": {
@@ -761,5 +765,60 @@
       "obtainTicket": "Ticket konnte nicht abgerufen werden"
     },
     "sessionTitle": "Sitzungstitel"
+  },
+  "quickSupport": {
+    "title": "Schnellsupport",
+    "subtitle": "Erzeugen Sie einen Einmalcode für spontanen Support auf einem Gerät, das nicht registriert ist.",
+    "newSession": "Neue Supportsitzung",
+    "form": {
+      "title": "Supportsitzung starten",
+      "attributionOrg": "Kunden zuordnen (optional)",
+      "attributionOrgHint": "Nur für Auswertungen — der Zugriff auf die Daten dieses Kunden ändert sich dadurch nicht.",
+      "attributionOrgNone": "Nicht zugeordnet",
+      "attributionLabel": "Bezeichnung (optional)",
+      "attributionLabelPlaceholder": "Für wen oder wofür ist diese Sitzung?",
+      "submit": "Code erzeugen",
+      "submitting": "Code wird erzeugt…"
+    },
+    "code": {
+      "heading": "Lesen Sie diesen Code der Person vor, der Sie helfen",
+      "shownOnce": "Dieser Code erscheint nur einmal. Kopieren Sie ihn, bevor Sie diese Seite verlassen — er kann nie wieder angezeigt werden.",
+      "expires": "Läuft ab um {{time}}",
+      "instructions": "Senden Sie den Link, lassen Sie den heruntergeladenen Client ausführen und den Code eingeben.",
+      "copyCode": "Code kopieren",
+      "copyLink": "Download-Link kopieren",
+      "copiedCode": "Code in die Zwischenablage kopiert",
+      "copiedLink": "Download-Link in die Zwischenablage kopiert",
+      "copyFailed": "Kopieren in die Zwischenablage nicht möglich"
+    },
+    "status": {
+      "heading": "Sitzungsfortschritt",
+      "pending": "Warten darauf, dass der Benutzer den Client startet…",
+      "claimed": "Client verbindet sich…",
+      "ready": "Bereit zum Verbinden",
+      "active": "Sitzung läuft",
+      "ended": "Sitzung beendet",
+      "expired": "Sitzung abgelaufen"
+    },
+    "connect": {
+      "waitingForDevice": "Das Gerät wird registriert. Die Schaltfläche zum Verbinden erscheint, sobald es online ist."
+    },
+    "end": {
+      "button": "Sitzung beenden",
+      "success": "Supportsitzung beendet",
+      "error": "Supportsitzung konnte nicht beendet werden",
+      "alreadyEnded": "Diese Supportsitzung war bereits beendet"
+    },
+    "errors": {
+      "create": "Supportsitzung konnte nicht erstellt werden",
+      "list": "Aktuelle Supportsitzungen konnten nicht geladen werden"
+    },
+    "list": {
+      "heading": "Letzte Supportsitzungen",
+      "empty": "Noch keine Supportsitzungen.",
+      "columnCreated": "Gestartet",
+      "columnEnded": "Beendet",
+      "unlabeled": "Sitzung ohne Bezeichnung"
+    }
   }
 }

@@ -3,6 +3,7 @@ import { agentAuthMiddleware } from '../../middleware/agentAuth';
 import { downloadRoutes } from './download';
 import { enrollmentRoutes } from './enrollment';
 import { heartbeatRoutes } from './heartbeat';
+import { uninstallIntentRoutes } from './uninstallIntent';
 import { commandsRoutes } from './commands';
 import { agentSecurityRoutes } from './security';
 import { agentRecoveryKeysRoutes } from './recoveryKeys';
@@ -64,6 +65,7 @@ agentRoutes.route('/', enrollmentRoutes);
 
 // Mount all `:id/*` routes
 agentRoutes.route('/', heartbeatRoutes);
+agentRoutes.route('/', uninstallIntentRoutes);
 agentRoutes.route('/', commandsRoutes);
 agentRoutes.route('/', agentSecurityRoutes);
 agentRoutes.route('/', agentRecoveryKeysRoutes);

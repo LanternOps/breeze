@@ -467,10 +467,12 @@ async function listVulnerabilities(filters: {
     if (filters.allowedSiteIds.length === 0) {
       return [];
     }
+    // Ephemeral Quick Support devices stay inside accessibleOrgIds for RLS, so
+    // exclude them from this site-axis device enumeration explicitly.
     const allowedDeviceRows = await db
       .select({ id: devices.id })
       .from(devices)
-      .where(inArray(devices.siteId, filters.allowedSiteIds));
+      .where(and(inArray(devices.siteId, filters.allowedSiteIds), eq(devices.isEphemeral, false)));
     const allowedDeviceIds = allowedDeviceRows.map((r) => r.id);
     if (allowedDeviceIds.length === 0) {
       return [];

@@ -1085,7 +1085,9 @@
     "to": "to",
     "perPage": "Per page",
     "devicesPerPage": "Devices per page",
-    "page": "Page"
+    "page": "Page",
+    "possibleDuplicate": "Possible duplicate",
+    "possibleDuplicateTitle": "This device may replace an earlier row with the same hostname. Open it to review."
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Failed to fetch device logs",
@@ -2223,5 +2225,16 @@
     "idleMinutes": "idle {{count}}m",
     "disconnectedNotShadowable": "Disconnected sessions cannot be viewed — no active desktop to capture",
     "cancel": "Cancel"
+  },
+  "possibleReplacementBanner": {
+    "decommissionFailed": "Failed to decommission the old device",
+    "decommissionOldDevice": "Decommission old device",
+    "decommissionSucceeded": "Old device decommissioned",
+    "message": "This device may replace {{hostname}} — review and decommission the old row.",
+    "oldDeviceDecommissioned": "Old device decommissioned — nothing left to review.",
+    "oldDeviceUnavailable": "The old device record is no longer available.",
+    "title": "Possible duplicate enrollment",
+    "unknownDevice": "the previous device",
+    "viewOldDevice": "View old device"
   }
 }

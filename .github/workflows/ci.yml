@@ -77,6 +77,12 @@ jobs:
       - name: Run ESLint
         run: pnpm lint
 
+      # scripts/dev is outside the pnpm workspace, so `turbo run test` never
+      # reaches these suites (wt-stack shipped with the same blind spot).
+      # Runs in <1s; uses @breeze/api's vitest since the root has none.
+      - name: Test dev tooling scripts (wt-stack / test-stack)
+        run: pnpm test:dev-scripts
+
       - name: Check for schema drift
         working-directory: apps/api
         continue-on-error: true
@@ -439,6 +445,38 @@ jobs:
 
       - name: Run Web tests
         run: pnpm test --filter=@breeze/web
+
+  # Not yet wired into ci-success / branch protection — see #3139. Promote to
+  # required once the job proves stable.
+  test-mobile:
+    name: Test Mobile
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .node-version
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Mobile tests
+        run: pnpm test --filter=breeze-mobile
+
+      - name: Run Mobile type check
+        working-directory: apps/mobile
+        run: pnpm exec tsc --noEmit
 
   test-portal:
     name: Test Portal
@@ -1155,11 +1193,67 @@ jobs:
       # here. It is deliberately NOT added to the race step below: the Windows
       # tests it adds are the platform log-open/rotate helpers, and the race
       # step's cgo requirement is not something this change verified.
+      #
+      # ./internal/ipc was missing entirely (issue #3007). Unlike eventlog and
+      # logging this adds no previously-unrun test — ipc has no //go:build
+      # windows test files, and its tests use TCP loopback rather than the named
+      # pipe it uses in production, so this does NOT close a named-pipe coverage
+      # gap. It earns its place differently: ipc is the concurrency-critical
+      # framing layer every helper writes through, its Send path is guarded by a
+      # single mutex, and none of that had ever been exercised on the Windows
+      # scheduler and net stack. Adding it also gets auth_windows.go compiled by
+      # a test binary. Verified the same way as logging: with GOOS=windows
+      # GOARCH=amd64 CGO_ENABLED=0 it vets, its test binary compiles, and its
+      # GOOS=windows dependency graph contains no remote/desktop and no cgo.
+      #
+      # It IS added to the race step below (unlike logging) because it is a
+      # shared-mutex concurrency package worth detector coverage on the OS it
+      # ships to, and ipc is already compiled under cgo there as a dependency of
+      # sessionbroker. Note the #3007 bug itself was NOT a data race — sendSeq
+      # was already atomic — so -race would not have caught it; the regression
+      # test asserts receiver-visible ordering instead.
       - name: Run Windows Go tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/logging ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./cmd/breeze-watchdog
+
+      # internal/backup is the third instance of the same gap: its
+      # upload_error_class_codes_windows_test.go pins the Win32 permanent-error
+      # codes (#2997) against golang.org/x/sys/windows, and those codes drive
+      # ~300 of the 316 field failures that fix targets — yet the package
+      # cannot join the list above while its pre-existing Windows reds stand
+      # (#2523). A -run filter selects only the classification and VSS
+      # path-rewrite tests, so this
+      # gate is green today and still catches a typo'd code. It caught one in
+      # review: 0x17C is ERROR_CLOUD_FILE_INVALID_REQUEST, not the
+      # ERROR_CLOUD_FILE_ACCESS_DENIED (395) the OneDrive case needs.
+      # Drop the filter when #2523 lands and add the package above.
+      #
+      # The PASS-count assertion is not belt-and-braces: `go test -run` exits 0
+      # with "[no tests to run]" when the regex matches nothing, so a rename
+      # would silently void the only check the Win32 table has anywhere — the
+      # same vacuous-guard failure this repo has hit before. Counting top-level
+      # PASS lines makes that a red, not a green.
+      # TestRewritePathsForVSS* rides the same filter. It is the other half of
+      # the VSS fix (#2999): the provider is proven by live tests we do not run
+      # on CI runners (they need elevation, create a real snapshot, and take
+      # minutes), but the path-rewrite seam that decides whether a backup reads
+      # the shadow copy or the live volume is pure string logic, and it is only
+      # meaningful on Windows because filepath.VolumeName returns "" everywhere
+      # else. Without this it has no CI coverage at all.
+      - name: Run Windows backup error-classification and VSS path-rewrite tests
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/backup -run 'TestPermanentWindowsErrnoConstantsMatchWin32|TestClassifyPermanentUploadError|TestLookupPermanentWindowsErrno|TestRewritePathsForVSS|TestReportableLiveReads|TestSummarizeLiveReads' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 14) { throw "expected exactly 14 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # -race requires cgo, which remote/desktop cannot satisfy on Windows, so
       # this covers only packages that do not import it (heartbeat and agentapp
@@ -1169,7 +1263,7 @@ jobs:
       # the one that most needs the detector on the OS it actually ships to.
       - name: Run Windows race tests
         working-directory: agent
-        run: go test -race ./internal/sessionbroker ./internal/eventlog ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
+        run: go test -race ./internal/sessionbroker ./internal/eventlog ./internal/ipc ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
 
   # ─── Go agent lint ────────────────────────────────────────────────────
   # The `lint` job above is JS/TS + compose guards only; the Go agent was

@@ -112,6 +112,39 @@ docker compose -f docker/docker-compose.prod.yml exec postgres \
   psql -U breeze -c "SELECT * FROM pg_stat_activity WHERE state = 'active';"
 ```
 
+### Postgres `write CONNECT_TIMEOUT` while the database is healthy
+
+A `write CONNECT_TIMEOUT <host>:<port>` error does **not** always mean the
+database or the network failed. The driver's 10s connect budget covers socket
+creation, TCP, TLS, authentication, and the first ready-for-query — every one of
+which needs the API's event loop to run a socket callback. A saturated main
+thread expires that timer with Postgres and the network both fine, and the error
+then points at the wrong subsystem.
+
+**Check** whether the loop was starved at the time:
+
+```bash
+# Is the loop stalled right now? (1 = at or above the starvation threshold)
+curl -H "Authorization: Bearer $METRICS_SCRAPE_TOKEN" \
+  https://breeze.yourdomain.com/metrics/scrape | grep breeze_nodejs_eventloop
+
+# Did the API log a stall? (throttled; one line per run of breaching samples)
+docker compose logs api | grep '\[event-loop\]'
+```
+
+If `breeze_nodejs_eventloop_monitored` is `0`, the monitor is off and the other
+gauges are meaningless — the API cannot tell starvation from connectivity, and
+reports the cause as `unknown`. See
+[Event-loop lag monitor](/deploy/environment/#event-loop-lag-monitor).
+
+When Sentry is configured, the same verdict arrives as a `connect_timeout_cause`
+tag on the error (`event-loop-starvation`, `connectivity`, or `unknown`), with an
+`event_loop_lag_bucket` tag alongside it.
+
+**Fix**: treat it as load, not as a connection fault — the usual causes are a
+CPU-bound request path or a burst of agent traffic. Raising `connect_timeout`
+alone only lengthens the failing request; it does not unstall the loop.
+
 ### Redis memory growing
 
 **Check**:

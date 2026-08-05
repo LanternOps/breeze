@@ -106,6 +106,7 @@ vi.mock('../services/streamingSessionManager', () => ({
 
 vi.mock('../services/aiAgentSdk', () => ({
   runPreFlightChecks: vi.fn(),
+  settleBlockedTurnForNewMessage: vi.fn(() => Promise.resolve('not_blocked_on_approvals')),
   abortActivePlan: vi.fn(),
 }));
 
@@ -131,7 +132,7 @@ import {
 } from '../services/aiAgent';
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
 import { streamingSessionManager } from '../services/streamingSessionManager';
-import { runPreFlightChecks, abortActivePlan } from '../services/aiAgentSdk';
+import { runPreFlightChecks, abortActivePlan, settleBlockedTurnForNewMessage } from '../services/aiAgentSdk';
 
 const ORG_ID = 'org-111';
 const SESSION_ID = '11111111-1111-1111-1111-111111111111';
@@ -239,6 +240,105 @@ describe('AI routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+  });
+
+  // ============================================
+  // POST /sessions/:id/messages — concurrent-message guard settle path (#3089)
+  // ============================================
+  describe('POST /ai/sessions/:id/messages — approval-blocked turn settling', () => {
+    function mockPreflightOk() {
+      vi.mocked(runPreFlightChecks).mockResolvedValue({
+        ok: true,
+        session: {
+          id: SESSION_ID,
+          orgId: ORG_ID,
+          sdkSessionId: null,
+          model: 'claude-sonnet-4-5-20250929',
+          maxTurns: 50,
+          turnCount: 0,
+          systemPrompt: 'sp',
+          title: 'existing title',
+        },
+        sanitizedContent: 'hello there',
+        systemPrompt: 'sp',
+        maxBudgetUsd: undefined,
+      } as any);
+    }
+
+    function makeActiveSession() {
+      return {
+        breezeSessionId: SESSION_ID,
+        orgId: ORG_ID,
+        state: 'processing',
+        inputController: { pushMessage: vi.fn() },
+        eventBus: {
+          subscribe: vi.fn(() => (async function* () {
+            yield { type: 'done' };
+          })()),
+          unsubscribe: vi.fn(),
+          publish: vi.fn(),
+        },
+      } as any;
+    }
+
+    function postMessage() {
+      return app.request(`/ai/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ content: 'hello there' }),
+      });
+    }
+
+    it('409s untouched when the session is busy for a non-approval reason', async () => {
+      mockPreflightOk();
+      vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(makeActiveSession());
+      vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(false);
+      vi.mocked(settleBlockedTurnForNewMessage).mockResolvedValue('not_blocked_on_approvals');
+
+      const res = await postMessage();
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe('A message is already being processed for this session');
+      // The message was never queued into the turn.
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('proceeds with the message when the blocked turn settles and concludes', async () => {
+      mockPreflightOk();
+      const activeSession = makeActiveSession();
+      vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(activeSession);
+      // Busy on first check; free after the settled turn concluded.
+      vi.mocked(streamingSessionManager.tryTransitionToProcessing)
+        .mockReturnValueOnce(false)
+        .mockReturnValueOnce(true);
+      vi.mocked(settleBlockedTurnForNewMessage).mockResolvedValue('concluded');
+      vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
+
+      const res = await postMessage();
+
+      expect(res.status).toBe(200);
+      await res.text(); // drain the SSE stream (generator yields done and ends)
+      expect(settleBlockedTurnForNewMessage).toHaveBeenCalledWith(activeSession);
+      expect(activeSession.inputController.pushMessage).toHaveBeenCalledWith('hello there');
+      expect(streamingSessionManager.startTurnTimeout).toHaveBeenCalledWith(activeSession);
+    });
+
+    it('409s with a wrapping-up message when the settled turn does not conclude in time', async () => {
+      mockPreflightOk();
+      vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(makeActiveSession());
+      vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(false);
+      vi.mocked(settleBlockedTurnForNewMessage).mockResolvedValue('still_processing');
+
+      const res = await postMessage();
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toMatch(/wrapping up the previous turn/);
+      // Short-circuit: no second transition attempt once settling failed.
+      expect(vi.mocked(streamingSessionManager.tryTransitionToProcessing)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
     });
   });
 

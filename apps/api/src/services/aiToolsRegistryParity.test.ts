@@ -6,72 +6,16 @@ import { TOOL_PERMISSIONS } from './aiGuardrails';
 describe('aiTools registry parity', () => {
   const toolNames = Array.from(aiTools.keys());
 
-  // Pre-existing registered tools missing schemas/permissions; tracked as known debt for a separate follow-up.
-  const legacySchemaGaps = new Set([
-    'query_analytics',
-    'get_executive_summary',
-    'manage_update_rings',
-    'manage_software_policies',
-    'manage_peripheral_policies',
-    'manage_backup_configs',
-    'query_webhooks',
-    'query_psa_status',
-    'test_webhook',
-    'manage_tags',
-    'query_custom_fields',
-    'get_browser_security',
-    'manage_browser_policy',
-    'manage_scheduled_tasks',
-    'registry_operations',
-    'query_compliance_policies',
-    'get_compliance_status',
-    'manage_notification_channels',
-    'create_incident',
-    'execute_containment',
-    'collect_evidence',
-    'get_incident_timeline',
-    'generate_incident_report',
-    'search_documentation',
-    'list_remote_sessions',
-    'create_remote_session',
-    'query_agent_versions',
-    'trigger_agent_upgrade',
-    'trigger_agent_restart',
-    'manage_saved_filters',
-  ]);
+  // Registration-debt payoff: every tool that was ever missing a schema/
+  // permission entry has now been given one — both sets are intentionally
+  // EMPTY. Do NOT add a tool name back into either set as a way to skip
+  // writing its schema/permissions; add the real entry in aiToolSchemas.ts /
+  // aiGuardrails.ts instead. A newly-registered tool with no schema or no
+  // permission entry is exactly the bug this contract test exists to catch.
+  const legacySchemaGaps = new Set<string>([]);
 
-  // Pre-existing registered tools missing schemas/permissions; tracked as known debt for a separate follow-up.
-  const legacyPermissionGaps = new Set([
-    'manage_update_rings',
-    'manage_software_policies',
-    'manage_peripheral_policies',
-    'manage_backup_configs',
-    'get_network_changes',
-    'acknowledge_network_device',
-    'configure_network_baseline',
-    'get_ip_history',
-    'get_sensitive_data_overview',
-    'remediate_sensitive_data',
-    'get_dns_security',
-    'manage_dns_policy',
-    'get_peripheral_activity',
-    'manage_peripheral_policy',
-    'get_browser_security',
-    'manage_browser_policy',
-    'get_software_compliance',
-    'manage_software_policy',
-    'remediate_software_violation',
-    'create_incident',
-    'execute_containment',
-    'collect_evidence',
-    'get_incident_timeline',
-    'generate_incident_report',
-    'get_active_users',
-    'get_user_experience_metrics',
-    'request_elevation',
-    'revoke_elevation',
-    'get_elevation_history',
-  ]);
+  // See legacySchemaGaps above — kept empty on purpose.
+  const legacyPermissionGaps = new Set<string>([]);
 
   it('every registered tool has a Zod input schema, except tracked legacy gaps', () => {
     const missing = toolNames.filter(name => !(name in toolInputSchemas));

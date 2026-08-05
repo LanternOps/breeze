@@ -542,6 +542,9 @@
     "hideExpired": "Hide expiré",
     "deleteExpired": "Supprimer les clés expirées",
     "shortCode": "Code court",
+    "installerUsage": "Appareils de l’installateur {{consumed}} / {{max}}",
+    "installerUsageExpired": "Appareils de l’installateur {{consumed}} / {{max}} (expiré)",
+    "installerUsageMixed": "Appareils de l’installateur {{liveConsumed}} / {{liveMax}} actifs · {{expired}} expirés",
     "usage": "Utilisation",
     "expires": "Expiration",
     "empty": "Aucune clé d’inscription trouvée. Créez-en un pour commencer.",
@@ -575,7 +578,7 @@
     "rotateConfirm": "Renouveler « {{name}} » maintenant ? Les inscriptions existantes continueront de fonctionner, mais les nouvelles inscriptions devront utiliser la nouvelle clé.",
     "rotateKey": "Renouveler la clé",
     "deleteExpiredTitle": "Supprimer les clés d’inscription expirées",
-    "deleteExpiredConfirm": "Supprimer toutes les clés d’inscription expirées ? Cela ne peut pas être annulé."
+    "deleteExpiredConfirm": "Supprimer toutes les clés d’inscription expirées ? Les clés qui alimentent encore un lien de téléchargement d’installateur actif sont conservées. Cela ne peut pas être annulé."
   },
   "inboundEmail": {
     "saveError": "Impossible d’enregistrer les paramètres des courriels entrants : votre session peut nécessiter une nouvelle vérification MFA. Réessayez.",

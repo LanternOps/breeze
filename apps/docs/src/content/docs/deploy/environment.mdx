@@ -194,6 +194,34 @@ The Breeze stack includes a [coturn](https://github.com/coturn/coturn) TURN serv
 | `LOKI_PORT` | `3100` | Loki log aggregation API port (monitoring stack) |
 | `DEVICE_METRICS_RETENTION_DAYS` | `30` | Retention for the raw `device_metrics` series, clamped to 1–365. History charts are served from `metric_rollups` and are unaffected. **On first run after upgrading, older raw metrics are pruned — set this before starting the new version if you need more than 30 days.** |
 
+### Event-loop lag monitor
+
+The API samples its own event-loop delay so that a stalled main thread shows up
+as a stalled main thread. Without it, a stall surfaces as unrelated downstream
+errors — most confusingly a Postgres `write CONNECT_TIMEOUT <host>:<port>`, which
+names the database even though the database and the network were both healthy.
+The monitor runs by default; you do not need to set any of these.
+
+| Variable | Default | Description |
+|---|---|---|
+| `EVENT_LOOP_MONITOR_INTERVAL_MS` | `1000` | Sampling interval for event-loop delay. Values above `EVENT_LOOP_STARVATION_WARN_MS` leave a blind spot one interval wide — stalls shorter than one interval cannot be observed and are reported as cause `unknown`. The API logs a startup warning if you configure it that way. |
+| `EVENT_LOOP_STARVATION_WARN_MS` | `1000` | Lag at or above which a reading counts as starvation. Drives the `[event-loop] Main thread blocked…` warning and the `breeze_nodejs_eventloop_starved` gauge. |
+| `EVENT_LOOP_MONITOR_DISABLED` | — | Set to `1`, `true`, `yes`, or `on` to turn the monitor off. With it off, every Postgres `CONNECT_TIMEOUT` is classified `unknown`, because starvation can be neither ruled in nor out. |
+
+At startup the API prints one line stating whether it can see its own loop and at
+what settings — `[event-loop] Lag monitor started (interval …ms, warn threshold
+…ms, CONNECT_TIMEOUT attribution threshold …ms)`, or a warning if the monitor is
+disabled. The two thresholds can differ: `CONNECT_TIMEOUT` attribution caps its
+own threshold at the 10s connect budget, so raising the warn threshold above 10s
+cannot cause a timeout to be mis-attributed.
+
+Lag is exported on `/metrics/scrape` (see [Monitoring Stack](/monitoring/stack/#event-loop-metrics)).
+It is deliberately **not** reported by `/health/ready`: that endpoint is
+unauthenticated, and a live load gradient plus the configured threshold would let
+an unauthenticated prober measure whether its own traffic is starving the
+instance. Readiness is also not gated on lag — starvation is a load symptom, and
+failing readiness under load would shift traffic onto peers and starve those too.
+
 ## Sentry
 
 Both API and web Sentry integrations are off by default. Leave the DSN variables blank to disable. See [Error Tracking & Privacy](/security/error-tracking/) for what gets collected and how scrubbing works.

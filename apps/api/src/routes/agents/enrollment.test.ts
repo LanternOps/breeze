@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { Hono } from 'hono';
 import { createHash } from 'node:crypto';
 
@@ -43,6 +43,7 @@ vi.mock('../../db/schema', () => ({
     expiresAt: 'expiresAt',
     maxUsage: 'maxUsage',
     usageCount: 'usageCount',
+    supportSessionId: 'supportSessionId',
   },
   devices: {
     id: 'id',
@@ -53,22 +54,40 @@ vi.mock('../../db/schema', () => ({
     agentTokenHash: 'agentTokenHash',
     previousTokenHash: 'previousTokenHash',
     previousTokenExpiresAt: 'previousTokenExpiresAt',
+    agentTokenSuspendedAt: 'agentTokenSuspendedAt',
+    possibleReplacementOfDeviceId: 'possibleReplacementOfDeviceId',
     enrollmentIp: 'enrollment_ip',
+    createdAt: 'createdAt',
+    isEphemeral: 'devices.isEphemeral',
   },
   deviceHardware: { deviceId: 'deviceId', serialNumber: 'serialNumber' },
   deviceNetwork: { deviceId: 'deviceId', macAddress: 'macAddress' },
   organizations: { id: 'id', partnerId: 'partnerId' },
   partners: { id: 'id', maxDevices: 'maxDevices' },
+  supportSessions: {
+    id: 'supportSessions.id',
+    status: 'supportSessions.status',
+    hardExpiresAt: 'supportSessions.hardExpiresAt',
+    deviceId: 'supportSessions.deviceId',
+  },
 }));
 
 vi.mock('../../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
 }));
 
-vi.mock('../../services/enrollmentKeySecurity', () => ({
-  hashEnrollmentKey: vi.fn((k: string) => `hashed:${k}`),
-  hashEnrollmentKeyCandidates: vi.fn((k: string) => [`hashed:${k}`]),
-}));
+vi.mock('../../services/enrollmentKeySecurity', async () => {
+  // Dynamic import: vi.mock factories are hoisted above the file's imports.
+  const { createHash: sha } = await import('node:crypto');
+  return {
+    hashEnrollmentKey: vi.fn((k: string) => `hashed:${k}`),
+    hashEnrollmentKeyCandidates: vi.fn((k: string) => [`hashed:${k}`]),
+    // Real implementation, not a stub: the secret-comparison branches assert
+    // on actual digests, and stubbing would make the invalid-secret denials
+    // vacuous.
+    hashEnrollmentSecret: vi.fn((s: string) => sha('sha256').update(s).digest('hex')),
+  };
+});
 
 vi.mock('../../services/clientIp', () => ({
   getTrustedClientIp: vi.fn(() => '127.0.0.1'),
@@ -100,6 +119,10 @@ vi.mock('../../services/tenantStatus', () => ({
   getActiveOrgTenant: vi.fn(async () => ({ orgId: 'org-active', partnerId: 'partner-active' })),
 }));
 
+vi.mock('../../services/deviceIdentityCollisionAlert', () => ({
+  raiseDeviceIdentityCollisionAlert: vi.fn(async () => 'alert-1'),
+}));
+
 // ---------- imports after mocks ----------
 
 import { db, withSystemDbAccessContext } from '../../db';
@@ -109,6 +132,8 @@ import { getActiveOrgTenant } from '../../services/tenantStatus';
 import * as manifestSigning from '../../services/manifestSigning';
 import { getTrustedClientIp } from '../../services/clientIp';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
+import { raiseDeviceIdentityCollisionAlert } from '../../services/deviceIdentityCollisionAlert';
+import { devices as devicesTable, supportSessions as supportSessionsTable } from '../../db/schema';
 import { enrollmentRoutes } from './enrollment';
 
 function buildApp(): Hono {
@@ -137,14 +162,88 @@ function mockKeyLookup(row: Record<string, unknown> | undefined) {
   } as any);
 }
 
+// The org/partner lookups end in `.limit(1)`; the colliding-device lookup
+// (#2764) fetches EVERY match and ends in `.orderBy(devices.createdAt)`. One
+// thenable that answers to both shapes keeps every call site identical.
+function rowsResult(rows: Record<string, unknown>[]): any {
+  return Object.assign(Promise.resolve(rows), {
+    limit: vi.fn().mockResolvedValue(rows),
+    orderBy: vi.fn().mockResolvedValue(rows),
+  });
+}
+
 function mockSelectRows(rows: Record<string, unknown>[]) {
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn(() => ({
-      where: vi.fn(() => ({
-        limit: vi.fn().mockResolvedValue(rows),
-      })),
+      where: vi.fn(() => rowsResult(rows)),
     })),
   } as any);
+}
+
+interface TxSpy {
+  update: Mock<(table: unknown) => void>;
+  insert: Mock<(table: unknown) => void>;
+  /** values() passed to tx.insert(devices) — asserts the fresh-row payload. */
+  deviceInsertValues: Record<string, unknown>[];
+  /** Tables passed to tx.update(...) — used to prove the OLD row is untouched. */
+  updatedTables: unknown[];
+}
+
+/**
+ * Installs a db.transaction mock that records every table handed to
+ * tx.update()/tx.insert() and returns `insertedDevice` from the first
+ * tx.insert(devices).values().returning().
+ */
+function mockTransaction(insertedDevice: Record<string, unknown>, keyId = 'key-x'): TxSpy {
+  const spy: TxSpy = {
+    update: vi.fn(),
+    insert: vi.fn(),
+    deviceInsertValues: [],
+    updatedTables: [],
+  };
+
+  vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+    const fakeTx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ count: 0 }]),
+        }),
+      }),
+      update: vi.fn((table: unknown) => {
+        spy.update(table);
+        spy.updatedTables.push(table);
+        // The in-place re-enroll UPDATE(devices) returns the device row; the
+        // enrollment-key consume returns the claimed key id.
+        const returned = table === devicesTable ? insertedDevice : { id: keyId };
+        return {
+          set: vi.fn().mockReturnValue({
+            where: vi.fn(() => Object.assign(
+              Promise.resolve(undefined) as any,
+              { returning: vi.fn().mockResolvedValue([returned]) },
+            )),
+          }),
+        };
+      }),
+      insert: vi.fn((table: unknown) => {
+        spy.insert(table);
+        return {
+          values: vi.fn((values: Record<string, unknown>) => {
+            if (table === devicesTable) spy.deviceInsertValues.push(values);
+            return {
+              returning: vi.fn().mockResolvedValue([insertedDevice]),
+              onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+            };
+          }),
+        };
+      }),
+      delete: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      }),
+    };
+    return fn(fakeTx);
+  });
+
+  return spy;
 }
 
 async function enrollOk(): Promise<Record<string, unknown>> {
@@ -425,7 +524,20 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     expect(body.reason).toBe('enrollment_key_race_lost');
   });
 
-  it('denies hostname collision when the existing device token is absent and hardware identity conflicts', async () => {
+  // ---- #2764: hostname collision enrolls a FRESH row instead of 409 ----
+  //
+  // Matrix row 5 (active/offline existing row, no/invalid token): the machine
+  // structurally cannot hold the prior row's token after a reimage or a
+  // credential-losing uninstall, so the old 409 made the host permanently
+  // un-enrollable and rolled back the whole MSI install. Prevention value was
+  // near-nil anyway (hostname is self-attested). Replaced by DETECTION:
+  // fresh row + possibleReplacementOfDeviceId linkage + audit + operator alert.
+  //
+  // The invariant that makes this safe: enrollment NEVER writes to an existing
+  // device row. Every test below asserts tx.update() was never handed the
+  // devices table.
+
+  it('enrolls a fresh device row (201) on hostname collision when the existing device token is absent and hardware identity conflicts', async () => {
     mockKeyLookup({
       id: 'key-4',
       orgId: 'org-4',
@@ -436,18 +548,6 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
       usageCount: 0,
     });
 
-    vi.mocked(db.update).mockReturnValueOnce({
-      set: vi.fn(() => ({
-        where: vi.fn(() => ({
-          returning: vi.fn().mockResolvedValue([{
-            id: 'key-4',
-            orgId: 'org-4',
-            siteId: 'site-4',
-          }]),
-        })),
-      })),
-    } as any);
-
     mockSelectRows([{ partnerId: 'partner-4' }]);
     mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([{
@@ -456,7 +556,16 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
       agentTokenHash: 'existing-token-hash',
       previousTokenHash: null,
       previousTokenExpiresAt: null,
+      agentTokenSuspendedAt: null,
     }]);
+
+    const tx = mockTransaction({
+      id: 'device-collision-fresh',
+      orgId: 'org-4',
+      siteId: 'site-4',
+      hostname: 'host-1',
+    }, 'key-4');
+
     const resp = await buildApp().request('/agents/enroll', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -467,22 +576,48 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
       }),
     });
 
-    expect(resp.status).toBe(409);
-    const body = await resp.json();
-    expect(body.reason).toBe('hostname_collision_requires_existing_device_token');
+    expect(resp.status).toBe(201);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.deviceId).toBe('device-collision-fresh');
+    expect(body.deviceId).not.toBe('device-existing');
+
+    // (b) the fresh row carries the replacement linkage
+    expect(tx.deviceInsertValues).toHaveLength(1);
+    expect(tx.deviceInsertValues[0]).toMatchObject({
+      hostname: 'host-1',
+      possibleReplacementOfDeviceId: 'device-existing',
+    });
+
+    // (a) the OLD row is never written — no rename, no update, nothing.
+    expect(tx.updatedTables).not.toContain(devicesTable);
+    expect(db.update).not.toHaveBeenCalled();
+
+    // (c) success audit carries the reason + full colliding-id list
     expect(writeAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        resourceId: 'device-existing',
-        result: 'denied',
+        action: 'agent.enroll',
+        resourceId: 'device-collision-fresh',
+        details: expect.objectContaining({
+          reason: 'hostname_collision_enrolled_fresh_row',
+          possibleReplacementOfDeviceId: 'device-existing',
+          collidingDeviceIds: ['device-existing'],
+        }),
+      }),
+    );
+
+    // The removed 409's denied audit must be gone entirely.
+    expect(writeAuditEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
         details: expect.objectContaining({
           reason: 'hostname_collision_requires_existing_device_token',
         }),
-      })
+      }),
     );
   });
 
-  it('denies hostname collision even when self-attested hardware identity matches', async () => {
+  it('enrolls a fresh row on collision even when self-attested hardware identity matches (hardware never gates the branch)', async () => {
     mockKeyLookup({
       id: 'key-5',
       orgId: 'org-5',
@@ -493,18 +628,6 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
       usageCount: 0,
     });
 
-    vi.mocked(db.update).mockReturnValueOnce({
-      set: vi.fn(() => ({
-        where: vi.fn(() => ({
-          returning: vi.fn().mockResolvedValue([{
-            id: 'key-5',
-            orgId: 'org-5',
-            siteId: 'site-5',
-          }]),
-        })),
-      })),
-    } as any);
-
     mockSelectRows([{ partnerId: 'partner-5' }]);
     mockSelectRows([{ maxDevices: null }]);
     mockSelectRows([{
@@ -513,7 +636,15 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
       agentTokenHash: 'existing-token-hash',
       previousTokenHash: null,
       previousTokenExpiresAt: null,
+      agentTokenSuspendedAt: null,
     }]);
+
+    const tx = mockTransaction({
+      id: 'device-hw-match-fresh',
+      orgId: 'org-5',
+      siteId: 'site-5',
+      hostname: 'host-1',
+    }, 'key-5');
 
     const resp = await buildApp().request('/agents/enroll', {
       method: 'POST',
@@ -525,9 +656,640 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
       }),
     });
 
-    expect(resp.status).toBe(409);
-    const body = await resp.json();
-    expect(body.reason).toBe('hostname_collision_requires_existing_device_token');
+    expect(resp.status).toBe(201);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.deviceId).toBe('device-hw-match-fresh');
+    expect(tx.updatedTables).not.toContain(devicesTable);
+  });
+
+  it('raises the identity-collision alert only when the colliding row is currently online', async () => {
+    mockKeyLookup({
+      id: 'key-alert-on',
+      orgId: 'org-alert-on',
+      siteId: 'site-alert-on',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-alert-on' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([{
+      id: 'device-online-collider',
+      status: 'online',
+      agentTokenHash: 'not-ours',
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      agentTokenSuspendedAt: null,
+    }]);
+
+    mockTransaction({
+      id: 'device-alert-fresh',
+      orgId: 'org-alert-on',
+      siteId: 'site-alert-on',
+      hostname: 'host-1',
+    }, 'key-alert-on');
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+    expect(raiseDeviceIdentityCollisionAlert).toHaveBeenCalledWith({
+      orgId: 'org-alert-on',
+      siteId: 'site-alert-on',
+      hostname: 'host-1',
+      newDeviceId: 'device-alert-fresh',
+      existingDeviceId: 'device-online-collider',
+      collidingDeviceIds: ['device-online-collider'],
+    });
+  });
+
+  it('does not raise the identity-collision alert when the colliding row is offline (stale row, not a lookalike)', async () => {
+    mockKeyLookup({
+      id: 'key-alert-off',
+      orgId: 'org-alert-off',
+      siteId: 'site-alert-off',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-alert-off' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([{
+      id: 'device-offline-collider',
+      status: 'offline',
+      agentTokenHash: 'not-ours',
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      agentTokenSuspendedAt: null,
+    }]);
+
+    mockTransaction({
+      id: 'device-alert-off-fresh',
+      orgId: 'org-alert-off',
+      siteId: 'site-alert-off',
+      hostname: 'host-1',
+    }, 'key-alert-off');
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+    expect(raiseDeviceIdentityCollisionAlert).not.toHaveBeenCalled();
+  });
+
+  it('an alert failure never fails the enrollment (best-effort)', async () => {
+    vi.mocked(raiseDeviceIdentityCollisionAlert).mockRejectedValueOnce(new Error('alerting down'));
+
+    mockKeyLookup({
+      id: 'key-alert-fail',
+      orgId: 'org-alert-fail',
+      siteId: 'site-alert-fail',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-alert-fail' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([{
+      id: 'device-collider',
+      status: 'online',
+      agentTokenHash: 'not-ours',
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      agentTokenSuspendedAt: null,
+    }]);
+
+    mockTransaction({
+      id: 'device-alert-fail-fresh',
+      orgId: 'org-alert-fail',
+      siteId: 'site-alert-fail',
+      hostname: 'host-1',
+    }, 'key-alert-fail');
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+  });
+
+  it('links the FIRST ONLINE colliding row and audits every colliding id', async () => {
+    mockKeyLookup({
+      id: 'key-multi',
+      orgId: 'org-multi',
+      siteId: 'site-multi',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-multi' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    // Oldest-first. The oldest is offline; the online one is the live
+    // lookalike the operator needs pointed at.
+    mockSelectRows([
+      {
+        id: 'device-old-offline',
+        status: 'offline',
+        agentTokenHash: 'hash-a',
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        agentTokenSuspendedAt: null,
+      },
+      {
+        id: 'device-newer-online',
+        status: 'online',
+        agentTokenHash: 'hash-b',
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        agentTokenSuspendedAt: null,
+      },
+    ]);
+
+    const tx = mockTransaction({
+      id: 'device-multi-fresh',
+      orgId: 'org-multi',
+      siteId: 'site-multi',
+      hostname: 'host-1',
+    }, 'key-multi');
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+    expect(tx.deviceInsertValues[0]).toMatchObject({
+      possibleReplacementOfDeviceId: 'device-newer-online',
+    });
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        resourceId: 'device-multi-fresh',
+        details: expect.objectContaining({
+          reason: 'hostname_collision_enrolled_fresh_row',
+          possibleReplacementOfDeviceId: 'device-newer-online',
+          collidingDeviceIds: ['device-old-offline', 'device-newer-online'],
+        }),
+      }),
+    );
+    expect(raiseDeviceIdentityCollisionAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        existingDeviceId: 'device-newer-online',
+        collidingDeviceIds: ['device-old-offline', 'device-newer-online'],
+      }),
+    );
+  });
+
+  it('matrix row 6: a suspended token on an ACTIVE row does not block a fresh enrollment', async () => {
+    // Suspension binds the OLD row's credential; it is not a claim over the
+    // hostname. Only the decommissioned+suspended combination stays a refusal
+    // (deliberate ops alarm — pinned separately below).
+    mockKeyLookup({
+      id: 'key-susp-active',
+      orgId: 'org-susp-active',
+      siteId: 'site-susp-active',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-susp-active' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([{
+      id: 'device-susp-active',
+      status: 'online',
+      agentTokenHash: 'old-hash',
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      agentTokenSuspendedAt: new Date('2026-05-25T12:00:00Z'),
+    }]);
+
+    const tx = mockTransaction({
+      id: 'device-susp-active-fresh',
+      orgId: 'org-susp-active',
+      siteId: 'site-susp-active',
+      hostname: 'host-1',
+    }, 'key-susp-active');
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.deviceId).toBe('device-susp-active-fresh');
+    expect(tx.deviceInsertValues[0]).toMatchObject({
+      possibleReplacementOfDeviceId: 'device-susp-active',
+    });
+    expect(tx.updatedTables).not.toContain(devicesTable);
+    expect(writeAuditEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({
+          reason: 'existing_decommissioned_row_has_suspended_token',
+        }),
+      }),
+    );
+  });
+
+  it('matrix row 4: a valid existing-device token still re-enrolls the SAME row in place (no fresh row)', async () => {
+    const validToken = 'valid-reenroll-token';
+    const validHash = createHash('sha256').update(validToken).digest('hex');
+
+    mockKeyLookup({
+      id: 'key-inplace',
+      orgId: 'org-inplace',
+      siteId: 'site-inplace',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-inplace' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([{
+      id: 'device-inplace',
+      status: 'offline',
+      agentTokenHash: validHash,
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      agentTokenSuspendedAt: null,
+    }]);
+
+    const tx = mockTransaction({
+      id: 'device-inplace',
+      orgId: 'org-inplace',
+      siteId: 'site-inplace',
+      hostname: 'host-1',
+    }, 'key-inplace');
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-agent-reenrollment-token': validToken,
+      },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.deviceId).toBe('device-inplace');
+    // In-place re-enroll: the devices UPDATE is the known, allowed write.
+    expect(tx.updatedTables).toContain(devicesTable);
+    expect(tx.deviceInsertValues).toHaveLength(0);
+    expect(raiseDeviceIdentityCollisionAlert).not.toHaveBeenCalled();
+  });
+
+  it('idempotency: a token matching a LATER colliding row re-enrolls that row instead of stacking another fresh row', async () => {
+    // Without matching the presented credential against every colliding row,
+    // each reinstall would mint yet another row (row 1 checked, no match,
+    // fresh row) — an unbounded device-row leak on the very path this
+    // feature exists to make idempotent.
+    const validToken = 'second-row-token';
+    const validHash = createHash('sha256').update(validToken).digest('hex');
+
+    mockKeyLookup({
+      id: 'key-stack',
+      orgId: 'org-stack',
+      siteId: 'site-stack',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-stack' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([
+      {
+        id: 'device-stale-first',
+        status: 'online',
+        agentTokenHash: 'someone-elses',
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        agentTokenSuspendedAt: null,
+      },
+      {
+        id: 'device-ours-second',
+        status: 'offline',
+        agentTokenHash: validHash,
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        agentTokenSuspendedAt: null,
+      },
+    ]);
+
+    const tx = mockTransaction({
+      id: 'device-ours-second',
+      orgId: 'org-stack',
+      siteId: 'site-stack',
+      hostname: 'host-1',
+    }, 'key-stack');
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-agent-reenrollment-token': validToken,
+      },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.deviceId).toBe('device-ours-second');
+    expect(tx.deviceInsertValues).toHaveLength(0);
+  });
+
+  it('a DECOMMISSIONED collider never shadows a live one: collision path fires, not decom-bypass', async () => {
+    // Sequence that made this reachable: a collision minted row2; the operator
+    // then decommissioned row1; row2's machine reinstalls with no token. The
+    // oldest collider is row1 (decommissioned), but the enrollment is plainly
+    // a replacement of the LIVE row2 — taking the decom bypass here would skip
+    // linkage, the collision audit and the alert entirely.
+    mockKeyLookup({
+      id: 'key-decom-shadow',
+      orgId: 'org-decom-shadow',
+      siteId: 'site-decom-shadow',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-decom-shadow' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([
+      {
+        id: 'device-decommissioned-oldest',
+        status: 'decommissioned',
+        agentTokenHash: 'dead-hash',
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        agentTokenSuspendedAt: null,
+      },
+      {
+        id: 'device-live-offline',
+        status: 'offline',
+        agentTokenHash: 'live-hash',
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        agentTokenSuspendedAt: null,
+      },
+    ]);
+
+    const tx = mockTransaction({
+      id: 'device-decom-shadow-fresh',
+      orgId: 'org-decom-shadow',
+      siteId: 'site-decom-shadow',
+      hostname: 'host-1',
+    }, 'key-decom-shadow');
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+    // Linked to the LIVE row, not the decommissioned one.
+    expect(tx.deviceInsertValues[0]).toMatchObject({
+      possibleReplacementOfDeviceId: 'device-live-offline',
+    });
+    // No decom-bypass: the prior row was NOT renamed.
+    expect(tx.updatedTables).not.toContain(devicesTable);
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        resourceId: 'device-decom-shadow-fresh',
+        details: expect.objectContaining({
+          reason: 'hostname_collision_enrolled_fresh_row',
+          possibleReplacementOfDeviceId: 'device-live-offline',
+          collidingDeviceIds: ['device-decommissioned-oldest', 'device-live-offline'],
+        }),
+      }),
+    );
+    expect(writeAuditEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({
+          reason: 'decommissioned_row_reenrolled_fresh_id',
+        }),
+      }),
+    );
+  });
+
+  it('a decommissioned+SUSPENDED collider alongside a live one does not resurrect the un-enrollable 409', async () => {
+    // Same shape as above but the dead row also carries a probe suspension.
+    // Selecting it would return `existing_decommissioned_row_has_suspended_token`
+    // and make a perfectly healthy host permanently un-enrollable — precisely
+    // the failure this whole change exists to remove. The 409 stays reachable
+    // only when EVERY collider is decommissioned (pinned separately below).
+    mockKeyLookup({
+      id: 'key-decom-susp-shadow',
+      orgId: 'org-decom-susp-shadow',
+      siteId: 'site-decom-susp-shadow',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-decom-susp-shadow' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([
+      {
+        id: 'device-decom-suspended',
+        status: 'decommissioned',
+        agentTokenHash: 'dead-hash',
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        agentTokenSuspendedAt: new Date('2026-05-25T12:00:00Z'),
+      },
+      {
+        id: 'device-live-online',
+        status: 'online',
+        agentTokenHash: 'live-hash',
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        agentTokenSuspendedAt: null,
+      },
+    ]);
+
+    const tx = mockTransaction({
+      id: 'device-decom-susp-fresh',
+      orgId: 'org-decom-susp-shadow',
+      siteId: 'site-decom-susp-shadow',
+      hostname: 'host-1',
+    }, 'key-decom-susp-shadow');
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+    expect(tx.deviceInsertValues[0]).toMatchObject({
+      possibleReplacementOfDeviceId: 'device-live-online',
+    });
+    expect(writeAuditEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({
+          reason: 'existing_decommissioned_row_has_suspended_token',
+        }),
+      }),
+    );
+  });
+
+  it('an unauthenticated enrollment is refused when ANY collider is quarantined', async () => {
+    // Containment must not be sidestepped by the collision path: without a
+    // credential there is nothing distinguishing this agent from the
+    // quarantined row itself, so any quarantined collider blocks.
+    mockKeyLookup({
+      id: 'key-q-multi',
+      orgId: 'org-q-multi',
+      siteId: 'site-q-multi',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-q-multi' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([
+      {
+        id: 'device-q-clean-oldest',
+        status: 'offline',
+        agentTokenHash: 'clean-hash',
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        agentTokenSuspendedAt: null,
+      },
+      {
+        id: 'device-q-quarantined',
+        status: 'quarantined',
+        agentTokenHash: 'quarantined-hash',
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        agentTokenSuspendedAt: null,
+      },
+    ]);
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(403);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.reason).toBe('device_quarantined');
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        resourceId: 'device-q-quarantined',
+        result: 'denied',
+        details: expect.objectContaining({
+          reason: 'quarantined_device_reenroll_refused',
+        }),
+      }),
+    );
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('a quarantined SIBLING does not block an agent that authenticated to its own clean row', async () => {
+    // The agent proved possession of a non-quarantined row's credential —
+    // quarantine of some other row sharing the hostname is not a claim over
+    // this device, and refusing here would break re-enrollment idempotency.
+    const validToken = 'clean-row-token';
+    const validHash = createHash('sha256').update(validToken).digest('hex');
+
+    mockKeyLookup({
+      id: 'key-q-sibling',
+      orgId: 'org-q-sibling',
+      siteId: 'site-q-sibling',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-q-sibling' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([
+      {
+        id: 'device-q-sibling-quarantined',
+        status: 'quarantined',
+        agentTokenHash: 'not-ours',
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        agentTokenSuspendedAt: null,
+      },
+      {
+        id: 'device-q-sibling-clean',
+        status: 'offline',
+        agentTokenHash: validHash,
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        agentTokenSuspendedAt: null,
+      },
+    ]);
+
+    const tx = mockTransaction({
+      id: 'device-q-sibling-clean',
+      orgId: 'org-q-sibling',
+      siteId: 'site-q-sibling',
+      hostname: 'host-1',
+    }, 'key-q-sibling');
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-agent-reenrollment-token': validToken,
+      },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.deviceId).toBe('device-q-sibling-clean');
+    // In-place re-enroll of the agent's own row; no fresh row minted.
+    expect(tx.updatedTables).toContain(devicesTable);
+    expect(tx.deviceInsertValues).toHaveLength(0);
+    expect(writeAuditEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({
+          reason: 'quarantined_device_reenroll_refused',
+        }),
+      }),
+    );
   });
 
   it('allows re-enrollment without the existing-device token when the existing row is decommissioned (mints a fresh device.id — #914)', async () => {
@@ -689,9 +1451,10 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     );
   });
 
-  it('regression: status=offline (not decommissioned) still 409s without an existing-device token', async () => {
-    // Defense against future refactors that might widen the decommissioned
-    // bypass — make sure 'offline' rows continue to require the prior token.
+  it('status=offline (not decommissioned) enrolls a fresh row WITHOUT touching or renaming the old one (unlike decom-bypass)', async () => {
+    // The decom-bypass renames the prior row to free the hostname. The
+    // collision path must NOT copy that: both rows keep the hostname and
+    // coexist until a human decides via the review surface.
     mockKeyLookup({
       id: 'key-offline',
       orgId: 'org-offline',
@@ -701,18 +1464,6 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
       maxUsage: 10,
       usageCount: 0,
     });
-
-    vi.mocked(db.update).mockReturnValueOnce({
-      set: vi.fn(() => ({
-        where: vi.fn(() => ({
-          returning: vi.fn().mockResolvedValue([{
-            id: 'key-offline',
-            orgId: 'org-offline',
-            siteId: 'site-offline',
-          }]),
-        })),
-      })),
-    } as any);
 
     mockSelectRows([{ partnerId: 'partner-offline' }]);
     mockSelectRows([{ maxDevices: null }]);
@@ -724,7 +1475,15 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
       agentTokenHash: 'old-offline-hash',
       previousTokenHash: null,
       previousTokenExpiresAt: null,
+      agentTokenSuspendedAt: null,
     }]);
+
+    const tx = mockTransaction({
+      id: 'device-offline-fresh',
+      orgId: 'org-offline',
+      siteId: 'site-offline',
+      hostname: 'host-1',
+    }, 'key-offline');
 
     const resp = await buildApp().request('/agents/enroll', {
       method: 'POST',
@@ -732,9 +1491,16 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
       body: JSON.stringify(baseEnrollBody),
     });
 
-    expect(resp.status).toBe(409);
-    const body = await resp.json();
-    expect(body.reason).toBe('hostname_collision_requires_existing_device_token');
+    expect(resp.status).toBe(201);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.deviceId).toBe('device-offline-fresh');
+    expect(tx.deviceInsertValues[0]).toMatchObject({
+      hostname: 'host-1',
+      possibleReplacementOfDeviceId: 'device-offline-existing',
+    });
+    // No rename, no update of any kind against devices.
+    expect(tx.updatedTables).not.toContain(devicesTable);
+    expect(db.update).not.toHaveBeenCalled();
   });
 
   it('denies re-enrollment when the existing row is decommissioned AND its token was probe-suspended', async () => {
@@ -1513,11 +2279,11 @@ describe('POST /agents/enroll — enrollment key not consumed on failed device i
     process.env.NODE_ENV = 'test';
   });
 
-  it('does NOT call db.update(enrollment_keys) on the hostname-collision 409 path', async () => {
-    // maxUsage: 1, usageCount: 0 — a single-use key. The hostname-collision
-    // path returns 409 BEFORE the transaction opens. The buggy code path
-    // would have bumped usage_count to 1 here (now permanently exhausted).
-    // The fix never touches the row.
+  it('consumes the key only inside the transaction on the hostname-collision fresh-row path (#2764)', async () => {
+    // maxUsage: 1, usageCount: 0 — a single-use key. Pre-#2764 the collision
+    // returned 409 before the transaction opened; post-#2764 it enrolls a
+    // fresh row, so the key IS legitimately consumed — but still only by the
+    // in-transaction update, never by a standalone pre-insert db.update.
     mockKeyLookup({
       id: 'key-once',
       orgId: 'org-once',
@@ -1530,14 +2296,22 @@ describe('POST /agents/enroll — enrollment key not consumed on failed device i
 
     mockSelectRows([{ partnerId: 'partner-once' }]);
     mockSelectRows([{ maxDevices: null }]);
-    // Existing device row in a status that triggers a hostname-collision 409
+    // Existing device row that collides on hostname
     mockSelectRows([{
       id: 'device-collision',
       status: 'online',
       agentTokenHash: 'someone-elses-token',
       previousTokenHash: null,
       previousTokenExpiresAt: null,
+      agentTokenSuspendedAt: null,
     }]);
+
+    const tx = mockTransaction({
+      id: 'device-collision-fresh-once',
+      orgId: 'org-once',
+      siteId: 'site-once',
+      hostname: 'host-1',
+    }, 'key-once');
 
     const resp = await buildApp().request('/agents/enroll', {
       method: 'POST',
@@ -1545,16 +2319,12 @@ describe('POST /agents/enroll — enrollment key not consumed on failed device i
       body: JSON.stringify(baseEnrollBody),
     });
 
-    expect(resp.status).toBe(409);
-    const body = await resp.json();
-    expect(body.reason).toBe('hostname_collision_requires_existing_device_token');
-
-    // The fix: db.update was never invoked (no standalone pre-insert
-    // increment, no transaction opened). Pre-fix, db.update would have
-    // been called exactly once to bump usage_count.
+    expect(resp.status).toBe(201);
+    // No standalone pre-insert increment.
     expect(db.update).not.toHaveBeenCalled();
-    // And no transaction was opened, so the in-tx consume never ran either.
-    expect(db.transaction).not.toHaveBeenCalled();
+    // The only in-tx update is the enrollment-key consume — never devices.
+    expect(tx.update).toHaveBeenCalledTimes(1);
+    expect(tx.updatedTables).not.toContain(devicesTable);
   });
 
   it('does NOT call db.update(enrollment_keys) on the suspended-decom-token 409 path', async () => {
@@ -2005,5 +2775,235 @@ describe('POST /agents/enroll — enrollment IP persistence', () => {
     expect(deviceInsertValues).toHaveBeenCalledWith(
       expect.objectContaining({ enrollmentIp: null }),
     );
+  });
+});
+
+describe('POST /agents/enroll — Quick Support ephemeral enrollment', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    process.env.NODE_ENV = 'test';
+  });
+
+  interface SupportTxSpy {
+    /** values() handed to tx.insert(devices). */
+    deviceInsertValues: Record<string, unknown>[];
+    /** Every tx.update(...) as [table, setPayload]. */
+    updates: Array<{ table: unknown; values: Record<string, unknown> }>;
+    /** where() conditions handed to the in-transaction licence count. */
+    countWhere: unknown[];
+  }
+
+  function mockSupportTransaction(countAtCap = 0): SupportTxSpy {
+    const spy: SupportTxSpy = { deviceInsertValues: [], updates: [], countWhere: [] };
+
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+      const fakeTx = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn((cond: unknown) => {
+              spy.countWhere.push(cond);
+              return Promise.resolve([{ count: countAtCap }]);
+            }),
+          }),
+        }),
+        insert: vi.fn((table: unknown) => ({
+          values: vi.fn((values: Record<string, unknown>) => {
+            if (table === devicesTable) spy.deviceInsertValues.push(values);
+            return {
+              returning: vi.fn().mockResolvedValue([
+                { id: 'device-support', orgId: 'org-support', siteId: 'site-support', hostname: 'host-1' },
+              ]),
+              onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+            };
+          }),
+        })),
+        update: vi.fn((table: unknown) => ({
+          set: vi.fn((values: Record<string, unknown>) => {
+            spy.updates.push({ table, values });
+            return {
+              where: vi.fn(() => Object.assign(
+                Promise.resolve(undefined) as any,
+                { returning: vi.fn().mockResolvedValue([{ id: 'key-support' }]) },
+              )),
+            };
+          }),
+        })),
+        delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+      };
+      return fn(fakeTx);
+    });
+
+    return spy;
+  }
+
+  /**
+   * The two db.select calls a REJECTED support enrollment consumes: the key
+   * lookup and the support-session lookup. Queueing only what the handler
+   * actually reads matters — `mockReturnValueOnce` entries survive
+   * `clearAllMocks`, so an over-queued rejection test corrupts the next one.
+   * `session: null` stands in for a purged session row.
+   */
+  function arrangeSupportKey(session: { status: string; hardExpiresAt: Date } | null) {
+    mockKeyLookup({
+      id: 'key-support',
+      orgId: 'org-support',
+      siteId: 'site-support',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 1,
+      usageCount: 0,
+      supportSessionId: 'session-1',
+    });
+    mockSelectRows(session ? [session] : []); // support-session lookup
+  }
+
+  /** Full select sequence for an accepted support enrollment. */
+  function arrangeSupportEnroll(
+    session: { status: string; hardExpiresAt: Date },
+    maxDevices: number | null = null,
+  ) {
+    arrangeSupportKey(session);
+    mockSelectRows([{ partnerId: 'partner-support' }]); // org lookup
+    mockSelectRows([{ maxDevices }]); // partner.maxDevices
+    mockSelectRows([]); // no colliding device
+  }
+
+  function enroll() {
+    return buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+  }
+
+  it('marks the device ephemeral and binds it to the claimed session in the same transaction', async () => {
+    arrangeSupportEnroll({ status: 'claimed', hardExpiresAt: new Date(Date.now() + 3600_000) });
+    const spy = mockSupportTransaction();
+
+    const resp = await enroll();
+
+    expect(resp.status).toBe(201);
+    expect(spy.deviceInsertValues[0]).toEqual(
+      expect.objectContaining({ isEphemeral: true }),
+    );
+    // The session must learn its device id, or the technician's session never
+    // becomes connectable.
+    expect(spy.updates).toContainEqual({
+      table: supportSessionsTable,
+      values: { deviceId: 'device-support' },
+    });
+  });
+
+  it.each(['ended', 'expired', 'pending'])(
+    'rejects a support key whose session is %s, with the generic expired-key shape',
+    async (status) => {
+      arrangeSupportKey({ status, hardExpiresAt: new Date(Date.now() + 3600_000) });
+      const spy = mockSupportTransaction();
+
+      const resp = await enroll();
+
+      expect(resp.status).toBe(401);
+      const body = (await resp.json()) as Record<string, unknown>;
+      expect(body.reason).toBe('enrollment_key_expired');
+      expect(spy.deviceInsertValues).toHaveLength(0);
+      expect(writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          result: 'denied',
+          details: expect.objectContaining({
+            reason: 'support_session_not_claimable',
+            supportSessionId: 'session-1',
+            sessionStatus: status,
+          }),
+        }),
+      );
+    },
+  );
+
+  it('rejects a claimed session that has passed its hard expiry', async () => {
+    arrangeSupportKey({ status: 'claimed', hardExpiresAt: new Date(Date.now() - 1_000) });
+    const spy = mockSupportTransaction();
+
+    const resp = await enroll();
+
+    expect(resp.status).toBe(401);
+    expect(spy.deviceInsertValues).toHaveLength(0);
+  });
+
+  it('rejects a support key whose session row no longer exists', async () => {
+    arrangeSupportKey(null);
+    const spy = mockSupportTransaction();
+
+    const resp = await enroll();
+
+    expect(resp.status).toBe(401);
+    expect(spy.deviceInsertValues).toHaveLength(0);
+  });
+
+  it('enrolls even when the partner is at its device limit — a support session is not a licensed endpoint', async () => {
+    arrangeSupportEnroll({ status: 'claimed', hardExpiresAt: new Date(Date.now() + 3600_000) }, 2);
+    const spy = mockSupportTransaction(2); // fleet already at the cap
+
+    const resp = await enroll();
+
+    expect(resp.status).toBe(201);
+    // The cap block is skipped wholesale, so the count query never runs.
+    expect(spy.countWhere).toHaveLength(0);
+    expect(spy.deviceInsertValues[0]).toEqual(
+      expect.objectContaining({ isEphemeral: true }),
+    );
+  });
+
+  it('leaves an ordinary enrollment non-ephemeral and touches no support session', async () => {
+    mockKeyLookup({
+      id: 'key-normal',
+      orgId: 'org-normal',
+      siteId: 'site-normal',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+      supportSessionId: null,
+    });
+    mockSelectRows([{ partnerId: 'partner-normal' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([]);
+    const spy = mockSupportTransaction();
+
+    const resp = await enroll();
+
+    expect(resp.status).toBe(201);
+    expect(spy.deviceInsertValues[0]).toEqual(
+      expect.objectContaining({ isEphemeral: false }),
+    );
+    expect(spy.updates.some((u) => u.table === supportSessionsTable)).toBe(false);
+  });
+
+  it('excludes ephemeral rows from the partner licence count', async () => {
+    mockKeyLookup({
+      id: 'key-count',
+      orgId: 'org-count',
+      siteId: 'site-count',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+      supportSessionId: null,
+    });
+    mockSelectRows([{ partnerId: 'partner-count' }]);
+    mockSelectRows([{ maxDevices: 5 }]); // cap set, so the count actually runs
+    mockSelectRows([]);
+    const spy = mockSupportTransaction(1);
+
+    const resp = await enroll();
+
+    expect(resp.status).toBe(201);
+    // [0] is the partnerOrgIds subquery's where, [1] the fleet count itself.
+    expect(spy.countWhere).toHaveLength(2);
+    // The mocked schema names the column 'devices.isEphemeral', so its presence
+    // in the serialized condition proves the exclusion reached the SQL — a
+    // regression here silently re-bills every Quick Support session.
+    expect(JSON.stringify(spy.countWhere[1])).toContain('devices.isEphemeral');
   });
 });
