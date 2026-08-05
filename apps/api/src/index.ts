@@ -1035,7 +1035,17 @@ api.use('/mobile/*', mobileDeviceBlockedMiddleware);
 api.route('/mobile', mobileRoutes);
 api.route('/mobile/approvals', approvalRoutes);
 api.route('/action-intents', actionIntentsRoutes);
+// /authenticator is where the phone enrols its approver key, so it must be
+// behind the same check — a revoked handset registering a signing key is
+// exactly the lost-phone case the block is for. It is NOT under /mobile/*,
+// so it needs its own mount (#2913). Web/MCP callers sail through: the
+// middleware only acts on a device id, which only mobile clients ever carry.
+api.use('/authenticator/*', mobileDeviceBlockedMiddleware);
 api.route('/authenticator', authenticatorRoutes);
+// Same reasoning as /authenticator/*: /me/approver-devices lets a caller
+// enumerate and REVOKE the user's approver devices, so a revoked handset
+// holding a still-valid token could knock out its owner's second factor.
+api.use('/me/approver-devices/*', mobileDeviceBlockedMiddleware);
 api.route('/me/approver-devices', approverDevicesRoutes);
 api.route('/', lifecycleRoutes);
 api.route('/', lifecycleAdminRoutes);

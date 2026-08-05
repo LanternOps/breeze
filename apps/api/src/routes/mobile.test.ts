@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
-import { decodeCursor, encodeCursor, mobileRoutes } from './mobile';
+import {
+  decodeCursor,
+  encodeCursor,
+  mobileRoutes,
+  _resetRegistrationFallbackReportsForTests
+} from './mobile';
 
 // Partial-mock drizzle-orm so `inArray` is a spy while every other operator
 // (and/eq/sql/...) stays real. The /summary site-narrowing tests assert that
@@ -15,12 +20,23 @@ vi.mock('drizzle-orm', async (importOriginal) => {
   };
 });
 
-const { publishEventMock, setCooldownMock, emitAlertStateFeedbackMock, rateLimitState, authState } = vi.hoisted(() => ({
+const {
+  publishEventMock,
+  setCooldownMock,
+  emitAlertStateFeedbackMock,
+  writeRouteAuditMock,
+  rateLimitState,
+  authState
+} = vi.hoisted(() => ({
   publishEventMock: vi.fn().mockResolvedValue('event-1'),
   setCooldownMock: vi.fn().mockResolvedValue(undefined),
   emitAlertStateFeedbackMock: vi.fn().mockResolvedValue(undefined),
+  writeRouteAuditMock: vi.fn(),
   rateLimitState: { allowed: true },
-  authState: { permissions: undefined as { allowedSiteIds?: string[] } | undefined }
+  authState: {
+    permissions: undefined as { allowedSiteIds?: string[] } | undefined,
+    token: undefined as { mdid?: string } | undefined
+  }
 }));
 
 vi.mock('../db', () => ({
@@ -28,7 +44,8 @@ vi.mock('../db', () => ({
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
-    delete: vi.fn()
+    delete: vi.fn(),
+    transaction: vi.fn()
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
@@ -53,7 +70,8 @@ vi.mock('../middleware/auth', () => ({
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
       orgId: 'org-123',
-      partnerId: 'partner-123'
+      partnerId: 'partner-123',
+      token: authState.token ?? {}
     });
     // NOTE: authMiddleware does NOT populate `permissions` in production — only
     // requirePermission does. Setting it here would mask a route that relies on
@@ -71,6 +89,13 @@ vi.mock('../middleware/auth', () => ({
 
 vi.mock('../services/eventBus', () => ({
   publishEvent: publishEventMock
+}));
+
+// Partial-mock: auditEvents re-exports helpers that agentWs.ts evaluates at
+// module scope, so a bare factory drops them and the import chain dies.
+vi.mock('../services/auditEvents', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/auditEvents')>()),
+  writeRouteAudit: writeRouteAuditMock
 }));
 
 vi.mock('../services/alertCooldown', () => ({
@@ -92,7 +117,7 @@ vi.mock('../middleware/userRateLimit', () => ({
 
 import { db } from '../db';
 import { inArray } from 'drizzle-orm';
-import { devices, alerts } from '../db/schema';
+import { devices, alerts, mobileDevices } from '../db/schema';
 import { authMiddleware, requirePermission } from '../middleware/auth';
 
 const mockSelectLimitChain = (result: unknown) => ({
@@ -202,7 +227,10 @@ describe('mobile routes', () => {
     vi.mocked(db.update).mockReset();
     vi.mocked(db.delete).mockReset();
     authState.permissions = undefined;
+    authState.token = undefined;
     rateLimitState.allowed = true;
+    vi.mocked(db.transaction).mockReset();
+    _resetRegistrationFallbackReportsForTests();
     app = new Hono();
     app.route('/mobile', mobileRoutes);
   });
@@ -234,6 +262,204 @@ describe('mobile routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+    });
+
+    // #2913: the row must be keyed on the phone's per-install id (the header
+    // the app already sends), otherwise mobileDeviceBlockedMiddleware — which
+    // looks that id up — can never match and "block this phone" is inert.
+    describe('installation-id keying (#2913)', () => {
+      const INSTALL = 'install-uuid-abc';
+
+      const registerWithHeader = (app: Hono) =>
+        app.request('/mobile/notifications/register', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-breeze-mobile-device-id': INSTALL
+          },
+          body: JSON.stringify({ token: 'apns-token-1', platform: 'ios' })
+        });
+
+      it('inserts under the installation id, not the push-token hash', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectLimitChain([]) as any)  // no installation-id row
+          .mockReturnValueOnce(mockSelectLimitChain([]) as any); // no legacy row to adopt
+        const values = vi.fn().mockReturnValue({
+          onConflictDoUpdate: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'mobile-1', deviceId: INSTALL, platform: 'ios' }])
+          })
+        });
+        vi.mocked(db.insert).mockReturnValue({ values } as any);
+
+        const res = await registerWithHeader(app);
+
+        expect(res.status).toBe(200);
+        expect(values).toHaveBeenCalledWith(expect.objectContaining({ deviceId: INSTALL }));
+      });
+
+      it('adopts the existing push-derived row in place instead of orphaning it', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectLimitChain([]) as any)
+          .mockReturnValueOnce(
+            mockSelectLimitChain([
+              { id: 'row-legacy', userId: 'user-123', status: 'active', apnsToken: null, fcmToken: null }
+            ]) as any
+          );
+        const set = vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'row-legacy', deviceId: INSTALL, platform: 'ios' }])
+          })
+        });
+        // The adopt UPDATE runs in its own nested transaction (SAVEPOINT) so a
+        // 23505 cannot abort the request-wide transaction opened by authMiddleware.
+        vi.mocked(db.transaction).mockImplementation(async (cb: any) => cb({ update: () => ({ set }) }));
+
+        const res = await registerWithHeader(app);
+
+        expect(res.status).toBe(200);
+        // Re-keyed in place: the uuid PK (and every FK pointing at it) survives.
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({ deviceId: INSTALL }));
+        // No second mobile_devices row: the only inserts are audit writes.
+        expect(
+          vi.mocked(db.insert).mock.calls.some(([table]) => table === mobileDevices)
+        ).toBe(false);
+      });
+
+      it('parks another user ACTIVE row aside and strips its push tokens', async () => {
+        // Matching APNs token: the OS mints it per app install, so this proves
+        // the caller really is on the handset that owns the row.
+        vi.mocked(db.select).mockReturnValueOnce(
+          mockSelectLimitChain([
+            { id: 'row-other', userId: 'user-other', status: 'active', apnsToken: 'apns-token-1', fcmToken: null }
+          ]) as any
+        );
+        const displaceSet = vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'row-other' }])
+          })
+        });
+        const tx = {
+          update: vi.fn().mockReturnValue({ set: displaceSet }),
+          insert: vi.fn().mockReturnValue(
+            mockInsertReturning([{ id: 'mobile-2', deviceId: INSTALL, platform: 'ios' }])
+          )
+        };
+        vi.mocked(db.transaction).mockImplementation(async (cb: any) => cb(tx));
+
+        const res = await registerWithHeader(app);
+
+        expect(res.status).toBe(200);
+        const displaced = displaceSet.mock.calls[0]?.[0] as Record<string, unknown>;
+        expect((displaced.deviceId as string).startsWith(`${INSTALL}-`)).toBe(true);
+        // The displaced row holds the SAME OS-minted token the caller just
+        // submitted — leaving it would fan the previous user's notifications
+        // out to the new user's phone.
+        expect(displaced).toMatchObject({
+          apnsToken: null,
+          fcmToken: null,
+          notificationsEnabled: false
+        });
+        // Re-keying another account's row is never an unrecorded side effect.
+        expect(writeRouteAuditMock.mock.calls.at(-1)?.[1]?.details).toMatchObject({
+          displacedMobileDeviceId: 'row-other'
+        });
+      });
+
+      it('does not claim a displacement when the salting UPDATE matched no row', async () => {
+        // TOCTOU: the incumbent can be blocked, deleted or re-keyed between
+        // planMobileDeviceId and the transaction. Auditing a displacement —
+        // and a push-token clearing — that never happened is its own lie.
+        vi.mocked(db.select).mockReturnValueOnce(
+          mockSelectLimitChain([
+            { id: 'row-other', userId: 'user-other', status: 'active', apnsToken: 'apns-token-1', fcmToken: null }
+          ]) as any
+        );
+        const tx = {
+          update: vi.fn().mockReturnValue({
+            set: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) })
+            })
+          }),
+          insert: vi.fn().mockReturnValue(
+            mockInsertReturning([{ id: 'mobile-2', deviceId: INSTALL, platform: 'ios' }])
+          )
+        };
+        vi.mocked(db.transaction).mockImplementation(async (cb: any) => cb(tx));
+
+        const res = await registerWithHeader(app);
+
+        expect(res.status).toBe(200);
+        const auditDetails = writeRouteAuditMock.mock.calls.at(-1)?.[1]?.details;
+        expect(auditDetails).not.toHaveProperty('displacedMobileDeviceId');
+      });
+
+      it('rolls the displacement back and 409s when the insert lands no row', async () => {
+        vi.mocked(db.select).mockReturnValueOnce(
+          mockSelectLimitChain([
+            { id: 'row-other', userId: 'user-other', status: 'active', apnsToken: 'apns-token-1', fcmToken: null }
+          ]) as any
+        );
+        const tx = {
+          update: vi.fn().mockReturnValue({
+            set: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: 'row-other' }])
+              })
+            })
+          }),
+          insert: vi.fn().mockReturnValue(mockInsertReturning([]))
+        };
+        // A real transaction rolls back on throw; assert the route lets the
+        // throw escape the callback rather than swallowing it inside.
+        let threw = false;
+        vi.mocked(db.transaction).mockImplementation(async (cb: any) => {
+          try {
+            return await cb(tx);
+          } catch {
+            threw = true;
+            throw new Error('rolled back');
+          }
+        });
+
+        const res = await registerWithHeader(app);
+
+        expect(threw).toBe(true);
+        expect(res.status).toBe(409);
+      });
+
+      it('prefers the SIGNED mdid claim over the raw header (SR-001)', async () => {
+        // Otherwise a client could authenticate as install X and register its
+        // row under install Y, so the middleware's lookup on X misses forever.
+        authState.token = { mdid: 'signed-install-id' };
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectLimitChain([]) as any)
+          .mockReturnValueOnce(mockSelectLimitChain([]) as any);
+        const values = vi.fn().mockReturnValue({
+          onConflictDoUpdate: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'mobile-3', deviceId: 'signed-install-id' }])
+          })
+        });
+        vi.mocked(db.insert).mockReturnValue({ values } as any);
+
+        const res = await registerWithHeader(app); // header says INSTALL
+
+        expect(res.status).toBe(200);
+        expect(values).toHaveBeenCalledWith(expect.objectContaining({ deviceId: 'signed-install-id' }));
+      });
+
+      it('409s instead of reporting success when the conflict guard matches no row', async () => {
+        // Previously this returned { success: true } while the token was never
+        // stored — a silent push outage.
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectLimitChain([]) as any)
+          .mockReturnValueOnce(mockSelectLimitChain([]) as any);
+        vi.mocked(db.insert).mockReturnValue(mockInsertOnConflictReturning([]) as any);
+
+        const res = await registerWithHeader(app);
+
+        expect(res.status).toBe(409);
+        expect((await res.json()).code).toBe('device_registration_conflict');
+      });
     });
   });
 

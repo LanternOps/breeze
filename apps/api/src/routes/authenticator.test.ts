@@ -609,6 +609,20 @@ describe('approver device routes', () => {
     expect(values).toContain('user-123');
   });
 
+  it('never links an approver key to a REVOKED phone (#2913)', async () => {
+    dbState.selectQueue.push([{ id: OWNED_MOBILE_ROW_ID }]);
+
+    const res = await postMobileRegister(INSTALL_ID);
+    expect(res.status).toBe(201);
+
+    // Nothing reads authenticator_devices.mobile_device_id back today, so a
+    // blocked row here is latent rather than exploitable — but the moment any
+    // join goes through that column, a revoked handset becomes reachable.
+    const values = sqlValues(dbState.selectWheres[0]);
+    expect(values).toContain('mobileDevices.status');
+    expect(values).toContain('active');
+  });
+
   it('returns 201 with mobileDeviceId null when the header matches no mobile_devices row', async () => {
     dbState.selectQueue.push([]); // no row for this per-install id
 
