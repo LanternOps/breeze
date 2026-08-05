@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { zValidator } from '../lib/validation';
 import { z } from "zod";
-import { and, eq, sql, desc, inArray, lt, isNull, or, asc } from "drizzle-orm";
+import { and, eq, ne, sql, desc, inArray, lt, isNull, or, asc } from "drizzle-orm";
 import { customAlphabet } from "nanoid";
 import { db, withSystemDbAccessContext } from "../db";
 import { enrollmentKeys, organizations } from "../db/schema";
@@ -434,7 +434,9 @@ export async function mintChildEnrollmentKey(
     const [org] = await db
       .select({ id: organizations.id })
       .from(organizations)
-      .where(eq(organizations.partnerId, input.partnerId))
+      // The hidden 'quick_support' org may be the partner's oldest org — a child
+      // enrollment key must never default into it.
+      .where(and(eq(organizations.partnerId, input.partnerId), ne(organizations.type, 'quick_support')))
       .orderBy(asc(organizations.createdAt))
       .limit(1);
     if (!org) {

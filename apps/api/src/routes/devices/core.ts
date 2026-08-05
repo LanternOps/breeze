@@ -463,6 +463,11 @@ coreRoutes.get(
     // -------- row-filter predicates --------
     const conditions: SQL[] = [];
 
+    // Quick Support devices live in the partner's hidden 'quick_support' org,
+    // which deliberately stays inside accessibleOrgIds so RLS lets a tech reach
+    // their own session. Nothing filters them out for us — exclude explicitly.
+    conditions.push(eq(devices.isEphemeral, false));
+
     // Org access — uses pre-computed accessibleOrgIds from auth.
     const orgFilter = auth.orgCondition(devices.orgId);
     if (orgFilter) {

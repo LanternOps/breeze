@@ -32,7 +32,7 @@
  *    POST /orgs/sites) via the resolveWritableToolOrgId rules.
  */
 
-import { and, eq, ilike, inArray, isNull, type SQL } from 'drizzle-orm';
+import { and, eq, ilike, inArray, isNull, ne, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations, sites } from '../db/schema';
 import { escapeLike } from '../utils/sql';
@@ -158,7 +158,12 @@ async function handleListOrganizations(
     ? ilike(organizations.name, `%${escapeLike(search)}%`)
     : undefined;
 
-  const conditions: SQL[] = [isNull(organizations.deletedAt)];
+  // The hidden per-partner 'quick_support' org stays inside accessibleOrgIds so
+  // RLS lets techs read their own support sessions — it is therefore NOT filtered
+  // by the scope conditions below and must be excluded explicitly. (The slug read
+  // in handleCreateOrg deliberately does NOT exclude it — its slug must stay in
+  // the taken-set.)
+  const conditions: SQL[] = [isNull(organizations.deletedAt), ne(organizations.type, 'quick_support')];
   if (searchCondition) conditions.push(searchCondition);
 
   if (auth.scope === 'organization') {

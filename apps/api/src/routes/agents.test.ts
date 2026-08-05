@@ -152,11 +152,20 @@ vi.mock('../db/schema', () => ({
   ] },
 }));
 
-vi.mock('../services/enrollmentKeySecurity', () => ({
-  hashEnrollmentKey: vi.fn((key: string) => `hashed-${key}`),
-  hashEnrollmentKeyCandidates: vi.fn((key: string) => [`hashed-${key}`]),
-  generateEnrollmentKey: vi.fn(() => 'ek_test123')
-}));
+vi.mock('../services/enrollmentKeySecurity', async () => {
+  // Dynamic import: vi.mock factories are hoisted above this file's imports.
+  const { createHash } = await import('node:crypto');
+  return {
+    hashEnrollmentKey: vi.fn((key: string) => `hashed-${key}`),
+    hashEnrollmentKeyCandidates: vi.fn((key: string) => [`hashed-${key}`]),
+    generateEnrollmentKey: vi.fn(() => 'ek_test123'),
+    // Real implementation, not a stub: the enrollment-secret cases below
+    // compare actual digests, and stubbing would make the mismatch-rejection
+    // assertions vacuous.
+    hashEnrollmentSecret: vi.fn((secret: string) =>
+      createHash('sha256').update(secret).digest('hex')),
+  };
+});
 
 vi.mock('../services/cloudflareMtls', () => ({
   CloudflareMtlsService: {

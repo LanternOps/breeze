@@ -29,7 +29,7 @@ import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissi
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { devices, alerts, scripts, automations, partners, organizations } from '../db/schema';
-import { eq, and, asc, desc, inArray, isNull, or, getTableColumns, type SQL } from 'drizzle-orm';
+import { eq, ne, and, asc, desc, inArray, isNull, or, getTableColumns, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext, PrincipalKind } from '../middleware/auth';
 import { siteAccessCheck } from '../middleware/auth';
@@ -1850,13 +1850,18 @@ async function handleResourcesRead(
 
   try {
     if (uri === 'breeze://devices') {
-      const deviceSiteConditions: SQL[] =
-        siteAllowedDeviceIds === null
+      // Ephemeral Quick Support devices live in the partner's hidden
+      // 'quick_support' org, which deliberately stays inside accessibleOrgIds —
+      // orgCond() will not filter them, so exclude them explicitly.
+      const deviceSiteConditions: SQL[] = [eq(devices.isEphemeral, false)];
+      deviceSiteConditions.push(
+        ...(siteAllowedDeviceIds === null
           ? []
           : siteAllowedDeviceIds.length === 0
             ? // Restricted caller with zero in-scope devices — match no rows.
               [inArray(devices.id, ['00000000-0000-0000-0000-000000000000'])]
-            : [inArray(devices.id, siteAllowedDeviceIds)];
+            : [inArray(devices.id, siteAllowedDeviceIds)])
+      );
       return await readOrgScopedResource(id, uri, devices, {
         id: devices.id,
         hostname: devices.hostname,
@@ -1995,7 +2000,9 @@ async function resolveDefaultOrgId(partnerId: string): Promise<string | null> {
     const [row] = await db
       .select({ id: organizations.id })
       .from(organizations)
-      .where(eq(organizations.partnerId, partnerId))
+      // The hidden 'quick_support' org can be the partner's oldest org — it must
+      // never become the default org for audit scoping or authTool dispatch.
+      .where(and(eq(organizations.partnerId, partnerId), ne(organizations.type, 'quick_support')))
       .orderBy(asc(organizations.createdAt))
       .limit(1);
     return row?.id ?? null;
