@@ -24,6 +24,16 @@ const BLOCKED_TOOLS = new Set<string>([
   // cross-org access is enforced by orgCondition in each handler
 ]);
 
+// Sub-operation discriminator key per tool. Most action-multiplexed tools
+// carry their sub-operation in `action`; execute_command multiplexes on
+// `commandType` (#3088) — that string selects the agent-side command handler,
+// so it is a real dispatch discriminator, not a heuristic over command text.
+// The TIER1/2/3_ACTIONS tables are indexed by the value found under this key.
+// Exported for the tier-parity contract tests (aiGuardrailsTierParity.shared.ts).
+export const TOOL_ACTION_INPUT_KEYS: Record<string, string> = {
+  execute_command: 'commandType',
+};
+
 // Actions that are Tier 2 (auto-execute + audit):
 //   manage_alerts: acknowledge/resolve/suppress are low-risk mutations
 //   manage_services: list is a read downgraded from the tool's base Tier 3
@@ -56,6 +66,37 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // file READ stays Tier 3 below: the agent runs as root/LocalSystem and an
   // unapproved read can exfiltrate any file's contents.
   file_operations: ['list'],
+  // #3088 approval-fatigue fix (2026-08-04): read-only execute_command
+  // commandTypes are non-mutating device reads and auto-execute with audit,
+  // consistent with their sibling tools (manage_processes list is Tier 1,
+  // manage_services list and file_operations list are Tier 2). This is an
+  // explicit conservative allowlist keyed on commandType (the agent-side
+  // handler discriminator — see TOOL_ACTION_INPUT_KEYS above); anything not
+  // listed here, including an unknown or missing commandType, stays at the
+  // tool's base Tier 3.
+  //
+  // Deliberately NOT downgraded, despite being nominally "read" operations:
+  //   - file_read: arbitrary-file exfiltration off a root/LocalSystem agent
+  //     (same SR5-01 rationale as file_operations read).
+  //   - kill_process, start/stop/restart_service: mutating.
+  //   - list_services: agent/internal/remote/tools/services_{windows,linux}.go
+  //     populates ServiceInfo.Path from the service's full binary path/command
+  //     line (config.BinaryPathName / ExecStart), only length-truncated, never
+  //     credential-redacted. Legacy and third-party services routinely embed
+  //     secrets there (e.g. `-p <password>`, DB connection strings) — same
+  //     exfiltration class as file_read.
+  //   - event_logs_query: logName is a free-form, caller-controlled string
+  //     with no denylist excluding Security — combined with the raw, unredacted
+  //     Message field (agent/internal/remote/tools/eventlogs_windows.go), a
+  //     Security-log query can surface a mistyped password landing in a 4625
+  //     failed-logon Account Name, or any credential/PII another app logged.
+  // Both would let an AI actor pull that content into its context with zero
+  // human review under auto_approve session mode.
+  execute_command: [
+    'event_logs_list',
+    'file_list',
+    'list_processes',
+  ],
   // Fleet tools — Tier 2 actions (auto-execute + audit)
   manage_configuration_policy: ['activate', 'deactivate'],
   manage_deployments: ['pause', 'resume'],
@@ -813,8 +854,13 @@ export function checkGuardrails(
     };
   }
 
-  // Check for action-based tier escalation
-  const action = input.action as string | undefined;
+  // Check for action-based tier escalation. The discriminator is `action` for
+  // most tools; a TOOL_ACTION_INPUT_KEYS entry overrides the key (#3088 —
+  // execute_command multiplexes on `commandType`). Non-string values resolve
+  // to undefined, which falls through to the base tier (fail-closed).
+  const actionKey = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
+  const actionValue = input[actionKey];
+  const action = typeof actionValue === 'string' ? actionValue : undefined;
 
   // Tier 1 downgrade: read-only actions on otherwise-high-tier tools
   if (action && TIER1_ACTIONS[toolName]?.includes(action)) {
@@ -858,7 +904,7 @@ export function checkGuardrails(
     tier: baseTier,
     allowed: true,
     requiresApproval: false,
-    description: buildApprovalDescription(toolName, input.action as string | undefined, input)
+    description: buildApprovalDescription(toolName, action, input)
   };
 }
 

@@ -1,5 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 import { getServerUrl } from './serverConfig';
+import { fetchWithTimeout } from './fetchWithTimeout';
 
 const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const PREFIX = '/api/v1/mobile/approvals';
@@ -53,7 +54,7 @@ export interface ApprovalRequest {
 async function authedFetch(path: string, init?: RequestInit) {
   const token = await SecureStore.getItemAsync(TOKEN_KEY);
   const baseUrl = (await getServerUrl()) || FALLBACK_API_BASE_URL;
-  const res = await fetch(`${baseUrl}${path}`, {
+  const res = await fetchWithTimeout(`${baseUrl}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',

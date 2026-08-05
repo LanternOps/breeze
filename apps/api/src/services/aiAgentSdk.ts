@@ -1378,11 +1378,18 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     const toolUseId = session.toolUseIdQueue.shift();
     if (!toolUseId) {
       console.warn(`[AI-SDK] postToolUse: toolUseIdQueue empty for ${toolName} — tool_result will have no toolUseId`);
+    } else {
+      // Drop the paired name entry recorded at content_block_start — it exists
+      // for the dropped-call fallback (#3094), which must not fire for a call
+      // this postToolUse is handling.
+      session.toolUseNames?.delete(toolUseId);
     }
     const safeOutput = compactToolResultForChat(toolName, output);
     const parsedOutput = safeParseJson(safeOutput);
     const sessionId = session.breezeSessionId;
-    const orgId = session.auth.orgId ?? undefined;
+    // Canonical session org (always set) — `auth.orgId` is null for partner-
+    // scope logins, which left tool audit rows without an org attribution.
+    const orgId = session.orgId;
     const guardrailCheck = checkGuardrails(toolName, input);
 
     // Script-builder "apply" tools deliver their payload (code / metadata) to

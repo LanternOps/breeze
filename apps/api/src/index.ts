@@ -220,6 +220,10 @@ import {
   initializeQuickSupportReaper,
   shutdownQuickSupportReaper,
 } from './jobs/quickSupportReaper';
+import {
+  initializeSoftwareUploadSessionCleanupWorker,
+  shutdownSoftwareUploadSessionCleanupWorker,
+} from './jobs/softwareUploadSessionCleanup';
 import { initializeAuditRetentionWorker, shutdownAuditRetentionWorker } from './jobs/auditRetention';
 import {
   initializeAuditChainVerifyWorker,
@@ -1312,6 +1316,7 @@ async function initializeWorkers(): Promise<void> {
     // Quick Support safety net: expires stale codes/sessions, enforces the 8h
     // hard cap, detects end-user disconnects, and purges ephemeral devices.
     ['quickSupportReaper', initializeQuickSupportReaper],
+    ['softwareUploadSessionCleanup', initializeSoftwareUploadSessionCleanupWorker],
     ['auditRetention', initializeAuditRetentionWorker],
     ['extensionJobHost', () => initializeExtensionJobHost(extensionContributionRegistry, extensionStateStore)],
     ['auditChainVerify', initializeAuditChainVerifyWorker],
@@ -1524,6 +1529,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownQuoteSendWorker,
     shutdownEnrollmentKeyCleanupWorker,
     shutdownQuickSupportReaper,
+    shutdownSoftwareUploadSessionCleanupWorker,
     shutdownAuditRetentionWorker,
     shutdownExtensionJobHost,
     shutdownAuditChainVerifyWorker,

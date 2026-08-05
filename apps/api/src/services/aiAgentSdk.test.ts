@@ -164,7 +164,7 @@ vi.mock('./sentry', () => ({
 
 type TestAuth = {
   user: { id: string; email: string; name: string };
-  orgId: string;
+  orgId: string | null; // null for partner-scope logins — the real AuthContext.orgId type
   scope: string;
   accessibleOrgIds: string[];
   canAccessOrg: (orgId: string) => boolean;
@@ -1513,6 +1513,31 @@ describe('createSessionPostToolUse', () => {
     const setCall = set.mock.calls.find((c) => c[0] && 'status' in c[0]);
     expect(setCall).toBeDefined();
     expect((setCall![0] as any).delegantToolCallId).toBe('tc-456');
+  });
+
+  it('attributes the tool-use audit event to the session org, not the (possibly null) login auth.orgId — #3087 regression guard', async () => {
+    // Partner-scope logins carry auth.orgId === null. Before #3087 the audit
+    // write used auth.orgId directly, which left device-bound tool executions
+    // by partner techs with no org attribution on the audit trail.
+    const session = makeActiveSession({
+      orgId: 'session-org',
+      auth: makeAuth({ orgId: null, scope: 'partner' }),
+      auditSnapshot: { requestId: 'req-1' } as any,
+    });
+    const callback = createSessionPostToolUse(session);
+
+    await callback('query_devices', { marker: 'x' }, JSON.stringify({ status: 'completed' }), false, 5);
+
+    // requestLikeFromSnapshot is mocked as a bare vi.fn() in this file (returns
+    // undefined) — assert it directly rather than expect.anything(), which
+    // rejects undefined.
+    expect(mockWriteAuditEvent).toHaveBeenCalledWith(
+      undefined,
+      expect.objectContaining({
+        orgId: 'session-org',
+        action: 'ai.tool.query_devices',
+      }),
+    );
   });
 });
 
