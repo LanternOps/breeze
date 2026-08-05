@@ -102,6 +102,8 @@
     "retry": "Tentar novamente",
     "back": "Voltar",
     "next": "Avançar",
+    "previousPage": "Página anterior",
+    "nextPage": "Próxima página",
     "done": "Concluído",
     "apply": "Aplicar",
     "enable": "Ativar",

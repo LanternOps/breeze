@@ -499,10 +499,7 @@ function ListEditor({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={(e) =>
-            e.key ===
-              i18n.t(
-                "policies:configurationPolicies.featureTabs.sensitiveDataTab.enter",
-              ) && (e.preventDefault(), onAdd())
+            e.key === "Enter" && (e.preventDefault(), onAdd())
           }
           placeholder={placeholder}
           className="h-10 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"

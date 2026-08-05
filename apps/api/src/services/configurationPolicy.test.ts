@@ -17,6 +17,7 @@ import {
   addFeatureLink,
   assignPolicy,
   updateFeatureLink,
+  listConfigPolicies,
   listFeatureLinks,
   pamInlineSettingsSchema,
   validateFeaturePolicyExists,
@@ -26,7 +27,11 @@ import {
   PartnerWideWriteDeniedError,
 } from './configurationPolicy';
 import { db } from '../db';
-import { configPolicyAlertRules, configPolicyMonitoringSettings } from '../db/schema';
+import {
+  configPolicyAlertRules,
+  configPolicyFeatureLinks,
+  configPolicyMonitoringSettings,
+} from '../db/schema';
 
 // Chain for `db.select().from(...).where(...)` awaited directly (links query)
 function selectWhereRows(rows: unknown[]) {
@@ -1611,5 +1616,202 @@ describe('remote_access addFeatureLink — unknown keys stripped from the stored
     });
 
     expect(storedJsonb).toEqual({ webrtcDesktop: false });
+  });
+});
+
+// ============================================================================
+// listConfigPolicies — Features column data (#2950)
+// ============================================================================
+
+describe('listConfigPolicies feature links', () => {
+  const ORG_ID = '11111111-1111-1111-1111-111111111111';
+
+  function orgAuth(): any {
+    return {
+      scope: 'organization',
+      orgId: ORG_ID,
+      partnerId: null,
+      accessibleOrgIds: [ORG_ID],
+      canAccessOrg: (id: string) => id === ORG_ID,
+      // Any truthy SQL stands in for the real org filter; the mocked db never
+      // interprets it.
+      orgCondition: () => ({ queryChunks: [] }),
+    };
+  }
+
+  // db.select({count}).from().where() — awaited straight off .where()
+  function countChain(total: number) {
+    const chain: any = {};
+    chain.from = vi.fn(() => chain);
+    chain.where = vi.fn(() => Promise.resolve([{ count: total }]));
+    return chain;
+  }
+
+  // db.select().from().leftJoin().where().orderBy().limit().offset()
+  function pageChain(rows: unknown[]) {
+    const chain: any = {};
+    chain.from = vi.fn(() => chain);
+    chain.leftJoin = vi.fn(() => chain);
+    chain.where = vi.fn(() => chain);
+    chain.orderBy = vi.fn(() => chain);
+    chain.limit = vi.fn(() => chain);
+    chain.offset = vi.fn(() => Promise.resolve(rows));
+    return chain;
+  }
+
+  // db.select().from().where().orderBy() — awaited off .orderBy()
+  function linksChain(rows: unknown[]) {
+    const chain: any = {};
+    chain.from = vi.fn(() => chain);
+    chain.where = vi.fn(() => chain);
+    chain.orderBy = vi.fn(() => Promise.resolve(rows));
+    return chain;
+  }
+
+  // db.select({partnerId}).from(organizations).where().limit(1) — the extra
+  // statement the orgId-filter branch issues BEFORE the count query.
+  function orgPartnerChain(rows: unknown[]) {
+    const chain: any = {};
+    chain.from = vi.fn(() => chain);
+    chain.where = vi.fn(() => chain);
+    chain.limit = vi.fn(() => Promise.resolve(rows));
+    return chain;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('attaches each policy its own feature links, and an empty array when it has none', async () => {
+    const rows = [
+      { id: 'policy-a', name: 'Workstations', orgId: ORG_ID, orgName: 'OliveTech' },
+      { id: 'policy-b', name: 'Servers', orgId: ORG_ID, orgName: 'OliveTech' },
+    ];
+    const links = linksChain([
+      { id: 'link-1', configPolicyId: 'policy-a', featureType: 'alert_rule' },
+      { id: 'link-2', configPolicyId: 'policy-a', featureType: 'patch' },
+    ]);
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(countChain(2) as any)
+      .mockReturnValueOnce(pageChain(rows) as any)
+      .mockReturnValueOnce(links as any);
+
+    const result = await listConfigPolicies(orgAuth(), {}, { page: 1, limit: 25 });
+
+    expect(result.data).toHaveLength(2);
+    expect(result.data[0]).toMatchObject({
+      id: 'policy-a',
+      featureLinks: [
+        { id: 'link-1', featureType: 'alert_rule' },
+        { id: 'link-2', featureType: 'patch' },
+      ],
+    });
+    // No links of its own — must be [], never another policy's links and never
+    // undefined (the UI renders the em-dash only for a genuinely empty array).
+    expect(result.data[1]).toMatchObject({ id: 'policy-b', featureLinks: [] });
+    // Pre-existing fields are untouched: the change is purely additive.
+    expect(result.data[0]).toMatchObject({ name: 'Workstations', orgName: 'OliveTech' });
+    expect(result.pagination).toEqual({ page: 1, limit: 25, total: 2 });
+  });
+
+  it('batches the feature-link read into ONE statement for the whole page (no N+1)', async () => {
+    const rows = [
+      { id: 'policy-a', name: 'A', orgId: ORG_ID },
+      { id: 'policy-b', name: 'B', orgId: ORG_ID },
+      { id: 'policy-c', name: 'C', orgId: ORG_ID },
+    ];
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(countChain(3) as any)
+      .mockReturnValueOnce(pageChain(rows) as any)
+      .mockReturnValueOnce(linksChain([]) as any);
+
+    await listConfigPolicies(orgAuth(), {}, { page: 1, limit: 25 });
+
+    // count + page + links === 3 total, regardless of how many policies the
+    // page holds. A per-policy read would make this grow with `rows.length`.
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(3);
+  });
+
+  it('keys the batched read on config_policy_id and lets the DB do the ordering', async () => {
+    const rows = [{ id: 'policy-a', name: 'A', orgId: ORG_ID }];
+    const links = linksChain([
+      { id: 'link-2', configPolicyId: 'policy-a', featureType: 'patch' },
+      { id: 'link-1', configPolicyId: 'policy-a', featureType: 'alert_rule' },
+    ]);
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(countChain(1) as any)
+      .mockReturnValueOnce(pageChain(rows) as any)
+      .mockReturnValueOnce(links as any);
+
+    const result = await listConfigPolicies(orgAuth(), {}, { page: 1, limit: 25 });
+
+    // The WHERE targets configPolicyId (not id) — swapping the column would
+    // return the wrong links and is otherwise invisible through the mock.
+    // Compare against the Column object itself: the SQL wrapper is circular,
+    // so it cannot be serialized.
+    const whereArg: any = links.where.mock.calls[0][0];
+    expect(whereArg.queryChunks).toContain(configPolicyFeatureLinks.configPolicyId);
+    expect(whereArg.queryChunks).not.toContain(configPolicyFeatureLinks.id);
+    // Ordering is delegated to the query, so the service must NOT re-sort:
+    // rows come back in whatever order the DB produced them.
+    expect(links.orderBy).toHaveBeenCalledTimes(1);
+    const first = result.data[0];
+    expect(first).toBeDefined();
+    expect(first?.featureLinks.map((l) => l.id)).toEqual(['link-2', 'link-1']);
+  });
+
+  it('attaches links on the orgId-filtered path (the one the UI actually uses)', async () => {
+    // ConfigurationPoliciesPage sends orgId whenever an org is selected, which
+    // adds a partnerId lookup BEFORE the count query — so the statement
+    // sequence differs from the no-filter path exercised above. This also
+    // covers a partner-wide row (orgId null) carrying its own links.
+    const rows = [
+      { id: 'policy-partnerwide', name: 'All orgs', orgId: null, orgName: null },
+      { id: 'policy-org', name: 'OliveTech only', orgId: ORG_ID, orgName: 'OliveTech' },
+    ];
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(orgPartnerChain([{ partnerId: 'partner-1' }]) as any)
+      .mockReturnValueOnce(countChain(2) as any)
+      .mockReturnValueOnce(pageChain(rows) as any)
+      .mockReturnValueOnce(
+        linksChain([
+          { id: 'link-pw', configPolicyId: 'policy-partnerwide', featureType: 'patch' },
+          { id: 'link-org', configPolicyId: 'policy-org', featureType: 'security' },
+        ]) as any,
+      );
+
+    const result = await listConfigPolicies(
+      orgAuth(),
+      { orgId: ORG_ID },
+      { page: 1, limit: 25 },
+    );
+
+    expect(result.data[0]).toMatchObject({
+      id: 'policy-partnerwide',
+      featureLinks: [{ id: 'link-pw', featureType: 'patch' }],
+    });
+    expect(result.data[1]).toMatchObject({
+      id: 'policy-org',
+      featureLinks: [{ id: 'link-org', featureType: 'security' }],
+    });
+    // partnerId lookup + count + page + links — still ONE links statement.
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(4);
+  });
+
+  it('skips the feature-link query entirely when the page is empty', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(countChain(0) as any)
+      .mockReturnValueOnce(pageChain([]) as any);
+
+    const result = await listConfigPolicies(orgAuth(), {}, { page: 5, limit: 25 });
+
+    expect(result.data).toEqual([]);
+    // An inArray() against an empty id list is a SQL error in Drizzle, so the
+    // third statement must not be issued at all.
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
   });
 });

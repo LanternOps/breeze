@@ -313,7 +313,45 @@ export async function listConfigPolicies(
     .limit(pagination.limit)
     .offset(offset);
 
-  return { data: rows, pagination: { page: pagination.page, limit: pagination.limit, total } };
+  // Feature badges for the list page (#2950). ADDITIVE: every row gains a
+  // `featureLinks` array; nothing existing changes shape. Deliberately NOT
+  // listFeatureLinks() — the list only needs id + featureType, so this skips
+  // assembleInlineSettings() and its per-link fan-out across the normalized
+  // settings tables. One extra statement per page (never per row), keyed on
+  // config_feature_links_policy_id_idx over at most `limit` (<= 100) ids.
+  //
+  // Tenancy: config_policy_feature_links' RLS policy is an EXISTS join back to
+  // configuration_policies with the same dual-axis (org OR partner) test, so a
+  // link is visible exactly when its parent policy row is. Restricting the read
+  // to ids already returned by the access-filtered query above therefore adds no
+  // new visibility, and no row can carry another tenant's links.
+  const policyIds = rows.map((row) => row.id);
+  const featureLinkRows = policyIds.length
+    ? await db
+        .select({
+          id: configPolicyFeatureLinks.id,
+          configPolicyId: configPolicyFeatureLinks.configPolicyId,
+          featureType: configPolicyFeatureLinks.featureType,
+        })
+        .from(configPolicyFeatureLinks)
+        .where(inArray(configPolicyFeatureLinks.configPolicyId, policyIds))
+        .orderBy(asc(configPolicyFeatureLinks.featureType))
+    : [];
+
+  const linksByPolicyId = new Map<string, { id: string; featureType: string }[]>();
+  for (const link of featureLinkRows) {
+    const bucket = linksByPolicyId.get(link.configPolicyId);
+    const entry = { id: link.id, featureType: link.featureType };
+    if (bucket) bucket.push(entry);
+    else linksByPolicyId.set(link.configPolicyId, [entry]);
+  }
+
+  const data = rows.map((row) => ({
+    ...row,
+    featureLinks: linksByPolicyId.get(row.id) ?? [],
+  }));
+
+  return { data, pagination: { page: pagination.page, limit: pagination.limit, total } };
 }
 
 export async function updateConfigPolicy(

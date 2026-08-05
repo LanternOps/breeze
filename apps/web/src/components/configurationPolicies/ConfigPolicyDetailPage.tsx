@@ -517,10 +517,7 @@ export default function ConfigPolicyDetailPage({
       />
 
       {/* Overview Tab */}
-      {activeTab ===
-        i18n.t(
-          "policies:configurationPolicies.configPolicyDetailPage.overview2",
-        ) && (
+      {activeTab === "overview" && (
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h2 className="text-lg font-semibold">
             {i18n.t(
@@ -683,17 +680,11 @@ export default function ConfigPolicyDetailPage({
         ))}
 
       {/* Compliance Status Tab (read-only results; the `compliance` feature tab is the rule editor) */}
-      {activeTab ===
-        i18n.t(
-          "policies:configurationPolicies.configPolicyDetailPage.complianceStatus2",
-        ) &&
+      {activeTab === "compliance_status" &&
         policyId && <ComplianceStatusTab policyId={policyId} />}
 
       {/* Assignments Tab */}
-      {activeTab ===
-        i18n.t(
-          "policies:configurationPolicies.configPolicyDetailPage.assignments2",
-        ) &&
+      {activeTab === "assignments" &&
         policyId &&
         policy && (
           <AssignmentsTab
