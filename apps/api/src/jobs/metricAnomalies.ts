@@ -55,11 +55,17 @@ function recentWindow(now = new Date(), lookbackMinutes = DEFAULT_LOOKBACK_MINUT
   return { from, to };
 }
 
+// Quick Support exclusion: ephemeral devices (`devices.is_ephemeral`) live in
+// the hidden per-partner 'quick_support' org and are a stranger's personal
+// machine borrowed for one ~20-minute session. That org stays inside
+// technicians' accessibleOrgIds for RLS reasons, so this fleet-wide sweep is NOT
+// filtered for us; excluding the devices also drops the hidden org out of the
+// fan-out entirely (it holds nothing but ephemeral devices).
 async function findAnomalyOrgRows(): Promise<Array<{ orgId: string }>> {
   return db
     .select({ orgId: devices.orgId })
     .from(devices)
-    .where(sql`${devices.status} <> 'decommissioned'`)
+    .where(sql`${devices.status} <> 'decommissioned' AND ${devices.isEphemeral} = false`)
     .groupBy(devices.orgId);
 }
 

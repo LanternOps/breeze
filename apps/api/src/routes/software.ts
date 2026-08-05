@@ -38,11 +38,21 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { softwareUploadRoutes } from './softwareUploads';
 import {
   buildAndDispatchSoftwareInstalls,
   createSoftwareDeployment,
 } from '../services/softwareDeployment';
 import { detectionRulesSchema, softwareDownloadPolicySchema } from '@breeze/shared';
+import {
+  ALLOWED_EXTENSIONS,
+  MAX_UPLOAD_SIZE,
+  getFileExtension,
+  resolveScopedOrgId,
+  setLatestSoftwareVersion,
+  insertLatestSoftwareVersion,
+  type AuthScopeContext,
+} from '../services/softwareVersionShared';
 
 export const softwareRoutes = new Hono();
 const requireSoftwareRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -52,45 +62,6 @@ const requireSoftwareExecute = requirePermission(PERMISSIONS.DEVICES_EXECUTE.res
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-type ResolveScopedOrgIdResult =
-  | { orgId: string }
-  | { error: string; status: 400 | 403 };
-
-type AuthScopeContext = {
-  scope: 'system' | 'partner' | 'organization';
-  orgId?: string | null;
-  accessibleOrgIds?: string[] | null;
-};
-
-function resolveScopedOrgId(
-  auth: AuthScopeContext,
-  requestedOrgId?: string,
-): ResolveScopedOrgIdResult {
-  if (requestedOrgId) {
-    if (auth.scope === 'system') {
-      return { orgId: requestedOrgId };
-    }
-    if (auth.scope === 'organization') {
-      if (!auth.orgId || requestedOrgId !== auth.orgId) {
-        return { error: 'Access to this organization denied', status: 403 };
-      }
-      return { orgId: requestedOrgId };
-    }
-    const accessibleOrgIds = auth.accessibleOrgIds ?? [];
-    if (!accessibleOrgIds.includes(requestedOrgId)) {
-      return { error: 'Access to this organization denied', status: 403 };
-    }
-    return { orgId: requestedOrgId };
-  }
-
-  if (auth.orgId) return { orgId: auth.orgId };
-  if (auth.scope === 'partner' && Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length === 1) {
-    const single = auth.accessibleOrgIds[0];
-    if (single) return { orgId: single };
-  }
-  return { error: 'orgId is required for this scope', status: 400 };
-}
 
 type ResolveCatalogListScopeResult =
   | { orgCondition?: SQL }
@@ -135,8 +106,6 @@ function getLimitOffset(query: { limit?: string; offset?: string }) {
   return { limit, offset };
 }
 
-const ALLOWED_EXTENSIONS = new Set(['.msi', '.exe', '.dmg', '.deb', '.pkg']);
-const MAX_UPLOAD_SIZE = 500 * 1024 * 1024; // 500 MB
 type SoftwareDeploymentAggregateStatus =
   | 'pending'
   | 'in_progress'
@@ -144,34 +113,6 @@ type SoftwareDeploymentAggregateStatus =
   | 'completed_with_errors'
   | 'failed'
   | 'cancelled';
-
-type SoftwareVersionInsert = Omit<typeof softwareVersions.$inferInsert, 'catalogId' | 'isLatest'>;
-type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
-
-function getFileExtension(filename: string): string {
-  const dot = filename.lastIndexOf('.');
-  return dot >= 0 ? filename.slice(dot).toLowerCase() : '';
-}
-
-async function setLatestSoftwareVersion(
-  tx: DbTransaction,
-  catalogId: string,
-  versionId: string,
-) {
-  await tx.update(softwareVersions)
-    .set({ isLatest: false })
-    .where(eq(softwareVersions.catalogId, catalogId));
-
-  const [version] = await tx.update(softwareVersions)
-    .set({ isLatest: true })
-    .where(and(
-      eq(softwareVersions.catalogId, catalogId),
-      eq(softwareVersions.id, versionId),
-    ))
-    .returning();
-
-  return version ?? null;
-}
 
 export function computeSoftwareDeploymentAggregateStatus(
   results: Array<{ status: string; count: number }>,
@@ -355,21 +296,6 @@ async function resolveSoftwareTargetDeviceIds(
   }
 
   return { deviceIds };
-}
-
-async function insertLatestSoftwareVersion(
-  catalogId: string,
-  values: SoftwareVersionInsert,
-) {
-  return db.transaction(async (tx) => {
-    const [inserted] = await tx.insert(softwareVersions)
-      .values({ ...values, catalogId, isLatest: false })
-      .returning();
-
-    if (!inserted) return null;
-
-    return setLatestSoftwareVersion(tx, catalogId, inserted.id);
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2166,3 +2092,9 @@ softwareRoutes.put(
     return c.json({ data: result.effective });
   }
 );
+
+// ---------------------------------------------------------------------------
+// Chunked upload sessions (issue #2951). Mounted after `use('*',
+// authMiddleware)` above, so the sub-router's handlers run behind auth.
+// ---------------------------------------------------------------------------
+softwareRoutes.route('/', softwareUploadRoutes);

@@ -182,6 +182,15 @@ function parseNumericThreshold(threshold: string | null | undefined): number | n
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/**
+ * Quick Support exclusion (applies to every device selection below):
+ * ephemeral devices (`devices.isEphemeral`) live in the hidden per-partner
+ * 'quick_support' org and are a stranger's personal machine borrowed for one
+ * ~20-minute session. That org stays inside technicians' accessibleOrgIds for
+ * RLS reasons, so background workers are NOT filtered for us. Such a device must
+ * never be conscripted as a monitor executor (it would run network probes on a
+ * home network) nor be picked as the attribution device for a monitor alert.
+ */
 export async function selectExecutionAgentForMonitor(
   monitor: {
     orgId: string;
@@ -209,6 +218,7 @@ export async function selectExecutionAgentForMonitor(
       .from(devices)
       .where(and(
         eq(devices.orgId, monitor.orgId),
+        eq(devices.isEphemeral, false),
         eq(devices.siteId, assetSiteId),
         eq(devices.status, 'online')
       ))
@@ -224,7 +234,11 @@ export async function selectExecutionAgentForMonitor(
   const [onlineAgent] = await db
     .select({ agentId: devices.agentId })
     .from(devices)
-    .where(and(eq(devices.orgId, monitor.orgId), eq(devices.status, 'online')))
+    .where(and(
+      eq(devices.orgId, monitor.orgId),
+      eq(devices.isEphemeral, false),
+      eq(devices.status, 'online')
+    ))
     .limit(1);
 
   return onlineAgent?.agentId ?? null;
@@ -259,7 +273,11 @@ async function resolveMonitorAlertDevice(
     const [siteDevice] = await db
       .select({ id: devices.id })
       .from(devices)
-      .where(and(eq(devices.orgId, monitor.orgId), eq(devices.siteId, preferredSiteId)))
+      .where(and(
+        eq(devices.orgId, monitor.orgId),
+        eq(devices.isEphemeral, false),
+        eq(devices.siteId, preferredSiteId)
+      ))
       .orderBy(desc(devices.lastSeenAt), desc(devices.enrolledAt))
       .limit(1);
 
@@ -271,7 +289,7 @@ async function resolveMonitorAlertDevice(
   const [orgDevice] = await db
     .select({ id: devices.id })
     .from(devices)
-    .where(eq(devices.orgId, monitor.orgId))
+    .where(and(eq(devices.orgId, monitor.orgId), eq(devices.isEphemeral, false)))
     .orderBy(desc(devices.lastSeenAt), desc(devices.enrolledAt))
     .limit(1);
 

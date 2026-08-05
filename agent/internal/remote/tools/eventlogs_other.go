@@ -14,7 +14,7 @@ func listEventLogsOS(startTime time.Time) CommandResult {
 	)
 }
 
-func queryEventLogsOS(logName, level, source string, eventID, page, limit int, startTime time.Time) CommandResult {
+func queryEventLogsOS(logName, source, xpathQuery string, levelNum, eventID, page, limit int, startTime time.Time) CommandResult {
 	return NewErrorResult(
 		fmt.Errorf("event logs are only supported on Windows"),
 		time.Since(startTime).Milliseconds(),

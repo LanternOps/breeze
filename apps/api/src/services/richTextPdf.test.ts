@@ -64,6 +64,23 @@ describe('renderRichTextIntoPdf', () => {
     };
   }
 
+  it('honors startY when pdfkit\'s cursor was left higher by a side-by-side column', () => {
+    // Regression: quotePdf tracks the bottom of two identity columns separately.
+    // If the right column was drawn last but the left column was taller, doc.y
+    // could be above the explicit startY. The renderer must not jump back to
+    // that stale cursor and draw the first paragraph over the identity block.
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    doc.y = 140;
+    const after = renderRichTextIntoPdf(doc, '<p>First proposal paragraph.</p>', {
+      x: 50,
+      width: 495,
+      startY: 320,
+      ensureRoom: makeEnsureRoom(doc),
+    });
+
+    expect(after).toBeGreaterThan(320);
+  });
+
   it('spaces consecutive blocks apart instead of drawing them flush against each other', () => {
     // Regression: an earlier version of this renderer computed each block's
     // trailing gap into a local variable that was never actually reserved via
@@ -84,6 +101,7 @@ describe('renderRichTextIntoPdf', () => {
     // Two blocks drawn: the gap between them must show up in the total advance —
     // i.e. the cursor moves by strictly more than 2x the bare per-line text height.
     expect(after - before).toBeGreaterThan(bareTextHeight * 2);
+    expect(after - before - bareTextHeight * 2).toBeGreaterThanOrEqual(5.5);
   });
 
   // Render into an UNCOMPRESSED pdfkit doc and return the raw bytes, so tests can

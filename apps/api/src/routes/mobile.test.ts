@@ -380,7 +380,7 @@ describe('mobile routes', () => {
 
   describe('PATCH /mobile/devices/:id/settings', () => {
     it('should reject empty settings payload', async () => {
-      const res = await app.request('/mobile/devices/device-1/settings', {
+      const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/settings', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
@@ -392,7 +392,7 @@ describe('mobile routes', () => {
     it('should return 404 when device is missing', async () => {
       vi.mocked(db.update).mockReturnValue(mockUpdateReturning([]) as any);
 
-      const res = await app.request('/mobile/devices/device-1/settings', {
+      const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/settings', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: true })
@@ -471,7 +471,7 @@ describe('mobile routes', () => {
               triggeredAt: new Date(),
               acknowledgedAt: null,
               resolvedAt: null,
-              deviceId: 'device-1',
+              deviceId: '11111111-2222-4333-8444-555555555555',
               deviceHostname: 'host-1',
               deviceOsType: 'linux',
               deviceStatus: 'online'
@@ -671,7 +671,7 @@ describe('mobile routes', () => {
     it('should acknowledge active alert and emit feedback', async () => {
       vi.mocked(db.select).mockReturnValue(
         mockSelectLimitChain([
-          { id: 'alert-1', status: 'active', orgId: 'org-123', ruleId: 'rule-1', deviceId: 'device-1' }
+          { id: 'alert-1', status: 'active', orgId: 'org-123', ruleId: 'rule-1', deviceId: '11111111-2222-4333-8444-555555555555' }
         ]) as any
       );
       vi.mocked(db.update).mockReturnValue(
@@ -952,7 +952,7 @@ describe('mobile routes', () => {
         .mockReturnValueOnce(
           mockSelectOrderChain([
             {
-              id: 'device-1',
+              id: '11111111-2222-4333-8444-555555555555',
               orgId: 'org-123',
               siteId: 'site-1',
               hostname: 'host-1',
@@ -1107,10 +1107,28 @@ describe('mobile routes', () => {
   });
 
   describe('POST /mobile/devices/:id/actions', () => {
+    // #2968: this route used to resolve devices through a private copy of
+    // `getDeviceWithOrgCheck` living in mobile.ts, so the uuid guard added to the
+    // shared helper did not apply here and a malformed `:id` still reached
+    // Postgres as a 22P02 → 500 + Sentry event. The copy is gone; this pins the
+    // route to the guarded helper so a re-fork is caught.
+    it('404s a malformed device id without querying (#2968)', async () => {
+      vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([]) as any);
+
+      const res = await app.request('/mobile/devices/not-a-uuid/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reboot' })
+      });
+
+      expect(res.status).toBe(404);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
     it('requires scripts.execute for run_script actions before device lookup', async () => {
       vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([]) as any);
 
-      const res = await app.request('/mobile/devices/device-1/actions', {
+      const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1126,7 +1144,7 @@ describe('mobile routes', () => {
     it('does not require scripts.execute for non-script device actions', async () => {
       vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([]) as any);
 
-      const res = await app.request('/mobile/devices/device-1/actions', {
+      const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'reboot' })
@@ -1139,7 +1157,7 @@ describe('mobile routes', () => {
     it('should return 404 when device is missing', async () => {
       vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([]) as any);
 
-      const res = await app.request('/mobile/devices/device-1/actions', {
+      const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'reboot' })
@@ -1151,11 +1169,11 @@ describe('mobile routes', () => {
     it('should reject decommissioned devices', async () => {
       vi.mocked(db.select).mockReturnValue(
         mockSelectLimitChain([
-          { id: 'device-1', orgId: 'org-123', status: 'decommissioned' }
+          { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'decommissioned' }
         ]) as any
       );
 
-      const res = await app.request('/mobile/devices/device-1/actions', {
+      const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'reboot' })
@@ -1169,12 +1187,12 @@ describe('mobile routes', () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(
           mockSelectLimitChain([
-            { id: 'device-1', orgId: 'org-123', status: 'online', osType: 'linux' }
+            { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online', osType: 'linux' }
           ]) as any
         )
         .mockReturnValueOnce(mockSelectLimitChain([]) as any);
 
-      const res = await app.request('/mobile/devices/device-1/actions', {
+      const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'run_script', scriptId: 'script-1' })
@@ -1188,7 +1206,7 @@ describe('mobile routes', () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(
           mockSelectLimitChain([
-            { id: 'device-1', orgId: 'org-123', status: 'online', osType: 'linux' }
+            { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online', osType: 'linux' }
           ]) as any
         )
         .mockReturnValueOnce(
@@ -1216,7 +1234,7 @@ describe('mobile routes', () => {
           ]) as any
         );
 
-      const res = await app.request('/mobile/devices/device-1/actions', {
+      const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1236,7 +1254,7 @@ describe('mobile routes', () => {
       // Skipped: Complex command submission mock required
       vi.mocked(db.select).mockReturnValue(
         mockSelectLimitChain([
-          { id: 'device-1', orgId: 'org-123', status: 'online' }
+          { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online' }
         ]) as any
       );
       vi.mocked(db.insert).mockReturnValue(
@@ -1245,7 +1263,7 @@ describe('mobile routes', () => {
         ]) as any
       );
 
-      const res = await app.request('/mobile/devices/device-1/actions', {
+      const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'reboot' })
@@ -1283,7 +1301,7 @@ describe('mobile routes', () => {
         vi.mocked(db.select)
           .mockReturnValueOnce(
             mockSelectLimitChain([
-              { id: 'device-1', orgId: DEVICE_ORG, status: 'online', osType: 'linux', siteId: null }
+              { id: '11111111-2222-4333-8444-555555555555', orgId: DEVICE_ORG, status: 'online', osType: 'linux', siteId: null }
             ]) as any
           )
           .mockReturnValueOnce(
@@ -1302,7 +1320,7 @@ describe('mobile routes', () => {
           );
         vi.mocked(db.insert).mockReturnValue(mockInsertReturning([{ id: 'exec-1' }]) as any);
 
-        const res = await app.request('/mobile/devices/device-1/actions', {
+        const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'run_script', scriptId: SCRIPT_ID })
@@ -1317,7 +1335,7 @@ describe('mobile routes', () => {
         vi.mocked(db.select)
           .mockReturnValueOnce(
             mockSelectLimitChain([
-              { id: 'device-1', orgId: DEVICE_ORG, status: 'online', osType: 'linux', siteId: null }
+              { id: '11111111-2222-4333-8444-555555555555', orgId: DEVICE_ORG, status: 'online', osType: 'linux', siteId: null }
             ]) as any
           )
           .mockReturnValueOnce(
@@ -1338,7 +1356,7 @@ describe('mobile routes', () => {
           .mockReturnValueOnce(mockInsertReturning([{ id: 'exec-1' }]) as any)
           .mockReturnValueOnce(mockInsertReturning([{ id: 'cmd-1' }]) as any);
 
-        const res = await app.request('/mobile/devices/device-1/actions', {
+        const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'run_script', scriptId: SCRIPT_ID })
@@ -1354,7 +1372,7 @@ describe('mobile routes', () => {
         vi.mocked(db.select)
           .mockReturnValueOnce(
             mockSelectLimitChain([
-              { id: 'device-1', orgId: DEVICE_ORG, status: 'online', osType: 'linux', siteId: null }
+              { id: '11111111-2222-4333-8444-555555555555', orgId: DEVICE_ORG, status: 'online', osType: 'linux', siteId: null }
             ]) as any
           )
           .mockReturnValueOnce(
@@ -1375,7 +1393,7 @@ describe('mobile routes', () => {
           .mockReturnValueOnce(mockInsertReturning([{ id: 'exec-1' }]) as any)
           .mockReturnValueOnce(mockInsertReturning([{ id: 'cmd-1' }]) as any);
 
-        const res = await app.request('/mobile/devices/device-1/actions', {
+        const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'run_script', scriptId: SCRIPT_ID })

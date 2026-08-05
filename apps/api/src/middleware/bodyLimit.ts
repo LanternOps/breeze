@@ -21,6 +21,13 @@ export function bodyLimitForPath(path: string): { maxSize: number; error: string
   if (path.match(/^\/api\/v1\/system-tools\/devices\/[^/]+\/files\/upload$/)) {
     return { maxSize: 8 * 1024 * 1024, error: 'File too large (max 4MB)' };
   }
+  // Chunked software package uploads (#2951): each chunk is a raw
+  // application/octet-stream body of at most 8MB (client UPLOAD_CHUNK_SIZE,
+  // server-validated chunk_size cap). 9MB headroom lets the route's own
+  // per-chunk limit answer with its specific message instead of this one.
+  if (path.match(/^\/api\/v1\/software\/catalog\/[^/]+\/versions\/uploads\/[^/]+\/chunks$/)) {
+    return { maxSize: 9 * 1024 * 1024, error: 'Chunk too large (max 8MB)' };
+  }
   // Software package (installer) uploads are multipart and capped at 500MB by the
   // route's own MAX_UPLOAD_SIZE check; give the body limit headroom over that so the
   // route returns its specific "File too large" message instead of this generic one.

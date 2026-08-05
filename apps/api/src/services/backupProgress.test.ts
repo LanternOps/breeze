@@ -159,6 +159,97 @@ describe('applyBackupProgress', () => {
     expect(setArg.transferredSize).toBe(1000);
   });
 
+  // #3006: registering the snapshot id mid-run is what makes an orphaned
+  // snapshot structurally impossible — without it, a terminal result lost in
+  // transit leaves the uploaded objects with nothing linking them to a job.
+  it('persists the snapshot id reported mid-run', async () => {
+    vi.mocked(db.select).mockReturnValue(
+      selectChain([
+        { id: 'job-1', deviceId: 'device-1', agentId: 'agent-1', status: 'running' },
+      ]) as any
+    );
+    vi.mocked(db.update).mockReturnValue(updateChain([{ id: 'job-1' }]) as any);
+
+    const result = await applyBackupProgress({
+      agentId: 'agent-1',
+      commandId: JOB_UUID,
+      progress: {
+        phase: 'uploading',
+        current: 0,
+        total: 5000,
+        snapshotId: 'snapshot-20260801T101500Z-a1b2c3d4',
+      },
+    });
+
+    expect(result).toEqual({ applied: true });
+    const updateCall = vi.mocked(db.update).mock.results[0]!.value;
+    expect(updateCall.set).toHaveBeenCalledWith(
+      expect.objectContaining({ snapshotId: 'snapshot-20260801T101500Z-a1b2c3d4' })
+    );
+  });
+
+  it('leaves snapshotId untouched on the pre-snapshot keepalive frames', async () => {
+    vi.mocked(db.select).mockReturnValue(
+      selectChain([
+        { id: 'job-1', deviceId: 'device-1', agentId: 'agent-1', status: 'running' },
+      ]) as any
+    );
+    vi.mocked(db.update).mockReturnValue(updateChain([{ id: 'job-1' }]) as any);
+
+    // The agent's whole-run keepalive fires before any snapshot exists and
+    // omits snapshotId entirely; writing '' there would record a snapshot id
+    // for objects that were never uploaded.
+    await applyBackupProgress({
+      agentId: 'agent-1',
+      commandId: JOB_UUID,
+      progress: { phase: 'uploading', current: 0, total: 0 },
+    });
+
+    const updateCall = vi.mocked(db.update).mock.results[0]!.value;
+    expect(updateCall.set.mock.calls[0][0]).not.toHaveProperty('snapshotId');
+  });
+
+  it('drops only the unusable snapshotId, never the counters that keep the job alive', async () => {
+    // backup_jobs.snapshot_id is varchar(200). An over-long value must not take
+    // the whole payload down with it: losing the payload also loses
+    // lastProgressAt (so the stale reaper kills a healthy in-flight upload) and
+    // the dispatch-expectation refresh (so the real terminal result is later
+    // dropped as a replay) — i.e. it would reproduce #3006 fleet-wide via the
+    // very field added to prevent it. The id is best-effort recovery metadata;
+    // the counters are load-bearing.
+    vi.mocked(db.select).mockReturnValue(
+      selectChain([
+        { id: 'job-1', deviceId: 'device-1', agentId: 'agent-1', status: 'running' },
+      ]) as any
+    );
+    vi.mocked(db.update).mockReturnValue(updateChain([{ id: 'job-1' }]) as any);
+
+    const result = await applyBackupProgress({
+      agentId: 'agent-1',
+      commandId: JOB_UUID,
+      progress: { current: 1000, total: 5000, snapshotId: 'x'.repeat(201) },
+    });
+
+    expect(result).toEqual({ applied: true, snapshotIdDropped: true });
+    const updateCall = vi.mocked(db.update).mock.results[0]!.value;
+    const setArg = updateCall.set.mock.calls[0][0];
+    expect(setArg).not.toHaveProperty('snapshotId');
+    expect(setArg.transferredSize).toBe(1000);
+    expect(setArg.lastProgressAt).toBeInstanceOf(Date);
+    expect(refreshDispatchedExpectationMock).toHaveBeenCalledWith('backup', 'device-1', 'job-1');
+  });
+
+  it('still drops a payload whose load-bearing fields are malformed', async () => {
+    const result = await applyBackupProgress({
+      agentId: 'agent-1',
+      commandId: JOB_UUID,
+      progress: { current: 'not-a-number' as unknown as number, snapshotId: 'snapshot-1' },
+    });
+
+    expect(result).toEqual({ applied: false, reason: 'invalid-payload' });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
   it('returns not-found when no backup job matches the commandId', async () => {
     vi.mocked(db.select).mockReturnValue(selectChain([]) as any);
 

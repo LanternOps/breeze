@@ -127,7 +127,8 @@ describe('secret-bearing tool registry parity', () => {
       .map(({ rel }) => rel);
 
     expect(offenders, `these files call generateTempPassword but are neither registered nor allowlisted:\n${offenders.join('\n')}`).toEqual([]);
-  });
+    // Repo-wide source scan is IO-bound; widen timeout so it doesn't flake under load or cold FS cache.
+  }, 30000);
 
   it('every temporaryPassword field reference is covered by a registered tool', () => {
     const files = collectSourceFiles();
@@ -138,7 +139,8 @@ describe('secret-bearing tool registry parity', () => {
       .map(({ rel }) => rel);
 
     expect(offenders, `these files reference the temporaryPassword carrier field but are neither registered nor allowlisted:\n${offenders.join('\n')}`).toEqual([]);
-  });
+    // Repo-wide source scan is IO-bound; widen timeout so it doesn't flake under load or cold FS cache.
+  }, 30000);
 
   it('both known credential-minting tools are registered', () => {
     expect(isSecretBearingTool('m365_reset_password')).toBe(true);

@@ -569,6 +569,124 @@ func TestRunBackup_SystemImage_PartialCollectionWarns(t *testing.T) {
 	}
 }
 
+// TestRunBackup_SystemStateManifestWithoutArtifactsWarnsAndDropsArtifacts is
+// the end-to-end guard for #3026's symptom, at the level the bug actually
+// presented: a run that ALSO has configured file paths, so the len(files)==0
+// hard-failure guard never fires and the job completes green.
+//
+// The staging dir is empty here, which is what the walk saw when VSS had
+// rewritten the staging path onto a shadow-device path that predated the
+// snapshot. The manifest still claims two artifacts. That combination must not
+// produce an unqualified success: the operator has to be told, and the manifest
+// must stop advertising artifacts the restore point does not contain — it is
+// persisted server-side and drives the bare-metal recovery paths.
+func TestRunBackup_SystemStateManifestWithoutArtifactsWarnsAndDropsArtifacts(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "doc.txt", "user data that backed up fine")
+
+	// Collection reports artifacts, but nothing of theirs is on disk to walk.
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		return &systemstate.SystemStateManifest{
+			Platform:  "test",
+			Artifacts: []systemstate.Artifact{{Name: "registry"}, {Name: "boot"}},
+		}, t.TempDir(), nil
+	})
+
+	mgr := NewBackupManager(BackupConfig{
+		Provider:           newMockProvider(),
+		Paths:              []string{file1},
+		SystemStateEnabled: true,
+	})
+	job, err := mgr.RunBackup()
+	if err != nil {
+		t.Fatalf("the file-path portion is still valid, so the run should complete: %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("status = %q, want completed", job.Status)
+	}
+	if !strings.Contains(job.Warning, "system state artifacts were not captured") {
+		t.Errorf("job completed with no warning about the missing system state; warning = %q", job.Warning)
+	}
+	if job.SystemStateManifest == nil {
+		t.Fatal("the manifest should be retained (platform/hardware profile are still accurate), not dropped wholesale")
+	}
+	if len(job.SystemStateManifest.Artifacts) != 0 {
+		t.Errorf("manifest still advertises %d artifacts that never reached the snapshot",
+			len(job.SystemStateManifest.Artifacts))
+	}
+	if job.SystemStateManifest.Platform != "test" {
+		t.Errorf("platform = %q, want the collector's value retained", job.SystemStateManifest.Platform)
+	}
+}
+
+// A healthy run must not trip the detector — otherwise the warning fires on
+// every system_image backup and operators learn to ignore it.
+func TestRunBackup_SystemStateCapturedProducesNoWarning(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "doc.txt", "user data")
+
+	stagingDir := t.TempDir()
+	if err := os.WriteFile(pathpkg.Join(stagingDir, "registry.dat"), []byte("hive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		return &systemstate.SystemStateManifest{
+			Platform:  "test",
+			Artifacts: []systemstate.Artifact{{Name: "registry"}},
+		}, stagingDir, nil
+	})
+
+	mgr := NewBackupManager(BackupConfig{
+		Provider:           newMockProvider(),
+		Paths:              []string{file1},
+		SystemStateEnabled: true,
+	})
+	job, err := mgr.RunBackup()
+	if err != nil {
+		t.Fatalf("RunBackup failed: %v", err)
+	}
+	if job.Warning != "" {
+		t.Errorf("healthy system-state run produced warning %q, want none", job.Warning)
+	}
+	if len(job.SystemStateManifest.Artifacts) != 1 {
+		t.Errorf("a captured artifact list must be left intact, got %d", len(job.SystemStateManifest.Artifacts))
+	}
+}
+
+// TestRunBackup_SystemStateCollectionFailureWarnsOnMixedRun covers the sibling
+// route to the same silent outcome: collection fails outright on a run that has
+// configured file paths. systemStateErr only fails the run when there is
+// nothing else to fall back on, so without an explicit warning this completes
+// green with no system state and no signal. CollectSystemState errors only when
+// a REQUIRED class failed, i.e. the capture would not boot at restore time.
+func TestRunBackup_SystemStateCollectionFailureWarnsOnMixedRun(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "doc.txt", "user data that backed up fine")
+
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		return nil, "", fmt.Errorf("registry hive export failed")
+	})
+
+	mgr := NewBackupManager(BackupConfig{
+		Provider:           newMockProvider(),
+		Paths:              []string{file1},
+		SystemStateEnabled: true,
+	})
+	job, err := mgr.RunBackup()
+	if err != nil {
+		t.Fatalf("the file-path portion is still valid, so the run should complete: %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("status = %q, want completed", job.Status)
+	}
+	if !strings.Contains(job.Warning, "system state was not collected") {
+		t.Errorf("a failed collection on a mixed run must be surfaced; warning = %q", job.Warning)
+	}
+	if !strings.Contains(job.Warning, "registry hive export failed") {
+		t.Errorf("the warning should carry the collector's reason; warning = %q", job.Warning)
+	}
+}
+
 func TestRunBackup_MultiplePaths(t *testing.T) {
 	tmpDir := t.TempDir()
 	dir1 := pathpkg.Join(tmpDir, "dir1")
@@ -842,6 +960,13 @@ func (p *failSubstringUploadProvider) Upload(localPath, remotePath string) error
 // A partial-success run (some files uploaded, some retry-exhausted) must
 // complete WITH a visible Warning + ErrorCount — never as a green job with
 // zero errors that is silently an incomplete restore point.
+//
+// 1 of 2 files (and 54% of the bytes) is a DISPROPORTIONATE loss, so since
+// #3000 the terminal status is `partial` rather than `completed`. Everything
+// else this test guards — the run does not hard-fail, the snapshot is real,
+// and the failures are visible in Warning/ErrorCount — is unchanged. See
+// TestRunBackupContext_SmallFailureRatioStaysCompleted for the below-threshold
+// counterpart that still reports `completed`.
 func TestRunBackupContext_PartialFailureSetsWarningAndErrorCount(t *testing.T) {
 	restore := setUploadRetryDelayForTest(0)
 	defer restore()
@@ -861,8 +986,8 @@ func TestRunBackupContext_PartialFailureSetsWarningAndErrorCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("partial success must not fail the run, got: %v", err)
 	}
-	if job.Status != jobStatusCompleted {
-		t.Fatalf("expected completed status, got %q", job.Status)
+	if job.Status != jobStatusPartial {
+		t.Fatalf("expected partial status for a 1-of-2 failure run, got %q", job.Status)
 	}
 	if job.ErrorCount != 1 {
 		t.Fatalf("expected ErrorCount=1, got %d", job.ErrorCount)
@@ -882,6 +1007,11 @@ func TestRunBackupContext_PartialFailureSetsWarningAndErrorCount(t *testing.T) {
 // walk failures, missing paths) must complete WITH a visible Warning +
 // ErrorCount — never as a green job with errorCount 0. scan errors only ride
 // job.Error otherwise, which marshals to `{}` and the server never reads.
+//
+// 1 unreadable path out of 2 attempted is disproportionate, so since #3000 the
+// terminal status is `partial`. Note this case is caught by the FILE gate, not
+// the byte gate: a file whose os.Stat failed has no known size and contributes
+// nothing to the scanned-byte denominator.
 func TestRunBackupContext_ScanErrorSetsWarningAndErrorCount(t *testing.T) {
 	goodDir := t.TempDir()
 	createTempFile(t, goodDir, "readable.txt", "content that uploads fine")
@@ -901,8 +1031,8 @@ func TestRunBackupContext_ScanErrorSetsWarningAndErrorCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a partial-scan run must still complete, got: %v", err)
 	}
-	if job.Status != jobStatusCompleted {
-		t.Fatalf("expected completed status, got %q", job.Status)
+	if job.Status != jobStatusPartial {
+		t.Fatalf("expected partial status for a 1-of-2 unreadable-path run, got %q", job.Status)
 	}
 	if job.ErrorCount != 1 {
 		t.Fatalf("expected ErrorCount=1 for one unreadable path, got %d", job.ErrorCount)
@@ -992,9 +1122,13 @@ func TestStartRunKeepalive_EmitsThenStopsCleanly(t *testing.T) {
 
 	var mu sync.Mutex
 	var calls int
-	onProgress := func(filesDone, filesTotal int, bytesDone, bytesTotal int64) {
+	var sawSnapshotID bool
+	onProgress := func(filesDone, filesTotal int, bytesDone, bytesTotal int64, snapshotID string) {
 		mu.Lock()
 		calls++
+		if snapshotID != "" {
+			sawSnapshotID = true
+		}
 		mu.Unlock()
 	}
 
@@ -1027,6 +1161,16 @@ func TestStartRunKeepalive_EmitsThenStopsCleanly(t *testing.T) {
 	mu.Unlock()
 	if final != afterStop {
 		t.Fatalf("keepalive emitted after stop: %d -> %d (goroutine not joined)", afterStop, final)
+	}
+
+	// The pre-scan keepalive runs before any snapshot exists, so it must never
+	// claim one (#3006): a non-empty ID here would let the server record a
+	// snapshot_id for objects that were never written.
+	mu.Lock()
+	claimed := sawSnapshotID
+	mu.Unlock()
+	if claimed {
+		t.Fatal("pre-scan keepalive emitted a non-empty snapshot ID")
 	}
 
 	// A second stop is a safe no-op (idempotent).

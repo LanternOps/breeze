@@ -333,6 +333,19 @@ function resolveMigrationsDir(): string {
   }
 }
 
+/**
+ * Discover the core migration filenames present in this checkout, in apply
+ * order. Exported for the integration-test ledger-drift guard
+ * (`__tests__/integration/globalSetup.ts`), which compares the connected
+ * database's `breeze_migrations` ledger against exactly this set to detect a
+ * shared test DB polluted by another worktree's branch (#3066/#3064).
+ */
+export async function discoverCoreMigrationFilenames(): Promise<string[]> {
+  return (await readdir(resolveMigrationsDir()))
+    .filter((name) => MIGRATION_FILE_PATTERN.test(name))
+    .sort((a, b) => a.localeCompare(b));
+}
+
 async function tableExists(client: postgres.Sql, tableName: string): Promise<boolean> {
   const result = await client`
     SELECT EXISTS (
@@ -416,10 +429,13 @@ export async function autoMigrate(): Promise<void> {
     // ── 3. Read migration files ──────────────────────────────────────────
     let allFiles: string[];
     try {
-      allFiles = (await readdir(migrationsDir))
-        .filter((name) => MIGRATION_FILE_PATTERN.test(name))
-        .sort((a, b) => a.localeCompare(b));
-    } catch {
+      allFiles = await discoverCoreMigrationFilenames();
+    } catch (error) {
+      // Only a genuinely absent migrations directory is a benign "nothing to
+      // do". EACCES/ENOTDIR/etc. must fail loudly — swallowing them here used
+      // to let the process continue against an unmigrated database and fail
+      // later with confusing missing-table errors.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       console.log('[auto-migrate] No migration files found, skipping');
       return;
     }

@@ -1,0 +1,47 @@
+{
+  "page": {
+    "title": "Support-Sitzung starten",
+    "intro": "Jemand, der Ihnen mit diesem Computer hilft, hat Sie gebeten, diese Seite zu öffnen. Es passiert nichts, solange Sie das Programm nicht selbst herunterladen und starten."
+  },
+  "code": {
+    "heading": "Geben Sie den Code ein, den Sie erhalten haben",
+    "help": "Die Person, die Ihnen hilft, nennt Ihnen einen Code aus 9 Buchstaben und Zahlen, zum Beispiel KTM-4H7-P2X. Groß- und Kleinschreibung sowie Bindestriche spielen keine Rolle.",
+    "label": "Support-Code",
+    "placeholder": "XXX-XXX-XXX",
+    "submit": "Weiter",
+    "formatError": "Das ist noch kein vollständiger Code. Ein Code besteht aus 9 Buchstaben und Zahlen, zum Beispiel KTM-4H7-P2X."
+  },
+  "checking": "Code wird geprüft…",
+  "invalid": {
+    "title": "Dieser Code ist nicht mehr gültig",
+    "body": "Ein Support-Code verfällt kurz nach seiner Erstellung und lässt sich nur einmal verwenden. Bitten Sie die Person, die Ihnen hilft, um einen neuen Code, und geben Sie ihn oben ein."
+  },
+  "checkFailed": {
+    "title": "Der Code konnte nicht geprüft werden",
+    "body": "Möglicherweise ist die Internetverbindung abgebrochen. Prüfen Sie Ihre Verbindung und versuchen Sie es mit dem Code noch einmal.",
+    "retry": "Erneut versuchen"
+  },
+  "ready": {
+    "title": "Ihr Code ist gültig",
+    "codeIntro": "Ihr Code lautet {{code}}."
+  },
+  "download": {
+    "windows": "Für Windows herunterladen",
+    "manualFallback": "Falls beim Herunterladen nach einem Code gefragt wird, geben Sie ein: {{code}}",
+    "macosLabel": "macOS (Mac-Computer)",
+    "macosBadge": "Demnächst verfügbar",
+    "macosBody": "Für Mac-Computer ist das Programm noch nicht verfügbar. Fragen Sie die Person, die Ihnen hilft, wie Sie stattdessen vorgehen."
+  },
+  "windowsPrompt": {
+    "title": "Windows fragt Sie vor dem Start",
+    "body": "Wenn Sie die Datei öffnen, zeigt Windows eine Abfrage, ob das Programm ausgeführt werden darf. Die Datei ist digital signiert, deshalb nennt diese Abfrage einen Herausgeber: dort sollte {{publisher}} stehen. Steht dort, dass der Herausgeber unbekannt ist, oder ein Name, den Sie nicht erwartet haben, schließen Sie die Abfrage und rufen Sie die Person an, die Ihnen hilft, statt fortzufahren.",
+    "publisher": "der Herausgeber von Breeze"
+  },
+  "trust": {
+    "title": "Was das Programm tut",
+    "seeScreen": "Während die Sitzung läuft, kann die Person, die Ihnen hilft, Ihren Bildschirm sehen.",
+    "temporary": "Das Programm läuft einmal und entfernt sich danach selbst. Auf diesem Computer bleibt nichts installiert.",
+    "stopAnyTime": "Sie können die Freigabe jederzeit beenden, indem Sie das Programmfenster schließen.",
+    "onlyIfExpected": "Wenn Sie das nicht erwartet haben, starten Sie es nicht. Schließen Sie diese Seite und wenden Sie sich an Ihren gewohnten Support-Kontakt."
+  }
+}

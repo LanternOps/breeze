@@ -488,8 +488,19 @@ async function migratePatchPoliciesLive(
   if (!featureLink) throw new Error('Failed to create patch feature link');
   summary.featureLinksCreated++;
 
-  // sources is a patchSourceEnum[] on the legacy table, text[] on the target.
-  const sources: string[] = (primary.sources as string[] | null) ?? ['os'];
+  // Carry the legacy policy's source selection: hardcoding ['os'] here would
+  // silently drop a not-yet-migrated partner's third-party opt-in on the
+  // script's FIRST run — killing their 3P patch jobs AND (under dual consent)
+  // the ring-level thirdPartyApps toggle. The patch_policies.sources column is
+  // deprecated but this read is fine until the drop lands; #3151's DROP COLUMN
+  // removes the Drizzle field, which breaks this line at compile time and
+  // forces this script to be updated (or deleted) in the same PR.
+  const sources: string[] = primary.sources ?? ['os'];
+  if (sources.some((s) => s !== 'os')) {
+    console.warn(
+      `[migrateToConfigPolicies] carrying non-OS patch sources ${JSON.stringify(sources)} from legacy policy ${primary.id}`
+    );
+  }
 
   await tx.insert(configPolicyPatchSettings).values({
     featureLinkId: featureLink.id,

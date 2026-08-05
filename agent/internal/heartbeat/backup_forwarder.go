@@ -29,6 +29,42 @@ func shouldForwardBackupRunAsync(cmdType string, hasAsyncCapability bool) bool {
 	return cmdType == tools.CmdBackupRun && hasAsyncCapability
 }
 
+// backupResultToCommandResult maps the backup helper's IPC result onto the
+// websocket CommandResult the server consumes.
+//
+// The failure arm deliberately carries Stdout. marshalBackupRunResult populates
+// the job body even on a failed backup_run (#3027) so the run's VSS
+// diagnostics, warning text and partial counters survive; discarding it here
+// would simply move the loss one hop later, which is the bug class this issue
+// is about. Status remains "failed" — NewErrorResult sets it, and the server
+// keys the job's terminal status on exactly that (routes/agentWs.ts records
+// `completed` only when `result.status === 'completed'`), so the body can never
+// turn a failed run green. It only adds detail to a failure.
+//
+// Pulled out as a pure function so this mapping is testable without a live
+// websocket/IPC connection, matching shouldForwardBackupRunAsync above.
+func backupResultToCommandResult(result backupipc.BackupCommandResult) tools.CommandResult {
+	if !result.Success {
+		failed := tools.NewErrorResult(fmt.Errorf("%s", result.Stderr), result.DurationMs)
+		// Carried RAW, not json.Marshal'd the way NewSuccessResult encodes the
+		// success body — the two branches genuinely need different encodings,
+		// because toWSCommandResult treats them differently:
+		//
+		//   success: Error == "", so it json.Unmarshals Stdout into `Result`.
+		//            The double encoding means that yields the object TEXT as a
+		//            string, and the server's single JSON.parse turns it into
+		//            the object.
+		//   failure: Error != "", so `Result` is never populated and the server
+		//            falls back to `stdout` — with only ONE parse left. A
+		//            double-encoded body would parse to a string, fail
+		//            backupCommandResultSchema, and be reported as a malformed
+		//            payload. Raw object text is what makes that one parse land.
+		failed.Stdout = result.Stdout
+		return failed
+	}
+	return tools.NewSuccessResult(result.Stdout, result.DurationMs)
+}
+
 // forwardToBackupHelper sends a command to the backup binary via IPC and returns the result.
 func forwardToBackupHelper(h *Heartbeat, cmd Command, timeout time.Duration) tools.CommandResult {
 	start := time.Now()
@@ -59,8 +95,5 @@ func forwardToBackupHelper(h *Heartbeat, cmd Command, timeout time.Duration) too
 		return tools.NewErrorResult(fmt.Errorf("invalid backup result: %w", err), time.Since(start).Milliseconds())
 	}
 
-	if !result.Success {
-		return tools.NewErrorResult(fmt.Errorf("%s", result.Stderr), result.DurationMs)
-	}
-	return tools.NewSuccessResult(result.Stdout, result.DurationMs)
+	return backupResultToCommandResult(result)
 }

@@ -16,7 +16,11 @@ import { configPolicyBackupSettings } from '../db/schema/configurationPolicies';
 import { eq, and, desc, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { ringAutoApproveSchema, backupProfileSelectionsSchema } from '@breeze/shared/validators';
+import {
+  ringAutoApproveSchema,
+  mergeRingAutoApproveWrite,
+  backupProfileSelectionsSchema,
+} from '@breeze/shared/validators';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { validateS3Details } from '../routes/backup/schemas';
@@ -33,14 +37,18 @@ import { validateS3Details } from '../routes/backup/schemas';
  * string mirroring the route schema's refinement when the input is invalid.
  */
 function validateRingAutoApprove(
-  raw: unknown
+  raw: unknown,
+  storedRaw?: unknown
 ): { value: Record<string, unknown> } | { error: string } {
   const parsed = ringAutoApproveSchema.safeParse(raw);
   if (!parsed.success) {
     const message = parsed.error.issues[0]?.message ?? 'Invalid autoApprove configuration.';
     return { error: message };
   }
-  return { value: parsed.data as Record<string, unknown> };
+  // Merge, don't replace: the model routinely writes partial objects for
+  // fields it wasn't asked about, so absent third-party fields preserve the
+  // ring's current opt-in instead of resetting it to defaults.
+  return { value: mergeRingAutoApproveWrite(parsed.data, storedRaw) as unknown as Record<string, unknown> };
 }
 
 /**
@@ -180,13 +188,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           gracePeriodHours: { type: 'number', description: 'Hours after deadline before reboot is forced (default: 4)' },
           categories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to include (e.g. ["critical","important","security"])' },
           excludeCategories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to exclude' },
-          // NOT the config-policy patch `inlineSettings.sources` vocabulary
-          // ("os"/"third_party"/"custom") — this writes `patch_policies.sources`,
-          // which is the patch_source enum. Advertising "os" here made the model
-          // send a value Postgres rejects with 22P02, which safeHandler reports
-          // as "Invalid ID format — expected a valid UUID" (#2814 review).
-          sources: { type: 'array', items: { type: 'string', enum: ['microsoft', 'apple', 'linux', 'third_party', 'custom'] }, description: 'Patch sources: ["microsoft","apple","linux","third_party","custom"]' },
-          autoApprove: { type: 'object', description: 'Auto-approval rules (e.g. { enabled: true, severities: ["critical","important"], deferralDays: 0 }). severities must be a subset of ["critical","important","moderate","low"]. If enabled is true you MUST list at least one severity — an enabled rule with an empty severity set is rejected (it would auto-approve nothing).' },
+          autoApprove: { type: 'object', description: 'Auto-approval rules, e.g. { enabled: true, severities: ["critical","important"], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null }. severities gate OS patches only and must be a subset of ["critical","important","moderate","low"]. thirdPartyApps auto-approves third-party app updates (winget/Chocolatey/Homebrew/custom) — it also requires the linked configuration policy to include third-party patch sources. If enabled is true you MUST set at least one severity OR thirdPartyApps: true. On update, omitting thirdPartyApps/thirdPartyDeferralDays preserves the ring\'s current third-party settings; send explicit values to change them.' },
           enabled: { type: 'boolean', description: 'Whether ring is active (for update)' },
           limit: { type: 'number', description: 'Max results for list (default 25)' },
         },
@@ -218,7 +220,6 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           deadlineDays: patchPolicies.deadlineDays,
           gracePeriodHours: patchPolicies.gracePeriodHours,
           categories: patchPolicies.categories,
-          sources: patchPolicies.sources,
           autoApprove: patchPolicies.autoApprove,
           ringOrder: patchPolicies.ringOrder,
           createdAt: patchPolicies.createdAt,
@@ -242,7 +243,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
 
         const [ring] = await db.select().from(patchPolicies).where(and(...conditions)).limit(1);
         if (!ring) return JSON.stringify({ error: 'Update ring not found or access denied' });
-        return JSON.stringify({ ring });
+        // `sources` is deprecated (never consumed by the approval path) and must
+        // not leak into ring responses, matching the REST detail endpoint.
+        const { sources: _sources, ...ringWithoutSources } = ring;
+        return JSON.stringify({ ring: ringWithoutSources });
       }
 
       if (action === 'create') {
@@ -269,7 +273,6 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           gracePeriodHours: Number(input.gracePeriodHours) || 4,
           categories: (input.categories as string[]) ?? [],
           excludeCategories: (input.excludeCategories as string[]) ?? [],
-          sources: (input.sources as any[]) ?? undefined,
           autoApprove,
           createdBy: auth.user.id,
         }).returning();
@@ -301,11 +304,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (input.gracePeriodHours != null) updates.gracePeriodHours = Number(input.gracePeriodHours);
         if (input.categories) updates.categories = input.categories;
         if (input.excludeCategories) updates.excludeCategories = input.excludeCategories;
-        if (input.sources) updates.sources = input.sources;
         if (input.autoApprove != null) {
           // Fail-closed autoApprove (#1317): reject enabled-without-severity at
           // the write boundary, mirroring the route's ringAutoApproveSchema.
-          const validated = validateRingAutoApprove(input.autoApprove);
+          const validated = validateRingAutoApprove(input.autoApprove, existing.autoApprove);
           if ('error' in validated) return JSON.stringify({ error: validated.error });
           updates.autoApprove = validated.value;
         }

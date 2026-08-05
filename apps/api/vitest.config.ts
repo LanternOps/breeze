@@ -53,6 +53,12 @@ export default defineConfig({
       // the no-DB unit runner would fail it on connect. Belongs to
       // vitest.integration.config.ts.
       'src/routes/agents/patches.integration.test.ts',
+      // Enrollment idempotency real-DB test (#2764): imports
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate) and
+      // lives in src/routes/agents/ — outside the `src/__tests__/integration/**`
+      // glob above — so the no-DB unit runner would fail it on connect. Belongs
+      // to vitest.integration.config.ts (already in its include list).
+      'src/routes/agents/enrollmentCollision.integration.test.ts',
       // Software-report re-link real-DB test (BREEZE-3): imports
       // `__tests__/integration/setup` (real postgres pool + autoMigrate), so the
       // no-DB unit runner would fail it on connect. Belongs to
@@ -130,6 +136,13 @@ export default defineConfig({
       // fail it on connect. Belongs to vitest.integration.config.ts
       // (registered in its include list).
       'src/jobs/enrollmentKeyCleanup.integration.test.ts',
+      // On-demand enrollment-key purge route real-DB test (#2832
+      // live-bootstrap-token exemption): imports
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate) and
+      // lives in src/routes/ outside the `src/__tests__/integration/**` glob,
+      // so the no-DB unit runner would fail it on connect. Belongs to
+      // vitest.integration.config.ts (registered in its include list).
+      'src/routes/enrollmentKeysPurgeExpired.integration.test.ts',
     ],
     setupFiles: ['src/__tests__/setup.ts'],
     coverage: {

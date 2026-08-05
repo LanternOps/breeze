@@ -1,7 +1,9 @@
 import { useMemo } from 'react';
+import { Text, View } from 'react-native';
 import Markdown, { type RenderRules } from 'react-native-markdown-display';
 
 import { useApprovalTheme, fontFamily, radii, spacing } from '../../../theme';
+import { parseMarkdownTable, toDisplayRows } from './markdownTable';
 
 interface Props {
   content: string;
@@ -155,27 +157,45 @@ export function MarkdownBody({ content }: Props) {
         height: 0,
         backgroundColor: 'transparent',
       },
-      table: {
-        borderColor: theme.border,
+      // No table/thead/tr/th/td styles here: tables are rendered entirely by
+      // the custom `table` rule below (issue #3119).
+    }),
+    [theme],
+  );
+
+  // Custom table renderer (issue #3119). With mergeStyle={false} the library
+  // drops its default layout styles (tr: row direction, th/td: flex 1), so
+  // cells collapsed into full-width stacked lines. Rather than restoring the
+  // grid — which squeezes 3+ columns into unreadable slivers at phone widths
+  // or forces a horizontal scroller nested inside the chat scroll — tables
+  // render as stacked rows with the column label repeated per value
+  // ("OS: Windows Server"), matching the app's block cards (DeviceCard etc.).
+  const tableStyles = useMemo(
+    () => ({
+      card: {
         borderWidth: 1,
+        borderColor: theme.border,
         borderRadius: radii.md,
         marginVertical: spacing[2],
+        overflow: 'hidden' as const,
       },
-      thead: {
-        backgroundColor: theme.bg2,
+      row: {
+        paddingHorizontal: spacing[4],
+        paddingVertical: spacing[3],
       },
-      th: {
-        padding: spacing[3],
+      rowDivider: {
+        borderTopWidth: 1,
+        borderTopColor: theme.border,
+      },
+      line: {
+        fontFamily: fontFamily.sans,
+        fontSize: 15,
+        lineHeight: 22,
+        color: theme.textHi,
+      },
+      label: {
         fontFamily: fontFamily.sansSemiBold,
-        color: theme.textHi,
-      },
-      td: {
-        padding: spacing[3],
-        color: theme.textHi,
-      },
-      tr: {
-        borderBottomColor: theme.border,
-        borderBottomWidth: 1,
+        color: theme.textMd,
       },
     }),
     [theme],
@@ -187,8 +207,41 @@ export function MarkdownBody({ content }: Props) {
   const rules: RenderRules = useMemo(
     () => ({
       hr: () => null,
+      table: (node) => {
+        const parsed = parseMarkdownTable(node);
+        const { rows, showLabels } = toDisplayRows(parsed);
+        if (rows.length === 0) {
+          return null;
+        }
+        return (
+          <View key={node.key} style={tableStyles.card}>
+            {rows.map((cells, rowIndex) => (
+              <View
+                key={rowIndex}
+                style={
+                  rowIndex > 0 ? [tableStyles.row, tableStyles.rowDivider] : tableStyles.row
+                }
+              >
+                {cells.map((value, cellIndex) => {
+                  const label = showLabels ? parsed.labels[cellIndex] : undefined;
+                  if (!label && !value) {
+                    return null;
+                  }
+                  return (
+                    <Text key={cellIndex} style={tableStyles.line}>
+                      {label ? <Text style={tableStyles.label}>{label}: </Text> : null}
+                      {/* Em dash keeps a labelled blank cell legible ("OS: —"). */}
+                      {value || '—'}
+                    </Text>
+                  );
+                })}
+              </View>
+            ))}
+          </View>
+        );
+      },
     }),
-    [],
+    [tableStyles],
   );
 
   return (

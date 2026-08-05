@@ -19,12 +19,16 @@ function makeRingSchema(t: TFunction<'patches'>) {
     enabled: z.boolean(),
     severities: z.array(z.enum(['critical', 'important', 'moderate', 'low'])),
     deferralDays: z.coerce.number().int().min(0).max(365),
+    thirdPartyApps: z.boolean(),
+    // Always a concrete number in the form (pre-filled from the ring hold);
+    // null "inherit" is an API-writer concept, mirroring deferralDaysOverride.
+    thirdPartyDeferralDays: z.coerce.number().int().min(0).max(365),
   }).superRefine((data, ctx) => {
-    if (data.enabled && data.severities.length === 0) {
+    if (data.enabled && data.severities.length === 0 && !data.thirdPartyApps) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['severities'],
-        message: t('updateRingForm.validation.selectSeverity'),
+        message: t('updateRingForm.validation.selectSeverityOrThirdParty'),
       });
     }
   });
@@ -48,10 +52,19 @@ function makeRingSchema(t: TFunction<'patches'>) {
 type RingSchema = ReturnType<typeof makeRingSchema>;
 export type UpdateRingFormValues = z.infer<RingSchema>;
 
+/** Defaults arrive from the API, which may omit the third-party fields (older
+ *  rings) or send `thirdPartyDeferralDays: null` meaning "inherit the ring
+ *  hold". Both are normalized to concrete form values in `initialValues`. */
+export type UpdateRingFormDefaults = Partial<Omit<UpdateRingFormValues, 'autoApprove'>> & {
+  autoApprove?: Partial<Omit<UpdateRingFormValues['autoApprove'], 'thirdPartyDeferralDays'>> & {
+    thirdPartyDeferralDays?: number | null;
+  };
+};
+
 type UpdateRingFormProps = {
   onSubmit?: (values: UpdateRingFormValues) => void | Promise<void>;
   onCancel?: () => void;
-  defaultValues?: Partial<UpdateRingFormValues>;
+  defaultValues?: UpdateRingFormDefaults;
   submitLabel?: string;
   loading?: boolean;
   /** When editing, surfaces the blast radius of a change. */
@@ -64,12 +77,13 @@ type Severity = 'critical' | 'important' | 'moderate' | 'low';
 // classifyWindowsUpdateCategory) so the approval evaluator's category rules
 // actually match. Note 'definitions' is plural to match the agent; the
 // evaluator also canonicalizes legacy singular 'definition' rules.
+// 'third_party_app' is deliberately absent: third-party app updates are governed
+// by the ring-level toggle below (the API rejects a category rule for them).
 const categoryOptions = [
   { value: 'security', labelKey: 'updateRingForm.categories.security' },
   { value: 'feature', labelKey: 'updateRingForm.categories.feature' },
   { value: 'firmware', labelKey: 'updateRingForm.categories.firmware' },
   { value: 'driver', labelKey: 'updateRingForm.categories.driver' },
-  { value: 'third_party_app', labelKey: 'updateRingForm.categories.thirdPartyApp' },
   { value: 'definitions', labelKey: 'updateRingForm.categories.definitions' },
 ];
 
@@ -209,13 +223,26 @@ export default function UpdateRingForm({
       deferralDays: 0,
       deadlineDays: null,
       gracePeriodHours: 4,
-      autoApprove: { enabled: false, severities: [], deferralDays: 0 },
+      autoApprove: { enabled: false, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: 0 },
       categoryRules: [],
       ...defaultValues,
-    } satisfies Partial<UpdateRingFormValues>;
+    } satisfies UpdateRingFormDefaults;
     const inheritedHold = merged.autoApprove?.deferralDays ?? merged.deferralDays ?? 0;
+    // A ring saved before the third-party gate existed has no `thirdPartyApps`,
+    // and a null third-party hold means "inherit" — resolve both to concrete
+    // values so the controls are never blank/uncontrolled.
+    const aa = merged.autoApprove ?? {};
+    const mergedAutoApprove = {
+      enabled: false,
+      severities: [],
+      deferralDays: inheritedHold,
+      thirdPartyApps: false,
+      ...aa,
+      thirdPartyDeferralDays: aa.thirdPartyDeferralDays ?? inheritedHold,
+    };
     return {
       ...merged,
+      autoApprove: mergedAutoApprove,
       categoryRules: (merged.categoryRules ?? []).map((r) => ({
         ...r,
         autoApproveSeverities: r.autoApproveSeverities ?? [],
@@ -402,6 +429,40 @@ export default function UpdateRingForm({
                   </p>
                 </div>
                 <HoldField field={register('autoApprove.deferralDays')} testId="ring-auto-approve-deferral" t={t} />
+
+                <div className="mt-4 w-full border-t pt-4" data-testid="ring-third-party-section">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <span className="text-sm font-medium">{t('updateRingForm.thirdParty.title')}</span>
+                      <p className="mt-0.5 max-w-md text-xs text-muted-foreground">
+                        {t('updateRingForm.thirdParty.description')}
+                      </p>
+                    </div>
+                    <ApproveToggle
+                      checked={!!autoApprove?.thirdPartyApps}
+                      field={register('autoApprove.thirdPartyApps')}
+                      testId="ring-third-party-enabled"
+                      t={t}
+                    />
+                  </div>
+                  {autoApprove?.thirdPartyApps && (
+                    <div className="mt-3">
+                      <div className="flex flex-wrap items-end justify-between gap-4">
+                        <p className="max-w-md text-xs text-muted-foreground" data-testid="ring-third-party-policy-note">
+                          {t('updateRingForm.thirdParty.policyNote')}
+                        </p>
+                        <HoldField
+                          field={register('autoApprove.thirdPartyDeferralDays')}
+                          testId="ring-third-party-deferral"
+                          t={t}
+                        />
+                      </div>
+                      <p className="mt-1 text-right text-xs text-muted-foreground" data-testid="ring-third-party-hold-note">
+                        {t('updateRingForm.thirdParty.holdNote')}
+                      </p>
+                    </div>
+                  )}
+                </div>
               </div>
             ) : (
               <p className="mt-2 text-xs text-muted-foreground">

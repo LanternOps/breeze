@@ -207,15 +207,20 @@ describe('prerequisite tool bounds match the columns behind them (#2814)', () =>
     expect(validateToolInput(name, { ...base, name: 'x'.repeat(200) }).success).toBe(true);
   });
 
-  it('manage_update_rings rejects a source outside the patch_source enum', () => {
-    // "os" belongs to the config-policy patch inlineSettings vocabulary, not to
-    // patch_policies.sources. Unpinned, it reached Postgres as 22P02, which
-    // safeHandler reports as "Invalid ID format — expected a valid UUID".
+  it('manage_update_rings neither advertises nor validates the deprecated sources column', () => {
+    // `patch_policies.sources` is deprecated (#3150): the handler never writes
+    // it and `get` strips it from responses. The tool definition must not
+    // re-advertise it (the model would send values the DB rejects as 22P02,
+    // which safeHandler reports as "Invalid ID format — expected a valid
+    // UUID"), and the Zod gate must not fail a legacy caller that still sends
+    // it — the unknown key is stripped, never forwarded.
+    const def = aiTools.get('manage_update_rings')?.definition;
+    expect(def).toBeDefined();
+    const properties = (def!.input_schema as { properties: Record<string, unknown> }).properties;
+    expect(properties).not.toHaveProperty('sources');
+    expect(toolInputSchemas['manage_update_rings']).toBeDefined();
     expect(validateToolInput('manage_update_rings', {
       action: 'create', name: 'Ring', sources: ['os'],
-    }).success).toBe(false);
-    expect(validateToolInput('manage_update_rings', {
-      action: 'create', name: 'Ring', sources: ['microsoft', 'third_party'],
     }).success).toBe(true);
   });
 

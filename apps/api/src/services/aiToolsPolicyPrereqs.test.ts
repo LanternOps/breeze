@@ -32,7 +32,6 @@ vi.mock('../db/schema/patches', () => ({
     gracePeriodHours: 'patchPolicies.gracePeriodHours',
     categories: 'patchPolicies.categories',
     excludeCategories: 'patchPolicies.excludeCategories',
-    sources: 'patchPolicies.sources',
   },
 }));
 vi.mock('../db/schema/softwarePolicies', () => ({ softwarePolicies: {} }));
@@ -253,6 +252,38 @@ describe('manage_update_rings autoApprove fail-closed write boundary (#1317)', (
     expect(setArg.autoApprove).toMatchObject({ enabled: true, severities: ['low'] });
   });
 
+  it('update with an old-shape autoApprove preserves the stored third-party opt-in (merge, not replace)', async () => {
+    // The model routinely writes partial objects for fields it wasn't asked
+    // about — an omitted thirdPartyApps must not reset the ring's opt-in.
+    mockSelectReturns({
+      id: RING_ID,
+      partnerId: PARTNER_ID,
+      name: 'Ring A',
+      kind: 'ring',
+      autoApprove: { enabled: true, severities: ['critical'], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: 12 },
+    });
+    mockUpdate();
+    const tool = getTool();
+    const output = await tool.handler(
+      {
+        action: 'update',
+        ringId: RING_ID,
+        autoApprove: { enabled: true, severities: ['low'] },
+      },
+      makeAuth()
+    );
+
+    expect(JSON.parse(output).success).toBe(true);
+    const setArg = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
+    expect(setArg.autoApprove).toEqual({
+      enabled: true,
+      severities: ['low'],
+      deferralDays: 0,
+      thirdPartyApps: true,
+      thirdPartyDeferralDays: 12,
+    });
+  });
+
   it('rejects create and other actions for org-scope callers', async () => {
     const tool = getTool();
     const orgAuth = {
@@ -285,6 +316,86 @@ describe('manage_update_rings autoApprove fail-closed write boundary (#1317)', (
     const written = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
     expect(written.partnerId).toBe(PARTNER_ID);
     expect(written.orgId).toBeUndefined();
+  });
+
+  it('manage_update_rings create accepts a third-party-only autoApprove', async () => {
+    mockInsertReturns({ id: RING_ID, name: 'Ring A' });
+    const tool = getTool();
+    const output = await tool.handler(
+      {
+        action: 'create',
+        name: 'Ring A',
+        autoApprove: { enabled: true, severities: [], thirdPartyApps: true },
+      },
+      makeAuth()
+    );
+
+    const parsed = JSON.parse(output);
+    expect(parsed.error).toBeUndefined();
+    expect(parsed.success).toBe(true);
+    expect(insertMock).toHaveBeenCalledTimes(1);
+    const written = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+    expect(written.autoApprove).toMatchObject({
+      enabled: true,
+      severities: [],
+      thirdPartyApps: true,
+    });
+  });
+
+  it('manage_update_rings create/update ignore a sources input and never write the column', async () => {
+    mockInsertReturns({ id: RING_ID, name: 'Ring A' });
+    const tool = getTool();
+    const createOutput = await tool.handler(
+      { action: 'create', name: 'Ring A', sources: ['os'] },
+      makeAuth()
+    );
+    expect(JSON.parse(createOutput).success).toBe(true);
+    const createdValues = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+    expect(createdValues).not.toHaveProperty('sources');
+
+    vi.clearAllMocks();
+    mockSelectReturns({ id: RING_ID, partnerId: PARTNER_ID, name: 'Ring A', kind: 'ring' });
+    mockUpdate();
+    const updateOutput = await tool.handler(
+      { action: 'update', ringId: RING_ID, sources: ['os'] },
+      makeAuth()
+    );
+    expect(JSON.parse(updateOutput).success).toBe(true);
+    const updatedValues = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
+    expect(updatedValues).not.toHaveProperty('sources');
+  });
+
+  it('manage_update_rings still rejects enabled with no severities and no thirdPartyApps', async () => {
+    const tool = getTool();
+    const output = await tool.handler(
+      {
+        action: 'create',
+        name: 'Ring A',
+        autoApprove: { enabled: true, severities: [] },
+      },
+      makeAuth()
+    );
+
+    const parsed = JSON.parse(output);
+    expect(parsed.error).toMatch(/severity|third-party/i);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('manage_update_rings get strips the deprecated sources column from the response', async () => {
+    mockSelectReturns({
+      id: RING_ID,
+      partnerId: PARTNER_ID,
+      name: 'Ring A',
+      kind: 'ring',
+      sources: ['microsoft'],
+    });
+    const tool = getTool();
+    const output = await tool.handler({ action: 'get', ringId: RING_ID }, makeAuth());
+
+    const parsed = JSON.parse(output);
+    expect(parsed.ring).toBeDefined();
+    expect(parsed.ring).not.toHaveProperty('sources');
+    expect(parsed.ring.id).toBe(RING_ID);
   });
 });
 

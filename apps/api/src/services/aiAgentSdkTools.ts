@@ -21,7 +21,6 @@ import type { ActiveSession } from './streamingSessionManager';
 import { waitForPlanApproval } from './aiAgent';
 import {
   aiActionPlans,
-  patchSourceEnum,
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
 } from '../db/schema';
@@ -1864,7 +1863,8 @@ export function createBreezeMcpServer(
         gracePeriodHours: z.number().int().min(0).max(168).optional(),
         categories: z.array(z.string().max(100)).max(50).optional(),
         excludeCategories: z.array(z.string().max(100)).max(50).optional(),
-        sources: z.array(z.enum(patchSourceEnum.enumValues)).max(20).optional(),
+        // `patch_policies.sources` is deprecated (#3150) — never advertised to
+        // the model; the handler ignores it and `get` strips it from responses.
         autoApprove: z.record(z.string(), z.unknown()).optional(),
         enabled: z.boolean().optional(),
         limit: z.number().int().min(1).max(100).optional(),
@@ -2163,11 +2163,12 @@ export function createBreezeMcpServer(
           status: 'pending' as const,
         }));
 
-        // Guard: partner-scoped users may not have orgId
-        const orgId = session.auth.orgId;
-        if (!orgId) {
-          return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Action plans require an organization context' }) }], isError: true };
-        }
+        // Canonical session org (always set) — `session.auth.orgId` is null for
+        // partner-scope logins, which hard-failed every plan proposal for
+        // exactly the population #3087 narrows tool execution for. Every other
+        // DB write in this handler already keys off session.orgId (see
+        // aiAgentSdk.ts's withDbAccessContext calls).
+        const orgId = session.orgId;
 
         // Insert plan record
         let planId: string;
