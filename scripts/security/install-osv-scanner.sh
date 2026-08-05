@@ -16,8 +16,15 @@ base_url="https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER
 workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 
-curl -sSfL -o "$workdir/$asset" "$base_url/$asset"
-curl -sSfL -o "$workdir/$checksums" "$base_url/$checksums"
+# --retry alone only covers timeouts and HTTP 408/429/5xx; --retry-all-errors is
+# needed for transient TCP resets (curl exit 35 "Recv failure: Connection reset
+# by peer"), which have flaked the Security Audit job.
+curl_fetch() {
+  curl -sSfL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 -o "$1" "$2"
+}
+
+curl_fetch "$workdir/$asset" "$base_url/$asset"
+curl_fetch "$workdir/$checksums" "$base_url/$checksums"
 (cd "$workdir" && grep "  ${asset}$" "$checksums" | sha256sum -c -)
 
 sudo install -m 0755 "$workdir/$asset" /usr/local/bin/osv-scanner
