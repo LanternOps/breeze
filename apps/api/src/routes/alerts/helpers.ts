@@ -12,6 +12,7 @@ import {
   partners,
 } from '../../db/schema';
 import { siteAccessCheck } from '../../middleware/auth';
+import { retiredConditionTypeError } from '../../services/alertConditions';
 import {
   validateEmailConfig,
   validateWebhookConfig,
@@ -574,4 +575,65 @@ export async function resolveAlertTemplate(params: {
     .returning();
 
   return { template: createdTemplate, created: true };
+}
+
+/**
+ * Guard for the re-activation paths (#2948).
+ *
+ * `2026-08-08-drop-custom-alert-conditions.sql` deactivates standalone alert
+ * rules whose every effective condition is the retired `custom` type — it
+ * cannot delete them, because `alerts.rule_id` is a real FK with no
+ * `ON DELETE`. Without this check the obvious reaction to a rule that "turned
+ * itself off after an upgrade" — flipping it back on via the toggle or a
+ * PUT — silently restores the exact pre-fix state: enabled, healthy-looking,
+ * permanently unfirable. Neither of those paths sends `conditions`, so the
+ * write-boundary check on the payload never sees them.
+ *
+ * Resolves the rule's EFFECTIVE conditions with the same precedence
+ * formatAlertRuleResponse and alertService.getApplicableRules use
+ * (`overrides.conditions ?? template.conditions`) and returns an error message
+ * when they are retired, or null when re-activation is safe.
+ */
+export async function retiredConditionReactivationError(rule: {
+  templateId: string;
+  overrideSettings?: unknown;
+}): Promise<string | null> {
+  const overrides = getOverrides(rule.overrideSettings);
+  let conditions = overrides.conditions;
+
+  if (conditions === undefined || conditions === null) {
+    // Read in a SYSTEM context, not the caller's. alert_templates SELECT is
+    // `breeze_has_org_access(org_id) OR breeze_has_partner_access(partner_id)
+    // OR is_built_in`, and an org token never passes the partner branch — yet
+    // an org-owned rule is explicitly allowed to point at a partner-owned
+    // template (see the templateDenied check in rules.ts). Reading as the
+    // caller would return zero rows for exactly that combination, and a
+    // "no conditions found" answer reads as "nothing retired" — the gate would
+    // wave through the rule it exists to stop.
+    const [template] = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        db
+          .select({ conditions: alertTemplates.conditions })
+          .from(alertTemplates)
+          .where(eq(alertTemplates.id, rule.templateId))
+          .limit(1)
+      )
+    );
+
+    if (!template) {
+      // Fail CLOSED. "I could not determine this rule's conditions" is not
+      // evidence that they are safe, and the cost of being wrong is asymmetric:
+      // a spurious error on an already-broken rule, versus silently restoring
+      // permanent alerting loss.
+      return 'This alert rule\'s template could not be read, so its conditions cannot be verified. '
+        + 'It cannot be re-enabled until the template is accessible.';
+    }
+
+    conditions = template.conditions;
+  }
+
+  const error = retiredConditionTypeError(conditions);
+  if (!error) return null;
+
+  return `${error} This rule cannot be re-enabled until it is replaced.`;
 }

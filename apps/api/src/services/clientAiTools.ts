@@ -668,6 +668,9 @@ export function makeClientToolHandler(
       // the technician path drains them in createSessionPostToolUse
       // (aiAgentSdk.ts:640). Client handlers bypass that callback, so drain here.
       const toolUseId = session.toolUseIdQueue.shift() ?? crypto.randomUUID();
+      // Drop the paired name entry recorded at content_block_start (see the
+      // dropped-call fallback in streamingSessionManager.ts, #3094).
+      session.toolUseNames?.delete(toolUseId);
       const startTime = Date.now();
 
       // Server-side write-mode enforcement (pinned contract): 'readonly'

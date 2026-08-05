@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getJobMock, addMock, addBulkMock, closeMock, selectMock, fromMock, whereMock, groupByMock, workerProcessors } = vi.hoisted(() => ({
+const { getJobMock, addMock, addBulkMock, closeMock, selectMock, fromMock, innerJoinMock, whereMock, groupByMock, workerProcessors } = vi.hoisted(() => ({
   getJobMock: vi.fn(),
   addMock: vi.fn(),
   addBulkMock: vi.fn(),
   closeMock: vi.fn(),
   selectMock: vi.fn(),
   fromMock: vi.fn(),
+  innerJoinMock: vi.fn(),
   whereMock: vi.fn(),
   groupByMock: vi.fn(),
   workerProcessors: [] as Array<(job: { data: unknown }) => Promise<unknown>>,
@@ -47,6 +48,8 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   organizationUsers: { orgId: 'organizationUsers.orgId' },
+  // Joined so the org fan-out can exclude the hidden 'quick_support' org.
+  organizations: { id: 'organizations.id', type: 'organizations.type' },
 }));
 
 vi.mock('../services/userRiskScoring', () => ({
@@ -94,13 +97,15 @@ describe('triggerUserRiskRecompute', () => {
     closeMock.mockReset();
     selectMock.mockReset();
     fromMock.mockReset();
+    innerJoinMock.mockReset();
     whereMock.mockReset();
     groupByMock.mockReset();
     getJobMock.mockResolvedValue(null);
     addMock.mockResolvedValue({ id: 'queue-job-1' });
     addBulkMock.mockResolvedValue([]);
     selectMock.mockReturnValue({ from: fromMock });
-    fromMock.mockReturnValue({ where: whereMock });
+    fromMock.mockReturnValue({ innerJoin: innerJoinMock });
+    innerJoinMock.mockReturnValue({ where: whereMock });
     whereMock.mockReturnValue({ groupBy: groupByMock });
     groupByMock.mockResolvedValue([{ orgId: 'org-1' }]);
     workerProcessors.length = 0;

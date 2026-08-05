@@ -46,6 +46,8 @@ describe('UpdateRingForm — ring auto-approve (#1317)', () => {
       enabled: true,
       severities: ['critical', 'important'],
       deferralDays: 7,
+      thirdPartyApps: false,
+      thirdPartyDeferralDays: 0,
     });
   });
 
@@ -59,7 +61,9 @@ describe('UpdateRingForm — ring auto-approve (#1317)', () => {
     fireEvent.click(screen.getByTestId('ring-auto-approve-enabled'));
     fireEvent.click(screen.getByRole('button', { name: /save ring/i }));
 
-    await screen.findByText('Select at least one severity for auto-approval.');
+    await screen.findByText(
+      'Select at least one severity or enable third-party app auto-approval.'
+    );
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
@@ -167,5 +171,135 @@ describe('UpdateRingForm — ring auto-approve (#1317)', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     expect((onSubmit.mock.calls[0][0] as UpdateRingFormValues).deadlineDays).toBeNull();
+  });
+});
+
+// Third-party app updates are no longer a patch *category* rule — they are a
+// ring-level gate with its own hold, because vendors publish no severity for
+// them (winget/Chocolatey/Homebrew).
+describe('UpdateRingForm — third-party app auto-approve', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('renders the third-party toggle inside the enabled auto-approve section', () => {
+    render(
+      <UpdateRingForm
+        onSubmit={vi.fn()}
+        defaultValues={{
+          name: 'Pilot',
+          autoApprove: {
+            enabled: true,
+            severities: ['critical'],
+            deferralDays: 0,
+            thirdPartyApps: false,
+            thirdPartyDeferralDays: 0,
+          },
+        }}
+      />
+    );
+
+    expect(screen.getByTestId('ring-third-party-section')).toBeInTheDocument();
+    expect(screen.getByTestId('ring-third-party-enabled')).not.toBeChecked();
+    // The hold + policy note only appear once the gate is on.
+    expect(screen.queryByTestId('ring-third-party-deferral')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ring-third-party-policy-note')).not.toBeInTheDocument();
+  });
+
+  it('hides the third-party subsection while the default rule is manual', () => {
+    render(<UpdateRingForm onSubmit={vi.fn()} />);
+
+    expect(screen.queryByTestId('ring-third-party-section')).not.toBeInTheDocument();
+  });
+
+  it('shows the policy-consent note when third-party is on', () => {
+    render(<UpdateRingForm onSubmit={vi.fn()} />);
+
+    fireEvent.click(screen.getByTestId('ring-auto-approve-enabled'));
+    fireEvent.click(screen.getByTestId('ring-third-party-enabled'));
+
+    expect(screen.getByTestId('ring-third-party-policy-note')).toBeInTheDocument();
+    expect(screen.getByTestId('ring-third-party-deferral')).toBeInTheDocument();
+  });
+
+  it('submits a third-party-only ring without a severity validation error', async () => {
+    const onSubmit = vi.fn();
+    render(<UpdateRingForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByPlaceholderText('e.g. Pilot, Broad'), { target: { value: 'Apps' } });
+    fireEvent.click(screen.getByTestId('ring-auto-approve-enabled'));
+    fireEvent.click(screen.getByTestId('ring-third-party-enabled'));
+    fireEvent.change(screen.getByTestId('ring-third-party-deferral'), { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: /save ring/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const values = onSubmit.mock.calls[0][0] as UpdateRingFormValues;
+    expect(values.autoApprove.thirdPartyApps).toBe(true);
+    expect(values.autoApprove.severities).toEqual([]);
+    expect(values.autoApprove.thirdPartyDeferralDays).toBe(3);
+  });
+
+  it('still blocks enabled + no severities + third-party off', async () => {
+    const onSubmit = vi.fn();
+    render(<UpdateRingForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByPlaceholderText('e.g. Pilot, Broad'), { target: { value: 'Pilot' } });
+    fireEvent.click(screen.getByTestId('ring-auto-approve-enabled'));
+    expect(screen.getByTestId('ring-third-party-enabled')).not.toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: /save ring/i }));
+
+    await screen.findByText(
+      'Select at least one severity or enable third-party app auto-approval.'
+    );
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('no longer offers third_party_app as a category override option', () => {
+    render(<UpdateRingForm onSubmit={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /add override/i }));
+
+    const select = screen.getByRole('combobox', { name: 'Category' }) as HTMLSelectElement;
+    const values = Array.from(select.options).map((o) => o.value);
+    expect(values).not.toContain('third_party_app');
+    expect(values).toContain('security');
+  });
+
+  // The API sends `thirdPartyDeferralDays: null` for "inherit the ring hold";
+  // the form always shows (and submits) a concrete number.
+  it('resolves a null third-party hold to the inherited ring hold', () => {
+    render(
+      <UpdateRingForm
+        onSubmit={vi.fn()}
+        defaultValues={{
+          name: 'Broad',
+          autoApprove: {
+            enabled: true,
+            severities: ['critical'],
+            deferralDays: 6,
+            thirdPartyApps: true,
+            thirdPartyDeferralDays: null,
+          },
+        }}
+      />
+    );
+
+    expect(screen.getByTestId('ring-third-party-enabled')).toBeChecked();
+    expect(screen.getByTestId('ring-third-party-deferral')).toHaveValue(6);
+  });
+
+  // Rings saved before the gate existed have no third-party fields at all.
+  it('defaults a legacy ring without third-party fields to off', () => {
+    render(
+      <UpdateRingForm
+        onSubmit={vi.fn()}
+        defaultValues={{
+          name: 'Legacy',
+          autoApprove: { enabled: true, severities: ['critical'], deferralDays: 2 },
+        }}
+      />
+    );
+
+    expect(screen.getByTestId('ring-third-party-enabled')).not.toBeChecked();
   });
 });

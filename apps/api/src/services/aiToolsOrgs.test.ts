@@ -18,7 +18,7 @@ vi.mock('./tenantOffboarding', () => ({
   abortOrganizationOffboarding: vi.fn(async () => ({ aborted: false, uninstallsCancelled: 0 })),
 }));
 
-import { and, eq, ilike, inArray, isNull } from 'drizzle-orm';
+import { and, eq, ilike, inArray, isNull, ne } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations, sites } from '../db/schema';
 import { writeAuditEvent } from './auditEvents';
@@ -186,9 +186,14 @@ describe('list_organizations', () => {
     });
     expect(out.organizations[1].sites).toEqual([{ id: SITE_2, name: 'Warehouse' }]);
 
-    // The org query is narrowed to the caller's accessible orgs.
+    // The org query is narrowed to the caller's accessible orgs, and the hidden
+    // 'quick_support' org is excluded (it stays inside accessibleOrgIds by design).
     expect(whereSpy.mock.calls[0]![0]).toEqual(
-      and(isNull(organizations.deletedAt), inArray(organizations.id, [ORG_1, ORG_2]))
+      and(
+        isNull(organizations.deletedAt),
+        ne(organizations.type, 'quick_support'),
+        inArray(organizations.id, [ORG_1, ORG_2])
+      )
     );
   });
 
@@ -200,6 +205,7 @@ describe('list_organizations', () => {
     expect(whereSpy.mock.calls[0]![0]).toEqual(
       and(
         isNull(organizations.deletedAt),
+        ne(organizations.type, 'quick_support'),
         ilike(organizations.name, '%acme%'),
         inArray(organizations.id, [ORG_1, ORG_2])
       )
@@ -215,7 +221,11 @@ describe('list_organizations', () => {
     expect(out.organizations[0].id).toBe(ORG_1);
     // The org query is pinned to the caller's own org id.
     expect(whereSpy.mock.calls[0]![0]).toEqual(
-      and(isNull(organizations.deletedAt), eq(organizations.id, ORG_1))
+      and(
+        isNull(organizations.deletedAt),
+        ne(organizations.type, 'quick_support'),
+        eq(organizations.id, ORG_1)
+      )
     );
   });
 

@@ -328,6 +328,8 @@ describe('quoteService deposits', () => {
     queueResult(blocks); // getQuote: blocks
     queueResult(lines); // getQuote: lines
     queueResult([]); // getQuote: no staged Pax8 order
+    queueResult([]); // getQuote: listQuoteOrders — order headers
+    queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([{ name: 'Org Inc' }]); // getQuote: draft bill-to org lookup
     queueResult([]); // cloneQuote: quote images
     queueResult([{ counter: 2 }]); // allocateQuoteCounter
@@ -405,11 +407,40 @@ describe('quoteService deposits', () => {
     expect(clonedBlocks).toHaveLength(1); // only the source block's clone
   });
 
+  it('getQuote returns orders with their allocations grouped by order (Task 11)', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', taxRate: null, depositType: 'none', depositPercent: null }]); // quote
+    queueResult([]); // blocks
+    queueResult([]); // lines
+    queueResult([]); // no staged Pax8 order
+    queueResult([
+      { id: 'ord-1', quoteId: 'q1', orgId: 'org1', clientRequestId: 'c1' },
+      { id: 'ord-2', quoteId: 'q1', orgId: 'org1', clientRequestId: 'c2' },
+    ]); // listQuoteOrders: order headers
+    queueResult([
+      { id: 'ol-1', orderId: 'ord-1', quoteId: 'q1', quoteLineId: 'ql-1', orderedQty: '2.00', receivedQty: '0.00' },
+      { id: 'ol-2', orderId: 'ord-2', quoteId: 'q1', quoteLineId: 'ql-2', orderedQty: '1.00', receivedQty: '1.00' },
+    ]); // listQuoteOrders: order lines (both orders, one line each)
+
+    const detail = await svc.getQuote('q1', actor);
+
+    expect(detail.orders).toHaveLength(2);
+    const ord1 = detail.orders.find((o: { id: string }) => o.id === 'ord-1')!;
+    const ord2 = detail.orders.find((o: { id: string }) => o.id === 'ord-2')!;
+    expect((ord1 as { lines: unknown[] }).lines).toEqual([
+      { id: 'ol-1', orderId: 'ord-1', quoteId: 'q1', quoteLineId: 'ql-1', orderedQty: '2.00', receivedQty: '0.00' },
+    ]);
+    expect((ord2 as { lines: unknown[] }).lines).toEqual([
+      { id: 'ol-2', orderId: 'ord-2', quoteId: 'q1', quoteLineId: 'ql-2', orderedQty: '1.00', receivedQty: '1.00' },
+    ]);
+  });
+
   it('getQuote returns depositDueTotal and categoryBreakdown', async () => {
     queueResult([{ id: 'q1', orgId: 'org1', taxRate: '0.10000', depositType: 'percent', depositPercent: '30.00' }]); // quote
     queueResult([]); // blocks
     queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false, itemType: 'hardware' }]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // listQuoteOrders — order headers
+    queueResult([]); // listQuoteOrders — order lines
 
     const { quote } = await svc.getQuote('q1', actor);
 
@@ -423,13 +454,24 @@ describe('quoteService deposits', () => {
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', taxRate: null, depositType: 'none', depositPercent: null }]);
     queueResult([]); // blocks
     queueResult([]); // quote lines
-    queueResult([{ pax8OrderId: 'order-1' }]);
-    queueResult([{ count: 3 }]);
+    queueResult([{ pax8OrderId: 'order-1', status: 'awaiting_details' }]);
+    queueResult([
+      { sourceQuoteLineId: 'ql-1', submitState: 'pending', quantity: '1.00' },
+      { sourceQuoteLineId: 'ql-2', submitState: 'pending', quantity: '2.00' },
+    ]);
 
     const detail = await svc.getQuote('q1', actor);
 
     expect(detail.pax8OrderId).toBe('order-1');
-    expect(detail.pax8OrderLineCount).toBe(3);
+    expect(detail.pax8OrderLineCount).toBe(2);
+    expect(detail.pax8Order).toEqual({
+      id: 'order-1',
+      status: 'awaiting_details',
+      lines: [
+        { sourceQuoteLineId: 'ql-1', submitState: 'pending', quantity: '1.00' },
+        { sourceQuoteLineId: 'ql-2', submitState: 'pending', quantity: '2.00' },
+      ],
+    });
   });
 
   it('getQuote returns a null staged-order summary when acceptance staged no Pax8 order', async () => {
@@ -442,6 +484,7 @@ describe('quoteService deposits', () => {
 
     expect(detail.pax8OrderId).toBeNull();
     expect(detail.pax8OrderLineCount).toBe(0);
+    expect(detail.pax8Order).toBeNull();
   });
 
   it('getQuote returns a SENT quote bill-to from the frozen snapshot, never the live org', async () => {
@@ -465,6 +508,8 @@ describe('quoteService deposits', () => {
     queueResult([]); // blocks
     queueResult([]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // listQuoteOrders — order headers
+    queueResult([]); // listQuoteOrders — order lines
     queueResult([{ name: 'Org Inc', taxId: 'ORG-TAX', billingAddressLine1: 'Org St', billingAddressLine2: null, billingAddressCity: 'Berthoud', billingAddressRegion: 'CO', billingAddressPostalCode: '80513', billingAddressCountry: 'US' }]); // org billing
 
     const { billTo } = await svc.getQuote('q1', actor);

@@ -437,6 +437,66 @@ describe('auth store fetchWithAuth', () => {
     expect(useAuthStore.getState().tokens?.accessToken).toBe(refreshedTokens.accessToken);
     expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/auth/refresh'))).toHaveLength(1);
   });
+
+  it('preserves a caller-provided Content-Type instead of forcing JSON', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchWithAuth('/software/catalog/c1/versions/uploads/u1/chunks?offset=0', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: 'raw-bytes',
+    });
+
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((options.headers as Headers).get('Content-Type')).toBe('application/octet-stream');
+  });
+
+  it('rejects a timed-out request with a readable error, not "signal is aborted without reason"', async () => {
+    vi.useFakeTimers();
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      // fetch that only settles when its signal aborts, rejecting with the
+      // signal's reason — exactly what real fetch does.
+      const fetchMock = vi.fn(
+        (_url: string, options: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            options.signal?.addEventListener('abort', () =>
+              reject(options.signal?.reason ?? new DOMException('signal is aborted without reason', 'AbortError')),
+            );
+          }),
+      );
+      vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+      const pending = fetchWithAuth('/devices');
+      const assertion = expect(pending).rejects.toThrow(/timed out after 30s/);
+      await vi.advanceTimersByTimeAsync(30_001);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('passes the abort signal through to the 401 retry request', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi.fn()
+      // 1st: original request → 401
+      .mockResolvedValueOnce(makeResponse({ error: 'expired' }, false, 401))
+      // 2nd: /auth/refresh → new tokens
+      .mockResolvedValueOnce(
+        makeResponse({ success: true, tokens: { accessToken: 'access-new', expiresInSeconds: 900 } }),
+      )
+      // 3rd: replayed original request → 200
+      .mockResolvedValueOnce(makeResponse({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await fetchWithAuth('/devices', { method: 'POST', body: JSON.stringify({}) });
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const retryOptions = fetchMock.mock.calls[2][1] as RequestInit;
+    expect(retryOptions.signal).toBeInstanceOf(AbortSignal);
+  });
 });
 
 describe('auth API helpers', () => {

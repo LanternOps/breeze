@@ -1,0 +1,47 @@
+{
+  "page": {
+    "title": "Start a support session",
+    "intro": "Someone helping you with this computer asked you to open this page. Nothing happens until you download and run the program yourself."
+  },
+  "code": {
+    "heading": "Enter the code you were given",
+    "help": "The person helping you will read out a code of 9 letters and numbers, like KTM-4H7-P2X. Capitals and dashes do not matter.",
+    "label": "Support code",
+    "placeholder": "XXX-XXX-XXX",
+    "submit": "Continue",
+    "formatError": "That is not a complete code yet. A code has 9 letters and numbers, for example KTM-4H7-P2X."
+  },
+  "checking": "Checking that code…",
+  "invalid": {
+    "title": "That code no longer works",
+    "body": "A support code stops working a short time after it is created, and it can only be used once. Ask the person helping you to read out a new code, then type it in above."
+  },
+  "checkFailed": {
+    "title": "The code could not be checked",
+    "body": "The connection to the internet may have dropped. Check your connection and try the code again.",
+    "retry": "Try again"
+  },
+  "ready": {
+    "title": "Your code works",
+    "codeIntro": "Your code is {{code}}."
+  },
+  "download": {
+    "windows": "Download for Windows",
+    "manualFallback": "If the download prompts for a code, enter: {{code}}",
+    "macosLabel": "macOS (Mac computers)",
+    "macosBadge": "Coming soon",
+    "macosBody": "The program is not ready for Mac computers yet. Ask the person helping you what to do instead."
+  },
+  "windowsPrompt": {
+    "title": "Windows will ask you before it runs",
+    "body": "When you open the file, Windows shows a prompt asking whether you want to allow it to run. The file is digitally signed, so that prompt names a publisher: it should read {{publisher}}. If it says the publisher is unknown, or names anyone you were not expecting, close the prompt and call the person helping you instead of continuing.",
+    "publisher": "the publisher of Breeze"
+  },
+  "trust": {
+    "title": "What the program does",
+    "seeScreen": "While the session is running, the person helping you can see your screen.",
+    "temporary": "The program runs once and then removes itself. Nothing stays installed on this computer.",
+    "stopAnyTime": "You can stop sharing whenever you want by closing the program window.",
+    "onlyIfExpected": "If you were not expecting this, do not run it. Close this page and contact the support people you normally deal with."
+  }
+}

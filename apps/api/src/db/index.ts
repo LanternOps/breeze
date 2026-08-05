@@ -32,6 +32,17 @@ const client = postgres(requestDatabaseConfig.url, {
   max: getDbPoolMax(),
   idle_timeout: 20,
   max_lifetime: 60 * 30,
+  // #3022. This timer is a plain setTimeout inside the driver, so it expires
+  // when the main thread is too busy to run the socket callbacks just as
+  // readily as when the handshake actually fails — see
+  // services/postgresConnectTimeout.ts, which classifies the two apart.
+  //
+  // The literal is duplicated as POSTGRES_CONNECT_TIMEOUT_SECONDS there rather
+  // than imported from there: importing would pull the classifier and the
+  // event-loop monitor into this module's graph, and this module is the one
+  // db/requestDatabasePool.test.ts re-imports under a hard 15s budget. The two
+  // values are pinned together by a contract test in that classifier's suite,
+  // so they cannot drift silently.
   connect_timeout: 10,
 });
 

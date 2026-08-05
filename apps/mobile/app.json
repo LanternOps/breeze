@@ -6,15 +6,14 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#0A0A0B"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.breeze.rmm",
-      "buildNumber": "1",
+      "buildNumber": "5",
+      "associatedDomains": [
+        "webcredentials:us.2breeze.app",
+        "webcredentials:eu.2breeze.app"
+      ],
       "infoPlist": {
         "NSFaceIDUsageDescription": "Use Face ID to unlock the app",
         "NSCameraUsageDescription": "Camera access for QR code scanning",
@@ -43,6 +42,30 @@
     "plugins": [
       "expo-secure-store",
       [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#0A0A0B",
+          "dark": {
+            "image": "./assets/splash-icon.png",
+            "backgroundColor": "#0A0A0B"
+          }
+        }
+      ],
+      [
+        "expo-font",
+        {
+          "fonts": [
+            "./assets/fonts/Geist-Regular.otf",
+            "./assets/fonts/Geist-Medium.otf",
+            "./assets/fonts/Geist-SemiBold.otf",
+            "./assets/fonts/GeistMono-Regular.otf",
+            "./assets/fonts/GeistMono-Medium.otf"
+          ]
+        }
+      ],
+      [
         "expo-notifications",
         {
           "icon": "./assets/icon.png",
@@ -62,7 +85,13 @@
           "speechRecognitionPermission": "Use voice to ask Breeze about your fleet."
         }
       ],
-      "@sentry/react-native/expo"
+      [
+        "@sentry/react-native/expo",
+        {
+          "organization": "olivetech-ks",
+          "project": "breeze-mobile"
+        }
+      ]
     ]
   }
 }

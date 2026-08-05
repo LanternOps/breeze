@@ -13,6 +13,10 @@
     "sessions": {
       "title": "Historial de sesiones",
       "description": "Ver sesiones pasadas"
+    },
+    "quickSupport": {
+      "title": "Soporte rápido",
+      "description": "Código de un solo uso para soporte puntual"
     }
   },
   "connectDesktopButton": {
@@ -761,5 +765,60 @@
       "obtainTicket": "No se pudo obtener el ticket"
     },
     "sessionTitle": "Título de la sesión"
+  },
+  "quickSupport": {
+    "title": "Soporte rápido",
+    "subtitle": "Genere un código de un solo uso para dar soporte puntual a un equipo que no está inscrito.",
+    "newSession": "Nueva sesión de soporte",
+    "form": {
+      "title": "Iniciar una sesión de soporte",
+      "attributionOrg": "Atribuir a un cliente (opcional)",
+      "attributionOrgHint": "Solo para informes: esto no otorga ni cambia el acceso a los datos de ese cliente.",
+      "attributionOrgNone": "Sin atribuir",
+      "attributionLabel": "Etiqueta de referencia (opcional)",
+      "attributionLabelPlaceholder": "¿Para quién o para qué es esta sesión?",
+      "submit": "Generar código",
+      "submitting": "Generando el código…"
+    },
+    "code": {
+      "heading": "Léale este código a la persona que está ayudando",
+      "shownOnce": "Este código aparece una sola vez. Cópielo antes de salir de esta página: no se podrá volver a mostrar.",
+      "expires": "Vence a las {{time}}",
+      "instructions": "Envíele el enlace, pídale que ejecute el cliente descargado y que escriba el código.",
+      "copyCode": "Copiar código",
+      "copyLink": "Copiar enlace de descarga",
+      "copiedCode": "Código copiado al portapapeles",
+      "copiedLink": "Enlace de descarga copiado al portapapeles",
+      "copyFailed": "No se pudo copiar al portapapeles"
+    },
+    "status": {
+      "heading": "Avance de la sesión",
+      "pending": "Esperando a que el usuario ejecute el cliente…",
+      "claimed": "El cliente se está conectando…",
+      "ready": "Listo para conectar",
+      "active": "Sesión en curso",
+      "ended": "Sesión finalizada",
+      "expired": "Sesión vencida"
+    },
+    "connect": {
+      "waitingForDevice": "El equipo se está inscribiendo. El botón para conectar aparecerá en cuanto esté en línea."
+    },
+    "end": {
+      "button": "Finalizar sesión",
+      "success": "Sesión de soporte finalizada",
+      "error": "No se pudo finalizar la sesión de soporte",
+      "alreadyEnded": "Esa sesión de soporte ya había finalizado"
+    },
+    "errors": {
+      "create": "No se pudo crear la sesión de soporte",
+      "list": "No se pudieron cargar las sesiones de soporte recientes"
+    },
+    "list": {
+      "heading": "Sesiones de soporte recientes",
+      "empty": "Todavía no hay sesiones de soporte.",
+      "columnCreated": "Inicio",
+      "columnEnded": "Fin",
+      "unlabeled": "Sesión sin etiqueta"
+    }
   }
 }

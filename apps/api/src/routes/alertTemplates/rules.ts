@@ -9,6 +9,8 @@ import { listRulesSchema, createRuleSchema, updateRuleSchema, toggleRuleSchema }
 import { resolveScopedOrgId, parseBoolean } from './helpers';
 import { getPagination } from '../../utils/pagination';
 import { PERMISSIONS } from '../../services/permissions';
+import { retiredConditionTypeError } from '../../services/alertConditions';
+import { retiredConditionReactivationError } from '../alerts/helpers';
 
 export const ruleRoutes = new Hono();
 
@@ -132,6 +134,13 @@ ruleRoutes.post(
       const data = c.req.valid('json');
       if (data.orgId && data.orgId !== orgId) {
         return c.json({ error: 'Forbidden' }, 403);
+      }
+
+      // #2948 — this route writes the same overrideSettings.conditions the
+      // evaluator reads, so it needs the same boundary as POST /alerts/rules.
+      const createConditionTypeError = retiredConditionTypeError(data.conditions);
+      if (createConditionTypeError) {
+        return c.json({ error: createConditionTypeError }, 400);
       }
 
       // Verify template exists and is accessible
@@ -278,6 +287,24 @@ ruleRoutes.patch(
         return c.json({ error: 'No updates provided' }, 400);
       }
 
+      // Narrower than the /alerts/rules guard on purpose: updateRuleSchema
+      // (./schemas.ts) has no overrideSettings/overrides passthrough, so there
+      // is no second key to smuggle conditions through. Add one and this must
+      // widen to match.
+      const updateConditionTypeError = retiredConditionTypeError(updates.conditions);
+      if (updateConditionTypeError) {
+        return c.json({ error: updateConditionTypeError }, 400);
+      }
+
+      // This route accepts `enabled` too, so it is a second re-activation path
+      // alongside the toggle below — and it carries no conditions either.
+      if (updates.enabled === true && !existing.isActive) {
+        const reactivationError = await retiredConditionReactivationError(existing);
+        if (reactivationError) {
+          return c.json({ error: reactivationError }, 400);
+        }
+      }
+
       const setValues: Record<string, unknown> = {};
       if (updates.name !== undefined) setValues.name = updates.name.trim();
       if (updates.enabled !== undefined) setValues.isActive = updates.enabled;
@@ -386,6 +413,15 @@ ruleRoutes.post(
 
       if (existing.orgId === null) {
         return c.json({ error: PARTNER_WIDE_RULE_READONLY_HERE }, 403);
+      }
+
+      // #2948 — same gate as PUT /alerts/rules. Without it this is the one-click
+      // path back to a rule that is enabled, looks healthy, and can never fire.
+      if (enabled && !existing.isActive) {
+        const reactivationError = await retiredConditionReactivationError(existing);
+        if (reactivationError) {
+          return c.json({ error: reactivationError }, 400);
+        }
       }
 
       const [updated] = await db

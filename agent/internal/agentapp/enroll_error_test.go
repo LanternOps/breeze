@@ -20,6 +20,100 @@ func TestEnrollErrCategory_ExitCode(t *testing.T) {
 	if got, want := catUnknown.exitCode(), 16; got != want {
 		t.Errorf("catUnknown.exitCode() = %d, want %d", got, want)
 	}
+	// catIdentityConflict (#2764 Task 6) was appended AFTER catUnknown
+	// specifically so it gets the next unused code (17) without shifting
+	// any previously-shipped code.
+	if got, want := catIdentityConflict.exitCode(), 17; got != want {
+		t.Errorf("catIdentityConflict.exitCode() = %d, want %d", got, want)
+	}
+}
+
+func TestEnrollErrCategory_IsRefundable4xx(t *testing.T) {
+	tests := []struct {
+		cat  enrollErrCategory
+		want bool
+	}{
+		{catAuth, true},
+		{catNotFound, true},
+		{catRateLimit, true},
+		{catIdentityConflict, true},
+		{catNetwork, false},
+		{catServer, false},
+		{catConfig, false},
+		{catUnknown, false},
+	}
+	for _, tt := range tests {
+		if got := tt.cat.isRefundable4xx(); got != tt.want {
+			t.Errorf("%v.isRefundable4xx() = %v, want %v", tt.cat, got, tt.want)
+		}
+	}
+}
+
+func TestClassifyEnrollError_IdentityConflict(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{
+			// Old servers only — new servers enroll a fresh row instead of
+			// ever emitting this reason (#2764), but a self-hosted
+			// deployment may still be running an older API.
+			name:   "hostname collision (old server)",
+			status: 409,
+			body:   `{"error":"collision","reason":"hostname_collision_requires_existing_device_token"}`,
+		},
+		{
+			name:   "decommissioned row with suspended token",
+			status: 409,
+			body:   `{"error":"suspended","reason":"existing_decommissioned_row_has_suspended_token"}`,
+		},
+		{
+			name:   "device quarantined",
+			status: 403,
+			body:   `{"error":"quarantined","reason":"device_quarantined"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := &api.ErrHTTPStatus{StatusCode: tt.status, Body: tt.body}
+			cat, friendly := classifyEnrollError(err, "https://example.com")
+			if cat != catIdentityConflict {
+				t.Errorf("category = %v, want catIdentityConflict", cat)
+			}
+			if !strings.Contains(strings.ToLower(friendly), "decommission") {
+				t.Errorf("friendly = %q, should name the decommission-first remedy", friendly)
+			}
+			if friendly == "" {
+				t.Error("friendly message should not be empty")
+			}
+		})
+	}
+}
+
+// A plain 401/403/404 with no recognized `reason` field must still classify
+// via the ordinary status-code switch — classifyIdentityConflict must not
+// swallow every 4xx into catIdentityConflict.
+func TestClassifyEnrollError_PlainStatusNotMisclassifiedAsIdentityConflict(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		body    string
+		wantCat enrollErrCategory
+	}{
+		{"403 with no reason field", 403, `{"error":"forbidden"}`, catAuth},
+		{"403 with an unrecognized reason", 403, `{"error":"forbidden","reason":"some_other_reason"}`, catAuth},
+		{"404 with no body", 404, "", catNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := &api.ErrHTTPStatus{StatusCode: tt.status, Body: tt.body}
+			cat, _ := classifyEnrollError(err, "https://example.com")
+			if cat != tt.wantCat {
+				t.Errorf("category = %v, want %v", cat, tt.wantCat)
+			}
+		})
+	}
 }
 
 func TestClassifyEnrollError_HTTPStatuses(t *testing.T) {

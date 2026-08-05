@@ -624,6 +624,70 @@ describe('Device Groups routes — multi-tenant isolation', () => {
   });
 
   // ========================================================================
+  // Malformed :id guard (#2968, sibling table)
+  // ========================================================================
+  // `device_groups.id` is uuid-typed, so a malformed `:id` used to reach
+  // Postgres as a 22P02 and surface as a 500 + Sentry event instead of a 404.
+  // Every `:id` handler resolves through `getGroupById`, which rejects it before
+  // querying — asserting `mockSelect` was never called is the point, since a
+  // plain 404 would also be satisfied by querying and translating the error.
+  describe('malformed group id (#2968)', () => {
+    const malformed = ['not-a-uuid', '123', "'; DROP TABLE device_groups;--"];
+
+    it.each(malformed)('PATCH /devices/groups/%j 404s without querying', async (badId) => {
+      const systemApp = buildApp(makeAuth({ scope: 'system', orgId: null }));
+
+      const res = await systemApp.request(`/devices/groups/${encodeURIComponent(badId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Updated' }),
+      });
+
+      expect(res.status).toBe(404);
+      expect(mockSelect).not.toHaveBeenCalled();
+      expect(mockUpdate).not.toHaveBeenCalled();
+    });
+
+    it.each(malformed)('DELETE /devices/groups/%j 404s without querying', async (badId) => {
+      const systemApp = buildApp(makeAuth({ scope: 'system', orgId: null }));
+
+      const res = await systemApp.request(`/devices/groups/${encodeURIComponent(badId)}`, {
+        method: 'DELETE',
+      });
+
+      expect(res.status).toBe(404);
+      expect(mockSelect).not.toHaveBeenCalled();
+      expect(mockDelete).not.toHaveBeenCalled();
+    });
+
+    it('POST /devices/groups/:id/members 404s a malformed id without querying', async () => {
+      const systemApp = buildApp(makeAuth({ scope: 'system', orgId: null }));
+
+      const res = await systemApp.request('/devices/groups/not-a-uuid/members', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: [DEVICE_1] }),
+      });
+
+      expect(res.status).toBe(404);
+      expect(mockSelect).not.toHaveBeenCalled();
+    });
+
+    it('DELETE /devices/groups/:id/members 404s a malformed id without querying', async () => {
+      const systemApp = buildApp(makeAuth({ scope: 'system', orgId: null }));
+
+      const res = await systemApp.request('/devices/groups/not-a-uuid/members', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: [DEVICE_1] }),
+      });
+
+      expect(res.status).toBe(404);
+      expect(mockSelect).not.toHaveBeenCalled();
+    });
+  });
+
+  // ========================================================================
   // DELETE /devices/groups/:id
   // ========================================================================
   describe('DELETE /devices/groups/:id', () => {

@@ -44,6 +44,7 @@ vi.mock('../services/scriptBuilderService', () => ({
 
 vi.mock('../services/aiAgentSdk', () => ({
   runPreFlightChecks: vi.fn(),
+  settleBlockedTurnForNewMessage: vi.fn(() => Promise.resolve('not_blocked_on_approvals')),
 }));
 
 vi.mock('../services/streamingSessionManager', () => ({

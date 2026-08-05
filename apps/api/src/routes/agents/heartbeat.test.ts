@@ -1779,6 +1779,69 @@ describe('batteryStatus persistence', () => {
 });
 
 // ---------------------------------------------------------------------
+// uninstallIntentAt clearing (#2764 — Task 5)
+// ---------------------------------------------------------------------
+
+describe('uninstallIntentAt clearing (#2764)', () => {
+  const deviceRowWithIntent = {
+    id: 'device-1',
+    orgId: 'org-1',
+    siteId: 'site-1',
+    hostname: 'host-1',
+    osType: 'linux',
+    osVersion: 'Ubuntu 22.04',
+    osBuild: null,
+    architecture: 'amd64',
+    agentVersion: '0.65.10',
+    deviceRole: 'server',
+    deviceRoleSource: 'auto',
+    agentTokenHash: 'hash',
+    tokenIssuedAt: new Date(),
+    mainAgentSilentSince: null,
+    uninstallIntentAt: new Date('2026-08-01T00:00:00Z'),
+  };
+
+  function setupMocks(setSpy: ReturnType<typeof vi.fn>, deviceRow: Record<string, unknown>) {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    selectMock.mockReturnValue(selectChainResolving([]));
+  }
+
+  it('clears a previously-set uninstallIntentAt unconditionally', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    setupMocks(setSpy, deviceRowWithIntent);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg).toHaveProperty('uninstallIntentAt', null);
+  });
+
+  it('writes uninstallIntentAt: null even when the row had no intent set (steady-state beat)', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    setupMocks(setSpy, { ...deviceRowWithIntent, uninstallIntentAt: null });
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg).toHaveProperty('uninstallIntentAt', null);
+  });
+});
+
+// ---------------------------------------------------------------------
 // PAM config delivery (#uacInterceptionEnabled in heartbeat response)
 // ---------------------------------------------------------------------
 

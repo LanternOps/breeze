@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { and, asc, count, eq, sum } from 'drizzle-orm';
+import { and, asc, count, eq, ne, sum } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   clientAiOrgPolicies,
@@ -81,10 +81,13 @@ clientAiAdminOrgRoutes.get('/orgs', requireOrgsRead, async (c) => {
   // or this pattern being copied to a not-yet-RLS'd table), matching the
   // resolveScopedOrgId convention the sibling :orgId routes already use. For
   // system scope orgCondition returns undefined → unfiltered (correct).
+  // The hidden 'quick_support' org is inside accessibleOrgIds by design (RLS must
+  // let techs read their own support sessions), so orgCondition does not remove
+  // it — exclude it explicitly or it shows up in the admin org picker.
   const orgs = await db
     .select({ id: organizations.id, name: organizations.name })
     .from(organizations)
-    .where(auth.orgCondition?.(organizations.id))
+    .where(and(auth.orgCondition?.(organizations.id), ne(organizations.type, 'quick_support')))
     .orderBy(asc(organizations.name));
 
   const mappings = await db

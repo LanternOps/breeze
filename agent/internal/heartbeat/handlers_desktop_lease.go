@@ -186,6 +186,15 @@ func (h *Heartbeat) startDesktopLeaseRenewal(sessionID string) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				// A cancelled ctx and a fired ticker are both ready cases, and
+				// select picks between ready cases at random — so without this
+				// check the goroutine can run further renewal rounds after
+				// releaseDesktopLeases() has already cancelled it and released
+				// the roles, re-extending a TTL that was just released and
+				// leaving the helper to linger instead of being reaped.
+				if ctx.Err() != nil {
+					return
+				}
 				if !h.helperSessionPresent(sysKey) {
 					gone++
 					if gone >= 2 {

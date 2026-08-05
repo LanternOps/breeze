@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq, isNull, ne, sql } from 'drizzle-orm';
 import {
   db,
   runOutsideDbContext,
@@ -274,6 +274,12 @@ export async function partnerApiAuthMiddleware(c: Context, next: Next): Promise<
       await db.execute(sql`SELECT public.breeze_partner_export_lock_partners_shared(
         ARRAY[${bootstrap.partnerId}::uuid]
       )`);
+      // The hidden per-partner 'quick_support' org is an internal Quick Support
+      // artifact, never a customer tenant — it must not enter the Partner API's
+      // accessible set (which every export route derives its org filter from,
+      // including the caller-supplied ?orgId, validated against this list).
+      // Verified: the Partner API mounts no support-session routes, so removing
+      // it here costs no functionality.
       const activeOrganizations = await db
         .select({ id: organizations.id })
         .from(organizations)
@@ -281,6 +287,7 @@ export async function partnerApiAuthMiddleware(c: Context, next: Next): Promise<
           eq(organizations.partnerId, bootstrap.partnerId),
           eq(organizations.status, 'active'),
           isNull(organizations.deletedAt),
+          ne(organizations.type, 'quick_support'),
         ));
       const resolvedPrincipal: PartnerApiPrincipalContext = {
         ...bootstrap,

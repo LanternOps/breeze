@@ -6,6 +6,7 @@ import { devices, deviceGroups, deviceGroupMemberships, sites } from '../../db/s
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import { getPagination, ensureOrgAccess } from './helpers';
+import { PG_UUID_REGEX } from '../../utils/uuid';
 import { createGroupSchema, updateGroupSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { pruneGroupMembershipsOutsideSite } from '../../services/groupMembership';
@@ -17,6 +18,29 @@ groupsRoutes.use('*', authMiddleware);
 function groupSiteAllowed(group: { siteId: string | null }, perms: UserPermissions | undefined): boolean {
   if (!perms?.allowedSiteIds) return true;
   return typeof group.siteId === 'string' && canAccessSite(perms, group.siteId);
+}
+
+/**
+ * Resolve a group by its `:id` path param.
+ *
+ * `device_groups.id` is uuid-typed, so a malformed `:id` reaches Postgres as a
+ * 22P02 and surfaces through the global error handler as a 500 (plus a Sentry
+ * event) instead of a 404 — the same defect class #2968 fixed for `devices.id`,
+ * on the sibling table. Returning `null` puts it on the not-found path all four
+ * `:id` handlers already translate to 404.
+ */
+async function getGroupById(groupId: string) {
+  if (!PG_UUID_REGEX.test(groupId)) {
+    return null;
+  }
+
+  const [group] = await db
+    .select()
+    .from(deviceGroups)
+    .where(eq(deviceGroups.id, groupId))
+    .limit(1);
+
+  return group ?? null;
 }
 
 // GET /devices/groups - List device groups
@@ -174,11 +198,7 @@ groupsRoutes.patch(
       return c.json({ error: 'No updates provided' }, 400);
     }
 
-    const [group] = await db
-      .select()
-      .from(deviceGroups)
-      .where(eq(deviceGroups.id, groupId))
-      .limit(1);
+    const group = await getGroupById(groupId);
 
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
@@ -278,11 +298,7 @@ groupsRoutes.delete(
     const auth = c.get('auth');
     const groupId = c.req.param('id')!;
 
-    const [group] = await db
-      .select()
-      .from(deviceGroups)
-      .where(eq(deviceGroups.id, groupId))
-      .limit(1);
+    const group = await getGroupById(groupId);
 
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
@@ -334,11 +350,7 @@ groupsRoutes.post(
       return c.json({ error: 'deviceIds array required' }, 400);
     }
 
-    const [group] = await db
-      .select()
-      .from(deviceGroups)
-      .where(eq(deviceGroups.id, groupId))
-      .limit(1);
+    const group = await getGroupById(groupId);
 
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
@@ -425,11 +437,7 @@ groupsRoutes.delete(
       return c.json({ error: 'deviceIds array required' }, 400);
     }
 
-    const [group] = await db
-      .select()
-      .from(deviceGroups)
-      .where(eq(deviceGroups.id, groupId))
-      .limit(1);
+    const group = await getGroupById(groupId);
 
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);

@@ -1085,7 +1085,9 @@
     "to": "a",
     "perPage": "Por página",
     "devicesPerPage": "Dispositivos por página",
-    "page": "Página"
+    "page": "Página",
+    "possibleDuplicate": "Possível duplicata",
+    "possibleDuplicateTitle": "Este dispositivo pode substituir um registro anterior com o mesmo nome de host. Abra-o para revisar."
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Falha ao buscar os logs do dispositivo",
@@ -2223,5 +2225,16 @@
     "idleMinutes": "{{count}} min inativa",
     "disconnectedNotShadowable": "Sessões desconectadas não podem ser visualizadas — nenhuma área de trabalho ativa para capturar",
     "cancel": "Cancelar"
+  },
+  "possibleReplacementBanner": {
+    "decommissionFailed": "Falha ao desativar o dispositivo antigo",
+    "decommissionOldDevice": "Desativar o dispositivo antigo",
+    "decommissionSucceeded": "Dispositivo antigo desativado",
+    "message": "Este dispositivo pode substituir {{hostname}} — revise e desative o registro antigo.",
+    "oldDeviceDecommissioned": "Dispositivo antigo desativado — nada mais a revisar.",
+    "oldDeviceUnavailable": "O registro do dispositivo antigo não está mais disponível.",
+    "title": "Possível registro duplicado",
+    "unknownDevice": "o dispositivo anterior",
+    "viewOldDevice": "Ver dispositivo antigo"
   }
 }

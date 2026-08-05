@@ -2271,9 +2271,21 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	// Start receive loop — blocks until disconnect
 	session.RecvLoop(b.dispatchHelperMessage)
 
-	// Clean up after disconnect
+	b.finishHelperSession(session)
+}
+
+// finishHelperSession performs post-disconnect cleanup for a helper session.
+// Every way a session can end funnels through here, because they all work by
+// closing the transport, which returns RecvLoop above.
+//
+// Split out of handleConnection so the backup-death reporting path (#2998) is
+// exercisable without standing up a full IPC handshake.
+func (b *Broker) finishHelperSession(session *Session) {
 	b.removeSession(session)
 	if session.HelperRole == backupipc.HelperRoleBackup {
+		// Report before clearing the session pointer: the report has to see
+		// that this session is the one that owns the in-flight run.
+		b.reportBackupHelperDeath(session)
 		b.ClearBackupSession()
 	}
 	log.Info("user helper disconnected", "uid", session.UID, "sessionId", session.SessionID)
@@ -2854,6 +2866,13 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 			log.Warn("dropping unauthorized backup helper message",
 				"type", env.Type, "sessionId", s.SessionID, "role", s.HelperRole)
 			return
+		}
+		// A terminal result retires the in-flight run, so a helper exit right
+		// after it (the normal end of every async backup) reports nothing
+		// further (#2998). Cleared before the forward: the handler may block
+		// on a websocket send, and the run must already be untracked by then.
+		if env.Type == backupipc.TypeBackupResult {
+			b.noteBackupRunResult(env)
 		}
 		if b.onMessage != nil {
 			b.onMessage(s, env)

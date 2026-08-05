@@ -1,4 +1,4 @@
-import { and, count, desc, eq, inArray, lt, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt, or, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteLines, quoteBlocks, quoteImages } from '../db/schema/quotes';
@@ -7,10 +7,12 @@ import { organizations, partners } from '../db/schema/orgs';
 import { contractTemplates, contractTemplateVersions } from '../db/schema/contractDocuments';
 import { catalogItems } from '../db/schema/catalog';
 import { pax8OrderLines, pax8Orders } from '../db/schema/pax8Orders';
+import { listQuoteOrders } from './quoteOrderService';
 import { computeLineTotal, resolveEffectiveTaxRate } from './invoiceMath';
+import { vendorIdentityFromAttributes } from './catalogVendorIdentity';
 import { buildBillToAddress, type BillToAddress } from './sellerSnapshot';
 import { computeQuoteTotals, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
-import { QuoteServiceError, type QuoteActor } from './quoteTypes';
+import { QuoteServiceError, assertOrg, assertSite, assertQuoteAccess, type QuoteActor } from './quoteTypes';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
 import { sanitizeRichTextHtml } from './richTextSanitize';
 import type {
@@ -25,13 +27,22 @@ import type {
 // ---------------------------------------------------------------------------
 
 /**
- * Strip internal-only economics (unitCost/unit_cost) from quote lines before
- * returning them to customer-facing surfaces (public quote URL, portal, PDF).
- * sku and partNumber are acceptable on the customer document; unitCost is NOT,
- * and markup/net must never be derived from it on the customer side.
+ * Customer-facing projection of a quote line (public quote URL, portal, PDF).
+ * ALLOWLIST, not a strip: new internal columns (vendor identity, fulfillment,
+ * economics) are excluded by default. sku/partNumber stay customer-visible by
+ * design; unitCost and the procurement snapshot never leave the MSP surface.
  */
-export function toCustomerLines<T extends { unitCost: unknown }>(lines: T[]): Omit<T, 'unitCost'>[] {
-  return lines.map(({ unitCost: _cost, ...rest }) => rest as Omit<T, 'unitCost'>);
+const CUSTOMER_LINE_FIELDS = [
+  'id', 'quoteId', 'blockId', 'orgId', 'sourceType', 'catalogItemId', 'parentLineId',
+  'name', 'description', 'quantity', 'unitPrice', 'taxable', 'customerVisible',
+  'lineTotal', 'recurrence', 'termMonths', 'billingFrequency', 'depositEligible',
+  'itemType', 'sku', 'partNumber', 'imageId', 'sortOrder', 'createdAt',
+] as const;
+export type CustomerQuoteLine<T> = Pick<T & Record<string, unknown>, (typeof CUSTOMER_LINE_FIELDS)[number] & keyof T>;
+export function toCustomerLines<T extends Record<string, unknown>>(lines: T[]) {
+  return lines.map((line) => Object.fromEntries(
+    CUSTOMER_LINE_FIELDS.filter((f) => f in line).map((f) => [f, line[f]]),
+  ) as CustomerQuoteLine<T>);
 }
 
 /**
@@ -92,38 +103,6 @@ function resolvePartner(actor: QuoteActor): string {
     throw new QuoteServiceError('Partner could not be resolved', 403, 'PARTNER_UNRESOLVABLE');
   }
   return actor.partnerId;
-}
-
-function assertOrg(actor: QuoteActor, orgId: string): void {
-  if (actor.accessibleOrgIds !== null && !actor.accessibleOrgIds.includes(orgId)) {
-    throw new QuoteServiceError('Organization access denied', 403, 'ORG_DENIED');
-  }
-}
-
-/**
- * Site-axis guard mirroring `siteAccessCheck` (middleware/auth.ts). An actor with
- * no `allowedSiteIds` (undefined) is unrestricted — a no-op, so partner/system
- * callers and all-sites org users are unaffected. A site-restricted actor may only
- * touch a siteId in its allowlist; a null/undefined siteId (an org-level quote) is
- * DENIED, exactly as the auth closure denies a restricted caller for a null site.
- */
-function assertSite(actor: QuoteActor, siteId: string | null | undefined): void {
-  if (!actor.allowedSiteIds) return; // unrestricted
-  if (!siteId || !actor.allowedSiteIds.includes(siteId)) {
-    throw new QuoteServiceError('Site access denied', 403, 'SITE_DENIED');
-  }
-}
-
-/**
- * Org + site guard for a loaded quote row. The single authorization chokepoint for
- * every quote path (CRUD via loadDraft, getQuote, and the pay-link path in
- * quotePay). Exported so quotePay can enforce the same site restriction that was
- * previously bypassable (org is enforced downstream in createInvoicePayLink; site
- * was not enforced anywhere on the quote).
- */
-export function assertQuoteAccess(actor: QuoteActor, quote: { orgId: string; siteId: string | null }): void {
-  assertOrg(actor, quote.orgId);
-  assertSite(actor, quote.siteId);
 }
 
 /**
@@ -469,6 +448,9 @@ export async function cloneQuote(id: string, actor: QuoteActor, input: CloneQuot
         itemType: line.itemType,
         sku: line.sku,
         partNumber: line.partNumber,
+        procurementSource: line.procurementSource,
+        vendorSku: line.vendorSku,
+        manufacturer: line.manufacturer,
         imageId: line.imageId ? imageIds.get(line.imageId) ?? null : null,
         sortOrder: line.sortOrder,
       })));
@@ -490,18 +472,32 @@ export async function getQuote(id: string, actor: QuoteActor) {
   // reload or open the converted quote later. Keep discoverability in the quote
   // read model itself. The quote access check runs first, and the lookup repeats
   // the partner + org axes in addition to relying on the tables' forced RLS.
-  const [pax8OrderSummary] = await db.select({ pax8OrderId: pax8Orders.id }).from(pax8Orders).where(and(
+  const [pax8OrderSummary] = await db.select({
+    pax8OrderId: pax8Orders.id,
+    status: pax8Orders.status,
+  }).from(pax8Orders).where(and(
     eq(pax8Orders.sourceQuoteId, id),
     eq(pax8Orders.partnerId, q.partnerId),
     eq(pax8Orders.orgId, q.orgId),
   )).orderBy(desc(pax8Orders.createdAt)).limit(1);
-  const [pax8OrderLineSummary] = pax8OrderSummary
-    ? await db.select({ count: count(pax8OrderLines.id) }).from(pax8OrderLines).where(and(
+  // Line-level detail (not just a count) so the order breakdown can cross-
+  // reference each quote line against its own submit outcome — a partially
+  // failed order must not read as uniformly "staged" or "ordered".
+  const pax8LineRows = pax8OrderSummary
+    ? await db.select({
+        sourceQuoteLineId: pax8OrderLines.sourceQuoteLineId,
+        submitState: pax8OrderLines.submitState,
+        quantity: pax8OrderLines.quantity,
+      }).from(pax8OrderLines).where(and(
         eq(pax8OrderLines.orderId, pax8OrderSummary.pax8OrderId),
         eq(pax8OrderLines.partnerId, q.partnerId),
         eq(pax8OrderLines.orgId, q.orgId),
       ))
     : [];
+  // Procurement order tracking (Task 11): every PO header + its line-level
+  // allocations recorded against this quote, so the editor can show fulfillment
+  // status alongside the pax8 auto-order summary above.
+  const orders = await listQuoteOrders(id);
   // dueOnAcceptanceTotal is a derived (non-persisted) figure: the amount accept
   // actually invoices (one-time lines only — recurring is deferred to the Phase 4
   // contract). Computed from the canonical quoteMath so it stays penny-consistent
@@ -570,8 +566,12 @@ export async function getQuote(id: string, actor: QuoteActor) {
     blocks,
     lines,
     billTo,
+    orders,
     pax8OrderId: pax8OrderSummary?.pax8OrderId ?? null,
-    pax8OrderLineCount: Number(pax8OrderLineSummary?.count ?? 0),
+    pax8OrderLineCount: pax8LineRows.length,
+    pax8Order: pax8OrderSummary
+      ? { id: pax8OrderSummary.pax8OrderId, status: pax8OrderSummary.status, lines: pax8LineRows }
+      : null,
   };
 }
 
@@ -921,6 +921,9 @@ export async function addManualLine(quoteId: string, input: QuoteLineInput, acto
     unitCost: input.unitCost != null ? Number(input.unitCost).toFixed(2) : null,
     sku: input.sku ?? null,
     partNumber: input.partNumber ?? null,
+    procurementSource: input.procurementSource ?? null,
+    vendorSku: input.vendorSku ?? null,
+    manufacturer: input.manufacturer ?? null,
     depositEligible: input.depositEligible ?? false,
     itemType: null,
     sortOrder,
@@ -957,6 +960,7 @@ export async function addCatalogLine(
     .where(and(eq(catalogItems.id, catalogItemId), eq(catalogItems.partnerId, q.partnerId)))
     .limit(1);
   if (!item) throw new QuoteServiceError('Catalog item not found', 404, 'CATALOG_ITEM_NOT_FOUND');
+  const vendor = vendorIdentityFromAttributes(item.attributes);
   // Phase 1 recurrence is monthly|annual only; quarterly is not offered (dropped
   // from the catalog Zod enum). The DB enum retains 'quarterly' for a future phase.
   const recurrence = item.billingType === 'recurring'
@@ -986,7 +990,10 @@ export async function addCatalogLine(
     // catalog edit never mutates existing quote line cost/sku data.
     unitCost: item.costBasis ?? null,
     sku: item.sku ?? null,
-    partNumber: options?.partNumber ?? null,
+    partNumber: options?.partNumber ?? vendor.mfgPartNo,
+    procurementSource: vendor.procurementSource,
+    vendorSku: vendor.vendorSku,
+    manufacturer: vendor.manufacturer,
     // Deposit eligibility defaults from the catalog item's type — hardware is the
     // one category a deposit typically secures (custom order, restocking risk).
     // itemType is snapshotted at add-time so a later catalog recategorization
@@ -1008,6 +1015,7 @@ export async function updateLine(
     recurrence?: 'one_time' | 'monthly' | 'annual';
     termMonths?: number | null; sortOrder?: number;
     unitCost?: number | null; sku?: string | null; partNumber?: string | null;
+    procurementSource?: string | null; vendorSku?: string | null; manufacturer?: string | null;
     imageId?: string | null;
     depositEligible?: boolean;
   },
@@ -1036,6 +1044,9 @@ export async function updateLine(
   if (input.unitCost !== undefined) set.unitCost = input.unitCost != null ? Number(input.unitCost).toFixed(2) : null;
   if (input.sku !== undefined) set.sku = input.sku;
   if (input.partNumber !== undefined) set.partNumber = input.partNumber;
+  if (input.procurementSource !== undefined) set.procurementSource = input.procurementSource;
+  if (input.vendorSku !== undefined) set.vendorSku = input.vendorSku;
+  if (input.manufacturer !== undefined) set.manufacturer = input.manufacturer;
   if (input.depositEligible !== undefined) set.depositEligible = input.depositEligible;
   if (input.imageId !== undefined) {
     // Ownership check: the image must be a quote_images row on THIS quote, or a

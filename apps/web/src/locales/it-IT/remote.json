@@ -13,6 +13,10 @@
     "sessions": {
       "title": "Cronologia sessioni",
       "description": "Visualizza le sessioni precedenti"
+    },
+    "quickSupport": {
+      "title": "Supporto rapido",
+      "description": "Codice monouso per assistenza al volo"
     }
   },
   "connectDesktopButton": {
@@ -761,5 +765,60 @@
       "obtainTicket": "Impossibile ottenere il ticket"
     },
     "sessionTitle": "Titolo sessione"
+  },
+  "quickSupport": {
+    "title": "Supporto rapido",
+    "subtitle": "Genera un codice monouso per assistere al volo un dispositivo non registrato.",
+    "newSession": "Nuova sessione di supporto",
+    "form": {
+      "title": "Avvia una sessione di supporto",
+      "attributionOrg": "Attribuisci a un cliente (facoltativo)",
+      "attributionOrgHint": "Solo a fini di rendicontazione: non concede né modifica l'accesso ai dati di quel cliente.",
+      "attributionOrgNone": "Non attribuita",
+      "attributionLabel": "Etichetta di riferimento (facoltativa)",
+      "attributionLabelPlaceholder": "A chi o a cosa serve questa sessione?",
+      "submit": "Genera codice",
+      "submitting": "Generazione del codice…"
+    },
+    "code": {
+      "heading": "Comunica questo codice alla persona che stai assistendo",
+      "shownOnce": "Questo codice compare una sola volta. Copialo prima di lasciare questa pagina: non potrà più essere mostrato.",
+      "expires": "Scade alle {{time}}",
+      "instructions": "Invia il link, poi chiedi di eseguire il client scaricato e di digitare il codice.",
+      "copyCode": "Copia il codice",
+      "copyLink": "Copia il link di download",
+      "copiedCode": "Codice copiato negli appunti",
+      "copiedLink": "Link di download copiato negli appunti",
+      "copyFailed": "Impossibile copiare negli appunti"
+    },
+    "status": {
+      "heading": "Avanzamento della sessione",
+      "pending": "In attesa che l'utente avvii il client…",
+      "claimed": "Connessione del client in corso…",
+      "ready": "Pronto per la connessione",
+      "active": "Sessione in corso",
+      "ended": "Sessione terminata",
+      "expired": "Sessione scaduta"
+    },
+    "connect": {
+      "waitingForDevice": "Il dispositivo si sta registrando. Il pulsante di connessione comparirà appena sarà online."
+    },
+    "end": {
+      "button": "Termina sessione",
+      "success": "Sessione di supporto terminata",
+      "error": "Impossibile terminare la sessione di supporto",
+      "alreadyEnded": "Questa sessione di supporto era già terminata"
+    },
+    "errors": {
+      "create": "Impossibile creare la sessione di supporto",
+      "list": "Impossibile caricare le sessioni di supporto recenti"
+    },
+    "list": {
+      "heading": "Sessioni di supporto recenti",
+      "empty": "Nessuna sessione di supporto finora.",
+      "columnCreated": "Inizio",
+      "columnEnded": "Fine",
+      "unlabeled": "Sessione senza etichetta"
+    }
   }
 }

@@ -94,25 +94,71 @@ export function normalizePatch(raw: Record<string, unknown>, index: number): Pat
 const RING_SEVERITIES = ['critical', 'important', 'moderate', 'low'] as const;
 type RingSeverity = (typeof RING_SEVERITIES)[number];
 
+const DISABLED_RING_AUTO_APPROVE: NonNullable<UpdateRingItem['autoApprove']> = {
+  enabled: false, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null,
+};
+
 /**
  * Normalize a ring's stored `autoApprove` JSONB (#1317) into the typed form
  * the editor expects. Tolerant of every historical shape the API may have
  * stored: `{}` / missing → disabled; boolean `true` → enabled with no severity
- * filter; the typed `{ enabled, severities, deferralDays }` object passes
- * through. Mirrors the API-side `parseRingAutoApprove`.
+ * filter; the typed `{ enabled, severities, deferralDays, thirdPartyApps,
+ * thirdPartyDeferralDays }` object passes through. Mirrors the API-side
+ * `parseRingAutoApprove`, including:
+ *  - the legacy-compat rule for the third-party gate: an absent
+ *    `thirdPartyApps` key derives from whether any severity is selected
+ *    (pre-gate rings auto-approved third-party updates whenever the ring
+ *    auto-approved anything);
+ *  - fail-closed holds: a PRESENT but invalid `deferralDays` or
+ *    `thirdPartyDeferralDays` means the evaluator treats the row as disabled,
+ *    so the editor must show it disabled too — coercing to a valid-looking
+ *    value here would let a save silently resurrect config the evaluator
+ *    fail-closed on. Absent/null `thirdPartyDeferralDays` = inherit (null).
+ *
+ * One deliberate editor-vs-evaluator divergence: a well-formed but DISABLED
+ * row keeps its stored severities/fields here (the evaluator collapses any
+ * disabled row, but the editor must not lose a selection the operator parked
+ * behind the off switch).
+ *
+ * Dropping a field here is a silent policy loss: the editor round-trips this
+ * object straight back into the PATCH body, so anything not carried is written
+ * back as its default.
  */
 function normalizeRingAutoApprove(raw: unknown): UpdateRingItem['autoApprove'] {
-  if (raw === true) return { enabled: true, severities: [], deferralDays: 0 };
-  if (!raw || typeof raw !== 'object') return { enabled: false, severities: [], deferralDays: 0 };
+  if (raw === true) {
+    return { enabled: true, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null };
+  }
+  if (!raw || typeof raw !== 'object') {
+    return { ...DISABLED_RING_AUTO_APPROVE };
+  }
   const obj = raw as Record<string, unknown>;
   const severities = Array.isArray(obj.severities)
     ? obj.severities.filter((s): s is RingSeverity => RING_SEVERITIES.includes(s as RingSeverity))
     : [];
-  const deferralDays =
-    typeof obj.deferralDays === 'number' && Number.isInteger(obj.deferralDays) && obj.deferralDays > 0
-      ? obj.deferralDays
-      : 0;
-  return { enabled: obj.enabled === true, severities, deferralDays };
+  let deferralDays = 0;
+  if (obj.deferralDays !== undefined) {
+    const rawHold = obj.deferralDays;
+    if (typeof rawHold !== 'number' || !Number.isInteger(rawHold) || rawHold < 0) {
+      return { ...DISABLED_RING_AUTO_APPROVE };
+    }
+    deferralDays = rawHold;
+  }
+  const thirdPartyApps =
+    'thirdPartyApps' in obj ? obj.thirdPartyApps === true : severities.length > 0;
+  let thirdPartyDeferralDays: number | null = null;
+  const rawThirdPartyHold = obj.thirdPartyDeferralDays;
+  if (rawThirdPartyHold !== undefined && rawThirdPartyHold !== null) {
+    if (
+      typeof rawThirdPartyHold !== 'number'
+      || !Number.isInteger(rawThirdPartyHold)
+      || rawThirdPartyHold < 0
+      || rawThirdPartyHold > 365
+    ) {
+      return { ...DISABLED_RING_AUTO_APPROVE };
+    }
+    thirdPartyDeferralDays = rawThirdPartyHold;
+  }
+  return { enabled: obj.enabled === true, severities, deferralDays, thirdPartyApps, thirdPartyDeferralDays };
 }
 
 export function normalizeRing(raw: Record<string, unknown>): UpdateRingItem {
