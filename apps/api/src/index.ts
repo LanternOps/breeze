@@ -1768,6 +1768,15 @@ async function bootstrap(): Promise<void> {
   if ((process.env.AGENT_BACKUP_SERVER_URL ?? '').trim()) {
     console.log(`[config] AGENT_BACKUP_SERVER_URL active: ${process.env.AGENT_BACKUP_SERVER_URL!.trim()}`);
   }
+  // Say which way the break-glass switch actually landed. An operator who set
+  // `off` in .env but never threaded it through the deployed compose file gets
+  // the empty-string default (= enforce) and is still locked out, with nothing
+  // in the logs explaining why. Compose drift is a documented failure mode here.
+  if (config.IP_ALLOWLIST_ENFORCEMENT_MODE === 'off') {
+    console.warn('[config] IP_ALLOWLIST_ENFORCEMENT_MODE=off — partner IP allowlists are GLOBALLY DISABLED (break-glass).');
+  } else {
+    console.log('[config] IP allowlist enforcement: enforce');
+  }
 
   await loadSourceExtensions(extensionContributionRegistry);
 
