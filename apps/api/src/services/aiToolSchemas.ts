@@ -19,6 +19,7 @@ import {
   peripheralPolicyTargetTypeEnum,
   peripheralEventTypeEnum
 } from '../db/schema';
+import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 
 // Reusable validators
 const uuid = z.string().guid();
@@ -1155,12 +1156,12 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     action: z.enum(['add', 'update', 'remove', 'list']),
     configPolicyId: uuid,
     featureLinkId: uuid.optional(),
-    featureType: z.enum([
-      'patch', 'alert_rule', 'backup', 'security', 'monitoring',
-      'maintenance', 'compliance', 'automation', 'event_log',
-      'software_policy', 'sensitive_data', 'peripheral_control',
-      'warranty', 'helper',
-    ]).optional(),
+    // Derived from the canonical list, never hand-copied: this enum had drifted
+    // four values behind `configFeatureTypeEnum` and behind the enum the tool's
+    // own definition advertises, so remote_access / pam / onedrive_helper /
+    // vulnerability were documented and DB-valid but rejected here — those
+    // feature types could not be linked from AI/MCP at all (#2814).
+    featureType: z.enum(CONFIG_FEATURE_TYPES).optional(),
     featurePolicyId: uuid.optional().nullable(),
     inlineSettings: z.record(z.string(), z.unknown()).optional().nullable(),
   }),
@@ -1388,11 +1389,13 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     ringId: uuid.optional(),
     name: z.string().min(1).max(255).optional(),
     description: z.string().max(2000).optional(),
-    deferralDays: z.number().int().min(0).optional(),
-    deadlineDays: z.number().int().min(0).optional(),
-    gracePeriodHours: z.number().int().min(0).optional(),
-    categories: z.array(z.string()).max(50).optional(),
-    excludeCategories: z.array(z.string()).max(50).optional(),
+    // Bounds mirror the HTTP route (routes/updateRings.ts) and the underlying
+    // columns (#2814 review).
+    deferralDays: z.number().int().min(0).max(365).optional(),
+    deadlineDays: z.number().int().min(0).max(365).optional(),
+    gracePeriodHours: z.number().int().min(0).max(168).optional(),
+    categories: z.array(z.string().max(100)).max(50).optional(),
+    excludeCategories: z.array(z.string().max(100)).max(50).optional(),
     autoApprove: ringAutoApproveSchema.optional(),
     enabled: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),

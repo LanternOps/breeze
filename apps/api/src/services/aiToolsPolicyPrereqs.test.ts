@@ -541,3 +541,141 @@ describe('manage_backup_configs S3 endpoint validation (Sentry BREEZE-P residual
     expect(setArg.providerConfig.endpoint).toBe('https://minio.internal.example.com:9000/');
   });
 });
+
+/**
+ * `ownerScope: 'partner'` creates a template that applies to EVERY org under
+ * the partner, while the tool's RBAC entry only asks for `policies.write` —
+ * org-level authority. `canManagePartnerWidePolicies` is the sole thing
+ * separating the two, and until #2814 registered these tools nothing could
+ * reach the branch, so nothing covered it.
+ */
+describe('manage_software_policies partner-wide create gate (#2126)', () => {
+  beforeEach(() => {
+    insertMock.mockReset();
+    updateMock.mockReset();
+    selectMock.mockReset();
+  });
+
+  function getSoftwarePoliciesTool() {
+    const tools = new Map<string, any>();
+    registerPolicyPrereqTools(tools);
+    const tool = tools.get('manage_software_policies');
+    if (!tool) throw new Error('manage_software_policies tool not registered');
+    return tool;
+  }
+
+  const CREATE_INPUT = {
+    action: 'create',
+    ownerScope: 'partner',
+    name: 'Partner Blocklist',
+    mode: 'blocklist',
+  };
+
+  it('REFUSES a partner-scoped caller without full org access, and writes nothing', async () => {
+    const auth = { ...makeAuth(), partnerOrgAccess: 'subset' };
+    const output = await getSoftwarePoliciesTool().handler(CREATE_INPUT, auth);
+
+    expect(JSON.parse(output).error).toMatch(/full partner org access/);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('REFUSES an org-scoped caller, and writes nothing', async () => {
+    const output = await getSoftwarePoliciesTool().handler(CREATE_INPUT, makeOrgAuth());
+
+    // Asserted on the specific refusal so this cannot pass on an unrelated
+    // validation error (missing name/mode) once the gate is gone.
+    expect(JSON.parse(output).error).toMatch(/require partner scope/);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('ALLOWS partnerOrgAccess "all" and writes partnerId, never orgId', async () => {
+    mockInsertReturns({ id: 'policy-1', name: 'Partner Blocklist', partnerId: PARTNER_ID, orgId: null });
+    const auth = { ...makeAuth(), partnerOrgAccess: 'all' };
+
+    const output = await getSoftwarePoliciesTool().handler(CREATE_INPUT, auth);
+
+    expect(JSON.parse(output).error).toBeUndefined();
+    const values = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+    expect(values.partnerId).toBe(PARTNER_ID);
+    expect(values.orgId).toBeNull();
+  });
+
+  it('defaults to org ownership when ownerScope is omitted', async () => {
+    mockInsertReturns({ id: 'policy-2', name: 'Org Blocklist', orgId: ORG_ID, partnerId: null });
+
+    const output = await getSoftwarePoliciesTool().handler(
+      { action: 'create', name: 'Org Blocklist', mode: 'blocklist' },
+      makeOrgAuth()
+    );
+
+    expect(JSON.parse(output).error).toBeUndefined();
+    const values = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+    expect(values.orgId).toBe(ORG_ID);
+    expect(values.partnerId).toBeNull();
+  });
+});
+
+/**
+ * `manage_peripheral_policies` had no handler coverage at all despite becoming
+ * reachable from AI/MCP for the first time in #2814. It also carries the
+ * `action_type` rename — the tool takes `action_type` because `action` is the
+ * multiplexer — and a silently dropped rename would create the policy with a
+ * default enforcement mode while still reporting success.
+ */
+describe('manage_peripheral_policies create (#2814 — first reachable)', () => {
+  beforeEach(() => {
+    insertMock.mockReset();
+    updateMock.mockReset();
+    selectMock.mockReset();
+  });
+
+  function getPeripheralPoliciesTool() {
+    const tools = new Map<string, any>();
+    registerPolicyPrereqTools(tools);
+    const tool = tools.get('manage_peripheral_policies');
+    if (!tool) throw new Error('manage_peripheral_policies tool not registered');
+    return tool;
+  }
+
+  it('maps action_type onto the `action` column and scopes the row to the org', async () => {
+    mockInsertReturns({ id: 'peripheral-1', name: 'Block USB storage' });
+
+    const output = await getPeripheralPoliciesTool().handler(
+      {
+        action: 'create',
+        name: 'Block USB storage',
+        deviceClass: 'storage',
+        action_type: 'block',
+      },
+      makeOrgAuth()
+    );
+
+    expect(JSON.parse(output).success).toBe(true);
+    const values = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+    // The rename is the whole point: `action` must carry the enforcement mode,
+    // never the 'create' multiplexer value.
+    expect(values.action).toBe('block');
+    expect(values.deviceClass).toBe('storage');
+    expect(values.orgId).toBe(ORG_ID);
+  });
+
+  it('refuses to create without action_type rather than defaulting the enforcement mode', async () => {
+    const output = await getPeripheralPoliciesTool().handler(
+      { action: 'create', name: 'Incomplete', deviceClass: 'storage' },
+      makeOrgAuth()
+    );
+
+    expect(JSON.parse(output).error).toMatch(/action_type is required/);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses to create without an org context', async () => {
+    const output = await getPeripheralPoliciesTool().handler(
+      { action: 'create', name: 'No org', deviceClass: 'storage', action_type: 'block' },
+      makeAuth()
+    );
+
+    expect(JSON.parse(output).error).toMatch(/Organization context required/);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+});

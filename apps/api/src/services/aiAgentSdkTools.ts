@@ -13,13 +13,18 @@ import { dbAccessContextFromAuth } from '../middleware/auth';
 import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
-import { executeTool } from './aiTools';
+import { executeTool, aiTools } from './aiTools';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import type { ActiveSession } from './streamingSessionManager';
 import { waitForPlanApproval } from './aiAgent';
-import { aiActionPlans } from '../db/schema';
+import {
+  aiActionPlans,
+  peripheralDeviceClassEnum,
+  peripheralPolicyActionEnum,
+} from '../db/schema';
+import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
@@ -283,6 +288,30 @@ async function safePostToolUse(
 // handler signature is strictly `(args, extra) => Promise<CallToolResult>`,
 // so the per-handler return type below is now checked against this.
 type SdkToolResult = Awaited<ReturnType<Parameters<typeof tool>[3]>>;
+
+/**
+ * Description for a `tool()` declaration, taken from the tool's entry in the
+ * `aiTools` registry (its `definition.description`).
+ *
+ * Most declarations in this file carry a short inline literal, which is fine
+ * when the registry description says the same thing in more words. It is NOT
+ * fine for the configuration-policy family: `manage_policy_feature_link`'s
+ * description IS the authoritative reference for every feature type's
+ * `inlineSettings` shape, and the prerequisite tools' descriptions carry the
+ * "create the standalone policy, then link it via featurePolicyId" workflow the
+ * model has to follow. Copying either into a second literal here creates two
+ * copies that drift — the same failure mode as #2605/#2814 one level down.
+ *
+ * Throws on an unknown name so a rename surfaces at server construction rather
+ * than as a silently empty description sent to the model.
+ */
+function registryDescription(toolName: string): string {
+  const description = aiTools.get(toolName)?.definition.description;
+  if (!description) {
+    throw new Error(`No aiTools registry description for tool "${toolName}"`);
+  }
+  return description;
+}
 
 function makeHandler(
   toolName: string,
@@ -1801,6 +1830,103 @@ export function createBreezeMcpServer(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('configuration_policy_compliance', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_policy_feature_link',
+      registryDescription('manage_policy_feature_link'),
+      {
+        action: z.enum(['add', 'update', 'remove', 'list']),
+        configPolicyId: uuid,
+        featureLinkId: uuid.optional(),
+        featureType: z.enum(CONFIG_FEATURE_TYPES).optional(),
+        featurePolicyId: uuid.optional().nullable(),
+        inlineSettings: z.record(z.string(), z.unknown()).optional().nullable(),
+      },
+      makeHandler('manage_policy_feature_link', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Policy prerequisite tools — the standalone policies a feature link points
+    // at via `featurePolicyId`. The system prompt's "create a configuration
+    // policy" workflow routes through these, so they have to reach the model.
+
+    tool(
+      'manage_update_rings',
+      registryDescription('manage_update_rings'),
+      {
+        action: z.enum(['list', 'get', 'create', 'update']),
+        ringId: uuid.optional(),
+        name: z.string().min(1).max(255).optional(),
+        description: z.string().max(2000).optional(),
+        deferralDays: z.number().int().min(0).max(365).optional(),
+        deadlineDays: z.number().int().min(0).max(365).optional(),
+        gracePeriodHours: z.number().int().min(0).max(168).optional(),
+        categories: z.array(z.string().max(100)).max(50).optional(),
+        excludeCategories: z.array(z.string().max(100)).max(50).optional(),
+        // `patch_policies.sources` is deprecated (#3150) — never advertised to
+        // the model; the handler ignores it and `get` strips it from responses.
+        autoApprove: z.record(z.string(), z.unknown()).optional(),
+        enabled: z.boolean().optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('manage_update_rings', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_software_policies',
+      registryDescription('manage_software_policies'),
+      {
+        action: z.enum(['list', 'get', 'create', 'update']),
+        policyId: uuid.optional(),
+        ownerScope: z.enum(['organization', 'partner']).optional(),
+        name: z.string().min(1).max(200).optional(),
+        description: z.string().max(2000).optional(),
+        mode: z.enum(['allowlist', 'blocklist', 'audit']).optional(),
+        rules: z.record(z.string(), z.unknown()).optional(),
+        enforceMode: z.boolean().optional(),
+        remediationOptions: z.record(z.string(), z.unknown()).optional(),
+        isActive: z.boolean().optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('manage_software_policies', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_peripheral_policies',
+      registryDescription('manage_peripheral_policies'),
+      {
+        action: z.enum(['list', 'get', 'create', 'update']),
+        policyId: uuid.optional(),
+        name: z.string().min(1).max(200).optional(),
+        deviceClass: z.enum(peripheralDeviceClassEnum.enumValues).optional(),
+        // Named `action_type` (not `action`) by the tool definition so it does
+        // not collide with the action multiplexer above.
+        action_type: z.enum(peripheralPolicyActionEnum.enumValues).optional(),
+        exceptions: z.array(z.record(z.string(), z.unknown())).max(200).optional(),
+        isActive: z.boolean().optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('manage_peripheral_policies', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_backup_configs',
+      registryDescription('manage_backup_configs'),
+      {
+        action: z.enum(['list', 'get', 'create', 'update']),
+        configId: uuid.optional(),
+        name: z.string().min(1).max(200).optional(),
+        type: z.enum(['file', 'system_image', 'database', 'application']).optional(),
+        provider: z.enum(['s3', 'azure_blob', 'google_cloud', 'backblaze', 'local']).optional(),
+        providerConfig: z.record(z.string(), z.unknown()).optional(),
+        schedule: z.record(z.string(), z.unknown()).optional(),
+        retention: z.record(z.string(), z.unknown()).optional(),
+        compression: z.boolean().optional(),
+        encryption: z.boolean().optional(),
+        isActive: z.boolean().optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('manage_backup_configs', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Playbook tools

@@ -28,4 +28,26 @@ describe('aiTools registry parity', () => {
     const untracked = missing.filter(name => !legacyPermissionGaps.has(name));
     expect(untracked, `Tools missing from TOOL_PERMISSIONS: ${untracked.join(', ')}`).toEqual([]);
   });
+
+  // Both exemption lists above are `.filter()`ed out of the MISSING set, so a
+  // tool that later gets its schema/permission keeps its exemption forever and
+  // the list quietly stops describing reality. These two tests are what make
+  // the lists shrink-only (#2814).
+  it('keeps legacySchemaGaps honest — every entry is still missing a schema', () => {
+    const stale = Array.from(legacySchemaGaps).filter(name => name in toolInputSchemas);
+    expect(stale, `Now have schemas — drop from legacySchemaGaps: ${stale.join(', ')}`).toEqual([]);
+  });
+
+  it('keeps legacyPermissionGaps honest — every entry is still missing a permission', () => {
+    const stale = Array.from(legacyPermissionGaps).filter(name => name in TOOL_PERMISSIONS);
+    expect(stale, `Now have permissions — drop from legacyPermissionGaps: ${stale.join(', ')}`).toEqual([]);
+  });
+
+  // Neither list may name a tool that no longer exists in the registry, which
+  // would otherwise mask a rename.
+  it('neither exemption list names an unregistered tool', () => {
+    const registered = new Set(toolNames);
+    const unknown = [...legacySchemaGaps, ...legacyPermissionGaps].filter(name => !registered.has(name));
+    expect(unknown, `Not in the aiTools registry: ${unknown.join(', ')}`).toEqual([]);
+  });
 });

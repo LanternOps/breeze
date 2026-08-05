@@ -2,7 +2,12 @@ import { readFileSync } from 'node:fs';
 
 import { describe, it, expect } from 'vitest';
 
-import { TOOL_TIERS } from './aiAgentSdkTools';
+import { z } from 'zod';
+
+import { TOOL_TIERS, createBreezeMcpServer } from './aiAgentSdkTools';
+import { aiTools } from './aiTools';
+import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
+import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 
 /**
  * MCP registration coverage guard (#2605).
@@ -50,11 +55,11 @@ function declaredDescription(name: string): string {
  * declared. Remove an entry when the tool gets registered — the last test in
  * this file fails on stale entries so the list cannot rot.
  *
- * All nine below are reachable only from the script-builder MCP server or not at
- * all; the policy-prerequisite four are a genuine gap of the same family as
- * #2605 (the system prompt tells the model to call manage_policy_feature_link /
- * manage_update_rings) and are tracked separately rather than widened into this
- * PR.
+ * The four below are reachable only from the script-builder MCP server. The
+ * five configuration-policy tools that used to sit here (#2814 — the same
+ * family as #2605) are now declared in `createBreezeMcpServer`, so their
+ * entries are gone: the third test in this describe fails on a stale entry, so
+ * this list cannot silently outlive the gap it documents.
  */
 const NOT_IN_BREEZE_MCP_SERVER: Record<string, string> = {
   // Exposed by the separate `script_builder` SDK MCP server (scriptBuilderTools.ts).
@@ -62,12 +67,6 @@ const NOT_IN_BREEZE_MCP_SERVER: Record<string, string> = {
   get_script_details: 'script_builder MCP server',
   list_script_templates: 'script_builder MCP server',
   get_script_execution_history: 'script_builder MCP server',
-  // Known gap — same shape as #2605, tracked separately.
-  manage_policy_feature_link: 'unregistered (known gap)',
-  manage_update_rings: 'unregistered (known gap)',
-  manage_software_policies: 'unregistered (known gap)',
-  manage_peripheral_policies: 'unregistered (known gap)',
-  manage_backup_configs: 'unregistered (known gap)',
 };
 
 describe('createBreezeMcpServer tool coverage vs TOOL_TIERS', () => {
@@ -97,6 +96,145 @@ describe('createBreezeMcpServer tool coverage vs TOOL_TIERS', () => {
       stale,
       'these tools are now declared in createBreezeMcpServer — drop them from NOT_IN_BREEZE_MCP_SERVER',
     ).toEqual([]);
+  });
+});
+
+/**
+ * Registration is necessary but NOT sufficient (#2814). A tool the model can
+ * see still fails on every call if the downstream gates don't know it:
+ * `validateToolInput` rejects a tool with no `toolInputSchemas` entry, and
+ * `checkToolPermission` fails closed with no `TOOL_PERMISSIONS` entry. Both
+ * denials reach the model as an ordinary tool error, so the symptom is
+ * identical to #2605 — it quietly falls back to a neighbouring tool.
+ *
+ * Those two gates are asserted registry-wide in `aiToolsRegistryParity.test.ts`
+ * (which covers the session-aware tools this file's source regexes would miss),
+ * so they are deliberately NOT re-asserted here. What that suite cannot see is
+ * whether the shapes AGREE — which is the drift below.
+ *
+ * `manage_policy_feature_link` is the cautionary case: its `toolInputSchemas`
+ * enum sat four values behind the enum its own `input_schema` advertised, so
+ * `remote_access` / `pam` / `onedrive_helper` / `vulnerability` were documented
+ * and DB-valid yet rejected at the gate. Key-level drift is worse still,
+ * because `z.object()` STRIPS unknown keys rather than rejecting: a renamed
+ * field vanishes silently, the write lands with defaults, and the tool reports
+ * success. This test pins the advertised contract to the enforced one.
+ */
+const CONFIG_POLICY_TOOLS = [
+  'manage_policy_feature_link',
+  'manage_update_rings',
+  'manage_software_policies',
+  'manage_peripheral_policies',
+  'manage_backup_configs',
+] as const;
+
+/** The prerequisite policies a feature link points at via `featurePolicyId`. */
+const PREREQUISITE_TOOLS = CONFIG_POLICY_TOOLS.filter(
+  (name) => name !== 'manage_policy_feature_link',
+);
+
+describe('advertised input_schema matches the enforced Zod schema (#2814)', () => {
+  it.each(CONFIG_POLICY_TOOLS)('%s advertises exactly the keys it validates', (name) => {
+    const advertised = Object.keys(
+      aiTools.get(name)!.definition.input_schema.properties as Record<string, unknown>,
+    ).sort();
+    const enforced = Object.keys(
+      (toolInputSchemas[name] as z.ZodObject<z.ZodRawShape>).shape,
+    ).sort();
+    expect(
+      enforced,
+      'a key the model is told to send but Zod does not know is stripped silently — the write '
+        + 'lands with defaults and the tool still reports success',
+    ).toEqual(advertised);
+  });
+});
+
+/**
+ * The configuration-policy family takes its `tool()` description from the
+ * `aiTools` registry (`registryDescription`) instead of a second inline literal,
+ * because `manage_policy_feature_link`'s description IS the reference for every
+ * feature type's `inlineSettings` shape. `registryDescription` throws when a
+ * name is absent from the registry, which is the single way that indirection
+ * can fail — so assert the registry actually answers for all five.
+ */
+describe('registry-sourced tool descriptions resolve (#2814)', () => {
+  it('createBreezeMcpServer constructs — registryDescription throws at build time', () => {
+    // Nothing else in the suite ever BUILDS the server (the only other
+    // reference is a vi.fn() mock in streamingSessionManager.clientLoop.test.ts),
+    // so this is the sole direct cover for the throw path — which would fail
+    // every chat request, not one tool call. Also cheap cover for the other
+    // ~120 declarations against a malformed shape.
+    expect(() => createBreezeMcpServer(() => ({}) as never)).not.toThrow();
+  });
+
+  it('every registry-sourced description resolves to non-empty text', () => {
+    for (const name of CONFIG_POLICY_TOOLS) {
+      const description = aiTools.get(name)?.definition.description;
+      expect(description, `aiTools registry has no description for "${name}"`).toBeTruthy();
+    }
+  });
+
+  it('the feature-link tool advertises featurePolicyId and the prerequisite workflow', () => {
+    // The three-step workflow in aiAgentSystemPrompt.ts (:60-64) is only
+    // followable if the model is told how a prerequisite policy attaches.
+    const description = aiTools.get('manage_policy_feature_link')!.definition.description;
+    expect(description).toContain('featurePolicyId');
+    expect(description).toContain('inlineSettings');
+    for (const name of PREREQUISITE_TOOLS) {
+      expect(
+        aiTools.get(name)!.definition.description,
+        `${name} should point back at manage_policy_feature_link`,
+      ).toContain('manage_policy_feature_link');
+    }
+  });
+});
+
+/**
+ * Bounds the model cannot infer from the advertised schema. Each of these
+ * previously passed Zod and died in Postgres, surfacing to the model as a
+ * sanitized driver error it has no way to act on.
+ */
+describe('prerequisite tool bounds match the columns behind them (#2814)', () => {
+  const overLength = 'x'.repeat(201);
+
+  it.each([
+    ['manage_software_policies', { action: 'create', mode: 'blocklist' }],
+    ['manage_peripheral_policies', { action: 'create', deviceClass: 'storage', action_type: 'block' }],
+    ['manage_backup_configs', { action: 'create', type: 'file', provider: 'local' }],
+  ] as const)('%s rejects a name longer than its varchar(200) column', (name, base) => {
+    const result = validateToolInput(name, { ...base, name: overLength });
+    expect(result.success, 'a 201-char name reaches Postgres as 22001').toBe(false);
+    expect(validateToolInput(name, { ...base, name: 'x'.repeat(200) }).success).toBe(true);
+  });
+
+  it('manage_update_rings neither advertises nor validates the deprecated sources column', () => {
+    // `patch_policies.sources` is deprecated (#3150): the handler never writes
+    // it and `get` strips it from responses. The tool definition must not
+    // re-advertise it (the model would send values the DB rejects as 22P02,
+    // which safeHandler reports as "Invalid ID format — expected a valid
+    // UUID"), and the Zod gate must not fail a legacy caller that still sends
+    // it — the unknown key is stripped, never forwarded.
+    const def = aiTools.get('manage_update_rings')?.definition;
+    expect(def).toBeDefined();
+    const properties = (def!.input_schema as { properties: Record<string, unknown> }).properties;
+    expect(properties).not.toHaveProperty('sources');
+    expect(toolInputSchemas['manage_update_rings']).toBeDefined();
+    expect(validateToolInput('manage_update_rings', {
+      action: 'create', name: 'Ring', sources: ['os'],
+    }).success).toBe(true);
+  });
+
+  it('manage_policy_feature_link accepts every DB-valid feature type', () => {
+    for (const featureType of CONFIG_FEATURE_TYPES) {
+      expect(
+        validateToolInput('manage_policy_feature_link', {
+          action: 'add',
+          configPolicyId: '00000000-0000-4000-8000-000000000000',
+          featureType,
+        }).success,
+        `featureType "${featureType}" is in config_feature_type but rejected at the gate`,
+      ).toBe(true);
+    }
   });
 });
 
