@@ -232,6 +232,10 @@ const authSlice = createSlice({
         state.isLoading = false;
         state.error = null;
         state.mfaChallenge = null;
+        // Reset push status too — leaving the previous account's 'ok'/'failed'
+        // behind briefly shows stale copy in Settings after the next sign-in.
+        state.pushRegistration = 'idle';
+        state.pushRegistrationReason = null;
         state.approverRegistration = 'idle';
         state.approverRegistrationReason = null;
         state.authenticatorRegisterGrantId = null;
@@ -242,6 +246,8 @@ const authSlice = createSlice({
         state.isLoading = false;
         state.error = null;
         state.mfaChallenge = null;
+        state.pushRegistration = 'idle';
+        state.pushRegistrationReason = null;
         state.approverRegistration = 'idle';
         state.approverRegistrationReason = null;
         state.authenticatorRegisterGrantId = null;

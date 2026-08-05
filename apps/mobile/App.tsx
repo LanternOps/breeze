@@ -51,14 +51,17 @@ import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import { Provider as ReduxProvider, useDispatch, useSelector } from 'react-redux';
 import { Provider as PaperProvider, MD3DarkTheme, MD3LightTheme } from 'react-native-paper';
-import { useColorScheme } from 'react-native';
+import { AppState, useColorScheme } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { store, type AppDispatch, type RootState } from './src/store';
 import { RootNavigator } from './src/navigation/RootNavigator';
 import { AppLockGate } from './src/navigation/AppLockGate';
-import { registerForPushNotifications } from './src/services/notifications';
+import {
+  registerForPushNotifications,
+  reconcilePushRegistration,
+} from './src/services/notifications';
 import { setPushRegistration } from './src/store/authSlice';
 
 // Hold the native splash until the first real screen is ready to paint.
@@ -111,17 +114,56 @@ const customDarkTheme = {
 function PushRegistrationGate() {
   const dispatch = useDispatch<AppDispatch>();
   const token = useSelector((s: RootState) => s.auth.token);
+  const pushRegistration = useSelector((s: RootState) => s.auth.pushRegistration);
+  const pushRegistrationReason = useSelector((s: RootState) => s.auth.pushRegistrationReason);
 
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
     (async () => {
-      const outcome = await registerForPushNotifications();
-      if (cancelled) return;
-      dispatch(setPushRegistration({ status: outcome.status, reason: outcome.status === 'ok' ? null : outcome.reason }));
+      try {
+        const outcome = await registerForPushNotifications();
+        if (cancelled) return;
+        dispatch(setPushRegistration({ status: outcome.status, reason: outcome.status === 'ok' ? null : outcome.reason }));
+      } catch (err) {
+        // registerForPushNotifications is total by contract, but if anything
+        // still rejects the store must not stay at 'idle' — Settings would
+        // read "Checking push registration…" forever. #3143
+        if (cancelled) return;
+        console.warn('[push] registration threw', err);
+        dispatch(setPushRegistration({
+          status: 'failed',
+          reason: err instanceof Error ? err.message : 'unknown',
+        }));
+      }
     })();
     return () => { cancelled = true; };
   }, [token, dispatch]);
+
+  // iOS keeps the app alive when the user flips the notification permission in
+  // Settings (which the Settings sheet's Notifications row now deep-links to),
+  // so re-check on every foreground and correct the stored status — otherwise
+  // the row and ApprovalGate's banner keep asserting a stale 'ok'. #3143
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') return;
+      void (async () => {
+        try {
+          const outcome = await reconcilePushRegistration(pushRegistration, pushRegistrationReason);
+          if (cancelled || !outcome) return;
+          dispatch(setPushRegistration({ status: outcome.status, reason: outcome.status === 'ok' ? null : outcome.reason }));
+        } catch (err) {
+          console.warn('[push] foreground permission re-check failed', err);
+        }
+      })();
+    });
+    return () => {
+      cancelled = true;
+      sub.remove();
+    };
+  }, [token, pushRegistration, pushRegistrationReason, dispatch]);
 
   return null;
 }
