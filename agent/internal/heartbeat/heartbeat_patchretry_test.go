@@ -252,7 +252,7 @@ func TestFailedSubmissionSchedulesAnotherScanInsideTheInterval(t *testing.T) {
 	if h.nextPatchRetryAt.IsZero() {
 		t.Fatal("a failed submission must arm a retry")
 	}
-	retryDelay := h.nextPatchRetryAt.Sub(time.Now())
+	retryDelay := time.Until(h.nextPatchRetryAt)
 	if retryDelay >= day {
 		t.Fatalf("retry scheduled %v out — no better than waiting for the interval", retryDelay)
 	}
