@@ -43,6 +43,7 @@ import { ease, duration } from '../../../lib/motion';
 import { track } from '../../../lib/analytics';
 import { relativeTime } from '../../../lib/relativeTime';
 import { Toast } from '../../../components/Toast';
+import { pushUnavailableCopy } from './pushUnavailableCopy';
 import { Avatar } from './Avatar';
 import { ChangePasswordSheet } from './ChangePasswordSheet';
 import type { PairedMobileDevice } from '../../../services/mobileDevices';
@@ -81,6 +82,13 @@ export function SettingsSheet({ visible, onCancel }: Props) {
   const activeAppCount = useAppSelector(selectActiveConnectedAppsCount);
   const pendingDeviceId = useAppSelector((s) => s.lifecycle.pendingDeviceId);
   const pendingAppId = useAppSelector((s) => s.lifecycle.pendingAppId);
+  // 'unsupported' is a deliberate "push not built / not possible here" state
+  // (e.g. android_push_not_configured) — the sheet must not show an ON toggle
+  // asserting a capability the build doesn't have. 'failed' keeps the normal
+  // toggle: ApprovalGate already surfaces failures with its own banner. #3118
+  const pushRegistration = useAppSelector((s) => s.auth.pushRegistration);
+  const pushRegistrationReason = useAppSelector((s) => s.auth.pushRegistrationReason);
+  const pushUnavailable = pushRegistration === 'unsupported';
 
   const screenWidth = Dimensions.get('window').width;
   const sheetWidth = Math.min(screenWidth * 0.84, 420);
@@ -286,6 +294,8 @@ export function SettingsSheet({ visible, onCancel }: Props) {
             biometricOn={biometricOn}
             notificationsOn={notificationsOn}
             criticalOnly={criticalOnly}
+            pushUnavailable={pushUnavailable}
+            pushUnavailableReason={pushRegistrationReason}
             buildVersion={buildVersion}
             pairedDevices={pairedDevices}
             connectedApps={connectedApps}
@@ -332,6 +342,8 @@ function SheetBody({
   biometricOn,
   notificationsOn,
   criticalOnly,
+  pushUnavailable,
+  pushUnavailableReason,
   buildVersion,
   pairedDevices,
   connectedApps,
@@ -356,6 +368,8 @@ function SheetBody({
   biometricOn: boolean;
   notificationsOn: boolean;
   criticalOnly: boolean;
+  pushUnavailable: boolean;
+  pushUnavailableReason: string | null;
   buildVersion: string;
   pairedDevices: PairedMobileDevice[];
   connectedApps: ConnectedApp[];
@@ -372,6 +386,7 @@ function SheetBody({
   onRevokeDevice: (device: PairedMobileDevice) => void;
   onRevokeApp: (app: ConnectedApp) => void;
 }) {
+  const pushCopy = pushUnavailable ? pushUnavailableCopy(pushUnavailableReason) : null;
   return (
     <View style={{ flex: 1 }}>
       <ScrollView
@@ -417,15 +432,26 @@ function SheetBody({
           />
         ) : null}
 
-        <ToggleRow
-          label="Notifications"
-          description="Approval pushes and alerts"
-          value={notificationsOn}
-          onChange={onToggleNotifications}
-          theme={theme}
-        />
+        {pushCopy ? (
+          <ToggleRow
+            label="Notifications"
+            description={pushCopy.notificationsRow}
+            value={false}
+            disabled
+            onChange={() => {}}
+            theme={theme}
+          />
+        ) : (
+          <ToggleRow
+            label="Notifications"
+            description="Approval pushes and alerts"
+            value={notificationsOn}
+            onChange={onToggleNotifications}
+            theme={theme}
+          />
+        )}
 
-        {notificationsOn ? (
+        {!pushCopy && notificationsOn ? (
           <ToggleRow
             label="Critical only"
             description="Quiet pushes for medium and warning alerts"
@@ -450,7 +476,11 @@ function SheetBody({
         <SectionHeader label="This phone + others" theme={theme} />
         {pairedDevices.length === 0 ? (
           <EmptyHint
-            text="No paired devices yet. Sign in on another phone to see it here."
+            text={
+              pushCopy
+                ? pushCopy.pairedDevicesHint
+                : 'No paired devices yet. Sign in on another phone to see it here.'
+            }
             theme={theme}
           />
         ) : (
@@ -709,12 +739,14 @@ function ToggleRow({
   label,
   description,
   value,
+  disabled,
   onChange,
   theme,
 }: {
   label: string;
   description?: string;
   value: boolean;
+  disabled?: boolean;
   onChange: (v: boolean) => void;
   theme: ReturnType<typeof useApprovalTheme>;
 }) {
@@ -728,7 +760,10 @@ function ToggleRow({
       }}
     >
       <View style={{ flex: 1, marginRight: spacing[3] }}>
-        <Text style={[type.bodyMd, { color: theme.textHi }]}>{label}</Text>
+        {/* Only the label and Switch signal "disabled" — the description stays
+            at full contrast because for a disabled row it carries the
+            explanation the user must be able to read (#3118). */}
+        <Text style={[type.bodyMd, { color: disabled ? theme.textLo : theme.textHi }]}>{label}</Text>
         {description ? (
           <Text style={[type.meta, { color: theme.textMd, marginTop: spacing[1] }]}>
             {description}
@@ -737,9 +772,11 @@ function ToggleRow({
       </View>
       <Switch
         value={value}
+        disabled={disabled}
         onValueChange={onChange}
         trackColor={{ false: theme.bg3, true: palette.brand.deep }}
         thumbColor={value ? palette.brand.base : theme.textMd}
+        style={disabled ? { opacity: 0.55 } : undefined}
       />
     </View>
   );
