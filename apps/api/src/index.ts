@@ -216,6 +216,10 @@ import {
   initializeEnrollmentKeyCleanupWorker,
   shutdownEnrollmentKeyCleanupWorker,
 } from './jobs/enrollmentKeyCleanup';
+import {
+  initializeQuickSupportReaper,
+  shutdownQuickSupportReaper,
+} from './jobs/quickSupportReaper';
 import { initializeAuditRetentionWorker, shutdownAuditRetentionWorker } from './jobs/auditRetention';
 import {
   initializeAuditChainVerifyWorker,
@@ -1305,6 +1309,9 @@ async function initializeWorkers(): Promise<void> {
     // Undo-send window: fires the delayed quote dispatch (jobs/quoteSendQueue).
     ['quoteSendWorker', async () => { initializeQuoteSendWorker(); }],
     ['enrollmentKeyCleanup', initializeEnrollmentKeyCleanupWorker],
+    // Quick Support safety net: expires stale codes/sessions, enforces the 8h
+    // hard cap, detects end-user disconnects, and purges ephemeral devices.
+    ['quickSupportReaper', initializeQuickSupportReaper],
     ['auditRetention', initializeAuditRetentionWorker],
     ['extensionJobHost', () => initializeExtensionJobHost(extensionContributionRegistry, extensionStateStore)],
     ['auditChainVerify', initializeAuditChainVerifyWorker],
@@ -1516,6 +1523,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownAuthEmailWorker,
     shutdownQuoteSendWorker,
     shutdownEnrollmentKeyCleanupWorker,
+    shutdownQuickSupportReaper,
     shutdownAuditRetentionWorker,
     shutdownExtensionJobHost,
     shutdownAuditChainVerifyWorker,
