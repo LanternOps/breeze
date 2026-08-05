@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   canonicalizeTimezone,
   isValidIanaTimezone,
+  listIanaTimezones,
   normalizeTimezone,
   resolveEffectiveTimezone,
   UTC_TIMEZONE,
@@ -139,5 +140,96 @@ describe('resolveEffectiveTimezone', () => {
         partnerTz: 'nope',
       }),
     ).toBe('UTC');
+  });
+});
+
+describe('listIanaTimezones', () => {
+  it('includes the zones the old hardcoded UI lists were missing (issue #2856)', () => {
+    const zones = listIanaTimezones();
+    expect(zones).toContain('Europe/Paris');
+    expect(zones).toContain('Europe/Madrid');
+    expect(zones).toContain('America/Sao_Paulo');
+    expect(zones).toContain('Africa/Nairobi');
+  });
+
+  it('prepends UTC, which Intl.supportedValuesOf omits', () => {
+    expect(listIanaTimezones()[0]).toBe(UTC_TIMEZONE);
+  });
+
+  it('is sorted after UTC, deduplicated, and every entry is a valid IANA zone', () => {
+    const [first, ...rest] = listIanaTimezones();
+    expect(first).toBe(UTC_TIMEZONE);
+    expect(new Set(rest).size).toBe(rest.length);
+    expect(rest).toEqual([...rest].sort((a, b) => a.localeCompare(b)));
+    expect(rest.every((zone) => isValidIanaTimezone(zone))).toBe(true);
+  });
+
+  it('returns a defensive copy so a caller mutating the result cannot poison the cache', () => {
+    const original = listIanaTimezones().length;
+    const first = listIanaTimezones();
+    first.length = 0;
+    expect(listIanaTimezones()).toHaveLength(original);
+  });
+
+  it('covers every zone the two legacy hardcoded UI lists offered, even on the fallback path', async () => {
+    // The fallback's doc comment promises this; without an assertion the
+    // promise silently rots on exactly the runtimes that depend on it.
+    const legacy = [
+      'UTC', 'America/Los_Angeles', 'America/Denver', 'America/Chicago',
+      'America/New_York', 'America/Phoenix', 'America/Anchorage',
+      'Pacific/Honolulu', 'Europe/London', 'Europe/Paris', 'Europe/Berlin',
+      'Asia/Tokyo', 'Asia/Shanghai', 'Asia/Singapore', 'Australia/Sydney',
+    ];
+    expect(listIanaTimezones()).toEqual(expect.arrayContaining(legacy));
+
+    vi.resetModules();
+    const supported = Intl.supportedValuesOf;
+    // @ts-expect-error — simulating an older runtime that lacks the ES2022 API.
+    delete Intl.supportedValuesOf;
+    try {
+      const fresh = await import('./timezone');
+      expect(fresh.listIanaTimezones()).toEqual(expect.arrayContaining(legacy));
+    } finally {
+      Intl.supportedValuesOf = supported;
+      vi.resetModules();
+    }
+  });
+
+  it('does not latch the degraded fallback list into the cache', async () => {
+    vi.resetModules();
+    const supported = Intl.supportedValuesOf;
+    // @ts-expect-error — simulating an older runtime that lacks the ES2022 API.
+    delete Intl.supportedValuesOf;
+    let fresh: typeof import('./timezone');
+    try {
+      fresh = await import('./timezone');
+      expect(fresh.listIanaTimezones().length).toBeLessThan(100);
+    } finally {
+      Intl.supportedValuesOf = supported;
+    }
+    // Caching a failure would pin the short list for the whole process.
+    expect(fresh!.listIanaTimezones().length).toBeGreaterThan(100);
+    vi.resetModules();
+  });
+
+  it('falls back to a broad curated list when Intl.supportedValuesOf is unavailable', async () => {
+    // A fresh module instance so the cache built by the tests above does not
+    // mask the fallback branch.
+    vi.resetModules();
+    const supported = Intl.supportedValuesOf;
+    // @ts-expect-error — simulating an older runtime that lacks the ES2022 API.
+    delete Intl.supportedValuesOf;
+    try {
+      const fresh = await import('./timezone');
+      const zones = fresh.listIanaTimezones();
+      expect(zones[0]).toBe(UTC_TIMEZONE);
+      // The fallback must not regress to the 10-entry US-centric list that
+      // caused the bug — Europe/Paris is the canonical reporter case.
+      expect(zones).toContain('Europe/Paris');
+      expect(zones.length).toBeGreaterThan(40);
+    } finally {
+      Intl.supportedValuesOf = supported;
+      vi.resetModules();
+    }
   });
 });

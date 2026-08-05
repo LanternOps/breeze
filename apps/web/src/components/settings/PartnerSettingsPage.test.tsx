@@ -221,7 +221,10 @@ describe('PartnerSettingsPage language control', () => {
       const languageSelect = screen.getByLabelText('Language') as HTMLSelectElement;
       expect(languageSelect.value).toBe(persistedLocale);
 
-      await user.selectOptions(screen.getByLabelText('Timezone'), 'Europe/London');
+      // Timezone is a searchable combobox (issue #2856), not a native select.
+      await user.click(screen.getByTestId('partner-timezone-trigger'));
+      await user.type(screen.getByTestId('partner-timezone-search'), 'Europe/London');
+      await user.click(screen.getByTestId('partner-timezone-option-Europe/London'));
       await user.click(screen.getByRole('button', { name: /save settings/i }));
 
       const patchCall = fetchWithAuthMock.mock.calls.find(
@@ -230,6 +233,9 @@ describe('PartnerSettingsPage language control', () => {
       expect(patchCall).toBeDefined();
       const body = JSON.parse((patchCall![1] as RequestInit).body as string);
       expect(body.settings.language).toBe(persistedLocale);
+      // The zone the user picked must reach the PATCH, not just mark the form
+      // dirty — a picker that silently drops the selection is issue #2856.
+      expect(body.settings.timezone).toBe('Europe/London');
     }
   );
 

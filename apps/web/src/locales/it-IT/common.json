@@ -185,6 +185,11 @@
     "toast": {
       "undo": "Annulla",
       "dismiss": "Ignora"
+    },
+    "timezoneSelect": {
+      "searchPlaceholder": "Cerca fusi orari…",
+      "noResults": "Nessun fuso orario corrispondente",
+      "invalidStored": "«{{value}}» non è un fuso orario riconosciuto. Scegline uno dall’elenco: questa impostazione non può essere salvata finché non lo fai."
     }
   },
   "dashboard": {

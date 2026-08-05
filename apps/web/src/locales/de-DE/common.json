@@ -185,6 +185,11 @@
     "toast": {
       "undo": "Rückgängig",
       "dismiss": "Schließen"
+    },
+    "timezoneSelect": {
+      "searchPlaceholder": "Zeitzonen suchen…",
+      "noResults": "Keine passende Zeitzone",
+      "invalidStored": "„{{value}}“ ist keine bekannte Zeitzone. Wählen Sie eine aus der Liste — diese Einstellung kann bis dahin nicht gespeichert werden."
     }
   },
   "dashboard": {

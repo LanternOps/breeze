@@ -1,15 +1,9 @@
 import { Clock, Globe } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import KnownGuestsSettings from './KnownGuestsSettings';
+import TimezoneSelect from '@/components/shared/TimezoneSelect';
 import type { BusinessHoursPreset, DateFormat, TimeFormat, DaySchedule, SupportedLocale } from '@breeze/shared';
 import '@/lib/i18n';
-
-const TIMEZONES = [
-  'UTC', 'America/New_York', 'America/Chicago', 'America/Denver',
-  'America/Los_Angeles', 'America/Phoenix', 'America/Anchorage',
-  'Pacific/Honolulu', 'Europe/London', 'Europe/Paris', 'Europe/Berlin',
-  'Asia/Tokyo', 'Asia/Shanghai', 'Asia/Singapore', 'Australia/Sydney'
-];
 
 const DATE_FORMATS: { value: DateFormat; labelKey: string }[] = [
   { value: 'MM/DD/YYYY', labelKey: 'us' },
@@ -75,10 +69,13 @@ export default function PartnerRegionalTab({
         <div className="grid gap-6 sm:grid-cols-2">
           <div className="space-y-2">
             <label htmlFor="partner-timezone" className="text-sm font-medium">{t('partner.regional.timezone')}</label>
-            <select id="partner-timezone" value={timezone} onChange={e => onTimezoneChange(e.target.value)}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm">
-              {TIMEZONES.map(tz => <option key={tz} value={tz}>{tz}</option>)}
-            </select>
+            <TimezoneSelect
+              id="partner-timezone"
+              label={t('partner.regional.timezone')}
+              value={timezone}
+              onChange={onTimezoneChange}
+              testId="partner-timezone"
+            />
           </div>
           <div className="space-y-2">
             <label htmlFor="partner-date-format" className="text-sm font-medium">{t('partner.regional.dateFormat')}</label>

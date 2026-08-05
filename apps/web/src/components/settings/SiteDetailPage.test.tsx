@@ -20,7 +20,10 @@ const SITE_FROM_API = {
   id: SITE_ID,
   orgId: ORG_ID,
   name: 'Main Office',
-  timezone: 'America/New_York',
+  // Deliberately a zone that NEITHER legacy hardcoded list contained (issue
+  // #2856): the old <select> here had no matching <option>, so the browser
+  // silently fell back to its first one and a save rewrote the site to UTC.
+  timezone: 'Pacific/Chatham',
   status: 'active',
   address: {
     line1: '123 Market Street',
@@ -118,6 +121,49 @@ describe('SiteDetailPage — address/contact round-trip', () => {
       expect(body).not.toHaveProperty('addressLine1');
       expect(body).not.toHaveProperty('city');
       expect(body).not.toHaveProperty('contactName');
+    });
+  });
+
+  it('renders a stored zone the old hardcoded list lacked, and round-trips it untouched', async () => {
+    mockApi();
+    render(<SiteDetailPage siteId={SITE_ID} />);
+
+    const trigger = await screen.findByTestId('site-detail-timezone-trigger');
+    expect(trigger).toHaveTextContent('Pacific/Chatham');
+
+    // Save after editing an UNRELATED field: the zone the user never touched
+    // must survive rather than being rewritten to the picker's first option.
+    fireEvent.change(screen.getByPlaceholderText('San Francisco'), { target: { value: 'Oakland' } });
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => {
+      const patchCall = fetchMock.mock.calls.find(
+        ([url, init]) => String(url) === `/orgs/sites/${SITE_ID}` && init?.method === 'PATCH'
+      );
+      expect(patchCall).toBeTruthy();
+      expect(JSON.parse(String(patchCall![1]?.body)).timezone).toBe('Pacific/Chatham');
+    });
+  });
+
+  it('marks the form dirty and PATCHes a newly picked zone', async () => {
+    mockApi();
+    render(<SiteDetailPage siteId={SITE_ID} />);
+
+    // The value-based onChange is a different handler from the event-based one
+    // the other fields use; wiring the event handler here would PATCH
+    // `timezone: undefined` and leave Save disabled.
+    fireEvent.click(await screen.findByTestId('site-detail-timezone-trigger'));
+    fireEvent.change(screen.getByTestId('site-detail-timezone-search'), { target: { value: 'paris' } });
+    fireEvent.click(screen.getByTestId('site-detail-timezone-option-Europe/Paris'));
+
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => {
+      const patchCall = fetchMock.mock.calls.find(
+        ([url, init]) => String(url) === `/orgs/sites/${SITE_ID}` && init?.method === 'PATCH'
+      );
+      expect(patchCall).toBeTruthy();
+      expect(JSON.parse(String(patchCall![1]?.body)).timezone).toBe('Europe/Paris');
     });
   });
 });

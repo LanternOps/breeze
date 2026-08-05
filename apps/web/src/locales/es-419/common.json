@@ -185,6 +185,11 @@
     "toast": {
       "undo": "Deshacer",
       "dismiss": "Descartar"
+    },
+    "timezoneSelect": {
+      "searchPlaceholder": "Buscar zonas horarias…",
+      "noResults": "No hay zonas horarias coincidentes",
+      "invalidStored": "«{{value}}» no es una zona horaria reconocida. Elige una de la lista: esta configuración no se puede guardar hasta que lo hagas."
     }
   },
   "dashboard": {
