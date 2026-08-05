@@ -27,7 +27,15 @@ vi.mock('../db/schema', () => ({
     orgId: 'devices.orgId',
     status: 'devices.status',
     lastSeenAt: 'devices.lastSeenAt',
-    updatedAt: 'devices.updatedAt'
+    updatedAt: 'devices.updatedAt',
+    siteId: 'devices.siteId',
+    hostname: 'devices.hostname',
+    agentVersion: 'devices.agentVersion',
+    isEphemeral: 'devices.isEphemeral'
+  },
+  supportSessions: {
+    deviceId: 'supportSessions.deviceId',
+    status: 'supportSessions.status',
   },
   deviceCommands: {
     id: 'deviceCommands.id',
@@ -245,6 +253,17 @@ vi.mock('../services/agentWorkExpectation', () => ({
   refreshDispatchedExpectation: vi.fn(),
 }));
 
+// #3000: the Redis-available branch of the backup-result handler enqueues
+// instead of persisting inline. Mocked so both transports can be asserted —
+// previously the queued branch had no coverage at all.
+vi.mock('../jobs/backupEnqueue', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../jobs/backupEnqueue')>();
+  return {
+    ...actual,
+    enqueueBackupResults: vi.fn(async () => 'queued-job-1'),
+  };
+});
+
 vi.mock('../services/backupResultPersistence', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/backupResultPersistence')>();
   return {
@@ -262,8 +281,8 @@ vi.mock('../services/sentry', async (importOriginal) => {
   return { ...actual, captureMessage: vi.fn() };
 });
 
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { devices, deviceCommands } from '../db/schema';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbAccessContext } from '../db';
+import { devices, deviceCommands, scriptExecutions, supportSessions } from '../db/schema';
 import { captureMessage } from '../services/sentry';
 import {
   createAgentWsHandlers,
@@ -305,6 +324,7 @@ import {
   refreshDispatchedExpectation,
 } from '../services/agentWorkExpectation';
 import { applyBackupCommandResultToJob } from '../services/backupResultPersistence';
+import { enqueueBackupResults } from '../jobs/backupEnqueue';
 
 function wsMock() {
   return {
@@ -1056,11 +1076,12 @@ describe('agent websocket command results', () => {
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 
-  // BREEZE-H: the command_result handler runs inside a held org-scoped
-  // transaction; BullMQ enqueues must be wrapped in runOutsideDbContext so
-  // the #1105 tripwire in bullmqQueue passes and nested DB work routes to
-  // the pool (the wrap does not release the outer transaction's connection —
-  // dispatching after the context closes is the deeper #1105 fix).
+  // BREEZE-H: the orphaned monitor branch runs inside a SHORT org-scoped
+  // transaction (agentWs.commandResult.orphaned since #3021); BullMQ enqueues
+  // must still be wrapped in runOutsideDbContext so the #1105 tripwire in
+  // bullmqQueue passes and nested DB work routes to the pool (the wrap does
+  // not release the outer transaction's connection — dispatching after the
+  // context closes is the deeper #1105 fix).
   it('enqueues an accepted monitor result via runOutsideDbContext (#1105, BREEZE-H)', async () => {
     const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
 
@@ -1905,6 +1926,87 @@ describe('backup command_result non-terminal guards (guard ordering integration)
     );
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
+
+  // #3000 wire plumbing, Redis-DOWN (inline) path. The agent reports a partial
+  // run as success:true with an inner status of `partial`; the outer status
+  // stays `completed`, so `agentStatus` is the ONLY carrier. Deleting that one
+  // argument makes the whole feature a silent no-op, which is why it is
+  // asserted explicitly rather than via objectContaining on `result`.
+  it('forwards the agent partial status inline when Redis is unavailable', async () => {
+    vi.mocked(isRedisAvailable).mockReturnValue(false);
+    const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([backupJobRow]) as any);
+
+    vi.mocked(consumeDispatchedExpectation).mockResolvedValue({ ok: true });
+    vi.mocked(applyBackupCommandResultToJob).mockResolvedValue({
+      applied: true,
+      snapshotDbId: 'snap-db-1',
+      providerSnapshotId: 'snap-1',
+    });
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: jobId,
+        status: 'completed',
+        result: JSON.stringify({
+          snapshotId: 'snap-1',
+          status: 'partial',
+          filesBackedUp: 1,
+          bytesBackedUp: 85,
+          errorCount: 21,
+        }),
+      })
+    } as any, ws as any);
+
+    expect(applyBackupCommandResultToJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId,
+        resultStatus: 'completed',
+        agentStatus: 'partial',
+      })
+    );
+  });
+
+  // Same, Redis-UP (queued) path. This one also pins the two-key design: the
+  // outer `status` must stay `completed` while the agent's own status rides
+  // `agentStatus`. Collapsing them into one key would make `partial`
+  // unreachable through the queue.
+  it('enqueues the agent partial status alongside the outer status when Redis is up', async () => {
+    vi.mocked(isRedisAvailable).mockReturnValue(true);
+    const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([backupJobRow]) as any);
+
+    vi.mocked(consumeDispatchedExpectation).mockResolvedValue({ ok: true });
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: jobId,
+        status: 'completed',
+        result: JSON.stringify({
+          snapshotId: 'snap-1',
+          status: 'partial',
+          filesBackedUp: 1,
+          errorCount: 21,
+        }),
+      })
+    } as any, ws as any);
+
+    expect(enqueueBackupResults).toHaveBeenCalledWith(
+      jobId,
+      'org-123',
+      'device-123',
+      expect.objectContaining({ status: 'completed', agentStatus: 'partial' }),
+      expect.anything()
+    );
+  });
 });
 
 // Finding #4 — one authorized socket per agent. A second socket must close the
@@ -2211,6 +2313,59 @@ describe('WS frames never claim pending commands (#2407)', () => {
   });
 });
 
+// Quick Support: the ephemeral agent's socket is the readiness signal, so onOpen
+// owns the claimed -> ready transition. The isEphemeral guard is the reason this
+// is affordable on a 10k-device fleet — the "no extra query" case is pinned here
+// as behaviour, not left to review.
+describe('Quick Support — support_sessions claimed -> ready on agent connect', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  /** Capture every db.update(table).set(...).where(...) the handshake performs. */
+  function rigOnOpen(deviceRow: Record<string, unknown>) {
+    const updates: Array<{ table: unknown; values: unknown; where: unknown }> = [];
+    vi.mocked(db.update).mockImplementation(((table: unknown) => ({
+      set: (values: unknown) => ({
+        where: (where: unknown) => {
+          updates.push({ table, values, where });
+          return Promise.resolve([]);
+        },
+      }),
+    })) as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([deviceRow]) as any);
+    vi.mocked(publishEvent).mockResolvedValue('event-id');
+    return updates;
+  }
+
+  it('flips the claimed session to ready when an ephemeral agent connects', async () => {
+    const updates = rigOnOpen({
+      id: 'device-eph', siteId: null, hostname: 'quick-support-pc', agentVersion: '1.0.0', isEphemeral: true,
+    });
+
+    const handlers = createAgentWsHandlers('agent-eph', { deviceId: 'device-eph', orgId: 'org-qs' });
+    await handlers.onOpen({}, wsMock() as any);
+
+    const sessionUpdate = updates.find(u => u.table === supportSessions);
+    expect(sessionUpdate).toBeDefined();
+    expect(sessionUpdate!.values).toEqual({ status: 'ready' });
+    expect(sessionUpdate!.where).toEqual(
+      and(eq(supportSessions.deviceId, 'device-eph'), eq(supportSessions.status, 'claimed'))
+    );
+  });
+
+  it('touches support_sessions not at all for a normal (non-ephemeral) device', async () => {
+    const updates = rigOnOpen({
+      id: 'device-normal', siteId: 'site-1', hostname: 'workstation-7', agentVersion: '1.0.0', isEphemeral: false,
+    });
+
+    const handlers = createAgentWsHandlers('agent-normal', { deviceId: 'device-normal', orgId: 'org-1' });
+    await handlers.onOpen({}, wsMock() as any);
+
+    expect(updates.some(u => u.table === supportSessions)).toBe(false);
+  });
+});
+
 // #2434 — agent-supplied error/output strings persisted OUTSIDE device_commands
 // must be redacted too (script_executions, tunnel_sessions, remote_sessions).
 describe('#2434 — secret redaction on non-device_commands persistence surfaces', () => {
@@ -2349,8 +2504,10 @@ describe('#2434 — secret redaction on non-device_commands persistence surfaces
 });
 
 // #1375 / BREEZE-7: the device_commands lookup + terminal compare-and-set on the
-// WS result path deliberately run OUTSIDE the held org-scoped transaction (fresh
-// snapshot visibility), but for a long time they ran with NO DB access context at
+// WS result path deliberately run OUTSIDE any ambient org-scoped transaction
+// (since #3021 there normally is none — runOutsideDbContext is kept as defense
+// and for fresh-snapshot visibility if a caller reintroduces one), but for a
+// long time they ran with NO DB access context at
 // all — tripping the contextless-write guard in db/index.ts on every fresh
 // process and flooding Sentry. device_commands has no RLS so the write always
 // landed; the bug was the false invariant + the noise. The fix nests
@@ -2461,6 +2618,270 @@ describe('device_commands access context on the WS result path (#1375)', () => {
     // context — in that exact order. Asserting the full stack (rather than
     // "both are non-zero") is what fails if the two wrappers are ever swapped.
     expect(write.stack).toEqual(['outside', 'system']);
+  });
+});
+
+// #3021: the command_result message must NOT run under a message-level org
+// context. The old `runWithAgentDbAccess('agentWs.commandResult', ...)` wrap
+// held one pooled connection idle-in-transaction for the whole message while
+// the nested `runOutsideDbContext(() => withSystemDbAccessContext(...))` steps
+// inside processCommandResult (terminal CAS, lifecycle recheck, audit write)
+// each acquired a SECOND connection — two pool slots per command result, the
+// same defect #2765 fixed on the HTTP /commands route. The fix scopes the org
+// context to exactly the pieces that need ambient tenant RLS (the per-type
+// handler dispatch and the orphaned-result branches), so no org transaction is
+// ever open while a fresh system context acquires.
+//
+// Same caveat as the #1375 suite above: `../db` is mocked wholesale, so this
+// pins WRAPPER COMPOSITION at the call sites, not real pool behaviour.
+describe('#3021: command_result opens no message-level org context', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('runs the device_commands steps with no enclosing org context and the per-type handler under a short org wrap', async () => {
+    // Open first, before the wrapper/DB spies below, so the handshake's own
+    // traffic can never land in `observed`.
+    const { handlers, ws } = await connectedAgent('agent-3021', { deviceId: 'device-3021', orgId: 'org-3021' });
+
+    // Track the ACTIVE WRAPPER STACK at the moment of every DB call. An
+    // `org:*` frame present during the deviceCommands select/update or the
+    // devices lifecycle recheck is the #3021 bug re-introduced: an org
+    // transaction held open while other work runs (and, for the CAS, while a
+    // nested system context acquires a second pooled connection).
+    const stack: string[] = [];
+    const orgContexts: Array<Record<string, unknown>> = [];
+
+    vi.mocked(withDbAccessContext).mockImplementation((async (ctx: any, fn: any) => {
+      orgContexts.push(ctx);
+      stack.push(`org:${ctx.label}`);
+      try {
+        return await fn();
+      } finally {
+        stack.pop();
+      }
+    }) as any);
+    vi.mocked(runOutsideDbContext).mockImplementation((async (fn: any) => {
+      stack.push('outside');
+      try {
+        return await fn();
+      } finally {
+        stack.pop();
+      }
+    }) as any);
+    vi.mocked(withSystemDbAccessContext).mockImplementation((async (fn: any) => {
+      stack.push('system');
+      try {
+        return await fn();
+      } finally {
+        stack.pop();
+      }
+    }) as any);
+
+    const observed: Array<{ op: 'select' | 'update'; table: unknown; stack: string[] }> = [];
+    const record = (op: 'select' | 'update', table: unknown) => {
+      observed.push({ op, table, stack: [...stack] });
+    };
+
+    // A `script`-type command with an executionId payload so the dispatch
+    // reaches handleScriptResult, whose scriptExecutions update NEEDS ambient
+    // tenant RLS — the piece that proves the short handler wrap exists.
+    const commandRow = {
+      id: 'cmd-3021',
+      type: 'script',
+      payload: { executionId: 'exec-3021' },
+      deviceId: 'device-3021',
+    };
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: vi.fn((table: unknown) => {
+        record('select', table);
+        const rows = table === deviceCommands ? [commandRow] : [];
+        return {
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          }),
+        };
+      }),
+    })) as any);
+    vi.mocked(db.update).mockImplementation(((table: unknown) => {
+      record('update', table);
+      const returning = vi.fn().mockResolvedValue([{ id: 'row-1', scriptId: 'script-1' }]);
+      return {
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ returning }),
+          returning,
+        }),
+      };
+    }) as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '44444444-4444-4444-8444-444444444444',
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'ok',
+      }),
+    } as any, ws as any);
+
+    // The deviceCommands lookup + terminal CAS keep their #1375 composition —
+    // and, new with #3021, have NO enclosing `org:*` frame.
+    const commandOps = observed.filter((o) => o.table === deviceCommands);
+    expect(commandOps.map((o) => o.op)).toEqual(['select', 'update']);
+    expect(commandOps.find((o) => o.op === 'select')!.stack).toEqual(['outside']);
+    expect(commandOps.find((o) => o.op === 'update')!.stack).toEqual(['outside', 'system']);
+
+    // The devices lifecycle recheck likewise runs outside any org context.
+    const deviceReads = observed.filter((o) => o.table === devices && o.op === 'select');
+    expect(deviceReads.length).toBeGreaterThan(0);
+    for (const read of deviceReads) {
+      expect(read.stack).toEqual(['outside', 'system']);
+    }
+
+    // The per-type handler's tenant-RLS write runs under EXACTLY the short
+    // labelled org wrap — present (RLS visibility preserved) and alone on the
+    // stack (no system context nested inside an org transaction).
+    const scriptOps = observed.filter((o) => o.table === scriptExecutions);
+    expect(scriptOps.map((o) => o.op)).toEqual(['update']);
+    expect(scriptOps[0]!.stack).toEqual(['org:agentWs.commandResult.handler']);
+
+    // The short wrap carries the authenticated agent's org, and no context
+    // anywhere in the message used the removed message-level label.
+    const handlerCtx = orgContexts.find((c) => c.label === 'agentWs.commandResult.handler');
+    expect(handlerCtx).toMatchObject({ scope: 'organization', orgId: 'org-3021', accessibleOrgIds: ['org-3021'] });
+    expect(orgContexts.map((c) => c.label)).not.toContain('agentWs.commandResult');
+
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('runs the deviceId-less fallback lookup under outside+system so the RLS-guarded devices join cannot silently 0-row', async () => {
+    // deviceId deliberately absent: this is the one lookup branch whose
+    // composition changed with #3021. Pre-fix it read `devices` through the
+    // ambient message-level org context; post-fix it MUST carry its own
+    // explicit system context — with no ambient context, a bare-pool read of
+    // RLS-guarded `devices` returns 0 rows without error and misroutes a
+    // legitimate result to the orphaned path.
+    const { handlers, ws } = await connectedAgent('agent-3021c', {
+      deviceId: undefined as unknown as string,
+      orgId: 'org-3021c',
+    });
+
+    const stack: string[] = [];
+    vi.mocked(withDbAccessContext).mockImplementation((async (ctx: any, fn: any) => {
+      stack.push(`org:${ctx.label}`);
+      try {
+        return await fn();
+      } finally {
+        stack.pop();
+      }
+    }) as any);
+    vi.mocked(runOutsideDbContext).mockImplementation((async (fn: any) => {
+      stack.push('outside');
+      try {
+        return await fn();
+      } finally {
+        stack.pop();
+      }
+    }) as any);
+    vi.mocked(withSystemDbAccessContext).mockImplementation((async (fn: any) => {
+      stack.push('system');
+      try {
+        return await fn();
+      } finally {
+        stack.pop();
+      }
+    }) as any);
+
+    const observed: Array<{ op: 'select' | 'update'; table: unknown; stack: string[] }> = [];
+    const record = (op: 'select' | 'update', table: unknown) => {
+      observed.push({ op, table, stack: [...stack] });
+    };
+
+    const commandRow = {
+      id: 'cmd-3021c',
+      type: 'script',
+      payload: { executionId: 'exec-3021c' },
+      deviceId: 'device-3021c',
+      targetRole: 'agent',
+    };
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: vi.fn((table: unknown) => {
+        record('select', table);
+        return {
+          // Plain where().limit() — the devices lifecycle recheck; empty
+          // result fails open.
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          // The fallback lookup joins deviceCommands -> devices and resolves
+          // the owned command + deviceId.
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue(
+                table === deviceCommands ? [{ command: commandRow, deviceId: 'device-3021c' }] : []
+              ),
+            }),
+          }),
+        };
+      }),
+    })) as any);
+    vi.mocked(db.update).mockImplementation(((table: unknown) => {
+      record('update', table);
+      const returning = vi.fn().mockResolvedValue([{ id: 'row-1', scriptId: 'script-1' }]);
+      return {
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ returning }),
+          returning,
+        }),
+      };
+    }) as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '55555555-5555-4555-8555-555555555555',
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'ok',
+      }),
+    } as any, ws as any);
+
+    // The fallback lookup ran under exactly outside+system — dropping either
+    // wrapper (or swapping the order, which would exit the context just
+    // opened) fails this exact-stack assertion.
+    const commandOps = observed.filter((o) => o.table === deviceCommands);
+    expect(commandOps.map((o) => o.op)).toEqual(['select', 'update']);
+    expect(commandOps.find((o) => o.op === 'select')!.stack).toEqual(['outside', 'system']);
+
+    // And the result was honored as an owned command (terminal CAS +
+    // handler dispatch), not misrouted to the orphaned path.
+    expect(commandOps.find((o) => o.op === 'update')!.stack).toEqual(['outside', 'system']);
+    const scriptOps = observed.filter((o) => o.table === scriptExecutions);
+    expect(scriptOps.map((o) => o.op)).toEqual(['update']);
+    expect(scriptOps[0]!.stack).toEqual(['org:agentWs.commandResult.handler']);
+  });
+
+  it('wraps a non-UUID orphaned result in the short orphaned org context, not a message-level wrap', async () => {
+    const { handlers, ws } = await connectedAgent('agent-3021b', { deviceId: 'device-3021b', orgId: 'org-3021b' });
+
+    const orgLabels: string[] = [];
+    vi.mocked(withDbAccessContext).mockImplementation((async (ctx: any, fn: any) => {
+      orgLabels.push(ctx.label);
+      return fn();
+    }) as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'mon-monitor-3021-1',
+        status: 'completed',
+        result: { monitorId: 'monitor-3021', status: 'online', responseMs: 5 },
+      }),
+    } as any, ws as any);
+
+    expect(orgLabels).toContain('agentWs.commandResult.orphaned');
+    expect(orgLabels).not.toContain('agentWs.commandResult');
   });
 });
 

@@ -143,7 +143,16 @@ type contextUploader interface {
 // out of the known totals. Called from the snapshot upload loop, throttled
 // (see progressThrottle) except for a final unconditional call after the
 // last file.
-type ProgressFn func(filesDone, filesTotal int, bytesDone, bytesTotal int64)
+//
+// snapshotID is the ID of the snapshot currently being written, or "" for
+// emissions that happen before a snapshot exists (the pre-scan whole-run
+// keepalive and the "scanning done" totals notice, both in backup.go). It is
+// carried on every progress emission so the SERVER learns the snapshot ID
+// while the run is still in flight, instead of only from the terminal result
+// (#3006): a dropped terminal result then still leaves backup_jobs.snapshot_id
+// pointing at the objects that were actually uploaded, so the snapshot can be
+// adopted into a restore point rather than orphaned in the bucket forever.
+type ProgressFn func(filesDone, filesTotal int, bytesDone, bytesTotal int64, snapshotID string)
 
 // progressThrottle is the minimum interval between ProgressFn invocations
 // from the snapshot loop (the final call after the loop always fires
@@ -340,7 +349,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			return
 		}
 		lastProgressAt = time.Now()
-		onProgress(filesDone, filesTotal, bytesDone, bytesTotal)
+		onProgress(filesDone, filesTotal, bytesDone, bytesTotal, snapshot.ID)
 	}
 	markDone := func(fileCount int, byteCount int64) {
 		progressMu.Lock()
@@ -398,9 +407,23 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 				"resumedFiles", len(resumedFiles),
 				"resumedBytes", resumedBytes,
 			)
-			emitProgress(true)
+			// The forced registration emit below reports these seeded counters,
+			// so no separate emission is needed here.
 		}
 	}
+
+	// Register the snapshot ID with the server BEFORE the first byte is
+	// uploaded (#3006). Every later emission carries it too, but this forced
+	// one guarantees it is sent even if the run dies during the very first
+	// file — and it is the only emission not subject to the throttle window,
+	// so the server learns the ID immediately rather than up to
+	// progressThrottle later.
+	//
+	// Placed AFTER the resume pre-seed on purpose: emitting first would report
+	// filesDone/bytesDone as 0 on a resumed run and then jump up, and progress
+	// that appears to go backwards is precisely what the counters are not
+	// allowed to do (see startRunKeepalive in backup.go).
+	emitProgress(true)
 
 	// abortStopped is the single exit point for every errBackupStopped
 	// return. See the journal parameter doc above for why cleanup is
@@ -459,27 +482,46 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		uploadStart := time.Now()
 		uploadErr := attemptFileUpload(ctx, provider, file, backupPath)
 		if uploadErr != nil && !errors.Is(uploadErr, errBackupStopped) {
-			// Exactly one retry, only for a non-cancel failure (including a
-			// per-file deadline expiry, which attemptFileUpload has already
-			// converted to a plain error). Job-context cancel during the
-			// backoff wait aborts immediately — never retried.
-			//
-			// Warn, not debug: a single retry is the first observable symptom
-			// of a stalling destination, and it is the point at which we have
-			// already burned the full per-file deadline.
-			log.Warn("file upload failed, retrying once",
-				"path", file.sourcePath,
-				"bytes", file.size,
-				"elapsedMs", time.Since(uploadStart).Milliseconds(),
-				"deadlineMs", deadline.Milliseconds(),
-				"retryDelayMs", uploadRetryDelay.Milliseconds(),
-				"error", uploadErr.Error(),
-			)
-			select {
-			case <-ctx.Done():
-				uploadErr = errBackupStopped
-			case <-time.After(uploadRetryDelay):
-				uploadErr = attemptFileUpload(ctx, provider, file, backupPath)
+			if reason, permanent := classifyPermanentUploadError(uploadErr, file.sourcePath); permanent {
+				// The source is locked by a live process, already gone, or an
+				// unhydratable cloud placeholder. A retry cannot change that,
+				// so skip immediately instead of burning uploadRetryDelay on a
+				// foregone conclusion — a real 123,600-file C:\Users run spent
+				// 2h38m of its 2h41m asleep here for 316 such files (#2997).
+				//
+				// This ONLY removes the sleep. The file falls through to the
+				// same skip-and-continue block below: counted in
+				// UploadFailures (and so job.ErrorCount), job carries on.
+				log.Warn("file upload failed permanently, skipping without retry",
+					"path", file.sourcePath,
+					"bytes", file.size,
+					"elapsedMs", time.Since(uploadStart).Milliseconds(),
+					"reason", reason,
+					"error", uploadErr.Error(),
+				)
+			} else {
+				// Exactly one retry, only for a non-cancel failure (including a
+				// per-file deadline expiry, which attemptFileUpload has already
+				// converted to a plain error). Job-context cancel during the
+				// backoff wait aborts immediately — never retried.
+				//
+				// Warn, not debug: a single retry is the first observable symptom
+				// of a stalling destination, and it is the point at which we have
+				// already burned the full per-file deadline.
+				log.Warn("file upload failed, retrying once",
+					"path", file.sourcePath,
+					"bytes", file.size,
+					"elapsedMs", time.Since(uploadStart).Milliseconds(),
+					"deadlineMs", deadline.Milliseconds(),
+					"retryDelayMs", uploadRetryDelay.Milliseconds(),
+					"error", uploadErr.Error(),
+				)
+				select {
+				case <-ctx.Done():
+					uploadErr = errBackupStopped
+				case <-time.After(uploadRetryDelay):
+					uploadErr = attemptFileUpload(ctx, provider, file, backupPath)
+				}
 			}
 		}
 		if uploadErr != nil {

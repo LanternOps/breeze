@@ -141,9 +141,12 @@ function getImmediatePeerIp(c: RequestLike, fallback: string): string | undefine
 // always means the pinned proxy IP went stale (proxy container recreated
 // without a static `ipv4_address`) — every per-IP rate limit then pools onto
 // the proxy IP and audit-log IP attribution silently records the proxy as the
-// client. Detect it and warn LOUDLY, rate-limited per peer so a burst can't
-// flood logs. Pure in-memory — no I/O on the hot path. Observability only:
-// the returned IP is unchanged.
+// client. Under FORCE_HTTPS the same stale pin is worse: effectiveRequestScheme
+// stops honoring X-Forwarded-Proto, so every non-health route 308-redirect-loops
+// while /health (exempt) keeps returning 200 (TRANSPORT-001, #2987). Detect it
+// and warn LOUDLY, rate-limited per peer so a burst can't flood logs. Pure
+// in-memory — no I/O on the hot path. Observability only: the returned IP is
+// unchanged.
 
 const UNTRUSTED_PEER_WARN_INTERVAL_MS = 15 * 60 * 1000;
 // Hard cap on tracked peers so a rotating set of source IPs can't grow the
@@ -182,15 +185,33 @@ function hasForwardedIpHeaders(c: RequestLike): boolean {
   );
 }
 
-function warnForwardedHeadersFromUntrustedPeer(peerIp: string | undefined): void {
-  // Count every occurrence — Prometheus rates are only useful unsampled.
-  proxyTrustMetricsRecorder.onForwardedHeadersFromUntrustedPeer();
+/**
+ * Any forwarded header whose value is gated on proxy trust — the IP headers
+ * above plus `X-Forwarded-Proto`.
+ *
+ * `X-Forwarded-Proto` is deliberately NOT in `hasForwardedIpHeaders`, which
+ * exists to answer "did this request carry client-IP attribution". It belongs
+ * here because a peer sending it is just as much evidence of a reverse proxy,
+ * and the FORCE_HTTPS redirect path (TRANSPORT-001) keys off that header
+ * alone — a proxy that forwards only the scheme would otherwise trip the
+ * misconfiguration silently.
+ */
+function hasTrustGatedForwardedHeaders(c: RequestLike): boolean {
+  return (
+    hasForwardedIpHeaders(c)
+    || Boolean(c.req.header('x-forwarded-proto') ?? c.req.header('X-Forwarded-Proto'))
+  );
+}
 
-  const key = peerIp ?? 'unknown';
+// Rate-limit gate shared by both proxy-trust warning variants below, so a peer
+// that already warned via one path stays suppressed on the other (one log line
+// per peer per window, regardless of which call site fired first). Returns true
+// when a warning should be emitted now and records the emission.
+function shouldEmitProxyTrustWarnNow(key: string): boolean {
   const now = Date.now();
   const lastWarnAt = untrustedPeerLastWarnAt.get(key);
   if (lastWarnAt !== undefined && now - lastWarnAt < UNTRUSTED_PEER_WARN_INTERVAL_MS) {
-    return;
+    return false;
   }
 
   if (!untrustedPeerLastWarnAt.has(key) && untrustedPeerLastWarnAt.size >= UNTRUSTED_PEER_WARN_MAX_TRACKED) {
@@ -201,13 +222,52 @@ function warnForwardedHeadersFromUntrustedPeer(peerIp: string | undefined): void
   if (untrustedPeerLastWarnAt.has(key) || untrustedPeerLastWarnAt.size < UNTRUSTED_PEER_WARN_MAX_TRACKED) {
     untrustedPeerLastWarnAt.set(key, now);
   }
+  return true;
+}
+
+const TRUST_GATED_HEADER_LIST = 'CF-Connecting-IP/X-Forwarded-For/X-Real-IP/X-Forwarded-Proto';
+
+function warnForwardedHeadersFromUntrustedPeer(peerIp: string | undefined): void {
+  // Count every occurrence — Prometheus rates are only useful unsampled.
+  proxyTrustMetricsRecorder.onForwardedHeadersFromUntrustedPeer();
+
+  const key = peerIp ?? 'unknown';
+  if (!shouldEmitProxyTrustWarnNow(key)) {
+    return;
+  }
 
   console.warn(
-    `[proxy-trust] MISCONFIGURATION: request carried forwarded-ip headers (CF-Connecting-IP/X-Forwarded-For/X-Real-IP) `
-    + `from untrusted peer ${key}, which is not in TRUSTED_PROXY_CIDRS — falling back to the socket address. `
+    `[proxy-trust] MISCONFIGURATION: request carried proxy-forwarded headers (${TRUST_GATED_HEADER_LIST}) `
+    + `from untrusted peer ${key}, which is not in TRUSTED_PROXY_CIDRS — ignoring them and falling back to the socket address. `
     + `If this peer is your reverse proxy, TRUSTED_PROXY_CIDRS is likely STALE (proxy container recreated without a `
-    + `static ipv4_address): all per-IP rate limits are pooling onto the proxy IP and audit-log IP attribution is `
-    + `recording the proxy as every client. Fix TRUSTED_PROXY_CIDRS or pin the proxy IP (see docs/operations/DEPLOY_PRODUCTION.md). `
+    + `static ipv4_address): all per-IP rate limits are pooling onto the proxy IP, audit-log IP attribution is `
+    + `recording the proxy as every client, and if FORCE_HTTPS=true every non-health route is stuck in a 308 redirect loop `
+    + `while /health keeps returning 200. Fix TRUSTED_PROXY_CIDRS or pin the proxy IP (see docs/operations/DEPLOY_PRODUCTION.md). `
+    + `Suppressed for this peer for ${UNTRUSTED_PEER_WARN_INTERVAL_MS / 60000} minutes.`,
+  );
+}
+
+// The TRUST_PROXY_HEADERS=false half of the same outage (#2987): with
+// FORCE_HTTPS=true behind a proxy, disabled trust makes effectiveRequestScheme
+// ignore X-Forwarded-Proto exactly like a stale CIDR does — same total 308
+// loop, same green /health, and (before this warning) the same zero log lines.
+// The config validator accepts an explicit `false` and cannot know a proxy is
+// actually in front, so this is only detectable at request time. Deliberately
+// NOT counted in the untrusted-peer metric — that counter's meaning ("peer
+// outside TRUSTED_PROXY_CIDRS while trust is enabled") stays stable — but it
+// shares the per-peer suppression state above.
+function warnForwardedHeadersWithTrustDisabled(peerIp: string | undefined): void {
+  const key = peerIp ?? 'unknown';
+  if (!shouldEmitProxyTrustWarnNow(key)) {
+    return;
+  }
+
+  console.warn(
+    `[proxy-trust] TRUST_PROXY_HEADERS is disabled, but a request from peer ${key} carried proxy-forwarded headers `
+    + `(${TRUST_GATED_HEADER_LIST}), which are being ignored. If this peer is your reverse proxy, forwarded client IPs and `
+    + `X-Forwarded-Proto are NOT honored — and if FORCE_HTTPS=true every non-health route is stuck in a 308 redirect loop `
+    + `while /health keeps returning 200. Set TRUST_PROXY_HEADERS=true and put the proxy in TRUSTED_PROXY_CIDRS. If the API `
+    + `is intentionally exposed directly (no proxy in front), a client sent these headers and this warning can be ignored. `
     + `Suppressed for this peer for ${UNTRUSTED_PEER_WARN_INTERVAL_MS / 60000} minutes.`,
   );
 }
@@ -270,9 +330,30 @@ export function getTrustedClientIpOrUndefined(c: RequestLike): string | undefine
 // (e.g. the auth-cookie Secure flag derives from X-Forwarded-Proto).
 export function trustsForwardedHeadersFrom(c: RequestLike): boolean {
   if (!shouldTrustProxyHeaders()) {
+    // Same 308-loop outage as the untrusted-peer branch below, reached via the
+    // neighboring config value (TRUST_PROXY_HEADERS=false behind a proxy)
+    // instead of a stale CIDR — see warnForwardedHeadersWithTrustDisabled.
+    if (hasTrustGatedForwardedHeaders(c)) {
+      warnForwardedHeadersWithTrustDisabled(getImmediatePeerIp(c, ''));
+    }
     return false;
   }
-  return isTrustedProxySource(getImmediatePeerIp(c, ''));
+  const peerIp = getImmediatePeerIp(c, '');
+  if (!isTrustedProxySource(peerIp)) {
+    // Same misconfiguration signal getTrustedClientIp emits, and rate-limited
+    // through the same per-peer state. Warning here is not redundant: the
+    // FORCE_HTTPS redirect in middleware/security.ts calls this and then
+    // short-circuits the request with a 308, so no handler downstream ever
+    // reaches getTrustedClientIp to raise it. That combination is silent and
+    // total — a stale TRUSTED_PROXY_CIDRS makes effectiveRequestScheme() read
+    // every request as `http`, so every non-health route 308s while /health
+    // (exempt) keeps returning 200.
+    if (hasTrustGatedForwardedHeaders(c)) {
+      warnForwardedHeadersFromUntrustedPeer(peerIp);
+    }
+    return false;
+  }
+  return true;
 }
 
 // The immediate TCP peer, socket-only — NEVER consults forwarded headers, so

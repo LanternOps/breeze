@@ -1,0 +1,47 @@
+{
+  "page": {
+    "title": "Iniciar uma sessão de suporte",
+    "intro": "Alguém que está ajudando você com este computador pediu para abrir esta página. Nada acontece até que você mesmo baixe e execute o programa."
+  },
+  "code": {
+    "heading": "Digite o código que você recebeu",
+    "help": "A pessoa que está ajudando você vai ditar um código de 9 letras e números, por exemplo KTM-4H7-P2X. Maiúsculas e hifens não fazem diferença.",
+    "label": "Código de suporte",
+    "placeholder": "XXX-XXX-XXX",
+    "submit": "Continuar",
+    "formatError": "Esse código ainda não está completo. Um código tem 9 letras e números, por exemplo KTM-4H7-P2X."
+  },
+  "checking": "Verificando o código…",
+  "invalid": {
+    "title": "Este código não funciona mais",
+    "body": "Um código de suporte expira pouco depois de ser criado e só pode ser usado uma vez. Peça um código novo a quem está ajudando você e digite-o acima."
+  },
+  "checkFailed": {
+    "title": "Não foi possível verificar o código",
+    "body": "A conexão com a internet pode ter caído. Verifique sua conexão e tente o código novamente.",
+    "retry": "Tentar novamente"
+  },
+  "ready": {
+    "title": "Seu código é válido",
+    "codeIntro": "Seu código é {{code}}."
+  },
+  "download": {
+    "windows": "Baixar para Windows",
+    "manualFallback": "Se o download pedir um código, digite: {{code}}",
+    "macosLabel": "macOS (computadores Mac)",
+    "macosBadge": "Em breve",
+    "macosBody": "O programa ainda não está pronto para computadores Mac. Pergunte a quem está ajudando você o que fazer nesse caso."
+  },
+  "windowsPrompt": {
+    "title": "O Windows vai perguntar antes de executar",
+    "body": "Ao abrir o arquivo, o Windows mostra um aviso perguntando se você permite a execução. O arquivo é assinado digitalmente, então esse aviso mostra um fornecedor: deve aparecer {{publisher}}. Se disser que o fornecedor é desconhecido, ou mostrar um nome que você não esperava, feche o aviso e ligue para quem está ajudando você em vez de continuar.",
+    "publisher": "o fornecedor do Breeze"
+  },
+  "trust": {
+    "title": "O que o programa faz",
+    "seeScreen": "Enquanto a sessão estiver ativa, quem está ajudando você pode ver a sua tela.",
+    "temporary": "O programa é executado uma vez e depois se remove sozinho. Nada fica instalado neste computador.",
+    "stopAnyTime": "Você pode parar o compartilhamento quando quiser, fechando a janela do programa.",
+    "onlyIfExpected": "Se você não estava esperando por isso, não execute o programa. Feche esta página e fale com o suporte com quem você costuma falar."
+  }
+}

@@ -136,7 +136,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
   {
     tier: 2,
     label: 'Auto-Execute + Audit',
-    description: 'Low-risk mutations that execute automatically but are logged to the audit trail.',
+    description:
+      'Low-risk mutations and audited reads, always logged to the audit trail. Read-only entries auto-execute in every approval mode; mutations auto-execute except under per-step approval, which asks a quick confirmation.',
     iconName: 'shield-check',
     borderColor: 'border-l-blue-500',
     badgeBg: 'bg-blue-500/15',
@@ -156,6 +157,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Remote Access & Control
       { name: 'set_device_context', description: 'Set brain device context', category: 'Remote Access & Control' },
       { name: 'resolve_device_context', description: 'Resolve brain device context', category: 'Remote Access & Control' },
+      { name: 'execute_command (list_processes/file_list/event_logs_list)', description: 'Read-only device commands (process list, directory listings, event log channel list)', category: 'Remote Access & Control' },
       // Files, Disk & Registry
       { name: 'file_operations (list)', description: 'List directory contents on device', category: 'Files, Disk & Registry' },
       // Logs & Audit
@@ -192,9 +194,9 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_services (start/stop/restart)', description: 'Mutate device services', category: 'Services & Processes' },
       { name: 'manage_processes (kill)', description: 'Terminate a running process', category: 'Services & Processes' },
       { name: 'manage_startup_items (enable/disable)', description: 'Manage startup items', category: 'Services & Processes' },
-      { name: 'manage_scheduled_tasks (run/disable/enable/delete)', description: 'Mutate scheduled tasks', category: 'Services & Processes' },
+      { name: 'manage_scheduled_tasks (run/disable/enable)', description: 'Mutate scheduled tasks', category: 'Services & Processes' },
       // Remote Access & Control
-      { name: 'execute_command', description: 'Execute system commands on device', category: 'Remote Access & Control' },
+      { name: 'execute_command (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query)', description: 'Mutating system commands, file reads, and commands that can return unredacted credential/PII-bearing content (service binary paths, raw event log messages)', category: 'Remote Access & Control' },
       { name: 'run_script', description: 'Run scripts on up to 10 devices', category: 'Remote Access & Control' },
       { name: 'computer_control', description: 'Send input actions to device', category: 'Remote Access & Control' },
       { name: 'create_remote_session', description: 'Create remote terminal or file session', category: 'Remote Access & Control' },
@@ -351,7 +353,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   // Services & startup
   manage_services: 'devices.execute',
   manage_startup_items: 'devices.execute',
-  manage_scheduled_tasks: { list: 'devices.read', run: 'devices.execute', disable: 'devices.execute', enable: 'devices.execute', delete: 'devices.execute' },
+  manage_scheduled_tasks: { list: 'devices.read', run: 'devices.execute', disable: 'devices.execute', enable: 'devices.execute' },
   // Security
   security_scan: { scan: 'devices.execute', status: 'devices.execute', quarantine: 'devices.execute', remove: 'devices.execute', restore: 'devices.execute', vulnerabilities: 'devices.read' },
   get_security_posture: 'devices.read',

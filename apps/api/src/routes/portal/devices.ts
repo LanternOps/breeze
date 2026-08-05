@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices } from '../../db/schema';
 import { listSchema } from './schemas';
@@ -18,10 +18,13 @@ deviceRoutes.get('/devices', zValidator('query', listSchema), async (c) => {
   const query = c.req.valid('query');
   const { page, limit, offset } = getPagination(query);
 
+  // Belt-and-braces: a portal user's org is never the hidden 'quick_support'
+  // org, but this is the most customer-facing surface in the product — never
+  // show an ephemeral support device here.
   const countResult = await db
     .select({ count: sql<number>`count(*)` })
     .from(devices)
-    .where(eq(devices.orgId, auth.user.orgId));
+    .where(and(eq(devices.orgId, auth.user.orgId), eq(devices.isEphemeral, false)));
   const count = countResult[0]?.count ?? 0;
 
   const data = await db
@@ -35,7 +38,7 @@ deviceRoutes.get('/devices', zValidator('query', listSchema), async (c) => {
       lastSeenAt: devices.lastSeenAt
     })
     .from(devices)
-    .where(eq(devices.orgId, auth.user.orgId))
+    .where(and(eq(devices.orgId, auth.user.orgId), eq(devices.isEphemeral, false)))
     .orderBy(desc(devices.lastSeenAt))
     .limit(limit)
     .offset(offset);

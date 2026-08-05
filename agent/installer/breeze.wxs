@@ -470,6 +470,25 @@
       Return="check"
       HideTarget="yes" />
 
+    <!-- Task 6 (#2764): best-effort "I'm about to be removed" signal to the
+         server (POST /agents/:id/uninstall-intent), run before secrets.yaml
+         is deleted below so the agent can still authenticate as itself.
+         Return="ignore" — unlike EnrollAgent/BootstrapEnroll above, this
+         must NEVER block or roll back an uninstall. breeze-agent.exe
+         uninstall-notify (runUninstallNotify, internal/agentapp/main.go)
+         always exits 0 regardless of outcome: missing secrets.yaml, a
+         network error, or the 403 tenant_offboarding drain response
+         returned while the device's org is mid-offboarding are all
+         swallowed there too — this Return="ignore" is belt-and-suspenders
+         in case that contract is ever broken. -->
+    <CustomAction
+      Id="UninstallNotify"
+      FileRef="filBreezeAgentExe"
+      ExeCommand="uninstall-notify"
+      Execute="deferred"
+      Impersonate="no"
+      Return="ignore" />
+
     <InstallExecuteSequence>
       <!-- Run on every install path EXCEPT uninstall. Broadened from the
            original `WIX_UPGRADE_DETECTED OR Installed` (which skipped fresh
@@ -540,6 +559,13 @@
            Real uninstalls (REMOVE=ALL without an upgrade in flight) still
            clean up. -->
       <Custom Action="UnregisterUserHelperTask" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <!-- Same guard as UnregisterUserHelperTask above, and sequenced
+           before the same standard action for the same reason: it must run
+           before RemoveFiles deletes secrets.yaml (rmfSecretsYaml,
+           cmpCleanConfigOnUninstall component above), which is this CA's
+           own credential source. Never fires on an upgrade's nested
+           old-product removal. -->
+      <Custom Action="UninstallNotify" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
 
     <Feature Id="MainFeature" Title="Breeze Agent" Level="1">

@@ -194,7 +194,9 @@ export async function generateSecurityCompliancePostureReport(
     .where(eq(organizations.id, orgId))
     .limit(1);
 
-  const deviceConditions = [eq(devices.orgId, orgId)];
+  // Ephemeral Quick Support devices stay inside accessibleOrgIds for RLS by
+  // design — exclude them from the compliance population explicitly.
+  const deviceConditions = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false)];
   if (cfg.sites.length > 0) {
     deviceConditions.push(inArray(devices.siteId, cfg.sites));
   }

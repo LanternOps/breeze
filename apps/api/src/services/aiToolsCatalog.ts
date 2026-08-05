@@ -118,6 +118,7 @@ const AI_DISTRIBUTOR_FIELDS = [
   'msrp',
   'warehouses',
   'mfgPartNo',
+  'manufacturer',
   'synnexSku',
   'status',
   'importedAt',
@@ -182,7 +183,7 @@ function sanitizeCatalogItemForAi(item: CatalogItemRow, auth: AuthContext): Reco
 // availability, identifiers) are always safe. Margin-sensitive fields (reseller
 // cost + the discount it derives from) are added only for seller scopes.
 const AI_DISTRIBUTOR_PRODUCT_PUBLIC_FIELDS = [
-  'source', 'synnexSku', 'mfgPartNo', 'status', 'name', 'description',
+  'source', 'synnexSku', 'mfgPartNo', 'manufacturer', 'status', 'name', 'description',
   'currency', 'msrp', 'totalQty', 'warehouses', 'weight', 'parcelShippable',
 ] as const;
 const AI_DISTRIBUTOR_PRODUCT_MARGIN_FIELDS = ['cost', 'discount'] as const;

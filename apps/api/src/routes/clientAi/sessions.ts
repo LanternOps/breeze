@@ -29,6 +29,7 @@ import {
   streamingSessionManager,
   type ActiveSession,
 } from '../../services/streamingSessionManager';
+import { settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { checkBillingCredits } from '../../services/aiCostTracker';
 import {
@@ -590,9 +591,18 @@ clientAiSessionRoutes.post(
       throw err;
     }
 
-    // Concurrent message guard — atomic check-and-set (ai.ts:467 convention).
+    // Concurrent message guard — atomic check-and-set (ai.ts convention). If
+    // the turn is blocked only on pending approval waits, settle them so the
+    // assistant can conclude and answer this message (#3089 — shared helper).
     if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
-      return c.json({ error: 'A message is already being processed for this session' }, 409);
+      const settle = await settleBlockedTurnForNewMessage(activeSession);
+      if (settle !== 'concluded' || !streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+        return c.json({
+          error: settle === 'not_blocked_on_approvals'
+            ? 'A message is already being processed for this session'
+            : 'The assistant is wrapping up the previous turn — please try again in a moment',
+        }, 409);
+      }
     }
 
     // Persist the REDACTED form only: result.text + result.redactions

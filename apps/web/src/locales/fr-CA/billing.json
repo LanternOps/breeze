@@ -890,6 +890,73 @@
         "sent": "Envoyé",
         "viewed": "Vu"
       },
+      "orderBreakdown": {
+        "copied": "Copié",
+        "copyFailed": "Impossible de copier dans le presse-papiers.",
+        "copyTsv": "Copier pour tableur",
+        "costTotal": "Coût total",
+        "exportCsv": "Télécharger le CSV",
+        "fulfillment": {
+          "allocation": {
+            "cancelled": "Annulé",
+            "eta": "Arrivée le {{date}}",
+            "ordered": "{{qty}} commandées",
+            "received": "{{qty}} reçues",
+            "tracking": "Suivi {{number}}"
+          },
+          "cancel": "Annuler la ligne",
+          "cancelError": "Impossible d’annuler cette ligne de commande.",
+          "cancelSuccess": "Ligne de commande annulée",
+          "dialog": {
+            "cancel": "Annuler",
+            "empty": "Tout ce qui est sélectionné est déjà commandé.",
+            "error": "Impossible d’enregistrer la commande.",
+            "eta": "Arrivée prévue",
+            "notes": "Remarques",
+            "orderRef": "Référence de commande",
+            "qtyAria": "Quantité à commander pour {{item}}",
+            "submit": "Enregistrer la commande",
+            "success": "Commande enregistrée",
+            "title": "Marquer les articles comme commandés",
+            "tracking": "Numéro de suivi",
+            "vendor": "Fournisseur"
+          },
+          "markOrdered": "Marquer comme commandé",
+          "receive": "Marquer comme reçu",
+          "receiveQtyAria": "Quantité reçue",
+          "receiveError": "Impossible de mettre à jour cette ligne de commande.",
+          "receiveSuccess": "Marqué comme reçu",
+          "select": "Sélectionner {{item}}",
+          "selectColumn": "Sélectionner pour commander",
+          "status": {
+            "ordered": "Commandé",
+            "partiallyReceived": "Reçu en partie",
+            "received": "Reçu"
+          }
+        },
+        "itemCount_one": "{{count}} article",
+        "itemCount_other": "{{count}} articles",
+        "missingCost_one": "{{count}} article sans coût saisi",
+        "missingCost_other": "{{count}} articles sans coût saisi",
+        "pax8Badge": {
+          "failed": "Échec Pax8",
+          "ordered": "Commandé via Pax8",
+          "reconcile": "Pax8 à vérifier",
+          "staged": "Préparé dans Pax8"
+        },
+        "table": {
+          "extCost": "Coût étendu",
+          "item": "Article",
+          "markup": "Marge",
+          "partNumber": "N° de pièce",
+          "qty": "Qté",
+          "sku": "SKU",
+          "unitCost": "Coût unitaire",
+          "vendor": "Fournisseur"
+        },
+        "title": "À commander",
+        "unknownVendor": "Autre / fournisseur inconnu"
+      },
       "pax8Order": {
         "message_one": "Ce devis a préparé une commande Pax8 ({{count}} article) en attente des détails de provisionnement",
         "message_other": "Ce devis a préparé une commande Pax8 ({{count}} articles) en attente des détails de provisionnement",

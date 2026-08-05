@@ -52,7 +52,7 @@ beforeEach(() => {
 });
 
 const lookupOne = () => ecExpressLookup.mockResolvedValue(ok([{
-  source: 'td_synnex_ec_express', synnexSku: 'ABC123', mfgPartNo: null, status: 'Active',
+  source: 'td_synnex_ec_express', synnexSku: 'ABC123', mfgPartNo: null, manufacturer: null, status: 'Active',
   name: 'Widget', description: null, currency: 'USD', cost: 80, msrp: 100, discount: null,
   totalQty: 5, warehouses: [], weight: null, parcelShippable: null, raw: {},
 }]));
@@ -68,7 +68,7 @@ describe('QuoteEditor distributor mode', () => {
 
   it('full import & add flow from the distributor panel', async () => {
     ecExpressLookup.mockResolvedValue(ok([{
-      source: 'td_synnex_ec_express', synnexSku: 'ABC123', mfgPartNo: null, status: 'Active',
+      source: 'td_synnex_ec_express', synnexSku: 'ABC123', mfgPartNo: null, manufacturer: null, status: 'Active',
       name: 'Widget', description: null, currency: 'USD', cost: 80, msrp: 100, discount: null,
       totalQty: 5, warehouses: [], weight: null, parcelShippable: null, raw: {},
     }]));

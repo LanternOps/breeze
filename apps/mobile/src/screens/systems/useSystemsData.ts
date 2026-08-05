@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { reportInternalError } from '../../lib/errorReporting';
+
 import type { Alert, Device } from '../../services/api';
 import { getAlerts, getDevices } from '../../services/api';
 import {
@@ -102,12 +104,14 @@ export function useSystemsData() {
       });
       lastFetchAt.current = Date.now();
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : 'Failed to load systems data.';
+      // The raw message is internal (function name + HTTP status) — report it
+      // to Sentry and keep only a static string in UI state (issue #3141).
+      reportInternalError(err, 'systems-data');
       setData((d) => ({
         ...d,
         loading: false,
         refreshing: false,
-        error: errMsg,
+        error: 'Failed to load systems data.',
       }));
     } finally {
       inFlight.current = false;

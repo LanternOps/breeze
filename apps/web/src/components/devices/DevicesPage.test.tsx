@@ -128,7 +128,7 @@ vi.mock('./DeviceCard', () => ({
 // action over the FULL device array it was given (mirroring the real
 // DeviceList, which hands the unfiltered selection to onBulkAction). Tests use
 // the per-action buttons to drive DevicesPage.handleBulkAction directly.
-type StubDevice = { id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null; status?: string };
+type StubDevice = { id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null; status?: string; wanIp?: string | null; lanIp?: string | null };
 vi.mock('./DeviceList', () => ({
   default: ({ devices, serverFilterIds, onBulkAction, onAction, onSelect, onShowDecommissioned, includeDecommissioned }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onAction?: (action: string, device: StubDevice) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; includeDecommissioned?: boolean }) => (
     <div
@@ -139,6 +139,8 @@ vi.mock('./DeviceList', () => ({
       data-hostnames={devices.map(d => d.hostname ?? '').join(',')}
       data-display-names={devices.map(d => d.displayName ?? '').join(',')}
       data-watchdog-versions={devices.map(d => d.watchdogVersion ?? '').join(',')}
+      data-wan-ips={devices.map(d => d.wanIp ?? '').join(',')}
+      data-lan-ips={devices.map(d => d.lanIp ?? '').join(',')}
     >
       {['maintenance-on', 'maintenance-off', 'decommission', 'reboot', 'run-script', 'link-vm-host', 'wake', 'deploy-software', 'compare'].map(action => (
         <button
@@ -291,6 +293,29 @@ describe('DevicesPage — advanced filter applies to BOTH views', () => {
 
     const list = await screen.findByTestId('device-list');
     expect(list.getAttribute('data-watchdog-versions')).toBe('0.70.1,');
+  });
+
+  // #2503 — the opt-in WAN/LAN IP columns read these two fields straight off
+  // the Device row, so this transform is the only thing between the API
+  // payload and the rendered cell. A dropped or renamed field here blanks the
+  // columns fleet-wide with nothing else going red.
+  it('maps wanIp/lanIp from API rows into DeviceList, degrading non-strings to null', async () => {
+    vi.mocked(fetchAllDevices).mockResolvedValueOnce({
+      data: [
+        { ...rawDevice(DEV_1, 'host-alpha'), wanIp: '198.51.100.24', lanIp: '192.168.1.10' },
+        // Never authenticated / no inventory yet: both absent from the payload.
+        rawDevice(DEV_2, 'host-beta'),
+        // A malformed value must degrade to null (render a dash) rather than
+        // reaching the cell and being displayed as "[object Object]".
+        { ...rawDevice(DEV_3, 'host-gamma'), wanIp: { nope: true }, lanIp: 42 },
+      ],
+    } as never);
+
+    render(<DevicesPage />);
+
+    const list = await screen.findByTestId('device-list');
+    expect(list.getAttribute('data-wan-ips')).toBe('198.51.100.24,,');
+    expect(list.getAttribute('data-lan-ips')).toBe('192.168.1.10,,');
   });
 
   it('grid view shows all devices when no advanced filter is active', async () => {
@@ -460,8 +485,36 @@ describe('DevicesPage — bulk actions exclude network rows + survive per-item f
       orgId: 'org-1',
       siteId: 'site-1',
       tags: [],
+      // The discovered asset's own address (routes/devices/network.ts emits
+      // `ipAddress`); the network arm renames it to lanIp — see the #2503 test.
+      ipAddress: '192.168.1.55',
     };
   }
+
+  // #2503 — the network arm is the ONLY place the `ipAddress` -> `lanIp`
+  // rename happens, and the transform guards it with `typeof === 'string'`, so
+  // a rename on the API side would silently blank the LAN IP column for every
+  // discovered asset with nothing logged. Pin both halves: the rename, and the
+  // fact that a discovered asset never claims a WAN address.
+  it('maps a discovered asset ipAddress to lanIp and leaves wanIp null', async () => {
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null);
+    vi.mocked(fetchAllDevices).mockResolvedValueOnce({ data: [] } as never);
+    vi.mocked(fetchAllNetworkDevices).mockResolvedValue({
+      data: [rawNetworkDevice(NET_1, 'Lobby Printer')],
+      total: 1,
+      pagesWalked: 1,
+    } as never);
+
+    render(<DevicesPage />);
+
+    const list = await screen.findByTestId('device-list');
+    await waitFor(() => {
+      expect(list.getAttribute('data-device-count')).toBe('1');
+    });
+    expect(list.getAttribute('data-lan-ips')).toBe('192.168.1.55');
+    expect(list.getAttribute('data-wan-ips')).toBe('');
+  });
 
   async function renderWithFleet() {
     const { decodeFilterFromHash } = await import('./filterUrl');

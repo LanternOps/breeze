@@ -408,6 +408,12 @@ it('handles single (non-array) priceAvail in response', () => {
   expect(products[0]!.cost).toBe(99.99);
 });
 
+it('maps manufacturer to null — the live PA pnaDetail response carries no manufacturer-name field (only mfgPartNo)', () => {
+  const xml = readFileSync(join(__dirname, '__fixtures__/ec-express-pna-response.xml'), 'utf8');
+  const products = parsePnaResponse(xml);
+  expect(products[0]!.manufacturer).toBeNull();
+});
+
 it('maps msrp === "0" to null', () => {
   const xml = `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><ns2:getPriceAvailabilityResponse xmlns:ns2="http://pnaV05.model.ws.synnex.com/"><return><priceAvail><synnexSku>9999999</synnexSku><price>50.00</price><msrp>0</msrp><totalQty>10</totalQty></priceAvail></return></ns2:getPriceAvailabilityResponse></soap:Body></soap:Envelope>`;
   const products = parsePnaResponse(xml);
@@ -416,12 +422,14 @@ it('maps msrp === "0" to null', () => {
 
 it('imports a product into the catalog with a distributor snapshot', async () => {
   const createSpy = vi.mocked(createCatalogItem).mockResolvedValue({ id: 'item1' } as any);
-  const product = { source: 'td_synnex_ec_express' as const, synnexSku: '8938995', mfgPartNo: 'DELL-U2724D', status: 'ACTIVE', name: 'Dell U2724D', description: 'Dell U2724D', currency: 'USD', cost: 381.35, msrp: 549.99, discount: null, totalQty: 1437, warehouses: [], weight: 20.50, parcelShippable: 'Y', raw: {} };
+  const product = { source: 'td_synnex_ec_express' as const, synnexSku: '8938995', mfgPartNo: 'DELL-U2724D', manufacturer: 'Dell', status: 'ACTIVE', name: 'Dell U2724D', description: 'Dell U2724D', currency: 'USD', cost: 381.35, msrp: 549.99, discount: null, totalQty: 1437, warehouses: [], weight: 20.50, parcelShippable: 'Y', raw: {} };
   await importEcExpressCatalogItem({ product, item: { name: 'Dell U2724D', sku: '8938995', unitPrice: 549.99, costBasis: 381.35, taxable: true } }, actor, dbCtx);
   const arg = createSpy.mock.calls[0]![0];
   expect(arg).toMatchObject({ itemType: 'hardware', name: 'Dell U2724D', sku: '8938995', unitPrice: 549.99, costBasis: 381.35 });
   expect((arg.attributes as any).distributor.source).toBe('td_synnex_ec_express');
   expect((arg.attributes as any).distributor.synnexSku).toBe('8938995');
+  // Task 2's vendor-identity normalizer prefers this top-level field over raw.manufacturer.
+  expect((arg.attributes as any).distributor.manufacturer).toBe('Dell');
   expect(enrichMocks.enrichDistributorListing).not.toHaveBeenCalled(); // aiCleanup unset → no AI
 });
 
@@ -434,7 +442,7 @@ it('web-enriches the listing when aiCleanup is set (clean name + technical descr
     priceGuidance: 'typically $380–550',
     provenance: { source: 'ai_enrich', model: 'm', query: 'q', suggestion: {}, enrichedAt: 't', enrichedBy: 'u1' },
   });
-  const product = { source: 'td_synnex_ec_express' as const, synnexSku: '8938995', mfgPartNo: 'DELL-U2724D', status: 'ACTIVE', name: 'SPL Dell U2724D DISTI', description: null, currency: 'USD', cost: 381.35, msrp: 549.99, discount: null, totalQty: 1, warehouses: [], weight: null, parcelShippable: 'Y', raw: {} };
+  const product = { source: 'td_synnex_ec_express' as const, synnexSku: '8938995', mfgPartNo: 'DELL-U2724D', manufacturer: 'Dell', status: 'ACTIVE', name: 'SPL Dell U2724D DISTI', description: null, currency: 'USD', cost: 381.35, msrp: 549.99, discount: null, totalQty: 1, warehouses: [], weight: null, parcelShippable: 'Y', raw: {} };
   await importEcExpressCatalogItem({ product, item: { name: 'SPL Dell U2724D DISTI', sku: '8938995', unitPrice: 549.99, taxable: true }, aiCleanup: true }, actor, dbCtx);
 
   // Query is anchored on the manufacturer part number for an accurate web lookup.
@@ -462,7 +470,7 @@ it('web-enriches the listing when aiCleanup is set (clean name + technical descr
 it('falls back to the raw values when aiCleanup is set but enrichment is unavailable', async () => {
   const createSpy = vi.mocked(createCatalogItem).mockResolvedValue({ id: 'item3' } as any);
   enrichMocks.enrichDistributorListing.mockResolvedValueOnce(null); // rate-limited / down
-  const product = { source: 'td_synnex_ec_express' as const, synnexSku: '8938995', mfgPartNo: 'DELL-U2724D', status: 'ACTIVE', name: 'SPL Dell U2724D DISTI', description: 'raw desc', currency: 'USD', cost: 381.35, msrp: 549.99, discount: null, totalQty: 1, warehouses: [], weight: null, parcelShippable: 'Y', raw: {} };
+  const product = { source: 'td_synnex_ec_express' as const, synnexSku: '8938995', mfgPartNo: 'DELL-U2724D', manufacturer: null, status: 'ACTIVE', name: 'SPL Dell U2724D DISTI', description: 'raw desc', currency: 'USD', cost: 381.35, msrp: 549.99, discount: null, totalQty: 1, warehouses: [], weight: null, parcelShippable: 'Y', raw: {} };
   await importEcExpressCatalogItem({ product, item: { name: 'SPL Dell U2724D DISTI', sku: '8938995', unitPrice: 549.99, taxable: true }, aiCleanup: true }, actor, dbCtx);
   const arg = createSpy.mock.calls.at(-1)![0];
   expect(arg.name).toBe('SPL Dell U2724D DISTI'); // unchanged raw name

@@ -1,6 +1,6 @@
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import * as dbModule from '../../db';
-import { backupJobs as backupJobsTable, recoveryReadiness as recoveryReadinessTable } from '../../db/schema';
+import { backupJobs as backupJobsTable, recoveryReadiness as recoveryReadinessTable, RESTORABLE_BACKUP_JOB_STATUSES } from '../../db/schema';
 import { publishEvent } from '../../services/eventBus';
 import {
   backupJobs,
@@ -192,7 +192,7 @@ async function getLatestCompletedBackup(
         .where(and(
           eq(backupJobsTable.orgId, orgId),
           eq(backupJobsTable.deviceId, deviceId),
-          eq(backupJobsTable.status, 'completed'),
+          inArray(backupJobsTable.status, RESTORABLE_BACKUP_JOB_STATUSES),
         ))
         .orderBy(desc(backupJobsTable.completedAt))
         .limit(1));

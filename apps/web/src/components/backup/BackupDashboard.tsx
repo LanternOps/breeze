@@ -109,7 +109,10 @@ function BackupDashboardInner() {
         }
         if (overview.jobsLast24h) {
           const j = overview.jobsLast24h;
-          const total24h = (j.completed ?? 0) + (j.failed ?? 0);
+          // Partial runs count as attempts (denominator) but never as successes:
+          // excluding them entirely made a device whose every run is partial
+          // read as having no runs at all.
+          const total24h = (j.completed ?? 0) + (j.failed ?? 0) + (j.partial ?? 0);
           const rate = total24h > 0 ? Math.round(((j.completed ?? 0) / total24h) * 100) : 0;
           builtStats.push({ id: 'success_rate', name: 'Success Rate (24h)', value: `${rate}%`, changeType: rate >= 90 ? 'positive' : rate >= 70 ? 'neutral' : 'negative' });
         }
@@ -317,6 +320,9 @@ function BackupDashboardInner() {
   const resolveJobStatus = (status?: string) => {
     if (!status) return 'warning';
     const normalized = status.toLowerCase();
+    // Checked before completed/failed so a partial run is never laundered into
+    // a green "success" nor collapsed into the unnamed generic warning bucket.
+    if (normalized.includes('partial')) return 'partial';
     if (normalized.includes('success') || normalized.includes('complete')) return 'success';
     if (normalized.includes('run') || normalized.includes('progress')) return 'running';
     if (normalized.includes('fail') || normalized.includes('error')) return 'failed';

@@ -264,6 +264,7 @@ const ecProductSchema = z.object({
   source: z.enum(['td_synnex_ec_express', 'td_synnex_price_file']),
   synnexSku: z.string().min(1).max(64),
   mfgPartNo: z.string().max(255).nullable(),
+  manufacturer: z.string().max(255).nullable(),
   status: z.string().max(64).nullable(),
   name: z.string().min(1).max(500),
   description: z.string().max(10_000).nullable(),

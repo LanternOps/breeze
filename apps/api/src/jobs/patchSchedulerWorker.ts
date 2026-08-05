@@ -182,6 +182,16 @@ function getDueOccurrenceKey(settings: PatchInlineSettings, timezone: string, no
   return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
 }
 
+/**
+ * Quick Support exclusion (applies to every set-resolution query below):
+ * ephemeral devices (`devices.isEphemeral`) live in the hidden per-partner
+ * 'quick_support' org and are a stranger's personal machine borrowed for one
+ * ~20-minute session. That org stays inside technicians' accessibleOrgIds for
+ * RLS reasons, so the partner-wide fan-out would otherwise sweep it up and
+ * schedule patch installs on a home PC. Every branch that resolves a SET of
+ * devices filters them out; the explicit device-level branches are by-id
+ * lookups of an operator-chosen target and are left alone.
+ */
 async function resolveDeviceIdsForAssignment(
   assignmentLevel: string,
   assignmentTargetId: string,
@@ -208,7 +218,10 @@ async function resolveDeviceIdsForAssignment(
     // so the scheduling scope is intentionally broader than the visibility
     // scope. If product decides suspended orgs should stop receiving patches,
     // add the organizations.status filter here.
-    const conditions = [eq(organizations.partnerId, assignmentTargetId)];
+    const conditions = [
+      eq(organizations.partnerId, assignmentTargetId),
+      eq(devices.isEphemeral, false),
+    ];
     if (policyOrgId) conditions.push(eq(devices.orgId, policyOrgId));
     const partnerDevices = await db
       .select({ id: devices.id })
@@ -260,19 +273,25 @@ async function resolveDeviceIdsForAssignment(
           .select({ deviceId: deviceGroupMemberships.deviceId })
           .from(deviceGroupMemberships)
           .innerJoin(organizations, eq(deviceGroupMemberships.orgId, organizations.id))
+          .innerJoin(devices, eq(deviceGroupMemberships.deviceId, devices.id))
           .where(
             and(
               eq(deviceGroupMemberships.groupId, assignmentTargetId),
-              eq(organizations.partnerId, policyPartnerId!)
+              eq(organizations.partnerId, policyPartnerId!),
+              eq(devices.isEphemeral, false)
             )
           );
         return members.map((m) => m.deviceId);
       }
-      const conditions = [eq(deviceGroupMemberships.groupId, assignmentTargetId)];
+      const conditions = [
+        eq(deviceGroupMemberships.groupId, assignmentTargetId),
+        eq(devices.isEphemeral, false),
+      ];
       if (policyOrgId) conditions.push(eq(deviceGroupMemberships.orgId, policyOrgId));
       const members = await db
         .select({ deviceId: deviceGroupMemberships.deviceId })
         .from(deviceGroupMemberships)
+        .innerJoin(devices, eq(deviceGroupMemberships.deviceId, devices.id))
         .where(and(...conditions));
       return members.map((m) => m.deviceId);
     }
@@ -283,10 +302,14 @@ async function resolveDeviceIdsForAssignment(
           .select({ id: devices.id })
           .from(devices)
           .innerJoin(organizations, eq(devices.orgId, organizations.id))
-          .where(and(eq(devices.siteId, assignmentTargetId), eq(organizations.partnerId, policyPartnerId!)));
+          .where(and(
+            eq(devices.siteId, assignmentTargetId),
+            eq(organizations.partnerId, policyPartnerId!),
+            eq(devices.isEphemeral, false)
+          ));
         return siteDevices.map((d) => d.id);
       }
-      const conditions = [eq(devices.siteId, assignmentTargetId)];
+      const conditions = [eq(devices.siteId, assignmentTargetId), eq(devices.isEphemeral, false)];
       if (policyOrgId) conditions.push(eq(devices.orgId, policyOrgId));
       const siteDevices = await db
         .select({ id: devices.id })
@@ -301,10 +324,14 @@ async function resolveDeviceIdsForAssignment(
           .select({ id: devices.id })
           .from(devices)
           .innerJoin(organizations, eq(devices.orgId, organizations.id))
-          .where(and(eq(devices.orgId, assignmentTargetId), eq(organizations.partnerId, policyPartnerId!)));
+          .where(and(
+            eq(devices.orgId, assignmentTargetId),
+            eq(organizations.partnerId, policyPartnerId!),
+            eq(devices.isEphemeral, false)
+          ));
         return orgDevices.map((d) => d.id);
       }
-      const conditions = [eq(devices.orgId, assignmentTargetId)];
+      const conditions = [eq(devices.orgId, assignmentTargetId), eq(devices.isEphemeral, false)];
       if (policyOrgId) conditions.push(eq(devices.orgId, policyOrgId));
       const orgDevices = await db
         .select({ id: devices.id })

@@ -107,20 +107,33 @@ describe('QuoteEditor — ADD SECTION heading-text gating', () => {
   });
 });
 
-describe('QuoteEditor — sticky per-block column headers', () => {
+describe('QuoteEditor — per-block table has no vertical scrollport', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('pins the header row (sticky + solid background) above the scrolling rows', async () => {
+  // The page is the editor's single vertical scroller: an earlier design
+  // capped each block's table wrapper at max-h-[70vh] (to make sticky header
+  // cells engage), but a scrollport per pricing block made the editor read as
+  // nested boxes of scrollbars. The wrapper may still scroll horizontally on
+  // narrow screens.
+  it('lets the block grow to its content (no max-h / overflow-y cap, no sticky header cells)', async () => {
     render(<QuoteEditor detail={onePricingBlock} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-block-lines-blk-1')).toBeInTheDocument());
 
     const table = screen.getByTestId('quote-block-lines-blk-1');
+    const wrapper = table.parentElement as HTMLElement;
+    expect(wrapper.className).toMatch(/\boverflow-x-auto\b/);
+    expect(wrapper.className).not.toMatch(/\bmax-h-/);
+    expect(wrapper.className).not.toMatch(/\boverflow-y-auto\b/);
+    // The wrapper is still a HORIZONTAL scroll region on narrow screens, so it
+    // must keep its keyboard/AT affordances.
+    expect(wrapper).toHaveAttribute('role', 'region');
+    expect(wrapper).toHaveAttribute('aria-label');
+    expect(wrapper).toHaveAttribute('tabindex', '0');
+
     const headerCells = table.querySelectorAll('thead th');
     expect(headerCells.length).toBeGreaterThan(0);
     headerCells.forEach((th) => {
-      expect(th.className).toMatch(/\bsticky\b/);
-      expect(th.className).toMatch(/\btop-0\b/);
-      expect(th.className).toMatch(/\bbg-card\b/);
+      expect(th.className).not.toMatch(/\bsticky\b/);
     });
   });
 });

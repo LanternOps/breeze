@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Modal, Pressable, Text, View } from 'react-native';
+import * as Sentry from '@sentry/react-native';
 
 import { useApprovalTheme, radii, spacing, type } from '../../../theme';
 import { listAiSessions, type AiSessionListItem } from '../../../services/aiChat';
@@ -22,7 +23,12 @@ export function SessionsSheet({ visible, onCancel, onSelect }: Props) {
     setError(null);
     listAiSessions(30)
       .then(setSessions)
-      .catch((err: Error) => setError(err.message));
+      .catch((err: Error) => {
+        // The raw message is internal (function name + HTTP status) — report it
+        // to Sentry and show the user a static string instead (issue #3115).
+        Sentry.captureException(err, { tags: { area: 'ai-sessions-history' } });
+        setError("Couldn't load conversation history.");
+      });
   }, [visible]);
 
   return (

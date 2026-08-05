@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
   auditBaselines,
@@ -284,7 +284,17 @@ export function getTemplateSettings(
 }
 
 export async function seedDefaultAuditBaselines(): Promise<{ created: number }> {
-  const orgRows = await db.select({ id: organizations.id }).from(organizations);
+  // Quick Support exclusion: this enumerates EVERY organization and seeds a
+  // baseline row into each. The hidden per-partner 'quick_support' org holds
+  // ephemeral devices — a stranger's personal machine borrowed for one
+  // ~20-minute session — and stays inside technicians' accessibleOrgIds for RLS
+  // reasons, so it is not filtered for us. Seeding it would give a throwaway org
+  // a permanent audit-baseline corpus and make its devices eligible for
+  // audit-policy collection sweeps.
+  const orgRows = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(ne(organizations.type, 'quick_support'));
   if (orgRows.length === 0) {
     return { created: 0 };
   }

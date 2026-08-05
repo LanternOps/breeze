@@ -222,7 +222,7 @@ describe('createActionIntent — approver fan-out across org+partner axes (real 
     // later, at release/execution time), so a bare random UUID is fine here.
     const snapshot = await createActionIntent(auth, {
       toolName: 'execute_command',
-      input: { deviceId: randomUUID(), commandType: 'list_processes' },
+      input: { deviceId: randomUUID(), commandType: 'kill_process' },
       source: 'chat',
     });
 
@@ -270,7 +270,7 @@ describe('createActionIntent — approver fan-out across org+partner axes (real 
 
     const snapshot = await createActionIntent(auth, {
       toolName: 'execute_command',
-      input: { deviceId: randomUUID(), commandType: 'list_processes' },
+      input: { deviceId: randomUUID(), commandType: 'kill_process' },
       source: 'chat',
     });
 
@@ -299,7 +299,7 @@ describe('createActionIntent — approver fan-out across org+partner axes (real 
     const auth = requesterAuth(s.requester, s.orgId, s.partnerId, s.requesterRoleId);
     const input = {
       toolName: 'execute_command',
-      input: { deviceId: randomUUID(), commandType: 'list_processes' },
+      input: { deviceId: randomUUID(), commandType: 'kill_process' },
       source: 'chat' as const,
     };
 

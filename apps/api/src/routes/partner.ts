@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { organizations, devices, partners, partnerUsers } from '../db/schema';
@@ -91,7 +91,12 @@ partnerRoutes.get(
     }
   }
 
-  const orgConditions = [isNull(organizations.deletedAt)];
+  // The hidden per-partner 'quick_support' org (and its ephemeral devices) is
+  // reachable via accessibleOrgIds by design — keep it out of the partner rollup.
+  const orgConditions = [
+    isNull(organizations.deletedAt),
+    ne(organizations.type, 'quick_support'),
+  ];
   if (orgIds) {
     orgConditions.push(inArray(organizations.id, orgIds));
   }
@@ -120,7 +125,7 @@ partnerRoutes.get(
       lastSeenAt: devices.lastSeenAt
     })
     .from(devices)
-    .where(inArray(devices.orgId, orgIdList));
+    .where(and(inArray(devices.orgId, orgIdList), eq(devices.isEphemeral, false)));
 
   const devicesByOrg = new Map<string, Array<{
     id: string;
