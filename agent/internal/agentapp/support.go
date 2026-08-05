@@ -361,7 +361,9 @@ func runSupportSession() {
 	if err != nil {
 		_ = os.RemoveAll(workDir)
 		if errors.Is(err, api.ErrSupportCodeInvalid) {
-			supportFail(err.Error(), nil)
+			// The person reading this is not technical and did not choose the
+			// code — name the remedy, not the status.
+			supportFail("That code is invalid or has expired — ask your technician for a new one.", nil)
 			return
 		}
 		supportFail("Could not reach the Breeze server. Check your internet connection and try again.", err)

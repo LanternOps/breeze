@@ -447,9 +447,12 @@ type SupportRedeemResponse struct {
 }
 
 // ErrSupportCodeInvalid is returned for the server's 404 — an unknown,
-// expired, or already-redeemed code. Its text is shown verbatim to a
-// non-technical end user, so it names the remedy rather than the status code.
-var ErrSupportCodeInvalid = errors.New("That code is invalid or has expired — ask your technician for a new one.")
+// expired, or already-redeemed code (the endpoint deliberately does not
+// distinguish them).
+//
+// Terse and lowercase per Go convention; the end-user wording lives at the
+// display site in agentapp, which is where the audience is actually known.
+var ErrSupportCodeInvalid = errors.New("support code invalid or expired")
 
 // RedeemSupportCode exchanges a one-time Quick Support code for an ephemeral
 // enrollment. Package-level (not a *Client method) because at this point the
