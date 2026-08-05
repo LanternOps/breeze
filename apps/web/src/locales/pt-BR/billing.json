@@ -721,7 +721,7 @@
         "notTaxable": "Não tributável",
         "qty": "Qtd.",
         "recurrence": "Cobrança",
-        "scrollAria": "Tabela de preços — role lateralmente em telas estreitas para ver totais e ações da linha; em seções longas, role verticalmente com o cabeçalho fixo",
+        "scrollAria": "Tabela de preços — role lateralmente em telas estreitas para ver totais e ações da linha",
         "showSubtotal": "Mostrar linha de subtotal",
         "tax": "Imposto",
         "taxSuffix": "+ {{amount}} de imposto",

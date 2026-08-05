@@ -721,7 +721,7 @@
         "notTaxable": "No sujeto a impuestos",
         "qty": "Cantidad",
         "recurrence": "Facturación",
-        "scrollAria": "Tabla de precios: desplácese hacia los lados en pantallas angostas para ver totales y acciones de fila; en secciones largas, se desplaza verticalmente con el encabezado fijo",
+        "scrollAria": "Tabla de precios: desplácese hacia los lados en pantallas angostas para ver totales y acciones de fila",
         "showSubtotal": "Mostrar fila de subtotal",
         "tax": "Impuesto",
         "taxSuffix": "+ {{amount}} de impuesto",
