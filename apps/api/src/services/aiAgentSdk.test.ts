@@ -628,6 +628,60 @@ describe('createSessionPreToolUse', () => {
       expect(waitForApproval).toHaveBeenCalled();
     });
 
+    it.each(['action_plan', 'hybrid_plan'] as const)(
+      'a plan-matched read-only call in %s mode takes the PLAN branch (index advances), not the fast path',
+      async (mode) => {
+        vi.mocked(checkGuardrails).mockReturnValue(readOnlyCheck as any);
+        const values = mockInsertValues();
+        const session = makeActiveSession({
+          approvalMode: mode,
+          activePlanId: 'plan-1',
+          approvedPlanSteps: new Map([
+            [0, { toolName: 'execute_command', input: { deviceId: 'd-1', commandType: 'list_processes' } }],
+          ]),
+        });
+
+        const result = await createSessionPreToolUse(session)('execute_command', {
+          deviceId: 'd-1',
+          commandType: 'list_processes',
+        });
+
+        expect(result).toEqual({ allowed: true });
+        // The direct evidence this went through the plan branch rather than
+        // the read-only fast path: the step index advanced and
+        // plan_step_start was emitted — the fast path does neither, which is
+        // exactly the desync the plan carve-out prevents.
+        expect(session.currentPlanStepIndex).toBe(1);
+        expect(session.eventBus.publish).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'plan_step_start', stepIndex: 0 }),
+        );
+        expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'executing' }));
+      },
+    );
+
+    it('an UNmatched read-only call during an active plan is a deviation and still prompts', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue(readOnlyCheck as any);
+      mockInsertReturning({ id: 'exec-ro-dev' });
+      mockGetUserPushTokens.mockResolvedValue([]);
+      vi.mocked(waitForApproval).mockResolvedValue(false);
+      const session = makeActiveSession({
+        approvalMode: 'action_plan',
+        activePlanId: 'plan-1',
+        approvedPlanSteps: new Map([
+          [0, { toolName: 'take_screenshot', input: { deviceId: 'd-1' } }],
+        ]),
+      });
+
+      const result = await createSessionPreToolUse(session)('execute_command', {
+        deviceId: 'd-1',
+        commandType: 'list_processes',
+      });
+
+      expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+      expect(waitForApproval).toHaveBeenCalled();
+      expect(session.currentPlanStepIndex).toBe(0);
+    });
+
     it('mutating Tier 2 (no readOnly flag) still takes the per_step approval bridge', async () => {
       vi.mocked(checkGuardrails).mockReturnValue({
         allowed: true,

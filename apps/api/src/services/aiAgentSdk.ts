@@ -633,16 +633,27 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       // Auto-approve mode only skips approval for Tier 2 tools. Tier 3+
       // tools still require an explicit per-step approval.
       // Read-only Tier-2 calls (#3130 — the TIER2_READONLY_* allowlists in
-      // aiGuardrails.ts) additionally skip the prompt under EVERY mode, not
-      // just auto_approve: a verified read has nothing to confirm, and
-      // per-step prompting per list call is the approval-fatigue scenario
-      // #3088 measured. Never on a paused session — pause is the user's hard
-      // brake, and the explicit !isPaused guard is what keeps it one
-      // (effectiveMode === 'auto_approve' already implies !isPaused).
-      if (
-        guardrailCheck.tier === 2 &&
-        (effectiveMode === 'auto_approve' || (guardrailCheck.readOnly === true && !session.isPaused))
-      ) {
+      // aiGuardrails.ts) additionally skip the prompt outside of plan
+      // execution: a verified read has nothing to confirm, and per-step
+      // prompting per list call is the approval-fatigue scenario #3088
+      // measured. Two carve-outs keep existing semantics intact:
+      //   - Never on a paused session — pause is the user's hard brake, and
+      //     the explicit !isPaused guard is what keeps it one
+      //     (effectiveMode === 'auto_approve' already implies !isPaused).
+      //   - Never while a plan is actively executing — taking this early
+      //     return would skip matchPlanStep, so a read that IS the current
+      //     plan step would leave currentPlanStepIndex un-advanced: the next
+      //     real step then reads as a deviation, postToolUse mis-attributes
+      //     its plan_step_complete SSE to the stale index, and a plan ending
+      //     in a read never reaches plan_complete. Plan-matched reads
+      //     auto-execute through the plan branch below anyway (tier < 3);
+      //     an UNmatched read during a plan is a deviation and deliberately
+      //     still prompts, same as before this change.
+      const readOnlyAutoExec =
+        guardrailCheck.readOnly === true &&
+        !session.isPaused &&
+        !(session.activePlanId && (effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan'));
+      if (guardrailCheck.tier === 2 && (effectiveMode === 'auto_approve' || readOnlyAutoExec)) {
         try {
           await withDbAccessContext(
             { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
