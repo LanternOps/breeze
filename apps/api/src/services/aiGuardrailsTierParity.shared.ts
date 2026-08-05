@@ -12,7 +12,7 @@
  * a `tool (action/action)` label and the comparison against checkGuardrails
  * live here once rather than being copied per surface.
  */
-import { checkGuardrails } from './aiGuardrails';
+import { checkGuardrails, TOOL_ACTION_INPUT_KEYS } from './aiGuardrails';
 import { TOOL_TIERS } from './aiAgentSdkTools';
 
 /** A tier claim made by a mirror surface, ready to be checked. */
@@ -79,12 +79,16 @@ export function findTierMismatches(entries: ClaimedTierEntry[]): string[] {
   const mismatches: string[] = [];
 
   for (const entry of entries) {
+    // Most tools multiplex on `action`; a TOOL_ACTION_INPUT_KEYS entry names a
+    // different discriminator (execute_command → commandType, #3088). Build
+    // the probe input under the same key checkGuardrails resolves.
+    const actionKey = TOOL_ACTION_INPUT_KEYS[entry.tool] ?? 'action';
     const inputs: Array<Record<string, unknown>> = entry.actions.length > 0
-      ? entry.actions.map((action) => ({ action }))
+      ? entry.actions.map((action) => ({ [actionKey]: action }))
       : [{}];
 
     for (const input of inputs) {
-      const action = input.action as string | undefined;
+      const action = input[actionKey] as string | undefined;
       const actual = resolveTier(entry.tool, input);
       if (actual.tier === entry.claimedTier) continue;
       mismatches.push(

@@ -25,6 +25,9 @@ const notif = vi.hoisted(() => ({
   getDevicePushTokenAsync: vi.fn(),
   getExpoPushTokenAsync: vi.fn(),
   setNotificationChannelAsync: vi.fn(),
+  getPresentedNotificationsAsync: vi.fn(),
+  dismissNotificationAsync: vi.fn(),
+  setBadgeCountAsync: vi.fn(),
   AndroidImportance: { MAX: 5 },
 }));
 vi.mock('expo-notifications', () => notif);
@@ -32,7 +35,16 @@ vi.mock('expo-notifications', () => notif);
 const api = vi.hoisted(() => ({ registerPushToken: vi.fn() }));
 vi.mock('./api', () => ({ registerPushToken: (...a: unknown[]) => api.registerPushToken(...a) }));
 
-import { registerForPushNotifications } from './notifications';
+import {
+  registerForPushNotifications,
+  reconcileApprovalNotifications,
+  reconcilePushRegistration,
+  staleApprovalNotificationIds,
+} from './notifications';
+import {
+  notificationsRowCopy,
+  pushUnavailableCopy,
+} from '../screens/chat/components/pushUnavailableCopy';
 
 beforeEach(() => {
   platform.OS = 'ios';
@@ -94,6 +106,22 @@ describe('registerForPushNotifications', () => {
     });
   });
 
+  it('emits reasons the Settings sheet maps to SPECIFIC copy, not the generic fallback (#3118)', async () => {
+    // Pins the string contract between this service and pushUnavailableCopy:
+    // if a reason is renamed here, the sheet silently falls through to generic
+    // "this device" copy with both sides' own tests still green.
+    platform.OS = 'android';
+    const android = await registerForPushNotifications();
+    if (android.status !== 'unsupported') throw new Error('expected unsupported');
+    expect(pushUnavailableCopy(android.reason).notificationsRow).toMatch(/Android/);
+
+    platform.OS = 'ios';
+    device.isDevice = false;
+    const sim = await registerForPushNotifications();
+    if (sim.status !== 'unsupported') throw new Error('expected unsupported');
+    expect(pushUnavailableCopy(sim.reason).notificationsRow).toMatch(/simulator/i);
+  });
+
   it('reports failed when the user denies permission', async () => {
     notif.getPermissionsAsync.mockResolvedValue({ status: 'denied' });
     notif.requestPermissionsAsync.mockResolvedValue({ status: 'denied' });
@@ -104,6 +132,47 @@ describe('registerForPushNotifications', () => {
     });
   });
 
+  it('resolves failed instead of rejecting when the permission check itself throws (#3143)', async () => {
+    // Pre-#3143 the permission calls ran before the try/catch, so a throw here
+    // became an unhandled rejection in PushRegistrationGate and the store
+    // stayed at 'idle' — "Checking push registration…" forever in Settings.
+    notif.getPermissionsAsync.mockRejectedValue(new Error('boom'));
+
+    await expect(registerForPushNotifications()).resolves.toEqual({
+      status: 'failed',
+      reason: 'boom',
+    });
+  });
+
+  it('Android channel-setup failure does not reject or flip a registered token to failed (#3143)', async () => {
+    // The token is already registered with the API by the time channels are
+    // configured; a channel failure is a presentation nit, not a delivery
+    // failure. Pre-#3143 this ran after the catch and rejected the promise.
+    platform.OS = 'android';
+    constants.expoConfig = { extra: { eas: { projectId: 'proj-1' } } };
+    notif.setNotificationChannelAsync.mockRejectedValue(new Error('channel boom'));
+
+    await expect(registerForPushNotifications()).resolves.toEqual({
+      status: 'ok',
+      token: 'ExponentPushToken[x]',
+    });
+  });
+
+  it("permission-denied failure maps to the Settings-actionable row copy (#3143)", async () => {
+    // Pins the reason-string contract for the FAILED branch, same as the
+    // unsupported pin above: rename 'permission_denied' here and the Settings
+    // sheet silently falls back to the generic "sign in again to retry" copy
+    // (no Settings deep-link) with both sides' own tests still green.
+    notif.getPermissionsAsync.mockResolvedValue({ status: 'denied' });
+    notif.requestPermissionsAsync.mockResolvedValue({ status: 'denied' });
+
+    const out = await registerForPushNotifications();
+    if (out.status !== 'failed') throw new Error('expected failed');
+    const copy = notificationsRowCopy(out.status, out.reason);
+    expect(copy.opensSystemSettings).toBe(true);
+    expect(copy.description).toMatch(/turned off for Breeze in Settings/);
+  });
+
   it('reports failed when the token call throws', async () => {
     notif.getDevicePushTokenAsync.mockRejectedValue(new Error('APNs unavailable'));
 
@@ -111,5 +180,111 @@ describe('registerForPushNotifications', () => {
       status: 'failed',
       reason: 'APNs unavailable',
     });
+  });
+});
+
+/**
+ * A request approved in the web UI leaves its push banner sitting in
+ * Notification Center on the phone. Clearing it is the visible half of "the
+ * approval dismissed itself"; alert banners must survive the sweep.
+ */
+function presented(identifier: string, data: Record<string, unknown> | null) {
+  return { request: { identifier, content: { data } } };
+}
+
+describe('staleApprovalNotificationIds', () => {
+  it('selects approval banners whose request is no longer pending', () => {
+    const list = [
+      presented('n1', { type: 'approval', approvalId: 'a' }),
+      presented('n2', { type: 'approval', approvalId: 'b' }),
+    ];
+    expect(staleApprovalNotificationIds(list, ['b'])).toEqual(['n1']);
+  });
+
+  it('never touches alert banners or payload-less notifications', () => {
+    const list = [
+      presented('n1', { type: 'alert', alertId: 'x', eventType: 'alert.triggered' }),
+      presented('n2', null),
+      presented('n3', { type: 'approval', approvalId: 'gone' }),
+    ];
+    expect(staleApprovalNotificationIds(list, [])).toEqual(['n3']);
+  });
+
+  it('returns nothing when every delivered approval is still pending', () => {
+    const list = [presented('n1', { type: 'approval', approvalId: 'a' })];
+    expect(staleApprovalNotificationIds(list, ['a', 'b'])).toEqual([]);
+  });
+});
+
+describe('reconcileApprovalNotifications', () => {
+  beforeEach(() => {
+    notif.getPresentedNotificationsAsync.mockReset().mockResolvedValue([]);
+    notif.dismissNotificationAsync.mockReset().mockResolvedValue(undefined);
+    notif.setBadgeCountAsync.mockReset().mockResolvedValue(undefined);
+  });
+
+  it('dismisses resolved approval banners and syncs the badge', async () => {
+    notif.getPresentedNotificationsAsync.mockResolvedValue([
+      presented('n1', { type: 'approval', approvalId: 'decided-in-browser' }),
+      presented('n2', { type: 'approval', approvalId: 'still-waiting' }),
+    ]);
+
+    await reconcileApprovalNotifications(['still-waiting']);
+
+    expect(notif.dismissNotificationAsync).toHaveBeenCalledTimes(1);
+    expect(notif.dismissNotificationAsync).toHaveBeenCalledWith('n1');
+    expect(notif.setBadgeCountAsync).toHaveBeenCalledWith(1);
+  });
+
+  it('degrades quietly when the notification APIs throw', async () => {
+    notif.getPresentedNotificationsAsync.mockRejectedValue(new Error('no permission'));
+    await expect(reconcileApprovalNotifications([])).resolves.toBeUndefined();
+  });
+});
+
+describe('reconcilePushRegistration (#3143)', () => {
+  it("'ok' with permission still granted needs no correction", async () => {
+    await expect(reconcilePushRegistration('ok', null)).resolves.toBeNull();
+  });
+
+  it("'ok' downgrades to failed/permission_denied when the user revoked permission in Settings", async () => {
+    // The exact sequence the Settings sheet's deep-link invites: tap row →
+    // system Settings → turn Breeze notifications off → return to the app.
+    // iOS does not restart the app, so without this the row keeps claiming
+    // "delivered" for the rest of the session.
+    notif.getPermissionsAsync.mockResolvedValue({ status: 'denied' });
+
+    await expect(reconcilePushRegistration('ok', null)).resolves.toEqual({
+      status: 'failed',
+      reason: 'permission_denied',
+    });
+  });
+
+  it("failed/permission_denied re-registers fully once permission is granted again", async () => {
+    const out = await reconcilePushRegistration('failed', 'permission_denied');
+
+    // Not just a status flip: the token must actually be (re)registered.
+    expect(out).toEqual({ status: 'ok', token: 'APNS-TOKEN' });
+    expect(api.registerPushToken).toHaveBeenCalledWith('APNS-TOKEN', 'ios');
+  });
+
+  it('failed/permission_denied stays put while permission remains denied', async () => {
+    notif.getPermissionsAsync.mockResolvedValue({ status: 'denied' });
+
+    await expect(reconcilePushRegistration('failed', 'permission_denied')).resolves.toBeNull();
+    expect(api.registerPushToken).not.toHaveBeenCalled();
+  });
+
+  it('non-permission failures and resting states are never touched by a foreground hop', async () => {
+    for (const [status, reason] of [
+      ['failed', 'some network error'],
+      ['failed', null],
+      ['unsupported', 'android_push_not_configured'],
+      ['idle', null],
+    ] as const) {
+      await expect(reconcilePushRegistration(status, reason)).resolves.toBeNull();
+    }
+    expect(notif.getPermissionsAsync).not.toHaveBeenCalled();
+    expect(api.registerPushToken).not.toHaveBeenCalled();
   });
 });

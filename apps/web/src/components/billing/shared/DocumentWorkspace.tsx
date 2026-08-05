@@ -20,9 +20,9 @@ export interface DocumentWorkspaceProps {
    *  workspace's editable title input for drafts). The `title` string is still
    *  required as the fallback/document identity. */
   titleSlot?: ReactNode;
-  /** Rendered on its own line directly under the title row (e.g. the quote
-   *  workspace's customer switcher) — metadata that belongs with the document
-   *  identity but must not squeeze the title or the status pill. */
+  /** Rendered inline after the title + status pill (e.g. the quote workspace's
+   *  customer switcher), wrapping onto its own line when the row runs out of
+   *  width — keeps the pinned header to a single row on wide screens. */
   metaSlot?: ReactNode;
   statusPill?: ReactNode;
   actions?: ReactNode;
@@ -109,19 +109,20 @@ export function DocumentWorkspace({
           of scrolled content show through above it. -top-4/-top-6 pin the bar
           flush with main's true top edge; its own pt re-covers the zone. */}
       <div className="sticky -top-4 z-20 -mx-4 -mt-4 bg-background px-4 pt-4 md:-top-6 md:-mx-6 md:-mt-6 md:px-6 md:pt-6">
-        {/* Back link on its own line, THEN title + actions as one row: the
-            actions cluster aligns with the title it acts on, not with the tiny
-            back link above it. */}
-        <a
-          href={backHref}
-          aria-label={t('shared.documentWorkspace.backAria', { label: backLabel.toLowerCase() })}
-          className="text-xs text-muted-foreground hover:underline"
-        >
-          <span aria-hidden="true">←</span> {backLabel}
-        </a>
-        <div className="mt-1 flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 min-w-0">
+        {/* One compact row: back link, title (+ status pill), inline meta and
+            the actions cluster all share it, wrapping on narrow screens. The
+            header is pinned, so every vertical pixel here is stolen from the
+            working canvas below — keep it short. */}
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+            <a
+              href={backHref}
+              aria-label={t('shared.documentWorkspace.backAria', { label: backLabel.toLowerCase() })}
+              className="shrink-0 text-xs text-muted-foreground hover:underline"
+            >
+              <span aria-hidden="true">←</span> {backLabel}
+            </a>
+            <div className="flex min-w-0 flex-1 items-center gap-2">
               {titleSlot ? (
                 <>
                   {/* The slot replaces the VISUAL heading (e.g. with an editable
@@ -132,7 +133,7 @@ export function DocumentWorkspace({
                   {titleSlot}
                 </>
               ) : (
-                <h1 className="truncate text-xl font-semibold" data-testid={`${idPrefix}-workspace-title`}>
+                <h1 className="truncate text-lg font-semibold" data-testid={`${idPrefix}-workspace-title`}>
                   {title}
                 </h1>
               )}
@@ -149,7 +150,7 @@ export function DocumentWorkspace({
 
         {/* Tabs */}
         <div
-          className="mt-4 flex gap-1 border-b"
+          className="mt-2 flex gap-1 border-b"
           role="tablist"
           data-testid={`${idPrefix}-workspace-tabs`}
           onKeyDown={onTabKeyDown}
@@ -165,7 +166,7 @@ export function DocumentWorkspace({
               tabIndex={activeTab === t.id ? 0 : -1}
               onClick={() => onTabChange(t.id)}
               data-testid={`${idPrefix}-tab-${t.id}`}
-              className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium transition ${
+              className={`-mb-px border-b-2 px-3 py-1.5 text-sm font-medium transition ${
                 activeTab === t.id
                   ? 'border-primary text-foreground'
                   : 'border-transparent text-muted-foreground hover:text-foreground'

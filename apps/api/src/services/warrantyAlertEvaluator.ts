@@ -158,6 +158,14 @@ export async function evaluateWarrantyAlerts(deviceId: string): Promise<string |
 
   if (!device) return null;
 
+  // Quick Support exclusion: ephemeral devices live in the hidden per-partner
+  // 'quick_support' org and are a stranger's personal machine borrowed for one
+  // ~20-minute session. That org stays inside technicians' accessibleOrgIds for
+  // RLS reasons, so nothing upstream filters them. Raising a warranty-expiry
+  // alert about someone's home laptop pages a technician over a machine the MSP
+  // does not own and cannot service.
+  if (device.isEphemeral) return null;
+
   // Resolve warranty config policy settings
   const settings = await resolveWarrantySettings(deviceId);
 

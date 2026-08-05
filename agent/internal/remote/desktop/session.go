@@ -183,6 +183,12 @@ type SessionManager struct {
 	// disconnected and allow reconnection.
 	OnSessionStopped func(sessionID string)
 
+	// OnSessionStarted is the symmetric hook: called when a WebRTC peer
+	// connection reaches Connected, i.e. the viewer is actually watching.
+	// Quick Support uses it to tell the end user "Technician connected."
+	// Invoked on its own goroutine, like OnSessionStopped.
+	OnSessionStarted func(sessionID string)
+
 	// lastDesktopState caches the most recently broadcast desktop state so
 	// late-connecting viewers can receive an initial state when their control
 	// channel opens. Protected by mu.

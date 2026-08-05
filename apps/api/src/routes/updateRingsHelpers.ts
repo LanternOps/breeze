@@ -36,11 +36,14 @@ async function resolveRingAssignedDeviceIds(assignments: { level: string; target
     for (const row of groupDevices) deviceIds.add(row.deviceId);
   }
 
+  // Site/org expansion must never pull in ephemeral Quick Support devices: they
+  // live in the hidden 'quick_support' org that stays inside accessibleOrgIds
+  // for RLS, so nothing excludes them from a fan-out for us.
   if (siteIds.length > 0) {
     const siteDevices = await db
       .select({ id: devices.id })
       .from(devices)
-      .where(inArray(devices.siteId, siteIds));
+      .where(and(inArray(devices.siteId, siteIds), eq(devices.isEphemeral, false)));
     for (const row of siteDevices) deviceIds.add(row.id);
   }
 
@@ -48,7 +51,7 @@ async function resolveRingAssignedDeviceIds(assignments: { level: string; target
     const orgDevices = await db
       .select({ id: devices.id })
       .from(devices)
-      .where(inArray(devices.orgId, orgIds));
+      .where(and(inArray(devices.orgId, orgIds), eq(devices.isEphemeral, false)));
     for (const row of orgDevices) deviceIds.add(row.id);
   }
 

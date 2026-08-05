@@ -32,6 +32,10 @@ vi.mock('../db/schema', () => ({
     sessionId: 'aiToolExecutions.sessionId',
     intentId: 'aiToolExecutions.intentId',
   },
+  approvalRequests: {
+    executionId: 'approvalRequests.executionId',
+    status: 'approvalRequests.status',
+  },
   delegantM365Connections: {},
   devices: {},
 }));
@@ -146,7 +150,8 @@ describe('handleApproval owner-binding (SR5-10)', () => {
       { id: 'exec-1', status: 'pending', sessionId: 's1' },
       { id: 's1', orgId: 'org-1', userId: 'victim' },
     );
-    const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    const returningSpy = vi.fn().mockResolvedValue([{ id: 'exec-1' }]);
+    const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: returningSpy }) });
     updateMock.mockReturnValue({ set: setSpy });
 
     const ok = await handleApproval('exec-1', true, auth('victim'), 's1');
@@ -155,6 +160,120 @@ describe('handleApproval owner-binding (SR5-10)', () => {
     expect(setSpy).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'approved', approvedBy: 'victim' }),
     );
+  });
+
+  it('returns false when the CAS updates zero rows (row settled/decided concurrently — #3089)', async () => {
+    // The pre-check SELECT saw 'pending', but by the time the guarded UPDATE
+    // ran, a settle (or the waitForApproval timeout writer) had already moved
+    // the row out of 'pending'. Reporting true here would tell the UI an
+    // action was approved that nothing will ever execute.
+    stubExecutionThenSession(
+      { id: 'exec-1', status: 'pending', sessionId: 's1' },
+      { id: 's1', orgId: 'org-1', userId: 'victim' },
+    );
+    const returningSpy = vi.fn().mockResolvedValue([]);
+    const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: returningSpy }) });
+    updateMock.mockReturnValue({ set: setSpy });
+
+    const ok = await handleApproval('exec-1', true, auth('victim'), 's1');
+
+    expect(ok).toBe(false);
+  });
+});
+
+// #3094: the Tier-2 per_step flow creates BOTH an ai_tool_executions row and a
+// mobile-bridge approval_requests row. The inline web-chat decide historically
+// flipped only the execution row, stranding the bridge row 'pending' until its
+// 5-minute TTL — which reads as an unattended-expired approval sitting next to
+// a recorded success. Pin that handleApproval now mirrors the decision onto
+// the still-pending bridge row.
+describe('handleApproval approval_requests mirror (#3094)', () => {
+  function stubExecutionThenSession(execution: unknown, session: unknown) {
+    stubSelectOnce([execution]);
+    stubSelectOnce([session]);
+  }
+
+  function captureUpdates() {
+    const calls: Array<{ set: Record<string, unknown>; where: unknown }> = [];
+    let call = 0;
+    updateMock.mockImplementation(() => ({
+      set: (values: Record<string, unknown>) => ({
+        where: (cond: unknown) => {
+          calls.push({ set: values, where: cond });
+          call += 1;
+          // First update is the CAS on aiToolExecutions (#3089) — chains
+          // .returning() and must yield the updated row for `updated` to be
+          // truthy so the mirror below is reached. Second update is the
+          // approval_requests mirror, which resolves the where() directly.
+          if (call === 1) {
+            return { returning: vi.fn().mockResolvedValue([{ id: 'exec-1' }]) };
+          }
+          return Promise.resolve(undefined);
+        },
+      }),
+    }));
+    return calls;
+  }
+
+  it('marks the pending bridge row approved when the owner approves', async () => {
+    stubExecutionThenSession(
+      { id: 'exec-1', status: 'pending', sessionId: 's1' },
+      { id: 's1', orgId: 'org-1', userId: 'victim' },
+    );
+    const updates = captureUpdates();
+
+    const ok = await handleApproval('exec-1', true, auth('victim'), 's1');
+
+    expect(ok).toBe(true);
+    expect(updates).toHaveLength(2);
+    const mirror = updates[1]!;
+    expect(mirror.set).toMatchObject({ status: 'approved' });
+    expect(mirror.set.decidedAt).toBeInstanceOf(Date);
+    // Predicate must bind to this execution AND only flip a still-pending row.
+    const where = mirror.where as { op: string; conds: Array<{ col: unknown; val: unknown }> };
+    expect(where.op).toBe('and');
+    expect(where.conds).toContainEqual(
+      expect.objectContaining({ col: 'approvalRequests.executionId', val: 'exec-1' }),
+    );
+    expect(where.conds).toContainEqual(
+      expect.objectContaining({ col: 'approvalRequests.status', val: 'pending' }),
+    );
+  });
+
+  it('marks the pending bridge row denied when the owner rejects', async () => {
+    stubExecutionThenSession(
+      { id: 'exec-1', status: 'pending', sessionId: 's1' },
+      { id: 's1', orgId: 'org-1', userId: 'victim' },
+    );
+    const updates = captureUpdates();
+
+    const ok = await handleApproval('exec-1', false, auth('victim'), 's1');
+
+    expect(ok).toBe(true);
+    expect(updates[1]!.set).toMatchObject({ status: 'denied' });
+  });
+
+  it('still reports success when the bridge mirror fails (execution row is the source of truth)', async () => {
+    stubExecutionThenSession(
+      { id: 'exec-1', status: 'pending', sessionId: 's1' },
+      { id: 's1', orgId: 'org-1', userId: 'victim' },
+    );
+    let call = 0;
+    updateMock.mockImplementation(() => ({
+      set: (values: Record<string, unknown>) => ({
+        where: () => {
+          call += 1;
+          // First update (the CAS) must succeed and report the updated row so
+          // `updated` is truthy and the mirror update is attempted at all.
+          if (call === 1) {
+            return { returning: vi.fn().mockResolvedValue([{ id: 'exec-1' }]) };
+          }
+          return Promise.reject(new Error('db down'));
+        },
+      }),
+    }));
+
+    await expect(handleApproval('exec-1', true, auth('victim'), 's1')).resolves.toBe(true);
   });
 });
 

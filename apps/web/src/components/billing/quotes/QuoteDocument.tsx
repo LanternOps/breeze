@@ -153,7 +153,7 @@ function PricingTable({ lines, quoteId, currency, label, taxRate, showTax, showS
         <table className="w-full min-w-[30rem] text-sm">
           <thead>
             <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-2.5 text-left font-medium sm:px-5">{t('quotes.document.table.description')}</th>
+              <th className="w-full px-4 py-2.5 text-left font-medium sm:px-5">{t('quotes.document.table.description')}</th>
               <th className="px-2 py-2.5 text-right font-medium">{t('quotes.document.table.qty')}</th>
               <th className="px-2 py-2.5 text-right font-medium">{t('quotes.document.table.unitPrice')}</th>
               {showTax && <th className="px-2 py-2.5 text-right font-medium">{t('quotes.document.table.tax')}</th>}
@@ -167,7 +167,7 @@ function PricingTable({ lines, quoteId, currency, label, taxRate, showTax, showS
               const tax = showTax ? lineTaxAmount(l.lineTotal, l.taxable, taxRate) : null;
               return (
                 <tr key={l.id} className="border-b align-top last:border-0">
-                  <td className="px-4 py-3 text-foreground sm:px-5">
+                  <td className="w-full px-4 py-3 text-foreground sm:px-5">
                     <div className="flex items-start gap-2.5">
                       {(l.imageId || l.catalogItemId) && (
                         <DocLineThumb path={l.imageId ? quoteImageUrl(quoteId, l.imageId) : catalogItemImagePath(l.catalogItemId!)} />

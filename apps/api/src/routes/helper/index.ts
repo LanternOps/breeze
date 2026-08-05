@@ -32,7 +32,7 @@ import { sanitizeUserMessage } from '../../services/aiInputSanitizer';
 import { storeScreenshot } from '../../services/screenshotStorage';
 import { checkBudget, getRemainingBudgetUsd } from '../../services/aiCostTracker';
 import { getRedis, rateLimiter } from '../../services';
-import { createSessionPreToolUse, createSessionPostToolUse } from '../../services/aiAgentSdk';
+import { createSessionPreToolUse, createSessionPostToolUse, settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 import { helperAuth, type HelperDevice } from '../../middleware/helperAuth';
 import type { ActiveSession } from '../../services/streamingSessionManager';
 
@@ -288,9 +288,18 @@ helperRoutes.post(
       mcpServerFactory as Parameters<typeof streamingSessionManager.getOrCreate>[7],
     );
 
-    // Concurrent message guard
+    // Concurrent message guard. If the turn is blocked only on pending
+    // approval waits (PAM-gated helper tools), settle them so the assistant
+    // can conclude and answer this message (#3089 — shared helper, see ai.ts).
     if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
-      return c.json({ error: 'A message is already being processed for this session' }, 409);
+      const settle = await settleBlockedTurnForNewMessage(activeSession);
+      if (settle !== 'concluded' || !streamingSessionManager.tryTransitionToProcessing(activeSession)) {
+        return c.json({
+          error: settle === 'not_blocked_on_approvals'
+            ? 'A message is already being processed for this session'
+            : 'The assistant is wrapping up the previous turn — please try again in a moment',
+        }, 409);
+      }
     }
 
     // Save user message

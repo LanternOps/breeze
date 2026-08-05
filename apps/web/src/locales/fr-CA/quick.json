@@ -1,0 +1,47 @@
+{
+  "page": {
+    "title": "Démarrer une session de soutien technique",
+    "intro": "Une personne qui vous aide avec cet ordinateur vous a demandé d’ouvrir cette page. Rien ne démarre tant que vous n’avez pas téléchargé et lancé le programme vous-même."
+  },
+  "code": {
+    "heading": "Entrez le code qu’on vous a donné",
+    "help": "La personne qui vous aide va vous dicter un code de 9 lettres et chiffres, par exemple KTM-4H7-P2X. Les majuscules et les traits d’union n’ont aucune importance.",
+    "label": "Code de soutien",
+    "placeholder": "XXX-XXX-XXX",
+    "submit": "Poursuivre",
+    "formatError": "Ce code n’est pas encore complet. Un code compte 9 lettres et chiffres, par exemple KTM-4H7-P2X."
+  },
+  "checking": "Vérification du code en cours…",
+  "invalid": {
+    "title": "Ce code ne fonctionne plus",
+    "body": "Un code de soutien cesse de fonctionner peu de temps après sa création et ne peut servir qu’une seule fois. Demandez un nouveau code à la personne qui vous aide, puis entrez-le ci-dessus."
+  },
+  "checkFailed": {
+    "title": "Impossible de vérifier ce code",
+    "body": "Votre connexion à Internet a peut-être été coupée. Vérifiez la connexion, puis essayez le code de nouveau.",
+    "retry": "Essayer de nouveau"
+  },
+  "ready": {
+    "title": "Votre code est valide",
+    "codeIntro": "Votre code est {{code}}."
+  },
+  "download": {
+    "windows": "Télécharger pour Windows",
+    "manualFallback": "Si le téléchargement demande un code, entrez : {{code}}",
+    "macosLabel": "macOS (ordinateurs Mac)",
+    "macosBadge": "Bientôt offert",
+    "macosBody": "Le programme n’est pas encore offert pour les ordinateurs Mac. Demandez à la personne qui vous aide comment procéder autrement."
+  },
+  "windowsPrompt": {
+    "title": "Windows vous demandera votre accord",
+    "body": "Au moment où vous ouvrez le fichier, Windows affiche une demande d’autorisation avant de l’exécuter. Le fichier porte une signature numérique : la demande nomme donc un éditeur, et ce nom doit être {{publisher}}. Si l’on y lit que l’éditeur est inconnu, ou un nom auquel vous ne vous attendiez pas, fermez la fenêtre et téléphonez à la personne qui vous aide plutôt que de poursuivre.",
+    "publisher": "l’éditeur de Breeze"
+  },
+  "trust": {
+    "title": "Ce que fait le programme",
+    "seeScreen": "Pendant la session, la personne qui vous aide peut voir votre écran.",
+    "temporary": "Le programme s’exécute une seule fois, puis il s’efface. Rien ne demeure installé sur cet ordinateur.",
+    "stopAnyTime": "Vous pouvez cesser le partage quand vous le voulez en fermant la fenêtre du programme.",
+    "onlyIfExpected": "Si vous ne vous attendiez pas à cette demande, ne lancez pas le programme. Fermez cette page et communiquez avec votre personne-ressource habituelle."
+  }
+}

@@ -27,7 +27,15 @@ vi.mock('../db/schema', () => ({
     orgId: 'devices.orgId',
     status: 'devices.status',
     lastSeenAt: 'devices.lastSeenAt',
-    updatedAt: 'devices.updatedAt'
+    updatedAt: 'devices.updatedAt',
+    siteId: 'devices.siteId',
+    hostname: 'devices.hostname',
+    agentVersion: 'devices.agentVersion',
+    isEphemeral: 'devices.isEphemeral'
+  },
+  supportSessions: {
+    deviceId: 'supportSessions.deviceId',
+    status: 'supportSessions.status',
   },
   deviceCommands: {
     id: 'deviceCommands.id',
@@ -274,7 +282,7 @@ vi.mock('../services/sentry', async (importOriginal) => {
 });
 
 import { db, runOutsideDbContext, withSystemDbAccessContext, withDbAccessContext } from '../db';
-import { devices, deviceCommands, scriptExecutions } from '../db/schema';
+import { devices, deviceCommands, scriptExecutions, supportSessions } from '../db/schema';
 import { captureMessage } from '../services/sentry';
 import {
   createAgentWsHandlers,
@@ -2302,6 +2310,59 @@ describe('WS frames never claim pending commands (#2407)', () => {
       .find(frame => frame.type === 'heartbeat_ack');
     expect(ack).toBeDefined();
     expect(ack!.commands).toEqual([]);
+  });
+});
+
+// Quick Support: the ephemeral agent's socket is the readiness signal, so onOpen
+// owns the claimed -> ready transition. The isEphemeral guard is the reason this
+// is affordable on a 10k-device fleet — the "no extra query" case is pinned here
+// as behaviour, not left to review.
+describe('Quick Support — support_sessions claimed -> ready on agent connect', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  /** Capture every db.update(table).set(...).where(...) the handshake performs. */
+  function rigOnOpen(deviceRow: Record<string, unknown>) {
+    const updates: Array<{ table: unknown; values: unknown; where: unknown }> = [];
+    vi.mocked(db.update).mockImplementation(((table: unknown) => ({
+      set: (values: unknown) => ({
+        where: (where: unknown) => {
+          updates.push({ table, values, where });
+          return Promise.resolve([]);
+        },
+      }),
+    })) as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([deviceRow]) as any);
+    vi.mocked(publishEvent).mockResolvedValue('event-id');
+    return updates;
+  }
+
+  it('flips the claimed session to ready when an ephemeral agent connects', async () => {
+    const updates = rigOnOpen({
+      id: 'device-eph', siteId: null, hostname: 'quick-support-pc', agentVersion: '1.0.0', isEphemeral: true,
+    });
+
+    const handlers = createAgentWsHandlers('agent-eph', { deviceId: 'device-eph', orgId: 'org-qs' });
+    await handlers.onOpen({}, wsMock() as any);
+
+    const sessionUpdate = updates.find(u => u.table === supportSessions);
+    expect(sessionUpdate).toBeDefined();
+    expect(sessionUpdate!.values).toEqual({ status: 'ready' });
+    expect(sessionUpdate!.where).toEqual(
+      and(eq(supportSessions.deviceId, 'device-eph'), eq(supportSessions.status, 'claimed'))
+    );
+  });
+
+  it('touches support_sessions not at all for a normal (non-ephemeral) device', async () => {
+    const updates = rigOnOpen({
+      id: 'device-normal', siteId: 'site-1', hostname: 'workstation-7', agentVersion: '1.0.0', isEphemeral: false,
+    });
+
+    const handlers = createAgentWsHandlers('agent-normal', { deviceId: 'device-normal', orgId: 'org-1' });
+    await handlers.onOpen({}, wsMock() as any);
+
+    expect(updates.some(u => u.table === supportSessions)).toBe(false);
   });
 });
 

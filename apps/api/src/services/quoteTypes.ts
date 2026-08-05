@@ -72,7 +72,21 @@ export type QuoteServiceErrorCode =
   // render data those blocks need to produce their executed-document snapshot.
   // An accept must never silently skip its legal snapshot, so this hard-fails
   // (500) and rolls the whole accept back rather than recording a bare acceptance.
-  | 'CONTRACT_RENDER_DATA_MISSING';
+  | 'CONTRACT_RENDER_DATA_MISSING'
+  // Order-tracking codes (quoteOrderService, Task 11): fulfillment can only be
+  // recorded against an accepted/converted quote, submitted allocations must
+  // reference lines on THAT quote, and a receipt can never exceed what was
+  // ordered — mirrored client-side so a 400 arrives before the DB CHECK does.
+  | 'QUOTE_NOT_FULFILLABLE'
+  | 'QUOTE_LINE_MISMATCH'
+  | 'QUOTE_ORDER_NOT_FOUND'
+  | 'QUOTE_ORDER_LINE_NOT_FOUND'
+  | 'RECEIVED_QTY_EXCEEDS_ORDERED'
+  // A receipt (receivedQty change) against an allocation that is cancelled —
+  // deriveLineFulfillment ignores cancelled allocations entirely, so recording
+  // a receipt against one would be a silent no-op invisible in the derived
+  // status. Reject it explicitly instead.
+  | 'QUOTE_ORDER_LINE_CANCELLED';
 
 export class QuoteServiceError extends Error {
   constructor(
@@ -83,4 +97,43 @@ export class QuoteServiceError extends Error {
     super(message);
     this.name = 'QuoteServiceError';
   }
+}
+
+// ---------------------------------------------------------------------------
+// Actor guards. Live here (not quoteService.ts) so every quote-domain service
+// module (quoteService, quoteOrderService, quotePay, …) can depend on them
+// without creating a module cycle back through quoteService — that cycle bit
+// once already (quoteOrderService importing from quoteService, which in turn
+// imports quoteOrderService.listQuoteOrders for getQuote). quoteService.ts
+// still imports these from here rather than redefining them.
+// ---------------------------------------------------------------------------
+
+export function assertOrg(actor: QuoteActor, orgId: string): void {
+  if (actor.accessibleOrgIds !== null && !actor.accessibleOrgIds.includes(orgId)) {
+    throw new QuoteServiceError('Organization access denied', 403, 'ORG_DENIED');
+  }
+}
+
+/**
+ * Site-axis guard mirroring `siteAccessCheck` (middleware/auth.ts). An actor with
+ * no `allowedSiteIds` (undefined) is unrestricted — a no-op, so partner/system
+ * callers and all-sites org users are unaffected. A site-restricted actor may only
+ * touch a siteId in its allowlist; a null/undefined siteId (an org-level quote) is
+ * DENIED, exactly as the auth closure denies a restricted caller for a null site.
+ */
+export function assertSite(actor: QuoteActor, siteId: string | null | undefined): void {
+  if (!actor.allowedSiteIds) return; // unrestricted
+  if (!siteId || !actor.allowedSiteIds.includes(siteId)) {
+    throw new QuoteServiceError('Site access denied', 403, 'SITE_DENIED');
+  }
+}
+
+/**
+ * Org + site guard for a loaded quote row. The single authorization chokepoint for
+ * every quote path (CRUD via loadDraft, getQuote, the pay-link path in quotePay,
+ * and the fulfillment paths in quoteOrderService).
+ */
+export function assertQuoteAccess(actor: QuoteActor, quote: { orgId: string; siteId: string | null }): void {
+  assertOrg(actor, quote.orgId);
+  assertSite(actor, quote.siteId);
 }

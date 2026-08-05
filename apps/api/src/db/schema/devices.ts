@@ -77,6 +77,12 @@ export const devices = pgTable('devices', {
   // per-session targeting. Null for old agents / non-Windows.
   helperLifecycleMode: varchar('helper_lifecycle_mode', { length: 20 }),
   status: deviceStatusEnum('status').notNull().default('offline'),
+  // Quick Support ephemeral device: enrolled for one ad-hoc support session in
+  // the hidden per-partner org, purged by the reaper 6h after the session ends.
+  // Excluded from license counts, device listings, billing rollups and alert
+  // evaluation — but NOT from the status-upkeep path, which the reaper's
+  // end-user-stop detection depends on.
+  isEphemeral: boolean('is_ephemeral').notNull().default(false),
   lastSeenAt: timestamp('last_seen_at'),
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),
   enrolledBy: uuid('enrolled_by').references(() => users.id),

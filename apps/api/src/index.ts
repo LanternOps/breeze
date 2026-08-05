@@ -67,6 +67,7 @@ import { partnerServicePrincipalRoutes } from './routes/partnerServicePrincipals
 import { partnerApiRoutes } from './routes/partnerApi';
 import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './routes/enrollmentKeys';
 import { installerRoutes } from './routes/installer';
+import { supportPublicRoutes } from './routes/supportPublic';
 import { ssoRoutes } from './routes/sso';
 import { partnerLoginBrandingRoutes } from './routes/partnerLoginBranding';
 import { docsRoutes } from './routes/docs';
@@ -215,6 +216,14 @@ import {
   initializeEnrollmentKeyCleanupWorker,
   shutdownEnrollmentKeyCleanupWorker,
 } from './jobs/enrollmentKeyCleanup';
+import {
+  initializeQuickSupportReaper,
+  shutdownQuickSupportReaper,
+} from './jobs/quickSupportReaper';
+import {
+  initializeSoftwareUploadSessionCleanupWorker,
+  shutdownSoftwareUploadSessionCleanupWorker,
+} from './jobs/softwareUploadSessionCleanup';
 import { initializeAuditRetentionWorker, shutdownAuditRetentionWorker } from './jobs/auditRetention';
 import {
   initializeAuditChainVerifyWorker,
@@ -915,6 +924,10 @@ api.route('/partner-api', partnerApiRoutes);
 api.route('/enrollment-keys', publicEnrollmentRoutes); // Public download (no auth) — must precede auth-protected routes
 api.route('/enrollment-keys', enrollmentKeyRoutes);
 api.route('/installer', installerRoutes);
+// Public Quick Support — the one-time code is the auth (no bearer token).
+// Guarded by ~44 bits of code entropy, a 15-minute TTL, per-IP rate limits
+// and a single atomic pending->claimed transition.
+api.route('/support', supportPublicRoutes);
 api.route('/sso', ssoRoutes);
 // Mounted directly at /partners (not nested under /orgs' /partners/me or the
 // legacy singular /partner router) — final URL /api/v1/partners/me/login-branding
@@ -1300,6 +1313,10 @@ async function initializeWorkers(): Promise<void> {
     // Undo-send window: fires the delayed quote dispatch (jobs/quoteSendQueue).
     ['quoteSendWorker', async () => { initializeQuoteSendWorker(); }],
     ['enrollmentKeyCleanup', initializeEnrollmentKeyCleanupWorker],
+    // Quick Support safety net: expires stale codes/sessions, enforces the 8h
+    // hard cap, detects end-user disconnects, and purges ephemeral devices.
+    ['quickSupportReaper', initializeQuickSupportReaper],
+    ['softwareUploadSessionCleanup', initializeSoftwareUploadSessionCleanupWorker],
     ['auditRetention', initializeAuditRetentionWorker],
     ['extensionJobHost', () => initializeExtensionJobHost(extensionContributionRegistry, extensionStateStore)],
     ['auditChainVerify', initializeAuditChainVerifyWorker],
@@ -1511,6 +1528,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownAuthEmailWorker,
     shutdownQuoteSendWorker,
     shutdownEnrollmentKeyCleanupWorker,
+    shutdownQuickSupportReaper,
+    shutdownSoftwareUploadSessionCleanupWorker,
     shutdownAuditRetentionWorker,
     shutdownExtensionJobHost,
     shutdownAuditChainVerifyWorker,

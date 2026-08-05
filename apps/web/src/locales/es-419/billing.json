@@ -721,7 +721,7 @@
         "notTaxable": "No sujeto a impuestos",
         "qty": "Cantidad",
         "recurrence": "Facturación",
-        "scrollAria": "Tabla de precios: desplácese hacia los lados en pantallas angostas para ver totales y acciones de fila; en secciones largas, se desplaza verticalmente con el encabezado fijo",
+        "scrollAria": "Tabla de precios: desplácese hacia los lados en pantallas angostas para ver totales y acciones de fila",
         "showSubtotal": "Mostrar fila de subtotal",
         "tax": "Impuesto",
         "taxSuffix": "+ {{amount}} de impuesto",
@@ -889,6 +889,73 @@
         "declined": "Rechazado",
         "sent": "Enviado",
         "viewed": "Visto"
+      },
+      "orderBreakdown": {
+        "copied": "Copiado",
+        "copyFailed": "No se pudo copiar al portapapeles.",
+        "copyTsv": "Copiar para hoja de cálculo",
+        "costTotal": "Costo total",
+        "exportCsv": "Descargar CSV",
+        "fulfillment": {
+          "allocation": {
+            "cancelled": "Cancelado",
+            "eta": "Llega el {{date}}",
+            "ordered": "{{qty}} pedidas",
+            "received": "{{qty}} recibidas",
+            "tracking": "Rastreo {{number}}"
+          },
+          "cancel": "Cancelar línea",
+          "cancelError": "No se pudo cancelar esta línea del pedido.",
+          "cancelSuccess": "Línea del pedido cancelada",
+          "dialog": {
+            "cancel": "Cancelar",
+            "empty": "Todo lo seleccionado ya está pedido.",
+            "error": "No se pudo registrar el pedido.",
+            "eta": "Llegada estimada",
+            "notes": "Notas",
+            "orderRef": "Referencia del pedido",
+            "qtyAria": "Cantidad a pedir de {{item}}",
+            "submit": "Registrar pedido",
+            "success": "Pedido registrado",
+            "title": "Marcar artículos como pedidos",
+            "tracking": "Número de rastreo",
+            "vendor": "Proveedor"
+          },
+          "markOrdered": "Marcar como pedido",
+          "receive": "Marcar como recibido",
+          "receiveQtyAria": "Cantidad recibida",
+          "receiveError": "No se pudo actualizar esta línea del pedido.",
+          "receiveSuccess": "Marcado como recibido",
+          "select": "Seleccionar {{item}}",
+          "selectColumn": "Seleccionar para pedir",
+          "status": {
+            "ordered": "Pedido",
+            "partiallyReceived": "Recibido en parte",
+            "received": "Recibido"
+          }
+        },
+        "itemCount_one": "{{count}} artículo",
+        "itemCount_other": "{{count}} artículos",
+        "missingCost_one": "{{count}} artículo no tiene costo registrado",
+        "missingCost_other": "{{count}} artículos no tienen costo registrado",
+        "pax8Badge": {
+          "failed": "Pax8 falló",
+          "ordered": "Pedido vía Pax8",
+          "reconcile": "Pax8 requiere revisión",
+          "staged": "Preparado en Pax8"
+        },
+        "table": {
+          "extCost": "Costo ext.",
+          "item": "Artículo",
+          "markup": "Margen",
+          "partNumber": "N.º de parte",
+          "qty": "Cantidad",
+          "sku": "SKU",
+          "unitCost": "Costo unitario",
+          "vendor": "Proveedor"
+        },
+        "title": "Por ordenar",
+        "unknownVendor": "Otro / proveedor desconocido"
       },
       "pax8Order": {
         "message_one": "Esta cotización preparó un pedido de Pax8 ({{count}} artículo) pendiente de los detalles de aprovisionamiento",
