@@ -63,9 +63,20 @@ func Do(ctx context.Context, client *http.Client, method, url string, body []byt
 			if nextSleepOverride > 0 {
 				// Honor server-provided Retry-After. ParseRetryAfter already
 				// caps at 300s defensively.
-				sleepFor = nextSleepOverride
+				//
+				// Issue #2728: jitter this too. A server-side rate limit is
+				// usually tripped by the WHOLE fleet at once, so every agent
+				// receives the same Retry-After (the per-org limiter sends a
+				// flat "60") at the same instant. Sleeping exactly that long
+				// re-synchronizes the fleet and guarantees the retry lands as
+				// another simultaneous burst — the limiter then rejects it
+				// again, and the agents stay in lockstep. The jitter is
+				// strictly ADDITIVE so we never retry earlier than the server
+				// asked; it only smears the herd forward over a window.
+				sleepFor = applyPositiveJitter(nextSleepOverride, cfg.JitterFrac)
 				log.Debug("honoring Retry-After from server",
 					"attempt", attempt,
+					"retryAfter", nextSleepOverride,
 					"delay", sleepFor,
 					"url", url,
 				)
@@ -142,6 +153,23 @@ type RetryableStatusError struct {
 
 func (e *RetryableStatusError) Error() string {
 	return "request to " + e.URL + " failed after retries with status " + http.StatusText(e.StatusCode)
+}
+
+// applyPositiveJitter adds +[0, frac] random jitter to a duration — never
+// negative. Used for server-provided Retry-After delays, where sleeping LESS
+// than instructed would defeat the purpose, but where spreading a fleet of
+// agents out over a window is essential to avoid a synchronized retry burst
+// (issue #2728). The result is clamped to retryAfterMaxCap so the added jitter
+// can't push a near-cap Retry-After far past the defensive ceiling.
+func applyPositiveJitter(d time.Duration, frac float64) time.Duration {
+	if frac <= 0 || d <= 0 {
+		return d
+	}
+	result := time.Duration(float64(d) * (1 + frac*rand.Float64()))
+	if result > retryAfterMaxCap {
+		return retryAfterMaxCap
+	}
+	return result
 }
 
 // applyJitter adds ±frac random jitter to a duration.

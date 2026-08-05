@@ -713,6 +713,16 @@ jobs:
       - name: Run customer-PII guard
         run: bash scripts/security/check-customer-pii.sh
 
+      # #2797: plaintext threat-signature strings in agent Go source get
+      # compiled verbatim into shipped binaries and AV engines flag them.
+      - name: Run agent threat-signature source guard (#2797)
+        run: pnpm check:agent-binary-signatures
+
+      # Self-test proving the guard script itself detects planted signatures
+      # and fails loudly on scan errors (mirrors test:override-floors).
+      - name: Run agent threat-signature guard self-test (#2797)
+        run: pnpm test:agent-binary-signatures
+
       - name: Run agent mTLS edge policy guard
         run: pnpm check:agent-mtls-edge-policy
 
@@ -1019,6 +1029,17 @@ jobs:
           go build -ldflags="-s -w -X main.version=${BUILD_VERSION} -H windowsgui" \
             -o "breeze-user-helper-${GOOS}-${GOARCH}${{ matrix.suffix }}" \
             ./cmd/breeze-user-helper
+
+      # Regression guard (#2797): built agent binaries must not contain
+      # plaintext threat-signature strings — AV engines flag them as malware
+      # (VT-confirmed Elastic Multi.EICAR on shipped exes).
+      - name: Scan built binaries for plaintext threat signatures (#2797)
+        run: |
+          bins=("agent/breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}")
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            bins+=("agent/breeze-user-helper-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}")
+          fi
+          bash scripts/security/check-agent-binary-signatures.sh "${bins[@]}"
 
       - name: Upload Agent artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

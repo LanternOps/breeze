@@ -1,15 +1,30 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   evaluateIpAllowlist,
   enforceIpAllowlist,
   readPartnerAllowlist,
   clearPartnerAllowlistCache,
+  ipAllowlistMode,
   isBlocked,
 } from './ipAllowlist';
 
 const serviceMocks = vi.hoisted(() => ({
   getTrustedClientIpOrUndefined: vi.fn(),
   writeAuditEvent: vi.fn(),
+}));
+
+const configMocks = vi.hoisted(() => ({
+  getConfig: vi.fn(),
+  isConfigInitialized: vi.fn(() => false),
+}));
+
+// Spread the real module rather than replacing it: this mock is file-wide, and
+// the first other module in this graph to import config/validate would
+// otherwise silently receive `undefined` for every export not listed here.
+vi.mock('../config/validate', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config/validate')>()),
+  getConfig: configMocks.getConfig,
+  isConfigInitialized: configMocks.isConfigInitialized,
 }));
 
 vi.mock('../db', () => {
@@ -254,6 +269,28 @@ describe('enforceIpAllowlist', () => {
     expect(limit).not.toHaveBeenCalled();
   });
 
+  // The tests in this block otherwise all sit on the PRE-boot fallback branch
+  // (isConfigInitialized defaults to false), which production never takes.
+  // This one exercises the branch that actually runs in a booted API.
+  it('skips without reading the allowlist when the VALIDATED config says off', async () => {
+    configMocks.isConfigInitialized.mockImplementation(() => true);
+    configMocks.getConfig.mockReturnValue({ IP_ALLOWLIST_ENFORCEMENT_MODE: 'off' });
+    serviceMocks.getTrustedClientIpOrUndefined.mockReturnValue('203.0.113.10');
+
+    try {
+      const decision = await enforceIpAllowlist(c, {
+        partnerId: 'partner-deny',
+        isPlatformAdmin: false,
+      });
+
+      expect(decision).toEqual({ decision: 'skip', reason: 'mode_off' });
+      expect(limit).not.toHaveBeenCalled();
+    } finally {
+      configMocks.isConfigInitialized.mockImplementation(() => false);
+      configMocks.getConfig.mockReset();
+    }
+  });
+
   it('skips without reading the allowlist when enforcement mode is off', async () => {
     process.env.IP_ALLOWLIST_ENFORCEMENT_MODE = 'off';
     serviceMocks.getTrustedClientIpOrUndefined.mockReturnValue('203.0.113.10');
@@ -265,5 +302,83 @@ describe('enforceIpAllowlist', () => {
 
     expect(decision).toEqual({ decision: 'skip', reason: 'mode_off' });
     expect(limit).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #2896 — the enforcement mode is read from the VALIDATED config, so the
+// value the boot enum accepted is the value the request path acts on. The raw
+// process.env read this replaced let getConfig() and the runtime disagree.
+// ---------------------------------------------------------------------------
+describe('ipAllowlistMode', () => {
+  const originalEnv = process.env.IP_ALLOWLIST_ENFORCEMENT_MODE;
+
+  beforeEach(() => {
+    configMocks.getConfig.mockReset();
+    // mockImplementation, NOT mockReset: the hoisted `() => false` is what keeps
+    // the other describes in this file on the pre-boot branch, and mockReset
+    // would strip it for anything declared after this block.
+    configMocks.isConfigInitialized.mockImplementation(() => false);
+    delete process.env.IP_ALLOWLIST_ENFORCEMENT_MODE;
+  });
+
+  afterEach(() => {
+    if (originalEnv === undefined) delete process.env.IP_ALLOWLIST_ENFORCEMENT_MODE;
+    else process.env.IP_ALLOWLIST_ENFORCEMENT_MODE = originalEnv;
+  });
+
+  describe('once validateConfig() has run', () => {
+    beforeEach(() => {
+      configMocks.isConfigInitialized.mockImplementation(() => true);
+    });
+
+    it('returns the validated off', () => {
+      configMocks.getConfig.mockReturnValue({ IP_ALLOWLIST_ENFORCEMENT_MODE: 'off' });
+      expect(ipAllowlistMode()).toBe('off');
+    });
+
+    it('returns the validated enforce', () => {
+      configMocks.getConfig.mockReturnValue({ IP_ALLOWLIST_ENFORCEMENT_MODE: 'enforce' });
+      expect(ipAllowlistMode()).toBe('enforce');
+    });
+
+    // The divergence #2896 describes: config says one thing, raw env another.
+    // The validated value must win, so getConfig() and the guard never disagree.
+    it('ignores a process.env value that contradicts the validated config', () => {
+      process.env.IP_ALLOWLIST_ENFORCEMENT_MODE = 'enforce';
+      configMocks.getConfig.mockReturnValue({ IP_ALLOWLIST_ENFORCEMENT_MODE: 'off' });
+      expect(ipAllowlistMode()).toBe('off');
+    });
+
+    // The security-relevant direction, and the one that actually occurs: the
+    // unit setup sets the env var to 'off' globally, and a stale droplet .env
+    // looks identical. An implementation that ORed the two sources, or consulted
+    // env first and only fell through to config when env was unset, would pass
+    // the test above and silently disable enforcement fleet-wide.
+    it('enforces when the validated config says enforce and process.env says off', () => {
+      process.env.IP_ALLOWLIST_ENFORCEMENT_MODE = 'off';
+      configMocks.getConfig.mockReturnValue({ IP_ALLOWLIST_ENFORCEMENT_MODE: 'enforce' });
+      expect(ipAllowlistMode()).toBe('enforce');
+    });
+  });
+
+  describe('before validateConfig() has run', () => {
+    it('falls back to the raw env read for an exact off', () => {
+      process.env.IP_ALLOWLIST_ENFORCEMENT_MODE = 'off';
+      expect(ipAllowlistMode()).toBe('off');
+      expect(configMocks.getConfig).not.toHaveBeenCalled();
+    });
+
+    it('enforces when unset', () => {
+      expect(ipAllowlistMode()).toBe('enforce');
+      expect(configMocks.getConfig).not.toHaveBeenCalled();
+    });
+
+    // Fail closed: the pre-boot window keeps the original strict-equality
+    // semantics rather than guessing at near-misses.
+    it.each(['Off', 'OFF', 'disabled', 'false'])('enforces on the near-miss %s', (value) => {
+      process.env.IP_ALLOWLIST_ENFORCEMENT_MODE = value;
+      expect(ipAllowlistMode()).toBe('enforce');
+    });
   });
 });
