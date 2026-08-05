@@ -187,15 +187,19 @@ export function contractUploadedMarker(templateName: string): string {
 export interface QuotePdfColumns {
   left: number; right: number; contentWidth: number;
   colQtyX: number; colQtyW: number; colDescX: number; colDescW: number;
-  colUnitX: number; colTaxX: number; colNumW: number; colAmtX: number;
+  colUnitX: number; colTaxX: number; colNumW: number; colAmtX: number; colAmtW: number;
   colSummaryAmtX: number; colSummaryNumW: number;
   showTax: boolean;
 }
 
 // When showTax is set the table carries a fifth column (qty | description | unit
-// | tax | total) and uses 12.5%-wide money cells; the four-column layout can give
-// each money cell 14%. The summary gets a wider 17% amount box for its 14pt
-// emphasis figure while sharing TOTAL's right edge.
+// | tax | total) with 12.5%-wide money cells; the four-column layout gives each
+// money cell 14%. TOTAL gets its own wider box (16.5% / 17.5%) because it is the
+// one cell that renders money PLUS a recurrence suffix ("$12,000.00/mo") — sized
+// to colNumW it character-wraps, and the wrapped second line overprints the next
+// row (row height is measured from the description column only). The summary
+// gets a 19% amount box for its 14pt emphasis figure; both it and TOTAL share
+// the table's right edge so the amounts stay visually aligned.
 export function columnsFor(doc: PDFKit.PDFDocument, showTax = false): QuotePdfColumns {
   const left = doc.page.margins.left;
   const right = doc.page.width - doc.page.margins.right;
@@ -207,15 +211,14 @@ export function columnsFor(doc: PDFKit.PDFDocument, showTax = false): QuotePdfCo
       colQtyX: left,
       colQtyW: contentWidth * 0.07,
       colDescX,
-      colDescW: contentWidth * 0.52,
-      colUnitX: left + contentWidth * 0.605,
-      colTaxX: left + contentWidth * 0.735,
-      colAmtX: left + contentWidth * 0.875,
+      colDescW: contentWidth * 0.485,
+      colUnitX: left + contentWidth * 0.57,
+      colTaxX: left + contentWidth * 0.70,
+      colAmtX: left + contentWidth * 0.835,
       colNumW: contentWidth * 0.125,
-      // The 14pt emphasis figure needs more room than the 10pt table cells.
-      // It shares TOTAL's right edge, so the visual alignment remains intact.
-      colSummaryAmtX: left + contentWidth * 0.83,
-      colSummaryNumW: contentWidth * 0.17,
+      colAmtW: contentWidth * 0.165,
+      colSummaryAmtX: left + contentWidth * 0.81,
+      colSummaryNumW: contentWidth * 0.19,
     };
   }
   return {
@@ -223,13 +226,14 @@ export function columnsFor(doc: PDFKit.PDFDocument, showTax = false): QuotePdfCo
     colQtyX: left,
     colQtyW: contentWidth * 0.07,
     colDescX,
-    colDescW: contentWidth * 0.60,
-    colUnitX: left + contentWidth * 0.69,
-    colTaxX: left + contentWidth * 0.72, // unused when !showTax
-    colAmtX: left + contentWidth * 0.86,
+    colDescW: contentWidth * 0.57,
+    colUnitX: left + contentWidth * 0.66,
+    colTaxX: left + contentWidth * 0.70, // unused when !showTax
+    colAmtX: left + contentWidth * 0.825,
     colNumW: contentWidth * 0.14,
-    colSummaryAmtX: left + contentWidth * 0.83,
-    colSummaryNumW: contentWidth * 0.17,
+    colAmtW: contentWidth * 0.175,
+    colSummaryAmtX: left + contentWidth * 0.81,
+    colSummaryNumW: contentWidth * 0.19,
   };
 }
 
@@ -304,7 +308,7 @@ async function renderLineTable(
     doc.text('DESCRIPTION', c.colDescX, headerY, { width: c.colDescW, align: 'left' });
     doc.text('UNIT', c.colUnitX, headerY, { width: c.colNumW, align: 'right' });
     if (showTax) doc.text('TAX', c.colTaxX, headerY, { width: c.colNumW, align: 'right' });
-    doc.text('TOTAL', c.colAmtX, headerY, { width: c.colNumW, align: 'right' });
+    doc.text('TOTAL', c.colAmtX, headerY, { width: c.colAmtW, align: 'right' });
     return headerY + 24;
   };
   // Page-break helper that re-draws the column header on the fresh page (unlike
@@ -377,14 +381,17 @@ async function renderLineTable(
       doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(blurb, descX + gutter, y + titleHeight + 2, { width: descW, lineGap: 1 });
       doc.fillColor('#1f2937').fontSize(10);
     }
-    doc.font('Helvetica').fontSize(10).text(formatMoney(l.unitPrice, currency), c.colUnitX, y, { width: c.colNumW, align: 'right' });
+    // lineBreak: false on every money cell — row height is measured from the
+    // description column only, so a wrapped amount would overprint the next
+    // row. An amount too wide for its box clips into the column gap instead.
+    doc.font('Helvetica').fontSize(10).text(formatMoney(l.unitPrice, currency), c.colUnitX, y, { width: c.colNumW, align: 'right', lineBreak: false });
     if (showTax) {
       const t = lineTax(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), !!l.taxable, taxRate);
-      doc.fillColor('#6b7280').text(t === null ? '—' : formatMoney(t, currency), c.colTaxX, y, { width: c.colNumW, align: 'right' });
+      doc.fillColor('#6b7280').text(t === null ? '—' : formatMoney(t, currency), c.colTaxX, y, { width: c.colNumW, align: 'right', lineBreak: false });
       doc.fillColor('#1f2937');
     }
     const suffix = recurrenceSuffix(l.recurrence);
-    doc.font('Helvetica').fontSize(10).text(`${formatMoney(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), currency)}${suffix}`, c.colAmtX, y, { width: c.colNumW, align: 'right' });
+    doc.font('Helvetica').fontSize(10).text(`${formatMoney(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), currency)}${suffix}`, c.colAmtX, y, { width: c.colAmtW, align: 'right', lineBreak: false });
     y += rowHeight + 6;
   }
 
@@ -461,7 +468,11 @@ function renderRecurringSummary(
   const showTaxRow = quote.taxTotal != null && Number(quote.taxTotal) > 0;
   const hasRecurring =
     Number(quote.monthlyRecurringTotal ?? 0) > 0 || Number(quote.annualRecurringTotal ?? 0) > 0;
-  const sumX = c.left + c.contentWidth * 0.40;
+  // 0.36, not 0.40: the label box ends at colSummaryAmtX (0.81), and the widest
+  // label — "Remaining balance (due per terms)" at bold 12pt, ~200pt — needs the
+  // extra room. Rows advance by the fixed constants below, so a wrapped label
+  // overprints the next row exactly like a wrapped amount would.
+  const sumX = c.left + c.contentWidth * 0.36;
   const labelX = sumX;
   const labelW = c.colSummaryAmtX - sumX - 8;
   const categoryAmountX = c.colSummaryAmtX - 60;
@@ -530,7 +541,9 @@ function renderRecurringSummary(
     const strong = bold || emphasis;
     doc.font(strong ? 'Helvetica-Bold' : 'Helvetica').fontSize(emphasis ? 14 : strong ? 12 : 10).fillColor(strong ? '#111827' : '#6b7280');
     doc.text(label, labelX, y, { width: labelW, align: 'left' });
-    doc.fillColor(emphasis ? primary : strong ? '#111827' : '#1f2937').text(`${formatMoney(amount, currency)}${suffix}`, c.colSummaryAmtX, y, { width: c.colSummaryNumW, align: 'right' });
+    // lineBreak: false — the y advances below are fixed constants shared with
+    // the page-break reservation; a wrapped amount would silently break both.
+    doc.fillColor(emphasis ? primary : strong ? '#111827' : '#1f2937').text(`${formatMoney(amount, currency)}${suffix}`, c.colSummaryAmtX, y, { width: c.colSummaryNumW, align: 'right', lineBreak: false });
     y += emphasis ? EMPHASIS_ROW_ADVANCE : strong ? BOLD_ROW_ADVANCE : REGULAR_ROW_ADVANCE;
   };
 

@@ -721,7 +721,7 @@
         "notTaxable": "Nicht steuerpflichtig",
         "qty": "Menge",
         "recurrence": "Abrechnung",
-        "scrollAria": "Preistabelle – scrollen Sie auf schmalen Bildschirmen seitwärts für Gesamtsummen und Zeilenaktionen; bei langen Abschnitten scrollt sie vertikal mit fixierter Kopfzeile",
+        "scrollAria": "Preistabelle – scrollen Sie auf schmalen Bildschirmen seitwärts für Gesamtsummen und Zeilenaktionen",
         "showSubtotal": "Zwischensummenzeile anzeigen",
         "tax": "Steuer",
         "taxSuffix": "+ {{amount}} Steuer",

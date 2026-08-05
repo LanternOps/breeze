@@ -124,6 +124,11 @@ describe('QuoteEditor — per-block table has no vertical scrollport', () => {
     expect(wrapper.className).toMatch(/\boverflow-x-auto\b/);
     expect(wrapper.className).not.toMatch(/\bmax-h-/);
     expect(wrapper.className).not.toMatch(/\boverflow-y-auto\b/);
+    // The wrapper is still a HORIZONTAL scroll region on narrow screens, so it
+    // must keep its keyboard/AT affordances.
+    expect(wrapper).toHaveAttribute('role', 'region');
+    expect(wrapper).toHaveAttribute('aria-label');
+    expect(wrapper).toHaveAttribute('tabindex', '0');
 
     const headerCells = table.querySelectorAll('thead th');
     expect(headerCells.length).toBeGreaterThan(0);

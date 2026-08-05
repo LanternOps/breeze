@@ -82,21 +82,37 @@ describe('renderQuotePdf', () => {
     const fraction = (points: number) => points / taxed.contentWidth;
 
     expect(fraction(taxed.colDescX - taxed.left)).toBeCloseTo(0.08, 5);
-    expect(fraction(taxed.colDescW)).toBeGreaterThanOrEqual(0.52);
-    expect(fraction(untaxed.colDescW)).toBeGreaterThanOrEqual(0.60);
+    expect(fraction(taxed.colDescW)).toBeGreaterThanOrEqual(0.48);
+    expect(fraction(untaxed.colDescW)).toBeGreaterThanOrEqual(0.55);
     expect(taxed.colQtyW).toBeCloseTo(taxed.contentWidth * 0.07, 5);
-    expect(taxed.colAmtX + taxed.colNumW).toBeCloseTo(taxed.right, 5);
-    expect(untaxed.colAmtX + untaxed.colNumW).toBeCloseTo(untaxed.right, 5);
+    expect(taxed.colAmtX + taxed.colAmtW).toBeCloseTo(taxed.right, 5);
+    expect(untaxed.colAmtX + untaxed.colAmtW).toBeCloseTo(untaxed.right, 5);
 
-    doc.font('Helvetica-Bold').fontSize(10);
-    const rowAmountWidth = doc.widthOfString('$888,888.88');
-    expect(taxed.colNumW).toBeGreaterThanOrEqual(rowAmountWidth + 2);
-    expect(untaxed.colNumW).toBeGreaterThanOrEqual(rowAmountWidth + 2);
+    // Measure at the row's REAL font (Helvetica regular 10 — see the money
+    // draws in renderLineTable). UNIT/TAX render bare money; TOTAL renders
+    // money + the recurrence suffix, which is why it has its own wider box —
+    // asserting the suffix-less string against colNumW is what let a wrapping
+    // "$12,000.00/mo" TOTAL ship.
+    doc.font('Helvetica').fontSize(10);
+    const bareAmountWidth = doc.widthOfString('$888,888.88');
+    const suffixedAmountWidth = doc.widthOfString('$888,888.88/mo');
+    expect(taxed.colNumW).toBeGreaterThanOrEqual(bareAmountWidth + 2);
+    expect(untaxed.colNumW).toBeGreaterThanOrEqual(bareAmountWidth + 2);
+    expect(taxed.colAmtW).toBeGreaterThanOrEqual(suffixedAmountWidth + 2);
+    expect(untaxed.colAmtW).toBeGreaterThanOrEqual(suffixedAmountWidth + 2);
 
     doc.font('Helvetica-Bold').fontSize(14);
-    const emphasisAmountWidth = doc.widthOfString('$888,888.88');
+    const emphasisAmountWidth = doc.widthOfString('$1,000,000.00');
     expect(taxed.colSummaryNumW).toBeGreaterThanOrEqual(emphasisAmountWidth + 2);
     expect(taxed.colSummaryAmtX + taxed.colSummaryNumW).toBeCloseTo(taxed.right, 5);
+
+    // The summary label box must fit its widest static label (bold 12pt) —
+    // rows advance by fixed constants, so a wrapped label overprints the next
+    // row. Mirrors the sumX/labelW arithmetic in renderRecurringSummary.
+    const sumX = taxed.left + taxed.contentWidth * 0.36;
+    const labelW = taxed.colSummaryAmtX - sumX - 8;
+    doc.font('Helvetica-Bold').fontSize(12);
+    expect(labelW).toBeGreaterThanOrEqual(doc.widthOfString('Remaining balance (due per terms)') + 2);
     doc.end();
   });
 
@@ -455,6 +471,36 @@ describe('renderQuotePdf', () => {
     expect(summaryStream).toContain('Remaining balance');
     // The summary page must be its own page — none of the 25 line rows on it.
     expect(summaryStream).not.toContain('Item ');
+  });
+
+  it('never draws the summary into the bottom margin for the no-deposit, suppressed-row shape', async () => {
+    // The deposit+breakdown page-break test above proves the reservation for
+    // the TALLEST summary; this sweep guards the SHORTEST one (rollupRows = 1,
+    // no rule-separated deposit trio, no trailer row). The reservation and the
+    // drawn advances share named constants, so they can only drift apart if
+    // someone edits drawRow without them — in which case some line count in
+    // this sweep lands the final emphasis row below the bottom margin.
+    const blocks = [{ id: 'b1', blockType: 'line_items' as const, sortOrder: 0, content: {} }];
+    const BOTTOM_MARGIN = 50; // pdf y-coords are bottom-up: content must stay >= margin
+    for (let count = 20; count <= 32; count++) {
+      const lines = Array.from({ length: count }, (_, i) => ({
+        id: `l${i}`, blockId: 'b1', description: `Item ${i + 1}`,
+        quantity: '1', unitPrice: '10', lineTotal: '10.00', recurrence: 'one_time' as const,
+      }));
+      const buf = await renderQuotePdf(
+        {
+          id: 'q1', quoteNumber: `Q-SWEEP-${count}`,
+          oneTimeTotal: '1000.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00',
+          dueOnAcceptanceTotal: '1000.00', total: '1000.00', currencyCode: 'USD',
+        } as never,
+        blocks, lines, async () => null, {},
+      );
+      const due = extractPositionedPdfText(buf).filter((f) => f.text.includes('Due on acceptance'));
+      expect(due.length).toBeGreaterThan(0);
+      for (const f of due) {
+        expect(f.y, `count=${count}: emphasis row overflowed into the bottom margin`).toBeGreaterThanOrEqual(BOTTOM_MARGIN - 5);
+      }
+    }
   });
 
   it('renders a per-table Subtotal row only when the block opts in', async () => {

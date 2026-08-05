@@ -721,7 +721,7 @@
         "notTaxable": "Not taxable",
         "qty": "Qty",
         "recurrence": "Billing",
-        "scrollAria": "Pricing table — scrolls sideways on narrow screens for totals and row actions, and vertically (with the header pinned) once a section grows long",
+        "scrollAria": "Pricing table — scrolls sideways on narrow screens for totals and row actions",
         "showSubtotal": "Show subtotal row",
         "tax": "Tax",
         "taxSuffix": "+ {{amount}} tax",

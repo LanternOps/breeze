@@ -721,7 +721,7 @@
         "notTaxable": "Non taxable",
         "qty": "Qté",
         "recurrence": "Facturation",
-        "scrollAria": "Tableau de prix — faites défiler horizontalement sur écrans étroits pour les totaux et les actions de ligne ; pour les sections longues, défilement vertical avec l'en-tête fixe",
+        "scrollAria": "Tableau de prix — faites défiler horizontalement sur écrans étroits pour les totaux et les actions de ligne",
         "showSubtotal": "Afficher la ligne de sous-total",
         "tax": "Taxe",
         "taxSuffix": "+ {{amount}} de taxe",
