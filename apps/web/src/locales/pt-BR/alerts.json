@@ -292,10 +292,6 @@
     "value": "Valor (%)",
     "offlineDurationMinutes": "Tempo offline (minutos)",
     "alertWhenDeviceIsOfflineForThis": "Alertar quando o dispositivo permanecer offline por este número de minutos",
-    "fieldName": "Nome do campo",
-    "customField": "custom_field",
-    "condition": "Condição",
-    "value100": "value > 100",
     "removeCondition": "Remover condição",
     "noConditionsDefinedClickAddConditionTo": "Nenhuma condição definida. Clique em \"Adicionar condição\" para criar uma.",
     "notificationChannels": "Canais de notificação",
@@ -356,9 +352,16 @@
     },
     "conditionTypeOption": {
       "metric": "Condição de métrica",
-      "status": "Condição de status",
-      "custom": "Campo personalizado"
-    }
+      "status": "Condição de status"
+    },
+    "retiredConditionWarning": "O tipo de condição \"{{type}}\" não é mais compatível e nunca disparou um alerta. Remova esta condição para salvar a regra.",
+    "retiredConditionBlocksSave": "Tipo de condição não compatível \"{{type}}\" — remova esta condição antes de salvar.",
+    "readOnlyConditionNote": "O tipo de condição \"{{type}}\" não pode ser editado aqui. Ele é mantido exatamente como está.",
+    "conditionsBlockSaveSummary": "Pelo menos uma condição precisa ser corrigida antes de salvar esta regra.",
+    "invalidMetric": "Selecione uma métrica.",
+    "invalidOperator": "Selecione um operador.",
+    "invalidValue": "Informe um valor entre 0 e 100.",
+    "invalidDuration": "Informe pelo menos 1 minuto."
   },
   "alertRuleList": {
     "editRule": "Editar regra",

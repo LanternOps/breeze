@@ -18,6 +18,7 @@ export interface EcProduct {
   source: 'td_synnex_ec_express' | 'td_synnex_price_file';
   synnexSku: string;
   mfgPartNo: string | null;
+  manufacturer: string | null;
   status: string | null;
   name: string;
   description: string | null;

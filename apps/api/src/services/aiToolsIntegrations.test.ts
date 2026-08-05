@@ -14,15 +14,30 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   dbSelect: vi.fn(),
   dbInsert: vi.fn(),
+  dbUpdate: vi.fn(),
   decryptForColumn: vi.fn(),
   redactUrlForLogs: vi.fn(),
+  queueDelivery: vi.fn(),
+  toWorkerWebhookConfig: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
   db: {
     select: mocks.dbSelect,
     insert: mocks.dbInsert,
+    update: mocks.dbUpdate,
   },
+}));
+
+// test_webhook now mirrors routes/webhooks.ts POST /:id/test and actually
+// dispatches to the worker (D.1 fix) — mock the worker + config mapper so
+// these tests exercise the dispatch call without touching Redis/eventBus.
+vi.mock('../workers/webhookDelivery', () => ({
+  getWebhookWorker: () => ({ queueDelivery: mocks.queueDelivery }),
+}));
+
+vi.mock('../routes/webhooks', () => ({
+  toWorkerWebhookConfig: mocks.toWorkerWebhookConfig,
 }));
 
 // Mock the schema so Drizzle column references resolve without a real DB.
@@ -145,6 +160,14 @@ function makeInsertChain(rows: unknown[]) {
   const chain: any = {};
   chain.values = vi.fn(() => chain);
   chain.returning = vi.fn(() => Promise.resolve(rows));
+  return chain;
+}
+
+/** Fluent update chain that resolves after .set().where() */
+function makeUpdateChain() {
+  const chain: any = {};
+  chain.set = vi.fn(() => chain);
+  chain.where = vi.fn(() => Promise.resolve(undefined));
   return chain;
 }
 
@@ -280,6 +303,8 @@ describe('aiToolsIntegrations — test_webhook credential masking', () => {
 
     mocks.decryptForColumn.mockImplementation((_table: string, _col: string, val: string) => val);
     mocks.redactUrlForLogs.mockImplementation((url: string) => realRedact(url));
+    mocks.toWorkerWebhookConfig.mockImplementation((w: unknown) => w);
+    mocks.queueDelivery.mockResolvedValue('worker-delivery-id');
   });
 
   it('masks credential-bearing webhookUrl in the test_webhook response', async () => {
@@ -287,7 +312,7 @@ describe('aiToolsIntegrations — test_webhook credential masking', () => {
 
     // First select: fetch the webhook row.
     mocks.dbSelect.mockReturnValueOnce(makeSelectChain([
-      { id: WEBHOOK_ID, name: 'Test Hook', url: credentialUrl },
+      { id: WEBHOOK_ID, orgId: ORG_ID, name: 'Test Hook', url: credentialUrl },
     ]));
 
     // Insert: create delivery record.
@@ -308,6 +333,14 @@ describe('aiToolsIntegrations — test_webhook credential masking', () => {
     expect(result).not.toContain('admin:');
     expect(result).not.toContain('mysecret');
     expect(parsed.webhookUrl).toBe('https://hooks.example.com/test');
+    // D.1: the delivery must actually be dispatched to the worker, not just
+    // inserted as a permanently-'pending' row.
+    expect(mocks.queueDelivery).toHaveBeenCalledTimes(1);
+    expect(mocks.queueDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({ id: WEBHOOK_ID, orgId: ORG_ID }),
+      expect.objectContaining({ orgId: ORG_ID }),
+      DELIVERY_ID,
+    );
   });
 
   it('masks encrypted URL in test_webhook — ciphertext not echoed', async () => {
@@ -317,7 +350,7 @@ describe('aiToolsIntegrations — test_webhook credential masking', () => {
     mocks.decryptForColumn.mockImplementation(() => decryptedUrl);
 
     mocks.dbSelect.mockReturnValueOnce(makeSelectChain([
-      { id: WEBHOOK_ID, name: 'Enc Test Hook', url: encryptedUrl },
+      { id: WEBHOOK_ID, orgId: ORG_ID, name: 'Enc Test Hook', url: encryptedUrl },
     ]));
 
     mocks.dbInsert.mockReturnValueOnce(makeInsertChain([
@@ -345,7 +378,7 @@ describe('aiToolsIntegrations — test_webhook credential masking', () => {
     mocks.redactUrlForLogs.mockImplementation((val: string) => realRedact(val));
 
     mocks.dbSelect.mockReturnValueOnce(makeSelectChain([
-      { id: WEBHOOK_ID, name: 'Broken Hook', url: encryptedUrl },
+      { id: WEBHOOK_ID, orgId: ORG_ID, name: 'Broken Hook', url: encryptedUrl },
     ]));
 
     mocks.dbInsert.mockReturnValueOnce(makeInsertChain([
@@ -371,5 +404,29 @@ describe('aiToolsIntegrations — test_webhook credential masking', () => {
     const parsed = JSON.parse(result);
 
     expect(parsed.error).toMatch(/not found|access denied/i);
+  });
+
+  it('marks the delivery failed (not left permanently pending) when the worker queue rejects', async () => {
+    mocks.dbSelect.mockReturnValueOnce(makeSelectChain([
+      { id: WEBHOOK_ID, orgId: ORG_ID, name: 'Test Hook', url: 'https://hooks.example.com/test' },
+    ]));
+    mocks.dbInsert.mockReturnValueOnce(makeInsertChain([
+      { id: DELIVERY_ID, createdAt: new Date('2026-06-01T00:00:00Z') },
+    ]));
+    const updateChain = makeUpdateChain();
+    mocks.dbUpdate.mockReturnValueOnce(updateChain);
+    mocks.queueDelivery.mockRejectedValueOnce(new Error('redis unavailable'));
+
+    const result = await toolMap.get('test_webhook')!.handler(
+      { webhookId: WEBHOOK_ID },
+      makeAuth(),
+    );
+    const parsed = JSON.parse(result);
+
+    expect(parsed.error).toMatch(/failed to queue/i);
+    expect(mocks.dbUpdate).toHaveBeenCalledTimes(1);
+    expect(updateChain.set).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed', errorMessage: 'redis unavailable' }),
+    );
   });
 });

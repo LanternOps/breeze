@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { backupCommandResultSchema } from '../routes/backup/resultSchemas';
+import { sanitizeVssMetadata } from './backupResultPersistence';
 import {
   BACKUP_SNAPSHOT_ROOT_DIR,
   BACKUP_SNAPSHOT_MANIFEST_KEY,
@@ -144,5 +145,99 @@ describe('backup Go<->TS contract — result JSON round-trips through backupComm
     expect(parsed.errorCount).toBe(0);
     // 0 is distinct from undefined — pin the distinction explicitly.
     expect(parsed.referencedBytes).not.toBeUndefined();
+  });
+});
+
+describe('backup Go<->TS contract — VSS metadata (#3027)', () => {
+  it('the agent VSSMetadata struct still declares every field the API persists', () => {
+    // The API stores this blob field-by-field (sanitizeVssMetadata), so a json
+    // tag renamed on the Go side would silently start writing NULLs into the
+    // parts of vss_metadata the device tab reads. Pin the tags by source text.
+    const src = readRepoFile('agent/internal/backup/vss/types.go');
+    for (const tag of [
+      'shadowCopyId',
+      'creationTime',
+      'writers',
+      'exposedPaths',
+      'unprotectedVolumes',
+      'warnings',
+      'durationMs',
+    ]) {
+      expect(src).toMatch(new RegExp(`json:"${tag}(,omitempty)?"`));
+    }
+  });
+
+  it('backup.go copies UnprotectedVolumes into VSSMetadata — the field that says the snapshot is incomplete', () => {
+    // Regression: the struct literal copied five fields and omitted this one,
+    // so a run whose volumes got no shadow copy reached the server looking
+    // identical to a clean VSS backup. ExposedPaths cannot substitute — it
+    // lists what succeeded, never what was requested.
+    const src = readRepoFile('agent/internal/backup/backup.go');
+    expect(src).toMatch(/UnprotectedVolumes:\s*session\.UnprotectedVolumes/);
+  });
+
+  it('a Windows VSS result round-trips through the schema and the persistence sanitizer', () => {
+    // Exactly as Go's encoding/json emits vss.VSSMetadata on a run where one
+    // volume got no shadow copy and one writer failed — the #2999 shape.
+    const wireJson = JSON.stringify({
+      id: 'job-vss',
+      status: 'completed',
+      filesBackedUp: 10,
+      bytesBackedUp: 2048,
+      snapshot: { id: 'snap-vss' },
+      vssMetadata: {
+        shadowCopyId: '{11111111-2222-3333-4444-555555555555}',
+        creationTime: '2026-08-02T00:00:00Z',
+        writers: [
+          { name: 'SqlServerWriter', id: '{a}', state: 'stable' },
+          { name: 'NTDS', id: '{b}', state: 'failed', lastError: 'writer timed out' },
+        ],
+        exposedPaths: { 'C:\\': '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1' },
+        unprotectedVolumes: ['D:\\'],
+        warnings: ['volume D:\\ has no shadow copy (0x80042308) — it will be read LIVE'],
+        durationMs: 3120,
+      },
+    });
+
+    const parsed = backupCommandResultSchema.parse(JSON.parse(wireJson));
+    // The snapshot identity must survive alongside the diagnostics.
+    expect(parsed.snapshot?.id).toBe('snap-vss');
+
+    const persisted = sanitizeVssMetadata(parsed.vssMetadata) as Record<string, unknown>;
+    expect(persisted.shadowCopyId).toBe('{11111111-2222-3333-4444-555555555555}');
+    expect(persisted.unprotectedVolumes).toEqual(['D:\\']);
+    expect(persisted.writers).toEqual([
+      { name: 'SqlServerWriter', id: '{a}', state: 'stable' },
+      { name: 'NTDS', id: '{b}', state: 'failed', lastError: 'writer timed out' },
+    ]);
+    expect(persisted.exposedPaths).toEqual({
+      'C:\\': '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1',
+    });
+    expect(persisted.warnings).toEqual([
+      'volume D:\\ has no shadow copy (0x80042308) — it will be read LIVE',
+    ]);
+    expect(persisted.durationMs).toBe(3120);
+  });
+
+  it('omitempty drops unprotectedVolumes/warnings on a clean run and the sanitizer keeps them absent', () => {
+    const parsed = backupCommandResultSchema.parse(JSON.parse(JSON.stringify({
+      status: 'completed',
+      snapshot: { id: 'snap-clean' },
+      vssMetadata: {
+        shadowCopyId: 'set-clean',
+        creationTime: '2026-08-02T00:00:00Z',
+        writers: [{ name: 'SqlServerWriter', id: '{a}', state: 'stable' }],
+        exposedPaths: { 'C:\\': '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1' },
+        durationMs: 900,
+      },
+    })));
+
+    const persisted = sanitizeVssMetadata(parsed.vssMetadata) as Record<string, unknown>;
+    // Absent, not empty-array: the UI's "is this snapshot incomplete" check is
+    // a length test, and a fabricated [] would read the same — but a fabricated
+    // warnings [] would make an oversize-truncation note indistinguishable from
+    // a clean run.
+    expect(persisted.unprotectedVolumes).toBeUndefined();
+    expect(persisted.warnings).toBeUndefined();
   });
 });

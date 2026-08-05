@@ -5,7 +5,7 @@ import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPer
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext, type DbAccessScope } from '../db';
 import { users, partnerUsers, organizations } from '../db/schema';
-import { and, eq, inArray, isNull, SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { ENABLE_2FA } from '../routes/auth/schemas';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
@@ -317,9 +317,24 @@ async function computeAccessibleOrgIds(
           (value): value is string => typeof value === 'string' && value.length > 0
         );
 
-        if (selectedOrgIds.length === 0) {
-          return { orgIds: [], partnerOrgAccess: 'selected' };
-        }
+        // The partner's hidden 'quick_support' org is granted regardless of the
+        // curated list. It holds no customer data — only this partner's own
+        // ad-hoc support sessions and their ephemeral devices — and it is
+        // deliberately absent from every org picker, so it can never appear in
+        // partnerUsers.orgIds. Without this a 'selected'-access technician
+        // creates a Quick Support session and then reads back zero rows: RLS
+        // denies it, silently, and their status panel stays blank forever.
+        //
+        // Note this is partner-wide: a technician can see (and connect to)
+        // Quick Support sessions raised by their colleagues at the same
+        // partner. That is the accepted trade-off for keeping authorization on
+        // the normal audited path rather than special-casing the connect flow.
+        const orgFilter = selectedOrgIds.length > 0
+          ? or(
+              inArray(organizations.id, selectedOrgIds),
+              eq(organizations.type, 'quick_support')
+            )
+          : eq(organizations.type, 'quick_support');
 
         const partnerOrgs = await db
           .select({ id: organizations.id })
@@ -327,7 +342,7 @@ async function computeAccessibleOrgIds(
           .where(
             and(
               eq(organizations.partnerId, partnerId),
-              inArray(organizations.id, selectedOrgIds),
+              orgFilter,
               inArray(organizations.status, ['active', 'trial']),
               isNull(organizations.deletedAt)
             )

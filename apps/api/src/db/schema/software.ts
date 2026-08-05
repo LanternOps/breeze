@@ -144,3 +144,45 @@ export const softwareInventory = pgTable('software_inventory', {
   nameVendorIdx: index('software_inventory_name_vendor_idx').on(table.name, table.vendor),
   nameTrgmIdx: index('software_inventory_name_trgm_idx').using('gin', sql`name gin_trgm_ops`),
 }));
+
+// Chunked-upload sessions for software package installers (issue #2951).
+// One row per in-flight browser upload; chunks append to temp_path on the API
+// host's local disk (single-instance assumption — see routes/softwareUploads.ts).
+// Rows are deleted on complete/abort; the softwareUploadSessionCleanup job
+// reaps sessions idle for SOFTWARE_UPLOAD_SESSION_IDLE_TTL_HOURS (2h) or older
+// than SOFTWARE_UPLOAD_SESSION_MAX_AGE_HOURS (24h) regardless of activity.
+// Tenancy shape 1 (direct org_id, forced RLS — see
+// migrations/2026-08-11-software-upload-sessions.sql).
+export const softwareUploadSessions = pgTable('software_upload_sessions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  // ON DELETE CASCADE so a direct `DELETE FROM software_catalog` outside the
+  // org-erasure path cannot strand sessions. It is NOT needed for the org
+  // cascade itself: deleteOrgCascade runs topologicalCascadeOrder(), which
+  // recomputes an FK-safe order from pg_constraint, so sessions are always
+  // deleted before the catalog regardless of alphabetical list position.
+  catalogId: uuid('catalog_id').notNull().references(() => softwareCatalog.id, { onDelete: 'cascade' }),
+  fileName: varchar('file_name', { length: 500 }).notNull(),
+  fileSize: bigint('file_size', { mode: 'number' }).notNull(),
+  chunkSize: integer('chunk_size').notNull(),
+  bytesReceived: bigint('bytes_received', { mode: 'number' }).notNull().default(0),
+  status: varchar('status', { length: 20 }).notNull().default('active'),
+  tempPath: text('temp_path').notNull(),
+  // Per-process boot id of the API instance that owns the temp file (stamped
+  // at create from PROCESS_INSTANCE_ID in routes/softwareUploads.ts). Chunk
+  // and complete requests landing on a different process fail fast with a
+  // non-retryable 409 'upload_instance_mismatch' instead of an opaque resync
+  // loop — the multi-replica-without-sticky-sessions tripwire.
+  ownerInstanceId: varchar('owner_instance_id', { length: 64 }).notNull(),
+  // Version metadata captured at session create (version, architecture,
+  // releaseNotes, downloadUrl, supportedOs, silent args, pre/post scripts,
+  // detectionRules) — validated by uploadVersionMetadataSchema before insert.
+  versionMetadata: jsonb('version_metadata').notNull().default({}),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  lastActivityAt: timestamp('last_activity_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  orgIdx: index('software_upload_sessions_org_id_idx').on(table.orgId),
+  catalogIdx: index('software_upload_sessions_catalog_id_idx').on(table.catalogId),
+  lastActivityIdx: index('software_upload_sessions_last_activity_idx').on(table.lastActivityAt),
+}));

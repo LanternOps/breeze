@@ -62,7 +62,7 @@ vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }))
 
 import { __testOnly } from './automationWorker';
 import { db } from '../db';
-import { organizations } from '../db/schema';
+import { organizations, devices } from '../db/schema';
 
 const { resolveDeviceIdsForAssignment, processTriggerConfigPolicySchedule } = __testOnly;
 
@@ -167,8 +167,12 @@ describe('automationWorker resolveDeviceIdsForAssignment — partner re-clamp (#
     const ids = await resolveDeviceIdsForAssignment('device_group', 'group-x', null, 'partner-123');
 
     expect(ids).toEqual(['dev-a']);
-    expect(chain.innerJoin).toHaveBeenCalledTimes(1);
+    // Two joins: organizations for the partner re-clamp, devices for the
+    // Quick Support ephemeral exclusion (group membership rows carry no
+    // is_ephemeral of their own).
+    expect(chain.innerJoin).toHaveBeenCalledTimes(2);
     expect(chain.innerJoin.mock.calls[0][0]).toBe(organizations);
+    expect(chain.innerJoin.mock.calls[1][0]).toBe(devices);
     const whereArgs = collectSqlLeafStrings(chain.where.mock.calls[0][0]);
     expect(whereArgs).toContain('group-x');
     expect(whereArgs).toContain('partner-123');

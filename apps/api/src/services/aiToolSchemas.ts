@@ -9,7 +9,7 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
 import { INVOICE_STATUSES } from '@breeze/shared';
-import { backupProfileSelectionsSchema } from '@breeze/shared/validators';
+import { backupProfileSelectionsSchema, ringAutoApproveSchema } from '@breeze/shared/validators';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
 import { m365ToolSchemas } from './aiToolSchemasM365';
@@ -1023,8 +1023,11 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     (data) => !['update', 'delete', 'get'].includes(data.action) || !!data.policyId,
     { message: 'policyId is required for update/delete/get actions' }
   ).refine(
-    (data) => data.action !== 'create' || (!!data.name && !!data.mode && !!data.targetType),
-    { message: 'name, mode, and targetType are required for create action' }
+    // The handler's create branch only reads name/mode (aiToolsCompliance.ts)
+    // — it never reads targetType/targetIds, so requiring targetType here
+    // rejected valid creates for a field the handler ignores.
+    (data) => data.action !== 'create' || (!!data.name && !!data.mode),
+    { message: 'name and mode are required for create action' }
   ),
 
   remediate_software_violation: z.object({
@@ -1272,6 +1275,303 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }).refine(
     (d) => !['status', 'summary'].includes(d.action) || !!d.deviceId,
     { message: 'deviceId is required for status/summary actions' },
+  ),
+
+  // Registration-debt payoff: schemas for tools that were registered in
+  // aiTools but had no Zod input schema (legacySchemaGaps in
+  // aiToolsRegistryParity.test.ts). See that file's history for context.
+  query_analytics: z.object({
+    action: z.enum(['sla_compliance', 'capacity_predictions', 'sla_definitions']),
+    slaId: uuid.optional(),
+    deviceId: uuid.optional(),
+    metricType: z.string().max(50).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  get_executive_summary: z.object({
+    periodType: z.string().max(20).optional(),
+  }),
+
+  query_psa_status: z.object({
+    connectionId: uuid.optional(),
+  }),
+
+  search_documentation: z.object({
+    query: z.string().min(1).max(500),
+    section: z.enum(['getting-started', 'deploy', 'agents', 'security', 'features', 'monitoring', 'reference']).optional(),
+  }),
+
+  query_webhooks: z.object({
+    status: z.enum(['active', 'disabled', 'error']).optional(),
+    includeDeliveries: z.boolean().optional(),
+    limit: z.number().int().min(1).max(50).optional(),
+  }),
+
+  test_webhook: z.object({
+    webhookId: uuid,
+  }),
+
+  manage_notification_channels: z.object({
+    action: z.enum(['list', 'test', 'create', 'update', 'delete']),
+    channelId: uuid.optional(),
+    name: z.string().min(1).max(255).optional(),
+    type: z.enum(['email', 'slack', 'teams', 'webhook', 'pagerduty', 'sms']).optional(),
+    config: z.record(z.string(), z.unknown()).optional(),
+    enabled: z.boolean().optional(),
+    limit: z.number().int().min(1).max(50).optional(),
+  }).refine(
+    (d) => !['test', 'update', 'delete'].includes(d.action) || !!d.channelId,
+    { message: 'channelId is required for test/update/delete actions' },
+  ).refine(
+    (d) => d.action !== 'create' || (!!d.name && !!d.type && !!d.config),
+    { message: 'name, type, and config are required for create' },
+  ),
+
+  manage_saved_filters: z.object({
+    action: z.enum(['list', 'get', 'create', 'delete']),
+    filterId: uuid.optional(),
+    name: z.string().min(1).max(255).optional(),
+    description: z.string().max(2000).optional(),
+    conditions: z.record(z.string(), z.unknown()).optional(),
+  }).refine(
+    (d) => !['get', 'delete'].includes(d.action) || !!d.filterId,
+    { message: 'filterId is required for get/delete actions' },
+  ).refine(
+    (d) => d.action !== 'create' || (!!d.name && !!d.conditions),
+    { message: 'name and conditions are required for create' },
+  ),
+
+  query_custom_fields: z.object({
+    action: z.enum(['list_definitions', 'get_device_values']),
+    deviceId: uuid.optional(),
+  }).refine(
+    (d) => d.action !== 'get_device_values' || !!d.deviceId,
+    { message: 'deviceId is required for get_device_values' },
+  ),
+
+  create_incident: z.object({
+    title: z.string().min(1).max(500),
+    classification: z.enum([
+      'malware', 'ransomware', 'phishing', 'data_breach',
+      'unauthorized_access', 'denial_of_service', 'insider_threat', 'other',
+    ]),
+    severity: z.enum(['p1', 'p2', 'p3', 'p4']),
+    summary: z.string().max(5000).optional(),
+    relatedAlertIds: z.array(uuid).max(200).optional(),
+    affectedDeviceIds: z.array(uuid).max(200).optional(),
+  }),
+
+  execute_containment: z.object({
+    incidentId: uuid,
+    deviceId: uuid,
+    actionType: z.enum(['process_kill', 'network_isolation', 'account_disable', 'usb_block']),
+    parameters: z.record(z.string(), z.unknown()).optional(),
+    approvalRef: z.string().max(128).optional(),
+  }),
+
+  collect_evidence: z.object({
+    incidentId: uuid,
+    deviceId: uuid,
+    evidenceTypes: z.array(z.enum(['logs', 'processes', 'connections', 'screenshot'])).min(1),
+  }),
+
+  get_incident_timeline: z.object({
+    incidentId: uuid,
+  }),
+
+  generate_incident_report: z.object({
+    incidentId: uuid,
+  }),
+
+  manage_update_rings: z.object({
+    action: z.enum(['list', 'get', 'create', 'update']),
+    ringId: uuid.optional(),
+    name: z.string().min(1).max(255).optional(),
+    description: z.string().max(2000).optional(),
+    deferralDays: z.number().int().min(0).optional(),
+    deadlineDays: z.number().int().min(0).optional(),
+    gracePeriodHours: z.number().int().min(0).optional(),
+    categories: z.array(z.string()).max(50).optional(),
+    excludeCategories: z.array(z.string()).max(50).optional(),
+    autoApprove: ringAutoApproveSchema.optional(),
+    enabled: z.boolean().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  manage_backup_configs: z.object({
+    action: z.enum(['list', 'get', 'create', 'update']),
+    configId: uuid.optional(),
+    name: z.string().min(1).max(200).optional(),
+    type: z.enum(['file', 'system_image', 'database', 'application']).optional(),
+    provider: z.enum(['s3', 'azure_blob', 'google_cloud', 'backblaze', 'local']).optional(),
+    providerConfig: z.record(z.string(), z.unknown()).optional(),
+    schedule: z.record(z.string(), z.unknown()).optional(),
+    retention: z.record(z.string(), z.unknown()).optional(),
+    compression: z.boolean().optional(),
+    encryption: z.boolean().optional(),
+    isActive: z.boolean().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  manage_scheduled_tasks: z.object({
+    deviceId: uuid,
+    action: z.enum(['list', 'run', 'disable', 'enable']),
+    taskName: z.string().min(1).max(1024).optional(),
+    search: z.string().max(200).optional(),
+  }).refine(
+    (d) => !['run', 'disable', 'enable'].includes(d.action) || !!d.taskName,
+    { message: 'taskName (full task path) is required for run/disable/enable' },
+  ),
+
+  registry_operations: z.object({
+    action: z.enum(['read_key', 'get_value', 'set_value', 'create_key', 'delete_key']),
+    deviceId: uuid,
+    keyPath: z.string().min(1).max(2048),
+    valueName: z.string().max(255).optional(),
+    valueData: z.string().max(8192).optional(),
+    valueType: z.enum(['REG_SZ', 'REG_DWORD', 'REG_QWORD', 'REG_BINARY', 'REG_EXPAND_SZ', 'REG_MULTI_SZ']).optional(),
+  }).refine(
+    (d) => d.action !== 'get_value' || !!d.valueName,
+    { message: 'valueName is required for get_value' },
+  ).refine(
+    (d) => d.action !== 'set_value' || (!!d.valueName && d.valueData !== undefined),
+    { message: 'valueName and valueData are required for set_value' },
+  ),
+
+  query_agent_versions: z.object({
+    action: z.enum(['list_versions', 'check_upgrades']),
+    platform: z.enum(['windows', 'macos', 'linux']).optional(),
+    limit: z.number().int().min(1).max(50).optional(),
+  }),
+
+  trigger_agent_upgrade: z.object({
+    deviceIds: z.array(uuid).min(1).max(50),
+    targetVersion: z.string().max(100).optional(),
+  }),
+
+  trigger_agent_restart: z.object({
+    deviceIds: z.array(uuid).min(1).max(50),
+  }),
+
+  list_remote_sessions: z.object({
+    status: z.enum(['pending', 'connecting', 'active', 'disconnected', 'failed']).optional(),
+    type: z.enum(['terminal', 'desktop', 'file_transfer']).optional(),
+    deviceId: uuid.optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  create_remote_session: z.object({
+    deviceId: uuid,
+    type: z.enum(['terminal', 'file_transfer']),
+  }),
+
+  manage_tags: z.object({
+    action: z.enum(['list', 'add', 'remove']),
+    deviceId: uuid.optional(),
+    tags: z.array(z.string().min(1).max(100)).max(50).optional(),
+    search: z.string().max(200).optional(),
+  }).refine(
+    (d) => d.action === 'list' || !!d.deviceId,
+    { message: 'deviceId is required for add/remove' },
+  ).refine(
+    (d) => d.action === 'list' || (Array.isArray(d.tags) && d.tags.length > 0),
+    { message: 'tags array is required for add/remove' },
+  ),
+
+  get_browser_security: z.object({
+    orgId: uuid.optional(),
+    deviceId: uuid.optional(),
+    browser: z.enum(['chrome', 'edge', 'firefox', 'safari', 'brave', 'other']).optional(),
+    riskLevel: z.enum(['low', 'medium', 'high', 'critical']).optional(),
+    includeViolations: z.boolean().optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+  }),
+
+  manage_browser_policy: z.object({
+    action: z.enum(['list', 'create', 'update', 'apply']),
+    policyId: uuid.optional(),
+    orgId: uuid.optional(),
+    name: z.string().min(1).max(255).optional(),
+    targetType: z.enum(['org', 'site', 'group', 'device', 'tag']).optional(),
+    targetIds: z.array(z.string().min(1).max(255)).max(500).optional(),   // plain strings: 'tag' targets tag NAMES
+    allowedExtensions: z.array(z.string().min(1).max(255)).max(1000).optional(),
+    blockedExtensions: z.array(z.string().min(1).max(255)).max(1000).optional(),
+    requiredExtensions: z.array(z.string().min(1).max(255)).max(1000).optional(),
+    settings: z.record(z.string(), z.unknown()).optional(),
+    isActive: z.boolean().optional(),
+    deviceIds: z.array(uuid).max(1000).optional(),
+  }),
+
+  query_compliance_policies: z.object({
+    enabled: z.boolean().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  get_compliance_status: z.object({
+    policyId: uuid,
+    status: z.enum(['compliant', 'non_compliant', 'pending', 'error']).optional(),
+    deviceId: uuid.optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+  }),
+
+  manage_software_policies: z.object({
+    action: z.enum(['list', 'get', 'create', 'update']),
+    policyId: uuid.optional(),
+    ownerScope: z.enum(['organization', 'partner']).optional(),
+    name: z.string().min(1).max(200).optional(),
+    description: z.string().max(4000).optional(),
+    mode: z.enum(['allowlist', 'blocklist', 'audit']).optional(),
+    rules: z.object({
+      software: z.array(z.object({
+        name: z.string().min(1).max(500),
+        vendor: z.string().max(200).optional(),
+        minVersion: z.string().max(100).optional(),
+        maxVersion: z.string().max(100).optional(),
+        catalogId: uuid.optional(),
+        reason: z.string().max(1000).optional(),
+      })).max(1000).optional(),
+      allowUnknown: z.boolean().optional(),
+    }).optional(),
+    enforceMode: z.boolean().optional(),
+    remediationOptions: z.object({
+      autoUninstall: z.boolean().optional(),
+      notifyUser: z.boolean().optional(),
+      gracePeriod: z.number().int().min(0).max(2160).optional(),
+      cooldownMinutes: z.number().int().min(1).max(129600).optional(),
+      maintenanceWindowOnly: z.boolean().optional(),
+    }).optional(),
+    isActive: z.boolean().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }).refine(
+    (data) => !['get', 'update'].includes(data.action) || !!data.policyId,
+    { message: 'policyId is required for get/update actions' }
+  ).refine(
+    (data) => data.action !== 'create' || (!!data.name && !!data.mode),
+    { message: 'name and mode are required for create action' }
+  ),
+
+  manage_peripheral_policies: z.object({
+    action: z.enum(['list', 'get', 'create', 'update']),
+    policyId: uuid.optional(),
+    name: z.string().min(1).max(200).optional(),
+    deviceClass: z.enum(peripheralDeviceClassEnum.enumValues).optional(),
+    action_type: z.enum(peripheralPolicyActionEnum.enumValues).optional(),
+    exceptions: z.array(z.object({
+      vendor: z.string().max(255).optional(),
+      product: z.string().max(255).optional(),
+      serialNumber: z.string().max(255).optional(),
+      allow: z.boolean().optional(),
+      reason: z.string().max(2000).optional(),
+      expiresAt: z.string().datetime({ offset: true }).optional(),
+    })).max(500).optional(),
+    isActive: z.boolean().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }).refine(
+    (data) => !['get', 'update'].includes(data.action) || !!data.policyId,
+    { message: 'policyId is required for get/update actions' }
+  ).refine(
+    (data) => data.action !== 'create' || (!!data.name && !!data.deviceClass && !!data.action_type),
+    { message: 'name, deviceClass, and action_type are required for create action' }
   ),
 
   // Fleet orchestration tools

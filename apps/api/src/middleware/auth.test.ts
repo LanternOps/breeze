@@ -386,6 +386,38 @@ describe('authMiddleware', () => {
     expect(body.auth.accessibleOrgIds).toEqual(['org-a']);
   });
 
+  // Quick Support: the hidden 'quick_support' org can never be in the curated
+  // orgIds list (it is absent from every org picker), so a 'selected' partner
+  // user with an empty list must still hit the database to pick it up. Before
+  // this, the empty list short-circuited to [] and the technician's own
+  // support sessions came back as a silent zero-row read.
+  //
+  // This pins that the query HAPPENS; that it resolves the right org through
+  // real RLS is covered by supportSessionsRls.integration.test.ts.
+  it('still resolves orgs for partner orgAccess=selected with an empty list', async () => {
+    const app = buildAuthApp();
+    vi.mocked(verifyToken).mockResolvedValue({
+      ...basePayload,
+      scope: 'partner',
+      orgId: null
+    });
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWithLimit([activeUser]) as any)
+      .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'selected', orgIds: [] }]) as any)
+      .mockReturnValueOnce(selectWithWhere([{ id: 'hidden-quick-support-org' }]) as any);
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.auth.accessibleOrgIds).toEqual(['hidden-quick-support-org']);
+    // user lookup + membership lookup + the org query that used to be skipped
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(3);
+  });
+
   it('enforces partner orgAccess=none as no accessible organizations', async () => {
     const app = buildAuthApp();
     vi.mocked(verifyToken).mockResolvedValue({

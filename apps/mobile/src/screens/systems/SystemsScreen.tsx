@@ -18,6 +18,7 @@ import { SearchSheet } from '../search/SearchSheet';
 import type { MobileSearchResult } from '../../services/search';
 import { haptic } from '../../lib/motion';
 import { track } from '../../lib/analytics';
+import { reportInternalError } from '../../lib/errorReporting';
 
 import { AlertActionSheet } from './components/AlertActionSheet';
 import { FilterChip } from './components/FilterChip';
@@ -207,7 +208,12 @@ export function SystemsScreen() {
         const parent = navigation.getParent<NativeStackNavigationProp<MainTabParamList>>();
         if (parent) parent.navigate('HomeTab');
       } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Could not load conversation.';
+        // The raw message is internal (function name + HTTP status) — report it
+        // to Sentry and show the user a static string instead (issue #3141).
+        // Distinct tag from the HomeTab history paths: this open comes from
+        // Systems search and surfaces as a toast, not the chat error banner.
+        reportInternalError(err, 'ai-session-open-from-search');
+        const msg = 'Could not load that conversation.';
         dispatch(setChatError(msg));
         setToast({ kind: 'error', text: msg });
       }

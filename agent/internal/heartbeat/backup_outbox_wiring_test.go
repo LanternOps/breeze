@@ -55,6 +55,63 @@ func TestHandleBackupResult_NoWSClient_PersistsToOutbox(t *testing.T) {
 	}
 }
 
+// #3027: on the async path — the one every modern backup_run takes — a FAILED
+// terminal result used to deliver stderr and nothing else, because error and
+// body were an either/or. That discarded the job body the helper populates
+// precisely so a failed run keeps its VSS diagnostics, warning text and partial
+// counters. Both must ride together, and the run must still be `failed`.
+func TestHandleBackupResult_FailedRunKeepsItsBody(t *testing.T) {
+	outbox := newBackupResultOutbox(filepath.Join(t.TempDir(), "outbox"))
+	h := &Heartbeat{backupOutbox: outbox} // wsClient intentionally nil
+
+	res := backupipc.BackupCommandResult{
+		CommandID: "cmd-failed",
+		Success:   false,
+		Stderr:    "upload destination unreachable",
+		Stdout:    `{"status":"failed","errorCount":3,"warning":"VSS shadow copy could not be created","vssMetadata":{"shadowCopyId":"set-1","unprotectedVolumes":["D:\\"]}}`,
+	}
+	payload, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := &ipc.Envelope{ID: "e-failed", Type: backupipc.TypeBackupResult, Payload: payload}
+
+	h.handleUserHelperMessage(nil, env)
+
+	var delivered []websocket.CommandResult
+	outbox.Flush(func(r websocket.CommandResult) error {
+		delivered = append(delivered, r)
+		return nil
+	})
+	if len(delivered) != 1 {
+		t.Fatalf("expected exactly one delivered result, got %+v", delivered)
+	}
+	got := delivered[0]
+
+	// A body must never green a failed run — the server reads the job's
+	// terminal status from this field alone.
+	if got.Status != "failed" {
+		t.Fatalf("failed run must stay failed, got %q", got.Status)
+	}
+	if got.Error != "upload destination unreachable" {
+		t.Errorf("failure reason lost: %q", got.Error)
+	}
+
+	body, isObject := got.Result.(map[string]any)
+	if !isObject {
+		t.Fatalf("failed run must carry its job body as a structured result, got %#v", got.Result)
+	}
+	if body["vssMetadata"] == nil {
+		t.Errorf("VSS diagnostics dropped from the failed run: %#v", body)
+	}
+	if body["warning"] != "VSS shadow copy could not be created" {
+		t.Errorf("warning dropped from the failed run: %#v", body)
+	}
+	if body["errorCount"] != float64(3) {
+		t.Errorf("partial counters dropped from the failed run: %#v", body)
+	}
+}
+
 // TestSetWebSocketClient_ReconnectFlushesBackupOutbox proves the flush-on-
 // reconnect wiring end-to-end: SetWebSocketClient points ws.OnConnected at
 // flushBackupResultOutbox, so when the read pump parses the server's

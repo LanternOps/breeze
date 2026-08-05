@@ -24,7 +24,7 @@ import {
   sites,
   softwarePolicies,
 } from '../db/schema';
-import { and, eq, sql, inArray, asc, SQL } from 'drizzle-orm';
+import { and, eq, ne, sql, inArray, asc, SQL } from 'drizzle-orm';
 import { resolveEffectiveTimezone, canonicalizeTimezone } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 import type { TokenPayload } from './jwt';
@@ -950,11 +950,14 @@ export async function resolveDeviceIdsForSoftwarePolicy(
         assignedDeviceIds = rows.map((r) => r.deviceId);
         break;
       }
+      // Assignment fan-outs skip ephemeral Quick Support devices (and the hidden
+      // 'quick_support' org that holds them) — a transient support session is
+      // never a policy target. Explicit `device`-level targets are left as-is.
       case 'site': {
         const rows = await db
           .select({ id: devices.id })
           .from(devices)
-          .where(eq(devices.siteId, assignment.targetId));
+          .where(and(eq(devices.siteId, assignment.targetId), eq(devices.isEphemeral, false)));
         assignedDeviceIds = rows.map((r) => r.id);
         break;
       }
@@ -962,7 +965,7 @@ export async function resolveDeviceIdsForSoftwarePolicy(
         const rows = await db
           .select({ id: devices.id })
           .from(devices)
-          .where(eq(devices.orgId, assignment.targetId));
+          .where(and(eq(devices.orgId, assignment.targetId), eq(devices.isEphemeral, false)));
         assignedDeviceIds = rows.map((r) => r.id);
         break;
       }
@@ -970,14 +973,14 @@ export async function resolveDeviceIdsForSoftwarePolicy(
         const orgs = await db
           .select({ id: organizations.id })
           .from(organizations)
-          .where(eq(organizations.partnerId, assignment.targetId));
+          .where(and(eq(organizations.partnerId, assignment.targetId), ne(organizations.type, 'quick_support')));
         if (orgs.length === 0) {
           assignedDeviceIds = [];
         } else {
           const rows = await db
             .select({ id: devices.id })
             .from(devices)
-            .where(inArray(devices.orgId, orgs.map((o) => o.id)));
+            .where(and(inArray(devices.orgId, orgs.map((o) => o.id)), eq(devices.isEphemeral, false)));
           assignedDeviceIds = rows.map((r) => r.id);
         }
         break;
@@ -1133,12 +1136,12 @@ export async function resolveAllVulnerabilityEnabledDevices(): Promise<Map<strin
         break;
       }
       case 'site': {
-        const rows = await db.select({ id: devices.id }).from(devices).where(eq(devices.siteId, assignment.targetId));
+        const rows = await db.select({ id: devices.id }).from(devices).where(and(eq(devices.siteId, assignment.targetId), eq(devices.isEphemeral, false)));
         ids = rows.map((r) => r.id);
         break;
       }
       case 'organization': {
-        const rows = await db.select({ id: devices.id }).from(devices).where(eq(devices.orgId, assignment.targetId));
+        const rows = await db.select({ id: devices.id }).from(devices).where(and(eq(devices.orgId, assignment.targetId), eq(devices.isEphemeral, false)));
         ids = rows.map((r) => r.id);
         break;
       }
@@ -1146,7 +1149,7 @@ export async function resolveAllVulnerabilityEnabledDevices(): Promise<Map<strin
         const orgs = await db
           .select({ id: organizations.id })
           .from(organizations)
-          .where(eq(organizations.partnerId, assignment.targetId));
+          .where(and(eq(organizations.partnerId, assignment.targetId), ne(organizations.type, 'quick_support')));
         if (orgs.length === 0) {
           ids = [];
           break;
@@ -1154,7 +1157,7 @@ export async function resolveAllVulnerabilityEnabledDevices(): Promise<Map<strin
         const rows = await db
           .select({ id: devices.id })
           .from(devices)
-          .where(inArray(devices.orgId, orgs.map((o) => o.id)));
+          .where(and(inArray(devices.orgId, orgs.map((o) => o.id)), eq(devices.isEphemeral, false)));
         ids = rows.map((r) => r.id);
         break;
       }

@@ -577,7 +577,9 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
   // Don't force a JSON content-type on FormData uploads — the browser must set
   // `multipart/form-data` itself so it can append the boundary. Forcing JSON
   // here strips the boundary and the server can't parse the body (avatar upload).
-  if (!(options.body instanceof FormData)) {
+  // Also don't clobber a caller-provided Content-Type (e.g. `application/octet-stream`
+  // for raw chunk PUTs) — only default to JSON when the caller set none.
+  if (!(options.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
 
@@ -589,7 +591,15 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
   const externalSignal = options.signal;
   const timeoutMs = options.body instanceof FormData ? UPLOAD_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
   const controller = !externalSignal ? new AbortController() : null;
-  const timeout = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  const timeout = controller
+    ? setTimeout(
+        () =>
+          controller.abort(
+            new DOMException(`Request timed out after ${Math.round(timeoutMs / 1000)}s`, 'TimeoutError'),
+          ),
+        timeoutMs,
+      )
+    : null;
   const signal = externalSignal ?? controller!.signal;
 
   let response: Response;
@@ -610,13 +620,13 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
 
       // Retry original request with new token
       headers.set('Authorization', `Bearer ${newTokens.accessToken}`);
-      response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include' });
+      response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include', signal });
     } else {
       // If another in-flight request already refreshed state, retry once with latest token.
       const latestToken = useAuthStore.getState().tokens?.accessToken;
       if (latestToken && latestToken !== previousAccessToken) {
         headers.set('Authorization', `Bearer ${latestToken}`);
-        response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include' });
+        response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include', signal });
       } else {
         // Refresh failed and no newer token exists; logout.
         logout();

@@ -1,0 +1,47 @@
+{
+  "page": {
+    "title": "Iniciar una sesión de soporte",
+    "intro": "Alguien que le está ayudando con esta computadora le pidió que abriera esta página. No ocurre nada hasta que usted mismo descargue y ejecute el programa."
+  },
+  "code": {
+    "heading": "Escriba el código que le dieron",
+    "help": "La persona que le está ayudando le dictará un código de 9 letras y números, por ejemplo KTM-4H7-P2X. Las mayúsculas y los guiones no importan.",
+    "label": "Código de soporte",
+    "placeholder": "XXX-XXX-XXX",
+    "submit": "Continuar",
+    "formatError": "Ese código todavía no está completo. Un código tiene 9 letras y números, por ejemplo KTM-4H7-P2X."
+  },
+  "checking": "Verificando el código…",
+  "invalid": {
+    "title": "Este código ya no funciona",
+    "body": "Un código de soporte vence poco después de crearse y solo se puede usar una vez. Pídale un código nuevo a la persona que le está ayudando y escríbalo arriba."
+  },
+  "checkFailed": {
+    "title": "No se pudo verificar el código",
+    "body": "Es posible que se haya cortado la conexión a internet. Revise su conexión e intente el código de nuevo.",
+    "retry": "Intentar de nuevo"
+  },
+  "ready": {
+    "title": "Su código es válido",
+    "codeIntro": "Su código es {{code}}."
+  },
+  "download": {
+    "windows": "Descargar para Windows",
+    "manualFallback": "Si la descarga pide un código, escriba: {{code}}",
+    "macosLabel": "macOS (computadoras Mac)",
+    "macosBadge": "Muy pronto",
+    "macosBody": "El programa todavía no está listo para computadoras Mac. Pregúntele a la persona que le está ayudando qué hacer en ese caso."
+  },
+  "windowsPrompt": {
+    "title": "Windows le preguntará antes de ejecutarlo",
+    "body": "Al abrir el archivo, Windows muestra un aviso que pregunta si permite ejecutarlo. El archivo está firmado digitalmente, así que ese aviso indica un editor: debería decir {{publisher}}. Si dice que el editor es desconocido, o muestra un nombre que usted no esperaba, cierre el aviso y llame a la persona que le está ayudando en lugar de continuar.",
+    "publisher": "el editor de Breeze"
+  },
+  "trust": {
+    "title": "Qué hace el programa",
+    "seeScreen": "Mientras la sesión está activa, la persona que le está ayudando puede ver su pantalla.",
+    "temporary": "El programa se ejecuta una vez y luego se elimina solo. No queda nada instalado en esta computadora.",
+    "stopAnyTime": "Puede dejar de compartir cuando quiera cerrando la ventana del programa.",
+    "onlyIfExpected": "Si no esperaba esto, no ejecute el programa. Cierre esta página y comuníquese con el soporte con el que trata habitualmente."
+  }
+}

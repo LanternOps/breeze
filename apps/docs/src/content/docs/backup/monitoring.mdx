@@ -32,7 +32,7 @@ At the top of the dashboard, summary cards show:
 
 A live feed of the latest backup activity. Each job card shows:
 - Device name and configuration
-- Status: **Completed** (green), **Running** (blue), **Failed** (red), **Queued** (gray), **Canceled**
+- Status: **Completed** (green), **Partial** (amber), **Running** (blue), **Failed** (red), **Queued** (gray), **Canceled**
 - Start time, duration, and data size
 
 Click **View all** to see the full job history with filters for status, device, and date range.
@@ -96,6 +96,7 @@ Backup and restore jobs move through these statuses:
 | **Pending / Queued** | Created and waiting to be dispatched to the agent |
 | **Running** | Actively in progress on the device |
 | **Completed** | Finished successfully; a snapshot was created |
+| **Partial** | A snapshot was created and can be restored from, but a disproportionate share of the run failed — more than 10% of the scanned bytes, or more than 10% of the attempted files. Check the error log for which files were skipped. A small number of failures in a large run still reports **Completed** with a warning. |
 | **Failed** | Encountered an error (check the error details) |
 | **Canceled** | Explicitly stopped by a user before completion |
 

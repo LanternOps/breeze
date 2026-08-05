@@ -302,6 +302,10 @@ export interface RenderRichTextOpts {
  *  trailing spacing), for the caller to continue drawing from. */
 export function renderRichTextIntoPdf(doc: PDFKit.PDFDocument, html: string, opts: RenderRichTextOpts): number {
   const blocks = parseRichText(html);
+  // Side-by-side callers can legitimately leave pdfkit's implicit cursor at the
+  // bottom of the column drawn last rather than the lower of both columns.
+  // startY is the public contract; synchronize doc.y before ensureRoom reads it.
+  doc.y = opts.startY;
   let y = opts.startY;
   // The gap BEFORE the upcoming block (0 for the first block; each subsequent
   // block's leading gap is the PREVIOUS block's spacingAfter). Tracked explicitly

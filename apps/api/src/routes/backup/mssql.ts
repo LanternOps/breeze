@@ -320,6 +320,9 @@ mssqlRoutes.post(
         orgId,
         deviceId: payload.deviceId,
         resultStatus: result.status,
+        // See the note on the hyperv path: forwarded now so the provider-backed
+        // routes are not silently the odd ones out.
+        agentStatus: parsedBackup.data.status,
         result: {
           ...parsedBackup.data,
           error: result.error,

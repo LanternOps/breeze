@@ -130,9 +130,11 @@ func emitVaultAutoSyncResult(conn *ipc.Conn, snapshotID string, syncResult *back
 		result.Stderr = fmt.Sprintf("failed to marshal vault sync result: %v", err)
 	}
 
-	if err := conn.SendTyped(result.CommandID, backupipc.TypeBackupResult, result); err != nil {
-		slog.Warn("failed to emit vault auto-sync result", "snapshotId", snapshotID, "error", err.Error())
-	}
+	// Bounded like every other backup result (#3001): syncErr is
+	// errors.Join(<one entry per failed file>), so a vault sync over the same
+	// 123k-file set that produced the original 64 MB result yields a
+	// multi-megabyte Stderr and the identical "message too large" drop.
+	_ = sendBackupResult(conn, result.CommandID, result)
 }
 
 // autoSyncToVault parses the backup_run result to extract the snapshot ID and

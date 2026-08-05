@@ -32,6 +32,11 @@ import { captureMessage } from '../services/sentry';
 import { createReportThrottle } from '../utils/reportThrottle';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { UUID_REGEX } from '../utils/uuid';
+// Shared with the web device routes rather than re-declared locally. This file
+// used to carry a byte-identical private copy, which is precisely why the #2968
+// uuid guard — added to the shared helper — silently did not apply to
+// POST /mobile/devices/:id/actions. One definition, one guard.
+import { getDeviceWithOrgCheck } from './devices/helpers';
 
 export const mobileRoutes = new Hono();
 const requireMobileAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
@@ -183,28 +188,6 @@ async function getOrgIdsForAuth(
   return { orgIds: null };
 }
 
-async function getDeviceWithOrgCheck(
-  deviceId: string,
-  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
-) {
-  const [device] = await db
-    .select()
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
-
-  if (!device) {
-    return null;
-  }
-
-  const hasAccess = await ensureOrgAccess(device.orgId, auth);
-  if (!hasAccess) {
-    return null;
-  }
-
-  return device;
-}
-
 // Resolve an alert and enforce BOTH tenancy axes (mirrors the web helper in
 // routes/alerts/helpers.ts):
 //  - org axis (RLS-backed) via ensureOrgAccess.
@@ -253,7 +236,11 @@ async function getAlertWithOrgCheck(
 
 async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
   if (!perms?.allowedSiteIds) return null;
-  const orgDevices = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices).where(eq(devices.orgId, orgId));
+  // Ephemeral Quick Support devices sit in the partner's hidden 'quick_support'
+  // org, which deliberately stays inside accessibleOrgIds — exclude them here so
+  // they never enter a site-allowed device set. (Applies to every mobile
+  // enumeration below; by-id lookups are left alone.)
+  const orgDevices = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices).where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false)));
   return orgDevices.filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId)).map((d) => d.id);
 }
 
@@ -1105,7 +1092,7 @@ mobileRoutes.get(
       return c.json({ error: orgCheck.error.message }, orgCheck.error.status as 400 | 403 | 404);
     }
 
-    const conditions: ReturnType<typeof eq>[] = [];
+    const conditions: ReturnType<typeof eq>[] = [eq(devices.isEphemeral, false)];
     if (orgCheck.orgIds !== null) {
       if (orgCheck.orgIds.length === 0) {
         return c.json({ data: [], pagination: { page, limit, total: 0, nextCursor: null } });
@@ -1375,7 +1362,7 @@ mobileRoutes.get(
       return c.json({ error: orgCheck.error.message }, orgCheck.error.status as 400 | 403 | 404);
     }
 
-    const deviceConditions: ReturnType<typeof eq>[] = [];
+    const deviceConditions: ReturnType<typeof eq>[] = [eq(devices.isEphemeral, false)];
     if (orgCheck.orgIds !== null) {
       if (orgCheck.orgIds.length === 0) {
         return c.json({
@@ -1550,6 +1537,7 @@ mobileRoutes.get(
 
     const deviceWhere = and(
       orgCheck.orgIds === null ? sql`true` : inArray(devices.orgId, orgCheck.orgIds),
+      eq(devices.isEphemeral, false),
       perms?.allowedSiteIds ? inArray(devices.siteId, perms.allowedSiteIds) : sql`true`,
       or(
         ilike(devices.hostname, term),

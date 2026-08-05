@@ -71,10 +71,23 @@ export async function handleDnsThreatBlocked(
   // Resolve hostname for the message template. Best-effort — fall back to
   // a stable identifier if device lookup fails.
   const [device] = await db
-    .select({ hostname: devices.hostname, displayName: devices.displayName })
+    .select({
+      hostname: devices.hostname,
+      displayName: devices.displayName,
+      isEphemeral: devices.isEphemeral,
+    })
     .from(devices)
     .where(eq(devices.id, payload.deviceId))
     .limit(1);
+
+  // Quick Support exclusion: ephemeral devices live in the hidden per-partner
+  // 'quick_support' org and are a stranger's personal machine borrowed for one
+  // ~20-minute session. That org stays inside technicians' accessibleOrgIds for
+  // RLS reasons, so nothing upstream filters them out. A DNS threat on someone's
+  // home network is not the MSP's incident and must not page an on-call tech.
+  if (device?.isEphemeral) {
+    return { alertId: null, reason: 'ephemeral_device' };
+  }
 
   const hostname = device?.displayName || device?.hostname || payload.deviceId;
 

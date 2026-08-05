@@ -501,9 +501,12 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 		result := executeCommand(req, mgr, vaultState, conn, commandCanceller)
 		result.CommandID = req.CommandID
 		result.DurationMs = time.Since(start).Milliseconds()
-		if err := sendUnsolicitedResult(conn, result); err != nil {
-			slog.Error("failed to send final backup result", "commandId", req.CommandID, "error", err.Error())
-		}
+		// sendUnsolicitedResult bounds the payload before sending: an oversize
+		// terminal result used to be dropped outright, leaving a SUCCEEDED
+		// backup stuck `running` until the stale-backup reaper failed it
+		// (#3001). Send failures are logged inside sendBackupResult under
+		// component=backup so they ship server-side.
+		_ = sendUnsolicitedResult(conn, result)
 		return
 	}
 
@@ -518,9 +521,10 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 	result.CommandID = req.CommandID
 	result.DurationMs = time.Since(start).Milliseconds()
 
-	if err := conn.SendTyped(env.ID, backupipc.TypeBackupResult, result); err != nil {
-		slog.Error("failed to send result", "commandId", req.CommandID, "error", err.Error())
-	}
+	// Same oversize guard as the async path above: the synchronous reply is
+	// what resolves the agent's pending request, so dropping it strands the
+	// command until its forward wait times out (#3001).
+	_ = sendBackupResult(conn, env.ID, result)
 }
 
 // sendUnsolicitedResult sends a terminal backup_result envelope that is not
@@ -531,9 +535,12 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 // broker's session.pending map and instead falls through
 // dispatchHelperMessage to the heartbeat's unsolicited-result handler (see
 // heartbeat.go, case backupipc.TypeBackupResult).
+//
+// It goes through sendBackupResult so the payload is bounded to the IPC frame
+// first — see result_bounds.go and #3001.
 func sendUnsolicitedResult(conn *ipc.Conn, result backupipc.BackupCommandResult) error {
 	id := fmt.Sprintf("%s-final-%d", result.CommandID, time.Now().UnixNano())
-	return conn.SendTyped(id, backupipc.TypeBackupResult, result)
+	return sendBackupResult(conn, id, result)
 }
 
 func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn, commandCanceller *activeCommandCanceller) backupipc.BackupCommandResult {
@@ -603,14 +610,17 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 		// mgr here may be the ephemeral payload-built manager resolved above
 		// (not the long-lived agent.yaml manager), so the progress fn is set
 		// on it directly, right before the run that actually uses it.
-		mgr.SetProgressFn(func(filesDone, filesTotal int, bytesDone, bytesTotal int64) {
+		mgr.SetProgressFn(func(filesDone, filesTotal int, bytesDone, bytesTotal int64, snapshotID string) {
 			sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{
 				CommandID: req.CommandID, Phase: "uploading",
 				Current: bytesDone, Total: bytesTotal,
 				FilesDone: filesDone, FilesTotal: filesTotal,
+				// Forwarded so the server records backup_jobs.snapshot_id
+				// mid-run (#3006). Empty on pre-snapshot keepalives.
+				SnapshotID: snapshotID,
 			})
 		})
-		result := marshalResult(mgr.RunBackupContext(ctx, excludes))
+		result := marshalBackupRunResult(mgr.RunBackupContext(ctx, excludes))
 		// Auto-sync to vault after successful backup (async — don't block command response)
 		if result.Success {
 			go autoSyncToVault(result.Stdout, vaultState, conn)
@@ -698,6 +708,37 @@ func ok(stdout string) backupipc.BackupCommandResult {
 
 func fail(msg string) backupipc.BackupCommandResult {
 	return backupipc.BackupCommandResult{Success: false, Stderr: msg}
+}
+
+// marshalBackupRunResult is marshalResult for backup_run specifically, differing
+// on ONE point: a failed run still carries its job body.
+//
+// The generic marshalResult throws `v` away when err != nil, so on every hard
+// failure the server received Stderr and nothing else. That silently defeated
+// #3027 on the branch where the diagnostics matter most: job.VSSMetadata and
+// job.Warning were both built by then — recording, say, that no shadow copy
+// could be created and which writers were wedged — and both were discarded one
+// frame before the wire. The counters (filesBackedUp, errorCount) went with
+// them.
+//
+// Success stays false and Stderr still carries the failure reason, so the server
+// still records the job `failed` (routes/agentWs.ts gates on
+// `result.status === 'completed'`). The body only adds detail to a failure that
+// was going to be a failure regardless. A body that cannot be marshalled is
+// simply omitted — a marshalling problem must never escalate into losing the
+// failure reason itself.
+func marshalBackupRunResult(job *backup.BackupJob, err error) backupipc.BackupCommandResult {
+	if err == nil {
+		return marshalResult(job, nil)
+	}
+	result := fail(err.Error())
+	if job == nil {
+		return result
+	}
+	if data, merr := json.Marshal(job); merr == nil {
+		result.Stdout = string(data)
+	}
+	return result
 }
 
 func marshalResult(v any, err error) backupipc.BackupCommandResult {

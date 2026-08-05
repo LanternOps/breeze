@@ -18,8 +18,14 @@
  * Tier 3 actions.
  */
 
-import { INVOICE_STATUSES } from '@breeze/shared';
-import type { ManualLineInput, RecordPaymentInput } from '@breeze/shared';
+import { z } from 'zod';
+import {
+  INVOICE_STATUSES,
+  manualLineSchema,
+  updateLineSchema,
+  updateInvoiceSchema,
+  recordPaymentSchema
+} from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool, AiToolTier } from './aiTools';
 import {
@@ -47,9 +53,6 @@ import { computeContractEstimate, getContract } from './contractService';
 import { toCents } from './invoiceMath';
 import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
 
-type UpdateInvoiceLinePatch = Parameters<typeof updateLine>[2];
-type UpdateInvoiceHeaderPatch = Parameters<typeof updateInvoice>[1];
-
 function actorFromAuth(auth: AuthContext): InvoiceActor {
   return {
     userId: auth.user.id,
@@ -68,6 +71,18 @@ function serviceErrorToJson(err: unknown): string | null {
   }
   return null;
 }
+
+// Payload parsers wrap the value under its param name so ZodError paths are
+// self-describing ("line.quantity: ...", "payment.receivedAt: ..."). These
+// are the SAME schemas the HTTP invoice routes validate with — one source of
+// truth. Without this, a malformed manage_invoices call skipped validation
+// entirely (the type-cast reached invoiceService with no Zod layer at all)
+// and died as an opaque DB constraint 500 instead of a structured
+// VALIDATION_ERROR the model could act on.
+const manualLinePayload = z.object({ line: manualLineSchema });
+const lineUpdatePayload = z.object({ patch: updateLineSchema });
+const headerUpdatePayload = z.object({ patch: updateInvoiceSchema });
+const paymentPayload = z.object({ payment: recordPaymentSchema });
 
 /**
  * Adds a derived `depositPaid` boolean (amountPaid >= depositDue, compared in
@@ -248,7 +263,11 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
               actor
             ));
           case 'add_manual_line':
-            return JSON.stringify(await addManualLine(String(input.invoiceId), input.line as ManualLineInput, actor));
+            return JSON.stringify(await addManualLine(
+              String(input.invoiceId),
+              manualLinePayload.parse({ line: input.line }).line,
+              actor
+            ));
           case 'add_catalog_line':
             return JSON.stringify(await addCatalogLine(String(input.invoiceId), String(input.catalogItemId), Number(input.quantity), actor));
           case 'add_bundle_line':
@@ -279,13 +298,28 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
             }, actor));
           }
           case 'update_line':
-            return JSON.stringify(await updateLine(String(input.invoiceId), String(input.lineId), input.patch as UpdateInvoiceLinePatch, actor));
+            return JSON.stringify(await updateLine(
+              String(input.invoiceId),
+              String(input.lineId),
+              lineUpdatePayload.parse({ patch: input.patch }).patch,
+              actor
+            ));
           case 'remove_line':
             return JSON.stringify(await removeLine(String(input.invoiceId), String(input.lineId), actor));
           case 'update_header':
-            return JSON.stringify(await updateInvoice(String(input.invoiceId), input.patch as UpdateInvoiceHeaderPatch, actor));
+            return JSON.stringify(await updateInvoice(
+              String(input.invoiceId),
+              headerUpdatePayload.parse({ patch: input.patch }).patch,
+              actor
+            ));
           case 'delete_draft':
-            return JSON.stringify(await deleteDraftInvoice(String(input.invoiceId), actor));
+            // deleteDraftInvoice returns Promise<void>; stringifying the await
+            // directly produced the string "undefined" (not JSON), which the
+            // MCP layer rejected as a tool failure AFTER the delete already
+            // committed — matches aiToolsContracts.ts's delete_draft/remove_line
+            // and aiToolsQuotes.ts's delete_draft/delete_block pattern.
+            await deleteDraftInvoice(String(input.invoiceId), actor);
+            return JSON.stringify({ ok: true });
           case 'assemble_from_org':
             return JSON.stringify(await assembleDraftFromOrg(
               { orgId: String(input.orgId), siteId: s('siteId'), from: String(input.from), to: String(input.to) },
@@ -298,7 +332,11 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
           case 'void':
             return JSON.stringify(await voidInvoice(String(input.invoiceId), String(input.reason), { reissue: Boolean(input.reissue) }, actor));
           case 'record_payment':
-            return JSON.stringify(await recordPayment(String(input.invoiceId), input.payment as RecordPaymentInput, actor));
+            return JSON.stringify(await recordPayment(
+              String(input.invoiceId),
+              paymentPayload.parse({ payment: input.payment }).payment,
+              actor
+            ));
           case 'void_payment':
             return JSON.stringify(await voidPayment(String(input.paymentId), actor));
           case 'create_pay_link':

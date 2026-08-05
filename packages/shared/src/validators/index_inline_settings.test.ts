@@ -3,6 +3,7 @@ import {
   patchInlineSettingsSchema,
   policyAppRuleSchema,
   ringAutoApproveSchema,
+  mergeRingAutoApproveWrite,
   eventLogInlineSettingsSchema,
   sensitiveDataInlineSettingsSchema,
   monitoringInlineSettingsSchema,
@@ -13,7 +14,12 @@ import {
 // ============================================
 
 describe('ringAutoApproveSchema', () => {
-  it('applies fail-closed defaults', () => {
+  it('applies fail-closed defaults (third-party fields stay ABSENT, not defaulted)', () => {
+    // thirdPartyApps/thirdPartyDeferralDays deliberately have no schema
+    // default: an omitted value means "writer predates the field" and the API
+    // write path preserves the stored row via mergeRingAutoApproveWrite. A
+    // .default(false) would make an old-shape replay indistinguishable from an
+    // explicit opt-out.
     const result = ringAutoApproveSchema.safeParse({});
     expect(result.success).toBe(true);
     if (result.success) {
@@ -48,6 +54,53 @@ describe('ringAutoApproveSchema', () => {
   it('allows disabled with no severities (the default off state)', () => {
     const result = ringAutoApproveSchema.safeParse({ enabled: false, severities: [], deferralDays: 0 });
     expect(result.success).toBe(true);
+  });
+
+  it('accepts a third-party-only ring: enabled with empty severities but thirdPartyApps', () => {
+    const result = ringAutoApproveSchema.safeParse({
+      enabled: true, severities: [], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: null,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('still rejects enabled with empty severities and thirdPartyApps false', () => {
+    const result = ringAutoApproveSchema.safeParse({
+      enabled: true, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('leaves omitted third-party fields undefined for the write path to merge', () => {
+    const result = ringAutoApproveSchema.parse({ enabled: true, severities: ['critical'], deferralDays: 0 });
+    expect(result.thirdPartyApps).toBeUndefined();
+    expect(result.thirdPartyDeferralDays).toBeUndefined();
+  });
+
+  it('mergeRingAutoApproveWrite: absent fields carry the stored opt-in; explicit values win; create stamps defaults', () => {
+    const incoming = ringAutoApproveSchema.parse({ enabled: true, severities: ['low'], deferralDays: 2 });
+    // Stored explicit opt-in carried
+    expect(mergeRingAutoApproveWrite(incoming, {
+      enabled: true, severities: ['critical'], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: 9,
+    })).toEqual({ enabled: true, severities: ['low'], deferralDays: 2, thirdPartyApps: true, thirdPartyDeferralDays: 9 });
+    // Legacy stored row without the field: derives from stored severities
+    expect(mergeRingAutoApproveWrite(incoming, { enabled: true, severities: ['critical'] }).thirdPartyApps).toBe(true);
+    expect(mergeRingAutoApproveWrite(incoming, { enabled: true, severities: [] }).thirdPartyApps).toBe(false);
+    // Explicit false always wins over a stored true
+    const explicitOff = ringAutoApproveSchema.parse({
+      enabled: true, severities: ['low'], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null,
+    });
+    expect(mergeRingAutoApproveWrite(explicitOff, {
+      enabled: true, severities: [], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: 9,
+    })).toMatchObject({ thirdPartyApps: false, thirdPartyDeferralDays: null });
+    // Create (no stored row): explicit fail-closed defaults
+    expect(mergeRingAutoApproveWrite(incoming, undefined)).toEqual({
+      enabled: true, severities: ['low'], deferralDays: 2, thirdPartyApps: false, thirdPartyDeferralDays: null,
+    });
+  });
+
+  it('rejects out-of-range thirdPartyDeferralDays', () => {
+    expect(ringAutoApproveSchema.safeParse({ enabled: true, severities: ['low'], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: 366 }).success).toBe(false);
+    expect(ringAutoApproveSchema.safeParse({ enabled: true, severities: ['low'], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: -1 }).success).toBe(false);
   });
 });
 
