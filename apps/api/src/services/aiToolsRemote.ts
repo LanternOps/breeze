@@ -20,6 +20,7 @@ import { eq, and, desc, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import { getToolTimeout } from './toolTimeouts';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -80,7 +81,7 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
       const { executeCommand } = await getCommandQueue();
       const result = await executeCommand(deviceId, 'take_screenshot', {
         monitor: input.monitor ?? 0
-      }, { userId: auth.user.id, timeoutMs: 30000 });
+      }, { userId: auth.user.id, timeoutMs: getToolTimeout('take_screenshot') });
 
       if (result.status !== 'completed') {
         return JSON.stringify({ error: result.error || 'Screenshot capture failed' });
@@ -138,7 +139,7 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
       const { executeCommand } = await getCommandQueue();
       const result = await executeCommand(deviceId, 'take_screenshot', {
         monitor: input.monitor ?? 0
-      }, { userId: auth.user.id, timeoutMs: 30000 });
+      }, { userId: auth.user.id, timeoutMs: getToolTimeout('analyze_screen') });
 
       if (result.status !== 'completed') {
         return JSON.stringify({ error: result.error || 'Screenshot capture failed' });
@@ -224,7 +225,7 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
         monitor: input.monitor ?? 0,
         captureAfter: input.captureAfter ?? true,
         captureDelayMs: input.captureDelayMs ?? 500,
-      }, { userId: auth.user.id, timeoutMs: 30000 });
+      }, { userId: auth.user.id, timeoutMs: getToolTimeout('computer_control') });
 
       if (result.status !== 'completed') {
         return JSON.stringify({ error: result.error || 'Computer action failed' });

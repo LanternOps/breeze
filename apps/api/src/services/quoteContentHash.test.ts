@@ -33,6 +33,23 @@ describe('computeQuoteSha256', () => {
     const withNone = computeQuoteSha256({ ...quote, depositType: 'none', depositPercent: null, depositAmount: null } as any, [], [], []);
     expect(withNone).toBe(legacy);
   });
+  it('is UNCHANGED by vendor/procurement fields (Task 11) — the mapper enumerates fields explicitly and never picks these up', () => {
+    // Pins the explicit-field-mapper contract against a future refactor that
+    // widens HashableLine or spreads the raw line object into the canonical
+    // form: procurementSource/vendorSku/manufacturer are internal builder
+    // economics (never customer-facing), so setting them on an otherwise
+    // identical line must not move a prior acceptance's signature.
+    const withoutVendorFields = computeQuoteSha256(quote, blocks, lines, []);
+    const linesWithVendorFields = lines.map((l: any) => ({
+      ...l,
+      procurementSource: 'td_synnex',
+      vendorSku: 'VEND-123',
+      manufacturer: 'Acme Corp',
+    }));
+    const withVendorFields = computeQuoteSha256(quote, blocks, linesWithVendorFields, []);
+    expect(withVendorFields).toBe(withoutVendorFields);
+  });
+
   it('deposit config and line eligibility change the hash', () => {
     const quote = { id: 'q1', currencyCode: 'USD', subtotal: '10.00', taxTotal: '0.00', total: '10.00',
       oneTimeTotal: '10.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00' };

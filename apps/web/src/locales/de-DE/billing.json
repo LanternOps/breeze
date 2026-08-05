@@ -890,6 +890,73 @@
         "sent": "Gesendet",
         "viewed": "Gesehen"
       },
+      "orderBreakdown": {
+        "copied": "Kopiert",
+        "copyFailed": "Kopieren in die Zwischenablage fehlgeschlagen.",
+        "copyTsv": "Für Tabellenkalkulation kopieren",
+        "costTotal": "Gesamtkosten",
+        "exportCsv": "CSV herunterladen",
+        "fulfillment": {
+          "allocation": {
+            "cancelled": "Storniert",
+            "eta": "Ankunft {{date}}",
+            "ordered": "{{qty}} bestellt",
+            "received": "{{qty}} erhalten",
+            "tracking": "Sendungsnr. {{number}}"
+          },
+          "cancel": "Position stornieren",
+          "cancelError": "Diese Bestellposition konnte nicht storniert werden.",
+          "cancelSuccess": "Bestellposition storniert",
+          "dialog": {
+            "cancel": "Abbrechen",
+            "empty": "Alles Ausgewählte ist bereits bestellt.",
+            "error": "Die Bestellung konnte nicht erfasst werden.",
+            "eta": "Voraussichtliche Ankunft",
+            "notes": "Notizen",
+            "orderRef": "Bestellreferenz",
+            "qtyAria": "Zu bestellende Menge für {{item}}",
+            "submit": "Bestellung erfassen",
+            "success": "Bestellung erfasst",
+            "title": "Artikel als bestellt markieren",
+            "tracking": "Sendungsnummer",
+            "vendor": "Anbieter"
+          },
+          "markOrdered": "Als bestellt markieren",
+          "receive": "Als erhalten markieren",
+          "receiveQtyAria": "Erhaltene Menge",
+          "receiveError": "Diese Bestellposition konnte nicht aktualisiert werden.",
+          "receiveSuccess": "Als erhalten markiert",
+          "select": "{{item}} auswählen",
+          "selectColumn": "Für Bestellung auswählen",
+          "status": {
+            "ordered": "Bestellt",
+            "partiallyReceived": "Teilweise erhalten",
+            "received": "Erhalten"
+          }
+        },
+        "itemCount_one": "{{count}} Artikel",
+        "itemCount_other": "{{count}} Artikel",
+        "missingCost_one": "Für {{count}} Artikel sind keine Kosten erfasst",
+        "missingCost_other": "Für {{count}} Artikel sind keine Kosten erfasst",
+        "pax8Badge": {
+          "failed": "Pax8 fehlgeschlagen",
+          "ordered": "Über Pax8 bestellt",
+          "reconcile": "Pax8 prüfen",
+          "staged": "In Pax8 vorgemerkt"
+        },
+        "table": {
+          "extCost": "Kosten gesamt",
+          "item": "Artikel",
+          "markup": "Markup",
+          "partNumber": "Teilenr.",
+          "qty": "Menge",
+          "sku": "SKU",
+          "unitCost": "Stückkosten",
+          "vendor": "Anbieter"
+        },
+        "title": "Zu bestellen",
+        "unknownVendor": "Sonstige / unbekannter Anbieter"
+      },
       "pax8Order": {
         "message_one": "Dieses Angebot hat einen Pax8-Auftrag ({{count}} Position) bereitgestellt, für den noch Bereitstellungsdetails fehlen",
         "message_other": "Dieses Angebot hat einen Pax8-Auftrag ({{count}} Positionen) bereitgestellt, für den noch Bereitstellungsdetails fehlen",

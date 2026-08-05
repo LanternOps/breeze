@@ -890,6 +890,73 @@
         "sent": "Inviato",
         "viewed": "Visualizzato"
       },
+      "orderBreakdown": {
+        "copied": "Copiato",
+        "copyFailed": "Impossibile copiare negli appunti.",
+        "copyTsv": "Copia per foglio di calcolo",
+        "costTotal": "Costo totale",
+        "exportCsv": "Scarica CSV",
+        "fulfillment": {
+          "allocation": {
+            "cancelled": "Annullato",
+            "eta": "Arrivo il {{date}}",
+            "ordered": "{{qty}} ordinate",
+            "received": "{{qty}} ricevute",
+            "tracking": "Tracciamento {{number}}"
+          },
+          "cancel": "Annulla riga",
+          "cancelError": "Impossibile annullare questa riga d’ordine.",
+          "cancelSuccess": "Riga d’ordine annullata",
+          "dialog": {
+            "cancel": "Annulla",
+            "empty": "Tutto ciò che è selezionato è già ordinato.",
+            "error": "Impossibile registrare l’ordine.",
+            "eta": "Arrivo previsto",
+            "notes": "Note",
+            "orderRef": "Riferimento ordine",
+            "qtyAria": "Quantità da ordinare per {{item}}",
+            "submit": "Registra ordine",
+            "success": "Ordine registrato",
+            "title": "Segna gli articoli come ordinati",
+            "tracking": "Numero di tracciamento",
+            "vendor": "Fornitore"
+          },
+          "markOrdered": "Segna come ordinato",
+          "receive": "Segna come ricevuto",
+          "receiveQtyAria": "Quantità ricevuta",
+          "receiveError": "Impossibile aggiornare questa riga d’ordine.",
+          "receiveSuccess": "Segnato come ricevuto",
+          "select": "Seleziona {{item}}",
+          "selectColumn": "Seleziona per l’ordine",
+          "status": {
+            "ordered": "Ordinato",
+            "partiallyReceived": "Ricevuto in parte",
+            "received": "Ricevuto"
+          }
+        },
+        "itemCount_one": "{{count}} articolo",
+        "itemCount_other": "{{count}} articoli",
+        "missingCost_one": "{{count}} articolo senza costo registrato",
+        "missingCost_other": "{{count}} articoli senza costo registrato",
+        "pax8Badge": {
+          "failed": "Pax8 non riuscito",
+          "ordered": "Ordinato via Pax8",
+          "reconcile": "Pax8 da verificare",
+          "staged": "Preparato in Pax8"
+        },
+        "table": {
+          "extCost": "Costo esteso",
+          "item": "Elemento",
+          "markup": "Ricarico",
+          "partNumber": "N. parte",
+          "qty": "Qtà",
+          "sku": "SKU",
+          "unitCost": "Costo unitario",
+          "vendor": "Fornitore"
+        },
+        "title": "Da ordinare",
+        "unknownVendor": "Altro / fornitore sconosciuto"
+      },
       "pax8Order": {
         "message_one": "Questo preventivo ha preparato un ordine Pax8 ({{count}} elemento) in attesa dei dettagli di provisioning",
         "message_other": "Questo preventivo ha preparato un ordine Pax8 ({{count}} elementi) in attesa dei dettagli di provisioning",

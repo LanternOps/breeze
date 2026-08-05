@@ -147,6 +147,12 @@ export const quoteLines = pgTable('quote_lines', {
   itemType: catalogItemTypeEnum('item_type'),
   sku: varchar('sku', { length: 100 }),
   partNumber: varchar('part_number', { length: 100 }),
+  // Vendor identity snapshotted at add-time from catalog_items.attributes
+  // (never joined live: the distributor price table is partner-axis RLS and the
+  // attributes jsonb has three incompatible shapes). NULL = unknown/manual.
+  procurementSource: varchar('procurement_source', { length: 40 }),
+  vendorSku: varchar('vendor_sku', { length: 100 }),
+  manufacturer: varchar('manufacturer', { length: 255 }),
   // Optional per-line product image (quote_images row on the SAME quote; the
   // service enforces that). Wins over the catalog item's image when both exist.
   imageId: uuid('image_id').references((): AnyPgColumn => quoteImages.id, { onDelete: 'set null' }),
@@ -156,7 +162,8 @@ export const quoteLines = pgTable('quote_lines', {
   index('quote_lines_quote_sort_idx').on(t.quoteId, t.sortOrder),
   index('quote_lines_block_idx').on(t.blockId),
   index('quote_lines_org_idx').on(t.orgId),
-  index('quote_lines_image_idx').on(t.imageId)
+  index('quote_lines_image_idx').on(t.imageId),
+  uniqueIndex('quote_lines_id_quote_uq').on(t.id, t.quoteId)
 ]);
 
 export const quoteImages = pgTable('quote_images', {
@@ -207,6 +214,62 @@ export const quoteRecipients = pgTable('quote_recipients', {
     columns: [t.quoteId, t.orgId],
     foreignColumns: [quotes.id, quotes.orgId],
     name: 'quote_recipients_quote_id_org_id_fkey',
+  }).onDelete('cascade'),
+]);
+
+export const quoteOrders = pgTable('quote_orders', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  quoteId: uuid('quote_id').notNull(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  procurementSource: varchar('procurement_source', { length: 40 }),
+  vendorName: varchar('vendor_name', { length: 255 }),
+  orderRef: varchar('order_ref', { length: 120 }),
+  orderedBy: uuid('ordered_by').references(() => users.id, { onDelete: 'set null' }),
+  orderedAt: timestamp('ordered_at').defaultNow().notNull(),
+  notes: text('notes'),
+  // Double-click / retry dedupe: the client sends a UUID per Mark-ordered submit.
+  clientRequestId: uuid('client_request_id'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (t) => [
+  index('quote_orders_quote_idx').on(t.quoteId),
+  index('quote_orders_org_idx').on(t.orgId),
+  uniqueIndex('quote_orders_id_quote_org_uq').on(t.id, t.quoteId, t.orgId),
+  uniqueIndex('quote_orders_client_request_uq').on(t.quoteId, t.clientRequestId)
+    .where(sql`${t.clientRequestId} IS NOT NULL`),
+  foreignKey({
+    columns: [t.quoteId, t.orgId], foreignColumns: [quotes.id, quotes.orgId],
+    name: 'quote_orders_quote_org_fkey',
+  }).onDelete('cascade'),
+]);
+
+export const quoteOrderLines = pgTable('quote_order_lines', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orderId: uuid('order_id').notNull(),
+  quoteId: uuid('quote_id').notNull(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  quoteLineId: uuid('quote_line_id').notNull(),
+  orderedQty: numeric('ordered_qty', { precision: 12, scale: 2 }).notNull(),
+  receivedQty: numeric('received_qty', { precision: 12, scale: 2 }).notNull().default('0'),
+  trackingNumber: varchar('tracking_number', { length: 120 }),
+  eta: date('eta'),
+  receivedAt: timestamp('received_at'),
+  cancelledAt: timestamp('cancelled_at'),
+  notes: text('notes'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (t) => [
+  index('quote_order_lines_order_idx').on(t.orderId),
+  index('quote_order_lines_org_idx').on(t.orgId),
+  index('quote_order_lines_quote_idx').on(t.quoteId),
+  index('quote_order_lines_quote_line_idx').on(t.quoteLineId),
+  foreignKey({
+    columns: [t.orderId, t.quoteId, t.orgId],
+    foreignColumns: [quoteOrders.id, quoteOrders.quoteId, quoteOrders.orgId],
+    name: 'quote_order_lines_order_fkey',
+  }).onDelete('cascade'),
+  foreignKey({
+    columns: [t.quoteLineId, t.quoteId], foreignColumns: [quoteLines.id, quoteLines.quoteId],
+    name: 'quote_order_lines_quote_line_fkey',
   }).onDelete('cascade'),
 ]);
 
