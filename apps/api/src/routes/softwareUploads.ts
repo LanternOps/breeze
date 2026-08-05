@@ -222,7 +222,7 @@ softwareUploadRoutes.post(
     // disk for hours, so concurrency is bounded before the row is inserted.
     // One aggregate over the org's active sessions; pg returns count()/sum()
     // as strings, hence the Number() coercions.
-    // `IS NOT DISTINCT FROM` (not `=`) for the per-user predicate: `auth.userId`
+    // `IS NOT DISTINCT FROM` (not `=`) for the per-user predicate: `createdBy`
     // is null for system-scope/service-principal callers (requireScope admits
     // 'system'), and `created_by = NULL` is never true in SQL — a plain `=`
     // would silently exempt every null-user caller from
@@ -240,10 +240,11 @@ softwareUploadRoutes.post(
     // `getIdleTtlHours()` is imported from the reaper job itself so the two
     // can never drift apart into independently-tuned copies of the same knob.
     const idleCutoff = new Date(Date.now() - getIdleTtlHours() * 3_600_000);
+    const createdBy = auth.user?.id ?? null;
     const [usage] = await db
       .select({
         orgActive: sql<number>`count(*)`,
-        userActive: sql<number>`count(*) filter (where ${softwareUploadSessions.createdBy} is not distinct from ${auth.userId ?? null})`,
+        userActive: sql<number>`count(*) filter (where ${softwareUploadSessions.createdBy} is not distinct from ${createdBy})`,
         orgBytes: sql<number>`coalesce(sum(${softwareUploadSessions.fileSize}), 0)`,
       })
       .from(softwareUploadSessions)
@@ -277,7 +278,7 @@ softwareUploadRoutes.post(
         tempPath: uploadSessionTempPath(uploadId),
         ownerInstanceId: PROCESS_INSTANCE_ID,
         versionMetadata: metadata,
-        createdBy: auth.userId ?? null,
+        createdBy,
       })
       .returning();
     if (!session) return c.json({ error: 'Failed to create upload session' }, 500);

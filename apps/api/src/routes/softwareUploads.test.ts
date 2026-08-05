@@ -800,8 +800,9 @@ describe('software upload-session routes', () => {
         '936a185caaa266bb9cbe981e9e05cb78cd732b0b3280eb944412bb6f8f8f07af',
       );
       const insertArgs = vi.mocked(insertLatestSoftwareVersion).mock.calls[0];
-      expect(insertArgs[0]).toBe(CATALOG_ID);
-      expect(insertArgs[1]).toMatchObject({
+      expect(insertArgs).toBeDefined();
+      expect(insertArgs![0]).toBe(CATALOG_ID);
+      expect(insertArgs![1]).toMatchObject({
         version: '1.2.3',
         fileType: 'msi',
         originalFileName: 'big.msi',
