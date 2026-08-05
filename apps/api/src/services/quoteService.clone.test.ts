@@ -98,6 +98,8 @@ describe('cloneQuote', () => {
       // here means "no staged order", which short-circuits the pax8OrderLineSummary
       // query below it so no extra select is consumed from this queue.
       [],
+      [], // getQuote: listQuoteOrders — order headers
+      [], // getQuote: listQuoteOrders — order lines
       [{ id: 'image-1', quoteId: 'quote-1', orgId: 'org-1', imageData: Buffer.from('image'), mime: 'image/png', byteSize: 5, sha256: 'hash', createdAt: new Date() }],
     );
 
@@ -138,6 +140,8 @@ describe('cloneQuote', () => {
       [{ id: 'block-lines', quoteId: 'quote-1', orgId: 'org-1', blockType: 'line_items', content: { label: 'Services' }, sortOrder: 0, createdAt: new Date() }],
       [{ id: 'line-1', quoteId: 'quote-1', blockId: 'block-lines', orgId: 'org-1', sourceType: 'manual', catalogItemId: null, parentLineId: null, name: 'Server', description: null, quantity: '1.00', unitPrice: '100.00', taxable: true, customerVisible: true, lineTotal: '100.00', recurrence: 'one_time', termMonths: null, billingFrequency: null, unitCost: null, depositEligible: true, itemType: 'hardware', sku: null, partNumber: null, imageId: 'image-1', sortOrder: 0, createdAt: new Date() }],
       [], // no staged Pax8 order
+      [], // getQuote: listQuoteOrders — order headers
+      [], // getQuote: listQuoteOrders — order lines
       [{ id: 'image-1', quoteId: 'quote-1', orgId: 'org-1', imageData: Buffer.from('image'), mime: 'image/png', byteSize: 5, sha256: 'hash', createdAt: new Date() }],
       [{ id: 'org-2' }], // target org same-partner membership check
       // resolveQuoteTaxRate for the NEW org: 8% org rate, no partner default
@@ -214,6 +218,8 @@ describe('cloneQuote', () => {
       [{ id: 'block-contract', quoteId: 'quote-1', orgId: 'org-1', blockType: 'contract', content: contractContent, sortOrder: 0, createdAt: new Date() }],
       [], // no lines
       [], // no staged Pax8 order
+      [], // getQuote: listQuoteOrders — order headers
+      [], // getQuote: listQuoteOrders — order lines
       [], // no images
     );
 
@@ -238,6 +244,8 @@ describe('cloneQuote', () => {
       [{ id: 'block-contract', quoteId: 'quote-1', orgId: 'org-1', blockType: 'contract', content: contractContent, sortOrder: 0, createdAt: new Date() }],
       [], // no lines
       [], // no staged Pax8 order
+      [], // getQuote: listQuoteOrders — order headers
+      [], // getQuote: listQuoteOrders — order lines
       [], // no images
       [{ id: 'org-2' }], // target org same-partner membership check
       // assertContractBlockValid: version published + matching template
@@ -259,6 +267,8 @@ describe('cloneQuote', () => {
       [{ id: 'block-contract', quoteId: 'quote-1', orgId: 'org-1', blockType: 'contract', content: contractContent, sortOrder: 0, createdAt: new Date() }],
       [], // no lines
       [], // no staged Pax8 order
+      [], // getQuote: listQuoteOrders — order headers
+      [], // getQuote: listQuoteOrders — order lines
       [], // no images
       [{ id: 'org-2' }], // target org same-partner membership check
       [{ templateId: 'tpl-1', status: 'published' }], // version published
@@ -284,6 +294,8 @@ describe('cloneQuote', () => {
       [], // no blocks
       [], // no lines
       [], // no staged Pax8 order
+      [], // getQuote: listQuoteOrders — order headers
+      [], // getQuote: listQuoteOrders — order lines
       [{ id: 'image-1', quoteId: 'quote-1', orgId: 'org-1', imageData: Buffer.from('image'), mime: 'image/png', byteSize: 5, sha256: 'hash', createdAt: new Date() }],
     );
 

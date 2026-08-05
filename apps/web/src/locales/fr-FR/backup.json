@@ -19,6 +19,7 @@
     "running": "En cours",
     "failed": "Échec",
     "completed": "Terminée",
+    "partial": "Partielle",
     "queued": "En file d’attente",
     "cancelled": "Annulé",
     "filterByConfig": "Filtrer par configuration",
@@ -48,7 +49,10 @@
     "errorLog": "Journal d’erreurs",
     "savings": "{{protected}} protégés — {{uploaded}} téléversés",
     "errorCount_one": "{{count}} erreur",
-    "errorCount_other": "{{count}} erreurs"
+    "errorCount_other": "{{count}} erreurs",
+    "failedCount_one": "{{count}} en échec",
+    "failedCount_other": "{{count}} en échec",
+    "failedFilesTooltip": "Fichiers en échec lors de cette sauvegarde"
   },
   "backupOverviewContent": {
     "noProviderTimelineAvailableYet": "Aucun délai de fournisseur n’est encore disponible.",
@@ -168,6 +172,9 @@
     "vssStatus": "Statut VSS",
     "latestBackupJob": "Dernière tâche de sauvegarde",
     "oneOrMoreVssWritersAreNotStable": "Un ou plusieurs rédacteurs VSS ne sont pas stables. Consultez les derniers écrits des auteurs avant la prochaine édition.",
+    "vssUnprotectedVolumes": "Lu à partir du volume actif, et non d’une copie fantôme VSS : {{volumes}}. Les fichiers en cours d’utilisation sur ces volumes peuvent avoir été ignorés ou capturés dans un état incohérent.",
+    "lastBackupFailed": "Échec de la dernière sauvegarde",
+    "lastBackupCompletedWithWarnings": "Dernière sauvegarde terminée avec des avertissements",
     "writer": "Écrivain",
     "state": "État",
     "noVssWriterDetailsWereReportedForThe": "Aucun détail de l’auteur VSS n’a été rapporté pour la dernière sauvegarde.",

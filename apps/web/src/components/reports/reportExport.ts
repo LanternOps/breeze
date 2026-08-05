@@ -1,14 +1,16 @@
 import type { PostureSummary, ExecutiveSummary } from '@breeze/shared';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula } from '@/lib/csvExport';
+import { downloadBlob } from '@/lib/downloadBlob';
 import { sanitizeImageSrc } from '@/lib/safeImageSrc';
 import { fetchWithAuth } from '../../stores/auth';
 import { buildReportPdf, type ReportBranding } from '@breeze/shared/reportPdf';
 
-// Re-export the shared CSV helpers so existing importers of these names from
-// './reportExport' keep working; the canonical definitions now live in
-// lib/csvExport (jsPDF-free so non-report exporters don't bundle a PDF library).
-export { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula };
+// Re-export the shared CSV + download helpers so existing importers of these
+// names from './reportExport' keep working; the canonical definitions now live
+// in lib/csvExport and lib/downloadBlob (both jsPDF-free, so a non-report
+// exporter such as the quote order breakdown doesn't bundle a PDF library).
+export { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula, downloadBlob };
 // PostureSummary is single-sourced in @breeze/shared (also consumed by the API
 // generator that produces it); re-export so existing local importers still work.
 export type { PostureSummary } from '@breeze/shared';
@@ -27,18 +29,6 @@ function extractTable(rows: unknown[]): { headers: string[]; body: string[][] } 
     return headers.map(h => cellToString(record[h]));
   });
   return { headers, body };
-}
-
-/** Trigger a browser file download from a Blob. */
-export function downloadBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
 }
 
 /** Return the browser's IANA timezone string. */

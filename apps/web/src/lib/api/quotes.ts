@@ -20,7 +20,10 @@
 import { fetchWithAuth } from '../../stores/auth';
 import type {
   CreateQuoteInput,
+  CreateQuoteOrderInput,
   UpdateQuoteInput,
+  UpdateQuoteOrderInput,
+  UpdateQuoteOrderLineInput,
   QuoteLineInput,
   QuoteBlockInput,
 } from '@breeze/shared';
@@ -198,6 +201,52 @@ export function reorderLines(id: string, blockId: string, body: { lineIds: strin
  *  the target block's sort order; bundle children follow their parent. */
 export function moveLine(id: string, lineId: string, body: { blockId: string }): Promise<Response> {
   return fetchWithAuth(`/quotes/${id}/lines/${lineId}/move`, {
+    method: 'PATCH',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  });
+}
+
+// ---- fulfillment (procurement order tracking) -----------------------------
+// All three are gated server-side on `quotes:fulfill` — a distinct permission
+// from quotes:write, so the UI must gate on it separately too.
+
+/** Record a purchase order against a won quote's lines
+ *  (POST /quotes/:id/orders). `clientRequestId` is the idempotency key: the
+ *  server dedupes a retry with the same id instead of creating a second order,
+ *  so the caller must mint it ONCE per submit-session (not per render/click). */
+export function createQuoteOrder(quoteId: string, body: CreateQuoteOrderInput): Promise<Response> {
+  return fetchWithAuth(`/quotes/${quoteId}/orders`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  });
+}
+
+/** Edit an order's header fields (PATCH /quotes/:id/orders/:orderId). */
+export function updateQuoteOrder(
+  quoteId: string,
+  orderId: string,
+  body: UpdateQuoteOrderInput,
+): Promise<Response> {
+  return fetchWithAuth(`/quotes/${quoteId}/orders/${orderId}`, {
+    method: 'PATCH',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  });
+}
+
+/** Receive / re-track / cancel a single allocation
+ *  (PATCH /quotes/:id/orders/:orderId/lines/:lineId). `receivedQty: 0` is a
+ *  legal correction (it clears a mistaken receipt), and receiving against a
+ *  cancelled allocation 400s unless the same patch also sets `cancelled: false`. */
+export function updateQuoteOrderLine(
+  quoteId: string,
+  orderId: string,
+  lineId: string,
+  body: UpdateQuoteOrderLineInput,
+): Promise<Response> {
+  return fetchWithAuth(`/quotes/${quoteId}/orders/${orderId}/lines/${lineId}`, {
     method: 'PATCH',
     headers: JSON_HEADERS,
     body: JSON.stringify(body),

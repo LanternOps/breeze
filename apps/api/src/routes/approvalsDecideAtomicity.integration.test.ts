@@ -164,7 +164,7 @@ async function seedIntentWithTwoApprovers(s: Scenario): Promise<{ intentId: stri
   // release time), so a bare random UUID is fine (mirrors intentFanout).
   const snapshot = await createActionIntent(auth, {
     toolName: 'execute_command',
-    input: { deviceId: randomUUID(), commandType: 'list_processes' },
+    input: { deviceId: randomUUID(), commandType: 'kill_process' },
     source: 'chat',
   });
   expect(snapshot.status).toBe('pending_approval');

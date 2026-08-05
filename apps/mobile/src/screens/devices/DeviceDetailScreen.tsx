@@ -17,6 +17,7 @@ import {
   type,
 } from '../../theme';
 import { Spinner } from '../../components/Spinner';
+import { reportInternalError } from '../../lib/errorReporting';
 
 interface Props {
   route: { params: { device: Device } };
@@ -170,8 +171,11 @@ export function DeviceDetailScreen({ route }: Props) {
       .then((data) => {
         if (mounted) setMetrics(data);
       })
-      .catch((err: Error) => {
-        if (mounted) setMetricsError(err.message);
+      .catch((err: unknown) => {
+        // The raw message is internal (function name + HTTP status) — report it
+        // to Sentry and keep only a static string in UI state (issue #3141).
+        reportInternalError(err, 'device-metrics');
+        if (mounted) setMetricsError('Could not load metrics.');
       })
       .finally(() => {
         if (mounted) setLoadingMetrics(false);

@@ -272,6 +272,48 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS bar_idx ON t (b);`;
   });
 });
 
+describe('db:migrate entrypoint (#3065)', () => {
+  // `pnpm db:migrate` executes a dedicated entry file via tsx. That file must
+  // unconditionally invoke autoMigrate() — the original bug was the script
+  // pointing at the library module itself, which only exports the function,
+  // so the command exited 0 having applied nothing. A conditional
+  // "am I the main module?" guard is not acceptable here either: comparing
+  // import.meta.url to process.argv[1] fails open on percent-encodable or
+  // symlinked paths, silently reproducing the same no-op.
+  const apiRoot = path.resolve(__dirname, '..', '..');
+
+  function resolveEntrypoint(): { entrypoint: string; source: string } {
+    const pkg = JSON.parse(readFileSync(path.join(apiRoot, 'package.json'), 'utf8'));
+    const script: string = pkg.scripts['db:migrate'];
+    expect(script).toMatch(/^tsx /);
+    const entrypoint = script.replace(/^tsx\s+/, '').trim();
+    return { entrypoint, source: readFileSync(path.join(apiRoot, entrypoint), 'utf8') };
+  }
+
+  it('package.json db:migrate points at a dedicated entry file, not the library module', () => {
+    const { entrypoint, source } = resolveEntrypoint();
+    expect(source.length).toBeGreaterThan(0);
+    // The library module must stay import-safe for the API boot path, so the
+    // script may not point straight at it.
+    expect(path.basename(entrypoint)).not.toBe('autoMigrate.ts');
+  });
+
+  it('the entrypoint invokes autoMigrate() unconditionally and exits by outcome', () => {
+    const { source } = resolveEntrypoint();
+
+    // Invokes the runner (not just imports it)...
+    expect(source).toContain('autoMigrate()');
+    // ...must not hide the call behind a main-module guard (fails open on
+    // percent-encoded/symlinked paths — the silent-no-op failure mode again).
+    expect(source).not.toContain('import.meta.url ===');
+    // Success must exit 0 explicitly (the auto-seed step opens the shared
+    // pool, which would otherwise hold the event loop open forever)...
+    expect(source).toContain('process.exit(0)');
+    // ...and failure must exit non-zero.
+    expect(source).toContain('process.exit(1)');
+  });
+});
+
 describe('CHECKSUM_RECONCILIATIONS', () => {
   const migrationsDir = path.resolve(__dirname, '../../migrations');
 

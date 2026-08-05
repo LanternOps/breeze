@@ -67,4 +67,24 @@ describe('bodyLimitForPath', () => {
     expect(bodyLimitForPath('/api/v1/software/catalog/cat-123/versions').maxSize).toBe(1 * MB);
     expect(bodyLimitForPath('/api/v1/software/catalog/cat-123/versions/upload/extra').maxSize).toBe(1 * MB);
   });
+
+  // Chunked package uploads (#2951): each chunk is a raw octet-stream request
+  // of at most 8MB (the client's UPLOAD_CHUNK_SIZE); 9MB gives the route's own
+  // per-chunk size check headroom to answer with its specific message.
+  it('carves out software upload-session chunks at 9MB', () => {
+    expect(
+      bodyLimitForPath(
+        '/api/v1/software/catalog/11111111-1111-4111-8111-111111111111/versions/uploads/22222222-2222-4222-8222-222222222222/chunks',
+      ),
+    ).toEqual({
+      maxSize: 9 * MB,
+      error: 'Chunk too large (max 8MB)',
+    });
+    // Session create/status/complete/abort stay on the tight default.
+    expect(
+      bodyLimitForPath(
+        '/api/v1/software/catalog/11111111-1111-4111-8111-111111111111/versions/uploads',
+      ).maxSize,
+    ).toBe(1 * MB);
+  });
 });

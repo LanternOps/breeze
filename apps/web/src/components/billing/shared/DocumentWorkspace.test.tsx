@@ -98,16 +98,18 @@ describe('DocumentWorkspace', () => {
     expect(h1).toHaveClass('sr-only');
   });
 
-  it('renders metaSlot below the title row', () => {
+  it('renders metaSlot inline in the header row, after the title cluster', () => {
     renderWs({
       titleSlot: <input data-testid="title-input" defaultValue="THING-1" />,
       metaSlot: <span data-testid="meta-slot">Customer: Acme</span>,
     });
     const meta = screen.getByTestId('meta-slot');
-    expect(meta).toBeInTheDocument();
-    // Below the title row, not inside it — the switcher used to sit inline and
-    // squeeze the title.
-    expect(screen.getByTestId('title-input').compareDocumentPosition(meta))
+    const titleInput = screen.getByTestId('title-input');
+    // Inline after the title + pill cluster, in the same wrapping flex row —
+    // NOT inside the title cluster (where it would squeeze the title) and NOT
+    // on a separate dedicated line (the header must stay one row when wide).
+    expect(meta.parentElement).toBe(titleInput.parentElement!.parentElement);
+    expect(titleInput.parentElement!.compareDocumentPosition(meta))
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 

@@ -161,6 +161,9 @@ vi.mock('../db/schema', () => ({
   discoveryJobs: { id: 'id', status: 'status', completedAt: 'completedAt', errors: 'errors', updatedAt: 'updatedAt' },
   discoveredAssets: { id: 'id', orgId: 'orgId' },
   sites: { id: 'id', orgId: 'orgId', createdAt: 'createdAt' },
+  // GET /orgs/sites excludes the hidden per-partner 'quick_support' org's site
+  // with a NOT EXISTS against `organizations`, so the mock must export it.
+  organizations: { id: 'id', partnerId: 'partnerId', type: 'type', name: 'name', deletedAt: 'deletedAt' },
   huntressIntegrations: {
     id: 'id',
     orgId: 'orgId',

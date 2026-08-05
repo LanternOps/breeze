@@ -16,6 +16,15 @@ interface ApprovalsState {
   loading: boolean;
   error: string | null;
   decisionInFlight: Record<string, 'approve' | 'deny' | undefined>;
+  /**
+   * True once `/pending` has answered at least once this session.
+   *
+   * Before that, an empty `pending` means "haven't asked yet", not "nothing is
+   * awaiting a decision" — and the two are not interchangeable. The
+   * notification sweep keys off this so a cold start cannot clear the banner
+   * for a request that is in fact still live.
+   */
+  hasSynced: boolean;
 }
 
 const initialState: ApprovalsState = {
@@ -24,6 +33,7 @@ const initialState: ApprovalsState = {
   loading: false,
   error: null,
   decisionInFlight: {},
+  hasSynced: false,
 };
 
 export const hydrateFromCache = createAsyncThunk('approvals/hydrate', async () => {
@@ -74,6 +84,32 @@ export const reportSuspicious = createAsyncThunk(
   }
 );
 
+/**
+ * Drop `id` from the queue and roll focus onto the next still-pending request.
+ *
+ * Every removal path must go through here. Filtering `pending` without moving
+ * `focusId` strands the rest of the queue: the takeover selector requires
+ * `focusId` to name a row whose status is still `'pending'`, so a `focusId`
+ * left pointing at a removed/decided row renders "No pending approvals" while
+ * real requests sit behind it (#3026).
+ */
+function dropAndRefocus(state: ApprovalsState, id: string): void {
+  state.pending = state.pending.filter((a) => a.id !== id);
+  if (state.focusId === id) {
+    state.focusId = state.pending.find((a) => a.status === 'pending')?.id ?? null;
+  }
+}
+
+/**
+ * Decision-error codes that mean the request is settled server-side and will
+ * never become actionable again. Surfaced by services/approvals.ts from the
+ * 409/410 responses. On these the local row MUST go — leaving it pending is
+ * what pinned the takeover screen open with a request the user could not
+ * clear by any means (the classic "approved it in the browser, phone still
+ * nags me" report).
+ */
+const TERMINAL_DECISION_ERRORS = new Set(['ALREADY_DECIDED', 'EXPIRED']);
+
 const slice = createSlice({
   name: 'approvals',
   initialState,
@@ -84,6 +120,33 @@ const slice = createSlice({
     markExpired(state, action: PayloadAction<string>) {
       const i = state.pending.findIndex((a) => a.id === action.payload);
       if (i >= 0) state.pending[i].status = 'expired';
+      if (state.focusId === action.payload) {
+        state.focusId = state.pending.find((a) => a.status === 'pending')?.id ?? null;
+      }
+    },
+    /**
+     * Wall-clock sweep over the WHOLE queue.
+     *
+     * ApprovalScreen only ever ran an expiry timer against the focused
+     * request, so anything queued behind it aged past `expiresAt` and stayed
+     * `pending` forever. Callers pass `now` explicitly so this stays
+     * deterministic under test.
+     */
+    pruneExpired(state, action: PayloadAction<number>) {
+      const now = action.payload;
+      for (const a of state.pending) {
+        if (a.status === 'pending' && new Date(a.expiresAt).getTime() <= now) {
+          a.status = 'expired';
+        }
+      }
+      if (state.focusId) {
+        const focusStillPending = state.pending.some(
+          (a) => a.id === state.focusId && a.status === 'pending'
+        );
+        if (!focusStillPending) {
+          state.focusId = state.pending.find((a) => a.status === 'pending')?.id ?? null;
+        }
+      }
     },
     upsert(state, action: PayloadAction<ApprovalRequest>) {
       const i = state.pending.findIndex((a) => a.id === action.payload.id);
@@ -110,9 +173,18 @@ const slice = createSlice({
     });
     b.addCase(refreshPending.fulfilled, (s, a) => {
       s.loading = false;
+      s.hasSynced = true;
       s.pending = a.payload;
-      if (a.payload.length > 0 && !s.focusId) s.focusId = a.payload[0].id;
-      if (a.payload.length === 0) s.focusId = null;
+      // The server list is authoritative. A request decided elsewhere (browser,
+      // another approver device, server-side expiry) simply stops appearing
+      // here, so focus must be re-derived from the new list rather than left
+      // pointing at a row that no longer exists.
+      const focusStillPending = a.payload.some(
+        (x) => x.id === s.focusId && x.status === 'pending'
+      );
+      if (!focusStillPending) {
+        s.focusId = a.payload.find((x) => x.status === 'pending')?.id ?? null;
+      }
     });
     b.addCase(refreshPending.rejected, (s, a) => {
       s.loading = false;
@@ -120,6 +192,13 @@ const slice = createSlice({
     });
 
     b.addCase(fetchOne.fulfilled, (s, a) => {
+      // A push can land for a request that was already decided in the browser
+      // between dispatch and delivery. Re-adding it to `pending` leaves a dead
+      // row in the queue (and in the on-device cache) forever, so settle it.
+      if (a.payload.status !== 'pending') {
+        dropAndRefocus(s, a.payload.id);
+        return;
+      }
       const i = s.pending.findIndex((x) => x.id === a.payload.id);
       if (i >= 0) s.pending[i] = a.payload;
       else s.pending.unshift(a.payload);
@@ -140,11 +219,16 @@ const slice = createSlice({
     });
     b.addCase(approve.fulfilled, (s, a) => {
       delete s.decisionInFlight[a.meta.arg];
-      s.pending = s.pending.filter((x) => x.id !== a.payload.id);
-      if (s.focusId === a.payload.id) s.focusId = s.pending[0]?.id ?? null;
+      dropAndRefocus(s, a.payload.id);
     });
     b.addCase(approve.rejected, (s, a) => {
       delete s.decisionInFlight[a.meta.arg];
+      if (TERMINAL_DECISION_ERRORS.has(a.error.message ?? '')) {
+        dropAndRefocus(s, a.meta.arg);
+        // ApprovalScreen already toasts "Already decided elsewhere." / "This
+        // request expired." — no banner needed for an outcome the user caused.
+        return;
+      }
       s.error = a.error.message ?? 'Approve failed';
     });
 
@@ -153,11 +237,14 @@ const slice = createSlice({
     });
     b.addCase(deny.fulfilled, (s, a) => {
       delete s.decisionInFlight[a.meta.arg.id];
-      s.pending = s.pending.filter((x) => x.id !== a.payload.id);
-      if (s.focusId === a.payload.id) s.focusId = s.pending[0]?.id ?? null;
+      dropAndRefocus(s, a.payload.id);
     });
     b.addCase(deny.rejected, (s, a) => {
       delete s.decisionInFlight[a.meta.arg.id];
+      if (TERMINAL_DECISION_ERRORS.has(a.error.message ?? '')) {
+        dropAndRefocus(s, a.meta.arg.id);
+        return;
+      }
       s.error = a.error.message ?? 'Deny failed';
     });
 
@@ -166,8 +253,7 @@ const slice = createSlice({
     });
     b.addCase(reportSuspicious.fulfilled, (s, a) => {
       delete s.decisionInFlight[a.meta.arg];
-      s.pending = s.pending.filter((x) => x.id !== a.payload.id);
-      if (s.focusId === a.payload.id) s.focusId = s.pending[0]?.id ?? null;
+      dropAndRefocus(s, a.payload.id);
     });
     b.addCase(reportSuspicious.rejected, (s, a) => {
       delete s.decisionInFlight[a.meta.arg];
@@ -176,5 +262,5 @@ const slice = createSlice({
   },
 });
 
-export const { setFocus, markExpired, upsert, clearApprovalsError } = slice.actions;
+export const { setFocus, markExpired, pruneExpired, upsert, clearApprovalsError } = slice.actions;
 export default slice.reducer;

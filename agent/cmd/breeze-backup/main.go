@@ -620,7 +620,7 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 				SnapshotID: snapshotID,
 			})
 		})
-		result := marshalResult(mgr.RunBackupContext(ctx, excludes))
+		result := marshalBackupRunResult(mgr.RunBackupContext(ctx, excludes))
 		// Auto-sync to vault after successful backup (async — don't block command response)
 		if result.Success {
 			go autoSyncToVault(result.Stdout, vaultState, conn)
@@ -708,6 +708,37 @@ func ok(stdout string) backupipc.BackupCommandResult {
 
 func fail(msg string) backupipc.BackupCommandResult {
 	return backupipc.BackupCommandResult{Success: false, Stderr: msg}
+}
+
+// marshalBackupRunResult is marshalResult for backup_run specifically, differing
+// on ONE point: a failed run still carries its job body.
+//
+// The generic marshalResult throws `v` away when err != nil, so on every hard
+// failure the server received Stderr and nothing else. That silently defeated
+// #3027 on the branch where the diagnostics matter most: job.VSSMetadata and
+// job.Warning were both built by then — recording, say, that no shadow copy
+// could be created and which writers were wedged — and both were discarded one
+// frame before the wire. The counters (filesBackedUp, errorCount) went with
+// them.
+//
+// Success stays false and Stderr still carries the failure reason, so the server
+// still records the job `failed` (routes/agentWs.ts gates on
+// `result.status === 'completed'`). The body only adds detail to a failure that
+// was going to be a failure regardless. A body that cannot be marshalled is
+// simply omitted — a marshalling problem must never escalate into losing the
+// failure reason itself.
+func marshalBackupRunResult(job *backup.BackupJob, err error) backupipc.BackupCommandResult {
+	if err == nil {
+		return marshalResult(job, nil)
+	}
+	result := fail(err.Error())
+	if job == nil {
+		return result
+	}
+	if data, merr := json.Marshal(job); merr == nil {
+		result.Stdout = string(data)
+	}
+	return result
 }
 
 func marshalResult(v any, err error) backupipc.BackupCommandResult {

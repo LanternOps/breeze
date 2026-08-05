@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { authMiddleware, requireMfa, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { sessionRoutes } from './sessions';
+import { supportSessionRoutes } from './supportSessions';
 
 export const remoteRoutes = new Hono();
 
@@ -11,4 +12,6 @@ remoteRoutes.use('*', requirePermission(PERMISSIONS.REMOTE_ACCESS.resource, PERM
 
 // Mount sub-routes
 remoteRoutes.route('/', sessionRoutes);
+// Quick Support inherits the same auth + remote:access + MFA gate above.
+remoteRoutes.route('/', supportSessionRoutes);
 

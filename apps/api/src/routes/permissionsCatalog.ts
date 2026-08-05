@@ -47,6 +47,7 @@ const ACTION_LABELS: Record<string, string> = {
   export: 'Export',
   manage: 'Manage',
   send: 'Send',
+  fulfill: 'Fulfill',
   admin: 'Administer',
   accept_risk: 'Accept Risk',
   read_all: 'Read All',

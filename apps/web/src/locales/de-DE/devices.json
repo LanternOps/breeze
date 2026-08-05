@@ -1085,7 +1085,9 @@
     "to": "zu",
     "perPage": "Pro Seite",
     "devicesPerPage": "Geräte pro Seite",
-    "page": "Seite"
+    "page": "Seite",
+    "possibleDuplicate": "Mögliches Duplikat",
+    "possibleDuplicateTitle": "Dieses Gerät ersetzt möglicherweise einen früheren Eintrag mit demselben Hostnamen. Zum Prüfen öffnen."
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Geräteprotokolle konnten nicht abgerufen werden",
@@ -2223,5 +2225,16 @@
     "idleMinutes": "{{count}} Min. inaktiv",
     "disconnectedNotShadowable": "Getrennte Sitzungen können nicht angezeigt werden – kein aktiver Desktop zum Erfassen",
     "cancel": "Abbrechen"
+  },
+  "possibleReplacementBanner": {
+    "decommissionFailed": "Das alte Gerät konnte nicht außer Betrieb genommen werden",
+    "decommissionOldDevice": "Altes Gerät außer Betrieb nehmen",
+    "decommissionSucceeded": "Altes Gerät außer Betrieb genommen",
+    "message": "Dieses Gerät ersetzt möglicherweise {{hostname}} – prüfen Sie den alten Eintrag und nehmen Sie ihn außer Betrieb.",
+    "oldDeviceDecommissioned": "Altes Gerät außer Betrieb genommen – nichts mehr zu prüfen.",
+    "oldDeviceUnavailable": "Der alte Geräteeintrag ist nicht mehr verfügbar.",
+    "title": "Mögliche doppelte Registrierung",
+    "unknownDevice": "das vorherige Gerät",
+    "viewOldDevice": "Altes Gerät anzeigen"
   }
 }

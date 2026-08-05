@@ -127,6 +127,11 @@ describe('DELETE /devices/:id (decommission) — remote-session teardown wiring'
   // getDeviceWithOrgAndSiteCheck issues db.select().from(devices).where(...)
   // .limit(1); then the decommission handler runs db.update().set().where()
   // .returning() → the updated row.
+  //
+  // Two db.update() chains run on the success path: the status flip (which
+  // calls .returning()) and the replacement-linkage clear (which does not —
+  // awaiting the where() result object is a no-op, so one shared rig serves
+  // both). `set` is returned so tests can inspect each chain's payload.
   function rigDecommission(device: unknown) {
     const limit = vi.fn().mockResolvedValue(device ? [device] : []);
     const where = vi.fn().mockReturnValue({ limit });
@@ -139,6 +144,7 @@ describe('DELETE /devices/:id (decommission) — remote-session teardown wiring'
     const updWhere = vi.fn().mockReturnValue({ returning });
     const set = vi.fn().mockReturnValue({ where: updWhere });
     vi.mocked(db.update).mockReturnValue({ set } as never);
+    return { set, updWhere };
   }
 
   it('calls terminateDeviceRemoteSessions with the decommissioned device id', async () => {
@@ -217,5 +223,42 @@ describe('DELETE /devices/:id (decommission) — remote-session teardown wiring'
     expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       details: expect.objectContaining({ agentWsDisconnect: 'not-connected' }),
     }));
+  });
+
+  // #2764: a newer device carrying possible_replacement_of_device_id = <this
+  // device> renders a "review possible replacement" banner/badge asking a
+  // human whether the new device replaced the old one. Decommissioning the
+  // old device IS that answer, so the linkage must be cleared — otherwise the
+  // prompt persists forever with nothing left to compare against.
+  describe('replacement-linkage resolution', () => {
+    it('clears possible_replacement_of_device_id on rows pointing at the decommissioned device', async () => {
+      const { set } = rigDecommission(ONLINE_DEVICE);
+
+      const res = await app.request(`/devices/${DEVICE_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      // Two writes: the status flip, then the linkage clear.
+      expect(set).toHaveBeenCalledTimes(2);
+      expect(set).toHaveBeenNthCalledWith(1, expect.objectContaining({ status: 'decommissioned' }));
+      expect(set).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ possibleReplacementOfDeviceId: null })
+      );
+    });
+
+    it('does not clear linkage when the device is already decommissioned (400)', async () => {
+      const { set } = rigDecommission({ ...ONLINE_DEVICE, status: 'decommissioned' });
+
+      const res = await app.request(`/devices/${DEVICE_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(400);
+      expect(set).not.toHaveBeenCalled();
+    });
   });
 });

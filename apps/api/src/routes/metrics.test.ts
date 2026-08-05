@@ -1,4 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  EventLoopLagMonitor,
+  stopEventLoopMonitor,
+  __setEventLoopMonitorForTests,
+} from '../services/eventLoopMonitor';
 import { Hono } from 'hono';
 
 const selectMock = vi.hoisted(() => vi.fn());
@@ -203,6 +208,42 @@ function getMetricLine(metrics: string, name: string, labels?: Record<string, st
     .find((line) => line.startsWith(`${name}${labelText} `));
 }
 
+/**
+ * Install a real EventLoopLagMonitor driven by a fake clock and a fake
+ * histogram, so the gauges are exercised through the genuine
+ * getEventLoopLagStats / readLatestEventLoopLag path rather than a stub of it.
+ */
+function installFakeMonitor(first: {
+  maxLagMs: number;
+  meanLagMs: number;
+  /** Wall-clock to advance past the sample, simulating a still-blocked loop. */
+  advanceAfterSampleMs?: number;
+}): { pushSample: (s: { maxLagMs: number; meanLagMs: number }) => void } {
+  const NS = 1e6;
+  const histogram = { max: 0, mean: 0, enable: () => true, disable: () => true, reset() { this.max = 0; this.mean = 0; } };
+  let now = 5_000_000;
+  const sampleIntervalMs = 1_000;
+  const monitor = new EventLoopLagMonitor({
+    sampleIntervalMs,
+    now: () => now,
+    createHistogram: () => histogram as never,
+  });
+  monitor.start();
+
+  const push = (sample: { maxLagMs: number; meanLagMs: number }) => {
+    histogram.max = sample.maxLagMs * NS;
+    histogram.mean = sample.meanLagMs * NS;
+    now += sampleIntervalMs;
+    monitor.sampleNow();
+  };
+
+  push(first);
+  if (first.advanceAfterSampleMs) now += first.advanceAfterSampleMs;
+
+  __setEventLoopMonitorForTests(monitor);
+  return { pushSample: push };
+}
+
 describe('metrics routes', () => {
   let app: Hono;
 
@@ -234,6 +275,96 @@ describe('metrics routes', () => {
     expect(body).toContain('# HELP http_requests_total Total number of HTTP requests');
     expect(body).toContain('http_requests_in_flight 0');
     expect(body).toContain('agent_heartbeat_total{status="success"} 0');
+  });
+
+  // #3022 — these four gauges are the durable production artifact of the
+  // event-loop work. Without a test, deleting the `updateEventLoopMetrics()`
+  // call leaves them pinned at their initialize-time zeros, and every dashboard
+  // reads a perfectly healthy loop forever.
+  describe('event-loop gauges (#3022)', () => {
+    afterEach(() => {
+      stopEventLoopMonitor();
+      __setEventLoopMonitorForTests(null);
+      delete process.env.EVENT_LOOP_STARVATION_WARN_MS;
+    });
+
+    async function scrape(): Promise<string> {
+      const res = await app.request('/metrics', { headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(200);
+      return res.text();
+    }
+
+    it('publishes every series even with no monitor running', async () => {
+      const body = await scrape();
+      expect(body).toContain('# TYPE breeze_nodejs_eventloop_lag_max_seconds gauge');
+      expect(body).toContain('# TYPE breeze_nodejs_eventloop_lag_window_max_seconds gauge');
+      expect(body).toContain('# TYPE breeze_nodejs_eventloop_lag_window_mean_seconds gauge');
+      expect(body).toContain('# TYPE breeze_nodejs_eventloop_starved gauge');
+      // The one that keeps a blind instance from reading as a healthy one.
+      expect(getMetricLine(body, 'breeze_nodejs_eventloop_monitored')).toBe(
+        'breeze_nodejs_eventloop_monitored 0',
+      );
+    });
+
+    it('tracks a running monitor and reports lag in SECONDS', async () => {
+      process.env.EVENT_LOOP_STARVATION_WARN_MS = '1000';
+      installFakeMonitor({ maxLagMs: 2_500, meanLagMs: 40 });
+
+      const body = await scrape();
+      expect(getMetricLine(body, 'breeze_nodejs_eventloop_monitored')).toBe(
+        'breeze_nodejs_eventloop_monitored 1',
+      );
+      // 2500ms -> 2.5s. A ms value here would be 1000x off in every dashboard.
+      expect(getMetricLine(body, 'breeze_nodejs_eventloop_lag_max_seconds')).toBe(
+        'breeze_nodejs_eventloop_lag_max_seconds 2.5',
+      );
+      expect(getMetricLine(body, 'breeze_nodejs_eventloop_lag_window_mean_seconds')).toBe(
+        'breeze_nodejs_eventloop_lag_window_mean_seconds 0.04',
+      );
+      expect(getMetricLine(body, 'breeze_nodejs_eventloop_starved')).toBe(
+        'breeze_nodejs_eventloop_starved 1',
+      );
+    });
+
+    it('clears `starved` once the loop recovers, rather than smearing the spike', async () => {
+      process.env.EVENT_LOOP_STARVATION_WARN_MS = '1000';
+      const monitor = installFakeMonitor({ maxLagMs: 9_000, meanLagMs: 20 });
+      // A later, healthy interval. The 9s spike stays the window high-water
+      // mark, but the instantaneous gauge must fall back to the current value —
+      // otherwise `starved == 1 for 1m` fires on a momentary blip.
+      monitor.pushSample({ maxLagMs: 5, meanLagMs: 2 });
+
+      const body = await scrape();
+      expect(getMetricLine(body, 'breeze_nodejs_eventloop_starved')).toBe(
+        'breeze_nodejs_eventloop_starved 0',
+      );
+      expect(getMetricLine(body, 'breeze_nodejs_eventloop_lag_max_seconds')).toBe(
+        'breeze_nodejs_eventloop_lag_max_seconds 0.005',
+      );
+      expect(getMetricLine(body, 'breeze_nodejs_eventloop_lag_window_max_seconds')).toBe(
+        'breeze_nodejs_eventloop_lag_window_max_seconds 9',
+      );
+      // The mean must be named for the same time base as the window max, not
+      // read as the partner of the instantaneous max — otherwise a recovered
+      // loop publishes a max below its mean.
+      expect(getMetricLine(body, 'breeze_nodejs_eventloop_lag_window_mean_seconds')).toBe(
+        'breeze_nodejs_eventloop_lag_window_mean_seconds 0.011',
+      );
+    });
+
+    it('reports a stall that is still in flight, so a mid-stall scrape is not healthy', async () => {
+      process.env.EVENT_LOOP_STARVATION_WARN_MS = '1000';
+      installFakeMonitor({ maxLagMs: 3, meanLagMs: 1, advanceAfterSampleMs: 8_000 });
+
+      const body = await scrape();
+      // 8s elapsed since the last sample, 1s of which is the scheduled interval.
+      expect(getMetricLine(body, 'breeze_nodejs_eventloop_lag_max_seconds')).toBe(
+        'breeze_nodejs_eventloop_lag_max_seconds 7',
+      );
+      expect(getMetricLine(body, 'breeze_nodejs_eventloop_starved')).toBe(
+        'breeze_nodejs_eventloop_starved 1',
+      );
+    });
   });
 
   it('registers the action-intents counter on the live registry', async () => {

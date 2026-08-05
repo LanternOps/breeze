@@ -77,6 +77,12 @@ export const devices = pgTable('devices', {
   // per-session targeting. Null for old agents / non-Windows.
   helperLifecycleMode: varchar('helper_lifecycle_mode', { length: 20 }),
   status: deviceStatusEnum('status').notNull().default('offline'),
+  // Quick Support ephemeral device: enrolled for one ad-hoc support session in
+  // the hidden per-partner org, purged by the reaper 6h after the session ends.
+  // Excluded from license counts, device listings, billing rollups and alert
+  // evaluation — but NOT from the status-upkeep path, which the reaper's
+  // end-user-stop detection depends on.
+  isEphemeral: boolean('is_ephemeral').notNull().default(false),
   lastSeenAt: timestamp('last_seen_at'),
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),
   enrolledBy: uuid('enrolled_by').references(() => users.id),
@@ -144,6 +150,13 @@ export const devices = pgTable('devices', {
   // build correctly reports back down to 0. Task 5 gates managed-software
   // dispatch on this value.
   outboundNetworkPolicyVersion: integer('outbound_network_policy_version').notNull().default(0),
+  // Enrollment idempotency (#2764): uninstall intent stamped by the agent's
+  // graceful-uninstall notify path (Task 5/6); reaper decommissions once past
+  // grace with no re-enrollment heartbeat. possibleReplacementOfDeviceId links
+  // a newly enrolled device back to a prior device it may be replacing
+  // (collision detection, Task 4) for operator review (Task 7).
+  uninstallIntentAt: timestamp('uninstall_intent_at', { withTimezone: true }),
+  possibleReplacementOfDeviceId: uuid('possible_replacement_of_device_id'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()

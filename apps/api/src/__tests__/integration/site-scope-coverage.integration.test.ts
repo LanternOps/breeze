@@ -190,6 +190,14 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // ---- Genuinely site-gated via the cross-file `getDeviceWithOrgCheck`
   // helper (routes/remote/helpers.ts), which the file-local scanner can't see.
   'routes/remote/sessions.ts:POST /sessions',
+  // ---- Quick Support: no caller-supplied device input. Device ids are
+  // derived from support_sessions rows RLS already authorized, and the only
+  // device datum returned is the boolean `deviceOnline`. The devices are
+  // ephemeral rows in the hidden per-partner 'quick_support' org, reachable
+  // only at PARTNER scope; `allowedSiteIds` is an org-scope-only axis, so a
+  // site-restricted caller sees no sessions here in the first place.
+  'routes/remote/supportSessions.ts:GET /support-sessions',
+  'routes/remote/supportSessions.ts:GET /support-sessions/:id',
   // ---- Org-wide AGGREGATE reads: return only counts/summaries (no
   // per-device rows), so no cross-site device data is disclosed (returns
   // re-verified 2026-05-31). NB: totals still span the org incl. other
@@ -231,6 +239,15 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
   'routes/lifecycle.ts:GET /me/mobile-devices',
   // Site-gated via the cross-file getDeviceWithOrgCheck resolver (remote/helpers.ts).
   'routes/remote/sessions.ts:POST /sessions',
+  // Quick Support reads take NO device input from the caller: the device ids
+  // come from support_sessions rows RLS has already authorized, and the only
+  // device datum returned is the boolean deviceOnline. The devices themselves
+  // are ephemeral rows in the hidden per-partner 'quick_support' org, which is
+  // granted to PARTNER scope only — and allowedSiteIds is exclusively an
+  // org-scope axis, so a site-restricted caller cannot see these sessions at
+  // all, let alone reach a device through them.
+  'routes/remote/supportSessions.ts:GET /support-sessions',
+  'routes/remote/supportSessions.ts:GET /support-sessions/:id',
   // Org-wide AGGREGATE reads: return only counts/summaries (no per-device rows),
   // so no cross-site device data is disclosed. Reached via user auth but exempt
   // for the aggregate reason rather than non-user auth — recorded here so the

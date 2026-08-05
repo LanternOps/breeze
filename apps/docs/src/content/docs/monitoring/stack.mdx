@@ -167,6 +167,32 @@ Rules are evaluated every 30 seconds (API and infrastructure groups) or every 60
 | `pg_database_size_bytes` | Gauge | Database size in bytes |
 | `pg_settings_max_connections` | Gauge | PostgreSQL max allowed connections |
 
+### Event-Loop Metrics
+
+The API exports its own event-loop delay so a stalled main thread is visible as
+such, rather than only as the downstream errors it causes (see
+[Event-loop lag monitor](/deploy/environment/#event-loop-lag-monitor) for the
+tuning variables). All five series are published from process start, so an alert
+rule referencing them never queries a metric that does not exist yet.
+
+| Metric | Type | Description |
+|---|---|---|
+| `breeze_nodejs_eventloop_monitored` | Gauge | `1` when the instrumentation is running, `0` when it is disabled or not yet started |
+| `breeze_nodejs_eventloop_lag_max_seconds` | Gauge | Delay over the last completed sampling interval, including any stall still in flight (instantaneous) |
+| `breeze_nodejs_eventloop_lag_window_max_seconds` | Gauge | Worst delay retained across the whole sampling window (high-water mark) |
+| `breeze_nodejs_eventloop_lag_window_mean_seconds` | Gauge | Mean delay across the retained sampling window |
+| `breeze_nodejs_eventloop_starved` | Gauge | `1` while the current lag is at or above `EVENT_LOOP_STARVATION_WARN_MS`, else `0` |
+
+Two things to know before writing alert rules against these:
+
+- **Alert on `breeze_nodejs_eventloop_monitored == 0`.** When the monitor is off,
+  the other four gauges sit at `0` — which is indistinguishable from a perfectly
+  healthy loop. This series is what separates the two cases.
+- **`_lag_max_seconds` is instantaneous, `_lag_window_max_seconds` is not.** Use
+  the instantaneous series (or `breeze_nodejs_eventloop_starved`) for "is it
+  stalled right now"; the window max stays elevated for the retention window, so
+  a `max_over_time` on it counts one stall many times.
+
 ## Log Aggregation with Loki
 
 Promtail scrapes Docker container logs and ships them to Loki. Loki stores logs for 14 days by default (configurable via `retention_period` in `monitoring/loki-config.yml`).

@@ -6,6 +6,10 @@
  *
  * Usage:
  * 1. Start test containers: docker compose -f docker-compose.test.yml up -d
+ *    — or, when other worktree sessions may run tests concurrently (#3066),
+ *    give this worktree a PRIVATE stack instead: `pnpm test-stack up` at the
+ *    repo root (writes a worktree-local .env.test; `pnpm test-stack down`
+ *    tears it down).
  * 2. Run integration tests: pnpm test:integration
  * 3. Stop containers: docker compose -f docker-compose.test.yml down -v
  *

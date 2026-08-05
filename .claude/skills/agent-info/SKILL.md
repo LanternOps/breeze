@@ -129,7 +129,7 @@ Terminal commands use `term-` prefix IDs and skip DB persistence.
 | Type | Handler | Payload |
 |------|---------|---------|
 | `event_logs_list` | `ListEventLogs` | `{}` |
-| `event_logs_query` | `QueryEventLogs` | `{logName, level, source, page, limit}` |
+| `event_logs_query` | `QueryEventLogs` | `{logName, level, source, eventId, query, page, limit}` (`query` = XPath, exclusive with level/source/eventId) |
 | `event_log_get` | `GetEventLogEntry` | `{logName, recordId}` |
 | `tasks_list` | `ListTasks` | `{folder, page, limit}` |
 | `task_get` | `GetTask` | `{name, path}` |
