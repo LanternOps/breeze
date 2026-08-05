@@ -14,6 +14,11 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
 
+const captureMessageMock = vi.fn();
+vi.mock('../services/sentry', () => ({
+  captureMessage: (...args: unknown[]) => captureMessageMock(...args),
+}));
+
 vi.mock('../db/schema', () => ({
   mobileDevices: {
     status: { name: 'status' },
@@ -24,7 +29,10 @@ vi.mock('../db/schema', () => ({
 }));
 
 import { Hono } from 'hono';
-import { mobileDeviceBlockedMiddleware } from './mobileDeviceBlocked';
+import {
+  mobileDeviceBlockedMiddleware,
+  _resetUnresolvedDeviceReportsForTests,
+} from './mobileDeviceBlocked';
 import { verifyToken } from '../services/jwt';
 import { MOBILE_DEVICE_ID_HEADER } from '../services/mobileDeviceBinding';
 
@@ -133,5 +141,65 @@ describe('mobileDeviceBlockedMiddleware — signed device binding (SR-001)', () 
     });
     expect(res.status).toBe(200);
     expect(whereMock).not.toHaveBeenCalled();
+  });
+});
+
+// #2913: for years this middleware matched nothing, because no code path ever
+// created a mobile_devices row keyed on the id the header carries. An inert
+// control looked exactly like a working one. Misses are now reported.
+describe('mobileDeviceBlockedMiddleware — unresolved device telemetry (#2913)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    limitMock.mockResolvedValue([]);
+    _resetUnresolvedDeviceReportsForTests();
+  });
+
+  it('reports when a presented device id resolves to no row', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({ sub: VICTIM, mdid: DEVICE, type: 'access' } as never);
+
+    const res = await makeApp().request('/mobile/ping', {
+      headers: { Authorization: 'Bearer bound-token' },
+    });
+
+    // Still fails OPEN — failing closed would lock out every install that has
+    // not re-registered yet, plus onboarding's pre-registration calls.
+    expect(res.status).toBe(200);
+    expect(captureMessageMock).toHaveBeenCalledTimes(1);
+    expect(captureMessageMock.mock.calls[0]?.[3]).toMatchObject({ source: 'signed-claim' });
+  });
+
+  it('tags a header-only (legacy token) miss distinctly from a signed-claim miss', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({ sub: VICTIM, type: 'access' } as never);
+
+    await makeApp().request('/mobile/ping', {
+      headers: { Authorization: 'Bearer legacy-token', [MOBILE_DEVICE_ID_HEADER]: DEVICE },
+    });
+
+    expect(captureMessageMock.mock.calls[0]?.[3]).toMatchObject({ source: 'header' });
+  });
+
+  it('rate limits so an unregistered fleet cannot flood Sentry', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({ sub: VICTIM, mdid: DEVICE, type: 'access' } as never);
+    const app = makeApp();
+
+    for (let i = 0; i < 5; i++) {
+      await app.request('/mobile/ping', { headers: { Authorization: 'Bearer bound-token' } });
+    }
+
+    expect(captureMessageMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not report when the device resolves to a real row', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({ sub: VICTIM, mdid: DEVICE, type: 'access' } as never);
+    limitMock.mockResolvedValueOnce([{ status: 'active', blockedReason: null }]);
+
+    await makeApp().request('/mobile/ping', { headers: { Authorization: 'Bearer bound-token' } });
+
+    expect(captureMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('does not report for callers that present no device id at all', async () => {
+    await makeApp().request('/mobile/ping');
+    expect(captureMessageMock).not.toHaveBeenCalled();
   });
 });

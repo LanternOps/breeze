@@ -4,11 +4,11 @@ import ConfigPolicyList, { type ConfigPolicy } from "./ConfigPolicyList";
 import { fetchWithAuth } from "../../stores/auth";
 import { useOrgStore } from "../../stores/orgStore";
 import { navigateTo } from "@/lib/navigation";
+import { runAction, handleActionError } from "@/lib/runAction";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 type ModalMode = "closed" | "delete";
 export default function ConfigurationPoliciesPage() {
-  useTranslation("policies");
   useTranslation("policies");
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const [policies, setPolicies] = useState<ConfigPolicy[]>([]);
@@ -65,24 +65,30 @@ export default function ConfigurationPoliciesPage() {
   const handleConfirmDelete = async () => {
     if (!selectedPolicy) return;
     setSubmitting(true);
+    const fallback = i18n.t(
+      "policies:configurationPolicies.configurationPoliciesPage.failedToDeletePolicy",
+    );
     try {
-      const response = await fetchWithAuth(
-        `/configuration-policies/${selectedPolicy.id}`,
-        {
-          method: "DELETE",
-        },
-      );
-      if (!response.ok) {
-        throw new Error(
-          i18n.t(
-            "policies:configurationPolicies.configurationPoliciesPage.failedToDeletePolicy",
-          ),
-        );
-      }
+      // runAction, not setError: the confirmation modal is `fixed inset-0 z-50`
+      // over an opaque scrim, and this handler does NOT close it on failure —
+      // so a page-level error banner rendered in normal flow is painted BEHIND
+      // the modal. The user would see the button re-enable and nothing else,
+      // indistinguishable from a dead button. runAction's toast renders above
+      // the scrim, and extractApiError surfaces the server's real reason
+      // instead of a generic string — notably the 403 partner-wide gate
+      // ("Partner-wide policies require full partner org access"), which is
+      // actionable and was previously discarded.
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/configuration-policies/${selectedPolicy.id}`, {
+            method: "DELETE",
+          }),
+        errorFallback: fallback,
+      });
       await fetchPolicies();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "An error occurred");
+      handleActionError(err, fallback);
     } finally {
       setSubmitting(false);
     }
@@ -194,12 +200,22 @@ export default function ConfigurationPoliciesPage() {
         onDelete={handleDelete}
       />
 
-      {modalMode ===
-        i18n.t(
-          "policies:configurationPolicies.configurationPoliciesPage.delete",
-        ) &&
+      {/*
+        Compare against the ModalMode literal, NOT a translated string. An i18n
+        codemod had rewritten this gate to `modalMode === i18n.t(...".delete")`,
+        which only ever matched because the en value happened to be the
+        lowercase word "delete" — under fr/de/es/pt it resolves to
+        "supprimer"/"löschen"/… so the confirmation dialog never rendered and
+        the row Delete button was a silent no-op for those users (#2950).
+        src/lib/__tests__/no-translated-comparisons.test.ts now guards the class
+        repo-wide (and tolerates prose like this line quoting the bad shape).
+      */}
+      {modalMode === "delete" &&
         selectedPolicy && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8"
+            data-testid="config-policy-delete-modal"
+          >
             <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
               <h2 className="text-lg font-semibold">
                 {i18n.t(
@@ -220,6 +236,7 @@ export default function ConfigurationPoliciesPage() {
                   type="button"
                   onClick={handleCloseModal}
                   className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
+                  data-testid="config-policy-delete-cancel"
                 >
                   {i18n.t("common:actions.cancel")}
                 </button>
@@ -228,6 +245,7 @@ export default function ConfigurationPoliciesPage() {
                   onClick={handleConfirmDelete}
                   disabled={submitting}
                   className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                  data-testid="config-policy-delete-confirm"
                 >
                   {submitting
                     ? i18n.t(

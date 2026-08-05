@@ -5,6 +5,7 @@ import { ipMatchesAny } from './ipMatch';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { writeAuditEvent, type RequestLike } from './auditEvents';
 import { captureException } from './sentry';
+import { getConfig, isConfigInitialized } from '../config/validate';
 
 export type IpAllowlistMode = 'enforce' | 'off';
 
@@ -39,9 +40,40 @@ export function evaluateIpAllowlist(params: {
     : { decision: 'deny', reason: 'not_in_list' };
 }
 
-/** Reads the global enforcement mode from env (mirrors clientIp.ts env reads). */
+let warnedPreBootModeRead = false;
+
+/**
+ * Global enforcement mode.
+ *
+ * Reads the VALIDATED config, so the value the `z.enum` accepted at boot is the
+ * one the request path honours. A raw `process.env` read here let the two
+ * disagree: `getConfig()` reported the schema default while the runtime acted on
+ * whatever string the operator set (issue #2896).
+ *
+ * Before `validateConfig()` has run there is no validated value to read — unit
+ * tests, one-off scripts and the integration harness all call into this without
+ * booting the API. Fall back to the raw env read in that window only, keeping
+ * the original fail-closed semantics: anything other than an exact `off`
+ * enforces.
+ */
 export function ipAllowlistMode(): IpAllowlistMode {
-  return process.env.IP_ALLOWLIST_ENFORCEMENT_MODE === 'off' ? 'off' : 'enforce';
+  if (!isConfigInitialized()) {
+    // No request path can reach here in production — bootstrap() calls
+    // validateConfig() before serve(). Say so out loud anyway rather than
+    // silently reading unvalidated env: a future module-scope or preflight
+    // caller would otherwise reintroduce exactly the divergence this function
+    // was changed to close. Tests deliberately live on this branch (the unit
+    // setup sets the variable and never boots config), so stay quiet there.
+    if (!warnedPreBootModeRead && process.env.NODE_ENV !== 'test') {
+      warnedPreBootModeRead = true;
+      console.warn(
+        '[ipAllowlist] enforcement mode read before validateConfig(); '
+        + 'falling back to unvalidated process.env for this process.',
+      );
+    }
+    return process.env.IP_ALLOWLIST_ENFORCEMENT_MODE === 'off' ? 'off' : 'enforce';
+  }
+  return getConfig().IP_ALLOWLIST_ENFORCEMENT_MODE;
 }
 
 // --- Per-partner allowlist read with a short in-process cache -----------------

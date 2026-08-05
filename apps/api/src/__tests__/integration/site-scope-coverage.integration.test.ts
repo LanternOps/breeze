@@ -183,7 +183,9 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/lifecycle.ts:GET /admin/users/:userId/mobile-devices',
   'routes/lifecycle.ts:GET /me/mobile-devices',
   'routes/mobile.ts:POST /devices',
-  'routes/mobile.ts:POST /notifications/register',
+  // routes/mobile.ts:POST /notifications/register was exempt here until #2983
+  // moved its mobile_devices queries into services/mobileDeviceIdentity.ts —
+  // the file-local scanner no longer flags it, so the ratchet removed it.
   'routes/portal/assets.ts:GET /assets',
   'routes/portal/assets.ts:POST /assets/:id/checkin',
   'routes/portal/assets.ts:POST /assets/:id/checkout',
@@ -234,7 +236,6 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
   // userId, tighter than site-scope.
   'routes/authenticator.ts:POST /devices',
   'routes/mobile.ts:POST /devices',
-  'routes/mobile.ts:POST /notifications/register',
   'routes/lifecycle.ts:GET /admin/users/:userId/mobile-devices',
   'routes/lifecycle.ts:GET /me/mobile-devices',
   // Site-gated via the cross-file getDeviceWithOrgCheck resolver (remote/helpers.ts).

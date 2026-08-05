@@ -344,7 +344,12 @@ authenticatorRoutes.post(
         .where(
           and(
             eq(mobileDevices.deviceId, mobileDeviceHeader),
-            eq(mobileDevices.userId, auth.user.id)
+            eq(mobileDevices.userId, auth.user.id),
+            // Never link an approver key to a REVOKED phone (#2913). Nothing
+            // reads `authenticator_devices.mobile_device_id` back today, so
+            // this is latent — but the moment anything joins through the
+            // column, a blocked device would become reachable again.
+            eq(mobileDevices.status, 'active')
           )
         )
         .limit(1);

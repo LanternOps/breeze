@@ -26,6 +26,11 @@ import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/pe
 import { dispatchWake } from '../services/wakeOnLan';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { emitAlertStateFeedback } from '../services/mlFeedbackEmitters';
+import { readMobileDeviceId } from '../services/mobileDeviceBinding';
+import { planMobileDeviceId, saltDeviceId } from '../services/mobileDeviceIdentity';
+import { captureMessage } from '../services/sentry';
+import { createReportThrottle } from '../utils/reportThrottle';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 import { UUID_REGEX } from '../utils/uuid';
 // Shared with the web device routes rather than re-declared locally. This file
 // used to carry a byte-identical private copy, which is precisely why the #2968
@@ -77,6 +82,57 @@ export function decodeCursor(raw: string | undefined): CursorTuple | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Thrown inside the displace transaction to roll it back; mapped to a 409 by
+ * the caller. Never escapes the route.
+ */
+class MobileDeviceRegistrationConflict extends Error {}
+
+/**
+ * Throttled per (reason, caller) rather than per reason alone. The key space
+ * matters: `unverified-installation-claim` means someone asserted ANOTHER
+ * account's installation id without holding that install's push token — an
+ * attempted eviction of a stranger's device row. A process-wide key would
+ * collapse a campaign enumerating ids across many users into a single event
+ * indistinguishable from one benign occurrence.
+ */
+const registrationFallbackThrottle = createReportThrottle(15 * 60 * 1000);
+const registrationConflictThrottle = createReportThrottle(15 * 60 * 1000);
+
+/** Test seam: clears the registration report throttles. */
+export function _resetRegistrationFallbackReportsForTests(): void {
+  registrationFallbackThrottle.reset();
+  registrationConflictThrottle.reset();
+}
+
+/**
+ * Both 409 exits, with a signal attached. A phone whose installation id is
+ * permanently held by a foreign or blocked row would otherwise 409 on every
+ * app foreground and produce no server-side evidence at all — the same
+ * "indistinguishable from working" failure mode #2913 is about.
+ */
+function registrationConflict(
+  c: import('hono').Context,
+  userId: string,
+  reason: 'displace-insert-conflict' | 'upsert-guard-matched-no-row'
+) {
+  if (registrationConflictThrottle.shouldReport(`${reason}:${userId}`)) {
+    captureMessage(
+      'mobile push registration conflicted — the phone is not receiving notifications',
+      'warning',
+      undefined,
+      { area: 'mobile-device-identity', reason }
+    );
+  }
+  return c.json(
+    {
+      error: 'This device could not be registered for notifications.',
+      code: 'device_registration_conflict'
+    },
+    409
+  );
 }
 
 function derivePushDeviceId(userId: string, platform: 'ios' | 'android', token: string) {
@@ -272,48 +328,201 @@ mobileRoutes.post(
     const auth = c.get('auth');
     const { token, platform } = c.req.valid('json');
     const now = new Date();
-    let deviceId = derivePushDeviceId(auth.user.id, platform, token);
 
-    // If a row already exists for this deviceId AND it's blocked, insert
-    // a fresh row instead of reactivating the blocked one. We salt with
-    // the current timestamp so the new deviceId is unique.
-    const [existing] = await db
-      .select({ status: mobileDevices.status })
-      .from(mobileDevices)
-      .where(eq(mobileDevices.deviceId, deviceId))
-      .limit(1);
-    if (existing?.status === 'blocked') {
-      deviceId = `${deviceId}-${now.getTime()}`;
+    // #2913: key the row on the phone's per-install id (the value the
+    // blocked-device middleware looks up) rather than on the push-token hash.
+    // The hash remains the fallback for header-less callers and the id we
+    // adopt FROM.
+    //
+    // Precedence MUST mirror mobileDeviceBlockedMiddleware: the SIGNED `mdid`
+    // claim first, the header only for pre-binding tokens. Keying off the raw
+    // header alone would let a client authenticate as install X and then
+    // register its row under install Y, so the middleware's lookup on X misses
+    // forever — the same inert control this issue is about, re-opened by the
+    // very client it constrains (SR-001: the header is forgeable).
+    const installationId =
+      typeof auth.token?.mdid === 'string' && auth.token.mdid.length > 0
+        ? auth.token.mdid
+        : readMobileDeviceId(c);
+    const legacyDeviceId = derivePushDeviceId(auth.user.id, platform, token);
+    const plan = await planMobileDeviceId({
+      userId: auth.user.id,
+      installationId,
+      legacyDeviceId,
+      platform,
+      token
+    });
+
+    if (
+      plan.fallbackReason &&
+      registrationFallbackThrottle.shouldReport(`${plan.fallbackReason}:${auth.user.id}`)
+    ) {
+      // We could not key this phone on its installation id, so the blocked-
+      // device check still cannot see it. Say so rather than leaving another
+      // silently inert control behind (#2913). Throttled: a phone stuck in
+      // this state re-registers on every app foreground.
+      captureMessage(
+        'mobile push registration fell back to push-derived device id — block enforcement stays inert for this caller',
+        'warning',
+        undefined,
+        { area: 'mobile-device-identity', reason: plan.fallbackReason }
+      );
     }
 
-    const [device] = await db
-      .insert(mobileDevices)
-      .values({
-        userId: auth.user.id,
-        deviceId,
-        platform,
-        fcmToken: platform === 'android' ? token : null,
-        apnsToken: platform === 'ios' ? token : null,
-        notificationsEnabled: true,
-        lastActiveAt: now,
-        updatedAt: now
-      })
-      .onConflictDoUpdate({
-        target: mobileDevices.deviceId,
-        set: {
-          fcmToken: platform === 'android' ? token : null,
-          apnsToken: platform === 'ios' ? token : null,
-          notificationsEnabled: true,
-          lastActiveAt: now,
-          updatedAt: now
-        },
-        // Belt-and-suspenders: never overwrite a blocked row via conflict
-        // path; the salted-id branch above keeps us out of this case
-        // entirely, but if a race lands a fresh row in between we still
-        // want the conflict update to skip blocked rows.
-        setWhere: sql`${mobileDevices.status} = 'active'`
-      })
-      .returning();
+    const tokenFields = {
+      fcmToken: platform === 'android' ? token : null,
+      apnsToken: platform === 'ios' ? token : null,
+      notificationsEnabled: true,
+      lastActiveAt: now,
+      updatedAt: now
+    };
+
+    let device: typeof mobileDevices.$inferSelect | undefined;
+    let displacedRowId: string | null = null;
+
+    // Another account's ACTIVE row already holds this installation id (the
+    // phone changed hands). Park it under a salted id so the caller can take
+    // the clean key without inheriting the previous user's row.
+    //
+    // Atomic with the insert: a displace that committed while the insert
+    // failed would leave the previous owner re-keyed for nothing, and their
+    // live tokens still carry the ORIGINAL id as their signed `mdid` — so a
+    // later block on that row would match nothing. Roll both back together.
+    //
+    // The displaced row also loses its push tokens: they are the same
+    // OS-minted tokens the caller just submitted (that is what proved the
+    // shared handset), so leaving them would fan the previous user's
+    // notifications out to the new user's phone.
+    if (plan.displaceRowId) {
+      const displaceRowId = plan.displaceRowId;
+      let sawConflict = false;
+      let displacedRows = 0;
+      device = await db.transaction(async (tx) => {
+        // `.returning()` is load-bearing: the WHERE re-checks state that
+        // planMobileDeviceId read a moment earlier, so a row blocked, deleted
+        // or re-keyed in between matches nothing. Without the row count we
+        // would report a displacement — and a token-clearing — that never
+        // happened. A 0-row write under FORCE RLS is exactly the silent-write
+        // class the repo guards elsewhere, and `tx` bypasses that guard.
+        const displaced = await tx
+          .update(mobileDevices)
+          .set({
+            deviceId: saltDeviceId(plan.deviceId, now.getTime()),
+            fcmToken: null,
+            apnsToken: null,
+            notificationsEnabled: false,
+            updatedAt: now
+          })
+          .where(
+            and(
+              eq(mobileDevices.id, displaceRowId),
+              eq(mobileDevices.status, 'active'),
+              ne(mobileDevices.userId, auth.user.id)
+            )
+          )
+          .returning({ id: mobileDevices.id });
+        displacedRows = displaced.length;
+
+        const [inserted] = await tx
+          .insert(mobileDevices)
+          .values({ userId: auth.user.id, deviceId: plan.deviceId, platform, ...tokenFields })
+          .returning();
+
+        if (!inserted) {
+          // Abort so the displacement is rolled back rather than stranding the
+          // previous owner under a salted id for a registration that failed.
+          // The flag — not the thrown value — is what the catch keys on: the
+          // driver may wrap or replace the error on rollback, and a mis-typed
+          // sentinel would surface as a 500 instead of the intended 409.
+          sawConflict = true;
+          throw new MobileDeviceRegistrationConflict();
+        }
+        return inserted;
+      }).catch((err: unknown) => {
+        if (sawConflict || isPgUniqueViolation(err)) {
+          return undefined;
+        }
+        throw err;
+      });
+
+      if (!device) {
+        return registrationConflict(c, auth.user.id, 'displace-insert-conflict');
+      }
+      // Only claim a displacement that actually moved a row.
+      displacedRowId = displacedRows > 0 ? displaceRowId : null;
+    }
+
+    // Adoption: rewrite this phone's existing push-derived row onto the
+    // installation id, keeping its uuid PK so notification preferences and
+    // every FK pointing at it survive. A no-op result means a concurrent
+    // request already adopted (or blocked) the row — fall through to the
+    // upsert, whose conflict path converges on the same row.
+    //
+    // The 23505 recovery REQUIRES its own transaction. authMiddleware wraps the
+    // whole request in one (`withDbAccessContext` -> `db.transaction`), and the
+    // ambient `db` resolves to it — so a unique violation raised here would
+    // abort the REQUEST transaction, leaving the fallback upsert below to die
+    // with 25P02 and the mapped response discarded in favour of a raw 500.
+    // Nesting yields a SAVEPOINT, so the conflict rolls back to it and the
+    // outer transaction survives to run the upsert.
+    if (plan.adoptRowId) {
+      const adoptRowId = plan.adoptRowId;
+      device = await db
+        .transaction(async (tx) => {
+          const [adopted] = await tx
+            .update(mobileDevices)
+            .set({ deviceId: plan.deviceId, platform, ...tokenFields })
+            .where(
+              and(
+                eq(mobileDevices.id, adoptRowId),
+                eq(mobileDevices.userId, auth.user.id),
+                eq(mobileDevices.status, 'active')
+              )
+            )
+            .returning();
+          return adopted;
+        })
+        .catch((err: unknown) => {
+          // A concurrent registration inserted the installation-id row between
+          // our read and this update. Not an error — the upsert below lands on
+          // that row instead, leaving the legacy row to be adopted next time.
+          if (isPgUniqueViolation(err)) return undefined;
+          throw err;
+        });
+    }
+
+    if (!device) {
+      [device] = await db
+        .insert(mobileDevices)
+        .values({
+          userId: auth.user.id,
+          deviceId: plan.deviceId,
+          platform,
+          ...tokenFields
+        })
+        .onConflictDoUpdate({
+          target: mobileDevices.deviceId,
+          // `userId` is deliberately NOT reassigned here: with per-install
+          // keying a conflict can now be another account's row, and silently
+          // moving it to the caller would redirect that user's pushes. The
+          // cross-user case is handled by the displace branch above.
+          set: tokenFields,
+          // Belt-and-suspenders: never overwrite a blocked row via the
+          // conflict path; the salted-id branch in planMobileDeviceId keeps us
+          // out of this case entirely, but if a race lands a fresh row in
+          // between we still want the conflict update to skip blocked rows.
+          setWhere: sql`${mobileDevices.status} = 'active' AND ${mobileDevices.userId} = ${auth.user.id}`
+        })
+        .returning();
+    }
+
+    if (!device) {
+      // The conflict guard matched no row: the id is held by a blocked row or
+      // by another account. Returning `{ success: true }` here (the previous
+      // behaviour) reported a registration that never happened, so the phone
+      // silently stopped receiving pushes.
+      return registrationConflict(c, auth.user.id, 'upsert-guard-matched-no-row');
+    }
 
     writeRouteAudit(c, {
       orgId: auth.orgId,
@@ -321,7 +530,11 @@ mobileRoutes.post(
       resourceType: 'mobile_device',
       resourceId: device?.id,
       resourceName: device?.deviceId,
-      details: { platform }
+      // A displacement re-keys ANOTHER account's row. That must never be an
+      // unrecorded side effect of a routine push registration.
+      details: displacedRowId
+        ? { platform, displacedMobileDeviceId: displacedRowId }
+        : { platform }
     });
 
     return c.json({ success: true });
@@ -404,8 +617,11 @@ mobileRoutes.post(
     // Same blocked-row protection as /notifications/register: if our own row
     // for this deviceId is `blocked`, salt the id so the re-pair lands in a
     // fresh row instead of reactivating the blocked one.
+    // saltDeviceId truncates the base so the result still fits varchar(255) —
+    // `deviceId` is accepted up to the full 255 chars, so a naive
+    // `${id}-${ts}` overflows the column and 500s (22001).
     const insertDeviceId = existing?.status === 'blocked'
-      ? `${data.deviceId}-${now.getTime()}`
+      ? saltDeviceId(data.deviceId, now.getTime())
       : data.deviceId;
 
     const [device] = await db

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/breeze-rmm/agent/internal/obfuscate"
 )
 
 // SecurityLevel defines the level of security validation
@@ -89,10 +91,14 @@ func (v *SecurityValidator) initPatterns() {
 		{`IEX\s*\(\s*\(New-Object`, "PowerShell download cradle"},
 		{`DownloadString\s*\(`, "PowerShell download string"},
 
-		// Credential access patterns
-		{`mimikatz`, "credential dumping tool"},
-		{`sekurlsa`, "credential extraction"},
-		{`lsadump`, "LSA dump"},
+		// Credential access patterns. These three tool-name tokens are stored
+		// XOR-obfuscated (see internal/obfuscate) so they never appear as
+		// plaintext in shipped binaries, where AV heuristics match on them
+		// (issue #2797). The tokens contain no regex metacharacters, so
+		// decoding them straight into the pattern preserves matching semantics.
+		{obfuscate.Decode([]byte{0x37, 0x33, 0x37, 0x33, 0x31, 0x3b, 0x2e, 0x20}), "credential dumping tool"},
+		{obfuscate.Decode([]byte{0x29, 0x3f, 0x31, 0x2f, 0x28, 0x36, 0x29, 0x3b}), "credential extraction"},
+		{obfuscate.Decode([]byte{0x36, 0x29, 0x3b, 0x3e, 0x2f, 0x37, 0x2a}), "LSA dump"},
 		{`Get-Credential`, "PowerShell credential prompt"},
 		{`ConvertTo-SecureString`, "PowerShell secure string (may be legitimate)"},
 

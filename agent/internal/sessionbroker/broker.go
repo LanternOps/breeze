@@ -2894,9 +2894,19 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 }
 
 // keepaliveMaxSendFailures is the number of consecutive ping sends that may
-// fail before runKeepalive gives up and closes the session. A single failure
-// can be a transient EAGAIN on a full socket buffer or a slow drain — the
-// real "helper is wedged" signal is the pong-age check, not the send side.
+// fail before runKeepalive gives up and closes the session. The real "helper
+// is wedged" signal is the pong-age check, not the send side, so the send path
+// is deliberately slow to condemn a session.
+//
+// This is a guard against a one-off anomalous Send error, not a recovery
+// window — do not raise it expecting more resilience. Since #2273 no send
+// failure this loop can observe is actually transient: a failed Write poisons
+// the Conn permanently, a SetWriteDeadline failure means the socket is already
+// closed, and a slow drain blocks up to the ipc writeTimeout rather than
+// erroring early. So the first real failure is terminal and the threshold only
+// defers the close by keepaliveMaxSendFailures-1 ticks. The threshold and the
+// reset-on-success are pinned by TestKeepaliveClosesAtSendFailureThreshold and
+// TestKeepaliveToleratesSendFailuresBelowThreshold.
 const keepaliveMaxSendFailures = 3
 
 // runKeepalive pings the helper every keepalivePingInterval and closes the

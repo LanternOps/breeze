@@ -102,6 +102,8 @@
     "retry": "Riprova",
     "back": "Indietro",
     "next": "Avanti",
+    "previousPage": "Pagina precedente",
+    "nextPage": "Pagina successiva",
     "done": "Fatto",
     "apply": "Applica",
     "enable": "Abilita",

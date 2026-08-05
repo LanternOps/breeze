@@ -542,10 +542,16 @@ export default function ComplianceDashboard({
                       >
                         <ShieldCheck className="h-4 w-4" />
                       </button>
-                      {policy.mode !==
-                        i18n.t(
-                          "policies:software.complianceDashboard.audit",
-                        ) && (
+                      {/*
+                        `mode` is the softwarePolicies enum
+                        ("allowlist" | "blocklist" | "audit"), so it must be
+                        compared to the literal. Comparing it to the translated
+                        label offered Remediate on audit-only policies wherever
+                        the catalog actually translated "audit" (fr: "Audit",
+                        de: "Prüfung", es: "auditoría") — audit mode means
+                        report, never change.
+                      */}
+                      {policy.mode !== "audit" && (
                         <button
                           type="button"
                           onClick={() => handleRemediate(policy)}
@@ -644,8 +650,7 @@ export default function ComplianceDashboard({
           <div className="flex w-full max-w-3xl max-h-[calc(100vh-2rem)] flex-col rounded-lg border bg-card shadow-xs">
             <div className="flex items-center justify-between border-b px-6 py-4 shrink-0">
               <h2 className="text-lg font-semibold">
-                {modalMode ===
-                i18n.t("policies:software.complianceDashboard.create")
+                {modalMode === "create"
                   ? i18n.t(
                       "policies:software.complianceDashboard.createSoftwarePolicy",
                     )
@@ -667,15 +672,12 @@ export default function ComplianceDashboard({
                 onSubmit={handleFormSubmit}
                 onCancel={closeModal}
                 defaultValues={
-                  modalMode ===
-                    i18n.t("policies:software.complianceDashboard.edit") &&
-                  selectedPolicy
+                  modalMode === "edit" && selectedPolicy
                     ? policyToFormDefaults(selectedPolicy)
                     : { ownerScope: defaultOwnerScope }
                 }
                 submitLabel={
-                  modalMode ===
-                  i18n.t("policies:software.complianceDashboard.create")
+                  modalMode === "create"
                     ? i18n.t(
                         "policies:software.complianceDashboard.createPolicy",
                       )
@@ -685,9 +687,7 @@ export default function ComplianceDashboard({
                 }
                 loading={submitting}
                 showOwnerScope={
-                  modalMode ===
-                    i18n.t("policies:software.complianceDashboard.create") &&
-                  isPartnerScope
+                  modalMode === "create" && isPartnerScope
                 }
               />
             </div>

@@ -4,6 +4,40 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { mobileDevices } from '../db/schema';
 import { verifyToken } from '../services/jwt';
 import { MOBILE_DEVICE_ID_HEADER, readMobileDeviceId } from '../services/mobileDeviceBinding';
+import { captureMessage } from '../services/sentry';
+import { createReportThrottle } from '../utils/reportThrottle';
+
+/**
+ * An inert security control is indistinguishable from a working one — which is
+ * exactly how #2913 stayed hidden: the id in the header could never match a
+ * `mobile_devices.device_id`, so the lookup below missed on EVERY request and
+ * nothing anywhere said so.
+ *
+ * We deliberately do NOT fail closed on a miss. A miss is legitimate during
+ * onboarding (the first calls land before the phone has registered), and any
+ * install that has not yet re-registered under its installation id would be
+ * locked out of the app entirely. Instead we make the miss observable, rate
+ * limited to one report per source per interval so a fleet of unregistered
+ * phones cannot flood Sentry.
+ */
+const unresolvedReportThrottle = createReportThrottle(15 * 60 * 1000);
+
+function reportUnresolvedDeviceId(source: 'signed-claim' | 'header'): void {
+  if (!unresolvedReportThrottle.shouldReport(source)) {
+    return;
+  }
+  captureMessage(
+    'mobile device id resolved to no mobile_devices row — block enforcement is inert for this caller',
+    'warning',
+    undefined,
+    { area: 'mobile-device-blocked', source }
+  );
+}
+
+/** Test seam: clears the report rate limiter between cases. */
+export function _resetUnresolvedDeviceReportsForTests(): void {
+  unresolvedReportThrottle.reset();
+}
 
 /**
  * Reject API calls from a blocked mobile device with a structured
@@ -65,6 +99,7 @@ export async function mobileDeviceBlockedMiddleware(c: Context, next: Next): Pro
   );
 
   if (!row) {
+    reportUnresolvedDeviceId(scopeByUser ? 'signed-claim' : 'header');
     return next();
   }
 

@@ -133,10 +133,7 @@ export default function PatchAppRulesSection({ apps, onChange }: Props) {
                     updateRule(key, {
                       action: event.target.value as PolicyAppAction,
                       pinnedVersion:
-                        event.target.value ===
-                        i18n.t(
-                          "policies:configurationPolicies.featureTabs.patchAppRulesSection.block",
-                        )
+                        event.target.value === "block"
                           ? undefined
                           : (rule.pinnedVersion ?? ""),
                     })
@@ -154,10 +151,7 @@ export default function PatchAppRulesSection({ apps, onChange }: Props) {
                     )}
                   </option>
                 </select>
-                {rule.action ===
-                  i18n.t(
-                    "policies:configurationPolicies.featureTabs.patchAppRulesSection.pin",
-                  ) && (
+                {rule.action === "pin" && (
                   <input
                     type="text"
                     placeholder={i18n.t(
@@ -188,10 +182,7 @@ export default function PatchAppRulesSection({ apps, onChange }: Props) {
 
       {apps.some(
         (app) =>
-          app.action ===
-            i18n.t(
-              "policies:configurationPolicies.featureTabs.patchAppRulesSection.pin",
-            ) && !app.pinnedVersion,
+          app.action === "pin" && !app.pinnedVersion,
       ) && (
         <p className="mt-1 text-xs text-destructive">
           {i18n.t(
