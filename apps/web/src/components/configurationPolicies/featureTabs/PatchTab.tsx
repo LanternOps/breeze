@@ -560,6 +560,9 @@ export default function PatchTab({
             />
           </button>
         </div>
+        <p className="mt-2 text-xs text-muted-foreground" data-testid="patch-third-party-ring-hint">
+          {i18n.t("policies:configurationPolicies.featureTabs.patchTab.thirdPartyRingHint")}
+        </p>
       </div>
 
       <PatchAppRulesSection apps={settings.apps} onChange={(apps) => update('apps', apps)} />

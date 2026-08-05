@@ -13,6 +13,10 @@
     "sessions": {
       "title": "Histórico de sessões",
       "description": "Veja as sessões anteriores"
+    },
+    "quickSupport": {
+      "title": "Suporte rápido",
+      "description": "Código de uso único para atendimento pontual"
     }
   },
   "connectDesktopButton": {
@@ -761,5 +765,60 @@
       "obtainTicket": "Falha ao obter o ticket de conexão"
     },
     "sessionTitle": "Sessão VNC"
+  },
+  "quickSupport": {
+    "title": "Suporte rápido",
+    "subtitle": "Gere um código de uso único para atender pontualmente um dispositivo que não está inscrito.",
+    "newSession": "Nova sessão de suporte",
+    "form": {
+      "title": "Iniciar uma sessão de suporte",
+      "attributionOrg": "Atribuir a um cliente (opcional)",
+      "attributionOrgHint": "Somente para relatórios: isso não concede nem altera o acesso aos dados desse cliente.",
+      "attributionOrgNone": "Sem atribuição",
+      "attributionLabel": "Rótulo de referência (opcional)",
+      "attributionLabelPlaceholder": "Para quem ou para que serve esta sessão?",
+      "submit": "Gerar código",
+      "submitting": "Gerando o código…"
+    },
+    "code": {
+      "heading": "Passe este código para a pessoa que você está atendendo",
+      "shownOnce": "Este código aparece uma única vez. Copie-o antes de sair desta página: ele não poderá ser exibido de novo.",
+      "expires": "Expira às {{time}}",
+      "instructions": "Envie o link, peça para executar o cliente baixado e digitar o código.",
+      "copyCode": "Copiar código",
+      "copyLink": "Copiar link de download",
+      "copiedCode": "Código copiado para a área de transferência",
+      "copiedLink": "Link de download copiado para a área de transferência",
+      "copyFailed": "Não foi possível copiar para a área de transferência"
+    },
+    "status": {
+      "heading": "Andamento da sessão",
+      "pending": "Aguardando o usuário executar o cliente…",
+      "claimed": "Conectando o cliente…",
+      "ready": "Pronto para conectar",
+      "active": "Sessão em andamento",
+      "ended": "Sessão encerrada",
+      "expired": "Sessão expirada"
+    },
+    "connect": {
+      "waitingForDevice": "O dispositivo está se inscrevendo. O botão de conexão aparece assim que ele ficar on-line."
+    },
+    "end": {
+      "button": "Encerrar sessão",
+      "success": "Sessão de suporte encerrada",
+      "error": "Não foi possível encerrar a sessão de suporte",
+      "alreadyEnded": "Essa sessão de suporte já havia sido encerrada"
+    },
+    "errors": {
+      "create": "Não foi possível criar a sessão de suporte",
+      "list": "Não foi possível carregar as sessões de suporte recentes"
+    },
+    "list": {
+      "heading": "Sessões de suporte recentes",
+      "empty": "Ainda não há sessões de suporte.",
+      "columnCreated": "Início",
+      "columnEnded": "Término",
+      "unlabeled": "Sessão sem rótulo"
+    }
   }
 }

@@ -16,15 +16,16 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query, SDKResultMessage, SDKUserMessage, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import { aiSessions, aiMessages, aiBudgets } from '../db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, isNull } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+import { buildOrgAccessClosures } from '../middleware/auth';
 import type { AiStreamEvent, AiApprovalMode } from '@breeze/shared/types/ai';
 import { AsyncEventQueue } from '../utils/asyncQueue';
-import { recordUsageFromSdkResult } from './aiCostTracker';
+import { recordUsageFromSdkResult, calculateCostCents } from './aiCostTracker';
 import { sanitizeErrorForClient } from './aiAgent';
 import { captureException } from './sentry';
 import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
-import { createSessionPreToolUse, createSessionPostToolUse } from './aiAgentSdk';
+import { createSessionPreToolUse, createSessionPostToolUse, settleApprovalWaits } from './aiAgentSdk';
 import type { RequestLike } from './auditEvents';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
@@ -35,7 +36,37 @@ const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
 const EVICTION_INTERVAL_MS = 60 * 1000; // Check every 60s
 const MAX_ACTIVE_SESSIONS = 200;
 const EVENT_RING_BUFFER_SIZE = 100;
-const SDK_TURN_TIMEOUT_MS = 6 * 60 * 1000; // 6 min per-turn timeout (accounts for tool approval waits up to 5 min)
+/**
+ * 6 min per-turn timeout. Sized to accept a single approval wait
+ * (`waitForApproval`, aiAgentSdk.ts, 300_000ms = 5 min) plus headroom for
+ * execution — but the two are NOT bounded to fit together, and this handler
+ * does not reach into the pending call to stop it.
+ *
+ * #3096 review (raising the vision-tool budget in toolTimeouts.ts to 120s):
+ * approval-wait fully resolves BEFORE `withToolTimeout` starts
+ * (aiAgentSdkTools.ts onPreToolUse vs. the executeTool wrapper), so the two
+ * budgets stack rather than overlap. Worst case for a tier-3 vision/desktop
+ * tool call is now approval wait (up to 5 min) + execution (up to 120s) =
+ * up to 7 min — past this 6-min ceiling.
+ *
+ * When that happens today, `startTurnTimeout`'s callback (below) publishes
+ * `error` + `done` and sets `state = 'idle'`, but does NOT abort
+ * `session.abortController` or otherwise unblock the in-flight
+ * `waitForApproval` poll — only `remove()` does that. `runBackgroundProcessor`'s
+ * `for await` loop only stops on `state === 'closing' | 'closed'`, so once the
+ * approval/tool call eventually settles, its SDK messages (tool_result,
+ * closing assistant text, `result`) still get processed and published into a
+ * turn the client was already told had ended.
+ *
+ * This is a known gap, not a new one from #3091/#3096 — the same overlap
+ * already existed for two stacked ordinary approval waits before the vision
+ * budget was ever raised. It has a proper fix in progress: PR #3104 (Closes
+ * #3089) introduces a shared per-cycle `APPROVAL_WAIT_BUDGET_MS` that resets
+ * at the same `message_start` point as this timeout, so cumulative approval
+ * blocking is bounded to fit inside the turn window. That PR is not merged as
+ * of this comment — do not assume the overlap is handled until it lands.
+ */
+const SDK_TURN_TIMEOUT_MS = 6 * 60 * 1000;
 const MCP_PREFIX = 'mcp__breeze__';
 // Use the directly-imported runOutsideDbContext (see commandQueue.ts for explanation).
 const runOutsideDbContextSafe = runOutsideDbContext;
@@ -229,6 +260,22 @@ export class SessionEventBus {
 
 export type SessionState = 'initializing' | 'ready' | 'processing' | 'idle' | 'closing' | 'closed';
 
+/** Token usage accumulated across the model API calls of a single turn. */
+export interface PendingTurnUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+}
+
+function emptyPendingTurnUsage(): PendingTurnUsage {
+  return { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
+}
+
+function hasTokens(u: PendingTurnUsage): boolean {
+  return u.inputTokens > 0 || u.outputTokens > 0 || u.cacheReadInputTokens > 0 || u.cacheCreationInputTokens > 0;
+}
+
 /** Immutable audit snapshot extracted from the HTTP request context */
 export interface AuditSnapshot {
   ip: string | undefined;
@@ -245,6 +292,13 @@ export interface ActiveSession {
    */
   readonly orgId: string;
   /**
+   * Bound device ID from the aiSessions DB row (null when the session is not
+   * device-bound). When set, `toolAuth` is narrowed to the session org via
+   * `buildDeviceBoundSessionAuth` so org-scoped tools query the DEVICE's org,
+   * not the login org (#3087).
+   */
+  readonly deviceId: string | null;
+  /**
    * Model id this session runs with (from the aiSessions row). Used to price
    * tokens for cost tracking when the SDK fails to report total_cost_usd.
    */
@@ -257,7 +311,20 @@ export interface ActiveSession {
   state: SessionState;
   lastActivityAt: number;
   readonly createdAt: number;
+  /**
+   * RAW login AuthContext from the latest request. Used for actor identity,
+   * RBAC (`checkToolPermission` resolves the login role from it — a partner
+   * tech keeps their partner role, matching the rest of the API), rate limits,
+   * and audit attribution. NOT for tool queries — see `toolAuth`.
+   */
   auth: AuthContext;
+  /**
+   * Effective AuthContext for TOOL EXECUTION (MCP handlers + their RLS DB
+   * context). For device-bound sessions this is `auth` narrowed to the
+   * session (device) org via `buildDeviceBoundSessionAuth` (#3087); otherwise
+   * it is `auth` itself. Refreshed alongside `auth` on every request.
+   */
+  toolAuth: AuthContext;
   /** Immutable audit data extracted from the latest request (avoids holding stale Hono context) */
   auditSnapshot: AuditSnapshot;
   mcpServer: McpSdkServerConfigWithInstance;
@@ -265,10 +332,43 @@ export interface ActiveSession {
   mcpPrefix: string;
   /** FIFO queue of toolUseIds from content_block_start for postToolUse correlation */
   toolUseIdQueue: string[];
+  /**
+   * Per-turn usage accumulated from the SDK's `assistant` messages (one per
+   * underlying model API call). Used as the fallback token source when the
+   * `result` message arrives with missing/zero usage (#3095), and flushed if a
+   * turn is abandoned without ever producing a `result` (teardown, crash).
+   * Reset after every flush.
+   */
+  pendingTurnUsage: PendingTurnUsage;
+  /**
+   * tool_use id → bare tool name, recorded at content_block_start alongside
+   * toolUseIdQueue. Consumed by postToolUse on the normal path, or by the
+   * dropped-call fallback in the background processor's 'user' case when the
+   * SDK rejected the call before our MCP handler ever ran (issue #3094).
+   * Optional so existing fixtures that build ActiveSession literals compile
+   * unchanged; the fallback degrades to 'unknown_tool' without it.
+   */
+  toolUseNames?: Map<string, string>;
   /** Promise that resolves when background processor finishes */
   readonly processorPromise: Promise<void>;
   /** Timer for per-turn timeout; cleared when 'result' arrives */
   turnTimeoutId: ReturnType<typeof setTimeout> | null;
+  /**
+   * Epoch-ms deadline SHARED by every approval wait in the current assistant
+   * cycle (#3089) — set by the first wait of the cycle (beginApprovalWait in
+   * aiAgentSdk.ts), reset to null at each message_start via startTurnTimeout.
+   * Guarantees cumulative approval blocking per cycle stays under the turn
+   * timeout so the model can always conclude the turn.
+   */
+  approvalWaitDeadline: number | null;
+  /**
+   * Aborts in-flight approval waits early WITHOUT tearing down the session
+   * (settleApprovalWaits in aiAgentSdk.ts) — fired when a new user message or
+   * an interrupt arrives while the turn is blocked on approvals.
+   */
+  approvalWaitAbort: AbortController | null;
+  /** Count of approval waits currently blocked inside preToolUse. */
+  pendingApprovalWaits: number;
   /** Approval mode for this session (loaded from org's aiBudgets) */
   approvalMode: AiApprovalMode;
   /** Optional MCP allowlist for restricted sessions such as helper chat. */
@@ -293,6 +393,51 @@ export interface ActiveSession {
   /** Extra per-turn usage recorder invoked in the result case alongside
    *  recordUsageFromSdkResult (client sessions: per-user client_ai_usage buckets). */
   recordExtraUsage?: (usage: { inputTokens: number; outputTokens: number; costCents: number }) => Promise<void>;
+}
+
+/**
+ * Narrow a caller's AuthContext to a device-bound session's org (#3087).
+ *
+ * `ai_sessions.org_id` is anchored to the bound DEVICE's org at creation
+ * (services/aiAgent.ts createSession — gated on `auth.canAccessOrg` +
+ * `auth.canAccessSite`), but tool execution historically ran under the raw
+ * login AuthContext. For a partner-scope tech whose login org differs from the
+ * device's org, org-scoped tools (`getOrgId(auth)` → `accessibleOrgIds[0]`,
+ * `auth.orgCondition(...)` → whole partner) silently queried the WRONG org —
+ * e.g. `manage_patches` returned a sibling org's patches and `search_logs`
+ * returned empty for the device's own logs.
+ *
+ * The returned context pins the org axis to the session org:
+ * - `orgId` / `accessibleOrgIds` = the session (device) org only, with matching
+ *   `orgCondition` / `canAccessOrg` closures from `buildOrgAccessClosures`.
+ * - `scope` and `partnerId` are PRESERVED — collapsing a partner scope to
+ *   'organization' would drop `accessiblePartnerIds` from the derived RLS
+ *   context and black out partner-axis tables (scripts, alert templates,
+ *   update rings — the #2822 failure mode). Partner-wide config rows apply to
+ *   the device's org and must stay readable.
+ * - Site restrictions (`allowedSiteIds` / `canAccessSite`), `helperDeviceId`,
+ *   principal/user/token are preserved via spread — this narrows, never widens.
+ *
+ * Defensive: throws if the caller cannot access the session org. Unreachable
+ * in practice (`getSession` pre-filters by `auth.orgCondition`), but if auth
+ * ever regresses we must fail loudly rather than run tools cross-org.
+ */
+export function buildDeviceBoundSessionAuth(auth: AuthContext, sessionOrgId: string): AuthContext {
+  if (!auth.canAccessOrg(sessionOrgId)) {
+    throw new Error('Device-bound AI session org is not accessible to the caller');
+  }
+  const alreadyPinned =
+    auth.orgId === sessionOrgId &&
+    auth.accessibleOrgIds?.length === 1 &&
+    auth.accessibleOrgIds[0] === sessionOrgId;
+  if (alreadyPinned) return auth;
+
+  return {
+    ...auth,
+    orgId: sessionOrgId,
+    accessibleOrgIds: [sessionOrgId],
+    ...buildOrgAccessClosures([sessionOrgId]),
+  };
 }
 
 // ============================================
@@ -335,6 +480,13 @@ export class StreamingSessionManager {
       maxTurns: number;
       turnCount: number;
       systemPrompt: string | null;
+      /**
+       * Bound device from the aiSessions row. When set, the session's
+       * effective auth is narrowed to the session org (#3087). Callers whose
+       * middleware already pins the auth to one org (helper chat, client AI)
+       * may omit it — narrowing would be a no-op there.
+       */
+      deviceId?: string | null;
     },
     auth: AuthContext,
     requestContext: RequestLike | undefined,
@@ -356,8 +508,17 @@ export class StreamingSessionManager {
 
     const existing = this.sessions.get(breezeSessionId);
     if (existing && existing.state !== 'closed') {
-      // Update per-request context
+      // Update per-request context. Device-bound sessions re-narrow the fresh
+      // request auth to the session org every time (#3087) — `toolAuth` must
+      // never revert to the raw login scope on a follow-up message. Narrow
+      // against the freshly-loaded `dbSession.orgId`, not the possibly-stale
+      // `existing.orgId` snapshot captured at session creation — this is the
+      // current DB value, so it survives the device being moved to a
+      // different org mid-session.
       existing.auth = auth;
+      existing.toolAuth = existing.deviceId
+        ? buildDeviceBoundSessionAuth(auth, dbSession.orgId)
+        : auth;
       existing.auditSnapshot = snapshot;
       existing.allowedTools = allowedTools;
       existing.lastActivityAt = Date.now();
@@ -389,12 +550,20 @@ export class StreamingSessionManager {
       console.error('[StreamingSessionManager] Failed to load approval mode, defaulting to per_step:', err);
     }
 
+    // Device-bound sessions execute tools under the DEVICE's org, not the
+    // login org (#3087). `toolAuth` (MCP tool handlers + their RLS context)
+    // is narrowed to the session org; `auth` stays raw so RBAC, rate limits,
+    // and audit attribution keep resolving the login identity/role.
+    const deviceId = dbSession.deviceId ?? null;
+    const toolAuth = deviceId ? buildDeviceBoundSessionAuth(auth, dbSession.orgId) : auth;
+
     // Build partial session object so callbacks can reference it.
     // query and processorPromise are filled in after creation.
     const now = Date.now();
     const session: ActiveSession = {
       breezeSessionId,
       orgId: dbSession.orgId,
+      deviceId,
       model: dbSession.model,
       sdkSessionId: dbSession.sdkSessionId,
       query: null as unknown as Query, // set below
@@ -405,12 +574,18 @@ export class StreamingSessionManager {
       lastActivityAt: now,
       createdAt: now,
       auth,
+      toolAuth,
       auditSnapshot: snapshot,
       mcpServer: null as unknown as McpSdkServerConfigWithInstance, // set below
       mcpPrefix: MCP_PREFIX, // updated below if custom factory
       toolUseIdQueue: [],
+      pendingTurnUsage: emptyPendingTurnUsage(),
+      toolUseNames: new Map(),
       processorPromise: Promise.resolve(),
       turnTimeoutId: null,
+      approvalWaitDeadline: null,
+      approvalWaitAbort: null,
+      pendingApprovalWaits: 0,
       approvalMode,
       allowedTools,
       isPaused: false,
@@ -429,11 +604,11 @@ export class StreamingSessionManager {
     let mcpServer: McpSdkServerConfigWithInstance;
     let mcpServerName = 'breeze';
     if (mcpServerFactory) {
-      const custom = mcpServerFactory(() => session.auth, preToolUse, postToolUse, () => session);
+      const custom = mcpServerFactory(() => session.toolAuth, preToolUse, postToolUse, () => session);
       mcpServer = custom.server;
       mcpServerName = custom.name;
     } else {
-      mcpServer = createBreezeMcpServer(() => session.auth, preToolUse, postToolUse, () => session);
+      mcpServer = createBreezeMcpServer(() => session.toolAuth, preToolUse, postToolUse, () => session);
     }
     session.mcpServer = mcpServer;
     session.mcpPrefix = `mcp__${mcpServerName}__`;
@@ -546,6 +721,11 @@ export class StreamingSessionManager {
     }
 
     try {
+      // Settle any in-flight approval waits first: while a preToolUse approval
+      // wait is blocking an MCP tool handler, query.interrupt() alone cannot
+      // conclude the turn (#3089). The tier-3 intents stay pending_approval
+      // and are still executed by the durable release worker once decided.
+      settleApprovalWaits(session);
       await session.query.interrupt();
       return { interrupted: true };
     } catch (err) {
@@ -573,9 +753,31 @@ export class StreamingSessionManager {
   /** Start the per-turn timeout. Publishes error + done if SDK hangs. */
   startTurnTimeout(session: ActiveSession): void {
     this.clearTurnTimeout(session);
+    // New assistant cycle: reset the shared approval-wait budget (#3089) at
+    // the same point this turn timeout resets, preserving the invariant that
+    // a cycle's approval waits (<= 5 min total) always leave headroom for the
+    // model to emit its closing message before the 6-min timeout fires.
+    // Guarded: never reset while a wait is actually in flight (waits only run
+    // in the tool phase, between assistant messages) — EXCEPT when the
+    // deadline is already exhausted, where an in-flight wait is settling
+    // within milliseconds anyway and skipping the reset would poison every
+    // later cycle with a permanently zero budget.
+    if (
+      session.pendingApprovalWaits === 0
+      || (session.approvalWaitDeadline ?? Infinity) <= Date.now()
+    ) {
+      session.approvalWaitDeadline = null;
+      session.approvalWaitAbort = null;
+    }
     session.turnTimeoutId = setTimeout(() => {
       if (session.state === 'processing') {
         console.error('[StreamingSessionManager] Turn timeout for session:', session.breezeSessionId);
+        // The timeout can fire while approval waits are still blocked (e.g.
+        // long-running sibling tools delayed the first wait's start past the
+        // headroom window). Settle them so the SDK turn can actually conclude
+        // in the background instead of holding the subprocess for the rest of
+        // the 5-minute wait (#3089).
+        settleApprovalWaits(session);
         session.eventBus.publish({ type: 'error', message: 'AI request timed out. Please try again.' });
         session.eventBus.publish({ type: 'done' });
         session.state = 'idle';
@@ -647,12 +849,17 @@ export class StreamingSessionManager {
                 // content_block_start fires before the tool executes;
                 // postToolUse shifts the queue after execution.
                 session.toolUseIdQueue.push(block.id);
+                const bareStreamToolName = block.name.startsWith(session.mcpPrefix)
+                  ? block.name.slice(session.mcpPrefix.length)
+                  : block.name;
+                // Name lookup for the dropped-call fallback (#3094): if the
+                // SDK rejects this call before the MCP handler runs, the
+                // orphaned tool_result only carries the id, not the name.
+                session.toolUseNames?.set(block.id, bareStreamToolName);
 
                 session.eventBus.publish({
                   type: 'tool_use_start',
-                  toolName: block.name.startsWith(session.mcpPrefix)
-                    ? block.name.slice(session.mcpPrefix.length)
-                    : block.name,
+                  toolName: bareStreamToolName,
                   toolUseId: block.id,
                   input: {},
                 });
@@ -671,6 +878,24 @@ export class StreamingSessionManager {
           }
 
           case 'assistant': {
+            // Accumulate per-API-call usage as the fallback token source for
+            // this turn's cost recording (#3095). Each SDK assistant message
+            // wraps one model API response whose `usage` is authoritative for
+            // that call; the turn's `result` message *should* aggregate these,
+            // but has been observed arriving with missing/zero usage.
+            const apiUsage = message.message.usage as {
+              input_tokens?: number;
+              output_tokens?: number;
+              cache_read_input_tokens?: number | null;
+              cache_creation_input_tokens?: number | null;
+            } | undefined;
+            if (apiUsage) {
+              session.pendingTurnUsage.inputTokens += apiUsage.input_tokens ?? 0;
+              session.pendingTurnUsage.outputTokens += apiUsage.output_tokens ?? 0;
+              session.pendingTurnUsage.cacheReadInputTokens += apiUsage.cache_read_input_tokens ?? 0;
+              session.pendingTurnUsage.cacheCreationInputTokens += apiUsage.cache_creation_input_tokens ?? 0;
+            }
+
             const assistantContent = message.message.content
               .filter((b: { type: string }) => b.type === 'text')
               .map((b: { type: string; text?: string }) => b.text ?? '')
@@ -734,7 +959,36 @@ export class StreamingSessionManager {
           }
 
           case 'user': {
-            // SDK replays user messages during resume — skip, already in DB
+            // Ordinary user content is skipped (the SDK replays user messages
+            // during resume; they are already in DB). BUT this is also the only
+            // place a tool_result the model received WITHOUT our MCP handler
+            // running is visible: when the SDK rejects a tool call before
+            // dispatch (e.g. a -32602 input-schema validation failure), the
+            // model is fed an error tool_result while preToolUse/postToolUse
+            // never fire — historically leaving NO ai_messages row, NO SSE
+            // event, and a stale toolUseIdQueue entry that misattributes every
+            // subsequent result (issue #3094: a set_device_context call with a
+            // parenthesized details value vanished from the transcript while
+            // the model saw a validation error and silently retried). Detect
+            // exactly those orphans — a tool_result whose tool_use id is still
+            // queued; postToolUse shifts the queue before the MCP call
+            // returns, so normally-executed calls never match here, and
+            // replayed history predates this process's queue — and record an
+            // explicit error result instead of silence.
+            const userContent = (message as SDKUserMessage).message?.content;
+            if (Array.isArray(userContent)) {
+              for (const block of userContent) {
+                if (
+                  typeof block === 'object' && block !== null &&
+                  (block as { type?: string }).type === 'tool_result'
+                ) {
+                  await this.recordDroppedToolResult(
+                    session,
+                    block as { tool_use_id?: string; content?: unknown; is_error?: boolean },
+                  );
+                }
+              }
+            }
             break;
           }
 
@@ -743,7 +997,12 @@ export class StreamingSessionManager {
             this.clearTurnTimeout(session);
 
             const resultMsg = message as SDKResultMessage;
-            const orgId = session.auth.orgId;
+            // #3095: use the session's canonical org id (from the aiSessions DB
+            // row — always set), NOT `auth.orgId`, which is null for partner-
+            // and system-scoped users. The old guard on `auth.orgId` silently
+            // skipped usage recording for EVERY turn of every session run by a
+            // partner-scoped technician, leaving ai_sessions token counters at 0.
+            const orgId = session.orgId;
 
             if (!orgId) {
               console.warn('[StreamingSessionManager] Skipping usage recording — no orgId on session', session.breezeSessionId);
@@ -753,30 +1012,48 @@ export class StreamingSessionManager {
             }
 
             // Extract usage with defensive checks — SDK types say usage is non-nullable
-            // but in practice it may be missing, leaving sessions with 0 tokens
+            // but in practice it may be missing/zero. Fall back to the usage
+            // accumulated from this turn's assistant messages (#3095).
+            const sdkUsage = resultMsg.usage as {
+              input_tokens?: number;
+              output_tokens?: number;
+              cache_read_input_tokens?: number | null;
+              cache_creation_input_tokens?: number | null;
+            } | undefined;
+            const sdkReported: PendingTurnUsage = {
+              inputTokens: sdkUsage?.input_tokens ?? 0,
+              outputTokens: sdkUsage?.output_tokens ?? 0,
+              // Cache tokens are billed separately (read ~0.1x input, write ~1.25x
+              // input). Capture them so the token-based fallback doesn't undercount
+              // cost on cached requests when the SDK reports $0.
+              cacheReadInputTokens: sdkUsage?.cache_read_input_tokens ?? 0,
+              cacheCreationInputTokens: sdkUsage?.cache_creation_input_tokens ?? 0,
+            };
+            const effectiveUsage = hasTokens(sdkReported) ? sdkReported : session.pendingTurnUsage;
+            // Consumed (or superseded by the SDK's own numbers) — reset for the next turn.
+            session.pendingTurnUsage = emptyPendingTurnUsage();
+
             const usageData = {
               total_cost_usd: resultMsg.total_cost_usd ?? 0,
               usage: {
-                input_tokens: resultMsg.usage?.input_tokens ?? 0,
-                output_tokens: resultMsg.usage?.output_tokens ?? 0,
-                // Cache tokens are billed separately (read ~0.1x input, write ~1.25x
-                // input). Capture them so the token-based fallback doesn't undercount
-                // cost on cached requests when the SDK reports $0.
-                cache_read_input_tokens: resultMsg.usage?.cache_read_input_tokens ?? 0,
-                cache_creation_input_tokens: resultMsg.usage?.cache_creation_input_tokens ?? 0,
+                input_tokens: effectiveUsage.inputTokens,
+                output_tokens: effectiveUsage.outputTokens,
+                cache_read_input_tokens: effectiveUsage.cacheReadInputTokens,
+                cache_creation_input_tokens: effectiveUsage.cacheCreationInputTokens,
               },
               num_turns: resultMsg.num_turns ?? 0,
               // Model id for token-based cost fallback when the SDK reports $0.
               model: session.model,
             };
 
-            if (!resultMsg.usage || (!resultMsg.usage.input_tokens && !resultMsg.usage.output_tokens)) {
-              console.warn('[StreamingSessionManager] Result message has no/empty usage:', {
+            if (!hasTokens(sdkReported)) {
+              console.warn('[StreamingSessionManager] Result message has no/empty usage — using accumulated assistant-message usage:', {
                 sessionId: session.breezeSessionId,
                 subtype: resultMsg.subtype,
                 hasUsage: !!resultMsg.usage,
                 totalCostUsd: resultMsg.total_cost_usd,
-                keys: Object.keys(resultMsg),
+                fallbackInputTokens: effectiveUsage.inputTokens,
+                fallbackOutputTokens: effectiveUsage.outputTokens,
               });
             }
 
@@ -854,11 +1131,163 @@ export class StreamingSessionManager {
       session.eventBus.publish({ type: 'error', message: sanitizeErrorForClient(err) });
       session.eventBus.publish({ type: 'done' });
     } finally {
+      // Flush usage from a turn that never produced a `result` message
+      // (teardown mid-turn, subprocess crash, iterator error) so the tokens
+      // already spent on model API calls still land in the session counters
+      // and org cost aggregates (#3095). Zero after a normal turn — the
+      // accumulator is reset when each `result` is recorded.
+      if (hasTokens(session.pendingTurnUsage)) {
+        const abandoned = session.pendingTurnUsage;
+        session.pendingTurnUsage = emptyPendingTurnUsage();
+        // Awaited (not fire-and-forget): the most common abandoned-turn trigger
+        // is process shutdown (deploy/SIGTERM), where an untracked promise can
+        // be killed before it settles — silently, since even the .catch would
+        // never run. Awaiting ties the write into processorPromise so it can
+        // be drained; failures are logged, never re-credited (the underlying
+        // writes are non-idempotent += increments, retry would double-count).
+        try {
+          await withDbAccessContext(
+            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+            () => recordUsageFromSdkResult(session.breezeSessionId, session.orgId, {
+              total_cost_usd: 0,
+              usage: {
+                input_tokens: abandoned.inputTokens,
+                output_tokens: abandoned.outputTokens,
+                cache_read_input_tokens: abandoned.cacheReadInputTokens,
+                cache_creation_input_tokens: abandoned.cacheCreationInputTokens,
+              },
+              num_turns: 1,
+              model: session.model,
+            })
+          );
+        } catch (err) {
+          captureException(err);
+          console.error('[StreamingSessionManager] Failed to record abandoned-turn usage:', err);
+        }
+        // Mirror the result path's per-user hook (AI for Office): without this,
+        // abandoned-turn spend would reach the org ledger but never the
+        // client_ai_usage buckets that back per-user caps and invoicing.
+        if (session.recordExtraUsage) {
+          try {
+            await session.recordExtraUsage({
+              inputTokens: abandoned.inputTokens,
+              outputTokens: abandoned.outputTokens,
+              costCents: calculateCostCents(
+                session.model,
+                abandoned.inputTokens,
+                abandoned.outputTokens,
+                abandoned.cacheReadInputTokens,
+                abandoned.cacheCreationInputTokens
+              ),
+            });
+          } catch (err) {
+            captureException(err);
+            console.error('[StreamingSessionManager] recordExtraUsage failed for abandoned turn:', err);
+          }
+        }
+      }
+
       // Always clean up the session from the map after the processor exits
       this.clearTurnTimeout(session);
       if (this.sessions.has(session.breezeSessionId)) {
         this.remove(session.breezeSessionId);
       }
+    }
+  }
+
+  /**
+   * Persist + emit an explicit error tool_result for a tool call the SDK
+   * rejected BEFORE our MCP handler ran (issue #3094).
+   *
+   * Detection contract: a tool_result block inside an SDK 'user' message whose
+   * tool_use id is STILL in session.toolUseIdQueue was never seen by
+   * createSessionPostToolUse (which shifts the queue synchronously before the
+   * MCP call returns). For those calls nothing else will ever write the
+   * transcript row or resolve the UI tool card, so this fallback:
+   *  - removes the stale queue entry (it would misattribute every subsequent
+   *    tool_result to the wrong toolUseId),
+   *  - emits the SSE tool_result event (UI card resolves with the error),
+   *  - persists the ai_messages tool_result row (transcript/audit review sees
+   *    an explicit failure instead of a vanished call),
+   *  - flags the session (parity with postToolUse's tool-failure auto-flag).
+   */
+  private async recordDroppedToolResult(
+    session: ActiveSession,
+    block: { tool_use_id?: string; content?: unknown; is_error?: boolean },
+  ): Promise<void> {
+    const toolUseId = block.tool_use_id;
+    if (!toolUseId) return;
+    const queueIdx = session.toolUseIdQueue.indexOf(toolUseId);
+    if (queueIdx === -1) return; // handled by postToolUse, or replayed history
+    session.toolUseIdQueue.splice(queueIdx, 1);
+    const toolName = session.toolUseNames?.get(toolUseId) ?? 'unknown_tool';
+    session.toolUseNames?.delete(toolUseId);
+
+    const rawText = Array.isArray(block.content)
+      ? (block.content as Array<{ type?: string; text?: string }>)
+          .map((c) => (typeof c?.text === 'string' ? c.text : ''))
+          .join(' ')
+          .trim()
+      : typeof block.content === 'string'
+        ? block.content
+        : '';
+    // The text is SDK/CLI-authored (typically an input-schema validation error
+    // that only references our own advertised tool schema); redact + cap as
+    // defense-in-depth before it reaches the stream and the transcript.
+    const errorText = redactAiToolOutputText(
+      rawText || 'Tool call was rejected before execution and produced no result.',
+    ).slice(0, 1000);
+    const output = { error: errorText, droppedBeforeExecution: true };
+
+    console.warn(
+      `[StreamingSessionManager] Tool call ${toolName} (${toolUseId}) was rejected before the MCP handler ran — recording explicit error tool_result`,
+    );
+
+    // SSE first (mirrors createSessionPostToolUse): the UI must receive the
+    // result even if persistence fails.
+    session.eventBus.publish({
+      type: 'tool_result',
+      toolUseId,
+      output,
+      isError: block.is_error ?? true,
+    });
+
+    try {
+      await withDbAccessContext(
+        { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+        () =>
+          db.insert(aiMessages).values({
+            sessionId: session.breezeSessionId,
+            role: 'tool_result',
+            toolName,
+            toolOutput: output,
+            toolUseId,
+          })
+      );
+    } catch (err) {
+      captureException(err);
+      console.error('[StreamingSessionManager] Failed to persist dropped tool_result:', toolName, err);
+    }
+
+    // Auto-flag the session (first failure only) so flagged-session review
+    // surfaces these drops — mirrors postToolUse's tool-failure flag.
+    try {
+      await withDbAccessContext(
+        { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+        () =>
+          db.update(aiSessions)
+            .set({
+              flaggedAt: new Date(),
+              flagReason: `Tool rejected before execution: ${toolName} — ${errorText.slice(0, 300)}`,
+            })
+            .where(and(
+              eq(aiSessions.id, session.breezeSessionId),
+              isNull(aiSessions.flaggedAt),
+            ))
+      );
+    } catch (err) {
+      captureException(err);
+      console.error('[StreamingSessionManager] Failed to auto-flag session for dropped tool_result:', session.breezeSessionId, err);
     }
   }
 

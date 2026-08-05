@@ -20,12 +20,15 @@ import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
  *
  * Returns the freshly-rebuilt actor `auth` on success. Callers decide how to
  * EXECUTE: the worker executes under this rebuilt context; the inline chat path
- * executes under its live `session.auth` (which alone carries the session-aware
- * M365/Google connection context) — but only AFTER this returns ok, i.e. only
- * once the requester's CURRENT authorization has been re-proven. The rebuilt
- * `auth` and `session.auth` describe the same user + org (accessibleOrgIds ===
- * [intent.orgId] === session.orgId), so they are interchangeable for tenant
- * scope; the difference is only that this one reflects live DB state.
+ * executes under its live `session.toolAuth` (which alone carries the
+ * session-aware M365/Google connection context — and, for device-bound
+ * sessions since #3087, is narrowed to the session/device org, whereas
+ * `session.auth` stays the raw login context) — but only AFTER this returns
+ * ok, i.e. only once the requester's CURRENT authorization has been
+ * re-proven. The rebuilt `auth` and `session.toolAuth` describe the same
+ * user + org (accessibleOrgIds === [intent.orgId] === session.orgId), so
+ * they are interchangeable for tenant scope; the difference is only that
+ * this one reflects live DB state.
  *
  * Every failure carries the same `errorCode` the worker has always CASed
  * `executing -> failed` with, so audit/metrics semantics are unchanged.

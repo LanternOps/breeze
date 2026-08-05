@@ -129,7 +129,16 @@ export const policyUpdateSchema = z.object({
 });
 
 export const jobListSchema = z.object({
-  status: z.enum(['queued', 'running', 'completed', 'failed', 'canceled']).optional(),
+  // The real backup_status enum values, plus the two legacy misspellings
+  // ('queued'/'canceled') this schema has always accepted, kept so an existing
+  // caller does not start 400ing. They are NOT enum members — the list route
+  // maps them to 'pending'/'cancelled' before building the condition, because
+  // passing one through to a pgEnum comparison makes Postgres raise
+  // `invalid input value for enum backup_status` (a 500, not an empty list).
+  status: z.enum([
+    'pending', 'running', 'completed', 'failed', 'cancelled', 'partial',
+    'queued', 'canceled',
+  ]).optional(),
   device: z.string().optional(),
   deviceId: z.string().optional(),
   date: z.string().optional(),

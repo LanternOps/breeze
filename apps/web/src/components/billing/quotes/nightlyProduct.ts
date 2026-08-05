@@ -72,6 +72,9 @@ export function nightlyToEcProduct(product: SftpProduct): EcProduct {
     source: 'td_synnex_price_file',
     synnexSku: product.synnexSku,
     mfgPartNo: product.mfgPartNo ?? null,
+    // Lifted to the top level so it flows through the shared EC import contract
+    // (Task 2's vendor-identity normalizer prefers this over raw.manufacturer).
+    manufacturer: product.manufacturer ?? null,
     status: product.status ?? null,
     name: product.name ?? product.synnexSku,
     description: product.description ?? null,

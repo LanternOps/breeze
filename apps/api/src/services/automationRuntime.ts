@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto';
-import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import type { DeploymentTargetConfig } from '@breeze/shared';
 import { db } from '../db';
 import {
@@ -82,7 +82,10 @@ async function notificationChannelOwnershipCondition(
       db
         .select({ id: organizations.id })
         .from(organizations)
-        .where(eq(organizations.partnerId, owner.partnerId)),
+        // The hidden per-partner 'quick_support' org never owns notification
+        // channels and is never an automation target — keep it out of both
+        // partner fan-outs here and in automationOwnerOrgIds below.
+        .where(and(eq(organizations.partnerId, owner.partnerId), ne(organizations.type, 'quick_support'))),
     )
   ) as SQL;
 }
@@ -113,7 +116,7 @@ async function automationOwnerOrgIds(
   const orgRows = await db
     .select({ id: organizations.id })
     .from(organizations)
-    .where(eq(organizations.partnerId, automation.partnerId));
+    .where(and(eq(organizations.partnerId, automation.partnerId), ne(organizations.type, 'quick_support')));
 
   return orgRows.map((row) => row.id);
 }

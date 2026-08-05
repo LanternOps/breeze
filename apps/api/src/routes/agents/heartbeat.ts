@@ -474,6 +474,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // reports back down to 0 rather than leaving a stale capability claim
     // that Task 5's dispatch gate would wrongly trust.
     outboundNetworkPolicyVersion: data.securityCapabilities?.outboundNetworkPolicyVersion === 1 ? 1 : 0,
+    // Task 5 (#2764) — a live heartbeat is proof the agent is still installed,
+    // so it unconditionally clears any uninstall-intent stamp left by a prior
+    // /uninstall-intent call (aborted uninstall, or a reinstall on the same
+    // device row). Written every beat, sticky or not — this is the cheapest
+    // correct form and self-heals the reaper's decommission window without
+    // needing to first check whether a stamp is even present.
+    uninstallIntentAt: null,
     updatedAt: new Date()
   };
 

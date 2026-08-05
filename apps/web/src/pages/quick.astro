@@ -1,0 +1,11 @@
+---
+// Public, unauthenticated end-user landing page for Quick Support. The one-time
+// code in the URL is the only credential, so this page must render for a
+// logged-out stranger — deliberately NO auth guard.
+import AuthLayout from '../layouts/AuthLayout.astro';
+import QuickLandingPage from '../components/quick/QuickLandingPage';
+---
+
+<AuthLayout title="Quick Support">
+  <QuickLandingPage client:load />
+</AuthLayout>

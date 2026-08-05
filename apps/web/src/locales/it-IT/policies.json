@@ -910,7 +910,8 @@
         "createUpdateRing": "Crea anello di aggiornamento",
         "text2xl": "2xl",
         "saveChanges": "Salva modifiche",
-        "createRing": "Crea anello"
+        "createRing": "Crea anello",
+        "thirdPartyRingHint": "Le regole di approvazione automatica per gli aggiornamenti di terze parti si configurano nell'anello di aggiornamento collegato."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Collega criterio periferiche",

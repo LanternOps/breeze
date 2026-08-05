@@ -69,8 +69,11 @@ describe('manage_contracts', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('create_draft calls createContract with input payload and actor built from auth', async () => {
+    // orgId is validated as a UUID (createContractSchema) — unlike contractId/
+    // lineId elsewhere in this file, which are only ever String()-coerced path
+    // params and never parsed against a guid schema.
     const input = {
-      orgId: 'org-1',
+      orgId: '11111111-1111-1111-1111-111111111111',
       name: 'Managed services',
       billingTiming: 'advance',
       intervalMonths: 1,
@@ -167,5 +170,54 @@ describe('manage_contracts', () => {
     expect(parsed.code).toBe('VALIDATION_ERROR');
     expect(parsed.error).toContain('contractId');
     expect(contractService.activateContract).not.toHaveBeenCalled();
+  });
+
+  // BUG 1: manage_contracts used to type-cast create_draft/update/add_line
+  // payloads straight into the service call with no Zod layer at all — a
+  // malformed payload (e.g. missing billingTiming/intervalMonths) reached
+  // createContract's raw insert and died as an opaque HTTP 500 NOT NULL
+  // violation instead of a structured validation message.
+  it('create_draft with an invalid payload (missing billingTiming/intervalMonths) returns a structured VALIDATION_ERROR instead of throwing', async () => {
+    const out = await getTool().handler(
+      {
+        action: 'create_draft',
+        input: { orgId: 'org-1', name: 'Managed services', startDate: '2026-07-01' },
+      },
+      auth,
+    );
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(contractService.createContract).not.toHaveBeenCalled();
+  });
+
+  it('update with an invalid patch (bad intervalMonths type) returns a structured VALIDATION_ERROR', async () => {
+    const out = await getTool().handler(
+      {
+        action: 'update',
+        contractId: 'contract-1',
+        patch: { intervalMonths: 'monthly' },
+      },
+      auth,
+    );
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(contractService.updateContract).not.toHaveBeenCalled();
+  });
+
+  it('add_line with an invalid line (missing unitPrice/taxable) returns a structured VALIDATION_ERROR', async () => {
+    const out = await getTool().handler(
+      {
+        action: 'add_line',
+        contractId: 'contract-1',
+        line: { lineType: 'manual', description: 'Support' },
+      },
+      auth,
+    );
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(contractService.addContractLineToContract).not.toHaveBeenCalled();
   });
 });

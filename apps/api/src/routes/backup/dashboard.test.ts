@@ -25,6 +25,7 @@ function chainMock(resolvedValue: unknown = []) {
 
 const selectMock = vi.fn(() => chainMock([]));
 const resolveAllBackupAssignedDevicesMock = vi.fn();
+const resolveBackupConfigForDeviceMock = vi.fn(async () => null as unknown);
 
 vi.mock('../../db', () => ({
   db: {
@@ -65,10 +66,13 @@ vi.mock('../../db/schema', () => ({
     displayName: 'devices.display_name',
     hostname: 'devices.hostname',
   },
+  // `partial` counts as a restore point (#3000) — the status route reads this
+  // to decide lastSuccessAt.
+  RESTORABLE_BACKUP_JOB_STATUSES: ['completed', 'partial'] as const,
 }));
 
 vi.mock('../../services/featureConfigResolver', () => ({
-  resolveBackupConfigForDevice: vi.fn(),
+  resolveBackupConfigForDevice: (...args: unknown[]) => resolveBackupConfigForDeviceMock(...(args as [])),
   resolveAllBackupAssignedDevices: (...args: unknown[]) => resolveAllBackupAssignedDevicesMock(...(args as [])),
 }));
 
@@ -224,6 +228,116 @@ describe('backup dashboard routes', () => {
     expect(body.data.attentionError).toBe(false);
   });
 
+  // #3000: a device whose latest backup landed `partial` (a real snapshot, but
+  // a disproportionate share of the data missing) must reach attentionItems.
+  // Before the partial status existed such a run was indistinguishable from a
+  // clean one, so nothing keyed on job status ever fired for it.
+  it('flags a device whose latest backup is partial in attentionItems', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // configCount
+      .mockReturnValueOnce(chainMock([{ count: 1 }])) // jobCount
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // snapshotCount
+      .mockReturnValueOnce(chainMock([{ completed: 0, failed: 0, partial: 1, running: 0, pending: 0 }])) // last24hStats
+      .mockReturnValueOnce(chainMock([{ totalBytes: 0, count: 0 }])) // storageStats
+      .mockReturnValueOnce(chainMock([])) // recentJobsRaw
+      .mockReturnValueOnce(chainMock([])) // ranked-jobs subquery build (value unused)
+      .mockReturnValueOnce(chainMock([
+        {
+          deviceId: FAILING_DEVICE_ID,
+          status: 'partial',
+          errorLog: '21 of 22 files failed to upload',
+          completedAt: new Date('2026-07-14T10:00:00.000Z'),
+          createdAt: new Date('2026-07-14T09:55:00.000Z'),
+          rn: 1,
+          deviceName: 'Finance Laptop',
+          deviceHostname: 'fin-laptop-01',
+        },
+      ])); // ranked-jobs rows
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.attentionItems).toHaveLength(1);
+    // A single partial run is a warning, not yet critical, and the copy must
+    // not call it a failure.
+    expect(body.data.attentionItems[0]).toMatchObject({
+      id: `backup-failing-${FAILING_DEVICE_ID}`,
+      severity: 'warning',
+    });
+    expect(body.data.attentionItems[0].title).toContain('only partially completed');
+    expect(body.data.attentionItems[0].description).toContain('21 of 22 files failed to upload');
+    // The counter must be SERIALIZED, not merely computed. Omitting it from the
+    // response body made the web success-rate fix inert while every unit test
+    // still passed, because the web test hand-mocked a shape the API never sent.
+    expect(body.data.jobsLast24h).toMatchObject({ completed: 0, failed: 0, partial: 1 });
+  });
+
+  // Two consecutive partial runs are two degraded-but-usable restore points.
+  // They must not escalate to `critical` the way two hard failures do.
+  it('does not escalate consecutive partial runs to critical severity', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    const partialRow = (rn: number, day: string) => ({
+      deviceId: FAILING_DEVICE_ID,
+      status: 'partial',
+      errorLog: 'most files failed to upload',
+      completedAt: new Date(`2026-07-${day}T10:00:00.000Z`),
+      createdAt: new Date(`2026-07-${day}T09:55:00.000Z`),
+      rn,
+      deviceName: 'Finance Laptop',
+      deviceHostname: 'fin-laptop-01',
+    });
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ count: 2 }]))
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ completed: 0, failed: 0, partial: 2, running: 0, pending: 0 }]))
+      .mockReturnValueOnce(chainMock([{ totalBytes: 0, count: 0 }]))
+      .mockReturnValueOnce(chainMock([]))
+      .mockReturnValueOnce(chainMock([]))
+      .mockReturnValueOnce(chainMock([partialRow(1, '14'), partialRow(2, '13')]));
+
+    const res = await app.request('/backup/dashboard');
+    const body = await res.json();
+
+    expect(body.data.attentionItems).toHaveLength(1);
+    expect(body.data.attentionItems[0].severity).toBe('warning');
+    expect(body.data.attentionItems[0].title).toContain('consecutive unsuccessful backups');
+    expect(body.data.attentionItems[0].title).not.toContain('failures');
+  });
+
+  // A cancelled job is a user action, not a fault: it must NOT raise attention.
+  it('does not flag a device whose latest backup was cancelled', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // configCount
+      .mockReturnValueOnce(chainMock([{ count: 1 }])) // jobCount
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // snapshotCount
+      .mockReturnValueOnce(chainMock([{ completed: 0, failed: 0, partial: 0, running: 0, pending: 0 }])) // last24hStats
+      .mockReturnValueOnce(chainMock([{ totalBytes: 0, count: 0 }])) // storageStats
+      .mockReturnValueOnce(chainMock([])) // recentJobsRaw
+      .mockReturnValueOnce(chainMock([])) // ranked-jobs subquery build (value unused)
+      .mockReturnValueOnce(chainMock([
+        {
+          deviceId: FAILING_DEVICE_ID,
+          status: 'cancelled',
+          errorLog: null,
+          completedAt: new Date('2026-07-14T10:00:00.000Z'),
+          createdAt: new Date('2026-07-14T09:55:00.000Z'),
+          rn: 1,
+          deviceName: 'Finance Laptop',
+          deviceHostname: 'fin-laptop-01',
+        },
+      ])); // ranked-jobs rows
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.attentionItems).toEqual([]);
+  });
+
   it('surfaces a degraded attentionError flag when the attention-items query fails (not a silent all-clear)', async () => {
     resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
 
@@ -302,6 +416,80 @@ describe('backup dashboard routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.attentionItems).toEqual([]);
+  });
+
+  describe('GET /status/:deviceId — lastJob VSS metadata (#3027)', () => {
+    function mockStatusQueries(job: Record<string, unknown>) {
+      resolveBackupConfigForDeviceMock.mockResolvedValueOnce(null);
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]))
+        .mockReturnValueOnce(chainMock([job]));
+    }
+
+    function makeJob(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'job-vss',
+        status: 'completed',
+        createdAt: new Date('2026-04-01T00:00:00.000Z'),
+        completedAt: new Date('2026-04-01T00:10:00.000Z'),
+        errorLog: null,
+        vssMetadata: null,
+        ...overrides,
+      };
+    }
+
+    it('includes vssMetadata in the lastJob projection', async () => {
+      // Regression: the projection returned only {id,status,createdAt,completedAt},
+      // so the device tab's VSS panel could never render — showVssStatus was
+      // permanently false regardless of what the agent reported.
+      mockStatusQueries(makeJob({
+        vssMetadata: {
+          shadowCopyId: 'set-1',
+          writers: [{ name: 'NTDS', state: 'failed' }],
+          unprotectedVolumes: ['D:\\'],
+        },
+      }));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.lastJob.vssMetadata).toEqual({
+        shadowCopyId: 'set-1',
+        writers: [{ name: 'NTDS', state: 'failed' }],
+        unprotectedVolumes: ['D:\\'],
+      });
+    });
+
+    it('returns null (not undefined) when the run recorded no VSS metadata', async () => {
+      // The UI gates on `!= null`, so the key has to be present and explicitly
+      // null rather than dropped from the JSON body.
+      mockStatusQueries(makeJob());
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.lastJob).toHaveProperty('vssMetadata');
+      expect(body.data.lastJob.vssMetadata).toBeNull();
+    });
+
+    it('includes errorLog — the ONLY channel a total VSS failure has', async () => {
+      // When the shadow copy could not be created there is no vssMetadata at
+      // all, so the degradation rides the warning into error_log. Without this
+      // the device tab showed a clean green backup for a run that read every
+      // file off the live volume.
+      mockStatusQueries(makeJob({
+        vssMetadata: null,
+        errorLog: 'VSS shadow copy could not be created, so every path was read from the live volume',
+      }));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.lastJob.errorLog).toContain('read from the live volume');
+    });
   });
 });
 

@@ -24,10 +24,21 @@ const TOOL_TIMEOUT_OVERRIDES: Record<string, number> = {
   manage_patches: 180_000,
   // Network discovery — port scanning is slow
   network_discovery: 120_000,
-  // Desktop / vision — WebRTC setup + capture
-  take_screenshot: 30_000,
-  analyze_screen: 30_000,
-  computer_control: 30_000,
+  // Desktop / vision — WebRTC negotiation + capture + (for analyze_screen) a
+  // model vision pass. #3091: these were 30_000, the only three entries in this
+  // table that LOWERED the budget below the 60s default — so the slowest tools
+  // here got less time than an unlisted one. `analyze_screen` duly timed out on
+  // prod at 30s while ordinary `execute_command` round-trips to the same device
+  // in the same window were taking 40s to 6min. They do an agent round-trip like
+  // `execute_command` and then more, so they get at least its budget.
+  //
+  // The timeout covers execution only: `withToolTimeout` wraps the `executeTool`
+  // call in `aiAgentSdkTools.ts`, and approval resolution happens earlier in the
+  // handler — so approval latency never ate into the 30s, and raising this is a
+  // real increase in execution budget rather than a wider window for waiting.
+  take_screenshot: 120_000,
+  analyze_screen: 120_000,
+  computer_control: 120_000,
   // Report generation — aggregates across many devices
   generate_report: 90_000,
 };

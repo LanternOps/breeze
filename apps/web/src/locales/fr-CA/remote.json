@@ -4,7 +4,7 @@
     "subtitle": "Lancez des outils à distance pour les appareils en ligne.",
     "terminal": {
       "title": "Démarrer le terminal",
-    "description": "Sélectionnez un appareil auquel vous connecter"
+      "description": "Sélectionnez un appareil auquel vous connecter"
     },
     "files": {
       "title": "Transfert de fichiers",
@@ -13,6 +13,10 @@
     "sessions": {
       "title": "Historique des sessions",
       "description": "Voir les sessions précédentes"
+    },
+    "quickSupport": {
+      "title": "Soutien rapide",
+      "description": "Code à usage unique pour un dépannage sur-le-champ"
     }
   },
   "connectDesktopButton": {
@@ -209,7 +213,7 @@
         "browser_cache": "Cache navigateur",
         "package_cache": "Cache de paquets",
         "temp_files": "Fichiers temporaires",
-      "trash": "Corbeille"
+        "trash": "Corbeille"
       },
       "cleanupPreview": "Aperçu du nettoyage",
       "cleanupResult": "Nettoyage {{status}} : récupéré {{size}} de {{count}} cible(s), {{failed}} échoué.",
@@ -761,5 +765,60 @@
       "obtainTicket": "Impossible de récupérer le ticket"
     },
     "sessionTitle": "Titre de la session"
+  },
+  "quickSupport": {
+    "title": "Soutien rapide",
+    "subtitle": "Créez un code à usage unique pour dépanner sur-le-champ un appareil qui n'est pas inscrit.",
+    "newSession": "Nouvelle séance de soutien",
+    "form": {
+      "title": "Démarrer une séance de soutien",
+      "attributionOrg": "Attribuer à un client (facultatif)",
+      "attributionOrgHint": "Uniquement pour les rapports : l'accès aux données de ce client demeure inchangé.",
+      "attributionOrgNone": "Non attribuée",
+      "attributionLabel": "Étiquette de référence (facultatif)",
+      "attributionLabelPlaceholder": "À qui ou à quoi sert cette séance?",
+      "submit": "Générer le code",
+      "submitting": "Génération du code en cours…"
+    },
+    "code": {
+      "heading": "Transmettez ce code à la personne que vous dépannez",
+      "shownOnce": "Ce code ne s'affiche qu'une seule fois. Copiez-le avant de quitter cette page, car il ne pourra plus jamais être affiché.",
+      "expires": "Expire à {{time}}",
+      "instructions": "Envoyez-lui le lien, puis demandez-lui de lancer le client téléchargé et d'entrer le code.",
+      "copyCode": "Copier le code",
+      "copyLink": "Copier le lien de téléchargement",
+      "copiedCode": "Code copié dans le presse-papiers",
+      "copiedLink": "Lien de téléchargement copié dans le presse-papiers",
+      "copyFailed": "Impossible de copier dans le presse-papiers"
+    },
+    "status": {
+      "heading": "Progression de la séance",
+      "pending": "En attente que l'utilisateur lance le client…",
+      "claimed": "Connexion du client en cours…",
+      "ready": "Prêt à se connecter",
+      "active": "Séance en cours",
+      "ended": "Séance terminée",
+      "expired": "Séance expirée"
+    },
+    "connect": {
+      "waitingForDevice": "L'appareil s'inscrit. Le bouton de connexion apparaîtra dès qu'il sera en ligne."
+    },
+    "end": {
+      "button": "Mettre fin à la séance",
+      "success": "Séance de soutien terminée",
+      "error": "Impossible de mettre fin à la séance de soutien",
+      "alreadyEnded": "Cette séance de soutien était déjà terminée"
+    },
+    "errors": {
+      "create": "Impossible de créer la séance de soutien",
+      "list": "Impossible de charger les séances de soutien récentes"
+    },
+    "list": {
+      "heading": "Séances de soutien récentes",
+      "empty": "Aucune séance de soutien pour le moment.",
+      "columnCreated": "Début",
+      "columnEnded": "Fin",
+      "unlabeled": "Séance sans étiquette"
+    }
   }
 }

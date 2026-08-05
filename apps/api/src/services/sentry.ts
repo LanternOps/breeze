@@ -2,6 +2,9 @@ import * as Sentry from '@sentry/node';
 import type { Context } from 'hono';
 import { API_VERSION } from '../version';
 import { pgErrorCode } from '../utils/pgErrors';
+// TYPE-ONLY on purpose — erased at build time, so this adds no runtime import
+// edge. See setConnectTimeoutClassifier below for why that matters.
+import type { ConnectTimeoutDiagnosis } from './postgresConnectTimeout';
 import {
   UNMATCHED_ROUTE_LABEL,
   safeMatchedRouteLabel,
@@ -22,6 +25,27 @@ const RLS_DENY_SQLSTATE = '42501';
 
 let initialized = false;
 
+/**
+ * #3022 CONNECT_TIMEOUT classifier, injected at boot rather than imported.
+ *
+ * This module is imported by ~120 others, `db/index.ts` among them. A static
+ * import back to the classifier therefore pulls it — and the event-loop monitor
+ * behind it — into the module graph of everything that merely reports an error,
+ * including the DB module itself. That measurably slowed module evaluation and
+ * pushed `db/requestDatabasePool.test.ts` (a hard 15s budget on a dynamic
+ * `import('./index')`) over its timeout. Inverting the dependency keeps
+ * `services/sentry` a leaf, matching how the metrics recorders are wired
+ * (`setBackupMetricsRecorder`, `setS1MetricsRecorder`, …).
+ *
+ * Unset means "not wired yet" — the tags are simply omitted, never guessed.
+ */
+type ConnectTimeoutClassifier = (err: unknown) => ConnectTimeoutDiagnosis | null;
+let connectTimeoutClassifier: ConnectTimeoutClassifier | null = null;
+
+export function setConnectTimeoutClassifier(classifier: ConnectTimeoutClassifier | null): void {
+  connectTimeoutClassifier = classifier;
+}
+
 const ALLOWED_TAG_NAMES = new Set([
   'method',
   'route_template',
@@ -41,6 +65,14 @@ const ALLOWED_TAG_NAMES = new Set([
   // tenant, device, or command identifier.
   'prior_status',
   'cas_label',
+  // #3022: a Postgres CONNECT_TIMEOUT is already tagged `pg_code:CONNECT_TIMEOUT`,
+  // but that alone says nothing about WHY — the driver reports the identical
+  // error whether the handshake failed or this process was simply never
+  // scheduled to run the socket callbacks. These two split that bucket in
+  // Sentry. Both are closed sets by construction (see ConnectTimeoutCause and
+  // bucketEventLoopLag); neither carries a tenant, device, or host identifier.
+  'connect_timeout_cause',
+  'event_loop_lag_bucket',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;
@@ -171,6 +203,52 @@ export function scrubEvent<T extends Record<string, any>>(event: T): T {
   return event;
 }
 
+/**
+ * #3077: the same rebuild for TRANSACTION events, which `beforeSend` never sees.
+ *
+ * `@sentry/core` dispatches the two hooks by event type — `beforeSend` for error
+ * events, `beforeSendTransaction` for transactions — so `scrubEvent` above ran on
+ * exactly half the outbound traffic. Meanwhile `requestDataIntegration()` is a
+ * default node integration whose `processEvent` fires on EVERY event type and
+ * copies the request header bag verbatim into `event.request.headers`; the SDK's
+ * own `SENSITIVE_KEY_SNIPPETS` deny list (which would have caught `x-api-key`)
+ * is only applied on the span-attribute path, not to the event body. So a
+ * sampled transaction on an api-key route shipped a live `brz_` credential with
+ * no error involved at all — and `.env.example` ships
+ * `SENTRY_TRACES_SAMPLE_RATE=0.1`, so sampling is on for anyone who copies it.
+ *
+ * This deliberately does NOT reuse `scrubEvent`: that one deletes `contexts`,
+ * and a transaction event without `contexts.trace` is invalid — reusing it would
+ * silently disable tracing rather than secure it. Instead `contexts` is narrowed
+ * to `trace` alone, which is the field the event format requires and the only one
+ * carrying no host or tenant detail (`nodeContextIntegration` fills the rest with
+ * server metadata).
+ *
+ * `event.spans[].data` is left alone: those attributes already pass through the
+ * SDK's `filterKeyValueData` + `SENSITIVE_KEY_SNIPPETS` in
+ * `httpHeadersToSpanAttributes`, so header values arrive pre-redacted there.
+ */
+export function scrubTransactionEvent<T extends Record<string, any>>(event: T): T {
+  const mutableEvent = event as Record<string, any>;
+  // Same allowlist rebuild as scrubEvent: drops headers, url, query_string and
+  // the request body in one move rather than denying known-bad header names.
+  mutableEvent.request =
+    typeof mutableEvent.request?.method === 'string'
+      ? { method: mutableEvent.request.method }
+      : undefined;
+  delete mutableEvent.extra;
+  delete mutableEvent.breadcrumbs;
+  const trace = mutableEvent.contexts?.trace;
+  mutableEvent.contexts = trace ? { trace } : undefined;
+  mutableEvent.tags = pickAllowedTags(mutableEvent.tags);
+  mutableEvent.user =
+    typeof mutableEvent.user?.id === 'string' &&
+    isBoundedTagValue(mutableEvent.user.id)
+      ? { id: mutableEvent.user.id }
+      : undefined;
+  return event;
+}
+
 function parseSampleRate(raw: string | undefined): number {
   if (!raw) return 0;
   const parsed = Number(raw);
@@ -200,7 +278,8 @@ export function initSentry(): void {
     release: API_VERSION,
     tracesSampleRate,
     profilesSampleRate: parseSampleRate(process.env.SENTRY_PROFILES_SAMPLE_RATE),
-    beforeSend: (event) => scrubEvent(event)
+    beforeSend: (event) => scrubEvent(event),
+    beforeSendTransaction: (event) => scrubTransactionEvent(event)
   });
 
   initialized = true;
@@ -240,6 +319,26 @@ export function captureException(
       if (sqlState === RLS_DENY_SQLSTATE) {
         scope.setTag('rls_deny', true);
       }
+    }
+
+    // #3022. Tagged HERE rather than in the HTTP error handler because a
+    // CONNECT_TIMEOUT is just as likely to surface from a BullMQ worker as from
+    // a request — in the original incident the loudest signature in Sentry was
+    // the patch scheduler, not any route. captureException is the one chokepoint
+    // every path already goes through, so tagging it here covers all of them.
+    // The injected classifier is expected to be the never-throwing
+    // `safeDiagnoseConnectTimeout`, but this is the last line before an error
+    // report is emitted, so it is guarded here too: a classifier fault must cost
+    // two tags, never the report itself. `Sentry.captureException` below is
+    // deliberately outside the try.
+    try {
+      const diagnosis = connectTimeoutClassifier?.(err) ?? null;
+      if (diagnosis) {
+        scope.setTag('connect_timeout_cause', diagnosis.cause);
+        scope.setTag('event_loop_lag_bucket', diagnosis.lagBucket);
+      }
+    } catch {
+      // Classification is diagnostic only — never let it displace the report.
     }
 
     Sentry.captureException(err);

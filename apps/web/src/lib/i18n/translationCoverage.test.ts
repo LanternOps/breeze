@@ -26,7 +26,9 @@ const namespaceDuplicateBaselines = {
     // placeholder are locale-invariant.
     // +2: liveTotals "Subtotal"/"Total" — both spell identically to English in
     // pt-BR (same cognate already accepted for document.totals.subtotal).
-    'billing.json': 47,
+    // +3: order breakdown — "SKU" is a locale-invariant acronym, and "Item" /
+    // "{{count}} item" spell identically to English in pt-BR.
+    'billing.json': 50,
     // +1: richTextEditor.link — "Link" is the standard loanword in pt-BR.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -34,10 +36,15 @@ const namespaceDuplicateBaselines = {
     'devices.json': 159,
     'discovery.json': 17,
     'integrations.json': 23,
-    'patches.json': 22,
+    // +1: updateRingList.badges.manual — "Manual" is spelled identically in
+    // pt-BR.
+    'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 357,
     'portal.json': 3,
+    // +1: the input placeholder "XXX-XXX-XXX" is a code-shape mask, not
+    // wording — it is intentionally identical in every catalog.
+    'quick.json': 1,
     'remote.json': 12,
     'reports.json': 39,
     'scripts.json': 55,
@@ -60,17 +67,23 @@ const namespaceDuplicateBaselines = {
     // placeholder are locale-invariant.
     // +1: liveTotals "Total" — spells identically to English in es-419 (same
     // cognate already accepted for document.totals.firstPeriodTotal's root word).
-    'billing.json': 39,
+    // +1: order breakdown — "SKU" is a locale-invariant acronym.
+    'billing.json': 40,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     'common.json': 76,
     'devices.json': 115,
     'discovery.json': 17,
     'integrations.json': 31,
-    'patches.json': 15,
+    // +1: updateRingList.badges.manual — "Manual" is spelled identically in
+    // es-419.
+    'patches.json': 16,
     'peripherals.json': 4,
     'policies.json': 241,
     'portal.json': 4,
+    // +1: the input placeholder "XXX-XXX-XXX" is a code-shape mask, not
+    // wording — it is intentionally identical in every catalog.
+    'quick.json': 1,
     'remote.json': 12,
     'reports.json': 32,
     'scripts.json': 57,
@@ -96,7 +109,8 @@ const namespaceDuplicateBaselines = {
     // translate, and every other locale carries the identical value.
     // +1: liveTotals "Total" — spells identically to English in fr-FR (same
     // cognate already accepted for document.totals.firstPeriodTotal's root word).
-    'billing.json': 50,
+    // +1: order breakdown — "SKU" is a locale-invariant acronym.
+    'billing.json': 51,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     'common.json': 94,
@@ -107,6 +121,9 @@ const namespaceDuplicateBaselines = {
     'peripherals.json': 9,
     'policies.json': 204,
     'portal.json': 4,
+    // +1: the input placeholder "XXX-XXX-XXX" is a code-shape mask, not
+    // wording — it is intentionally identical in every catalog.
+    'quick.json': 1,
     'remote.json': 18,
     'reports.json': 43,
     'scripts.json': 60,
@@ -128,7 +145,8 @@ const namespaceDuplicateBaselines = {
     // +2: liveTotals "Total" is the identical French cognate (already accepted
     // in fr-FR), and unassigned.qtyPrice "{{qty}} × {{price}}" is two
     // interpolations plus a multiplication sign with no wording to translate.
-    'billing.json': 50,
+    // +1: order breakdown — "SKU" is a locale-invariant acronym.
+    'billing.json': 51,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     'common.json': 96,
@@ -139,6 +157,9 @@ const namespaceDuplicateBaselines = {
     'peripherals.json': 9,
     'policies.json': 204,
     'portal.json': 4,
+    // +1: the input placeholder "XXX-XXX-XXX" is a code-shape mask, not
+    // wording — it is intentionally identical in every catalog.
+    'quick.json': 1,
     'remote.json': 17,
     'reports.json': 43,
     'scripts.json': 60,
@@ -160,7 +181,9 @@ const namespaceDuplicateBaselines = {
     // that are legitimately identical to English in de-DE.
     // +3: quote send composer — "Cc" (label + toggle) and the example email
     // placeholder are locale-invariant.
-    'billing.json': 35,
+    // +2: order breakdown — "SKU" is a locale-invariant acronym and "Markup" is
+    // the loanword the quote editor already uses in de-DE.
+    'billing.json': 37,
     // +1: richTextEditor.link — "Link" is the standard loanword in de-DE.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -168,10 +191,15 @@ const namespaceDuplicateBaselines = {
     'devices.json': 146,
     'discovery.json': 26,
     'integrations.json': 43,
-    'patches.json': 22,
+    // +1: updateRingList.badges.os — "OS: {{severities}}" is an acronym plus an
+    // interpolation; German uses the same "OS" acronym.
+    'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 205,
     'portal.json': 4,
+    // +1: the input placeholder "XXX-XXX-XXX" is a code-shape mask, not
+    // wording — it is intentionally identical in every catalog.
+    'quick.json': 1,
     'remote.json': 14,
     'reports.json': 53,
     'scripts.json': 53,
@@ -188,7 +216,8 @@ const namespaceDuplicateBaselines = {
     'backup.json': 45,
     // +1: unassigned.qtyPrice "{{qty}} × {{price}}" is two interpolations plus a
     // multiplication sign with no wording to translate.
-    'billing.json': 30,
+    // +1: order breakdown — "SKU" is a locale-invariant acronym.
+    'billing.json': 31,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     'common.json': 97,
@@ -199,6 +228,9 @@ const namespaceDuplicateBaselines = {
     'peripherals.json': 4,
     'policies.json': 363,
     'portal.json': 9,
+    // +1: the input placeholder "XXX-XXX-XXX" is a code-shape mask, not
+    // wording — it is intentionally identical in every catalog.
+    'quick.json': 1,
     'remote.json': 14,
     'reports.json': 51,
     'scripts.json': 57,

@@ -24,7 +24,26 @@ import type { ComputedSignal } from './types';
 // Cross-tenant corpus rule (mirrors rmm.shared_installer_host): fingerprints
 // are correlated over ALL partners regardless of status — a suspended partner
 // must stay in the corpus or the re-signup it is correlated with goes unseen —
-// but signals are only attributed to active, non-deleted partners.
+// but signals are only attributed to non-deleted partners in the evaluated
+// scope.
+//
+// Evaluated scope is 'active' OR 'pending', unlike the RMM detectors, which are
+// active-only. Billing evidence is written by payment-provider webhooks and is
+// completely independent of the signup gate, so it accrues to accounts that
+// never activate: card testing is by definition a PRE-activation act — the
+// attacker is trying cards precisely because they have not got in yet, so the
+// partner sits at 'pending' forever and an active-only scope can never see it.
+// The same holds for the other two: a mismatched cardholder name on a partner
+// that never activated is the same evidence, and a shared fingerprint's most
+// valuable case is a suspended partner's card resurfacing on a NEW signup —
+// which is 'pending' at exactly the moment we need to attribute it. Excluding
+// pending would keep the old partner in the corpus while making the new one
+// unflaggable, defeating the corpus rule itself.
+//
+// Deliberately NOT widened to suspended/churned/offboarding/deleted: those are
+// already-actioned accounts (invariant.suspended_partner_active_subscription
+// covers the one billing condition that still matters for them), and attributing
+// fresh signals to them would re-open rows an operator has already dispositioned.
 //
 // Coverage caveat: wallet/Link-style payments expose no card fingerprint, so
 // billing_card_fingerprint is frequently NULL. NULL is "unknown" and can never
@@ -62,7 +81,7 @@ export interface BillingIdentityAggregate {
 }
 
 export interface BillingIdentityResult {
-  /** Aggregates for partners in the evaluated (active, non-deleted) scope only. */
+  /** Aggregates for partners in the evaluated (active-or-pending, non-deleted) scope only. */
   aggregates: BillingIdentityAggregate[];
   /** fingerprint -> distinct partner count (>= 2), computed over the FULL corpus. */
   sharedFingerprints: Map<string, number>;
@@ -420,14 +439,22 @@ export async function loadBillingIdentityAggregates(): Promise<BillingIdentityRe
         p.billing_failed_attempts,
         p.billing_identity_synced_at
       FROM partners p
-      WHERE p.deleted_at IS NULL AND p.status = 'active'
+      -- 'pending' is in scope here (and only here — the RMM detectors stay
+      -- active-only): billing evidence arrives from provider webhooks
+      -- independently of the signup gate, and card testing is a pre-activation
+      -- act by construction. See the header for the full rationale.
+      WHERE p.deleted_at IS NULL AND p.status IN ('active', 'pending')
         AND (
           p.billing_cardholder_name IS NOT NULL
           OR p.billing_card_fingerprint IS NOT NULL
           OR p.billing_distinct_payment_methods > 0
           -- Keep re-evaluating partners with an open billing signal even after
           -- the billing service clears the snapshot, so the row resolves on
-          -- evidence rather than being stranded open by scope exit.
+          -- evidence rather than being stranded open by scope exit. This arm
+          -- is what makes the pending->active transition non-thrashing: both
+          -- statuses are in scope, so a row opened while pending keeps being
+          -- re-scored (and stays open) after activation instead of resolving
+          -- and immediately re-firing.
           OR EXISTS (
             SELECT 1 FROM partner_abuse_signals pas
             WHERE pas.partner_id = p.id AND pas.resolved_at IS NULL

@@ -175,7 +175,8 @@ describe('MCP org-scoped key: creator perms fail closed on null (SR2-15)', () =>
     // The tool never dispatched — auth was rejected before RBAC/execution.
     expect(mocks.checkToolPermission).not.toHaveBeenCalled();
     expect(mocks.executeTool).not.toHaveBeenCalled();
-  });
+    // vi.resetModules() + dynamic re-import of mcpServer is IO-bound; widen timeout so it doesn't flake under load or cold FS cache.
+  }, 30000);
 
   it('a legitimate FULL-access admin (non-null perms, allowedSiteIds undefined) still gets all-site access', async () => {
     // Default mock already models this (allowedSiteIds: undefined).
@@ -191,7 +192,8 @@ describe('MCP org-scoped key: creator perms fail closed on null (SR2-15)', () =>
     expect(auth.allowedSiteIds).toBeUndefined();
     // Unrestricted: every site allowed.
     expect(auth.canAccessSite('any-site-at-all')).toBe(true);
-  });
+    // vi.resetModules() + dynamic re-import of mcpServer is IO-bound; widen timeout so it doesn't flake under load or cold FS cache.
+  }, 30000);
 
   it('a site-restricted creator keeps EXACTLY their sites (no widening)', async () => {
     mocks.getUserPermissions.mockResolvedValueOnce({
@@ -217,5 +219,6 @@ describe('MCP org-scoped key: creator perms fail closed on null (SR2-15)', () =>
     expect(auth.allowedSiteIds).toEqual(['site-a']);
     expect(auth.canAccessSite('site-a')).toBe(true);
     expect(auth.canAccessSite('site-b')).toBe(false);
-  });
+    // vi.resetModules() + dynamic re-import of mcpServer is IO-bound; widen timeout so it doesn't flake under load or cold FS cache.
+  }, 30000);
 });

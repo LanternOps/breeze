@@ -2037,11 +2037,12 @@ export function createBreezeMcpServer(
           status: 'pending' as const,
         }));
 
-        // Guard: partner-scoped users may not have orgId
-        const orgId = session.auth.orgId;
-        if (!orgId) {
-          return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Action plans require an organization context' }) }], isError: true };
-        }
+        // Canonical session org (always set) — `session.auth.orgId` is null for
+        // partner-scope logins, which hard-failed every plan proposal for
+        // exactly the population #3087 narrows tool execution for. Every other
+        // DB write in this handler already keys off session.orgId (see
+        // aiAgentSdk.ts's withDbAccessContext calls).
+        const orgId = session.orgId;
 
         // Insert plan record
         let planId: string;

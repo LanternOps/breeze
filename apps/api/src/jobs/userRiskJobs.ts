@@ -3,7 +3,7 @@ import { sql } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 
 import * as dbModule from '../db';
-import { organizationUsers } from '../db/schema';
+import { organizationUsers, organizations } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
 import {
   appendUserRiskSignalEvent,
@@ -147,11 +147,18 @@ async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number 
   // context so RLS lets us see every org (a bare breeze_app read would match
   // 0 rows, #1375). The result returns before we touch Redis, so the context
   // is closed by the time we enqueue (#1105).
+  // Quick Support exclusion: the hidden per-partner 'quick_support' org holds
+  // ephemeral devices — a stranger's personal machine borrowed for one
+  // ~20-minute session. It has no organization_users rows today (technicians
+  // reach it at the partner level), but that is an implicit invariant a future
+  // seed or backfill could break, and the result would be ML risk scores and
+  // risk events computed for a borrowed machine's org. Filter explicitly.
   const orgRows = await runSystemDbCompute(() =>
     db
       .select({ orgId: organizationUsers.orgId })
       .from(organizationUsers)
-      .where(sql`${organizationUsers.orgId} is not null`)
+      .innerJoin(organizations, sql`${organizations.id} = ${organizationUsers.orgId}`)
+      .where(sql`${organizationUsers.orgId} is not null and ${organizations.type} <> 'quick_support'`)
       .groupBy(organizationUsers.orgId)
   );
 

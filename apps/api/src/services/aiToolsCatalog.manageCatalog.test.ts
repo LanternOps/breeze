@@ -129,8 +129,16 @@ describe('manage_catalog', () => {
   });
 
   it('set_bundle_components passes components through to setBundleComponents with actor', async () => {
+    // componentItemId is validated as a UUID (bundleComponentSchema); the fake
+    // "cat-1"-style ids used elsewhere in this file are only ever String()-coerced
+    // path params, never parsed against a guid schema, so they stay untouched.
     const components = [
-      { componentItemId: 'cat-1', quantity: 2, showOnInvoice: true, revenueAllocation: 50 },
+      {
+        componentItemId: '11111111-1111-1111-1111-111111111111',
+        quantity: 2,
+        showOnInvoice: true,
+        revenueAllocation: 50,
+      },
     ];
 
     const out = await getTool().handler(
@@ -144,6 +152,43 @@ describe('manage_catalog', () => {
       actor,
     );
     expect(JSON.parse(out)).toEqual({ item: { id: 'bundle-1' }, components: [] });
+  });
+
+  it('create_item with an invalid item payload returns a structured VALIDATION_ERROR (BUG1 sibling fix)', async () => {
+    const out = await getTool().handler(
+      { action: 'create_item', item: { name: 'Missing required fields' } },
+      auth,
+    );
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(catalogService.createCatalogItem).not.toHaveBeenCalled();
+  });
+
+  it('set_org_price with a non-numeric unitPrice returns a structured VALIDATION_ERROR (BUG1 sibling fix)', async () => {
+    const out = await getTool().handler(
+      { action: 'set_org_price', catalogId: 'cat-1', orgId: 'org-1', override: { unitPrice: 'free' } },
+      auth,
+    );
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(catalogService.setOrgPriceOverride).not.toHaveBeenCalled();
+  });
+
+  it('set_bundle_components with a non-UUID componentItemId returns a structured VALIDATION_ERROR (BUG1 sibling fix)', async () => {
+    const out = await getTool().handler(
+      {
+        action: 'set_bundle_components',
+        catalogId: 'bundle-1',
+        components: [{ componentItemId: 'not-a-uuid', quantity: 2 }],
+      },
+      auth,
+    );
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(catalogService.setBundleComponents).not.toHaveBeenCalled();
   });
 
   it('returns a JSON error when a service action rejects with CatalogServiceError', async () => {
