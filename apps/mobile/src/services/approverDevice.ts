@@ -17,6 +17,7 @@ import * as SecureStore from 'expo-secure-store';
 import { getServerUrl } from './serverConfig';
 import { getHardwareSigner, type HardwareSigner } from './hardwareSigner';
 import { getOrCreateInstallationId } from './installationId';
+import { fetchWithTimeout } from './fetchWithTimeout';
 
 const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const TOKEN_KEY = 'breeze_auth_token';
@@ -34,7 +35,7 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
   const token = await SecureStore.getItemAsync(TOKEN_KEY);
   const deviceId = await getOrCreateInstallationId();
   const baseUrl = (await getServerUrl()) || FALLBACK_API_BASE_URL;
-  return fetch(`${baseUrl}${path}`, {
+  return fetchWithTimeout(`${baseUrl}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',

@@ -105,6 +105,7 @@ vi.mock('../services/streamingSessionManager', () => ({
 
 vi.mock('../services/aiAgentSdk', () => ({
   runPreFlightChecks: vi.fn(),
+  settleBlockedTurnForNewMessage: vi.fn(() => Promise.resolve('not_blocked_on_approvals')),
   abortActivePlan: vi.fn(),
 }));
 
@@ -351,6 +352,64 @@ describe('AI routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+  });
+
+  // ============================================
+  // POST /sessions/:id/messages
+  // ============================================
+  describe('POST /ai/sessions/:id/messages', () => {
+    it('passes the bound device id from the DB session into streamingSessionManager.getOrCreate (#3087 route wiring)', async () => {
+      // This is the seam that arms the #3087 fix: getOrCreate uses `deviceId`
+      // to decide whether to narrow tool execution to the device's org. If
+      // this route ever stops forwarding it, the whole narrowing mechanism in
+      // streamingSessionManager goes dark even though its unit tests stay green.
+      vi.mocked(runPreFlightChecks).mockResolvedValueOnce({
+        ok: true,
+        session: {
+          id: SESSION_ID,
+          orgId: ORG_ID,
+          sdkSessionId: null,
+          model: 'claude-sonnet-4-5-20250929',
+          maxTurns: 50,
+          turnCount: 0,
+          systemPrompt: null,
+          title: 'Existing title', // truthy — skips the auto-title-generation branch
+          deviceId: 'device-42',
+        } as any,
+        sanitizedContent: 'hello there',
+        systemPrompt: 'SYSTEM PROMPT',
+        maxBudgetUsd: undefined,
+      });
+
+      const fakeActiveSession = {
+        state: 'ready',
+        eventBus: {
+          subscribe: vi.fn(() => (async function* () {})()),
+          unsubscribe: vi.fn(),
+        },
+        inputController: { pushMessage: vi.fn() },
+      };
+      vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValueOnce(fakeActiveSession as any);
+      vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValueOnce(true);
+
+      const valuesSpy = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.insert).mockReturnValue({ values: valuesSpy } as any);
+
+      await app.request(`/ai/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ content: 'hello there' }),
+      });
+
+      expect(streamingSessionManager.getOrCreate).toHaveBeenCalledWith(
+        SESSION_ID,
+        expect.objectContaining({ deviceId: 'device-42' }),
+        expect.anything(),
+        expect.anything(),
+        'SYSTEM PROMPT',
+        undefined,
+      );
     });
   });
 

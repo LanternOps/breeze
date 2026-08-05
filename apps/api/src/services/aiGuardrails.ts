@@ -24,6 +24,16 @@ const BLOCKED_TOOLS = new Set<string>([
   // cross-org access is enforced by orgCondition in each handler
 ]);
 
+// Sub-operation discriminator key per tool. Most action-multiplexed tools
+// carry their sub-operation in `action`; execute_command multiplexes on
+// `commandType` (#3088) — that string selects the agent-side command handler,
+// so it is a real dispatch discriminator, not a heuristic over command text.
+// The TIER1/2/3_ACTIONS tables are indexed by the value found under this key.
+// Exported for the tier-parity contract tests (aiGuardrailsTierParity.shared.ts).
+export const TOOL_ACTION_INPUT_KEYS: Record<string, string> = {
+  execute_command: 'commandType',
+};
+
 // Actions that are Tier 2 (auto-execute + audit):
 //   manage_alerts: acknowledge/resolve/suppress are low-risk mutations
 //   manage_services: list is a read downgraded from the tool's base Tier 3
@@ -56,6 +66,37 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // file READ stays Tier 3 below: the agent runs as root/LocalSystem and an
   // unapproved read can exfiltrate any file's contents.
   file_operations: ['list'],
+  // #3088 approval-fatigue fix (2026-08-04): read-only execute_command
+  // commandTypes are non-mutating device reads and auto-execute with audit,
+  // consistent with their sibling tools (manage_processes list is Tier 1,
+  // manage_services list and file_operations list are Tier 2). This is an
+  // explicit conservative allowlist keyed on commandType (the agent-side
+  // handler discriminator — see TOOL_ACTION_INPUT_KEYS above); anything not
+  // listed here, including an unknown or missing commandType, stays at the
+  // tool's base Tier 3.
+  //
+  // Deliberately NOT downgraded, despite being nominally "read" operations:
+  //   - file_read: arbitrary-file exfiltration off a root/LocalSystem agent
+  //     (same SR5-01 rationale as file_operations read).
+  //   - kill_process, start/stop/restart_service: mutating.
+  //   - list_services: agent/internal/remote/tools/services_{windows,linux}.go
+  //     populates ServiceInfo.Path from the service's full binary path/command
+  //     line (config.BinaryPathName / ExecStart), only length-truncated, never
+  //     credential-redacted. Legacy and third-party services routinely embed
+  //     secrets there (e.g. `-p <password>`, DB connection strings) — same
+  //     exfiltration class as file_read.
+  //   - event_logs_query: logName is a free-form, caller-controlled string
+  //     with no denylist excluding Security — combined with the raw, unredacted
+  //     Message field (agent/internal/remote/tools/eventlogs_windows.go), a
+  //     Security-log query can surface a mistyped password landing in a 4625
+  //     failed-logon Account Name, or any credential/PII another app logged.
+  // Both would let an AI actor pull that content into its context with zero
+  // human review under auto_approve session mode.
+  execute_command: [
+    'event_logs_list',
+    'file_list',
+    'list_processes',
+  ],
   // Fleet tools — Tier 2 actions (auto-execute + audit)
   manage_configuration_policy: ['activate', 'deactivate'],
   manage_deployments: ['pause', 'resume'],
@@ -78,6 +119,44 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   manage_notification_channels: ['test', 'create', 'update', 'delete'],
   manage_saved_filters: ['create', 'delete'],
 };
+
+// #3130: Tier-2 entries that are strictly READ-ONLY. Tier 2 as a whole means
+// "low-risk mutations + audit", so the per_step approval mode still prompts
+// for it — but a verified read has nothing to confirm, and prompting per list
+// call is exactly the approval-fatigue scenario #3088 measured (25 prompts in
+// 35 minutes). Entries here keep Tier 2 — and its ai_tool_executions
+// audit-ledger row; they are deliberately NOT demoted to Tier 1, which never
+// writes one (recon reads stay in the audit trail, SR5-01 precedent) — but
+// auto-execute under every session approval mode. A paused session still
+// prompts (aiAgentSdk.ts gates on !isPaused).
+//
+// CONTRACT (enforced by aiGuardrails.readonly.contract.test.ts): every pair
+// here must also be in TIER2_ACTIONS, and must be a pure read — no state
+// change on the device, the org, or any external system. When in doubt an
+// entry does not belong here; leaving a read out only costs one lightweight
+// prompt.
+export const TIER2_READONLY_ACTIONS: Record<string, string[]> = {
+  execute_command: ['event_logs_list', 'file_list', 'list_processes'],
+  file_operations: ['list'],
+  manage_services: ['list'],
+};
+
+// #3130 companion for whole tools: base-Tier-2 tools whose EVERY operation is
+// a read — single-purpose get/list/search tools with no action multiplexing
+// and no TIER3_ACTIONS escalation (both enforced by the contract test). Same
+// semantics as TIER2_READONLY_ACTIONS: keep the Tier-2 audit row, skip the
+// per-step prompt.
+export const TIER2_READONLY_TOOLS = new Set<string>([
+  'get_catalog_item',
+  'get_contract',
+  'get_invoice',
+  'get_quote',
+  'list_contracts',
+  'list_invoices',
+  'list_quotes',
+  'lookup_distributor_product',
+  'search_catalog',
+]);
 
 // Actions that downgrade to Tier 1 (auto-execute, no approval) even if the tool's base tier is higher
 // Exported for contract tests only — see the note on TIER2_ACTIONS.
@@ -781,6 +860,12 @@ export interface GuardrailCheck {
   tier: AiToolTier;
   allowed: boolean;
   requiresApproval: boolean;
+  /**
+   * Set (true) only for Tier-2 resolutions on the #3130 read-only allowlists
+   * (TIER2_READONLY_ACTIONS / TIER2_READONLY_TOOLS): eligible to auto-execute
+   * — with the Tier-2 audit-ledger row — even under per_step approval mode.
+   */
+  readOnly?: boolean;
   reason?: string;
   description?: string;
 }
@@ -813,8 +898,13 @@ export function checkGuardrails(
     };
   }
 
-  // Check for action-based tier escalation
-  const action = input.action as string | undefined;
+  // Check for action-based tier escalation. The discriminator is `action` for
+  // most tools; a TOOL_ACTION_INPUT_KEYS entry overrides the key (#3088 —
+  // execute_command multiplexes on `commandType`). Non-string values resolve
+  // to undefined, which falls through to the base tier (fail-closed).
+  const actionKey = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
+  const actionValue = input[actionKey];
+  const action = typeof actionValue === 'string' ? actionValue : undefined;
 
   // Tier 1 downgrade: read-only actions on otherwise-high-tier tools
   if (action && TIER1_ACTIONS[toolName]?.includes(action)) {
@@ -840,6 +930,7 @@ export function checkGuardrails(
       tier: 2,
       allowed: true,
       requiresApproval: false,
+      ...(TIER2_READONLY_ACTIONS[toolName]?.includes(action) ? { readOnly: true } : {}),
       description: buildApprovalDescription(toolName, action, input)
     };
   }
@@ -858,7 +949,8 @@ export function checkGuardrails(
     tier: baseTier,
     allowed: true,
     requiresApproval: false,
-    description: buildApprovalDescription(toolName, input.action as string | undefined, input)
+    ...(baseTier === 2 && TIER2_READONLY_TOOLS.has(toolName) ? { readOnly: true } : {}),
+    description: buildApprovalDescription(toolName, action, input)
   };
 }
 

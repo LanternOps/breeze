@@ -422,6 +422,85 @@ func CancelBootstrap(serverURL, childEnrollmentKey string) (*CancelBootstrapResp
 	return &result, nil
 }
 
+// SupportRedeemRequest is the body of POST /api/v1/support/redeem — the
+// Quick Support (ad-hoc remote support) code redemption. Unauthenticated:
+// the one-time code IS the credential, exactly like bootstrap-token
+// redemption (see CancelBootstrap above).
+type SupportRedeemRequest struct {
+	Code     string `json:"code"`
+	Hostname string `json:"hostname"`
+	OSType   string `json:"osType"`
+}
+
+// SupportRedeemResponse mirrors the server's 200 response. EnrollmentSecret
+// is a PER-KEY secret unique to this support session — not the org-shared
+// AGENT_ENROLLMENT_SECRET — and is presented to /agents/enroll through the
+// ordinary EnrollRequest.EnrollmentSecret body field.
+type SupportRedeemResponse struct {
+	ServerURL        string `json:"serverUrl"`
+	EnrollmentKey    string `json:"enrollmentKey"`
+	EnrollmentSecret string `json:"enrollmentSecret"`
+	SessionID        string `json:"sessionId"`
+	// RFC3339. The client treats this as a hard stop even if the server's
+	// support_end command never arrives.
+	HardExpiresAt string `json:"hardExpiresAt"`
+}
+
+// ErrSupportCodeInvalid is returned for the server's 404 — an unknown,
+// expired, or already-redeemed code (the endpoint deliberately does not
+// distinguish them).
+//
+// Terse and lowercase per Go convention; the end-user wording lives at the
+// display site in agentapp, which is where the audience is actually known.
+var ErrSupportCodeInvalid = errors.New("support code invalid or expired")
+
+// RedeemSupportCode exchanges a one-time Quick Support code for an ephemeral
+// enrollment. Package-level (not a *Client method) because at this point the
+// process holds no device token and no agent ID — the code is the only
+// credential, the same trust level as bootstrap redemption.
+//
+// The 404 case is mapped to ErrSupportCodeInvalid so the caller can print a
+// human sentence to an end user who mistyped a code; every other non-200 is
+// surfaced as *ErrHTTPStatus for diagnostics.
+func RedeemSupportCode(server, code, hostname, osType string) (*SupportRedeemResponse, error) {
+	url := strings.TrimRight(server, "/") + "/api/v1/support/redeem"
+	body, err := json.Marshal(&SupportRedeemRequest{Code: code, Hostname: hostname, OSType: osType})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal support redeem request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create support redeem request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: refuseUntrustedRedirect}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send support redeem request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read support redeem response body: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, ErrSupportCodeInvalid
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, &ErrHTTPStatus{StatusCode: resp.StatusCode, Body: string(bodyBytes)}
+	}
+
+	var result SupportRedeemResponse
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return nil, fmt.Errorf("failed to decode support redeem response: %w", err)
+	}
+	return &result, nil
+}
+
 // UninstallIntentResponse mirrors the server's POST
 // /agents/:id/uninstall-intent 200 response body.
 type UninstallIntentResponse struct {

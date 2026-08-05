@@ -11,10 +11,11 @@ import {
   enrollmentKeys,
   organizations,
   partners,
+  supportSessions,
 } from '../../db/schema';
 import { getActiveOrgTenant } from '../../services/tenantStatus';
 import { writeAuditEvent } from '../../services/auditEvents';
-import { hashEnrollmentKeyCandidates } from '../../services/enrollmentKeySecurity';
+import { hashEnrollmentKeyCandidates, hashEnrollmentSecret } from '../../services/enrollmentKeySecurity';
 import { getTrustedClientIp } from '../../services/clientIp';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
@@ -59,10 +60,6 @@ function timingSafeStringEqual(left: string, right: string): boolean {
   const leftBuf = Buffer.from(left);
   const rightBuf = Buffer.from(right);
   return leftBuf.length === rightBuf.length && timingSafeEqual(leftBuf, rightBuf);
-}
-
-function hashEnrollmentSecret(secret: string): string {
-  return createHash('sha256').update(secret).digest('hex');
 }
 
 export function getGlobalEnrollmentSecret(): string | null {
@@ -146,6 +143,9 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         expiresAt: enrollmentKeys.expiresAt,
         maxUsage: enrollmentKeys.maxUsage,
         usageCount: enrollmentKeys.usageCount,
+        // Set only on the single-use child keys minted by POST /support/redeem;
+        // NULL on every ordinary key. Drives the whole Quick Support branch below.
+        supportSessionId: enrollmentKeys.supportSessionId,
       })
       .from(enrollmentKeys)
       .where(inArray(enrollmentKeys.key, enrollmentKeyCandidates))
@@ -167,6 +167,11 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         reason: 'enrollment_key_not_found',
       }, 401);
     }
+
+    // Quick Support enrollments ride the same key path as everything else, but
+    // mint an EPHEMERAL device: excluded from the partner licence count, never
+    // adopted by a hostname collision, and linked back to its session below.
+    const isSupportEnrollment = !!matchingKey.supportSessionId;
 
     // Step 2: the row exists — now tell the admin precisely which invariant
     // it's violating. Both branches stay on 401 for backwards compatibility
@@ -314,6 +319,50 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       }
     }
 
+    // Step 3 (Quick Support only): the child key is single-use and short-lived,
+    // but the SESSION is the real authority — a technician who ends a session,
+    // or a hard-expiry reaper run, must invalidate a key that was redeemed
+    // moments earlier and never used. Checked AFTER the secret verification so
+    // a caller holding only the key cannot probe session state.
+    //
+    // The response is byte-for-byte the ordinary expired-key rejection: the end
+    // user is an anonymous stranger and nothing here should confirm that a
+    // support session ever existed. The audit row carries the real reason.
+    if (isSupportEnrollment) {
+      const [session] = await db
+        .select({
+          status: supportSessions.status,
+          hardExpiresAt: supportSessions.hardExpiresAt,
+        })
+        .from(supportSessions)
+        .where(eq(supportSessions.id, matchingKey.supportSessionId!))
+        .limit(1);
+
+      const supportNow = new Date();
+      if (!session || session.status !== 'claimed' || new Date(session.hardExpiresAt) < supportNow) {
+        writeAuditEvent(c, {
+          orgId: matchingKey.orgId,
+          actorType: 'system',
+          action: 'agent.enroll',
+          resourceType: 'device',
+          resourceName: data.hostname,
+          details: {
+            reason: 'support_session_not_claimable',
+            keyId: matchingKey.id,
+            supportSessionId: matchingKey.supportSessionId,
+            sessionStatus: session?.status ?? null,
+          },
+          result: 'denied',
+          errorMessage: 'Quick Support session is not claimable',
+        });
+        recordAgentEnrollment('error');
+        return c.json({
+          error: 'Enrollment key has expired — regenerate the key or installer link and retry',
+          reason: 'enrollment_key_expired',
+        }, 401);
+      }
+    }
+
     if (!matchingKey.siteId) {
       throw new HTTPException(400, { message: 'Enrollment key must be associated with a site' });
     }
@@ -411,7 +460,15 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         and(
           eq(devices.hostname, data.hostname),
           eq(devices.orgId, key.orgId),
-          eq(devices.siteId, siteId)
+          eq(devices.siteId, siteId),
+          // Ephemeral Quick Support rows are never collision candidates. Every
+          // session for the same machine lands in the same hidden per-partner
+          // org under the same hostname, so without this filter the second
+          // support run would take the re-enrollment-token branch, fail to
+          // prove possession of the (already reaped) prior row's token, and
+          // drag a dead session's device into the new one. Each session gets
+          // its own fresh row instead.
+          eq(devices.isEphemeral, false)
         )
       )
       .orderBy(devices.createdAt);
@@ -639,7 +696,13 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       // (#914) is going to INSERT a new active row — both grow net active
       // count by 1. Skipped on the normal UPDATE-in-place re-enroll path,
       // which is count-neutral.
-      if (maxDevices != null && deviceLimitPartnerId && insertFreshRow) {
+      //
+      // Also skipped entirely for Quick Support: an ephemeral device is a
+      // minutes-long remote-assist session on a machine the MSP does not
+      // manage, not a licensed endpoint. A partner sitting at their cap must
+      // still be able to help a caller — and since the row is excluded from
+      // the count below, admitting it cannot push the fleet past the cap.
+      if (maxDevices != null && deviceLimitPartnerId && insertFreshRow && !isSupportEnrollment) {
         const partnerOrgIds = tx
           .select({ id: organizations.id })
           .from(organizations)
@@ -651,7 +714,13 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
           .where(
             and(
               sql`${devices.orgId} IN (${partnerOrgIds})`,
-              ne(devices.status, 'decommissioned')
+              ne(devices.status, 'decommissioned'),
+              // Quick Support devices are not licensed endpoints — they live in
+              // the hidden per-partner support org for the length of one
+              // session and are purged by the reaper. Counting them would let a
+              // busy support day silently consume a partner's device
+              // entitlement and block real enrollments.
+              eq(devices.isEphemeral, false)
             )
           );
 
@@ -781,6 +850,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             virtualizationPlatform: data.virtualizationPlatform ?? null,
             status: 'online',
             lastSeenAt: new Date(),
+            isEphemeral: isSupportEnrollment,
             // #2764: forensic + UI linkage back to the row this enrollment may
             // be replacing. Set on the collision path only — the decom bypass
             // records its own linkage in the audit trail (#914).
@@ -792,6 +862,24 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
 
       if (!dev) {
         throw new Error('Failed to create device');
+      }
+
+      // Quick Support: bind the session to the device it just enrolled. Inside
+      // the SAME transaction as the device write so a rolled-back enrollment
+      // can never leave a session pointing at a device row that does not exist.
+      // The status='claimed' guard makes this a no-op if the technician ended
+      // (or the reaper expired) the session while the insert was in flight —
+      // that session must stay terminal rather than be revived by a late agent.
+      if (isSupportEnrollment) {
+        await tx
+          .update(supportSessions)
+          .set({ deviceId: dev.id })
+          .where(
+            and(
+              eq(supportSessions.id, matchingKey.supportSessionId!),
+              eq(supportSessions.status, 'claimed')
+            )
+          );
       }
 
       if (data.hardwareInfo) {

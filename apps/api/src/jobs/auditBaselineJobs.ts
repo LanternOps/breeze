@@ -46,9 +46,15 @@ export function getAuditBaselineQueue(): Queue<AuditBaselineJobData> {
 async function processCollectAuditPolicy(
   data: CollectAuditPolicyJobData
 ): Promise<{ attempted: number; queued: number; skipped: number }> {
+  // Quick Support exclusion (both sweeps in this file): ephemeral devices
+  // (`devices.isEphemeral`) live in the hidden per-partner 'quick_support' org
+  // and are a stranger's personal machine borrowed for one ~20-minute session.
+  // That org stays inside technicians' accessibleOrgIds for RLS reasons, so this
+  // fleet-wide sweep is NOT filtered for us — we must not push audit-policy
+  // collection commands onto a home PC, nor count it toward the work estimate.
   const where = data.orgId
-    ? and(eq(devices.orgId, data.orgId), eq(devices.status, 'online'))
-    : eq(devices.status, 'online');
+    ? and(eq(devices.isEphemeral, false), eq(devices.orgId, data.orgId), eq(devices.status, 'online'))
+    : and(eq(devices.isEphemeral, false), eq(devices.status, 'online'));
 
   const rows = await db
     .selectDistinct({ id: devices.id })
@@ -235,8 +241,8 @@ export async function enqueueAuditDriftEvaluation(orgId?: string): Promise<strin
 
 export async function getOnlineDeviceCountForAuditCollection(orgId?: string): Promise<number> {
   const deviceStatusFilter = orgId
-    ? and(eq(devices.status, 'online'), eq(devices.orgId, orgId))
-    : eq(devices.status, 'online');
+    ? and(eq(devices.isEphemeral, false), eq(devices.status, 'online'), eq(devices.orgId, orgId))
+    : and(eq(devices.isEphemeral, false), eq(devices.status, 'online'));
 
   const [row] = await db
     .select({ count: sql<number>`count(distinct ${devices.id})::int` })

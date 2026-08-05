@@ -979,8 +979,12 @@ metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', '
     allowedSiteIds === undefined ? undefined : inArray(devices.siteId, allowedSiteIds);
 
   try {
+    // Ephemeral Quick Support devices sit in the hidden 'quick_support' org,
+    // which stays inside accessibleOrgIds for RLS — exclude them explicitly so
+    // they never inflate the fleet counts or skew the uptime denominator.
     const deviceStatusCondition = and(
       sql`${devices.status} != 'decommissioned'`,
+      eq(devices.isEphemeral, false),
       orgCondition,
       siteCondition
     );

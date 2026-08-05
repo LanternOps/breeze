@@ -77,6 +77,12 @@ jobs:
       - name: Run ESLint
         run: pnpm lint
 
+      # scripts/dev is outside the pnpm workspace, so `turbo run test` never
+      # reaches these suites (wt-stack shipped with the same blind spot).
+      # Runs in <1s; uses @breeze/api's vitest since the root has none.
+      - name: Test dev tooling scripts (wt-stack / test-stack)
+        run: pnpm test:dev-scripts
+
       - name: Check for schema drift
         working-directory: apps/api
         continue-on-error: true
@@ -439,6 +445,38 @@ jobs:
 
       - name: Run Web tests
         run: pnpm test --filter=@breeze/web
+
+  # Not yet wired into ci-success / branch protection — see #3139. Promote to
+  # required once the job proves stable.
+  test-mobile:
+    name: Test Mobile
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .node-version
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Mobile tests
+        run: pnpm test --filter=breeze-mobile
+
+      - name: Run Mobile type check
+        working-directory: apps/mobile
+        run: pnpm exec tsc --noEmit
 
   test-portal:
     name: Test Portal

@@ -38,6 +38,19 @@ export function hashEnrollmentKey(rawKey: string): string {
   return hashWithPepper(getPrimaryPepper(), rawKey);
 }
 
+/**
+ * Hash for `enrollment_keys.key_secret_hash` and for the secret an enrolling
+ * agent presents.
+ *
+ * Deliberately unpeppered plain SHA-256, unlike {@link hashEnrollmentKey}: the
+ * comparison also has to work against the global AGENT_ENROLLMENT_SECRET,
+ * which is hashed on the fly at verification time. Changing this breaks every
+ * already-issued per-key secret.
+ */
+export function hashEnrollmentSecret(secret: string): string {
+  return createHash('sha256').update(secret).digest('hex');
+}
+
 // Returns every hash a stored enrollment-key row could match — primary first,
 // then any legacy peppers. Use with `inArray(enrollmentKeys.key, candidates)`
 // on lookup paths. Order is significant: callers that do per-row comparison

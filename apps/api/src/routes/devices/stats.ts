@@ -43,7 +43,12 @@ statsRoutes.get(
     const query = c.req.valid('query');
     const permissions = c.get('permissions') as UserPermissions | undefined;
 
-    const conditions: SQL[] = [sql`${devices.status} != 'decommissioned'`];
+    // Ephemeral Quick Support devices live in the hidden 'quick_support' org,
+    // which stays in accessibleOrgIds for RLS — exclude them from tech-facing counts.
+    const conditions: SQL[] = [
+      sql`${devices.status} != 'decommissioned'`,
+      eq(devices.isEphemeral, false),
+    ];
 
     const orgFilter = auth.orgCondition(devices.orgId);
     if (orgFilter) {

@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
-import { and, desc, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lte, ne, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import {
@@ -258,7 +258,9 @@ async function resolvePolicyTargetOrgIds(policy: { orgId: string | null; partner
   const rows = await db
     .select({ id: organizations.id })
     .from(organizations)
-    .where(eq(organizations.partnerId, policy.partnerId));
+    // The hidden 'quick_support' org holds only ephemeral support devices — a
+    // partner-wide USB/peripheral policy must not fan out into it.
+    .where(and(eq(organizations.partnerId, policy.partnerId), ne(organizations.type, 'quick_support')));
   return rows.map((row) => row.id);
 }
 

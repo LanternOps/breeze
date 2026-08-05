@@ -5,11 +5,12 @@
 //                           amber/green save language as every other field).
 //                           Rendered into DocumentWorkspace's titleSlot.
 //   QuoteCustomerSwitcher — the customer (organization) selector, rendered
-//                           into DocumentWorkspace's metaSlot on its OWN line
-//                           under the title. It used to sit inline between the
-//                           title and the status pill, which squeezed the
-//                           title and left the select floating mis-aligned in
-//                           the header row.
+//                           into DocumentWorkspace's metaSlot: inline AFTER the
+//                           title + status pill, wrapping to its own line when
+//                           the header row runs out of width. (An early design
+//                           put it BETWEEN the title and the pill, which
+//                           squeezed the title — after-the-pill + wrap avoids
+//                           that while keeping the pinned header one row.)
 //
 // Non-draft quotes keep the plain read-only h1 and no switcher. Each piece
 // reports its own pending state; QuoteWorkspace ORs them into the Send gate.
@@ -107,7 +108,7 @@ export function QuoteHeaderMeta({ detail, onChanged, onPendingChange, onUnsavedC
           onBlur={() => void saveTitle()}
           disabled={titleBusy}
           data-testid="quote-title"
-          className={`w-full rounded-md border bg-transparent px-2 py-0.5 text-xl font-semibold transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(titleDirty, titleSaved))}`}
+          className={`w-full rounded-md border bg-transparent px-2 py-0.5 text-lg font-semibold transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(titleDirty, titleSaved))}`}
         />
       </div>
       <SrSaved show={titleSaved} testId="quote-title-saved" />
