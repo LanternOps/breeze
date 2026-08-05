@@ -90,11 +90,21 @@ async function seedQuickSupportOrg(partnerId: string): Promise<{ orgId: string; 
   return { orgId: org.id, siteId: site.id };
 }
 
-/** A complete, independent Quick Support tenant: partner + hidden org + tech user. */
+/**
+ * A complete, INDEPENDENT Quick Support tenant: partner + hidden org + tech
+ * user. Never memoized — each test builds its own, so no shared fixture can
+ * make a cross-tenant assertion pass by accident.
+ */
 async function seedTenant() {
   const partner = await createPartner();
   const { orgId } = await seedQuickSupportOrg(partner.id);
-  const user = await createUser({ partnerId: partner.id });
+  // Explicit unique address: db-utils' default is `test-${Date.now()}` and
+  // users.email is UNIQUE, so two tenants seeded in the same millisecond
+  // would collide.
+  const user = await createUser({
+    partnerId: partner.id,
+    email: `qs-rls-${Date.now()}-${Math.random().toString(36).slice(2, 10)}@example.com`,
+  });
   return { partnerId: partner.id, orgId, userId: user.id };
 }
 
@@ -132,10 +142,18 @@ afterEach(async () => {
     for (const id of createdSites) {
       await db.delete(sites).where(eq(sites.id, id));
     }
-    for (const id of createdOrgs) {
-      await db.delete(organizations).where(eq(organizations.id, id));
-    }
   });
+  // Each organization delete gets its OWN transaction. Deleting an org fires
+  // breeze_partner_export_organizations_delete, which takes a PARTNER export
+  // lock — and the lock hierarchy forbids acquiring a partner lock once an
+  // organization lock is already held in the same transaction. Batching these
+  // with the deletes above (or with each other) raises
+  // "partner export lock hierarchy violation".
+  for (const id of createdOrgs) {
+    await withDbAccessContext(SYSTEM_CTX, () =>
+      db.delete(organizations).where(eq(organizations.id, id)),
+    );
+  }
   createdSessions.length = 0;
   createdSites.length = 0;
   createdOrgs.length = 0;

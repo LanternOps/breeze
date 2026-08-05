@@ -40,7 +40,6 @@ import {
   partners,
   sites,
   supportSessions,
-  users,
 } from '../../db/schema';
 import { createPartner, createOrganization, createSite, createUser } from './db-utils';
 import { getOrCreateQuickSupportOrg } from '../../services/quickSupportOrg';
@@ -71,11 +70,20 @@ function asSystem<T>(fn: () => Promise<T>): Promise<T> {
   return runOutsideDbContext(() => withSystemDbAccessContext(fn));
 }
 
+/**
+ * Explicitly drop every feature-owned row this file creates.
+ *
+ * The tenant ROOTS (organizations / partners / users / audit_logs) are left to
+ * setup.ts's global `beforeEach` TRUNCATE ... CASCADE, which already lists all
+ * four. Deleting them here would abort anyway: `audit_logs.org_id` is an FK
+ * with no ON DELETE action, and the redeem + enroll routes under test both
+ * write audit rows, so an org DELETE raises 23503 while audit_logs is
+ * append-only (REVOKE DELETE) and cannot be cleared first.
+ */
 afterEach(async () => {
   if (createdPartners.length === 0 && createdOrgs.length === 0 && createdDevices.length === 0) return;
   await asSystem(async () => {
-    // Children first: an FK declared without ON DELETE (enrollment_keys.org_id)
-    // would otherwise abort the org delete.
+    // Devices first: deleteDeviceCascade also NULLs support_sessions.device_id.
     for (const deviceId of createdDevices) {
       await db.transaction(async (tx) => {
         await deleteDeviceCascade(tx as unknown as DeviceDeletionTx, deviceId);
@@ -86,16 +94,6 @@ afterEach(async () => {
       await db.delete(supportSessions).where(eq(supportSessions.orgId, orgId));
       await db.delete(devices).where(eq(devices.orgId, orgId));
       await db.delete(sites).where(eq(sites.orgId, orgId));
-    }
-    for (const partnerId of createdPartners) {
-      await db.delete(users).where(eq(users.partnerId, partnerId));
-    }
-    for (const orgId of createdOrgs) {
-      await db.delete(organizations).where(eq(organizations.id, orgId));
-    }
-    for (const partnerId of createdPartners) {
-      await db.delete(organizations).where(eq(organizations.partnerId, partnerId));
-      await db.delete(partners).where(eq(partners.id, partnerId));
     }
   });
   createdDevices.length = 0;
@@ -123,6 +121,10 @@ async function postJson(app: Hono, path: string, body: unknown): Promise<Respons
   });
 }
 
+function uniqueEmail(): string {
+  return `qs-chain-${Date.now()}-${Math.random().toString(36).slice(2, 10)}@example.com`;
+}
+
 /**
  * A partner with its hidden Quick Support org provisioned and a technician
  * user to own the sessions.
@@ -132,7 +134,9 @@ async function seedSupportTenant() {
   createdPartners.push(partner.id);
   const { orgId, siteId } = await getOrCreateQuickSupportOrg(partner.id);
   createdOrgs.push(orgId);
-  const tech = await createUser({ partnerId: partner.id });
+  // users.email is UNIQUE and db-utils' default is `test-${Date.now()}`, which
+  // collides when two tenants land in the same millisecond.
+  const tech = await createUser({ partnerId: partner.id, email: uniqueEmail() });
   return { partnerId: partner.id, orgId, siteId, techId: tech.id };
 }
 
@@ -384,8 +388,10 @@ describe('licence counting — ephemeral devices are not endpoints', () => {
     );
 
     // One real endpoint, then the cap set to exactly that.
+    // /agents/enroll answers 201 Created, not 200 — matching the route and its
+    // unit suite.
     const firstRes = await postJson(enrollApp(), '/agents/enroll', enrollBody(rawKey, null, 'cap-host-1'));
-    expect(firstRes.status).toBe(200);
+    expect(firstRes.status).toBe(201);
     const first = (await firstRes.json()) as { deviceId: string };
     createdDevices.push(first.deviceId);
 
@@ -394,7 +400,7 @@ describe('licence counting — ephemeral devices are not endpoints', () => {
     // Quick Support tenant for the SAME partner.
     const { orgId: qsOrgId } = await getOrCreateQuickSupportOrg(partner.id);
     createdOrgs.push(qsOrgId);
-    const tech = await createUser({ partnerId: partner.id });
+    const tech = await createUser({ partnerId: partner.id, email: uniqueEmail() });
     const session = await mintSession(qsOrgId, tech.id);
 
     // (a) Support enrollment succeeds at the cap — a tech must always be able
