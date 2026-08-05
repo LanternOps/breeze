@@ -349,6 +349,12 @@ import * as dbModule from './db';
 import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
 import { and, eq, sql } from 'drizzle-orm';
 import { envInt } from './utils/envInt';
+import {
+  computeWorkersHealthy,
+  createReadinessEvaluator,
+  type WorkerInitPhase
+} from './services/readiness';
+import { createReadinessHandler } from './routes/readiness';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -372,22 +378,91 @@ const REQUIRE_REDIS_ON_STARTUP = envFlag(
 
 const app = new Hono();
 
-const readinessState: {
-  dbOk: boolean;
-  redisOk: boolean;
-  workersHealthy: boolean;
-  checkedAt: string | null;
-} = {
+/**
+ * Boot-time connectivity results. These drive the startup fail-fast gate and
+ * the decision to start Redis-backed workers. They deliberately do NOT answer
+ * `/ready` — that used to be exactly the bug (#2974): the snapshot was taken
+ * once during boot, and whichever way the race with worker registration landed
+ * was latched for the process lifetime.
+ */
+const startupChecks = {
   dbOk: false,
-  redisOk: false,
-  workersHealthy: false,
-  checkedAt: null
+  redisOk: false
 };
 
-function isReady(): boolean {
-  const redisReady = REQUIRE_REDIS_ON_STARTUP ? readinessState.redisOk : true;
-  return readinessState.dbOk && redisReady && readinessState.workersHealthy;
+/** How far boot-time worker initialisation has progressed. */
+let workerInitPhase: WorkerInitPhase = 'pending';
+
+/**
+ * Readiness cache lifetime.
+ *
+ * `/ready` is unauthenticated and exempt from the global rate limiter
+ * (`SKIP_PATHS` in `middleware/globalRateLimit.ts`, so load-balancer probes
+ * aren't throttled). An uncached live check would therefore let any anonymous
+ * caller drive one Postgres `select 1` plus one Redis `PING` per request. The
+ * TTL bounds that to a single probe pair per window regardless of request rate,
+ * while staying far below any realistic uptime-check interval so a genuine
+ * outage still surfaces within seconds.
+ *
+ * Clamped rather than trusted: a negative value would silently disable the
+ * amplification defence, and an over-large one would re-create #2974 in slow
+ * motion by latching the answer for minutes.
+ */
+const READINESS_CACHE_TTL_MAX_MS = 30_000;
+const readinessTtlRaw = envInt('READINESS_CACHE_TTL_MS', 5_000);
+const READINESS_CACHE_TTL_MS = Math.min(Math.max(readinessTtlRaw, 0), READINESS_CACHE_TTL_MAX_MS);
+if (READINESS_CACHE_TTL_MS !== readinessTtlRaw) {
+  console.warn(
+    `[ready] READINESS_CACHE_TTL_MS=${readinessTtlRaw} out of range, clamped to ${READINESS_CACHE_TTL_MS}ms`
+  );
 }
+
+/**
+ * Per-probe deadline. postgres.js has a connect timeout but no pool-acquire
+ * timeout, so a saturated pool can leave `select 1` queued indefinitely.
+ * Without a deadline that evaluation would never settle and the evaluator's
+ * single-flight slot would never clear, silencing `/ready` for the rest of the
+ * process. Kept well under a typical load-balancer probe timeout.
+ */
+const READINESS_PROBE_TIMEOUT_MS = Math.max(envInt('READINESS_PROBE_TIMEOUT_MS', 3_000), 100);
+
+/**
+ * One-shot guard for the "Redis came back but boot never started the workers"
+ * state. It is terminal until restart and its payload
+ * (`{db:true, redis:true, workers:false}`) is indistinguishable from #2974, so
+ * the explanation has to reach logs and Sentry rather than only a 503 body.
+ */
+let warnedWorkersNeverStarted = false;
+
+const readiness = createReadinessEvaluator({
+  checkDb: () => checkDatabaseConnectivity(),
+  checkRedis: () => checkRedisConnectivity(),
+  workersHealthy: (redisOk) => {
+    if (redisOk && workerInitPhase === 'skipped-no-redis' && !warnedWorkersNeverStarted) {
+      warnedWorkersNeverStarted = true;
+      const message =
+        'Redis is reachable again, but this process skipped worker startup because Redis was down at boot. ' +
+        'No queues are being consumed and /ready will stay not-ready until the API restarts.';
+      console.error(`[ready] ${message}`);
+      captureException(new Error(`[ready] ${message}`));
+    }
+
+    return computeWorkersHealthy({
+      phase: workerInitPhase,
+      workerStatus,
+      redisOk,
+      shuttingDown: shutdownInProgress
+    });
+  },
+  isShuttingDown: () => shutdownInProgress,
+  requireRedis: REQUIRE_REDIS_ON_STARTUP,
+  ttlMs: READINESS_CACHE_TTL_MS,
+  probeTimeoutMs: READINESS_PROBE_TIMEOUT_MS,
+  onProbeFailure: (probeName, error) => {
+    console.error(`[ready] ${probeName} probe failed:`, error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+  }
+});
 
 // Create WebSocket helpers (must be done before routes are registered)
 const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
@@ -508,20 +583,21 @@ app.get('/health/ready', async (c) => {
   );
 });
 
-// Legacy /ready alias (backward compatibility)
-app.get('/ready', (c) => {
-  const ready = isReady();
-  return c.json(
-    {
-      ready,
-      db: readinessState.dbOk,
-      redis: readinessState.redisOk,
-      workers: readinessState.workersHealthy,
-      checkedAt: readinessState.checkedAt
-    },
-    ready ? 200 : 503
-  );
-});
+// Legacy /ready alias (backward compatibility).
+//
+// Evaluated live on each request, TTL-cached and single-flighted — see
+// `services/readiness.ts`. Response shape is unchanged, except `checkedAt` now
+// actually moves; before #2974 it was frozen at the boot-time snapshot.
+app.get(
+  '/ready',
+  createReadinessHandler({
+    evaluator: readiness,
+    onEvaluationError: (error, c) => {
+      console.error('[ready] Readiness evaluation failed:', error);
+      captureException(error instanceof Error ? error : new Error(String(error)), c);
+    }
+  })
+);
 
 // Metrics endpoint (for Prometheus scraping at /metrics)
 app.route('/metrics', metricsRoutes);
@@ -1105,9 +1181,9 @@ const port = parseInt(process.env.API_PORT || '3001', 10);
 
 // Initialize background workers (only if Redis is available)
 const workerStatus: Record<string, boolean> = {};
-export function areWorkersHealthy(): boolean {
-  return readinessState.workersHealthy;
-}
+// `areWorkersHealthy()` used to be exported here. It had no callers repo-wide
+// and, now that readiness is evaluated live, a second copy of the worker-health
+// rule could only drift from what `/ready` reports. Use `readiness.get()`.
 export function getWorkerStatus(): Record<string, boolean> { return { ...workerStatus }; }
 
 let server: ReturnType<typeof serve> | null = null;
@@ -1262,10 +1338,10 @@ async function initializeWebhookDeliveryWorker(): Promise<void> {
 }
 
 async function initializeWorkers(): Promise<void> {
-  if (!readinessState.redisOk || !isRedisAvailable()) {
+  if (!startupChecks.redisOk || !isRedisAvailable()) {
     console.warn('[WARN] Redis not available - background workers disabled');
-    readinessState.workersHealthy = !REQUIRE_REDIS_ON_STARTUP;
-    readinessState.checkedAt = new Date().toISOString();
+    workerInitPhase = 'skipped-no-redis';
+    readiness.invalidate();
     return;
   }
 
@@ -1387,13 +1463,21 @@ async function initializeWorkers(): Promise<void> {
       } catch (error) {
         workerStatus[name] = false;
         console.error(`[CRITICAL] Failed to initialize ${name}:`, error);
+        // A failed worker now pins /ready to not-ready for the process
+        // lifetime (previously the boot race often hid it), so the reason has
+        // to reach Sentry — a stdout line can't explain a permanent 503.
+        captureException(
+          error instanceof Error ? error : new Error(String(error))
+        );
       }
     })
   );
 
   const failed = Object.entries(workerStatus).filter(([, ok]) => !ok).map(([n]) => n);
-  readinessState.workersHealthy = failed.length === 0;
-  readinessState.checkedAt = new Date().toISOString();
+  workerInitPhase = 'started';
+  // Drop any snapshot taken during the boot race so the next probe sees the
+  // real outcome immediately instead of waiting out the TTL.
+  readiness.invalidate();
 
   if (failed.length === 0) {
     console.log('All background workers initialized');
@@ -1435,9 +1519,8 @@ async function runStartupChecks(): Promise<void> {
     checkRedisConnectivity()
   ]);
 
-  readinessState.dbOk = dbOk;
-  readinessState.redisOk = redisOk;
-  readinessState.checkedAt = new Date().toISOString();
+  startupChecks.dbOk = dbOk;
+  startupChecks.redisOk = redisOk;
 
   if (REQUIRE_DB_ON_STARTUP && !dbOk) {
     throw new Error('Database is required at startup but is unreachable');
@@ -1592,9 +1675,10 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   // (cause of fleetwide false-offline after a restart).
   if (server) {
     const httpServer = server as unknown as import('http').Server;
-    // Make readiness fail so any load balancer stops routing to us.
-    readinessState.workersHealthy = false;
-    readinessState.checkedAt = new Date().toISOString();
+    // Make readiness fail so any load balancer stops routing to us. The
+    // evaluator short-circuits on `shutdownInProgress` (already set above);
+    // dropping the cache too means no probe can be served a stale "ready".
+    readiness.invalidate();
     httpServer.close();                 // stop accepting NEW connections
     if (typeof httpServer.closeIdleConnections === 'function') {
       httpServer.closeIdleConnections(); // drop idle keep-alive sockets now
@@ -1767,6 +1851,15 @@ async function bootstrap(): Promise<void> {
   console.log(`[config] Validated: NODE_ENV=${config.NODE_ENV}, port=${config.API_PORT}`);
   if ((process.env.AGENT_BACKUP_SERVER_URL ?? '').trim()) {
     console.log(`[config] AGENT_BACKUP_SERVER_URL active: ${process.env.AGENT_BACKUP_SERVER_URL!.trim()}`);
+  }
+  // Say which way the break-glass switch actually landed. An operator who set
+  // `off` in .env but never threaded it through the deployed compose file gets
+  // the empty-string default (= enforce) and is still locked out, with nothing
+  // in the logs explaining why. Compose drift is a documented failure mode here.
+  if (config.IP_ALLOWLIST_ENFORCEMENT_MODE === 'off') {
+    console.warn('[config] IP_ALLOWLIST_ENFORCEMENT_MODE=off — partner IP allowlists are GLOBALLY DISABLED (break-glass).');
+  } else {
+    console.log('[config] IP allowlist enforcement: enforce');
   }
 
   await loadSourceExtensions(extensionContributionRegistry);

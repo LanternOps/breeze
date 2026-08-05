@@ -10,6 +10,12 @@ import { enforceAgentCertificateBinding, readAgentCertificateAssertion } from '.
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIp } from '../services/clientIp';
 import { getAgentTenantState } from '../services/tenantStatus';
+import {
+  AGENT_ORG_RATE_WINDOW_SECONDS,
+  computeReservedIngestLimit,
+  isReservedIngestPath,
+  resolveOrgRateLimit,
+} from '../services/agentOrgRateLimit';
 
 export interface AgentAuthContext {
   deviceId: string;
@@ -62,19 +68,11 @@ const AGENT_PER_IP_RATE_WINDOW_SECONDS = 60;
 // pair at most once per day so noisy mobile/roaming agents don't drown ops
 // in events.
 const AGENT_IP_CHANGE_AUDIT_DEDUP_SECONDS = 24 * 60 * 60;
-// Default per-org budget: 5x the per-agent budget — supports up to ~5 active
-// agents per org without rate-limiting. Configurable via env var.
-const DEFAULT_AGENT_ORG_RATE_LIMIT = 600;
-const AGENT_ORG_RATE_WINDOW_SECONDS = 60;
+// Per-org budget. Previously a flat 600/min for every tenant regardless of
+// fleet size, which silently dropped patch inventory on any org past ~100-300
+// devices (#2728). Now scaled by enrolled device count between a floor and a
+// hard ceiling — see services/agentOrgRateLimit.ts for the sizing rationale.
 const DEFAULT_AGENT_TOKEN_ROTATION_MAX_AGE_DAYS = 30;
-
-function getAgentOrgRateLimit(): number {
-  const raw = Number.parseInt(process.env.AGENT_ORG_RATE_LIMIT_PER_MIN ?? '', 10);
-  if (!Number.isFinite(raw) || raw <= 0) {
-    return DEFAULT_AGENT_ORG_RATE_LIMIT;
-  }
-  return raw;
-}
 
 function tokenHashMatches(storedHash: string, tokenHash: string): boolean {
   const storedBuf = Buffer.from(storedHash, 'hex');
@@ -514,20 +512,60 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // for requests that already failed the per-agent check). Protects against a
   // large fleet on one MSP saturating shared resources via the per-agent budget.
   const orgRateKey = `agent_org_rate:${device.orgId}`;
+  const orgLimit = await resolveOrgRateLimit(redis, device.orgId);
   const orgRateCheck = await rateLimiter(
     redis,
     orgRateKey,
-    getAgentOrgRateLimit(),
+    orgLimit,
     AGENT_ORG_RATE_WINDOW_SECONDS,
   );
 
   if (!orgRateCheck.allowed) {
-    console.warn('[agentAuth] org rate limit exceeded', {
+    // #2728 — reserved lane. The org bucket is shared with no per-device
+    // fairness, so a fleet of chatty heartbeats can drain it and starve the
+    // once-per-24h patch/inventory uploads that carry operator-facing posture.
+    // Those uploads are far too infrequent to be a load source themselves, so
+    // when the main bucket is exhausted we still admit them from a smaller
+    // reserved bucket. Only consulted on the overflow path, so the steady-state
+    // request path pays no extra Redis round-trip.
+    const reserved = isReservedIngestPath(c.req.path);
+    const reservedCheck = reserved
+      ? await rateLimiter(
+          redis,
+          `agent_org_rate_reserved:${device.orgId}`,
+          computeReservedIngestLimit(orgLimit),
+          AGENT_ORG_RATE_WINDOW_SECONDS,
+        )
+      : null;
+
+    if (!reservedCheck?.allowed) {
+      // Per-device detail so a stale-posture report is diagnosable from logs
+      // without new tables: which device, which org, which endpoint, and
+      // whether the reserved lane was also spent (#2728).
+      console.warn('[agentAuth] org rate limit exceeded', {
+        orgId: device.orgId,
+        deviceId: device.id,
+        path: c.req.path,
+        orgLimit,
+        reservedLane: reserved ? 'exhausted' : 'not-eligible',
+      });
+      // Advertise the full window. `orgRateCheck.resetAt` is when ONE slot
+      // frees (oldest entry + window), which under sustained saturation is
+      // ~now — advertising that would tell the whole fleet to come back in a
+      // second and turn backoff into a hot loop, amplifying the very overload
+      // that caused the rejection. De-synchronizing the herd is the agent's
+      // job, via additive jitter on this value (httputil.applyPositiveJitter),
+      // not the server's job via a varying header.
+      c.header('Retry-After', String(AGENT_ORG_RATE_WINDOW_SECONDS));
+      return c.json({ error: 'org_rate_limit_exceeded' }, 429);
+    }
+
+    console.warn('[agentAuth] org rate limit exceeded — admitted via reserved ingest lane', {
       orgId: device.orgId,
       deviceId: device.id,
+      path: c.req.path,
+      orgLimit,
     });
-    c.header('Retry-After', '60');
-    return c.json({ error: 'org_rate_limit_exceeded' }, 429);
   }
 
   // Tenant-status gate: a suspended/churned/soft-deleted org or partner must

@@ -235,6 +235,22 @@ jobs:
           path: agent/breeze-desktop-helper-${{ matrix.goos }}-${{ matrix.goarch }}
           retention-days: 30
 
+      # Regression guard (#2797): no shipped agent binary may contain
+      # plaintext threat-signature strings — AV engines flag them as malware
+      # (VT-confirmed Elastic Multi.EICAR on shipped exes). Scans every
+      # breeze-* binary this matrix leg produced (agent/backup/watchdog, plus
+      # desktop-helper on darwin); fails if the glob matches nothing so a
+      # renamed output cannot silently skip the scan.
+      - name: Scan built binaries for plaintext threat signatures (#2797)
+        run: |
+          shopt -s nullglob
+          bins=(agent/breeze-*-${{ matrix.goos }}-${{ matrix.goarch }}*)
+          if [ "${#bins[@]}" -eq 0 ]; then
+            echo "no built agent binaries matched agent/breeze-*-${{ matrix.goos }}-${{ matrix.goarch }}* — refusing to pass a vacuous scan" >&2
+            exit 1
+          fi
+          bash scripts/security/check-agent-binary-signatures.sh "${bins[@]}"
+
   build-windows-msi:
     name: Build + Sign Windows Artifacts
     if: >-
@@ -407,6 +423,29 @@ jobs:
           if ($agText -notmatch 'requestedExecutionLevel[^>]*level\s*=\s*["'']requireAdministrator') { throw "breeze-agent.exe lost its requireAdministrator manifest" }
           if ($agText -match 'level\s*=\s*["'']asInvoker') { throw "breeze-agent.exe is asInvoker — lost its requireAdministrator manifest (#949)" }
           Write-Host "Manifest guard OK: user-helper=asInvoker, agent=requireAdministrator"
+
+      # Regression guard (#2797): the exes packaged into the MSI must not
+      # contain plaintext threat-signature strings — AV engines flag them as
+      # malware (VT-confirmed Elastic Multi.EICAR on shipped exes). git-bash
+      # on the windows runner provides bash + grep. Scans every dist/breeze-*.exe
+      # via glob (like the build-agent scan) instead of a hardcoded path list,
+      # so a renamed build output cannot silently dodge the scan; also fails if
+      # fewer than the four expected exes (agent, backup, watchdog, user-helper)
+      # are present.
+      - name: Scan Windows binaries for plaintext threat signatures (#2797)
+        shell: bash
+        run: |
+          shopt -s nullglob
+          bins=(dist/breeze-*.exe)
+          if [ "${#bins[@]}" -eq 0 ]; then
+            echo "no built Windows exes matched dist/breeze-*.exe — refusing to pass a vacuous scan" >&2
+            exit 1
+          fi
+          if [ "${#bins[@]}" -lt 4 ]; then
+            echo "only ${#bins[@]} exe(s) matched dist/breeze-*.exe, expected at least 4 (agent, backup, watchdog, user-helper) — a build output was renamed or dropped" >&2
+            exit 1
+          fi
+          bash scripts/security/check-agent-binary-signatures.sh "${bins[@]}"
 
       - name: Validate signing configuration
         shell: pwsh
