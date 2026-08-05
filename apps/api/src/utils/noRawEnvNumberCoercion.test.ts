@@ -412,7 +412,8 @@ describe('no raw numeric coercion of process.env (#2823)', () => {
     // Measured: 550 raw, 533 surviving (the 17 lost are genuine doc comments).
     expect(rawReads).toBeGreaterThan(400);
     expect(survivingReads).toBeGreaterThan(rawReads * 0.9);
-  });
+    // Repo-wide source scan is IO-bound; widen timeout so it doesn't flake under load or cold FS cache.
+  }, 30000);
 
   // Vacuity guard #3: the self-checks below all feed the detector short
   // synthetic strings. This proves the same detector still fires on a real
@@ -444,7 +445,8 @@ describe('no raw numeric coercion of process.env (#2823)', () => {
         'variable as an empty string. Use envInt/envFloat from src/utils, or ' +
         '`|| \'default\'` (which does fire on \'\'). See the header of this file.'
     ).toEqual([]);
-  });
+    // Repo-wide source scan is IO-bound; widen timeout so it doesn't flake under load or cold FS cache.
+  }, 30000);
 
   // ---- detector self-checks: prove the guard discriminates, not just passes ----
 

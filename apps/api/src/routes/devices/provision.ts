@@ -221,6 +221,12 @@ provisionRoutes.post(
             and(
               sql`${devices.orgId} IN (${partnerOrgIds})`,
               ne(devices.status, 'decommissioned'),
+              // Quick Support devices are not licensed endpoints — they live in
+              // the hidden per-partner support org for the length of one
+              // session and are purged by the reaper. Must match the identical
+              // exclusion in agents/enrollment.ts, or the two paths would
+              // enforce the same cap against different fleet counts.
+              eq(devices.isEphemeral, false),
             ),
           );
         return { maxDevices, activeCount: Number(countResult?.count ?? 0) };

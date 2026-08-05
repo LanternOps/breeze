@@ -355,6 +355,23 @@ function disableProxyTrustEnv(): void {
 }
 
 describe('isRequestConnectionSecure (#1618 — Secure flag tracks real transport)', () => {
+  // These tests assert on the untrusted-proxy-peer behavior (no remoteAddress
+  // is set, so the trusted-CIDR check must resolve via the dev-mode empty-list
+  // fallback), which a gitignored repo-root .env for local dev silently
+  // overrides via dotenv injection at test-run time: .env.example ships both
+  // TRUST_PROXY_HEADERS=true and a non-empty TRUSTED_PROXY_CIDRS, either of
+  // which alone is enough to change these results. CI has no .env file so it
+  // never sees this; pin both vars explicitly so the suite is deterministic
+  // regardless of the machine's ambient environment.
+  beforeEach(() => {
+    vi.stubEnv('TRUST_PROXY_HEADERS', 'true');
+    vi.stubEnv('TRUSTED_PROXY_CIDRS', '');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('true when X-Forwarded-Proto is https (Caddy behind TLS)', () => {
     expect(isRequestConnectionSecure(makeCookieContext({ forwardedProto: 'https' }).c)).toBe(true);
   });

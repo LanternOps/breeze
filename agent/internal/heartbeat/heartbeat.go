@@ -276,6 +276,15 @@ type Heartbeat struct {
 	shutdownTimeout time.Duration
 	isService       bool
 	isHeadless      bool
+	// supportMode marks this heartbeat as belonging to an ephemeral Quick
+	// Support client. It is the guard on the support_end command: without it
+	// a forged or misrouted support_end would self-destruct a real,
+	// permanently-installed agent. supportWorkDir is the temp workspace that
+	// self-destruct removes — never the machine-wide config dir. Both are
+	// copied from cfg at construction and never mutated afterwards, exactly
+	// like isService/isHeadless.
+	supportMode    bool
+	supportWorkDir string
 	// headlessCachedAt memoizes the Linux resolver-backed headless probe used by
 	// currentHeadless() for the outgoing heartbeat payload. Stores a
 	// headlessCache; an atomic.Value so the heartbeat and command-handler
@@ -618,6 +627,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	h.accepting.Store(true)
 	h.isService = cfg.IsService
 	h.isHeadless = cfg.IsHeadless
+	h.supportMode = cfg.SupportMode
+	h.supportWorkDir = cfg.SupportWorkDir
 
 	// Classify device role once at startup and cache system info.
 	// CollectHardware spawns WMIC processes on Windows which can take up to
@@ -932,9 +943,18 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 		if backupResult.Success {
 			result.Status = "completed"
 		}
+		// Error and body are set INDEPENDENTLY, not as an either/or (#3027).
+		// This is the async path every modern backup_run takes, and the old
+		// `else if` meant a failed run delivered its stderr and nothing else —
+		// discarding the job body that marshalBackupRunResult populates
+		// precisely so a failure keeps its VSS diagnostics, warning text and
+		// partial counters. Status is already decided above from
+		// backupResult.Success, and the server reads the job's terminal status
+		// from that field alone, so attaching a body cannot green a failed run.
 		if backupResult.Stderr != "" {
 			result.Error = backupResult.Stderr
-		} else if backupResult.Stdout != "" {
+		}
+		if backupResult.Stdout != "" {
 			var parsed any
 			if err := json.Unmarshal([]byte(backupResult.Stdout), &parsed); err == nil {
 				result.Result = parsed

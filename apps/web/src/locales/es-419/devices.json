@@ -1085,7 +1085,9 @@
     "to": "a",
     "perPage": "Por página",
     "devicesPerPage": "Dispositivos por página",
-    "page": "Página"
+    "page": "Página",
+    "possibleDuplicate": "Posible duplicado",
+    "possibleDuplicateTitle": "Este dispositivo podría reemplazar a un registro anterior con el mismo nombre de host. Ábrelo para revisarlo."
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "No se pudieron recuperar los registros del dispositivo",
@@ -2223,5 +2225,16 @@
     "idleMinutes": "{{count}} min inactiva",
     "disconnectedNotShadowable": "Las sesiones desconectadas no se pueden ver: no hay escritorio activo para capturar",
     "cancel": "Cancelar"
+  },
+  "possibleReplacementBanner": {
+    "decommissionFailed": "No se pudo retirar el dispositivo antiguo",
+    "decommissionOldDevice": "Retirar el dispositivo antiguo",
+    "decommissionSucceeded": "Dispositivo antiguo retirado",
+    "message": "Este dispositivo podría reemplazar a {{hostname}}: revisa y retira el registro antiguo.",
+    "oldDeviceDecommissioned": "Dispositivo antiguo retirado: no queda nada por revisar.",
+    "oldDeviceUnavailable": "El registro del dispositivo antiguo ya no está disponible.",
+    "title": "Posible inscripción duplicada",
+    "unknownDevice": "el dispositivo anterior",
+    "viewOldDevice": "Ver dispositivo antiguo"
   }
 }

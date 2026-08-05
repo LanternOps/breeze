@@ -393,10 +393,20 @@ export async function schedulePolicyScans(policy: SchedulablePolicy, now: Date):
   if (policy.orgId) {
     ownerOrgIds = [policy.orgId];
   } else if (policy.partnerId) {
+    // Quick Support exclusion: the hidden per-partner 'quick_support' org holds
+    // ephemeral devices — a stranger's personal machine borrowed for one
+    // ~20-minute session. It sits under the partner like any other org and
+    // stays inside technicians' accessibleOrgIds for RLS reasons, so this
+    // partner->org fan-out is NOT filtered for us. Scanning a stranger's home
+    // PC for PII/PHI is a privacy incident; the device filter below is the
+    // second line of defense.
     const orgRows = await db
       .select({ id: organizations.id })
       .from(organizations)
-      .where(eq(organizations.partnerId, policy.partnerId));
+      .where(and(
+        eq(organizations.partnerId, policy.partnerId),
+        ne(organizations.type, 'quick_support')
+      ));
     ownerOrgIds = orgRows.map((row) => row.id);
   } else {
     ownerOrgIds = [];
@@ -426,6 +436,7 @@ export async function schedulePolicyScans(policy: SchedulablePolicy, now: Date):
   const schedule = parsePolicySchedule(policy.schedule);
   const conditions: SQL[] = [
     inArray(devices.orgId, admittedOrgIds),
+    eq(devices.isEphemeral, false),
     ne(devices.status, 'decommissioned')
   ];
   if (schedule.deviceIds.length > 0) {

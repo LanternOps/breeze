@@ -766,3 +766,118 @@ func TestConfirmTokenRotationMapsConflictCodes(t *testing.T) {
 		})
 	}
 }
+
+// TestCancelBootstrap covers the Task 6 (#2764) client call: POST
+// /installer/bootstrap/cancel with the raw child key as the JSON
+// enrollmentSecret field, and no bearer auth — possession of the secret is
+// the auth for this endpoint.
+func TestCancelBootstrap(t *testing.T) {
+	t.Parallel()
+
+	var gotMethod, gotPath, gotAuth string
+	var gotBody map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"refunded":true}`))
+	}))
+	defer ts.Close()
+
+	resp, err := CancelBootstrap(ts.URL, "child-secret-abc")
+	if err != nil {
+		t.Fatalf("CancelBootstrap() error = %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/api/v1/installer/bootstrap/cancel" {
+		t.Errorf("path = %q, want /api/v1/installer/bootstrap/cancel", gotPath)
+	}
+	if gotAuth != "" {
+		t.Errorf("Authorization = %q, want empty — the raw secret is the auth", gotAuth)
+	}
+	if gotBody["enrollmentSecret"] != "child-secret-abc" {
+		t.Errorf("enrollmentSecret = %v, want child-secret-abc", gotBody["enrollmentSecret"])
+	}
+	if !resp.Refunded {
+		t.Error("Refunded = false, want true")
+	}
+}
+
+func TestCancelBootstrap_NonOKStatusReturnsErrHTTPStatus(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"not found"}`))
+	}))
+	defer ts.Close()
+
+	_, err := CancelBootstrap(ts.URL, "unknown-secret")
+	var httpErr *ErrHTTPStatus
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("error = %v, want *ErrHTTPStatus{404}", err)
+	}
+}
+
+// TestUninstallIntent covers the Task 6 (#2764) client call: POST
+// /agents/<id>/uninstall-intent, bearer-authenticated like every other
+// agent route, path carrying the agent ID (matches SubmitCommandResult /
+// RotateToken).
+func TestUninstallIntent(t *testing.T) {
+	t.Parallel()
+
+	var gotMethod, gotPath, gotAuth string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"acknowledged":true}`))
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, "brz_token", "agent-1")
+	resp, err := client.UninstallIntent()
+	if err != nil {
+		t.Fatalf("UninstallIntent() error = %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/api/v1/agents/agent-1/uninstall-intent" {
+		t.Errorf("path = %q, want /api/v1/agents/agent-1/uninstall-intent", gotPath)
+	}
+	if gotAuth != "Bearer brz_token" {
+		t.Errorf("Authorization = %q, want Bearer brz_token", gotAuth)
+	}
+	if !resp.Acknowledged {
+		t.Error("Acknowledged = false, want true")
+	}
+}
+
+// TestUninstallIntent_TenantOffboardingDrainIsAnOrdinaryError asserts the
+// 403 tenant_offboarding drain response (returned by agentAuthMiddleware
+// during an active org offboarding) decodes as any other non-2xx would —
+// an *ErrHTTPStatus the caller (runUninstallNotify) treats as non-fatal.
+// This method has no special-case handling for that status; the "never
+// blocks uninstall" contract lives entirely in the caller.
+func TestUninstallIntent_TenantOffboardingDrainIsAnOrdinaryError(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"tenant_offboarding"}`))
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, "brz_token", "agent-1")
+	_, err := client.UninstallIntent()
+	var httpErr *ErrHTTPStatus
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusForbidden {
+		t.Fatalf("error = %v, want *ErrHTTPStatus{403}", err)
+	}
+}

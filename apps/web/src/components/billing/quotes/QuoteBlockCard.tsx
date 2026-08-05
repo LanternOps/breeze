@@ -464,26 +464,21 @@ export function BlockCard({
                 the per-line Total — the most-checked figure on a quote — is always
                 visible without sideways scrolling at desktop widths. Billing cadence
                 rides in the Price cell; Taxable moved to each line's controls row;
-                per-line tax renders as a sub-line under the Total. The wrapper still
-                scrolls on genuinely narrow screens (phone), without a sticky column.
-                max-h + overflow-y-auto (in addition to the existing overflow-x-auto)
-                makes THIS div the sticky containing block for the header cells below —
-                position:sticky on a descendant binds to its nearest scroll-container
-                ancestor, and an unbounded overflow-x-auto div never actually scrolls
-                vertically, so a plain `sticky top-0` inside it is inert (verified: the
-                header just scrolls off with the rows). Bounding the height is what
-                makes the header cells' sticky top-0 do anything at all. The cap is
-                generous (70vh) so short blocks never show an inner scrollbar — it only
-                engages once a section has enough rows to need a pinned header. */}
-            <div className="max-h-[70vh] overflow-x-auto overflow-y-auto rounded-md focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring" role="region" aria-label={t('quotes.editor.table.scrollAria')} tabIndex={0}>
+                per-line tax renders as a sub-line under the Total. The wrapper only
+                scrolls HORIZONTALLY on genuinely narrow screens (phone) — the page is
+                the editor's single vertical scroller. An earlier design capped this
+                div at max-h-[70vh] to make sticky header cells work, but a vertical
+                scrollport per pricing block made the editor read as nested boxes of
+                scrollbars, so the block now grows to its content instead. */}
+            <div className="overflow-x-auto rounded-md focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring" role="region" aria-label={t('quotes.editor.table.scrollAria')} tabIndex={0}>
             <table className="w-full min-w-[36rem] text-sm" data-testid={`quote-block-lines-${block.id}`}>
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="sticky top-0 z-10 min-w-[12rem] bg-card px-1.5 py-2 font-medium">{t('quotes.editor.table.item')}</th>
-                  <th className="sticky top-0 z-10 bg-card px-1.5 py-2 text-right font-medium">{t('quotes.editor.table.qty')}</th>
-                  <th className="sticky top-0 z-10 bg-card px-1.5 py-2 text-right font-medium">{t('quotes.editor.table.unitPrice')}</th>
-                  <th className="sticky top-0 z-10 bg-card px-1.5 py-2 text-right font-medium">{t('quotes.editor.table.total')}</th>
-                  {canWrite && <th className="sticky top-0 z-10 bg-card px-1.5 py-2" />}
+                  <th className="min-w-[12rem] px-1.5 py-2 font-medium">{t('quotes.editor.table.item')}</th>
+                  <th className="px-1.5 py-2 text-right font-medium">{t('quotes.editor.table.qty')}</th>
+                  <th className="px-1.5 py-2 text-right font-medium">{t('quotes.editor.table.unitPrice')}</th>
+                  <th className="px-1.5 py-2 text-right font-medium">{t('quotes.editor.table.total')}</th>
+                  {canWrite && <th className="px-1.5 py-2" />}
                 </tr>
               </thead>
               <tbody>

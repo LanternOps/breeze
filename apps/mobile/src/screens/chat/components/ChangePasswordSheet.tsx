@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import {
   Alert,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   Text,
   TextInput,
@@ -180,94 +182,99 @@ export function ChangePasswordSheet({ visible, onCancel, onSuccess }: Props) {
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={handleCancel}>
-      <Pressable
-        style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' }}
-        onPress={handleCancel}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={{ flex: 1 }}
       >
         <Pressable
-          onPress={(e) => e.stopPropagation()}
-          style={{
-            backgroundColor: theme.bg1,
-            borderTopLeftRadius: radii.xl,
-            borderTopRightRadius: radii.xl,
-            padding: spacing[6],
-            paddingBottom: insets.bottom + spacing[6],
-          }}
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' }}
+          onPress={handleCancel}
         >
-          <View
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
             style={{
-              alignSelf: 'center',
-              width: 36,
-              height: 4,
-              borderRadius: 2,
-              backgroundColor: theme.bg3,
-              marginBottom: spacing[4],
+              backgroundColor: theme.bg1,
+              borderTopLeftRadius: radii.xl,
+              borderTopRightRadius: radii.xl,
+              padding: spacing[6],
+              paddingBottom: insets.bottom + spacing[6],
             }}
-          />
-          <Text style={[type.title, { color: theme.textHi }]}>Change password</Text>
-          <Text style={[type.meta, { color: theme.textMd, marginTop: spacing[1] }]}>
-            8+ characters, with at least one uppercase, lowercase, and number.
-          </Text>
-
-          <PasswordField
-            label="CURRENT"
-            value={current}
-            onChangeText={setCurrent}
-            textColor={theme.textHi}
-            bg2={theme.bg2}
-            textLo={theme.textLo}
-          />
-          <PasswordField
-            label="NEW"
-            value={next}
-            onChangeText={setNext}
-            textColor={theme.textHi}
-            bg2={theme.bg2}
-            textLo={theme.textLo}
-          />
-          <PasswordField
-            label="CONFIRM NEW"
-            value={confirm}
-            onChangeText={setConfirm}
-            textColor={theme.textHi}
-            bg2={theme.bg2}
-            textLo={theme.textLo}
-          />
-
-          <View style={{ flexDirection: 'row', marginTop: spacing[6], gap: spacing[3] }}>
-            <Pressable
-              onPress={handleCancel}
-              disabled={submitting}
+          >
+            <View
               style={{
-                flex: 1,
-                paddingVertical: spacing[4],
-                alignItems: 'center',
-                borderRadius: radii.lg,
-                backgroundColor: theme.bg2,
-                opacity: submitting ? 0.5 : 1,
+                alignSelf: 'center',
+                width: 36,
+                height: 4,
+                borderRadius: 2,
+                backgroundColor: theme.bg3,
+                marginBottom: spacing[4],
               }}
-            >
-              <Text style={[type.bodyMd, { color: theme.textHi }]}>Cancel</Text>
-            </Pressable>
-            <Pressable
-              onPress={handleSubmit}
-              disabled={submitting}
-              style={{
-                flex: 1.4,
-                paddingVertical: spacing[4],
-                alignItems: 'center',
-                borderRadius: radii.lg,
-                backgroundColor: theme.brand,
-                opacity: submitting ? 0.5 : 1,
-              }}
-            >
-              <Text style={[type.bodyMd, { color: palette.approve.onBase }]}>
-                {submitting ? 'Saving' : 'Save'}
-              </Text>
-            </Pressable>
-          </View>
+            />
+            <Text style={[type.title, { color: theme.textHi }]}>Change password</Text>
+            <Text style={[type.meta, { color: theme.textMd, marginTop: spacing[1] }]}>
+              8+ characters, with at least one uppercase, lowercase, and number.
+            </Text>
+
+            <PasswordField
+              label="CURRENT"
+              value={current}
+              onChangeText={setCurrent}
+              textColor={theme.textHi}
+              bg2={theme.bg2}
+              textLo={theme.textLo}
+            />
+            <PasswordField
+              label="NEW"
+              value={next}
+              onChangeText={setNext}
+              textColor={theme.textHi}
+              bg2={theme.bg2}
+              textLo={theme.textLo}
+            />
+            <PasswordField
+              label="CONFIRM NEW"
+              value={confirm}
+              onChangeText={setConfirm}
+              textColor={theme.textHi}
+              bg2={theme.bg2}
+              textLo={theme.textLo}
+            />
+
+            <View style={{ flexDirection: 'row', marginTop: spacing[6], gap: spacing[3] }}>
+              <Pressable
+                onPress={handleCancel}
+                disabled={submitting}
+                style={{
+                  flex: 1,
+                  paddingVertical: spacing[4],
+                  alignItems: 'center',
+                  borderRadius: radii.lg,
+                  backgroundColor: theme.bg2,
+                  opacity: submitting ? 0.5 : 1,
+                }}
+              >
+                <Text style={[type.bodyMd, { color: theme.textHi }]}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleSubmit}
+                disabled={submitting}
+                style={{
+                  flex: 1.4,
+                  paddingVertical: spacing[4],
+                  alignItems: 'center',
+                  borderRadius: radii.lg,
+                  backgroundColor: theme.brand,
+                  opacity: submitting ? 0.5 : 1,
+                }}
+              >
+                <Text style={[type.bodyMd, { color: palette.approve.onBase }]}>
+                  {submitting ? 'Saving' : 'Save'}
+                </Text>
+              </Pressable>
+            </View>
+          </Pressable>
         </Pressable>
-      </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

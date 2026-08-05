@@ -164,7 +164,7 @@ vi.mock('./sentry', () => ({
 
 type TestAuth = {
   user: { id: string; email: string; name: string };
-  orgId: string;
+  orgId: string | null; // null for partner-scope logins — the real AuthContext.orgId type
   scope: string;
   accessibleOrgIds: string[];
   canAccessOrg: (orgId: string) => boolean;
@@ -580,6 +580,188 @@ describe('createSessionPreToolUse', () => {
     expect(waitForApproval).not.toHaveBeenCalled();
   });
 
+  describe('#3130: read-only Tier 2 auto-executes under per_step', () => {
+    const readOnlyCheck = {
+      allowed: true,
+      tier: 2,
+      requiresApproval: false,
+      readOnly: true,
+      description: 'List processes',
+    };
+
+    it('auto-executes with an executing audit row and no approval prompt', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue(readOnlyCheck as any);
+      const values = mockInsertValues();
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      const result = await createSessionPreToolUse(session)('execute_command', {
+        deviceId: 'd-1',
+        commandType: 'list_processes',
+      });
+
+      expect(result).toEqual({ allowed: true });
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: 'session-1',
+        toolName: 'execute_command',
+        status: 'executing',
+      }));
+      expect(waitForApproval).not.toHaveBeenCalled();
+      expect(session.eventBus.publish).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'approval_required' }),
+      );
+      expect(mockCreateActionIntent).not.toHaveBeenCalled();
+    });
+
+    it('a paused session still prompts — pause is a hard brake even for read-only calls', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue(readOnlyCheck as any);
+      mockInsertReturning({ id: 'exec-ro-1' });
+      mockGetUserPushTokens.mockResolvedValue([]);
+      vi.mocked(waitForApproval).mockResolvedValue(false);
+      const session = makeActiveSession({ approvalMode: 'per_step', isPaused: true });
+
+      const result = await createSessionPreToolUse(session)('execute_command', {
+        deviceId: 'd-1',
+        commandType: 'list_processes',
+      });
+
+      expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+      expect(waitForApproval).toHaveBeenCalled();
+    });
+
+    it.each(['action_plan', 'hybrid_plan'] as const)(
+      'a plan-matched read-only call in %s mode takes the PLAN branch (index advances), not the fast path',
+      async (mode) => {
+        vi.mocked(checkGuardrails).mockReturnValue(readOnlyCheck as any);
+        const values = mockInsertValues();
+        const session = makeActiveSession({
+          approvalMode: mode,
+          activePlanId: 'plan-1',
+          approvedPlanSteps: new Map([
+            [0, { toolName: 'execute_command', input: { deviceId: 'd-1', commandType: 'list_processes' } }],
+          ]),
+        });
+
+        const result = await createSessionPreToolUse(session)('execute_command', {
+          deviceId: 'd-1',
+          commandType: 'list_processes',
+        });
+
+        expect(result).toEqual({ allowed: true });
+        // The direct evidence this went through the plan branch rather than
+        // the read-only fast path: the step index advanced and
+        // plan_step_start was emitted — the fast path does neither, which is
+        // exactly the desync the plan carve-out prevents.
+        expect(session.currentPlanStepIndex).toBe(1);
+        expect(session.eventBus.publish).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'plan_step_start', stepIndex: 0 }),
+        );
+        expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'executing' }));
+      },
+    );
+
+    it('an UNmatched read-only call during an active plan is a deviation and still prompts', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue(readOnlyCheck as any);
+      mockInsertReturning({ id: 'exec-ro-dev' });
+      mockGetUserPushTokens.mockResolvedValue([]);
+      vi.mocked(waitForApproval).mockResolvedValue(false);
+      const session = makeActiveSession({
+        approvalMode: 'action_plan',
+        activePlanId: 'plan-1',
+        approvedPlanSteps: new Map([
+          [0, { toolName: 'take_screenshot', input: { deviceId: 'd-1' } }],
+        ]),
+      });
+
+      const result = await createSessionPreToolUse(session)('execute_command', {
+        deviceId: 'd-1',
+        commandType: 'list_processes',
+      });
+
+      expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+      expect(waitForApproval).toHaveBeenCalled();
+      expect(session.currentPlanStepIndex).toBe(0);
+    });
+
+    it('mutating Tier 2 (no readOnly flag) still takes the per_step approval bridge', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 2,
+        requiresApproval: false,
+        description: 'Take screenshot',
+      } as any);
+      mockInsertReturning({ id: 'exec-ro-2' });
+      mockGetUserPushTokens.mockResolvedValue([]);
+      vi.mocked(waitForApproval).mockResolvedValue(false);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      const result = await createSessionPreToolUse(session)('take_screenshot', {});
+
+      expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+      expect(waitForApproval).toHaveBeenCalled();
+    });
+
+    it('audits read_only_auto executions as approved:false with the concrete method', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue(readOnlyCheck as any);
+      mockInsertValues();
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+
+      const pre = await createSessionPreToolUse(session)('execute_command', { commandType: 'list_processes' });
+      expect(pre).toEqual({ allowed: true });
+      await createSessionPostToolUse(session)(
+        'execute_command',
+        { commandType: 'list_processes' },
+        JSON.stringify({ status: 'completed' }),
+        false,
+        3,
+      );
+
+      const auditCall = mockWriteAuditEvent.mock.calls.find(
+        (c) => (c[1] as any)?.action === 'ai.tool.execute_command',
+      );
+      expect(auditCall).toBeDefined();
+      expect((auditCall![1] as any).details).toMatchObject({
+        approved: false,
+        approvalMethod: 'read_only_auto',
+      });
+    });
+
+    it('audits a human per_step Tier-2 approval as approved:true / per_step_user', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 2,
+        requiresApproval: false,
+        description: 'Take screenshot',
+      } as any);
+      mockInsertReturning({ id: 'exec-ro-3' });
+      mockGetUserPushTokens.mockResolvedValue([]);
+      vi.mocked(waitForApproval).mockResolvedValue(true);
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+
+      const pre = await createSessionPreToolUse(session)('take_screenshot', {});
+      expect(pre).toEqual({ allowed: true });
+      await createSessionPostToolUse(session)(
+        'take_screenshot',
+        {},
+        JSON.stringify({ status: 'completed' }),
+        false,
+        3,
+      );
+
+      const auditCall = mockWriteAuditEvent.mock.calls.find(
+        (c) => (c[1] as any)?.action === 'ai.tool.take_screenshot',
+      );
+      expect(auditCall).toBeDefined();
+      expect((auditCall![1] as any).details).toMatchObject({
+        approved: true,
+        approvalMethod: 'per_step_user',
+      });
+    });
+  });
+
   describe('Tier 3: durable action-intents backing (spec §6.1)', () => {
     beforeEach(() => {
       mockCreateActionIntent.mockReset();
@@ -796,6 +978,45 @@ describe('createSessionPreToolUse', () => {
         error: 'Approval still pending; this action will complete once approved.',
       });
       // The intent is left exactly as-is: no release CAS attempted.
+      expect(mockTransitionIntent).not.toHaveBeenCalled();
+    });
+
+    // #3090: waitForIntentDecision can still read `pending_approval` from a
+    // stale DB row after the intent's own `expiresAt` has already passed —
+    // jobs/intentExpiryReaper.ts flips the row to `expired` on a 30s sweep,
+    // and the chat wait's own local timeout races that sweep by design. The
+    // tool result must say "expired", never "still pending", once wall-clock
+    // time is past the intent's deadline — the old message was false on both
+    // counts (not pending, and never completing on a later approval).
+    it('reports the approval as expired — not "still pending" — once the intent deadline has passed', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-5-expired' });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({
+          id: 'intent-5-expired',
+          approvalRequestIds: ['appr-5-expired'],
+          // Deadline already in the past — the sweep just hasn't caught up yet.
+          expiresAt: new Date(Date.now() - 1_000),
+        }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('pending_approval');
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      const result = await createSessionPreToolUse(session)('execute_command', {});
+
+      expect(result).toEqual({
+        allowed: false,
+        error:
+          'Approval request expired before a decision was made; the action was not executed. Re-issue the tool call if it is still needed.',
+      });
+      // Same durable-no-mutation contract as the still-pending case: giving
+      // up here must not touch the intent — an approver deciding it late (or
+      // the reaper's own sweep) is what actually resolves the row.
       expect(mockTransitionIntent).not.toHaveBeenCalled();
     });
 
@@ -1474,6 +1695,31 @@ describe('createSessionPostToolUse', () => {
     const setCall = set.mock.calls.find((c) => c[0] && 'status' in c[0]);
     expect(setCall).toBeDefined();
     expect((setCall![0] as any).delegantToolCallId).toBe('tc-456');
+  });
+
+  it('attributes the tool-use audit event to the session org, not the (possibly null) login auth.orgId — #3087 regression guard', async () => {
+    // Partner-scope logins carry auth.orgId === null. Before #3087 the audit
+    // write used auth.orgId directly, which left device-bound tool executions
+    // by partner techs with no org attribution on the audit trail.
+    const session = makeActiveSession({
+      orgId: 'session-org',
+      auth: makeAuth({ orgId: null, scope: 'partner' }),
+      auditSnapshot: { requestId: 'req-1' } as any,
+    });
+    const callback = createSessionPostToolUse(session);
+
+    await callback('query_devices', { marker: 'x' }, JSON.stringify({ status: 'completed' }), false, 5);
+
+    // requestLikeFromSnapshot is mocked as a bare vi.fn() in this file (returns
+    // undefined) — assert it directly rather than expect.anything(), which
+    // rejects undefined.
+    expect(mockWriteAuditEvent).toHaveBeenCalledWith(
+      undefined,
+      expect.objectContaining({
+        orgId: 'session-org',
+        action: 'ai.tool.query_devices',
+      }),
+    );
   });
 });
 

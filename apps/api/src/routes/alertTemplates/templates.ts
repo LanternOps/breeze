@@ -9,6 +9,7 @@ import { listTemplatesSchema, createTemplateSchema, updateTemplateSchema } from 
 import { parseBoolean } from './helpers';
 import { getPagination } from '../../utils/pagination';
 import { PERMISSIONS } from '../../services/permissions';
+import { retiredConditionTypeError } from '../../services/alertConditions';
 
 export const templateRoutes = new Hono();
 
@@ -175,6 +176,15 @@ templateRoutes.post(
       const auth = c.get('auth');
       const data = c.req.valid('json');
 
+      // #2948 — template conditions are the evaluator's fallback when a rule
+      // carries no override, so a retired type is just as dead here. The
+      // editor nests its triggers under `conditions.triggers`, which the walk
+      // in retiredConditionTypeError descends into.
+      const createConditionTypeError = retiredConditionTypeError(data.conditions);
+      if (createConditionTypeError) {
+        return c.json({ error: createConditionTypeError }, 400);
+      }
+
       // Resolve org/partner axes from scope + the requested availability,
       // mirroring Scripts (#1357). partner_id is denormalized onto org rows for
       // RLS consistency; a partner-wide template has org_id NULL.
@@ -307,6 +317,11 @@ templateRoutes.patch(
       const writable = canWriteTemplate(auth, existing);
       if (!writable.ok) {
         return c.json({ error: writable.error }, writable.status);
+      }
+
+      const updateConditionTypeError = retiredConditionTypeError(updates.conditions);
+      if (updateConditionTypeError) {
+        return c.json({ error: updateConditionTypeError }, 400);
       }
 
       if (Object.keys(updates).length === 0) {

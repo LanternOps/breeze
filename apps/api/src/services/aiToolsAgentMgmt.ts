@@ -140,7 +140,10 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
         }
 
         // Find devices whose agent version differs from the effective target.
-        const conditions: SQL[] = [ne(devices.agentVersion, effectiveTarget)];
+        // Ephemeral Quick Support agents are always on a transient version and
+        // sit in an org the tech can read, so they would inflate this rollout
+        // rollup forever — exclude them.
+        const conditions: SQL[] = [ne(devices.agentVersion, effectiveTarget), eq(devices.isEphemeral, false)];
         const orgCond = auth.orgCondition(devices.orgId);
         if (orgCond) conditions.push(orgCond);
 

@@ -125,6 +125,9 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   { pattern: /^\/admin(\/.*)?$/, kind: 'platform' },
   { pattern: /^\/(login|register|register-partner|forgot-password|reset-password|accept-invite|setup|auth|404|500)(\/.*)?$/, kind: 'auth' },
   { pattern: /^\/oauth(\/.*)?$/, kind: 'auth' },
+  // Public Quick Support landing page. The one-time code in the URL is the only
+  // credential — an end user reaching it has no Breeze account at all.
+  { pattern: /^\/quick$/, kind: 'auth' },
 ];
 
 function normalize(pathname: string): string {

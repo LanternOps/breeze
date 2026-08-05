@@ -89,12 +89,21 @@ export function decideRebootCommand(params: {
 
 // ── DB-backed helpers ────────────────────────────────────────────────────────
 
+/**
+ * Quick Support exclusion: ephemeral devices (`devices.isEphemeral`) live in the
+ * hidden per-partner 'quick_support' org and are a stranger's personal machine
+ * borrowed for one ~20-minute session. That org stays inside technicians'
+ * accessibleOrgIds for RLS reasons, so this fleet-wide sweep is NOT filtered for
+ * us — without the predicate below this worker would reboot someone's home PC
+ * mid-session.
+ */
 export async function getRebootCandidates(): Promise<RebootCandidate[]> {
   const rows = await db
     .select({ id: devices.id, orgId: devices.orgId, osType: devices.osType })
     .from(devices)
     .where(
       and(
+        eq(devices.isEphemeral, false),
         eq(devices.pendingReboot, true),
         eq(devices.status, 'online'),
         inArray(devices.osType, ['windows', 'linux']),

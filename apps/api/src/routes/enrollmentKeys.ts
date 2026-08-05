@@ -2,11 +2,12 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { zValidator } from '../lib/validation';
 import { z } from "zod";
-import { and, eq, sql, desc, inArray, lt, isNull, or, asc } from "drizzle-orm";
+import { and, eq, ne, sql, desc, inArray, lt, isNull, or, asc } from "drizzle-orm";
 import { customAlphabet } from "nanoid";
 import { db, withSystemDbAccessContext } from "../db";
 import { enrollmentKeys, organizations } from "../db/schema";
 import { sites } from "../db/schema/orgs";
+import { installerBootstrapTokens } from "../db/schema/installerBootstrapTokens";
 import {
   authMiddleware,
   requireMfa,
@@ -42,6 +43,7 @@ import {
   BootstrapTokenIssuanceError,
 } from "../services/installerBootstrapTokenIssuance";
 import { assertTtlWithinCap, clampTtlToCap } from "../services/enrollmentDefaults";
+import { hasNoLiveUnexhaustedBootstrapToken } from "../services/enrollmentKeyPurgeGuards";
 import { captureException } from "../services/sentry";
 
 // ============================================================
@@ -136,6 +138,32 @@ function parentKeyTooCloseToExpiry(expiresAt: Date | null): boolean {
   if (!expiresAt) return false;
   const remainingMs = expiresAt.getTime() - Date.now();
   return remainingMs < INSTALLER_PARENT_MIN_REMAINING_SECONDS * 1000;
+}
+
+/**
+ * Bootstrap-token TTL derived from an installer link's remaining lifetime
+ * (#3038). A Windows MSI downloaded from a share link embeds a bootstrap
+ * token, and that token — not the link — is what the eventual install
+ * redeems. Minting it with the 24h base while the link the admin configured
+ * lives for 30 days silently discards the admin's expiry choice: installs
+ * from a day-1 download die after hour 24 with an unexplained 404 (the same
+ * silent-discard trap as #2775, resurfaced on the download path).
+ *
+ * So: the token inherits the link's remaining lifetime at download time —
+ * never MORE than the link has left (floored to minutes, minimum 1 so the
+ * `expires_at > created_at` CHECK on installer_bootstrap_tokens always
+ * holds), and clamped to the partner's `maxEnrollmentLinkTtlMinutes` cap
+ * inside issueBootstrapTokenForKey. A link with no expiry returns undefined
+ * → the conservative 24h base, NOT an unbounded token.
+ */
+function installerLinkRemainingTtlMinutes(
+  linkExpiresAt: Date | null,
+): number | undefined {
+  if (!linkExpiresAt) return undefined;
+  const remainingMinutes = Math.floor(
+    (linkExpiresAt.getTime() - Date.now()) / 60_000,
+  );
+  return Math.max(1, remainingMinutes);
 }
 
 function getPagination(query: { page?: string; limit?: string }) {
@@ -406,7 +434,9 @@ export async function mintChildEnrollmentKey(
     const [org] = await db
       .select({ id: organizations.id })
       .from(organizations)
-      .where(eq(organizations.partnerId, input.partnerId))
+      // The hidden 'quick_support' org may be the partner's oldest org — a child
+      // enrollment key must never default into it.
+      .where(and(eq(organizations.partnerId, input.partnerId), ne(organizations.type, 'quick_support')))
       .orderBy(asc(organizations.createdAt))
       .limit(1);
     if (!org) {
@@ -542,6 +572,205 @@ function sanitizeEnrollmentKey(
   return safeRecord;
 }
 
+/**
+ * Installer device capacity minted from a key, aggregated across its
+ * `installer_bootstrap_tokens` rows.
+ *
+ * Why this exists (#2992): on the modern download paths — Windows, and macOS
+ * in its default app-bundle mode — the installer routes create NO child
+ * enrollment key. They issue a bootstrap token whose `max_usage` IS the device
+ * count the operator asked for, and mint a single-use child key lazily, one per
+ * device, at redemption. So the enrollment_keys row the Enrollment Keys page
+ * renders knows nothing about the installer, and `usage_count / max_usage`
+ * showed "0 / 1" for an installer built for X devices.
+ *
+ * Read-side by design. The obvious alternative — writing the device count into
+ * the parent's `max_usage` — is wrong: `max_usage` is an ENFORCED enrollment
+ * budget (`/agents/enroll` matches on `usage_count < max_usage`, and the
+ * short-link and MCP-invite paths atomically claim `usage_count` against it),
+ * so it would widen a live credential to fix a display string.
+ *
+ * Counts DEVICE SLOTS, not installers: a key that produced two 5-device
+ * downloads reports max 10, not 2.
+ *
+ * NOT reported for every key — see `reportsInstallerCapacity`, which is the
+ * gate both read routes run before asking for this at all.
+ */
+export interface InstallerTokenUsage {
+  /** Σ consumed_count — devices that have actually redeemed an installer. */
+  consumed: number;
+  /** Σ max_usage — total device slots those installers were minted for. */
+  max: number;
+  /**
+   * Σ consumed_count over UNEXPIRED tokens only (`expires_at > now()`).
+   * Additive (#3039) — `consumed`/`max` keep their all-tokens semantics so
+   * existing consumers are untouched.
+   */
+  liveConsumed: number;
+  /**
+   * Σ max_usage over UNEXPIRED tokens only. Together with `liveConsumed` this
+   * carries token liveness without a second query:
+   *
+   *   - `liveMax === 0`               → every installer from this key is dead
+   *     (a "0 / 7" total is seven slots nothing can ever redeem again);
+   *   - `liveConsumed < liveMax`      → at least one live, unexhausted token —
+   *     the EXACT predicate `services/enrollmentKeyPurgeGuards.ts` uses to
+   *     spare a key from the purge (per-token `consumed_count` never exceeds
+   *     `max_usage`, so the sum comparison and the per-row EXISTS agree);
+   *   - `liveConsumed >= liveMax > 0` → unexpired installers exist but every
+   *     slot is claimed.
+   *
+   * The UI derives the row's effective status from these instead of the
+   * transient parent key's own expiry (an Add-Device parent lives 60 minutes;
+   * the installer minted from it can live a year).
+   */
+  liveMax: number;
+}
+
+/**
+ * Whether a key's installer figure is a DEVICE-SLOT CAPACITY at all, and so
+ * may be surfaced as `installerTokens` (#2992 review round 2).
+ *
+ * Two flows parent `installer_bootstrap_tokens`, and they mean different
+ * things:
+ *
+ *   (a) Add Device / guided setup — mints ONE token off a fresh parent key
+ *       whose `max_usage` IS the device count the operator picked. Σ max_usage
+ *       is a real budget; this is the case the whole feature exists for.
+ *   (b) Short-link / installer-link — POST /:id/installer-link creates a CHILD
+ *       key carrying the device count in its OWN `max_usage` plus a
+ *       `short_code`, and then EVERY public download (`/s/:code`, and the
+ *       handle-based `public-download` route that shares serveInstaller) mints
+ *       a hardcoded `maxUsage: 1` token against that child. Σ max_usage there
+ *       is "downloads so far", not capacity: a 7-device link clicked 3 times
+ *       renders `3 / 7` from the key row and `Installer devices 0 / 3`
+ *       underneath it — a second, smaller-looking N/M that grows on every
+ *       click and never reaches 7. Worse, the `3` in each line means something
+ *       different (claims vs downloads).
+ *
+ * So: suppress (b). A `short_code` is the discriminator because it is written
+ * ONLY by the three child-minting paths — POST /:id/installer-link, the legacy
+ * macOS installer download, and mintChildEnrollmentKey (MCP invites) — and
+ * never by POST /enrollment-keys or by the Add-Device parent. Nothing is lost
+ * on the short-link row: `usage_count` is atomically claimed against the child
+ * on that same `/s/:code` path, so the key's own first line already tells the
+ * true story and the installer line was pure redundancy.
+ *
+ * Suppressed API-side, not in the UI, deliberately: the wire field should only
+ * ever be populated when it genuinely denotes device-slot capacity, so a second
+ * consumer (portal, AI tool, export) can't rediscover the same confusion. Both
+ * read routes gate on this helper for the same reason — a UI-only fix would
+ * have to be re-derived per consumer, and the list and detail routes would be
+ * free to disagree.
+ *
+ * KNOWN EDGE CASE, accepted: the authenticated `/:id/installer/:platform` and
+ * `/:id/bootstrap-token` routes take ANY key id the caller can reach, including
+ * an installer-link child (it's a visible row on the Enrollment Keys page). An
+ * operator who builds an installer FROM a short-link child therefore gets a
+ * `max_usage > 1` token under a short_code-bearing key, and this suppresses a
+ * figure that was real. Not worth contorting the design for: it needs a
+ * deliberate second download off a child row, the alternative (SUM over a mix
+ * of one N-device token and K download tokens) is a number with no meaning at
+ * all, and an absent line beats a confidently wrong denominator.
+ */
+export function reportsInstallerCapacity(key: { shortCode?: string | null }): boolean {
+  return !key.shortCode;
+}
+
+/**
+ * Batched lookup of installer capacity for the keys on one list page.
+ *
+ * Callers MUST pre-filter with `reportsInstallerCapacity` — this function
+ * aggregates whatever ids it is handed and cannot tell a capacity token from a
+ * per-download one.
+ *
+ * Deliberately a SECOND query rather than a leftJoin onto the list select:
+ * `installer_bootstrap_tokens` is 1:N per parent key (nothing constrains it to
+ * one, and every download from the same key mints another), so joining it would
+ * fan the page out into duplicate key rows and corrupt the pagination the caller
+ * was handed. Bounded by page size — at most `limit` (<= 100) ids, served by
+ * idx_installer_bootstrap_tokens_parent.
+ *
+ * Aggregation rule for a key with SEVERAL tokens: SUM across all of them,
+ * including expired ones. Summing (rather than "most recent") means a key that
+ * produced three installers reports the whole picture instead of hiding the
+ * first two; including expired tokens keeps the number STABLE — a live "3 / 7"
+ * would otherwise silently flip back to the parent's own "0 / 1" the moment the
+ * token aged out, even though those three devices really did enroll.
+ *
+ * The totals report slots USED of slots MINTED and make no redeemability
+ * claim; the live* pair (#3039) carries that claim separately, as FILTERed
+ * sums over unexpired tokens in the same grouped query. Both are needed: a
+ * bootstrap token gets a fresh lifetime independent of its parent (see
+ * installerBootstrapTokenIssuance), and the Add-Device parent is a 60-minute
+ * container, so an installer routinely outlives the key it was minted from —
+ * without the live pair a fully-expired installer's "0 / 7" reads as seven
+ * usable slots, and the row badge (parent expiry) contradicts the capacity
+ * line.
+ *
+ * RLS: `installer_bootstrap_tokens` is a shape-1 (direct org_id) table with
+ * enabled + forced policies (`2026-04-19-a-installer-bootstrap-tokens.sql`), so
+ * this SELECT is org-filtered by Postgres in the request context on top of the
+ * app-layer `inArray` on ids the caller already proved access to.
+ *
+ * Never throws. This is cosmetic enrichment on a read that worked before it
+ * existed, so a failed aggregate degrades to "no installer info" rather than
+ * blanking the operator's whole Enrollment Keys page.
+ *
+ * The nested `db.transaction` is load-bearing, not decoration — a bare
+ * try/catch here does NOT work. Request handlers run inside
+ * withDbAccessContext's postgres.js `sql.begin`, whose scope attaches
+ * `q.catch(e => uncaughtError ||= e)` to every query and re-throws the
+ * original error at COMMIT even when the callback resolved. Swallowing the
+ * error would still 500 the page, just without the route's own context (#2189;
+ * see dbSavepointErrorIsolation.integration.test.ts). A nested transaction
+ * becomes `sql.savepoint`, which gets its own scope and rolls back to the
+ * savepoint — leaving the outer transaction healthy and its uncaughtError
+ * unset. The query MUST be issued on `tx`: the ambient `db` proxy resolves via
+ * AsyncLocalStorage to the OUTER transaction and would reintroduce the clobber.
+ */
+export async function fetchInstallerTokenUsage(
+  keyIds: string[],
+  c?: Context,
+): Promise<Map<string, InstallerTokenUsage>> {
+  const usage = new Map<string, InstallerTokenUsage>();
+  if (keyIds.length === 0) return usage;
+
+  try {
+    const rows = await db.transaction((tx) =>
+      tx
+        .select({
+          parentEnrollmentKeyId: installerBootstrapTokens.parentEnrollmentKeyId,
+          consumed: sql<number>`coalesce(sum(${installerBootstrapTokens.consumedCount}), 0)`,
+          max: sql<number>`coalesce(sum(${installerBootstrapTokens.maxUsage}), 0)`,
+          // Liveness cut (#3039): same sums restricted to unexpired tokens.
+          // `expires_at` is NOT NULL on this table, so `> now()` is the whole
+          // predicate — see InstallerTokenUsage for how the pair encodes the
+          // purge-guard's live-token condition.
+          liveConsumed: sql<number>`coalesce(sum(${installerBootstrapTokens.consumedCount}) filter (where ${installerBootstrapTokens.expiresAt} > now()), 0)`,
+          liveMax: sql<number>`coalesce(sum(${installerBootstrapTokens.maxUsage}) filter (where ${installerBootstrapTokens.expiresAt} > now()), 0)`,
+        })
+        .from(installerBootstrapTokens)
+        .where(inArray(installerBootstrapTokens.parentEnrollmentKeyId, keyIds))
+        .groupBy(installerBootstrapTokens.parentEnrollmentKeyId),
+    );
+
+    for (const row of rows) {
+      usage.set(row.parentEnrollmentKeyId, {
+        consumed: Number(row.consumed),
+        max: Number(row.max),
+        liveConsumed: Number(row.liveConsumed),
+        liveMax: Number(row.liveMax),
+      });
+    }
+  } catch (err) {
+    console.error("[enrollment-keys] installer usage aggregate failed:", err);
+    captureException(err, c);
+    return new Map();
+  }
+  return usage;
+}
+
 const idParamSchema = z.object({ id: z.string().guid() });
 
 // ============================================
@@ -624,8 +853,37 @@ enrollmentKeyRoutes.get(
       .limit(limit)
       .offset(offset);
 
+    // Installer capacity for this page only (#2992) — see
+    // fetchInstallerTokenUsage for why this is a second keyed query and not a
+    // join. `null` for a key that never minted an installer, so the UI can fall
+    // back to the key's own counters (correct for CLI / plain keys, where
+    // usage_count is what actually gets claimed).
+    //
+    // Short-link children are gated TWICE against reportsInstallerCapacity,
+    // and both gates earn their place:
+    //
+    //   - on the ID LIST, so a page of nothing but short-link rows never issues
+    //     the query at all (it hits the keyIds.length === 0 early-return);
+    //   - on the READ below, because the id list only narrows a WHERE clause.
+    //     Suppression that lives solely in the predicate is suppression the
+    //     response layer is trusting the database to have performed — one
+    //     `inArray` typo, or any future caller that widens the id set, and the
+    //     `.get()` silently reattaches the figure. The response must not be
+    //     able to state something the gate forbids, whatever the query did.
+    const installerUsage = await fetchInstallerTokenUsage(
+      keyList
+        .filter((keyRecord) => reportsInstallerCapacity(keyRecord))
+        .map((keyRecord) => keyRecord.id),
+      c,
+    );
+
     return c.json({
-      data: keyList.map((keyRecord) => sanitizeEnrollmentKey(keyRecord)),
+      data: keyList.map((keyRecord) => ({
+        ...sanitizeEnrollmentKey(keyRecord),
+        installerTokens: reportsInstallerCapacity(keyRecord)
+          ? (installerUsage.get(keyRecord.id) ?? null)
+          : null,
+      })),
       pagination: { page, limit, total },
     });
   },
@@ -768,9 +1026,24 @@ enrollmentKeyRoutes.post(
 // POST /enrollment-keys/purge-expired - Bulk hard-delete all expired
 // enrollment keys visible to the caller (org/partner/system scoped, same as
 // the GET / list route). Keys with expiresAt IS NULL are never matched by
-// the `lt` condition below and are therefore never deleted. Hard delete is
-// safe here: installer_bootstrap_tokens and deployment_invites both carry
-// ON DELETE CASCADE against enrollment_keys.
+// the `lt` condition below and are therefore never deleted.
+//
+// Hard delete is NOT unconditionally safe (#2832): installer_bootstrap_tokens
+// and deployment_invites both carry ON DELETE CASCADE against
+// enrollment_keys, and for bootstrap tokens that cascade is exactly the
+// problem. The Add Device modal's parent key is a transient 60-minute
+// container, while the bootstrap token minted from it keeps its own
+// independent TTL of up to a year — so a key becomes purge-eligible here one
+// hour after creation while its installer link is still live for another 30
+// days. This route has no grace period at all (unlike the nightly sweep's
+// 7 days), which makes it the FASTEST path to that data loss: one click on
+// the web UI's "Delete expired" button. The `hasNoLiveUnexhaustedBootstrapToken()`
+// condition below is therefore load-bearing, and is shared verbatim with
+// jobs/enrollmentKeyCleanup.ts via services/enrollmentKeyPurgeGuards.ts.
+//
+// deployment_invites needs no such exemption — it has no independent expiry,
+// so an invite is redeemable exactly while its enrollment key is (#2821,
+// pinned by cases (e)-(h) of jobs/enrollmentKeyCleanup.integration.test.ts).
 //
 // Registered BEFORE the /:id-parameterized routes (GET /:id, POST
 // /:id/rotate, DELETE /:id, etc.) so "purge-expired" is never captured as an
@@ -810,6 +1083,14 @@ enrollmentKeyRoutes.post(
     // never-expiring keys are never touched.
     conditions.push(
       lt(enrollmentKeys.expiresAt, new Date()) as ReturnType<typeof eq>,
+    );
+
+    // #2832: exempt any key still backing a live, unexhausted installer
+    // bootstrap token — see the route's header comment above and the shared
+    // guard's docblock. Without this, "Delete expired" cascades away
+    // 30-day/1-year installer links whose 60-minute parent key aged out.
+    conditions.push(
+      hasNoLiveUnexhaustedBootstrapToken() as ReturnType<typeof eq>,
     );
 
     const deletedRows = await db
@@ -865,7 +1146,24 @@ enrollmentKeyRoutes.get(
       return c.json({ error: "Access denied" }, 403);
     }
 
-    return c.json(sanitizeEnrollmentKey(enrollmentKey));
+    // Same shape as the list route so a caller doesn't have to special-case
+    // which endpoint it read the key from (#2992) — including the short-link
+    // suppression, gated on both the id list and the read for the same reasons
+    // spelled out there. Passing [] rather than branching around the call keeps
+    // the two routes on one code path: the empty-ids early-return does the
+    // skipping, exactly as it does for an empty page.
+    const reportsCapacity = reportsInstallerCapacity(enrollmentKey);
+    const installerUsage = await fetchInstallerTokenUsage(
+      reportsCapacity ? [enrollmentKey.id] : [],
+      c,
+    );
+
+    return c.json({
+      ...sanitizeEnrollmentKey(enrollmentKey),
+      installerTokens: reportsCapacity
+        ? (installerUsage.get(enrollmentKey.id) ?? null)
+        : null,
+    });
   },
 );
 
@@ -1867,6 +2165,12 @@ export async function checkInstallerSignSpend(
 // per-(short-code OR enrollment-key id) signing budget (i.e. the /s/:code
 // path debited against the short code before the atomic claim). When false
 // (public-download path), we debit here using `keyRow.id` as the bucket key.
+// `linkExpiresAt` — the expiry of the installer LINK the requester followed,
+// which bounds the Windows bootstrap token's lifetime (#3038). Defaults to
+// `keyRow.expiresAt` because on the public-download path `keyRow` IS the
+// installer-link child key; the /s/:code path must pass the short-link row's
+// expiry explicitly, since its `keyRow` is a freshly-minted download key
+// whose 24h TTL says nothing about the link the admin configured.
 async function serveInstaller(
   c: Context,
   keyRow: typeof enrollmentKeys.$inferSelect,
@@ -1874,6 +2178,7 @@ async function serveInstaller(
   rawToken: string,
   cleanupOnFailure = false,
   signSpendBucketChecked = false,
+  linkExpiresAt: Date | null = keyRow.expiresAt,
 ): Promise<Response> {
   // Use getTrustedClientIp so spoofed `X-Forwarded-For` from untrusted
   // clients does not let an attacker open unlimited rate-limit buckets.
@@ -1980,12 +2285,14 @@ async function serveInstaller(
         // insert with `invalid input syntax for type uuid: ""` (500 on /s/:code).
         createdByUserId: keyRow.createdBy ?? null,
         maxUsage: 1,
-        // Short-link downloads carry no per-request picker (the link was
-        // generated once, by an admin who already chose a TTL for the CHILD
-        // key at /installer-link time). There is no ttlMinutes in scope here
-        // to forward, so the bootstrap token deliberately takes the 24h base
-        // rather than inheriting a stale selection. Deliberate — not an
-        // oversight (#2775).
+        // The token inherits the installer link's remaining lifetime (#3038).
+        // This path has no per-request TTL picker — the admin already chose
+        // the expiry when the link was generated, and the token minted into
+        // the downloaded MSI must honor that choice, not silently fall back
+        // to the 24h base (which killed every install after hour 24 of a
+        // 30-day link). undefined (no link expiry) keeps the 24h base;
+        // issueBootstrapTokenForKey clamps to the partner cap either way.
+        ttlMinutes: installerLinkRemainingTtlMinutes(linkExpiresAt),
         installerPlatform: "windows",
       });
     } catch (err) {
@@ -2271,6 +2578,11 @@ publicShortLinkRoutes.get("/:code", async (c) => {
       rawToken,
       true,
       true, // signSpendBucketChecked — debited against short code above
+      // The SHORT-LINK row's expiry, not downloadKey's: the download key is a
+      // fresh 24h transport container, while `row` is the link the admin
+      // configured — its remaining lifetime is what the Windows bootstrap
+      // token must inherit (#3038).
+      row.expiresAt,
     );
   });
 });

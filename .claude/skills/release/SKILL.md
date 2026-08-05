@@ -66,7 +66,17 @@ Before proceeding, verify the new release has the **same asset families** as the
 
 ## Step 1 — Source the content (PRs + git only)
 
-Release content comes from **merged PRs and git history only** — never blog posts, design docs, or product docs (those describe *planned*, not *shipped*, work).
+**Read `docs/release-notes/next-release-draft.md` FIRST.** It is the running
+scratch list where operator-visible details get written down at the moment
+they're introduced — new env vars, new log lines, new metrics, behaviour changes
+— rather than being reconstructed from a commit subject weeks later. Fold each
+entry into the body below (most of it belongs in Self-Hosting / Upgrade Notes),
+then **clear the file in the same PR that publishes the release**, so a stale
+entry can't be shipped twice. It is a supplement to the git history, not a
+replacement: still do the `$PREV..$NEW` sweep, because anything nobody thought to
+write down only exists there.
+
+Release content otherwise comes from **merged PRs and git history only** — never blog posts, design docs, or product docs (those describe *planned*, not *shipped*, work).
 
 ```bash
 git -C ~/breeze log --oneline $PREV..$NEW
@@ -309,6 +319,7 @@ Rolling the fleet is a user-facing change — get Todd's go-ahead before promoti
 
 ## Quick checklist
 
+- [ ] `docs/release-notes/next-release-draft.md` read and folded into the body — then cleared
 - [ ] `git diff $PREV..HEAD --stat` + migrations reviewed — blast radius understood
 - [ ] Tag pushed (off main for full release / off $PREV for surgical hotfix)
 - [ ] **Build finished green + ALL artifacts present** (signed MSI, notarized macOS, manifest+sigs, checksums) — asset count matches prior release; do not publish/roll out before this

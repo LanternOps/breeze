@@ -567,6 +567,9 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		case webrtc.PeerConnectionStateConnected:
 			logSelectedPair("connected")
 			session.startStreaming()
+			if m.OnSessionStarted != nil {
+				go m.OnSessionStarted(sessionID)
+			}
 
 		case webrtc.PeerConnectionStateDisconnected:
 			// Transient: a brief network blip enters this state. We deliberately

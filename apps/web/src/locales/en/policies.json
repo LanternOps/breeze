@@ -910,7 +910,8 @@
         "createUpdateRing": "Create update ring",
         "text2xl": "2xl",
         "saveChanges": "Save Changes",
-        "createRing": "Create Ring"
+        "createRing": "Create Ring",
+        "thirdPartyRingHint": "Auto-approval rules for third-party updates are configured on the linked Update Ring."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Link Peripheral Policy",

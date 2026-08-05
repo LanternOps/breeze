@@ -16,6 +16,7 @@ import reducer, {
   fetchOne,
   hydrateFromCache,
   markExpired,
+  pruneExpired,
   refreshPending,
   reportSuspicious,
   setFocus,
@@ -351,5 +352,139 @@ describe('approvalsSlice — async thunk extraReducers', () => {
     });
     expect(next.decisionInFlight['a']).toBeUndefined();
     expect(next.error).toBe('cannot revoke');
+  });
+});
+
+/**
+ * Reconciliation with decisions made OFF this phone.
+ *
+ * The app used to fetch /pending exactly once per mount and thereafter only
+ * shrink the queue when this phone decided something. Anything approved in the
+ * web UI, denied from a second device, or expired server-side stayed `pending`
+ * locally forever — the takeover screen kept demanding a decision that had
+ * already been made, and later requests stacked up behind it.
+ */
+describe('approvalsSlice — decisions made elsewhere', () => {
+  it('refreshPending.fulfilled drops a request decided in the browser and refocuses', () => {
+    let s = reducer(initial, upsert(makeApproval({ id: 'a' })));
+    s = reducer(s, upsert(makeApproval({ id: 'b' })));
+    s = reducer(s, setFocus('a'));
+
+    // 'a' was approved in the web UI, so the server stops returning it.
+    const next = reducer(s, {
+      type: refreshPending.fulfilled.type,
+      payload: [makeApproval({ id: 'b' })],
+    });
+
+    expect(next.pending.map((x) => x.id)).toEqual(['b']);
+    expect(next.focusId).toBe('b');
+  });
+
+  it('hasSynced stays false until /pending actually answers', () => {
+    // An empty queue pre-sync means "not asked yet" — the notification sweep
+    // must not read it as "nothing is awaiting a decision".
+    expect(initial.hasSynced).toBe(false);
+    const inFlight = reducer(initial, { type: refreshPending.pending.type });
+    expect(inFlight.hasSynced).toBe(false);
+    const synced = reducer(inFlight, {
+      type: refreshPending.fulfilled.type,
+      payload: [],
+    });
+    expect(synced.hasSynced).toBe(true);
+  });
+
+  it('refreshPending.fulfilled keeps focus on a request that is still pending', () => {
+    const s = reducer(initial, setFocus('b'));
+    const next = reducer(s, {
+      type: refreshPending.fulfilled.type,
+      payload: [makeApproval({ id: 'a' }), makeApproval({ id: 'b' })],
+    });
+    expect(next.focusId).toBe('b');
+  });
+
+  it('approve.rejected with ALREADY_DECIDED removes the request instead of pinning the takeover', () => {
+    let s = reducer(initial, upsert(makeApproval({ id: 'a' })));
+    s = reducer(s, upsert(makeApproval({ id: 'b' })));
+    s = reducer(s, setFocus('a'));
+    s = reducer(s, { type: approve.pending.type, meta: { arg: 'a' } });
+
+    const next = reducer(s, {
+      type: approve.rejected.type,
+      error: { message: 'ALREADY_DECIDED' },
+      meta: { arg: 'a' },
+    });
+
+    expect(next.pending.map((x) => x.id)).toEqual(['b']);
+    expect(next.focusId).toBe('b');
+    // ApprovalScreen toasts this outcome; a banner would double-report it.
+    expect(next.error).toBeNull();
+  });
+
+  it('deny.rejected with EXPIRED removes the request', () => {
+    let s = reducer(initial, upsert(makeApproval({ id: 'a' })));
+    s = reducer(s, setFocus('a'));
+    const next = reducer(s, {
+      type: deny.rejected.type,
+      error: { message: 'EXPIRED' },
+      meta: { arg: { id: 'a' } },
+    });
+    expect(next.pending).toHaveLength(0);
+    expect(next.focusId).toBeNull();
+  });
+
+  it('fetchOne.fulfilled does not re-add a request that was already decided', () => {
+    const s = reducer(initial, upsert(makeApproval({ id: 'b' })));
+    const next = reducer(s, {
+      type: fetchOne.fulfilled.type,
+      payload: makeApproval({ id: 'a', status: 'approved' }),
+    });
+    expect(next.pending.map((x) => x.id)).toEqual(['b']);
+  });
+});
+
+describe('approvalsSlice — expiry sweep', () => {
+  it('markExpired rolls focus forward off the expired request', () => {
+    let s = reducer(initial, upsert(makeApproval({ id: 'a' })));
+    s = reducer(s, upsert(makeApproval({ id: 'b' })));
+    s = reducer(s, setFocus('a'));
+    const next = reducer(s, markExpired('a'));
+    expect(next.focusId).toBe('b');
+  });
+
+  it('pruneExpired ages out queued requests, not just the focused one', () => {
+    const stale = makeApproval({
+      id: 'b',
+      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    let s = reducer(initial, upsert(makeApproval({ id: 'a' })));
+    s = reducer(s, upsert(stale));
+    s = reducer(s, setFocus('a'));
+
+    const next = reducer(s, pruneExpired(Date.now()));
+
+    expect(next.pending.find((x) => x.id === 'b')?.status).toBe('expired');
+    expect(next.pending.find((x) => x.id === 'a')?.status).toBe('pending');
+    expect(next.focusId).toBe('a');
+  });
+
+  it('pruneExpired refocuses when the sweep expires the focused request', () => {
+    const stale = makeApproval({
+      id: 'a',
+      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    let s = reducer(initial, upsert(stale));
+    s = reducer(s, upsert(makeApproval({ id: 'b' })));
+    s = reducer(s, setFocus('a'));
+
+    const next = reducer(s, pruneExpired(Date.now()));
+
+    expect(next.focusId).toBe('b');
+  });
+
+  it('pruneExpired leaves an all-fresh queue untouched', () => {
+    let s = reducer(initial, upsert(makeApproval({ id: 'a' })));
+    s = reducer(s, upsert(makeApproval({ id: 'b' })));
+    const next = reducer(s, pruneExpired(Date.now()));
+    expect(next.pending.every((x) => x.status === 'pending')).toBe(true);
   });
 });

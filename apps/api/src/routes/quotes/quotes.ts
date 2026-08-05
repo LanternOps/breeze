@@ -8,12 +8,14 @@ import {
   createQuoteSchema, cloneQuoteSchema, updateQuoteSchema, quoteLineInputSchema, catalogQuoteLineSchema,
   updateQuoteLineSchema, quoteBlockInputSchema, listQuotesQuerySchema,
   reorderBlocksSchema, reorderLinesSchema, moveQuoteLineSchema, type CloneQuoteInput,
+  createQuoteOrderSchema, updateQuoteOrderSchema, updateQuoteOrderLineSchema,
 } from '@breeze/shared';
 import {
   createQuote, cloneQuote, getQuote, listQuotes, updateQuote, deleteDraftQuote,
   addManualLine, addCatalogLine, updateLine, removeLine, addBlock, updateBlock, deleteBlock,
   reorderBlocks, reorderLines, moveLineToBlock,
 } from '../../services/quoteService';
+import { createQuoteOrder, updateQuoteOrder, updateQuoteOrderLine } from '../../services/quoteOrderService';
 import { QuoteServiceError, type QuoteActor } from '../../services/quoteTypes';
 import { db } from '../../db';
 import { quoteImages } from '../../db/schema/quotes';
@@ -28,14 +30,18 @@ import {
 } from '../../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 import { PdfMergeError } from '../../services/pdfMerge';
+import { writeRouteAudit } from '../../services/auditEvents';
 
 export const quoteCrudRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
 const readPerm = requirePermission(PERMISSIONS.QUOTES_READ.resource, PERMISSIONS.QUOTES_READ.action);
 const writePerm = requirePermission(PERMISSIONS.QUOTES_WRITE.resource, PERMISSIONS.QUOTES_WRITE.action);
+const fulfillPerm = requirePermission(PERMISSIONS.QUOTES_FULFILL.resource, PERMISSIONS.QUOTES_FULFILL.action);
 const idParam = z.object({ id: z.string().guid() });
 const lineParam = z.object({ id: z.string().guid(), lineId: z.string().guid() });
 const blockParam = z.object({ id: z.string().guid(), blockId: z.string().guid() });
+const orderParam = z.object({ id: z.string().guid(), orderId: z.string().guid() });
+const orderLineParam = z.object({ id: z.string().guid(), orderId: z.string().guid(), lineId: z.string().guid() });
 
 export function quoteActorFrom(c: { get: (k: string) => unknown }): QuoteActor {
   const auth = c.get('auth') as AuthContext;
@@ -157,6 +163,57 @@ quoteCrudRoutes.patch('/:id/lines/:lineId/move', scopes, writePerm, zValidator('
 quoteCrudRoutes.delete('/:id/lines/:lineId', scopes, writePerm, zValidator('param', lineParam), async (c) => {
   try { const p = c.req.valid('param'); await removeLine(p.id, p.lineId, quoteActorFrom(c)); return c.json({ data: { ok: true } }); }
   catch (err) { return handleServiceError(c, err); }
+});
+
+// Fulfillment (procurement order tracking) — gated on quotes:fulfill, a
+// separate permission from quotes:write so a tech that can edit a draft can't
+// necessarily record real-world purchase orders against it (and vice versa).
+quoteCrudRoutes.post('/:id/orders', scopes, fulfillPerm, zValidator('param', idParam), zValidator('json', createQuoteOrderSchema), async (c) => {
+  try {
+    const { created, ...order } = await createQuoteOrder(c.req.valid('param').id, c.req.valid('json'), quoteActorFrom(c));
+    // Only audit an actual creation — a deduped retry (same clientRequestId)
+    // did no write this call, so logging quote_order_created again would be
+    // noise attributing a second "creation" to a request that changed nothing.
+    if (created) {
+      writeRouteAudit(c, {
+        orgId: order.orgId, action: 'quote_order_created', resourceType: 'quote',
+        resourceId: order.quoteId, details: { orderId: order.id, lineCount: order.lines.length },
+      });
+    }
+    return c.json({ data: order });
+  } catch (err) { return handleServiceError(c, err); }
+});
+quoteCrudRoutes.patch('/:id/orders/:orderId', scopes, fulfillPerm, zValidator('param', orderParam), zValidator('json', updateQuoteOrderSchema), async (c) => {
+  try {
+    const p = c.req.valid('param');
+    const order = await updateQuoteOrder(p.id, p.orderId, c.req.valid('json'), quoteActorFrom(c));
+    writeRouteAudit(c, {
+      orgId: order.orgId, action: 'quote_order_updated', resourceType: 'quote',
+      resourceId: order.quoteId, details: { orderId: order.id },
+    });
+    return c.json({ data: order });
+  } catch (err) { return handleServiceError(c, err); }
+});
+quoteCrudRoutes.patch('/:id/orders/:orderId/lines/:lineId', scopes, fulfillPerm, zValidator('param', orderLineParam), zValidator('json', updateQuoteOrderLineSchema), async (c) => {
+  try {
+    const p = c.req.valid('param');
+    const body = c.req.valid('json');
+    const { changed, ...line } = await updateQuoteOrderLine(p.id, p.orderId, p.lineId, body, quoteActorFrom(c));
+    // Skip the audit on the no-op early-return path (an empty/all-undefined
+    // patch) — nothing changed, so there's nothing to attribute.
+    if (changed) {
+      writeRouteAudit(c, {
+        orgId: line.orgId, action: 'quote_order_line_updated', resourceType: 'quote',
+        resourceId: line.quoteId,
+        details: {
+          orderId: line.orderId, lineId: line.id,
+          ...(body.cancelled !== undefined ? { cancelled: body.cancelled } : {}),
+          ...(body.receivedQty !== undefined ? { receivedQty: body.receivedQty } : {}),
+        },
+      });
+    }
+    return c.json({ data: line });
+  } catch (err) { return handleServiceError(c, err); }
 });
 
 // GET /:id/pdf — render the proposal PDF (blocks in order) and stream it inline.

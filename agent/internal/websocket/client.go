@@ -138,9 +138,9 @@ type Client struct {
 	// read pump waiting for lane space. Overridable in tests; defaults to
 	// defaultOrderedEnqueueTimeout.
 	orderedEnqueueTimeout time.Duration
-	stopOnce        sync.Once
-	isRunning       bool
-	runningMu       sync.RWMutex
+	stopOnce              sync.Once
+	isRunning             bool
+	runningMu             sync.RWMutex
 
 	// OnConnected, if set, is invoked synchronously from the read pump once
 	// the server's "connected" welcome frame has been parsed — i.e. after a
@@ -258,6 +258,16 @@ func (c *Client) UpdateTLSConfig(tlsCfg *tls.Config) {
 	c.tlsConfigMu.Lock()
 	c.config.TLSConfig = tlsCfg
 	c.tlsConfigMu.Unlock()
+}
+
+// IsConnected reports whether a live WebSocket connection is currently held.
+// conn is set on a successful dial and cleared by closeCurrentConn, so this is
+// "connected right now", not "has ever connected". Used by the Quick Support
+// dead-man switch to detect a control plane that has gone away for good.
+func (c *Client) IsConnected() bool {
+	c.connMu.RLock()
+	defer c.connMu.RUnlock()
+	return c.conn != nil
 }
 
 // ForceReconnect closes the active connection so the reconnect loop re-dials.
