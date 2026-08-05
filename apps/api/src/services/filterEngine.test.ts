@@ -130,6 +130,53 @@ describe('filterEngine virtual EXISTS fields (#968)', () => {
   });
 });
 
+// #3166: the Architecture filter advertised x64/x86/arm64 while the agent stores
+// Go's runtime.GOARCH verbatim (amd64/386/arm64), so x64 and x86 matched nothing.
+// arm64 worked only by coincidence of spelling. These pin the projection, not the
+// enum list — asserting the enum values alone would have passed while the filter
+// stayed broken, which is how this shipped.
+describe('filterEngine architecture normalization (#3166)', () => {
+  const renderWithParams = (cond: FilterCondition) => {
+    const q = dialect.sqlToQuery(buildConditionSQL(cond));
+    return { sql: q.sql, params: q.params };
+  };
+
+  it('projects the stored GOARCH column into the advertised vocabulary', () => {
+    const { sql } = renderWithParams({ field: 'architecture', operator: 'equals', value: 'x64' });
+
+    // The comparison must not hit the raw column directly.
+    expect(sql).toMatch(/case lower\("devices"\."architecture"\)/i);
+    expect(sql).toMatch(/when 'amd64' then 'x64'/i);
+    expect(sql).toMatch(/when '386' then 'x86'/i);
+    expect(sql).toMatch(/when 'aarch64' then 'arm64'/i);
+  });
+
+  it('compares the caller value unchanged, so x64 is what reaches the predicate', () => {
+    const { params } = renderWithParams({ field: 'architecture', operator: 'equals', value: 'x64' });
+    expect(params).toContain('x64');
+  });
+
+  it('applies to every operator, not just equals', () => {
+    for (const operator of ['equals', 'notEquals', 'in', 'notIn'] as const) {
+      const value = operator === 'in' || operator === 'notIn' ? ['x64', 'arm64'] : 'x64';
+      const { sql } = renderWithParams({ field: 'architecture', operator, value });
+      expect.soft(sql, `operator ${operator}`).toMatch(/case lower\("devices"\."architecture"\)/i);
+    }
+  });
+
+  it('leaves an unrecognised architecture filterable by its raw name', () => {
+    // Anything not in the map falls through lower-cased rather than being
+    // swallowed, so a future arch is still reachable instead of matching nothing.
+    const { sql } = renderWithParams({ field: 'architecture', operator: 'equals', value: 'riscv64' });
+    expect(sql).toMatch(/else lower\("devices"\."architecture"\)/i);
+  });
+
+  it('still advertises the enum the projection targets', () => {
+    const def = getFieldDefinition('architecture');
+    expect(def?.enumValues).toEqual(['x64', 'x86', 'arm64']);
+  });
+});
+
 describe('filterEngine field registration (#968)', () => {
   it('registers the three boolean fields', () => {
     for (const key of ['patches.pending', 'alerts.critical', 'system.rebootRequired']) {

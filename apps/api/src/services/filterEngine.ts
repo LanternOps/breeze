@@ -183,6 +183,42 @@ function getColumnForField(field: string): { table: 'devices' | 'hardware' | 'ne
     };
   }
 
+  // #3166: the agent reports Go's `runtime.GOARCH` verbatim (`amd64`, `arm64`,
+  // `386`) and enrollment stores it untranslated, but this field advertises the
+  // friendlier `x64` / `x86` / `arm64`. A condition of `architecture equals x64`
+  // was therefore compared against a column literally containing `amd64` and
+  // matched nothing — on one live instance every device stores `amd64`, so the
+  // x64 option could never match anything at all. `arm64` worked only because
+  // Go's spelling happens to equal the enum's.
+  //
+  // Projecting the column into the advertised vocabulary (rather than mapping
+  // the value) fixes every operator at once — equals, notEquals, in, notIn,
+  // contains — instead of special-casing equality and leaving the rest broken.
+  // It also needs no migration and no change to what agents send: stored data
+  // stays raw GOARCH, which is what the agent actually knows.
+  //
+  // Historical spellings are folded in too, so a device enrolled by any agent
+  // version lands in the right bucket. Anything unrecognised passes through
+  // lower-cased rather than being swallowed, so a new architecture is still
+  // filterable by its raw name instead of silently matching nothing.
+  if (field === 'architecture') {
+    return {
+      table: 'devices',
+      column: 'architecture',
+      computed: sql`CASE lower(${devices.architecture})
+        WHEN 'amd64' THEN 'x64'
+        WHEN 'x86_64' THEN 'x64'
+        WHEN 'x64' THEN 'x64'
+        WHEN '386' THEN 'x86'
+        WHEN 'i386' THEN 'x86'
+        WHEN 'x86' THEN 'x86'
+        WHEN 'arm64' THEN 'arm64'
+        WHEN 'aarch64' THEN 'arm64'
+        ELSE lower(${devices.architecture})
+      END`
+    };
+  }
+
   // Computed fields
   if (field === 'daysSinceLastSeen') {
     return {
