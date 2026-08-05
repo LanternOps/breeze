@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   automationPolicies,
@@ -1007,8 +1007,14 @@ export async function resolvePolicyRemediationAutomationIdForOrg(
  * resolves to no orgs — i.e. zero target devices.
  */
 async function policyDeviceScopeCondition(policy: PolicyRow): Promise<SQL | null> {
+  // Ephemeral Quick Support devices live in the partner's hidden 'quick_support'
+  // org, so both the org-owned and the partner-wide fan-out below would otherwise
+  // pick them up. Policies must never target a transient support session. Folded
+  // in here so every branch of resolveTargetDevices() inherits it.
+  const notEphemeral = eq(devices.isEphemeral, false);
+
   if (policy.orgId) {
-    return eq(devices.orgId, policy.orgId);
+    return and(eq(devices.orgId, policy.orgId), notEphemeral)!;
   }
 
   if (!policy.partnerId) {
@@ -1019,13 +1025,13 @@ async function policyDeviceScopeCondition(policy: PolicyRow): Promise<SQL | null
   const orgRows = await db
     .select({ id: organizations.id })
     .from(organizations)
-    .where(eq(organizations.partnerId, policy.partnerId));
+    .where(and(eq(organizations.partnerId, policy.partnerId), ne(organizations.type, 'quick_support')));
 
   if (orgRows.length === 0) {
     return null;
   }
 
-  return inArray(devices.orgId, orgRows.map((row) => row.id));
+  return and(inArray(devices.orgId, orgRows.map((row) => row.id)), notEphemeral)!;
 }
 
 const TARGET_DEVICE_COLUMNS = {
@@ -1936,18 +1942,20 @@ async function resolveDevicesForAssignmentTarget(
         .where(eq(deviceGroupMemberships.groupId, targetId));
       return rows.map((r) => r.deviceId);
     }
+    // Every fan-out below excludes ephemeral Quick Support devices — they live in
+    // the partner's hidden 'quick_support' org and must never receive assignments.
     case 'site': {
       const rows = await db
         .select({ id: devices.id })
         .from(devices)
-        .where(eq(devices.siteId, targetId));
+        .where(and(eq(devices.siteId, targetId), eq(devices.isEphemeral, false)));
       return rows.map((r) => r.id);
     }
     case 'organization': {
       const rows = await db
         .select({ id: devices.id })
         .from(devices)
-        .where(eq(devices.orgId, targetId));
+        .where(and(eq(devices.orgId, targetId), eq(devices.isEphemeral, false)));
       return rows.map((r) => r.id);
     }
     case 'partner': {
@@ -1955,14 +1963,14 @@ async function resolveDevicesForAssignmentTarget(
       const orgRows = await db
         .select({ id: organizations.id })
         .from(organizations)
-        .where(eq(organizations.partnerId, targetId));
+        .where(and(eq(organizations.partnerId, targetId), ne(organizations.type, 'quick_support')));
       const orgIds = orgRows.map((r) => r.id);
       if (orgIds.length === 0) return [];
 
       const deviceRows = await db
         .select({ id: devices.id })
         .from(devices)
-        .where(inArray(devices.orgId, orgIds));
+        .where(and(inArray(devices.orgId, orgIds), eq(devices.isEphemeral, false)));
       return deviceRows.map((r) => r.id);
     }
     default: {

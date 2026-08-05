@@ -264,7 +264,13 @@ async function resolveAuditOrgIdForPartner(partnerId: string | null): Promise<st
     const [org] = await db
       .select({ id: organizations.id })
       .from(organizations)
-      .where(and(eq(organizations.partnerId, partnerId), isNull(organizations.deletedAt)))
+      // The hidden 'quick_support' org is a real row under the partner and could
+      // easily be the oldest — never let it become the audit fallback org.
+      .where(and(
+        eq(organizations.partnerId, partnerId),
+        ne(organizations.type, 'quick_support'),
+        isNull(organizations.deletedAt),
+      ))
       .orderBy(organizations.createdAt)
       .limit(1);
 
@@ -281,7 +287,9 @@ orgRoutes.use('*', authMiddleware);
 orgRoutes.get('/', requireScope('organization', 'partner', 'system'), requireOrgRead, async (c) => {
   const auth = c.get('auth') as AuthContext;
 
-  const conditions = [isNull(organizations.deletedAt)];
+  // The per-partner 'quick_support' org stays inside accessibleOrgIds so RLS
+  // lets a tech reach their own support session — it must never be enumerated.
+  const conditions = [isNull(organizations.deletedAt), ne(organizations.type, 'quick_support')];
 
   if (auth.scope === 'organization' && auth.orgId) {
     conditions.push(eq(organizations.id, auth.orgId));
@@ -1110,6 +1118,10 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
     });
   }
 
+  // The hidden 'quick_support' org is inside accessibleOrgIds by design (RLS),
+  // so it has to be excluded from the paginated list — one shared `conditions`
+  // covers both the count and the row query below.
+  const notQuickSupport = ne(organizations.type, 'quick_support');
   let conditions;
   if (auth.scope === 'partner') {
     const orgIds = auth.accessibleOrgIds ?? [];
@@ -1119,11 +1131,11 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
         pagination: { page, limit, total: 0 }
       });
     }
-    conditions = and(inArray(organizations.id, orgIds), isNull(organizations.deletedAt), searchCondition);
+    conditions = and(inArray(organizations.id, orgIds), notQuickSupport, isNull(organizations.deletedAt), searchCondition);
   } else {
     conditions = queryPartnerId
-      ? and(eq(organizations.partnerId, queryPartnerId), isNull(organizations.deletedAt), searchCondition)
-      : and(isNull(organizations.deletedAt), searchCondition);
+      ? and(eq(organizations.partnerId, queryPartnerId), notQuickSupport, isNull(organizations.deletedAt), searchCondition)
+      : and(notQuickSupport, isNull(organizations.deletedAt), searchCondition);
   }
 
   const countResult = await db
@@ -1733,9 +1745,20 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
   }
 
   const baseCondition = conditions ?? sql`true`;
+  // `sites` has no org type column, so exclude the hidden per-partner
+  // 'quick_support' org's default site with a correlated NOT EXISTS. That org
+  // sits inside accessibleOrgIds by design (RLS must let a tech reach their own
+  // support session), so it would otherwise surface as a real site in the
+  // picker. Written as raw SQL rather than `notInArray(sites.orgId, db.select(…))`
+  // deliberately: the builder form issues a second `db.select()` chain, which
+  // the route tests' queue-based db mock would consume as if it were a real query.
+  const notQuickSupportSite = sql`NOT EXISTS (
+    SELECT 1 FROM ${organizations} qs_org
+    WHERE qs_org.id = ${sites.orgId} AND qs_org.type = 'quick_support'
+  )`;
   const whereCondition = allowedSiteIds
-    ? and(baseCondition, inArray(sites.id, allowedSiteIds))
-    : baseCondition;
+    ? and(baseCondition, notQuickSupportSite, inArray(sites.id, allowedSiteIds))
+    : and(baseCondition, notQuickSupportSite);
 
   const countResult = await db
     .select({ count: sql<number>`count(*)` })
@@ -1764,7 +1787,7 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
     const counts = await db
       .select({ siteId: devices.siteId, count: sql<number>`count(*)` })
       .from(devices)
-      .where(inArray(devices.siteId, siteIds))
+      .where(and(inArray(devices.siteId, siteIds), eq(devices.isEphemeral, false)))
       .groupBy(devices.siteId);
     for (const row of counts) {
       deviceCountBySite.set(row.siteId, Number(row.count));

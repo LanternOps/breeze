@@ -118,6 +118,10 @@ const TARGET_GLOBS = [
   'src/components/billing/InvoiceActions.tsx',
   'src/components/billing/quotes/QuoteHeaderMeta.tsx',
   'src/components/billing/quotes/QuoteLineRows.tsx',
+  // Quick Support: the create/end mutations mint and revoke live remote-access
+  // codes, so a silent failure would leave a tech reading out a dead code or
+  // believing a session was torn down when it wasn't.
+  'src/components/remote/QuickSupportPage.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -309,7 +313,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(80);
+    expect(absoluteFiles.length).toBe(81);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

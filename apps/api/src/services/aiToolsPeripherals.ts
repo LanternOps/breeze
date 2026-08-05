@@ -17,7 +17,7 @@ import {
   peripheralPolicyTargetTypeEnum,
   type PeripheralExceptionRule
 } from '../db/schema';
-import { eq, and, desc, sql, gte, lte, inArray, SQL } from 'drizzle-orm';
+import { eq, ne, and, desc, sql, gte, lte, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { publishEvent } from './eventBus';
@@ -258,7 +258,9 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
         const rows = await db
           .select({ id: organizations.id })
           .from(organizations)
-          .where(eq(organizations.partnerId, policy.partnerId));
+          // The hidden 'quick_support' org holds only ephemeral support devices —
+          // a partner-wide peripheral policy must not fan out into it.
+          .where(and(eq(organizations.partnerId, policy.partnerId), ne(organizations.type, 'quick_support')));
         return rows.map((row) => row.id);
       };
 

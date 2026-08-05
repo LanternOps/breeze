@@ -529,13 +529,21 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
     }
   }
   if (!agentId) {
-    // Pick an online agent from the same site
+    // Pick an online agent from the same site.
+    //
+    // Quick Support exclusion: ephemeral devices (`devices.isEphemeral`) live in
+    // the hidden per-partner 'quick_support' org and are a stranger's personal
+    // machine borrowed for one ~20-minute session. That org stays inside
+    // technicians' accessibleOrgIds for RLS reasons, so a bare "any online
+    // device here" pick could conscript a home PC into network-scanning the
+    // stranger's own LAN.
     const [onlineAgent] = await db
       .select({ agentId: devices.agentId })
       .from(devices)
       .where(
         and(
           eq(devices.orgId, data.orgId),
+          eq(devices.isEphemeral, false),
           eq(devices.siteId, data.siteId),
           eq(devices.status, 'online')
         )

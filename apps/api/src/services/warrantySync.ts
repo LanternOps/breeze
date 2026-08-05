@@ -42,12 +42,22 @@ export async function syncWarrantyForDevice(deviceId: string): Promise<void> {
 
   // Get device org
   const [device] = await db
-    .select({ orgId: devices.orgId })
+    .select({ orgId: devices.orgId, isEphemeral: devices.isEphemeral })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
 
   if (!device) return;
+
+  // Quick Support exclusion: ephemeral devices live in the hidden per-partner
+  // 'quick_support' org and are a stranger's personal machine borrowed for one
+  // ~20-minute session. That org stays inside technicians' accessibleOrgIds for
+  // RLS reasons, so nothing upstream filters them. A warranty sync ships the
+  // machine's serial number to a third-party vendor API (Dell/Lenovo/Apple) —
+  // never do that for hardware the MSP does not own. The fleet sweep in
+  // getDevicesNeedingWarrantySync excludes them too; this is the entry-point
+  // guard for any other caller.
+  if (device.isEphemeral) return;
 
   const provider = getProviderForManufacturer(hw.manufacturer);
   if (!provider) {
@@ -288,6 +298,8 @@ export async function getDevicesNeedingWarrantySync(limit = 50): Promise<string[
     .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
     .where(
       and(
+        // Quick Support exclusion — see syncWarrantyForDevice above.
+        eq(devices.isEphemeral, false),
         // Has hardware with serial number
         sql`${deviceHardware.serialNumber} IS NOT NULL`,
         sql`${deviceHardware.manufacturer} IS NOT NULL`,

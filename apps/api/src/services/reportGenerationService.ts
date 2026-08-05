@@ -177,7 +177,11 @@ export async function generateDeviceInventoryReport(
   authority: ReportExecutionAuthority,
 ) {
   assertExecutableAuthority(orgId, authority);
-  const conditions: SQL[] = [eq(devices.orgId, orgId)];
+  // `isEphemeral = false` on every device predicate in this file: Quick Support
+  // devices live in the partner's hidden 'quick_support' org, which deliberately
+  // stays inside accessibleOrgIds so RLS lets a tech reach their own session.
+  // Nothing filters them out for us — reports must exclude them explicitly.
+  const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false)];
 
   const filters = config.filters as Record<string, unknown> | undefined;
   if (filters?.siteIds && Array.isArray(filters.siteIds) && filters.siteIds.length > 0) {
@@ -223,7 +227,7 @@ export async function generateSoftwareInventoryReport(
   authority: ReportExecutionAuthority,
 ) {
   assertExecutableAuthority(orgId, authority);
-  const conditions: SQL[] = [eq(devices.orgId, orgId)];
+  const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false)];
 
   const filters = config.filters as Record<string, unknown> | undefined;
   if (filters?.deviceIds && Array.isArray(filters.deviceIds) && filters.deviceIds.length > 0) {
@@ -323,7 +327,7 @@ export async function generateComplianceReport(
   authority: ReportExecutionAuthority,
 ) {
   assertExecutableAuthority(orgId, authority);
-  const conditions: SQL[] = [eq(devices.orgId, orgId)];
+  const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false)];
 
   const filters = config.filters as Record<string, unknown> | undefined;
   if (filters?.siteIds && Array.isArray(filters.siteIds) && filters.siteIds.length > 0) {
@@ -394,7 +398,7 @@ export async function generatePerformanceReport(
   authority: ReportExecutionAuthority,
 ) {
   assertExecutableAuthority(orgId, authority);
-  const deviceConditions: SQL[] = [eq(devices.orgId, orgId)];
+  const deviceConditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false)];
   if (addAllowedSiteCondition(deviceConditions, authority)) {
     return emptyRowsReport();
   }
@@ -469,7 +473,7 @@ export async function generateExecutiveSummaryReport(
     .limit(1);
 
   const dateRange = config.dateRange as Record<string, string> | undefined;
-  const deviceConditions: SQL[] = [eq(devices.orgId, orgId)];
+  const deviceConditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false)];
   const emptyDeviceScope = addAllowedSiteCondition(deviceConditions, authority);
   const deviceWhereCondition = and(...deviceConditions);
 

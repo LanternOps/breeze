@@ -13,6 +13,10 @@
     "sessions": {
       "title": "Session History",
       "description": "View past sessions"
+    },
+    "quickSupport": {
+      "title": "Quick Support",
+      "description": "One-time code for ad-hoc support"
     }
   },
   "connectDesktopButton": {
@@ -761,5 +765,60 @@
       "obtainTicket": "Failed to obtain ticket"
     },
     "sessionTitle": "Session Title"
+  },
+  "quickSupport": {
+    "title": "Quick Support",
+    "subtitle": "Generate a one-time code for ad-hoc support on a device that is not enrolled.",
+    "newSession": "New support session",
+    "form": {
+      "title": "Start a support session",
+      "attributionOrg": "Attribute to customer (optional)",
+      "attributionOrgHint": "Reporting only — this does not grant or change access to that customer's data.",
+      "attributionOrgNone": "Not attributed",
+      "attributionLabel": "Reference label (optional)",
+      "attributionLabelPlaceholder": "Who or what is this session for?",
+      "submit": "Generate code",
+      "submitting": "Generating code…"
+    },
+    "code": {
+      "heading": "Read this code to the person you are helping",
+      "shownOnce": "This code appears only once. Copy it before you leave this page — it can never be shown again.",
+      "expires": "Expires at {{time}}",
+      "instructions": "Send them the link, then have them run the downloaded client and type the code.",
+      "copyCode": "Copy code",
+      "copyLink": "Copy download link",
+      "copiedCode": "Code copied to the clipboard",
+      "copiedLink": "Download link copied to the clipboard",
+      "copyFailed": "Could not copy to the clipboard"
+    },
+    "status": {
+      "heading": "Session progress",
+      "pending": "Waiting for the user to run the client…",
+      "claimed": "Client connecting…",
+      "ready": "Ready to connect",
+      "active": "Session in progress",
+      "ended": "Session ended",
+      "expired": "Session expired"
+    },
+    "connect": {
+      "waitingForDevice": "The device is enrolling. The connect button appears as soon as it comes online."
+    },
+    "end": {
+      "button": "End session",
+      "success": "Support session ended",
+      "error": "Could not end the support session",
+      "alreadyEnded": "That support session had already ended"
+    },
+    "errors": {
+      "create": "Could not create the support session",
+      "list": "Could not load recent support sessions"
+    },
+    "list": {
+      "heading": "Recent support sessions",
+      "empty": "No support sessions yet.",
+      "columnCreated": "Started",
+      "columnEnded": "Finished",
+      "unlabeled": "Unlabelled session"
+    }
   }
 }

@@ -23,7 +23,7 @@ import {
   sqlInstances,
 } from '../db/schema';
 import { recoveryTokens } from '../db/schema/recoveryTokens';
-import { eq, and, sql, isNull, lt, inArray } from 'drizzle-orm';
+import { eq, ne, and, sql, isNull, lt, inArray } from 'drizzle-orm';
 import { resolveAllBackupAssignedDevices } from '../services/featureConfigResolver';
 import { getBullMQConnection } from '../services/redis';
 import {
@@ -164,11 +164,20 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
   const partnerIds = partnerRows
     .map((row) => row.partnerId)
     .filter((id): id is string => !!id);
+  // Quick Support exclusion: the hidden per-partner 'quick_support' org holds
+  // ephemeral devices — a stranger's personal machine borrowed for one
+  // ~20-minute session. It sits under the partner like any other org and stays
+  // inside technicians' accessibleOrgIds for RLS reasons, so this partner->org
+  // fan-out is NOT filtered for us. Backing up a stranger's home PC to the
+  // MSP's storage is a data-protection incident, not a feature.
   const partnerOrgRows = partnerIds.length > 0
     ? await db
         .select({ orgId: organizations.id })
         .from(organizations)
-        .where(inArray(organizations.partnerId, partnerIds))
+        .where(and(
+          inArray(organizations.partnerId, partnerIds),
+          ne(organizations.type, 'quick_support')
+        ))
     : [];
 
   const orgIds = new Set<string>();
