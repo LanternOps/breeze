@@ -26,7 +26,7 @@ function consumeCfAccessLoginParam(): boolean {
 
 export default function AuthOverlay() {
   const { t } = useTranslation('auth');
-  const { isAuthenticated, isLoading, tokens } = useAuthStore();
+  const { isAuthenticated, isLoading, tokens, sessionExpiredReason } = useAuthStore();
   const [isChecking, setIsChecking] = useState(true);
   const [isRecovering, setIsRecovering] = useState(false);
   const [recoverAttempted, setRecoverAttempted] = useState(false);
@@ -47,6 +47,10 @@ export default function AuthOverlay() {
   useEffect(() => {
     const safetyTimer = setTimeout(() => {
       const state = useAuthStore.getState();
+      // CONSTRAINT: same invariant as the redirect branch below — once
+      // `handleSessionExpired` owns the navigation this must stay dormant, or
+      // its soft nav races the hard redirect and drops `next`/`reason`.
+      if (state.sessionExpiredReason) return;
       if (!state.isAuthenticated || !state.tokens?.accessToken) {
         redirectToLogin();
       }
@@ -107,12 +111,20 @@ export default function AuthOverlay() {
       return () => { cancelled = true; };
     }
 
-    if (!isAuthenticated) {
+    // CONSTRAINT: this is a SECOND redirect path, and it must stay dormant once
+    // `handleSessionExpired` owns the navigation. That helper flips
+    // `isAuthenticated` to false (via logout()) synchronously before its
+    // `window.location.replace('/login?next=…&reason=…')`, which re-runs this
+    // effect; an ungated soft `navigateTo('/login')` here races the hard
+    // redirect and, when it wins, lands the user on a bare /login with no
+    // notice and no deep link. `sessionExpiredReason` is the flag that the
+    // expiry flow is in progress — never drop this guard.
+    if (!isAuthenticated && !sessionExpiredReason) {
       redirectToLogin();
     }
 
     return () => { cancelled = true; };
-  }, [isAuthenticated, isLoading, isChecking, tokens, recoverAttempted, isRecovering, cfBootstrapAttempted]);
+  }, [isAuthenticated, isLoading, isChecking, tokens, recoverAttempted, isRecovering, cfBootstrapAttempted, sessionExpiredReason]);
 
   // Authenticated with token — fade out then unmount
   const shouldHide = !isChecking && !isLoading && isAuthenticated && !!tokens?.accessToken;
@@ -123,6 +135,31 @@ export default function AuthOverlay() {
       requestAnimationFrame(() => setFadeState('fading'));
     }
   }, [shouldHide, fadeState]);
+
+  // Session expiry mask. Checked BEFORE the `fadeState === 'hidden'` early
+  // return: by the time a session expires the overlay has long since faded out
+  // and unmounted itself, and `handleSessionExpired()` has already gutted the
+  // store — without this branch the user stares at an empty sidebar and blank
+  // widgets until the browser finishes the redirect. Purely cosmetic: the
+  // navigation is `window.location.replace` inside `handleSessionExpired`, this
+  // component must never navigate on its own.
+  if (sessionExpiredReason) {
+    return (
+      <div
+        data-testid="session-expired-overlay"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-background"
+      >
+        <div className="text-center">
+          <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary" />
+          <p className="mt-4 text-sm text-muted-foreground">
+            {t('common.sessionExpiredRedirecting', {
+              defaultValue: 'Your session has expired — redirecting to sign in…',
+            })}
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (fadeState === 'hidden') {
     return null;

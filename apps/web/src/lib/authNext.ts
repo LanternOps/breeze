@@ -27,3 +27,10 @@ function rejectAndWarn(raw: string, fallback: string): string {
   console.warn('[authNext] dropping unsafe next', { raw: preview, fallback });
   return fallback;
 }
+
+/** Login URL that round-trips the current location through LoginPage's ?next= handling. */
+export function loginPathWithNext(): string {
+  if (typeof window === 'undefined') return '/login';
+  const here = window.location.pathname + window.location.search + window.location.hash;
+  return here && here !== '/' ? `/login?next=${encodeURIComponent(here)}` : '/login';
+}

@@ -30,6 +30,24 @@ function getRegistrationDisabledNotice(t: ReturnType<typeof useTranslation<'auth
   }
 }
 
+// Copy for `?reason=<code>` bounces produced by handleSessionExpired() in the
+// auth store, which appends the code when it redirects an expired session here.
+// Informational, not an error: the user did nothing wrong, they just need to
+// sign in again. Unknown codes render nothing.
+function getSessionExpiredNotice(t: ReturnType<typeof useTranslation<'auth'>>['t']): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  const reason = new URLSearchParams(window.location.search).get('reason');
+  const sessionExpiredCopy: Record<string, string> = {
+    'session-expired': t('login.notices.sessionExpired', {
+      defaultValue: 'Your session expired. Please sign in again to continue.',
+    }),
+    idle: t('login.notices.idle', {
+      defaultValue: 'You were signed out due to inactivity.',
+    }),
+  };
+  return reason ? sessionExpiredCopy[reason] : undefined;
+}
+
 // Copy for SSO callback `?error=<reason>` bounces that land back on /login.
 // `sso_link_required` (#2183): a password-holding user tried to sign in via SSO
 // and was refused auto-linking — they must connect SSO from an authenticated
@@ -106,6 +124,10 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   const [error, setError] = useState<string>();
   const registrationNotice = getRegistrationDisabledNotice(t);
   const ssoLoginNotice = getSsoLoginNotice(t);
+  // An SSO bounce carries the more specific, more actionable copy — when both
+  // params resolve to a notice, the error wins and the expiry notice is dropped
+  // rather than stacked.
+  const sessionExpiredNotice = ssoLoginNotice ? undefined : getSessionExpiredNotice(t);
   const [loading, setLoading] = useState(false);
   const [mfaRequired, setMfaRequired] = useState(false);
   const [tempToken, setTempToken] = useState<string>();
@@ -316,6 +338,15 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
       {registrationNotice && (
         <div className="mb-6 rounded-md border border-yellow-300 bg-yellow-50 px-4 py-3 text-sm text-yellow-800 dark:border-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-200">
           {registrationNotice}
+        </div>
+      )}
+      {sessionExpiredNotice && (
+        <div
+          role="status"
+          data-testid="login-session-expired-notice"
+          className="mb-6 rounded-md border border-yellow-300 bg-yellow-50 px-4 py-3 text-sm text-yellow-800 dark:border-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-200"
+        >
+          {sessionExpiredNotice}
         </div>
       )}
       {ssoLoginNotice && (

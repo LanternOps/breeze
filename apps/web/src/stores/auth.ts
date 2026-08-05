@@ -9,7 +9,7 @@ import {
   type RegistrationResponseJSON
 } from '@simplewebauthn/browser';
 import { extractApiError } from '@/lib/apiError';
-import { getSafeNext } from '@/lib/authNext';
+import { getSafeNext, loginPathWithNext } from '@/lib/authNext';
 import {
   applyAppearancePreferences,
   applyResolvedLocalePreferences,
@@ -64,6 +64,11 @@ interface AuthState {
   isLoading: boolean;
   mfaPending: boolean;
   mfaTempToken: string | null;
+  // Set by handleSessionExpired() just before logout() so UI (the expiry
+  // overlay, login-page notice) can render a reason in the same tick the nav
+  // collapses. NOT persisted — see partialize below — a stale reason must
+  // never survive a reload.
+  sessionExpiredReason: 'session-expired' | 'idle' | null;
 
   // Actions
   setUser: (user: User | null) => void;
@@ -77,6 +82,11 @@ interface AuthState {
 
 type PersistedAuthState = Pick<AuthState, 'user' | 'isAuthenticated'>;
 
+// Guards handleSessionExpired() below against double-redirects when parallel
+// requests both 401 at once. Reset on login() so a later re-login (or a fresh
+// test) can trigger it again in the same JS context.
+let sessionExpiryInFlight = false;
+
 export const useAuthStore = create<AuthState>()(
   persist(
     (set) => ({
@@ -86,6 +96,7 @@ export const useAuthStore = create<AuthState>()(
       isLoading: true,
       mfaPending: false,
       mfaTempToken: null,
+      sessionExpiredReason: null,
 
       setUser: (user) => set({ user, isAuthenticated: !!user }),
 
@@ -98,15 +109,25 @@ export const useAuthStore = create<AuthState>()(
 
       setLoading: (loading) => set({ isLoading: loading }),
 
-      login: (user, tokens) => set({
-        user,
-        tokens,
-        isAuthenticated: true,
-        isLoading: false,
-        mfaPending: false,
-        mfaTempToken: null
-      }),
+      login: (user, tokens) => {
+        // Re-login clears any stale expiry state and re-arms
+        // handleSessionExpired for the new session.
+        sessionExpiryInFlight = false;
+        set({
+          user,
+          tokens,
+          isAuthenticated: true,
+          isLoading: false,
+          mfaPending: false,
+          mfaTempToken: null,
+          sessionExpiredReason: null
+        });
+      },
 
+      // Deliberately does NOT clear `sessionExpiredReason`: handleSessionExpired
+      // sets the reason and then calls this, and AuthOverlay's expiry mask must
+      // keep rendering until the hard redirect completes. The reason is cleared
+      // by login() and by the next page load (it isn't persisted).
       logout: () => set({
         user: null,
         tokens: null,
@@ -265,6 +286,18 @@ export function resolveApiOrigin(): string {
   return '';
 }
 
+// The verdict requestTokenRefresh/requestTokenRefreshShared reach, threaded
+// through to callers that need to distinguish "no verdict yet, retry later"
+// (transient) from "verdict reached, session is dead" (auth-failed) — see
+// restoreAccessTokenFromCookieDetailed below. Every internal caller in this
+// file discriminates on `kind`; the only place the distinction is collapsed is
+// `restoreAccessTokenFromCookie`, which flattens it to a boolean for callers
+// that only care about restored-or-not.
+type RefreshOutcome =
+  | { kind: 'restored'; tokens: Tokens }
+  | { kind: 'auth-failed' }
+  | { kind: 'transient' };
+
 const REFRESH_LOCK_NAME = 'breeze-token-refresh';
 
 // One low-level /auth/refresh attempt. Returns the new tokens on success, or a
@@ -350,12 +383,12 @@ async function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
 const MAX_TRANSIENT_REFRESH_RETRIES = 2;
 const TRANSIENT_REFRESH_BASE_DELAY_MS = 300;
 
-async function requestTokenRefresh(): Promise<Tokens | null> {
+async function requestTokenRefresh(): Promise<RefreshOutcome> {
   return withRefreshLock(async () => {
     let transientRetries = 0;
     for (;;) {
       const result = await refreshFetchOnce();
-      if (result.tokens) return result.tokens;
+      if (result.tokens) return { kind: 'restored', tokens: result.tokens };
 
       if (result.raced) {
         // Benign race (#1107): a sibling context won the rotation. Give the
@@ -363,19 +396,19 @@ async function requestTokenRefresh(): Promise<Tokens | null> {
         // retry exactly once. The retry sends the now-current cookie.
         await new Promise((resolve) => setTimeout(resolve, 200));
         const retry = await refreshFetchOnce();
-        if (retry.tokens) return retry.tokens;
+        if (retry.tokens) return { kind: 'restored', tokens: retry.tokens };
         // If the race-retry itself hit a transient blip, fall through to the
         // backoff path below; otherwise the session is genuinely gone.
-        if (!retry.transient) return null;
+        if (!retry.transient) return { kind: 'auth-failed' };
       } else if (!result.transient) {
         // Hard failure (expired/reused refresh cookie, real 401/403): the
         // session is unrecoverable — evict.
-        return null;
+        return { kind: 'auth-failed' };
       }
 
       // Transient gateway/network failure. Retry with bounded exponential
       // backoff before giving up and letting the caller evict the session.
-      if (transientRetries >= MAX_TRANSIENT_REFRESH_RETRIES) return null;
+      if (transientRetries >= MAX_TRANSIENT_REFRESH_RETRIES) return { kind: 'transient' };
       const delay = TRANSIENT_REFRESH_BASE_DELAY_MS * 2 ** transientRetries;
       transientRetries += 1;
       await new Promise((resolve) => setTimeout(resolve, delay));
@@ -383,9 +416,9 @@ async function requestTokenRefresh(): Promise<Tokens | null> {
   });
 }
 
-let tokenRefreshInFlight: Promise<Tokens | null> | null = null;
+let tokenRefreshInFlight: Promise<RefreshOutcome> | null = null;
 
-async function requestTokenRefreshShared(): Promise<Tokens | null> {
+async function requestTokenRefreshShared(): Promise<RefreshOutcome> {
   if (tokenRefreshInFlight) {
     return tokenRefreshInFlight;
   }
@@ -423,15 +456,37 @@ export async function waitForPendingRefresh(): Promise<void> {
   }
 }
 
-export async function restoreAccessTokenFromCookie(): Promise<boolean> {
+/**
+ * Like `restoreAccessTokenFromCookie`, but surfaces WHY a refresh didn't
+ * restore a session instead of collapsing everything to `false`. Callers that
+ * need to react differently to "session is dead" vs. "couldn't reach a
+ * verdict, try again later" (the AdminSessionManager heartbeat, #Task-3) use
+ * this; callers that only care about restored-or-not keep using the boolean
+ * wrapper below.
+ */
+export async function restoreAccessTokenFromCookieDetailed(): Promise<'restored' | 'auth-failed' | 'transient'> {
   try {
-    const tokens = await requestTokenRefreshShared();
-    if (!tokens) return false;
-    useAuthStore.getState().setTokens(tokens);
-    return true;
-  } catch {
-    return false;
+    const outcome = await requestTokenRefreshShared();
+    if (outcome.kind === 'restored') {
+      useAuthStore.getState().setTokens(outcome.tokens);
+    }
+    return outcome.kind;
+  } catch (err) {
+    // Unexpected throw, not a verdict from the server — treat as transient so
+    // callers retry rather than treat an unrelated exception as proof the
+    // session is dead. refreshFetchOnce already absorbs network/HTTP failures
+    // internally, so anything landing here is genuinely unexpected (Web Locks
+    // unavailable/rejected, a regression upstream) and worth a log line.
+    console.warn(
+      '[restoreAccessTokenFromCookieDetailed] unexpected error during refresh; treating as transient',
+      err
+    );
+    return 'transient';
   }
+}
+
+export async function restoreAccessTokenFromCookie(): Promise<boolean> {
+  return (await restoreAccessTokenFromCookieDetailed()) === 'restored';
 }
 
 /**
@@ -450,8 +505,9 @@ export async function restoreAccessTokenFromCookie(): Promise<boolean> {
  * caller should fall back to the regular login form).
  */
 export async function bootstrapFromCfAccessRedirect(): Promise<boolean> {
-  const tokens = await requestTokenRefreshShared();
-  if (!tokens?.accessToken) return false;
+  const outcome = await requestTokenRefreshShared();
+  if (outcome.kind !== 'restored' || !outcome.tokens.accessToken) return false;
+  const tokens = outcome.tokens;
 
   let meResponse: Response;
   try {
@@ -504,6 +560,31 @@ export class AuthSessionExpiredError extends Error {
   }
 }
 
+/**
+ * Single entry point for "the session is unrecoverable, evict and redirect."
+ * Both fetchWithAuth expiry paths (dead refresh cookie on bootstrap, and a
+ * 401 that survives a refresh-and-retry) funnel through here so idle-timeout
+ * and future callers get identical behavior.
+ *
+ * Idempotent: concurrent 401s from parallel requests must not double-redirect.
+ * The in-flight flag resets on login() so a later re-login (or the next test)
+ * can trigger it again.
+ */
+export function handleSessionExpired(reason: 'session-expired' | 'idle' = 'session-expired'): void {
+  if (sessionExpiryInFlight) return;
+  sessionExpiryInFlight = true;
+
+  // Set before logout() so UI (the expiry overlay) can render a mask in the
+  // same tick the nav state collapses.
+  useAuthStore.setState({ sessionExpiredReason: reason });
+  useAuthStore.getState().logout();
+
+  if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+    const url = loginPathWithNext();
+    window.location.replace(`${url}${url.includes('?') ? '&' : '?'}reason=${reason}`);
+  }
+}
+
 export interface FetchWithAuthOptions extends RequestInit {
   /**
    * Skip the automatic refresh-and-replay on a 401. Opt-in, for the rare
@@ -525,7 +606,7 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
     url = `${url}${separator}orgId=${orgId}`;
   }
 
-  const { tokens: initialTokens, isAuthenticated, logout, setTokens } = useAuthStore.getState();
+  const { tokens: initialTokens, isAuthenticated, setTokens } = useAuthStore.getState();
   let tokens = initialTokens;
   const previousAccessToken = tokens?.accessToken ?? null;
 
@@ -540,10 +621,10 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
   // in-memory access token is always gone and enrollment depends entirely on
   // this refresh succeeding here.
   if (!tokens?.accessToken && isAuthenticated) {
-    const restoredTokens = await requestTokenRefreshShared();
-    if (restoredTokens) {
-      setTokens(restoredTokens);
-      tokens = restoredTokens;
+    const outcome = await requestTokenRefreshShared();
+    if (outcome.kind === 'restored') {
+      setTokens(outcome.tokens);
+      tokens = outcome.tokens;
     } else {
       // The session claims to be authenticated but the refresh cookie can no
       // longer mint an access token (rotated/revoked/expired, or — as seen in
@@ -559,11 +640,11 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
       // does NOT weaken auth — protected endpoints (including /auth/mfa/setup)
       // still require a valid Bearer; we simply refuse to send a request we know
       // can't carry one.
-      logout();
-      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-        const returnTo = encodeURIComponent(window.location.pathname + window.location.search);
-        window.location.href = `/login?returnTo=${returnTo}`;
-      }
+      //
+      // This evicts on 'transient' too (bounded retries exhausted), unlike the
+      // background heartbeat which can wait forever: a foreground fetch needs a
+      // verdict now — bounded retries, then evict.
+      handleSessionExpired('session-expired');
       throw new AuthSessionExpiredError();
     }
   }
@@ -614,12 +695,12 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
   // If unauthorized, attempt cookie-backed refresh once (unless the caller's
   // body is single-use and must never be replayed — see skipUnauthorizedRetry).
   if (response.status === 401 && !options.skipUnauthorizedRetry) {
-    const newTokens = await requestTokenRefreshShared();
-    if (newTokens) {
-      setTokens(newTokens);
+    const outcome = await requestTokenRefreshShared();
+    if (outcome.kind === 'restored') {
+      setTokens(outcome.tokens);
 
       // Retry original request with new token
-      headers.set('Authorization', `Bearer ${newTokens.accessToken}`);
+      headers.set('Authorization', `Bearer ${outcome.tokens.accessToken}`);
       response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include', signal });
     } else {
       // If another in-flight request already refreshed state, retry once with latest token.
@@ -628,8 +709,14 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
         headers.set('Authorization', `Bearer ${latestToken}`);
         response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include', signal });
       } else {
-        // Refresh failed and no newer token exists; logout.
-        logout();
+        // Refresh failed and no newer token exists; the session is
+        // unrecoverable. Still return the 401 below — callers may inspect it,
+        // and the page is navigating away.
+        //
+        // Also reached on 'transient' (bounded retries exhausted), unlike the
+        // background heartbeat which can wait forever: a foreground fetch needs
+        // a verdict now — bounded retries, then evict.
+        handleSessionExpired('session-expired');
       }
     }
   }
@@ -864,10 +951,20 @@ export async function apiRegisterPartner(
   }
 }
 
+// The server-side revoke is best-effort; client-side eviction must never be
+// gated on it. Without a bound, a hung /auth/logout strands the idle-timeout
+// flow forever: AdminSessionManager awaits this before handleSessionExpired(),
+// so the modal sits on "Signing you out…" and idleLogoutInFlightRef
+// permanently gates both the heartbeat and the countdown tick. 8s matches
+// refreshFetchOnce above.
+const LOGOUT_TIMEOUT_MS = 8000;
+
 export async function apiLogout(): Promise<void> {
   const { tokens, logout } = useAuthStore.getState();
 
   if (tokens?.accessToken) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), LOGOUT_TIMEOUT_MS);
     try {
       await fetch(buildApiUrl('/auth/logout'), {
         method: 'POST',
@@ -875,10 +972,16 @@ export async function apiLogout(): Promise<void> {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${tokens.accessToken}`
         },
-        credentials: 'include'
+        credentials: 'include',
+        signal: controller.signal
       });
-    } catch {
-      // Ignore errors, logout anyway
+    } catch (err) {
+      // Network error, offline, or the 8s abort fired. Ignored on purpose —
+      // the refresh-token family may survive server-side, but the client must
+      // still evict. Logged so a systematically failing revoke is diagnosable.
+      console.warn('[apiLogout] logout request failed; evicting client session anyway', err);
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
