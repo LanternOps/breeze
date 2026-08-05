@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { NavigationContainer, DefaultTheme as NavDefaultTheme } from '@react-navigation/native';
 import { Alert, Pressable, Text, View } from 'react-native';
+import * as SplashScreen from 'expo-splash-screen';
 import * as Sentry from '@sentry/react-native';
 
 import { useAppSelector, useAppDispatch, store } from '../store';
@@ -48,9 +49,17 @@ async function clearAuthDataTolerant(): Promise<void> {
   }
 }
 
+/**
+ * Upper bound on how long the native splash may stay up waiting for boot.
+ * Boot is local-storage-only now, so exceeding this means something is wrong —
+ * better to show the app (and whatever error state it is in) than to sit on a
+ * splash that looks like a frozen launch.
+ */
+const SPLASH_MAX_HOLD_MS = 4000;
+
 export function RootNavigator() {
   const dispatch = useAppDispatch();
-  const { token, isLoading, user } = useAppSelector((state) => state.auth);
+  const { token, user } = useAppSelector((state) => state.auth);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [blockedReason, setBlockedReason] = useState<string | null>(null);
   const blockedHandledRef = useRef(false);
@@ -133,6 +142,33 @@ export function RootNavigator() {
   }, [token, user, dispatch]);
 
   useEffect(() => {
+    /**
+     * Re-validate a restored session against the server. Deliberately NOT
+     * awaited by `checkAuth` — see the comment there.
+     */
+    async function revalidate(storedToken: string) {
+      try {
+        const fresh = await getCurrentUser();
+        // Refresh the cached user with whatever the server returned
+        // (name / email / role may have changed since last login).
+        dispatch(setCredentials({ token: storedToken, user: fresh }));
+      } catch (err) {
+        const status = (err as { statusCode?: number } | null)?.statusCode;
+        if (status === 401 || status === 403) {
+          // A failed secure wipe (SecureWipeError) is already reported to
+          // Sentry inside clearAuthData; clearAuthDataTolerant swallows only
+          // that so it can't abort the redux logout. Other failures still
+          // surface — but this runs detached, so catch them here rather than
+          // leaving an unhandled rejection.
+          await clearAuthDataTolerant().catch(() => {});
+          dispatch(logout());
+        }
+        // Other failures (network down, 5xx) intentionally leave the
+        // cached credentials in place; the user can still operate
+        // offline-friendly surfaces (approvals via push, cached state).
+      }
+    }
+
     async function checkAuth() {
       try {
         const [storedToken, storedUser, onboardingDone] = await Promise.all([
@@ -147,31 +183,15 @@ export function RootNavigator() {
           return;
         }
 
-        // Optimistically hydrate from storage so the UI mounts behind the
-        // ActivityIndicator while we verify, then validate the token by
-        // pinging /auth/me. If the server rejects (401, expired, revoked)
-        // we clear the cached credentials and fall back to AuthNavigator.
+        // Hydrate from storage and let the UI mount IMMEDIATELY. Validation
+        // against /auth/me runs detached in the background: awaiting it here
+        // is what made cold start feel like a hang, because the whole tree
+        // stayed behind a spinner until a network round-trip completed (and
+        // fetches have a timeout but it is still seconds on a bad link).
+        // A session that turns out to be revoked flips to AuthNavigator a
+        // moment later via the `logout()` in `revalidate`.
         dispatch(setCredentials({ token: storedToken, user: storedUser }));
-
-        try {
-          const fresh = await getCurrentUser();
-          // Refresh the cached user with whatever the server returned
-          // (name / email / role may have changed since last login).
-          dispatch(setCredentials({ token: storedToken, user: fresh }));
-        } catch (err) {
-          const status = (err as { statusCode?: number } | null)?.statusCode;
-          if (status === 401 || status === 403) {
-            // A failed secure wipe (SecureWipeError) is already reported to
-            // Sentry inside clearAuthData; clearAuthDataTolerant swallows only
-            // that so it can't abort the redux logout or fall through to the
-            // outer catch and double-wipe. Other failures still surface.
-            await clearAuthDataTolerant();
-            dispatch(logout());
-          }
-          // Other failures (network down, 5xx) intentionally leave the
-          // cached credentials in place; the user can still operate
-          // offline-friendly surfaces (approvals via push, cached state).
-        }
+        void revalidate(storedToken);
       } catch (error) {
         console.error('Error checking auth:', error);
         await clearAuthDataTolerant();
@@ -183,6 +203,29 @@ export function RootNavigator() {
 
     checkAuth();
   }, [dispatch]);
+
+  // Boot gate: local storage reads only, so this clears in milliseconds.
+  // `auth.isLoading` is deliberately NOT part of it — it is also true during an
+  // interactive login, and including it replaced the whole LoginScreen with a
+  // full-screen spinner on every sign-in attempt (LoginScreen has its own
+  // in-button spinner for that).
+  const booting = isCheckingAuth || hasOnboarded === null;
+
+  // Hand off from the native splash only once there is a real frame to show, so
+  // the user never sees a bare spinner on a dark screen. The timeout is a
+  // safety net: if boot somehow never completes, an app stuck on the splash is
+  // indistinguishable from a crash, so uncover it and let the in-app spinner
+  // (or an error state) be visible instead.
+  useEffect(() => {
+    if (!booting) {
+      SplashScreen.hideAsync().catch(() => {});
+      return;
+    }
+    const t = setTimeout(() => {
+      SplashScreen.hideAsync().catch(() => {});
+    }, SPLASH_MAX_HOLD_MS);
+    return () => clearTimeout(t);
+  }, [booting]);
 
   const navigationTheme = {
     ...NavDefaultTheme,
@@ -258,7 +301,7 @@ export function RootNavigator() {
     );
   }
 
-  if (isCheckingAuth || isLoading || hasOnboarded === null) {
+  if (booting) {
     return (
       <View
         style={{
