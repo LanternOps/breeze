@@ -1,6 +1,11 @@
 import * as SecureStore from 'expo-secure-store';
+import * as Sentry from '@sentry/react-native';
 
 import { getServerUrl } from './serverConfig';
+import { fetchWithTimeout } from './fetchWithTimeout';
+import type { ApiError } from './api';
+import { refreshToken } from './api';
+import { storeToken } from './auth';
 
 const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const API_CORE_PREFIX = '/api/v1';
@@ -26,12 +31,69 @@ async function getToken(): Promise<string | null> {
   }
 }
 
-async function authedFetch(
+// Single-flight guard so N concurrent 401s trigger one /auth/refresh, not N.
+// Cleared once the refresh settles; callers that grabbed the promise still
+// receive its result. NOTE: /auth/refresh rotates the refresh cookie and
+// replaying a rotated token revokes the whole token family, so this guard is
+// only safe while aiChat is the sole mobile refresh caller — if another
+// service starts calling refreshToken(), move the single-flight into a shared
+// module.
+let refreshInFlight: Promise<string | null> | null = null;
+
+/**
+ * Refresh the access token via the shared `refreshToken()` helper (api.ts) and
+ * persist it so every service reading `breeze_auth_token` picks it up.
+ * Returns the new token, or null when refresh failed (e.g. the refresh cookie
+ * itself expired) — callers then surface the original 401.
+ */
+async function refreshAccessToken(): Promise<string | null> {
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      try {
+        const { token } = await refreshToken();
+        try {
+          await storeToken(token);
+        } catch (e) {
+          // Persisting failed (locked keychain, etc.) — the in-memory token is
+          // still valid for the retry, so don't turn a usable refresh into a
+          // hard failure. But a phone that can't persist tokens will silently
+          // double every aiChat round-trip while all non-refreshing services
+          // hard-401, so make the real cause observable in production
+          // (console.* goes nowhere on release RN builds).
+          Sentry.captureException(e, {
+            tags: { area: 'aichat-token-refresh' },
+            extra: { stage: 'persist' },
+          });
+        }
+        return token;
+      } catch (e) {
+        // Refresh failed — expired refresh cookie, offline, or a
+        // /auth/refresh outage. We return null so the caller surfaces the
+        // original 401 to the UI either way, but record which failure mode it
+        // was: without this, "users see 401s" is undiagnosable in production.
+        Sentry.captureMessage('aiChat token refresh failed', {
+          level: 'warning',
+          tags: { area: 'aichat-token-refresh' },
+          extra: {
+            statusCode: (e as ApiError)?.statusCode,
+            message: (e as ApiError)?.message ?? String(e),
+          },
+        });
+        return null;
+      } finally {
+        refreshInFlight = null;
+      }
+    })();
+  }
+  return refreshInFlight;
+}
+
+async function doAuthedFetch(
   path: string,
-  init: RequestInit & { stream?: boolean } = {},
+  init: RequestInit & { stream?: boolean },
+  token: string | null,
 ): Promise<Response> {
   const baseUrl = (await getServerUrl()) || FALLBACK_API_BASE_URL;
-  const token = await getToken();
   const url = `${baseUrl}${API_CORE_PREFIX}${path}`;
 
   const headers: Record<string, string> = {
@@ -42,7 +104,29 @@ async function authedFetch(
   if (init.method && init.method !== 'GET') headers['x-breeze-csrf'] = '1';
   if (init.stream) headers['Accept'] = 'text/event-stream';
 
-  return fetch(url, { ...init, headers, credentials: 'include' });
+  // Safe for SSE: fetchWithTimeout bounds only the wait for response
+  // HEADERS and clears its timer once they arrive, so an open stream body is
+  // never aborted mid-flight.
+  return fetchWithTimeout(url, { ...init, headers, credentials: 'include' });
+}
+
+// Access tokens live 15 minutes (ACCESS_TOKEN_EXPIRY, apps/api/src/services/jwt.ts)
+// and this wrapper reads whatever is in SecureStore, so any call made >15m
+// after login starts with an expired bearer. On 401, refresh once via the same
+// token lifecycle the rest of the mobile services use, then retry the request
+// a single time (#3114). Bodies here are always JSON strings, so re-sending
+// `init` unchanged is safe.
+async function authedFetch(
+  path: string,
+  init: RequestInit & { stream?: boolean } = {},
+): Promise<Response> {
+  const res = await doAuthedFetch(path, init, await getToken());
+  if (res.status !== 401) return res;
+
+  const newToken = await refreshAccessToken();
+  if (!newToken) return res;
+
+  return doAuthedFetch(path, init, newToken);
 }
 
 export async function createAiSession(input: CreateSessionPayload = {}): Promise<AiSessionSummary> {
@@ -134,23 +218,16 @@ const KNOWN_EVENT_TYPES = new Set([
 // platform-spotty; XHR's incremental `responseText` reads are reliable
 // across iOS/Android/Hermes. We track how many bytes we've already parsed
 // so each `onreadystatechange` (state 3 = LOADING) only handles new data.
+//
+// Auth mirrors authedFetch (#3114/#3140): the stored access token expires
+// after 15 minutes, so a stream opened with a stale token 401s before any
+// SSE data flows. On a 401 at stream open we refresh once through the same
+// single-flighted refreshAccessToken() and reopen the stream with the fresh
+// token; a second 401 (or a failed refresh) surfaces to the caller.
 export function streamChat(opts: SseStreamOptions): SseStreamHandle {
   let aborted = false;
-  let cursor = 0;
-  let buffered = '';
-
-  const xhr = new XMLHttpRequest();
   let didEmitDone = false;
-
-  const flushBuffered = () => {
-    let idx = buffered.indexOf('\n\n');
-    while (idx !== -1) {
-      const block = buffered.slice(0, idx);
-      buffered = buffered.slice(idx + 2);
-      handleSseBlock(block);
-      idx = buffered.indexOf('\n\n');
-    }
-  };
+  let currentXhr: XMLHttpRequest | null = null;
 
   const handleSseBlock = (block: string) => {
     if (!block.trim()) return;
@@ -178,49 +255,104 @@ export function streamChat(opts: SseStreamOptions): SseStreamHandle {
     }
   };
 
+  const emitHttpError = (xhr: XMLHttpRequest) => {
+    let msg = `HTTP ${xhr.status}`;
+    try {
+      const body = JSON.parse(xhr.responseText);
+      if (body && typeof body.error === 'string') msg = body.error;
+    } catch {
+      // keep generic message
+    }
+    opts.onError(new Error(msg));
+  };
+
+  // Opens one stream attempt. Parse state (cursor/buffered) is per-attempt so
+  // a retried stream never inherits the 401 attempt's response bytes.
+  const openStream = (url: string, token: string | null, canRetryAuth: boolean) => {
+    let cursor = 0;
+    let buffered = '';
+    const xhr = new XMLHttpRequest();
+    currentXhr = xhr;
+
+    const flushBuffered = () => {
+      let idx = buffered.indexOf('\n\n');
+      while (idx !== -1) {
+        const block = buffered.slice(0, idx);
+        buffered = buffered.slice(idx + 2);
+        handleSseBlock(block);
+        idx = buffered.indexOf('\n\n');
+      }
+    };
+
+    xhr.open('POST', url, true);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.setRequestHeader('Accept', 'text/event-stream');
+    xhr.setRequestHeader('x-breeze-csrf', '1');
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    xhr.withCredentials = true;
+
+    xhr.onreadystatechange = () => {
+      if (aborted) return;
+      // A 401 body is a JSON error, never SSE blocks — skip incremental
+      // parsing on an attempt we may retry so nothing leaks to callbacks.
+      const authRetryPending = xhr.status === 401 && canRetryAuth;
+      if (
+        !authRetryPending &&
+        xhr.readyState >= 3 &&
+        xhr.responseText &&
+        xhr.responseText.length > cursor
+      ) {
+        buffered += xhr.responseText.slice(cursor);
+        cursor = xhr.responseText.length;
+        flushBuffered();
+      }
+      if (xhr.readyState === 4) {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          if (!didEmitDone) opts.onDone();
+          return;
+        }
+        if (authRetryPending) {
+          // Stale access token (>15 min since login with no interim REST
+          // call). Refresh once via the shared single-flight helper and
+          // reopen; on refresh failure surface the original 401. The whole
+          // body is guarded: a throw from the retried open (or from the
+          // refresh) must reach onError — an unhandled rejection here would
+          // leave the chat UI streaming forever with no error surfaced.
+          void (async () => {
+            try {
+              const newToken = await refreshAccessToken();
+              if (aborted) return;
+              if (newToken) {
+                openStream(url, newToken, false);
+                return;
+              }
+              emitHttpError(xhr);
+            } catch (err) {
+              if (aborted) return;
+              opts.onError(err instanceof Error ? err : new Error(String(err)));
+            }
+          })();
+          return;
+        }
+        emitHttpError(xhr);
+      }
+    };
+
+    xhr.onerror = () => {
+      if (aborted) return;
+      opts.onError(new Error('Network error'));
+    };
+
+    xhr.send(JSON.stringify({ content: opts.content }));
+  };
+
   (async () => {
     try {
       const baseUrl = (await getServerUrl()) || FALLBACK_API_BASE_URL;
       const token = await getToken();
       const url = `${baseUrl}${API_CORE_PREFIX}/ai/sessions/${opts.sessionId}/messages`;
       if (aborted) return;
-
-      xhr.open('POST', url, true);
-      xhr.setRequestHeader('Content-Type', 'application/json');
-      xhr.setRequestHeader('Accept', 'text/event-stream');
-      xhr.setRequestHeader('x-breeze-csrf', '1');
-      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-      xhr.withCredentials = true;
-
-      xhr.onreadystatechange = () => {
-        if (aborted) return;
-        if (xhr.readyState >= 3 && xhr.responseText && xhr.responseText.length > cursor) {
-          buffered += xhr.responseText.slice(cursor);
-          cursor = xhr.responseText.length;
-          flushBuffered();
-        }
-        if (xhr.readyState === 4) {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            if (!didEmitDone) opts.onDone();
-            return;
-          }
-          let msg = `HTTP ${xhr.status}`;
-          try {
-            const body = JSON.parse(xhr.responseText);
-            if (body && typeof body.error === 'string') msg = body.error;
-          } catch {
-            // keep generic message
-          }
-          opts.onError(new Error(msg));
-        }
-      };
-
-      xhr.onerror = () => {
-        if (aborted) return;
-        opts.onError(new Error('Network error'));
-      };
-
-      xhr.send(JSON.stringify({ content: opts.content }));
+      openStream(url, token, true);
     } catch (err) {
       if (aborted) return;
       opts.onError(err instanceof Error ? err : new Error(String(err)));
@@ -230,7 +362,7 @@ export function streamChat(opts: SseStreamOptions): SseStreamHandle {
   return {
     abort: () => {
       aborted = true;
-      try { xhr.abort(); } catch { /* noop */ }
+      try { currentXhr?.abort(); } catch { /* noop */ }
     },
   };
 }

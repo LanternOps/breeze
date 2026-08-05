@@ -25,11 +25,11 @@ import { MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { bearerTokenAuthMiddleware, resolvePartnerAccessibleOrgIds } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
-import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement } from '../services/aiGuardrails';
+import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, TIER3_ACTIONS } from '../services/aiGuardrails';
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { devices, alerts, scripts, automations, partners, organizations } from '../db/schema';
-import { eq, and, asc, desc, inArray, isNull, or, getTableColumns, type SQL } from 'drizzle-orm';
+import { eq, ne, and, asc, desc, inArray, isNull, or, getTableColumns, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext, PrincipalKind } from '../middleware/auth';
 import { siteAccessCheck } from '../middleware/auth';
@@ -828,6 +828,119 @@ async function handleJsonRpc(
 }
 
 // ============================================
+// MCP interactive-approval-only gate
+// ============================================
+//
+// User decision, 2026-08-02: ALL Tier 3 tools require interactive approval —
+// full stop, no exceptions for tools that predate this change. The MCP
+// server has NO interactive approval surface (the durable action_intents
+// Tier 3 approval workflow is an interactive-web-app-only construct), so
+// rather than continue trusting the API key holder at the scope level (the
+// old model — see the removed "MCP server auto-executes Tier 3 tools without
+// approval" comment that used to sit where the gate below is applied), MCP
+// now fails closed on every Tier 3 call: `tools/call` denies with a
+// structured MCP_APPROVAL_REQUIRED error instead of invoking executeTool,
+// and `tools/list` doesn't advertise a tool that can never actually be
+// invoked over this transport. The in-app (non-MCP) execution path is
+// completely unaffected — this gate lives only in this route, never in
+// aiGuardrails.ts, which still governs the real tier/approval behavior the
+// interactive app's action_intents workflow acts on.
+//
+// The gate reuses the SAME effective-tier resolution `tools/call` already
+// computes (`Math.max(baseTier, checkGuardrails(...).tier)`, honoring
+// TIER1_ACTIONS/TIER2_ACTIONS/TIER3_ACTIONS per-action escalation/downgrade
+// for multiplexed tools) — there is no separate hand-maintained tool list for
+// the tier-3 case, so a future tool that lands at Tier 3 is gated
+// automatically with zero extra wiring.
+//
+// MCP_APPROVAL_REQUIRED_EXTRA_TOOLS exists ONLY for tools whose registered
+// tier UNDERSTATES their risk over an unattended transport like MCP — today
+// that's just collect_evidence (Tier 2 in-app because it goes through the
+// same confirm-before-execute UI as any Tier 2 mutation, but it dispatches a
+// privileged device-side extraction command, including a screenshot, so an
+// unattended MCP caller must not be able to trigger it without human
+// approval the way a Tier 3 call cannot). Do not add tools here to route
+// around normal tier design — fix the tier in aiGuardrails.ts instead if a
+// tool's tier is simply wrong; this constant is a narrow, documented
+// exception, not a second gating mechanism.
+const MCP_APPROVAL_REQUIRED_EXTRA_TOOLS: Record<string, true> = {
+  collect_evidence: true,
+};
+
+const MCP_APPROVAL_REQUIRED_ERROR = {
+  error: 'This action requires interactive approval and cannot be executed over MCP. Run it from the Breeze web app AI assistant, where it goes through the approval workflow.',
+  code: 'MCP_APPROVAL_REQUIRED',
+} as const;
+
+/**
+ * True when `tools/call` must deny this tool/action over MCP instead of
+ * executing it: effective tier 3 (see the constant's block comment for why
+ * this is unconditional and reuses the shared tier resolution), or an
+ * explicit sub-Tier-3 extra.
+ */
+function isMcpApprovalRequired(toolName: string, effectiveTier: number): boolean {
+  return effectiveTier === 3 || MCP_APPROVAL_REQUIRED_EXTRA_TOOLS[toolName] === true;
+}
+
+/**
+ * True when EVERY possible invocation of this tool resolves to a gated tier —
+ * i.e. it can never be successfully called over MCP, so `tools/list` should
+ * not advertise it (the "advertised-but-dead" pattern this payoff exists to
+ * eliminate). Three cases:
+ *   1. A wholly-gated extra (MCP_APPROVAL_REQUIRED_EXTRA_TOOLS) — no action
+ *      of this tool escapes the gate regardless of tier.
+ *   2. A flat Tier 3 tool (base tier 3) — `tools/call`'s effective tier is
+ *      `Math.max(baseTier, guardrailTier)`, which can never fall below the
+ *      base tier, so every action is unconditionally Tier 3.
+ *   3. A multiplexed tool whose `action` enum is fully covered by
+ *      TIER3_ACTIONS for that tool — every value a caller could legally pass
+ *      escalates to Tier 3, even though the tool's base tier is lower.
+ * A tool with base tier <3 and either no `action` enum or at least one action
+ * NOT in TIER3_ACTIONS stays listed — some invocation of it can succeed.
+ */
+function isToolWhollyGatedOverMcp(
+  toolName: string,
+  inputSchema: unknown,
+  getTier: (name: string) => number | undefined,
+): boolean {
+  if (MCP_APPROVAL_REQUIRED_EXTRA_TOOLS[toolName] === true) return true;
+
+  const baseTier = getTier(toolName);
+  if (baseTier === undefined) return false;
+  if (baseTier >= 3) return true;
+
+  const actionEnum = extractActionEnum(inputSchema);
+  if (!actionEnum || actionEnum.length === 0) return false; // not a multiplexer — fixed at base tier <3, never gated
+
+  const tier3Actions = TIER3_ACTIONS[toolName];
+  if (!tier3Actions || tier3Actions.length === 0) return false;
+  return actionEnum.every((action) => tier3Actions.includes(action));
+}
+
+/** Pull the `action` property's JSON-Schema `enum` off a tool's input_schema, if present. */
+function extractActionEnum(inputSchema: unknown): string[] | null {
+  if (!inputSchema || typeof inputSchema !== 'object') return null;
+  const properties = (inputSchema as { properties?: Record<string, unknown> }).properties;
+  const actionProp = properties?.action as { enum?: unknown[] } | undefined;
+  if (!actionProp || !Array.isArray(actionProp.enum)) return null;
+  return actionProp.enum.filter((v): v is string => typeof v === 'string');
+}
+
+/**
+ * Which of a tool's declared actions are gated over MCP — used to append a
+ * "these actions require the web app" note to a mixed multiplexer's
+ * `tools/list` description. Empty for a wholly-gated tool (it's suppressed
+ * entirely, see isToolWhollyGatedOverMcp) and for a tool with no gated
+ * actions at all.
+ */
+function gatedActionsForTool(toolName: string, inputSchema: unknown): string[] {
+  const actionEnum = extractActionEnum(inputSchema);
+  if (!actionEnum) return [];
+  const tier3Actions = new Set(TIER3_ACTIONS[toolName] ?? []);
+  return actionEnum.filter((action) => tier3Actions.has(action));
+}
+
+// ============================================
 // tools/list
 // ============================================
 
@@ -840,6 +953,12 @@ function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse
 
   // Filter tools based on API key scopes.
   const filteredTools = allTools.filter((tool) => {
+    // A wholly-gated tool (every possible invocation resolves to a gated
+    // tier — see isToolWhollyGatedOverMcp) is never advertised: every call to
+    // it would be denied by the tools/call gate below, so listing it is
+    // exactly the advertised-but-dead pattern this payoff eliminates.
+    if (isToolWhollyGatedOverMcp(tool.name, tool.input_schema, getToolTier)) return false;
+
     const tier = getToolTier(tool.name);
     if (tier === undefined) return false;
 
@@ -847,15 +966,28 @@ function handleToolsList(id: string | number, scopes: string[]): JsonRpcResponse
     if (tier <= 1) return true;
     // Tier 2 (low-risk mutations) = ai:write
     if (tier === 2) return hasWrite;
-    // Tier 3+ (destructive) = ai:execute
+    // Tier 3+ (destructive) = ai:execute. (A FLAT Tier 3 tool never reaches
+    // here — isToolWhollyGatedOverMcp already suppressed it above — but a
+    // multiplexer whose base tier is <3 can still surface here if only SOME
+    // of its actions escalate to Tier 3, and those callers need ai:execute
+    // to reach the tools/call gate at all, same as before this payoff.)
     return hasExecute && (!requireExecuteAdmin || hasExecuteAdmin);
   });
 
-  const result = filteredTools.map((tool) => ({
-    name: tool.name,
-    description: tool.description ?? '',
-    inputSchema: tool.input_schema,
-  }));
+  const result = filteredTools.map((tool) => {
+    // A mixed multiplexer (some but not all actions gated over MCP) stays
+    // listed — its ungated actions (typically reads/drafts) still work —
+    // but its MCP-visible description gains a note about which don't.
+    const gatedActions = gatedActionsForTool(tool.name, tool.input_schema);
+    const description = gatedActions.length > 0
+      ? `${tool.description ?? ''} (Actions ${gatedActions.map((a) => `"${a}"`).join(', ')} require interactive approval and are not available over MCP — use the Breeze web app AI assistant for those.)`
+      : tool.description ?? '';
+    return {
+      name: tool.name,
+      description,
+      inputSchema: tool.input_schema,
+    };
+  });
 
   // Surface bootstrap auth tools (send_deployment_invites, configure_defaults)
   // to authenticated callers with the matching scope. These tools live outside
@@ -954,6 +1086,18 @@ async function handleToolsCall(
   }
   const tier = Math.max(baseTier, guardrailCheck.tier);
 
+  // MCP interactive-approval-only gate (see the block comment above
+  // MCP_APPROVAL_REQUIRED_EXTRA_TOOLS). Deliberately checked BEFORE the scope
+  // gates below — this is an unconditional deny regardless of what scope the
+  // caller holds, not "insufficient scope" (those gates report that
+  // distinctly). executeTool is never reached for a gated tool/action.
+  if (isMcpApprovalRequired(toolName, tier)) {
+    return jsonRpcResult(id, {
+      content: [{ type: 'text', text: JSON.stringify(MCP_APPROVAL_REQUIRED_ERROR) }],
+      isError: true,
+    });
+  }
+
   const hasExecute = scopes.includes('ai:execute');
   const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
   const hasExecuteAdmin = scopes.includes('ai:execute_admin');
@@ -996,8 +1140,14 @@ async function handleToolsCall(
     return jsonRpcError(id, -32000, 'Unable to verify rate limits');
   }
 
-  // MCP server auto-executes Tier 3 tools without approval — the API key holder
-  // is trusted at the scope level. Approval flow is for interactive UI only.
+  // By this point every Tier 3 call (and the sub-Tier-3
+  // MCP_APPROVAL_REQUIRED_EXTRA_TOOLS) has already been denied by the
+  // isMcpApprovalRequired gate above — user decision 2026-08-02 replaced the
+  // old "MCP server auto-executes Tier 3 tools, API key holder trusted at the
+  // scope level" model with a hard fail-closed over MCP, because MCP has no
+  // interactive approval surface. Everything reaching this point is Tier ≤2
+  // (or a Tier 3 action that was itself downgraded by TIER1_ACTIONS/
+  // TIER2_ACTIONS), so auto-execution here is intentional and safe.
 
   // Authoritative execution org (MCP-OAUTH-05): for device-targeted tools this
   // is resolved from the TARGETED DEVICES via the org+site access gate — NOT
@@ -1700,13 +1850,18 @@ async function handleResourcesRead(
 
   try {
     if (uri === 'breeze://devices') {
-      const deviceSiteConditions: SQL[] =
-        siteAllowedDeviceIds === null
+      // Ephemeral Quick Support devices live in the partner's hidden
+      // 'quick_support' org, which deliberately stays inside accessibleOrgIds —
+      // orgCond() will not filter them, so exclude them explicitly.
+      const deviceSiteConditions: SQL[] = [eq(devices.isEphemeral, false)];
+      deviceSiteConditions.push(
+        ...(siteAllowedDeviceIds === null
           ? []
           : siteAllowedDeviceIds.length === 0
             ? // Restricted caller with zero in-scope devices — match no rows.
               [inArray(devices.id, ['00000000-0000-0000-0000-000000000000'])]
-            : [inArray(devices.id, siteAllowedDeviceIds)];
+            : [inArray(devices.id, siteAllowedDeviceIds)])
+      );
       return await readOrgScopedResource(id, uri, devices, {
         id: devices.id,
         hostname: devices.hostname,
@@ -1845,7 +2000,9 @@ async function resolveDefaultOrgId(partnerId: string): Promise<string | null> {
     const [row] = await db
       .select({ id: organizations.id })
       .from(organizations)
-      .where(eq(organizations.partnerId, partnerId))
+      // The hidden 'quick_support' org can be the partner's oldest org — it must
+      // never become the default org for audit scoping or authTool dispatch.
+      .where(and(eq(organizations.partnerId, partnerId), ne(organizations.type, 'quick_support')))
       .orderBy(asc(organizations.createdAt))
       .limit(1);
     return row?.id ?? null;

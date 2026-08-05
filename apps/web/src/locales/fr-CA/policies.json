@@ -910,7 +910,8 @@
         "createUpdateRing": "Créer un anneau de mise à jour",
         "text2xl": "2XL",
         "saveChanges": "Enregistrer les modifications",
-        "createRing": "Créer un anneau"
+        "createRing": "Créer un anneau",
+        "thirdPartyRingHint": "Les règles d'approbation automatique des mises à jour tierces se configurent dans l'anneau de mise à jour lié."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Politique de périphériques de lien",

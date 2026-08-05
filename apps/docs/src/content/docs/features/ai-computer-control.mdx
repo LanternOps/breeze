@@ -23,7 +23,7 @@ The table below lists every device-control tool, its tier classification, and wh
 | `get_active_users` | Active user sessions with reboot-safety signal | Tier 1 | No |
 | `get_user_experience_metrics` | Login performance and session behavior trends | Tier 1 | No |
 | `manage_alerts` | List/get alerts (Tier 1); acknowledge/resolve (Tier 2) | Tier 1/2 | No |
-| `execute_command` | Run system commands on a device | Tier 3 | **Yes** |
+| `execute_command` | List processes/files/event-log channels (Tier 2); kill/service control/file read/service list/event-log query (Tier 3) | Tier 2/3 | Tier 3 command types only |
 | `run_script` | Execute a library script on up to 10 devices | Tier 3 | **Yes** |
 | `manage_services` | List services (Tier 2); start/stop/restart (Tier 3) | Tier 2/3 | Start/stop/restart only |
 | `file_operations` | List directories (Tier 2); read/write/delete/mkdir/rename (Tier 3) | Tier 2/3 | Read/write/delete/mkdir/rename |
@@ -100,24 +100,26 @@ Analyzes login performance and session behavior trends over time (up to 365 days
 
 ## Command Execution
 
-These Tier 3 tools send commands to the device agent for execution. Every invocation requires human approval before it reaches the device.
+`run_script` is Tier 3 — every invocation requires human approval before it reaches the device. `execute_command` is split per command type (see below): most command types are Tier 3 and require approval; `list_processes`, `file_list`, and `event_logs_list` are Tier 2 and run without a durable approval step in auto-execute session modes (they're still audit logged, and under the default per-step mode they still take a lightweight inline confirmation).
 
 ### execute_command
 
 Executes a system command on a single online device. The AI selects from a set of predefined command types, each with its own payload schema:
 
-| Command Type | What It Does |
-|--------------|--------------|
-| `list_processes` | List running processes |
-| `kill_process` | Terminate a process by ID or name |
-| `list_services` | List system services and their status |
-| `start_service` | Start a stopped service |
-| `stop_service` | Stop a running service |
-| `restart_service` | Restart a service |
-| `file_list` | List files in a directory |
-| `file_read` | Read file contents |
-| `event_logs_list` | List available event log channels |
-| `event_logs_query` | Query event log entries with filters |
+| Command Type | What It Does | Tier |
+|--------------|--------------|------|
+| `list_processes` | List running processes | 2 |
+| `kill_process` | Terminate a process by ID or name | 3 |
+| `list_services` | List system services and their status | 3 |
+| `start_service` | Start a stopped service | 3 |
+| `stop_service` | Stop a running service | 3 |
+| `restart_service` | Restart a service | 3 |
+| `file_list` | List files in a directory | 2 |
+| `file_read` | Read file contents | 3 |
+| `event_logs_list` | List available event log channels | 2 |
+| `event_logs_query` | Query event log entries with filters | 3 |
+
+`list_services` and `event_logs_query` stay Tier 3 even though they're reads: service records can carry credentials in their binary path/arguments, and event-log entries (particularly the Security log) can carry a mistyped password or other sensitive text in their message body.
 
 The device must be online (WebSocket connected) to receive commands. Commands have a 30-second timeout.
 
@@ -128,7 +130,7 @@ The device must be online (WebSocket connected) to receive commands. Commands ha
 ```
 
 <Aside type="caution">
-  When the AI proposes an `execute_command` action, you will see a detailed description of the command in the approval prompt -- for example, "Execute `kill_process` command on device a1b2c3d4...". Review the command type and payload before approving.
+  When the AI proposes a Tier 3 `execute_command` action, you will see a detailed description of the command in the approval prompt -- for example, "Execute `kill_process` command on device a1b2c3d4...". Review the command type and payload before approving. Tier 2 command types (`list_processes`, `file_list`, `event_logs_list`) skip this durable approval step in auto-execute session modes.
 </Aside>
 
 ### run_script

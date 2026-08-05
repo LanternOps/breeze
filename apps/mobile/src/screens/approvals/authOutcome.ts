@@ -9,7 +9,12 @@
  * not succeed".
  */
 
-export type AuthFailureKind = 'silent' | 'interrupted' | 'lockout' | 'failed';
+export type AuthFailureKind =
+  | 'silent'
+  | 'interrupted'
+  | 'lockout'
+  | 'no_authenticator'
+  | 'failed';
 
 export interface AuthFailureClassification {
   kind: AuthFailureKind;
@@ -29,6 +34,37 @@ const SILENT_CANCEL_CODE = 'user_cancel';
 const INTERRUPTED_CODES = new Set(['system_cancel', 'app_cancel']);
 
 const LOCKOUT_CODES = new Set(['lockout', 'lockout_permanent']);
+
+// The device has NO enrolled authenticator at all — no biometric AND no
+// PIN/pattern/password. By the time these codes reach the classifier the
+// component has already tried the device-credential fallback, so this is a
+// permanent configuration state, not a transient failure: "Try again" can
+// never succeed (issue #3117). Surface setup guidance instead.
+const NO_AUTHENTICATOR_CODES = new Set(['not_enrolled', 'passcode_not_set']);
+
+export const NO_AUTHENTICATOR_MESSAGE =
+  'This device has no screen lock. Set up a screen lock in device settings to approve requests.';
+
+// Mirrors expo-local-authentication's SecurityLevel.NONE. Kept as a local
+// constant so this module stays free of RN/Expo imports (the mobile Vitest
+// harness is node-env, pure-logic only — see the header comment).
+const SECURITY_LEVEL_NONE = 0;
+
+/**
+ * Preflight check run BEFORE showing any auth prompt. `enrolledLevel` is
+ * the result of `getEnrolledLevelAsync()` (or `null` if the probe threw —
+ * in that case we don't block the attempt; the prompt's own error code is
+ * the backstop). Returns the no-authenticator classification when the
+ * device has no screen lock at all, else `null` (proceed to the prompt).
+ */
+export function classifyPreAuth(
+  enrolledLevel: number | null,
+): AuthFailureClassification | null {
+  if (enrolledLevel === SECURITY_LEVEL_NONE) {
+    return { kind: 'no_authenticator', message: NO_AUTHENTICATOR_MESSAGE };
+  }
+  return null;
+}
 
 /**
  * Map an `expo-local-authentication` failure `error` code to what the
@@ -50,6 +86,9 @@ export function classifyAuthFailure(code: string | undefined): AuthFailureClassi
       kind: 'lockout',
       message: 'Biometrics locked. Use device passcode in Settings to unlock.',
     };
+  }
+  if (code && NO_AUTHENTICATOR_CODES.has(code)) {
+    return { kind: 'no_authenticator', message: NO_AUTHENTICATOR_MESSAGE };
   }
   return { kind: 'failed', message: 'Authentication failed. Try again.' };
 }

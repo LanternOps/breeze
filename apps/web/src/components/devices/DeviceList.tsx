@@ -147,6 +147,18 @@ export type Device = {
    * responses from older API versions or agents too old to send it.
    */
   agentServerUrl?: string | null;
+  /**
+   * Public address the control plane last saw the agent connect from
+   * (devices.last_seen_ip, #2503). Agent rows only — null until the device
+   * has made one authenticated request, and always null for network rows.
+   */
+  wanIp?: string | null;
+  /**
+   * Best current local address for the device (#2503). For agent rows the API
+   * picks one interface from device_network (primary > IPv4 > routable);
+   * for network-discovered rows it is the discovered asset's own IP.
+   */
+  lanIp?: string | null;
   tags: string[];
   lastUser?: string;
   uptimeSeconds?: number;
@@ -162,6 +174,15 @@ export type Device = {
    * responses from older API versions.
    */
   pendingReboot?: boolean;
+  /**
+   * Set when this row was created by a hostname-collision enrollment and may
+   * be replacing an earlier device record (#2764,
+   * `devices.possible_replacement_of_device_id`). Null/absent on every
+   * ordinary device — a non-null value is a prompt for a human to review the
+   * old row and retire it. Drives the list badge and the review banner on the
+   * device page.
+   */
+  possibleReplacementOfDeviceId?: string | null;
   desktopAccess?: DesktopAccessState | null;
   remoteAccessPolicy?: RemoteAccessPolicy | null;
   /**
@@ -482,6 +503,12 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   lastSeen: (d) => new Date(d.lastSeen).getTime() || null,
   agentVersion: (d) => d.agentVersion || null,
   watchdogVersion: (d) => d.watchdogVersion?.trim() || null,
+  // IP columns (#2503) sort as strings through the shared numeric collator,
+  // which happens to give correct dotted-quad ordering: it compares digit runs
+  // numerically, so 192.168.1.9 < 192.168.1.10 and 10.x < 192.x. Missing
+  // values sort blanks-last (null) to match the dash the cell renders (#1284).
+  wanIp: (d) => d.wanIp || null,
+  lanIp: (d) => d.lanIp || null,
   serverUrl: (d) => serverHost(d.agentServerUrl),
   tags: (d) => (d.tags && d.tags.length > 0 ? d.tags.join(", ") : null),
   lastUser: (d) => d.lastUser || null,
@@ -1330,6 +1357,20 @@ export default function DeviceList({
                 {formatSilentDuration(device.mainAgentSilentSince!)}
               </span>
             )}
+            {/* Collision enrollment (#2764): this row may be replacing an
+                earlier device with the same hostname. Unlike pending-reboot
+                below it is NOT suppressed on an offline row — the duplicate
+                still needs a human decision, and an offline collider is the
+                likeliest one to be the stale record. */}
+            {device.possibleReplacementOfDeviceId && (
+              <span
+                data-testid={`device-${device.id}-possible-duplicate-badge`}
+                title={t("deviceList.possibleDuplicateTitle")}
+                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
+              >
+                {t("deviceList.possibleDuplicate")}
+              </span>
+            )}
             {/* Pending-reboot is only actionable while the box is reachable. On an
                 offline device the flag is stale and unactionable, so suppress the
                 dot rather than wrap it under the wider "Down" pill. */}
@@ -1553,6 +1594,40 @@ export default function DeviceList({
           data-testid={`device-${device.id}-server-url`}
         >
           {serverHost(device.agentServerUrl) || dash}
+        </td>
+      ),
+    },
+    // WAN/LAN IP columns (#2503). Both are opt-in and default-hidden. Header
+    // labels stay literal English here, matching every other opt-in column in
+    // this table (osVersion, power, vpn, …); only the ten default-visible
+    // columns are translated today.
+    wanIp: {
+      header: () => sortHeader("wanIp", "WAN IP", "Sort by WAN IP"),
+      // Agent-only: a discovered printer/switch never authenticates to the
+      // control plane, so there is no source address to report for it.
+      cell: (device) => (
+        <td
+          key="wanIp"
+          className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap font-mono"
+          title={device.wanIp ?? undefined}
+          data-testid={`device-${device.id}-wan-ip`}
+        >
+          {agentCell(device, device.wanIp || dash)}
+        </td>
+      ),
+    },
+    lanIp: {
+      header: () => sortHeader("lanIp", "LAN IP", "Sort by LAN IP"),
+      // Populated for BOTH arms: agent rows get the interface the API picked
+      // out of device_network, network rows their own discovered address.
+      cell: (device) => (
+        <td
+          key="lanIp"
+          className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap font-mono"
+          title={device.lanIp ?? undefined}
+          data-testid={`device-${device.id}-lan-ip`}
+        >
+          {device.lanIp || dash}
         </td>
       ),
     },

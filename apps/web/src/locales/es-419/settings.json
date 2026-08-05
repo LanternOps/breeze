@@ -542,6 +542,9 @@
     "hideExpired": "Ocultar caducado",
     "deleteExpired": "Eliminar caducado",
     "shortCode": "código corto",
+    "installerUsage": "Dispositivos del instalador {{consumed}} / {{max}}",
+    "installerUsageExpired": "Dispositivos del instalador {{consumed}} / {{max}} (expirado)",
+    "installerUsageMixed": "Dispositivos del instalador {{liveConsumed}} / {{liveMax}} activos · {{expired}} expirados",
     "usage": "Uso",
     "expires": "Vence",
     "empty": "No se encontraron claves de inscripción. Cree uno para comenzar.",
@@ -575,7 +578,7 @@
     "rotateConfirm": "¿Rotar \"{{name}}\" ahora? Las inscripciones existentes seguirán funcionando, pero las nuevas inscripciones deben utilizar la nueva clave.",
     "rotateKey": "Rotar clave",
     "deleteExpiredTitle": "Eliminar claves de inscripción caducadas",
-    "deleteExpiredConfirm": "¿Eliminar todas las claves de inscripción caducadas? Esto no se puede deshacer."
+    "deleteExpiredConfirm": "¿Eliminar todas las claves de inscripción caducadas? Se conservan las claves que aún respaldan un enlace de descarga del instalador activo. Esto no se puede deshacer."
   },
   "inboundEmail": {
     "saveError": "No se pudo guardar la configuración del correo electrónico entrante; es posible que su sesión necesite una nueva verificación MFA. Reintentar.",

@@ -66,8 +66,10 @@ complianceRoutes.get(
       effectivePartnerId = await resolvePartnerIdForOrg(effectiveOrgId);
     }
 
-    // Get devices scoped to org (or all accessible orgs for partner/system)
-    const deviceConditions = [];
+    // Get devices scoped to org (or all accessible orgs for partner/system).
+    // Ephemeral Quick Support devices stay inside accessibleOrgIds for RLS by
+    // design, so exclude them from the patch-compliance population explicitly.
+    const deviceConditions = [eq(devices.isEphemeral, false)];
     const perms = c.get('permissions') as UserPermissions | undefined;
     if (effectiveOrgId) {
       deviceConditions.push(eq(devices.orgId, effectiveOrgId));

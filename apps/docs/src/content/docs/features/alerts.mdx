@@ -152,7 +152,7 @@ Alert rules define what conditions to watch for and which devices to monitor.
 </Steps>
 
 <Aside type="caution">
-  Older rules may still carry condition types Breeze no longer evaluates -- `custom`, and a "network usage" metric that never had a metric to compare against. Those are shown read-only with an amber warning on the rule, and the rule cannot be saved until you remove or replace the condition. Agent-side service and process watches are configured separately, on the policy's **Monitoring** tab -- see [Service & Process Monitoring](/features/service-monitoring/).
+  Older rules may still carry condition types Breeze no longer evaluates -- `custom`, and a "network usage" metric that never had a metric to compare against. Those are shown read-only with a warning on the rule, and the rule cannot be saved until you remove or replace the condition. The retired `custom` **type** is also rejected by the API on write, so a rule using one can't be created through the AI assistant or a direct API call either, and a rule that was disabled because it only contained one can't be re-enabled until it's replaced. Agent-side service and process watches are configured separately, on the policy's **Monitoring** tab -- see [Service & Process Monitoring](/features/service-monitoring/).
 </Aside>
 
 ### Testing a Rule

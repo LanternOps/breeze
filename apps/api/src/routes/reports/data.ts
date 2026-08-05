@@ -105,8 +105,11 @@ dataRoutes.get(
       return c.json({ data: [], total: 0 });
     }
 
-    // Build conditions
-    const conditions: SQL[] = [];
+    // Build conditions. Ephemeral Quick Support devices sit in the hidden
+    // 'quick_support' org, which deliberately stays inside accessibleOrgIds so
+    // RLS lets a tech reach their own session — every report enumeration in
+    // this file has to exclude them explicitly.
+    const conditions: SQL[] = [eq(devices.isEphemeral, false)];
 
     if (query.orgId) {
       const hasAccess = await ensureOrgAccess(query.orgId, auth);
@@ -195,7 +198,7 @@ dataRoutes.get(
     }
 
     // Build conditions
-    const conditions: SQL[] = [];
+    const conditions: SQL[] = [eq(devices.isEphemeral, false)];
 
     if (query.orgId) {
       const hasAccess = await ensureOrgAccess(query.orgId, auth);
@@ -460,7 +463,7 @@ dataRoutes.get(
     }
 
     // Build conditions
-    const conditions: ReturnType<typeof eq>[] = [];
+    const conditions: ReturnType<typeof eq>[] = [eq(devices.isEphemeral, false)];
 
     if (query.orgId) {
       const hasAccess = await ensureOrgAccess(query.orgId, auth);
@@ -612,7 +615,7 @@ dataRoutes.get(
     }
 
     // Build conditions for devices
-    const deviceConditions: SQL[] = [];
+    const deviceConditions: SQL[] = [eq(devices.isEphemeral, false)];
 
     if (query.orgId) {
       const hasAccess = await ensureOrgAccess(query.orgId, auth);
