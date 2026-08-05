@@ -138,9 +138,9 @@ type Client struct {
 	// read pump waiting for lane space. Overridable in tests; defaults to
 	// defaultOrderedEnqueueTimeout.
 	orderedEnqueueTimeout time.Duration
-	stopOnce        sync.Once
-	isRunning       bool
-	runningMu       sync.RWMutex
+	stopOnce              sync.Once
+	isRunning             bool
+	runningMu             sync.RWMutex
 
 	// OnConnected, if set, is invoked synchronously from the read pump once
 	// the server's "connected" welcome frame has been parsed — i.e. after a
