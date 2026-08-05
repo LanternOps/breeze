@@ -804,6 +804,228 @@ describe("GET /s/:code", () => {
     expect(insertedRow.expiresAt.getTime()).toBeLessThanOrEqual(after + 1441 * 60 * 1000);
   });
 
+  // #3038: the Windows bootstrap token minted on a short-link download must
+  // inherit the SHORT-LINK row's remaining lifetime — not the 24h base, and
+  // not the freshly-minted download child key's 24h TTL. Otherwise an MSI
+  // downloaded on day 1 of a 30-day link dies after hour 24 with an
+  // unexplained 404, silently discarding the admin's expiry choice.
+  it("windows bootstrap token inherits the short-link row's remaining lifetime (#3038)", async () => {
+    const thirtyDaysMinutes = 30 * 24 * 60;
+    const shortLinkRow = makeKeyRow({
+      shortCode: "longlived12",
+      installerPlatform: "windows",
+      expiresAt: new Date(Date.now() + thirtyDaysMinutes * 60 * 1000),
+    });
+    // The download child key keeps its default fresh 1h expiry from
+    // makeChildKeyRow — proving the ttl comes from the LINK row, not the
+    // transport child key serveInstaller receives.
+    const childRow = makeChildKeyRow({ installerPlatform: "windows" });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([shortLinkRow]),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([childRow]),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: KEY_ID }]),
+        }),
+      }),
+    } as any);
+
+    const issueSpy = vi
+      .spyOn(installerBootstrapTokenIssuance, "issueBootstrapTokenForKey")
+      .mockResolvedValueOnce({
+        id: "btok-ttl-1",
+        token: "LONGLIVED1",
+        expiresAt: new Date(Date.now() + thirtyDaysMinutes * 60 * 1000),
+        parentKeyName: "Test Key",
+      });
+
+    const res = await app.request("/s/longlived12");
+
+    expect(res.status).toBe(200);
+    const ttlMinutes = issueSpy.mock.calls[0]?.[0]?.ttlMinutes;
+    // floor() of the remaining lifetime — at most the full 30 days, and no
+    // more than a couple of minutes of test-elapsed drift below it.
+    expect(ttlMinutes).toBeGreaterThanOrEqual(thirtyDaysMinutes - 2);
+    expect(ttlMinutes).toBeLessThanOrEqual(thirtyDaysMinutes);
+
+    issueSpy.mockRestore();
+  });
+
+  it("windows bootstrap token from a near-expiry short link is short-lived, not the 24h base (#3038)", async () => {
+    const shortLinkRow = makeKeyRow({
+      shortCode: "nearexpiry1",
+      installerPlatform: "windows",
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000), // 5 minutes left
+    });
+    const childRow = makeChildKeyRow({ installerPlatform: "windows" });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([shortLinkRow]),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([childRow]),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: KEY_ID }]),
+        }),
+      }),
+    } as any);
+
+    const issueSpy = vi
+      .spyOn(installerBootstrapTokenIssuance, "issueBootstrapTokenForKey")
+      .mockResolvedValueOnce({
+        id: "btok-ttl-2",
+        token: "NEAREXP123",
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+        parentKeyName: "Test Key",
+      });
+
+    const res = await app.request("/s/nearexpiry1");
+
+    expect(res.status).toBe(200);
+    const ttlMinutes = issueSpy.mock.calls[0]?.[0]?.ttlMinutes;
+    // A token still gets minted (the CHECK constraint needs expires_at >
+    // created_at, hence the 1-minute floor), but it dies with the link —
+    // nowhere near the 1440-minute base.
+    expect(ttlMinutes).toBeGreaterThanOrEqual(1);
+    expect(ttlMinutes).toBeLessThanOrEqual(5);
+
+    issueSpy.mockRestore();
+  });
+
+  it("windows bootstrap token falls back to the 24h base when the short link has no expiry (#3038)", async () => {
+    const shortLinkRow = makeKeyRow({
+      shortCode: "noexpiry123",
+      installerPlatform: "windows",
+      expiresAt: null,
+    });
+    const childRow = makeChildKeyRow({ installerPlatform: "windows" });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([shortLinkRow]),
+        }),
+      }),
+    } as any);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([childRow]),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: KEY_ID }]),
+        }),
+      }),
+    } as any);
+
+    const issueSpy = vi
+      .spyOn(installerBootstrapTokenIssuance, "issueBootstrapTokenForKey")
+      .mockResolvedValueOnce({
+        id: "btok-ttl-3",
+        token: "NOEXPIRY12",
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        parentKeyName: "Test Key",
+      });
+
+    const res = await app.request("/s/noexpiry123");
+
+    expect(res.status).toBe(200);
+    // undefined → issueBootstrapTokenForKey's 24h base, NOT an unbounded token.
+    expect(issueSpy.mock.calls[0]?.[0]?.ttlMinutes).toBeUndefined();
+
+    issueSpy.mockRestore();
+  });
+
+  it("partner cap clamps the inherited link lifetime on the windows bootstrap token (#3038, real issuance)", async () => {
+    // Runs the REAL issueBootstrapTokenForKey (no spy) so the cap clamp
+    // inside it is exercised end-to-end from the route: a 30-day link under
+    // a 60-minute partner cap must mint a 60-minute token.
+    mockEnrollmentDefaults({ maxTtlMinutes: 60 });
+    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+    const shortLinkRow = makeKeyRow({
+      shortCode: "cappedwin12",
+      installerPlatform: "windows",
+      expiresAt: new Date(Date.now() + thirtyDaysMs),
+    });
+    const childRow = makeChildKeyRow({ installerPlatform: "windows" });
+
+    // Same select mock serves both the short-code lookup and the issuance
+    // service's parent-key lookup (the parent it resolves is the download
+    // child key id, but the row shape only needs org/expiry/usage fields).
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([shortLinkRow]),
+        }),
+      }),
+    } as any);
+
+    // First insert: the download child key. Second insert: the bootstrap
+    // token row (from the real issuance service) — capture its values.
+    const insertedValues: Record<string, unknown>[] = [];
+    vi.mocked(db.insert).mockImplementation(
+      () =>
+        ({
+          values: (vals: Record<string, unknown>) => {
+            insertedValues.push(vals);
+            return {
+              returning: vi
+                .fn()
+                .mockResolvedValue(
+                  insertedValues.length === 1
+                    ? [childRow]
+                    : [{ id: "btok-real-1", token: vals.token }],
+                ),
+            };
+          },
+        }) as any,
+    );
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: KEY_ID }]),
+        }),
+      }),
+    } as any);
+
+    const before = Date.now();
+    const res = await app.request("/s/cappedwin12");
+    const after = Date.now();
+
+    expect(res.status).toBe(200);
+    expect(insertedValues).toHaveLength(2);
+    const tokenExpiresAt = (insertedValues[1] as { expiresAt: Date }).expiresAt;
+    // Clamped to the 60-minute cap — not 30 days, not the 24h base.
+    expect(tokenExpiresAt.getTime()).toBeGreaterThanOrEqual(
+      before + 59 * 60 * 1000,
+    );
+    expect(tokenExpiresAt.getTime()).toBeLessThanOrEqual(
+      after + 60 * 60 * 1000 + 5_000,
+    );
+  });
+
   it("returns 404 for unknown code", async () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
@@ -1190,6 +1412,46 @@ describe("GET /public-download/:platform", () => {
         actorId: "00000000-0000-0000-0000-000000000000",
       }),
     );
+
+    issueSpy.mockRestore();
+  });
+
+  // #3038: on this path the served key IS the installer-link child key the
+  // admin configured, so the bootstrap token inherits ITS remaining lifetime.
+  it("public windows download derives the bootstrap token TTL from the link key's remaining lifetime (#3038)", async () => {
+    const sevenDaysMinutes = 7 * 24 * 60;
+    const row = makeKeyRow({
+      installerPlatform: "windows",
+      maxUsage: 1,
+      usageCount: 0,
+      expiresAt: new Date(Date.now() + sevenDaysMinutes * 60 * 1000),
+    });
+
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([row]),
+        }),
+      }),
+    } as any);
+
+    const issueSpy = vi
+      .spyOn(installerBootstrapTokenIssuance, "issueBootstrapTokenForKey")
+      .mockResolvedValueOnce({
+        id: "btok-pd-1",
+        token: "PUBDLTTL12",
+        expiresAt: new Date(Date.now() + sevenDaysMinutes * 60 * 1000),
+        parentKeyName: "Test Key",
+      });
+
+    const res = await app.request(
+      `/enrollment-keys/public-download/windows?h=dlh_${"1".repeat(32)}`,
+    );
+
+    expect(res.status).toBe(200);
+    const ttlMinutes = issueSpy.mock.calls[0]?.[0]?.ttlMinutes;
+    expect(ttlMinutes).toBeGreaterThanOrEqual(sevenDaysMinutes - 2);
+    expect(ttlMinutes).toBeLessThanOrEqual(sevenDaysMinutes);
 
     issueSpy.mockRestore();
   });

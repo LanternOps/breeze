@@ -71,7 +71,7 @@ describe('diagnostic log routes', () => {
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: 'device-1', orgId: 'org-1', siteId: 'site-allowed' }]),
+            limit: vi.fn().mockResolvedValue([{ id: '11111111-2222-4333-8444-555555555555', orgId: 'org-1', siteId: 'site-allowed' }]),
           }),
         }),
       } as any)
@@ -82,7 +82,7 @@ describe('diagnostic log routes', () => {
               limit: vi.fn().mockReturnValue({
                 offset: vi.fn().mockResolvedValue([{
                   id: 'log-1',
-                  deviceId: 'device-1',
+                  deviceId: '11111111-2222-4333-8444-555555555555',
                   message: 'failed with token=raw-token',
                   fields: { apiKey: 'raw-key', nested: { password: 'raw-password' } },
                   timestamp: new Date('2026-05-01T00:00:00.000Z'),
@@ -98,7 +98,7 @@ describe('diagnostic log routes', () => {
         }),
       } as any);
 
-    const res = await app.request('/devices/device-1/diagnostic-logs', {
+    const res = await app.request('/devices/11111111-2222-4333-8444-555555555555/diagnostic-logs', {
       headers: { Authorization: 'Bearer token' },
     });
 
@@ -115,12 +115,12 @@ describe('diagnostic log routes', () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{ id: 'device-1', orgId: 'org-1', siteId: 'site-denied' }]),
+          limit: vi.fn().mockResolvedValue([{ id: '11111111-2222-4333-8444-555555555555', orgId: 'org-1', siteId: 'site-denied' }]),
         }),
       }),
     } as any);
 
-    const res = await app.request('/devices/device-1/diagnostic-logs', {
+    const res = await app.request('/devices/11111111-2222-4333-8444-555555555555/diagnostic-logs', {
       headers: { Authorization: 'Bearer token', 'x-site-restricted': 'true' },
     });
 

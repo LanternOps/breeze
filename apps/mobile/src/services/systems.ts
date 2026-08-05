@@ -1,6 +1,7 @@
 import * as SecureStore from 'expo-secure-store';
 
 import { getServerUrl } from './serverConfig';
+import { fetchWithTimeout } from './fetchWithTimeout';
 
 const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const TOKEN_KEY = 'breeze_auth_token';
@@ -32,7 +33,7 @@ async function authedGet<T>(path: string, errLabel: string): Promise<T> {
     'Content-Type': 'application/json',
   };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  const res = await fetch(url, { headers, credentials: 'include' });
+  const res = await fetchWithTimeout(url, { headers, credentials: 'include' });
   if (!res.ok) throw new Error(`${errLabel} failed: ${res.status}`);
   return res.json();
 }

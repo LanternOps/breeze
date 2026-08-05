@@ -104,6 +104,221 @@ describe('compactToolResultForChat', () => {
     expect((parsed._chat as Record<string, unknown>).outputCompacted).toBe(true);
   });
 
+  // ─── #3093: structured stdout survives compaction ───────────────────
+
+  it('keeps plain-text stdout up to 6K chars without truncation', () => {
+    const stdout = 'log line about nothing sensitive\n'.repeat(150); // ~4,950 chars, non-JSON
+    const raw = JSON.stringify({ status: 'completed', exitCode: 0, stdout });
+
+    const compacted = compactToolResultForChat('execute_command', raw);
+    const parsed = JSON.parse(compacted) as Record<string, unknown>;
+
+    expect(parsed.stdout).toBe(stdout);
+    expect((parsed.stdout as string).includes('[truncated')).toBe(false);
+  });
+
+  it('compacts JSON file_list stdout structurally, preserving the envelope and paging guidance (#3093)', () => {
+    const fileListResponse = {
+      path: 'C:\\Program Files',
+      entries: Array.from({ length: 200 }).map((_, idx) => ({
+        name: `app-${idx}`,
+        path: `C:\\Program Files\\app-${idx}`,
+        type: 'directory',
+        size: 4096,
+        modified: '2026-08-01T00:00:00Z',
+        permissions: 'drwxr-xr-x',
+      })),
+      limit: 1000,
+      truncated: false,
+    };
+    const raw = JSON.stringify({
+      status: 'completed',
+      exitCode: 0,
+      stdout: JSON.stringify(fileListResponse),
+      durationMs: 42,
+    });
+
+    const compacted = compactToolResultForChat('execute_command', raw);
+    expect(compacted.length).toBeLessThanOrEqual(8_000);
+    // The whole result must still be valid JSON — the old char-cut broke it mid-string.
+    const parsed = JSON.parse(compacted) as Record<string, unknown>;
+    const stdout = parsed.stdout as Record<string, unknown>;
+
+    expect(parsed.status).toBe('completed');
+    // Envelope fields survive (the old cut destroyed the trailing limit/truncated keys).
+    expect(stdout.path).toBe('C:\\Program Files');
+    expect(stdout.limit).toBe(1000);
+    expect(Array.isArray(stdout.entries)).toBe(true);
+    expect((stdout.entries as unknown[]).length).toBeGreaterThan(0);
+    expect((stdout.entries as unknown[]).length).toBeLessThan(200);
+    // Explicit, actionable truncation marker.
+    const truncation = parsed.stdoutTruncation as Record<string, unknown>;
+    expect(truncation.itemsDropped).toBeGreaterThan(0);
+    expect(String(truncation.note)).toContain('file_list');
+    expect((parsed._chat as Record<string, unknown>).outputCompacted).toBe(true);
+  });
+
+  it('compacts JSON list_processes stdout structurally, preserving pagination fields (#3093)', () => {
+    const processResponse = {
+      processes: Array.from({ length: 120 }).map((_, idx) => ({
+        pid: 1000 + idx,
+        name: `service-host-${idx}.exe`,
+        user: 'SYSTEM',
+        cpuPercent: 0.5,
+        memoryMb: 128.25,
+        status: 'running',
+      })),
+      total: 312,
+      page: 1,
+      limit: 120,
+      totalPages: 3,
+    };
+    const raw = JSON.stringify({
+      status: 'completed',
+      exitCode: 0,
+      stdout: JSON.stringify(processResponse),
+    });
+
+    const compacted = compactToolResultForChat('execute_command', raw);
+    expect(compacted.length).toBeLessThanOrEqual(8_000);
+    const parsed = JSON.parse(compacted) as Record<string, unknown>;
+    const stdout = parsed.stdout as Record<string, unknown>;
+
+    expect(stdout.total).toBe(312);
+    expect(stdout.totalPages).toBe(3);
+    expect(Array.isArray(stdout.processes)).toBe(true);
+    // 120 in → capped at 50 (or tighter): the compaction must actually fire.
+    expect((stdout.processes as unknown[]).length).toBeLessThanOrEqual(50);
+    expect((parsed.stdoutTruncation as Record<string, unknown>).itemsDropped).toBeGreaterThanOrEqual(70);
+    expect(parsed.stdoutChars).toBeGreaterThan(2_000);
+  });
+
+  it('lands long-string event-log stdout as valid JSON via the tighter tiers, never the raw preview cut (#3093)', () => {
+    const eventLogResponse = {
+      logName: 'System',
+      events: Array.from({ length: 300 }).map((_, idx) => ({
+        recordId: 90_000 + idx,
+        level: 'Information',
+        source: 'Service Control Manager',
+        message: `M${'x'.repeat(899)}`,
+      })),
+      total: 3_000,
+      page: 1,
+      limit: 300,
+      totalPages: 10,
+    };
+    const raw = JSON.stringify({
+      status: 'completed',
+      exitCode: 0,
+      stdout: JSON.stringify(eventLogResponse),
+    });
+
+    const compacted = compactToolResultForChat('execute_command', raw);
+    expect(compacted.length).toBeLessThanOrEqual(8_000);
+    // Must be structurally valid — this shape used to fall through to the
+    // final fallback's mid-string preview slice.
+    const parsed = JSON.parse(compacted) as Record<string, unknown>;
+    const stdout = parsed.stdout as Record<string, unknown>;
+
+    expect(parsed._chat).toBeDefined();
+    expect((parsed._chat as Record<string, unknown>).reason).toBeUndefined();
+    expect(stdout.logName).toBe('System');
+    expect(stdout.total).toBe(3_000);
+    expect(Array.isArray(stdout.events)).toBe(true);
+    expect((stdout.events as unknown[]).length).toBeGreaterThan(0);
+    const truncation = parsed.stdoutTruncation as Record<string, unknown>;
+    expect(truncation.itemsDropped).toBe(300 - (stdout.events as unknown[]).length);
+    expect(String(truncation.note)).toContain('event_logs_query');
+  });
+
+  it('redacts key-form secrets inside JSON stdout before it reaches the model', () => {
+    const raw = JSON.stringify({
+      status: 'completed',
+      exitCode: 0,
+      stdout: JSON.stringify({
+        services: [
+          { name: 'svc', password: 'hunter2-super-secret', apiKey: 'plain-key-value-123', token: 'tok_zzz' },
+        ],
+      }),
+    });
+
+    const compacted = compactToolResultForChat('execute_command', raw);
+
+    expect(compacted).not.toContain('hunter2-super-secret');
+    expect(compacted).not.toContain('plain-key-value-123');
+    expect(compacted).not.toContain('tok_zzz');
+    expect(compacted).toContain('[REDACTED]');
+    // The non-secret sibling survives redaction.
+    const parsed = JSON.parse(compacted) as Record<string, unknown>;
+    const services = (parsed.stdout as Record<string, unknown>).services as Record<string, unknown>[];
+    expect(services[0]?.name).toBe('svc');
+  });
+
+  it('reports cumulative truncation on long string leaves and steers away from useless paging', () => {
+    const raw = JSON.stringify({
+      status: 'completed',
+      exitCode: 0,
+      stdout: JSON.stringify({ report: 'x'.repeat(3_000) }),
+    });
+
+    const compacted = compactToolResultForChat('execute_command', raw);
+    const parsed = JSON.parse(compacted) as Record<string, unknown>;
+    const stdout = parsed.stdout as Record<string, unknown>;
+
+    // The marker must report the true omitted count (1500), not the marker's
+    // own overhang from a second truncation pass (the old "26 chars" bug).
+    expect(stdout.report).toMatch(/\[truncated 1500 chars\]$/);
+    expect((parsed._chat as Record<string, unknown>).stringsTruncated).toBe(1);
+    // Nothing pageable was dropped — the note must NOT tell the model to page.
+    const truncation = parsed.stdoutTruncation as Record<string, unknown>;
+    expect(truncation.itemsDropped).toBe(0);
+    expect(String(truncation.note)).toContain('narrower command');
+  });
+
+  it('keeps the truncation marker accurate when only a tighter tier drops items', () => {
+    // 45 chunky processes: under the 50-item first-tier cap, but too big to
+    // serialize — the tighter tier drops to 20 and the marker must say so
+    // (this case used to ship with NO stdoutTruncation at all).
+    const raw = JSON.stringify({
+      status: 'completed',
+      exitCode: 0,
+      stdout: JSON.stringify({
+        processes: Array.from({ length: 45 }).map((_, idx) => ({
+          pid: 2_000 + idx,
+          name: `chunky-${idx}.exe`,
+          commandLine: `--flag=${'v'.repeat(280)}`,
+        })),
+        total: 45,
+      }),
+    });
+
+    const compacted = compactToolResultForChat('execute_command', raw);
+    expect(compacted.length).toBeLessThanOrEqual(8_000);
+    const parsed = JSON.parse(compacted) as Record<string, unknown>;
+    const stdout = parsed.stdout as Record<string, unknown>;
+    const kept = (stdout.processes as unknown[]).length;
+
+    expect(kept).toBeLessThan(45);
+    const truncation = parsed.stdoutTruncation as Record<string, unknown>;
+    expect(truncation.itemsDropped).toBe(45 - kept);
+  });
+
+  it('returns small JSON stdout as a parsed object without truncation metadata', () => {
+    const raw = JSON.stringify({
+      status: 'completed',
+      exitCode: 0,
+      stdout: JSON.stringify({ path: '/tmp', entries: [{ name: 'a.txt', type: 'file', size: 12 }], truncated: false }),
+    });
+
+    const compacted = compactToolResultForChat('execute_command', raw);
+    const parsed = JSON.parse(compacted) as Record<string, unknown>;
+    const stdout = parsed.stdout as Record<string, unknown>;
+
+    expect(stdout.path).toBe('/tmp');
+    expect(parsed.stdoutTruncation).toBeUndefined();
+    expect(parsed._chat).toBeUndefined();
+  });
+
   // ─── Fleet tool compaction ──────────────────────────────────────────
 
   it('compacts oversized list_configuration_policies output', () => {

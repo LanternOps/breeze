@@ -56,35 +56,44 @@ describe('searchAll', () => {
     fetchMock.mockImplementation((_url: string, opts: RequestInit) => {
       receivedSignal = opts.signal as AbortSignal;
       // Resolve only once aborted, simulating a slow server we want to cut off.
-      return new Promise((resolve, reject) => {
-        const signal = opts.signal;
-        if (signal?.aborted) {
-          abortFromFetch = true;
-          const err = new Error('aborted');
-          err.name = 'AbortError';
-          reject(err);
-          return;
-        }
-        signal?.addEventListener('abort', () => {
+      return new Promise((_resolve, reject) => {
+        opts.signal?.addEventListener('abort', () => {
           abortFromFetch = true;
           const err = new Error('aborted');
           err.name = 'AbortError';
           reject(err);
         });
+        // Abort from INSIDE the mock, once the request is genuinely in flight
+        // and the listener above is wired. Aborting from the test body instead
+        // meant guessing how many microtasks searchAll's await chain takes, and
+        // that guess silently went stale the moment the chain changed length —
+        // the request was then cancelled before dispatch, so this test stopped
+        // covering the in-flight path it exists to cover.
+        controller.abort();
       });
     });
 
     const promise = searchAll('macbook', 20, controller.signal);
-    // The await chain inside searchAll (getServerUrl + getToken) has to
-    // resolve before fetch is invoked — yield two microtasks so the
-    // listener is wired up before we abort.
-    await Promise.resolve();
-    await Promise.resolve();
-    controller.abort();
 
     await expect(promise).rejects.toMatchObject({ name: 'AbortError' });
-    expect(receivedSignal).toBe(controller.signal);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // Not identity: `fetchWithTimeout` composes the caller's signal with its own
+    // timeout signal, so `fetch` sees a derived controller. What matters is that
+    // aborting the CALLER's controller still cancels the in-flight request.
+    expect(receivedSignal).not.toBe(controller.signal);
+    expect(receivedSignal?.aborted).toBe(true);
     expect(abortFromFetch).toBe(true);
+  });
+
+  it('rejects without dispatching a request when the caller signal is pre-aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    fetchMock.mockResolvedValue(jsonResponse({ results: [] }));
+
+    await expect(searchAll('macbook', 20, controller.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('throws a descriptive Error when the server returns a non-2xx response', async () => {

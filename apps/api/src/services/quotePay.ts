@@ -1,8 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { quotes } from '../db/schema/quotes';
-import { QuoteServiceError } from './quoteTypes';
-import { assertQuoteAccess } from './quoteService';
+import { QuoteServiceError, assertQuoteAccess } from './quoteTypes';
 import { createInvoicePayLink } from './invoiceCheckout';
 import type { InvoiceActor } from './invoiceTypes';
 

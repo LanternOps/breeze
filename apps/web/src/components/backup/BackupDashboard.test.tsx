@@ -260,4 +260,74 @@ describe('BackupDashboard usage history chart', () => {
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/backup/jobs/run/device-2', { method: 'POST' });
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/backup/jobs/run/device-3', { method: 'POST' });
   });
+
+  it('counts partial jobs in the 24h success-rate denominator but not the numerator', async () => {
+    // A device whose every run is partial used to read as having no runs at all
+    // (0 completed + 0 failed => rate 0% off a zero denominator).
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/backup/dashboard') {
+        return makeJsonResponse({
+          data: {
+            jobsLast24h: { completed: 1, failed: 0, partial: 1, running: 0, pending: 0 },
+            recentJobs: [],
+            storageProviders: [],
+            attentionItems: [],
+          },
+        });
+      }
+
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    await screen.findByText('Success Rate (24h)');
+    // 1 completed of (1 completed + 1 partial) = 50%, not 100%.
+    expect(screen.getByText('50%')).toBeTruthy();
+  });
+
+  it('renders a partial recent job as a distinct warning state', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/backup/dashboard') {
+        return makeJsonResponse({
+          data: {
+            stats: [],
+            recentJobs: [
+              {
+                id: 'job-partial',
+                device: 'edge-02',
+                config: 'Primary S3',
+                status: 'partial',
+                started: '5m ago',
+                duration: '3m',
+                size: '85 B',
+              },
+            ],
+            storageProviders: [],
+            attentionItems: [],
+          },
+        });
+      }
+
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    await screen.findByText('edge-02');
+    expect(screen.getByText('Partial')).toBeTruthy();
+    expect(screen.queryByText('Warning')).toBeNull();
+  });
 });

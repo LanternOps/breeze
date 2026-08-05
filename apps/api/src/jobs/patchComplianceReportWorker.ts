@@ -75,10 +75,15 @@ async function generateComplianceSummary(
   source?: PatchSource | null,
   severity?: PatchSeverity | null
 ): Promise<ComplianceSummary> {
+  // Quick Support exclusion: ephemeral devices (`devices.isEphemeral`) live in
+  // the hidden per-partner 'quick_support' org and are a stranger's personal
+  // machine borrowed for one ~20-minute session. That org stays inside
+  // technicians' accessibleOrgIds for RLS reasons, so it is NOT filtered for us
+  // — a borrowed home PC must never skew an MSP's patch-compliance reporting.
   const orgDevices = await db
     .select({ id: devices.id })
     .from(devices)
-    .where(eq(devices.orgId, orgId));
+    .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false)));
 
   const deviceIds = orgDevices.map((entry) => entry.id);
 

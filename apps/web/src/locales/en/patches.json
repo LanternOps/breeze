@@ -372,6 +372,7 @@
     "validation": {
       "selectCategory": "Select a category",
       "selectSeverity": "Select at least one severity for auto-approval.",
+      "selectSeverityOrThirdParty": "Select at least one severity or enable third-party app auto-approval.",
       "nameRequired": "Ring name is required"
     },
     "categories": {
@@ -379,7 +380,6 @@
       "feature": "Feature Updates",
       "firmware": "Firmware",
       "driver": "Drivers",
-      "thirdPartyApp": "Third-Party Apps",
       "definitions": "Definition Updates"
     },
     "severities": {
@@ -421,10 +421,16 @@
       "description": "What auto-approves in this ring, and how long to hold a patch after its vendor release. The default applies to every category; add an override to treat one differently.",
       "allCategories": "All categories",
       "default": "Default",
-      "severityNote": "Severities apply to OS updates. Third-party app updates (winget, Homebrew) have no vendor severity — when a policy enables other-software sources, they auto-approve on this ring's cadence regardless of the severities selected here.",
+      "severityNote": "Severities apply to OS updates only. Third-party app updates are controlled by the toggle below — they are not severity-controlled.",
       "manualDefault": "Every patch in this ring needs manual approval.",
       "manualCategory": "Patches in this category need manual approval.",
       "noOverrides": "All categories follow the default. Add an override to treat one differently."
+    },
+    "thirdParty": {
+      "title": "Third-party applications",
+      "description": "Auto-approve app updates from winget, Chocolatey, and Homebrew. App block/pin rules still apply; the hold is measured from when each device first reports the update.",
+      "policyNote": "Applies only to devices whose configuration policy includes third-party software updates (policy Patch settings).",
+      "holdNote": "Pre-filled from the ring's auto-approve hold. After saving, this hold is independent and no longer follows it."
     },
     "usage": {
       "messageOne": "This ring applies to {{count}} device. Changes take effect on its next check-in.",
@@ -457,7 +463,13 @@
       "devices": "Devices",
       "compliance": "Compliance",
       "updated": "Updated",
-      "actions": "Actions"
+      "actions": "Actions",
+      "autoApprove": "Auto-approve"
+    },
+    "badges": {
+      "manual": "Manual",
+      "os": "OS: {{severities}}",
+      "thirdParty": "3rd-party apps"
     }
   }
 }

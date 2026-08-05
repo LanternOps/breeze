@@ -508,6 +508,14 @@ async function processExecuteRun(data: ExecuteRunJobData): Promise<{ runId: stri
  *   - site:         all devices at the site
  *   - organization: all devices in the org
  *   - partner:      all devices across all orgs belonging to the partner
+ *
+ * Quick Support exclusion: ephemeral devices (`devices.isEphemeral`) live in the
+ * hidden per-partner 'quick_support' org and are a stranger's personal machine
+ * borrowed for one ~20-minute session. That org stays inside technicians'
+ * accessibleOrgIds for RLS reasons, so the partner-wide fan-out would otherwise
+ * resolve them and run the MSP's automation scripts on a home PC. Every branch
+ * that resolves a SET of devices filters them out; the explicit device-level
+ * branches are by-id lookups of an operator-chosen target and are left alone.
  */
 async function resolveDeviceIdsForAssignment(
   assignmentLevel: string,
@@ -528,7 +536,10 @@ async function resolveDeviceIdsForAssignment(
     // A partner-wide policy (policyOrgId null, #1724) resolves EVERY device
     // under the assigned partner. A legacy org-owned policy at partner level
     // (now rejected at assign time) still clamps to its own org as a backstop.
-    const conditions = [eq(organizations.partnerId, assignmentTargetId)];
+    const conditions = [
+      eq(organizations.partnerId, assignmentTargetId),
+      eq(devices.isEphemeral, false),
+    ];
     if (policyOrgId) conditions.push(eq(devices.orgId, policyOrgId));
     const partnerDevices = await db
       .select({ id: devices.id })
@@ -580,19 +591,25 @@ async function resolveDeviceIdsForAssignment(
           .select({ deviceId: deviceGroupMemberships.deviceId })
           .from(deviceGroupMemberships)
           .innerJoin(organizations, eq(deviceGroupMemberships.orgId, organizations.id))
+          .innerJoin(devices, eq(deviceGroupMemberships.deviceId, devices.id))
           .where(
             and(
               eq(deviceGroupMemberships.groupId, assignmentTargetId),
               eq(organizations.partnerId, policyPartnerId!),
+              eq(devices.isEphemeral, false),
             ),
           );
         return members.map((m) => m.deviceId);
       }
-      const conditions = [eq(deviceGroupMemberships.groupId, assignmentTargetId)];
+      const conditions = [
+        eq(deviceGroupMemberships.groupId, assignmentTargetId),
+        eq(devices.isEphemeral, false),
+      ];
       if (policyOrgId) conditions.push(eq(deviceGroupMemberships.orgId, policyOrgId));
       const members = await db
         .select({ deviceId: deviceGroupMemberships.deviceId })
         .from(deviceGroupMemberships)
+        .innerJoin(devices, eq(deviceGroupMemberships.deviceId, devices.id))
         .where(and(...conditions));
       return members.map((m) => m.deviceId);
     }
@@ -603,10 +620,14 @@ async function resolveDeviceIdsForAssignment(
           .select({ id: devices.id })
           .from(devices)
           .innerJoin(organizations, eq(devices.orgId, organizations.id))
-          .where(and(eq(devices.siteId, assignmentTargetId), eq(organizations.partnerId, policyPartnerId!)));
+          .where(and(
+            eq(devices.siteId, assignmentTargetId),
+            eq(organizations.partnerId, policyPartnerId!),
+            eq(devices.isEphemeral, false),
+          ));
         return siteDevices.map((d) => d.id);
       }
-      const conditions = [eq(devices.siteId, assignmentTargetId)];
+      const conditions = [eq(devices.siteId, assignmentTargetId), eq(devices.isEphemeral, false)];
       if (policyOrgId) conditions.push(eq(devices.orgId, policyOrgId));
       const siteDevices = await db
         .select({ id: devices.id })
@@ -621,10 +642,14 @@ async function resolveDeviceIdsForAssignment(
           .select({ id: devices.id })
           .from(devices)
           .innerJoin(organizations, eq(devices.orgId, organizations.id))
-          .where(and(eq(devices.orgId, assignmentTargetId), eq(organizations.partnerId, policyPartnerId!)));
+          .where(and(
+            eq(devices.orgId, assignmentTargetId),
+            eq(organizations.partnerId, policyPartnerId!),
+            eq(devices.isEphemeral, false),
+          ));
         return orgDevices.map((d) => d.id);
       }
-      const conditions = [eq(devices.orgId, assignmentTargetId)];
+      const conditions = [eq(devices.orgId, assignmentTargetId), eq(devices.isEphemeral, false)];
       if (policyOrgId) conditions.push(eq(devices.orgId, policyOrgId));
       const orgDevices = await db
         .select({ id: devices.id })
@@ -835,10 +860,20 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
   // callback already runs under a system DB context, so RLS is not the filter
   // — a plain eq(orgId, ...) would silently never match partner-wide rows.
   const [eventOrg] = await db
-    .select({ partnerId: organizations.partnerId })
+    .select({ partnerId: organizations.partnerId, type: organizations.type })
     .from(organizations)
     .where(eq(organizations.id, event.orgId))
     .limit(1);
+
+  // Quick Support exclusion: events raised by an ephemeral device carry the
+  // hidden per-partner 'quick_support' org. The partner-wide fan-out just below
+  // matches every automation with org_id NULL owned by that partner, and the
+  // config-policy branch at the bottom of this function would execute scripts
+  // against payload.deviceId — i.e. run the MSP's automation library on a
+  // stranger's home PC. Drop the whole event.
+  if (eventOrg?.type === 'quick_support') {
+    return;
+  }
 
   const ownershipCondition = eventOrg?.partnerId
     ? or(

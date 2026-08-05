@@ -910,7 +910,8 @@
         "createUpdateRing": "Update-Ring erstellen",
         "text2xl": "2xl",
         "saveChanges": "Änderungen speichern",
-        "createRing": "Ring erstellen"
+        "createRing": "Ring erstellen",
+        "thirdPartyRingHint": "Regeln zur automatischen Genehmigung von Drittanbieter-Updates werden im verknüpften Update-Ring konfiguriert."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Link-Peripherierichtlinie",

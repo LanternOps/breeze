@@ -41,6 +41,7 @@ import {
 } from './cursor';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
+import { deleteDeviceCascade } from '../../services/deviceDeletion';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
 import {
   resolveRemoteAccessLaunch,
@@ -76,7 +77,11 @@ export const DEVICE_LINKED_DEVICE_ID_TABLES = [
  * of cascade-deleting during permanent device deletion. Deviceless tickets
  * are first-class (tickets.device_id is nullable).
  */
-export const DEVICE_DETACH_DEVICE_ID_TABLES = ['tickets'] as const;
+// support_sessions (Quick Support) detaches rather than cascades: the session
+// row is the audit trail for an ad-hoc support session and must outlive the
+// ephemeral device the reaper purges 6h after the session ends. Its device_id
+// FK is declared ON DELETE SET NULL to match.
+export const DEVICE_DETACH_DEVICE_ID_TABLES = ['support_sessions', 'tickets'] as const;
 
 /**
  * Subset of {@link getDeviceCascadeDeleteTables} ∪
@@ -131,6 +136,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'sensitive_data_findings', 'sensitive_data_scans',
   'service_process_check_results',
   'software_inventory', 'software_policy_audit', 'sql_instances',
+  'support_sessions',
   'tickets', 'time_series_metrics', 'tunnel_sessions',
 ] as const;
 
@@ -457,6 +463,11 @@ coreRoutes.get(
     // -------- row-filter predicates --------
     const conditions: SQL[] = [];
 
+    // Quick Support devices live in the partner's hidden 'quick_support' org,
+    // which deliberately stays inside accessibleOrgIds so RLS lets a tech reach
+    // their own session. Nothing filters them out for us — exclude explicitly.
+    conditions.push(eq(devices.isEphemeral, false));
+
     // Org access — uses pre-computed accessibleOrgIds from auth.
     const orgFilter = auth.orgCondition(devices.orgId);
     if (orgFilter) {
@@ -598,6 +609,12 @@ coreRoutes.get(
         watchdogStatus: devices.watchdogStatus,
         mainAgentSilentSince: devices.mainAgentSilentSince,
         lastSeenAt: devices.lastSeenAt,
+        // WAN IP for the opt-in list column (#2503): the source address of the
+        // agent's last authenticated request, stamped by agentAuth. That is
+        // the device's public address as the control plane sees it — note that
+        // device_network.public_ip looks like the obvious source but is never
+        // written by any code path and is always NULL.
+        lastSeenIp: devices.lastSeenIp,
         enrolledAt: devices.enrolledAt,
         tags: devices.tags,
         customFields: devices.customFields,
@@ -606,6 +623,12 @@ coreRoutes.get(
         uptimeSeconds: devices.uptimeSeconds,
         isHeadless: devices.isHeadless,
         pendingReboot: devices.pendingReboot,
+        // Collision enrollment (#2764): non-null when this row was created
+        // because an agent presented a hostname that already existed in the
+        // org. The list renders a "Possible duplicate" badge from it so the
+        // review surface is discoverable from the fleet view, not only from
+        // the device page a tech happens to open.
+        possibleReplacementOfDeviceId: devices.possibleReplacementOfDeviceId,
         batteryStatus: devices.batteryStatus,
         activeVpns: devices.activeVpns,
         // Linked multi-boot profiles (#2138): null => unlinked. The web list
@@ -659,6 +682,10 @@ coreRoutes.get(
       timestamp: Date;
     }>();
 
+    // Best current LAN address per device for the opt-in list column (#2503);
+    // populated by the batched lateral below. Absent => the column dashes.
+    const lanIpByDevice = new Map<string, string>();
+
     if (deviceIds.length > 0) {
       // Per-device latest-row lookup via LATERAL + LIMIT 1 against the
       // (device_id, timestamp) primary key. Index-scan-backward returns
@@ -702,6 +729,52 @@ coreRoutes.get(
           timestamp: row.timestamp,
         });
       }
+
+      // LAN IP for the opt-in list column (#2503). One batched query for the
+      // whole page rather than a correlated subquery per row, and NOT a
+      // leftJoin on the main row query: device_network is 1:N per device (one
+      // row per interface per address family), so joining it there would fan
+      // the page out to one row per interface and silently break pagination.
+      //
+      // Ranking, best-first — the agent's is_primary flag alone is not enough
+      // to pick a row, because collectors/inventory.go sets it from a fixed
+      // interface-NAME allowlist (en0/eth0/ens33/enp0s3/wlan0/Wi-Fi/Ethernet).
+      // Real fleets are full of "Ethernet 2", "eno1", "enp3s0" etc., which
+      // that allowlist misses, so a primary-only filter would leave the column
+      // blank for a large share of devices. The tiers below degrade instead:
+      //   1. is_primary rows first (when the agent did identify one)
+      //   2. IPv4 before IPv6 (techs type v4 addresses)
+      //   3. routable addresses before APIPA/link-local/loopback — an
+      //      unconfigured 169.254.x is worse than useless in a scan column
+      //   4. interface_name for a deterministic, stable tiebreak
+      const lanIpRows = await db.execute<{ device_id: string; ip_address: string }>(sql`
+        SELECT d.device_id, n.ip_address
+        FROM (VALUES ${idTuples}) AS d(device_id)
+        INNER JOIN LATERAL (
+          SELECT ip_address, interface_name
+          FROM ${deviceNetwork}
+          WHERE device_id = d.device_id
+            AND ip_address IS NOT NULL
+          ORDER BY
+            is_primary DESC,
+            (ip_type = 'ipv4') DESC,
+            (
+              ip_address LIKE '169.254.%'
+              OR ip_address LIKE '127.%'
+              -- ILIKE, not LIKE: the column is free text from an agent
+              -- payload, and an uppercase FE80:: would otherwise be graded
+              -- routable and outrank the device's real NIC.
+              OR ip_address ILIKE 'fe80:%'
+              OR ip_address = '::1'
+            ) ASC,
+            interface_name ASC
+          LIMIT 1
+        ) AS n ON true
+      `);
+
+      for (const row of lanIpRows) {
+        lanIpByDevice.set(row.device_id, row.ip_address);
+      }
     }
 
     // Transform to include hardware and latest metrics as nested objects
@@ -729,6 +802,11 @@ coreRoutes.get(
         mainAgentSilentSince: d.mainAgentSilentSince,
         pendingReboot: d.pendingReboot,
         lastSeenAt: d.lastSeenAt,
+        // Opt-in WAN/LAN IP columns (#2503). Both null-able: wanIp is null
+        // until the device has made one authenticated request, lanIp until an
+        // inventory run has reported an interface with an address.
+        wanIp: d.lastSeenIp ?? null,
+        lanIp: lanIpByDevice.get(d.id) ?? null,
         enrolledAt: d.enrolledAt,
         tags: d.tags,
         customFields: d.customFields,
@@ -736,6 +814,10 @@ coreRoutes.get(
         lastUser: d.lastUser,
         uptimeSeconds: d.uptimeSeconds,
         isHeadless: d.isHeadless,
+        // Selected above but historically the mapper is where list fields get
+        // silently dropped (#800/#1273/#2138) — asserted by
+        // core.list-response-shape.test.ts.
+        possibleReplacementOfDeviceId: d.possibleReplacementOfDeviceId ?? null,
         batteryStatus: d.batteryStatus ?? null,
         activeVpns: d.activeVpns ?? null,
         linkGroupId: d.linkGroupId ?? null,
@@ -1303,6 +1385,27 @@ coreRoutes.delete(
       .where(eq(devices.id, deviceId))
       .returning();
 
+    // Resolve any "possible replacement of THIS device" linkage now that the
+    // old device is decommissioned (#2764). The banner/badge on the newer
+    // device asks a human "is this a replacement for <old device>?"; retiring
+    // the old device IS that answer, so the question must stop being asked —
+    // otherwise the prompt persists forever with no way to dismiss it.
+    //
+    // This writes OTHER devices' rows, not the enrollment path's own row, so
+    // it does not violate the "never write existing device rows at enrollment
+    // time" invariant — it is decommission-triggered, human-initiated, and
+    // runs in the same request DB context (and therefore the same RLS scope)
+    // as the decommission UPDATE above.
+    await db
+      .update(devices)
+      .set({ possibleReplacementOfDeviceId: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(devices.possibleReplacementOfDeviceId, deviceId),
+          eq(devices.orgId, device.orgId)
+        )
+      );
+
     // Cut any live remote-control session to the device being decommissioned —
     // device `status` is only checked at session connect time, so an in-flight
     // desktop/terminal session would otherwise survive the offboarding. Never
@@ -1428,31 +1531,9 @@ coreRoutes.delete(
     // When adding new tables with device_id FK, add them here too.
     try {
       await db.transaction(async (tx) => {
-        // Transitive dependencies: tables that reference device-scoped records
-        // but don't have a direct device_id column.
-        const deviceAlertIds = sql`(SELECT id FROM alerts WHERE device_id = ${deviceId})`;
-        const deviceAiSessionIds = sql`(SELECT id FROM ai_sessions WHERE device_id = ${deviceId})`;
-
-        await tx.execute(sql`DELETE FROM ai_tool_executions WHERE session_id IN ${deviceAiSessionIds}`);
-        await tx.execute(sql`DELETE FROM ai_messages WHERE session_id IN ${deviceAiSessionIds}`);
-        await tx.execute(sql`DELETE FROM ai_action_plans WHERE session_id IN ${deviceAiSessionIds}`);
-        await tx.execute(sql`DELETE FROM alert_correlations WHERE parent_alert_id IN ${deviceAlertIds} OR child_alert_id IN ${deviceAlertIds}`);
-        await tx.execute(sql`DELETE FROM alert_notifications WHERE alert_id IN ${deviceAlertIds}`);
-        await tx.execute(sql`UPDATE log_correlations SET alert_id = NULL WHERE alert_id IN ${deviceAlertIds}`);
-        await tx.execute(sql`UPDATE network_change_events SET alert_id = NULL WHERE alert_id IN ${deviceAlertIds}`);
-        for (const linkedTable of DEVICE_LINKED_DEVICE_ID_TABLES) {
-          await tx.execute(sql`UPDATE ${sql.identifier(linkedTable)} SET linked_device_id = NULL WHERE linked_device_id = ${deviceId}`);
-        }
-        // Tenant business records (tickets): preserve history, detach the device.
-        for (const detachTable of DEVICE_DETACH_DEVICE_ID_TABLES) {
-          await tx.execute(sql`UPDATE ${sql.identifier(detachTable)} SET device_id = NULL WHERE device_id = ${deviceId}`);
-        }
-
-        const tables = getDeviceCascadeDeleteTables();
-        for (const table of tables) {
-          await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
-        }
-        await tx.delete(devices).where(eq(devices.id, deviceId));
+        // Shared with the Quick Support reaper's ephemeral-device purge — see
+        // services/deviceDeletion.ts for why this lives in one place.
+        await deleteDeviceCascade(tx, deviceId);
 
         // #2138 — the deleted device's link_group_id went with its row. If it
         // was a boot profile and the group now has a single lone survivor —

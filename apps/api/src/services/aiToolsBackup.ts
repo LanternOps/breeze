@@ -17,6 +17,7 @@ import {
   configPolicyBackupSettings,
   restoreJobs,
   devices,
+  RESTORABLE_BACKUP_JOB_STATUSES,
 } from '../db/schema';
 import { eq, and, desc, sql, gte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -325,7 +326,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         }).from(backupJobs)
           .where(and(
             eq(backupJobs.deviceId, deviceId),
-            eq(backupJobs.status, 'completed'),
+            inArray(backupJobs.status, RESTORABLE_BACKUP_JOB_STATUSES),
             ...(jobOrgCond ? [jobOrgCond] : []),
           ))
           .orderBy(desc(backupJobs.completedAt))

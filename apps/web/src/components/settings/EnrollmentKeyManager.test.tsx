@@ -78,6 +78,12 @@ interface Row {
   expiresAt: string | null;
   createdBy: string | null;
   createdAt: string;
+  installerTokens?: {
+    consumed: number;
+    max: number;
+    liveConsumed?: number;
+    liveMax?: number;
+  } | null;
 }
 
 const PAST = new Date(Date.now() - 86_400_000).toISOString();
@@ -297,5 +303,224 @@ describe('EnrollmentKeyManager — create form site selector', () => {
     await screen.findByText(EMPTY);
     fireEvent.click(screen.getByText('Create Key'));
     expect(screen.getByTestId('enrollment-key-org-select')).toBeTruthy();
+  });
+
+  // ------------------------------------------------------------------
+  // #2992 — installer capacity in the usage cell.
+  //
+  // The Add-Device / guided-setup download paths mint no child enrollment key,
+  // so the device count the operator chose lives only on the bootstrap token.
+  // The key's own usage_count is inert on that path, which is why the row read
+  // "0 / 1" for an installer built for 7 devices.
+  // ------------------------------------------------------------------
+  describe('installer usage (#2992)', () => {
+    it('shows the installer device budget alongside the key\'s own counters', async () => {
+      routeFetch([
+        makeRow({
+          id: 'k-installer',
+          usageCount: 0,
+          maxUsage: 1,
+          installerTokens: { consumed: 0, max: 7 },
+        }),
+      ]);
+      render(<EnrollmentKeyManager />);
+
+      const installerCell = await screen.findByTestId('key-installer-usage-k-installer');
+      expect(installerCell.textContent).toContain('0');
+      expect(installerCell.textContent).toContain('7');
+
+      // The key's own budget is still rendered — it is a real, separately
+      // enforced counter, not something the installer figure replaces.
+      expect(screen.getByTestId('key-usage-k-installer').textContent).toContain('0 / 1');
+    });
+
+    it('counts up as devices redeem the installer', async () => {
+      routeFetch([
+        makeRow({
+          id: 'k-partial',
+          usageCount: 0,
+          maxUsage: 1,
+          installerTokens: { consumed: 3, max: 7 },
+        }),
+      ]);
+      render(<EnrollmentKeyManager />);
+
+      const cell = await screen.findByTestId('key-installer-usage-k-partial');
+      expect(cell.textContent).toContain('3');
+      expect(cell.textContent).toContain('7');
+    });
+
+    // The design's justification for TWO lines rather than a replacement: some
+    // keys carry both counters live (an installer-link child key accrues
+    // usage_count from direct enrollments AND parents bootstrap tokens issued
+    // by the one-time public-download route). Collapsing them would hide a real
+    // budget, so both must render with their own numbers.
+    it('renders both counters when a key has real usage AND installers', async () => {
+      routeFetch([
+        makeRow({
+          id: 'k-both',
+          usageCount: 4,
+          maxUsage: 10,
+          installerTokens: { consumed: 2, max: 3 },
+        }),
+      ]);
+      render(<EnrollmentKeyManager />);
+
+      expect((await screen.findByTestId('key-usage-k-both')).textContent).toContain('4 / 10');
+      const installer = screen.getByTestId('key-installer-usage-k-both');
+      expect(installer.textContent).toContain('2');
+      expect(installer.textContent).toContain('3');
+      // The two must stay distinct — neither folded into nor replacing the other.
+      expect(installer.textContent).not.toContain('10');
+    });
+
+    it('renders nothing extra for a key that never minted an installer', async () => {
+      routeFetch([makeRow({ id: 'k-plain', usageCount: 2, maxUsage: 10, installerTokens: null })]);
+      render(<EnrollmentKeyManager />);
+
+      await screen.findByTestId('key-usage-k-plain');
+      expect(screen.queryByTestId('key-installer-usage-k-plain')).toBeNull();
+      expect(screen.getByTestId('key-usage-k-plain').textContent).toContain('2 / 10');
+    });
+
+    // A response from an API that predates this field must not crash or render
+    // a bare "/" — the property is optional on the wire.
+    it('tolerates a list response with no installerTokens field at all', async () => {
+      routeFetch([makeRow({ id: 'k-legacy', usageCount: 1, maxUsage: 5 })]);
+      render(<EnrollmentKeyManager />);
+
+      await screen.findByTestId('key-usage-k-legacy');
+      expect(screen.queryByTestId('key-installer-usage-k-legacy')).toBeNull();
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // #3039 — live vs expired installer capacity, and token-derived row status.
+  //
+  // The Add-Device parent key is a 60-minute container while the bootstrap
+  // token minted from it can live a year, so neither the parent's expiry nor
+  // the all-token capacity sum tells the truth on its own: a fully-expired
+  // installer rendered "0 / 7" (reads as seven usable slots), and the badge
+  // said Expired while the installer was still enrolling devices.
+  // ------------------------------------------------------------------
+  describe('installer capacity liveness (#3039)', () => {
+    it('marks a fully-expired installer instead of rendering its slots as usable', async () => {
+      routeFetch([
+        makeRow({
+          id: 'k-dead',
+          usageCount: 0,
+          maxUsage: 1,
+          expiresAt: FUTURE,
+          installerTokens: { consumed: 0, max: 7, liveConsumed: 0, liveMax: 0 },
+        }),
+      ]);
+      render(<EnrollmentKeyManager />);
+
+      const cell = await screen.findByTestId('key-installer-usage-k-dead');
+      // Totals stay (stable historical figure) but the expired marker
+      // withdraws the capacity claim.
+      expect(cell.textContent).toContain('0 / 7');
+      expect(cell.textContent?.toLowerCase()).toContain('expired');
+    });
+
+    it('splits live and expired slots when only some installers are still redeemable', async () => {
+      routeFetch([
+        makeRow({
+          id: 'k-mixed',
+          usageCount: 0,
+          maxUsage: 1,
+          installerTokens: { consumed: 4, max: 12, liveConsumed: 1, liveMax: 7 },
+        }),
+      ]);
+      render(<EnrollmentKeyManager />);
+
+      const cell = await screen.findByTestId('key-installer-usage-k-mixed');
+      expect(cell.textContent).toContain('1 / 7');
+      expect(cell.textContent?.toLowerCase()).toContain('live');
+      // 12 − 7 = 5 dead slots, called out rather than folded into capacity.
+      expect(cell.textContent).toContain('5');
+    });
+
+    it('keeps the row Active when the parent expired but its installer is live', async () => {
+      routeFetch([
+        makeRow({
+          id: 'k-outlives',
+          usageCount: 0,
+          maxUsage: 1,
+          siteId: 'site-a', // the Download gate needs a site — without one the
+          // button never renders and the assertion below would pass vacuously
+          expiresAt: PAST, // transient Add-Device parent, long dead
+          installerTokens: { consumed: 2, max: 7, liveConsumed: 2, liveMax: 7 },
+        }),
+        // Positive control: a live parent with a site DOES get the Download
+        // action — proves the absence assertion below isn't a translation or
+        // markup artifact.
+        makeRow({ id: 'k-live-parent', siteId: 'site-a', expiresAt: FUTURE }),
+      ]);
+      render(<EnrollmentKeyManager />);
+
+      await screen.findByTestId('key-installer-usage-k-outlives');
+      expect(screen.getAllByText('Active').length).toBe(2);
+      expect(screen.queryByText('Expired')).toBeNull();
+      // But the Download action follows the PARENT key, which the installer
+      // routes 410 on once expired — a live token must not re-enable it. Only
+      // the control row (live parent) may offer it.
+      expect(screen.getAllByText('Download')).toHaveLength(1);
+    });
+
+    it('shows Expired when both the parent and every installer token are dead', async () => {
+      routeFetch([
+        makeRow({
+          id: 'k-all-dead',
+          usageCount: 0,
+          maxUsage: 1,
+          expiresAt: PAST,
+          installerTokens: { consumed: 3, max: 7, liveConsumed: 0, liveMax: 0 },
+        }),
+      ]);
+      render(<EnrollmentKeyManager />);
+
+      await screen.findByTestId('key-installer-usage-k-all-dead');
+      expect(screen.getByText('Expired')).toBeTruthy();
+      expect(screen.queryByText('Active')).toBeNull();
+    });
+
+    it('shows Exhausted when unexpired installers exist but every slot is claimed', async () => {
+      routeFetch([
+        makeRow({
+          id: 'k-full',
+          usageCount: 0,
+          maxUsage: 1,
+          expiresAt: PAST,
+          installerTokens: { consumed: 7, max: 7, liveConsumed: 7, liveMax: 7 },
+        }),
+      ]);
+      render(<EnrollmentKeyManager />);
+
+      await screen.findByTestId('key-installer-usage-k-full');
+      expect(screen.getByText('Exhausted')).toBeTruthy();
+    });
+
+    it('falls back to parent-based status when the API omits the live fields', async () => {
+      // A legacy response must not have its expired badge flipped by guessing
+      // every token alive.
+      routeFetch([
+        makeRow({
+          id: 'k-legacy-status',
+          usageCount: 0,
+          maxUsage: 1,
+          expiresAt: PAST,
+          installerTokens: { consumed: 2, max: 7 },
+        }),
+      ]);
+      render(<EnrollmentKeyManager />);
+
+      await screen.findByTestId('key-installer-usage-k-legacy-status');
+      expect(screen.getByText('Expired')).toBeTruthy();
+      // The capacity line still renders in its pre-liveness form.
+      expect(
+        screen.getByTestId('key-installer-usage-k-legacy-status').textContent,
+      ).toContain('2 / 7');
+    });
   });
 });

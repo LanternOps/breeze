@@ -316,6 +316,38 @@ The connection flow is identical to Remote Desktop:
 
 ---
 
+## Quick Support (ad-hoc sessions)
+
+Quick Support connects you to a machine that runs **no permanently enrolled agent** — a customer's home PC, a prospect's laptop, a device not yet onboarded. Rather than enrolling the device for real, the end user runs a client that exists only for the duration of one session.
+
+<Steps>
+
+1. On **Remote Access → Quick Support**, create a session. Optionally attribute it to a customer organization and add a label (e.g. "Contoso — CFO laptop"). Attribution is for reporting only; it does not grant or change access to that customer's data.
+
+2. Breeze returns a one-time code (`KTM-4H7-P2X`) and a link. **The code is shown once and cannot be retrieved again.** It expires in 15 minutes.
+
+3. Send the link or read the code out. The end user opens the link, downloads the client, and runs it. The code is embedded in the download's filename, so they normally never type it.
+
+4. When the client connects, the session becomes **Ready** and a Connect button appears. From there it is an ordinary remote desktop session.
+
+5. **End session** revokes the client's credentials, tells it to remove itself, and drops its connection.
+
+</Steps>
+
+<Aside type="caution">
+  Quick Support requires **partner scope**. An organization-scoped login cannot create these sessions. Sessions are visible to all technicians at your partner, not only their creator.
+</Aside>
+
+**What the end user's machine gets.** The client runs in the user's own session, is not installed as a service, and deletes itself when the session ends. It enrolls an *ephemeral* device that is deliberately invisible to the rest of Breeze: it never counts toward your device licence, never appears in device lists, reports or invoices, and is never patched, rebooted, backed up or alerted on. The reaper removes the device record six hours after the session ends.
+
+**How a session ends.** Whichever comes first: you end it; the end user closes the client (detected when the device goes offline); or the eight-hour hard cap expires. If the self-destruct command is ever lost, the client's own ten-minute dead-man switch shuts it down.
+
+<Aside>
+  Phase 1 ships a **Windows** client. macOS is planned. The elevated mode that allows control of UAC prompts is not yet available — the client currently runs with the end user's own privileges.
+</Aside>
+
+---
+
 ## Session Lifecycle
 
 All session types follow the same state machine:

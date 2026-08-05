@@ -148,6 +148,9 @@ export const patchPolicies = pgTable('patch_policies', {
   description: text('description'),
   enabled: boolean('enabled').notNull().default(true),
   targets: jsonb('targets').notNull().default({}),
+  // DEPRECATED (spec 2026-08-04): never consumed by the approval path — the
+  // evaluated sources are config_policy_patch_settings.sources. Writers removed
+  // in the same release; DROP COLUMN ships one release later (expand/contract).
   sources: patchSourceEnum('sources').array(),
   autoApprove: jsonb('auto_approve').notNull().default({}),
   schedule: jsonb('schedule').notNull().default({}),

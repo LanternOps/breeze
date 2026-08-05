@@ -284,7 +284,8 @@ pnpm db:seed         # Seed dev data
 pnpm db:check-drift  # Verify schema matches migrations (no drift)
 pnpm db:studio       # Open Drizzle Studio
 
-# Node is pinned to 22.20.0 (.nvmrc). Other root scripts: pnpm lint, pnpm build, pnpm wt-stack
+# Node is pinned to 22.23.2 (.nvmrc / .node-version; package.json engines requires >=22.22.2).
+# Other root scripts: pnpm lint, pnpm build, pnpm wt-stack
 # (no root typecheck script — typecheck runs via turbo/CI only)
 
 # Agent development
