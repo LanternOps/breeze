@@ -430,4 +430,175 @@ describe('DeviceBackupTab', () => {
     // Not styled as the emerald/success banner.
     expect(banner.className).not.toMatch(/emerald/);
   });
+
+  it('labels a partial job "Partial", never "Pending"', async () => {
+    // The `?? jobStatusConfig.pending` fallback silently mislabels any status
+    // missing from the map — a finished-but-degraded run read as still queued.
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+
+      if (url === '/backup/status/device-1') {
+        return makeJsonResponse({ data: { protected: true } });
+      }
+
+      if (url === '/backup/jobs?deviceId=device-1') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'job-partial',
+              deviceId: 'device-1',
+              type: 'file',
+              status: 'partial',
+              startedAt: '2026-03-30T00:00:00Z',
+              completedAt: '2026-03-30T00:10:00Z',
+              totalSize: 1024,
+              errorCount: 21,
+            },
+          ],
+        });
+      }
+
+      if (url === '/backup/snapshots?deviceId=device-1' && method === 'GET') {
+        return makeJsonResponse({ data: [] });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceBackupTab deviceId="device-1" />);
+
+    const jobHistoryTable = (await screen.findByText('Job History')).parentElement?.querySelector('table');
+    expect(jobHistoryTable).toBeTruthy();
+    expect(within(jobHistoryTable as HTMLTableElement).getByText('Partial')).toBeTruthy();
+    expect(within(jobHistoryTable as HTMLTableElement).queryByText('Pending')).toBeNull();
+  });
+
+  describe('VSS status panel (#3027)', () => {
+    function mockStatusWithVss(vssMetadata: unknown, lastJobExtra: Record<string, unknown> = {}) {
+      fetchMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = (init as RequestInit | undefined)?.method ?? 'GET';
+
+        if (url === '/backup/status/device-1') {
+          return makeJsonResponse({
+            data: {
+              protected: true,
+              lastJob: {
+                id: 'job-vss',
+                status: 'completed',
+                createdAt: '2026-03-30T00:00:00Z',
+                completedAt: '2026-03-30T00:10:00Z',
+                vssMetadata,
+                ...lastJobExtra,
+              },
+            },
+          });
+        }
+        if (url === '/backup/jobs?deviceId=device-1') return makeJsonResponse({ data: [] });
+        if (url === '/backup/snapshots?deviceId=device-1' && method === 'GET') {
+          return makeJsonResponse({ data: [] });
+        }
+        return makeJsonResponse({}, false, 404);
+      });
+    }
+
+    it('renders the writer table once the API actually returns vssMetadata', async () => {
+      // The panel existed but was unreachable: lastJob's projection omitted
+      // vssMetadata, so showVssStatus was permanently false and this whole
+      // branch was dead code.
+      mockStatusWithVss({
+        shadowCopyId: 'set-1',
+        writers: [
+          { name: 'SqlServerWriter', state: 'stable' },
+          { name: 'NTDS', state: 'failed' },
+        ],
+      });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      expect(await screen.findByText('SqlServerWriter')).toBeTruthy();
+      expect(screen.getByText('NTDS')).toBeTruthy();
+      // A non-stable writer still raises the existing writer banner.
+      expect(screen.getByText(/writers are not stable/i)).toBeTruthy();
+    });
+
+    it('flags unprotected volumes on a SUCCESSFUL run — "backed up" vs "backed up but read live"', async () => {
+      // The signal that motivated the issue: every writer stable, job green,
+      // and yet a whole volume was read off the live filesystem.
+      mockStatusWithVss({
+        shadowCopyId: 'set-1',
+        writers: [{ name: 'SqlServerWriter', state: 'stable' }],
+        unprotectedVolumes: ['D:\\'],
+      });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      const banner = await screen.findByTestId('backup-vss-unprotected-volumes');
+      expect(banner.textContent).toContain('D:\\');
+      // Not merely the writer banner, which stays silent here.
+      expect(screen.queryByText(/writers are not stable/i)).toBeNull();
+    });
+
+    it('lists provider warnings carried on the metadata', async () => {
+      mockStatusWithVss({
+        shadowCopyId: 'set-1',
+        writers: [{ name: 'SqlServerWriter', state: 'stable' }],
+        warnings: ['volume D:\\ has no shadow copy (0x80042308)'],
+      });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      const warnings = await screen.findByTestId('backup-vss-warnings');
+      expect(warnings.textContent).toContain('0x80042308');
+    });
+
+    it('hides the panel entirely when the run reported no VSS metadata (non-Windows / VSS off)', async () => {
+      mockStatusWithVss(null);
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      await screen.findByText('Job History');
+      expect(screen.queryByText('VSS Status')).toBeNull();
+      expect(screen.queryByTestId('backup-vss-unprotected-volumes')).toBeNull();
+    });
+
+    it('surfaces a total VSS failure, which has NO vssMetadata and so no panel', async () => {
+      // The worst outcome and previously the most invisible: the shadow copy
+      // never started, so there is nothing for the VSS panel to render, and
+      // this tab used to ignore errorLog entirely — a run that read every file
+      // off the live volume displayed as a clean, green backup.
+      mockStatusWithVss(null, {
+        status: 'completed',
+        errorLog: 'VSS shadow copy could not be created, so every path was read from the live volume',
+      });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      const banner = await screen.findByTestId('backup-last-job-diagnostic');
+      expect(banner.textContent).toContain('read from the live volume');
+      // A successful-but-degraded run is a WARNING, not an error.
+      expect(banner.textContent).toContain('completed with warnings');
+      expect(banner.className).not.toMatch(/destructive/);
+    });
+
+    it('styles the diagnostic as an error when the run actually failed', async () => {
+      mockStatusWithVss(null, { status: 'failed', errorLog: 'upload destination unreachable' });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      const banner = await screen.findByTestId('backup-last-job-diagnostic');
+      expect(banner.textContent).toContain('Last backup failed');
+      expect(banner.className).toMatch(/destructive/);
+    });
+
+    it('renders no diagnostic banner for a clean run', async () => {
+      mockStatusWithVss(null, { errorLog: null });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      await screen.findByText('Job History');
+      expect(screen.queryByTestId('backup-last-job-diagnostic')).toBeNull();
+    });
+  });
 });

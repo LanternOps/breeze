@@ -93,6 +93,14 @@ export const statusConfig = {
     label: 'Failed',
     className: 'text-destructive bg-destructive/10'
   },
+  // A partial run is a warning-severity outcome in its own right: restorable,
+  // but a large share of the data is missing. Kept distinct from the generic
+  // `warning` bucket so the dashboard can name what actually happened.
+  partial: {
+    icon: AlertTriangle,
+    label: 'Partial',
+    className: 'text-warning bg-warning/10'
+  },
   warning: {
     icon: AlertTriangle,
     label: 'Warning',

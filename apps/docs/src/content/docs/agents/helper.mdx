@@ -199,7 +199,7 @@ The Helper uses a tiered tool whitelist that controls which AI tools are availab
 | `network_discovery` | -- | -- | Yes |
 
 <Aside type="caution">
-  The **extended** permission level grants access to `execute_command`, `security_scan`, and `network_discovery`. These are Tier 3 tools that require explicit approval before execution. Only enable extended mode for trusted environments where end users should be able to trigger device commands.
+  The **extended** permission level grants access to `execute_command`, `security_scan`, and `network_discovery`. `security_scan` and `network_discovery` are Tier 3; `execute_command` is Tier 2 for a handful of read-only command types (`list_processes`, `file_list`, `event_logs_list`) and Tier 3 for everything else — but on the Helper path, PAM governs any Tier ≥ 2 tool call regardless of that split, so all of these still require explicit approval before execution here. Only enable extended mode for trusted environments where end users should be able to trigger device commands.
 </Aside>
 
 The default permission level is `standard`. Organizations can override this per-device or globally through the Helper configuration endpoint.

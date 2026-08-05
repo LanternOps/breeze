@@ -227,7 +227,7 @@ describe('createActionIntent — atomicity + RLS (real Postgres, breeze_app)', (
       withIntentCreatedOutboxFault(() =>
         createActionIntent(auth, {
           toolName: 'execute_command',
-          input: { deviceId: randomUUID(), commandType: 'list_processes' },
+          input: { deviceId: randomUUID(), commandType: 'kill_process' },
           source: 'chat',
           idempotencyKey,
         }),
@@ -274,7 +274,7 @@ describe('createActionIntent — atomicity + RLS (real Postgres, breeze_app)', (
 
     const snapshot = await createActionIntent(auth, {
       toolName: 'execute_command',
-      input: { deviceId: randomUUID(), commandType: 'list_processes' },
+      input: { deviceId: randomUUID(), commandType: 'kill_process' },
       source: 'chat',
     });
     expect(snapshot.status).toBe('pending_approval');

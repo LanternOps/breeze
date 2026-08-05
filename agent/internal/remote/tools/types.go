@@ -202,6 +202,12 @@ const (
 	// Self-uninstall (remote wipe)
 	CmdSelfUninstall = "self_uninstall"
 
+	// Quick Support session teardown. Only an ephemeral support-mode client
+	// acts on this; a permanently-installed agent refuses it (see
+	// handleSupportEnd) so a forged or misrouted command cannot destroy a
+	// real install.
+	CmdSupportEnd = "support_end"
+
 	// Hyper-V VM backup management
 	CmdHypervDiscover   = "hyperv_discover"
 	CmdHypervBackup     = "hyperv_backup"

@@ -57,7 +57,7 @@ import { db } from '../db';
 import { lookupEcExpressProducts, TdSynnexEcExpressError } from './tdSynnexEcExpress';
 
 const EC_PRODUCT = {
-  source: 'td_synnex_ec_express', synnexSku: '14753620', mfgPartNo: 'PC14250', status: 'OK',
+  source: 'td_synnex_ec_express', synnexSku: '14753620', mfgPartNo: 'PC14250', manufacturer: 'Dell', status: 'OK',
   name: 'Dell Pro 14', description: 'Ultra 5', currency: 'USD', cost: 1120.5, msrp: 1499,
   discount: 12, totalQty: 42, warehouses: [{ code: 'CA', available: 42, onOrder: 0, bo: 0, eta: null }],
   weight: 3.1, parcelShippable: 'Y', raw: { soap: 'internal-dump' },
@@ -230,6 +230,7 @@ describe('aiToolsCatalog: get_catalog_item', () => {
           source: 'td_synnex_ec_express',
           synnexSku: '14703953',
           mfgPartNo: 'SPL-DOCK-1',
+          manufacturer: 'HPE Aruba',
           status: 'Active',
           cost: 100,
           msrp: 150,
@@ -253,6 +254,7 @@ describe('aiToolsCatalog: get_catalog_item', () => {
     expect(parsed.item.attributes.distributor).toMatchObject({
       synnexSku: '14703953',
       mfgPartNo: 'SPL-DOCK-1',
+      manufacturer: 'HPE Aruba',
       status: 'Active',
       cost: 100,
       msrp: 150,
@@ -426,6 +428,7 @@ describe('aiToolsCatalog: lookup_distributor_product', () => {
     expect(parsed.products[0].discount).toBe(12); // …and discount (margin-derivable)
     expect(parsed.products[0].msrp).toBe(1499);
     expect(parsed.products[0].synnexSku).toBe('14753620');
+    expect(parsed.products[0].manufacturer).toBe('Dell');
     expect(parsed.products[0].raw).toBeUndefined(); // internal SOAP dump never exposed
   });
 

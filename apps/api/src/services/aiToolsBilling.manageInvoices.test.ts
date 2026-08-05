@@ -211,11 +211,13 @@ describe('manage_invoices', () => {
   });
 
   it('record_payment calls recordPayment with the payment payload and actor', async () => {
+    // receivedAt is validated against recordPaymentSchema's isoDate (YYYY-MM-DD),
+    // the same shape the POST /invoices/:id/payments route enforces.
     const payment = {
       amount: 125,
       method: 'card',
       reference: 'ch_123',
-      receivedAt: '2026-07-01T10:00:00.000Z',
+      receivedAt: '2026-07-01',
     };
 
     const out = await getTool().handler(
@@ -255,11 +257,66 @@ describe('manage_invoices', () => {
     );
 
     const out = await getTool().handler(
-      { action: 'record_payment', invoiceId: 'inv-1', payment: { amount: 999 } },
+      {
+        action: 'record_payment',
+        invoiceId: 'inv-1',
+        payment: { amount: 999, method: 'card', receivedAt: '2026-07-01' },
+      },
       auth,
     );
 
     expect(JSON.parse(out)).toEqual({ error: 'Payment exceeds balance', code: 'OVERPAYMENT' });
+  });
+
+  it('record_payment with an incomplete payload returns a structured VALIDATION_ERROR instead of reaching recordPayment (BUG1 sibling fix)', async () => {
+    const out = await getTool().handler(
+      { action: 'record_payment', invoiceId: 'inv-1', payment: { amount: 999 } },
+      auth,
+    );
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(invoiceService.recordPayment).not.toHaveBeenCalled();
+  });
+
+  it('add_manual_line with a missing quantity/unitPrice returns a structured VALIDATION_ERROR (BUG1 sibling fix)', async () => {
+    const out = await getTool().handler(
+      { action: 'add_manual_line', invoiceId: 'inv-1', line: { name: 'Widget', taxable: false } },
+      auth,
+    );
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(invoiceService.addManualLine).not.toHaveBeenCalled();
+  });
+
+  it('update_line with an invalid patch field returns a structured VALIDATION_ERROR (BUG1 sibling fix)', async () => {
+    const out = await getTool().handler(
+      { action: 'update_line', invoiceId: 'inv-1', lineId: 'line-1', patch: { quantity: 'not-a-number' } },
+      auth,
+    );
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(invoiceService.updateLine).not.toHaveBeenCalled();
+  });
+
+  it('update_header with an invalid patch field returns a structured VALIDATION_ERROR (BUG1 sibling fix)', async () => {
+    const out = await getTool().handler(
+      { action: 'update_header', invoiceId: 'inv-1', patch: { dueDate: 'not-a-date' } },
+      auth,
+    );
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(invoiceService.updateInvoice).not.toHaveBeenCalled();
+  });
+
+  it('delete_draft awaits deleteDraftInvoice and returns {"ok":true} instead of the string "undefined" (BUG2 fix)', async () => {
+    const out = await getTool().handler({ action: 'delete_draft', invoiceId: 'inv-1' }, auth);
+
+    expect(invoiceService.deleteDraftInvoice).toHaveBeenCalledWith('inv-1', actor);
+    expect(JSON.parse(out)).toEqual({ ok: true });
   });
 
   it('re-throws non-service errors from service actions', async () => {

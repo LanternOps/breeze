@@ -235,7 +235,7 @@ describe('device endpoints (authenticated)', () => {
 
   describe('POST /devices/:id/maintenance', () => {
     it('should enable maintenance mode', async () => {
-      const device = createTestDevice({ id: 'device-1', status: 'online' });
+      const device = createTestDevice({ id: '11111111-2222-4333-8444-555555555555', status: 'online' });
       const updated = { ...device, status: 'maintenance' };
 
       mockUserLookup();
@@ -261,7 +261,7 @@ describe('device endpoints (authenticated)', () => {
     });
 
     it('should disable maintenance mode', async () => {
-      const device = createTestDevice({ id: 'device-2', status: 'maintenance' });
+      const device = createTestDevice({ id: '22222222-3333-4444-8555-666666666666', status: 'maintenance' });
       const updated = { ...device, status: 'online' };
 
       mockUserLookup();
@@ -288,7 +288,7 @@ describe('device endpoints (authenticated)', () => {
 
   describe('GET /devices/:id/alerts', () => {
     it('should return alerts for a device', async () => {
-      const device = createTestDevice({ id: 'device-1' });
+      const device = createTestDevice({ id: '11111111-2222-4333-8444-555555555555' });
       const mockAlert = {
         id: 'alert-1',
         title: 'High CPU',

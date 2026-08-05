@@ -89,6 +89,101 @@ func nextBackupResult(t *testing.T, ch <-chan recvResult) *ipc.Envelope {
 	}
 }
 
+// #3006: the snapshot id must actually reach the WIRE, not just the in-process
+// ProgressFn. This exercises the whole hop the fix depends on —
+// createSnapshotWithProgress -> ProgressFn -> the SetProgressFn closure in
+// executeCommand -> backupipc.BackupProgress -> a real IPC envelope — and pins
+// it to the snapshot id the terminal result reports, which is what the server
+// keys the restore point on. Without this, deleting `SnapshotID: snapshotID`
+// from the closure makes Part 1 a silent no-op with every other test green.
+func TestHandleBackupCommand_BackupRunProgressCarriesSnapshotID(t *testing.T) {
+	provider := providers.NewLocalProvider(t.TempDir())
+	mgr := backup.NewBackupManager(backup.BackupConfig{Provider: provider})
+
+	agentSide, helperSide := net.Pipe()
+	defer func() { _ = agentSide.Close() }()
+	defer func() { _ = helperSide.Close() }()
+
+	agentConn := ipc.NewConn(agentSide)
+	helperConn := ipc.NewConn(helperSide)
+
+	req := backupipc.BackupCommandRequest{
+		CommandID:   "progress-snapshot-id-cmd",
+		CommandType: "backup_run",
+		Payload:     backupRunTestPayload(t),
+		Async:       true,
+	}
+	reqPayload, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	env := &ipc.Envelope{ID: req.CommandID, Type: backupipc.TypeBackupCommand, Payload: reqPayload}
+
+	ch := startEnvelopeReader(agentConn)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handleBackupCommand(helperConn, env, mgr, nil, newActiveCommandCanceller())
+	}()
+
+	// Collect every envelope until the terminal result arrives, keeping the
+	// progress frames this time instead of discarding them.
+	var progressSnapshotIDs []string
+	var finalResult backupipc.BackupCommandResult
+	deadline := time.After(10 * time.Second)
+collect:
+	for {
+		select {
+		case r := <-ch:
+			if r.err != nil {
+				t.Fatalf("recv envelope: %v", r.err)
+			}
+			switch r.env.Type {
+			case backupipc.TypeBackupProgress:
+				var progress backupipc.BackupProgress
+				if err := json.Unmarshal(r.env.Payload, &progress); err != nil {
+					t.Fatalf("unmarshal progress: %v", err)
+				}
+				if progress.SnapshotID != "" {
+					progressSnapshotIDs = append(progressSnapshotIDs, progress.SnapshotID)
+				}
+			case backupipc.TypeBackupResult:
+				var res backupipc.BackupCommandResult
+				if err := json.Unmarshal(r.env.Payload, &res); err != nil {
+					t.Fatalf("unmarshal result: %v", err)
+				}
+				// Skip the immediate {"started":true} ack.
+				if res.Stdout == `{"started":true}` {
+					continue
+				}
+				finalResult = res
+				break collect
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for the terminal backup_result envelope")
+		}
+	}
+	<-done
+
+	if len(progressSnapshotIDs) == 0 {
+		t.Fatal("no backup_progress envelope carried a snapshotId — the mid-run registration never reached the wire")
+	}
+
+	var job backup.BackupJob
+	if err := json.Unmarshal([]byte(finalResult.Stdout), &job); err != nil {
+		t.Fatalf("unmarshal backup job from result stdout: %v", err)
+	}
+	if job.Snapshot == nil || job.Snapshot.ID == "" {
+		t.Fatalf("terminal result carried no snapshot: %+v", job)
+	}
+	for i, id := range progressSnapshotIDs {
+		if id != job.Snapshot.ID {
+			t.Fatalf("progress emission %d reported snapshotId %q, but the run produced %q",
+				i, id, job.Snapshot.ID)
+		}
+	}
+}
+
 func TestHandleBackupCommand_AsyncBackupRunSendsAckThenUnsolicitedResult(t *testing.T) {
 	provider := providers.NewLocalProvider(t.TempDir())
 	mgr := backup.NewBackupManager(backup.BackupConfig{Provider: provider})

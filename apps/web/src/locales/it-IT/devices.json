@@ -1085,7 +1085,9 @@
     "to": "a",
     "perPage": "Per pagina",
     "devicesPerPage": "Dispositivi per pagina",
-    "page": "Pagina"
+    "page": "Pagina",
+    "possibleDuplicate": "Possibile duplicato",
+    "possibleDuplicateTitle": "Questo dispositivo potrebbe sostituire una scheda precedente con lo stesso nome host. Aprila per controllare."
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Impossibile recuperare i log del dispositivo",
@@ -2223,5 +2225,16 @@
     "idleMinutes": "inattiva da {{count}} min",
     "disconnectedNotShadowable": "Le sessioni disconnesse non possono essere visualizzate — nessun desktop attivo da acquisire",
     "cancel": "Annulla"
+  },
+  "possibleReplacementBanner": {
+    "decommissionFailed": "Impossibile dismettere il vecchio dispositivo",
+    "decommissionOldDevice": "Dismetti il vecchio dispositivo",
+    "decommissionSucceeded": "Vecchio dispositivo dismesso",
+    "message": "Questo dispositivo potrebbe sostituire {{hostname}}: controlla e dismetti la vecchia scheda.",
+    "oldDeviceDecommissioned": "Vecchio dispositivo dismesso: non c’è altro da controllare.",
+    "oldDeviceUnavailable": "La scheda del vecchio dispositivo non è più disponibile.",
+    "title": "Possibile registrazione duplicata",
+    "unknownDevice": "il dispositivo precedente",
+    "viewOldDevice": "Visualizza il vecchio dispositivo"
   }
 }

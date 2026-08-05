@@ -67,6 +67,7 @@ import { partnerServicePrincipalRoutes } from './routes/partnerServicePrincipals
 import { partnerApiRoutes } from './routes/partnerApi';
 import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './routes/enrollmentKeys';
 import { installerRoutes } from './routes/installer';
+import { supportPublicRoutes } from './routes/supportPublic';
 import { ssoRoutes } from './routes/sso';
 import { partnerLoginBrandingRoutes } from './routes/partnerLoginBranding';
 import { docsRoutes } from './routes/docs';
@@ -160,7 +161,23 @@ import { extensionsAdminRoutes } from './routes/extensionsAdmin';
 import { extensionsWebRoutes } from './routes/extensionsWeb';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
-import { captureException, flushSentry, initSentry } from './services/sentry';
+import {
+  captureException,
+  captureMessage,
+  flushSentry,
+  initSentry,
+  setConnectTimeoutClassifier,
+} from './services/sentry';
+import {
+  getEventLoopStarvationThresholdMs,
+  startEventLoopMonitor,
+  stopEventLoopMonitor,
+} from './services/eventLoopMonitor';
+import { createStarvationReporter } from './services/eventLoopStarvationReporter';
+import {
+  getConnectTimeoutStarvationThresholdMs,
+  safeDiagnoseConnectTimeout,
+} from './services/postgresConnectTimeout';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
@@ -199,6 +216,14 @@ import {
   initializeEnrollmentKeyCleanupWorker,
   shutdownEnrollmentKeyCleanupWorker,
 } from './jobs/enrollmentKeyCleanup';
+import {
+  initializeQuickSupportReaper,
+  shutdownQuickSupportReaper,
+} from './jobs/quickSupportReaper';
+import {
+  initializeSoftwareUploadSessionCleanupWorker,
+  shutdownSoftwareUploadSessionCleanupWorker,
+} from './jobs/softwareUploadSessionCleanup';
 import { initializeAuditRetentionWorker, shutdownAuditRetentionWorker } from './jobs/auditRetention';
 import {
   initializeAuditChainVerifyWorker,
@@ -538,6 +563,17 @@ app.get('/health/ready', async (c) => {
 
   const allOk = Object.values(checks).every((v) => v === 'ok');
 
+  // #3022 — event-loop lag is deliberately NOT reported here. This endpoint is
+  // unauthenticated (see HEALTH_CHECK_PATHS in middleware/security.ts), and the
+  // lag stats are a live load gradient plus the starvation threshold itself,
+  // which would let an unauthenticated prober measure whether its own load is
+  // starving the instance. What this endpoint already exposes is binary
+  // availability; a tunable pressure readout is a different thing.
+  //
+  // Nothing is lost by the omission: the same numbers are on the auth-gated
+  // /metrics as Prometheus gauges, and the starvation reporter logs to the
+  // console unconditionally. Load balancers — the actual consumers here — read
+  // the status code, not the body.
   return c.json(
     {
       status: allOk ? 'ready' : 'not_ready',
@@ -964,6 +1000,10 @@ api.route('/partner-api', partnerApiRoutes);
 api.route('/enrollment-keys', publicEnrollmentRoutes); // Public download (no auth) — must precede auth-protected routes
 api.route('/enrollment-keys', enrollmentKeyRoutes);
 api.route('/installer', installerRoutes);
+// Public Quick Support — the one-time code is the auth (no bearer token).
+// Guarded by ~44 bits of code entropy, a 15-minute TTL, per-IP rate limits
+// and a single atomic pending->claimed transition.
+api.route('/support', supportPublicRoutes);
 api.route('/sso', ssoRoutes);
 // Mounted directly at /partners (not nested under /orgs' /partners/me or the
 // legacy singular /partner router) — final URL /api/v1/partners/me/login-branding
@@ -1105,6 +1145,22 @@ app.onError((err, c) => {
       },
       err.status
     );
+  }
+
+  // #3022 — say out loud what a CONNECT_TIMEOUT actually means before the raw
+  // error is logged. The driver's own message is `write CONNECT_TIMEOUT
+  // <host>:<port>`, which reads as a database or network fault and sent the
+  // original investigation after both; the loop being blocked produces a
+  // byte-identical error. Console-side only (the Sentry tags are set in
+  // captureException) so the explanation is present even when Sentry is
+  // disabled, which is the self-hosted default.
+  //
+  // Must be the never-throwing variant: this runs INSIDE onError and ahead of
+  // captureException, so a throw here would cost the request its JSON 500 and
+  // stop the original error from ever being reported.
+  const connectTimeout = safeDiagnoseConnectTimeout(err);
+  if (connectTimeout) {
+    console.error(connectTimeout.message);
   }
 
   // Route unhandled errors to Sentry. Per-route `captureException(err, c)`
@@ -1333,6 +1389,10 @@ async function initializeWorkers(): Promise<void> {
     // Undo-send window: fires the delayed quote dispatch (jobs/quoteSendQueue).
     ['quoteSendWorker', async () => { initializeQuoteSendWorker(); }],
     ['enrollmentKeyCleanup', initializeEnrollmentKeyCleanupWorker],
+    // Quick Support safety net: expires stale codes/sessions, enforces the 8h
+    // hard cap, detects end-user disconnects, and purges ephemeral devices.
+    ['quickSupportReaper', initializeQuickSupportReaper],
+    ['softwareUploadSessionCleanup', initializeSoftwareUploadSessionCleanupWorker],
     ['auditRetention', initializeAuditRetentionWorker],
     ['extensionJobHost', () => initializeExtensionJobHost(extensionContributionRegistry, extensionStateStore)],
     ['auditChainVerify', initializeAuditChainVerifyWorker],
@@ -1484,6 +1544,10 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   console.log(`[shutdown] Received ${signal}, shutting down gracefully...`);
 
   getWebhookWorker().stop();
+  // The sampler is already unref'd, so this is tidiness rather than a
+  // requirement — it just stops starvation warnings from being emitted about a
+  // process that is deliberately winding down and no longer serving traffic.
+  stopEventLoopMonitor();
   if (auditRetryInterval) {
     clearInterval(auditRetryInterval);
     auditRetryInterval = null;
@@ -1547,6 +1611,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownAuthEmailWorker,
     shutdownQuoteSendWorker,
     shutdownEnrollmentKeyCleanupWorker,
+    shutdownQuickSupportReaper,
+    shutdownSoftwareUploadSessionCleanupWorker,
     shutdownAuditRetentionWorker,
     shutdownExtensionJobHost,
     shutdownAuditChainVerifyWorker,
@@ -1721,6 +1787,59 @@ async function bootstrap(): Promise<void> {
   // (migrations, seeds, self-tests) and the global onError/unhandledRejection
   // handlers are actually captured. No-op unless SENTRY_DSN is set.
   initSentry();
+
+  // #3022 — start measuring event-loop lag immediately after Sentry, and before
+  // migrations/startup checks, so a stall is observable for the whole life of
+  // the process rather than only once it is serving traffic. The monitor is a
+  // native histogram plus one unref'd interval; it holds nothing open and adds
+  // no per-request work. Reports go to the console always, and to Sentry on a
+  // throttle (a single stall produces a run of breaching samples, and this repo
+  // has twice had an unthrottled recurring warning exhaust the event quota).
+  const eventLoopMonitor = startEventLoopMonitor({
+    onSample: createStarvationReporter({
+      thresholdMs: getEventLoopStarvationThresholdMs,
+      capture: (message, tags) => captureMessage(message, 'warning', undefined, tags),
+    }),
+  });
+  // Say whether the instance can see its own loop, and at what settings. Without
+  // this line a disabled or mistuned monitor is completely silent: every
+  // CONNECT_TIMEOUT diagnosis degrades to "unknown" and the only other evidence
+  // is a Prometheus series nobody is alerting on yet. Printing the effective
+  // interval also makes a misparsed env var (parseInt('2s') === 2) visible.
+  if (eventLoopMonitor) {
+    // Both thresholds are printed because they can differ: the warn threshold is
+    // the operator's knob, while CONNECT_TIMEOUT attribution caps it at the
+    // connect budget so a raised warn value cannot mis-attribute a timeout.
+    // Printing only the former would advertise 15000ms while diagnosis applied
+    // 10000ms.
+    console.log(
+      `[event-loop] Lag monitor started (interval ${eventLoopMonitor.intervalMs}ms, `
+      + `warn threshold ${getEventLoopStarvationThresholdMs()}ms, `
+      + `CONNECT_TIMEOUT attribution threshold ${getConnectTimeoutStarvationThresholdMs()}ms)`,
+    );
+    // A sampling interval coarser than the warn threshold leaves a blind spot
+    // one interval wide, which degrades every diagnosis in it to "unknown".
+    if (eventLoopMonitor.intervalMs > getEventLoopStarvationThresholdMs()) {
+      console.warn(
+        `[event-loop] EVENT_LOOP_MONITOR_INTERVAL_MS (${eventLoopMonitor.intervalMs}ms) exceeds the `
+        + `starvation threshold (${getEventLoopStarvationThresholdMs()}ms). Stalls shorter than one `
+        + `sampling interval cannot be observed, so CONNECT_TIMEOUT causes will report "unknown" (#3022).`,
+      );
+    }
+  } else {
+    console.warn(
+      '[event-loop] Lag monitor DISABLED via EVENT_LOOP_MONITOR_DISABLED — Postgres '
+      + 'CONNECT_TIMEOUT errors will report cause "unknown" because starvation can be '
+      + 'neither ruled in nor out (#3022).',
+    );
+  }
+
+  // Inject the CONNECT_TIMEOUT classifier into the Sentry layer. It is wired
+  // here rather than imported by services/sentry.ts so that module stays a leaf
+  // — see setConnectTimeoutClassifier for the import-graph reason. Must follow
+  // startEventLoopMonitor: before the monitor runs, every diagnosis correctly
+  // reports 'unknown' rather than guessing.
+  setConnectTimeoutClassifier(safeDiagnoseConnectTimeout);
 
   // Validate configuration before anything else — fail fast on missing/insecure secrets.
   // The validated config is stored as a singleton; retrieve later via getConfig().

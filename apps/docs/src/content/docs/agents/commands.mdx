@@ -116,7 +116,7 @@ Query Windows Event Logs. Returns stub responses on non-Windows platforms.
 | Action | Description | Key Payload Fields |
 |---|---|---|
 | `event_logs_list` | List available event logs | -- |
-| `event_logs_query` | Query events from a log | `logName`, `level`, `source`, `eventId`, `page`, `limit` |
+| `event_logs_query` | Query events from a log | `logName`, `level`, `source`, `eventId`, `query`, `page`, `limit` |
 | `event_log_get` | Get a specific log entry | `logName`, `recordId` |
 
 ### `event_logs_query`
@@ -124,9 +124,10 @@ Query Windows Event Logs. Returns stub responses on non-Windows platforms.
 | Param | Type | Default | Description |
 |---|---|---|---|
 | `logName` | string | `"System"` | Log name (`System`, `Application`, `Security`, etc.) |
-| `level` | string | `""` | Filter: `Information`, `Warning`, `Error`, `Critical` |
+| `level` | string \| int | `""` | Filter: `Information`, `Warning`, `Error`, `Critical`, `Verbose`, or the numeric level `1`-`5`. Unknown values are rejected with an error. |
 | `source` | string | `""` | Filter by event source |
 | `eventId` | int | `0` | Filter by event ID |
+| `query` | string | `""` | XPath filter applied via `-FilterXPath` (max 4096 bytes). Mutually exclusive with `level`/`source`/`eventId` — combining them returns an error. |
 | `page` | int | `1` | Page number |
 | `limit` | int | `50` | Results per page (max 500) |
 

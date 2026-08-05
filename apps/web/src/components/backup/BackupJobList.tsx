@@ -24,7 +24,10 @@ import { asList } from '@/lib/asList';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
-type JobStatus = 'completed' | 'running' | 'failed' | 'queued' | 'cancelled';
+// `partial` is a terminal outcome of its own: a restorable snapshot exists, but
+// a large share of the scanned data never made it. It is neither a success nor
+// a hard failure, so it renders amber — never green, never red.
+type JobStatus = 'completed' | 'running' | 'failed' | 'queued' | 'cancelled' | 'partial';
 
 type BackupJobRaw = {
   id: string;
@@ -79,36 +82,35 @@ const POLL_MS = 5000;
 const STALL_MS = 2 * 60 * 1000;
 // Statuses a job can no longer leave — used to reconcile optimistic cancels
 // against a possibly-stale poll response.
-const TERMINAL_STATUSES: readonly JobStatus[] = ['completed', 'failed', 'cancelled'];
+const TERMINAL_STATUSES: readonly JobStatus[] = ['completed', 'failed', 'cancelled', 'partial'];
 
 type BackupJobDetails = BackupJobRaw & {
   deviceName?: string | null;
   configName?: string | null;
 };
 
-const statusConfig: Record<JobStatus, { label: string; icon: typeof CheckCircle2; className: string }> = {
+const statusConfig: Record<JobStatus, { icon: typeof CheckCircle2; className: string }> = {
   completed: {
-    label: 'Completed',
     icon: CheckCircle2,
     className: 'text-success bg-success/10'
   },
   running: {
-    label: 'Running',
     icon: Loader2,
     className: 'text-primary bg-primary/10'
   },
   failed: {
-    label: 'Failed',
     icon: XCircle,
     className: 'text-destructive bg-destructive/10'
   },
+  partial: {
+    icon: AlertTriangle,
+    className: 'text-warning bg-warning/10'
+  },
   queued: {
-    label: 'Queued',
     icon: Clock,
     className: 'text-muted-foreground bg-muted'
   },
   cancelled: {
-    label: 'Cancelled',
     icon: XCircle,
     className: 'text-muted-foreground bg-muted'
   }
@@ -118,6 +120,9 @@ function normalizeStatus(status?: string): JobStatus {
   if (!status) return 'queued';
   const s = status.toLowerCase();
   if (s === 'running' || s.includes('progress')) return 'running';
+  // `partial` must be tested before the completed/failed substring checks so a
+  // future value like "partial_complete" can't be laundered into a clean green.
+  if (s === 'partial' || s.includes('partial')) return 'partial';
   if (s === 'completed' || s.includes('success') || s.includes('complete')) return 'completed';
   if (s === 'failed' || s.includes('fail') || s.includes('error')) return 'failed';
   if (s === 'cancelled' || s === 'canceled') return 'cancelled';
@@ -196,6 +201,17 @@ function mapJob(raw: BackupJobRaw): BackupJob {
 
 export default function BackupJobList() {
   const { t } = useTranslation('backup');
+  // Labels live here rather than on the module-scope `statusConfig` so they
+  // resolve against the active locale on every render instead of freezing
+  // whatever language happened to be loaded at import time.
+  const statusLabels: Record<JobStatus, string> = {
+    completed: t('backupJobList.completed'),
+    running: t('backupJobList.running'),
+    failed: t('backupJobList.failed'),
+    partial: t('backupJobList.partial'),
+    queued: t('backupJobList.queued'),
+    cancelled: t('backupJobList.cancelled')
+  };
   const [jobs, setJobs] = useState<BackupJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -458,6 +474,7 @@ export default function BackupJobList() {
             <option value="running">{t('backupJobList.running')}</option>
             <option value="failed">{t('backupJobList.failed')}</option>
             <option value="completed">{t('backupJobList.completed')}</option>
+            <option value="partial">{t('backupJobList.partial')}</option>
             <option value="queued">{t('backupJobList.queued')}</option>
             <option value="cancelled">{t('backupJobList.cancelled')}</option>
           </select>
@@ -510,6 +527,7 @@ export default function BackupJobList() {
             ) : (
               filteredJobs.map((job) => {
                 const status = statusConfig[job.status] ?? statusConfig.queued;
+                const statusLabel = statusLabels[job.status] ?? statusLabels.queued;
                 const StatusIcon = status.icon;
                 const isCancellable = job.status === 'running' || job.status === 'queued';
                 const isRunning = job.status === 'running';
@@ -545,8 +563,21 @@ export default function BackupJobList() {
                             <StatusIcon
                               className={cn('h-3.5 w-3.5', job.status === 'running' && 'animate-spin')}
                             />
-                            {status.label}
+                            {statusLabel}
                           </span>
+                          {job.errorCount > 0 && (
+                            // Issue #3000: the failed-file count was only visible
+                            // after expanding the row, so a run that lost most of
+                            // its files read as a clean job in the list.
+                            <span
+                              data-testid="backup-job-failed-count"
+                              title={t('backupJobList.failedFilesTooltip')}
+                              className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-1 text-xs font-medium text-warning"
+                            >
+                              <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+                              {t('backupJobList.failedCount', { count: job.errorCount })}
+                            </span>
+                          )}
                           {isStalled && (
                             <span
                               data-testid="backup-job-stalled"
@@ -667,7 +698,9 @@ export default function BackupJobList() {
                               <p className="mt-1 break-all text-foreground">{details.featureLinkId ?? '--'}</p>
                             </div>
                           </div>
-                          {job.status === 'completed' && details.referencedSize != null && (
+                          {/* A partial run still produced a restorable snapshot,
+                              so its dedup savings are as real as a completed run's. */}
+                          {(job.status === 'completed' || job.status === 'partial') && details.referencedSize != null && (
                             <p
                               data-testid="backup-job-savings"
                               className="mt-4 text-xs text-muted-foreground"

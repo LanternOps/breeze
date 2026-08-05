@@ -23,6 +23,38 @@ interface EnrollmentKey {
   expiresAt: string | null;
   createdBy: string | null;
   createdAt: string;
+  /**
+   * Device slots across the installers minted from this key, summed over its
+   * bootstrap tokens (#2992).
+   *
+   * A SEPARATE counter from usageCount/maxUsage, not a replacement: the modern
+   * installer downloads mint no child enrollment key, so the device count the
+   * operator chose lands here and nowhere else. Both get rendered; see the
+   * usage cell below.
+   *
+   * null in TWO cases, and the API decides both — do not try to re-derive
+   * either here:
+   *   1. the key never produced an installer;
+   *   2. the key is a short-link / invite CHILD (it carries a shortCode), whose
+   *      bootstrap tokens are one-per-DOWNLOAD rather than one-per-device, so
+   *      the sum would count clicks and render a denominator that grows on
+   *      every click and never reaches the key's real budget. See
+   *      `reportsInstallerCapacity` in routes/enrollmentKeys.ts.
+   *
+   * `liveConsumed` / `liveMax` (#3039) are the same sums over UNEXPIRED tokens
+   * only. They drive two things below: the capacity line marks dead slots
+   * instead of rendering an expired installer as "0 / 7" free capacity, and
+   * `getKeyStatus` derives the row's effective status from token liveness once
+   * the parent key itself is dead (the Add-Device parent is a 60-minute
+   * container; its installer can live a year). Optional so a response predating
+   * the field degrades to the old all-live rendering.
+   */
+  installerTokens?: {
+    consumed: number;
+    max: number;
+    liveConsumed?: number;
+    liveMax?: number;
+  } | null;
 }
 
 interface CreateFormValues {
@@ -357,10 +389,64 @@ export default function EnrollmentKeyManager() {
   const isExhausted = (key: EnrollmentKey) =>
     key.maxUsage !== null && key.usageCount >= key.maxUsage;
 
+  /**
+   * Normalized liveness cut of a key's installer capacity, or null when the
+   * key has no installer figure at all. Falls back to treating every token as
+   * live when the API predates the live* fields, which reproduces the old
+   * behavior exactly.
+   */
+  const installerLiveness = (key: EnrollmentKey) => {
+    const tokens = key.installerTokens;
+    if (!tokens || tokens.max <= 0) return null;
+    return {
+      ...tokens,
+      liveConsumed: tokens.liveConsumed ?? tokens.consumed,
+      liveMax: tokens.liveMax ?? tokens.max,
+    };
+  };
+
+  const STATUS_STYLES = {
+    expired: { key: 'expired', active: false, className: 'bg-red-500/10 text-red-400 border-red-500/30' },
+    exhausted: { key: 'exhausted', active: false, className: 'bg-amber-500/10 text-amber-400 border-amber-500/30' },
+    active: { key: 'active', active: true, className: 'bg-green-500/10 text-green-400 border-green-500/30' },
+  } as const;
+
+  /**
+   * Whether the parent key ITSELF is still a redeemable credential (CLI
+   * enroll, and the gate the authenticated installer-download routes apply —
+   * they 410 on an expired key). Deliberately separate from the row's
+   * effective status below: the Download button must follow THIS, not the
+   * token-derived badge, or an expired parent with a live installer would
+   * offer a download that can only 410.
+   */
+  const isParentActive = (key: EnrollmentKey) => !isExpired(key) && !isExhausted(key);
+
+  /**
+   * Effective row status (#3039). The parent key's own expiry wins while the
+   * parent is alive, but once it is dead a key that minted installers is
+   * judged by its tokens — the things that actually enroll. Without this an
+   * Add-Device row flips to "Expired" 60 minutes in while its installer keeps
+   * enrolling devices for months (and vice versa: a dead installer under a
+   * live-looking row).
+   */
   const getKeyStatus = (key: EnrollmentKey) => {
-    if (isExpired(key)) return { key: 'expired', active: false, className: 'bg-red-500/10 text-red-400 border-red-500/30' };
-    if (isExhausted(key)) return { key: 'exhausted', active: false, className: 'bg-amber-500/10 text-amber-400 border-amber-500/30' };
-    return { key: 'active', active: true, className: 'bg-green-500/10 text-green-400 border-green-500/30' };
+    if (isParentActive(key)) return STATUS_STYLES.active;
+    const tokens = key.installerTokens;
+    // Only trust token liveness when the API actually reported it — a legacy
+    // response without the live* fields falls through to the parent-based
+    // status rather than guessing every token alive.
+    if (
+      tokens &&
+      tokens.max > 0 &&
+      tokens.liveMax !== undefined &&
+      tokens.liveConsumed !== undefined
+    ) {
+      if (tokens.liveConsumed < tokens.liveMax) return STATUS_STYLES.active;
+      if (tokens.liveMax > 0) return STATUS_STYLES.exhausted;
+      return STATUS_STYLES.expired;
+    }
+    if (isExpired(key)) return STATUS_STYLES.expired;
+    return STATUS_STYLES.exhausted;
   };
 
   if (loading) {
@@ -532,7 +618,64 @@ export default function EnrollmentKeyManager() {
                         </span>
                       </td>
                       <td className="px-4 py-3 tabular-nums">
-                        {key.usageCount}{key.maxUsage !== null ? ` / ${key.maxUsage}` : ''}
+                        <div data-testid={`key-usage-${key.id}`}>
+                          {key.usageCount}{key.maxUsage !== null ? ` / ${key.maxUsage}` : ''}
+                        </div>
+                        {/*
+                          #2992 — device slots across the installers minted from
+                          this key. A second line rather than a replacement for
+                          the numbers above, because the two count different
+                          things and neither can be folded into the other:
+                          usageCount is enrollments claimed against THIS key,
+                          while this is redemptions of bootstrap tokens parented
+                          to it. No row is guaranteed to carry both — for the
+                          Add-Device / guided-setup parents (the case the bug was
+                          reported against) usageCount is inert and this line is
+                          the only true statement about the installer, whereas a
+                          CLI or MCP-invite key has no tokens at all and only the
+                          line above means anything.
+                        */}
+                        {(() => {
+                          /*
+                            #3039 — the line distinguishes live from expired
+                            capacity so a dead installer cannot read as free
+                            slots:
+                              - all tokens live  → "Installer devices C / M"
+                                (unchanged);
+                              - none live        → the totals plus an explicit
+                                expired marker — the historical count stays
+                                (those devices really did enroll) but the
+                                capacity claim is withdrawn;
+                              - mixed            → live figures first, dead
+                                slots called out ("L / N live · K expired").
+                          */
+                          const live = installerLiveness(key);
+                          if (!live) return null;
+                          const label =
+                            live.liveMax >= live.max
+                              ? t('enrollmentKeys.installerUsage', {
+                                  consumed: live.consumed,
+                                  max: live.max,
+                                })
+                              : live.liveMax === 0
+                                ? t('enrollmentKeys.installerUsageExpired', {
+                                    consumed: live.consumed,
+                                    max: live.max,
+                                  })
+                                : t('enrollmentKeys.installerUsageMixed', {
+                                    liveConsumed: live.liveConsumed,
+                                    liveMax: live.liveMax,
+                                    expired: live.max - live.liveMax,
+                                  });
+                          return (
+                            <div
+                              className="text-xs text-muted-foreground"
+                              data-testid={`key-installer-usage-${key.id}`}
+                            >
+                              {label}
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">
                         {key.expiresAt
@@ -544,8 +687,13 @@ export default function EnrollmentKeyManager() {
                       </td>
                       <td className="px-4 py-3 text-right">
                         <div className="relative inline-flex items-center gap-1">
-                          {/* Download Installer Dropdown - only for active keys with siteId */}
-                          {status.active && key.siteId && (
+                          {/* Download Installer Dropdown — gated on the PARENT
+                              key being redeemable, not the token-derived row
+                              status: the authenticated installer routes 410 on
+                              an expired key, so a row kept "Active" by a live
+                              installer token must not offer a download that
+                              can only fail. */}
+                          {isParentActive(key) && key.siteId && (
                             <div className="relative">
                               <button
                                 type="button"

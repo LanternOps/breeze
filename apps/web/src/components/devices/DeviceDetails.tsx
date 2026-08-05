@@ -61,6 +61,7 @@ import DevicePeripheralsTab from "./DevicePeripheralsTab";
 import DeviceWarrantyCard from "./DeviceWarrantyCard";
 import DeviceUserIdleStat from "./DeviceUserIdleStat";
 import MacOSPermissionsBanner from "./MacOSPermissionsBanner";
+import PossibleReplacementBanner from "./PossibleReplacementBanner";
 import { navigateTo } from "@/lib/navigation";
 import { OverflowTabs } from "../shared/OverflowTabs";
 import DeviceBackupTab from "../backup/DeviceBackupTab";
@@ -537,6 +538,12 @@ export default function DeviceDetails({
       </div>
 
       <MacOSPermissionsBanner deviceId={device.id} osType={device.os} />
+
+      {/* Collision enrollment review (#2764) — inert unless the row carries a
+          possible-replacement link. */}
+      <PossibleReplacementBanner
+        possibleReplacementOfDeviceId={device.possibleReplacementOfDeviceId}
+      />
 
       <OverflowTabs
         tabs={tabs}

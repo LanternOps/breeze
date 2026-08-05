@@ -231,7 +231,7 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
         const lifecycle = row ? lifecycleOf(row) : null;
         const outOfStock = row ? (p.totalQty ?? 0) === 0 : false;
         const warehouses = row ? warehouseSummary(row.warehouses) : '';
-        const manufacturer = row?.manufacturer?.trim() ?? '';
+        const manufacturer = p.manufacturer?.trim() ?? '';
         const freshness = row ? freshnessOf(row.syncedAt) : null;
         return (
           <div key={p.synnexSku} data-testid={`quote-distributor-result-${p.synnexSku}`} className="rounded-md border bg-background/40 p-3 text-sm">

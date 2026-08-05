@@ -66,6 +66,7 @@ export const PERMISSION_GRANTS = {
   QUOTES_READ: { resource: 'quotes', action: 'read' },
   QUOTES_WRITE: { resource: 'quotes', action: 'write' },
   QUOTES_SEND: { resource: 'quotes', action: 'send' },
+  QUOTES_FULFILL: { resource: 'quotes', action: 'fulfill' },
 
   // Time entries (ticketing Phase 3)
   TIME_ENTRIES_READ: { resource: 'time_entries', action: 'read' },

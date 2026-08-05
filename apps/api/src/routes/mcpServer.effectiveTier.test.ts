@@ -278,27 +278,30 @@ describe('MCP tools/call effective-tier gating (FIX 1)', () => {
     expect(body.result?.content?.[0]?.text).toContain('ok');
   });
 
-  // C3 — the audit event records the EFFECTIVE (escalated) tier, not the base
-  // tier. registry_operations base tier 1 + action:'delete_key' → tier 3; the
-  // ledger already asserts tier:3 (in the existing ledger test), so here we
-  // assert the audit-event payload carries details.tier === 3.
-  it('C3: audit event records the escalated effective tier (3), not base tier (1)', async () => {
+  // C3 — user decision 2026-08-02 made ALL Tier 3 unconditionally
+  // approval-required over MCP, so an escalated-to-tier-3 action now never
+  // reaches the ledger/audit path at all (the interactive-approval-only gate
+  // fires first, before ledger/audit — see mcpServer.approvalGate.test.ts for
+  // the full gate suite). What THIS test still needs to prove is narrower:
+  // the effective-tier resolution (Math.max(baseTier, guardrailTier)) is what
+  // feeds that gate — an action-level escalation from a base-tier-1 tool
+  // gates it exactly like a flat base-tier-3 tool would, not like its base
+  // tier. Previously this asserted the escalated tier landed in the audit
+  // payload; that payload no longer exists for a gated call, so this now
+  // asserts the gate itself fires (and, via the "no ledger" check, that it
+  // fires BEFORE the ledger/audit machinery ever runs).
+  it('C3: an action escalated from base tier 1 to effective tier 3 is gated exactly like a flat Tier-3 tool', async () => {
     const res = await callTool(
       ['ai:read', 'ai:execute'],
       'registry_operations',
       { action: 'delete_key', key: 'HKLM\\foo' },
     );
     const body = await res.json();
-    expect(body.error).toBeUndefined();
-    // The route writes two audit events: a request-level 'mcp_request' and the
-    // tool-level 'mcp_tool_execution'. Select the tool-level one and assert it
-    // records the EFFECTIVE (escalated) tier 3, not the base tier 1.
-    const toolAudit = mocks.writeAuditEvent.mock.calls
-      .map((call: any[]) => call[1])
-      .find((p: any) => p?.resourceType === 'mcp_tool_execution');
-    expect(toolAudit).toBeDefined();
-    expect(toolAudit.action).toBe('mcp.tool.registry_operations');
-    expect(toolAudit.details.tier).toBe(3);
+    expect(body.result.isError).toBe(true);
+    const payload = JSON.parse(body.result.content[0].text);
+    expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
+    expect(mocks.ledgerBegin).not.toHaveBeenCalled();
+    expect(mocks.writeAuditEvent.mock.calls.some((call: any[]) => call[1]?.resourceType === 'mcp_tool_execution')).toBe(false);
   });
 
   // Downgrade-clamp: security_scan base tier 2 + action:'vulnerabilities'
@@ -320,12 +323,21 @@ describe('MCP tools/call effective-tier gating (FIX 1)', () => {
     expect(okBody.error).toBeUndefined();
   });
 
-  it('ai:read key calling a tier-1 tool with a destructive action is DENIED', async () => {
+  // Since 2026-08-02, a destructive escalated action is gated by
+  // MCP_APPROVAL_REQUIRED before the scope check ever runs, so an
+  // under-scoped (ai:read-only) caller and a fully-scoped (ai:execute)
+  // caller now get the IDENTICAL denial for this tool/action — see the
+  // "no scope can reach it" tests further below and the dedicated suite in
+  // mcpServer.approvalGate.test.ts. This test now just pins that the
+  // escalation still denies an ai:read-only caller (via the new gate, not
+  // the old scope message).
+  it('ai:read key calling a tier-1 tool with a destructive action is DENIED (MCP_APPROVAL_REQUIRED)', async () => {
     const res = await callTool(['ai:read'], 'registry_operations', { action: 'delete_key' });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.error?.code).toBe(-32603);
-    expect(body.error?.message).toContain('requires ai:execute');
+    expect(body.result.isError).toBe(true);
+    const payload = JSON.parse(body.result.content[0].text);
+    expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
   });
 
   it('ai:read key calling a benign read action on the same tool still succeeds', async () => {
@@ -336,38 +348,51 @@ describe('MCP tools/call effective-tier gating (FIX 1)', () => {
     expect(body.result?.content?.[0]?.text).toContain('ok');
   });
 
-  it('manage_processes action:kill is escalated to tier 3 and denied for ai:read', async () => {
+  it('manage_processes action:kill is escalated to tier 3 and gated (MCP_APPROVAL_REQUIRED) for ai:read', async () => {
     const res = await callTool(['ai:read'], 'manage_processes', { action: 'kill', pid: 1234 });
     const body = await res.json();
-    expect(body.error?.code).toBe(-32603);
-    expect(body.error?.message).toContain('requires ai:execute');
+    expect(body.result.isError).toBe(true);
+    const payload = JSON.parse(body.result.content[0].text);
+    expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
   });
 
-  it('a true tier-3 tool is unaffected (still denied for ai:read)', async () => {
+  it('a true tier-3 tool is unaffected by scope — still gated (MCP_APPROVAL_REQUIRED) for ai:read', async () => {
     const res = await callTool(['ai:read'], 'run_script', { scriptId: 's1' });
     const body = await res.json();
-    expect(body.error?.code).toBe(-32603);
-    expect(body.error?.message).toContain('requires ai:execute');
+    expect(body.result.isError).toBe(true);
+    const payload = JSON.parse(body.result.content[0].text);
+    expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
   });
 
-  it('a true tier-3 tool still executes for ai:execute', async () => {
+  // Reversed 2026-08-02: a flat Tier 3 tool no longer executes over MCP at
+  // all, regardless of scope — ai:execute used to be sufficient; now every
+  // Tier 3 call requires the interactive web app's approval workflow, which
+  // MCP has no surface for.
+  it('a true tier-3 tool no longer executes over MCP even with ai:execute — gated (MCP_APPROVAL_REQUIRED)', async () => {
     const res = await callTool(['ai:read', 'ai:execute'], 'run_script', { scriptId: 's1' });
     const body = await res.json();
-    expect(body.error).toBeUndefined();
+    expect(body.result.isError).toBe(true);
+    const payload = JSON.parse(body.result.content[0].text);
+    expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
+    expect(mocks.executeTool).not.toHaveBeenCalled();
   });
 
-  it('ledger is created for the escalated destructive action (ai:execute key)', async () => {
+  // Reversed 2026-08-02: the ledger is only ever created for tier>=3 calls
+  // that actually reach runTier3ToolLifecycle — and a tier-3 call (base OR
+  // escalated) never gets that far anymore, the approval gate denies it
+  // first. So the escalated destructive action must NOT create a ledger row,
+  // the inverse of what this test asserted before the policy reversal.
+  it('ledger is NOT created for an escalated-to-tier-3 destructive action (ai:execute key) — gated before the ledger begins', async () => {
     const res = await callTool(
       ['ai:read', 'ai:execute'],
       'registry_operations',
       { action: 'delete_key', key: 'HKLM\\foo' },
     );
     const body = await res.json();
-    expect(body.error).toBeUndefined();
-    expect(mocks.ledgerBegin).toHaveBeenCalledTimes(1);
-    const arg = (mocks.ledgerBegin.mock.calls[0] as any[])[0] as any;
-    expect(arg.tier).toBe(3);
-    expect(arg.toolName).toBe('registry_operations');
+    expect(body.result.isError).toBe(true);
+    const payload = JSON.parse(body.result.content[0].text);
+    expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
+    expect(mocks.ledgerBegin).not.toHaveBeenCalled();
   });
 
   it('benign read action on a tier-1 tool does NOT create a ledger', async () => {

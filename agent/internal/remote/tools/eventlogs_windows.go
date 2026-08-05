@@ -3,9 +3,9 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -42,40 +42,27 @@ func listEventLogsOS(startTime time.Time) CommandResult {
 	return NewSuccessResult(response, time.Since(startTime).Milliseconds())
 }
 
-func queryEventLogsOS(logName, level, source string, eventID, page, limit int, startTime time.Time) CommandResult {
-	// Build PowerShell filter
-	filter := fmt.Sprintf("LogName='%s'", escapePowerShellSingleQuoted(logName))
-	if level != "" {
-		levelNum := levelToNumber(level)
-		if levelNum > 0 {
-			filter += fmt.Sprintf(" and Level=%d", levelNum)
-		}
-	}
-	if source != "" {
-		filter += fmt.Sprintf(" and ProviderName='%s'", escapePowerShellSingleQuoted(source))
-	}
-	if eventID > 0 {
-		filter += fmt.Sprintf(" and Id=%d", eventID)
-	}
-
-	// Query events using PowerShell
+func queryEventLogsOS(logName, source, xpathQuery string, levelNum, eventID, page, limit int, startTime time.Time) CommandResult {
 	maxEvents := page * limit
+	script := buildEventLogQueryScript(logName, source, xpathQuery, levelNum, eventID, maxEvents)
+
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
-		utf8PowerShellCommand(fmt.Sprintf(`Get-WinEvent -FilterHashtable @{%s} -MaxEvents %d -ErrorAction SilentlyContinue | `+
-			`Select-Object RecordId, LogName, LevelDisplayName, TimeCreated, ProviderName, Id, Message | `+
-			`ConvertTo-Json -Depth 2`, filter, maxEvents)))
+		utf8PowerShellCommand(script))
 
 	output, err := cmd.Output()
 	if err != nil {
-		// Return empty result if no events found
-		response := EventLogQueryResponse{
-			Events:     []EventLogEntry{},
-			Total:      0,
-			Page:       page,
-			Limit:      limit,
-			TotalPages: 0,
+		// The script exits non-zero only when the query actually failed
+		// (invalid XPath, unknown log, access denied, parse error) — the
+		// benign no-matching-events case exits zero with empty output.
+		// Surface the failure explicitly instead of masking it as an empty
+		// success (issue #3092).
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			if stderr := strings.TrimSpace(string(exitErr.Stderr)); stderr != "" {
+				return NewErrorResult(fmt.Errorf("event log query failed: %s", stderr), time.Since(startTime).Milliseconds())
+			}
 		}
-		return NewSuccessResult(response, time.Since(startTime).Milliseconds())
+		return NewErrorResult(fmt.Errorf("event log query failed: %w", err), time.Since(startTime).Milliseconds())
 	}
 
 	events, truncated := sanitizeEventLogEntries(parseEventLogEntries(string(output)))
@@ -107,14 +94,13 @@ func queryEventLogsOS(logName, level, source string, eventID, page, limit int, s
 
 func getEventLogEntryOS(logName string, recordID int64, startTime time.Time) CommandResult {
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
-		utf8PowerShellCommand(fmt.Sprintf(`Get-WinEvent -FilterHashtable @{LogName='%s'} -ErrorAction SilentlyContinue | `+
-			`Where-Object { $_.RecordId -eq %d } | Select-Object -First 1 | `+
-			`Select-Object RecordId, LogName, LevelDisplayName, TimeCreated, ProviderName, Id, Message, UserId, MachineName | `+
-			`ConvertTo-Json -Depth 2`, escapePowerShellSingleQuoted(logName), recordID)))
+		utf8PowerShellCommand(buildEventLogGetEntryScript(logName, recordID)))
 
 	output, err := cmd.Output()
 	if err != nil {
-		return NewErrorResult(fmt.Errorf("event not found"), time.Since(startTime).Milliseconds())
+		// Distinguish a real failure (powershell missing, terminating error)
+		// from a genuinely absent record so callers can debug it.
+		return NewErrorResult(fmt.Errorf("failed to read event log %q: %w", logName, err), time.Since(startTime).Milliseconds())
 	}
 
 	entries, _ := sanitizeEventLogEntries(parseEventLogEntries(string(output)))
@@ -123,23 +109,6 @@ func getEventLogEntryOS(logName string, recordID int64, startTime time.Time) Com
 	}
 
 	return NewSuccessResult(entries[0], time.Since(startTime).Milliseconds())
-}
-
-func levelToNumber(level string) int {
-	switch strings.ToLower(level) {
-	case "critical":
-		return 1
-	case "error":
-		return 2
-	case "warning":
-		return 3
-	case "information", "info":
-		return 4
-	case "verbose":
-		return 5
-	default:
-		return 0
-	}
 }
 
 func parseEventLogList(output string) []EventLog {
@@ -176,64 +145,4 @@ func parseEventLogList(output string) []EventLog {
 	}
 
 	return logs
-}
-
-func parseEventLogEntries(output string) []EventLogEntry {
-	var entries []EventLogEntry
-
-	// Basic line-by-line parsing
-	lines := strings.Split(output, "\n")
-	var current *EventLogEntry
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-
-		if strings.Contains(line, "RecordId") {
-			if current != nil {
-				entries = append(entries, *current)
-			}
-			current = &EventLogEntry{}
-			val := extractValue(line)
-			if id, err := strconv.ParseInt(val, 10, 64); err == nil {
-				current.RecordID = id
-			}
-		} else if current != nil {
-			if strings.Contains(line, "LogName") {
-				current.LogName = extractValue(line)
-			} else if strings.Contains(line, "LevelDisplayName") {
-				current.Level = extractValue(line)
-			} else if strings.Contains(line, "TimeCreated") {
-				// Parse time
-				val := extractValue(line)
-				if t, err := time.Parse(time.RFC3339, val); err == nil {
-					current.TimeCreated = t
-				}
-			} else if strings.Contains(line, "ProviderName") {
-				current.Source = extractValue(line)
-			} else if strings.Contains(line, `"Id"`) {
-				val := extractValue(line)
-				if id, err := strconv.Atoi(val); err == nil {
-					current.EventID = id
-				}
-			} else if strings.Contains(line, "Message") {
-				current.Message = extractValue(line)
-			}
-		}
-	}
-
-	if current != nil {
-		entries = append(entries, *current)
-	}
-
-	return entries
-}
-
-func extractValue(line string) string {
-	parts := strings.SplitN(line, ":", 2)
-	if len(parts) < 2 {
-		return ""
-	}
-	val := strings.TrimSpace(parts[1])
-	val = strings.Trim(val, `",`)
-	return val
 }

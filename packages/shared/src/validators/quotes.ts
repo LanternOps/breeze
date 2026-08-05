@@ -6,6 +6,10 @@ import { BULK_ID_LIMIT } from '../constants';
 // money/quantity ceiling in validators/catalog.ts.
 const money = z.number().nonnegative().max(9_999_999_999.99).multipleOf(0.01);
 const positiveQty = z.number().positive().max(9_999_999_999.99).multipleOf(0.01);
+// Same bound/precision as positiveQty but permits 0 — used where the value is a
+// running tally that can legitimately be corrected back to zero (received_qty),
+// unlike an ordered/line quantity which must always be > 0.
+const nonnegativeQty = z.number().nonnegative().max(9_999_999_999.99).multipleOf(0.01);
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'expected YYYY-MM-DD');
 const taxRate = z.number().min(0).max(1);
 
@@ -65,6 +69,9 @@ export const quoteLineInputSchema = z.object({
   unitCost: money.nullable().optional(),
   sku: z.string().max(100).nullable().optional(),
   partNumber: z.string().max(100).nullable().optional(),
+  procurementSource: z.string().max(40).nullable().optional(),
+  vendorSku: z.string().max(100).nullable().optional(),
+  manufacturer: z.string().max(255).nullable().optional(),
   depositEligible: z.boolean().default(false),
 }).refine((d) => Boolean(d.name?.trim() || d.description?.trim()), {
   message: 'A line needs a name or a description', path: ['name'],
@@ -86,6 +93,9 @@ export const updateQuoteLineSchema = z.object({
   unitCost: money.nullable().optional(),
   sku: z.string().max(100).nullable().optional(),
   partNumber: z.string().max(100).nullable().optional(),
+  procurementSource: z.string().max(40).nullable().optional(),
+  vendorSku: z.string().max(100).nullable().optional(),
+  manufacturer: z.string().max(255).nullable().optional(),
   // Attach/replace (guid) or clear (null) the line's product image. Must be a
   // quote_images row on the same quote — the service enforces ownership.
   imageId: z.string().guid().nullable().optional(),
@@ -199,6 +209,36 @@ export const bulkQuoteIdsSchema = z.object({
   ids: z.array(z.string().guid()).min(1).max(BULK_ID_LIMIT),
 });
 
+export const createQuoteOrderSchema = z.object({
+  clientRequestId: z.string().guid(),
+  procurementSource: z.string().max(40).nullable().optional(),
+  vendorName: z.string().max(255).nullable().optional(),
+  orderRef: z.string().max(120).nullable().optional(),
+  notes: z.string().max(2000).nullable().optional(),
+  trackingNumber: z.string().max(120).nullable().optional(),
+  eta: isoDate.optional(),
+  lines: z.array(z.object({
+    quoteLineId: z.string().guid(),
+    orderedQty: positiveQty,
+  })).min(1).max(200),
+});
+
+export const updateQuoteOrderSchema = z.object({
+  vendorName: z.string().max(255).nullable().optional(),
+  orderRef: z.string().max(120).nullable().optional(),
+  notes: z.string().max(2000).nullable().optional(),
+});
+
+export const updateQuoteOrderLineSchema = z.object({
+  // CONTROLLER RULING (deviation from positiveQty): a receipt correction back to
+  // zero is legitimate (e.g. an erroneous mark-received undone) and the DB CHECK
+  // allows it — positiveQty would reject a valid { receivedQty: 0 } patch.
+  receivedQty: nonnegativeQty.optional(),
+  trackingNumber: z.string().max(120).nullable().optional(),
+  eta: isoDate.nullable().optional(),
+  cancelled: z.boolean().optional(),
+});
+
 export type QuoteLineInput = z.infer<typeof quoteLineInputSchema>;
 export type QuoteBlockInput = z.infer<typeof quoteBlockInputSchema>;
 export type CreateQuoteInput = z.infer<typeof createQuoteSchema>;
@@ -207,3 +247,6 @@ export type UpdateQuoteInput = z.infer<typeof updateQuoteSchema>;
 export type ListQuotesQuery = z.infer<typeof listQuotesQuerySchema>;
 export type AcceptQuoteInput = z.infer<typeof acceptQuoteSchema>;
 export type DeclineQuoteInput = z.infer<typeof declineQuoteSchema>;
+export type CreateQuoteOrderInput = z.infer<typeof createQuoteOrderSchema>;
+export type UpdateQuoteOrderInput = z.infer<typeof updateQuoteOrderSchema>;
+export type UpdateQuoteOrderLineInput = z.infer<typeof updateQuoteOrderLineSchema>;

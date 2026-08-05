@@ -37,5 +37,6 @@ describe('OAuth revocation marker call-site contract', () => {
     });
 
     expect(violations).toEqual([]);
-  });
+    // Repo-wide source scan is IO-bound; widen timeout so it doesn't flake under load or cold FS cache.
+  }, 30000);
 });

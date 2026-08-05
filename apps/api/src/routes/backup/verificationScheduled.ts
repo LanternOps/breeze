@@ -4,6 +4,7 @@ import {
   backupJobs as backupJobsTable,
   deviceCommands,
   backupVerifications as backupVerificationsTable,
+  RESTORABLE_BACKUP_JOB_STATUSES,
 } from '../../db/schema';
 import {
   backupJobs,
@@ -80,7 +81,7 @@ async function listCompletedJobsFromDb(orgId?: string): Promise<Array<BackupJob 
   if (orgId && !isUuid(orgId)) return null;
 
   try {
-    const conditions = [eq(backupJobsTable.status, 'completed')];
+    const conditions = [inArray(backupJobsTable.status, RESTORABLE_BACKUP_JOB_STATUSES)];
     if (orgId) conditions.push(eq(backupJobsTable.orgId, orgId));
     const rows = await runWithSystemDbAccess(() => db
       .select()
@@ -467,7 +468,7 @@ export async function ensurePostBackupIntegrityChecks(orgId?: string): Promise<n
   const dbCandidates = await listCompletedJobsFromDb(orgId);
   const candidates = dbCandidates ?? backupJobs
     .filter((job) => (!orgId || jobOrgById.get(job.id) === orgId))
-    .filter((job) => job.status === 'completed');
+    .filter((job) => (RESTORABLE_BACKUP_JOB_STATUSES as readonly string[]).includes(job.status));
 
   let created = 0;
   for (const job of candidates) {
@@ -512,7 +513,7 @@ export async function runWeeklyTestRestore(orgId?: string): Promise<number> {
   const jobsToScan = dbCandidates ?? backupJobs;
 
   for (const job of jobsToScan) {
-    if (job.status !== 'completed' || !job.snapshotId) continue;
+    if (!(RESTORABLE_BACKUP_JOB_STATUSES as readonly string[]).includes(job.status) || !job.snapshotId) continue;
     if (!dbCandidates && orgId && jobOrgById.get(job.id) !== orgId) continue;
     const current = latestByDevice.get(job.deviceId);
     const jobTime = toEpoch(job.completedAt ?? job.startedAt ?? job.updatedAt);

@@ -4,6 +4,7 @@ import { and, eq, sql, desc, inArray, isNull, or, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { alertRules, alertTemplates, alerts, devices, deviceGroups, organizations, sites } from '../../db/schema';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
+import { conditionPayloadsFrom, retiredConditionTypeError } from '../../services/alertConditions';
 import { requireMfa, requirePermission, requireScope, siteAccessCheck } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
@@ -25,6 +26,7 @@ import {
   validateAlertRuleNotificationBindings,
   formatAlertRuleResponse,
   resolveAlertTemplate,
+  retiredConditionReactivationError,
 } from './helpers';
 
 export const rulesRoutes = new Hono();
@@ -276,6 +278,26 @@ rulesRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
+    // Reject retired condition types (#2948). Stored unchecked, such a rule
+    // fails closed forever while presenting as a healthy, enabled rule.
+    //
+    // Checked over `overrideSettings`/`overrides` as well as `conditions`, not
+    // just the latter: both are `z.any()` passthroughs that are merged into
+    // baseOverrides below, and `overrides.conditions` /
+    // `overrides.autoResolveConditions` are read straight back out by
+    // alertService (getApplicableRules, evaluateAutoResolveConditions). A
+    // guard on `data.conditions` alone is bypassed by moving the same payload
+    // one key over. Only those two keys are scanned — not the whole blob, whose
+    // `targetIds` can hold thousands of device ids and would truncate the scan.
+    const createConditionTypeError = retiredConditionTypeError([
+      data.conditions,
+      ...conditionPayloadsFrom(data.overrideSettings),
+      ...conditionPayloadsFrom(data.overrides),
+    ]);
+    if (createConditionTypeError) {
+      return c.json({ error: createConditionTypeError }, 400);
+    }
+
     // Ownership axis (#2128). Partner-wide rules evaluate against devices in
     // ALL orgs under the partner (including orgs created later), so creation
     // is gated on the partner-wide capability — same gate as software/security
@@ -350,6 +372,18 @@ rulesRoutes.post(
     });
     if (!template) {
       return c.json({ error: 'Failed to resolve alert template' }, 500);
+    }
+
+    // A legacy template can itself be all-`custom`: the cleanup migration
+    // deactivates RULES but never rewrites alert_templates.conditions. Creating
+    // a rule from one with no `conditions` of its own would mint a brand-new
+    // active, healthy-looking, unfirable rule (#2948) — the payload check above
+    // sees nothing because the request carries no conditions.
+    if (data.conditions === undefined) {
+      const templateConditionError = retiredConditionTypeError(template.conditions);
+      if (templateConditionError) {
+        return c.json({ error: templateConditionError }, 400);
+      }
     }
 
     if (!created) {
@@ -453,6 +487,18 @@ rulesRoutes.put(
 
     if (Object.keys(data).length === 0) {
       return c.json({ error: 'No updates provided' }, 400);
+    }
+
+    // #2948 — same boundary as create, over the same three passthrough fields.
+    // Also the mechanism that forces a tech editing a legacy rule to delete its
+    // retired condition rather than re-saving it verbatim.
+    const updateConditionTypeError = retiredConditionTypeError([
+      data.conditions,
+      ...conditionPayloadsFrom(data.overrideSettings),
+      ...conditionPayloadsFrom(data.overrides),
+    ]);
+    if (updateConditionTypeError) {
+      return c.json({ error: updateConditionTypeError }, 400);
     }
 
     const rule = await getAlertRuleWithOrgCheck(ruleId, auth);
@@ -595,6 +641,21 @@ rulesRoutes.put(
 
     const isActive = data.isActive ?? data.enabled ?? data.active;
     if (isActive !== undefined) updates.isActive = isActive;
+
+    // Re-enabling a rule the #2948 cleanup migration switched off must go
+    // through the same boundary. This request carries no `conditions`, so the
+    // payload check above cannot see them — resolve the rule's effective ones.
+    // Only on the false -> true edge: an already-active rule being edited for
+    // some other reason is not made un-saveable by this.
+    if (isActive === true && !rule.isActive) {
+      const reactivationError = await retiredConditionReactivationError({
+        templateId: (updates.templateId as string) ?? rule.templateId,
+        overrideSettings: updates.overrideSettings ?? rule.overrideSettings,
+      });
+      if (reactivationError) {
+        return c.json({ error: reactivationError }, 400);
+      }
+    }
 
     if (Object.keys(updates).length === 0) {
       return c.json({ error: 'No updates provided' }, 400);

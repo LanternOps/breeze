@@ -169,7 +169,7 @@ async function createIntent(s: Scenario) {
   const auth = requesterAuth(s.requester, s.orgId, s.partnerId, s.orgRoleId);
   return createActionIntent(auth, {
     toolName: 'execute_command',
-    input: { deviceId: randomUUID(), commandType: 'list_processes' },
+    input: { deviceId: randomUUID(), commandType: 'kill_process' },
     source: 'chat',
   });
 }

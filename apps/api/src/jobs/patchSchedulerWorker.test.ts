@@ -197,7 +197,7 @@ describe('resolveDeviceIdsForAssignment (partner-wide patch, #1724)', () => {
 
   it('re-clamps a DEVICE_GROUP-level SUBSET assignment on a partner-owned library policy to the policy partner (#2280 review)', async () => {
     const { db } = await import('../db');
-    const { organizations } = await import('../db/schema');
+    const { organizations, devices } = await import('../db/schema');
     const chain: any = {
       from: vi.fn(() => chain),
       innerJoin: vi.fn(() => chain),
@@ -208,8 +208,12 @@ describe('resolveDeviceIdsForAssignment (partner-wide patch, #1724)', () => {
     const ids = await resolveDeviceIdsForAssignment('device_group', 'group-x', null, 'partner-123');
 
     expect(ids).toEqual(['dev-a']);
-    expect(chain.innerJoin).toHaveBeenCalledTimes(1);
+    // Two joins: organizations for the partner re-clamp, devices for the
+    // Quick Support ephemeral exclusion (group membership rows carry no
+    // is_ephemeral of their own).
+    expect(chain.innerJoin).toHaveBeenCalledTimes(2);
     expect(chain.innerJoin.mock.calls[0][0]).toBe(organizations);
+    expect(chain.innerJoin.mock.calls[1][0]).toBe(devices);
     const whereArgs = collectSqlLeafStrings(chain.where.mock.calls[0][0]);
     expect(whereArgs).toContain('group-x');
     expect(whereArgs).toContain('partner-123');

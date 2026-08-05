@@ -250,14 +250,25 @@ export async function resolvePartnerAccessibleOrgIds(
       const selected = (partnerMembership.orgIds ?? []).filter(
         (v): v is string => typeof v === 'string' && v.length > 0,
       );
-      if (selected.length === 0) return [];
+      // Mirrors computeAccessibleOrgIds in auth.ts — see the long comment
+      // there. The partner's hidden 'quick_support' org is always granted,
+      // because it can never appear in the curated orgIds list and its absence
+      // shows up as a silent zero-row read of the technician's own sessions.
+      // Both paths must agree, or session-JWT and OAuth/MCP callers behave
+      // differently for the same user.
+      const orgFilter = selected.length > 0
+        ? or(
+            inArray(organizations.id, selected),
+            eq(organizations.type, 'quick_support'),
+          )
+        : eq(organizations.type, 'quick_support');
       const rows = await db
         .select({ id: organizations.id })
         .from(organizations)
         .where(
           and(
             eq(organizations.partnerId, partnerId),
-            inArray(organizations.id, selected),
+            orgFilter,
             inArray(organizations.status, ['active', 'trial']),
             isNull(organizations.deletedAt),
           ),

@@ -37,6 +37,10 @@ const {
   applyDlpMock: vi.fn(),
 }));
 
+vi.mock('../../services/aiAgentSdk', () => ({
+  settleBlockedTurnForNewMessage: vi.fn(() => Promise.resolve('not_blocked_on_approvals')),
+}));
+
 vi.mock('../../middleware/clientAiAuth', () => ({
   clientAiAuthMiddleware: (c: any, next: any) => {
     if (!c.req.header('authorization')) return c.json({ error: 'Unauthorized' }, 401);
