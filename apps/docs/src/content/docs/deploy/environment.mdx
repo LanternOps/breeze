@@ -242,7 +242,9 @@ Per-user and per-endpoint rate limits (login, MFA, dashboard usage) are fixed in
 
 | Variable | Default | Description |
 |---|---|---|
-| `AGENT_ORG_RATE_LIMIT_PER_MIN` | `600` | Per-organization sliding-window rate limit on agent-authenticated endpoints. Returns `429` with `Retry-After: 60` when exceeded. Sized for ~5 active agents per org; raise for MSPs with very large fleets. Not mapped in the stock compose file — to change it, add it to the `api` service `environment:` block as well as `.env`. |
+| `AGENT_ORG_RATE_LIMIT_PER_MIN` | `600` | **Floor** for the per-organization sliding-window rate limit on agent-authenticated endpoints. The effective ceiling scales with the org's enrolled device count (see `AGENT_ORG_RATE_LIMIT_PER_DEVICE`), so this value only applies to small orgs. Returns `429` with a `Retry-After` derived from the window reset. Not mapped in the stock compose file — to change it, add it to the `api` service `environment:` block as well as `.env`. |
+| `AGENT_ORG_RATE_LIMIT_PER_DEVICE` | `12` | Requests per minute allowed per enrolled device when sizing the per-organization ceiling. A steady-state agent uses ~2 req/min, so the default leaves roughly 6x headroom for synchronized bursts, manual scans and command traffic. |
+| `AGENT_ORG_RATE_LIMIT_MAX` | `20000` | Hard platform ceiling for the per-organization limit, regardless of device count. Keeps the per-tenant guardrail meaningful for very large fleets. |
 
 <Aside type="note">
   Earlier `.env.example` files carried `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_MAX_REQUESTS`, `SESSION_MAX_AGE`, and `ENABLE_API_DOCS` entries. None of these were ever read by the API — they are gone from `.env.example` as of v0.99.0 and can be safely deleted from your `.env`.

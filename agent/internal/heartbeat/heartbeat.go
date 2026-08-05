@@ -266,6 +266,13 @@ type Heartbeat struct {
 	lastReliabilityUpdate time.Time
 	lastHardwareUpdate    time.Time // stamped at startup; gate then re-runs every 24 h
 	lastPatchUpdate       time.Time // stamped at startup; gate then re-runs every PatchScanIntervalHours
+	// #2728 — a patch submission that fails (e.g. a fleet-wide 429 from the
+	// per-org rate limiter) used to leave posture stale for a full scan
+	// interval, because lastPatchUpdate was stamped at dispatch time whether or
+	// not the upload landed. These two track a bounded, jittered retry schedule
+	// so a transient rejection costs minutes instead of a day.
+	nextPatchRetryAt  time.Time
+	patchSendFailures int
 
 	// User session helper (IPC)
 	helperToken     string // retained copy of the helper-scoped token for connect-time pushes
@@ -1360,10 +1367,8 @@ func (h *Heartbeat) Start() {
 			// Patch scan cadence is configurable (PatchScanIntervalHours, default 24 h).
 			// Initial send is the explicit startup dispatch; this gate handles the rest.
 			patchIntervalHours := clampPatchScanIntervalHours(h.config.PatchScanIntervalHours)
-			shouldSendPatch := dueForRun(now, h.lastPatchUpdate, time.Duration(patchIntervalHours)*time.Hour)
-			if shouldSendPatch {
-				h.lastPatchUpdate = now
-			}
+			patchInterval := time.Duration(patchIntervalHours) * time.Hour
+			shouldSendPatch := h.claimPatchScanLocked(now, patchInterval)
 			h.mu.Unlock()
 
 			// Check for recent boot every few minutes (not every heartbeat tick).
@@ -1690,6 +1695,74 @@ func clampPatchScanIntervalHours(hours int) int {
 // Pure, so the cadence math can be unit-tested independently of the tick loop.
 func dueForRun(now, last time.Time, interval time.Duration) bool {
 	return now.Sub(last) > interval
+}
+
+// Patch-submission retry schedule (#2728). A failed patch upload is usually a
+// transient, fleet-wide condition — most often a 429 from the per-org agent
+// rate limiter when many devices submit at once. Retrying on the normal scan
+// cadence would leave the device's patch posture stale for a full interval
+// (24 h by default), which is the "silently dropped" symptom in the issue.
+//
+// The schedule is deliberately slow and bounded rather than aggressive: the
+// limiter's window is 60 s, but a saturated org bucket drains over minutes, and
+// a whole fleet retrying hard would re-create the very burst that caused the
+// rejection. Four attempts at 5/10/20/40 min (±jitter) recover from a transient
+// squeeze within ~75 min while adding at most 8 extra requests per device per
+// day.
+const (
+	maxPatchSendRetries  = 4
+	patchRetryBaseDelay  = 5 * time.Minute
+	patchRetryMaxDelay   = 2 * time.Hour
+	patchRetryJitterFrac = 0.3
+)
+
+// patchRetryDelay returns the backoff before retry number `failures` (1-based).
+// Returns 0 when the bounded attempt budget is exhausted, meaning the caller
+// should fall back to the normal scan interval instead of retrying again.
+// Jitter is additive-only and applied by the caller-supplied source so the
+// function stays pure and table-testable.
+func patchRetryDelay(failures int, jitterFrac, rnd float64) time.Duration {
+	if failures < 1 || failures > maxPatchSendRetries {
+		return 0
+	}
+	delay := patchRetryBaseDelay << (failures - 1) // 5m, 10m, 20m, 40m
+	if delay > patchRetryMaxDelay {
+		delay = patchRetryMaxDelay
+	}
+	if jitterFrac > 0 {
+		// Additive-only: spreads a synchronized fleet forward in time without
+		// any agent retrying sooner than the base delay.
+		delay = time.Duration(float64(delay) * (1 + jitterFrac*rnd))
+	}
+	return delay
+}
+
+// patchScanDue reports whether a patch scan should run now — either because the
+// normal interval elapsed, or because a bounded retry after a failed submission
+// has come due (#2728).
+func patchScanDue(now, lastUpdate, nextRetryAt time.Time, interval time.Duration) bool {
+	if dueForRun(now, lastUpdate, interval) {
+		return true
+	}
+	return !nextRetryAt.IsZero() && !now.Before(nextRetryAt)
+}
+
+// claimPatchScanLocked decides whether a patch scan is due and, if so, claims
+// it by advancing the gate so the next tick can't dispatch a duplicate
+// concurrent scan. Returns whether the caller should dispatch.
+//
+// The decision and the state transition live together here (rather than being
+// open-coded in the tick loop) so the whole gate is exercised by one test
+// instead of only its pure predicate. Caller must hold h.mu.
+func (h *Heartbeat) claimPatchScanLocked(now time.Time, interval time.Duration) bool {
+	if !patchScanDue(now, h.lastPatchUpdate, h.nextPatchRetryAt, interval) {
+		return false
+	}
+	h.lastPatchUpdate = now
+	// Clear the retry slot as we dispatch; sendPatchInventory re-arms it if
+	// this attempt also fails.
+	h.nextPatchRetryAt = time.Time{}
+	return true
 }
 
 // runProcessSampler periodically captures a top-N process snapshot and POSTs it,
@@ -2483,7 +2556,19 @@ func (h *Heartbeat) sendPatchInventory() {
 	installedItems = installedPatchStateItems(installedItems)
 
 	if len(pendingItems) == 0 && len(installedItems) == 0 {
+		if err != nil {
+			// Collection FAILED and produced nothing. The scheduler already
+			// stamped lastPatchUpdate, so returning quietly here would strand
+			// posture for a full interval with no retry — the same #2728
+			// symptom, reached through the collector instead of the network.
+			log.Warn("patch inventory collection produced no items after an error — arming retry")
+			h.recordPatchSendOutcome(false)
+			return
+		}
+		// Genuinely nothing to report: a successful scan of a device with no
+		// patches. Clear any armed retry so an earlier failure doesn't linger.
 		log.Debug("no patches found")
+		h.recordPatchSendOutcome(true)
 		return
 	}
 
@@ -2492,8 +2577,61 @@ func (h *Heartbeat) sendPatchInventory() {
 		log.Warn("failed to send pending patch inventory", "error", pendingErr.Error())
 	}
 	if installedErr != nil {
-		log.Warn("failed to send installed patch inventory", "error", installedErr.Error())
+		// Not retried: the retry budget is gated on the PENDING upload, which
+		// is the one carrying operator-facing patch posture. This is a
+		// severity call, not a claim that the data is redundant — both
+		// payloads are equally resent by the next scan. Stated explicitly so
+		// the non-retry is visible rather than inferred.
+		log.Warn("failed to send installed patch inventory — will not be retried until the next scheduled scan",
+			"error", installedErr.Error())
 	}
+	// #2728 — only the pending upload gates the retry schedule (see above).
+	h.recordPatchSendOutcome(pendingErr == nil)
+}
+
+// recordPatchSendOutcome arms or clears the bounded patch-submission retry
+// (#2728). On success the failure counter resets. On failure the next attempt
+// is scheduled with additive jitter, up to maxPatchSendRetries; once that budget
+// is spent the device falls back to the normal scan interval.
+func (h *Heartbeat) recordPatchSendOutcome(ok bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if ok {
+		if h.patchSendFailures > 0 {
+			log.Info("patch inventory submission recovered",
+				"afterFailures", h.patchSendFailures)
+		}
+		h.patchSendFailures = 0
+		h.nextPatchRetryAt = time.Time{}
+		return
+	}
+
+	h.patchSendFailures++
+	delay := patchRetryDelay(h.patchSendFailures, patchRetryJitterFrac, rand.Float64())
+	if delay <= 0 {
+		// Attempt budget exhausted — stop retrying and let the normal scan
+		// interval pick it up. Logged at Error because at this point the
+		// device's patch posture IS stale on the server and an operator
+		// needs a greppable signal (the "silently dropped" case in #2728).
+		log.Error("patch inventory submission failed after all retries — device patch posture is stale until the next scheduled scan",
+			"attempts", h.patchSendFailures)
+		h.nextPatchRetryAt = time.Time{}
+		// Reset the counter so the NEXT scan episode gets a fresh budget.
+		// Without this the counter stays above the budget forever (it only
+		// ever reset on success), so every future scan would skip retries
+		// entirely and silently revert to the pre-#2728 behaviour — an org
+		// that is over its ceiling today is usually over it tomorrow too, so
+		// the recurring failure is the expected path, not the exception.
+		h.patchSendFailures = 0
+		return
+	}
+
+	h.nextPatchRetryAt = time.Now().Add(delay)
+	log.Warn("patch inventory submission failed — scheduling bounded retry",
+		"failures", h.patchSendFailures,
+		"retryIn", delay,
+		"retryAt", h.nextPatchRetryAt.Format(time.RFC3339))
 }
 
 // sendPatchInventoryData uploads pending then installed patch inventory.

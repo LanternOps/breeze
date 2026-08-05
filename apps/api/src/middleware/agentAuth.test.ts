@@ -65,7 +65,27 @@ vi.mock('drizzle-orm', () => ({
   and: vi.fn((...args) => ({ and: args })),
   isNull: vi.fn((col) => ({ isNull: col })),
   desc: vi.fn((col) => ({ desc: col })),
+  ne: vi.fn((left, right) => ({ ne: [left, right] })),
+  count: vi.fn(() => ({ count: true })),
 }));
+
+// #2728 — `resolveOrgRateLimit` is stubbed so a test can drive the ceiling
+// directly (the real one needs Redis plus a COUNT query); its own math is
+// covered in agentOrgRateLimit.test.ts. `isReservedIngestPath` and
+// `computeReservedIngestLimit` stay REAL, so the reserved-lane wiring under
+// test is the actual implementation.
+//
+// Without this stub the harness's drizzle/Redis mocks made every device-count
+// lookup fail into the floor, so the org limit was silently always 600 no
+// matter what the service computed — the reserved-lane assertions below were
+// passing by coincidence.
+vi.mock('../services/agentOrgRateLimit', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/agentOrgRateLimit')>();
+  return {
+    ...actual,
+    resolveOrgRateLimit: vi.fn(async () => 600),
+  };
+});
 
 import type { Context } from 'hono';
 import { createHash } from 'crypto';
@@ -75,6 +95,7 @@ import { getRedis, rateLimiter } from '../services';
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIp, trustsForwardedHeadersFrom } from '../services/clientIp';
 import { getAgentTenantState } from '../services/tenantStatus';
+import { resolveOrgRateLimit } from '../services/agentOrgRateLimit';
 import {
   agentAuthMiddleware,
   isAgentTokenRotationDue,
@@ -682,9 +703,13 @@ describe('agentAuthMiddleware - per-org rate limit', () => {
     expect(getAgentTenantState).not.toHaveBeenCalled();
   });
 
-  it('honors AGENT_ORG_RATE_LIMIT_PER_MIN env override', async () => {
-    vi.stubEnv('AGENT_ORG_RATE_LIMIT_PER_MIN', '900');
+  // #2728 — the ceiling is now resolved by services/agentOrgRateLimit (scaled
+  // by enrolled device count, with AGENT_ORG_RATE_LIMIT_PER_MIN as the floor).
+  // The middleware's contract is simply to apply whatever the resolver returns;
+  // the floor/scaling/ceiling math is covered in agentOrgRateLimit.test.ts.
+  it('applies the ceiling returned by the resolver to the org bucket', async () => {
     buildSelectMock([makeDevice()]);
+    vi.mocked(resolveOrgRateLimit).mockResolvedValue(900);
 
     vi.mocked(rateLimiter)
       .mockResolvedValueOnce({ allowed: true, remaining: 100, resetAt: new Date(Date.now() + 60_000) })
@@ -695,6 +720,7 @@ describe('agentAuthMiddleware - per-org rate limit', () => {
 
     await agentAuthMiddleware(c, next);
 
+    expect(resolveOrgRateLimit).toHaveBeenCalledWith(expect.anything(), 'org-1');
     expect(rateLimiter).toHaveBeenNthCalledWith(2, expect.anything(), 'agent_org_rate:org-1', 900, 60);
   });
 
@@ -771,6 +797,182 @@ describe('agentAuthMiddleware - per-org rate limit', () => {
       siteId: 'site-1',
       role: 'watchdog',
     });
+  });
+});
+
+// Issue #2728 — the org bucket is shared with no per-device fairness, so a
+// fleet of chatty heartbeats could drain it and starve the once-per-24h patch
+// upload that carries operator-facing posture. A reserved overflow lane keeps
+// low-frequency inventory ingest admissible.
+describe('agentAuthMiddleware - reserved ingest lane (#2728)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    vi.mocked(getRedis).mockReturnValue({} as any);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    vi.mocked(resolveOrgRateLimit).mockResolvedValue(600);
+  });
+
+  // The headline behavior of #2728: the org ceiling must actually track the
+  // resolved (device-count-scaled) limit end-to-end through the middleware,
+  // and the reserved lane must be sized off that SCALED value — not off the
+  // floor.
+  it('applies the resolved device-count-scaled ceiling to the org bucket', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(resolveOrgRateLimit).mockResolvedValue(20_000);
+    vi.mocked(rateLimiter)
+      .mockResolvedValueOnce({ allowed: true, remaining: 119, resetAt: new Date(Date.now() + 60_000) })
+      .mockResolvedValueOnce({ allowed: true, remaining: 19_999, resetAt: new Date(Date.now() + 60_000) });
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/heartbeat' });
+    await agentAuthMiddleware(c, vi.fn().mockResolvedValue(undefined));
+
+    expect(rateLimiter).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      'agent_org_rate:org-1',
+      20_000,
+      60,
+    );
+  });
+
+  it('sizes the reserved lane from the scaled ceiling, not the floor', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(resolveOrgRateLimit).mockResolvedValue(20_000);
+    vi.mocked(rateLimiter)
+      .mockResolvedValueOnce({ allowed: true, remaining: 119, resetAt: new Date(Date.now() + 60_000) })
+      .mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date(Date.now() + 60_000) })
+      .mockResolvedValueOnce({ allowed: true, remaining: 3_999, resetAt: new Date(Date.now() + 60_000) });
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/agents/agent-1/patches/pending',
+    });
+    await agentAuthMiddleware(c, vi.fn().mockResolvedValue(undefined));
+
+    // 20% of 20000.
+    expect(rateLimiter).toHaveBeenNthCalledWith(
+      3,
+      expect.anything(),
+      'agent_org_rate_reserved:org-1',
+      4_000,
+      60,
+    );
+  });
+
+  const overOrgLimit = () => {
+    vi.mocked(rateLimiter)
+      // per-agent: fine
+      .mockResolvedValueOnce({ allowed: true, remaining: 119, resetAt: new Date(Date.now() + 60_000) })
+      // per-org: exhausted
+      .mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date(Date.now() + 30_000) });
+  };
+
+  it('admits a patch upload from the reserved lane when the org bucket is drained', async () => {
+    buildSelectMock([makeDevice()]);
+    overOrgLimit();
+    // reserved lane: has room
+    vi.mocked(rateLimiter).mockResolvedValueOnce({
+      allowed: true,
+      remaining: 119,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/agents/agent-1/patches/pending',
+    });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(c._getResponse()).toBeNull();
+    expect(rateLimiter).toHaveBeenNthCalledWith(
+      3,
+      expect.anything(),
+      'agent_org_rate_reserved:org-1',
+      120, // 20% of the 600 floor
+      60,
+    );
+  });
+
+  it('rejects a patch upload when the reserved lane is ALSO exhausted', async () => {
+    buildSelectMock([makeDevice()]);
+    overOrgLimit();
+    vi.mocked(rateLimiter).mockResolvedValueOnce({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date(Date.now() + 30_000),
+    });
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/agents/agent-1/patches/pending',
+    });
+    const next = vi.fn();
+
+    const result = await agentAuthMiddleware(c, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect((result as any).status).toBe(429);
+    expect((result as any).body).toEqual({ error: 'org_rate_limit_exceeded' });
+  });
+
+  it('does NOT consult the reserved lane for high-frequency heartbeat traffic', async () => {
+    buildSelectMock([makeDevice()]);
+    overOrgLimit();
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/agents/agent-1/heartbeat',
+    });
+    const next = vi.fn();
+
+    const result = await agentAuthMiddleware(c, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect((result as any).status).toBe(429);
+    // Only per-agent + per-org — the reserved bucket must not be spent by the
+    // very traffic class it exists to protect against.
+    expect(rateLimiter).toHaveBeenCalledTimes(2);
+  });
+
+  it('costs no extra Redis round-trip when the org bucket is not exhausted', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(rateLimiter)
+      .mockResolvedValueOnce({ allowed: true, remaining: 119, resetAt: new Date(Date.now() + 60_000) })
+      .mockResolvedValueOnce({ allowed: true, remaining: 599, resetAt: new Date(Date.now() + 60_000) });
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/agents/agent-1/patches/pending',
+    });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(rateLimiter).toHaveBeenCalledTimes(2);
+  });
+
+  // Regression guard: an earlier revision of this fix derived Retry-After from
+  // `resetAt`. Under SUSTAINED saturation `resetAt` is when one slot frees —
+  // i.e. ~now — so the header collapsed to 1s and turned agent backoff into a
+  // hot loop, amplifying the overload. Retry-After must advertise the full
+  // window regardless of how close the next slot is.
+  it('advertises the full window even when the next slot frees immediately', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(rateLimiter)
+      .mockResolvedValueOnce({ allowed: true, remaining: 119, resetAt: new Date(Date.now() + 60_000) })
+      // Deeply saturated: oldest entry is ~60s old, so resetAt is ~now.
+      .mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date(Date.now() + 50) });
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/heartbeat' });
+
+    await agentAuthMiddleware(c, vi.fn());
+
+    expect(c._getResponseHeaders()['Retry-After']).toBe('60');
   });
 });
 
