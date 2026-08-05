@@ -211,6 +211,49 @@ export async function settleBlockedTurnForNewMessage(
 const pendingIntentBySession = new WeakMap<ActiveSession, string>();
 
 /**
+ * How the most recent tier>=2 call for a session was authorized, so the
+ * postToolUse audit event can record `approved` honestly — true only when a
+ * human (or an explicit policy ceremony) decided THIS call — plus the concrete
+ * path taken. Before #3130 the audit detail hard-coded `approved: true` for
+ * every tier>=2 execution, which was already wrong for auto_approve-mode and
+ * plan-free auto executions and would have become actively misleading once
+ * read-only Tier-2 calls started auto-executing under per_step. Same
+ * single-in-flight assumption (and WeakMap rationale) as
+ * pendingIntentBySession above.
+ */
+type ApprovalMethod =
+  | 'per_step_user' // human decided the lightweight Tier-2 approval card
+  | 'action_intent' // durable Tier-3 intent decided via the approvals surface
+  | 'pam' // helper session — PAM elevation policy/approver decision
+  | 'plan_step' // pre-authorized step of a human-approved action plan
+  | 'auto_approve_mode' // session runs auto_approve; Tier 2 executes unprompted
+  | 'read_only_auto'; // #3130 read-only Tier-2 allowlist; auto-executes in any un-paused mode
+const lastApprovalBySession = new WeakMap<ActiveSession, { toolName: string; method: ApprovalMethod }>();
+
+// Methods that represent an explicit decision on this specific call (a human
+// approver, or the PAM policy ceremony for helper sessions). Plan steps count:
+// the user approved exactly this step (digest-matched) when approving the plan.
+const DECIDED_APPROVAL_METHODS: ReadonlySet<ApprovalMethod> = new Set([
+  'per_step_user',
+  'action_intent',
+  'pam',
+  'plan_step',
+]);
+
+/** Consume the recorded approval method for the audit event's details. */
+function approvalAuditDetails(
+  session: ActiveSession,
+  toolName: string,
+): { approved: boolean; approvalMethod: ApprovalMethod | 'unknown' } {
+  const last = lastApprovalBySession.get(session);
+  if (last?.toolName === toolName) {
+    lastApprovalBySession.delete(session);
+    return { approved: DECIDED_APPROVAL_METHODS.has(last.method), approvalMethod: last.method };
+  }
+  return { approved: false, approvalMethod: 'unknown' };
+}
+
+/**
  * Categorized `action_intents.error_code` for the inline (chat-session)
  * completion CAS below, matching the durable release worker's short-code
  * style (`tier_escalated`, `execution_lost`, `digest_mismatch`,
@@ -580,6 +623,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         } catch (err) {
           console.error('[AI-SDK] Failed to update helper approval to executing:', helperExec.id, err);
         }
+        lastApprovalBySession.set(session, { toolName, method: 'pam' });
         return { allowed: true };
       }
 
@@ -588,7 +632,17 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
 
       // Auto-approve mode only skips approval for Tier 2 tools. Tier 3+
       // tools still require an explicit per-step approval.
-      if (effectiveMode === 'auto_approve' && guardrailCheck.tier === 2) {
+      // Read-only Tier-2 calls (#3130 — the TIER2_READONLY_* allowlists in
+      // aiGuardrails.ts) additionally skip the prompt under EVERY mode, not
+      // just auto_approve: a verified read has nothing to confirm, and
+      // per-step prompting per list call is the approval-fatigue scenario
+      // #3088 measured. Never on a paused session — pause is the user's hard
+      // brake, and the explicit !isPaused guard is what keeps it one
+      // (effectiveMode === 'auto_approve' already implies !isPaused).
+      if (
+        guardrailCheck.tier === 2 &&
+        (effectiveMode === 'auto_approve' || (guardrailCheck.readOnly === true && !session.isPaused))
+      ) {
         try {
           await withDbAccessContext(
             { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
@@ -604,6 +658,10 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           console.error('[AI-SDK] Failed to create auto-approve audit record:', toolName, err);
           return { allowed: false, error: 'Failed to create audit record. Please try again.' };
         }
+        lastApprovalBySession.set(session, {
+          toolName,
+          method: effectiveMode === 'auto_approve' ? 'auto_approve_mode' : 'read_only_auto',
+        });
         return { allowed: true };
       }
 
@@ -674,6 +732,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             return { allowed: false, error: 'Failed to create audit record. Please try again.' };
           }
           session.currentPlanStepIndex = match.stepIndex + 1;
+          lastApprovalBySession.set(session, { toolName, method: 'plan_step' });
           return { allowed: true };
         }
         if (match.matches) {
@@ -1349,6 +1408,15 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       }
     }
 
+    if (guardrailCheck.tier >= 2) {
+      // Reaching here inside the tier>=2 block means the call was explicitly
+      // decided: the durable tier-3 intent flow (approver via the approvals
+      // surface) or the tier-2 lightweight card (user clicked Approve).
+      lastApprovalBySession.set(session, {
+        toolName,
+        method: guardrailCheck.tier >= 3 ? 'action_intent' : 'per_step_user',
+      });
+    }
     return { allowed: true, intentId: createdIntentId };
   };
 }
@@ -1683,7 +1751,13 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
           toolInput: input,
           durationMs,
           tier: guardrailCheck.tier,
-          ...(guardrailCheck.tier >= 2 ? { approved: true } : {}),
+          // `approved` is true only when this specific call was explicitly
+          // decided (human approver / PAM / an approved plan step);
+          // `approvalMethod` records the concrete path. Auto-executions
+          // (auto_approve mode, #3130 read-only Tier 2) report approved: false
+          // — before #3130 this hard-coded `approved: true` for every
+          // tier>=2 execution, which misrepresented auto-approved calls.
+          ...(guardrailCheck.tier >= 2 ? approvalAuditDetails(session, toolName) : {}),
         },
       });
     }

@@ -136,7 +136,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
   {
     tier: 2,
     label: 'Auto-Execute + Audit',
-    description: 'Low-risk mutations that execute automatically but are logged to the audit trail.',
+    description:
+      'Low-risk mutations and audited reads, always logged to the audit trail. Read-only entries auto-execute in every approval mode; mutations auto-execute except under per-step approval, which asks a quick confirmation.',
     iconName: 'shield-check',
     borderColor: 'border-l-blue-500',
     badgeBg: 'bg-blue-500/15',
