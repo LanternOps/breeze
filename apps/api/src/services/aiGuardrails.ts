@@ -120,6 +120,44 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   manage_saved_filters: ['create', 'delete'],
 };
 
+// #3130: Tier-2 entries that are strictly READ-ONLY. Tier 2 as a whole means
+// "low-risk mutations + audit", so the per_step approval mode still prompts
+// for it — but a verified read has nothing to confirm, and prompting per list
+// call is exactly the approval-fatigue scenario #3088 measured (25 prompts in
+// 35 minutes). Entries here keep Tier 2 — and its ai_tool_executions
+// audit-ledger row; they are deliberately NOT demoted to Tier 1, which never
+// writes one (recon reads stay in the audit trail, SR5-01 precedent) — but
+// auto-execute under every session approval mode. A paused session still
+// prompts (aiAgentSdk.ts gates on !isPaused).
+//
+// CONTRACT (enforced by aiGuardrails.readonly.contract.test.ts): every pair
+// here must also be in TIER2_ACTIONS, and must be a pure read — no state
+// change on the device, the org, or any external system. When in doubt an
+// entry does not belong here; leaving a read out only costs one lightweight
+// prompt.
+export const TIER2_READONLY_ACTIONS: Record<string, string[]> = {
+  execute_command: ['event_logs_list', 'file_list', 'list_processes'],
+  file_operations: ['list'],
+  manage_services: ['list'],
+};
+
+// #3130 companion for whole tools: base-Tier-2 tools whose EVERY operation is
+// a read — single-purpose get/list/search tools with no action multiplexing
+// and no TIER3_ACTIONS escalation (both enforced by the contract test). Same
+// semantics as TIER2_READONLY_ACTIONS: keep the Tier-2 audit row, skip the
+// per-step prompt.
+export const TIER2_READONLY_TOOLS = new Set<string>([
+  'get_catalog_item',
+  'get_contract',
+  'get_invoice',
+  'get_quote',
+  'list_contracts',
+  'list_invoices',
+  'list_quotes',
+  'lookup_distributor_product',
+  'search_catalog',
+]);
+
 // Actions that downgrade to Tier 1 (auto-execute, no approval) even if the tool's base tier is higher
 // Exported for contract tests only — see the note on TIER2_ACTIONS.
 export const TIER1_ACTIONS: Record<string, string[]> = {
@@ -822,6 +860,12 @@ export interface GuardrailCheck {
   tier: AiToolTier;
   allowed: boolean;
   requiresApproval: boolean;
+  /**
+   * Set (true) only for Tier-2 resolutions on the #3130 read-only allowlists
+   * (TIER2_READONLY_ACTIONS / TIER2_READONLY_TOOLS): eligible to auto-execute
+   * — with the Tier-2 audit-ledger row — even under per_step approval mode.
+   */
+  readOnly?: boolean;
   reason?: string;
   description?: string;
 }
@@ -886,6 +930,7 @@ export function checkGuardrails(
       tier: 2,
       allowed: true,
       requiresApproval: false,
+      ...(TIER2_READONLY_ACTIONS[toolName]?.includes(action) ? { readOnly: true } : {}),
       description: buildApprovalDescription(toolName, action, input)
     };
   }
@@ -904,6 +949,7 @@ export function checkGuardrails(
     tier: baseTier,
     allowed: true,
     requiresApproval: false,
+    ...(baseTier === 2 && TIER2_READONLY_TOOLS.has(toolName) ? { readOnly: true } : {}),
     description: buildApprovalDescription(toolName, action, input)
   };
 }
