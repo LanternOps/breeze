@@ -260,6 +260,16 @@ func (c *Client) UpdateTLSConfig(tlsCfg *tls.Config) {
 	c.tlsConfigMu.Unlock()
 }
 
+// IsConnected reports whether a live WebSocket connection is currently held.
+// conn is set on a successful dial and cleared by closeCurrentConn, so this is
+// "connected right now", not "has ever connected". Used by the Quick Support
+// dead-man switch to detect a control plane that has gone away for good.
+func (c *Client) IsConnected() bool {
+	c.connMu.RLock()
+	defer c.connMu.RUnlock()
+	return c.conn != nil
+}
+
 // ForceReconnect closes the active connection so the reconnect loop re-dials.
 func (c *Client) ForceReconnect() {
 	c.closeCurrentConn(false)

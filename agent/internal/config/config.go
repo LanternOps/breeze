@@ -250,6 +250,25 @@ type Config struct {
 	// IsHeadless is a runtime flag set when no console/TTY is attached (launchd
 	// daemon, systemd service, etc.). Desktop commands route through IPC when set.
 	IsHeadless bool `mapstructure:"-"`
+
+	// SupportMode marks this process as an ephemeral Quick Support client:
+	// enrolled into a throwaway temp workspace, serving one remote-desktop
+	// session, then self-destructing. It gates off everything a disposable
+	// client must not do (watchdog, updater, background collector loops) and
+	// — critically — is the guard that lets a support_end command destroy
+	// this process while refusing to touch a real, permanently-installed
+	// agent. Runtime-only: `mapstructure:"-"` keeps it out of any config
+	// round-trip, so it can never be set by a file on disk.
+	SupportMode bool `mapstructure:"-"`
+
+	// SupportSessionID is the server-side support session this client was
+	// redeemed for. Runtime-only, same reasoning as SupportMode.
+	SupportSessionID string `mapstructure:"-"`
+
+	// SupportWorkDir is the temp directory holding this support client's
+	// config, secrets and log file. It is what the self-destruct removes, so
+	// it must NEVER be the real agent config dir. Runtime-only.
+	SupportWorkDir string `mapstructure:"-"`
 }
 
 // IsEnrolled reports whether cfg represents a complete enrollment — both
