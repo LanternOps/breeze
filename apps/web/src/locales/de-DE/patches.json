@@ -429,7 +429,8 @@
     "thirdParty": {
       "title": "Drittanbieter-Anwendungen",
       "description": "App-Updates aus winget, Chocolatey und Homebrew automatisch genehmigen. App-Sperr-/Pin-Regeln gelten weiterhin; die Wartezeit zählt ab der ersten Meldung des Updates durch das Gerät.",
-      "policyNote": "Gilt nur für Geräte, deren Konfigurationsrichtlinie Software-Updates von Drittanbietern einschließt (Patch-Einstellungen der Richtlinie)."
+      "policyNote": "Gilt nur für Geräte, deren Konfigurationsrichtlinie Software-Updates von Drittanbietern einschließt (Patch-Einstellungen der Richtlinie).",
+      "holdNote": "Vorausgefüllt mit der Wartezeit der automatischen Genehmigung des Rings. Nach dem Speichern ist diese Wartezeit unabhängig und folgt ihr nicht mehr."
     },
     "usage": {
       "messageOne": "Dieser Ring gilt für {{count}} Gerät. Änderungen werden bei dessen nächster Rückmeldung wirksam.",

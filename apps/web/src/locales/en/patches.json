@@ -429,7 +429,8 @@
     "thirdParty": {
       "title": "Third-party applications",
       "description": "Auto-approve app updates from winget, Chocolatey, and Homebrew. App block/pin rules still apply; the hold is measured from when each device first reports the update.",
-      "policyNote": "Applies only to devices whose configuration policy includes third-party software updates (policy Patch settings)."
+      "policyNote": "Applies only to devices whose configuration policy includes third-party software updates (policy Patch settings).",
+      "holdNote": "Pre-filled from the ring's auto-approve hold. After saving, this hold is independent and no longer follows it."
     },
     "usage": {
       "messageOne": "This ring applies to {{count}} device. Changes take effect on its next check-in.",

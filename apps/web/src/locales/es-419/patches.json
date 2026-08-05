@@ -429,7 +429,8 @@
     "thirdParty": {
       "title": "Aplicaciones de terceros",
       "description": "Aprueba automáticamente actualizaciones de apps de winget, Chocolatey y Homebrew. Las reglas de bloqueo/fijado de apps siguen aplicando; la espera se mide desde que cada dispositivo reporta la actualización por primera vez.",
-      "policyNote": "Aplica solo a dispositivos cuya política de configuración incluye actualizaciones de software de terceros (ajustes de parches de la política)."
+      "policyNote": "Aplica solo a dispositivos cuya política de configuración incluye actualizaciones de software de terceros (ajustes de parches de la política).",
+      "holdNote": "Prellenado con la espera de aprobación automática del anillo. Después de guardar, esta espera es independiente y ya no la sigue."
     },
     "usage": {
       "messageOne": "Este anillo se aplica al dispositivo {{count}}. Los cambios entran en vigor en su próximo check-in.",

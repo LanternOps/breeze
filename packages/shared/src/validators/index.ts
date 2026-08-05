@@ -636,10 +636,16 @@ export const ringAutoApproveSchema = z.object({
   // is not the control axis for these (they mostly ingest severity='unknown'),
   // so this is a source-level toggle. Dual consent applies at evaluation: the
   // config policy's `sources` must ALSO include 'third_party'.
-  thirdPartyApps: z.boolean().default(false),
-  // Hold for third-party candidates, anchored on first-seen (#2218). null =
-  // inherit deferralDays.
-  thirdPartyDeferralDays: z.number().int().min(0).max(365).nullable().default(null),
+  //
+  // OPTIONAL (no default) on purpose: an omitted value means "writer predates
+  // this field" and the API write path preserves the ring's current setting
+  // (mergeRingAutoApproveWrite) instead of resetting it — a `.default(false)`
+  // would make an old-shape replay indistinguishable from an explicit opt-out.
+  thirdPartyApps: z.boolean().optional(),
+  // Hold for third-party candidates, anchored on releaseDate when present,
+  // first-seen otherwise (#2218). null = inherit deferralDays. Optional for
+  // the same old-shape-preservation reason as thirdPartyApps.
+  thirdPartyDeferralDays: z.number().int().min(0).max(365).nullable().optional(),
 }).superRefine((data, ctx) => {
   if (data.enabled && data.severities.length === 0 && !data.thirdPartyApps) {
     ctx.addIssue({
@@ -651,6 +657,58 @@ export const ringAutoApproveSchema = z.object({
 });
 
 export type RingAutoApprove = z.infer<typeof ringAutoApproveSchema>;
+
+const RING_AUTO_APPROVE_SEVERITIES = new Set(['critical', 'important', 'moderate', 'low']);
+
+/**
+ * Resolve an incoming `autoApprove` write against the stored row. The two
+ * third-party fields are OPTIONAL in `ringAutoApproveSchema` so a pre-2026-08
+ * client replaying the old `{enabled, severities, deferralDays}` shape (a
+ * script, a stale tab, an AI-tool partial write) cannot silently reset a
+ * ring's third-party opt-in it doesn't know about: absent fields carry over
+ * the stored row's effective values (same compat derivation as the API's
+ * parseRingAutoApprove — an absent stored `thirdPartyApps` derives from the
+ * stored severities); explicit values — including explicit `false` — always
+ * win. Pass `storedRaw: undefined` on create to stamp the explicit defaults.
+ */
+export function mergeRingAutoApproveWrite(
+  incoming: RingAutoApprove,
+  storedRaw: unknown
+): {
+  enabled: boolean;
+  severities: RingAutoApprove['severities'];
+  deferralDays: number;
+  thirdPartyApps: boolean;
+  thirdPartyDeferralDays: number | null;
+} {
+  let storedThirdPartyApps = false;
+  let storedThirdPartyDeferralDays: number | null = null;
+  if (storedRaw && typeof storedRaw === 'object') {
+    const stored = storedRaw as Record<string, unknown>;
+    const storedSeverities = Array.isArray(stored.severities)
+      ? stored.severities.filter(
+          (s): s is string => typeof s === 'string' && RING_AUTO_APPROVE_SEVERITIES.has(s)
+        )
+      : [];
+    storedThirdPartyApps =
+      'thirdPartyApps' in stored ? stored.thirdPartyApps === true : storedSeverities.length > 0;
+    const rawTp = stored.thirdPartyDeferralDays;
+    storedThirdPartyDeferralDays =
+      typeof rawTp === 'number' && Number.isInteger(rawTp) && rawTp >= 0 && rawTp <= 365
+        ? rawTp
+        : null;
+  }
+  return {
+    enabled: incoming.enabled,
+    severities: incoming.severities,
+    deferralDays: incoming.deferralDays,
+    thirdPartyApps: incoming.thirdPartyApps ?? storedThirdPartyApps,
+    thirdPartyDeferralDays:
+      incoming.thirdPartyDeferralDays !== undefined
+        ? incoming.thirdPartyDeferralDays
+        : storedThirdPartyDeferralDays,
+  };
+}
 
 export const patchInlineSettingsSchema = z.object({
   sources: z.array(patchSourceValueSchema).min(1).default(['os']),

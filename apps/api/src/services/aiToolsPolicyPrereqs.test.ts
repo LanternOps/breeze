@@ -252,6 +252,38 @@ describe('manage_update_rings autoApprove fail-closed write boundary (#1317)', (
     expect(setArg.autoApprove).toMatchObject({ enabled: true, severities: ['low'] });
   });
 
+  it('update with an old-shape autoApprove preserves the stored third-party opt-in (merge, not replace)', async () => {
+    // The model routinely writes partial objects for fields it wasn't asked
+    // about — an omitted thirdPartyApps must not reset the ring's opt-in.
+    mockSelectReturns({
+      id: RING_ID,
+      partnerId: PARTNER_ID,
+      name: 'Ring A',
+      kind: 'ring',
+      autoApprove: { enabled: true, severities: ['critical'], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: 12 },
+    });
+    mockUpdate();
+    const tool = getTool();
+    const output = await tool.handler(
+      {
+        action: 'update',
+        ringId: RING_ID,
+        autoApprove: { enabled: true, severities: ['low'] },
+      },
+      makeAuth()
+    );
+
+    expect(JSON.parse(output).success).toBe(true);
+    const setArg = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
+    expect(setArg.autoApprove).toEqual({
+      enabled: true,
+      severities: ['low'],
+      deferralDays: 0,
+      thirdPartyApps: true,
+      thirdPartyDeferralDays: 12,
+    });
+  });
+
   it('rejects create and other actions for org-scope callers', async () => {
     const tool = getTool();
     const orgAuth = {

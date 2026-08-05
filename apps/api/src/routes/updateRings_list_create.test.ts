@@ -299,6 +299,34 @@ describe('updateRings routes', () => {
       expect(body.name).toBe('Test Ring');
     });
 
+    it('stamps explicit third-party defaults when an old-shape autoApprove omits them on create', async () => {
+      // No stored row to preserve on create: omitted third-party fields become
+      // explicit false/null (fail-closed), never schema-defaulted surprises.
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([makeRing()])
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/update-rings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Old Shape Ring',
+          autoApprove: { enabled: true, severities: ['critical'], deferralDays: 2 }
+        })
+      });
+
+      expect(res.status).toBe(201);
+      const inserted = valuesMock.mock.calls[0]![0] as Record<string, unknown>;
+      expect(inserted.autoApprove).toEqual({
+        enabled: true,
+        severities: ['critical'],
+        deferralDays: 2,
+        thirdPartyApps: false,
+        thirdPartyDeferralDays: null
+      });
+    });
+
     it('should resolve partnerId from the query string for system users', async () => {
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {

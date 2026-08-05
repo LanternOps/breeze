@@ -446,15 +446,20 @@ export default function UpdateRingForm({
                     />
                   </div>
                   {autoApprove?.thirdPartyApps && (
-                    <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
-                      <p className="max-w-md text-xs text-muted-foreground" data-testid="ring-third-party-policy-note">
-                        {t('updateRingForm.thirdParty.policyNote')}
+                    <div className="mt-3">
+                      <div className="flex flex-wrap items-end justify-between gap-4">
+                        <p className="max-w-md text-xs text-muted-foreground" data-testid="ring-third-party-policy-note">
+                          {t('updateRingForm.thirdParty.policyNote')}
+                        </p>
+                        <HoldField
+                          field={register('autoApprove.thirdPartyDeferralDays')}
+                          testId="ring-third-party-deferral"
+                          t={t}
+                        />
+                      </div>
+                      <p className="mt-1 text-right text-xs text-muted-foreground" data-testid="ring-third-party-hold-note">
+                        {t('updateRingForm.thirdParty.holdNote')}
                       </p>
-                      <HoldField
-                        field={register('autoApprove.thirdPartyDeferralDays')}
-                        testId="ring-third-party-deferral"
-                        t={t}
-                      />
                     </div>
                   )}
                 </div>

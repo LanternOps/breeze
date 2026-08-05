@@ -429,7 +429,8 @@
     "thirdParty": {
       "title": "Applications tierces",
       "description": "Approuver automatiquement les mises à jour d'applications winget, Chocolatey et Homebrew. Les règles de blocage/épinglage s'appliquent toujours ; le délai est mesuré à partir du premier signalement de la mise à jour par chaque appareil.",
-      "policyNote": "S'applique uniquement aux appareils dont la politique de configuration inclut les mises à jour logicielles tierces (paramètres de correctifs de la politique)."
+      "policyNote": "S'applique uniquement aux appareils dont la politique de configuration inclut les mises à jour logicielles tierces (paramètres de correctifs de la politique).",
+      "holdNote": "Prérempli avec le délai d'approbation automatique de l'anneau. Après l'enregistrement, ce délai est indépendant et ne le suit plus."
     },
     "usage": {
       "messageOne": "Cet anneau s’applique à {{count}} appareil. Les modifications prendront effet lors de son prochain check-in.",

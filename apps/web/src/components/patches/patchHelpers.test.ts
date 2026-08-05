@@ -90,15 +90,29 @@ describe('normalizeRing — autoApprove normalization (#1317)', () => {
     });
   });
 
-  it('clamps a non-positive or non-integer deferralDays to 0', () => {
+  it('treats a present-but-invalid deferralDays as disabled (mirrors the API fail-closed parse)', () => {
+    // The evaluator disables such a row entirely; showing it as an enabled
+    // 0-day hold would let a save silently resurrect config the API refused.
     expect(
       normalizeRing({ id: 'r1', name: 'x', autoApprove: { enabled: true, severities: ['low'], deferralDays: -3, thirdPartyApps: false } })
         .autoApprove
-    ).toMatchObject({ enabled: true, severities: ['low'], deferralDays: 0 });
+    ).toEqual({ enabled: false, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null });
     expect(
       normalizeRing({ id: 'r1', name: 'x', autoApprove: { enabled: true, severities: ['low'], deferralDays: 1.5, thirdPartyApps: false } })
         .autoApprove
+    ).toEqual({ enabled: false, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null });
+    // Absent stays fine (0 = no hold).
+    expect(
+      normalizeRing({ id: 'r1', name: 'x', autoApprove: { enabled: true, severities: ['low'], thirdPartyApps: false } })
+        .autoApprove
     ).toMatchObject({ enabled: true, severities: ['low'], deferralDays: 0 });
+  });
+
+  it('preserves parked severities on a well-formed DISABLED row (editor divergence from the evaluator)', () => {
+    expect(
+      normalizeRing({ id: 'r1', name: 'x', autoApprove: { enabled: false, severities: ['critical'], deferralDays: 3 } })
+        .autoApprove
+    ).toMatchObject({ enabled: false, severities: ['critical'], deferralDays: 3 });
   });
 
   // The editor round-trips this object straight back into the ring PATCH body,
@@ -175,7 +189,7 @@ describe('normalizeRing — autoApprove normalization (#1317)', () => {
     ).toMatchObject({ thirdPartyApps: false });
   });
 
-  it('coerces malformed third-party values', () => {
+  it('coerces a non-boolean thirdPartyApps to false, but a present-but-invalid hold disables the row', () => {
     // A non-boolean thirdPartyApps is present-but-invalid → false (never derived).
     expect(
       normalizeRing({
@@ -185,8 +199,10 @@ describe('normalizeRing — autoApprove normalization (#1317)', () => {
       }).autoApprove
     ).toMatchObject({ thirdPartyApps: false });
 
-    // Out-of-range / non-integer / non-numeric holds fall back to inherit (null).
-    for (const bad of [-1, 366, 1.5, '3', null]) {
+    // Present-but-invalid holds disable the row (mirrors the API fail-closed
+    // parse — coercing to "inherit" would show a valid-looking editor state
+    // for config the evaluator refuses). Explicit null stays inherit.
+    for (const bad of [-1, 366, 1.5, '3']) {
       expect(
         normalizeRing({
           id: 'r1',
@@ -199,7 +215,14 @@ describe('normalizeRing — autoApprove normalization (#1317)', () => {
             thirdPartyDeferralDays: bad,
           },
         }).autoApprove
-      ).toMatchObject({ thirdPartyApps: true, thirdPartyDeferralDays: null });
+      ).toEqual({ enabled: false, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null });
     }
+    expect(
+      normalizeRing({
+        id: 'r1',
+        name: 'x',
+        autoApprove: { enabled: true, severities: [], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: null },
+      }).autoApprove
+    ).toEqual({ enabled: true, severities: [], deferralDays: 0, thirdPartyApps: true, thirdPartyDeferralDays: null });
   });
 });

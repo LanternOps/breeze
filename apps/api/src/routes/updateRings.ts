@@ -15,7 +15,7 @@ import { getPagination, inferPatchOs } from './patches/helpers';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
-import { ringAutoApproveSchema } from '@breeze/shared/validators';
+import { ringAutoApproveSchema, mergeRingAutoApproveWrite } from '@breeze/shared/validators';
 
 // Typed default for a ring's autoApprove JSONB (#1317). A freshly created or
 // auto-provisioned ring auto-approves nothing until an operator opts in.
@@ -231,7 +231,9 @@ updateRingRoutes.post(
         gracePeriodHours: data.gracePeriodHours ?? 4,
         categories: data.categories ?? [],
         excludeCategories: data.excludeCategories ?? [],
-        autoApprove: data.autoApprove ?? DEFAULT_RING_AUTO_APPROVE,
+        autoApprove: data.autoApprove
+          ? mergeRingAutoApproveWrite(data.autoApprove, undefined)
+          : DEFAULT_RING_AUTO_APPROVE,
         categoryRules: data.categoryRules ?? [],
         targets: data.targets ?? {},
         createdBy: auth.user.id,
@@ -333,7 +335,11 @@ updateRingRoutes.patch(
     const data = c.req.valid('json');
 
     const [existing] = await db
-      .select({ id: patchPolicies.id, partnerId: patchPolicies.partnerId })
+      .select({
+        id: patchPolicies.id,
+        partnerId: patchPolicies.partnerId,
+        autoApprove: patchPolicies.autoApprove,
+      })
       .from(patchPolicies)
       .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')))
       .limit(1);
@@ -353,7 +359,11 @@ updateRingRoutes.patch(
     if (data.gracePeriodHours !== undefined) updateFields.gracePeriodHours = data.gracePeriodHours;
     if (data.categories !== undefined) updateFields.categories = data.categories;
     if (data.excludeCategories !== undefined) updateFields.excludeCategories = data.excludeCategories;
-    if (data.autoApprove !== undefined) updateFields.autoApprove = data.autoApprove;
+    // Merge, don't replace: absent third-party fields (old-shape writers)
+    // preserve the ring's current opt-in instead of resetting it to defaults.
+    if (data.autoApprove !== undefined) {
+      updateFields.autoApprove = mergeRingAutoApproveWrite(data.autoApprove, existing.autoApprove);
+    }
     if (data.categoryRules !== undefined) updateFields.categoryRules = data.categoryRules;
     if (data.targets !== undefined) updateFields.targets = data.targets;
 

@@ -488,15 +488,19 @@ async function migratePatchPoliciesLive(
   if (!featureLink) throw new Error('Failed to create patch feature link');
   summary.featureLinksCreated++;
 
-  // The legacy patch_policies.sources column is deprecated (spec 2026-08-04,
-  // never consumed by the approval path) — default to ['os'] rather than
-  // reading it, so this one-shot script isn't the last remaining reader of
-  // that column once its writers are gone.
-  // Acceptable only because this script is retained as a one-shot, not a
-  // repeatable sync: re-running it for a legacy partner whose ring already
-  // opted in to third-party auto-approve would silently drop that opt-in
-  // by re-writing sources to ['os'] here.
-  const sources: string[] = ['os'];
+  // Carry the legacy policy's source selection: hardcoding ['os'] here would
+  // silently drop a not-yet-migrated partner's third-party opt-in on the
+  // script's FIRST run — killing their 3P patch jobs AND (under dual consent)
+  // the ring-level thirdPartyApps toggle. The patch_policies.sources column is
+  // deprecated but this read is fine until the drop lands; #3151's DROP COLUMN
+  // removes the Drizzle field, which breaks this line at compile time and
+  // forces this script to be updated (or deleted) in the same PR.
+  const sources: string[] = primary.sources ?? ['os'];
+  if (sources.some((s) => s !== 'os')) {
+    console.warn(
+      `[migrateToConfigPolicies] carrying non-OS patch sources ${JSON.stringify(sources)} from legacy policy ${primary.id}`
+    );
+  }
 
   await tx.insert(configPolicyPatchSettings).values({
     featureLinkId: featureLink.id,

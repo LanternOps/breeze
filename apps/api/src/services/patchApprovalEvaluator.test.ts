@@ -402,8 +402,11 @@ describe('app rules in resolveApprovedPatchesForDevice', () => {
     const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
       ringId: RING_ID,
       categoryRules: [{ category: 'third_party_app', autoApprove: true }],
-      autoApprove: {},
+      // Dual consent: a category allow rule for a third-party patch requires
+      // the same policy-sources + ring-toggle legs as Priority 3.
+      autoApprove: { enabled: true, severities: [], thirdPartyApps: true },
       deferralDays: 0,
+      sources: ['third_party'],
       apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
     });
 
@@ -538,6 +541,17 @@ describe('"third_party_app" as a literal category (virtual source-matching remov
     deferralDays: 0,
   };
 
+  // Dual consent granted (policy sources + ring toggle) so the category rule
+  // itself is what each test exercises — without consent a third-party patch
+  // is refused before the rule's severity/deferral gates are ever reached.
+  const consentedRingWithThirdPartyRule: RingConfig = {
+    ringId: RING_ID,
+    categoryRules: [{ category: 'third_party_app', autoApprove: true }],
+    autoApprove: { enabled: true, severities: [], thirdPartyApps: true },
+    deferralDays: 0,
+    sources: ['third_party'],
+  };
+
   it('no longer matches a third_party-source patch whose category is not literally "third_party_app"', async () => {
     mockPendingAndApprovals(
       [pendingRow({ patchId: 'aaaaaaaa-0000-0000-0000-000000000010', source: 'third_party', category: 'homebrew-cask' })],
@@ -567,7 +581,7 @@ describe('"third_party_app" as a literal category (virtual source-matching remov
     );
 
     const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
-      ...ringWithThirdPartyRule,
+      ...consentedRingWithThirdPartyRule,
       categoryRules: [
         { category: 'homebrew', autoApprove: true, severityFilter: ['critical'] },
         { category: 'third_party_app', autoApprove: true },
@@ -584,7 +598,7 @@ describe('"third_party_app" as a literal category (virtual source-matching remov
     );
 
     const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
-      ...ringWithThirdPartyRule,
+      ...consentedRingWithThirdPartyRule,
       categoryRules: [{ category: 'third_party_app', autoApprove: true, severityFilter: ['critical'] }],
     });
 
@@ -600,7 +614,7 @@ describe('"third_party_app" as a literal category (virtual source-matching remov
     );
 
     const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
-      ...ringWithThirdPartyRule,
+      ...consentedRingWithThirdPartyRule,
       categoryRules: [{ category: 'third_party_app', autoApprove: true, severityFilter: ['critical'] }],
     });
 
@@ -615,7 +629,7 @@ describe('"third_party_app" as a literal category (virtual source-matching remov
     );
 
     const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
-      ...ringWithThirdPartyRule,
+      ...consentedRingWithThirdPartyRule,
       categoryRules: [{ category: 'third_party_app', autoApprove: true, deferralDaysOverride: 7 }],
     });
 
@@ -631,7 +645,7 @@ describe('"third_party_app" as a literal category (virtual source-matching remov
       );
 
       const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
-        ...ringWithThirdPartyRule,
+        ...consentedRingWithThirdPartyRule,
         categoryRules: [{ category: 'third_party_app', autoApprove: true, deferralDaysOverride: 7 }],
       });
 
@@ -662,7 +676,7 @@ describe('"third_party_app" as a literal category (virtual source-matching remov
     );
 
     const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
-      ...ringWithThirdPartyRule,
+      ...consentedRingWithThirdPartyRule,
       categoryRules: [
         { category: 'homebrew', autoApprove: false },
         { category: 'third_party_app', autoApprove: true },
@@ -709,6 +723,34 @@ describe('category rules — repaired semantics (#spec 2026-08-04)', () => {
     });
 
     expect(result).toEqual([]);
+  });
+
+  it('prefers autoApproveSeverities over severityFilter when both are present', async () => {
+    // Canonical field wins; the legacy alias must not resurrect a wider list.
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'microsoft', category: 'security', severity: 'low' })],
+      []
+    );
+    const refused = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [{ category: 'security', autoApprove: true, autoApproveSeverities: ['critical'], severityFilter: ['low'] }],
+      autoApprove: {},
+      deferralDays: 0,
+    });
+    expect(refused).toEqual([]);
+
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'microsoft', category: 'security', severity: 'critical' })],
+      []
+    );
+    const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [{ category: 'security', autoApprove: true, autoApproveSeverities: ['critical'], severityFilter: ['low'] }],
+      autoApprove: {},
+      deferralDays: 0,
+    });
+    expect(approved).toHaveLength(1);
+    expect(approved[0]?.approvalReason).toBe('category_rule');
   });
 
   it('still honors legacy stored severityFilter as a read alias', async () => {
@@ -1511,7 +1553,7 @@ describe('deferral first-seen fallback for third-party patches (#2218)', () => {
     const held = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
       ringId: RING_ID,
       categoryRules: [{ category: 'third_party_app', autoApprove: true, deferralDaysOverride: 7 }],
-      autoApprove: {},
+      autoApprove: { enabled: true, severities: [], thirdPartyApps: true },
       deferralDays: 0,
       sources: ['third_party'],
     });
@@ -1526,7 +1568,7 @@ describe('deferral first-seen fallback for third-party patches (#2218)', () => {
     const approved = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
       ringId: RING_ID,
       categoryRules: [{ category: 'third_party_app', autoApprove: true, deferralDaysOverride: 7 }],
-      autoApprove: {},
+      autoApprove: { enabled: true, severities: [], thirdPartyApps: true },
       deferralDays: 0,
       sources: ['third_party'],
     });
@@ -1681,6 +1723,107 @@ describe('ring auto-approve — third-party dual consent (#spec 2026-08-04)', ()
     });
     expect(heldViaInherit).toEqual([]);
   });
+
+  it('honors an explicit thirdPartyDeferralDays of 0 over a non-zero inherited hold', async () => {
+    // Pins the ?? (not ||) semantics: 0 is an explicit "no hold" override and
+    // must not fall back to deferralDays.
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'third_party', severity: 'unknown', releaseDate: null, firstSeenAt: new Date() })],
+      []
+    );
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: [], thirdPartyApps: true, deferralDays: 7, thirdPartyDeferralDays: 0 },
+      deferralDays: 0,
+      sources: ['os', 'third_party'],
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('evaluates a mixed OS + third-party ring per-source: OS approves, 3P refused with the toggle off', async () => {
+    mockPendingAndApprovals(
+      [
+        pendingRow({ patchId: P1, source: 'microsoft', category: 'security', severity: 'critical' }),
+        pendingRow({ patchId: P2, devicePatchId: 'dp-2', source: 'third_party', severity: 'unknown', releaseDate: null }),
+      ],
+      []
+    );
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: ['critical'], thirdPartyApps: false, deferralDays: 0 },
+      deferralDays: 0,
+      sources: ['os', 'third_party'],
+    });
+    expect(result.map((r) => r.patchId)).toEqual([P1]);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('a literal category allow rule cannot bypass dual consent for a third-party patch (ring toggle off)', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'third_party', category: 'homebrew', severity: 'unknown', releaseDate: null })],
+      []
+    );
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [{ category: 'homebrew', autoApprove: true }],
+      autoApprove: { enabled: true, severities: [], thirdPartyApps: false },
+      deferralDays: 0,
+      sources: ['third_party'],
+    });
+    expect(result).toEqual([]);
+  });
+
+  it('a literal category allow rule cannot bypass the policy-sources consent leg (legacy absent sources)', async () => {
+    // Legacy job snapshots have no sources (= no upstream filtering) — exactly
+    // the case the literal 'third_party' check defends. The rule must not
+    // reintroduce the bypass.
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'third_party', category: 'homebrew', severity: 'unknown', releaseDate: null })],
+      []
+    );
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [{ category: 'homebrew', autoApprove: true }],
+      autoApprove: { enabled: true, severities: [], thirdPartyApps: true },
+      deferralDays: 0,
+    });
+    expect(result).toEqual([]);
+  });
+
+  it('a literal category allow rule approves a third-party patch once BOTH consent legs hold', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'third_party', category: 'homebrew', severity: 'unknown', releaseDate: null })],
+      []
+    );
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [{ category: 'homebrew', autoApprove: true }],
+      autoApprove: { enabled: true, severities: [], thirdPartyApps: true },
+      deferralDays: 0,
+      sources: ['third_party'],
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0]?.approvalReason).toBe('category_rule');
+  });
+
+  it('an autoApprove:false category rule is terminal for a third-party patch even with full dual consent', async () => {
+    // A per-category "needs manual approval" beats the ring-level 3P gate.
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'third_party', category: 'homebrew', severity: 'unknown', releaseDate: null })],
+      []
+    );
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ringId: RING_ID,
+      categoryRules: [{ category: 'homebrew', autoApprove: false }],
+      autoApprove: { enabled: true, severities: [], thirdPartyApps: true },
+      deferralDays: 0,
+      sources: ['third_party'],
+    });
+    expect(result).toEqual([]);
+  });
 });
 
 describe('parseRingAutoApprove — thirdPartyApps compatibility (#spec 2026-08-04)', () => {
@@ -1713,10 +1856,37 @@ describe('parseRingAutoApprove — thirdPartyApps compatibility (#spec 2026-08-0
     expect(parseRingAutoApprove({ enabled: true, severities: ['critical'] })).toMatchObject({ enabled: true, deferralDays: 0 });
   });
 
-  it('parses thirdPartyDeferralDays: valid int kept, malformed/absent/null → null', () => {
+  it('parses thirdPartyDeferralDays: valid int kept, absent/null → inherit (null)', () => {
     expect(parseRingAutoApprove({ enabled: true, severities: [], thirdPartyApps: true, thirdPartyDeferralDays: 14 }).thirdPartyDeferralDays).toBe(14);
     expect(parseRingAutoApprove({ enabled: true, severities: [], thirdPartyApps: true, thirdPartyDeferralDays: null }).thirdPartyDeferralDays).toBeNull();
-    expect(parseRingAutoApprove({ enabled: true, severities: [], thirdPartyApps: true, thirdPartyDeferralDays: 999 }).thirdPartyDeferralDays).toBeNull();
     expect(parseRingAutoApprove({ enabled: true, severities: [], thirdPartyApps: true }).thirdPartyDeferralDays).toBeNull();
+  });
+
+  it('disables the row on a present-but-invalid thirdPartyDeferralDays instead of coercing to inherit', () => {
+    // Coercing to null would inherit deferralDays (often 0 = approve
+    // immediately) — the fail-open direction the sibling deferralDays field
+    // was already hardened against.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(parseRingAutoApprove({ enabled: true, severities: [], thirdPartyApps: true, thirdPartyDeferralDays: '30' }).enabled).toBe(false);
+      expect(parseRingAutoApprove({ enabled: true, severities: [], thirdPartyApps: true, thirdPartyDeferralDays: 999 }).enabled).toBe(false);
+      expect(parseRingAutoApprove({ enabled: true, severities: [], thirdPartyApps: true, thirdPartyDeferralDays: -1 }).enabled).toBe(false);
+      expect(parseRingAutoApprove({ enabled: true, severities: [], thirdPartyApps: true, thirdPartyDeferralDays: 1.5 }).enabled).toBe(false);
+      expect(String(warnSpy.mock.calls[0]?.[0] ?? '')).toContain('malformed autoApprove.thirdPartyDeferralDays');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('warns (loudly, with context) when a malformed deferralDays disables the row', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(parseRingAutoApprove({ enabled: true, severities: ['critical'], deferralDays: '7' }, 'ring test-ring').enabled).toBe(false);
+      const warning = String(warnSpy.mock.calls[0]?.[0] ?? '');
+      expect(warning).toContain('ring test-ring');
+      expect(warning).toContain('malformed autoApprove.deferralDays');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
