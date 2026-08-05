@@ -23,6 +23,7 @@ import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import {
   resolveApprovedPatchesForDevice,
+  type CategoryRule,
   type PolicyAppRule,
   type PolicyAutoApproveConfig,
   type RingConfig,
@@ -39,6 +40,17 @@ const jobPolicyAutoApproveSchema = z.object({
   enabled: z.boolean(),
   severities: z.array(z.string()),
   deferralDays: z.number().int().min(0).optional(),
+});
+
+// Strict shape for one patches.categoryRules entry as stored in the job JSONB.
+// Matches the evaluator's CategoryRule: severityFilter is the legacy stored
+// alias for autoApproveSeverities (pre-2026-08 snapshots), both read-only here.
+const jobCategoryRuleSchema = z.object({
+  category: z.string().min(1),
+  autoApprove: z.boolean(),
+  autoApproveSeverities: z.array(z.string()).optional(),
+  severityFilter: z.array(z.string()).optional(),
+  deferralDaysOverride: z.number().int().min(0).nullable().optional(),
 });
 
 /**
@@ -672,11 +684,45 @@ async function prepareDeviceExecution(
     return { skipped: true, reason: 'Invalid patch category filter' };
   }
 
+  // Category rules were the one snapshot field cast blind while every sibling
+  // (sources, apps, policyAutoApprove, categories) is validated loudly — and a
+  // matching rule is now TERMINAL in the evaluator, so a malformed entry
+  // silently became a deny. Mirror the apps posture: a rule with a usable
+  // category but bad shape coerces to an explicit deny (fail-closed, matching
+  // what the evaluator's `!rule.autoApprove` would have done — but logged);
+  // a rule with no usable category is dropped, loudly.
+  const jobCategoryRules: CategoryRule[] = [];
+  if (patchesConfig?.categoryRules !== undefined) {
+    if (!Array.isArray(patchesConfig.categoryRules)) {
+      const message = `[PatchJobExecutor] Job ${patchJobId} has malformed patches.categoryRules; ignoring category rules`;
+      console.warn(`${message}:`, JSON.stringify(patchesConfig.categoryRules));
+      captureException(new Error(message));
+    } else {
+      for (const entry of patchesConfig.categoryRules) {
+        const parsed = jobCategoryRuleSchema.safeParse(entry);
+        if (parsed.success) {
+          jobCategoryRules.push(parsed.data);
+          continue;
+        }
+        const e = entry as { category?: unknown } | null;
+        if (e !== null && typeof e === 'object' && typeof e.category === 'string' && e.category.length > 0) {
+          console.warn(
+            `[PatchJobExecutor] Job ${patchJobId} coercing malformed category rule to deny (fail-closed):`,
+            JSON.stringify(entry)
+          );
+          jobCategoryRules.push({ category: e.category, autoApprove: false });
+        } else {
+          const message = `[PatchJobExecutor] Job ${patchJobId} dropping malformed category rule with unusable category`;
+          console.warn(`${message}:`, JSON.stringify(entry));
+          captureException(new Error(message));
+        }
+      }
+    }
+  }
+
   const ringConfig: RingConfig = {
     ringId: patchesConfig?.ringId ?? null,
-    categoryRules: (Array.isArray(patchesConfig?.categoryRules)
-      ? patchesConfig.categoryRules
-      : []) as RingConfig['categoryRules'],
+    categoryRules: jobCategoryRules,
     autoApprove: patchesConfig?.autoApprove ?? {},
     deferralDays: 0,
     categories: jobCategories,

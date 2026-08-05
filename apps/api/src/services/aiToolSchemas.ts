@@ -1393,7 +1393,6 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     gracePeriodHours: z.number().int().min(0).optional(),
     categories: z.array(z.string()).max(50).optional(),
     excludeCategories: z.array(z.string()).max(50).optional(),
-    sources: z.array(z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom'])).optional(),
     autoApprove: ringAutoApproveSchema.optional(),
     enabled: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),

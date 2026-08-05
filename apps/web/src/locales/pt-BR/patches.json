@@ -372,6 +372,7 @@
     "validation": {
       "selectCategory": "Selecione uma categoria",
       "selectSeverity": "Selecione pelo menos uma severidade para aprovação automática.",
+      "selectSeverityOrThirdParty": "Selecione pelo menos uma severidade ou habilite a aprovação automática de apps de terceiros.",
       "nameRequired": "O nome do anel é obrigatório"
     },
     "categories": {
@@ -379,7 +380,6 @@
       "feature": "Atualizações de recursos",
       "firmware": "Firmware",
       "driver": "Drivers",
-      "thirdPartyApp": "Apps de terceiros",
       "definitions": "Atualizações de definições"
     },
     "severities": {
@@ -421,10 +421,16 @@
       "description": "O que é aprovado automaticamente neste anel e por quanto tempo reter um patch após o lançamento pelo fornecedor. O padrão se aplica a todas as categorias; adicione uma substituição para tratar uma delas de forma diferente.",
       "allCategories": "Todas as categorias",
       "default": "Padrão",
-      "severityNote": "As severidades se aplicam a atualizações do SO. Atualizações de apps de terceiros (winget, Homebrew) não têm severidade do fornecedor — quando uma política habilita fontes de outros softwares, elas são aprovadas automaticamente no ritmo deste anel, independentemente das severidades selecionadas aqui.",
+      "severityNote": "As severidades se aplicam apenas às atualizações do sistema operacional. Atualizações de apps de terceiros são controladas pelo botão abaixo — não são controladas por severidade.",
       "manualDefault": "Todos os patches neste anel precisam de aprovação manual.",
       "manualCategory": "Patches nesta categoria precisam de aprovação manual.",
       "noOverrides": "Todas as categorias seguem o padrão. Adicione uma substituição para tratar uma delas de forma diferente."
+    },
+    "thirdParty": {
+      "title": "Aplicativos de terceiros",
+      "description": "Aprovar automaticamente atualizações de apps do winget, Chocolatey e Homebrew. As regras de bloqueio/fixação de apps continuam valendo; a espera é medida a partir do primeiro relato da atualização por cada dispositivo.",
+      "policyNote": "Aplica-se apenas a dispositivos cuja política de configuração inclui atualizações de software de terceiros (configurações de patch da política).",
+      "holdNote": "Pré-preenchido com a espera de aprovação automática do anel. Após salvar, essa espera é independente e não a acompanha mais."
     },
     "usage": {
       "messageOne": "Este anel se aplica a {{count}} dispositivo. As alterações entram em vigor no próximo check-in dele.",
@@ -457,7 +463,13 @@
       "devices": "Dispositivos",
       "compliance": "Conformidade",
       "updated": "Atualizado",
-      "actions": "Ações"
+      "actions": "Ações",
+      "autoApprove": "Aprovação automática"
+    },
+    "badges": {
+      "manual": "Manual",
+      "os": "SO: {{severities}}",
+      "thirdParty": "Apps de terceiros"
     }
   }
 }

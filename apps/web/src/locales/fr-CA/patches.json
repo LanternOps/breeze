@@ -372,6 +372,7 @@
     "validation": {
       "selectCategory": "Sélectionnez une catégorie",
       "selectSeverity": "Sélectionnez au moins une sévérité pour l’approbation automatique.",
+      "selectSeverityOrThirdParty": "Sélectionnez au moins une sévérité ou activez l'approbation automatique des applications tierces.",
       "nameRequired": "Un nom d’anneau est requis"
     },
     "categories": {
@@ -379,7 +380,6 @@
       "feature": "Mises à jour des fonctionnalités",
       "firmware": "Micrologiciel",
       "driver": "Pilotes",
-      "thirdPartyApp": "Applications tierces",
       "definitions": "Mises à jour des définitions"
     },
     "severities": {
@@ -421,10 +421,16 @@
       "description": "Ce qui est approuvé automatiquement dans cet anneau, et combien de temps il faut conserver un patch après sa sortie chez le fabricant. Le principe par défaut s’applique à toutes les catégories ; Ajoutez une dérogation pour traiter un autre type différemment.",
       "allCategories": "Toutes les catégories",
       "default": "Par défaut",
-      "severityNote": "Les sévérités s’appliquent aux mises à jour du système d’exploitation. Les mises à jour d’applications tierces (winget, Homebrew) n’ont aucune sévérité du fournisseur — lorsqu’une politique permet à d’autres sources logicielles, elles sont approuvées automatiquement selon le rythme de cet anneau, quel que soit le niveau de sévérité sélectionné ici.",
+      "severityNote": "Les sévérités ne s'appliquent qu'aux mises à jour du système d'exploitation. Les mises à jour d'applications tierces sont contrôlées par l'interrupteur ci-dessous — elles ne sont pas contrôlées par sévérité.",
       "manualDefault": "Chaque correctif de cet anneau nécessite une approbation manuelle.",
       "manualCategory": "Les correctifs de cette catégorie nécessitent une approbation manuelle.",
       "noOverrides": "Toutes les catégories suivent la norme par défaut. Ajoutez une dérogation pour traiter un autre type différemment."
+    },
+    "thirdParty": {
+      "title": "Applications tierces",
+      "description": "Approuver automatiquement les mises à jour d'applications winget, Chocolatey et Homebrew. Les règles de blocage/épinglage s'appliquent toujours ; le délai est mesuré à partir du premier signalement de la mise à jour par chaque appareil.",
+      "policyNote": "S'applique uniquement aux appareils dont la politique de configuration inclut les mises à jour logicielles tierces (paramètres de correctifs de la politique).",
+      "holdNote": "Prérempli avec le délai d'approbation automatique de l'anneau. Après l'enregistrement, ce délai est indépendant et ne le suit plus."
     },
     "usage": {
       "messageOne": "Cet anneau s’applique à {{count}} appareil. Les modifications prendront effet lors de son prochain check-in.",
@@ -457,7 +463,13 @@
       "devices": "Dispositifs",
       "compliance": "Conformité",
       "updated": "Mise à jour",
-      "actions": "Actions"
+      "actions": "Actions",
+      "autoApprove": "Approbation auto"
+    },
+    "badges": {
+      "manual": "Manuelle",
+      "os": "SE : {{severities}}",
+      "thirdParty": "Applications tierces"
     }
   }
 }
