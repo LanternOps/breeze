@@ -28,7 +28,10 @@
  * `installer_bootstrap_tokens` row referencing the key is still live (its own
  * `expires_at` in the future) AND unexhausted (`consumed_count < max_usage`);
  * such a key is left for a later sweep, once its last token has expired or
- * been fully consumed.
+ * been fully consumed. The predicate itself lives in
+ * `services/enrollmentKeyPurgeGuards.ts` because the on-demand purge route
+ * named above needs the identical guard (#2832) — it was missed there for two
+ * releases while it lived inline here.
  *
  * Scheduling:
  *   - Repeat cron: 04:00 UTC daily (pattern "0 4 * * *")
@@ -56,10 +59,11 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
-import { and, eq, gt, isNotNull, lt, notExists, sql } from 'drizzle-orm';
+import { and, isNotNull, lt } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { enrollmentKeys, installerBootstrapTokens } from '../db/schema';
+import { enrollmentKeys } from '../db/schema';
 import { captureException } from '../services/sentry';
+import { hasNoLiveUnexhaustedBootstrapToken } from '../services/enrollmentKeyPurgeGuards';
 import { getBullMQConnection } from '../services/redis';
 
 const QUEUE_NAME = 'enrollment-key-cleanup';
@@ -83,31 +87,6 @@ function getPurgeAfterDays(): number {
   const parsed = parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_PURGE_AFTER_DAYS;
 }
-
-/**
- * Correlated NOT EXISTS guard (#2775): evaluates true — i.e. the outer
- * `enrollmentKeys` row is eligible for the purge — only when NO
- * `installer_bootstrap_tokens` row still points at it with both `expires_at`
- * in the future AND `consumed_count < max_usage` (a "live, unexhausted"
- * token). When such a token does exist, this evaluates false and the AND'd
- * outer WHERE excludes the key from the DELETE; it survives to a later
- * sweep, once its last token has expired or been fully consumed. Matches the
- * `exists`/`notExists` correlated-subquery idiom used by
- * `services/vulnerabilityCorrelation.ts`.
- */
-const hasNoLiveUnexhaustedBootstrapToken = () =>
-  notExists(
-    dbModule.db
-      .select({ one: sql`1` })
-      .from(installerBootstrapTokens)
-      .where(
-        and(
-          eq(installerBootstrapTokens.parentEnrollmentKeyId, enrollmentKeys.id),
-          gt(installerBootstrapTokens.expiresAt, new Date()),
-          lt(installerBootstrapTokens.consumedCount, installerBootstrapTokens.maxUsage),
-        ),
-      ),
-  );
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   if (typeof dbModule.withSystemDbAccessContext !== 'function') {

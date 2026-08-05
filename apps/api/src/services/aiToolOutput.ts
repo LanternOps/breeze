@@ -16,6 +16,13 @@ type CompactConfig = {
   maxArrayItems: number;
   maxObjectKeys: number;
   maxDepth: number;
+  /**
+   * Char budget for `stdout` string leaves specifically. Command output is the
+   * payload the model is actually after (file listings, process lists), so it
+   * gets a larger budget than generic string leaves — the old shared 1.5–2K cap
+   * cut structured listings mid-JSON at ~2KB with no way to recover (#3093).
+   */
+  maxStdoutChars: number;
 };
 
 const DEFAULT_CONFIG: CompactConfig = {
@@ -23,10 +30,27 @@ const DEFAULT_CONFIG: CompactConfig = {
   maxArrayItems: 60,
   maxObjectKeys: 60,
   maxDepth: 6,
+  maxStdoutChars: 6_000,
 };
+
+/**
+ * Progressively tighter budgets tried in order until the serialized result
+ * fits MAX_TOOL_RESULT_CHARS. The final tier exists so structured command
+ * output with long string items (event-log messages, service descriptions)
+ * still lands as VALID JSON with its envelope and truncation marker intact —
+ * without it those payloads fell through to the mid-string `preview` slice,
+ * which is exactly the #3093 failure mode.
+ */
+const COMPACTION_TIERS: CompactConfig[] = [
+  DEFAULT_CONFIG,
+  { maxStringChars: 700, maxArrayItems: 20, maxObjectKeys: 20, maxDepth: 4, maxStdoutChars: 2_000 },
+  { maxStringChars: 300, maxArrayItems: 10, maxObjectKeys: 15, maxDepth: 4, maxStdoutChars: 1_000 },
+];
 
 const MAX_TOOL_RESULT_CHARS = 8_000;
 const RAW_PREVIEW_CHARS = 2_000;
+const STDOUT_TEXT_CHARS = 6_000;
+const STDERR_TEXT_CHARS = 1_200;
 const MAX_DISK_CANDIDATES = 60;
 const MAX_DISK_LIST_ROWS = 30;
 const REDACTED = '[REDACTED]';
@@ -47,11 +71,26 @@ function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+const TRUNCATION_MARKER_RE = /\n\.\.\.\[truncated (\d+) chars\]$/;
+
+/**
+ * Truncate a string leaf, appending an explicit `[truncated N chars]` marker.
+ *
+ * Idempotent across compaction passes: a string this function already cut
+ * carries the marker, and a later pass with the same or a larger budget must
+ * NOT re-truncate the (base + marker) result — that used to replace an honest
+ * `[truncated 1500 chars]` with a false `[truncated 26 chars]` (the marker's
+ * own overhang) and double-count stringsTruncated. When a tighter pass does
+ * cut further, the reported count is cumulative from the original string.
+ */
 function truncateText(value: string, maxChars: number, stats: CompactStats): string {
-  if (value.length <= maxChars) return value;
+  const marker = value.match(TRUNCATION_MARKER_RE);
+  const priorOmitted = marker ? Number(marker[1]) : 0;
+  const base = marker ? value.slice(0, marker.index) : value;
+  if (base.length <= maxChars) return value;
   stats.stringsTruncated += 1;
-  const omitted = value.length - maxChars;
-  return `${value.slice(0, maxChars)}\n...[truncated ${omitted} chars]`;
+  const omitted = base.length - maxChars + priorOmitted;
+  return `${base.slice(0, maxChars)}\n...[truncated ${omitted} chars]`;
 }
 
 export function redactAiToolOutputText(value: string): string {
@@ -92,7 +131,8 @@ function compactValue(
   value: unknown,
   stats: CompactStats,
   config: CompactConfig,
-  depth = 0
+  depth = 0,
+  keyHint = ''
 ): unknown {
   if (
     value === null ||
@@ -103,7 +143,10 @@ function compactValue(
   }
 
   if (typeof value === 'string') {
-    return truncateText(value, config.maxStringChars, stats);
+    // stdout carries the command output the model asked for — give it the
+    // dedicated (larger) budget instead of the generic leaf cap (#3093).
+    const maxChars = keyHint === 'stdout' ? config.maxStdoutChars : config.maxStringChars;
+    return truncateText(value, maxChars, stats);
   }
 
   if (depth >= config.maxDepth) {
@@ -130,7 +173,7 @@ function compactValue(
 
     const output: Record<string, unknown> = {};
     for (const [key, itemValue] of entries.slice(0, config.maxObjectKeys)) {
-      output[key] = compactValue(itemValue, stats, config, depth + 1);
+      output[key] = compactValue(itemValue, stats, config, depth + 1, key);
     }
     return output;
   }
@@ -236,28 +279,116 @@ function compactDiskCleanupPayload(payload: Record<string, unknown>, stats: Comp
   return output;
 }
 
-function compactCommandStylePayload(payload: Record<string, unknown>, stats: CompactStats): Record<string, unknown> {
+function mergeStats(target: CompactStats, source: CompactStats): void {
+  target.stringsTruncated += source.stringsTruncated;
+  target.arraysTruncated += source.arraysTruncated;
+  target.arrayItemsDropped += source.arrayItemsDropped;
+  target.objectsTruncated += source.objectsTruncated;
+  target.objectKeysDropped += source.objectKeysDropped;
+  target.depthLimited += source.depthLimited;
+  target.sensitiveFieldsOmitted += source.sensitiveFieldsOmitted;
+}
+
+function statsShowTruncation(stats: CompactStats): boolean {
+  return (
+    stats.stringsTruncated > 0 ||
+    stats.arraysTruncated > 0 ||
+    stats.objectsTruncated > 0 ||
+    stats.depthLimited > 0
+  );
+}
+
+/**
+ * Guidance appended to compacted command output so the model can actually
+ * recover the rest instead of re-issuing blind variants of the same command
+ * (#3093 — each retry costs a fresh approval, compounding approval fatigue).
+ *
+ * Both notes must stay under the tightest tier's maxStringChars (300) or the
+ * final compaction pass will cut the guidance itself. Parameter claims are
+ * verified against the agent handlers (processes.go, eventlogs.go, fileops.go):
+ * event_logs_query has NO search param and its page is hard-capped at 20;
+ * file_list has no paging at all — only path + limit.
+ */
+const COMMAND_PAGING_NOTE =
+  'Output compacted to fit chat budget. Page/filter via payload: ' +
+  'list_processes {page, limit<=500, search, sortBy}; ' +
+  'event_logs_query {page<=20, limit<=500, logName, level, source, eventId}; ' +
+  'file_list: no paging - narrow path or raise limit (<=5000).';
+
+const COMMAND_TEXT_TRUNCATION_NOTE =
+  'Long text fields were shortened (see [truncated N chars] markers). ' +
+  'Paging will not recover them; issue a narrower command instead ' +
+  '(e.g. file_read a specific file, or event_logs_query filtered by eventId/source).';
+
+function compactCommandStylePayload(
+  payload: Record<string, unknown>,
+  stats: CompactStats,
+  config: CompactConfig,
+): Record<string, unknown> {
   const output: Record<string, unknown> = {};
   for (const key of ['status', 'exitCode', 'durationMs', 'error']) {
     if (payload[key] !== undefined) output[key] = payload[key];
   }
 
   if (typeof payload.stdout === 'string') {
-    output.stdout = truncateText(redactAiToolOutputText(payload.stdout), 2_000, stats);
-    output.stdoutChars = payload.stdout.length;
+    // Structured commands (list_processes, file_list, event logs, services…)
+    // return their whole response as JSON in `stdout`. Blind char-truncation
+    // used to cut that JSON mid-string at ~2KB, destroying the trailing
+    // envelope fields (total/page/truncated) the model needed to page (#3093).
+    // Compact it structurally instead: keep the envelope, drop excess list
+    // items, and report exactly what was dropped plus how to fetch more.
+    const parsedStdout = tryParseJson(payload.stdout);
+    if (parsedStdout !== null && typeof parsedStdout === 'object') {
+      const stdoutStats = emptyStats();
+      // The key-based redactor ran while stdout was still a string leaf, where
+      // its assignment regex cannot match JSON's `"password":"x"` syntax. The
+      // parsed structure is the first (and only) place key-based redaction can
+      // see these fields — without this, credentials in structured command
+      // output (service configs, env dumps) reach the model and the persisted
+      // transcript verbatim.
+      const redactedStdout = redactLogFields(parsedStdout);
+      const compactedStdout = compactValue(redactedStdout, stdoutStats, {
+        ...config,
+        maxArrayItems: Math.min(config.maxArrayItems, 50),
+      });
+      output.stdout = compactedStdout;
+      output.stdoutChars = payload.stdout.length;
+      if (stdoutStats.arrayItemsDropped > 0) {
+        // Items were dropped from a list — paging/filtering can recover them.
+        output.stdoutTruncation = {
+          itemsDropped: stdoutStats.arrayItemsDropped,
+          note: COMMAND_PAGING_NOTE,
+        };
+      } else if (statsShowTruncation(stdoutStats)) {
+        // Only string/depth cuts — paging would re-fetch the same shortened
+        // fields and burn an approval for nothing; steer to narrower commands.
+        output.stdoutTruncation = {
+          itemsDropped: 0,
+          note: COMMAND_TEXT_TRUNCATION_NOTE,
+        };
+      }
+      mergeStats(stats, stdoutStats);
+    } else {
+      output.stdout = truncateText(redactAiToolOutputText(payload.stdout), config.maxStdoutChars, stats);
+      output.stdoutChars = payload.stdout.length;
+    }
   }
 
   if (typeof payload.stderr === 'string') {
-    output.stderr = truncateText(redactAiToolOutputText(payload.stderr), 1_200, stats);
+    output.stderr = truncateText(
+      redactAiToolOutputText(payload.stderr),
+      Math.min(STDERR_TEXT_CHARS, config.maxStdoutChars),
+      stats,
+    );
     output.stderrChars = payload.stderr.length;
   }
 
   if (payload.data !== undefined) {
     output.data = compactValue(payload.data, stats, {
-      ...DEFAULT_CONFIG,
-      maxArrayItems: 40,
-      maxObjectKeys: 40,
-      maxStringChars: 1_000,
+      ...config,
+      maxArrayItems: Math.min(config.maxArrayItems, 40),
+      maxObjectKeys: Math.min(config.maxObjectKeys, 40),
+      maxStringChars: Math.min(config.maxStringChars, 1_000),
     });
   }
 
@@ -304,7 +435,17 @@ function sanitizeToolPayloadValue(
   if (typeof value === 'string') {
     const redacted = redactAiToolOutputText(value);
     if (['stdout', 'stderr'].includes(keyHint.toLowerCase())) {
-      return truncateText(redacted, keyHint.toLowerCase() === 'stderr' ? 1_200 : 2_000, stats);
+      // JSON stdout is structured command output — leave it whole here so
+      // compactCommandStylePayload can compact it structurally instead of
+      // cutting the JSON mid-string (#3093). It stays bounded either way:
+      // the compaction pipeline's compactValue pass caps stdout leaves at
+      // maxStdoutChars and the overall result at MAX_TOOL_RESULT_CHARS.
+      if (keyHint.toLowerCase() === 'stdout') {
+        const parsed = tryParseJson(redacted);
+        if (parsed !== null && typeof parsed === 'object') return redacted;
+        return truncateText(redacted, STDOUT_TEXT_CHARS, stats);
+      }
+      return truncateText(redacted, STDERR_TEXT_CHARS, stats);
     }
     return redacted;
   }
@@ -340,7 +481,8 @@ function sanitizeToolPayloadValue(
 function applyToolSpecificCompaction(
   toolName: string,
   parsed: unknown,
-  stats: CompactStats
+  stats: CompactStats,
+  config: CompactConfig
 ): unknown {
   if (!isRecord(parsed)) return parsed;
 
@@ -363,7 +505,7 @@ function applyToolSpecificCompaction(
   );
 
   if (looksLikeCommandResult) {
-    return compactCommandStylePayload(parsed, stats);
+    return compactCommandStylePayload(parsed, stats, config);
   }
 
   // Fleet tools: compact large arrays in standard list/data responses
@@ -473,28 +615,23 @@ export function compactToolResultForChat(toolName: string, rawResult: string): s
   const minimized = sanitizeToolPayloadValue(toolName, errorScrubbed, stats);
   const redacted = redactLogFields(minimized);
   const sanitized = sanitizeToolPayloadValue(toolName, redacted, stats);
-  const toolSpecific = applyToolSpecificCompaction(toolName, sanitized, stats);
-  const compacted = compactValue(toolSpecific, stats, DEFAULT_CONFIG);
-  const withMeta = appendChatMeta(compacted, stats, rawResult.length);
-  let serialized = safeStringify(withMeta);
 
-  if (serialized.length <= MAX_TOOL_RESULT_CHARS) {
-    return serialized;
-  }
-
-  const secondaryStats = emptyStats();
-
-  const aggressivelyCompacted = compactValue(toolSpecific, secondaryStats, {
-    maxStringChars: 700,
-    maxArrayItems: 20,
-    maxObjectKeys: 20,
-    maxDepth: 4,
-  });
-  const aggressiveWithMeta = appendChatMeta(aggressivelyCompacted, secondaryStats, rawResult.length);
-  serialized = safeStringify(aggressiveWithMeta);
-
-  if (serialized.length <= MAX_TOOL_RESULT_CHARS) {
-    return serialized;
+  // Try each tier from `sanitized`, not from the previous tier's output: a
+  // tighter tier that re-compacted already-compacted data would report drop
+  // counts relative to the prior tier (e.g. "30 dropped" when 180 of 200 are
+  // gone) and leave `stdoutTruncation` stale. Recomputing from the sanitized
+  // payload keeps the marker and counters accurate for whichever tier ships.
+  const baseStats: CompactStats = { ...stats };
+  let serialized = '';
+  for (const tier of COMPACTION_TIERS) {
+    const tierStats: CompactStats = { ...baseStats };
+    const toolSpecific = applyToolSpecificCompaction(toolName, sanitized, tierStats, tier);
+    const compacted = compactValue(toolSpecific, tierStats, tier);
+    const withMeta = appendChatMeta(compacted, tierStats, rawResult.length);
+    serialized = safeStringify(withMeta);
+    if (serialized.length <= MAX_TOOL_RESULT_CHARS) {
+      return serialized;
+    }
   }
 
   return JSON.stringify({

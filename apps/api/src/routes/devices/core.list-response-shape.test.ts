@@ -91,7 +91,13 @@ vi.mock('../agents/enrollment', () => ({
 import { coreRoutes } from './core';
 import { db } from '../../db';
 
-function rigDeviceListRows(rows: unknown[]) {
+function rigDeviceListRows(
+  rows: unknown[],
+  // Rows the batched LAN-IP lateral returns (#2503). The handler issues two
+  // db.execute calls per request in a fixed order — latest metrics first, then
+  // the LAN-IP lookup — so the LAN rig has to be the SECOND queued result.
+  lanIpRows: Array<{ device_id: string; ip_address: string }> = [],
+) {
   const offset = vi.fn().mockResolvedValue(rows);
   const limit = vi.fn().mockReturnValue({ offset });
   const orderBy = vi.fn().mockReturnValue({ limit });
@@ -104,7 +110,10 @@ function rigDeviceListRows(rows: unknown[]) {
   chain.where = where;
   const from = vi.fn().mockReturnValue({ leftJoin });
   vi.mocked(db.select).mockReturnValue({ from } as never);
-  vi.mocked(db.execute).mockResolvedValue([] as never);
+  vi.mocked(db.execute)
+    .mockResolvedValue([] as never)
+    .mockResolvedValueOnce([] as never)      // latest-metrics lateral
+    .mockResolvedValueOnce(lanIpRows as never); // LAN-IP lateral (#2503)
 }
 
 describe('GET /devices — response shape', () => {
@@ -118,7 +127,8 @@ describe('GET /devices — response shape', () => {
 
   it('includes watchdog health fields in each list row', async () => {
     const silentSince = new Date('2026-05-26T19:24:57.519Z');
-    rigDeviceListRows([
+    rigDeviceListRows(
+      [
       {
         id: '33333333-3333-4333-8333-333333333333',
         orgId: 'org-1',
@@ -139,6 +149,7 @@ describe('GET /devices — response shape', () => {
         mainAgentSilentSince: silentSince,
         pendingReboot: true,
         lastSeenAt: new Date('2026-05-26T19:19:57.519Z'),
+        lastSeenIp: '198.51.100.24',
         enrolledAt: new Date('2026-04-26T19:39:57.519Z'),
         tags: ['e2e'],
         customFields: {},
@@ -157,8 +168,11 @@ describe('GET /devices — response shape', () => {
         reliabilityScore: 42,
         reliabilityTrend: 'degrading',
         helperLifecycleMode: 'on-demand',
+        possibleReplacementOfDeviceId: '55555555-5555-4555-8555-555555555555',
       },
-    ]);
+      ],
+      [{ device_id: '33333333-3333-4333-8333-333333333333', ip_address: '10.20.30.40' }],
+    );
 
     const res = await app.request('/devices?limit=50', {
       method: 'GET',
@@ -188,6 +202,21 @@ describe('GET /devices — response shape', () => {
     // the mapper: Tasks 13/14 gate the session picker on this field being
     // 'on-demand' at the list-row level, not just on the detail page.
     expect(row).toHaveProperty('helperLifecycleMode', 'on-demand');
+    // #2503 — the opt-in WAN/LAN IP columns. wanIp is renamed from the DB's
+    // `lastSeenIp`, and lanIp comes from a SEPARATE batched query rather than
+    // the row select, so both are exactly the kind of field this file exists
+    // to catch being dropped between the query and the response body.
+    expect(row).toHaveProperty('wanIp', '198.51.100.24');
+    expect(row).toHaveProperty('lanIp', '10.20.30.40');
+    // #2764 — collision-enrollment link. The web list renders the "Possible
+    // duplicate" badge from this field alone; drop it in the mapper and every
+    // duplicate row looks ordinary while the device page still shows the
+    // review banner (the detail route returns the whole row), so nothing else
+    // would go red.
+    expect(row).toHaveProperty(
+      'possibleReplacementOfDeviceId',
+      '55555555-5555-4555-8555-555555555555',
+    );
   });
 
   it('returns null watchdogStatus / mainAgentSilentSince for healthy rows (still present in shape)', async () => {
@@ -212,6 +241,7 @@ describe('GET /devices — response shape', () => {
         mainAgentSilentSince: null,
         pendingReboot: false,
         lastSeenAt: new Date(),
+        lastSeenIp: null,
         enrolledAt: new Date(),
         tags: [],
         customFields: {},
@@ -271,5 +301,13 @@ describe('GET /devices — response shape', () => {
     // haven't reported a mode (non-RDS hosts, or agents predating plan 2).
     expect(Object.prototype.hasOwnProperty.call(row, 'helperLifecycleMode')).toBe(true);
     expect(row.helperLifecycleMode).toBeNull();
+
+    // #2503 — WAN/LAN IP keys present (null) for a device that has never made
+    // an authenticated request and has no reported interface yet. Present-but-
+    // null is what lets the column render a dash instead of guessing.
+    expect(Object.prototype.hasOwnProperty.call(row, 'wanIp')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(row, 'lanIp')).toBe(true);
+    expect(row.wanIp).toBeNull();
+    expect(row.lanIp).toBeNull();
   });
 });

@@ -130,13 +130,20 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
     return { dispatched: false, agentId: null };
   }
 
-  // Find an online agent for this org
+  // Find an online agent for this org.
+  //
+  // Quick Support exclusion: ephemeral devices (`devices.isEphemeral`) live in
+  // the hidden per-partner 'quick_support' org and are a stranger's personal
+  // machine borrowed for one ~20-minute session. That org stays inside
+  // technicians' accessibleOrgIds for RLS reasons, so a bare "any online device
+  // in this org" pick could conscript a home PC into polling SNMP targets.
   const [onlineAgent] = await db
     .select({ agentId: devices.agentId })
     .from(devices)
     .where(
       and(
         eq(devices.orgId, data.orgId),
+        eq(devices.isEphemeral, false),
         eq(devices.status, 'online')
       )
     )

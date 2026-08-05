@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,12 @@ const (
 	jobStatusFailed    = "failed"
 	jobStatusSkipped   = "skipped"
 	jobStatusStopped   = "stopped"
+	// jobStatusPartial is a terminal status for a run that produced a real,
+	// restorable snapshot but lost a disproportionate share of the work to
+	// per-file failures. Distinct from jobStatusFailed on purpose: the
+	// snapshot exists and can be restored from, so anything that treats it as
+	// "no backup happened" would be wrong. See classifyCompletionStatus.
+	jobStatusPartial = "partial"
 )
 
 var errBackupStopped = errors.New("backup stopped")
@@ -322,16 +329,17 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 				"elapsedMs", time.Since(vssStart).Milliseconds(),
 				"error", vssErr.Error(),
 			)
+			// #3027: the worst VSS outcome used to be the quietest one. When the
+			// session never starts there is no VSSMetadata to send, so without
+			// this the run reaches the server indistinguishable from a clean
+			// VSS-backed backup — every path read live, every locked file at
+			// risk of being skipped, and nothing anywhere saying so. The
+			// per-path warning further down only fires when a session DID
+			// start, so it cannot cover this branch.
+			appendWarning(job, vssCreationFailureWarning(vssErr))
 		} else {
 			vssSession = session
-			job.VSSMetadata = &vss.VSSMetadata{
-				ShadowCopyID: session.ID,
-				CreationTime: session.CreatedAt,
-				Writers:      session.Writers,
-				ExposedPaths: session.ShadowPaths,
-				Warnings:     session.Warnings,
-				DurationMs:   time.Since(vssStart).Milliseconds(),
-			}
+			job.VSSMetadata = buildVSSMetadata(session, time.Since(vssStart).Milliseconds())
 			if len(session.Warnings) > 0 {
 				log.Warn("VSS completed with warnings",
 					"warningCount", len(session.Warnings),
@@ -348,12 +356,21 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 
 	// System state collection: gather OS config, hardware profile, etc.
 	var systemStateErr error
-	// systemStateStagingDir/systemStateStagingIdx let us recover, after any
-	// VSS rewrite below, whichever staging-root value was ACTUALLY walked —
-	// see the assignment right after the VSS rewrite for why the raw
-	// stagingDir returned here isn't necessarily it.
+	// systemStateStagingIdx marks the staging dir's slot in backupPaths so the
+	// VSS rewrite below can leave it alone — it is created after the snapshot
+	// and therefore only exists on the live volume (#3026). Because it is never
+	// rewritten, systemStateStagingDir is simply the path collectSystemState
+	// returned, and it is the same prefix collectBackupFilesFromPaths produces
+	// for markSystemStateFiles to match on.
+	//
+	// The index is POSITIONAL and captured immediately before the append below.
+	// Nothing may insert into, reorder, filter or dedupe backupPaths between
+	// that append and rewritePathsForVSS, or the exclusion lands on a real user
+	// path — which would then read live with its warning suppressed, i.e. the
+	// #2999 class this file works to keep visible. If backupPaths ever needs
+	// post-processing, append the staging dir after it instead of moving this.
 	var systemStateStagingDir string
-	systemStateStagingIdx := -1
+	systemStateStagingIdx := noStagingIdx
 	if m.config.SystemStateEnabled {
 		if err := runCtx.Err(); err != nil {
 			return stopBackupRun()
@@ -362,6 +379,14 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		if ssErr != nil {
 			systemStateErr = ssErr
 			log.Warn("system state collection failed, proceeding without", "error", ssErr.Error())
+			// systemStateErr alone only fails the run when there is nothing
+			// else to fall back on (the len(files)==0 branch below). A run that
+			// ALSO has configured file paths keeps going and completes green,
+			// so without this the operator is never told the system state is
+			// absent — the same silent outcome as #3026, reached by a different
+			// route. CollectSystemState only errors when a REQUIRED class
+			// failed, i.e. the capture would not boot at restore time.
+			appendWarning(job, "system state was not collected: "+ssErr.Error())
 		} else {
 			job.SystemStateManifest = manifest
 			// Collection succeeded on all *required* artifacts (missing a
@@ -370,11 +395,29 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 			// ...) — surface them as a completion warning so a degraded capture
 			// is visible without discarding an otherwise-usable backup.
 			if len(manifest.IncompleteSteps) > 0 {
-				job.Warning = fmt.Sprintf("system state collection incomplete: %v failed", manifest.IncompleteSteps)
-				log.Warn("system state collection incomplete", "warning", job.Warning)
+				// appendWarning, NOT a raw assignment: this used to be the
+				// first and only writer of job.Warning, but it is now one of
+				// several (the collection-failure note above, the live-read
+				// note and the uncaptured-artifacts note below). A raw
+				// assignment here silently discards whichever of those ran
+				// first.
+				//
+				// The VSS note is the one that mattered most: the VSS block
+				// above runs first, and a wedged VSS/writer subsystem is
+				// exactly what tends to leave system state incomplete too, so
+				// the two co-occur. Overwriting here destroyed that note on
+				// the one run where both mattered — and when the session never
+				// started there is no VSSMetadata, so job.Warning is the only
+				// channel that outcome has.
+				incomplete := fmt.Sprintf("system state collection incomplete: %v failed", manifest.IncompleteSteps)
+				appendWarning(job, incomplete)
+				log.Warn("system state collection incomplete", "warning", incomplete)
 			}
-			// Append staging dir to backup paths so artifacts are included in snapshot
+			// Append the staging dir to the walked paths so its artifacts land
+			// in the backup manifest. NOT in the VSS shadow copy — the rewrite
+			// below deliberately skips this entry (see rewritePathsForVSS).
 			systemStateStagingIdx = len(backupPaths)
+			systemStateStagingDir = stagingDir
 			backupPaths = append(backupPaths, stagingDir)
 			defer func() {
 				if removeErr := os.RemoveAll(stagingDir); removeErr != nil {
@@ -386,17 +429,40 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 
 	// Rewrite paths to shadow copy device paths when VSS is active
 	if vssSession != nil {
-		backupPaths = rewritePathsForVSS(backupPaths, vssSession.ShadowPaths)
-	}
-	if systemStateStagingIdx >= 0 && systemStateStagingIdx < len(backupPaths) {
-		// The staging dir's OS temp volume commonly coincides with a
-		// VSS-shadowed backup volume, so rewritePathsForVSS above may have
-		// rewritten it too — capture whichever value was actually walked
-		// (this index in the possibly-rewritten backupPaths) rather than
-		// the pre-rewrite path from collectSystemState, so
-		// markSystemStateFiles below compares against the same sourcePath
-		// prefix collectBackupFilesFromPaths actually produced.
-		systemStateStagingDir = backupPaths[systemStateStagingIdx]
+		var unmappedIdx []int
+		backupPaths, unmappedIdx = rewritePathsForVSS(backupPaths, vssSession.ShadowPaths, systemStateStagingIdx)
+		if liveReads := reportableLiveReads(backupPaths, unmappedIdx, systemStateStagingIdx); len(liveReads) > 0 {
+			shadowedVolumes := make([]string, 0, len(vssSession.ShadowPaths))
+			for vol := range vssSession.ShadowPaths {
+				shadowedVolumes = append(shadowedVolumes, vol)
+			}
+			sort.Strings(shadowedVolumes)
+			summary := summarizeLiveReads(liveReads)
+			// Overlaps the provider's own UnprotectedVolumes warning for a
+			// volume whose snapshot failed — every non-staging path's volume
+			// was requested, so that is the common cause. What it adds is
+			// path-level detail, and it uniquely covers the case the provider
+			// cannot see: VSS reported total success but the path never
+			// matched a shadow root.
+			log.Warn("VSS is active but some backup paths are NOT routed through the shadow copy; "+
+				"they will be read from the live volume, where in-use files can fail or be captured torn",
+				"jobId", job.ID,
+				"unmappedPathCount", len(liveReads),
+				"paths", summary,
+				"shadowedVolumes", strings.Join(shadowedVolumes, ", "),
+			)
+			// The log line alone is endpoint-local. Both server-visible channels
+			// are used, deliberately, because they carry different things:
+			// job.VSSMetadata (#3027) is the structured record — per-writer
+			// state, unprotected volumes, shadow paths — persisted to
+			// backup_jobs.vss_metadata for the device tab's VSS panel, while
+			// this warning is the loud, always-rendered summary that survives
+			// even when the IPC bounding drops vssMetadata as a bulk field
+			// (result_bounds.go). The warning also uniquely covers the case
+			// the VSS provider cannot see: VSS reported total success but the
+			// path never matched a shadow root, so UnprotectedVolumes is empty.
+			appendWarning(job, "read from the live volume, not the VSS shadow copy: "+summary)
+		}
 	}
 
 	if err := runCtx.Err(); err != nil {
@@ -426,7 +492,33 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		// backupFile.originalPath doc comment.
 		originalPathsForVSS(files, vssSession.ShadowPaths)
 	}
-	markSystemStateFiles(files, systemStateStagingDir)
+	if systemStateArtifactsMissing(job.SystemStateManifest, markSystemStateFiles(files, systemStateStagingDir)) {
+		// Reached only when the manifest and the collected files disagree, so
+		// it cannot fire on a healthy run.
+		//
+		// Warning rather than failure for the JOB: the file-path portion is
+		// still valid and restorable, so failing would throw away good data.
+		// But a warning alone is not enough, because unlike job.VSSMetadata the
+		// manifest DOES survive the trip — it is persisted to
+		// backup_snapshots.system_state_manifest and handed to the bare-metal
+		// recovery paths. Left intact it would advertise a complete system
+		// state on a restore point that holds none of it, which is the #3026
+		// symptom rather than a report of it. So drop the artifact list it can
+		// no longer vouch for, and keep the rest of the manifest (platform, OS
+		// version, hardware profile) — that is inline collector output, still
+		// accurate, and the hardware profile is persisted from here for
+		// recovery planning.
+		artifactCount := len(job.SystemStateManifest.Artifacts)
+		log.Warn("system state manifest was recorded but none of its artifacts were captured; "+
+			"the restore point does not contain the system state it describes",
+			"jobId", job.ID,
+			"artifacts", artifactCount,
+			"stagingDir", systemStateStagingDir,
+		)
+		job.SystemStateManifest.Artifacts = nil
+		appendWarning(job, "system state artifacts were not captured: the manifest described "+
+			strconv.Itoa(artifactCount)+" artifacts but none reached the snapshot")
+	}
 	if len(files) == 0 {
 		if err := runCtx.Err(); err != nil {
 			return stopBackupRun()
@@ -487,7 +579,9 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		// Initial "scanning done" notice: totals are now known even though
 		// nothing has uploaded yet, so the server learns the run's scope
 		// before the (throttled) per-file progress calls start arriving.
-		progressFn(0, len(files), 0, bytesTotal)
+		// No snapshot exists yet — createSnapshotWithProgress mints the ID
+		// below and emits it on its own first (forced) progress call.
+		progressFn(0, len(files), 0, bytesTotal, "")
 	}
 
 	// Checkpoint journal: keyed by destination identity (provider kind +
@@ -617,16 +711,24 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// BackupJob.Error marshals to `{}` and the server never reads it (see the
 	// Error field's doc comment). Success path only: on a hard failure scanErr
 	// already rides job.Error alongside the fatal error above.
-	if scanFailures := flattenJoinedErrors(scanErr); len(scanFailures) > 0 {
+	scanFailures := flattenJoinedErrors(scanErr)
+	if len(scanFailures) > 0 {
 		job.ErrorCount += len(scanFailures)
 		scanWarning := summarizeScanErrors(scanFailures)
 		appendWarning(job, scanWarning)
 		log.Warn("snapshot completed with scan failures", "warning", scanWarning)
 	}
 
-	job.Status = jobStatusCompleted
+	// Proportionality gate (#3000). The failures above are already visible via
+	// Warning/ErrorCount, but until now a run that stored essentially nothing
+	// carried the same terminal status as a clean one. classifyCompletionStatus
+	// downgrades only a DISPROPORTIONATE loss to `partial`; a handful of
+	// failures in a large run still completes, preserving the deliberate
+	// partial-success design above.
+	job.Status = classifyCompletionStatus(job.BytesBackedUp, totalScannedBytes(files), job.ErrorCount, len(files)+len(scanFailures))
 	job.Error = errors.Join(scanErr, retentionErr)
-	log.Info("backup run completed",
+	log.Info("backup run finished",
+		"status", job.Status,
 		"jobId", job.ID,
 		"snapshotId", snapshotID(snapshot),
 		"filesBackedUp", job.FilesBackedUp,
@@ -719,6 +821,44 @@ func flattenJoinedErrors(err error) []error {
 
 // appendWarning appends fragment to job.Warning, joining with "; " when the
 // job already carries an earlier warning (e.g. a partial system-state note).
+// buildVSSMetadata converts a live VSS session into the metadata block the
+// server persists to backup_jobs.vss_metadata (#3027).
+//
+// Extracted from RunBackupContext's Windows-gated branch so it is directly
+// callable from a portable test — the original inline struct literal copied
+// five of the session's six diagnostic fields and silently dropped
+// UnprotectedVolumes, and nothing could reach it to notice.
+func buildVSSMetadata(session *vss.VSSSession, durationMs int64) *vss.VSSMetadata {
+	if session == nil {
+		return nil
+	}
+	return &vss.VSSMetadata{
+		ShadowCopyID: session.ID,
+		CreationTime: session.CreatedAt,
+		Writers:      session.Writers,
+		ExposedPaths: session.ShadowPaths,
+		// Copied, not derived: ExposedPaths lists only the volumes that
+		// SUCCEEDED, so a volume with no shadow device is indistinguishable
+		// from one that was never requested. Omitting this was how a
+		// partially-snapshotted run reached the server looking clean.
+		UnprotectedVolumes: session.UnprotectedVolumes,
+		Warnings:           session.Warnings,
+		DurationMs:         durationMs,
+	}
+}
+
+// vssCreationFailureWarning is the server-visible note for the worst VSS
+// outcome, which used to be the quietest one: when CreateShadowCopy fails
+// outright there is no VSSMetadata to send at all, so without this the run
+// reaches the server indistinguishable from a clean VSS-backed backup — every
+// path read live, every locked file at risk of being skipped, and nothing
+// anywhere saying so. The per-path warning raised after the shadow-path
+// rewrite only fires when a session DID start, so it cannot cover this branch.
+func vssCreationFailureWarning(vssErr error) string {
+	return "VSS shadow copy could not be created, so every path was read from the live volume, " +
+		"where in-use files can be skipped or captured torn: " + vssErr.Error()
+}
+
 func appendWarning(job *BackupJob, fragment string) {
 	if fragment == "" {
 		return
@@ -758,8 +898,9 @@ func startRunKeepalive(ctx context.Context, onProgress ProgressFn) (stop func())
 				// Totals are unknown until the scan completes; a zero heartbeat
 				// exists purely to refresh the server's last_progress_at during
 				// the pre-upload phases. filesDone stays 0, so nothing the loop
-				// later reports can appear to go backwards.
-				onProgress(0, 0, 0, 0)
+				// later reports can appear to go backwards. This keepalive only
+				// runs before the snapshot is created, so it never has an ID.
+				onProgress(0, 0, 0, 0, "")
 			}
 		}
 	}()
@@ -970,20 +1111,111 @@ func extractVolumes(paths []string) []string {
 	return volumes
 }
 
+// noStagingIdx is the stagingIdx sentinel for a run with no system-state
+// staging directory: no index is excluded from the VSS rewrite or from the
+// live-read warning.
+const noStagingIdx = -1
+
+// reportableLiveReads selects, from rewritePathsForVSS's unmapped indices, the paths
+// actually worth reporting.
+//
+// Two exclusions, both deliberate:
+//
+//   - stagingIdx, the system-state staging dir (#3025 added this exclusion;
+//     #3026 extended it to the rewrite). The agent creates it itself during
+//     this run, after the snapshot, so it is excluded from the rewrite and can
+//     only ever be read live (see rewritePathsForVSS). That makes it an
+//     expected member of the unmapped set on every run where VSS is active and
+//     system-state collection succeeded, not a symptom of anything.
+//   - Anything whose volume is not a local drive letter. VSS cannot snapshot a
+//     UNC share, and filepath.VolumeName yields "" for a relative or
+//     drive-rooted path, which extractVolumes never even requests. Reporting
+//     those would fire on every run of an unchanged config, and a warning that
+//     is always on is a warning operators learn to ignore.
+//
+// Split out as a pure function because the caller needs a real elevated
+// Windows box and a live VSS provider to reach, so this is the only way the
+// selection logic itself is testable.
+func reportableLiveReads(paths []string, unmapped []int, stagingIdx int) []string {
+	var liveReads []string
+	for _, idx := range unmapped {
+		if idx == stagingIdx || idx < 0 || idx >= len(paths) {
+			continue
+		}
+		if !isLocalVolumePath(paths[idx]) {
+			continue
+		}
+		liveReads = append(liveReads, paths[idx])
+	}
+	return liveReads
+}
+
+// isLocalVolumePath reports whether p is rooted on a local drive letter
+// ("C:..."), the only shape VSS can snapshot and therefore the only shape
+// whose absence from the shadow map is worth reporting.
+func isLocalVolumePath(p string) bool {
+	vol := filepath.VolumeName(p)
+	return len(vol) == 2 && vol[1] == ':'
+}
+
+// summarizeLiveReads renders the unmapped paths for an operator-facing message,
+// capped like every other per-item summary in this file. The cap is not
+// cosmetic: this string is promoted into job.Warning, which the IPC result
+// bounding truncates and appends to (see cmd/breeze-backup/result_bounds.go),
+// so an unbounded join can be cut mid-path or crowd out other diagnostics.
+func summarizeLiveReads(paths []string) string {
+	if len(paths) <= maxUploadFailureDetails {
+		return strings.Join(paths, "; ")
+	}
+	return strings.Join(paths[:maxUploadFailureDetails], "; ") +
+		fmt.Sprintf(" (+%d more)", len(paths)-maxUploadFailureDetails)
+}
+
 // rewritePathsForVSS rewrites source paths to use VSS shadow copy device paths.
 // e.g., "C:\\Users\\data" with shadow "C:" -> "\\\\?\\GLOBALROOT\\...\\Users\\data"
-func rewritePathsForVSS(paths []string, shadowPaths map[string]string) []string {
+//
+// stagingIdx (noStagingIdx when the run has none) is the index of the
+// system-state staging directory, which is excluded from the rewrite. It is
+// created by collectSystemState AFTER the shadow copy was taken, so it does
+// not exist inside that point-in-time image — but %TEMP% normally sits on C:,
+// normally one of the shadowed backup volumes, so rewriting it would map it
+// onto a snapshot path that is simply absent. The walk then finds nothing,
+// markSystemStateFiles matches zero files, and a run that also has configured
+// file paths still reports success with SystemStateManifest set: silent,
+// partial data loss (#3026). (A system-state-ONLY run trips the len(files)==0
+// hard-failure guard instead, so it fails loudly rather than silently.) The
+// live volume is the only place those artifacts exist, so that is where the
+// path must keep pointing.
+//
+// Reachable whenever VSS and system-state collection are both on for the same
+// run — an agent.yaml enabling backup_vss_enabled and
+// backup_system_state_enabled, or a system_image run with an explicit vss
+// override. Server-dispatched system_image runs default VSS off (defaultVSS in
+// cmd/breeze-backup/exec_backup.go), so this is opt-in rather than universal.
+//
+// The second return value holds the indices of paths left pointing at the live
+// volume — those that found no shadow root, plus stagingIdx when it is in
+// range. The no-shadow-root fallback is deliberate — a volume whose snapshot
+// failed is still worth a best-effort read — but it is also indistinguishable,
+// from the walk onward, from a successful VSS backup. It is how a shadowPaths key-format change would
+// silently reintroduce #2999, so the caller reports it rather than letting it
+// pass unnoticed. Indices, not paths, so the caller can tell an unshadowed user
+// volume (worth a warning) apart from the staging dir it wrote itself (never
+// worth one) — see reportableLiveReads.
+func rewritePathsForVSS(paths []string, shadowPaths map[string]string, stagingIdx int) ([]string, []int) {
 	rewritten := make([]string, len(paths))
+	var unmapped []int
 	for i, p := range paths {
 		vol := filepath.VolumeName(p)
-		if shadow, ok := shadowPaths[vol]; ok {
-			rest := p[len(vol):]
-			rewritten[i] = shadow + rest
-		} else {
+		shadow, ok := shadowPaths[vol]
+		if !ok || i == stagingIdx {
 			rewritten[i] = p // fallback: use original path
+			unmapped = append(unmapped, i)
+			continue
 		}
+		rewritten[i] = shadow + p[len(vol):]
 	}
-	return rewritten
+	return rewritten, unmapped
 }
 
 // originalPathsForVSS sets backupFile.originalPath for every file whose

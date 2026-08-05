@@ -93,6 +93,7 @@ vi.mock('../../services', () => ({
 vi.mock('../../services/aiAgentSdk', () => ({
   createSessionPreToolUse: vi.fn(),
   createSessionPostToolUse: vi.fn(),
+  settleBlockedTurnForNewMessage: vi.fn(() => Promise.resolve('not_blocked_on_approvals')),
 }));
 
 import { helperRoutes } from './index';

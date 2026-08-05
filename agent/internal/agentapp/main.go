@@ -256,6 +256,20 @@ var statusCmd = &cobra.Command{
 	},
 }
 
+// uninstallNotifyCmd is the WiX uninstall CA's target (Return="ignore" —
+// see installer/breeze.wxs). It is intentionally NOT wired through
+// enrollError/osExit: unlike every other enroll/bootstrap path in this
+// package, a failure here must never fail the process. See
+// runUninstallNotify.
+var uninstallNotifyCmd = &cobra.Command{
+	Use:    "uninstall-notify",
+	Short:  "Best-effort notify the server that this agent is about to be uninstalled (used by the uninstaller)",
+	Hidden: true,
+	Run: func(cmd *cobra.Command, args []string) {
+		runUninstallNotify()
+	},
+}
+
 var userHelperCmd = &cobra.Command{
 	Use:   "user-helper",
 	Short: "Run as a per-user session helper (started automatically by the system)",
@@ -286,6 +300,7 @@ func init() {
 	enrollCmd.Flags().BoolVar(&quietEnroll, "quiet", false, "Suppress stdout progress output (errors still go to stderr). Intended for unattended installs.")
 	bootstrapCmd.Flags().StringVar(&bootstrapInstallData, "install-data", "", "Pipe-packed bootstrap inputs from the MSI BootstrapEnroll CA: <OriginalDatabase>|<BOOTSTRAP_TOKEN>|<SERVER_URL>")
 	bootstrapCmd.Flags().BoolVar(&quietEnroll, "quiet", false, "Suppress stdout progress output (errors still go to stderr)")
+	supportCmd.Flags().StringVar(&supportCode, "code", "", "Quick Support code (overrides the code embedded in the filename)")
 	userHelperCmd.Flags().StringVar(&helperRole, "role", string(ipc.HelperRoleUser), "Helper role: 'system' (desktop capture) or 'user' (script execution)")
 	desktopHelperCmd.Flags().StringVar(&desktopContext, "context", ipc.DesktopContextUserSession, "Desktop context: 'user_session' or 'login_window'")
 
@@ -295,6 +310,8 @@ func init() {
 	rootCmd.AddCommand(bootstrapCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(supportCmd)
+	rootCmd.AddCommand(uninstallNotifyCmd)
 	rootCmd.AddCommand(userHelperCmd)
 	rootCmd.AddCommand(desktopHelperCmd)
 }
@@ -347,6 +364,21 @@ func Main(v string) {
 		runDesktopHelper()
 		return
 	}
+
+	// Quick Support clients are downloaded under a name that carries the
+	// one-time code (breeze-support-<CODE>-<host>.exe) and are double-clicked,
+	// so there is no subcommand on the command line. Dispatch to `support` by
+	// basename.
+	//
+	// The second condition guards a future service copy launched with an
+	// explicit `support --service-run` argv; without it the dispatch would
+	// prepend a SECOND "support" and cobra would parse the duplicate as a
+	// positional arg.
+	if strings.HasPrefix(strings.ToLower(filepath.Base(os.Args[0])), "breeze-support") &&
+		(len(os.Args) < 2 || os.Args[1] != "support") {
+		rootCmd.SetArgs(append([]string{"support"}, os.Args[1:]...))
+	}
+
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -365,7 +397,13 @@ func initLogging(cfg *config.Config) {
 			logFileFallbackReason = describeLogFileError(err)
 			fmt.Fprintf(os.Stderr, "Failed to open log file %s: %s (logging to stdout)\n", cfg.LogFile, logFileFallbackReason)
 			logFileFallback = true
-		} else if !hasConsole() {
+		} else if !hasConsole() || cfg.SupportMode {
+			// Support mode is file-only for a different reason than the
+			// headless case below: the console IS the end user's status
+			// window ("Waiting for your technician…"), and structured slog
+			// lines interleaved with it look like an error to a
+			// non-technical user. The lines still land in the workspace log
+			// file, which is what the technician gets.
 			// No console attached (Windows service, launchd daemon, or systemd
 			// service). Use file-only logging — stdout may be invalid or already
 			// redirected to a log destination by the init system. Using
@@ -560,9 +598,21 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		return nil, fmt.Errorf("startAgent called with unenrolled config — caller must waitForEnrollment first")
 	}
 
+	// Quick Support clients are throwaway, unelevated, and live entirely in a
+	// temp workspace. They must never touch the machine-wide install: no
+	// self-update (a support session outlives nothing), and every ProgramData
+	// path below is skipped because a real permanently-installed agent may be
+	// running on this same machine and owns those files. See runSupportSession.
+	if cfg.SupportMode {
+		cfg.AutoUpdate = false
+	}
+
 	// Loosen config directory (0755) and agent.yaml (0644) so the Helper can read
-	// them. secrets.yaml stays root-only (0600).
-	config.FixConfigPermissions()
+	// them. secrets.yaml stays root-only (0600). Skipped in support mode: this
+	// operates on the REAL config dir, which a support client does not own.
+	if !cfg.SupportMode {
+		config.FixConfigPermissions()
+	}
 
 	initLogging(cfg)
 
@@ -576,14 +626,22 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// stays zero (watchdog treats zero as a startup grace period) exactly as
 	// the running-state write does until the first heartbeat records it.
 	// See #1029.
+	//
+	// NOT in support mode: agent.state lives in the machine-wide config dir
+	// and is read by the watchdog as the live agent's PID. A throwaway
+	// support client writing its own PID there would make the watchdog
+	// supervise (and eventually force-kill) the wrong process, and would
+	// report the real agent as gone the moment the support client exits.
 	startupStatePath := state.PathInDir(config.ConfigDir())
-	if err := state.Write(startupStatePath, &state.AgentState{
-		Status:    state.StatusStarting,
-		PID:       os.Getpid(),
-		Version:   version,
-		Timestamp: time.Now(),
-	}); err != nil {
-		log.Warn("failed to write startup state file", "error", err.Error())
+	if !cfg.SupportMode {
+		if err := state.Write(startupStatePath, &state.AgentState{
+			Status:    state.StatusStarting,
+			PID:       os.Getpid(),
+			Version:   version,
+			Timestamp: time.Now(),
+		}); err != nil {
+			log.Warn("failed to write startup state file", "error", err.Error())
+		}
 	}
 
 	// Auto-clear Safe Mode BCD flag on startup to prevent reboot loops.
@@ -654,8 +712,11 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// if the MSI HardenProgramDataAcl action was skipped or blocked (#1481).
 	// Runs here, after the shipper is up, so the drift warning actually reaches
 	// agent_logs — same constraint as the reconcile reporter above. No-op off
-	// Windows and when the dirs are already hardened.
-	config.EnforceProgramDataTreePermissions()
+	// Windows and when the dirs are already hardened. Skipped in support mode:
+	// an unelevated throwaway client has no business re-ACLing ProgramData.
+	if !cfg.SupportMode {
+		config.EnforceProgramDataTreePermissions()
+	}
 
 	// Load mTLS client certificate if configured
 	var tlsCfg *tls.Config
@@ -708,8 +769,16 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// Propagate service/headless flags. On Windows, desktop sessions route
 	// through the IPC user helper. On macOS, the daemon handles desktop
 	// directly but uses IPC for user-context operations (run_as_user, helper).
-	cfg.IsService = isWindowsService()
-	cfg.IsHeadless = isHeadless()
+	//
+	// Support mode pins BOTH to false: the client is a plain foreground
+	// process owning the interactive desktop, so desktop capture takes the
+	// in-process path and no SYSTEM/user helper has to be spawned or
+	// installed. Pinning here (rather than only in runSupportSession) means a
+	// probe misfiring — isHeadless() on a double-clicked .exe with no attached
+	// console is the realistic one — cannot silently reroute capture through
+	// IPC to a helper that does not exist.
+	cfg.IsService = isWindowsService() && !cfg.SupportMode
+	cfg.IsHeadless = isHeadless() && !cfg.SupportMode
 
 	// Ensure SAS (Ctrl+Alt+Del) policy allows services to generate it.
 	// Only relevant on Windows when running as a service.
@@ -717,7 +786,9 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		ensureSASPolicy()
 	}
 
-	if cfg.PAMEnabled && runtime.GOOS == "windows" {
+	// Never in support mode: provisioning a dormant elevation account is a
+	// permanent machine change, and the client is unelevated anyway.
+	if cfg.PAMEnabled && runtime.GOOS == "windows" && !cfg.SupportMode {
 		if err := elevaccount.New().EnsureProvisioned(); err != nil {
 			log.Warn("failed to provision PAM dormant elevation account, continuing",
 				"error", err.Error())
@@ -776,9 +847,12 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// on-site UniFi controller's local Network Integration API and uploads
 	// per-device PoE/health + client telemetry. Runs for the agent process
 	// lifetime and no-ops until the server assigns collectors to this device.
+	//
+	// Off in support mode: a client that exists to serve one screen-share
+	// session has no business polling the customer's network gear.
 	var unifiCancel context.CancelFunc
 	var unifiDone <-chan struct{}
-	if cfg.ServerURL != "" && cfg.AgentID != "" {
+	if cfg.ServerURL != "" && cfg.AgentID != "" && !cfg.SupportMode {
 		var unifiCtx context.Context
 		// Scope the loop to a cancellable context registered in agentComponents
 		// so shutdownAgent stops it. context.Background() here would never cancel:
@@ -802,7 +876,11 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 
 	var workspaceIndexCancel context.CancelFunc
 	var workspaceIndexDone <-chan struct{}
-	if cfg.WorkspaceIndex.Enabled != nil && !*cfg.WorkspaceIndex.Enabled {
+	if cfg.SupportMode {
+		// Crawling and indexing the customer's filesystem is exactly the kind
+		// of thing an ad-hoc support client must never do.
+		log.Debug("workspace indexing disabled in Quick Support mode")
+	} else if cfg.WorkspaceIndex.Enabled != nil && !*cfg.WorkspaceIndex.Enabled {
 		log.Debug("workspace indexing disabled by local configuration")
 	} else {
 		workspaceClient := workspaceindex.NewClient(workspaceindex.ClientConfig{
@@ -834,24 +912,38 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// context.Background() (the old call) never cancels — defer
 	// sub.Stop() at etwlua.Start exit-path never fires and the real-time
 	// ETW session leaks across agent restarts (PR #959 review, blocker 1).
+	//
+	// A real-time kernel ETW session is process-global and machine-wide (two
+	// callers conflict — see NewETWSubscriber), so a support client must never
+	// open one alongside the installed agent.
 	etwCtx, etwCancel := context.WithCancel(context.Background())
-	etwluaDone := startETWLua(etwCtx, hb)
+	var etwluaDone <-chan struct{}
+	if cfg.SupportMode {
+		closed := make(chan struct{})
+		close(closed)
+		etwluaDone = closed
+	} else {
+		etwluaDone = startETWLua(etwCtx, hb)
+	}
 
 	log.Info("agent is running")
 
-	// Write state file so the watchdog can detect a running agent.
-	statePath := state.PathInDir(config.ConfigDir())
-	if err := state.Write(statePath, &state.AgentState{
-		Status:    state.StatusRunning,
-		PID:       os.Getpid(),
-		Version:   version,
-		Timestamp: time.Now(),
-	}); err != nil {
-		log.Warn("failed to write agent state file", "error", err.Error())
-	}
+	// Write state file so the watchdog can detect a running agent. Support
+	// mode never writes or registers it — see the startup-state write above.
+	if !cfg.SupportMode {
+		statePath := state.PathInDir(config.ConfigDir())
+		if err := state.Write(statePath, &state.AgentState{
+			Status:    state.StatusRunning,
+			PID:       os.Getpid(),
+			Version:   version,
+			Timestamp: time.Now(),
+		}); err != nil {
+			log.Warn("failed to write agent state file", "error", err.Error())
+		}
 
-	// Tell the heartbeat where the state file is so it can update after each heartbeat.
-	hb.SetStatePath(statePath)
+		// Tell the heartbeat where the state file is so it can update after each heartbeat.
+		hb.SetStatePath(statePath)
+	}
 
 	// Mutual supervision: on Windows, when running as the SCM service this
 	// agent process supervises BreezeWatchdog the same way BreezeWatchdog
@@ -860,9 +952,13 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// LaunchDaemons report cfg.IsService=true via service_unix.go:21-26,
 	// startWatchdogSupervisor is a no-op stub on non-Windows builds, so
 	// gating on cfg.IsService here is safe across platforms.
+	//
+	// Support mode is doubly excluded (it always runs with IsService=false):
+	// there is no watchdog to supervise, and installing one is precisely the
+	// "permanently installed" outcome Quick Support promises not to produce.
 	var supervisorCancel context.CancelFunc
 	var supervisorDone <-chan struct{}
-	if cfg.IsService {
+	if cfg.IsService && !cfg.SupportMode {
 		supCtx, supCancel := context.WithCancel(context.Background())
 		supervisorCancel = supCancel
 		supervisorDone = startWatchdogSupervisor(supCtx)
@@ -1184,6 +1280,81 @@ func enrollDevice(enrollmentKey string) {
 			"server", cfg.ServerURL)
 	}
 
+	secret := enrollmentSecret
+	if secret == "" {
+		secret = os.Getenv("BREEZE_AGENT_ENROLLMENT_SECRET")
+	}
+
+	if err := enrollWithConfig(cfg, cfgFile, enrollmentKey, secret); err != nil {
+		var failure *enrollFailure
+		if errors.As(err, &failure) {
+			enrollError(failure.cat, failure.friendly, failure.detail)
+		} else {
+			// Unreachable in production: enrollWithConfig only ever returns
+			// *enrollFailure. Kept so a future edit that returns a bare error
+			// still exits through the four-sink reporter instead of silently
+			// falling through to the "start the agent with" guidance below.
+			enrollError(catUnknown, err.Error(), nil)
+		}
+		return // enrollError does not return in production; belt-and-braces.
+	}
+
+	if isSystemServiceRunning() {
+		if !quietEnroll {
+			fmt.Println("Agent is already running via system service.")
+		}
+	} else if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+		if !quietEnroll {
+			fmt.Println("Start the agent with:")
+			fmt.Println("  sudo breeze-agent service start")
+		}
+	} else {
+		if !quietEnroll {
+			fmt.Println("Run 'breeze-agent start' to start the agent.")
+		}
+	}
+}
+
+// enrollFailure carries an enrollment failure's category and user-facing
+// message out of enrollWithConfig so the caller can report it through
+// enrollError (four sinks + category-specific exit code) exactly as the
+// inline code used to. It exists because enrollWithConfig is shared with
+// Quick Support mode (support.go), which must NOT exit the process on a
+// failure — it has its own console to talk to the end user through.
+type enrollFailure struct {
+	cat      enrollErrCategory
+	friendly string
+	detail   error
+}
+
+func (e *enrollFailure) Error() string {
+	if e.detail != nil {
+		return fmt.Sprintf("%s (%v)", e.friendly, e.detail)
+	}
+	return e.friendly
+}
+
+func (e *enrollFailure) Unwrap() error { return e.detail }
+
+// enrollWithConfig is the core of enrollment: collect system + hardware
+// identity, POST /agents/enroll, apply the response to cfg, and persist it to
+// cfgFile (agent.yaml + the sibling root-only secrets.yaml).
+//
+// This is a verbatim extraction of enrollDevice's core so the `enroll`
+// command and Quick Support mode enroll through exactly one code path. The
+// only behavioural difference from the inline version is that failures are
+// RETURNED (as *enrollFailure) instead of calling enrollError inline;
+// enrollDevice immediately forwards them to enrollError, so the CLI command's
+// messages, sinks and exit codes are unchanged.
+//
+// The enrollment secret is a parameter rather than being read from the
+// enrollmentSecret flag / BREEZE_AGENT_ENROLLMENT_SECRET here, because
+// support mode presents a PER-KEY secret unique to its session. Everything
+// else still reads the package-level command flags (quietEnroll,
+// enrollDeviceRole, backupServerURL) — only one command runs per process.
+func enrollWithConfig(cfg *config.Config, cfgFile, enrollmentKey, secret string) error {
+	enrollLog := logging.L("enroll")
+
 	enrollLog.Info("starting enrollment", "server", cfg.ServerURL)
 	if !quietEnroll {
 		fmt.Printf("Enrolling with server: %s\n", cfg.ServerURL)
@@ -1237,11 +1408,9 @@ func enrollDevice(enrollmentKey string) {
 	// issue #439 — one prod device ended up with its UUID in the hostname
 	// column, which is worse than a loud failure because it looks legit.
 	if err := assertHostnameNonEmpty(systemInfo); err != nil {
-		enrollError(catConfig,
-			"hostname resolution failed on this machine — tried "+
-				collectors.HostnameSourcesDescription()+
-				"; all returned empty. Refusing to enroll with an empty hostname.",
-			err)
+		return &enrollFailure{cat: catConfig, friendly: "hostname resolution failed on this machine — tried " +
+			collectors.HostnameSourcesDescription() +
+			"; all returned empty. Refusing to enroll with an empty hostname.", detail: err}
 	}
 
 	// Carry any existing device token into the enroll client. On a fresh
@@ -1251,11 +1420,6 @@ func enrollDevice(enrollmentKey string) {
 	// row instead of 409-ing on a hostname collision with the agent's own
 	// active row (e.g. after a rename/re-image). See #1028.
 	client := api.NewClient(cfg.ServerURL, cfg.AuthToken, cfg.AgentID)
-
-	secret := enrollmentSecret
-	if secret == "" {
-		secret = os.Getenv("BREEZE_AGENT_ENROLLMENT_SECRET")
-	}
 
 	deviceRole := enrollDeviceRole
 	if deviceRole == "" {
@@ -1313,7 +1477,7 @@ func enrollDevice(enrollmentKey string) {
 	enrollResp, err := client.Enroll(enrollReq)
 	if err != nil {
 		cat, friendly := classifyEnrollError(err, cfg.ServerURL)
-		enrollError(cat, friendly, err)
+		return &enrollFailure{cat: cat, friendly: friendly, detail: err}
 	}
 
 	applyEnrollResponseIdentity(cfg, enrollResp)
@@ -1383,11 +1547,9 @@ func enrollDevice(enrollmentKey string) {
 	}
 
 	if err := config.SaveTo(cfg, cfgFile); err != nil {
-		enrollError(catConfig,
-			fmt.Sprintf(
-				"enrollment succeeded but could not save config to %s — check that the directory exists and SYSTEM has write access (agentID=%s)",
-				cfgFile, cfg.AgentID),
-			err)
+		return &enrollFailure{cat: catConfig, friendly: fmt.Sprintf(
+			"enrollment succeeded but could not save config to %s — check that the directory exists and SYSTEM has write access (agentID=%s)",
+			cfgFile, cfg.AgentID), detail: err}
 	}
 
 	enrollLog.Info("enrollment successful",
@@ -1400,20 +1562,7 @@ func enrollDevice(enrollmentKey string) {
 		fmt.Println("Configuration saved.")
 	}
 
-	if isSystemServiceRunning() {
-		if !quietEnroll {
-			fmt.Println("Agent is already running via system service.")
-		}
-	} else if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
-		if !quietEnroll {
-			fmt.Println("Start the agent with:")
-			fmt.Println("  sudo breeze-agent service start")
-		}
-	} else {
-		if !quietEnroll {
-			fmt.Println("Run 'breeze-agent start' to start the agent.")
-		}
-	}
+	return nil
 }
 
 // initEnrollLogging configures the agent logging package for the enroll
@@ -1502,6 +1651,49 @@ func checkStatus() {
 	fmt.Printf("Heartbeat Interval: %d seconds\n", cfg.HeartbeatIntervalSeconds)
 	fmt.Printf("Metrics Interval: %d seconds\n", cfg.MetricsIntervalSeconds)
 	fmt.Printf("Enabled Collectors: %v\n", cfg.EnabledCollectors)
+}
+
+// runUninstallNotify posts the best-effort uninstall-intent signal (Task 6,
+// #2764) — POST /agents/:id/uninstall-intent — before the MSI's RemoveFiles
+// standard action deletes secrets.yaml (see the UninstallNotify CA,
+// installer/breeze.wxs, sequenced Before="RemoveFiles"). This is a
+// diagnostic courtesy to the server (it lets the offline-detector reaper
+// distinguish "cleanly uninstalled" from "just went dark"), never a
+// precondition for uninstalling.
+//
+// Every branch below returns without calling osExit at all, let alone with
+// a nonzero code: no readable config, an unenrolled config, a network
+// error, and a non-2xx response (including the 403 tenant_offboarding
+// drain response returned while the device's org is mid-offboarding) are
+// all treated identically — logged, then return. Combined with the WiX
+// CA's own Return="ignore", this is belt-and-suspenders: the process must
+// exit 0 even if some future edit here forgets that contract.
+func runUninstallNotify() {
+	cfg, err := config.Load(cfgFile)
+	if err != nil {
+		cfg = config.Default()
+	}
+	initEnrollLogging(cfg, true)
+	uLog := logging.L("uninstall-notify")
+
+	if !config.IsEnrolled(cfg) {
+		// Covers both "never enrolled" and "secrets.yaml already gone" —
+		// IsEnrolled requires AuthToken, which only ever lives in
+		// secrets.yaml. Nothing to notify either way.
+		uLog.Info("uninstall-notify: agent is not enrolled (or secrets.yaml is missing); nothing to notify")
+		return
+	}
+
+	client := api.NewClient(cfg.ServerURL, cfg.AuthToken, cfg.AgentID)
+	resp, err := client.UninstallIntent()
+	if err != nil {
+		// Includes the 403 tenant_offboarding drain response and any
+		// network/timeout error — both are expected/benign here and must
+		// never block or slow down the uninstall.
+		uLog.Info("uninstall-notify: server call failed (non-fatal, uninstall proceeds)", "error", err.Error())
+		return
+	}
+	uLog.Info("uninstall-notify: acknowledged by server", "acknowledged", resp.Acknowledged)
 }
 
 // runUserHelper starts the per-user session helper process.

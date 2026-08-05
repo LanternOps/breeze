@@ -254,7 +254,12 @@ softwareInventoryRoutes.get('/', requireSoftwareInventoryRead, zValidator('query
     return c.json({ error: orgScope.error }, orgScope.status);
   }
 
-  const conditions: SQL[] = [];
+  // Ephemeral Quick Support devices live in the hidden 'quick_support' org that
+  // deliberately stays inside accessibleOrgIds so RLS lets a tech reach their own
+  // session — nothing drops them for us. Both aggregates below are raw SQL, but
+  // each already INNER JOINs `devices` and interpolates this same `whereClause`,
+  // so pushing the predicate here covers the count and the row query alike.
+  const conditions: SQL[] = [eq(devices.isEphemeral, false)];
   const deviceOrgFilter = orgScope.applyTo(devices.orgId);
   if (deviceOrgFilter) conditions.push(deviceOrgFilter);
   if (perms?.allowedSiteIds) {

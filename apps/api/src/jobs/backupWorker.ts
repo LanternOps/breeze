@@ -23,7 +23,7 @@ import {
   sqlInstances,
 } from '../db/schema';
 import { recoveryTokens } from '../db/schema/recoveryTokens';
-import { eq, and, sql, isNull, lt, inArray } from 'drizzle-orm';
+import { eq, ne, and, sql, isNull, lt, inArray } from 'drizzle-orm';
 import { resolveAllBackupAssignedDevices } from '../services/featureConfigResolver';
 import { getBullMQConnection } from '../services/redis';
 import {
@@ -164,11 +164,20 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
   const partnerIds = partnerRows
     .map((row) => row.partnerId)
     .filter((id): id is string => !!id);
+  // Quick Support exclusion: the hidden per-partner 'quick_support' org holds
+  // ephemeral devices — a stranger's personal machine borrowed for one
+  // ~20-minute session. It sits under the partner like any other org and stays
+  // inside technicians' accessibleOrgIds for RLS reasons, so this partner->org
+  // fan-out is NOT filtered for us. Backing up a stranger's home PC to the
+  // MSP's storage is a data-protection incident, not a feature.
   const partnerOrgRows = partnerIds.length > 0
     ? await db
         .select({ orgId: organizations.id })
         .from(organizations)
-        .where(inArray(organizations.partnerId, partnerIds))
+        .where(and(
+          inArray(organizations.partnerId, partnerIds),
+          ne(organizations.type, 'quick_support')
+        ))
     : [];
 
   const orgIds = new Set<string>();
@@ -713,6 +722,10 @@ async function processResults(
     orgId: data.orgId,
     deviceId: data.deviceId,
     resultStatus,
+    // NB: NOT `result.status` — backupCommandResultSchema parsed `data.result`,
+    // whose `status` is the OUTER command status. The agent's own terminal
+    // status rides the distinct `agentStatus` key (see backupProcessResultSchema).
+    agentStatus: data.result.agentStatus,
     result: {
       ...result,
       error: data.result.error,
@@ -720,7 +733,11 @@ async function processResults(
   });
 
   console.log(
-    `[BackupWorker] Job ${data.jobId} result processed: ${resultStatus}`
+    // Include the agent's own status: `resultStatus` is only ever
+    // completed/failed, so without this a `partial` run is invisible in the
+    // API logs even though the DB row records it (#3000).
+    `[BackupWorker] Job ${data.jobId} result processed: ${resultStatus}` +
+    (data.result.agentStatus ? ` (agent: ${data.result.agentStatus})` : '')
   );
   return { processed: true };
 }
@@ -854,4 +871,8 @@ export async function shutdownBackupWorker(): Promise<void> {
 // skips). Internal helper, not part of the worker's public surface.
 export const __testOnly = {
   processCheckSchedules,
+  // Exposed so the agentStatus hop can be tested: this function is the only
+  // thing carrying a `partial` run from the queue payload into persistence, and
+  // dropping that one argument silently reverts #3000 with nothing going red.
+  processResults,
 };

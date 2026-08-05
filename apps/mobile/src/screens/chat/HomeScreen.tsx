@@ -7,6 +7,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
+import * as Sentry from '@sentry/react-native';
 
 import { useAppDispatch, useAppSelector } from '../../store';
 import {
@@ -36,6 +37,7 @@ import {
 import { fetchAlerts } from '../../store/alertsSlice';
 import { fetchOne as fetchApprovalOne, setFocus as setApprovalFocus } from '../../store/approvalsSlice';
 import { track } from '../../lib/analytics';
+import { reportInternalError } from '../../lib/errorReporting';
 import { ChatHeader } from './components/ChatHeader';
 import { ColdOpenChips } from './components/ColdOpenChips';
 import { Composer } from './components/Composer';
@@ -190,8 +192,10 @@ export function HomeScreen() {
           track('chat_session_created');
         } catch (err) {
           dispatch(setStatus('error'));
-          const errMsg = err instanceof Error ? err.message : 'Could not start a session.';
-          dispatch(failAssistantMessage({ id: userMessageId, error: errMsg }));
+          // The raw message is internal (function name + HTTP status) — report it
+          // to Sentry and show the user a static string instead (issue #3141).
+          reportInternalError(err, 'ai-session-create');
+          dispatch(failAssistantMessage({ id: userMessageId, error: 'Could not start a session.' }));
           return;
         }
       }
@@ -235,8 +239,10 @@ export function HomeScreen() {
         const messages = historyToMessages(rows);
         dispatch(loadHistory({ sessionId: sid, messages }));
       } catch (err) {
-        const errMsg = err instanceof Error ? err.message : 'Could not load session.';
-        dispatch(setError(errMsg));
+        // The raw message is internal (function name + HTTP status) — report it
+        // to Sentry and show the user a static string instead (issue #3115).
+        Sentry.captureException(err, { tags: { area: 'ai-sessions-history' } });
+        dispatch(setError('Could not load that conversation.'));
       }
     },
     [dispatch],

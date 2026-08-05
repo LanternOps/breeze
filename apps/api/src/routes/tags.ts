@@ -54,7 +54,10 @@ tagRoutes.get(
     }
 
     // Build the query to get all devices with their tags
-    const conditions = [] as ReturnType<typeof eq>[];
+    // Quick Support devices sit in the hidden 'quick_support' org that stays
+    // inside accessibleOrgIds for RLS, so nothing drops them for us — tag
+    // facet counts must exclude them explicitly.
+    const conditions = [eq(devices.isEphemeral, false)] as ReturnType<typeof eq>[];
     if (orgIds) {
       conditions.push(inArray(devices.orgId, orgIds));
     }
@@ -123,7 +126,8 @@ tagRoutes.get(
       return c.json({ data: [], total: 0 });
     }
 
-    const conditions = [] as ReturnType<typeof eq>[];
+    // Ephemeral Quick Support devices are excluded from tag facets/listings.
+    const conditions = [eq(devices.isEphemeral, false)] as ReturnType<typeof eq>[];
     if (orgIds) {
       conditions.push(inArray(devices.orgId, orgIds));
     }

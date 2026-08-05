@@ -220,6 +220,8 @@ describe('sendQuote deposit validation', () => {
     queueResult([]); // blocks
     queueResult([]); // lines — none at all, so dueOnAcceptanceTotal is $0
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // getQuote: listQuoteOrders — order headers
+    queueResult([]); // getQuote: listQuoteOrders — order lines
 
     await expect(sendQuote('q1', actor)).rejects.toMatchObject({ status: 409, code: 'DEPOSIT_INVALID' });
   });
@@ -232,6 +234,8 @@ describe('sendQuote deposit validation', () => {
     queueResult([]); // blocks
     queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false }]);
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // getQuote: listQuoteOrders — order headers
+    queueResult([]); // getQuote: listQuoteOrders — order lines
 
     await expect(sendQuote('q1', actor)).rejects.toMatchObject({ status: 409, code: 'DEPOSIT_INVALID' });
   });
@@ -249,6 +253,8 @@ describe('sendQuote deposit validation', () => {
     // A one-time line exists (so dueOnAcceptance > 0) but NONE are depositEligible.
     queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false }]);
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // getQuote: listQuoteOrders — order headers
+    queueResult([]); // getQuote: listQuoteOrders — order lines
 
     await expect(sendQuote('q1', actor)).rejects.toMatchObject({ status: 409, code: 'DEPOSIT_INVALID' });
   });
@@ -261,6 +267,8 @@ describe('sendQuote deposit validation', () => {
     queueResult([]); // blocks
     queueResult([]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // getQuote: listQuoteOrders — order headers
+    queueResult([]); // getQuote: listQuoteOrders — order lines
 
     // Proves the deposit gate is skipped for depositType 'none' — the failure
     // that surfaces is the pre-existing status guard, never DEPOSIT_INVALID.
@@ -309,6 +317,8 @@ describe('sendQuote customer-facing PDF', () => {
     queueResult([]); // blocks
     queueResult([visibleLine, internalLine]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // getQuote: listQuoteOrders — order headers
+    queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([{ name: 'Customer Co', taxId: null, billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null }]); // getQuote's own draft billTo org lookup
 
     queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow (reused for partner name)
@@ -366,6 +376,8 @@ describe('sendQuote email delivery status', () => {
     queueResult([]); // blocks
     queueResult([lineRow]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // getQuote: listQuoteOrders — order headers
+    queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([org]); // getQuote's draft billTo org lookup
     queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null, ...partner }]);
     queueResult([org]); // org (billing snapshot + recipient)
@@ -534,6 +546,8 @@ describe('sendQuote bill-to snapshot', () => {
     queueResult([]);       // getQuote: blocks
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
     queueResult([]);       // getQuote: no staged Pax8 order
+    queueResult([]); // getQuote: listQuoteOrders — order headers
+    queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([org]);    // getQuote's own draft billTo org lookup (status is 'draft' for every quote sent through this helper)
     queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow (reused for partner name)
     queueResult([org]);    // org (billing snapshot + recipient)
@@ -725,6 +739,8 @@ describe('sendQuote contract-variable gate', () => {
     queueResult([contractBlock({})]);       // getQuote: blocks — governing_state left blank
     queueResult([]);                        // getQuote: lines
     queueResult([]);                        // getQuote: no staged Pax8 order
+    queueResult([]); // getQuote: listQuoteOrders — order headers
+    queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([org]);                     // getQuote's own draft billTo org lookup
     queueResult([versionRow]);              // loadContractBlockRenderData: version select
     queueResult([templateRow]);             // loadContractBlockRenderData: template select
@@ -742,7 +758,9 @@ describe('sendQuote contract-variable gate', () => {
     queueResult([baseQuote]);
     queueResult([contractBlock({})]);
     queueResult([]);
-    queueResult([]);
+    queueResult([]); // getQuote: no staged Pax8 order
+    queueResult([]); // getQuote: listQuoteOrders — order headers
+    queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([org]);
     queueResult([versionRow]);
     queueResult([templateRow]);
@@ -758,6 +776,8 @@ describe('sendQuote contract-variable gate', () => {
     queueResult([contractBlock({ governing_state: 'Texas' })]); // getQuote: blocks — filled in
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
     queueResult([]);                        // getQuote: no staged Pax8 order
+    queueResult([]); // getQuote: listQuoteOrders — order headers
+    queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([org]);                     // getQuote's own draft billTo org lookup
     queueResult([versionRow]);              // loadContractBlockRenderData: version select
     queueResult([templateRow]);             // loadContractBlockRenderData: template select
@@ -796,6 +816,8 @@ describe('sendQuote contract-variable gate', () => {
     queueResult([contractBlock({})]);        // getQuote: blocks
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
     queueResult([]);                         // getQuote: no staged Pax8 order
+    queueResult([]); // getQuote: listQuoteOrders — order headers
+    queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([org]);                      // getQuote's own draft billTo org lookup
     queueResult([autoOnlyVersion]);          // send gate: version
     queueResult([templateRow]);              // send gate: template

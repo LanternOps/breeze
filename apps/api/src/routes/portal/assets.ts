@@ -27,6 +27,9 @@ assetRoutes.get('/assets', zValidator('query', listSchema), async (c) => {
 
   const availableWhere = and(
     eq(devices.orgId, auth.user.orgId),
+    // Ephemeral Quick Support devices are never checkoutable assets, and this is
+    // an end-customer-facing surface — exclude them defensively.
+    eq(devices.isEphemeral, false),
     isNull(assetCheckouts.id)
   );
 

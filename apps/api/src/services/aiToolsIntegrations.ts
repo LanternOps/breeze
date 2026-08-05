@@ -18,6 +18,8 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { decryptForColumn } from './secretCrypto';
 import { redactUrlForLogs } from './notificationSenders/webhookSender';
+import { getWebhookWorker } from '../workers/webhookDelivery';
+import { toWorkerWebhookConfig } from '../routes/webhooks';
 
 // webhooks.url is encrypted at rest and may embed credentials. Decrypt for
 // display then strip userinfo/query/hash so the AI tool never sees a token.
@@ -243,13 +245,15 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
     handler: safeHandler('test_webhook', async (input, auth) => {
       const webhookId = input.webhookId as string;
 
-      // Verify webhook exists and belongs to org
+      // Verify webhook exists and belongs to org. Select the full row — the
+      // worker config mapper needs orgId/secret/headers/events/retryPolicy,
+      // not just id/name/url.
       const conditions: SQL[] = [eq(webhooks.id, webhookId)];
       const orgCond = auth.orgCondition(webhooks.orgId);
       if (orgCond) conditions.push(orgCond);
 
       const [webhook] = await db
-        .select({ id: webhooks.id, name: webhooks.name, url: webhooks.url })
+        .select()
         .from(webhooks)
         .where(and(...conditions))
         .limit(1);
@@ -259,20 +263,61 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
       }
 
       // Insert a test delivery record
-      const now = new Date().toISOString();
+      const eventType = 'test';
+      const eventId = `test-${Date.now()}`;
+      const now = new Date();
+      const payload = { test: true, timestamp: now.toISOString() };
       const [delivery] = await db
         .insert(webhookDeliveries)
         .values({
           webhookId: webhook.id,
-          eventType: 'test',
-          eventId: `test-${Date.now()}`,
-          payload: { test: true, timestamp: now },
+          eventType,
+          eventId,
+          payload,
           status: 'pending',
           attempts: 0,
         })
         .returning({ id: webhookDeliveries.id, createdAt: webhookDeliveries.createdAt });
 
       if (!delivery) return JSON.stringify({ error: 'Failed to create test delivery record' });
+
+      // Mirror routes/webhooks.ts POST /:id/test — an inserted 'pending' row
+      // with no worker dispatch never actually sends anything. Queue the
+      // delivery the same way the route does, and mark it 'failed' on a queue
+      // error instead of leaving a permanently-stuck 'pending' row.
+      const event = {
+        id: eventId,
+        type: eventType,
+        orgId: webhook.orgId,
+        source: 'webhook.test',
+        priority: 'normal',
+        payload,
+        metadata: {
+          timestamp: now.toISOString(),
+          userId: auth.user.id,
+        },
+      };
+
+      try {
+        await getWebhookWorker().queueDelivery(toWorkerWebhookConfig(webhook), event as any, delivery.id);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
+        await db
+          .update(webhookDeliveries)
+          .set({
+            status: 'failed',
+            attempts: 1,
+            errorMessage,
+            deliveredAt: new Date(),
+          })
+          .where(eq(webhookDeliveries.id, delivery.id));
+
+        return JSON.stringify({
+          error: 'Failed to queue webhook delivery',
+          deliveryId: delivery.id,
+          webhookId: webhook.id,
+        });
+      }
 
       return JSON.stringify({
         success: true,

@@ -87,6 +87,23 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // blocks (see withChannelsDbContext in routes/alerts/channels.ts) and runs
   // the send between them, holding no connection across the network call.
   { method: 'POST', pattern: /^\/api\/v1\/alerts\/channels\/[^/]+\/test\/?$/ },
+  // #3006 orphaned-snapshot reconcile. The handler pages an ENTIRE S3 bucket
+  // listing and then fetches multi-MB snapshot manifests, all against a
+  // customer-supplied (therefore tenant-controlled) endpoint host — a
+  // blackholed or merely slow destination would otherwise pin a pooled
+  // connection idle-in-transaction for the whole call. The service takes a
+  // `runInDbContext` runner and wraps each DB phase (config lookup, job
+  // lookup, each adoption write) in its own short withDbAccessContext, with
+  // the listing and manifest fetches between them.
+  //
+  // Known exception: applyBackupCommandResultToJob applies provider-enforced
+  // object lock (checkBackupProviderCapabilities + applyBackupSnapshotImmutability)
+  // INSIDE the adoption write context, so an org using WORM still holds a
+  // connection across that S3 call. Pre-existing behaviour shared with the
+  // agent result path and routes/backup/{hyperv,mssql}.ts — bounded here by
+  // RECONCILE_MAX_LIMIT, and still far better than the whole-handler
+  // transaction this registration replaces. Hoisting it out is a follow-up.
+  { method: 'POST', pattern: /^\/api\/v1\/backup\/reconcile\/?$/ },
 ];
 
 /**

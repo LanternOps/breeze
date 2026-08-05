@@ -1085,7 +1085,9 @@
     "to": "à",
     "perPage": "Par page",
     "devicesPerPage": "Appareils par page",
-    "page": "Page"
+    "page": "Page",
+    "possibleDuplicate": "Doublon possible",
+    "possibleDuplicateTitle": "Cet appareil remplace peut-être une fiche antérieure portant le même nom d’hôte. Ouvrez-la pour vérifier."
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Impossible de récupérer les journaux des périphériques",
@@ -2223,5 +2225,16 @@
     "idleMinutes": "inactive depuis {{count}} min",
     "disconnectedNotShadowable": "Les sessions déconnectées ne peuvent pas être affichées — aucun bureau actif à capturer",
     "cancel": "Annuler"
+  },
+  "possibleReplacementBanner": {
+    "decommissionFailed": "Échec de la mise hors service de l’ancien appareil",
+    "decommissionOldDevice": "Mettre hors service l’ancien appareil",
+    "decommissionSucceeded": "Ancien appareil mis hors service",
+    "message": "Cet appareil remplace peut-être {{hostname}} — vérifiez et mettez hors service l’ancienne fiche.",
+    "oldDeviceDecommissioned": "Ancien appareil mis hors service — plus rien à vérifier.",
+    "oldDeviceUnavailable": "La fiche de l’ancien appareil n’est plus disponible.",
+    "title": "Inscription potentiellement en double",
+    "unknownDevice": "l’appareil précédent",
+    "viewOldDevice": "Voir l’ancien appareil"
   }
 }

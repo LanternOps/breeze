@@ -589,7 +589,10 @@ describe('POST /approvals/:id/approve', () => {
         where: vi.fn().mockResolvedValue([{ ...linkedRow, status: 'pending' }]),
       }),
     } as any);
-    const aiSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    const aiReturning = vi.fn().mockResolvedValue([{ id: 'exec-42' }]);
+    const aiSet = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: aiReturning }),
+    });
     const approvalReturning = vi.fn().mockResolvedValue([linkedRow]);
     const approvalSet = vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({ returning: approvalReturning }),
@@ -604,6 +607,42 @@ describe('POST /approvals/:id/approve', () => {
     expect(aiSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'approved', approvedBy: TEST_USER.id }),
     );
+  });
+
+  it('logs a lost-race warning (not an error) when the ai_tool_executions mirror CAS matches zero rows, and still returns 200 (#3089 review finding)', async () => {
+    // The execution row was already closed out (settled/timed out) between
+    // the approval_requests CAS and this mirror — status='pending' guard
+    // correctly refuses to resurrect it. approval_requests is still the
+    // source of truth and correctly recorded THIS decision, so the decide
+    // call must still succeed; only the mirror silently lost the race.
+    const linkedRow = { ...updatedRow, executionId: 'exec-42' };
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ ...linkedRow, status: 'pending' }]),
+      }),
+    } as any);
+    const aiReturning = vi.fn().mockResolvedValue([]);
+    const aiSet = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: aiReturning }),
+    });
+    const approvalReturning = vi.fn().mockResolvedValue([linkedRow]);
+    const approvalSet = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: approvalReturning }),
+    });
+    vi.mocked(db.update)
+      .mockReturnValueOnce({ set: approvalSet } as any)
+      .mockReturnValueOnce({ set: aiSet } as any);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await buildApp().request('/approvals/a1/approve', { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(aiReturning).toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('ai_tool_executions mirror lost the race'),
+      'exec-42',
+    );
+    warnSpy.mockRestore();
   });
 });
 
@@ -1040,7 +1079,10 @@ describe('POST /approvals/:id/deny', () => {
         where: vi.fn().mockResolvedValue([{ ...deniedRow, status: 'pending' }]),
       }),
     } as any);
-    const aiSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    const aiReturning = vi.fn().mockResolvedValue([{ id: 'exec-77' }]);
+    const aiSet = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: aiReturning }),
+    });
     const approvalReturning = vi.fn().mockResolvedValue([deniedRow]);
     const approvalSet = vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({ returning: approvalReturning }),

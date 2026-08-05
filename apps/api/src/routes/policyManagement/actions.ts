@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { automationPolicies, automationRuns, automations, organizations } from '../../db/schema';
 import { requirePermission, requireScope } from '../../middleware/auth';
@@ -211,7 +211,10 @@ actionRoutes.post(
           db
             .select({ id: organizations.id })
             .from(organizations)
-            .where(eq(organizations.partnerId, policy.partnerId ?? ''))
+            // The hidden 'quick_support' org never owns automations — keep it out
+            // of the partner-wide ownership set. (The by-id lookup above is left
+            // alone; it resolves one known org.)
+            .where(and(eq(organizations.partnerId, policy.partnerId ?? ''), ne(organizations.type, 'quick_support')))
         ),
         and(isNull(automations.orgId), eq(automations.partnerId, policy.partnerId ?? ''))
       );

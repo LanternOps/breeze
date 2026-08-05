@@ -3,6 +3,7 @@ import * as Sentry from '@sentry/react-native';
 
 import { getServerUrl } from './serverConfig';
 import { getOrCreateInstallationId } from './installationId';
+import { fetchWithTimeout } from './fetchWithTimeout';
 
 export const FALLBACK_API_BASE_URL =
   process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
@@ -237,7 +238,7 @@ async function requestWithPrefix<T>(
 
   const baseUrl = (await getServerUrl()) || FALLBACK_API_BASE_URL;
   const url = `${baseUrl}${prefix}${endpoint}`;
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     ...options,
     headers,
     credentials: 'include',

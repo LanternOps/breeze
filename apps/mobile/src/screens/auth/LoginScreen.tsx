@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -15,11 +15,6 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import { useAppDispatch, useAppSelector } from '../../store';
 import { loginAsync, clearError } from '../../store/authSlice';
-import {
-  checkBiometricAvailability,
-  authenticateWithBiometrics,
-} from '../../services/biometrics';
-import { getStoredToken, getStoredUser } from '../../services/auth';
 import { getServerUrl } from '../../services/serverConfig';
 import { useApprovalTheme, palette, radii, spacing, type } from '../../theme';
 import { Spinner } from '../../components/Spinner';
@@ -63,20 +58,6 @@ function EyeGlyph({ color, hidden }: { color: string; hidden: boolean }) {
   );
 }
 
-function FingerprintGlyph({ color }: { color: string }) {
-  return (
-    <Svg width={18} height={18} viewBox="0 0 24 24">
-      <Path
-        d="M6 11 a6 6 0 0 1 12 0 v2 M9 21 c-1-2-1-4-1-6 a4 4 0 0 1 8 0 v3 M12 21 v-7 M16 19 c1-2 1-4 1-6"
-        stroke={color}
-        strokeWidth={1.5}
-        strokeLinecap="round"
-        fill="none"
-      />
-    </Svg>
-  );
-}
-
 export function LoginScreen({ navigation }: Props) {
   const theme = useApprovalTheme('dark');
   const dispatch = useAppDispatch();
@@ -85,12 +66,8 @@ export function LoginScreen({ navigation }: Props) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [serverUrl, setServerUrlState] = useState<string | null>(null);
-
-  useEffect(() => {
-    checkBiometricAvailability().then(setBiometricAvailable);
-  }, []);
+  const passwordRef = useRef<TextInput>(null);
 
   useEffect(() => {
     const unsubscribe = navigation.addListener('focus', () => {
@@ -104,18 +81,6 @@ export function LoginScreen({ navigation }: Props) {
     haptic.tap();
     dispatch(clearError());
     dispatch(loginAsync({ email: email.trim(), password }));
-  }
-
-  async function handleBiometricLogin() {
-    haptic.tap();
-    const success = await authenticateWithBiometrics();
-    if (success) {
-      const token = await getStoredToken();
-      const user = await getStoredUser();
-      if (token && user) {
-        dispatch({ type: 'auth/setCredentials', payload: { token, user } });
-      }
-    }
   }
 
   const isEmailValid = email.length === 0 || email.includes('@');
@@ -167,9 +132,16 @@ export function LoginScreen({ navigation }: Props) {
                   onChangeText={setEmail}
                   keyboardType="email-address"
                   autoCapitalize="none"
-                  autoComplete="email"
+                  // `autoComplete` drives ANDROID autofill; iOS reads
+                  // `textContentType`. Only setting the former is why 1Password
+                  // and iCloud Keychain never offered a credential here.
+                  autoComplete="username"
+                  textContentType="username"
                   autoCorrect={false}
                   spellCheck={false}
+                  returnKeyType="next"
+                  submitBehavior="submit"
+                  onSubmitEditing={() => passwordRef.current?.focus()}
                   placeholder="you@company.com"
                   placeholderTextColor={theme.textLo}
                   style={[
@@ -199,13 +171,19 @@ export function LoginScreen({ navigation }: Props) {
                 ]}
               >
                 <TextInput
+                  ref={passwordRef}
                   value={password}
                   onChangeText={setPassword}
                   secureTextEntry={!showPassword}
                   autoCapitalize="none"
                   autoComplete="password"
+                  textContentType="password"
                   autoCorrect={false}
                   spellCheck={false}
+                  returnKeyType="go"
+                  onSubmitEditing={() => {
+                    if (canSubmit && !isLoading) void handleLogin();
+                  }}
                   placeholder="Your password"
                   placeholderTextColor={theme.textLo}
                   style={[
@@ -253,29 +231,6 @@ export function LoginScreen({ navigation }: Props) {
               )}
             </Pressable>
 
-            {biometricAvailable && (
-              <Pressable
-                onPress={handleBiometricLogin}
-                disabled={isLoading}
-                style={({ pressed }) => [
-                  styles.secondaryButton,
-                  {
-                    backgroundColor: theme.bg2,
-                    opacity: isLoading ? 0.5 : pressed ? 0.85 : 1,
-                  },
-                ]}
-              >
-                <FingerprintGlyph color={theme.textHi} />
-                <Text
-                  style={[
-                    type.bodyMd,
-                    { color: theme.textHi, marginLeft: spacing[2] },
-                  ]}
-                >
-                  Use biometrics
-                </Text>
-              </Pressable>
-            )}
           </View>
 
           <View style={styles.serverFooter}>
@@ -362,14 +317,6 @@ const styles = StyleSheet.create({
     borderRadius: radii.lg,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  secondaryButton: {
-    marginTop: spacing[3],
-    paddingVertical: spacing[5],
-    borderRadius: radii.lg,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
   },
   serverFooter: {
     alignItems: 'center',

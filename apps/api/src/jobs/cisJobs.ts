@@ -160,8 +160,14 @@ async function processRunBaselineScan(data: RunBaselineScanJobData): Promise<{
     };
   }
 
+  // Quick Support exclusion: ephemeral devices (`devices.isEphemeral`) live in
+  // the hidden per-partner 'quick_support' org and are a stranger's personal
+  // machine borrowed for one ~20-minute session. That org stays inside
+  // technicians' accessibleOrgIds for RLS reasons, so this sweep is NOT filtered
+  // for us — running a CIS hardening scan against a home PC is never intended.
   const deviceConditions = [
     eq(devices.orgId, baseline.orgId),
+    eq(devices.isEphemeral, false),
     eq(devices.osType, baseline.osType),
     ne(devices.status, 'decommissioned'),
   ];

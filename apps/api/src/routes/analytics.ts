@@ -85,7 +85,10 @@ async function resolveSiteAllowedDeviceIds(
   const orgDevices = await db
     .select({ id: devices.id, siteId: devices.siteId })
     .from(devices)
-    .where(eq(devices.orgId, orgId));
+    // Ephemeral Quick Support devices live in the hidden 'quick_support' org that
+    // stays inside accessibleOrgIds for RLS, so nothing excludes them for us —
+    // every analytics enumeration in this file has to say so explicitly.
+    .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false)));
   return orgDevices
     .filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId))
     .map((d) => d.id);
@@ -1708,6 +1711,7 @@ analyticsRoutes.get(
       .where(
         and(
           eq(devices.orgId, sla.orgId),
+          eq(devices.isEphemeral, false),
           eq(devices.status, 'online'),
           gte(devices.lastSeenAt, since)
         )
@@ -1719,6 +1723,7 @@ analyticsRoutes.get(
       .where(
         and(
           eq(devices.orgId, sla.orgId),
+          eq(devices.isEphemeral, false),
           ne(devices.status, 'decommissioned')
         )
       );
@@ -1758,9 +1763,11 @@ analyticsRoutes.get(
 
     try {
       // Device counts by status (exclude decommissioned)
-      const statusCondition = orgCondition
-        ? and(ne(devices.status, 'decommissioned'), orgCondition)
-        : ne(devices.status, 'decommissioned');
+      const statusCondition = and(
+        ne(devices.status, 'decommissioned'),
+        eq(devices.isEphemeral, false),
+        orgCondition,
+      );
       const statusCounts = await db
         .select({
           status: devices.status,
@@ -1784,9 +1791,11 @@ analyticsRoutes.get(
 
       // Weekly enrollment trend (last 12 weeks)
       const twelveWeeksAgo = new Date(Date.now() - 12 * 7 * 24 * 60 * 60 * 1000);
-      const weeklyTrendCondition = orgCondition
-        ? and(gte(devices.enrolledAt, twelveWeeksAgo), orgCondition)
-        : gte(devices.enrolledAt, twelveWeeksAgo);
+      const weeklyTrendCondition = and(
+        gte(devices.enrolledAt, twelveWeeksAgo),
+        eq(devices.isEphemeral, false),
+        orgCondition,
+      );
       const weeklyTrend = await db
         .select({
           week: sql<string>`date_trunc('week', ${devices.enrolledAt})`.as('week'),
@@ -1846,9 +1855,11 @@ analyticsRoutes.get(
 
     try {
       // Group by osType + osVersion for granularity
-      const osDistributionCondition = orgCondition
-        ? and(ne(devices.status, 'decommissioned'), orgCondition)
-        : ne(devices.status, 'decommissioned');
+      const osDistributionCondition = and(
+        ne(devices.status, 'decommissioned'),
+        eq(devices.isEphemeral, false),
+        orgCondition,
+      );
       const rows = await db
         .select({
           osType: devices.osType,

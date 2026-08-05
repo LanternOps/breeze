@@ -175,10 +175,21 @@ export async function processPolicyDistribution(
   // rows PLUS partner-wide rows (org_id NULL) owned by the org's partner —
   // the worker runs under system context, so both axes are visible.
   const [orgRow] = await db
-    .select({ partnerId: organizations.partnerId })
+    .select({ partnerId: organizations.partnerId, type: organizations.type })
     .from(organizations)
     .where(eq(organizations.id, data.orgId))
     .limit(1);
+
+  // Quick Support exclusion: the hidden per-partner 'quick_support' org holds
+  // ephemeral devices — a stranger's personal machine borrowed for one
+  // ~20-minute session. It stays inside technicians' accessibleOrgIds for RLS
+  // reasons, so the partner-wide (org_id NULL) policy branch below would
+  // otherwise push the MSP's USB/peripheral-blocking policy onto a home PC.
+  // Bail on the org, and belt-and-braces exclude ephemeral devices from the
+  // device sweep so a stray org-owned policy cannot reach them either.
+  if (orgRow?.type === 'quick_support') {
+    return { queued: 0, immediate: 0, failed: 0 };
+  }
 
   const policyOwnershipCondition = orgRow?.partnerId
     ? or(
@@ -202,6 +213,7 @@ export async function processPolicyDistribution(
       .where(
         and(
           eq(devices.orgId, data.orgId),
+          eq(devices.isEphemeral, false),
           ne(devices.status, 'decommissioned')
         )
       )

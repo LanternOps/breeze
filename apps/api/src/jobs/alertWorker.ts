@@ -8,7 +8,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { devices, deviceMetrics, organizations, alerts } from '../db/schema';
-import { eq, and, gte, gt, desc, asc, inArray, isNotNull } from 'drizzle-orm';
+import { eq, ne, and, gte, gt, desc, asc, inArray, isNotNull } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import {
   evaluateDeviceAlerts,
@@ -124,11 +124,21 @@ export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
   const cap = data.batchSize ?? envInt('ALERT_WORKER_MAX_DEVICES_PER_RUN', 5000);
   const chunkSize = Math.max(1, envInt('ALERT_WORKER_CHUNK_SIZE', 500));
 
-  // Get all active organizations
+  // Get all active organizations.
+  //
+  // Quick Support exclusion: the hidden per-partner 'quick_support' org and the
+  // ephemeral devices inside it are a stranger's personal machine borrowed for a
+  // single ~20-minute session. That org stays inside technicians' accessibleOrgIds
+  // for RLS reasons, so it is NOT filtered out for us — every fleet sweep has to
+  // exclude it explicitly. Alert evaluation is the path that pages on-call staff,
+  // so ephemeral devices are excluded at both the org and the device level.
   const orgs = await db
     .select({ id: organizations.id })
     .from(organizations)
-    .where(eq(organizations.status, 'active'));
+    .where(and(
+      eq(organizations.status, 'active'),
+      ne(organizations.type, 'quick_support')
+    ));
 
   if (orgs.length === 0) {
     return { queued: 0, skipped: 0, durationMs: Date.now() - startTime };
@@ -157,6 +167,7 @@ export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
 
     const conditions = [
       inArray(devices.orgId, orgIds),
+      eq(devices.isEphemeral, false),
       eq(devices.status, 'online'),
       gte(devices.lastSeenAt, recentThreshold)
     ];

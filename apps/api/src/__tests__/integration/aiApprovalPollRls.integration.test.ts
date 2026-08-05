@@ -67,7 +67,7 @@ async function seedExecution(status: 'pending' | 'approved' | 'rejected'): Promi
     .values({
       sessionId,
       toolName: 'execute_command',
-      toolInput: { deviceId: 'd', commandType: 'list_processes' },
+      toolInput: { deviceId: 'd', commandType: 'kill_process' },
       status,
     })
     .returning({ id: aiToolExecutions.id });

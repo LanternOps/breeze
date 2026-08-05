@@ -79,6 +79,7 @@ export interface TdSynnexEcProduct {
   source: 'td_synnex_ec_express' | 'td_synnex_price_file';
   synnexSku: string;
   mfgPartNo: string | null;
+  manufacturer: string | null;
   status: string | null;
   name: string;
   description: string | null;
@@ -357,6 +358,13 @@ function normalizeDetail(d: Record<string, unknown>): TdSynnexEcProduct {
     source: 'td_synnex_ec_express',
     synnexSku: String(d.synnexSku ?? ''),
     mfgPartNo: str(d.mfgPartNo),
+    // The verified PA `pnaDetail` contract (synnexSku, mfgPartNo, status,
+    // description, currency, price, discount, totalQty, stock, msrp,
+    // parcelShippable/parcelShipable, weight) has no manufacturer-name field —
+    // only the manufacturer PART NUMBER (mfgPartNo). This always evaluates to
+    // null against the live response today; kept as a pass-through (not a
+    // hardcoded null) so it self-activates if TD SYNNEX ever adds the field.
+    manufacturer: str(d.manufacturer),
     status: str(d.status),
     name: str(d.description) ?? String(d.synnexSku ?? ''),
     description: str(d.description),
@@ -554,6 +562,7 @@ export async function importEcExpressCatalogItem(input: EcImportInput, actor: Ca
         source: product.source,
         synnexSku: product.synnexSku,
         mfgPartNo: product.mfgPartNo,
+        manufacturer: product.manufacturer,
         status: product.status,
         currency: product.currency,
         cost: product.cost,
