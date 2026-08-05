@@ -3029,16 +3029,45 @@ const terminalOutputFastPathSchema = z.object({
   encoding: z.enum(['base64']).optional(),
 });
 
-const terminalCommandResultSchema = z.object({
+export const terminalCommandResultSchema = z.object({
   type: z.literal('command_result'),
   commandId: z.string().regex(/^term-[a-zA-Z0-9_-]+$/).max(128),
   status: z.enum(['completed', 'failed', 'cancelled']),
   error: z.string().max(8192).optional(),
   exitCode: z.number().int().optional(),
+  // #3167: this object is `.strict()`, and it used to list only
+  // event/sessionId/exitCode — none of which is the shape the agent actually
+  // sends. `agent/internal/remote/tools/terminal.go` returns
+  // {sessionId, cols, rows, started} for start, {sessionId, written} for write,
+  // {sessionId, cols, rows, resized} for resize and {sessionId, stopped} for
+  // stop, so EVERY successful terminal command_result failed validation and was
+  // dropped as malformed, and the ack below was never sent.
+  //
+  // The `event` enum here has never had a consumer: the only reads of
+  // `fastResult.event` are the desktop path's `peer_disconnected` /
+  // `consent_denied`, which come from desktopCommandResultSchema. It is kept
+  // (optional, harmless) rather than removed, since removing it would reject any
+  // agent build that does start sending it — the same failure this fixes.
+  //
+  // Kept `.strict()` deliberately. Switching to passthrough would also stop the
+  // drops, but this is an unauthenticated-shape fast path on the agent socket and
+  // bounding what can be pushed through it is worth keeping; the fix is to
+  // describe reality, not to stop checking.
+  //
+  // cols/rows are bounded generously rather than mirroring the agent's current
+  // clamps (20-500 / 5-200). Pinning the server to the agent's exact constants
+  // would mean a future agent widening them silently reintroduces this same
+  // dropped-result bug.
   result: z.object({
     event: z.enum(['session_started', 'session_ended', 'session_error']).optional(),
     sessionId: z.string().min(SESSION_ID_MIN).max(SESSION_ID_MAX).optional(),
     exitCode: z.number().int().optional(),
+    cols: z.number().int().nonnegative().max(10_000).optional(),
+    rows: z.number().int().nonnegative().max(10_000).optional(),
+    written: z.number().int().nonnegative().optional(),
+    started: z.boolean().optional(),
+    resized: z.boolean().optional(),
+    stopped: z.boolean().optional(),
   }).strict().optional(),
 }).passthrough();
 
