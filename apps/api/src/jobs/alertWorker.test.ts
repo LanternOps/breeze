@@ -5,13 +5,20 @@ const { addBulkMock, addMock, getJobMock, warnSpy, devicesSchema, organizationsS
   addMock: vi.fn(async () => ({ id: 'queued-job-1' })),
   getJobMock: vi.fn(async () => null),
   warnSpy: vi.fn(),
-  devicesSchema: { id: 'devices.id', orgId: 'devices.orgId', status: 'devices.status', lastSeenAt: 'devices.lastSeenAt' } as const,
-  organizationsSchema: { id: 'organizations.id', status: 'organizations.status' } as const,
+  devicesSchema: {
+    id: 'devices.id',
+    orgId: 'devices.orgId',
+    status: 'devices.status',
+    lastSeenAt: 'devices.lastSeenAt',
+    isEphemeral: 'devices.isEphemeral'
+  } as const,
+  organizationsSchema: { id: 'organizations.id', status: 'organizations.status', type: 'organizations.type' } as const,
   fleetState: { fleet: [] as { id: string; orgId: string }[], chunkCalls: 0 }
 }));
 
 vi.mock('drizzle-orm', () => ({
   eq: (col: unknown, val: unknown) => ({ op: 'eq', col, val }),
+  ne: (col: unknown, val: unknown) => ({ op: 'ne', col, val }),
   and: (...args: unknown[]) => ({ op: 'and', args }),
   gte: (col: unknown, val: unknown) => ({ op: 'gte', col, val }),
   gt: (col: unknown, val: unknown) => ({ op: 'gt', col, val }),

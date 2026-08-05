@@ -302,6 +302,27 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
     deviceIds = resolvedDeviceIds.filter((id) => requested.has(id));
   }
 
+  // Device→org map for the dual-owner audit rows (#2126): a per-device event
+  // under a partner-wide policy (policy.orgId NULL) must carry the DEVICE's
+  // org so the org admin can see it, alongside the policy's partnerId.
+  //
+  // Quick Support exclusion: ephemeral devices (`devices.isEphemeral`) live in
+  // the hidden per-partner 'quick_support' org and are a stranger's personal
+  // machine borrowed for one ~20-minute session. That org stays inside
+  // technicians' accessibleOrgIds for RLS reasons, so a partner-wide policy
+  // resolves them like any other device. Filtering them out of this lookup and
+  // then narrowing deviceIds to what it returned keeps them out of compliance
+  // evaluation AND out of the remediation (software install/uninstall) queue.
+  const orgByDevice = new Map<string, string>();
+  for (const chunk of chunkArray(deviceIds)) {
+    const rows = await db
+      .select({ id: devices.id, orgId: devices.orgId })
+      .from(devices)
+      .where(and(inArray(devices.id, chunk), eq(devices.isEphemeral, false)));
+    for (const row of rows) orgByDevice.set(row.id, row.orgId);
+  }
+  deviceIds = deviceIds.filter((id) => orgByDevice.has(id));
+
   if (deviceIds.length === 0) {
     return {
       policyId: policy.id,
@@ -315,18 +336,6 @@ async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   const remediationOptions = readRemediationOptions(policy.remediationOptions);
   const existingByDevice = await readComplianceStateByDevice(policy.id, deviceIds);
   const inventoryByDevice = await getSoftwareInventoryByDeviceIds(deviceIds);
-
-  // Device→org map for the dual-owner audit rows (#2126): a per-device event
-  // under a partner-wide policy (policy.orgId NULL) must carry the DEVICE's
-  // org so the org admin can see it, alongside the policy's partnerId.
-  const orgByDevice = new Map<string, string>();
-  for (const chunk of chunkArray(deviceIds)) {
-    const rows = await db
-      .select({ id: devices.id, orgId: devices.orgId })
-      .from(devices)
-      .where(inArray(devices.id, chunk));
-    for (const row of rows) orgByDevice.set(row.id, row.orgId);
-  }
 
   let violations = 0;
   const remediationTargets = new Set<string>();
