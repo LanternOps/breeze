@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import zlib from 'node:zlib';
+import PDFKitDocument from 'pdfkit';
 import { PDFDocument } from 'pdf-lib';
-import { renderQuotePdf, contractUploadedMarker } from './quotePdf';
+import { renderQuotePdf, contractUploadedMarker, columnsFor } from './quotePdf';
 
 // A minimal valid 1x1 transparent PNG (the smallest real PNG pdfkit will accept).
 const ONE_BY_ONE_PNG = Buffer.from(
@@ -15,14 +16,22 @@ const ONE_BY_ONE_PNG = Buffer.from(
 // with its WinAnsi-encoded Helvetica the hex bytes ARE the character codes, so a
 // straight hex→latin1 decode reconstructs the visible text. Literal `(...)`
 // strings are handled too for robustness.
-function extractPdfTextByStream(pdf: Buffer): string[] {
-  const s = pdf.toString('latin1');
-  const streamRe = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+function inflatePdfStreams(pdf: Buffer): string[] {
+  const raw = pdf.toString('latin1');
+  const headerRe = /\/Length\s+(\d+)[\s\S]{0,120}?\/Filter\s+\/FlateDecode[\s\S]{0,40}?stream\r?\n/g;
   const streams: string[] = [];
-  let sm: RegExpExecArray | null;
-  while ((sm = streamRe.exec(s))) {
-    let body: string;
-    try { body = zlib.inflateSync(Buffer.from(sm[1]!, 'latin1')).toString('latin1'); } catch { continue; }
+  let match: RegExpExecArray | null;
+  while ((match = headerRe.exec(raw))) {
+    const length = Number(match[1]);
+    const compressed = Buffer.from(raw.slice(headerRe.lastIndex, headerRe.lastIndex + length), 'latin1');
+    try { streams.push(zlib.inflateSync(compressed).toString('latin1')); } catch { /* Skip non-text/corrupt streams. */ }
+  }
+  return streams;
+}
+
+function extractPdfTextByStream(pdf: Buffer): string[] {
+  const streams: string[] = [];
+  for (const body of inflatePdfStreams(pdf)) {
     const tokenRe = /<([0-9a-fA-F]+)>|\(((?:[^()\\]|\\.)*)\)/g;
     let out = '';
     let tm: RegExpExecArray | null;
@@ -43,7 +52,118 @@ function extractPdfText(pdf: Buffer): string {
   return extractPdfTextByStream(pdf).join(' ');
 }
 
+function extractPositionedPdfText(pdf: Buffer): { text: string; x: number; y: number }[] {
+  const fragments: { text: string; x: number; y: number }[] = [];
+  for (const body of inflatePdfStreams(pdf)) {
+    const textObjectRe = /BT\s+([\s\S]*?)\s+ET/g;
+    let textObject: RegExpExecArray | null;
+    while ((textObject = textObjectRe.exec(body))) {
+      const tm = /1 0 0 1 ([\d.]+) ([\d.]+) Tm/.exec(textObject[1]!);
+      if (!tm) continue;
+      let text = '';
+      const tokenRe = /<([0-9a-fA-F]+)>|\(((?:[^()\\]|\\.)*)\)/g;
+      let token: RegExpExecArray | null;
+      while ((token = tokenRe.exec(textObject[1]!))) {
+        text += token[1] !== undefined
+          ? Buffer.from(token[1].length % 2 ? `${token[1]}0` : token[1], 'hex').toString('latin1')
+          : token[2]!.replace(/\\([()\\])/g, '$1');
+      }
+      if (text) fragments.push({ text, x: Number(tm[1]), y: 841.89 - Number(tm[2]) });
+    }
+  }
+  return fragments;
+}
+
 describe('renderQuotePdf', () => {
+  it('allocates at least half the table to descriptions while keeping realistic amounts on one line', () => {
+    const doc = new PDFKitDocument({ size: 'A4', margin: 50 });
+    const taxed = columnsFor(doc, true);
+    const untaxed = columnsFor(doc, false);
+    const fraction = (points: number) => points / taxed.contentWidth;
+
+    expect(fraction(taxed.colDescX - taxed.left)).toBeCloseTo(0.08, 5);
+    expect(fraction(taxed.colDescW)).toBeGreaterThanOrEqual(0.52);
+    expect(fraction(untaxed.colDescW)).toBeGreaterThanOrEqual(0.60);
+    expect(taxed.colQtyW).toBeCloseTo(taxed.contentWidth * 0.07, 5);
+    expect(taxed.colAmtX + taxed.colNumW).toBeCloseTo(taxed.right, 5);
+    expect(untaxed.colAmtX + untaxed.colNumW).toBeCloseTo(untaxed.right, 5);
+
+    doc.font('Helvetica-Bold').fontSize(10);
+    const rowAmountWidth = doc.widthOfString('$888,888.88');
+    expect(taxed.colNumW).toBeGreaterThanOrEqual(rowAmountWidth + 2);
+    expect(untaxed.colNumW).toBeGreaterThanOrEqual(rowAmountWidth + 2);
+
+    doc.font('Helvetica-Bold').fontSize(14);
+    const emphasisAmountWidth = doc.widthOfString('$888,888.88');
+    expect(taxed.colSummaryNumW).toBeGreaterThanOrEqual(emphasisAmountWidth + 2);
+    expect(taxed.colSummaryAmtX + taxed.colSummaryNumW).toBeCloseTo(taxed.right, 5);
+    doc.end();
+  });
+
+  it('starts the first rich-text block below both wrapped identity columns', async () => {
+    const buf = await renderQuotePdf(
+      {
+        id: 'q-wrap', quoteNumber: 'Q-WRAP', currencyCode: 'USD',
+        sellerSnapshot: {
+          name: 'Seller With A Very Long Legal Name That Wraps Across Multiple Lines In The Left Identity Column',
+          address: {
+            line1: '12345 An Extremely Long Seller Street Address That Must Wrap In The Narrow Left Column',
+            line2: 'Suite 900, Building Seven, Attention Accounts Receivable And Contract Administration',
+            city: 'A Very Long Municipality Name', region: 'Texas', postalCode: '78701-1234', country: 'United States of America',
+          },
+          phone: '+1 (888) 555-0199 extension 12345',
+          email: 'long.billing.department@example.test',
+          website: 'https://www.example.test/a/very/long/path',
+        },
+        billToName: 'Customer With A Very Long Legal Name That Also Wraps In The Prepared For Column',
+        billToAddress: {
+          line1: '98765 Another Extremely Long Street Address That Must Wrap In The Right Column',
+          line2: 'Floor 42, Attention Procurement, Legal, Finance, And Information Technology',
+          city: 'Another Long Municipality Name', region: 'California', postalCode: '90210-1234', country: 'United States of America',
+        },
+        issueDate: '2026-08-04', expiryDate: '2026-09-03',
+        oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00',
+        dueOnAcceptanceTotal: '100.00', total: '100.00',
+      },
+      [{ id: 'rich', blockType: 'rich_text', sortOrder: 0, content: { html: '<p>FIRST_RICH_PARAGRAPH must be below both columns.</p>' } }],
+      [], async () => null, { partnerName: 'Acme' },
+    );
+    const positioned = extractPositionedPdfText(buf);
+    const firstRich = positioned.find((fragment) => fragment.text.includes('FIRST_RICH_PARAGRAPH'));
+    const identity = positioned.filter((fragment) =>
+      fragment.text.includes('Seller With') || fragment.text.includes('Customer With') ||
+      fragment.text.includes('12345 An') || fragment.text.includes('98765 Another') ||
+      fragment.text.includes('long.billing') || fragment.text.includes('Valid until:'),
+    );
+    expect(firstRich).toBeDefined();
+    expect(identity.length).toBeGreaterThan(0);
+    expect(firstRich!.y - Math.max(...identity.map((fragment) => fragment.y))).toBeGreaterThanOrEqual(28);
+  });
+
+  it('omits empty recurring summary rows unless a matching recurring line exists', async () => {
+    const quote = {
+      id: 'q1', quoteNumber: 'Q-SUMMARY', currencyCode: 'USD',
+      oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00',
+      dueOnAcceptanceTotal: '100.00', total: '100.00',
+    };
+    const blocks = [{ id: 'b1', blockType: 'line_items' as const, sortOrder: 0, content: {} }];
+    const oneTime = [{ id: 'l1', blockId: 'b1', description: 'Setup', quantity: '1', unitPrice: '100', lineTotal: '100.00', recurrence: 'one_time' }];
+    const oneTimePdf = await renderQuotePdf(quote, blocks, oneTime, async () => null, {});
+    const oneTimeText = extractPdfText(oneTimePdf);
+    expect(oneTimeText).not.toContain('Monthly');
+    expect(oneTimeText).not.toContain('Annual');
+
+    const freeRecurring = [
+      ...oneTime,
+      { id: 'l2', blockId: 'b1', description: 'Included monitoring', quantity: '1', unitPrice: '0', lineTotal: '0.00', recurrence: 'monthly' },
+      { id: 'l3', blockId: 'b1', description: 'Included annual review', quantity: '1', unitPrice: '0', lineTotal: '0.00', recurrence: 'annual' },
+    ];
+    const recurringPdf = await renderQuotePdf(quote, blocks, freeRecurring, async () => null, {});
+    const recurringText = extractPdfText(recurringPdf);
+    expect(recurringText).toContain('Monthly');
+    expect(recurringText).toContain('Annual');
+  });
+
   it('produces a PDF buffer (heading + line_items block)', async () => {
     const buf = await renderQuotePdf(
       { id: 'q1', quoteNumber: 'Q-1', oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '100.00', currencyCode: 'USD' },
@@ -353,6 +473,65 @@ describe('renderQuotePdf', () => {
     // Split by recurrence: one-time $200 and $50/mo.
     expect(text).toContain('200.00');
     expect(text).toContain('50.00/mo');
+  });
+
+  it('moves a long mixed-recurrence subtotal below its label instead of overlapping it', async () => {
+    const buf = await renderQuotePdf(
+      {
+        id: 'q1', quoteNumber: 'Q-LONG-SUB', currencyCode: 'USD',
+        oneTimeTotal: '12000.00', monthlyRecurringTotal: '4800.00', annualRecurringTotal: '9600.00',
+        dueOnAcceptanceTotal: '12000.00', total: '26400.00',
+      },
+      [{ id: 'b1', blockType: 'line_items', sortOrder: 0, content: { showSubtotal: true } }],
+      [
+        { id: 'l1', blockId: 'b1', description: 'Setup', quantity: '1', unitPrice: '12000', lineTotal: '12000.00', recurrence: 'one_time' },
+        { id: 'l2', blockId: 'b1', description: 'Service', quantity: '1', unitPrice: '4800', lineTotal: '4800.00', recurrence: 'monthly' },
+        { id: 'l3', blockId: 'b1', description: 'Review', quantity: '1', unitPrice: '9600', lineTotal: '9600.00', recurrence: 'annual' },
+      ],
+      async () => null,
+      {},
+    );
+    const positioned = extractPositionedPdfText(buf);
+    const label = positioned.find((fragment) => fragment.text === 'Subtotal');
+    const amount = positioned.find((fragment) => fragment.text.includes('$12,000.00') && fragment.text.includes('$4,800.00/mo'));
+    expect(label).toBeDefined();
+    expect(amount).toBeDefined();
+    expect(amount!.y).toBeGreaterThan(label!.y);
+  });
+
+  it('moves a long category breakdown amount below its label instead of crowding the next row', async () => {
+    const buf = await renderQuotePdf(
+      {
+        id: 'q1', quoteNumber: 'Q-LONG-CATEGORY', currencyCode: 'USD',
+        oneTimeTotal: '3000.00', monthlyRecurringTotal: '4800.00', annualRecurringTotal: '9600.00',
+        dueOnAcceptanceTotal: '3000.00', total: '17400.00',
+        categoryBreakdown: [
+          { category: 'hardware', oneTimeTotal: '100.00', monthlyTotal: '0.00', annualTotal: '0.00' },
+          { category: 'service', oneTimeTotal: '3000.00', monthlyTotal: '4800.00', annualTotal: '9600.00' },
+        ],
+      },
+      [],
+      [
+        { id: 'l1', description: 'Setup', quantity: '1', unitPrice: '3000', lineTotal: '3000.00', recurrence: 'one_time' },
+        { id: 'l2', description: 'Service', quantity: '1', unitPrice: '4800', lineTotal: '4800.00', recurrence: 'monthly' },
+        { id: 'l3', description: 'Review', quantity: '1', unitPrice: '9600', lineTotal: '9600.00', recurrence: 'annual' },
+      ],
+      async () => null,
+      {},
+    );
+    const positioned = extractPositionedPdfText(buf);
+    const label = positioned.find((fragment) => fragment.text === 'Service');
+    const amount = positioned.find((fragment) => fragment.text.includes('$3,000.00') && fragment.text.includes('$4,800.00/mo'));
+    const oneTime = positioned.find((fragment) => fragment.text === 'One-time');
+    const categoryLastLine = positioned
+      .filter((fragment) => fragment.text.includes('$9,600.00/yr') && oneTime && fragment.y < oneTime.y)
+      .sort((a, b) => b.y - a.y)[0];
+    expect(label).toBeDefined();
+    expect(amount).toBeDefined();
+    expect(amount!.y).toBeGreaterThan(label!.y);
+    expect(oneTime).toBeDefined();
+    expect(categoryLastLine).toBeDefined();
+    expect(oneTime!.y - categoryLastLine!.y).toBeGreaterThanOrEqual(10);
   });
 
   it('renderQuotePdf includes the From block and T&C', async () => {
