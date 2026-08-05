@@ -921,7 +921,7 @@ if strings.HasPrefix(strings.ToLower(filepath.Base(os.Args[0])), "breeze-support
 }
 ```
 
-- [ ] **Step 3: `go build ./...` + `go test -race ./internal/agentapp/` → PASS. Manual smoke on the Windows test VM (100.101.150.55) against a wt-stack: run `breeze-agent.exe support --code <code> --server <url>`, verify device appears ephemeral + session goes `ready`. Commit** — `feat(agent): quick support mode (tier 1 user-session)`
+- [ ] **Step 3: `go build ./...` + `go test -race ./internal/agentapp/` → PASS. Manual smoke on the Windows test VM (address in the `windows_test_vm` note — not recorded here, this repo is public) against a wt-stack: run `breeze-agent.exe support --code <code> --server <url>`, verify device appears ephemeral + session goes `ready`. Commit** — `feat(agent): quick support mode (tier 1 user-session)`
 
 ---
 
