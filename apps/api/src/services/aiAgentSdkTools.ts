@@ -25,6 +25,7 @@ import {
   peripheralPolicyActionEnum,
 } from '../db/schema';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
+import { INVOICE_STATUSES } from '@breeze/shared';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
@@ -201,6 +202,26 @@ export const TOOL_TIERS = {
   // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
   list_organizations: 1,
   manage_organizations: 2,      // create_org/update_org/create_site escalate to 3 in guardrails
+  // Billing / quoting / catalog / contracts (#3156). Same #2605 failure mode as
+  // the vulnerability tools: registered in the aiTools execution registry (all
+  // Tier 2 there) and reachable by external MCP clients, but never listed here
+  // — so BREEZE_MCP_TOOL_NAMES omitted them and the chat answered "I have no
+  // invoicing tool". Tier 2 mirrors the registry tier exactly; the nine reads
+  // additionally sit in TIER2_READONLY_TOOLS (#3130) so they auto-execute with
+  // an audit row instead of prompting per list call, while the two `manage_*`
+  // mutators stay prompt-on-every-action (no TIER2_ACTIONS entry) and escalate
+  // to Tier 3 for the financially-final actions via TIER3_ACTIONS.
+  list_invoices: 2,
+  get_invoice: 2,
+  manage_invoices: 2,           // issue/void/record_payment/void_payment escalate to 3 in guardrails
+  list_quotes: 2,
+  get_quote: 2,
+  list_contracts: 2,
+  get_contract: 2,
+  manage_contracts: 2,          // activate/pause/resume/cancel escalate to 3 in guardrails
+  search_catalog: 2,
+  get_catalog_item: 2,
+  lookup_distributor_product: 2,
   // M365 helpdesk tools (Delegant-backed)
   m365_lookup_user: 1,
   m365_recent_signins: 1,
@@ -2037,6 +2058,170 @@ export function createBreezeMcpServer(
         email: z.string().email().max(255).optional(),
       },
       makeHandler('manage_organizations', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Billing, quoting, catalog and contract tools (#3156). Identical failure
+    // mode to the vulnerability tools above (#2605): all eleven were registered
+    // in the aiTools execution registry (aiToolsBilling / aiToolsQuotes /
+    // aiToolsCatalog / aiToolsContracts) and served to EXTERNAL MCP clients via
+    // getToolDefinitions(), but had no tool() declaration here — so the
+    // in-product chat never saw them and answered "I don't have an invoicing
+    // tool". Worse, #3130 had already added the nine reads to
+    // TIER2_READONLY_TOOLS, an allowlist that is only consulted on the chat
+    // path (aiAgentSdk.ts), making it entirely inert.
+    //
+    // Descriptions are duplicated here, as for every other tool in this file;
+    // the aiTools* modules keep the canonical copy served to external MCP.
+    // Input shapes mirror toolInputSchemas (aiToolSchemas.ts) exactly — that is
+    // the gate executeTool validates against, and a key the model is told to
+    // send but Zod does not know is stripped silently.
+
+    tool(
+      'list_invoices',
+      'List invoices for the orgs the caller can access, newest first. Optionally filter by org or status. Each invoice includes depositDue and, when a deposit is configured, a derived depositPaid boolean. Use this for "invoices", "billing", "what do they owe", "unpaid" or "overdue" questions. Read-only.',
+      {
+        orgId: uuid.optional(),
+        status: z.enum(INVOICE_STATUSES).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('list_invoices', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_invoice',
+      'Get the full accounting view of one invoice (header plus all lines) by id. Includes depositDue and, when a deposit is configured, a derived depositPaid boolean. Read-only.',
+      {
+        invoiceId: uuid,
+      },
+      makeHandler('get_invoice', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_invoices',
+      'Create and manage invoices for orgs the caller can access: build drafts, add/edit/remove lines, delete a draft, assemble from an org or ticket, issue (finalize), void, record or void payments, and create a Stripe pay link. Issue/void/payment actions finalize financial state and require approval.',
+      {
+        action: z.enum([
+          'create_draft', 'add_manual_line', 'add_catalog_line', 'add_bundle_line', 'add_contract_line',
+          'update_line', 'remove_line', 'update_header', 'delete_draft',
+          'assemble_from_org', 'assemble_from_ticket',
+          'issue', 'void', 'record_payment', 'void_payment', 'create_pay_link',
+        ]),
+        orgId: uuid.optional(),
+        siteId: uuid.optional(),
+        invoiceId: uuid.optional(),
+        lineId: uuid.optional(),
+        paymentId: uuid.optional(),
+        catalogItemId: uuid.optional(),
+        bundleId: uuid.optional(),
+        contractId: uuid.optional(),
+        contractLineId: uuid.optional(),
+        ticketId: uuid.optional(),
+        quantity: z.number().optional(),
+        notes: z.string().optional(),
+        termsAndConditions: z.string().optional(),
+        reason: z.string().optional(),
+        reissue: z.boolean().optional(),
+        from: z.string().optional(),
+        to: z.string().optional(),
+        line: z.record(z.string(), z.unknown()).optional(),
+        patch: z.record(z.string(), z.unknown()).optional(),
+        payment: z.record(z.string(), z.unknown()).optional(),
+      },
+      makeHandler('manage_invoices', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_quotes',
+      'List quotes/proposals for the orgs the caller can access, newest first. Optionally filter by org or status. Read-only.',
+      {
+        orgId: uuid.optional(),
+        status: z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted']).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('list_quotes', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_quote',
+      'Get the full view of one quote/proposal by id: header (with derived totals, deposit and category breakdown), content blocks, and line items — the same view the web UI shows. Read-only.',
+      {
+        quoteId: uuid,
+      },
+      makeHandler('get_quote', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_contracts',
+      'List recurring contracts for the orgs the caller can access, newest first. Optionally filter by org or status. Read-only.',
+      {
+        orgId: uuid.optional(),
+        status: z.enum(['draft', 'active', 'paused', 'cancelled', 'expired']).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('list_contracts', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_contract',
+      'Get the full view of one recurring contract (header, lines, and billing-period history) by id. Read-only.',
+      {
+        contractId: uuid,
+      },
+      makeHandler('get_contract', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_contracts',
+      'Create and manage recurring contracts for orgs the caller can access: draft edits, lines, and lifecycle actions. Activate, pause, resume, and cancel actions change contract lifecycle state and require approval.',
+      {
+        action: z.enum([
+          'create_draft',
+          'update',
+          'delete_draft',
+          'add_line',
+          'remove_line',
+          'activate',
+          'pause',
+          'resume',
+          'cancel',
+        ]),
+        contractId: uuid.optional(),
+        lineId: uuid.optional(),
+        input: z.record(z.string(), z.unknown()).optional(),
+        line: z.record(z.string(), z.unknown()).optional(),
+        patch: z.record(z.string(), z.unknown()).optional(),
+      },
+      makeHandler('manage_contracts', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'search_catalog',
+      'Search the partner product catalog (hardware, software, services, and bundles). The search term matches item name, SKU, and distributor part numbers (manufacturer part number / SYNNEX SKU). Optional filters: item type, bundle flag. Read-only.',
+      {
+        search: z.string().optional(),
+        itemType: z.enum(['hardware', 'software', 'service']).optional(),
+        isBundle: z.boolean().optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('search_catalog', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_catalog_item',
+      'Get full detail for one catalog item by id, including bundle components if it is a bundle. Read-only.',
+      {
+        catalogItemId: uuid,
+      },
+      makeHandler('get_catalog_item', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'lookup_distributor_product',
+      'Live TD SYNNEX (EC Express) price & availability lookup for a SINGLE distributor SKU or manufacturer part number. Returns reseller cost, MSRP, currency, total stock, and per-warehouse availability. Read-only, but makes an outbound call to the distributor (partner-scoped). Use this to price a distributor product that is NOT yet in the catalog before adding it to a quote; for items already in the catalog use search_catalog instead.',
+      {
+        query: z.string().min(1).max(40),
+      },
+      makeHandler('lookup_distributor_product', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Microsoft 365 typed Graph read-query tools (Task 9) — registered as
