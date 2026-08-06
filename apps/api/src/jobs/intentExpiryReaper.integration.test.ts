@@ -124,7 +124,7 @@ describe('reapExpiredIntents (real PG) — status-split deadline', () => {
 
   async function seedIntent(fields: {
     status: 'pending_approval' | 'approved';
-    approvalExpiresAt: Date;
+    approvalExpiresAt: Date | null;
     releaseBy: Date | null;
     expiresAt: Date;
   }): Promise<string> {
@@ -215,6 +215,42 @@ describe('reapExpiredIntents (real PG) — status-split deadline', () => {
 
     expect(n).toBe(1);
     expect(await readStatus(id)).toBe('expired');
+  });
+
+  it('reaps a legacy pending_approval intent with a NULL approval_expires_at via the expires_at fallback', async () => {
+    // A writer that predates (or bypasses) the approval_expires_at backfill:
+    // the column is NULL, so the bare `approval_expires_at < now()`
+    // predicate this test guards against is NULL (never true in SQL) —
+    // without the COALESCE fallback this row would never be reaped.
+    const past = new Date(Date.now() - 60_000);
+
+    const id = await seedIntent({
+      status: 'pending_approval',
+      approvalExpiresAt: null,
+      releaseBy: null,
+      expiresAt: past,
+    });
+
+    const n = await withSystemDbAccessContext(() => reapExpiredIntents());
+
+    expect(n).toBe(1);
+    expect(await readStatus(id)).toBe('expired');
+  });
+
+  it('does not reap a legacy pending_approval intent with a NULL approval_expires_at whose expires_at fallback is still in the future', async () => {
+    const future = new Date(Date.now() + 3_600_000);
+
+    const id = await seedIntent({
+      status: 'pending_approval',
+      approvalExpiresAt: null,
+      releaseBy: null,
+      expiresAt: future,
+    });
+
+    const n = await withSystemDbAccessContext(() => reapExpiredIntents());
+
+    expect(n).toBe(0);
+    expect(await readStatus(id)).toBe('pending_approval');
   });
 
   it('reaps a legacy approved intent with no release_by via the expires_at fallback', async () => {

@@ -171,18 +171,50 @@ describe('intentExpiryReaper.reapExpiredIntents', () => {
     expect(recordActionIntentEvent).toHaveBeenCalledTimes(2);
   });
 
-  it('splits the deadline by status: pending_approval on approval_expires_at, approved on release_by falling back to expires_at', async () => {
+  it('splits the deadline by status: pending_approval on approval_expires_at falling back to expires_at, approved on release_by falling back to expires_at', async () => {
     executeMock.mockResolvedValueOnce({ rows: [] });
 
     await reapExpiredIntents();
 
     const query = sqlText(executeMock.mock.calls[0]?.[0]);
-    // pending_approval branch checks approval_expires_at, never expires_at.
-    expect(query).toMatch(/status\s*=\s*'pending_approval'\s+AND\s+approval_expires_at\s*<\s*now\(\)/);
+    // pending_approval branch checks approval_expires_at with an expires_at
+    // fallback for legacy writer rows that never set approval_expires_at.
+    expect(query).toContain('COALESCE( approval_expires_at ,  expires_at )');
+    expect(query).toMatch(/status\s*=\s*'pending_approval'\s+AND\s+COALESCE/);
     // approved branch checks release_by with an expires_at fallback for
     // legacy rows that predate the release-lease column.
     expect(query).toContain('COALESCE( release_by ,  expires_at )');
     expect(query).toMatch(/status\s*=\s*'approved'\s+AND\s+COALESCE/);
+  });
+
+  it('reaps a legacy pending_approval row with a NULL approval_expires_at once expires_at has passed', async () => {
+    // Legacy-writer row: approval_expires_at was never backfilled, but
+    // expires_at is the pre-split deadline and it has passed. Without the
+    // COALESCE fallback, `approval_expires_at < now()` on a NULL column is
+    // NULL (never true in SQL), so this row would never be reaped.
+    const past = new Date(Date.now() - 60_000);
+    executeMock.mockResolvedValueOnce({
+      rows: [
+        {
+          id: 'intent-legacy-null-approval-deadline',
+          org_id: 'org-1',
+          action_name: 'breeze.legacy',
+          argument_digest: 'digest-legacy',
+          source: 'chat',
+          requested_by_user_id: 'user-1',
+          expires_at: past,
+        },
+      ],
+    });
+    const chain = makeUpdateChain([]);
+    updateMock.mockReturnValue({ set: chain.set });
+
+    const reaped = await reapExpiredIntents();
+
+    expect(reaped).toBe(1);
+    expect(recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ intentId: 'intent-legacy-null-approval-deadline', outcome: 'expired' }),
+    );
   });
 
   it('the 59:59 trap: an approved intent past approval_expires_at but with releaseBy still in the future is NOT reaped', async () => {

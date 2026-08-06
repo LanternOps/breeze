@@ -29,7 +29,9 @@ import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
  *    respective deadline → `expired`. The two statuses no longer share one
  *    deadline column (tier3-supervised-four-eyes design §4.2): `pending_approval`
  *    rows expire on `approval_expires_at` (the decide-by deadline; backfilled
- *    from the legacy `expires_at` for pre-split rows, so it is never null).
+ *    from the legacy `expires_at` for pre-split rows) — falling back to
+ *    `expires_at` when `approval_expires_at IS NULL`, since some legacy
+ *    writers still leave the column unset.
  *    `approved` rows expire on `release_by` — the fixed lease the approve
  *    fan-in (`routes/approvals.ts`) stamps when it flips the intent to
  *    `approved` — falling back to `expires_at` when `release_by IS NULL`
@@ -145,13 +147,13 @@ export async function reapExpiredIntents(): Promise<number> {
       FROM ${actionIntents}
       WHERE (
         ${actionIntents.status} = 'pending_approval'
-        AND ${actionIntents.approvalExpiresAt} < now()
+        AND COALESCE(${actionIntents.approvalExpiresAt}, ${actionIntents.expiresAt}) < now()
       ) OR (
         ${actionIntents.status} = 'approved'
         AND COALESCE(${actionIntents.releaseBy}, ${actionIntents.expiresAt}) < now()
       )
       ORDER BY CASE
-        WHEN ${actionIntents.status} = 'pending_approval' THEN ${actionIntents.approvalExpiresAt}
+        WHEN ${actionIntents.status} = 'pending_approval' THEN COALESCE(${actionIntents.approvalExpiresAt}, ${actionIntents.expiresAt})
         ELSE COALESCE(${actionIntents.releaseBy}, ${actionIntents.expiresAt})
       END ASC
       LIMIT ${MAX_REAP_PER_RUN}

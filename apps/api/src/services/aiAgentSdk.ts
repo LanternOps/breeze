@@ -30,6 +30,7 @@ import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
 import { createActionIntent, waitForIntentDecision, transitionIntent } from './actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
 import { requiresDurableRelease } from './actionIntents/durableRelease';
+import { computeEffectDigest } from './actionIntents/effectDigest';
 import {
   assertNoPlaintextSecret,
   isSecretBearingTool,
@@ -1132,6 +1133,45 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               allowed: false,
               error: 'Authorization for this action could no longer be verified; it was not executed.',
             });
+          }
+
+          // Effect-digest revalidation (tier3-supervised-four-eyes design §4.1,
+          // services/actionIntents/effectDigest.ts) — mirrors the durable release
+          // worker's same-named check (jobs/intentReleaseWorker.ts) so the inline
+          // chat-session release path closes the exact same TOCTOU gap: an
+          // approver approves a REFERENCE ("run script <id>"), and the referenced
+          // content can drift during the approval window while the intent's own
+          // arguments/argumentDigest stay byte-identical. `intentRow.effectDigest`
+          // is NULL for supervised intents (never pinned) and unpinnable four_eyes
+          // intents (no resolver, or target didn't exist yet at creation) — both
+          // skip this check by design, same as the worker. Wrapped in
+          // withSystemDbAccessContext (via runOutsideDbContext, same discipline as
+          // the intentRow/winningApproval read above) because the resolver needs
+          // to read the current target row, which the ambient request context may
+          // not make visible.
+          // Truthy check (not `!== null`): the column is either NULL or a
+          // real 64-char hex digest, never falsy-but-present, so this is
+          // equivalent for real rows — and it is what correctly treats an
+          // `undefined` effectDigest (e.g. a narrower row shape) as "no
+          // stored digest, skip" rather than a spurious mismatch.
+          if (intentRow.effectDigest) {
+            const recomputedEffectDigest = await runOutsideDbContext(() =>
+              withSystemDbAccessContext(() =>
+                computeEffectDigest(intentRow.actionName, intentRow.arguments, db),
+              ),
+            );
+            if (recomputedEffectDigest !== intentRow.effectDigest) {
+              await transitionIntent(intent.id, 'executing', 'failed', {
+                errorCode: 'content_changed',
+              });
+              console.error(
+                `[AI-SDK] inline release effect-digest mismatch for intent ${intent.id}: content_changed`,
+              );
+              return await failMatchedPlanStep({
+                allowed: false,
+                error: 'The referenced content changed after approval; it was not executed.',
+              });
+            }
           }
 
           // Won the release: track the intent id so createSessionPostToolUse can

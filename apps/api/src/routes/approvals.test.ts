@@ -1473,6 +1473,7 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     requestedByUserId?: string;
     boundArgumentDigest?: string | null;
     intentDigest?: string;
+    approvalScope?: 'supervised' | 'four_eyes';
   }) {
     const approvalRow = {
       id: 'appr-1',
@@ -1507,6 +1508,10 @@ describe('Task 5: decide-handler bound to action_intents', () => {
       source: 'mcp_api',
       status: 'pending_approval',
       requestedByUserId: opts.requestedByUserId ?? 'requester-1',
+      // Defaults to four_eyes: every pre-existing test in this describe
+      // block (including the sole-operator self-approval ones) predates the
+      // tier3-supervised-four-eyes split and asserts four_eyes behavior.
+      approvalScope: opts.approvalScope ?? 'four_eyes',
     };
 
     // 1) pre-fetch select
@@ -1712,6 +1717,13 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     // #2685: the happy path must have actually re-derived the approver set,
     // not skipped the check.
     expect(resolveIntentApprovers).toHaveBeenCalledWith('org-9');
+    // Scope gate the other direction: a four_eyes sole-operator self-approval
+    // must NOT carry the supervised-only `approvalMethod` tag — that would
+    // blur the two signals this gate exists to keep apart.
+    const call = vi
+      .mocked(recordActionIntentEvent)
+      .mock.calls.find((c) => c[0]?.outcome === 'self_approved_sole_operator');
+    expect((call?.[0]?.details as Record<string, unknown> | undefined)?.approvalMethod).toBeUndefined();
   });
 
   // #2685: sole-operator status is RE-DERIVED at decide time, not inferred
@@ -1986,6 +1998,38 @@ describe('Task 6: supervised intent plain-decide branch', () => {
       'execute_command',
       { deviceId: 'dev-1', commandType: 'kill_process' },
       expect.anything(),
+    );
+  });
+
+  // Sole-operator audit-signal scope gate (finding: soleOperatorApproval must
+  // stay four_eyes-only): a supervised approve's sole approval row is ALWAYS
+  // requester === decider (Task 4's single-row fan-out), so it must NOT audit
+  // as `self_approved_sole_operator` — that outcome exists to flag the
+  // four_eyes "only eligible approver happened to be the requester" case.
+  // Supervised approves audit as ordinary `approved`, tagged with
+  // `details.approvalMethod: 'supervised_self'` so the signal is still
+  // distinguishable without polluting the four_eyes one.
+  it('audits a supervised self-approve as outcome=approved with details.approvalMethod=supervised_self, never self_approved_sole_operator', async () => {
+    mockDecideWithSupervisedIntent({});
+    mockSupervisedFanInTx();
+
+    const res = await buildApp().request('/approvals/appr-1/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+
+    expect(res.status).toBe(200);
+    expect(recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: 'org-9',
+        intentId: 'intent-sv-1',
+        outcome: 'approved',
+        details: expect.objectContaining({ approvalMethod: 'supervised_self' }),
+      }),
+    );
+    expect(recordActionIntentEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: 'self_approved_sole_operator' }),
     );
   });
 

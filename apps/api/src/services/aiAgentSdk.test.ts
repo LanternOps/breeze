@@ -143,6 +143,16 @@ vi.mock('./actionIntents/revalidateRelease', () => ({
     mockRevalidateApprovedIntentForRelease(...args),
 }));
 
+// Mocked so the inline release-CAS effect-digest recheck (mirrors
+// jobs/intentReleaseWorker.ts's same-named step) is controllable per-test
+// without wiring a real resolver's DB reads through the ../db mock. Default:
+// resolves to null (no digest computed) — irrelevant to every pre-existing
+// test in this file, since none of them set a truthy intentRow.effectDigest.
+const mockComputeEffectDigest = vi.fn((..._args: unknown[]) => Promise.resolve<string | null>(null));
+vi.mock('./actionIntents/effectDigest', () => ({
+  computeEffectDigest: (...args: unknown[]) => mockComputeEffectDigest(...args),
+}));
+
 // Real actionIntents schema is imported by aiAgentSdk for the inline system
 // read; the ../db/schema mock above only stubs approvalRequests, so stub the
 // actionIntents table object the query builder references here too.
@@ -2432,6 +2442,120 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     expect(session.currentPlanStepIndex).toBe(0);
     expect(session.eventBus.publish).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: 'plan_step_start' }),
+    );
+  });
+
+  // Effect-digest revalidation (tier3-supervised-four-eyes design §4.1): the
+  // inline chat-session release path must recompute and CAS-check the pinned
+  // effect digest exactly like the durable release worker
+  // (jobs/intentReleaseWorker.ts) does — a bare content_changed mismatch on
+  // this path used to silently execute a stale-target action.
+  it('does NOT advance and CASes to failed:content_changed when the recomputed effect digest mismatches', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-plan-digest-mismatch' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-plan-digest-mismatch', approvalRequestIds: ['appr-plan-digest-mismatch'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(true); // wins the release CAS
+    // The stored digest was pinned at approval time; the freshly-recomputed
+    // one no longer matches — the referenced content drifted underneath the
+    // approval window.
+    const selectChain: Record<string, unknown> = {
+      from: vi.fn(() => selectChain),
+      where: vi.fn(() => selectChain),
+      limit: vi.fn(async () => [
+        {
+          id: 'intent-plan-digest-mismatch',
+          boundArgumentDigest: 'digest',
+          actionName: 'execute_command',
+          arguments: { command: 'whoami' },
+          effectDigest: 'stored-digest-abc',
+        },
+      ]),
+    };
+    vi.mocked(db.select).mockReturnValue(selectChain as any);
+    mockComputeEffectDigest.mockResolvedValueOnce('recomputed-digest-xyz');
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+    });
+
+    const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+    expect(result).toEqual({
+      allowed: false,
+      error: 'The referenced content changed after approval; it was not executed.',
+    });
+    // Never executed: the plan did not advance and no plan_step_start fired.
+    expect(session.currentPlanStepIndex).toBe(0);
+    expect(session.eventBus.publish).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'plan_step_start' }),
+    );
+    // The intent was CAS'd executing -> failed with the same error_code the
+    // durable release worker uses for this exact condition.
+    expect(mockTransitionIntent).toHaveBeenCalledWith(
+      'intent-plan-digest-mismatch',
+      'executing',
+      'failed',
+      { errorCode: 'content_changed' },
+    );
+  });
+
+  // The mirror image: a stored NULL effect digest (supervised intents never
+  // pin one; unpinnable four_eyes intents skip it too) must skip the
+  // recompute entirely and let the step execute normally — proves the check
+  // is opt-in on a stored digest, not a blanket recompute-and-compare.
+  it('executes normally and never calls computeEffectDigest when the stored effect digest is null', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-plan-digest-null' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-plan-digest-null', approvalRequestIds: ['appr-plan-digest-null'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(true);
+    const selectChain: Record<string, unknown> = {
+      from: vi.fn(() => selectChain),
+      where: vi.fn(() => selectChain),
+      limit: vi.fn(async () => [
+        {
+          id: 'intent-plan-digest-null',
+          boundArgumentDigest: 'digest',
+          actionName: 'execute_command',
+          arguments: { command: 'whoami' },
+          effectDigest: null,
+        },
+      ]),
+    };
+    vi.mocked(db.select).mockReturnValue(selectChain as any);
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+    });
+
+    const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+    expect(result).toEqual({ allowed: true, intentId: 'intent-plan-digest-null' });
+    expect(session.currentPlanStepIndex).toBe(1);
+    expect(mockComputeEffectDigest).not.toHaveBeenCalled();
+    // No content_changed CAS — only the approved -> executing CAS ran.
+    expect(mockTransitionIntent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'executing',
+      'failed',
+      expect.objectContaining({ errorCode: 'content_changed' }),
     );
   });
 

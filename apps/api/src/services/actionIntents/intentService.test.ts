@@ -633,6 +633,37 @@ describe('createActionIntent — supervised/four_eyes scope', () => {
     expect(pushState.dispatchApprovalPushToTokens).not.toHaveBeenCalled();
   });
 
+  // Sole-operator audit-signal scope gate: a supervised intent's single
+  // fan-out row is ALWAYS requester-owned (Task 4's short-circuit), which is
+  // the ordinary supervised shape, not a four_eyes "only eligible approver
+  // happened to be the requester" self-approval. `details.soleOperator` on
+  // the `created` event must stay four_eyes-only or it pollutes the
+  // sole-operator audit signal with every supervised creation — see the
+  // sibling four_eyes assertion below ('four_eyes with no other active
+  // approver keeps sole-operator fallback') for the case this must NOT be
+  // confused with.
+  it('never sets details.soleOperator on a supervised intent creation, even though the row is requester-owned', async () => {
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Run a script on one or more devices',
+      approvalScope: 'supervised',
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-supervised-sole' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-supervised-sole' }]);
+
+    await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'key-supervised-sole' }));
+
+    expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: 'created',
+        details: expect.objectContaining({ soleOperator: false }),
+      }),
+    );
+  });
+
   it('four_eyes chat intent gets a 60-minute approval deadline; supervised keeps 5', async () => {
     guardrailMock.checkGuardrails.mockReturnValue({
       tier: 3,

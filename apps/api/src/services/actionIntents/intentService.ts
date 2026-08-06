@@ -637,7 +637,16 @@ export async function createActionIntent(
         ? { errorCode: creation.intent.errorCode ?? 'no_eligible_approvers' }
         : {
           approverCount: creation.approvalRequestIds.length,
-          soleOperator: creation.fanOutUserIds.length === 1 && creation.fanOutUserIds[0] === requesterId,
+          // Gated on four_eyes: supervised intents always have exactly one
+          // fan-out row owned by the requester (the short-circuit at line
+          // ~530), but that is the *normal* supervised shape, not a
+          // four_eyes sole-operator L3 self-approval — `soleOperator: true`
+          // must keep meaning the latter, or it pollutes the sole-operator
+          // audit signal with every supervised creation.
+          soleOperator:
+            approvalScope === 'four_eyes' &&
+            creation.fanOutUserIds.length === 1 &&
+            creation.fanOutUserIds[0] === requesterId,
         },
     });
   }

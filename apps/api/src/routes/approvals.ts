@@ -1307,7 +1307,17 @@ async function decideHandler(
   // reaper, or a retry already decided it — is a clean no-op: no event here,
   // but this row's own decision still committed above either way).
   if (wonIntent && updated.intentId && linkedIntent) {
-    const soleOperatorApproval = status === 'approved' && linkedIntent.requestedByUserId === userId;
+    // Gated on four_eyes: a supervised intent's sole approval row is ALWAYS
+    // owned by the requester (the supervised short-circuit above, enforced
+    // by the identity gate at the top of this handler), so "requester ===
+    // decider" is true for EVERY supervised approve, not just the four_eyes
+    // "only eligible approver happened to be the requester" case. Letting
+    // that through here would mean `self_approved_sole_operator` — and the
+    // audit signal built on it — fires on ordinary supervised approves,
+    // burying the four_eyes L3 self-approval signal it exists to isolate.
+    const isSelfApprove = status === 'approved' && linkedIntent.requestedByUserId === userId;
+    const soleOperatorApproval = isSelfApprove && linkedIntent.approvalScope === 'four_eyes';
+    const supervisedSelfApproval = isSelfApprove && linkedIntent.approvalScope === 'supervised';
     recordActionIntentEvent({
       orgId: linkedIntent.orgId,
       intentId: updated.intentId,
@@ -1324,6 +1334,7 @@ async function decideHandler(
         approvalRequestId: updated.id,
         decidedAssuranceLevel: assurance.decidedAssuranceLevel,
         decidedVia: assurance.decidedVia,
+        ...(supervisedSelfApproval ? { approvalMethod: 'supervised_self' as const } : {}),
       },
     });
   }
