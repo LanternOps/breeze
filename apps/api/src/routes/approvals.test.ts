@@ -68,6 +68,33 @@ vi.mock('../services/actionIntents/metrics', () => ({
   recordActionIntentEvent: vi.fn(),
 }));
 
+// Task 6: the supervised branch re-checks live RBAC for the underlying tool
+// action via checkToolPermission (aiGuardrails) + buildAuthContextForIntent
+// (actorContext) — mocked wholesale for the SAME reason intentService is
+// above: the real aiGuardrails.ts pulls in ../aiTools's whole dependency
+// graph, which this file's narrow ../services/permissions mock can't support.
+// Defaults are the PERMISSIVE case (a still-authorized requester); the
+// RBAC-revoked test overrides checkToolPermission to return a denial string.
+vi.mock('../services/aiGuardrails', () => ({
+  checkToolPermission: vi.fn(async () => null),
+}));
+
+vi.mock('../services/actionIntents/actorContext', () => ({
+  buildAuthContextForIntent: vi.fn(async () => ({
+    principal: { kind: 'user_session' },
+    user: { id: '00000000-0000-0000-0000-000000000001', email: 'req@example.com', name: 'Requester', isPlatformAdmin: false },
+    token: { sub: '00000000-0000-0000-0000-000000000001', email: 'req@example.com', roleId: 'role-1', orgId: 'org-9', partnerId: null, scope: 'organization', type: 'access', mfa: true },
+    partnerId: null,
+    orgId: 'org-9',
+    scope: 'organization',
+    accessibleOrgIds: ['org-9'],
+    orgCondition: () => undefined,
+    canAccessOrg: () => true,
+    allowedSiteIds: null,
+    canAccessSite: () => true,
+  })),
+}));
+
 // #2685: the decide handler RE-DERIVES the eligible approver set before
 // permitting a self-approve, instead of inferring sole-operator status from
 // "a requester-owned row exists". Default: the deciding user is the only
@@ -217,6 +244,8 @@ import { requireCurrentPasswordStepUp } from './auth/helpers';
 import { recordActionIntentEvent } from '../services/actionIntents/metrics';
 import { getUserPermissions, userCanDecideApprovals, canAccessOrg } from '../services/permissions';
 import { resolveIntentApprovers } from '../services/actionIntents/intentApprovers';
+import { checkToolPermission } from '../services/aiGuardrails';
+import { buildAuthContextForIntent } from '../services/actionIntents/actorContext';
 
 function buildApp() {
   const app = new Hono();
@@ -232,15 +261,18 @@ function mockUpdateReturning(rows: unknown[]) {
   return set;
 }
 
-// Wires the decideHandler flow: a pre-fetch select followed by the CAS update.
-// Returns the captured `.set(...)` argument so callers can assert the factor
-// columns persisted alongside status/decidedAt.
+// Wires the decideHandler flow: a pre-fetch select followed by the Task 6
+// atomic decide-write transaction (ONE `db.transaction` call, whose `tx` does
+// a SINGLE `.update(approvalRequests)` for the approval-row CAS — the plain,
+// non-intent/non-execution/non-elevation-linked case). Returns the captured
+// `.set(...)` argument so callers can assert the factor columns persisted
+// alongside status/decidedAt.
 //
-// Uses persistent `mockReturnValue` (NOT `mockReturnValueOnce`) on purpose:
-// `vi.clearAllMocks()` in beforeEach clears call history but does NOT drain a
-// queued `mockReturnValueOnce`, so an early-return decide case (404/409/410
-// never reaches the update) would otherwise leave an unconsumed update-once in
-// the queue and poison a later test's `db.update`.
+// Uses persistent `mockReturnValue`/`mockImplementation` (NOT the `Once`
+// variants) on purpose: `vi.clearAllMocks()` in beforeEach clears call history
+// but does NOT drain a queued `mockReturnValueOnce`, so an early-return decide
+// case (404/409/410 never opens the transaction at all) would otherwise leave
+// an unconsumed once-mock in the queue and poison a later test.
 function mockDecideFlow(opts: {
   existing: unknown | null;
   updateReturns: unknown[];
@@ -252,14 +284,45 @@ function mockDecideFlow(opts: {
     }),
   } as any);
 
-  // 2) CAS update — capture the set arg
+  // 2) the atomic decide-write transaction — capture the tx.update `.set(...)` arg
   const set = vi.fn().mockReturnValue({
     where: vi.fn().mockReturnValue({
       returning: vi.fn().mockResolvedValue(opts.updateReturns),
     }),
   });
-  vi.mocked(db.update).mockReturnValue({ set } as any);
+  const tx = { update: vi.fn(() => ({ set })) };
+  vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
   return set;
+}
+
+// Wires the Task 6 atomic decide-write tx with TWO sequential `tx.update`
+// calls: (1) the approval-row CAS, (2) the ai_tool_executions mirror. Used by
+// both the approve and deny ai_tool_executions-mirror tests.
+function mockDecideTxWithExecutionMirror(opts: {
+  linkedRow: unknown;
+  aiReturning: unknown[];
+}) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue([{ ...(opts.linkedRow as object), status: 'pending' }]),
+    }),
+  } as any);
+  const approvalReturning = vi.fn().mockResolvedValue([opts.linkedRow]);
+  const approvalSet = vi.fn().mockReturnValue({
+    where: vi.fn().mockReturnValue({ returning: approvalReturning }),
+  });
+  const aiReturning = vi.fn().mockResolvedValue(opts.aiReturning);
+  const aiSet = vi.fn().mockReturnValue({
+    where: vi.fn().mockReturnValue({ returning: aiReturning }),
+  });
+  const tx = {
+    update: vi
+      .fn()
+      .mockReturnValueOnce({ set: approvalSet } as any) // 1) approval_requests CAS
+      .mockReturnValueOnce({ set: aiSet } as any), // 2) ai_tool_executions mirror
+  };
+  vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+  return { approvalSet, aiSet, aiReturning };
 }
 
 function mockSelectResolves(rows: unknown[]) {
@@ -313,6 +376,22 @@ beforeEach(() => {
   // #2685: re-establish the "decider is still the only eligible approver"
   // default after clearAllMocks wipes the factory implementation.
   vi.mocked(resolveIntentApprovers).mockResolvedValue([TEST_USER.id]);
+  // Task 6: re-establish the supervised-branch live-RBAC defaults (permissive)
+  // after clearAllMocks wipes the factory implementation.
+  vi.mocked(checkToolPermission).mockResolvedValue(null);
+  vi.mocked(buildAuthContextForIntent).mockResolvedValue({
+    principal: { kind: 'user_session' },
+    user: { id: TEST_USER.id, email: TEST_USER.email, name: TEST_USER.name, isPlatformAdmin: false },
+    token: { sub: TEST_USER.id, email: TEST_USER.email, roleId: 'role-1', orgId: 'org-9', partnerId: null, scope: 'organization', type: 'access', mfa: true },
+    partnerId: null,
+    orgId: 'org-9',
+    scope: 'organization',
+    accessibleOrgIds: ['org-9'],
+    orgCondition: () => undefined,
+    canAccessOrg: () => true,
+    allowedSiteIds: null,
+    canAccessSite: () => true,
+  } as any);
   vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
     c.set('auth', {
       scope: 'partner',
@@ -590,24 +669,10 @@ describe('POST /approvals/:id/approve', () => {
 
   it('mirrors approval to ai_tool_executions when executionId is linked', async () => {
     const linkedRow = { ...updatedRow, executionId: 'exec-42' };
-    // Pre-fetch select returns the pending row; first update (approval_requests)
-    // returns the row; second update (ai_tool_executions) just resolves.
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([{ ...linkedRow, status: 'pending' }]),
-      }),
-    } as any);
-    const aiReturning = vi.fn().mockResolvedValue([{ id: 'exec-42' }]);
-    const aiSet = vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({ returning: aiReturning }),
+    const { approvalSet, aiSet } = mockDecideTxWithExecutionMirror({
+      linkedRow,
+      aiReturning: [{ id: 'exec-42' }],
     });
-    const approvalReturning = vi.fn().mockResolvedValue([linkedRow]);
-    const approvalSet = vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({ returning: approvalReturning }),
-    });
-    vi.mocked(db.update)
-      .mockReturnValueOnce({ set: approvalSet } as any)
-      .mockReturnValueOnce({ set: aiSet } as any);
 
     const res = await buildApp().request('/approvals/a1/approve', { method: 'POST' });
     expect(res.status).toBe(200);
@@ -624,22 +689,7 @@ describe('POST /approvals/:id/approve', () => {
     // source of truth and correctly recorded THIS decision, so the decide
     // call must still succeed; only the mirror silently lost the race.
     const linkedRow = { ...updatedRow, executionId: 'exec-42' };
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([{ ...linkedRow, status: 'pending' }]),
-      }),
-    } as any);
-    const aiReturning = vi.fn().mockResolvedValue([]);
-    const aiSet = vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({ returning: aiReturning }),
-    });
-    const approvalReturning = vi.fn().mockResolvedValue([linkedRow]);
-    const approvalSet = vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({ returning: approvalReturning }),
-    });
-    vi.mocked(db.update)
-      .mockReturnValueOnce({ set: approvalSet } as any)
-      .mockReturnValueOnce({ set: aiSet } as any);
+    const { aiReturning } = mockDecideTxWithExecutionMirror({ linkedRow, aiReturning: [] });
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const res = await buildApp().request('/approvals/a1/approve', { method: 'POST' });
@@ -1082,22 +1132,10 @@ describe('POST /approvals/:id/deny', () => {
       executionId: 'exec-77',
       createdAt: new Date(),
     };
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([{ ...deniedRow, status: 'pending' }]),
-      }),
-    } as any);
-    const aiReturning = vi.fn().mockResolvedValue([{ id: 'exec-77' }]);
-    const aiSet = vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({ returning: aiReturning }),
+    const { aiSet } = mockDecideTxWithExecutionMirror({
+      linkedRow: deniedRow,
+      aiReturning: [{ id: 'exec-77' }],
     });
-    const approvalReturning = vi.fn().mockResolvedValue([deniedRow]);
-    const approvalSet = vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({ returning: approvalReturning }),
-    });
-    vi.mocked(db.update)
-      .mockReturnValueOnce({ set: approvalSet } as any)
-      .mockReturnValueOnce({ set: aiSet } as any);
 
     const res = await buildApp().request('/approvals/a1/deny', {
       method: 'POST',
@@ -1112,12 +1150,14 @@ describe('POST /approvals/:id/deny', () => {
 });
 
 describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
-  // Builds a tx stub for db.transaction(fn). `elevationUpdateRows` is what the
-  // elevation CAS returns ([] = lost the race). The tx now does ONLY the
-  // elevation CAS (.update) + the audit insert (.values) — the sibling-expiry
-  // moved OUT of the tx to a post-commit system-scoped db.update (see
-  // mockSiblingExpireUpdate). Captures the elevation .set arg and the
-  // elevationAudit .values arg.
+  // Builds a tx stub for the SECOND db.transaction(fn) call — the elevation
+  // mirror tx, which runs AFTER the Task 6 atomic decide-write tx (registered
+  // by mockDecideWithElevation below, consumed first via mockImplementationOnce
+  // ordering). `elevationUpdateRows` is what the elevation CAS returns ([] =
+  // lost the race). The tx does ONLY the elevation CAS (.update) + the audit
+  // insert (.values) — the sibling-expiry runs post-commit as a separate,
+  // system-scoped db.update (see mockDecideWithElevation's siblingExpireSet).
+  // Captures the elevation .set arg and the elevationAudit .values arg.
   function mockElevationTx(elevationUpdateRows: unknown[]) {
     const elevationSet = vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(elevationUpdateRows) }),
@@ -1127,17 +1167,17 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
       update: vi.fn(() => ({ set: elevationSet } as any)),
       insert: vi.fn(() => ({ values: auditValues } as any)),
     };
-    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+    vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(tx));
     return { elevationSet, auditValues };
   }
 
-  // The decideHandler pre-fetch select + the approval_requests CAS update. The
-  // updated row carries elevationRequestId so the mirror block runs.
-  //
-  // On the win path the route now calls db.update TWICE: first the
-  // approval_requests CAS (inside decideHandler), then the post-commit
-  // system-scoped sibling-expiry. Wire both via mockReturnValueOnce so the
-  // sibling set arg is captured separately; return that captured set.
+  // The decideHandler pre-fetch select + the Task 6 atomic decide-write
+  // transaction (the FIRST db.transaction call — approval_requests CAS only,
+  // since an elevation-linked row never carries executionId/intentId), then
+  // the post-commit system-scoped sibling-expiry (a plain db.update, outside
+  // any tx). The updated row carries elevationRequestId so the elevation
+  // mirror block runs next (wired separately by mockElevationTx, the SECOND
+  // db.transaction call).
   function mockDecideWithElevation(opts: { status: 'pending'; riskTier: string; elevationRequestId: string | null }) {
     const updatedRow = {
       id: 'appr-1',
@@ -1163,14 +1203,14 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
         where: vi.fn().mockResolvedValue([{ ...updatedRow, status: 'pending' }]),
       }),
     } as any);
-    // 1) approval_requests CAS update
+    // 1) the atomic decide-write tx — ONE tx.update call (approval_requests CAS)
     const casReturning = vi.fn().mockResolvedValue([updatedRow]);
     const casSet = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: casReturning }) });
+    const mainTx = { update: vi.fn(() => ({ set: casSet } as any)) };
+    vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(mainTx));
     // 2) post-commit sibling-expiry (system scope) — a terminal .set().where()
     const siblingExpireSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
-    vi.mocked(db.update)
-      .mockReturnValueOnce({ set: casSet } as any)
-      .mockReturnValueOnce({ set: siblingExpireSet } as any);
+    vi.mocked(db.update).mockReturnValueOnce({ set: siblingExpireSet } as any);
     return { updatedRow, casSet, siblingExpireSet };
   }
 
@@ -1180,7 +1220,7 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
 
     const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
     expect(res.status).toBe(200);
-    expect(db.transaction).toHaveBeenCalledOnce();
+    expect(db.transaction).toHaveBeenCalledTimes(2);
     expect(tx.elevationSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'approved', approvedByUserId: TEST_USER.id }),
     );
@@ -1235,7 +1275,10 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
 
     const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
     expect(res.status).toBe(200);
-    expect(db.transaction).not.toHaveBeenCalled();
+    // Only the Task 6 atomic decide-write tx opens (the approval CAS) — the
+    // elevation-specific mirror transaction never does, since there is no
+    // elevationRequestId to mirror.
+    expect(db.transaction).toHaveBeenCalledTimes(1);
   });
 
   it('mirror failure is non-fatal: decide still returns 200', async () => {
@@ -1248,14 +1291,19 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
 });
 
 describe('Task 5: decide-handler bound to action_intents', () => {
+  // Shared between mockDecideWithIntent and mockIntentFanInTx (below) so the
+  // fan-in tx's approval-row CAS return value matches the row the pre-fetch
+  // select produced, without threading it through every call site.
+  let lastApprovalRow: Record<string, unknown> | undefined;
+
   // Wires the decideHandler flow for an intent-linked approval row:
   //   1) pre-fetch select (approval_requests, carries intentId + boundArgumentDigest)
   //   2) intent load select (action_intents, by id, system context)
-  //   3) approval_requests CAS update (the deciding user's OWN approval — the
-  //      Task 6 intent CAS is separate, done inline in the fan-in transaction
-  //      wired by mockIntentFanInTx). requestedByUserId defaults to someone
-  //      OTHER than TEST_USER so the sole-operator gate doesn't fire unless a
-  //      test opts in.
+  // The approval_requests CAS itself now runs inline as the FIRST tx.update
+  // call inside the Task 6 atomic decide-write transaction — wired by
+  // mockIntentFanInTx below, not here. requestedByUserId defaults to someone
+  // OTHER than TEST_USER so the sole-operator gate doesn't fire unless a
+  // test opts in.
   function mockDecideWithIntent(opts: {
     riskTier?: string;
     requestedByUserId?: string;
@@ -1310,41 +1358,51 @@ describe('Task 5: decide-handler bound to action_intents', () => {
       }),
     } as any);
 
-    // 3) approval_requests CAS update
-    const casReturning = vi.fn().mockResolvedValue([{ ...approvalRow, status: 'approved' }]);
-    const casSet = vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({ returning: casReturning }),
-    });
-    vi.mocked(db.update).mockReturnValueOnce({ set: casSet } as any);
-
-    return { approvalRow, intentRow, casSet };
+    lastApprovalRow = approvalRow;
+    return { approvalRow, intentRow };
   }
 
-  // Task 6: the whole intent fan-in — the intent CAS (inline, was
-  // transitionIntent), sibling expiry, and the intent_approved outbox insert —
-  // runs inside ONE `db.transaction` under system context. The tx does TWO
-  // updates in order (1: action_intents CAS with `.returning({ id })`, 2:
-  // approval_requests sibling expiry) plus, on approve, one intent_outbox
-  // insert. `casWins` controls whether the CAS RETURNING is non-empty; when it
-  // loses the race the handler returns early inside the tx (no sibling expiry,
-  // no outbox, no metrics).
+  // Task 6: the WHOLE decision write for an intent-linked row — the
+  // approval_requests CAS, the intent CAS (inline, was transitionIntent),
+  // sibling expiry, and the intent_approved outbox insert — runs inside ONE
+  // `db.transaction` under system context. The tx does up to THREE updates in
+  // order (1: approval_requests CAS for the deciding user's own row, 2:
+  // action_intents CAS with `.returning({ id })`, 3: approval_requests
+  // sibling expiry) plus, on approve, one intent_outbox insert. `casWins`
+  // controls whether the intent CAS RETURNING is non-empty; when it loses the
+  // race the handler returns early inside the tx (no sibling expiry, no
+  // outbox, no metrics) — the approval_requests CAS itself still always wins
+  // (this row is exclusively owned by the deciding user).
   function mockIntentFanInTx(opts: { casWins?: boolean } = {}) {
     const casWins = opts.casWins ?? true;
+
+    // 1) approval_requests CAS (the deciding user's own row)
+    const approvalCasReturning = vi
+      .fn()
+      .mockResolvedValue([{ ...(lastApprovalRow ?? {}), status: 'approved' }]);
+    const approvalCasSet = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: approvalCasReturning }),
+    });
+
+    // 2) intent CAS
     const casReturning = vi.fn().mockResolvedValue(casWins ? [{ id: 'intent-1' }] : []);
     const intentCasSet = vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({ returning: casReturning }),
     });
+
+    // 3) sibling expiry
     const siblingSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
     const outboxValues = vi.fn().mockResolvedValue(undefined);
     const tx = {
       update: vi
         .fn()
-        .mockReturnValueOnce({ set: intentCasSet } as any) // 1) intent CAS
-        .mockReturnValueOnce({ set: siblingSet } as any), // 2) sibling expiry
+        .mockReturnValueOnce({ set: approvalCasSet } as any) // 1) approval_requests CAS
+        .mockReturnValueOnce({ set: intentCasSet } as any) // 2) intent CAS
+        .mockReturnValueOnce({ set: siblingSet } as any), // 3) sibling expiry
       insert: vi.fn(() => ({ values: outboxValues }) as any),
     };
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
-    return { intentCasSet, siblingSet, outboxValues, tx };
+    return { approvalCasSet, intentCasSet, siblingSet, outboxValues, tx };
   }
 
   it('approving an intent-linked row transitions the intent, writes an intent_approved outbox row, and expires siblings', async () => {
@@ -1624,10 +1682,335 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     const res = await buildApp().request('/approvals/a1/approve', { method: 'POST' });
     expect(res.status).toBe(200);
     expect(set).toHaveBeenCalled();
-    expect(db.transaction).not.toHaveBeenCalled();
+    // The Task 6 atomic decide-write tx always opens (even for a plain row —
+    // it's what performs the approval-row CAS), but with only ONE tx.update
+    // call: no intent CAS, no sibling expiry, no outbox insert.
+    expect(db.transaction).toHaveBeenCalledTimes(1);
     expect(recordActionIntentEvent).not.toHaveBeenCalled();
-    // Only the pre-fetch + CAS selects/updates ran — no intent load select.
+    // Only the pre-fetch select ran — no intent load select.
     expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Task 6: supervised intent plain-decide branch', () => {
+  // Shared with mockIntentFanInTx-style wiring below: the approval_requests
+  // CAS return value must match the row the pre-fetch select produced.
+  let lastApprovalRow: Record<string, unknown> | undefined;
+
+  // Wires the decideHandler flow for a SUPERVISED intent-linked approval row
+  // (exactly one approval row, owned by the requester — Task 4). Defaults
+  // requestedByUserId to TEST_USER.id (the common case: the requester IS the
+  // decider); the non-requester test overrides it.
+  function mockDecideWithSupervisedIntent(opts: {
+    riskTier?: string;
+    requestedByUserId?: string;
+    decidingUserId?: string;
+  }) {
+    const decidingUserId = opts.decidingUserId ?? TEST_USER.id;
+    const approvalRow = {
+      id: 'appr-1',
+      userId: decidingUserId,
+      requestingClientLabel: 'Breeze AI',
+      requestingMachineLabel: null,
+      requestingClientId: null,
+      requestingSessionId: null,
+      actionLabel: 'x',
+      actionToolName: 'execute_command',
+      actionArguments: { deviceId: 'dev-1', commandType: 'kill_process' },
+      riskTier: opts.riskTier ?? 'high',
+      riskSummary: 'z',
+      status: 'pending',
+      expiresAt: new Date(Date.now() + 60_000),
+      decidedAt: null,
+      decisionReason: null,
+      executionId: null,
+      elevationRequestId: null,
+      intentId: 'intent-sv-1',
+      boundArgumentDigest: 'digest-abc',
+      isRecursive: false,
+      createdAt: new Date(),
+    };
+
+    const intentRow = {
+      id: 'intent-sv-1',
+      orgId: 'org-9',
+      actionName: 'execute_command',
+      arguments: { deviceId: 'dev-1', commandType: 'kill_process' },
+      argumentDigest: 'digest-abc',
+      source: 'chat',
+      status: 'pending_approval',
+      approvalScope: 'supervised',
+      requestedByUserId: opts.requestedByUserId ?? decidingUserId,
+    };
+
+    // 1) pre-fetch select (filtered to the DECIDING user's own row)
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([approvalRow]),
+      }),
+    } as any);
+    // 2) intent load select (system context, by id)
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([intentRow]),
+      }),
+    } as any);
+
+    lastApprovalRow = approvalRow;
+    return { approvalRow, intentRow };
+  }
+
+  // Wires the Task 6 atomic decide-write tx for the supervised happy path:
+  // approval_requests CAS, intent CAS (+ release_by on approve), sibling
+  // expiry (a no-op here — supervised has no siblings), and the
+  // intent_approved outbox insert on approve.
+  function mockSupervisedFanInTx() {
+    const approvalCasReturning = vi
+      .fn()
+      .mockResolvedValue([{ ...(lastApprovalRow ?? {}), status: 'approved' }]);
+    const approvalCasSet = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: approvalCasReturning }),
+    });
+    const intentCasReturning = vi.fn().mockResolvedValue([{ id: 'intent-sv-1' }]);
+    const intentCasSet = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: intentCasReturning }),
+    });
+    const siblingSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    const outboxValues = vi.fn().mockResolvedValue(undefined);
+    const tx = {
+      update: vi
+        .fn()
+        .mockReturnValueOnce({ set: approvalCasSet } as any)
+        .mockReturnValueOnce({ set: intentCasSet } as any)
+        .mockReturnValueOnce({ set: siblingSet } as any),
+      insert: vi.fn(() => ({ values: outboxValues }) as any),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+    return { approvalCasSet, intentCasSet, siblingSet, outboxValues };
+  }
+
+  it('supervised requester approves with no assertion', async () => {
+    mockDecideWithSupervisedIntent({});
+    mockSupervisedFanInTx();
+
+    const res = await buildApp().request('/approvals/appr-1/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+
+    expect(res.status).toBe(200);
+    // The whole assertion/assurance ladder is skipped for a supervised
+    // self-decide — no WebAuthn challenge is ever verified.
+    expect(assertApprovalAssurance).not.toHaveBeenCalled();
+    // The live-RBAC re-check DOES run (approve only), against the underlying
+    // tool action — not approvals:decide.
+    expect(buildAuthContextForIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'intent-sv-1', actionName: 'execute_command' }),
+    );
+    expect(checkToolPermission).toHaveBeenCalledWith(
+      'execute_command',
+      { deviceId: 'dev-1', commandType: 'kill_process' },
+      expect.anything(),
+    );
+  });
+
+  it('records session_tap/L1 (no proof consumed) on a supervised approve', async () => {
+    mockDecideWithSupervisedIntent({});
+    const { approvalCasSet } = mockSupervisedFanInTx();
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(approvalCasSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'approved',
+        decidedVia: 'session_tap',
+        decidedAssuranceLevel: 1,
+        authenticatorDeviceId: null,
+      }),
+    );
+  });
+
+  it('supervised row rejects a NON-requester decide even with approvals:decide', async () => {
+    // The row's userId happens to be the deciding user (Shape-6 self-visibility
+    // in production would otherwise 404 this for anyone else — see the not_requester
+    // gate's own comment), but the intent's requestedByUserId is a DIFFERENT
+    // user, simulating a non-requester somehow reaching this row.
+    mockDecideWithSupervisedIntent({ requestedByUserId: 'someone-else' });
+    // Holding approvals:decide must NOT substitute for the identity check.
+    vi.mocked(userCanDecideApprovals).mockReturnValue(true);
+    vi.mocked(canAccessOrg).mockReturnValue(true);
+
+    const res = await buildApp().request('/approvals/appr-1/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('not_requester');
+    // Fails closed before ever touching the assurance ladder or the write tx.
+    expect(assertApprovalAssurance).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('a non-requester supervised DENY is also refused (identity gate is unconditional)', async () => {
+    mockDecideWithSupervisedIntent({ requestedByUserId: 'someone-else' });
+
+    const res = await buildApp().request('/approvals/appr-1/deny', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'no' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('not_requester');
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('supervised approve re-checks live RBAC for the underlying tool action and refuses when it was revoked', async () => {
+    mockDecideWithSupervisedIntent({});
+    // Simulate devices:execute having been revoked from the requester between
+    // intent creation and decide.
+    vi.mocked(checkToolPermission).mockResolvedValueOnce(
+      'Insufficient permissions: requires devices.execute',
+    );
+
+    const res = await buildApp().request('/approvals/appr-1/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('forbidden');
+    // Refused BEFORE the write transaction and before the (skipped) assurance
+    // ladder would have run.
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(assertApprovalAssurance).not.toHaveBeenCalled();
+    expect(recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intentId: 'intent-sv-1',
+        outcome: 'approver_unauthorized',
+        details: expect.objectContaining({ errorCode: 'rbac_denied' }),
+      }),
+    );
+  });
+
+  it('a supervised DENY is never blocked by a revoked tool permission (deny is harmless)', async () => {
+    mockDecideWithSupervisedIntent({});
+    mockSupervisedFanInTx();
+    // NOTE: deliberately NOT queuing a checkToolPermission denial here — the
+    // assertion below is that checkToolPermission is never even CALLED on a
+    // deny, so a queued `mockResolvedValueOnce` would go unconsumed and poison
+    // a later test's call to the same mock (the exact trap this file's other
+    // helpers document).
+
+    const res = await buildApp().request('/approvals/appr-1/deny', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'changed my mind' }),
+    });
+
+    expect(res.status).toBe(200);
+    // checkToolPermission is gated to approve-only, so it's never even called
+    // on a deny.
+    expect(checkToolPermission).not.toHaveBeenCalled();
+  });
+
+  it('supervised approve never requires approvals:decide (the four_eyes RBAC re-check never runs)', async () => {
+    mockDecideWithSupervisedIntent({});
+    mockSupervisedFanInTx();
+    // A requester with NO approvals:decide permission whatsoever — the
+    // four_eyes decider-RBAC re-check would refuse this, but supervised must
+    // never call it at all. NOTE: deliberately not queuing a
+    // getUserPermissions override here — it's asserted below to never be
+    // called, so a queued `mockResolvedValueOnce` would go unconsumed and
+    // poison a later test (the same trap `checkToolPermission` had above).
+    vi.mocked(userCanDecideApprovals).mockReturnValue(false);
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(getUserPermissions).not.toHaveBeenCalled();
+    expect(userCanDecideApprovals).not.toHaveBeenCalled();
+    expect(resolveIntentApprovers).not.toHaveBeenCalled();
+    // Restore the permissive default — this mock is set with a persistent
+    // (not "Once") override above, and a later test's four_eyes branch DOES
+    // call userCanDecideApprovals.
+    vi.mocked(userCanDecideApprovals).mockReturnValue(true);
+  });
+
+  it('four_eyes rows keep the assurance gate (unaffected by the supervised branch)', async () => {
+    // An explicit four_eyes intent (approvalScope set, not merely absent) —
+    // confirms the else-branch is still reached and still runs the full
+    // assertion/assurance ladder.
+    const approvalRow = {
+      id: 'appr-fe-1',
+      userId: TEST_USER.id,
+      requestingClientLabel: 'MCP API client',
+      requestingMachineLabel: null,
+      requestingClientId: null,
+      requestingSessionId: null,
+      actionLabel: 'x',
+      actionToolName: 'y',
+      actionArguments: {},
+      riskTier: 'high',
+      riskSummary: 'z',
+      status: 'pending',
+      expiresAt: new Date(Date.now() + 60_000),
+      decidedAt: null,
+      decisionReason: null,
+      executionId: null,
+      elevationRequestId: null,
+      intentId: 'intent-fe-1',
+      boundArgumentDigest: 'digest-abc',
+      isRecursive: false,
+      createdAt: new Date(),
+    };
+    const intentRow = {
+      id: 'intent-fe-1',
+      orgId: 'org-9',
+      actionName: 'y',
+      arguments: {},
+      argumentDigest: 'digest-abc',
+      source: 'mcp_api',
+      status: 'pending_approval',
+      approvalScope: 'four_eyes',
+      requestedByUserId: 'requester-1',
+    };
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([approvalRow]) }),
+    } as any);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([intentRow]) }),
+    } as any);
+    const approvalCasReturning = vi.fn().mockResolvedValue([{ ...approvalRow, status: 'approved' }]);
+    const approvalCasSet = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: approvalCasReturning }),
+    });
+    const intentCasSet = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'intent-fe-1' }]) }),
+    });
+    const siblingSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    const tx = {
+      update: vi
+        .fn()
+        .mockReturnValueOnce({ set: approvalCasSet } as any)
+        .mockReturnValueOnce({ set: intentCasSet } as any)
+        .mockReturnValueOnce({ set: siblingSet } as any),
+      insert: vi.fn(() => ({ values: vi.fn().mockResolvedValue(undefined) }) as any),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    const res = await buildApp().request('/approvals/appr-fe-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(assertApprovalAssurance).toHaveBeenCalledWith(
+      expect.objectContaining({ approvalId: 'appr-fe-1', userId: TEST_USER.id }),
+    );
+    expect(buildAuthContextForIntent).not.toHaveBeenCalled();
+    expect(checkToolPermission).not.toHaveBeenCalled();
   });
 });
 

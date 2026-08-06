@@ -223,7 +223,8 @@ const pendingIntentBySession = new WeakMap<ActiveSession, string>();
  */
 type ApprovalMethod =
   | 'per_step_user' // human decided the lightweight Tier-2 approval card
-  | 'action_intent' // durable Tier-3 intent decided via the approvals surface
+  | 'action_intent' // durable Tier-3 four_eyes intent decided via the approvals surface
+  | 'supervised_self' // Task 6: durable Tier-3 SUPERVISED intent self-decided by the requester (no external approver, no assertion — tier3-supervised-four-eyes split design §4.2)
   | 'pam' // helper session — PAM elevation policy/approver decision
   | 'plan_step' // pre-authorized step of a human-approved action plan
   | 'auto_approve_mode' // session runs auto_approve; Tier 2 executes unprompted
@@ -233,9 +234,12 @@ const lastApprovalBySession = new WeakMap<ActiveSession, { toolName: string; met
 // Methods that represent an explicit decision on this specific call (a human
 // approver, or the PAM policy ceremony for helper sessions). Plan steps count:
 // the user approved exactly this step (digest-matched) when approving the plan.
+// `supervised_self` counts too — the requester explicitly decided this call,
+// just without an external approver or assertion.
 const DECIDED_APPROVAL_METHODS: ReadonlySet<ApprovalMethod> = new Set([
   'per_step_user',
   'action_intent',
+  'supervised_self',
   'pam',
   'plan_step',
 ]);
@@ -1422,10 +1426,16 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
     if (guardrailCheck.tier >= 2) {
       // Reaching here inside the tier>=2 block means the call was explicitly
       // decided: the durable tier-3 intent flow (approver via the approvals
-      // surface) or the tier-2 lightweight card (user clicked Approve).
+      // surface, or the requester self-deciding a SUPERVISED intent — Task 6)
+      // or the tier-2 lightweight card (user clicked Approve).
       lastApprovalBySession.set(session, {
         toolName,
-        method: guardrailCheck.tier >= 3 ? 'action_intent' : 'per_step_user',
+        method:
+          guardrailCheck.tier >= 3
+            ? guardrailCheck.approvalScope === 'supervised'
+              ? 'supervised_self'
+              : 'action_intent'
+            : 'per_step_user',
       });
     }
     return { allowed: true, intentId: createdIntentId };

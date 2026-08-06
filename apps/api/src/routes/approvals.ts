@@ -13,10 +13,18 @@ import { auditLogs } from '../db/schema/audit';
 import { actionIntents, intentOutbox, type ActionIntent, type ActionIntentStatus } from '../db/schema/actionIntents';
 import { dispatchApprovalPush } from '../services/expoPush';
 import { revokeUserOauthClient } from './lifecycle';
-import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
+import {
+  assertApprovalAssurance,
+  resolveApprovalAssurance,
+  StepUpRequiredError,
+  ReauthRequiredError,
+  type AssuranceDecision,
+} from '../services/authenticatorAssurance';
 import { recordActionIntentEvent } from '../services/actionIntents/metrics';
 import { RELEASE_LEASE_MS } from '../services/actionIntents/intentService';
 import { resolveIntentApprovers } from '../services/actionIntents/intentApprovers';
+import { buildAuthContextForIntent } from '../services/actionIntents/actorContext';
+import { checkToolPermission } from '../services/aiGuardrails';
 import { getUserPermissions, userCanDecideApprovals, canAccessOrg } from '../services/permissions';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import { issueMobileAssertionNonce } from '../services/mobileHwKey';
@@ -320,18 +328,24 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
     // rows belong to OTHER approvers, invisible to this user's request context.
     if (existing.intentId) {
       const intentId = existing.intentId;
+      // Atomic reject fan-in: the intent CAS (pending_approval -> rejected)
+      // and the sibling-approval expiry commit in ONE system-scoped
+      // transaction (a rejection has no intent_approved outbox row — mirror
+      // only what a reject writes). Collapsing them means a fan-in failure
+      // can no longer leave the intent rejected while a sibling approver's
+      // row stays live to approve the flagged action. System scope:
+      // action_intents is org-scoped and the sibling approval_requests rows
+      // belong to OTHER approvers, invisible to this user's request context.
+      // The CAS RETURNING carries the intent metadata for the metrics event;
+      // a lost race (zero rows) is a clean no-op.
+      //
+      // Task 6 "same treatment" as the main decide handler: a genuine throw
+      // here is NOT swallowed — it rolls this transaction back (the intent
+      // stays pending_approval, no sibling was expired) and the whole
+      // request fails with a retryable 500 BEFORE revocation/audit run,
+      // rather than silently leaving the intent live while still reporting
+      // success to the caller.
       try {
-        // Atomic reject fan-in: the intent CAS (pending_approval -> rejected)
-        // and the sibling-approval expiry commit in ONE system-scoped
-        // transaction (a rejection has no intent_approved outbox row — mirror
-        // only what a reject writes). Collapsing them means a swallowed
-        // sibling-expiry failure can no longer leave the intent rejected while
-        // a sibling approver's row stays live to approve the flagged action.
-        // System scope: action_intents is org-scoped and the sibling
-        // approval_requests rows belong to OTHER approvers, invisible to this
-        // user's request context. The CAS RETURNING carries the intent
-        // metadata for the metrics event; a lost race (zero rows) is a clean
-        // no-op.
         const rejected = await runOutsideDbContext(() =>
           withSystemDbAccessContext(() =>
             db.transaction(async (tx) => {
@@ -380,7 +394,8 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
           });
         }
       } catch (err) {
-        console.error('[approvals] report-suspicious: failed to reject linked action intent:', err);
+        console.error('[approvals] report-suspicious: failed to reject linked action intent (rolled back):', err);
+        return c.json({ error: 'report_suspicious_failed', retryable: true }, 500);
       }
     }
   }
@@ -481,6 +496,10 @@ async function decideHandler(
   // action_intents is org-scoped (Shape 1) and we want this read to succeed
   // regardless of the ambient request scope.
   let linkedIntent: ActionIntent | null = null;
+  // Set true only for a supervised intent's requester-owned decide (Task 6).
+  // Read below to skip the whole assertion/assurance ladder — supervised
+  // decides no WebAuthn/step-up ceremony, only the live-RBAC re-check above.
+  let isSupervisedSelfDecide = false;
   if (existing.intentId) {
     linkedIntent = await runOutsideDbContext(() =>
       withSystemDbAccessContext(async () => {
@@ -525,34 +544,27 @@ async function decideHandler(
       return c.json({ error: 'digest_mismatch' }, 409);
     }
 
-    // Re-check the DECIDER's live authorization before an intent-backed
-    // APPROVE (spec §4). The fanned-out approval_requests row (Shape-6,
-    // user-id-scoped) is otherwise a durable bearer capability: it was created
-    // for a user who held approvals:decide over the intent's org at fan-out
-    // time (services/actionIntents/intentApprovers.ts), but nothing re-checks
-    // that they STILL hold it. An Org Admin demoted to a role without
-    // approvals:decide (while keeping org membership, so the row stays visible)
-    // could otherwise still approve and drive a release. Resolve current perms
-    // for the intent's org and fail closed. Gated to `approved` only: a deny is
-    // harmless (it cancels the action) and must stay available even to a
-    // demoted approver. Checked BEFORE the assurance proof below so a stale
-    // approver never even consumes a WebAuthn challenge. Uses system context so
-    // the org membership/role reads resolve regardless of ambient request
-    // scope (partner approvers have no organization_users row).
-    if (status === 'approved') {
-      const deciderPerms = await runOutsideDbContext(() =>
-        withSystemDbAccessContext(() =>
-          getUserPermissions(userId, {
-            partnerId: c.get('auth').partnerId ?? undefined,
-            orgId: linkedIntent!.orgId,
-          }),
-        ),
-      );
-      if (
-        !deciderPerms ||
-        !canAccessOrg(deciderPerms, linkedIntent.orgId) ||
-        !userCanDecideApprovals(deciderPerms)
-      ) {
+    // Tier-3 supervised/four_eyes split (spec
+    // docs/superpowers/specs/ai-mcp/2026-08-05-tier3-supervised-four-eyes-split-design.md
+    // §4.2). Supervised intents fan out exactly ONE approval row, always owned
+    // by the requester (services/actionIntents/intentService.ts) — no other
+    // approvals:decide holder is ever eligible, and none of the four_eyes
+    // machinery below (live approvals:decide re-check, sole-operator
+    // re-derivation, the WebAuthn/step-up ladder) applies to it. Branching
+    // here, BEFORE any of that runs, is what lets a supervised requester who
+    // holds no approvals:decide permission at all still decide their own row.
+    if (linkedIntent.approvalScope === 'supervised') {
+      isSupervisedSelfDecide = true;
+
+      // Identity gate: even if a non-requester somehow reached this row (a
+      // future bug, manual DB tampering, or an admin-decide-any-row surface
+      // added later), a supervised row's whole trust model rests on "the
+      // requester is deciding their own action" — holding approvals:decide
+      // must NEVER substitute for that identity check, since supervised
+      // decides skip the assertion ladder entirely below. Unconditional
+      // (both approve and deny): nobody but the requester is ever a
+      // legitimate decider for this row.
+      if (linkedIntent.requestedByUserId !== userId) {
         recordActionIntentEvent({
           orgId: linkedIntent.orgId,
           intentId: linkedIntent.id,
@@ -561,54 +573,40 @@ async function decideHandler(
           source: linkedIntent.source,
           outcome: 'approver_unauthorized',
           actorId: userId,
-          details: { approvalId: existing.id },
+          details: { approvalId: existing.id, errorCode: 'not_requester' },
         });
-        return c.json({ error: 'forbidden' }, 403);
+        return c.json({ error: 'not_requester' }, 403);
       }
 
-      // Sole-operator RE-DERIVATION (#2685). Four-eyes for a Tier-3 intent is
-      // otherwise decided exactly once, at fan-out
-      // (services/actionIntents/intentService.ts), by branch mutual exclusion:
-      // the multi-approver branch fans rows out to OTHER users, and only the
-      // sole-operator branch ever creates a requester-owned row. Nothing
-      // downstream re-establishes that — this handler used to infer "you were
-      // the only eligible approver" purely from "a row exists that you own".
-      // Since release is first-wins CAS, any future fan-out regression that
-      // leaked a requester-owned row into a multi-approver intent would let the
-      // requester unilaterally release it with no server-side check catching
-      // it. So re-derive the eligible set here and require the self-approver to
-      // STILL be the only eligible approver for the intent's org.
-      //
-      // This is deliberately a re-derivation, not a persisted `sole_operator`
-      // flag (issue #2685 option 2 over option 1): it fails closed, and "you
-      // are no longer the only approver, so you no longer get to self-approve"
-      // is what the four-eyes model implies. An intent created while solo and
-      // decided after the org gained a second approver is REFUSED — intended.
-      // A persisted flag would still let that self-approve through.
-      //
-      // Only runs on a self-approve (requester === decider), so the common
-      // cross-user approve pays nothing. `resolveIntentApprovers` opens its own
-      // system context internally (partner_users is Shape-3 partner-axis RLS,
-      // invisible from an org-scoped request context), so it must be called
-      // with runOutsideDbContext — a nested withDbAccessContext RETAINS the
-      // ambient context rather than elevating (db/index.ts) — and calling it
-      // outside any context also avoids holding a pooled connection across the
-      // round-trip (the #1105 connection-hold class).
-      //
-      // Ordered with the stale-approver check ABOVE the assurance proof for the
-      // same reason that one is: a refused decision must never consume a
-      // WebAuthn challenge. Gated to `approved` only — a deny stays available
-      // in every case, since denying only cancels the action.
-      if (linkedIntent.requestedByUserId === userId) {
-        const eligibleNow = await runOutsideDbContext(() =>
-          resolveIntentApprovers(linkedIntent!.orgId),
+      // Live RBAC re-check for the underlying TOOL action (spec §4.2) — NOT
+      // approvals:decide, which supervised intents never require. Mirrors the
+      // release worker's revalidation (services/actionIntents/revalidateRelease.ts)
+      // so the decide-time and release-time gates can never diverge: same
+      // `buildAuthContextForIntent` + `checkToolPermission(actionName,
+      // arguments, auth)` pair. Gated to `approved` only — a deny only cancels
+      // the action and must stay available even to a requester who lost the
+      // underlying permission. System-scoped: buildAuthContextForIntent reads
+      // the requester's role from organization_users/partner_users, which the
+      // caller's own ambient request context may not make visible (partner
+      // approvers have no organization_users row) — and a bare (non-exited)
+      // withSystemDbAccessContext call from inside the ambient request context
+      // is a no-op passthrough (db/index.ts), so this must go through
+      // runOutsideDbContext to actually elevate.
+      if (status === 'approved') {
+        const revalidation = await runOutsideDbContext(() =>
+          withSystemDbAccessContext(async () => {
+            const auth = await buildAuthContextForIntent(linkedIntent!);
+            if (!auth) return { ok: false as const, errorCode: 'actor_invalid' };
+            const denial = await checkToolPermission(
+              linkedIntent!.actionName,
+              linkedIntent!.arguments,
+              auth,
+            );
+            if (denial) return { ok: false as const, errorCode: 'rbac_denied', reason: denial };
+            return { ok: true as const };
+          }),
         );
-        const othersEligible = eligibleNow.filter((candidate) => candidate !== userId);
-        // "ONLY eligible approver" is both halves: nobody else is eligible AND
-        // the self-approver still is. The second half is belt-and-braces over
-        // the live-authorization re-check above (which asks the permissions
-        // service rather than this resolver) — if the two ever disagree, refuse.
-        if (othersEligible.length > 0 || !eligibleNow.includes(userId)) {
+        if (!revalidation.ok) {
           recordActionIntentEvent({
             orgId: linkedIntent.orgId,
             intentId: linkedIntent.id,
@@ -617,15 +615,115 @@ async function decideHandler(
             source: linkedIntent.source,
             outcome: 'approver_unauthorized',
             actorId: userId,
-            details: {
-              approvalId: existing.id,
-              errorCode: 'not_sole_approver',
-              // Count only — never the approver ids (spec §7: ids of the
-              // event's own subjects, not a roster of other users).
-              eligibleApproverCount: eligibleNow.length,
-            },
+            details: { approvalId: existing.id, errorCode: revalidation.errorCode },
           });
-          return c.json({ error: 'not_sole_approver' }, 403);
+          return c.json({ error: 'forbidden' }, 403);
+        }
+      }
+    } else {
+      // four_eyes (unchanged): re-check the DECIDER's live authorization before
+      // an intent-backed APPROVE (spec §4). The fanned-out approval_requests row
+      // (Shape-6, user-id-scoped) is otherwise a durable bearer capability: it
+      // was created for a user who held approvals:decide over the intent's org
+      // at fan-out time (services/actionIntents/intentApprovers.ts), but nothing
+      // re-checks that they STILL hold it. An Org Admin demoted to a role
+      // without approvals:decide (while keeping org membership, so the row
+      // stays visible) could otherwise still approve and drive a release.
+      // Resolve current perms for the intent's org and fail closed. Gated to
+      // `approved` only: a deny is harmless (it cancels the action) and must
+      // stay available even to a demoted approver. Checked BEFORE the
+      // assurance proof below so a stale approver never even consumes a
+      // WebAuthn challenge. Uses system context so the org membership/role
+      // reads resolve regardless of ambient request scope (partner approvers
+      // have no organization_users row).
+      if (status === 'approved') {
+        const deciderPerms = await runOutsideDbContext(() =>
+          withSystemDbAccessContext(() =>
+            getUserPermissions(userId, {
+              partnerId: c.get('auth').partnerId ?? undefined,
+              orgId: linkedIntent!.orgId,
+            }),
+          ),
+        );
+        if (
+          !deciderPerms ||
+          !canAccessOrg(deciderPerms, linkedIntent.orgId) ||
+          !userCanDecideApprovals(deciderPerms)
+        ) {
+          recordActionIntentEvent({
+            orgId: linkedIntent.orgId,
+            intentId: linkedIntent.id,
+            actionName: linkedIntent.actionName,
+            argumentDigest: linkedIntent.argumentDigest,
+            source: linkedIntent.source,
+            outcome: 'approver_unauthorized',
+            actorId: userId,
+            details: { approvalId: existing.id },
+          });
+          return c.json({ error: 'forbidden' }, 403);
+        }
+
+        // Sole-operator RE-DERIVATION (#2685). Four-eyes for a Tier-3 intent is
+        // otherwise decided exactly once, at fan-out
+        // (services/actionIntents/intentService.ts), by branch mutual exclusion:
+        // the multi-approver branch fans rows out to OTHER users, and only the
+        // sole-operator branch ever creates a requester-owned row. Nothing
+        // downstream re-establishes that — this handler used to infer "you were
+        // the only eligible approver" purely from "a row exists that you own".
+        // Since release is first-wins CAS, any future fan-out regression that
+        // leaked a requester-owned row into a multi-approver intent would let the
+        // requester unilaterally release it with no server-side check catching
+        // it. So re-derive the eligible set here and require the self-approver to
+        // STILL be the only eligible approver for the intent's org.
+        //
+        // This is deliberately a re-derivation, not a persisted `sole_operator`
+        // flag (issue #2685 option 2 over option 1): it fails closed, and "you
+        // are no longer the only approver, so you no longer get to self-approve"
+        // is what the four-eyes model implies. An intent created while solo and
+        // decided after the org gained a second approver is REFUSED — intended.
+        // A persisted flag would still let that self-approve through.
+        //
+        // Only runs on a self-approve (requester === decider), so the common
+        // cross-user approve pays nothing. `resolveIntentApprovers` opens its own
+        // system context internally (partner_users is Shape-3 partner-axis RLS,
+        // invisible from an org-scoped request context), so it must be called
+        // with runOutsideDbContext — a nested withDbAccessContext RETAINS the
+        // ambient context rather than elevating (db/index.ts) — and calling it
+        // outside any context also avoids holding a pooled connection across the
+        // round-trip (the #1105 connection-hold class).
+        //
+        // Ordered with the stale-approver check ABOVE the assurance proof for the
+        // same reason that one is: a refused decision must never consume a
+        // WebAuthn challenge. Gated to `approved` only — a deny stays available
+        // in every case, since denying only cancels the action.
+        if (linkedIntent.requestedByUserId === userId) {
+          const eligibleNow = await runOutsideDbContext(() =>
+            resolveIntentApprovers(linkedIntent!.orgId),
+          );
+          const othersEligible = eligibleNow.filter((candidate) => candidate !== userId);
+          // "ONLY eligible approver" is both halves: nobody else is eligible AND
+          // the self-approver still is. The second half is belt-and-braces over
+          // the live-authorization re-check above (which asks the permissions
+          // service rather than this resolver) — if the two ever disagree, refuse.
+          if (othersEligible.length > 0 || !eligibleNow.includes(userId)) {
+            recordActionIntentEvent({
+              orgId: linkedIntent.orgId,
+              intentId: linkedIntent.id,
+              actionName: linkedIntent.actionName,
+              argumentDigest: linkedIntent.argumentDigest,
+              source: linkedIntent.source,
+              outcome: 'approver_unauthorized',
+              actorId: userId,
+              details: {
+                approvalId: existing.id,
+                errorCode: 'not_sole_approver',
+                // Count only — never the approver ids (spec §7: ids of the
+                // event's own subjects, not a roster of other users).
+                eligibleApproverCount: eligibleNow.length,
+              },
+            });
+            return c.json({ error: 'not_sole_approver' }, 403);
+          }
         }
       }
     }
@@ -639,114 +737,231 @@ async function decideHandler(
   // Phase 4: an ENFORCING partner policy may reject an under-assured APPROVE
   // (StepUpRequiredError → 403). A deny is passed through with decision:'denied'
   // so it is never blocked.
-  let assurance;
+  //
+  // Supervised self-decide (Task 6): skip the WHOLE assertion/assurance ladder
+  // — no WebAuthn challenge, no partner-policy step-up floor, no
+  // ReauthRequiredError ceremony. `resolveApprovalAssurance` is the same
+  // synchronous "no proof presented" L1/session_tap default `proof===undefined`
+  // resolves to today; reusing it (rather than hand-rolling the literal) keeps
+  // the recorded factor byte-for-byte identical to that existing no-proof shape
+  // and impossible to drift from `assertDecisionConsistent`'s invariants.
+  let assurance: AssuranceDecision;
+  if (isSupervisedSelfDecide) {
+    assurance = resolveApprovalAssurance(existing.riskTier as RiskTier);
+  } else {
+    try {
+      assurance = await assertApprovalAssurance({
+        approvalId: id,
+        userId,
+        riskTier: existing.riskTier as RiskTier,
+        proof,
+        partnerId: c.get('auth').partnerId ?? null,
+        decision: status,
+        reauthVerified,
+      });
+    } catch (err) {
+      if (err instanceof StepUpRequiredError) {
+        return c.json({ error: 'step_up_required', requiredLevel: err.requiredLevel }, 403);
+      }
+      if (err instanceof ReauthRequiredError) {
+        // Critical (L4) approve with a valid signature but no fresh re-auth — tell
+        // the client to re-collect the password and retry, not a generic failure.
+        return c.json({ error: 'reauth_required' }, 401);
+      }
+      console.error('[approvals] assertion verification failed:', err);
+      return c.json({ error: 'assertion_failed' }, 401);
+    }
+
+    // Sole-operator step-up (spec §1 / §4, four_eyes only): a requester
+    // approving their OWN intent (the sole-operator single-row fan-out case)
+    // must present >= L3 assurance (webauthn_platform or mobile_hw_key).
+    // Checked BEFORE the CAS so an under-assured self-approval never flips the
+    // row. Deny is unaffected — only an approve of one's own intent is gated.
+    // Never reached for a supervised self-decide (handled in the branch
+    // above, which always records L1 by design — this gate would otherwise
+    // refuse every supervised approve outright).
+    if (
+      linkedIntent &&
+      status === 'approved' &&
+      linkedIntent.requestedByUserId === userId
+    ) {
+      const level = assurance.decidedAssuranceLevel ?? 0;
+      if (level < 3) {
+        return c.json({ error: 'step_up_required', requiredLevel: 3 }, 403);
+      }
+    }
+  }
+
+  // Task 6: the ENTIRE decision write — approval-row CAS, the ai_tool_executions
+  // mirror, and the action-intents fan-in (intent CAS + release_by stamp +
+  // sibling expiry + intent_approved outbox insert) — commits as ONE
+  // transaction. Before this, the intent fan-in ran in its own,
+  // independently-committing transaction: a fault there left the approval row
+  // decided with NO intent/outbox follow-through (or vice versa on other
+  // fault points), a state no retry could repair. Now any throw here rolls
+  // EVERYTHING back and the caller gets a retryable 500 instead of a
+  // half-applied decision.
+  //
+  // System-scoped (runOutsideDbContext + withSystemDbAccessContext, exactly
+  // like the fan-in already was): the sibling approval_requests rows belong to
+  // OTHER approvers and are invisible under the caller's own Shape-6
+  // user-id-scoped ambient context, and action_intents/ai_tool_executions need
+  // org-scoped visibility the caller's ambient scope doesn't guarantee either.
+  // System scope is safe here because authorization was already fully decided
+  // by the checks above — this is purely a write, not a fresh access decision.
+  // Push dispatch and any other network I/O stay OUTSIDE this transaction
+  // (#1105 — never hold a txn across network I/O); there is none in this path.
+  type DecideWriteResult =
+    | { lostRace: true }
+    | { lostRace: false; updated: typeof approvalRequests.$inferSelect; wonIntent: boolean };
+
+  let writeResult: DecideWriteResult;
   try {
-    assurance = await assertApprovalAssurance({
-      approvalId: id,
-      userId,
-      riskTier: existing.riskTier as RiskTier,
-      proof,
-      partnerId: c.get('auth').partnerId ?? null,
-      decision: status,
-      reauthVerified,
-    });
+    writeResult = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        db.transaction(async (tx): Promise<DecideWriteResult> => {
+          const casRows = await tx
+            .update(approvalRequests)
+            .set({
+              status,
+              decidedAt: new Date(),
+              decisionReason: reason ?? null,
+              decidedAssuranceLevel: assurance.decidedAssuranceLevel,
+              decidedVia: assurance.decidedVia,
+              authenticatorDeviceId: assurance.authenticatorDeviceId,
+            })
+            .where(
+              and(
+                eq(approvalRequests.id, id),
+                eq(approvalRequests.userId, userId),
+                eq(approvalRequests.status, 'pending'),
+                gt(approvalRequests.expiresAt, new Date()),
+              )
+            )
+            .returning();
+
+          if (casRows.length === 0) {
+            // Lost a concurrent decide/expiry race between the pre-fetch and
+            // the CAS. Not a failure — the transaction still commits (nothing
+            // was written), and the caller gets a plain 409 below.
+            return { lostRace: true };
+          }
+          const updated = casRows[0]!;
+
+          // If this approval row was created by the AI agent SDK (Breeze AI /
+          // chat), it carries an `executionId` linking back to the
+          // ai_tool_executions row that the SDK is blocked on via
+          // waitForApproval(). Flip that row's status so the SDK's poll
+          // unblocks and the tool either executes or returns "rejected or
+          // timed out". For non-AI sources (helper, dev seed) execution_id is
+          // null and this is a no-op.
+          if (updated.executionId) {
+            const aiStatus = status === 'approved' ? 'approved' : 'rejected';
+            const mirrored = await tx
+              .update(aiToolExecutions)
+              .set({ status: aiStatus, approvedBy: userId, approvedAt: new Date() })
+              // Guarded on 'pending' (#3089): a settled approval wait marks the
+              // execution row 'rejected' without touching this approval_requests
+              // row first in every failure mode, so a decide that squeaked past
+              // the approval_requests CAS must not resurrect a closed execution
+              // row as a stranded 'approved' that the legacy bridge (no durable
+              // worker) would never run.
+              .where(and(
+                eq(aiToolExecutions.id, updated.executionId),
+                eq(aiToolExecutions.status, 'pending'),
+              ))
+              .returning({ id: aiToolExecutions.id });
+            if (mirrored.length === 0) {
+              // Lost the race, not a query failure: the execution row was
+              // already closed out (settled/timed out) between the
+              // approval_requests CAS above and this mirror — same
+              // first-wins posture as the elevation and intent mirrors below.
+              // approval_requests is still the source of truth for the
+              // mobile UI and correctly records this approver's decision,
+              // but the underlying tool call is already gone and will NOT
+              // run despite the 'approved' response below — worth a distinct
+              // log line so this isn't mistaken for the mirror failing.
+              console.warn('[approvals] ai_tool_executions mirror lost the race (execution already settled):', updated.executionId);
+            }
+          }
+
+          // Action intents (spec §4 / §3.4): mirror the decision onto the
+          // linked action_intents row. First-wins inline CAS — a lost race
+          // (another approver, the reaper, or a retry already decided the
+          // intent) is a clean no-op: this row's own decision still commits
+          // (with the rest of this transaction), so the user's decide call
+          // still succeeds either way.
+          let wonIntent = false;
+          if (updated.intentId && linkedIntent) {
+            const intentId = updated.intentId;
+            const intentTargetStatus: ActionIntentStatus = status === 'approved' ? 'approved' : 'rejected';
+
+            const intentCas = await tx
+              .update(actionIntents)
+              .set({
+                status: intentTargetStatus,
+                decidedAt: new Date(),
+                decidedByUserId: userId,
+                decidedAssuranceLevel: assurance.decidedAssuranceLevel,
+                decidedVia: assurance.decidedVia,
+                // Fixed release lease (design §4.2), stamped only on an
+                // approval win — a rejected intent never executes, so it has
+                // no release window to bound.
+                ...(status === 'approved'
+                  ? { releaseBy: new Date(Date.now() + RELEASE_LEASE_MS) }
+                  : {}),
+              })
+              .where(
+                and(
+                  eq(actionIntents.id, intentId),
+                  eq(actionIntents.status, 'pending_approval'),
+                ),
+              )
+              .returning({ id: actionIntents.id });
+
+            if (intentCas.length > 0) {
+              wonIntent = true;
+
+              // MUST run in the same system-scoped transaction: approval_requests
+              // is Shape-6 (user-id-scoped), so the sibling rows belong to OTHER
+              // approvers and are invisible to this approver's own ambient
+              // context — a context-scoped UPDATE would silently match zero rows.
+              await tx
+                .update(approvalRequests)
+                .set({ status: 'expired', decidedAt: new Date() })
+                .where(
+                  and(
+                    eq(approvalRequests.intentId, intentId),
+                    eq(approvalRequests.status, 'pending'),
+                    ne(approvalRequests.id, updated.id),
+                  ),
+                );
+
+              if (status === 'approved') {
+                await tx.insert(intentOutbox).values({
+                  intentId,
+                  eventType: 'intent_approved',
+                  // Ids only, no argument content (spec §3.2).
+                  payload: { intentId, orgId: linkedIntent.orgId },
+                });
+              }
+            }
+          }
+
+          return { lostRace: false, updated, wonIntent };
+        }),
+      ),
+    );
   } catch (err) {
-    if (err instanceof StepUpRequiredError) {
-      return c.json({ error: 'step_up_required', requiredLevel: err.requiredLevel }, 403);
-    }
-    if (err instanceof ReauthRequiredError) {
-      // Critical (L4) approve with a valid signature but no fresh re-auth — tell
-      // the client to re-collect the password and retry, not a generic failure.
-      return c.json({ error: 'reauth_required' }, 401);
-    }
-    console.error('[approvals] assertion verification failed:', err);
-    return c.json({ error: 'assertion_failed' }, 401);
+    console.error('[approvals] decide transaction failed (rolled back):', err);
+    return c.json({ error: 'decide_failed', retryable: true }, 500);
   }
 
-  // Sole-operator step-up (spec §1 / §4): a requester approving their OWN
-  // intent (the sole-operator single-row fan-out case) must present >= L3
-  // assurance (webauthn_platform or mobile_hw_key). Checked BEFORE the CAS
-  // so an under-assured self-approval never flips the row. Deny is
-  // unaffected — only an approve of one's own intent is gated.
-  if (
-    linkedIntent &&
-    status === 'approved' &&
-    linkedIntent.requestedByUserId === userId
-  ) {
-    const level = assurance.decidedAssuranceLevel ?? 0;
-    if (level < 3) {
-      return c.json({ error: 'step_up_required', requiredLevel: 3 }, 403);
-    }
-  }
-
-  const result = await db
-    .update(approvalRequests)
-    .set({
-      status,
-      decidedAt: new Date(),
-      decisionReason: reason ?? null,
-      decidedAssuranceLevel: assurance.decidedAssuranceLevel,
-      decidedVia: assurance.decidedVia,
-      authenticatorDeviceId: assurance.authenticatorDeviceId,
-    })
-    .where(
-      and(
-        eq(approvalRequests.id, id),
-        eq(approvalRequests.userId, userId),
-        eq(approvalRequests.status, 'pending'),
-        gt(approvalRequests.expiresAt, new Date()),
-      )
-    )
-    .returning();
-
-  if (result.length === 0) {
-    // Lost a concurrent decide/expiry race between the pre-fetch and the CAS.
+  if (writeResult.lostRace) {
     return c.json({ error: 'Already decided', finalStatus: 'expired' }, 409);
   }
 
-  const [updated] = result;
-
-  // If this approval row was created by the AI agent SDK (Breeze AI / chat),
-  // it carries an `executionId` linking back to the ai_tool_executions row
-  // that the SDK is blocked on via waitForApproval(). Flip that row's status
-  // so the SDK's poll unblocks and the tool either executes or returns
-  // "rejected or timed out". For non-AI sources (helper, dev seed) execution_id
-  // is null and this is a no-op.
-  if (updated?.executionId) {
-    const aiStatus = status === 'approved' ? 'approved' : 'rejected';
-    try {
-      const mirrored = await db
-        .update(aiToolExecutions)
-        .set({ status: aiStatus, approvedBy: userId, approvedAt: new Date() })
-        // Guarded on 'pending' (#3089): a settled approval wait marks the
-        // execution row 'rejected' without touching this approval_requests
-        // row first in every failure mode (the two writes aren't atomic), so
-        // a decide that squeaked past the approval_requests CAS must not
-        // resurrect a closed execution row as a stranded 'approved' that the
-        // legacy bridge (no durable worker) would never run.
-        .where(and(
-          eq(aiToolExecutions.id, updated.executionId),
-          eq(aiToolExecutions.status, 'pending'),
-        ))
-        .returning({ id: aiToolExecutions.id });
-      if (mirrored.length === 0) {
-        // Lost the race, not a query failure: the execution row was already
-        // closed out (settled/timed out) between the approval_requests CAS
-        // above and this mirror — same first-wins posture as the elevation
-        // and intent mirrors below. approval_requests is still the source of
-        // truth for the mobile UI and correctly records this approver's
-        // decision, but the underlying tool call is already gone and will
-        // NOT run despite the 'approved' response below — worth a distinct
-        // log line so this isn't mistaken for the mirror simply failing.
-        console.warn('[approvals] ai_tool_executions mirror lost the race (execution already settled):', updated.executionId);
-      }
-    } catch (err) {
-      console.error('[approvals] Failed to mirror status to ai_tool_executions:', err);
-      // Non-fatal: the approval_request row is the source of truth for the
-      // mobile UI. The SDK poll will time out at the 5-min ceiling if the
-      // mirror fails — better than failing the user-facing decide call.
-    }
-  }
+  const { updated, wonIntent } = writeResult;
 
   // #1254: PAM mobile bridge. If this approval was fanned out from a pending
   // uac_intercept elevation, mirror the decision back onto the elevation and
@@ -849,115 +1064,35 @@ async function decideHandler(
     }
   }
 
-  // Action intents (spec §4 / §3.4): mirror the decision onto the linked
-  // action_intents row. First-wins inline CAS — a lost race (another approver,
-  // the reaper, or a retry already decided the intent) is a clean no-op; this
-  // row's own decision already committed above, so the user's decide call still
-  // succeeds either way.
-  if (updated?.intentId && linkedIntent) {
-    const intentId = updated.intentId;
-    const intentTargetStatus: ActionIntentStatus = status === 'approved' ? 'approved' : 'rejected';
+  // Action intents (spec §4 / §3.4): post-commit audit/metrics projection for
+  // the intent fan-in that already committed (or rolled back) as part of the
+  // ONE decide transaction above. `wonIntent` reflects whether THIS decide's
+  // CAS actually transitioned the intent (a lost race — another approver, the
+  // reaper, or a retry already decided it — is a clean no-op: no event here,
+  // but this row's own decision still committed above either way).
+  if (wonIntent && updated.intentId && linkedIntent) {
     const soleOperatorApproval = status === 'approved' && linkedIntent.requestedByUserId === userId;
-
-    // Atomic intent fan-in: the intent CAS + sibling expiry + (approve-only)
-    // intent_approved outbox insert commit in ONE system-scoped transaction, so
-    // an `approved` intent can never exist without its intent_approved outbox
-    // row (which is exactly what the release worker consumes to run the
-    // action). Before this was one transaction, a swallowed fan-in failure left
-    // the intent approved with no outbox row → the worker never released it.
-    // MUST run in system scope: approval_requests is Shape-6 (user-id-scoped),
-    // so the sibling rows belong to OTHER approvers and are invisible to this
-    // approver's request context — a context-scoped UPDATE would silently
-    // match zero rows.
-    let wonIntent = false;
-    try {
-      wonIntent = await runOutsideDbContext(() =>
-        withSystemDbAccessContext(() =>
-          db.transaction(async (tx) => {
-            // First-wins CAS, inline (was transitionIntent). A lost race
-            // (another approver, the reaper, or a retry already decided the
-            // intent) affects zero rows → clean no-op: do NOT expire siblings
-            // or write the outbox.
-            const cas = await tx
-              .update(actionIntents)
-              .set({
-                status: intentTargetStatus,
-                decidedAt: new Date(),
-                decidedByUserId: userId,
-                decidedAssuranceLevel: assurance.decidedAssuranceLevel,
-                decidedVia: assurance.decidedVia,
-                // Fixed release lease (design §4.2), stamped only on an approval
-                // win — a rejected intent never executes, so it has no release
-                // window to bound. Task 6 makes this whole fan-in atomic with
-                // the release worker's claim; here it's just the field.
-                ...(status === 'approved'
-                  ? { releaseBy: new Date(Date.now() + RELEASE_LEASE_MS) }
-                  : {}),
-              })
-              .where(
-                and(
-                  eq(actionIntents.id, intentId),
-                  eq(actionIntents.status, 'pending_approval'),
-                ),
-              )
-              .returning({ id: actionIntents.id });
-            if (cas.length === 0) return false;
-
-            await tx
-              .update(approvalRequests)
-              .set({ status: 'expired', decidedAt: new Date() })
-              .where(
-                and(
-                  eq(approvalRequests.intentId, intentId),
-                  eq(approvalRequests.status, 'pending'),
-                  ne(approvalRequests.id, updated.id),
-                ),
-              );
-
-            if (status === 'approved') {
-              await tx.insert(intentOutbox).values({
-                intentId,
-                eventType: 'intent_approved',
-                // Ids only, no argument content (spec §3.2).
-                payload: { intentId, orgId: linkedIntent!.orgId },
-              });
-            }
-            return true;
-          }),
-        ),
-      );
-    } catch (err) {
-      // The approver's own approval row already committed above; a failure of
-      // the intent mirror now rolls back ALL of {CAS, sibling expiry, outbox}
-      // together (no partial state) and leaves the intent pending_approval for
-      // re-decide / the expiry reaper. It must not fail the user's decide call.
-      console.error('[approvals] Failed atomic intent fan-in (CAS / sibling expiry / outbox):', err);
-      wonIntent = false;
-    }
-
-    if (wonIntent) {
-      recordActionIntentEvent({
-        orgId: linkedIntent.orgId,
-        intentId,
-        actionName: linkedIntent.actionName,
-        argumentDigest: linkedIntent.argumentDigest,
-        source: linkedIntent.source,
-        outcome: soleOperatorApproval
-          ? 'self_approved_sole_operator'
-          : status === 'approved'
-            ? 'approved'
-            : 'rejected',
-        actorId: userId,
-        details: {
-          approvalRequestId: updated.id,
-          decidedAssuranceLevel: assurance.decidedAssuranceLevel,
-          decidedVia: assurance.decidedVia,
-        },
-      });
-    }
+    recordActionIntentEvent({
+      orgId: linkedIntent.orgId,
+      intentId: updated.intentId,
+      actionName: linkedIntent.actionName,
+      argumentDigest: linkedIntent.argumentDigest,
+      source: linkedIntent.source,
+      outcome: soleOperatorApproval
+        ? 'self_approved_sole_operator'
+        : status === 'approved'
+          ? 'approved'
+          : 'rejected',
+      actorId: userId,
+      details: {
+        approvalRequestId: updated.id,
+        decidedAssuranceLevel: assurance.decidedAssuranceLevel,
+        decidedVia: assurance.decidedVia,
+      },
+    });
   }
 
-  return c.json({ approval: serialize(updated!) });
+  return c.json({ approval: serialize(updated) });
 }
 
 // The two M365 mutation tools (tier 3) that create an approval card. Read-only
