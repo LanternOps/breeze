@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useCallback } from 'react';
+import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import { Layers, FileCog, BarChart3, Plus, Loader2, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import PatchList, {
@@ -55,6 +55,18 @@ function resolveTab(tab: TabKey, canManageRings: boolean): TabKey {
 }
 
 const DEVICE_SCAN_PAGE_LIMIT = 100;
+
+// Page size used when walking the patch catalog. 200 is MAX_PAGE_LIMIT in
+// apps/api/src/routes/patches/helpers.ts — the API clamps anything larger, so
+// asking for more just wastes a round trip.
+const PATCH_FETCH_PAGE_LIMIT = 200;
+
+// Hard ceiling on how many pages we walk (25 x 200 = 5,000 patches). PatchList
+// filters, sorts and paginates the whole array client-side, so an unbounded
+// walk would both hammer the API and put an arbitrarily large list in memory.
+// Beyond this we stop and tell the user the view is truncated instead of
+// silently dropping the tail (which is exactly what #3157 was).
+const PATCH_FETCH_MAX_PAGES = 25;
 
 export default function PatchesPage() {
   const { t } = useTranslation('patches');
@@ -121,6 +133,11 @@ export default function PatchesPage() {
   const [patchesLoading, setPatchesLoading] = useState(true);
   const [patchesError, setPatchesError] = useState<string>();
   const [sourceCounts, setSourceCounts] = useState<Record<string, number>>({});
+  // Set when the catalog is larger than PATCH_FETCH_MAX_PAGES pages, so the
+  // truncation is visible rather than silently capping the list (#3157).
+  const [patchesTruncatedTotal, setPatchesTruncatedTotal] = useState<number | null>(null);
+  // Monotonic id for the in-flight catalog walk; see fetchPatches.
+  const patchFetchGeneration = useRef(0);
   const [sourceFilter, setSourceFilter] = useState<'all' | 'microsoft' | 'apple' | 'linux' | 'third_party'>('all');
   const [scanLoading, setScanLoading] = useState(false);
   const [pendingScan, setPendingScan] = useState<{ deviceIds: string[]; orgNames: string[] } | null>(null);
@@ -172,42 +189,94 @@ export default function PatchesPage() {
   }, []);
 
   const fetchPatches = useCallback(async () => {
+    // Only the newest walk may write state. A walk is now up to
+    // PATCH_FETCH_MAX_PAGES sequential requests, so switching rings (or hitting
+    // Refresh) mid-walk leaves a much wider window in which a superseded walk
+    // could finish last and repaint the list with the previous ring's patches.
+    const generation = patchFetchGeneration.current + 1;
+    patchFetchGeneration.current = generation;
+    const isStale = () => patchFetchGeneration.current !== generation;
+
     try {
       setPatchesLoading(true);
       setPatchesError(undefined);
-      // Fixed `limit=200` fetch: PatchList sorts AND paginates entirely
-      // client-side over this already-loaded array (issue #1316), so the
-      // page-size selector (up to 200) is fully populated. Caveat: for an org
-      // with >200 patches, only the loaded subset is sorted/searched — the rest
-      // are never fetched. Note: this never sends sortBy/sortDir, so the
-      // server-side sort added to the API (list.ts / schemas.ts) is NOT yet
-      // consumed by the web; wiring it up is a follow-up (see list.ts comment).
-      // Ring-scoped patches use a dedicated endpoint; send the same `limit=200`
-      // so selecting a ring doesn't collapse the list to the endpoint's default
-      // page of 50 (the ring endpoint now shares the /patches 200 cap).
-      const url = selectedRingId
-        ? `/update-rings/${selectedRingId}/patches?limit=200`
-        : '/patches?limit=200';
-      const response = await fetchWithAuth(url);
-      if (!response.ok) {
-        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-        throw new Error(t('patchesPage.errors.fetchPatches'));
+      setPatchesTruncatedTotal(null);
+      // Walk every page of the catalog, not just the first. PatchList sorts AND
+      // paginates entirely client-side over this array (issue #1316), so
+      // whatever isn't fetched here can never be searched, sorted, paged to, or
+      // selected. A single `limit=200` request therefore hard-capped the UI at
+      // the API's MAX_PAGE_LIMIT: an org with 333 patches could only ever see
+      // and approve the first 200 (#3157). Both endpoints return
+      // `pagination: { page, limit, total }`, so we page until exhausted.
+      //
+      // Note: this never sends sortBy/sortDir, so the server-side sort added to
+      // the API (list.ts / schemas.ts) is NOT yet consumed by the web; wiring it
+      // up (along with server-side filtering and select-all) is the scalable
+      // follow-up that would let us drop the page walk entirely.
+      //
+      // Ring-scoped patches use a dedicated endpoint with the same page shape
+      // and the same 200 cap, so the walk is identical for both.
+      const baseUrl = selectedRingId
+        ? `/update-rings/${selectedRingId}/patches?limit=${PATCH_FETCH_PAGE_LIMIT}`
+        : `/patches?limit=${PATCH_FETCH_PAGE_LIMIT}`;
+
+      const collected: Patch[] = [];
+      let counts: Record<string, number> | null = null;
+      let truncatedTotal: number | null = null;
+      let page = 1;
+      let lastPage = 1;
+
+      while (page <= lastPage) {
+        // Page 1 keeps the bare `?limit=200` URL it has always used so the
+        // request is byte-identical to the pre-fix single-page fetch.
+        const url = page === 1 ? baseUrl : `${baseUrl}&page=${page}`;
+        const response = await fetchWithAuth(url);
+        // A newer walk started while this request was in flight — abandon this
+        // one silently; the newer walk owns the loading/error state now.
+        if (isStale()) return;
+        if (!response.ok) {
+          if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
+          throw new Error(t('patchesPage.errors.fetchPatches'));
+        }
+        const data = await response.json();
+        const patchData = asList(data, 'patches', 'items');
+        const rows = Array.isArray(patchData) ? patchData : [];
+        for (const patch of rows) {
+          // normalizePatch's index only seeds a fallback id for rows with no
+          // id; offsetting by the running total keeps those unique across pages.
+          collected.push(normalizePatch(patch as Record<string, unknown>, collected.length));
+        }
+        // Counts are catalog-wide and identical on every page — take page 1's.
+        if (counts === null && data && typeof data.counts === 'object' && data.counts !== null) {
+          counts = data.counts as Record<string, number>;
+        }
+
+        const pagination = (data?.pagination ?? {}) as { total?: unknown; limit?: unknown };
+        const total = Number(pagination.total);
+        const pageLimit = Number(pagination.limit) || PATCH_FETCH_PAGE_LIMIT;
+        // Endpoints/mocks that omit pagination metadata, and pages that come
+        // back empty, both mean "nothing more to fetch" — stop rather than loop.
+        if (rows.length > 0 && Number.isFinite(total) && total > 0 && pageLimit > 0) {
+          lastPage = Math.ceil(total / pageLimit);
+          if (lastPage > PATCH_FETCH_MAX_PAGES) {
+            lastPage = PATCH_FETCH_MAX_PAGES;
+            truncatedTotal = total;
+          }
+        } else {
+          lastPage = page;
+        }
+        page += 1;
       }
-      const data = await response.json();
-      const patchData = asList(data, 'patches', 'items');
-      const normalized = Array.isArray(patchData)
-        ? patchData.map((patch: Record<string, unknown>, index: number) => normalizePatch(patch, index))
-        : [];
-      setPatches(normalized);
-      if (data && typeof data.counts === 'object' && data.counts !== null) {
-        setSourceCounts(data.counts as Record<string, number>);
-      } else {
-        setSourceCounts({});
-      }
+
+      setPatches(collected);
+      setSourceCounts(counts ?? {});
+      setPatchesTruncatedTotal(truncatedTotal);
     } catch (err) {
+      if (isStale()) return;
       setPatchesError(err instanceof Error ? err.message : t('patchesPage.errors.fetchPatches'));
     } finally {
-      setPatchesLoading(false);
+      // A superseded walk must not clear the spinner the newer walk turned on.
+      if (!isStale()) setPatchesLoading(false);
     }
   }, [selectedRingId, t]);
 
@@ -668,6 +737,17 @@ export default function PatchesPage() {
             value={sourceFilter}
             onChange={setSourceFilter}
           />
+          {patchesTruncatedTotal !== null && (
+            <div
+              data-testid="patches-truncated-notice"
+              className="mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm text-amber-700 dark:text-amber-400"
+            >
+              {t('patchesPage.truncatedNotice', {
+                shown: patches.length,
+                total: patchesTruncatedTotal,
+              })}
+            </div>
+          )}
           <PatchList
             patches={sourceFilter === 'all' ? patches : patches.filter((p) => p.source === sourceFilter)}
             loading={patchesLoading}

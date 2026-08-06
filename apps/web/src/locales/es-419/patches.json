@@ -274,7 +274,8 @@
       "selectAllPatches": "Seleccionar todos los parches",
       "deselectAllPatches": "Deseleccionar todos los parches",
       "selectPatch": "Seleccione {{title}}",
-      "deselectPatch": "Deseleccionar {{title}}"
+      "deselectPatch": "Deseleccionar {{title}}",
+      "selectAllMatching": "Seleccionar los {{count}} coincidentes"
     },
     "table": {
       "patch": "Parche",
@@ -352,7 +353,8 @@
     "ringModal": {
       "editTitle": "Editar anillo de actualización",
       "createTitle": "Crear anillo de actualización"
-    }
+    },
+    "truncatedNotice": "Se muestran los primeros {{shown}} de {{total}} parches. Usa los filtros de arriba para acotar la lista."
   },
   "ringSelector": {
     "label": "Anillo de actualización:",

@@ -1155,4 +1155,213 @@ describe('PatchesPage', () => {
       expect.objectContaining({ type: 'success' })
     );
   });
+
+  // ---- #3157: the catalog must be walked page-by-page ----
+  //
+  // The page used to issue exactly one `?limit=200` request. 200 is the API's
+  // MAX_PAGE_LIMIT, and PatchList filters/sorts/paginates client-side over
+  // whatever that single response contained, so a partner with 333 patches
+  // could never see — let alone select or approve — patches 201-333.
+  describe('patch catalog paging (#3157)', () => {
+    const makePatch = (n: number) => ({
+      id: `patch-${n}`,
+      title: `Linux Update ${n}`,
+      severity: 'important',
+      source: 'linux',
+      os: 'linux',
+      releaseDate: '2026-04-01T00:00:00.000Z',
+      approvalStatus: 'pending',
+    });
+
+    it('walks every page until the reported total is exhausted', async () => {
+      const page1 = Array.from({ length: 200 }, (_, i) => makePatch(i + 1));
+      const page2 = Array.from({ length: 133 }, (_, i) => makePatch(i + 201));
+
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/update-rings') return makeJsonResponse({ data: [] });
+        if (url === '/patches?limit=200') {
+          return makeJsonResponse({
+            data: page1,
+            counts: { linux: 333 },
+            pagination: { page: 1, limit: 200, total: 333 },
+          });
+        }
+        if (url === '/patches?limit=200&page=2') {
+          return makeJsonResponse({
+            data: page2,
+            counts: { linux: 333 },
+            pagination: { page: 2, limit: 200, total: 333 },
+          });
+        }
+        return makeJsonResponse({}, false, 404);
+      });
+
+      render(<PatchesPage />);
+
+      // The tail of the catalog is only reachable if page 2 was fetched.
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith('/patches?limit=200&page=2');
+      });
+      // ...and it must not keep walking past the last page.
+      await waitFor(() => {
+        expect(fetchMock).not.toHaveBeenCalledWith('/patches?limit=200&page=3');
+      });
+
+      // Patch 333 came from page 2 — with the old single-request fetch it never
+      // reached the browser at all. Page size defaults to 25, so assert via the
+      // pagination footer that all 333 rows are loaded (14 pages of 25).
+      await screen.findByText('Page 1 of 14');
+    });
+
+    it('walks the ring-scoped endpoint the same way', async () => {
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/update-rings') {
+          return makeJsonResponse({
+            data: [{ id: 'ring-1', name: 'Ring 1', ringOrder: 1, deferralDays: 0, enabled: true }],
+          });
+        }
+        if (url === '/patches?limit=200') {
+          return makeJsonResponse({ data: [], pagination: { page: 1, limit: 200, total: 0 } });
+        }
+        if (url === '/update-rings/ring-1/patches?limit=200') {
+          return makeJsonResponse({
+            data: Array.from({ length: 200 }, (_, i) => makePatch(i + 1)),
+            pagination: { page: 1, limit: 200, total: 240 },
+          });
+        }
+        if (url === '/update-rings/ring-1/patches?limit=200&page=2') {
+          return makeJsonResponse({
+            data: Array.from({ length: 40 }, (_, i) => makePatch(i + 201)),
+            pagination: { page: 2, limit: 200, total: 240 },
+          });
+        }
+        return makeJsonResponse({}, false, 404);
+      });
+
+      render(<PatchesPage />);
+
+      // The RingSelector's <select> owns the "All Rings" option; switch it to the ring.
+      const ringOption = await screen.findByRole('option', { name: /All Rings/ });
+      const ringSelect = ringOption.closest('select') as HTMLSelectElement;
+      fireEvent.change(ringSelect, { target: { value: 'ring-1' } });
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith('/update-rings/ring-1/patches?limit=200&page=2');
+      });
+    });
+
+    it('stops at the page cap and says so rather than silently truncating', async () => {
+      // 20,000 patches would be 100 pages. The walk stops at 25 (5,000) and the
+      // user is told the list is capped — an invisible cap is the bug itself.
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/update-rings') return makeJsonResponse({ data: [] });
+        if (url.startsWith('/patches?limit=200')) {
+          return makeJsonResponse({
+            data: Array.from({ length: 200 }, (_, i) => makePatch(i + 1)),
+            pagination: { page: 1, limit: 200, total: 20000 },
+          });
+        }
+        return makeJsonResponse({}, false, 404);
+      });
+
+      render(<PatchesPage />);
+
+      const notice = await screen.findByTestId('patches-truncated-notice');
+      expect(notice.textContent).toContain('5000');
+      expect(notice.textContent).toContain('20000');
+      expect(fetchMock).toHaveBeenCalledWith('/patches?limit=200&page=25');
+      expect(fetchMock).not.toHaveBeenCalledWith('/patches?limit=200&page=26');
+    });
+
+    it('issues a single request when the response carries no pagination metadata', async () => {
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/update-rings') return makeJsonResponse({ data: [] });
+        if (url === '/patches?limit=200') return makeJsonResponse({ data: [makePatch(1)] });
+        return makeJsonResponse({}, false, 404);
+      });
+
+      render(<PatchesPage />);
+
+      await screen.findAllByText('Linux Update 1');
+      expect(fetchMock).not.toHaveBeenCalledWith('/patches?limit=200&page=2');
+    });
+
+    it('discards a superseded walk when the ring changes mid-walk', async () => {
+      // A walk is now up to 25 sequential requests, so the window in which a
+      // stale walk can finish last and repaint the list is much wider than it
+      // was for the old single request. Hold page 2 of the all-rings walk open
+      // until the ring walk has finished, then release it: the ring's patches
+      // must survive.
+      let releaseAllRingsPage2: () => void = () => {};
+      const allRingsPage2Gate = new Promise<void>((resolve) => { releaseAllRingsPage2 = resolve; });
+
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/update-rings') {
+          return makeJsonResponse({
+            data: [{ id: 'ring-1', name: 'Ring 1', ringOrder: 1, deferralDays: 0, enabled: true }],
+          });
+        }
+        if (url === '/patches?limit=200') {
+          return makeJsonResponse({
+            data: [makePatch(1)],
+            pagination: { page: 1, limit: 200, total: 201 },
+          });
+        }
+        if (url === '/patches?limit=200&page=2') {
+          await allRingsPage2Gate;
+          return makeJsonResponse({
+            data: [makePatch(2)],
+            pagination: { page: 2, limit: 200, total: 201 },
+          });
+        }
+        if (url === '/update-rings/ring-1/patches?limit=200') {
+          return makeJsonResponse({
+            data: [{ ...makePatch(99), title: 'Ring Only Patch' }],
+            pagination: { page: 1, limit: 200, total: 1 },
+          });
+        }
+        return makeJsonResponse({}, false, 404);
+      });
+
+      render(<PatchesPage />);
+
+      const ringOption = await screen.findByRole('option', { name: /All Rings/ });
+      const ringSelect = ringOption.closest('select') as HTMLSelectElement;
+      fireEvent.change(ringSelect, { target: { value: 'ring-1' } });
+
+      await screen.findAllByText('Ring Only Patch');
+
+      await act(async () => {
+        releaseAllRingsPage2();
+        await allRingsPage2Gate;
+      });
+
+      // The abandoned all-rings walk must not clobber the ring's list.
+      expect(await screen.findAllByText('Ring Only Patch')).not.toHaveLength(0);
+      expect(screen.queryByText('Linux Update 1')).toBeNull();
+    });
+
+    it('surfaces an error when a later page fails instead of showing a partial list', async () => {
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/update-rings') return makeJsonResponse({ data: [] });
+        if (url === '/patches?limit=200') {
+          return makeJsonResponse({
+            data: Array.from({ length: 200 }, (_, i) => makePatch(i + 1)),
+            pagination: { page: 1, limit: 200, total: 333 },
+          });
+        }
+        return makeJsonResponse({}, false, 500);
+      });
+
+      render(<PatchesPage />);
+
+      await screen.findByText('Failed to fetch patches');
+    });
+  });
 });

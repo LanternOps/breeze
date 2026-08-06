@@ -274,7 +274,8 @@
       "selectAllPatches": "Seleziona tutte le patch",
       "deselectAllPatches": "Deseleziona tutte le patch",
       "selectPatch": "Seleziona {{title}}",
-      "deselectPatch": "Deseleziona {{title}}"
+      "deselectPatch": "Deseleziona {{title}}",
+      "selectAllMatching": "Seleziona tutte le {{count}} corrispondenti"
     },
     "table": {
       "patch": "Patch",
@@ -352,7 +353,8 @@
     "ringModal": {
       "editTitle": "Modifica anello di aggiornamento",
       "createTitle": "Crea anello di aggiornamento"
-    }
+    },
+    "truncatedNotice": "Vengono mostrate le prime {{shown}} patch su {{total}}. Usa i filtri sopra per restringere l'elenco."
   },
   "ringSelector": {
     "label": "Anello di aggiornamento:",

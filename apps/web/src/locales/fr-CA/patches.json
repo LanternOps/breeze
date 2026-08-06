@@ -274,7 +274,8 @@
       "selectAllPatches": "Sélectionner tous les correctifs",
       "deselectAllPatches": "Désélectionner tous les correctifs",
       "selectPatch": "Sélectionner {{title}}",
-      "deselectPatch": "Désélectionner {{title}}"
+      "deselectPatch": "Désélectionner {{title}}",
+      "selectAllMatching": "Sélectionner les {{count}} correspondants"
     },
     "table": {
       "patch": "Correctif",
@@ -352,7 +353,8 @@
     "ringModal": {
       "editTitle": "Modifier l’anneau de mise à jour",
       "createTitle": "Créer un anneau de mise à jour"
-    }
+    },
+    "truncatedNotice": "Affichage des {{shown}} premiers correctifs sur {{total}}. Utilisez les filtres ci-dessus pour réduire la liste."
   },
   "ringSelector": {
     "label": "Anneau de mise à jour :",

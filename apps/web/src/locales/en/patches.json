@@ -274,7 +274,8 @@
       "selectAllPatches": "Select all patches",
       "deselectAllPatches": "Deselect all patches",
       "selectPatch": "Select {{title}}",
-      "deselectPatch": "Deselect {{title}}"
+      "deselectPatch": "Deselect {{title}}",
+      "selectAllMatching": "Select all {{count}} matching"
     },
     "table": {
       "patch": "Patch",
@@ -352,7 +353,8 @@
     "ringModal": {
       "editTitle": "Edit update ring",
       "createTitle": "Create update ring"
-    }
+    },
+    "truncatedNotice": "Showing the first {{shown}} of {{total}} patches. Use the filters above to narrow the list."
   },
   "ringSelector": {
     "label": "Update Ring:",

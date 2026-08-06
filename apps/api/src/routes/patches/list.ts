@@ -84,11 +84,12 @@ listRoutes.get(
     // to the whitelist keys by listPatchesSchema, so the lookup never misses.
     //
     // sortBy/sortDir are API-ready but NOT yet consumed by the web client: the
-    // patches page (apps/web/.../PatchesPage.tsx) fetches a fixed `limit=200`
-    // and sorts/paginates entirely client-side, so this server-side ordering is
-    // currently exercised only by direct API callers. Wiring the web to send
-    // these is a follow-up — see the severity-divergence NOTE on
-    // PATCH_SORT_COLUMNS above before doing so.
+    // patches page (apps/web/.../PatchesPage.tsx) walks every page at
+    // `limit=200` and then sorts/paginates entirely client-side, so this
+    // server-side ordering is currently exercised only by direct API callers.
+    // Wiring the web to send these (and thereby drop the page walk) is a
+    // follow-up — see the severity-divergence NOTE on PATCH_SORT_COLUMNS above
+    // before doing so.
     const sortColumn = (query.sortBy && PATCH_SORT_COLUMNS[query.sortBy]) || patches.createdAt;
     const sortDirection = query.sortDir ?? (query.sortBy ? 'asc' : 'desc');
     const orderByClause = sortDirection === 'asc' ? asc(sortColumn) : desc(sortColumn);

@@ -274,7 +274,8 @@
       "selectAllPatches": "Alle Patches auswählen",
       "deselectAllPatches": "Auswahl für alle Patches aufheben",
       "selectPatch": "{{title}} auswählen",
-      "deselectPatch": "Auswahl für {{title}} aufheben"
+      "deselectPatch": "Auswahl für {{title}} aufheben",
+      "selectAllMatching": "Alle {{count}} Treffer auswählen"
     },
     "table": {
       "patch": "Patch",
@@ -352,7 +353,8 @@
     "ringModal": {
       "editTitle": "Updatering bearbeiten",
       "createTitle": "Updatering erstellen"
-    }
+    },
+    "truncatedNotice": "Es werden die ersten {{shown}} von {{total}} Patches angezeigt. Verwenden Sie die Filter oben, um die Liste einzugrenzen."
   },
   "ringSelector": {
     "label": "Updatering:",

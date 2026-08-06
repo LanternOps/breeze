@@ -302,3 +302,74 @@ describe('patch approvals RBAC gating', () => {
     });
   });
 });
+
+// #3157 was reported as "can't approve more than 200 patches". The 200 ceiling
+// lived entirely in the web client's single-page fetch — bulkApproveSchema has
+// no max on patchIds and the handler loops the whole array. Pin that here so a
+// well-meaning `.max(200)` on the schema can't silently re-create the ceiling
+// on the server side after the client fix.
+describe('bulk approve beyond one API page (#3157)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    grantedPermission = 'devices:execute';
+    mfaSatisfied = true;
+    partnerOrgAccess = 'all';
+    vi.mocked(resolvePatchApprovalPartnerIdForRing).mockResolvedValue({ partnerId: PARTNER_ID });
+    vi.mocked(upsertPatchApproval).mockResolvedValue(undefined);
+  });
+
+  // 333 is the reporter's Linux catalog size, and 200 is the API's MAX_PAGE_LIMIT.
+  const manyPatchIds = Array.from(
+    { length: 333 },
+    (_, i) => `22222222-2222-4222-8222-${String(i + 1).padStart(12, '0')}`
+  );
+
+  it('approves all 333 patches in one request', async () => {
+    const res = await mountApp().request('/patches/bulk-approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+      body: JSON.stringify({ patchIds: manyPatchIds }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.approved).toHaveLength(333);
+    expect(body.failed).toHaveLength(0);
+    // Every id was actually written, not just accepted.
+    expect(upsertPatchApproval).toHaveBeenCalledTimes(333);
+    expect(body.approved[332]).toBe(manyPatchIds[332]);
+  });
+
+  it('records the full approved count in the audit entry', async () => {
+    await mountApp().request('/patches/bulk-approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+      body: JSON.stringify({ patchIds: manyPatchIds }),
+    });
+
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'patch.bulk_approve',
+        details: expect.objectContaining({ approvedCount: 333, failedCount: 0 }),
+      })
+    );
+  });
+
+  it('reports the ids that failed rather than aborting the whole batch', async () => {
+    vi.mocked(upsertPatchApproval).mockImplementation(async (values: { patchId: string }) => {
+      if (values.patchId === manyPatchIds[250]) throw new Error('conflict');
+      return undefined;
+    });
+
+    const res = await mountApp().request('/patches/bulk-approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+      body: JSON.stringify({ patchIds: manyPatchIds }),
+    });
+
+    const body = await res.json();
+    expect(body.approved).toHaveLength(332);
+    expect(body.failed).toEqual([manyPatchIds[250]]);
+  });
+});

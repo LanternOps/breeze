@@ -83,10 +83,11 @@ const DEFAULT_PAGE_SIZE = 25;
 // WARNING (sort divergence): this client-side severity sort uses SEMANTIC
 // priority (critical=0 … low=3), whereas the API sorts severity ALPHABETICALLY
 // (asc(patches.severity) in routes/patches/list.ts). These currently never
-// disagree because the web does 100% client-side sort/paginate over a fixed
-// `limit=200` fetch and never sends sortBy/sortDir. Whoever later pushes
-// sorting down to the server (via fetchPatches) MUST reconcile the two or
-// severity ordering will silently change. Note also that `os` and
+// disagree because the web does 100% client-side sort/paginate over the fully
+// paged-in catalog (PatchesPage walks every page) and never sends
+// sortBy/sortDir. Whoever later pushes sorting down to the server (via
+// fetchPatches) MUST reconcile the two or severity ordering will silently
+// change. Note also that `os` and
 // `approvalStatus` are SortKeys here with no matching column in the API's
 // PATCH_SORT_COLUMNS — they can't be pushed down without server-side support.
 const severityRank: Record<PatchSeverity, number> = {
@@ -203,7 +204,20 @@ export default function PatchList({
   const paginatedPatches = sortedPatches.slice(startIndex, startIndex + pageSize);
 
   const paginatedIds = useMemo(() => paginatedPatches.map(p => p.id), [paginatedPatches]);
-  const { selectedIds, allPageSelected, somePageSelected, toggleSelect, toggleSelectAll, clearSelection } = usePatchSelection(paginatedIds);
+  // Every patch matching the active filters, across all pages — backs the
+  // "select all N matching" action so approving a >1-page result set doesn't
+  // require a select-all click per page (#3157).
+  const matchingIds = useMemo(() => sortedPatches.map(p => p.id), [sortedPatches]);
+  const {
+    selectedIds,
+    allPageSelected,
+    somePageSelected,
+    allMatchingSelected,
+    selectAllMatching,
+    toggleSelect,
+    toggleSelectAll,
+    clearSelection,
+  } = usePatchSelection(paginatedIds, matchingIds);
 
   const selectedPatches = useMemo(
     () => patches.filter(p => selectedIds.has(p.id)),
@@ -457,6 +471,19 @@ export default function PatchList({
           <span className="text-sm font-medium">
             {t('patchList.selection.selected', { count: selectedIds.size })}
           </span>
+          {/* The header checkbox only ever covers the visible page, so once the
+              filtered set spans more than one page offer a one-click way to
+              take the whole thing (#3157). */}
+          {!allMatchingSelected && matchingIds.length > paginatedIds.length && (
+            <button
+              type="button"
+              onClick={selectAllMatching}
+              data-testid="patch-select-all-matching"
+              className="text-sm font-medium text-primary underline-offset-2 hover:underline"
+            >
+              {t('patchList.selection.selectAllMatching', { count: matchingIds.length })}
+            </button>
+          )}
           <div className="h-4 w-px bg-border" />
           {onBulkApprove && selectedPendingIds.length > 0 && (
             <button
