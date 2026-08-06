@@ -15,7 +15,12 @@
  * `PERMISSIONS.APPROVALS_DECIDE` instead of `DEVICES_EXECUTE`, and WITHOUT
  * the mobile-device narrowing: an action-intent approver decides from the web
  * app or an MCP client, not necessarily a phone, so `resolveElevationApprovers`'s
- * final `mobile_devices` filter has no equivalent here.
+ * final `mobile_devices` filter has no equivalent here. One deliberate
+ * divergence: both candidate queries here additionally join `users` and
+ * require status='active' (`resolveElevationApprovers` does not) — a
+ * disabled or still-invited account can hold a granting role but must never
+ * be counted as an eligible approver, since that both inflates the
+ * four-eyes fan-out and can wrongly suppress the sole-operator fallback.
  *
  * Runs under a system DB access context: this reads role_permissions,
  * permissions, organization_users, partner_users, and organizations — RLS-
@@ -35,6 +40,7 @@ import {
   partnerUsers,
   rolePermissions,
   permissions,
+  users,
 } from '../../db/schema';
 import { PERMISSIONS } from '../permissions';
 
@@ -74,14 +80,21 @@ export async function resolveIntentApprovers(orgId: string): Promise<string[]> {
 
     const candidateUserIds = new Set<string>();
 
-    // 1. Direct org members holding an approvals:decide role.
+    // 1. Direct org members holding an approvals:decide role. Joined against
+    // `users` and gated on status='active' so a disabled or still-invited
+    // account is never counted as an eligible approver — it both inflates
+    // the four-eyes fan-out with someone who can't actually decide, and can
+    // wrongly suppress the sole-operator fallback (intentService.ts) by
+    // making it look like a second approver exists when none does.
     const orgMembers = await db
       .select({ userId: organizationUsers.userId })
       .from(organizationUsers)
+      .innerJoin(users, eq(users.id, organizationUsers.userId))
       .where(
         and(
           eq(organizationUsers.orgId, orgId),
           inArray(organizationUsers.roleId, grantingRoleIds),
+          eq(users.status, 'active'),
         ),
       );
     for (const m of orgMembers) candidateUserIds.add(m.userId);
@@ -89,6 +102,7 @@ export async function resolveIntentApprovers(orgId: string): Promise<string[]> {
     // 2. Partner members of the org's partner whose org_access covers this
     // org — the population plain organization_users membership can never see
     // (CRITICAL-2: partner techs/admins have no organization_users row).
+    // Same `users` join + status='active' gate as above.
     if (org?.partnerId) {
       const partnerMembers = await db
         .select({
@@ -97,10 +111,12 @@ export async function resolveIntentApprovers(orgId: string): Promise<string[]> {
           orgIds: partnerUsers.orgIds,
         })
         .from(partnerUsers)
+        .innerJoin(users, eq(users.id, partnerUsers.userId))
         .where(
           and(
             eq(partnerUsers.partnerId, org.partnerId),
             inArray(partnerUsers.roleId, grantingRoleIds),
+            eq(users.status, 'active'),
           ),
         );
       for (const m of partnerMembers) {
