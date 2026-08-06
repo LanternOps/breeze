@@ -101,11 +101,25 @@ interface AgentDevice {
   status?: string | null;
 }
 
-// Label for a collector-agent <option>. `displayName ?? hostname` is the
-// repo-wide device-picker convention; the id is only ever a last resort for a
-// malformed row, not the normal case.
+// Label for a collector-agent <option>. Empty/whitespace names must fall
+// through the same way nulls do — `displayName: ""` survives the API write
+// schemas, and a blank option is worse than the UUID this replaced: it is
+// indistinguishable from the placeholder and from every other blank row.
+// `(displayName || hostname || id).trim()` matches the primary device surfaces
+// (DeviceList, DeviceDetails, NetworkChangesPanel), so a device cannot read as
+// one name there and blank here.
 function agentLabel(agent: AgentDevice): string {
-  return agent.displayName ?? agent.hostname ?? agent.id;
+  const label = agent.displayName?.trim() || agent.hostname?.trim();
+  if (label) return label;
+  // Unreachable for well-formed rows: devices.hostname is NOT NULL and is always
+  // selected by GET /devices. Reaching here means the response shape drifted —
+  // precisely the #3121 failure mode — so say so rather than silently showing a
+  // UUID for every row again.
+  console.warn(
+    "[unifi] agent device has neither displayName nor hostname; falling back to id",
+    agent.id,
+  );
+  return agent.id;
 }
 // Deep telemetry rows (from GET /unifi/telemetry?siteId=).
 interface TelemetryDevice {

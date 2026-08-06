@@ -317,7 +317,25 @@ describe("UnifiIntegration collector-agent dropdown labels (#3121)", () => {
       displayName: null,
       siteId: "site-1",
     },
+    // displayName: "" survives the device write schemas (no .min(1)/trim on
+    // PATCH /devices or /devices/provision), so it must fall through to
+    // hostname — a blank <option> is worse than the UUID this fix removes.
+    {
+      id: "1f2e3d4c-5b6a-4798-8899-aabbccddeeff",
+      hostname: "blank-name-host",
+      displayName: "",
+      siteId: "site-1",
+    },
+    // Different site: must be filtered OUT once site-1 is chosen.
+    {
+      id: "77778888-9999-4aaa-8bbb-cccddd000111",
+      hostname: "branch-01",
+      displayName: "Branch Router",
+      siteId: "site-2",
+    },
   ];
+  const SITE_1_AGENTS = AGENT_DEVICES.filter((d) => d.siteId === "site-1");
+  const OTHER_SITE_AGENT = AGENT_DEVICES[3];
 
   function optionLabels(select: HTMLElement): string[] {
     return within(select)
@@ -353,21 +371,33 @@ describe("UnifiIntegration collector-agent dropdown labels (#3121)", () => {
     });
     render(<UnifiIntegration />);
 
+    // Pick the site first: that is the real user journey, it enables the agent
+    // select, and it is the only way the siteId filter branch is exercised.
+    await screen.findAllByRole("option", { name: "HQ" });
+    fireEvent.change(screen.getByTestId("unifi-controller-site"), {
+      target: { value: "site-1" },
+    });
     const select = await screen.findByTestId("unifi-controller-agent");
+    expect((select as HTMLSelectElement).disabled).toBe(false);
+
     await waitFor(() =>
       expect(optionLabels(select)).toContain("HQ Edge Collector"),
     );
-    // Second device has no displayName → hostname, never the UUID.
+    // No displayName → hostname; empty-string displayName → hostname too.
     expect(optionLabels(select)).toContain("closet-sw-02");
+    expect(optionLabels(select)).toContain("blank-name-host");
+    // Never a UUID, and never a blank label.
     for (const device of AGENT_DEVICES) {
       expect(optionLabels(select)).not.toContain(device.id);
     }
+    // The site filter still applies — an agent at another site is not offered.
+    expect(optionLabels(select)).not.toContain(OTHER_SITE_AGENT.displayName);
     // Values stay the device id — only the label changed.
     expect(
       within(select)
         .getAllByRole("option")
         .map((o) => (o as HTMLOptionElement).value),
-    ).toEqual(expect.arrayContaining(AGENT_DEVICES.map((d) => d.id)));
+    ).toEqual(expect.arrayContaining(SITE_1_AGENTS.map((d) => d.id)));
   });
 
   it("labels the per-console collector agent picker by displayName, falling back to hostname", async () => {
@@ -399,17 +429,35 @@ describe("UnifiIntegration collector-agent dropdown labels (#3121)", () => {
     });
     render(<UnifiIntegration />);
 
+    await screen.findAllByRole("option", { name: "HQ" });
+    fireEvent.change(screen.getByTestId("unifi-collector-site"), {
+      target: { value: "site-1" },
+    });
     const select = await screen.findByTestId("unifi-collector-agent");
+    expect((select as HTMLSelectElement).disabled).toBe(false);
+
     await waitFor(() =>
       expect(optionLabels(select)).toContain("HQ Edge Collector"),
     );
     expect(optionLabels(select)).toContain("closet-sw-02");
+    expect(optionLabels(select)).toContain("blank-name-host");
     for (const device of AGENT_DEVICES) {
       expect(optionLabels(select)).not.toContain(device.id);
     }
+    expect(optionLabels(select)).not.toContain(OTHER_SITE_AGENT.displayName);
+    expect(
+      within(select)
+        .getAllByRole("option")
+        .map((o) => (o as HTMLOptionElement).value),
+    ).toEqual(expect.arrayContaining(SITE_1_AGENTS.map((d) => d.id)));
   });
 
-  it("falls back to the device id only when both name fields are missing", async () => {
+  // devices.hostname is NOT NULL, so this row cannot come from a healthy API —
+  // it stands in for the response-shape drift that caused #3121. The id is a
+  // deliberate last resort, but it must not be silent: a warning is what makes
+  // the next drift visible instead of shipping UUIDs to users again.
+  it("warns and falls back to the device id when both name fields are missing", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const nameless = {
       id: "deadbeef-0000-4000-8000-000000000001",
       hostname: null,
@@ -445,6 +493,11 @@ describe("UnifiIntegration collector-agent dropdown labels (#3121)", () => {
 
     const select = await screen.findByTestId("unifi-controller-agent");
     await waitFor(() => expect(optionLabels(select)).toContain(nameless.id));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("neither displayName nor hostname"),
+      nameless.id,
+    );
+    warn.mockRestore();
   });
 });
 
