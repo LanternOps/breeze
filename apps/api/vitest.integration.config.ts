@@ -202,6 +202,20 @@ export default defineConfig({
       // `src/__tests__/integration/**`, so already covered by the shared glob
       // above; named here for discoverability only.
       'src/__tests__/integration/effectDigestToctou.integration.test.ts',
+      // Live-Postgres behavioral half of the action_intents immutability
+      // contract: one rejecting UPDATE per column on the
+      // `action_intents_block_content_update()` deny-list (incl. the tier-3
+      // `approval_scope`, whose immutability IS the security value of the
+      // column), plus positive controls proving the lifecycle columns stayed
+      // mutable. These cases previously sat inside the UNIT suite
+      // `src/db/migration-action-intents.test.ts` behind
+      // `describe.runIf(!!process.env.DATABASE_URL)` and executed in NO CI job
+      // at all — `test-api` has no Postgres, and that file was never in this
+      // include list. Moving them under `src/__tests__/integration/**` puts
+      // them in the blocking `integration-test` job via the shared glob above;
+      // named here for discoverability only (same pattern
+      // `staleBackupReaper.integration.test.ts` uses).
+      'src/__tests__/integration/actionIntentsImmutabilityTrigger.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;
