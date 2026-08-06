@@ -17,7 +17,7 @@
   "devDependencies": {
     "@types/node": "^26.1.2",
     "drizzle-orm": "0.45.2",
-    "hono": "^4.12.32",
+    "hono": "^4.12.33",
     "typescript": "^5.7.2",
     "vitest": "^4.1.9"
   }
