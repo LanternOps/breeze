@@ -9,6 +9,7 @@ import {
   Unplug,
 } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
+import { fetchAllDevices } from "@/lib/devicesFetch";
 import { runAction, handleActionError, ActionError } from "../../lib/runAction";
 import { navigateTo } from "@/lib/navigation";
 import { loginPathWithNext, getJwtClaims } from "../../lib/authScope";
@@ -90,10 +91,6 @@ interface UnifiCollector {
   lastPollStatus: string | null;
   lastPollError: string | null;
 }
-// Page size for the collector-agent pickers. Named so the ceiling and the
-// "list may be incomplete" copy can never drift apart.
-const AGENT_LIST_LIMIT = 500;
-
 // Agent devices eligible to be a collector (from GET /devices).
 // Field names mirror the devices list response (apps/api/src/routes/devices/core.ts):
 // it returns `hostname` + `displayName`, never a `name`.
@@ -129,71 +126,112 @@ function agentLabel(agent: AgentDevice): string {
 // A collector polls the controller from the agent, so an offline agent yields a
 // collector that silently never polls. Annotate rather than filter: an agent
 // that is down right now is still a legitimate choice to configure, but the
-// operator has to be able to see what they are picking.
-function agentOptionLabel(agent: AgentDevice): string {
+// operator has to be able to see what they are picking. The status label is
+// translated out of the `devices` namespace, which already carries the full
+// device_status enum in every locale — an English "(offline)" inside otherwise
+// localized copy is its own small version of showing the user the wrong thing.
+function agentOptionLabel(
+  agent: AgentDevice,
+  translateStatus: (status: string) => string,
+): string {
   const name = agentLabel(agent);
   const status = agent.status?.trim().toLowerCase();
-  return !status || status === "online" ? name : `${name} (${status})`;
+  return !status || status === "online"
+    ? name
+    : `${name} (${translateStatus(status)})`;
 }
 
-// Unwrapping GET /devices. `res.ok` only says the request succeeded — it says
-// nothing about the body matching what this component expects, and #3121 was
-// exactly that gap: the rows arrived fine but the field this file read did not
-// exist. An unrecognised body previously collapsed to `[]` with `ok` true and
-// nothing pushed to `failed`, so the dropdown rendered empty with zero
-// diagnostics — strictly worse than the UUIDs, because there was nothing at all
-// to notice. Distinguish "no devices" (legitimate) from "shape drifted".
-type AgentDevicesResult =
-  | { ok: true; devices: AgentDevice[]; truncated: boolean }
+// Row-level validation for the device rows `fetchAllDevices` accumulated.
+//
+// The envelope is the walker's problem (it is the reviewed, shared unwrapper);
+// what it cannot know is whether the ROWS carry the fields this picker reads.
+// That gap is exactly #3121: the rows arrived fine, but under a field name this
+// file did not read, and nothing anywhere said so. `ok` on the request tells you
+// nothing about that, so check it explicitly and fail loudly.
+type AgentRowsResult =
+  | { ok: true; devices: AgentDevice[] }
   | { ok: false; reason: string };
 
-function parseAgentDevices(payload: unknown): AgentDevicesResult {
-  const record =
-    payload !== null && typeof payload === "object"
-      ? (payload as Record<string, unknown>)
-      : null;
-  const rows = Array.isArray(payload)
-    ? payload
-    : Array.isArray(record?.data)
-      ? (record.data as unknown[])
-      : Array.isArray(record?.devices)
-        ? (record.devices as unknown[])
-        : null;
-  if (!rows) {
-    return {
-      ok: false,
-      reason: `unrecognized list payload shape (keys: ${
-        record ? Object.keys(record).join(", ") || "none" : typeof payload
-      })`,
-    };
+function validateAgentRows(
+  rows: Record<string, unknown>[],
+  total: number | undefined,
+): AgentRowsResult {
+  // A healthy response always reports a count — `fetchAllDevices` sets
+  // includeTotal on the first page. Zero rows AND no count means the body
+  // carried no recognizable pagination at all (an error object served with
+  // HTTP 200, a renamed envelope), which is drift wearing an empty fleet's
+  // clothes. Zero rows WITH total===0 is a real empty fleet and stays silent —
+  // a guard that fires for every device-less partner is noise and gets ignored.
+  if (rows.length === 0) {
+    return total === undefined
+      ? { ok: false, reason: "empty body with no pagination total" }
+      : { ok: true, devices: [] };
   }
-  // An empty fleet is legitimate and must NOT read as drift. But a non-empty
-  // list where no row carries either label field means the field names moved —
-  // the #3121 regression, arriving as data rather than as a type error.
-  const named = rows.filter(
-    (row): row is AgentDevice =>
+  const usable = rows.filter(
+    (row): row is AgentDevice & Record<string, unknown> =>
       row !== null &&
       typeof row === "object" &&
+      typeof (row as { id?: unknown }).id === "string" &&
       ("hostname" in row || "displayName" in row),
   );
-  if (rows.length > 0 && named.length === 0) {
-    const keys = Object.keys(rows[0] as Record<string, unknown>).join(", ");
+  // All-or-nothing would let a PARTIAL drift through silently: some rows
+  // recognized, the rest filtered out of the dropdown with no warning — the
+  // same "my agent isn't in the list" symptom, and harder to spot than a total
+  // failure. Any unusable row is drift.
+  if (usable.length !== rows.length) {
+    const sample = rows.find(
+      (row) => row !== null && typeof row === "object" && !usable.includes(row as never),
+    );
+    const keys = sample ? Object.keys(sample).join(", ") : "non-object row";
     return {
       ok: false,
-      reason: `device rows carry neither hostname nor displayName (keys: ${keys})`,
+      reason: `${rows.length - usable.length} of ${rows.length} device rows lack id/hostname/displayName (sample keys: ${keys})`,
     };
   }
-  // Cursor pagination is the default for GET /devices, so a non-null nextCursor
-  // means the ?limit= ceiling cut the list short. Silently truncating produces
-  // the same user-visible symptom as #3121 — "my agent isn't in the list".
-  const pagination = record?.pagination as
-    | { nextCursor?: unknown }
-    | undefined;
-  return {
-    ok: true,
-    devices: named,
-    truncated: Boolean(pagination?.nextCursor),
-  };
+  return { ok: true, devices: usable };
+}
+
+// Shared agent load for both loaders.
+//
+// `fetchAllDevices` walks the keyset cursor to completion instead of taking one
+// capped page. That matters: this picker filters by site CLIENT-side, so a
+// partner past the old `?limit=500` ceiling simply could not reach their agent —
+// and a notice explaining that would have been a label on a broken control
+// rather than a fix. Truncation now means only the walker's 40,000-row safety
+// ceiling, which is why the notice can stay quiet in normal operation.
+type AgentLoad =
+  | { kind: "ok"; devices: AgentDevice[]; truncated: boolean }
+  | { kind: "unauthorized" }
+  | { kind: "failed"; label: string };
+
+async function loadAgentDevices(): Promise<AgentLoad> {
+  let truncated = false;
+  try {
+    const { data, total } = await fetchAllDevices({
+      // The route already hides decommissioned devices unless asked; preserve
+      // that. A decommissioned box is not a collector candidate.
+      includeDecommissioned: false,
+      onTruncated: () => {
+        truncated = true;
+      },
+    });
+    const parsed = validateAgentRows(data, total);
+    if (!parsed.ok) {
+      console.warn("[unifi] GET /devices response drift:", parsed.reason);
+      return {
+        kind: "failed",
+        label: "agent devices (unexpected response format)",
+      };
+    }
+    return { kind: "ok", devices: parsed.devices, truncated };
+  } catch (err) {
+    // fetchAllDevices rejects with the failed Response itself. Duck-type the
+    // status so a test double (a plain object) behaves like a real Response.
+    if ((err as { status?: unknown } | null)?.status === 401) {
+      return { kind: "unauthorized" };
+    }
+    return { kind: "failed", label: "agent devices" };
+  }
 }
 // Deep telemetry rows (from GET /unifi/telemetry?siteId=).
 interface TelemetryDevice {
@@ -289,9 +327,21 @@ export default function UnifiIntegration() {
     {},
   );
   const [agents, setAgents] = useState<AgentDevice[]>([]);
-  // True when GET /devices had more pages than the ?limit= ceiling returned, so
-  // the agent the operator is looking for may simply not be in the list.
+  // True only when the device walk hit its safety ceiling, so the agent the
+  // operator is looking for may genuinely not be in the list.
   const [agentsTruncated, setAgentsTruncated] = useState(false);
+  // device_status values are already translated in the `devices` namespace for
+  // every locale — reuse them rather than duplicating the enum here.
+  const translateDeviceStatus = useCallback(
+    (deviceStatus: string) =>
+      t(
+        /* i18n-dynamic */ `devices:deviceList.statuses.full.${deviceStatus}`,
+        // An enum value we don't have copy for renders as itself, never as a
+        // raw i18n key.
+        { defaultValue: deviceStatus },
+      ),
+    [t],
+  );
   const [collectorDrafts, setCollectorDrafts] = useState<
     Record<string, CollectorDraft>
   >({});
@@ -428,24 +478,20 @@ export default function UnifiIntegration() {
         mappingsRes,
         runsRes,
         collectorsRes,
-        devicesRes,
+        agentLoad,
       ] = await Promise.all([
         fetchWithAuth("/orgs/sites?limit=500"),
         fetchWithAuth("/orgs/organizations?limit=500"),
         fetchWithAuth("/unifi/mappings"),
         fetchWithAuth("/unifi/sync-runs"),
         fetchWithAuth("/unifi/collectors"),
-        fetchWithAuth(`/devices?limit=${AGENT_LIST_LIMIT}`),
+        loadAgentDevices(),
       ]);
       if (
-        [
-          sitesRes,
-          orgsRes,
-          mappingsRes,
-          runsRes,
-          collectorsRes,
-          devicesRes,
-        ].some((r) => r.status === 401)
+        [sitesRes, orgsRes, mappingsRes, runsRes, collectorsRes].some(
+          (r) => r.status === 401,
+        ) ||
+        agentLoad.kind === "unauthorized"
       ) {
         onUnauthorized();
         return;
@@ -504,22 +550,17 @@ export default function UnifiIntegration() {
           return next;
         });
       } else failed.push("collectors");
-      const devicesJson = await devicesRes.json().catch(() => ({}));
-      if (devicesRes.ok) {
-        const parsed = parseAgentDevices(devicesJson);
-        if (parsed.ok) {
-          setAgents(parsed.devices);
-          setAgentsTruncated(parsed.truncated);
-        } else {
-          // HTTP 200 with a body this component cannot read. Failing closed to
-          // an empty picker is right; doing it silently is what made #3121 take
-          // so long to spot, so this goes in `failed` and reaches the banner.
-          console.warn("[unifi] GET /devices response drift:", parsed.reason);
-          setAgents([]);
-          setAgentsTruncated(false);
-          failed.push("agent devices (unexpected response format)");
-        }
-      } else failed.push("agent devices");
+      if (agentLoad.kind === "ok") {
+        setAgents(agentLoad.devices);
+        setAgentsTruncated(agentLoad.truncated);
+      } else {
+        // Clear BOTH. Leaving a stale list under an error banner is bad enough;
+        // leaving the truncation notice asserting "only the first N were
+        // loaded" about a fetch that loaded nothing is a false factual claim.
+        setAgents([]);
+        setAgentsTruncated(false);
+        failed.push(agentLoad.label);
+      }
       if (failed.length > 0) {
         setDetailsError(
           t("unifiIntegration.someConfigurationFailed", {
@@ -547,14 +588,14 @@ export default function UnifiIntegration() {
         orgsRes,
         mappingsRes,
         collectorsRes,
-        devicesRes,
+        agentLoad,
         controllerSitesRes,
       ] = await Promise.all([
         fetchWithAuth("/orgs/sites?limit=500"),
         fetchWithAuth("/orgs/organizations?limit=500"),
         fetchWithAuth("/unifi/mappings"),
         fetchWithAuth("/unifi/collectors"),
-        fetchWithAuth(`/devices?limit=${AGENT_LIST_LIMIT}`),
+        loadAgentDevices(),
         fetchWithAuth("/unifi/controller-sites"),
       ]);
       if (
@@ -563,9 +604,9 @@ export default function UnifiIntegration() {
           orgsRes,
           mappingsRes,
           collectorsRes,
-          devicesRes,
           controllerSitesRes,
-        ].some((r) => r.status === 401)
+        ].some((r) => r.status === 401) ||
+        agentLoad.kind === "unauthorized"
       ) {
         onUnauthorized();
         return;
@@ -595,22 +636,17 @@ export default function UnifiIntegration() {
             [],
         );
       else failed.push("controllers");
-      const devicesJson = await devicesRes.json().catch(() => ({}));
-      if (devicesRes.ok) {
-        const parsed = parseAgentDevices(devicesJson);
-        if (parsed.ok) {
-          setAgents(parsed.devices);
-          setAgentsTruncated(parsed.truncated);
-        } else {
-          // HTTP 200 with a body this component cannot read. Failing closed to
-          // an empty picker is right; doing it silently is what made #3121 take
-          // so long to spot, so this goes in `failed` and reaches the banner.
-          console.warn("[unifi] GET /devices response drift:", parsed.reason);
-          setAgents([]);
-          setAgentsTruncated(false);
-          failed.push("agent devices (unexpected response format)");
-        }
-      } else failed.push("agent devices");
+      if (agentLoad.kind === "ok") {
+        setAgents(agentLoad.devices);
+        setAgentsTruncated(agentLoad.truncated);
+      } else {
+        // Clear BOTH. Leaving a stale list under an error banner is bad enough;
+        // leaving the truncation notice asserting "only the first N were
+        // loaded" about a fetch that loaded nothing is a false factual claim.
+        setAgents([]);
+        setAgentsTruncated(false);
+        failed.push(agentLoad.label);
+      }
       const controllerSitesJson = await controllerSitesRes
         .json()
         .catch(() => ({}));
@@ -1422,7 +1458,7 @@ export default function UnifiIntegration() {
                     )
                     .map((a) => (
                       <option key={a.id} value={a.id}>
-                        {agentOptionLabel(a)}
+                        {agentOptionLabel(a, translateDeviceStatus)}
                       </option>
                     ))}
                 </select>
@@ -1431,7 +1467,7 @@ export default function UnifiIntegration() {
                     className="mt-1 block text-xs text-amber-600"
                     data-testid="unifi-agents-truncated"
                   >
-                    {t("unifiIntegration.agentListTruncated", { limit: AGENT_LIST_LIMIT })}
+                    {t("unifiIntegration.agentListTruncated")}
                   </span>
                 )}
               </label>
@@ -1749,7 +1785,7 @@ export default function UnifiIntegration() {
               className="mb-4 text-xs text-amber-600"
               data-testid="unifi-agents-truncated"
             >
-              {t("unifiIntegration.agentListTruncated", { limit: AGENT_LIST_LIMIT })}
+              {t("unifiIntegration.agentListTruncated")}
             </p>
           )}
           <div className="space-y-4">
@@ -1850,7 +1886,7 @@ export default function UnifiIntegration() {
                         </option>
                         {eligibleAgents.map((a) => (
                           <option key={a.id} value={a.id}>
-                            {agentOptionLabel(a)}
+                            {agentOptionLabel(a, translateDeviceStatus)}
                           </option>
                         ))}
                       </select>

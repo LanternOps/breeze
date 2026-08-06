@@ -916,7 +916,7 @@
     "updateCollector": "Update collector",
     "enableDeepTelemetry": "Enable deep telemetry",
     "wired": "Wired",
-    "agentListTruncated": "Only the first {{limit}} agents were loaded — this list may be incomplete."
+    "agentListTruncated": "This agent list was cut short at a safety limit and may be incomplete."
   },
   "webhookEditor": {
     "failedToSaveWebhook": "Failed to save webhook",

@@ -916,7 +916,7 @@
     "updateCollector": "Collecteur de mises à jour",
     "enableDeepTelemetry": "Activer la télémétrie profonde",
     "wired": "Filaire",
-    "agentListTruncated": "Seuls les {{limit}} premiers agents ont été chargés ; cette liste peut être incomplète."
+    "agentListTruncated": "Cette liste d’agents a été tronquée à une limite de sécurité et peut être incomplète."
   },
   "webhookEditor": {
     "failedToSaveWebhook": "Impossible d’enregistrer le webhook",

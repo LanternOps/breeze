@@ -916,7 +916,7 @@
     "updateCollector": "Atualizar coletor",
     "enableDeepTelemetry": "Ativar telemetria detalhada",
     "wired": "Cabeada",
-    "agentListTruncated": "Apenas os primeiros {{limit}} agentes foram carregados; esta lista pode estar incompleta."
+    "agentListTruncated": "Esta lista de agentes foi truncada em um limite de segurança e pode estar incompleta."
   },
   "webhookEditor": {
     "failedToSaveWebhook": "Falha ao salvar o webhook",

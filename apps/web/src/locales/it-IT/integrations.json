@@ -916,7 +916,7 @@
     "updateCollector": "Aggiorna agente di raccolta",
     "enableDeepTelemetry": "Abilita telemetria approfondita",
     "wired": "Cablato",
-    "agentListTruncated": "Sono stati caricati solo i primi {{limit}} agenti: questo elenco potrebbe essere incompleto."
+    "agentListTruncated": "Questo elenco di agenti è stato troncato a un limite di sicurezza e potrebbe essere incompleto."
   },
   "webhookEditor": {
     "failedToSaveWebhook": "Impossibile salvare il webhook",
