@@ -9,11 +9,14 @@
 #      not match is not "rejected" — it is silently never applied. The schema
 #      then only exists on whichever database the author ran by hand.
 #
-#   2. The `2026-08-06-` date block is CLOSED. It was reserved by the security
-#      remediation program, one migration per wave; all of those have shipped
-#      and are content-hashed immutable, and later migrations re-create objects
-#      they define. A new file wedged into the block replays in the wrong order
-#      on a fresh database.
+#   2. The `2026-08-06-` date block is CLOSED. It was reserved for the security
+#      remediation waves, though two same-day migrations from unrelated work
+#      landed in it too (`-e-action-intents-origin-principal`,
+#      `-f-m365-comms-delegated`). All eight have shipped and are content-hash
+#      immutable, and the files carry ordering dependencies on each other, so a
+#      new file wedged into the block replays in the wrong order on a fresh
+#      database. Closure is about those dependencies, not about every file in
+#      the block being remediation content.
 #
 #      Rule 2 exists because rule-2 violations kept happening. Three separate
 #      authors independently reached for `2026-08-06-g-…` (#2995 — merged and
@@ -28,12 +31,16 @@
 #   check-migration-naming.sh            # every file in the migrations dir (CI)
 #
 # The reserved-block manifest below is duplicated in apps/api/src/db/
-# autoMigrate.test.ts, which asserts the two copies agree ("keeps the
-# commit-time naming guard pinned to the same reserved date").
+# autoMigrate.test.ts, which parses this array and asserts the two copies are
+# element-for-element identical ("keeps the commit-time naming guard in sync
+# with the reserved-block manifest"). Keep the array literal's shape parseable:
+# one quoted filename per line.
 
 set -euo pipefail
 
-MIGRATIONS_DIR="apps/api/migrations"
+# Overridable so the guard's FAILURE path can be exercised against a fixture
+# directory (see autoMigrate.test.ts). Nothing in CI or the hook sets it.
+MIGRATIONS_DIR="${BREEZE_MIGRATIONS_DIR:-apps/api/migrations}"
 RESERVED_DATE="2026-08-06-"
 
 # The complete, shipped contents of the reserved block. Nothing may be added.
@@ -86,6 +93,14 @@ check_filename() {
 if [ "${1:-}" = "--staged" ]; then
   # Pre-commit: only judge migrations this commit is ADDING. Renames surface as
   # A+D with --no-renames, and the added half is what we want to vet.
+  #
+  # Captured into a variable rather than piped through a process substitution:
+  # under `set -e` a failing `git diff` inside <(...) is invisible, and the loop
+  # would then read nothing and report OK — a guard passing without checking.
+  if ! staged_added="$(git diff --cached --no-renames --diff-filter=A --name-only)"; then
+    echo "check-migration-naming: 'git diff --cached' failed; refusing to pass." >&2
+    exit 1
+  fi
   while IFS= read -r file; do
     [ -n "$file" ] || continue
     case "$file" in
@@ -94,10 +109,22 @@ if [ "${1:-}" = "--staged" ]; then
       *) continue ;;                             # README.md etc. are not
     esac
     check_filename "$(basename "$file")"
-  done < <(git diff --cached --no-renames --diff-filter=A --name-only)
+  done <<< "$staged_added"
 else
-  for file in "$MIGRATIONS_DIR"/*.sql; do
-    [ -f "$file" ] || continue
+  # Without nullglob an unmatched glob expands to the literal pattern, `[ -f ]`
+  # rejects it, and the guard exits 0 having inspected nothing. A migrations
+  # directory with no migrations means the path is wrong, not that all is well.
+  shopt -s nullglob
+  sql_files=("$MIGRATIONS_DIR"/*.sql)
+  shopt -u nullglob
+
+  if [ "${#sql_files[@]}" -eq 0 ]; then
+    echo "check-migration-naming: no .sql files found under '$MIGRATIONS_DIR'." >&2
+    echo "Refusing to report OK without checking anything." >&2
+    exit 1
+  fi
+
+  for file in "${sql_files[@]}"; do
     check_filename "$(basename "$file")"
   done
 fi

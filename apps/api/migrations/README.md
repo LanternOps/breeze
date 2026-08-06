@@ -30,7 +30,11 @@ block replays in the wrong order on a fresh database.
 
 | Date | Status | Contents |
 |---|---|---|
-| `2026-08-06` | **CLOSED** | The eight security-remediation wave migrations, slots `-a-` … `-f-`. |
+| `2026-08-06` | **CLOSED** | Eight shipped migrations in slots `-a-` … `-f-`. Mostly the security-remediation waves, plus two same-day migrations from unrelated work that landed in the block (`-e-action-intents-origin-principal`, `-f-m365-comms-delegated`). |
+
+The block is closed because those eight files carry ordering dependencies on
+each other and are content-hash immutable — not because everything in it is
+remediation content.
 
 **Do not add `2026-08-06-g-` (or `-h-`, `-i-`, …).** Three separate authors
 reached for exactly that (#2995, #3008, and a plan doc), because the same-day

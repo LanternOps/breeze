@@ -9,6 +9,7 @@ import {
   partitionLedgerRows,
 } from './autoMigrate';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -20,11 +21,17 @@ import { deviceMtlsCertificates } from './schema/deviceMtlsCertificates';
 import { manifestSigningKeyDelegations } from './schema/manifestSigningKeys';
 import { devices } from './schema/devices';
 
-// The 2026-08-06 date was reserved by the security remediation program: one
-// migration per wave, all of which have now shipped. The block is CLOSED —
-// nothing may be added to it, because every file in it is immutable and
-// several later migrations already re-create objects it defines, so a new
-// file wedged into the block replays in the wrong order on a fresh DB.
+// The 2026-08-06 date was reserved for the security remediation waves — though
+// two same-day migrations from unrelated work landed in it as well
+// (-e-action-intents-origin-principal, -f-m365-comms-delegated; see the Wave 6
+// tests below, which document exactly that). All eight have now shipped.
+//
+// The block is CLOSED. Every file in it is content-hash immutable, and the
+// files carry ordering dependencies on each other (the wave tests below assert
+// several), so a new file wedged into the block replays in the wrong order on
+// a fresh DB. At least one planned migration is already known to re-create a
+// function the block defines — see the m365-comms plan doc, whose migrations
+// this PR moved to a later date for exactly this reason.
 //
 // Previous guards expressed this as a shape (`-a..-f` slot letters). That was
 // wrong twice over: it silently blessed `2026-08-06-a-something-unrelated.sql`,
@@ -36,7 +43,8 @@ import { devices } from './schema/devices';
 // The mechanism is therefore an explicit frozen manifest, not a pattern: these
 // eight filenames and no others. A ninth file on this date fails and is told to
 // use a later date. See `scripts/check-migration-naming.sh` for the same rule
-// enforced at commit time (which is where an author should hit it), and
+// enforced at commit time (which is where an author should hit it) — its copy
+// of this manifest is asserted identical below — and
 // `apps/api/migrations/README.md` for the authoring-facing writeup.
 const RESERVED_MIGRATION_DATE = '2026-08-06-';
 const RESERVED_BLOCK_MIGRATIONS = [
@@ -52,6 +60,7 @@ const RESERVED_BLOCK_MIGRATIONS = [
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 const REPO_ROOT = path.resolve(__dirname, '../../../..');
+const GUARD_SCRIPT = path.join(REPO_ROOT, 'scripts/check-migration-naming.sh');
 
 function listMigrationFilenames(): string[] {
   return readdirSync(MIGRATIONS_DIR)
@@ -382,13 +391,74 @@ describe('migration filename conventions', () => {
     ).toEqual([]);
   });
 
-  it('keeps the commit-time naming guard pinned to the same reserved date', () => {
+  it('keeps the commit-time naming guard in sync with the reserved-block manifest', () => {
     // The pre-commit guard is where an author should hit this, and it is
     // deliberately a standalone shell script (no toolchain needed). It carries
-    // its own copy of the reserved date, so assert the two cannot drift.
-    const guard = readFileSync(path.join(REPO_ROOT, 'scripts/check-migration-naming.sh'), 'utf8');
+    // its own copy of the date and the manifest, so assert BOTH element-for-
+    // element — a substring check on the date alone would still pass while the
+    // two guards enforced different memberships.
+    const guard = readFileSync(GUARD_SCRIPT, 'utf8');
 
-    expect(guard).toContain(RESERVED_MIGRATION_DATE);
+    expect(guard).toMatch(new RegExp(`^RESERVED_DATE="${RESERVED_MIGRATION_DATE}"$`, 'm'));
+
+    const arrayBody = guard.match(/^RESERVED_BLOCK=\(\n([\s\S]*?)^\)$/m)?.[1];
+    expect(arrayBody, 'could not parse RESERVED_BLOCK=( … ) out of the guard script').toBeDefined();
+
+    const shellManifest = (arrayBody ?? '')
+      .split('\n')
+      .map((line) => line.trim().replace(/^"(.*)"$/, '$1'))
+      .filter((line) => line.length > 0 && !line.startsWith('#'));
+
+    expect(shellManifest).toEqual([...RESERVED_BLOCK_MIGRATIONS]);
+  });
+
+  it('rejects a squatter migration when the commit-time guard actually runs', () => {
+    // The guard runs on every PR, but only ever against a clean tree — that
+    // proves the pass branch and nothing else. Drive its FAILURE path against a
+    // fixture directory so "the guard still fires" is a test, not a memory of
+    // having tried it once by hand.
+    const fixture = mkdtempSync(path.join(tmpdir(), 'migration-naming-'));
+    try {
+      for (const filename of RESERVED_BLOCK_MIGRATIONS) {
+        writeFileSync(path.join(fixture, filename), '-- fixture\n');
+      }
+
+      const run = (): { status: number | null; stderr: string } => {
+        const result = spawnSync('bash', [GUARD_SCRIPT], {
+          cwd: REPO_ROOT,
+          encoding: 'utf8',
+          env: { ...process.env, BREEZE_MIGRATIONS_DIR: fixture },
+        });
+        return { status: result.status, stderr: result.stderr };
+      };
+
+      // The shipped block alone is clean.
+      expect(run().status).toBe(0);
+
+      // A ninth file on the reserved date is rejected, and named.
+      writeFileSync(path.join(fixture, '2026-08-06-g-squatter.sql'), '-- fixture\n');
+      const squatter = run();
+      expect(squatter.status).toBe(1);
+      expect(squatter.stderr).toContain('2026-08-06-g-squatter.sql');
+      expect(squatter.stderr).toContain('CLOSED');
+      rmSync(path.join(fixture, '2026-08-06-g-squatter.sql'));
+
+      // A filename the runner would silently skip is rejected, and named.
+      writeFileSync(path.join(fixture, 'no-date-prefix.sql'), '-- fixture\n');
+      const undiscoverable = run();
+      expect(undiscoverable.status).toBe(1);
+      expect(undiscoverable.stderr).toContain('no-date-prefix.sql');
+      rmSync(path.join(fixture, 'no-date-prefix.sql'));
+
+      // An empty directory must FAIL rather than report OK having checked
+      // nothing — the vacuous-guard failure mode this whole suite exists for.
+      for (const filename of RESERVED_BLOCK_MIGRATIONS) {
+        rmSync(path.join(fixture, filename));
+      }
+      expect(run().status).toBe(1);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
   });
 
   it('resolves every core migration path referenced from apps/api/src', () => {
@@ -403,13 +473,24 @@ describe('migration filename conventions', () => {
     const walk = (dir: string): void => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         const full = path.join(dir, entry.name);
-        // Extensions ship their own per-bundle migrations directories and their
-        // tests use synthetic in-memory filenames — not the core directory.
         if (entry.isDirectory()) {
-          if (entry.name !== 'node_modules' && entry.name !== 'extensions') walk(full);
+          if (entry.name !== 'node_modules') walk(full);
           continue;
         }
         if (!entry.name.endsWith('.ts')) continue;
+        // Extension bundles carry their OWN migrations directories, and their
+        // tests build synthetic in-memory bundles whose fixture filenames
+        // intentionally do not exist on disk. Skip only those test files —
+        // extension SOURCE files do cite real core migrations (e.g.
+        // extensions/stateStore.ts), and those references should be held to
+        // the same standard as any other.
+        //
+        // Note this scan does not distinguish code from comments, so a prose
+        // mention of a migration path is checked too. That is intended: a
+        // comment citing a migration that no longer exists is also rot.
+        if (full.includes(`${path.sep}extensions${path.sep}`) && entry.name.endsWith('.test.ts')) {
+          continue;
+        }
         const contents = readFileSync(full, 'utf8');
         for (const match of contents.matchAll(/migrations\/(\d{4}-[A-Za-z0-9._-]*\.sql)/g)) {
           const filename = match[1];
