@@ -183,6 +183,16 @@ export default defineConfig({
       // mocked route suite can only assert the predicate's shape and cannot
       // see the ON DELETE CASCADE at all.
       'src/routes/enrollmentKeysPurgeExpired.integration.test.ts',
+      // Co-located real-DB end-to-end coverage for the tier3-supervised-four-eyes
+      // split (Task 10): four_eyes fan-out ownership (both admins, never the
+      // requester), a t+30min approve/release proving the new 60-minute
+      // four_eyes window (vs. the old 5-minute supervised one) via direct DB
+      // timestamp manipulation, and the disabled-second-admin sole-operator
+      // fallback. Lives under `src/__tests__/integration/**`, already covered
+      // by the shared glob above and the unit runner's wholesale
+      // `src/__tests__/integration/**` exclude; named here for discoverability
+      // only (same pattern `staleBackupReaper.integration.test.ts` uses).
+      'src/__tests__/integration/intentSupervisedFourEyes.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;
