@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
+	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
@@ -21,13 +23,24 @@ import (
 // crash, and both retry attempts burned in the same millisecond.
 
 // shrinkDesktopStartRetryBackoff makes the inter-attempt backoff test-sized and
-// restores it afterwards. These tests are not parallel, so the package-level
-// var is safe to swap (same pattern as desktopLeaseRenewEvery).
+// restores it afterwards (same pattern as desktopLeaseRenewEvery).
+//
+// RULE: these swap package-level vars, so any test that exercises
+// startDesktopViaHelper must NOT call t.Parallel().
 func shrinkDesktopStartRetryBackoff(t *testing.T, d time.Duration) {
 	t.Helper()
 	prev := desktopStartRetryBackoff
 	desktopStartRetryBackoff = d
 	t.Cleanup(func() { desktopStartRetryBackoff = prev })
+}
+
+// shrinkDesktopStartCommandTimeout bounds one IPC round-trip. Same
+// no-t.Parallel rule as above.
+func shrinkDesktopStartCommandTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := desktopStartCommandTimeout
+	desktopStartCommandTimeout = d
+	t.Cleanup(func() { desktopStartCommandTimeout = prev })
 }
 
 // newClosedHelperSession returns a desktop-capable session that is already
@@ -268,9 +281,8 @@ func TestStartDesktopViaHelperSpacesRetriesAndReportsRealError(t *testing.T) {
 	}
 }
 
-// A duplicate-id rejection must be surfaced verbatim, not retried and not
-// reported as a crash — the helper is alive and a retry cannot help.
-func TestStartDesktopViaHelperDoesNotRetryDuplicateCommand(t *testing.T) {
+// A helper-reported failure is terminal and surfaced verbatim.
+func TestStartDesktopViaHelperSurfacesHelperReportedError(t *testing.T) {
 	shrinkDesktopStartRetryBackoff(t, time.Millisecond)
 
 	serverConn, clientConn := createTestSocketPair(t)
@@ -282,26 +294,14 @@ func TestStartDesktopViaHelperDoesNotRetryDuplicateCommand(t *testing.T) {
 	})
 	go session.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
 
-	// The helper answers with the duplicate-id error the broker would raise if
-	// a shared correlation id were ever reintroduced.
 	go func() {
 		_ = clientIPC.SetReadDeadline(time.Now().Add(10 * time.Second))
 		env, err := clientIPC.Recv()
 		if err != nil {
 			return
 		}
-		_ = clientIPC.Send(&ipc.Envelope{
-			ID:    env.ID,
-			Type:  ipc.TypeDesktopStart,
-			Error: "boom",
-		})
+		_ = clientIPC.Send(&ipc.Envelope{ID: env.ID, Type: ipc.TypeDesktopStart, Error: "boom"})
 	}()
-
-	// Direct classification check: the loop only retries on a lost helper.
-	dupErr := fmt.Errorf("%w: %q (session %q)", sessionbroker.ErrDuplicateCommand, "desk-desktop-1", "helper-1")
-	if desktopStartLostHelper(dupErr) {
-		t.Fatal("duplicate-id rejection classified as a helper death")
-	}
 
 	calls := 0
 	h := &Heartbeat{
@@ -319,6 +319,52 @@ func TestStartDesktopViaHelperDoesNotRetryDuplicateCommand(t *testing.T) {
 	}
 }
 
+// TestStartDesktopViaHelperDoesNotRetryWedgedHelper pins the classifier into
+// the retry loop. A live helper that never answers must fail once, not twice:
+// the session stayed up, so nothing crashed and helperSessionForTarget would
+// only hand the retry back the very same wedged session.
+//
+// This is the test that fails if desktopStartLostHelper is ever bypassed and
+// startDesktopOnSession goes back to reporting every error as a helper death.
+func TestStartDesktopViaHelperDoesNotRetryWedgedHelper(t *testing.T) {
+	shrinkDesktopStartRetryBackoff(t, time.Millisecond)
+	shrinkDesktopStartCommandTimeout(t, 150*time.Millisecond)
+
+	serverConn, clientConn := createTestSocketPair(t)
+	clientIPC := ipc.NewConn(clientConn)
+	session := sessionbroker.NewSession(ipc.NewConn(serverConn), 1000, "1000", "alice", "quartz", "helper-1", []string{"desktop"})
+	t.Cleanup(func() {
+		_ = session.Close()
+		_ = clientIPC.Close()
+	})
+	// RecvLoop runs, so the session stays registered and connected — it just
+	// never produces a response. That is a wedged helper, not a dead one.
+	go session.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
+
+	calls := 0
+	h := &Heartbeat{
+		helperFinder: func(string) *sessionbroker.Session {
+			calls++
+			return session
+		},
+	}
+
+	result := h.startDesktopViaHelper("desktop-1", "offer", nil, 0, desktop.DefaultSessionPolicy(), map[string]any{})
+
+	if result.Status != "failed" {
+		t.Fatalf("status = %q, want failed", result.Status)
+	}
+	if calls != 1 {
+		t.Fatalf("helperFinder called %d times, want 1 — a timeout against a live session is not a helper death", calls)
+	}
+	if !strings.Contains(result.Error, "did not answer the start request") {
+		t.Errorf("timeout not translated into an operator-facing message: %s", result.Error)
+	}
+	if strings.Contains(result.Error, "helper session dropped each time") {
+		t.Errorf("timeout wrongly reported as a dropped helper session: %s", result.Error)
+	}
+}
+
 // Shutdown must not be held open by a pending desktop-start retry.
 func TestStartDesktopViaHelperAbortsRetryOnShutdown(t *testing.T) {
 	shrinkDesktopStartRetryBackoff(t, 10*time.Second)
@@ -326,12 +372,18 @@ func TestStartDesktopViaHelperAbortsRetryOnShutdown(t *testing.T) {
 	stop := make(chan struct{})
 	close(stop)
 
+	// Built on the TEST goroutine: createTestSocketPair calls t.Fatalf, which
+	// only Goexits the goroutine it runs on, so constructing it inside
+	// helperFinder (which runs on the goroutine below) would turn a setup
+	// failure into a misleading 5s timeout.
+	dead := newClosedHelperSession(t, "helper-1")
+
 	calls := 0
 	h := &Heartbeat{
 		stopChan: stop,
 		helperFinder: func(string) *sessionbroker.Session {
 			calls++
-			return newClosedHelperSession(t, fmt.Sprintf("helper-%d", calls))
+			return dead
 		},
 	}
 
@@ -353,5 +405,137 @@ func TestStartDesktopViaHelperAbortsRetryOnShutdown(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("helperFinder called %d times, want 1 (shutdown aborts before the retry)", calls)
+	}
+}
+
+// TestJoinOrRunDesktopStartJoinsSameOffer proves the collapse semantics with no
+// timing dependency: a leader is already registered and finished, so a start
+// carrying the SAME offer must take the leader's result and never run its own.
+//
+// This is what keeps a second concurrent start off the helper. Two starts
+// reaching SessionManager.StartSession would have the second tear down the
+// first, which the unique-id change alone would have made reachable.
+func TestJoinOrRunDesktopStartJoinsSameOffer(t *testing.T) {
+	const sessionID = "desktop-join"
+	leader := &desktopStartCall{offer: "offer-A", done: make(chan struct{})}
+	leader.result = tools.NewSuccessResult(map[string]any{"answer": "leader-answer"}, 0)
+	close(leader.done)
+	desktopStartInflight.Store(sessionID, leader)
+	t.Cleanup(func() { desktopStartInflight.Delete(sessionID) })
+
+	h := &Heartbeat{}
+	ran := false
+	got := h.joinOrRunDesktopStart(sessionID, "offer-A", func() tools.CommandResult {
+		ran = true
+		return tools.NewErrorResult(errors.New("second start reached the helper"), 0)
+	})
+
+	if ran {
+		t.Fatal("a concurrent start with the same offer ran its own helper round-trip instead of joining")
+	}
+	if got.Status != "completed" || got.Stdout != leader.result.Stdout {
+		t.Fatalf("joiner did not receive the leader's result: %+v", got)
+	}
+}
+
+// A different offer is a new negotiation and must NOT be answered with the
+// leader's SDP — it waits its turn and runs its own start.
+func TestJoinOrRunDesktopStartDefersDifferentOffer(t *testing.T) {
+	const sessionID = "desktop-defer"
+	leader := &desktopStartCall{offer: "offer-A", done: make(chan struct{})}
+	leader.result = tools.NewSuccessResult(map[string]any{"answer": "leader-answer"}, 0)
+	desktopStartInflight.Store(sessionID, leader)
+
+	// The leader finishes the way a real one does: delete, then close.
+	go func() {
+		desktopStartInflight.Delete(sessionID)
+		close(leader.done)
+	}()
+
+	h := &Heartbeat{}
+	ran := false
+	got := h.joinOrRunDesktopStart(sessionID, "offer-B", func() tools.CommandResult {
+		ran = true
+		return tools.NewSuccessResult(map[string]any{"answer": "own-answer"}, 0)
+	})
+
+	if !ran {
+		t.Fatal("a different offer was answered with the leader's SDP instead of renegotiating")
+	}
+	if got.Status != "completed" || !strings.Contains(got.Stdout, "own-answer") {
+		t.Fatalf("deferred start did not return its own result: %+v", got)
+	}
+	if _, still := desktopStartInflight.Load(sessionID); still {
+		t.Error("in-flight entry leaked after the deferred start completed")
+	}
+}
+
+// Waiting on someone else's in-flight start must not hold shutdown open.
+func TestJoinOrRunDesktopStartAbortsOnShutdown(t *testing.T) {
+	const sessionID = "desktop-shutdown"
+	leader := &desktopStartCall{offer: "offer-A", done: make(chan struct{})} // never closed
+	desktopStartInflight.Store(sessionID, leader)
+	t.Cleanup(func() { desktopStartInflight.Delete(sessionID) })
+
+	stop := make(chan struct{})
+	close(stop)
+	h := &Heartbeat{stopChan: stop}
+
+	done := make(chan tools.CommandResult, 1)
+	go func() {
+		done <- h.joinOrRunDesktopStart(sessionID, "offer-A", func() tools.CommandResult {
+			return tools.NewSuccessResult(map[string]any{}, 0)
+		})
+	}()
+
+	select {
+	case got := <-done:
+		if !strings.Contains(got.Error, "shutdown") {
+			t.Fatalf("error = %q, want a shutdown-aborted message", got.Error)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("joinOrRunDesktopStart blocked on an in-flight leader during shutdown")
+	}
+}
+
+// TestJoinOrRunDesktopStartNeverRunsTwoAtOnce asserts the invariant that
+// actually matters and that no scheduling order can break: however the
+// goroutines interleave, at most one start for a given desktop session is ever
+// executing. A late arrival running sequentially is correct; two overlapping is
+// the bug.
+func TestJoinOrRunDesktopStartNeverRunsTwoAtOnce(t *testing.T) {
+	const sessionID = "desktop-invariant"
+	const callers = 6
+	t.Cleanup(func() { desktopStartInflight.Delete(sessionID) })
+
+	var live, maxLive int32
+	h := &Heartbeat{}
+
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h.joinOrRunDesktopStart(sessionID, "offer-A", func() tools.CommandResult {
+				n := atomic.AddInt32(&live, 1)
+				for {
+					prev := atomic.LoadInt32(&maxLive)
+					if n <= prev || atomic.CompareAndSwapInt32(&maxLive, prev, n) {
+						break
+					}
+				}
+				time.Sleep(2 * time.Millisecond)
+				atomic.AddInt32(&live, -1)
+				return tools.NewSuccessResult(map[string]any{"answer": "a"}, 0)
+			})
+		}()
+	}
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&maxLive); got != 1 {
+		t.Fatalf("%d desktop starts ran concurrently for one session, want at most 1", got)
+	}
+	if _, still := desktopStartInflight.Load(sessionID); still {
+		t.Error("in-flight entry leaked")
 	}
 }
