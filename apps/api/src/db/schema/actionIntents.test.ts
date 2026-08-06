@@ -5,6 +5,7 @@ import {
   intentOutbox,
   actionIntentStatusEnum,
   actionIntentSourceEnum,
+  actionIntentApprovalScopeEnum,
   intentOutboxEventEnum,
 } from './actionIntents';
 import { approvalRequests } from './approvals';
@@ -33,6 +34,12 @@ describe('actionIntentSourceEnum', () => {
 describe('intentOutboxEventEnum', () => {
   it('has exactly intent_created and intent_approved', () => {
     expect(intentOutboxEventEnum).toEqual(['intent_created', 'intent_approved']);
+  });
+});
+
+describe('actionIntentApprovalScopeEnum', () => {
+  it('has exactly supervised and four_eyes', () => {
+    expect(actionIntentApprovalScopeEnum).toEqual(['supervised', 'four_eyes']);
   });
 });
 
@@ -108,6 +115,24 @@ describe('action_intents schema', () => {
     expect(cols.errorCode).toBeDefined();
   });
 
+  it('exposes the supervised/four_eyes classification and split-deadline columns', () => {
+    const cols = getTableColumns(actionIntents);
+    // Immutable classification content, decided once at creation.
+    expect(cols.approvalScope).toBeDefined();
+    expect(cols.approvalScope.notNull).toBe(true);
+    expect(cols.approvalScope.default).toBe('four_eyes');
+    expect(cols.classificationVersion).toBeDefined();
+    expect(cols.classificationVersion.notNull).toBe(true);
+    expect(cols.classificationVersion.default).toBe(0);
+    expect(cols.effectDigest).toBeDefined();
+    expect(cols.effectDigest.notNull).toBe(false);
+    // Lifecycle: mutable, NOT covered by the immutability trigger.
+    expect(cols.approvalExpiresAt).toBeDefined();
+    expect(cols.approvalExpiresAt.notNull).toBe(false);
+    expect(cols.releaseBy).toBeDefined();
+    expect(cols.releaseBy.notNull).toBe(false);
+  });
+
   it('has no extra/missing top-level columns', () => {
     const cols = Object.keys(getTableColumns(actionIntents)).sort();
     expect(cols).toEqual(
@@ -133,9 +158,14 @@ describe('action_intents schema', () => {
         'tenantId',
         'idempotencyKey',
         'correlationId',
+        'approvalScope',
+        'classificationVersion',
+        'effectDigest',
         'status',
         'createdAt',
         'expiresAt',
+        'approvalExpiresAt',
+        'releaseBy',
         'decidedAt',
         'decidedByUserId',
         'decidedAssuranceLevel',
