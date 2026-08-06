@@ -639,8 +639,8 @@ importers:
         specifier: ~57.0.1
         version: 57.0.1(expo@57.0.10)(react-native@0.86.2(@babel/core@7.29.7)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.86.2(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.8))(react@19.2.8)
       posthog-react-native:
-        specifier: 4.61.0
-        version: 4.61.0(f2ea8eedc16ebab0e856460a7ee39a29)
+        specifier: 4.61.2
+        version: 4.61.2(f2ea8eedc16ebab0e856460a7ee39a29)
       react:
         specifier: 19.2.8
         version: 19.2.8
@@ -3358,11 +3358,11 @@ packages:
     resolution: {integrity: sha512-+1VkjdD0QBLPodGrJUeqarH8VAIvQODIbwh9XpP5Syisf7YoQgsJKPNFoqqLQlu+VQ/tVSshMR6loPMn8U+dPg==}
     engines: {node: '>=14'}
 
-  '@posthog/core@1.46.0':
-    resolution: {integrity: sha512-9w/bzHkf8V26YDAk7bO+Y2M0O9LMJg53lw3TOpirWRY77CEq4EQ3FkrtxP6BM48qaeZ/ILmRcfz+u1jjeTLetg==}
+  '@posthog/core@1.46.8':
+    resolution: {integrity: sha512-WQTSwlFhsWk09xngTimHiTyhFU8QZHFZEGSm+6brY3acwYdvTLcTxpIhgl/qOCgn/XoqlCFTZqU1ldWLxNntfA==}
 
-  '@posthog/types@1.399.0':
-    resolution: {integrity: sha512-/WDwBzqIPko8VJ1B+0rlso2XQEz9+2sqtsY9Tqy3p1GhgTqsFakcz/PmMpAnA321LTEZVRcO6x5hAwABV4yrDw==}
+  '@posthog/types@1.402.1':
+    resolution: {integrity: sha512-4PZ9wMYI8m8AqJuZ9YR1IAHGVtSnYbBVBgTevrKpzZbcSe/OUwhEV2Ks//rJh/L8eMTU8R5DrD4D/hlrOwaAiQ==}
 
   '@radix-ui/primitive@1.1.5':
     resolution: {integrity: sha512-d86WIWFYNtGA0H/d8exstrTRTp7eWJYlYJbtNofxr/3ljupZYn6EFDG/Qgu/0Kc8v7yMUxySagqJsL1+PdYjWg==}
@@ -9777,8 +9777,9 @@ packages:
     resolution: {integrity: sha512-GD3qdB0x1z9xgFI6cdRD6xu2Sp2WCOEoe3mtnyB5Ee0XrrL5Pe+e4CCnJrRMnL1zYtRDZmQQVbvOttLnKDLnaw==}
     engines: {node: '>=12'}
 
-  posthog-react-native@4.61.0:
-    resolution: {integrity: sha512-0kX+bGa0J4aGfbfYxcngI1jnW6CZhUyhhltL887zbf5q0Yp3lC3ec1J9nKGoREch7nyBfZUGL5vYvO89WkCpyw==}
+  posthog-react-native@4.61.2:
+    resolution: {integrity: sha512-AaLU4Lyst9M4E16kqf5F7fdxuOFu8g9m6mH2pJydXsWUx/Rm6aLk6CZ1/EpfspCKaAhO32TVoQkBI/x4ZpVbMw==}
+    hasBin: true
     peerDependencies:
       '@posthog/react-native-plugin': '>= 2.2.0'
       '@react-native-async-storage/async-storage': '>=1.0.0'
@@ -14417,11 +14418,11 @@ snapshots:
   '@pkgjs/parseargs@0.11.0':
     optional: true
 
-  '@posthog/core@1.46.0':
+  '@posthog/core@1.46.8':
     dependencies:
-      '@posthog/types': 1.399.0
+      '@posthog/types': 1.402.1
 
-  '@posthog/types@1.399.0': {}
+  '@posthog/types@1.402.1': {}
 
   '@radix-ui/primitive@1.1.5': {}
 
@@ -21827,10 +21828,10 @@ snapshots:
 
   postgres@3.4.9: {}
 
-  posthog-react-native@4.61.0(f2ea8eedc16ebab0e856460a7ee39a29):
+  posthog-react-native@4.61.2(f2ea8eedc16ebab0e856460a7ee39a29):
     dependencies:
-      '@posthog/core': 1.46.0
-      '@posthog/types': 1.399.0
+      '@posthog/core': 1.46.8
+      '@posthog/types': 1.402.1
     optionalDependencies:
       '@react-native-async-storage/async-storage': 2.2.0(react-native@0.86.2(@babel/core@7.29.7)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.86.2(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.8))
       '@react-navigation/native': 7.3.8(react-native@0.86.2(@babel/core@7.29.7)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.86.2(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.8))(react@19.2.8)
