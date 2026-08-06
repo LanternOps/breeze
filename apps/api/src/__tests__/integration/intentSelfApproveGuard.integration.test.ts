@@ -161,15 +161,31 @@ async function seedScenario(opts: { withSecondApprover: boolean }): Promise<Scen
   };
 }
 
-/** Creates a Tier-3 intent as the requester. `execute_command` is a base
- * Tier-3 tool and createActionIntent never verifies the device exists (that
- * happens at release time), so a bare random UUID is fine (mirrors
- * intentFanout). */
+/**
+ * Creates a Tier-3 intent as the requester. `restore_snapshot` is a base
+ * Tier-3 tool classified whole-tool `four_eyes` (TIER3_FOUR_EYES_TOOLS,
+ * aiGuardrails.ts) — required here, not optional: this whole file's guard
+ * (#2685's `not_sole_approver` re-derivation) lives ONLY in the decide
+ * route's four_eyes branch (`routes/approvals.ts`), never in the supervised
+ * self-decide branch. `execute_command` was used here pre-
+ * tier3-supervised-four-eyes-split, but that split classifies it
+ * `supervised`, which routes every one of this file's three tests through
+ * the WRONG decide-time branch entirely — the multi-approver fan-out
+ * collapses to a single requester-owned row (breaking the sanity check in
+ * "refuses a self-approve..."), and the sole-operator self-approve no longer
+ * reaches the L3 step-up gate (it hits the supervised branch's tool-RBAC
+ * recheck instead, which 403s `forbidden` since this scenario's role only
+ * holds `approvals:decide`, not the tool's RBAC permission). All three tests
+ * in this file are about the four_eyes guard specifically (see the file
+ * header), so the shared helper switches for all of them, not per-test.
+ * createActionIntent never verifies the snapshot/device exist (that happens
+ * at release time), so bare random UUIDs are fine (mirrors intentFanout).
+ */
 async function createIntent(s: Scenario) {
   const auth = requesterAuth(s.requester, s.orgId, s.partnerId, s.orgRoleId);
   return createActionIntent(auth, {
-    toolName: 'execute_command',
-    input: { deviceId: randomUUID(), commandType: 'kill_process' },
+    toolName: 'restore_snapshot',
+    input: { snapshotId: randomUUID(), deviceId: randomUUID() },
     source: 'chat',
   });
 }
