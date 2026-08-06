@@ -1,4 +1,5 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, sql, type SQL } from 'drizzle-orm';
+import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import { unifiSiteMappings, unifiDevices, unifiSyncRuns, discoveredAssets } from '../../db/schema';
 import type { DbExecutor } from './unifiConnectionService';
 import type { UnifiClient, UnifiDeviceDto, UnifiIspMetrics } from './unifiClient';
@@ -60,6 +61,12 @@ function unifiToBreezeDeviceType(
   }
 }
 
+// Column-checked write set. `DbExecutor` is deliberately loosely typed, and
+// drizzle silently DROPS set keys that don't name a column — so a typo in a
+// bare object literal would compile, pass the mocked tests, and no-op at
+// runtime. Naming the type restores that check.
+type AssetWriteSet = PgUpdateSetSource<typeof discoveredAssets>;
+
 // Find-or-create a discovered_assets row for a UniFi device; return its id.
 async function reconcileDiscoveredAsset(
   db: DbExecutor,
@@ -78,11 +85,23 @@ async function reconcileDiscoveredAsset(
   // by another source, so leave both type columns alone unless we recognised it.
   const classified = aType === 'unknown' ? null : aType;
 
+  // A type a user set by hand outranks telemetry classification (#3011).
+  //
+  // The guard is evaluated in SQL, not JS, on BOTH write paths. On the conflict
+  // path we never read the colliding row at all; on the update path we did read
+  // it, but `type_source` can change between that SELECT and the UPDATE — and a
+  // user saving a manual type mid-sync is exactly the race this issue is about.
+  // Inside UPDATE ... SET and ON CONFLICT DO UPDATE SET, a reference qualified
+  // with the target table reads the *existing* row, while `excluded` is the row
+  // we proposed to insert.
+  const preserveManualType = (proposed: SQL) =>
+    sql`case when ${discoveredAssets.typeSource} = 'manual' then ${discoveredAssets.assetType} else ${proposed} end`;
+
   // 1. Match by (org_id, mac) first — the stable identifier.
-  let existing: { id: string; typeSource: 'manual' | 'auto' } | null = null;
+  let existing: { id: string } | null = null;
   if (device.mac) {
     const byMac = await db
-      .select({ id: discoveredAssets.id, typeSource: discoveredAssets.typeSource })
+      .select({ id: discoveredAssets.id })
       .from(discoveredAssets)
       .where(
         and(
@@ -97,7 +116,7 @@ async function reconcileDiscoveredAsset(
   // 2. Fall back to the (org_id, ip_address) unique key.
   if (!existing) {
     const byIp = await db
-      .select({ id: discoveredAssets.id, typeSource: discoveredAssets.typeSource })
+      .select({ id: discoveredAssets.id })
       .from(discoveredAssets)
       .where(
         and(
@@ -121,13 +140,13 @@ async function reconcileDiscoveredAsset(
   };
 
   if (existing) {
-    const updateSet: Record<string, unknown> = { ...enrich };
+    const updateSet: AssetWriteSet = { ...enrich };
     if (classified) {
       // Always record what this sync would have assigned, so "reset to auto"
       // has a value to restore...
       updateSet.detectedAssetType = classified;
-      // ...but a type a user set by hand outranks telemetry classification.
-      if (existing.typeSource !== 'manual') updateSet.assetType = classified;
+      // ...but only apply it when the type was not set by hand.
+      updateSet.assetType = preserveManualType(sql`${classified}`);
     }
     await db
       .update(discoveredAssets)
@@ -137,14 +156,12 @@ async function reconcileDiscoveredAsset(
   }
 
   // Net-new: insert, absorbing a race with agent discovery via the (org,ip) unique key.
-  const conflictSet: Record<string, unknown> = { ...enrich };
+  const conflictSet: AssetWriteSet = { ...enrich };
   if (classified) {
     conflictSet.detectedAssetType = classified;
-    // The conflicting row's type_source is not known when the statement is
-    // built, so the manual guard has to be expressed in SQL. Unqualified /
-    // table-qualified references inside DO UPDATE SET read the existing row;
-    // `excluded` is the row we tried to insert.
-    conflictSet.assetType = sql`case when ${discoveredAssets.typeSource} = 'manual' then ${discoveredAssets.assetType} else excluded.asset_type end`;
+    conflictSet.assetType = preserveManualType(
+      sql.raw(`excluded.${discoveredAssets.assetType.name}`),
+    );
   }
 
   const inserted = await db
