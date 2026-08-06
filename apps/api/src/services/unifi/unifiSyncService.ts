@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { unifiSiteMappings, unifiDevices, unifiSyncRuns, discoveredAssets } from '../../db/schema';
 import type { DbExecutor } from './unifiConnectionService';
 import type { UnifiClient, UnifiDeviceDto, UnifiIspMetrics } from './unifiClient';
@@ -71,11 +71,18 @@ async function reconcileDiscoveredAsset(
 
   const aType = assetType(device.deviceType);
 
+  // `assetType()` only recognises UniFi *network* gear (switch / AP / gateway /
+  // firewall). For anything else — Protect cameras, doorbells — it returns
+  // 'unknown', which means "this sync has no opinion", not "the device really is
+  // of unknown type". Writing that back would erase a better classification made
+  // by another source, so leave both type columns alone unless we recognised it.
+  const classified = aType === 'unknown' ? null : aType;
+
   // 1. Match by (org_id, mac) first — the stable identifier.
-  let existing: { id: string } | null = null;
+  let existing: { id: string; typeSource: 'manual' | 'auto' } | null = null;
   if (device.mac) {
     const byMac = await db
-      .select({ id: discoveredAssets.id })
+      .select({ id: discoveredAssets.id, typeSource: discoveredAssets.typeSource })
       .from(discoveredAssets)
       .where(
         and(
@@ -90,7 +97,7 @@ async function reconcileDiscoveredAsset(
   // 2. Fall back to the (org_id, ip_address) unique key.
   if (!existing) {
     const byIp = await db
-      .select({ id: discoveredAssets.id })
+      .select({ id: discoveredAssets.id, typeSource: discoveredAssets.typeSource })
       .from(discoveredAssets)
       .where(
         and(
@@ -102,31 +109,59 @@ async function reconcileDiscoveredAsset(
     existing = byIp[0] ?? null;
   }
 
+  // asset_type is deliberately NOT in here — it is applied per-branch below so a
+  // manual override survives the sync (#3011).
   const enrich = {
     macAddress: device.mac ?? undefined,
     hostname: device.name ?? undefined,
     manufacturer: 'Ubiquiti',
     model: device.model ?? undefined,
-    assetType: aType,
     isOnline: device.adoptionState === 'CONNECTED',
     lastSeenAt: new Date(),
   };
 
   if (existing) {
+    const updateSet: Record<string, unknown> = { ...enrich };
+    if (classified) {
+      // Always record what this sync would have assigned, so "reset to auto"
+      // has a value to restore...
+      updateSet.detectedAssetType = classified;
+      // ...but a type a user set by hand outranks telemetry classification.
+      if (existing.typeSource !== 'manual') updateSet.assetType = classified;
+    }
     await db
       .update(discoveredAssets)
-      .set(enrich)
+      .set(updateSet)
       .where(eq(discoveredAssets.id, existing.id));
     return existing.id;
   }
 
   // Net-new: insert, absorbing a race with agent discovery via the (org,ip) unique key.
+  const conflictSet: Record<string, unknown> = { ...enrich };
+  if (classified) {
+    conflictSet.detectedAssetType = classified;
+    // The conflicting row's type_source is not known when the statement is
+    // built, so the manual guard has to be expressed in SQL. Unqualified /
+    // table-qualified references inside DO UPDATE SET read the existing row;
+    // `excluded` is the row we tried to insert.
+    conflictSet.assetType = sql`case when ${discoveredAssets.typeSource} = 'manual' then ${discoveredAssets.assetType} else excluded.asset_type end`;
+  }
+
   const inserted = await db
     .insert(discoveredAssets)
-    .values({ orgId: mapping.orgId, siteId: mapping.siteId, ipAddress: device.ip, ...enrich })
+    .values({
+      orgId: mapping.orgId,
+      siteId: mapping.siteId,
+      ipAddress: device.ip,
+      ...enrich,
+      // typeSource is set only on the INSERT side; the conflict branch must
+      // never reset an existing row's type_source back to 'auto'.
+      typeSource: 'auto',
+      ...(classified ? { assetType: classified, detectedAssetType: classified } : {}),
+    })
     .onConflictDoUpdate({
       target: [discoveredAssets.orgId, discoveredAssets.ipAddress],
-      set: enrich,
+      set: conflictSet,
     })
     .returning({ id: discoveredAssets.id });
   return inserted[0]?.id ?? null;

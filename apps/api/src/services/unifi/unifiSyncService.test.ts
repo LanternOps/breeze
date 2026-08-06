@@ -41,7 +41,7 @@ function fakeClient(devices: any[]): UnifiClient {
 // `.then()` so each awaited chain records exactly once).
 // ---------------------------------------------------------------------------
 
-type WriteRecord = { table: any; values: any };
+type WriteRecord = { table: any; values: any; conflictSet?: any };
 
 function scriptedDb(opts: { mappings: any[]; existingDevices?: any[]; existingAsset?: any }) {
   const writes: { inserts: WriteRecord[]; updates: WriteRecord[] } = {
@@ -54,6 +54,7 @@ function scriptedDb(opts: { mappings: any[]; existingDevices?: any[]; existingAs
     table?: any;
     insertValues?: any;
     setValues?: any;
+    conflictSet?: any;
     hasReturning?: boolean;
   }) {
     const chain: any = {
@@ -73,7 +74,8 @@ function scriptedDb(opts: { mappings: any[]; existingDevices?: any[]; existingAs
         ctx.insertValues = v;
         return chain;
       },
-      onConflictDoUpdate(_opts: any) {
+      onConflictDoUpdate(opts: any) {
+        ctx.conflictSet = opts?.set;
         return chain;
       },
       returning(_cols?: any) {
@@ -93,7 +95,11 @@ function scriptedDb(opts: { mappings: any[]; existingDevices?: any[]; existingAs
         try {
           // Record writes
           if (ctx.op === 'insert' && ctx.insertValues !== undefined) {
-            writes.inserts.push({ table: ctx.table, values: ctx.insertValues });
+            writes.inserts.push({
+              table: ctx.table,
+              values: ctx.insertValues,
+              conflictSet: ctx.conflictSet,
+            });
           } else if (ctx.op === 'update' && ctx.setValues !== undefined) {
             writes.updates.push({ table: ctx.table, values: ctx.setValues });
           }
@@ -333,5 +339,109 @@ describe('unifiSyncService.syncIntegration', () => {
     const deviceInserts = writes.inserts.filter((w) => w.table === unifiDevices);
     expect(deviceInserts).toHaveLength(1);
     expect(deviceInserts[0]!.values.discoveredAssetId).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3011 — a manual asset_type must survive the next UniFi sync.
+// ---------------------------------------------------------------------------
+
+// Flatten the literal fragments of a drizzle `sql` template so we can assert on
+// the guard expression without a live database.
+function sqlText(value: any): string {
+  const chunks = value?.queryChunks ?? [];
+  return chunks
+    .map((c: any) => (Array.isArray(c?.value) ? c.value.join('') : ''))
+    .join(' ');
+}
+
+// UniFi Protect camera — assetType() has no mapping for it and returns 'unknown'.
+const CAMERA_DEVICE = {
+  ...NET_NEW_DEVICE,
+  unifiDeviceId: 'cam-1',
+  name: 'Doorbell',
+  model: 'G4 Doorbell Pro',
+  deviceType: 'uvc',
+  raw: { id: 'cam-1', type: 'uvc' },
+};
+
+describe('unifiSyncService — discovered_asset type_source precedence (#3011)', () => {
+  async function syncAgainstAsset(existingAsset: any, device: any = NET_NEW_DEVICE) {
+    const { writes, db } = scriptedDb({ mappings: [BASE_MAPPING], existingAsset });
+    await syncIntegration({ db, client: fakeClient([device]) }, BASE_INTEGRATION, 'scheduled');
+    return writes.updates.find((w) => w.table === discoveredAssets)?.values;
+  }
+
+  it('does not overwrite asset_type when type_source is manual', async () => {
+    const set = await syncAgainstAsset({ id: 'asset-1', typeSource: 'manual' });
+
+    expect(set).toBeDefined();
+    // The manual classification stands...
+    expect(set).not.toHaveProperty('assetType');
+    // ...but the sync still records what it would have picked, so "reset to
+    // auto" has a value to restore.
+    expect(set!.detectedAssetType).toBe('access_point');
+    // Non-type enrichment still lands.
+    expect(set!.manufacturer).toBe('Ubiquiti');
+    expect(set!.hostname).toBe('AP-1');
+    // type_source itself is never rewritten by the sync.
+    expect(set).not.toHaveProperty('typeSource');
+  });
+
+  it('does overwrite asset_type when type_source is auto', async () => {
+    const set = await syncAgainstAsset({ id: 'asset-1', typeSource: 'auto' });
+
+    expect(set!.assetType).toBe('access_point');
+    expect(set!.detectedAssetType).toBe('access_point');
+  });
+
+  it('leaves both type columns alone when the sync cannot classify the device', async () => {
+    // A camera is not UniFi network gear, so the classifier has no opinion —
+    // it must not stamp 'unknown' over whatever another source determined.
+    const set = await syncAgainstAsset({ id: 'asset-1', typeSource: 'auto' }, CAMERA_DEVICE);
+
+    expect(set).toBeDefined();
+    expect(set).not.toHaveProperty('assetType');
+    expect(set).not.toHaveProperty('detectedAssetType');
+    // The device is still enriched and kept alive.
+    expect(set!.manufacturer).toBe('Ubiquiti');
+    expect(set!.lastSeenAt).toBeInstanceOf(Date);
+  });
+
+  it('stamps type_source=auto and detected_asset_type on a net-new asset', async () => {
+    const { writes, db } = scriptedDb({ mappings: [BASE_MAPPING] });
+    await syncIntegration({ db, client: fakeClient([NET_NEW_DEVICE]) }, BASE_INTEGRATION, 'manual');
+
+    const insert = writes.inserts.find((w) => w.table === discoveredAssets)!;
+    expect(insert.values.assetType).toBe('access_point');
+    expect(insert.values.detectedAssetType).toBe('access_point');
+    expect(insert.values.typeSource).toBe('auto');
+  });
+
+  it('guards the insert-conflict branch in SQL and never resets type_source there', async () => {
+    const { writes, db } = scriptedDb({ mappings: [BASE_MAPPING] });
+    await syncIntegration({ db, client: fakeClient([NET_NEW_DEVICE]) }, BASE_INTEGRATION, 'manual');
+
+    const { conflictSet } = writes.inserts.find((w) => w.table === discoveredAssets)!;
+    expect(conflictSet).toBeDefined();
+    // The row we collide with may be manually typed, and we cannot know that
+    // when the statement is built — so the guard has to be SQL, not JS.
+    const guard = sqlText(conflictSet.assetType);
+    expect(guard).toContain('manual');
+    expect(guard).toContain('excluded.asset_type');
+    expect(conflictSet.detectedAssetType).toBe('access_point');
+    expect(conflictSet).not.toHaveProperty('typeSource');
+  });
+
+  it('omits the type columns entirely from an unclassified insert conflict', async () => {
+    const { writes, db } = scriptedDb({ mappings: [BASE_MAPPING] });
+    await syncIntegration({ db, client: fakeClient([CAMERA_DEVICE]) }, BASE_INTEGRATION, 'manual');
+
+    const insert = writes.inserts.find((w) => w.table === discoveredAssets)!;
+    expect(insert.values).not.toHaveProperty('assetType');
+    expect(insert.values).not.toHaveProperty('detectedAssetType');
+    expect(insert.values.typeSource).toBe('auto');
+    expect(insert.conflictSet).not.toHaveProperty('assetType');
+    expect(insert.conflictSet).not.toHaveProperty('detectedAssetType');
   });
 });
