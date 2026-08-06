@@ -30,7 +30,7 @@
     "jsdom": "^30.0.1",
     "tailwindcss": "^4.3.1",
     "typescript": "^5.5.4",
-    "vite": "^8.1.5",
+    "vite": "^8.2.0",
     "vitest": "^4.1.10"
   }
 }
