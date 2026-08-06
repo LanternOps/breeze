@@ -915,7 +915,8 @@
     "pickSiteFirst": "Choisissez d’abord un site",
     "updateCollector": "Collecteur de mises à jour",
     "enableDeepTelemetry": "Activer la télémétrie profonde",
-    "wired": "Filaire"
+    "wired": "Filaire",
+    "agentListTruncated": "Seuls les {{limit}} premiers agents ont été chargés; cette liste peut être incomplète."
   },
   "webhookEditor": {
     "failedToSaveWebhook": "Impossible d’enregistrer le webhook",

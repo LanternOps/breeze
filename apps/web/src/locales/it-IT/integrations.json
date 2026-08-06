@@ -915,7 +915,8 @@
     "pickSiteFirst": "Scegli prima un sito",
     "updateCollector": "Aggiorna agente di raccolta",
     "enableDeepTelemetry": "Abilita telemetria approfondita",
-    "wired": "Cablato"
+    "wired": "Cablato",
+    "agentListTruncated": "Sono stati caricati solo i primi {{limit}} agenti: questo elenco potrebbe essere incompleto."
   },
   "webhookEditor": {
     "failedToSaveWebhook": "Impossibile salvare il webhook",

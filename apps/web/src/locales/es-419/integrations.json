@@ -915,7 +915,8 @@
     "pickSiteFirst": "Elija un sitio primero",
     "updateCollector": "Recolector de actualizaciones",
     "enableDeepTelemetry": "Habilitar telemetría profunda",
-    "wired": "cableado"
+    "wired": "cableado",
+    "agentListTruncated": "Solo se cargaron los primeros {{limit}} agentes; esta lista puede estar incompleta."
   },
   "webhookEditor": {
     "failedToSaveWebhook": "No se pudo guardar el webhook",

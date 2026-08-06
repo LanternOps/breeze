@@ -915,7 +915,8 @@
     "pickSiteFirst": "Wählen Sie zunächst eine Standort aus",
     "updateCollector": "Kollektor aktualisieren",
     "enableDeepTelemetry": "Aktivieren Sie umfassende Telemetrie",
-    "wired": "Verkabelt"
+    "wired": "Verkabelt",
+    "agentListTruncated": "Es wurden nur die ersten {{limit}} Agenten geladen – diese Liste ist möglicherweise unvollständig."
   },
   "webhookEditor": {
     "failedToSaveWebhook": "Webhook konnte nicht gespeichert werden",

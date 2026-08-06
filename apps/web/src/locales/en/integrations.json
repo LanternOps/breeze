@@ -915,7 +915,8 @@
     "pickSiteFirst": "Pick a site first",
     "updateCollector": "Update collector",
     "enableDeepTelemetry": "Enable deep telemetry",
-    "wired": "Wired"
+    "wired": "Wired",
+    "agentListTruncated": "Only the first {{limit}} agents were loaded — this list may be incomplete."
   },
   "webhookEditor": {
     "failedToSaveWebhook": "Failed to save webhook",

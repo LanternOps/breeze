@@ -915,7 +915,8 @@
     "pickSiteFirst": "Primeiro, selecione um site",
     "updateCollector": "Atualizar coletor",
     "enableDeepTelemetry": "Ativar telemetria detalhada",
-    "wired": "Cabeada"
+    "wired": "Cabeada",
+    "agentListTruncated": "Apenas os primeiros {{limit}} agentes foram carregados; esta lista pode estar incompleta."
   },
   "webhookEditor": {
     "failedToSaveWebhook": "Falha ao salvar o webhook",

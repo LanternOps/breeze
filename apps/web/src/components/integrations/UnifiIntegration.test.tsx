@@ -501,6 +501,196 @@ describe("UnifiIntegration collector-agent dropdown labels (#3121)", () => {
   });
 });
 
+describe("UnifiIntegration agent-list integrity (#3121 follow-ups)", () => {
+  // Self-hosted connected view with a caller-supplied GET /devices body, so each
+  // test varies only the thing under test.
+  function routeWithDevices(devicesPayload: unknown, ok = true) {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === "/unifi")
+        return Promise.resolve(
+          res({
+            connected: true,
+            status: "connected",
+            connectionType: "self_hosted",
+          }),
+        );
+      if (url.startsWith("/orgs/sites"))
+        return Promise.resolve(
+          res({ data: [{ id: "site-1", name: "HQ", orgId: "org-1" }] }),
+        );
+      if (url.startsWith("/orgs/organizations"))
+        return Promise.resolve(res({ data: [{ id: "org-1", name: "Acme" }] }));
+      if (url === "/unifi/mappings")
+        return Promise.resolve(res({ mappings: [] }));
+      if (url === "/unifi/collectors")
+        return Promise.resolve(res({ collectors: [] }));
+      if (url === "/unifi/controller-sites")
+        return Promise.resolve(res({ sites: [] }));
+      if (url.startsWith("/devices"))
+        return Promise.resolve(res(devicesPayload, ok));
+      return Promise.resolve(res({ success: true }));
+    });
+  }
+
+  function agentOptions(select: HTMLElement): string[] {
+    return within(select)
+      .getAllByRole("option")
+      .map((o) => (o as HTMLOptionElement).value)
+      .filter((v) => v !== "");
+  }
+
+  describe("response-shape drift is surfaced, not swallowed", () => {
+    it("reports an error when the envelope is unrecognized (HTTP 200, wrong body)", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      // An error body returned with HTTP 200 — res.ok is true, so the old code
+      // unwrapped it to [] and pushed nothing to `failed`.
+      routeWithDevices({ error: "something went wrong" });
+      render(<UnifiIntegration />);
+
+      const err = await screen.findByTestId("unifi-details-error");
+      expect(err).toHaveTextContent(/agent devices/i);
+      const select = screen.getByTestId("unifi-controller-agent");
+      expect(agentOptions(select)).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("response drift"),
+        expect.stringContaining("unrecognized list payload shape"),
+      );
+      warn.mockRestore();
+    });
+
+    it("reports an error when device rows carry neither hostname nor displayName", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      // This is literally the #3121 shape: rows arrive, but under a field name
+      // this component does not read. Previously it rendered UUIDs; the fix
+      // made it render names; this makes the underlying drift *visible*.
+      routeWithDevices({
+        data: [{ id: "6eae0f70-8da9-49ff-9e18-c241698975f3", name: "Edge" }],
+      });
+      render(<UnifiIntegration />);
+
+      const err = await screen.findByTestId("unifi-details-error");
+      expect(err).toHaveTextContent(/agent devices/i);
+      expect(agentOptions(screen.getByTestId("unifi-controller-agent"))).toEqual(
+        [],
+      );
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("response drift"),
+        expect.stringContaining("neither hostname nor displayName"),
+      );
+      warn.mockRestore();
+    });
+
+    it("does NOT report an error for a genuinely empty fleet", async () => {
+      // The guard must not cry drift when a partner simply has no devices —
+      // otherwise it is noise and gets ignored, which defeats the point.
+      routeWithDevices({ data: [], pagination: { nextCursor: null } });
+      render(<UnifiIntegration />);
+
+      await screen.findByTestId("unifi-controller-agent");
+      await waitFor(() =>
+        expect(screen.queryByTestId("unifi-details-error")).toBeNull(),
+      );
+      expect(screen.queryByTestId("unifi-agents-truncated")).toBeNull();
+    });
+
+    it("accepts the legacy { devices: [...] } envelope without reporting drift", async () => {
+      routeWithDevices({
+        devices: [
+          { id: "agent-1", hostname: "edge-01", displayName: null, siteId: "site-1" },
+        ],
+      });
+      render(<UnifiIntegration />);
+
+      const select = await screen.findByTestId("unifi-controller-agent");
+      await waitFor(() => expect(agentOptions(select)).toEqual(["agent-1"]));
+      expect(screen.queryByTestId("unifi-details-error")).toBeNull();
+    });
+  });
+
+  describe("truncated agent list", () => {
+    const oneAgent = [
+      {
+        id: "agent-1",
+        hostname: "edge-01",
+        displayName: "Edge",
+        siteId: "site-1",
+      },
+    ];
+
+    it("warns the operator when more devices exist than the limit returned", async () => {
+      routeWithDevices({
+        data: oneAgent,
+        pagination: { nextCursor: "cursor-2", limit: 500 },
+      });
+      render(<UnifiIntegration />);
+
+      const note = await screen.findByTestId("unifi-agents-truncated");
+      expect(note).toHaveTextContent(/first 500 agents/i);
+      // Truncation is not a failure — it must not raise the error banner.
+      expect(screen.queryByTestId("unifi-details-error")).toBeNull();
+    });
+
+    it("shows no truncation notice when the list is complete", async () => {
+      routeWithDevices({
+        data: oneAgent,
+        pagination: { nextCursor: null, limit: 500 },
+      });
+      render(<UnifiIntegration />);
+
+      await screen.findByTestId("unifi-controller-agent");
+      await waitFor(() =>
+        expect(screen.queryByTestId("unifi-agents-truncated")).toBeNull(),
+      );
+    });
+  });
+
+  describe("agent status is visible in the picker", () => {
+    it("annotates a non-online agent so an offline collector is not picked blind", async () => {
+      routeWithDevices({
+        data: [
+          {
+            id: "agent-on",
+            hostname: "edge-01",
+            displayName: "Edge",
+            siteId: "site-1",
+            status: "online",
+          },
+          {
+            id: "agent-off",
+            hostname: "closet-sw",
+            displayName: "Closet",
+            siteId: "site-1",
+            status: "offline",
+          },
+          {
+            id: "agent-maint",
+            hostname: "spare",
+            displayName: "Spare",
+            siteId: "site-1",
+            status: "maintenance",
+          },
+        ],
+      });
+      render(<UnifiIntegration />);
+
+      const select = await screen.findByTestId("unifi-controller-agent");
+      await waitFor(() =>
+        expect(
+          within(select)
+            .getAllByRole("option")
+            .map((o) => o.textContent?.trim()),
+        ).toEqual(
+          expect.arrayContaining([
+            "Edge",
+            "Closet (offline)",
+            "Spare (maintenance)",
+          ]),
+        ),
+      );
+    });
+  });
+});
+
 describe("UnifiIntegration deep-telemetry error surfacing", () => {
   it("shows the backend error message on a failed telemetry load (not a silent empty panel)", async () => {
     routeFetch(res({ error: "Access to this site denied" }, false, 403));
