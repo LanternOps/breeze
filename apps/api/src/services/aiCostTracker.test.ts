@@ -431,6 +431,13 @@ describe('sumInputTokens', () => {
     expect(sumInputTokens({})).toBe(0);
     expect(sumInputTokens({ input_tokens: 10, cache_read_input_tokens: null })).toBe(10);
   });
+
+  it('never throws on a nullish usage object', () => {
+    // It sits ahead of the `done` publish that returns the session to 'idle';
+    // a throw there strands the turn and hangs the client.
+    expect(sumInputTokens(null)).toBe(0);
+    expect(sumInputTokens(undefined)).toBe(0);
+  });
 });
 
 // ============================================

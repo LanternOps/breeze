@@ -28,7 +28,16 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
-vi.mock('./aiCostTracker', () => ({ recordUsageFromSdkResult: recordUsageMock }));
+vi.mock('./aiCostTracker', () => ({
+  recordUsageFromSdkResult: recordUsageMock,
+  // Pure helper on the done path — kept real so these tests exercise the actual
+  // summing rule. A factory that omits it does NOT yield undefined: vitest
+  // throws on the access, the throw escapes the result handler, and both
+  // recordExtraUsage and the `done` publish are skipped. That surfaces as a
+  // baffling "Number of calls: 0" rather than a missing-export error.
+  sumInputTokens: (u: Record<string, number | null | undefined> | null | undefined) =>
+    (u?.input_tokens ?? 0) + (u?.cache_read_input_tokens ?? 0) + (u?.cache_creation_input_tokens ?? 0),
+}));
 vi.mock('./aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./aiAgentSdkTools', () => ({

@@ -154,12 +154,18 @@ export interface SdkInputTokenUsage {
  * session report 17 input tokens against 1029 output tokens and $0.57 of spend.
  * Cost was never affected — it is computed from the three split values, and
  * still is (this sum is deliberately NOT fed back into the pricing call).
+ *
+ * Total by construction: a nullish usage object or component yields 0 rather
+ * than throwing. This sits on the streaming `done` path, ahead of both the
+ * per-user usage hook and the `done` publish that returns the session to
+ * 'idle' — a throw there would strand the turn and hang the client, so it must
+ * not have a failure mode.
  */
-export function sumInputTokens(usage: SdkInputTokenUsage): number {
+export function sumInputTokens(usage: SdkInputTokenUsage | null | undefined): number {
   return (
-    (usage.input_tokens ?? 0) +
-    (usage.cache_read_input_tokens ?? 0) +
-    (usage.cache_creation_input_tokens ?? 0)
+    (usage?.input_tokens ?? 0) +
+    (usage?.cache_read_input_tokens ?? 0) +
+    (usage?.cache_creation_input_tokens ?? 0)
   );
 }
 
