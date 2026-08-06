@@ -474,6 +474,30 @@ export async function createActionIntent(
         isRecursive: false,
       });
 
+      // Shared by the supervised short-circuit and the four_eyes sole-operator
+      // branch below: both create exactly one approval_requests row owned by
+      // a single user and derive the same trio of locals from it.
+      const insertSingleApproverRow = async (
+        userId: string,
+      ): Promise<{
+        approvalRequestIds: string[];
+        requesterApprovalRequestId: string | null;
+        fanOutUserIds: string[];
+      }> => {
+        const rows = await db
+          .insert(approvalRequests)
+          .values([approvalRowFor(userId)])
+          .returning({ id: approvalRequests.id });
+        if (rows[0]) {
+          return {
+            approvalRequestIds: [rows[0].id],
+            requesterApprovalRequestId: rows[0].id,
+            fanOutUserIds: [userId],
+          };
+        }
+        return { approvalRequestIds: [], requesterApprovalRequestId: null, fanOutUserIds: [] };
+      };
+
       if (approvalScope === 'supervised') {
         // Supervised short-circuit (tier3-supervised-four-eyes split design
         // §4.2): exactly one approval row, always owned by the requester,
@@ -483,15 +507,8 @@ export async function createActionIntent(
         // requester holds no approval permission whatsoever). The
         // assurance-level gate is enforced later in the decide handler
         // (Task 5), same as the sole-operator four_eyes branch.
-        const rows = await db
-          .insert(approvalRequests)
-          .values([approvalRowFor(requesterId)])
-          .returning({ id: approvalRequests.id });
-        if (rows[0]) {
-          approvalRequestIds = [rows[0].id];
-          requesterApprovalRequestId = rows[0].id;
-          fanOutUserIds = [requesterId];
-        }
+        ({ approvalRequestIds, requesterApprovalRequestId, fanOutUserIds } =
+          await insertSingleApproverRow(requesterId));
       } else if (eligibleApprovers.length > 0) {
         const rows = await db
           .insert(approvalRequests)
@@ -503,15 +520,8 @@ export async function createActionIntent(
         // Sole-operator branch: the only eligible approver is the requester.
         // Create one row carrying the digest; the assurance-level >= 3 gate is
         // enforced later, in the decide handler (Task 5), not here.
-        const rows = await db
-          .insert(approvalRequests)
-          .values([approvalRowFor(requesterId)])
-          .returning({ id: approvalRequests.id });
-        if (rows[0]) {
-          approvalRequestIds = [rows[0].id];
-          requesterApprovalRequestId = rows[0].id;
-          fanOutUserIds = [requesterId];
-        }
+        ({ approvalRequestIds, requesterApprovalRequestId, fanOutUserIds } =
+          await insertSingleApproverRow(requesterId));
       }
 
       let finalIntent: ActionIntent = inserted;
