@@ -20,31 +20,43 @@ import { deviceMtlsCertificates } from './schema/deviceMtlsCertificates';
 import { manifestSigningKeyDelegations } from './schema/manifestSigningKeys';
 import { devices } from './schema/devices';
 
-// The 2026-08-06 date is reserved by the remediation program: its slots are
-// -a..-f, one per wave, and the ordering tests below guard the block against
-// an unrelated migration squatting inside it.
+// The 2026-08-06 date was reserved by the security remediation program: one
+// migration per wave, all of which have now shipped. The block is CLOSED —
+// nothing may be added to it, because every file in it is immutable and
+// several later migrations already re-create objects it defines, so a new
+// file wedged into the block replays in the wrong order on a fresh DB.
 //
-// They used to express that as `names.slice(-block.length) === block`, i.e.
-// "the block is the GLOBAL lexical tail". That is not the property they
-// describe, and it is unusable: it forbids any migration dated after
-// 2026-08-06 from ever existing, so the next ordinary migration on a later
-// date reds main for a reason unrelated to the waves.
+// Previous guards expressed this as a shape (`-a..-f` slot letters). That was
+// wrong twice over: it silently blessed `2026-08-06-a-something-unrelated.sql`,
+// and it read as an open range with `-g-` free for the taking. Three separate
+// authors reached for `-g-` (#2995, #3008, and the m365-comms plan doc) — the
+// convention documented for same-day ordering is exactly "take the next
+// letter", so that is the *natural* reading of a slot-letter rule.
 //
-// Contiguity is NOT the replacement either — on a localeCompare-sorted list
-// every common-prefix subset is contiguous by construction, so asserting it
-// would always pass and quietly delete the guard.
-//
-// What is both falsifiable and actually intended: every file on the reserved
-// date occupies one of the reserved -a..-f slots. `2026-08-06-bb-whatever.sql`
-// fails this; a legitimate wave file does not.
+// The mechanism is therefore an explicit frozen manifest, not a pattern: these
+// eight filenames and no others. A ninth file on this date fails and is told to
+// use a later date. See `scripts/check-migration-naming.sh` for the same rule
+// enforced at commit time (which is where an author should hit it), and
+// `apps/api/migrations/README.md` for the authoring-facing writeup.
 const RESERVED_MIGRATION_DATE = '2026-08-06-';
-const RESERVED_SLOT_PATTERN = /^2026-08-06-[a-f]-/;
+const RESERVED_BLOCK_MIGRATIONS = [
+  '2026-08-06-a-report-site-scope.sql',
+  '2026-08-06-b-live-authorization.sql',
+  '2026-08-06-c-quote-response-capability.sql',
+  '2026-08-06-d-device-mtls-certificate-history.sql',
+  '2026-08-06-e-action-intents-origin-principal.sql',
+  '2026-08-06-e-agent-outbound-network-capability.sql',
+  '2026-08-06-f-m365-comms-delegated.sql',
+  '2026-08-06-f-manifest-key-delegations.sql',
+] as const;
 
-function expectReservedBlockSlotsOnly(names: string[]): void {
-  const block = names.filter((name) => name.startsWith(RESERVED_MIGRATION_DATE));
+const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
+const REPO_ROOT = path.resolve(__dirname, '../../../..');
 
-  expect(block.length).toBeGreaterThan(0);
-  expect(block.filter((name) => !RESERVED_SLOT_PATTERN.test(name))).toEqual([]);
+function listMigrationFilenames(): string[] {
+  return readdirSync(MIGRATIONS_DIR)
+    .filter((filename) => /^\d{4}-.*\.sql$/.test(filename))
+    .sort((a, b) => a.localeCompare(b));
 }
 
 describe('autoMigrate', () => {
@@ -335,30 +347,118 @@ describe('CHECKSUM_RECONCILIATIONS', () => {
   });
 });
 
-describe('core migration ordering', () => {
-  const migrationsDir = path.resolve(__dirname, '../../migrations');
+describe('migration filename conventions', () => {
+  it('adds no new migration to the closed 2026-08-06 reserved block', () => {
+    const onDisk = listMigrationFilenames().filter((filename) =>
+      filename.startsWith(RESERVED_MIGRATION_DATE),
+    );
+    const manifest: string[] = [...RESERVED_BLOCK_MIGRATIONS];
+    const squatters = onDisk.filter((filename) => !manifest.includes(filename));
 
+    expect(
+      squatters,
+      squatters.length === 0
+        ? ''
+        : `Migration(s) added to the CLOSED reserved ${RESERVED_MIGRATION_DATE} block:\n` +
+          squatters.map((filename) => `  - ${filename}`).join('\n') +
+          `\n\nThat date is not a free namespace and its letters do NOT run past the\n` +
+          `shipped set. Rename the file to a date AFTER the block (a plain\n` +
+          `YYYY-MM-DD-<slug>.sql on today's date sorts last, which is normally\n` +
+          `what you actually want) and update every reference to the old path —\n` +
+          `integration tests replay migrations BY PATH, so a stale name is an\n` +
+          `ENOENT in Integration Tests, not a compile error.\n` +
+          `See apps/api/migrations/README.md.`,
+    ).toEqual([]);
+
+    // Guard the other direction too: a manifest entry that no longer exists on
+    // disk means a shipped migration was deleted or renamed, which re-applies
+    // under the new name on every already-migrated database.
+    const missing = manifest.filter((filename) => !onDisk.includes(filename));
+    expect(
+      missing,
+      missing.length === 0
+        ? ''
+        : `Shipped reserved-block migration(s) missing from apps/api/migrations: ${missing.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  it('keeps the commit-time naming guard pinned to the same reserved date', () => {
+    // The pre-commit guard is where an author should hit this, and it is
+    // deliberately a standalone shell script (no toolchain needed). It carries
+    // its own copy of the reserved date, so assert the two cannot drift.
+    const guard = readFileSync(path.join(REPO_ROOT, 'scripts/check-migration-naming.sh'), 'utf8');
+
+    expect(guard).toContain(RESERVED_MIGRATION_DATE);
+  });
+
+  it('resolves every core migration path referenced from apps/api/src', () => {
+    // Integration suites replay migrations by path (readFileSync of
+    // `../../../migrations/<file>.sql`). Those references are executable code,
+    // not prose: renaming a migration without sweeping them fails as an ENOENT
+    // minutes into Integration Tests, long after Test API has gone green.
+    // This assertion moves that failure into the unit job, where it is instant.
+    const srcDir = path.resolve(__dirname, '..');
+    const referenced = new Map<string, string>();
+
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        // Extensions ship their own per-bundle migrations directories and their
+        // tests use synthetic in-memory filenames — not the core directory.
+        if (entry.isDirectory()) {
+          if (entry.name !== 'node_modules' && entry.name !== 'extensions') walk(full);
+          continue;
+        }
+        if (!entry.name.endsWith('.ts')) continue;
+        const contents = readFileSync(full, 'utf8');
+        for (const match of contents.matchAll(/migrations\/(\d{4}-[A-Za-z0-9._-]*\.sql)/g)) {
+          const filename = match[1];
+          if (filename && !referenced.has(filename)) {
+            referenced.set(filename, path.relative(REPO_ROOT, full));
+          }
+        }
+      }
+    };
+    walk(srcDir);
+
+    expect(referenced.size).toBeGreaterThan(0);
+
+    const onDisk = new Set(readdirSync(MIGRATIONS_DIR));
+    const dangling = [...referenced.entries()]
+      .filter(([filename]) => !onDisk.has(filename))
+      .map(([filename, source]) => `${filename} (referenced from ${source})`);
+
+    expect(
+      dangling,
+      dangling.length === 0
+        ? ''
+        : `Migration path(s) referenced from apps/api/src that do not exist:\n` +
+          dangling.map((entry) => `  - ${entry}`).join('\n') +
+          `\n\nA migration was renamed or deleted without sweeping its references.`,
+    ).toEqual([]);
+  });
+});
+
+describe('core migration ordering', () => {
   it('discovers the report site-scope migration exactly once in lexical order', () => {
-    const filenames = readdirSync(migrationsDir)
-      .filter((filename) => /^\d{4}-.*\.sql$/.test(filename))
-      .sort((a, b) => a.localeCompare(b));
-    const ledgerNames = planMigrations(filenames).map((migration) => migration.ledgerName);
+    const ledgerNames = planMigrations(listMigrationFilenames()).map(
+      (migration) => migration.ledgerName,
+    );
     const reserved = '2026-08-06-a-report-site-scope.sql';
 
     expect(ledgerNames.filter((filename) => filename === reserved)).toHaveLength(1);
     expect(ledgerNames).toEqual([...ledgerNames].sort((a, b) => a.localeCompare(b)));
-    // 2026-08-06-a..f is reserved by the remediation program and later waves
-    // append to it, so assert the block stays contiguous and is opened by this
-    // file — never that it is the single last migration.
-    const reservedBlock = ledgerNames.filter((filename) => filename.startsWith('2026-08-06-'));
-    expectReservedBlockSlotsOnly(ledgerNames);
+    // This file opens the reserved block. The block's membership is guarded by
+    // 'migration filename conventions' above — deliberately NOT here, so a
+    // squatter reds a test whose name says what is wrong instead of this one.
+    const reservedBlock = ledgerNames.filter((filename) =>
+      filename.startsWith(RESERVED_MIGRATION_DATE),
+    );
     expect(reservedBlock[0]).toBe(reserved);
   });
 });
 
 describe('Wave 3 durable live authorization expansion', () => {
-  const migrationsDir = path.resolve(__dirname, '../../migrations');
-
   it('maps the user permission epoch as a non-null bigint defaulting to zero', () => {
     const column = getTableConfig(users).columns.find((candidate) => candidate.name === 'permissions_epoch');
 
@@ -410,18 +510,13 @@ describe('Wave 3 durable live authorization expansion', () => {
   });
 
   it('orders the reserved live-authorization migrations after all preceding migrations', () => {
-    const files = readdirSync(migrationsDir)
-      .filter((file) => /^\d{4}-.*\.sql$/.test(file))
-      .sort((a, b) => a.localeCompare(b));
+    const files = listMigrationFilenames();
     const liveAuthorization = '2026-08-06-b-live-authorization.sql';
     const quoteCapability = '2026-08-06-c-quote-response-capability.sql';
 
     expect(files).toContain(liveAuthorization);
     expect(files).toContain(quoteCapability);
-    // Later waves append -d..-f to the reserved 2026-08-06 block, so assert
-    // the block stays contiguous rather than pinning the global tail.
-    const reservedBlock = files.filter((file) => file.startsWith('2026-08-06-'));
-    expectReservedBlockSlotsOnly(files);
+    const reservedBlock = files.filter((file) => file.startsWith(RESERVED_MIGRATION_DATE));
     // Assert RELATIVE order, not adjacency (see the Wave 6 capability and
     // delegation migration tests below for the full rationale): a sibling
     // branch is free to land its own migration between -b- and -c- in the
@@ -450,16 +545,11 @@ describe('Wave 5 device mTLS certificate history', () => {
   const certificateHistory = '2026-08-06-d-device-mtls-certificate-history.sql';
 
   it('orders the certificate-history migration after the reserved Wave 3 quote-capability migration', () => {
-    const files = readdirSync(migrationsDir)
-      .filter((file) => /^\d{4}-.*\.sql$/.test(file))
-      .sort((a, b) => a.localeCompare(b));
+    const files = listMigrationFilenames();
     const quoteCapability = '2026-08-06-c-quote-response-capability.sql';
 
     expect(files).toContain(certificateHistory);
-    // -d..-f is still reserved for later waves, so assert the block remains
-    // contiguous, rather than pinning this file as the single last migration.
-    const reservedBlock = files.filter((file) => file.startsWith('2026-08-06-'));
-    expectReservedBlockSlotsOnly(files);
+    const reservedBlock = files.filter((file) => file.startsWith(RESERVED_MIGRATION_DATE));
     // Assert RELATIVE order, not adjacency (see the Wave 6 capability and
     // delegation migration tests below for the full rationale): a sibling
     // branch is free to land its own migration between -c- and -d- in the
@@ -542,9 +632,7 @@ describe('Wave 6 agent outbound-network-policy capability handshake', () => {
   const certificateHistory = '2026-08-06-d-device-mtls-certificate-history.sql';
 
   it('orders the capability migration after the reserved Wave 5 certificate-history migration and before the delegation migration', () => {
-    const files = readdirSync(migrationsDir)
-      .filter((file) => /^\d{4}-.*\.sql$/.test(file))
-      .sort((a, b) => a.localeCompare(b));
+    const files = listMigrationFilenames();
 
     expect(files).toContain(capabilityMigration);
 
@@ -591,9 +679,7 @@ describe('Wave 6 signed manifest key delegation', () => {
   const capabilityMigration = '2026-08-06-e-agent-outbound-network-capability.sql';
 
   it('orders the delegation migration after the Wave 6 capability migration', () => {
-    const files = readdirSync(migrationsDir)
-      .filter((file) => /^\d{4}-.*\.sql$/.test(file))
-      .sort((a, b) => a.localeCompare(b));
+    const files = listMigrationFilenames();
 
     expect(files).toContain(delegationMigration);
     expect(files).toContain(capabilityMigration);
