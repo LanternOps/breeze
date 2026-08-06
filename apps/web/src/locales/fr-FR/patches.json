@@ -327,7 +327,8 @@
       "updateRing": "Impossible de mettre à jour l’anneau",
       "createRing": "Impossible de créer un anneau de mise à jour",
       "deleteRing": "Impossible de supprimer l’anneau",
-      "approveUnknown": "État d'approbation inconnu — la réponse du serveur n'a pas pu être lue. Actualisez pour confirmer quels correctifs ont été approuvés."
+      "approveUnknown": "État d'approbation inconnu — la réponse du serveur n'a pas pu être lue. Actualisez pour confirmer quels correctifs ont été approuvés.",
+      "approveAbortedWithFailures": "{{message}} ({{count}} correctifs avaient également été refusés par le serveur auparavant.)"
     },
     "toast": {
       "ringSaved": "Anneau de mise à jour enregistré",
@@ -356,7 +357,8 @@
       "editTitle": "Modifier l’anneau de mise à jour",
       "createTitle": "Créer un anneau de mise à jour"
     },
-    "truncatedNotice": "Affichage de {{shown}} correctifs sur {{total}}. Les filtres ici ne réduisent que ce qui est déjà chargé ; le reste est donc inaccessible depuis cette vue — utilisez l'API des correctifs pour parcourir le catalogue complet."
+    "truncatedNotice": "Affichage de {{shown}} correctifs sur {{total}}. Les filtres ici ne réduisent que ce qui est déjà chargé ; le reste est donc inaccessible depuis cette vue — utilisez l'API des correctifs pour parcourir le catalogue complet.",
+    "shiftedNotice": "Affichage de {{shown}} correctifs sur {{total}} — le catalogue a changé pendant le chargement. Rechargez pour voir le reste."
   },
   "ringSelector": {
     "label": "Anneau de mise à jour :",

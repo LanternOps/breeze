@@ -140,10 +140,14 @@ export default function PatchesPage() {
   const [patchesLoading, setPatchesLoading] = useState(true);
   const [patchesError, setPatchesError] = useState<string>();
   const [sourceCounts, setSourceCounts] = useState<Record<string, number>>({});
-  // Total reported by the API when the walk brought back fewer patches than
-  // that — the page cap, a mid-walk anomaly, or duplicate rows. Non-null means
-  // the list on screen is incomplete and the user is told so (#3157).
-  const [patchesTruncatedTotal, setPatchesTruncatedTotal] = useState<number | null>(null);
+  // Set when the walk brought back fewer patches than the API reported, i.e.
+  // the list on screen is incomplete and the user must be told (#3157). The
+  // cause decides the advice: hitting the fetch cap genuinely can't be resolved
+  // from this view, whereas a catalog that shifted mid-walk (an agent ingesting
+  // patches while we page — rows land at the front under createdAt DESC, so the
+  // offset window slides) is fixed by simply reloading.
+  const [patchesIncomplete, setPatchesIncomplete] =
+    useState<{ total: number; cause: 'cap' | 'shifted' } | null>(null);
   // Monotonic id for the in-flight catalog walk; see fetchPatches.
   const patchFetchGeneration = useRef(0);
   const [sourceFilter, setSourceFilter] = useState<'all' | 'microsoft' | 'apple' | 'linux' | 'third_party'>('all');
@@ -208,7 +212,6 @@ export default function PatchesPage() {
     try {
       setPatchesLoading(true);
       setPatchesError(undefined);
-      setPatchesTruncatedTotal(null);
       // Walk every page of the catalog, not just the first. PatchList sorts AND
       // paginates entirely client-side over this array (issue #1316), so
       // whatever isn't fetched here can never be searched, sorted, paged to, or
@@ -234,6 +237,7 @@ export default function PatchesPage() {
       const seenIds = new Set<string>();
       let counts: Record<string, number> | null = null;
       let reportedTotal: number | null = null;
+      let hitPageCap = false;
       let page = 1;
       let lastPage = 1;
 
@@ -276,7 +280,10 @@ export default function PatchesPage() {
         if (rows.length > 0 && Number.isFinite(total) && total > 0) {
           reportedTotal = total;
           lastPage = Math.ceil(total / pageLimit);
-          if (lastPage > PATCH_FETCH_MAX_PAGES) lastPage = PATCH_FETCH_MAX_PAGES;
+          if (lastPage > PATCH_FETCH_MAX_PAGES) {
+            lastPage = PATCH_FETCH_MAX_PAGES;
+            hitPageCap = true;
+          }
         } else {
           // On page 1 this is the ordinary "endpoint returned no pagination
           // metadata, or the catalog is empty" case — one page IS the whole
@@ -295,7 +302,11 @@ export default function PatchesPage() {
 
       setPatches(collected);
       setSourceCounts(counts ?? {});
-      setPatchesTruncatedTotal(shortOfTotal ? reportedTotal : null);
+      setPatchesIncomplete(
+        shortOfTotal && reportedTotal !== null
+          ? { total: reportedTotal, cause: hitPageCap ? 'cap' : 'shifted' }
+          : null
+      );
     } catch (err) {
       if (isStale()) return;
       setPatchesError(err instanceof Error ? err.message : t('patchesPage.errors.fetchPatches'));
@@ -360,6 +371,20 @@ export default function PatchesPage() {
     // its own audit row, and keeps partial success attributable.
     const approvedIds: string[] = [];
     const failedIds: string[] = [];
+    // Commit what earlier batches achieved, then report the abort — but don't
+    // drop per-id rejections those batches already reported, or "40 of your
+    // first 200 were refused" vanishes behind the generic abort message.
+    const abortError = (message: string): Error => {
+      if (approvedIds.length > 0) markApproved(approvedIds);
+      return new Error(
+        failedIds.length > 0
+          ? t('patchesPage.errors.approveAbortedWithFailures', {
+              message,
+              count: failedIds.length,
+            })
+          : message
+      );
+    };
     for (let i = 0; i < patchIds.length; i += BULK_APPROVE_BATCH_SIZE) {
       const batch = patchIds.slice(i, i + BULK_APPROVE_BATCH_SIZE);
       // runaction-exempt: aggregate/partial-success — inline bulkError UI (see NOTE above)
@@ -372,10 +397,7 @@ export default function PatchesPage() {
       });
       if (!response.ok) {
         if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-        // Commit what earlier batches achieved before surfacing the failure, so
-        // the table doesn't show already-approved patches as still pending.
-        if (approvedIds.length > 0) markApproved(approvedIds);
-        throw new Error(t('patchesPage.errors.approvePatches'));
+        throw abortError(t('patchesPage.errors.approvePatches'));
       }
       const body = await response.json().catch(() => null) as {
         approved?: string[];
@@ -385,8 +407,7 @@ export default function PatchesPage() {
         // A 200 whose body we can't read is NOT evidence the approvals landed.
         // Optimistically flipping the rows to "approved" here would assert a
         // result we don't have; report it as indeterminate instead.
-        if (approvedIds.length > 0) markApproved(approvedIds);
-        throw new Error(t('patchesPage.errors.approveUnknown'));
+        throw abortError(t('patchesPage.errors.approveUnknown'));
       }
       approvedIds.push(...body.approved);
       if (Array.isArray(body.failed)) failedIds.push(...body.failed);
@@ -792,15 +813,30 @@ export default function PatchesPage() {
             value={sourceFilter}
             onChange={setSourceFilter}
           />
-          {patchesTruncatedTotal !== null && (
+          {patchesIncomplete !== null && (
             <div
               data-testid="patches-truncated-notice"
-              className="mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm text-amber-700 dark:text-amber-400"
+              data-cause={patchesIncomplete.cause}
+              className="mt-4 flex flex-wrap items-center gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm text-amber-700 dark:text-amber-400"
             >
-              {t('patchesPage.truncatedNotice', {
-                shown: patches.length,
-                total: patchesTruncatedTotal,
-              })}
+              <span>
+                {t(
+                  /* i18n-dynamic */ patchesIncomplete.cause === 'cap'
+                    ? 'patchesPage.truncatedNotice'
+                    : 'patchesPage.shiftedNotice',
+                  { shown: patches.length, total: patchesIncomplete.total }
+                )}
+              </span>
+              {patchesIncomplete.cause === 'shifted' && (
+                <button
+                  type="button"
+                  onClick={fetchPatches}
+                  data-testid="patches-reload"
+                  className="ml-auto rounded-md border border-amber-500/40 px-2 py-1 text-xs font-medium hover:bg-amber-500/20"
+                >
+                  {t('patchList.actions.tryAgain')}
+                </button>
+              )}
             </div>
           )}
           <PatchList

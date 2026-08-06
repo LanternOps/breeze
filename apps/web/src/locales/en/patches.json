@@ -327,7 +327,8 @@
       "updateRing": "Failed to update ring",
       "createRing": "Failed to create update ring",
       "deleteRing": "Failed to delete ring",
-      "approveUnknown": "Approval status unknown — the server response could not be read. Refresh to confirm which patches were approved."
+      "approveUnknown": "Approval status unknown — the server response could not be read. Refresh to confirm which patches were approved.",
+      "approveAbortedWithFailures": "{{message}} ({{count}} patches were also rejected by the server before this.)"
     },
     "toast": {
       "ringSaved": "Update ring saved",
@@ -356,7 +357,8 @@
       "editTitle": "Edit update ring",
       "createTitle": "Create update ring"
     },
-    "truncatedNotice": "Showing {{shown}} of {{total}} patches. The filters here only narrow what's already loaded, so the rest can't be reached from this view — use the patches API to work through the full catalog."
+    "truncatedNotice": "Showing {{shown}} of {{total}} patches. The filters here only narrow what's already loaded, so the rest can't be reached from this view — use the patches API to work through the full catalog.",
+    "shiftedNotice": "Showing {{shown}} of {{total}} patches — the catalog changed while it was loading. Reload to see the rest."
   },
   "ringSelector": {
     "label": "Update Ring:",

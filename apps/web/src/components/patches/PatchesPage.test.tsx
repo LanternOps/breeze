@@ -1273,6 +1273,10 @@ describe('PatchesPage', () => {
       render(<PatchesPage />);
 
       const notice = await screen.findByTestId('patches-truncated-notice');
+      // Genuinely capped: a reload cannot help, so this variant points at the API.
+      expect(notice.getAttribute('data-cause')).toBe('cap');
+      expect(notice.textContent).toContain('use the patches API');
+      expect(screen.queryByTestId('patches-reload')).toBeNull();
       expect(notice.textContent).toContain('5000');
       expect(notice.textContent).toContain('20000');
       expect(fetchMock).toHaveBeenCalledWith('/patches?limit=200&page=25');
@@ -1320,7 +1324,12 @@ describe('PatchesPage', () => {
       render(<PatchesPage />);
 
       const notice = await screen.findByTestId('patches-truncated-notice');
-      // 3 distinct rows survived of the 4 the server reported.
+      // 3 distinct rows survived of the 4 the server reported. The cap wasn't
+      // reached, so this is the "catalog shifted" case — a reload can fix it,
+      // and the notice must say so rather than sending the user to the API.
+      expect(notice.getAttribute('data-cause')).toBe('shifted');
+      expect(notice.textContent).toContain('Reload to see the rest');
+      expect(screen.getByTestId('patches-reload')).toBeTruthy();
       expect(notice.textContent).toContain('3');
       expect(notice.textContent).toContain('4');
       expect(desktop().getAllByRole('row').slice(1)).toHaveLength(3);
@@ -1347,6 +1356,7 @@ describe('PatchesPage', () => {
       render(<PatchesPage />);
 
       const notice = await screen.findByTestId('patches-truncated-notice');
+      expect(notice.getAttribute('data-cause')).toBe('shifted');
       expect(notice.textContent).toContain('200');
       expect(notice.textContent).toContain('400');
     });
@@ -1469,6 +1479,51 @@ describe('PatchesPage', () => {
       ]);
       // No bulk error surfaced.
       expect(screen.queryByText(/Failed to approve/)).toBeNull();
+    });
+
+    it('keeps earlier batches\' rejections visible when a later batch aborts', async () => {
+      let call = 0;
+      fetchMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url === '/update-rings') return makeJsonResponse({ data: [] });
+        if (url === '/patches?limit=200') {
+          return makeJsonResponse({
+            data: Array.from({ length: 200 }, (_, i) => makePatch(i + 1)),
+            pagination: { page: 1, limit: 200, total: 250 },
+          });
+        }
+        if (url === '/patches?limit=200&page=2') {
+          return makeJsonResponse({
+            data: Array.from({ length: 50 }, (_, i) => makePatch(i + 201)),
+            pagination: { page: 2, limit: 200, total: 250 },
+          });
+        }
+        if (url === '/patches/bulk-approve') {
+          call += 1;
+          if (call === 1) {
+            const body = JSON.parse(String((init as RequestInit).body)) as { patchIds: string[] };
+            // First batch: server rejects 3 of the 200.
+            return makeJsonResponse({
+              success: true,
+              approved: body.patchIds.slice(3),
+              failed: body.patchIds.slice(0, 3),
+            });
+          }
+          return makeJsonResponse({}, false, 500); // second batch dies
+        }
+        return makeJsonResponse({}, false, 404);
+      });
+
+      render(<PatchesPage />);
+      await screen.findByText('Page 1 of 10');
+
+      fireEvent.click(desktop().getByRole('button', { name: 'Select all patches' }));
+      fireEvent.click(await screen.findByTestId('patch-select-all-matching'));
+      fireEvent.click(screen.getByTestId('patch-bulk-approve'));
+
+      // The abort message must not erase the 3 the server already refused.
+      const err = await screen.findByText(/3 patches were also rejected/);
+      expect(err.textContent).toContain('Failed to approve patches');
     });
 
     it('discards a superseded walk when the ring changes mid-walk', async () => {

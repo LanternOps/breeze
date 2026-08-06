@@ -327,7 +327,8 @@
       "updateRing": "Ring konnte nicht aktualisiert werden",
       "createRing": "Updatering konnte nicht erstellt werden",
       "deleteRing": "Ring konnte nicht gelöscht werden",
-      "approveUnknown": "Freigabestatus unbekannt — die Serverantwort konnte nicht gelesen werden. Aktualisieren Sie, um zu prüfen, welche Patches freigegeben wurden."
+      "approveUnknown": "Freigabestatus unbekannt — die Serverantwort konnte nicht gelesen werden. Aktualisieren Sie, um zu prüfen, welche Patches freigegeben wurden.",
+      "approveAbortedWithFailures": "{{message}} ({{count}} Patches wurden zuvor außerdem vom Server abgelehnt.)"
     },
     "toast": {
       "ringSaved": "Updatering gespeichert",
@@ -356,7 +357,8 @@
       "editTitle": "Updatering bearbeiten",
       "createTitle": "Updatering erstellen"
     },
-    "truncatedNotice": "Es werden {{shown}} von {{total}} Patches angezeigt. Die Filter hier grenzen nur das bereits Geladene ein, der Rest ist über diese Ansicht nicht erreichbar — verwenden Sie die Patches-API für den vollständigen Katalog."
+    "truncatedNotice": "Es werden {{shown}} von {{total}} Patches angezeigt. Die Filter hier grenzen nur das bereits Geladene ein, der Rest ist über diese Ansicht nicht erreichbar — verwenden Sie die Patches-API für den vollständigen Katalog.",
+    "shiftedNotice": "Es werden {{shown}} von {{total}} Patches angezeigt — der Katalog hat sich während des Ladens geändert. Laden Sie neu, um den Rest zu sehen."
   },
   "ringSelector": {
     "label": "Updatering:",
