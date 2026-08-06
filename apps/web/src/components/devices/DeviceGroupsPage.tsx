@@ -13,37 +13,37 @@ import type { FilterConditionGroup } from "@breeze/shared";
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from "../filters/FilterBuilder";
 import { FilterPreview } from "../filters/FilterPreview";
 import { useFilterPreview } from "../../hooks/useFilterPreview";
-import { legacyRulesToFilterConditions } from "./filterMigration";
+import {
+  describeFilterConditions,
+  legacyRulesToFilterConditions,
+} from "./filterMigration";
+import {
+  deviceOsType,
+  matchDeviceIds,
+  type DeviceGroupRule,
+} from "./deviceGroupMatching";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
 type OSType = "windows" | "macos" | "linux";
 
+/**
+ * Whatever `/devices` returned. The list endpoint reports `osType` (never
+ * `os`) and omits `siteName` entirely, so every field beyond `id` is optional
+ * and read through a helper rather than dereferenced.
+ */
 type Device = {
   id: string;
-  hostname: string;
-  os: OSType;
+  hostname?: string;
+  osType?: OSType;
+  /** Legacy alias this page used to assume; tolerated on read only. */
+  os?: OSType;
   siteId?: string;
   siteName?: string;
   tags?: string[];
 };
 
 type GroupType = "static" | "dynamic";
-type RuleField = "os" | "site" | "tag" | "hostname";
-type RuleOperator =
-  | "is"
-  | "is_not"
-  | "contains"
-  | "not_contains"
-  | "matches"
-  | "not_matches";
-
-type DeviceGroupRule = {
-  id: string;
-  field: RuleField;
-  operator: RuleOperator;
-  value: string;
-};
 
 type DeviceGroup = {
   id: string;
@@ -53,7 +53,12 @@ type DeviceGroup = {
   deviceCount?: number;
   deviceIds?: string[];
   devices?: Device[];
+  /**
+   * Legacy, read-only. The web app has not authored these since the
+   * FilterBuilder landed — see `handleSubmitGroup`.
+   */
   rules?: DeviceGroupRule[];
+  filterConditions?: FilterConditionGroup | null;
   policyId?: string;
   policyName?: string;
   policy?: { id: string; name: string };
@@ -87,7 +92,6 @@ type GroupFormState = {
   description: string;
   type: GroupType;
   policyId: string;
-  rules: DeviceGroupRule[];
   deviceIds: string[];
   filterConditions: FilterConditionGroup;
 };
@@ -103,40 +107,18 @@ const osLabels: Record<OSType, string> = {
   linux: "Linux",
 };
 
-const ruleOperatorOptions: Record<
-  RuleField,
-  Array<{ value: RuleOperator; label: string }>
-> = {
-  os: [
-    { value: "is", label: "is" },
-    { value: "is_not", label: "is not" },
-  ],
-  site: [
-    { value: "is", label: "is" },
-    { value: "is_not", label: "is not" },
-  ],
-  tag: [
-    { value: "contains", label: "contains" },
-    { value: "not_contains", label: "does not contain" },
-  ],
-  hostname: [
-    { value: "contains", label: "contains" },
-    { value: "not_contains", label: "does not contain" },
-    { value: "matches", label: "matches regex" },
-    { value: "not_matches", label: "does not match regex" },
-  ],
-};
-
-let idCounter = 0;
-const createId = (prefix: string = "id") => {
-  idCounter += 1;
-  return `${prefix}-${idCounter}`;
+/** OS label for a device, tolerating the missing/renamed OS field. */
+const osLabel = (device: Device): string => {
+  const os = deviceOsType(device);
+  return osLabels[os as OSType] ?? os;
 };
 
 const normalizeGroup = (group: DeviceGroup): DeviceGroup => {
   const inferredType: GroupType =
     group.type ??
-    (group.rules && group.rules.length > 0 ? "dynamic" : "static");
+    (group.filterConditions || (group.rules && group.rules.length > 0)
+      ? "dynamic"
+      : "static");
   const policyId = group.policyId ?? group.policy?.id ?? "";
   const policyName = group.policyName ?? group.policy?.name ?? "";
   const deviceIds =
@@ -221,7 +203,6 @@ export default function DeviceGroupsPage() {
     description: "",
     type: "static",
     policyId: "",
-    rules: [],
     deviceIds: [],
     filterConditions: EMPTY_FILTER,
   });
@@ -283,9 +264,13 @@ export default function DeviceGroupsPage() {
     const query = assignmentQuery.trim().toLowerCase();
     if (!query) return devices;
     return devices.filter((device) => {
-      const matchesHostname = device.hostname.toLowerCase().includes(query);
+      const matchesHostname = String(device.hostname ?? "")
+        .toLowerCase()
+        .includes(query);
       const matchesTag = device.tags?.some((tag: string) =>
-        tag.toLowerCase().includes(query),
+        String(tag ?? "")
+          .toLowerCase()
+          .includes(query),
       );
       return matchesHostname || matchesTag;
     });
@@ -383,38 +368,21 @@ export default function DeviceGroupsPage() {
     });
   }, [groups]);
 
-  const buildRule = (field: RuleField = "os"): DeviceGroupRule => {
-    const defaultOperator = ruleOperatorOptions[field][0]?.value ?? "is";
-    const defaultValue =
-      field === "os"
-        ? t("deviceGroupsPage.windows")
-        : field === "site"
-          ? (siteOptions[0]?.id ?? "")
-          : field === "tag"
-            ? (tagOptions[0] ?? "")
-            : "";
-    return {
-      id: createId(),
-      field,
-      operator: defaultOperator,
-      value: defaultValue,
-    };
-  };
-
   const resetForm = (group?: DeviceGroup) => {
     if (group) {
-      // Migrate legacy rules to filter conditions if needed
+      // The filter is the authored representation. Legacy `rules` are only a
+      // seed for groups that predate the FilterBuilder and have no filter yet.
       const filterConditions =
-        group.rules && group.rules.length > 0
+        group.filterConditions ??
+        (group.rules && group.rules.length > 0
           ? legacyRulesToFilterConditions(group.rules)
-          : EMPTY_FILTER;
+          : EMPTY_FILTER);
 
       setGroupForm({
         name: group.name ?? "",
         description: group.description ?? "",
         type: group.type ?? "static",
         policyId: group.policyId ?? "",
-        rules: group.rules ? [...group.rules] : [],
         deviceIds: group.deviceIds
           ? [...group.deviceIds]
           : (group.devices?.map((device) => device.id) ?? []),
@@ -426,7 +394,6 @@ export default function DeviceGroupsPage() {
         description: "",
         type: "static",
         policyId: "",
-        rules: [],
         deviceIds: [],
         filterConditions: EMPTY_FILTER,
       });
@@ -462,59 +429,16 @@ export default function DeviceGroupsPage() {
     setDeleteReassignGroupId("");
   };
 
-  const matchesRule = (device: Device, rule: DeviceGroupRule): boolean => {
-    const normalizedValue = rule.value.trim().toLowerCase();
-    if (!normalizedValue) return false;
-
-    if (rule.field === "os") {
-      const match = device.os.toLowerCase() === normalizedValue;
-      return rule.operator === "is" ? match : !match;
-    }
-
-    if (rule.field === "site") {
-      const siteIdMatch = device.siteId?.toLowerCase() === normalizedValue;
-      const siteNameMatch = device.siteName?.toLowerCase() === normalizedValue;
-      const match = siteIdMatch || siteNameMatch;
-      return rule.operator === "is" ? match : !match;
-    }
-
-    if (rule.field === "tag") {
-      const hasTag =
-        device.tags?.some(
-          (tag: string) => tag.toLowerCase() === normalizedValue,
-        ) ?? false;
-      return rule.operator === "contains" ? hasTag : !hasTag;
-    }
-
-    const hostname = device.hostname.toLowerCase();
-    if (rule.operator === "contains" || rule.operator === "not_contains") {
-      const match = hostname.includes(normalizedValue);
-      return rule.operator === "contains" ? match : !match;
-    }
-
-    const regexMatch = (() => {
-      try {
-        return new RegExp(rule.value, "i").test(device.hostname);
-      } catch {
-        return hostname.includes(normalizedValue);
-      }
-    })();
-    return rule.operator === "matches" ? regexMatch : !regexMatch;
-  };
-
-  const getDynamicDeviceIds = (rules: DeviceGroupRule[] = []): string[] => {
-    if (rules.length === 0) return [];
-    return devices
-      .filter((device) => rules.every((rule) => matchesRule(device, rule)))
-      .map((device) => device.id);
-  };
-
   const getGroupDeviceIds = (group: DeviceGroup): string[] => {
     if (group.type === "dynamic") {
       if (group.deviceIds && group.deviceIds.length > 0) {
         return group.deviceIds;
       }
-      return getDynamicDeviceIds(group.rules ?? []);
+      // A filter-authored group is the server's to evaluate — the legacy
+      // matcher only understands four of the forty filter fields, so guessing
+      // here would report a membership the server disagrees with.
+      if (group.filterConditions) return [];
+      return matchDeviceIds(devices, group.rules);
     }
     return group.deviceIds ?? group.devices?.map((device) => device.id) ?? [];
   };
@@ -531,11 +455,12 @@ export default function DeviceGroupsPage() {
     overrides: Partial<DeviceGroup> = {},
   ) => {
     const nextGroup = { ...group, ...overrides };
+    // No `rules` key: this is a device-assignment write, and omitting the
+    // legacy column leaves whatever a pre-FilterBuilder group already had.
     const payload = {
       name: nextGroup.name,
       description: nextGroup.description ?? "",
       type: nextGroup.type,
-      rules: nextGroup.type === "dynamic" ? (nextGroup.rules ?? []) : [],
       deviceIds: nextGroup.type === "static" ? (nextGroup.deviceIds ?? []) : [],
       policyId: nextGroup.policyId || null,
     };
@@ -574,11 +499,17 @@ export default function DeviceGroupsPage() {
     setFormError(undefined);
 
     try {
+      // `filterConditions` is the only membership representation this form
+      // authors. It deliberately does NOT send `rules`: the form has no legacy
+      // rule editor, so anything it sent would be a fabricated stub — and the
+      // page then rendered that stub as the group's membership while the
+      // server evaluated the real filter. The server evaluates only
+      // `filterConditions` (routes/groups.ts, services/groupMembership.ts);
+      // `rules` is inert storage kept for pre-FilterBuilder rows.
       const payload = {
         name: trimmedName,
         description: groupForm.description.trim(),
         type: groupForm.type,
-        rules: groupForm.type === "dynamic" ? groupForm.rules : [],
         filterConditions:
           groupForm.type === "dynamic" ? groupForm.filterConditions : null,
         deviceIds: groupForm.type === "static" ? groupForm.deviceIds : [],
@@ -906,6 +837,14 @@ export default function DeviceGroupsPage() {
                 .map((id) => deviceById.get(id))
                 .filter((device): device is Device => Boolean(device));
               const deviceCount = getGroupDeviceCount(group);
+              // Describe what the server actually evaluates. Legacy `rules`
+              // are only shown for rows that have no filter — otherwise a
+              // stale stub would misreport the group's membership.
+              const membershipChips = group.filterConditions
+                ? describeFilterConditions(group.filterConditions)
+                : (group.rules ?? []).map((rule) =>
+                    buildRuleLabel(rule, siteNameById),
+                  );
               const isSelected = selectedGroupIds.has(group.id);
               const isDragOver = dragOverGroupId === group.id;
 
@@ -984,14 +923,14 @@ export default function DeviceGroupsPage() {
                           {deviceCount === 1 ? "" : t("deviceGroupsPage.s")}
                         </span>
                       </div>
-                      {group.rules && group.rules.length > 0 ? (
+                      {membershipChips.length > 0 ? (
                         <div className="mt-3 flex flex-wrap gap-2">
-                          {group.rules.map((rule) => (
+                          {membershipChips.map((chip, index) => (
                             <span
-                              key={rule.id}
+                              key={`${group.id}-chip-${index}`}
                               className="rounded-full border bg-background px-3 py-1 text-xs text-muted-foreground"
                             >
-                              {buildRuleLabel(rule, siteNameById)}
+                              {chip}
                             </span>
                           ))}
                         </div>
@@ -1056,7 +995,7 @@ export default function DeviceGroupsPage() {
                               <span className="font-medium text-foreground">
                                 {device.hostname}
                               </span>
-                              <span>{osLabels[device.os]}</span>
+                              <span>{osLabel(device)}</span>
                             </div>
                           ))
                         )}
@@ -1188,8 +1127,6 @@ export default function DeviceGroupsPage() {
                       setGroupForm((prev) => ({
                         ...prev,
                         type: "dynamic",
-                        rules:
-                          prev.rules.length > 0 ? prev.rules : [buildRule()],
                         filterConditions:
                           prev.filterConditions.conditions.length > 0
                             ? prev.filterConditions
@@ -1306,7 +1243,11 @@ export default function DeviceGroupsPage() {
                                 {device.hostname}
                               </p>
                               <p className="text-xs text-muted-foreground">
-                                {osLabels[device.os]} · {device.siteName}
+                                {osLabel(device)} ·{" "}
+                                {device.siteName ??
+                                  (device.siteId
+                                    ? (siteNameById.get(device.siteId) ?? "")
+                                    : "")}
                               </p>
                             </div>
                           </label>

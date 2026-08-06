@@ -1,4 +1,6 @@
-import type { FilterCondition, FilterConditionGroup } from '@breeze/shared';
+import type { FilterCondition, FilterConditionGroup, FilterOperator } from '@breeze/shared';
+import { FILTER_FIELDS } from '../filters/filterFields';
+import { OPERATOR_LABELS } from '../filters/OperatorSelector';
 
 interface LegacyDeviceGroupRule {
   id: string;
@@ -50,6 +52,62 @@ export function legacyRulesToFilterConditions(rules: LegacyDeviceGroupRule[]): F
   });
 
   return { operator: 'AND', conditions };
+}
+
+const FIELD_LABELS = new Map(FILTER_FIELDS.map(field => [field.key, field.label]));
+
+const NO_VALUE_OPERATORS: FilterOperator[] = ['isNull', 'isNotNull', 'isEmpty', 'isNotEmpty'];
+
+function isConditionGroup(entry: FilterCondition | FilterConditionGroup): entry is FilterConditionGroup {
+  return entry !== null && typeof entry === 'object' && Array.isArray((entry as FilterConditionGroup).conditions);
+}
+
+function formatFilterValue(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) return value.map(item => formatFilterValue(item)).filter(Boolean).join(', ');
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    if ('amount' in record && 'unit' in record) return `${record.amount} ${record.unit}`;
+    if ('from' in record && 'to' in record) return `${formatFilterValue(record.from)} - ${formatFilterValue(record.to)}`;
+    return '';
+  }
+  return String(value);
+}
+
+function describeEntry(entry: FilterCondition | FilterConditionGroup): string {
+  if (isConditionGroup(entry)) {
+    const inner = entry.conditions.map(describeEntry).filter(Boolean);
+    if (inner.length === 0) return '';
+    return `(${inner.join(entry.operator === 'OR' ? ' OR ' : ' AND ')})`;
+  }
+
+  const fieldLabel = FIELD_LABELS.get(entry.field) ?? entry.field;
+  const operatorLabel = OPERATOR_LABELS[entry.operator] ?? entry.operator;
+  if (NO_VALUE_OPERATORS.includes(entry.operator)) return `${fieldLabel} ${operatorLabel}`;
+
+  const value = formatFilterValue(entry.value);
+  return value ? `${fieldLabel} ${operatorLabel} ${value}` : '';
+}
+
+/**
+ * Human-readable chips for a `filterConditions` tree, using the same field and
+ * operator vocabulary the FilterBuilder shows.
+ *
+ * This is the honest counterpart to `filterConditionsToLegacyRules`: the legacy
+ * rule vocabulary covers four fields, the filter vocabulary covers forty, so
+ * round-tripping a real filter through legacy rules for DISPLAY silently
+ * relabels most conditions as "Hostname contains …". Describe the filter
+ * directly instead.
+ */
+export function describeFilterConditions(
+  conditions: FilterConditionGroup | null | undefined
+): string[] {
+  if (!conditions || !Array.isArray(conditions.conditions)) return [];
+  const parts = conditions.conditions.map(describeEntry).filter(Boolean);
+  // A top-level OR must not render as a list of chips — the card reads those
+  // as ANDed. Collapse it into one chip that states the operator.
+  if (conditions.operator === 'OR' && parts.length > 1) return [parts.join(' OR ')];
+  return parts;
 }
 
 export function filterConditionsToLegacyRules(
