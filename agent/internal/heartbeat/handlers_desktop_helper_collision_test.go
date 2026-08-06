@@ -408,16 +408,17 @@ func TestStartDesktopViaHelperAbortsRetryOnShutdown(t *testing.T) {
 	}
 }
 
-// TestJoinOrRunDesktopStartJoinsSameOffer proves the collapse semantics with no
-// timing dependency: a leader is already registered and finished, so a start
-// carrying the SAME offer must take the leader's result and never run its own.
+// TestJoinOrRunDesktopStartJoinsInFlight proves the collapse semantics with no
+// timing dependency: a leader is already registered and finished, so a second
+// start for that desktop session must take the leader's result and never run
+// its own.
 //
 // This is what keeps a second concurrent start off the helper. Two starts
 // reaching SessionManager.StartSession would have the second tear down the
 // first, which the unique-id change alone would have made reachable.
-func TestJoinOrRunDesktopStartJoinsSameOffer(t *testing.T) {
+func TestJoinOrRunDesktopStartJoinsInFlight(t *testing.T) {
 	const sessionID = "desktop-join"
-	leader := &desktopStartCall{offer: "offer-A", done: make(chan struct{})}
+	leader := &desktopStartCall{done: make(chan struct{})}
 	leader.result = tools.NewSuccessResult(map[string]any{"answer": "leader-answer"}, 0)
 	close(leader.done)
 	desktopStartInflight.Store(sessionID, leader)
@@ -425,55 +426,71 @@ func TestJoinOrRunDesktopStartJoinsSameOffer(t *testing.T) {
 
 	h := &Heartbeat{}
 	ran := false
-	got := h.joinOrRunDesktopStart(sessionID, "offer-A", func() tools.CommandResult {
+	got := h.joinOrRunDesktopStart(sessionID, func() tools.CommandResult {
 		ran = true
 		return tools.NewErrorResult(errors.New("second start reached the helper"), 0)
 	})
 
 	if ran {
-		t.Fatal("a concurrent start with the same offer ran its own helper round-trip instead of joining")
+		t.Fatal("a concurrent start ran its own helper round-trip instead of joining")
 	}
 	if got.Status != "completed" || got.Stdout != leader.result.Stdout {
 		t.Fatalf("joiner did not receive the leader's result: %+v", got)
 	}
 }
 
-// A different offer is a new negotiation and must NOT be answered with the
-// leader's SDP — it waits its turn and runs its own start.
-func TestJoinOrRunDesktopStartDefersDifferentOffer(t *testing.T) {
-	const sessionID = "desktop-defer"
-	leader := &desktopStartCall{offer: "offer-A", done: make(chan struct{})}
-	leader.result = tools.NewSuccessResult(map[string]any{"answer": "leader-answer"}, 0)
-	desktopStartInflight.Store(sessionID, leader)
-
-	// The leader finishes the way a real one does: delete, then close.
-	go func() {
-		desktopStartInflight.Delete(sessionID)
-		close(leader.done)
-	}()
-
+// The leader must always release its in-flight entry, and a panic must not
+// leave joiners with a zero-valued result.
+func TestJoinOrRunDesktopStartReleasesOnPanic(t *testing.T) {
+	const sessionID = "desktop-panic"
 	h := &Heartbeat{}
-	ran := false
-	got := h.joinOrRunDesktopStart(sessionID, "offer-B", func() tools.CommandResult {
-		ran = true
-		return tools.NewSuccessResult(map[string]any{"answer": "own-answer"}, 0)
-	})
 
-	if !ran {
-		t.Fatal("a different offer was answered with the leader's SDP instead of renegotiating")
+	joined := make(chan tools.CommandResult, 1)
+	leaderIn := make(chan struct{})
+	release := make(chan struct{})
+
+	go func() {
+		defer func() { _ = recover() }()
+		h.joinOrRunDesktopStart(sessionID, func() tools.CommandResult {
+			close(leaderIn)
+			<-release
+			panic("helper path blew up")
+		})
+	}()
+	<-leaderIn
+
+	go func() {
+		joined <- h.joinOrRunDesktopStart(sessionID, func() tools.CommandResult {
+			return tools.NewSuccessResult(map[string]any{"answer": "own"}, 0)
+		})
+	}()
+	close(release)
+
+	select {
+	case got := <-joined:
+		if got.Status == "" {
+			t.Fatalf("panicking leader handed the joiner a zero-valued result: %+v", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("in-flight entry was never released after the leader panicked")
 	}
-	if got.Status != "completed" || !strings.Contains(got.Stdout, "own-answer") {
-		t.Fatalf("deferred start did not return its own result: %+v", got)
-	}
-	if _, still := desktopStartInflight.Load(sessionID); still {
-		t.Error("in-flight entry leaked after the deferred start completed")
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, still := desktopStartInflight.Load(sessionID); !still {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("in-flight entry leaked after a panicking leader")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
 // Waiting on someone else's in-flight start must not hold shutdown open.
 func TestJoinOrRunDesktopStartAbortsOnShutdown(t *testing.T) {
 	const sessionID = "desktop-shutdown"
-	leader := &desktopStartCall{offer: "offer-A", done: make(chan struct{})} // never closed
+	leader := &desktopStartCall{done: make(chan struct{})} // never closed
 	desktopStartInflight.Store(sessionID, leader)
 	t.Cleanup(func() { desktopStartInflight.Delete(sessionID) })
 
@@ -483,7 +500,7 @@ func TestJoinOrRunDesktopStartAbortsOnShutdown(t *testing.T) {
 
 	done := make(chan tools.CommandResult, 1)
 	go func() {
-		done <- h.joinOrRunDesktopStart(sessionID, "offer-A", func() tools.CommandResult {
+		done <- h.joinOrRunDesktopStart(sessionID, func() tools.CommandResult {
 			return tools.NewSuccessResult(map[string]any{}, 0)
 		})
 	}()
@@ -516,7 +533,7 @@ func TestJoinOrRunDesktopStartNeverRunsTwoAtOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			h.joinOrRunDesktopStart(sessionID, "offer-A", func() tools.CommandResult {
+			h.joinOrRunDesktopStart(sessionID, func() tools.CommandResult {
 				n := atomic.AddInt32(&live, 1)
 				for {
 					prev := atomic.LoadInt32(&maxLive)

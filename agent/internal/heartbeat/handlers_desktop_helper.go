@@ -65,10 +65,9 @@ var desktopStartRetryBackoff = time.Second
 var desktopStartCommandTimeout = 30 * time.Second
 
 // desktopStartCall is one in-flight desktop start that later callers for the
-// same desktop session can wait on. result is written before done is closed, so
-// a reader that has received from done sees it safely.
+// same desktop session wait on. result is written before done is closed, so a
+// reader that has received from done sees it safely.
 type desktopStartCall struct {
-	offer  string
 	done   chan struct{}
 	result tools.CommandResult
 }
@@ -76,11 +75,6 @@ type desktopStartCall struct {
 // desktopStartInflight maps a desktop session id to its in-flight
 // desktopStartCall.
 var desktopStartInflight sync.Map
-
-// maxDesktopStartTurns bounds how many times a start will defer to a different
-// in-flight negotiation before giving up. Each turn blocks on a real completion
-// (it cannot spin), so this only guards against pathological churn.
-const maxDesktopStartTurns = 8
 
 // joinOrRunDesktopStart collapses concurrent start_desktop invocations for one
 // desktop session onto a single helper round-trip.
@@ -97,52 +91,52 @@ const maxDesktopStartTurns = 8
 // Closed callback calls StopSession(sessionID) and kills the SECOND session,
 // firing a spurious desktop_peer_disconnected.
 //
-// Two invocations carrying the SAME offer are the #3107 case — one start_desktop
-// delivered over both the WebSocket and the heartbeat response — so the joiner
-// takes the leader's answer, which is exactly the "join or defer to it" the
-// issue asked for. A DIFFERENT offer is a genuinely new negotiation and must not
-// be answered with the leader's SDP, so it waits for the leader to finish and
-// then takes its own turn. Either way the helper only ever sees one start at a
-// time for a given desktop session.
-func (h *Heartbeat) joinOrRunDesktopStart(sessionID, offer string, run func() tools.CommandResult) tools.CommandResult {
-	for turn := 0; turn < maxDesktopStartTurns; turn++ {
-		call := &desktopStartCall{offer: offer, done: make(chan struct{})}
-		existing, loaded := desktopStartInflight.LoadOrStore(sessionID, call)
-		if !loaded {
-			// Released via defer: if run() panics, the entry must still be
-			// dropped and done still closed, or every later start for this
-			// desktop session blocks forever on a leader that will never
-			// finish. The panic itself still propagates.
-			defer func() {
-				desktopStartInflight.Delete(sessionID)
-				close(call.done)
-			}()
-			call.result = run()
-			return call.result
-		}
+// The joiner takes the leader's result — "join or defer to it", as the issue
+// asked. That is unconditionally right for the #3107 case, which is ONE
+// start_desktop delivered over both the WebSocket and the heartbeat response:
+// same command id, same offer, so the leader's answer is the joiner's answer.
+//
+// It is deliberately not conditioned on the offers matching. A concurrent start
+// carrying a DIFFERENT offer for the same desktop session is not reachable in
+// practice — the viewer retries the same offer under the same commandId
+// (heartbeat.go, #434), and a genuine renegotiation only follows a completed or
+// failed attempt, sequentially. Deferring such a caller to a second turn instead
+// would cost real correctness: leases are keyed per desktop session
+// (desktopLeaseOpID), so the leader's failure path releases the shared lease out
+// from under the deferred caller, which then streams unleased and gets its
+// helper reaped mid-session. A bounded wrong-SDP failure beats that, and beats
+// today's behaviour, where such a caller is rejected outright.
+func (h *Heartbeat) joinOrRunDesktopStart(sessionID string, run func() tools.CommandResult) tools.CommandResult {
+	call := &desktopStartCall{done: make(chan struct{})}
+	// Pre-set so a panic in run() cannot hand joiners a zero-valued result
+	// (Status "", no Error), which upstream would submit to the API as a
+	// command result with no failure text. Overwritten on the normal path.
+	call.result = tools.NewErrorResult(
+		fmt.Errorf("desktop start for session %s did not complete", sessionID), 0)
 
-		leader := existing.(*desktopStartCall)
-		sameOffer := leader.offer == offer
-		action := "wait-then-retry"
-		if sameOffer {
-			action = "join"
-		}
-		log.Info("desktop start already in flight for this session",
-			"sessionId", sessionID, "action", action)
-		select {
-		case <-leader.done:
-		case <-h.stopChan:
-			return tools.NewErrorResult(
-				fmt.Errorf("desktop start aborted during shutdown while waiting on an in-flight start for session %s", sessionID), 0)
-		}
-		if sameOffer {
-			return leader.result
-		}
+	existing, loaded := desktopStartInflight.LoadOrStore(sessionID, call)
+	if !loaded {
+		// Released via defer: if run() panics, the entry must still be dropped
+		// and done still closed, or every later start for this desktop session
+		// blocks forever on a leader that will never finish. The panic itself
+		// still propagates.
+		defer func() {
+			desktopStartInflight.Delete(sessionID)
+			close(call.done)
+		}()
+		call.result = run()
+		return call.result
 	}
 
-	return tools.NewErrorResult(
-		fmt.Errorf("desktop start for session %s kept losing its turn to other in-flight starts after %d attempts",
-			sessionID, maxDesktopStartTurns), 0)
+	leader := existing.(*desktopStartCall)
+	log.Info("joining a desktop start already in flight for this session", "sessionId", sessionID)
+	select {
+	case <-leader.done:
+		return leader.result
+	case <-h.stopChan:
+		return tools.NewErrorResult(
+			fmt.Errorf("desktop start aborted during shutdown while waiting on an in-flight start for session %s", sessionID), 0)
+	}
 }
 
 // ErrLinuxDesktopHelperUnsupported is returned by spawnHelperForDesktop on
@@ -266,7 +260,7 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 
 	// Only one start may be in flight per desktop session — see
 	// joinOrRunDesktopStart for why the helper cannot tolerate two.
-	return h.joinOrRunDesktopStart(sessionID, offer, func() tools.CommandResult {
+	return h.joinOrRunDesktopStart(sessionID, func() tools.CommandResult {
 		// On-demand (RDS) hosts bypass find-or-spawn entirely: handleStartDesktop
 		// already leased the target session's helper, so the only thing left is to
 		// wait for the lifecycle manager to bring it up. Strict by design (#434) —
@@ -378,36 +372,6 @@ func desktopStartLostHelper(err error) bool {
 	return true
 }
 
-// reapUnprovenDesktopStart fires a best-effort desktop_stop for a start whose
-// outcome we never learned.
-//
-// Session.SendCommand's timeout does not cancel helper-side work — the helper
-// dispatches handleDesktopStart on its own goroutine — so after the daemon
-// gives up, the helper may still bring up a live capture and peer connection
-// that nothing on this side owns. rememberDesktopOwner never ran, so a later
-// stop_desktop would route to the daemon-side manager and report a false
-// success while the helper kept capturing. Best-effort by design: it runs in
-// the background with a short budget, and a failure only leaves the pre-existing
-// behaviour (the orphan tears itself down when ICE fails).
-func (h *Heartbeat) reapUnprovenDesktopStart(session *sessionbroker.Session, sessionID string) {
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Error("panic reaping unproven desktop start", "error", fmt.Sprint(r))
-			}
-		}()
-		_, err := session.SendCommand("desk-reap-"+sessionID, ipc.TypeDesktopStop,
-			ipc.DesktopStopRequest{SessionID: sessionID}, 10*time.Second)
-		if err != nil {
-			log.Warn("could not reap possibly-orphaned desktop start after IPC timeout",
-				"sessionId", sessionID, "helperSession", session.SessionID, "error", err.Error())
-			return
-		}
-		log.Info("reaped possibly-orphaned desktop start after IPC timeout",
-			"sessionId", sessionID, "helperSession", session.SessionID)
-	}()
-}
-
 // startDesktopOnSession runs one desktop-start attempt against a specific
 // helper session. The second return value is true only when the helper session
 // itself went away mid-command, as classified by desktopStartLostHelper — the
@@ -422,11 +386,18 @@ func (h *Heartbeat) startDesktopOnSession(session *sessionbroker.Session, sessio
 		// the two sentinels must not surface as bare internal strings.
 		switch {
 		case errors.Is(err, sessionbroker.ErrCommandTimeout):
-			// The helper never cancels work it has already started, so the
-			// start may still be completing on the box. Fire a best-effort
-			// stop: the retry used to reap this orphan implicitly, because the
-			// next StartSession stops every existing session first.
-			h.reapUnprovenDesktopStart(session, sessionID)
+			// NOTE: SendCommand's timeout does not cancel helper-side work, so
+			// the helper may still bring up a capture that nothing here owns.
+			// It is deliberately NOT reaped with a compensating desktop_stop:
+			// the helper processes stop off StartSession's mutex, so a stop
+			// still queued behind a wedged helper would land after the viewer's
+			// next start and silently kill a session the daemon believes is
+			// live — the same class of bug this issue is about. The orphan is
+			// self-limiting instead: the viewer never gets an answer, ICE never
+			// completes, and the peer connection tears itself down on the 15s
+			// failed timeout. Reaping it safely needs a helper-side start
+			// generation so a stale stop cannot match a newer session; tracked
+			// on #3107 with the ownership-on-failure gap.
 			err = fmt.Errorf("desktop helper did not answer the start request within %s (helper session %s, windows session %s) — the helper is busy or frozen; retry, and restart the Breeze helper on the device if it repeats: %w",
 				desktopStartCommandTimeout, session.SessionID, session.WinSessionID, err)
 		case errors.Is(err, sessionbroker.ErrDuplicateCommand):
