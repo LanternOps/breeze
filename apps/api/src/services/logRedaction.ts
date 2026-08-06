@@ -39,7 +39,29 @@ export function redactLogFields(value: unknown, depth = 0): unknown {
 
   const redacted: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
-    redacted[key] = isSecretKey(key) ? REDACTED : redactLogFields(entry, depth + 1);
+    const redactedEntry = isSecretKey(key) ? REDACTED : redactLogFields(entry, depth + 1);
+
+    // `redacted[key] = …` for the literal key `__proto__` does NOT create an own
+    // property — it invokes the setter inherited from Object.prototype (#3129):
+    //   * object value    -> the key vanishes from the output AND the returned
+    //                        object's prototype is silently replaced, so it
+    //                        inherits whatever the agent sent.
+    //   * primitive value -> the key vanishes, silently.
+    // Either way the field is lost from redacted logs; the object case also
+    // reprototypes an object built from untrusted input. defineProperty writes a
+    // real own property and leaves the prototype alone, so the field survives
+    // under its true name and JSON.stringify round-trips it unchanged.
+    if (key === '__proto__') {
+      Object.defineProperty(redacted, key, {
+        value: redactedEntry,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+      continue;
+    }
+
+    redacted[key] = redactedEntry;
   }
   return redacted;
 }
