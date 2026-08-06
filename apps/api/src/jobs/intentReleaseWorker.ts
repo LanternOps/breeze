@@ -168,6 +168,26 @@ function auditReleaseFailure(
 }
 
 /**
+ * True iff this durable worker cannot release `toolName` because it requires
+ * a live chat SSE session (services/aiTools.ts's requiresLiveSession) and has
+ * no headless Google/M365 dispatch path (googleToolsHeadless.ts /
+ * m365ToolsHeadless.ts). Exported so
+ * jobs/intentReleaseWorker.durable.contract.test.ts (tier3-supervised-four-eyes
+ * design task 9) can assert every four_eyes-classified tool is durably
+ * releasable — a four_eyes intent's whole reason for existing is to survive
+ * past the requesting chat session (a second approver may decide it minutes
+ * or hours later), so if the tool is ALSO session_required here, an approved
+ * four_eyes intent could sit forever with nothing able to execute it.
+ */
+export function isSessionRequiredForRelease(toolName: string): boolean {
+  return (
+    !isHeadlessGoogleTool(toolName)
+    && !isHeadlessM365Tool(toolName)
+    && requiresLiveSession(toolName)
+  );
+}
+
+/**
  * CAS `executing -> failed` with the given `error_code`, then (only if the
  * CAS actually won) writes the failure audit/metric. `executed: true` also
  * stamps `executedAt` — used for `execution_error` and
@@ -353,11 +373,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // session_required fail on "not a headless Google tool AND not a headless
   // M365 tool". See docs/superpowers/specs/
   // 2026-07-19-action-intents-phase2-google-headless-design.md.
-  if (
-    !isHeadlessGoogleTool(intent.actionName)
-    && !isHeadlessM365Tool(intent.actionName)
-    && requiresLiveSession(intent.actionName)
-  ) {
+  if (isSessionRequiredForRelease(intent.actionName)) {
     await failIntent(intent, 'session_required', { details: { actionName: intent.actionName } });
     return;
   }

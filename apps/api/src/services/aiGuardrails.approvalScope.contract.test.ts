@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest';
 import {
   TIER3_ACTIONS, TIER3_FOUR_EYES_ACTIONS, TIER3_FOUR_EYES_TOOLS,
   TIER3_SUPERVISED_ACTIONS, TIER3_SUPERVISED_TOOLS,
+  TIER3_INPUT_AWARE_ACTIONS, TIER3_INPUT_AWARE_TOOLS,
   checkGuardrails, resolveApprovalScope,
 } from './aiGuardrails';
 import { getToolTier, getAllRegisteredToolNames } from './aiTools';
@@ -17,6 +18,10 @@ describe('tier-3 approval scope classification', () => {
   it('classifies every per-action tier-3 pair in exactly one scope', () => {
     for (const [tool, actions] of Object.entries(TIER3_ACTIONS)) {
       for (const action of actions) {
+        // Input-aware pairs (e.g. manage_organizations:update_org) are
+        // resolved dynamically by resolveApprovalScope's override hooks, not
+        // these static tables — covered by their own both-branches tests below.
+        if (TIER3_INPUT_AWARE_ACTIONS.has(`${tool}:${action}`)) continue;
         const inFourEyes = TIER3_FOUR_EYES_ACTIONS[tool]?.includes(action) ?? false;
         const inSupervised = TIER3_SUPERVISED_ACTIONS[tool]?.includes(action) ?? false;
         expect(inFourEyes !== inSupervised, `${tool}:${action} must be in exactly one scope table`).toBe(true);
@@ -27,6 +32,9 @@ describe('tier-3 approval scope classification', () => {
   it('classifies every base-tier-3 tool in exactly one whole-tool scope set', () => {
     for (const tool of getAllRegisteredToolNames()) {
       if (getToolTier(tool) !== 3) continue;
+      // Input-aware tools (e.g. s1_isolate_device) are resolved dynamically —
+      // covered by their own both-branches tests below.
+      if (TIER3_INPUT_AWARE_TOOLS.has(tool)) continue;
       const inFourEyes = TIER3_FOUR_EYES_TOOLS.has(tool);
       const inSupervised = TIER3_SUPERVISED_TOOLS.has(tool);
       expect(inFourEyes !== inSupervised, `${tool} must be in exactly one whole-tool scope set`).toBe(true);
@@ -41,12 +49,46 @@ describe('tier-3 approval scope classification', () => {
   });
 
   it('defaults unclassified to four_eyes (fail-safe)', () => {
-    expect(resolveApprovalScope('some_future_unclassified_tool', undefined)).toBe('four_eyes');
+    expect(resolveApprovalScope('some_future_unclassified_tool', undefined, {})).toBe('four_eyes');
   });
 
-  it('s1_isolate_device is whole-tool four-eyes-exempt via supervised set', () => {
-    // boolean `isolate` discriminator — cannot be action-classified (spec §3.1)
-    expect(TIER3_SUPERVISED_TOOLS.has('s1_isolate_device')).toBe(true);
+  it('update_org is input-aware: exempt from the static per-action tables', () => {
+    expect(TIER3_INPUT_AWARE_ACTIONS.has('manage_organizations:update_org')).toBe(true);
+    expect(TIER3_FOUR_EYES_ACTIONS.manage_organizations ?? []).not.toContain('update_org');
+    expect(TIER3_SUPERVISED_ACTIONS.manage_organizations ?? []).not.toContain('update_org');
+  });
+
+  it('update_org escalates to four_eyes only when a status change is present', () => {
+    expect(
+      resolveApprovalScope('manage_organizations', 'update_org', { orgId: 'o1', status: 'suspended' }),
+    ).toBe('four_eyes');
+    expect(
+      resolveApprovalScope('manage_organizations', 'update_org', { orgId: 'o1', name: 'Renamed' }),
+    ).toBe('supervised');
+  });
+
+  it('checkGuardrails surfaces update_org\'s input-aware scope', () => {
+    const withStatus = checkGuardrails('manage_organizations', { action: 'update_org', orgId: 'o1', status: 'suspended' });
+    expect(withStatus.tier).toBe(3);
+    expect(withStatus.approvalScope).toBe('four_eyes');
+    const withoutStatus = checkGuardrails('manage_organizations', { action: 'update_org', orgId: 'o1', name: 'Renamed' });
+    expect(withoutStatus.tier).toBe(3);
+    expect(withoutStatus.approvalScope).toBe('supervised');
+  });
+
+  it('s1_isolate_device is input-aware: exempt from the static whole-tool sets', () => {
+    expect(TIER3_INPUT_AWARE_TOOLS.has('s1_isolate_device')).toBe(true);
+    expect(TIER3_FOUR_EYES_TOOLS.has('s1_isolate_device')).toBe(false);
+    expect(TIER3_SUPERVISED_TOOLS.has('s1_isolate_device')).toBe(false);
+  });
+
+  it('s1_isolate_device escalates to four_eyes only on isolate:false (containment release)', () => {
+    // isolate:false — release, reverses a prior mitigation.
+    expect(resolveApprovalScope('s1_isolate_device', undefined, { deviceId: 'd1', isolate: false })).toBe('four_eyes');
+    // isolate:true — urgent protective containment, must not wait.
+    expect(resolveApprovalScope('s1_isolate_device', undefined, { deviceId: 'd1', isolate: true })).toBe('supervised');
+    // isolate missing — fail toward the urgent-containment default, not the stricter one.
+    expect(resolveApprovalScope('s1_isolate_device', undefined, { deviceId: 'd1' })).toBe('supervised');
   });
 
   it('checkGuardrails surfaces the scope on tier-3 results', () => {

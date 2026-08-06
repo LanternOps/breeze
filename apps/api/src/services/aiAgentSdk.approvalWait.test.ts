@@ -201,12 +201,13 @@ async function until(fn: () => boolean, ms = 2000): Promise<void> {
   }
 }
 
-function tier3Guardrail() {
+function tier3Guardrail(approvalScope: 'supervised' | 'four_eyes' = 'four_eyes') {
   vi.mocked(checkGuardrails).mockReturnValue({
     allowed: true,
     tier: 3,
     requiresApproval: true,
     description: 'Execute command',
+    approvalScope,
   } as any);
 }
 
@@ -268,6 +269,72 @@ describe('shared approval-wait budget (#3089)', () => {
     expect(session.eventBus.publish).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'approval_required', executionId: 'exec-2' }),
     );
+  });
+});
+
+// ============================================
+// Tier-3 approval scope propagation (2026-08-05 tier3-supervised-four-eyes)
+// ============================================
+
+describe('tier-3 approval scope propagation to the chat SSE approval event', () => {
+  it('supervised: approval event carries approvalScope + selfApprovalRequestId; aiAgentSdk never dispatches push itself', async () => {
+    tier3Guardrail('supervised');
+    mockInsertReturning({ id: 'exec-supervised' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-supervised', requesterApprovalRequestId: 'appr-self' }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('rejected');
+    const session = makeActiveSession();
+
+    await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+    expect(session.eventBus.publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'approval_required',
+        executionId: 'exec-supervised',
+        approvalScope: 'supervised',
+        selfApprovalRequestId: 'appr-self',
+        intentBacked: true,
+      }),
+    );
+    // Push for the durable intent path is dispatched (and gated to four_eyes)
+    // entirely inside services/actionIntents/intentService.ts's
+    // createActionIntent — mocked wholesale here. This just proves aiAgentSdk
+    // itself never makes an independent push call on the tier-3 path (its
+    // one push call site is the unrelated Tier-2 legacy per_step bridge), so
+    // there is no second, ungated dispatch to worry about for either scope.
+    expect(mockDispatchApprovalPushToTokens).not.toHaveBeenCalled();
+    expect(mockGetUserPushTokens).not.toHaveBeenCalled();
+  });
+
+  it('four_eyes: approval event carries approvalScope; aiAgentSdk still never dispatches push itself', async () => {
+    tier3Guardrail('four_eyes');
+    mockInsertReturning({ id: 'exec-four-eyes' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-four-eyes', requesterApprovalRequestId: null }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('rejected');
+    const session = makeActiveSession();
+
+    await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+    expect(session.eventBus.publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'approval_required',
+        executionId: 'exec-four-eyes',
+        approvalScope: 'four_eyes',
+        selfApprovalRequestId: undefined,
+        intentBacked: true,
+      }),
+    );
+    // four_eyes push fan-out is real production behavior (intentService.ts,
+    // gated on approvalScope === 'four_eyes') but happens inside the mocked
+    // createActionIntent here, not in aiAgentSdk.ts — same "no second
+    // dispatch site" assertion as the supervised case above.
+    expect(mockDispatchApprovalPushToTokens).not.toHaveBeenCalled();
+    expect(mockGetUserPushTokens).not.toHaveBeenCalled();
   });
 });
 

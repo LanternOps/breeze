@@ -964,6 +964,15 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // org the requester holds no row and this stays undefined; the
             // card keeps its waiting state (four-eyes preserved).
             selfApprovalRequestId: intent.requesterApprovalRequestId ?? undefined,
+            // The tier3-supervised-four-eyes split (Task 1's checkGuardrails):
+            // 'supervised' means the card's self-approve button is the
+            // requester's OWN authorization, no second approver needed;
+            // 'four_eyes' preserves the pre-split waiting-for-someone-else
+            // semantics even when selfApprovalRequestId also happens to be
+            // set (the four_eyes sole-operator branch). The web card
+            // (AiApprovalDialog) uses this to decide whether the self-approve
+            // button is itself the whole decision or just this user's half of one.
+            approvalScope: guardrailCheck.approvalScope,
             // The intent's real server-side deadline, so the self-approve card's
             // countdown reflects actual expiry (created_at + CHAT_EXPIRY_MS)
             // rather than a mount-relative client constant that can silently drift

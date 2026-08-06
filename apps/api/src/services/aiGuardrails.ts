@@ -201,6 +201,8 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_quotes: ['send'],
   // Org lifecycle (issue #2366) — tenant-shape mutations require approval.
   // add_contact stays at the tool's base tier (it returns guidance only).
+  // update_org's approval SCOPE (not its tier) is input-aware — see
+  // resolveApprovalScope's override hook below.
   manage_organizations: ['create_org', 'update_org', 'create_site'],
   // s1_threat_action is registered at base Tier 3 (see TIER3_FOUR_EYES_TOOLS /
   // TIER3_SUPERVISED_TOOLS below for its whole-tool catch-all), but its
@@ -217,15 +219,24 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
 // plain click, gated on their existing RBAC. Unclassified tier-3 surfaces
 // resolve four_eyes (fail-safe); the contract test forbids relying on that.
 //
-// Two independent classification axes, both required for full coverage:
+// Three classification mechanisms, together covering the full tier-3 surface:
 //   1. Per-action pairs drawn from TIER3_ACTIONS above (TIER3_*_ACTIONS).
 //   2. Whole registered tools whose BASE tier is 3 (TIER3_*_TOOLS) — this
-//      covers pure whole-tool surfaces (execute_command, s1_isolate_device)
-//      AND the catch-all for action-multiplexed base-Tier-3 tools whose
-//      action falls outside every TIER1/2/3_ACTIONS table (e.g. security_scan
-//      'scan'/'status', which are not itself in TIER3_ACTIONS). A tool can
-//      legitimately appear in both an *_ACTIONS table and the complementary
-//      whole-tool set (manage_services, security_scan, s1_threat_action).
+//      covers pure whole-tool surfaces (execute_command) AND the catch-all
+//      for action-multiplexed base-Tier-3 tools whose action falls outside
+//      every TIER1/2/3_ACTIONS table (e.g. security_scan 'scan'/'status',
+//      which are not itself in TIER3_ACTIONS). A tool can legitimately
+//      appear in both an *_ACTIONS table and the complementary whole-tool
+//      set (manage_services, security_scan, s1_threat_action).
+//   3. Input-aware overrides in resolveApprovalScope, for tool/action pairs
+//      whose scope depends on ARGUMENT CONTENT, not just the tool/action
+//      name — manage_organizations:update_org (status present vs a plain
+//      rename) and s1_isolate_device (boolean `isolate`, not an `action`
+//      string, so it can't even be an action-classified pair). These are
+//      deliberately NOT listed in the static tables above; they are
+//      exempted from the "classified in exactly one static table" contract
+//      test via TIER3_INPUT_AWARE_ACTIONS / TIER3_INPUT_AWARE_TOOLS below
+//      and instead get dedicated both-branches tests.
 //
 // See docs/superpowers/specs/ai-mcp/2026-08-05-tier3-supervised-four-eyes-split-design.md §3.2
 // for the full classification rationale.
@@ -238,9 +249,11 @@ export const TIER3_FOUR_EYES_ACTIONS: Record<string, string[]> = {
   manage_invoices: ['issue', 'void', 'record_payment', 'void_payment'],
   manage_contracts: ['activate', 'cancel'],
   manage_quotes: ['send'],
-  // update_org: status-split (rename/plain edits -> supervised) is Task 9;
-  // for this task the whole action resolves four_eyes.
-  manage_organizations: ['create_org', 'update_org'],
+  // update_org is deliberately ABSENT here: its scope is input-aware (a
+  // `status` change is four_eyes, a plain rename is supervised) and is
+  // resolved by resolveApprovalScope's override hook, not this static table.
+  // See TIER3_INPUT_AWARE_ACTIONS.
+  manage_organizations: ['create_org'],
   manage_tickets: ['move_org'],
   // Destroys or rewinds state.
   manage_hyperv_checkpoints: ['delete', 'apply'],
@@ -321,10 +334,10 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
 export const TIER3_SUPERVISED_TOOLS = new Set<string>([
   // The customer's "regular work on a PC" (spec §3.2's explicit supervised list).
   'execute_command', 'run_script',
-  // boolean `isolate` discriminator — cannot be action-classified (spec §3.1).
-  // Isolate is urgent protective containment (stays supervised); unisolate
-  // (release) sharing this tool is a known, documented v1 tradeoff.
-  's1_isolate_device',
+  // s1_isolate_device is deliberately ABSENT here: its boolean `isolate`
+  // discriminator cannot be action-classified (spec §3.1), so its scope is
+  // resolved by resolveApprovalScope's override hook instead of this static
+  // set. See TIER3_INPUT_AWARE_TOOLS.
   'manage_services', 'security_scan', // whole-tool catch-all complementing their _ACTIONS entries above
   'manage_startup_items',
   'take_screenshot', 'analyze_screen',
@@ -339,10 +352,50 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
   'trigger_agent_upgrade', 'trigger_agent_restart',
 ]);
 
+/**
+ * Tier-3 (tool, action) pairs whose approval scope is resolved from INPUT
+ * content by resolveApprovalScope's override hooks, not a static lookup in
+ * TIER3_FOUR_EYES_ACTIONS / TIER3_SUPERVISED_ACTIONS. Exists purely so
+ * aiGuardrails.approvalScope.contract.test.ts can exempt these pairs from the
+ * "classified in exactly one static table" invariant — each one instead has
+ * its own dedicated both-branches test.
+ */
+export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
+  'manage_organizations:update_org',
+]);
+
+/**
+ * Whole-tool counterpart of TIER3_INPUT_AWARE_ACTIONS — base-tier-3 tools
+ * whose scope is resolved from input content rather than TIER3_FOUR_EYES_TOOLS
+ * / TIER3_SUPERVISED_TOOLS membership (e.g. s1_isolate_device's boolean
+ * `isolate`, which has no `action` string to key a per-action pair on).
+ */
+export const TIER3_INPUT_AWARE_TOOLS: ReadonlySet<string> = new Set<string>([
+  's1_isolate_device',
+]);
+
 export function resolveApprovalScope(
   toolName: string,
   action: string | undefined,
+  input: Record<string, unknown>,
 ): 'supervised' | 'four_eyes' {
+  // Input-aware overrides (spec §3.1) — scope depends on argument CONTENT,
+  // not just the tool/action name, so these cannot live in the static
+  // TIER3_*_ACTIONS / TIER3_*_TOOLS tables above. Checked first since neither
+  // pair is (or should be) also listed in a static table.
+  if (toolName === 'manage_organizations' && action === 'update_org') {
+    // A status change (suspend/churn/reactivate) severs or restores agent
+    // tenant access — externally binding, same class as the other
+    // TIER3_FOUR_EYES_ACTIONS members — vs a plain name edit, which is inert.
+    return 'status' in input ? 'four_eyes' : 'supervised';
+  }
+  if (toolName === 's1_isolate_device') {
+    // isolate:false is containment RELEASE (reverses a prior mitigation —
+    // same rationale as s1_threat_action's rollback); isolate:true or
+    // missing is urgent protective containment, which must not wait on a
+    // second approver.
+    return input.isolate === false ? 'four_eyes' : 'supervised';
+  }
   if (action && TIER3_FOUR_EYES_ACTIONS[toolName]?.includes(action)) return 'four_eyes';
   if (action && TIER3_SUPERVISED_ACTIONS[toolName]?.includes(action)) return 'supervised';
   if (TIER3_FOUR_EYES_TOOLS.has(toolName)) return 'four_eyes';
@@ -1074,7 +1127,7 @@ export function checkGuardrails(
       tier: 3,
       allowed: true,
       requiresApproval: true,
-      approvalScope: resolveApprovalScope(toolName, action),
+      approvalScope: resolveApprovalScope(toolName, action, input),
       description: buildApprovalDescription(toolName, action, input)
     };
   }
@@ -1097,7 +1150,7 @@ export function checkGuardrails(
       requiresApproval: true,
       // Only tier 3 gets a scope — a future base-Tier-4 tool would be blocked
       // (no approval path at all), not a bigger approval scope.
-      ...(baseTier === 3 ? { approvalScope: resolveApprovalScope(toolName, action) } : {}),
+      ...(baseTier === 3 ? { approvalScope: resolveApprovalScope(toolName, action, input) } : {}),
       description: buildApprovalDescription(toolName, action, input)
     };
   }
