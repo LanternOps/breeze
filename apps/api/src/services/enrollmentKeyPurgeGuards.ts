@@ -15,7 +15,7 @@
  *      behind the web UI's "Hide expired" toggle (#3191). Not a delete path, so
  *      the failure mode is inverted: instead of destroying a live installer it
  *      HID one, because the filter tested the parent's `expires_at` alone while
- *      the row's status badge had already been taught (#3045) to derive status
+ *      the row's status badge had already been taught (#3039, PR #3045) to derive status
  *      from live token counts. The toggle hid rows it was itself rendering
  *      "Active".
  *
@@ -36,8 +36,18 @@ import { enrollmentKeys, installerBootstrapTokens } from '../db/schema';
  * that are still redeemable — `expires_at` in the future AND
  * `consumed_count < max_usage`.
  *
- * Built fresh per call (not hoisted to a module constant) because it must read
- * `dbModule.db` at call time — see the `vi.mock('../db')` note below.
+ * Built fresh per call, never hoisted to a module constant, for TWO reasons —
+ * the first is a correctness one:
+ *
+ *   1. it binds `new Date()` (below). A module constant would freeze "now" at
+ *      process boot, so a long-lived API process would judge every token
+ *      against a stale clock — silently sparing keys from the purge forever
+ *      and silently keeping dead keys visible in the list filter.
+ *   2. it must read `dbModule.db` at call time — see the `vi.mock('../db')`
+ *      note below.
+ *
+ * Anyone making this lazy behind a `db` getter satisfies (2) and reintroduces
+ * (1). Keep both.
  */
 const liveUnexhaustedBootstrapTokenSubquery = () =>
   dbModule.db
@@ -96,10 +106,16 @@ export const hasNoLiveUnexhaustedBootstrapToken = () =>
  * expired" hiding a row that "Delete expired" deliberately refuses to delete is
  * exactly the contradiction #3191 reported.
  *
- * Equivalent to the UI badge's `liveConsumed < liveMax` test (see
- * `InstallerTokenUsage` in `routes/enrollmentKeys.ts`): per-token
+ * Agrees with the UI badge's `liveConsumed < liveMax` test (see
+ * `InstallerTokenUsage` in `routes/enrollmentKeys.ts`) because per-token
  * `consumed_count` never exceeds `max_usage`, so a positive sum difference and
- * a per-row EXISTS agree.
+ * a per-row EXISTS pick out the same keys. That premise has NO DB CHECK behind
+ * it — it is upheld by the conditional `consumed_count < max_usage` UPDATE in
+ * `routes/installer.ts`; a second write path to that column would have to
+ * preserve it. Two lesser seams, both benign on a read filter: the sums use
+ * Postgres `now()` while this binds the API process clock, and the badge
+ * additionally requires `max > 0` (a sum over ALL tokens) before it consults
+ * the live pair at all.
  */
 export const hasLiveUnexhaustedBootstrapToken = () =>
   exists(liveUnexhaustedBootstrapTokenSubquery());
