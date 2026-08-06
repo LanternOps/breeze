@@ -5,10 +5,10 @@
 -- No FK constraint on purpose: `automation_runs` is defined in
 -- apps/api/src/db/schema/automations.ts, which already imports
 -- apps/api/src/db/schema/scripts.ts. Declaring a Drizzle `.references()` the
--- other way would close an import cycle between the two schema modules. This
--- mirrors the existing `automation_runs.config_policy_id` column, which is a
--- bare uuid for the same reason. A stale id after a run is purged simply makes
--- the LEFT JOIN return nothing.
+-- other way would close an import cycle between the two schema modules.
+-- Consistent with the existing bare-uuid `automation_runs.config_policy_id`.
+-- Readers filter on equality (`WHERE automation_run_id = $run`), so a stale id
+-- left behind by a purged run simply matches nothing.
 ALTER TABLE script_executions
   ADD COLUMN IF NOT EXISTS automation_run_id uuid;
 

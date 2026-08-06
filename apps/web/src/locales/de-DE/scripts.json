@@ -293,7 +293,9 @@
       "exitCode": "Exit-Code {{code}}",
       "empty": "Keine Ausgabe",
       "stderr": "stderr",
-      "untitled": "Skript"
+      "untitled": "Skript",
+      "awaiting": "Warten auf Rückmeldung des Agenten…",
+      "truncated": "Ausgabe gekürzt — vollständiger Text im Skriptverlauf des Geräts."
     }
   },
   "automationsPage": {

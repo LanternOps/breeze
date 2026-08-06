@@ -124,11 +124,21 @@ function toDeviceScriptResults(raw: unknown): DeviceScriptResult[] | undefined {
         status: asString(entry.status) ?? 'pending',
         exitCode: typeof entry.exitCode === 'number' ? entry.exitCode : undefined,
         stdout: asString(entry.stdout),
+        stdoutTruncated: entry.stdoutTruncated === true,
         stderr: asString(entry.stderr),
+        stderrTruncated: entry.stderrTruncated === true,
         error: asString(entry.error),
       };
     })
     .filter((entry): entry is DeviceScriptResult => entry !== null);
+  // Dropping every row silently would render identically to "this run queued no
+  // scripts", hiding a backend contract break (renamed field, null scriptId)
+  // behind an empty panel. Say so.
+  if (raw.length > 0 && parsed.length === 0) {
+    console.warn(
+      `[AutomationsPage] discarded all ${raw.length} script result(s) for a device — unexpected payload shape`,
+    );
+  }
   return parsed.length > 0 ? parsed : undefined;
 }
 

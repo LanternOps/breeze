@@ -357,8 +357,9 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           scriptId: { type: 'string', format: 'uuid' },
           deviceId: { type: 'string', format: 'uuid' },
           triggeredBy: { type: 'string', format: 'uuid' },
-          // 'automation' is emitted by the automation runtime only (#3162); the
-          // execute-script request body below still accepts just the first four.
+          // 'automation' is emitted by the automation runtime only (#3162);
+          // the executeScript request body still accepts just the first four,
+          // so a caller cannot forge this provenance.
           triggerType: { type: 'string', enum: ['manual', 'scheduled', 'alert', 'policy', 'automation'] },
           parameters: { type: 'object', nullable: true },
           status: { type: 'string', enum: ['pending', 'queued', 'running', 'completed', 'failed', 'timeout', 'cancelled'] },

@@ -417,15 +417,22 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
     const executionId = payload?.executionId as string | undefined;
     // #3162: `script_executions.id` is a uuid column, so a non-uuid
     // executionId makes the UPDATE below throw with `invalid input syntax for
-    // type uuid` — swallowed by the catch, taking the agent's stdout with it.
-    // The automation `execute_command` action still sends a synthetic
-    // `${runId}:${deviceId}:${actionIndex}` id (it runs ad-hoc content with no
-    // `scripts` row, so it can have no execution row) and the Go agent rejects
-    // a command with an empty executionId, so the id can't simply be dropped.
-    // Skip those explicitly instead of failing the whole handler on them.
+    // type uuid` — swallowed by the catch at the bottom of this function,
+    // taking the agent's stdout with it.
+    //
+    // Nothing should mint a non-uuid executionId any more (the automation
+    // `execute_command` action, the only producer, now omits the field
+    // entirely). This guard is for commands queued BEFORE that deploy and still
+    // in flight, so it reports rather than silently skipping: a fresh non-uuid
+    // id means an unknown producer is sending garbage.
     if (executionId && !PG_UUID_REGEX.test(executionId)) {
       console.warn(
         `[AgentWs] Skipping script_executions update for non-uuid executionId ${executionId} (command ${command.id})`
+      );
+      captureException(
+        new Error('Non-uuid executionId in script command payload'),
+        undefined,
+        { commandId: command.id, agentId, executionId },
       );
       return;
     }
@@ -478,7 +485,17 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
       }
     }
   } catch (err) {
+    // #3162 lived undetected because this catch logged to the container and
+    // nothing else — a swallowed 22P02 silently discarded every automation's
+    // script output. Report it like the SNMP handler does so the next failure
+    // in here (schema drift, a redaction throw, a batch-counter FK violation)
+    // surfaces instead of quietly eating results.
     console.error(`[AgentWs] Failed to process script result for ${agentId}:`, err);
+    captureException(err, undefined, {
+      commandId: command.id,
+      agentId,
+      executionId: String((command.payload as Record<string, unknown> | null)?.executionId ?? ''),
+    });
   }
 }
 

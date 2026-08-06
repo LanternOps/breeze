@@ -293,7 +293,9 @@
       "exitCode": "Exit code {{code}}",
       "empty": "No output",
       "stderr": "stderr",
-      "untitled": "Script"
+      "untitled": "Script",
+      "awaiting": "Waiting for the agent to report…",
+      "truncated": "Output truncated — see the device's script history for the full text."
     }
   },
   "automationsPage": {

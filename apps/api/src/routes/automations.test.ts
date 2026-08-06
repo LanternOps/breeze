@@ -100,9 +100,22 @@ function deviceResultsSelectMock(rows: any[]) {
 /**
  * The run's script_executions rows (#3162) — same select shape as the
  * per-device results query, issued right after it inside the same Promise.all.
+ * Captures the WHERE argument so a test can prove the query is keyed on
+ * automation_run_id (dropping that predicate would otherwise return every
+ * execution in the tenant and still pass).
  */
+const capturedScriptExecWhere: unknown[] = [];
 function scriptExecutionsSelectMock(rows: any[]) {
-  return deviceResultsSelectMock(rows);
+  return {
+    from: vi.fn().mockReturnValue({
+      leftJoin: vi.fn().mockReturnValue({
+        where: vi.fn((condition: unknown) => {
+          capturedScriptExecWhere.push(condition);
+          return { orderBy: vi.fn().mockResolvedValue(rows) };
+        }),
+      }),
+    }),
+  } as any;
 }
 
 vi.mock('../services/auditEvents', () => ({
@@ -142,6 +155,7 @@ describe('automations routes', () => {
 
 	  beforeEach(() => {
 	    vi.clearAllMocks();
+	    capturedScriptExecWhere.length = 0;
 	    mockState.permissions = undefined;
 	    mockState.auth = undefined;
 	    vi.mocked(checkAutomationTargetsWithinSiteScope).mockResolvedValue({
@@ -1247,9 +1261,22 @@ describe('automations routes', () => {
           stdout: 'hello from the agent',
           stderr: null,
           errorMessage: null,
-          startedAt: '2026-07-08T00:00:00.000Z',
-          completedAt: '2026-07-08T00:00:02.000Z',
           createdAt: '2026-07-08T00:00:00.000Z',
+        },
+        // Second action on the SAME device — must group, not overwrite. Null
+        // scriptName is the partner-wide-script case (invisible under an
+        // org-scoped RLS context), which must still yield an output row.
+        {
+          executionId: 'ee222222-2222-4222-8222-222222222222',
+          deviceId: 'device-1',
+          scriptId: 'script-2',
+          scriptName: null,
+          status: 'failed',
+          exitCode: 3,
+          stdout: null,
+          stderr: 'kaboom',
+          errorMessage: 'script exited non-zero',
+          createdAt: '2026-07-08T00:00:01.000Z',
         },
       ]));
 
@@ -1285,18 +1312,101 @@ describe('automations routes', () => {
       error: 'boom',
     });
     // #3162: the script's real stdout rides along on the device that ran it,
-    // and only on that device.
-    expect(body.deviceResults[0].scriptResults).toEqual([
-      expect.objectContaining({
-        executionId: 'ee111111-1111-4111-8111-111111111111',
-        scriptId: 'script-1',
-        scriptName: 'Collect logs',
-        status: 'completed',
-        exitCode: 0,
-        stdout: 'hello from the agent',
-      }),
-    ]);
+    // and only on that device. Both of the device's executions are present, in
+    // created_at order — a second run_script action must not clobber the first.
+    expect(body.deviceResults[0].scriptResults).toHaveLength(2);
+    expect(body.deviceResults[0].scriptResults[0]).toMatchObject({
+      executionId: 'ee111111-1111-4111-8111-111111111111',
+      scriptId: 'script-1',
+      scriptName: 'Collect logs',
+      status: 'completed',
+      exitCode: 0,
+      stdout: 'hello from the agent',
+    });
+    expect(body.deviceResults[0].scriptResults[1]).toMatchObject({
+      executionId: 'ee222222-2222-4222-8222-222222222222',
+      status: 'failed',
+      exitCode: 3,
+      stderr: 'kaboom',
+      error: 'script exited non-zero',
+    });
+    // A script whose name RLS hid is still reported, just unnamed.
+    expect(body.deviceResults[0].scriptResults[1].scriptName).toBeUndefined();
     expect(body.deviceResults[1].scriptResults).toBeUndefined();
+
+    // The executions query is keyed on the run — without this predicate it
+    // would return every execution the caller can see.
+    expect(capturedScriptExecWhere).toHaveLength(1);
+    expect(JSON.stringify(capturedScriptExecWhere[0]))
+      .toContain('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+  });
+
+  it('truncates oversized script stdout/stderr and flags it (#3162)', async () => {
+    const longStdout = 'x'.repeat(20_000);
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+              automationId: '11111111-1111-4111-8111-111111111111',
+              status: 'completed',
+              logs: [],
+            }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: '11111111-1111-4111-8111-111111111111',
+              name: 'Automation One',
+              orgId: 'org-123',
+            }])
+          })
+        })
+      } as any)
+      .mockReturnValueOnce(deviceResultsSelectMock([
+        {
+          deviceId: 'device-1',
+          status: 'success',
+          startedAt: '2026-07-08T00:00:00.000Z',
+          completedAt: '2026-07-08T00:00:03.000Z',
+          output: null,
+          error: null,
+          hostname: 'HOST-1',
+          displayName: null,
+        },
+      ]))
+      .mockReturnValueOnce(scriptExecutionsSelectMock([
+        {
+          executionId: 'ee333333-3333-4333-8333-333333333333',
+          deviceId: 'device-1',
+          scriptId: 'script-1',
+          scriptName: 'Chatty',
+          status: 'completed',
+          exitCode: 0,
+          // SQL selects left(col, N+1); anything longer than N overflowed.
+          stdout: longStdout,
+          stderr: null,
+          errorMessage: null,
+          createdAt: '2026-07-08T00:00:00.000Z',
+        },
+      ]));
+
+    const res = await app.request('/automations/runs/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const script = body.deviceResults[0].scriptResults[0];
+    // This response is re-polled every few seconds while a run is live, and
+    // stdout is accepted up to 5MB per execution — it must not ship whole.
+    expect(script.stdout.length).toBe(16_384);
+    expect(script.stdoutTruncated).toBe(true);
   });
 
   // ============================================

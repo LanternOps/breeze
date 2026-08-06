@@ -2467,6 +2467,47 @@ describe('#2434 — secret redaction on non-device_commands persistence surfaces
     }
   });
 
+  // Pins PG_UUID_REGEX (any hex) over UUID_REGEX (RFC-4122 version+variant).
+  // Postgres casts this id happily, so "tightening" the guard to UUID_REGEX
+  // would start silently discarding real script output again — the exact class
+  // of bug #3162 was.
+  it('still persists results for a uuid Postgres accepts but RFC-4122 rejects', async () => {
+    const preValidatedAgent = { deviceId: 'device-nil', orgId: 'org-nil' };
+    const { handlers, ws } = await connectedAgent('agent-nil', preValidatedAgent);
+    vi.mocked(db.select).mockReturnValueOnce(selectOwnedCommandResult([
+      {
+        id: 'cmd-nil',
+        type: 'script',
+        // Version nibble 0 and variant nibble 0: valid for `uuid`, rejected by UUID_REGEX.
+        payload: { executionId: '00000000-0000-0000-0000-000000000000' },
+        deviceId: 'device-nil',
+      },
+    ]) as any);
+
+    const scriptSetSpy = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'exec-nil', scriptId: 'script-1' }]),
+      }),
+    });
+    vi.mocked(db.update)
+      .mockReturnValueOnce(updateResult([{ id: 'cmd-nil' }]) as any)
+      .mockReturnValueOnce({ set: scriptSetSpy } as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '77777777-7777-4777-8777-777777777777',
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'output that must not be dropped',
+      }),
+    } as any, ws as any);
+
+    expect(scriptSetSpy).toHaveBeenCalledTimes(1);
+    expect((scriptSetSpy.mock.calls[0]![0] as { stdout: string }).stdout)
+      .toBe('output that must not be dropped');
+  });
+
   it('redacts tunnel_sessions.errorMessage on a failed tun-open result (orphaned-path chokepoint)', async () => {
     const preValidatedAgent = { deviceId: 'device-tn', orgId: 'org-tn' };
     const { handlers, ws } = await connectedAgent('agent-tn', preValidatedAgent);

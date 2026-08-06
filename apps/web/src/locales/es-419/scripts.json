@@ -293,7 +293,9 @@
       "exitCode": "Código de salida {{code}}",
       "empty": "Sin salida",
       "stderr": "stderr",
-      "untitled": "Script"
+      "untitled": "Script",
+      "awaiting": "Esperando la respuesta del agente…",
+      "truncated": "Salida truncada: consulta el historial de scripts del dispositivo para ver el texto completo."
     }
   },
   "automationsPage": {

@@ -120,9 +120,10 @@ export const scriptExecutions = pgTable('script_executions', {
   // The automation run that queued this execution, when trigger_type is
   // 'automation' (#3162). Deliberately NOT a Drizzle `.references()`:
   // schema/automations.ts already imports this module, so pointing back at
-  // `automationRuns` would close an import cycle. Same reason
-  // `automation_runs.config_policy_id` is a bare uuid. Readers LEFT JOIN on it;
-  // a stale id after a run is purged simply yields no match.
+  // `automationRuns` would close an import cycle between the two schema
+  // modules. Consistent with `automation_runs.config_policy_id`, which is also
+  // a bare uuid. Readers filter on it (`WHERE automation_run_id = $run`), so a
+  // stale id left behind by a purged run simply matches nothing.
   automationRunId: uuid('automation_run_id'),
   parameters: jsonb('parameters'),
   status: executionStatusEnum('status').notNull().default('pending'),

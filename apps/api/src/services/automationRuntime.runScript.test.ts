@@ -5,9 +5,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // The old synthetic `${runId}:${deviceId}:${actionIndex}` executionId could
 // never match `script_executions.id` (a uuid column).
 
-const { insertMock, updateMock, queueMock } = vi.hoisted(() => ({
+const { insertMock, updateMock, deleteMock, queueMock } = vi.hoisted(() => ({
   insertMock: vi.fn(),
   updateMock: vi.fn(),
+  deleteMock: vi.fn(),
   queueMock: vi.fn(),
 }));
 
@@ -19,8 +20,11 @@ vi.mock('../db', () => ({
     select: vi.fn(),
     insert: insertMock,
     update: updateMock,
+    delete: deleteMock,
   },
 }));
+
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
 vi.mock('../db/schema', () => ({
   automationRuns: { id: 'id', automationId: 'automationId', status: 'status' },
@@ -30,7 +34,7 @@ vi.mock('../db/schema', () => ({
   devices: { id: 'id', hostname: 'hostname', osType: 'osType', status: 'status', displayName: 'displayName' },
   organizations: { id: 'id', partnerId: 'partnerId' },
   scripts: { id: 'id', deletedAt: 'deletedAt' },
-  scriptExecutions: { id: 'id', deviceId: 'deviceId', automationRunId: 'automationRunId' },
+  scriptExecutions: { id: 'id', deviceId: 'deviceId', automationRunId: 'automationRunId', status: 'status' },
   notificationChannels: { id: 'id', orgId: 'orgId' },
   automations: { id: 'id', runCount: 'runCount', lastRunAt: 'lastRunAt', updatedAt: 'updatedAt' },
   alerts: { id: 'id' },
@@ -79,6 +83,10 @@ const DEVICE = {
 let insertedValues: Array<Record<string, unknown>>;
 /** Captured `db.update(...).set(x)` payloads. */
 let updatedValues: Array<Record<string, unknown>>;
+/** Number of `db.delete(...)` calls (the unqueued-execution discard). */
+let deleteCount: number;
+/** Rows the mocked DELETE reports as removed. */
+let deleteReturns: Array<{ id: string }>;
 
 function buildContext() {
   return {
@@ -93,6 +101,13 @@ function buildContext() {
 beforeEach(() => {
   insertedValues = [];
   updatedValues = [];
+  deleteCount = 0;
+  deleteReturns = [{ id: EXECUTION_ID }];
+
+  deleteMock.mockReset().mockImplementation(() => {
+    deleteCount += 1;
+    return { where: () => ({ returning: async () => deleteReturns }) };
+  });
 
   insertMock.mockReset().mockImplementation(() => ({
     values: (vals: Record<string, unknown>) => {
@@ -110,6 +125,25 @@ beforeEach(() => {
 
   queueMock.mockReset().mockResolvedValue({ command: { id: 'cmd-1' } });
 });
+
+/** Flatten a drizzle SQL node into its literal tokens (column names + values). */
+function collectSqlTokens(node: unknown): string[] {
+  const found: string[] = [];
+  const visit = (value: unknown) => {
+    if (value == null) return;
+    if (typeof value === 'string') {
+      found.push(value);
+      return;
+    }
+    if (typeof value !== 'object') return;
+    for (const child of Object.values(value as Record<string, unknown>)) {
+      if (Array.isArray(child)) child.forEach(visit);
+      else visit(child);
+    }
+  };
+  visit(node);
+  return found;
+}
 
 describe('executeRunScriptAction — script_executions correlation (#3162)', () => {
   it('queues the command with the minted script_executions uuid, not a synthetic id', async () => {
@@ -197,29 +231,32 @@ describe('executeRunScriptAction — script_executions correlation (#3162)', () 
 
     expect(whereArgs).toHaveLength(1);
     // `and(eq(id, …), eq(status, 'pending'))` — two conjuncts, not a bare id.
-    expect(JSON.stringify(whereArgs[0])).toContain('pending');
+    // Assert on the bound parameter values so removing the status conjunct
+    // fails here rather than passing on an incidental substring match.
+    const tokens = collectSqlTokens(whereArgs[0]);
+    expect(tokens).toContain(EXECUTION_ID);
+    expect(tokens).toContain('status');
+    expect(tokens).toContain('pending');
   });
 
-  it('does not create an execution row for an offline device', async () => {
-    // queueCommandForExecution refuses non-online devices, so minting a row
-    // here would add one `failed` execution per offline device per run.
+  it('leaves the online/offline decision to queueCommandForExecution', async () => {
+    // The run's device snapshot is taken once at the top of a fleet run and can
+    // be minutes stale, so this must NOT pre-filter on it — queueCommandForExecution
+    // re-reads devices.status live, and execute_command relies on that same check.
     const context = buildContext() as unknown as { device: { status: string } };
     context.device = { ...DEVICE, status: 'offline' };
 
-    const result = await executeRunScriptAction(
+    await executeRunScriptAction(
       { type: 'run_script', scriptId: 'script-1' },
       0,
       context as never,
     );
 
-    expect(result.success).toBe(false);
-    expect(result.log.message).toContain('Failed to queue run_script action command');
-    expect(insertMock).not.toHaveBeenCalled();
-    expect(queueMock).not.toHaveBeenCalled();
+    expect(queueMock).toHaveBeenCalledTimes(1);
   });
 
-  it('fails the execution row instead of stranding it when queueing fails', async () => {
-    queueMock.mockResolvedValue({ command: null, error: 'Device not found' });
+  it('discards the execution row instead of stranding it when queueing fails', async () => {
+    queueMock.mockResolvedValue({ command: null, error: 'Device is offline, cannot execute command' });
 
     const result = await executeRunScriptAction(
       { type: 'run_script', scriptId: 'script-1' },
@@ -228,12 +265,43 @@ describe('executeRunScriptAction — script_executions correlation (#3162)', () 
     );
 
     expect(result.success).toBe(false);
-    expect(updatedValues).toHaveLength(1);
-    expect(updatedValues[0]).toMatchObject({
-      status: 'failed',
-      errorMessage: 'Device not found',
-    });
-    expect(updatedValues[0]!.completedAt).toBeInstanceOf(Date);
+    // No command was queued, so no execution happened — the row is removed
+    // rather than left `failed`, which would add one row per offline device
+    // per run and let the reaper misreport it as an agent timeout.
+    expect(deleteCount).toBe(1);
+    expect(updatedValues).toEqual([]);
+    expect(result.log.details).toMatchObject({ error: 'Device is offline, cannot execute command' });
+  });
+
+  it('discards the execution row and rethrows when queueing throws', async () => {
+    const boom = new Error('connection terminated');
+    queueMock.mockRejectedValue(boom);
+
+    await expect(executeRunScriptAction(
+      { type: 'run_script', scriptId: 'script-1' },
+      0,
+      buildContext(),
+    )).rejects.toThrow('connection terminated');
+
+    expect(deleteCount).toBe(1);
+  });
+
+  it('warns rather than silently continuing when the discard removes nothing', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      queueMock.mockResolvedValue({ command: null, error: 'Device not found' });
+      deleteReturns = [];
+
+      await executeRunScriptAction(
+        { type: 'run_script', scriptId: 'script-1' },
+        0,
+        buildContext(),
+      );
+
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('was not pending at discard time'));
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('does not create an execution row when the script is missing', async () => {

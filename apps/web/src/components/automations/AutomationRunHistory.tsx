@@ -32,9 +32,25 @@ export type DeviceScriptResult = {
   status: string;
   exitCode?: number;
   stdout?: string;
+  stdoutTruncated?: boolean;
   stderr?: string;
+  stderrTruncated?: boolean;
   error?: string;
 };
+
+/**
+ * An execution the agent hasn't reported on yet. Its stdout is legitimately
+ * absent, which must NOT read as "the script printed nothing" — that ambiguity
+ * is the whole reason #3162 was filed.
+ */
+const PENDING_SCRIPT_STATUSES = new Set(['pending', 'queued', 'running']);
+
+export function isScriptResultPending(status: string): boolean {
+  return PENDING_SCRIPT_STATUSES.has(status);
+}
+
+/** How often an expanded run re-checks for script output still in flight. */
+const SCRIPT_RESULT_POLL_MS = 5000;
 
 export type DeviceRunResult = {
   deviceId: string;
@@ -219,12 +235,26 @@ function DeviceResultRow({ result, t }: { result: DeviceRunResult; t: ScriptsT }
                       <span>{t('automationRunHistory.scriptOutput.exitCode', { code: script.exitCode })}</span>
                     )}
                   </div>
-                  <pre
-                    className="max-h-64 overflow-auto rounded-md bg-gray-900 p-3 text-xs font-mono whitespace-pre-wrap text-gray-100"
-                    data-testid="script-stdout"
-                  >
-                    {script.stdout ?? t('automationRunHistory.scriptOutput.empty')}
-                  </pre>
+                  {isScriptResultPending(script.status) ? (
+                    // Distinct from "no output": the agent simply hasn't
+                    // reported yet. Rendering the empty placeholder here would
+                    // recreate the exact ambiguity #3162 set out to remove.
+                    <p className="text-xs text-muted-foreground" data-testid="script-awaiting">
+                      {t('automationRunHistory.scriptOutput.awaiting')}
+                    </p>
+                  ) : (
+                    <pre
+                      className="max-h-64 overflow-auto rounded-md bg-gray-900 p-3 text-xs font-mono whitespace-pre-wrap text-gray-100"
+                      data-testid="script-stdout"
+                    >
+                      {script.stdout ?? t('automationRunHistory.scriptOutput.empty')}
+                    </pre>
+                  )}
+                  {script.stdoutTruncated && (
+                    <p className="mt-1 text-xs text-muted-foreground" data-testid="script-stdout-truncated">
+                      {t('automationRunHistory.scriptOutput.truncated')}
+                    </p>
+                  )}
                   {script.stderr && (
                     <pre
                       className="mt-1 max-h-40 overflow-auto rounded-md bg-gray-900 p-3 text-xs font-mono whitespace-pre-wrap text-red-300"
@@ -232,6 +262,11 @@ function DeviceResultRow({ result, t }: { result: DeviceRunResult; t: ScriptsT }
                     >
                       {`${t('automationRunHistory.scriptOutput.stderr')}\n${script.stderr}`}
                     </pre>
+                  )}
+                  {script.stderrTruncated && (
+                    <p className="mt-1 text-xs text-muted-foreground" data-testid="script-stderr-truncated">
+                      {t('automationRunHistory.scriptOutput.truncated')}
+                    </p>
                   )}
                   {script.error && (
                     <p className="mt-1 text-xs text-red-600">{script.error}</p>
@@ -262,6 +297,8 @@ function RunItem({
   const [detail, setDetail] = useState<{ deviceResults: DeviceRunResult[]; logs?: string[] } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState(false);
+  // Bumped by the script-result poll below to re-run the fetch effect.
+  const [scriptPollTick, setScriptPollTick] = useState(0);
 
   const isRunning = run.status === 'running';
 
@@ -290,11 +327,27 @@ function RunItem({
     return () => {
       cancelled = true;
     };
-    // Re-fetch when counts change (live progress) or the run terminates.
-  }, [expanded, onLoadRunDetail, run.id, run.status, run.devicesSuccess, run.devicesFailed]);
+    // Re-fetch when counts change (live progress), the run terminates, or the
+    // script-result poll below ticks.
+  }, [expanded, onLoadRunDetail, run.id, run.status, run.devicesSuccess, run.devicesFailed, scriptPollTick]);
 
   const deviceResults = detail?.deviceResults ?? run.deviceResults;
   const logs = detail?.logs ?? run.logs;
+
+  // An automation run goes terminal as soon as its commands are QUEUED — the
+  // agents report their script output seconds to minutes later (#3162). The
+  // parent's run-list poll stops at that point, so without this the first look
+  // at a finished run would freeze on "waiting on agent" until the user
+  // collapsed and re-expanded the row. Keep polling the detail while any
+  // execution is still non-terminal.
+  const hasPendingScripts = deviceResults.some(
+    (result) => result.scriptResults?.some((script) => isScriptResultPending(script.status)),
+  );
+  useEffect(() => {
+    if (!expanded || !onLoadRunDetail || !hasPendingScripts) return;
+    const timer = setInterval(() => setScriptPollTick((tick) => tick + 1), SCRIPT_RESULT_POLL_MS);
+    return () => clearInterval(timer);
+  }, [expanded, onLoadRunDetail, hasPendingScripts]);
 
   const StatusIcon = statusConfig[run.status].icon;
   const duration = run.completedAt

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
 
@@ -197,8 +197,126 @@ describe('AutomationRunHistory — script output (#3162)', () => {
 
     fireEvent.click(screen.getByTestId('script-output-toggle'));
     expect(screen.getByTestId('script-stdout').textContent).toBe('No output');
-    // Falls back to a generic label when the script name didn't resolve.
+    // Falls back to a generic label when the script name didn't resolve
+    // (a partner-wide script is invisible under an org-scoped RLS context).
     expect(screen.getByText('Script')).toBeTruthy();
+  });
+
+  it('distinguishes "agent has not reported yet" from "script printed nothing"', async () => {
+    // Collapsing these two into the same grey placeholder is exactly the
+    // ambiguity #3162 was filed about.
+    await expandRun([
+      {
+        deviceId: 'd-1',
+        deviceName: 'Reception PC',
+        status: 'success',
+        scriptResults: [
+          { executionId: 'exec-1', scriptId: 'script-1', status: 'running' },
+        ],
+      },
+    ]);
+
+    fireEvent.click(screen.getByTestId('script-output-toggle'));
+    expect(screen.getByTestId('script-awaiting')).toBeTruthy();
+    expect(screen.queryByTestId('script-stdout')).toBeNull();
+  });
+
+  it('flags truncated output so a cut-off log is not mistaken for the whole thing', async () => {
+    await expandRun([
+      {
+        deviceId: 'd-1',
+        deviceName: 'Reception PC',
+        status: 'success',
+        scriptResults: [
+          {
+            executionId: 'exec-1',
+            scriptId: 'script-1',
+            status: 'completed',
+            exitCode: 0,
+            stdout: 'first 16k of output',
+            stdoutTruncated: true,
+          },
+        ],
+      },
+    ]);
+
+    fireEvent.click(screen.getByTestId('script-output-toggle'));
+    expect(screen.getByTestId('script-stdout-truncated')).toBeTruthy();
+  });
+
+  it('keeps polling for output after the run itself has finished', async () => {
+    // A run goes terminal as soon as its commands are QUEUED; the agent reports
+    // stdout seconds later. The parent's run-list poll has already stopped by
+    // then, so without this the first view would freeze on "waiting on agent".
+    vi.useFakeTimers();
+    try {
+      const onLoadRunDetail = vi.fn().mockResolvedValue({
+        deviceResults: [
+          {
+            deviceId: 'd-1',
+            deviceName: 'Reception PC',
+            status: 'success',
+            scriptResults: [{ executionId: 'exec-1', scriptId: 'script-1', status: 'queued' }],
+          },
+        ],
+        logs: [],
+      });
+
+      render(
+        <AutomationRunHistory
+          runs={[makeRun({ status: 'success', completedAt: '2026-07-08T00:01:00.000Z' })]}
+          isOpen
+          onClose={() => {}}
+          onLoadRunDetail={onLoadRunDetail}
+        />,
+      );
+
+      fireEvent.click(screen.getByText(/Manual - 4 devices/).closest('button')!);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(onLoadRunDetail).toHaveBeenCalledTimes(1);
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      expect(onLoadRunDetail).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops polling once every execution is terminal', async () => {
+    vi.useFakeTimers();
+    try {
+      const onLoadRunDetail = vi.fn().mockResolvedValue({
+        deviceResults: [
+          {
+            deviceId: 'd-1',
+            deviceName: 'Reception PC',
+            status: 'success',
+            scriptResults: [
+              { executionId: 'exec-1', scriptId: 'script-1', status: 'completed', stdout: 'done' },
+            ],
+          },
+        ],
+        logs: [],
+      });
+
+      render(
+        <AutomationRunHistory
+          runs={[makeRun({ status: 'success', completedAt: '2026-07-08T00:01:00.000Z' })]}
+          isOpen
+          onClose={() => {}}
+          onLoadRunDetail={onLoadRunDetail}
+        />,
+      );
+
+      fireEvent.click(screen.getByText(/Manual - 4 devices/).closest('button')!);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(onLoadRunDetail).toHaveBeenCalledTimes(1);
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+      expect(onLoadRunDetail).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('renders no toggle when the run queued no scripts', async () => {
