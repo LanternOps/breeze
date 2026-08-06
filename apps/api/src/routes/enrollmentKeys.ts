@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { zValidator } from '../lib/validation';
 import { z } from "zod";
-import { and, eq, ne, sql, desc, inArray, lt, isNull, or, asc } from "drizzle-orm";
+import { and, eq, ne, sql, desc, inArray, lt, isNull, isNotNull, or, asc } from "drizzle-orm";
 import { customAlphabet } from "nanoid";
 import { db, withSystemDbAccessContext } from "../db";
 import { enrollmentKeys, organizations } from "../db/schema";
@@ -43,7 +43,10 @@ import {
   BootstrapTokenIssuanceError,
 } from "../services/installerBootstrapTokenIssuance";
 import { assertTtlWithinCap, clampTtlToCap } from "../services/enrollmentDefaults";
-import { hasNoLiveUnexhaustedBootstrapToken } from "../services/enrollmentKeyPurgeGuards";
+import {
+  hasLiveUnexhaustedBootstrapToken,
+  hasNoLiveUnexhaustedBootstrapToken,
+} from "../services/enrollmentKeyPurgeGuards";
 import { captureException } from "../services/sentry";
 
 // ============================================================
@@ -822,16 +825,68 @@ enrollmentKeyRoutes.get(
       }
     }
 
-    // Filter by expired status
+    // Filter by expired status.
+    //
+    // The invariant (#3191): NO key the row's status badge renders "Active" may
+    // be hidden by `expired=false`. #3045 taught that badge (`getKeyStatus`,
+    // EnrollmentKeyManager.tsx) that once the parent key is dead the row is
+    // judged by its installer tokens — the things that actually enroll — so an
+    // Add-Device key whose 60-minute parent aged out while its year-long
+    // installer keeps working renders "Active". This filter still tested
+    // `expires_at` alone, so "Hide expired" hid rows the same page was calling
+    // Active: both Active and invisible.
+    //
+    // The carve-out is `hasLiveUnexhaustedBootstrapToken()`, the positive form
+    // of the guard that already spares such a key from `purge-expired`. Sharing
+    // one predicate (services/enrollmentKeyPurgeGuards.ts) is what stops the
+    // page claiming a key is expired while the delete path insists it is not,
+    // and it is the exact SQL counterpart of the badge's `liveConsumed <
+    // liveMax` — the test that makes the badge say "Active".
+    //
+    // Scope note: this filter models EXPIRY, not the badge's third state.
+    // `usage_count >= max_usage` ("Exhausted", amber) has never been part of
+    // `?expired=` and still isn't — an exhausted-but-unexpired key stays listed
+    // exactly as before. Correcting the expiry axis alone is sufficient for the
+    // invariant: the badge is "Active" iff the parent is live OR a live
+    // unexhausted token exists, and both of those now keep the row visible.
+    //
+    // Gated on `short_code IS NULL` to mirror `reportsInstallerCapacity`: for a
+    // short-link child the API deliberately reports no `installerTokens` at all
+    // (#3034), so the badge falls back to parent expiry and the filter has to
+    // as well — reading token liveness here would re-introduce the same
+    // disagreement in the opposite direction. Note the purge guard applies NO
+    // such gate, and should not: suppressing a confusing capacity NUMBER is
+    // cosmetic, whereas deleting a key out from under a live token is
+    // irreversible, so the delete path stays maximally conservative.
+    //
+    // The two branches stay exact complements (`expires_at IS NULL` never
+    // satisfies `lt`, hence the explicit isNull), so no key falls through both.
+    //
+    // Both guards are built INSIDE their branch: each runs `db.select(...)` to
+    // shape its correlated subquery, and an unfiltered list request (the common
+    // case — the toggle is off by default) has no business issuing that call.
     if (query.expired === "true") {
       conditions.push(
-        lt(enrollmentKeys.expiresAt, new Date()) as ReturnType<typeof eq>,
+        and(
+          lt(enrollmentKeys.expiresAt, new Date()),
+          // De Morgan of the carve-out below, expressed with the guard's
+          // already-existing negative form rather than a `not()` wrapper, so
+          // both branches read as the same shared predicate.
+          or(
+            isNotNull(enrollmentKeys.shortCode),
+            hasNoLiveUnexhaustedBootstrapToken(),
+          ),
+        ) as ReturnType<typeof eq>,
       );
     } else if (query.expired === "false") {
       conditions.push(
         or(
           isNull(enrollmentKeys.expiresAt),
           sql`${enrollmentKeys.expiresAt} >= NOW()`,
+          and(
+            isNull(enrollmentKeys.shortCode),
+            hasLiveUnexhaustedBootstrapToken(),
+          ),
         ) as ReturnType<typeof eq>,
       );
     }
@@ -1078,9 +1133,14 @@ enrollmentKeyRoutes.post(
     }
     // scope === "system": no org restriction — purge across all orgs.
 
-    // Same expired condition the list route builds for ?expired=true
-    // (line ~575 above). expiresAt IS NULL never satisfies `lt`, so
-    // never-expiring keys are never touched.
+    // Same parent-expiry condition the list route builds for ?expired=true.
+    // expiresAt IS NULL never satisfies `lt`, so never-expiring keys are never
+    // touched. The list route pairs it with the same live-token exemption used
+    // below, so "Hide expired" and "Delete expired" now agree about which keys
+    // are dead (#3191) — with one deliberate asymmetry, documented at that
+    // filter: the list route skips the exemption for short-link children
+    // (their token counts are suppressed on the wire, so their badge is
+    // parent-only), while this delete path applies it to every key.
     conditions.push(
       lt(enrollmentKeys.expiresAt, new Date()) as ReturnType<typeof eq>,
     );

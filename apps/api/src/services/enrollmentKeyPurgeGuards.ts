@@ -1,8 +1,8 @@
 /**
- * Shared purge guards for `enrollment_keys`.
+ * Shared "is this key still backed by a live installer?" predicate for
+ * `enrollment_keys`.
  *
- * There are TWO code paths that hard-delete expired enrollment keys, and they
- * must agree on what "safe to delete" means:
+ * THREE code paths ask that question, and they must all answer it the same way:
  *
  *   1. `jobs/enrollmentKeyCleanup.ts` — the nightly system-wide sweep, which
  *      only touches keys that expired more than `ENROLLMENT_KEY_PURGE_AFTER_DAYS`
@@ -11,16 +11,45 @@
  *      on-demand tenant-scoped counterpart behind the web UI's "Delete expired"
  *      button, which has NO grace period: a key is eligible the instant it
  *      expires.
+ *   3. `routes/enrollmentKeys.ts` — the `GET /enrollment-keys?expired=` filter
+ *      behind the web UI's "Hide expired" toggle (#3191). Not a delete path, so
+ *      the failure mode is inverted: instead of destroying a live installer it
+ *      HID one, because the filter tested the parent's `expires_at` alone while
+ *      the row's status badge had already been taught (#3045) to derive status
+ *      from live token counts. The toggle hid rows it was itself rendering
+ *      "Active".
  *
- * The exemption below started life inside (1) for #2775 and was missed on (2)
- * for #2832 — the route was in fact the *faster* path to the same data loss
- * (60-minute parent expiry + one click, vs. 7 days). It lives here so a future
- * change to the predicate cannot land on one path and skip the other.
+ * The exemption below started life inside (1) for #2775, was missed on (2) for
+ * #2832 — the route was in fact the *faster* path to the same data loss
+ * (60-minute parent expiry + one click, vs. 7 days) — and was missed again on
+ * (3) for #3191. It lives here so a future change to the predicate cannot land
+ * on one path and skip the others.
  */
 
-import { and, eq, gt, lt, notExists, sql } from 'drizzle-orm';
+import { and, eq, exists, gt, lt, notExists, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { enrollmentKeys, installerBootstrapTokens } from '../db/schema';
+
+/**
+ * Single definition of the correlated subquery both exported guards wrap: the
+ * `installer_bootstrap_tokens` rows pointing at the outer `enrollmentKeys` row
+ * that are still redeemable — `expires_at` in the future AND
+ * `consumed_count < max_usage`.
+ *
+ * Built fresh per call (not hoisted to a module constant) because it must read
+ * `dbModule.db` at call time — see the `vi.mock('../db')` note below.
+ */
+const liveUnexhaustedBootstrapTokenSubquery = () =>
+  dbModule.db
+    .select({ one: sql`1` })
+    .from(installerBootstrapTokens)
+    .where(
+      and(
+        eq(installerBootstrapTokens.parentEnrollmentKeyId, enrollmentKeys.id),
+        gt(installerBootstrapTokens.expiresAt, new Date()),
+        lt(installerBootstrapTokens.consumedCount, installerBootstrapTokens.maxUsage),
+      ),
+    );
 
 /**
  * Correlated NOT EXISTS guard (#2775, #2832): evaluates true — i.e. the outer
@@ -53,15 +82,24 @@ import { enrollmentKeys, installerBootstrapTokens } from '../db/schema';
  * correlated-subquery idiom in `services/vulnerabilityCorrelation.ts`.
  */
 export const hasNoLiveUnexhaustedBootstrapToken = () =>
-  notExists(
-    dbModule.db
-      .select({ one: sql`1` })
-      .from(installerBootstrapTokens)
-      .where(
-        and(
-          eq(installerBootstrapTokens.parentEnrollmentKeyId, enrollmentKeys.id),
-          gt(installerBootstrapTokens.expiresAt, new Date()),
-          lt(installerBootstrapTokens.consumedCount, installerBootstrapTokens.maxUsage),
-        ),
-      ),
-  );
+  notExists(liveUnexhaustedBootstrapTokenSubquery());
+
+/**
+ * The same correlated subquery in its POSITIVE form: true when the outer
+ * `enrollmentKeys` row IS still backed by a live, unexhausted installer token.
+ *
+ * Used by the `GET /enrollment-keys?expired=false` filter (#3191) to keep such
+ * a key VISIBLE past its parent's expiry, which is the same fact the purge
+ * guard uses to keep it ALIVE past its parent's expiry. Derived from the one
+ * subquery builder rather than restated so the two can never drift into
+ * disagreeing about which keys are still backed by an installer — "Hide
+ * expired" hiding a row that "Delete expired" deliberately refuses to delete is
+ * exactly the contradiction #3191 reported.
+ *
+ * Equivalent to the UI badge's `liveConsumed < liveMax` test (see
+ * `InstallerTokenUsage` in `routes/enrollmentKeys.ts`): per-token
+ * `consumed_count` never exceeds `max_usage`, so a positive sum difference and
+ * a per-row EXISTS agree.
+ */
+export const hasLiveUnexhaustedBootstrapToken = () =>
+  exists(liveUnexhaustedBootstrapTokenSubquery());
