@@ -95,6 +95,18 @@ vi.mock('../services/actionIntents/actorContext', () => ({
   })),
 }));
 
+// Fix round 1, finding 5: a supervised approve now checks whether the
+// partner's authenticator policy is actively ENFORCING before skipping the
+// assurance ladder. Mocked wholesale (loadPartnerPolicy does a real DB read
+// this file's mocked `db` can't usefully back) with a permissive default
+// (non-enforcing, i.e. every existing "plain click" supervised test keeps its
+// behavior) — the two Task 6 enforcing/non-enforcing tests override
+// `isEnforcing` directly.
+vi.mock('../services/authenticatorPolicy', () => ({
+  loadPartnerPolicy: vi.fn(async () => null),
+  isEnforcing: vi.fn(() => false),
+}));
+
 // #2685: the decide handler RE-DERIVES the eligible approver set before
 // permitting a self-approve, instead of inferring sole-operator status from
 // "a requester-owned row exists". Default: the deciding user is the only
@@ -246,6 +258,7 @@ import { getUserPermissions, userCanDecideApprovals, canAccessOrg } from '../ser
 import { resolveIntentApprovers } from '../services/actionIntents/intentApprovers';
 import { checkToolPermission } from '../services/aiGuardrails';
 import { buildAuthContextForIntent } from '../services/actionIntents/actorContext';
+import { loadPartnerPolicy, isEnforcing } from '../services/authenticatorPolicy';
 
 function buildApp() {
   const app = new Hono();
@@ -295,9 +308,32 @@ function mockDecideFlow(opts: {
   return set;
 }
 
+// Fix round 1, finding 3: the ai_tool_executions mirror's WHERE clause now
+// embeds an `exists(tx.select(...).from(aiSessions).where(...))` tenant/
+// linkage guard, built synchronously while the WHERE expression is
+// constructed. Real Drizzle's `exists()` just wraps whatever it's given into
+// a `sql` template fragment (drizzle-orm/sql/expressions/conditions.js) — it
+// never calls anything on it — so `tx.select(...)` only needs to be a
+// callable chain here, never actually awaited by this stub.
+function txSelectExistsStub() {
+  return vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({})) })) }));
+}
+
+// Fix round 1, finding 2: an intent-linked decide-write tx now takes a
+// `SELECT ... FOR UPDATE` lock on the intent row as its FIRST statement
+// (lock-order fix — see the route's own comment). This IS awaited directly,
+// so the stub's `.for(...)` must resolve.
+function txSelectForUpdateStub() {
+  return vi.fn(() => ({
+    from: vi.fn(() => ({ where: vi.fn(() => ({ for: vi.fn().mockResolvedValue([]) })) })),
+  }));
+}
+
 // Wires the Task 6 atomic decide-write tx with TWO sequential `tx.update`
 // calls: (1) the approval-row CAS, (2) the ai_tool_executions mirror. Used by
-// both the approve and deny ai_tool_executions-mirror tests.
+// both the approve and deny ai_tool_executions-mirror tests. These rows carry
+// executionId (never intentId — mutually exclusive), so the tx never takes
+// the finding-2 intent lock, but it DOES reach the finding-3 exists() guard.
 function mockDecideTxWithExecutionMirror(opts: {
   linkedRow: unknown;
   aiReturning: unknown[];
@@ -316,6 +352,7 @@ function mockDecideTxWithExecutionMirror(opts: {
     where: vi.fn().mockReturnValue({ returning: aiReturning }),
   });
   const tx = {
+    select: txSelectExistsStub(),
     update: vi
       .fn()
       .mockReturnValueOnce({ set: approvalSet } as any) // 1) approval_requests CAS
@@ -392,6 +429,11 @@ beforeEach(() => {
     allowedSiteIds: null,
     canAccessSite: () => true,
   } as any);
+  // Fix round 1, finding 5: re-establish the non-enforcing default after
+  // clearAllMocks wipes the factory implementation — every existing
+  // supervised "plain click" test relies on this.
+  vi.mocked(loadPartnerPolicy).mockResolvedValue(null);
+  vi.mocked(isEnforcing).mockReturnValue(false);
   vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
     c.set('auth', {
       scope: 'partner',
@@ -1394,6 +1436,10 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     const siblingSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
     const outboxValues = vi.fn().mockResolvedValue(undefined);
     const tx = {
+      // Fix round 1, finding 2: the FIRST statement in an intent-linked
+      // decide-write tx is now `SELECT ... FOR UPDATE` on the intent row
+      // (lock-order fix), ahead of the three `update` calls below.
+      select: txSelectForUpdateStub(),
       update: vi
         .fn()
         .mockReturnValueOnce({ set: approvalCasSet } as any) // 1) approval_requests CAS
@@ -1778,6 +1824,8 @@ describe('Task 6: supervised intent plain-decide branch', () => {
     const siblingSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
     const outboxValues = vi.fn().mockResolvedValue(undefined);
     const tx = {
+      // Fix round 1, finding 2: intent-first lock ahead of the three updates.
+      select: txSelectForUpdateStub(),
       update: vi
         .fn()
         .mockReturnValueOnce({ set: approvalCasSet } as any)
@@ -1789,7 +1837,7 @@ describe('Task 6: supervised intent plain-decide branch', () => {
     return { approvalCasSet, intentCasSet, siblingSet, outboxValues };
   }
 
-  it('supervised requester approves with no assertion', async () => {
+  it('supervised requester approves with no assertion (non-enforcing partner policy — fix round 1, finding 5)', async () => {
     mockDecideWithSupervisedIntent({});
     mockSupervisedFanInTx();
 
@@ -1801,8 +1849,12 @@ describe('Task 6: supervised intent plain-decide branch', () => {
 
     expect(res.status).toBe(200);
     // The whole assertion/assurance ladder is skipped for a supervised
-    // self-decide — no WebAuthn challenge is ever verified.
+    // self-decide UNDER A NON-ENFORCING partner policy — no WebAuthn
+    // challenge is ever verified. The enforcing branch is covered by the
+    // dedicated 'enforcing partner policy' test below.
     expect(assertApprovalAssurance).not.toHaveBeenCalled();
+    expect(loadPartnerPolicy).toHaveBeenCalledWith('partner-123');
+    expect(isEnforcing).toHaveBeenCalled();
     // The live-RBAC re-check DOES run (approve only), against the underlying
     // tool action — not approvals:decide.
     expect(buildAuthContextForIntent).toHaveBeenCalledWith(
@@ -1813,6 +1865,64 @@ describe('Task 6: supervised intent plain-decide branch', () => {
       { deviceId: 'dev-1', commandType: 'kill_process' },
       expect.anything(),
     );
+  });
+
+  it('an ENFORCING partner policy blocks a plain-click supervised approve with step_up_required (fix round 1, finding 5)', async () => {
+    mockDecideWithSupervisedIntent({});
+    vi.mocked(isEnforcing).mockReturnValue(true);
+
+    const res = await buildApp().request('/approvals/appr-1/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('step_up_required');
+    // The RBAC re-check still ran (it is unconditional for supervised,
+    // regardless of enforcement) — only the assurance ladder's outcome
+    // changed. The write transaction never opened.
+    expect(checkToolPermission).toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('an ENFORCING partner policy is satisfied by a WebAuthn L3 proof on a supervised approve', async () => {
+    mockDecideWithSupervisedIntent({});
+    vi.mocked(isEnforcing).mockReturnValue(true);
+    vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
+      requiredLevel: 3,
+      decidedAssuranceLevel: 3,
+      decidedVia: 'webauthn_platform',
+      authenticatorDeviceId: 'dev-1',
+    });
+    const { approvalCasSet } = mockSupervisedFanInTx();
+
+    const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(assertApprovalAssurance).toHaveBeenCalledWith(
+      expect.objectContaining({ approvalId: 'appr-1', userId: TEST_USER.id }),
+    );
+    expect(approvalCasSet).toHaveBeenCalledWith(
+      expect.objectContaining({ decidedVia: 'webauthn_platform', decidedAssuranceLevel: 3 }),
+    );
+  });
+
+  it('an ENFORCING partner policy never blocks a supervised DENY (deny is harmless, no partner-policy read)', async () => {
+    mockDecideWithSupervisedIntent({});
+    mockSupervisedFanInTx();
+    vi.mocked(isEnforcing).mockReturnValue(true);
+
+    const res = await buildApp().request('/approvals/appr-1/deny', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'no' }),
+    });
+
+    expect(res.status).toBe(200);
+    // Gated to approve-only — a deny never spends a partner-policy read.
+    expect(loadPartnerPolicy).not.toHaveBeenCalled();
+    expect(assertApprovalAssurance).not.toHaveBeenCalled();
   });
 
   it('records session_tap/L1 (no proof consumed) on a supervised approve', async () => {
@@ -1995,6 +2105,8 @@ describe('Task 6: supervised intent plain-decide branch', () => {
     });
     const siblingSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
     const tx = {
+      // Fix round 1, finding 2: intent-first lock ahead of the three updates.
+      select: txSelectForUpdateStub(),
       update: vi
         .fn()
         .mockReturnValueOnce({ set: approvalCasSet } as any)
@@ -2104,31 +2216,36 @@ describe('POST /approvals/:id/report-suspicious', () => {
         where: vi.fn().mockResolvedValue([intentRow]),
       }),
     } as any);
-    // 2) update approval_requests -> reported
-    vi.mocked(db.update).mockReturnValueOnce({
-      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
-    } as any);
-    // 3) Task 6: the reject fan-in is now ONE db.transaction — the intent CAS
-    //    (inline, `.returning(...)` the metadata for the metrics event) plus
-    //    the sibling-expiry update, both on `tx`.
+    // Fix round 1, finding 1: the reject fan-in is now ONE db.transaction
+    // that ALSO folds in the approval-row 'reported' flip (previously a
+    // separate, unconditional db.update BEFORE this transaction even
+    // opened) — the tx does the intent-first lock (finding 2), the flip,
+    // the intent CAS (`.returning(...)` the metadata for the metrics
+    // event), and the sibling-expiry update, all on `tx`.
     const casReturning = vi
       .fn()
       .mockResolvedValue([{ orgId: 'org-9', actionName: 'y', argumentDigest: 'd', source: 'mcp_api' }]);
+    const flipSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
     const intentCasSet = vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({ returning: casReturning }),
     });
     const siblingSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
     const tx = {
+      select: txSelectForUpdateStub(),
       update: vi
         .fn()
-        .mockReturnValueOnce({ set: intentCasSet } as any) // 1) intent CAS
-        .mockReturnValueOnce({ set: siblingSet } as any), // 2) sibling expiry
+        .mockReturnValueOnce({ set: flipSet } as any) // 1) approval_requests -> reported
+        .mockReturnValueOnce({ set: intentCasSet } as any) // 2) intent CAS
+        .mockReturnValueOnce({ set: siblingSet } as any), // 3) sibling expiry
     };
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
     vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
 
     const res = await buildApp().request('/approvals/a1/report-suspicious', { method: 'POST' });
     expect(res.status).toBe(204);
+    expect(flipSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'reported' }),
+    );
     expect(intentCasSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'rejected', decidedByUserId: TEST_USER.id }),
     );

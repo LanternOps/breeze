@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
-import { and, eq, gt, desc, inArray, isNull, ne } from 'drizzle-orm';
+import { and, eq, exists, gt, desc, inArray, isNull, ne, sql } from 'drizzle-orm';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { authMiddleware } from '../middleware/auth';
@@ -25,6 +25,7 @@ import { RELEASE_LEASE_MS } from '../services/actionIntents/intentService';
 import { resolveIntentApprovers } from '../services/actionIntents/intentApprovers';
 import { buildAuthContextForIntent } from '../services/actionIntents/actorContext';
 import { checkToolPermission } from '../services/aiGuardrails';
+import { loadPartnerPolicy, isEnforcing } from '../services/authenticatorPolicy';
 import { getUserPermissions, userCanDecideApprovals, canAccessOrg } from '../services/permissions';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import { issueMobileAssertionNonce } from '../services/mobileHwKey';
@@ -297,58 +298,59 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
   // Flip status to 'reported' if still pending, else leave as-is. Either way
   // we treat the report as authoritative for revocation + audit.
   if (existing.status === 'pending') {
-    await db
-      .update(approvalRequests)
-      .set({
-        status: 'reported',
-        decidedAt: new Date(),
-        decisionReason: 'Reported as suspicious by user',
-      })
-      .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
-
-    // Mirror to ai_tool_executions so the SDK waiter unblocks with denial.
-    if (existing.executionId) {
-      try {
-        await db
-          .update(aiToolExecutions)
-          .set({ status: 'rejected', approvedBy: userId, approvedAt: new Date() })
-          .where(eq(aiToolExecutions.id, existing.executionId));
-      } catch (err) {
-        console.error('[approvals] report-suspicious: failed to mirror to ai_tool_executions:', err);
-      }
-    }
-
-    // Intent-backed rows (durable four-eyes path) carry `intentId`, not
-    // `executionId`. A suspicious report is a strong DENY, so it must reject the
-    // whole intent and expire every SIBLING approval row — otherwise the intent
-    // stays pending_approval and another approver's still-live row could approve
-    // the action the reporter just flagged as malicious. Mirrors the decide
-    // handler's fan-in (first-wins CAS + system-scope sibling expiry). Runs in
-    // system scope: action_intents is org-scoped and sibling approval_requests
-    // rows belong to OTHER approvers, invisible to this user's request context.
+    // Intent-backed rows (durable four-eyes / supervised path) carry
+    // `intentId`, not `executionId`. A suspicious report is a strong DENY, so
+    // it must reject the whole intent and expire every SIBLING approval row —
+    // otherwise the intent stays pending_approval and another approver's
+    // still-live row could approve the action the reporter just flagged as
+    // malicious. Mirrors the decide handler's fan-in (first-wins CAS +
+    // system-scope sibling expiry). Runs in system scope: action_intents is
+    // org-scoped and sibling approval_requests rows belong to OTHER
+    // approvers, invisible to this user's request context.
     if (existing.intentId) {
       const intentId = existing.intentId;
-      // Atomic reject fan-in: the intent CAS (pending_approval -> rejected)
-      // and the sibling-approval expiry commit in ONE system-scoped
-      // transaction (a rejection has no intent_approved outbox row — mirror
-      // only what a reject writes). Collapsing them means a fan-in failure
-      // can no longer leave the intent rejected while a sibling approver's
-      // row stays live to approve the flagged action. System scope:
-      // action_intents is org-scoped and the sibling approval_requests rows
-      // belong to OTHER approvers, invisible to this user's request context.
-      // The CAS RETURNING carries the intent metadata for the metrics event;
-      // a lost race (zero rows) is a clean no-op.
+      // Fix round 1, finding 1: the 'reported' flip for THIS row is now
+      // folded into the SAME transaction as the intent CAS + sibling expiry
+      // (it used to be a separate, unconditional statement committed BEFORE
+      // this transaction even opened). Previously, a throw here rolled back
+      // only the intent CAS/sibling-expiry — the flip had already committed —
+      // so a retry's pre-fetch saw status='reported' (not 'pending'), the
+      // outer `if` above never re-entered, and the intent was permanently
+      // stranded `pending_approval` with live sibling rows that could still
+      // approve the flagged action. Folding the flip in here means a
+      // rollback restores 'pending' too, so a retry genuinely replays
+      // everything (flip + intent CAS + sibling expiry) as one unit, same as
+      // the main decide handler's atomic write.
       //
-      // Task 6 "same treatment" as the main decide handler: a genuine throw
-      // here is NOT swallowed — it rolls this transaction back (the intent
-      // stays pending_approval, no sibling was expired) and the whole
-      // request fails with a retryable 500 BEFORE revocation/audit run,
-      // rather than silently leaving the intent live while still reporting
-      // success to the caller.
+      // Fix round 1, finding 2 (lock-order inversion): lock the intent row
+      // FIRST, before touching approval_requests — the SAME order the decide
+      // handler's transaction now takes (see its own comment for the
+      // deadlock this prevents between concurrent decide / report-suspicious
+      // / intentExpiryReaper transactions).
+      //
+      // A genuine throw is NOT swallowed — it rolls this whole transaction
+      // back (flip + intent CAS + sibling expiry all undone) and the request
+      // fails with a retryable 500 BEFORE revocation/audit run, rather than
+      // silently leaving a half-applied state while still reporting success.
       try {
         const rejected = await runOutsideDbContext(() =>
           withSystemDbAccessContext(() =>
             db.transaction(async (tx) => {
+              await tx
+                .select({ id: actionIntents.id })
+                .from(actionIntents)
+                .where(eq(actionIntents.id, intentId))
+                .for('update');
+
+              await tx
+                .update(approvalRequests)
+                .set({
+                  status: 'reported',
+                  decidedAt: new Date(),
+                  decisionReason: 'Reported as suspicious by user',
+                })
+                .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
+
               const cas = await tx
                 .update(actionIntents)
                 .set({ status: 'rejected', decidedAt: new Date(), decidedByUserId: userId })
@@ -396,6 +398,32 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
       } catch (err) {
         console.error('[approvals] report-suspicious: failed to reject linked action intent (rolled back):', err);
         return c.json({ error: 'report_suspicious_failed', retryable: true }, 500);
+      }
+    } else {
+      // Non-intent-linked rows (executionId-linked legacy AI mobile-push
+      // flow, or plain dev-seed/PAM rows with neither): unchanged from
+      // before this fix round — a single flip statement, plus a best-effort
+      // ai_tool_executions mirror. There is no intent/sibling fan-in for
+      // these rows, so there is nothing else to make atomic with the flip.
+      await db
+        .update(approvalRequests)
+        .set({
+          status: 'reported',
+          decidedAt: new Date(),
+          decisionReason: 'Reported as suspicious by user',
+        })
+        .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
+
+      // Mirror to ai_tool_executions so the SDK waiter unblocks with denial.
+      if (existing.executionId) {
+        try {
+          await db
+            .update(aiToolExecutions)
+            .set({ status: 'rejected', approvedBy: userId, approvedAt: new Date() })
+            .where(eq(aiToolExecutions.id, existing.executionId));
+        } catch (err) {
+          console.error('[approvals] report-suspicious: failed to mirror to ai_tool_executions:', err);
+        }
       }
     }
   }
@@ -740,13 +768,30 @@ async function decideHandler(
   //
   // Supervised self-decide (Task 6): skip the WHOLE assertion/assurance ladder
   // — no WebAuthn challenge, no partner-policy step-up floor, no
-  // ReauthRequiredError ceremony. `resolveApprovalAssurance` is the same
+  // ReauthRequiredError ceremony — UNLESS the partner's authenticator policy
+  // is actively ENFORCING (fix round 1, finding 5 — adjudicated requirement).
+  // An enforcing partner's step-up floor must not be silently bypassed just
+  // because an intent classified as supervised: the requester can still
+  // satisfy it with a WebAuthn L3 proof, exactly like the four_eyes
+  // sole-operator self-approve does. The ladder's own self-approve step-up
+  // gate below already keys off `requestedByUserId === userId` (never off
+  // approvalScope), which is unconditionally true for a supervised row, so no
+  // extra gate is needed there — routing an enforcing supervised approve
+  // through the shared ladder is sufficient. Only checked for an approve
+  // (deny is never blocked by assurance, so there's no reason to spend a
+  // partner-policy read on it) — `resolveApprovalAssurance` is the same
   // synchronous "no proof presented" L1/session_tap default `proof===undefined`
   // resolves to today; reusing it (rather than hand-rolling the literal) keeps
   // the recorded factor byte-for-byte identical to that existing no-proof shape
   // and impossible to drift from `assertDecisionConsistent`'s invariants.
+  const isPartnerEnforcingForSupervised =
+    isSupervisedSelfDecide && status === 'approved'
+      ? isEnforcing(await loadPartnerPolicy(c.get('auth').partnerId ?? null), new Date())
+      : false;
+  const skipAssuranceLadder = isSupervisedSelfDecide && !isPartnerEnforcingForSupervised;
+
   let assurance: AssuranceDecision;
-  if (isSupervisedSelfDecide) {
+  if (skipAssuranceLadder) {
     assurance = resolveApprovalAssurance(existing.riskTier as RiskTier);
   } else {
     try {
@@ -772,14 +817,16 @@ async function decideHandler(
       return c.json({ error: 'assertion_failed' }, 401);
     }
 
-    // Sole-operator step-up (spec §1 / §4, four_eyes only): a requester
-    // approving their OWN intent (the sole-operator single-row fan-out case)
-    // must present >= L3 assurance (webauthn_platform or mobile_hw_key).
-    // Checked BEFORE the CAS so an under-assured self-approval never flips the
-    // row. Deny is unaffected — only an approve of one's own intent is gated.
-    // Never reached for a supervised self-decide (handled in the branch
-    // above, which always records L1 by design — this gate would otherwise
-    // refuse every supervised approve outright).
+    // Sole-operator step-up (spec §1 / §4): a requester approving their OWN
+    // intent (the four_eyes sole-operator single-row fan-out case, OR a
+    // supervised row under an enforcing partner policy) must present >= L3
+    // assurance (webauthn_platform or mobile_hw_key). Checked BEFORE the CAS
+    // so an under-assured self-approval never flips the row. Deny is
+    // unaffected — only an approve of one's own intent is gated. Never
+    // reached for a supervised self-decide under a NON-enforcing policy
+    // (handled by `skipAssuranceLadder` above, which always records L1 by
+    // design — this gate would otherwise refuse every plain-click supervised
+    // approve outright).
     if (
       linkedIntent &&
       status === 'approved' &&
@@ -820,6 +867,27 @@ async function decideHandler(
     writeResult = await runOutsideDbContext(() =>
       withSystemDbAccessContext(() =>
         db.transaction(async (tx): Promise<DecideWriteResult> => {
+          // Fix round 1, finding 2 (lock-order inversion): report-suspicious
+          // and intentExpiryReaper both lock action_intents BEFORE touching
+          // approval_requests. This transaction used to lock its OWN
+          // approval_requests row first and the intent second — the opposite
+          // order — so a concurrent report-suspicious/reaper transaction
+          // (intent held, waiting on a sibling approval_requests row this
+          // transaction already holds) and this transaction (approval_requests
+          // row held, waiting on the intent report-suspicious/reaper already
+          // holds) could deadlock (Postgres 40P01 → a user-visible 500).
+          // Taking the SAME intent-first lock here makes every writer agree on
+          // one global order, so concurrent transactions serialize instead of
+          // cycling. `existing.intentId` is read from the pre-fetch outside
+          // this transaction, before any lock is held.
+          if (existing.intentId) {
+            await tx
+              .select({ id: actionIntents.id })
+              .from(actionIntents)
+              .where(eq(actionIntents.id, existing.intentId))
+              .for('update');
+          }
+
           const casRows = await tx
             .update(approvalRequests)
             .set({
@@ -866,9 +934,34 @@ async function decideHandler(
               // the approval_requests CAS must not resurrect a closed execution
               // row as a stranded 'approved' that the legacy bridge (no durable
               // worker) would never run.
+              //
+              // Fix round 1, finding 3 (tenant/linkage guard): this UPDATE runs
+              // under system scope (no RLS), and `ai_tool_executions` has no
+              // org_id column of its own — it's scoped via its `ai_sessions`
+              // row. Matching on `updated.executionId` alone relies entirely on
+              // that FK having been populated correctly at insert time (an
+              // app-layer guarantee, not a DB-enforced one), which the repo's
+              // tenancy contract treats as insufficient for a system-scoped
+              // write. This executionId-linked flow (services/aiAgentSdk.ts's
+              // mobile waitForApproval path) is ALWAYS a self-approval — the
+              // approval_requests row's own userId (== `userId` here, already
+              // proven equal by the CAS's WHERE clause above) must own the
+              // session the execution belongs to. Carrying that check inside
+              // the UPDATE's WHERE (not as a separate app-layer assertion)
+              // means a wrong/stale executionId fails closed (0 rows) instead
+              // of silently mutating another tenant's execution row.
               .where(and(
                 eq(aiToolExecutions.id, updated.executionId),
                 eq(aiToolExecutions.status, 'pending'),
+                exists(
+                  tx
+                    .select({ one: sql`1` })
+                    .from(aiSessions)
+                    .where(and(
+                      eq(aiSessions.id, aiToolExecutions.sessionId),
+                      eq(aiSessions.userId, userId),
+                    )),
+                ),
               ))
               .returning({ id: aiToolExecutions.id });
             if (mirrored.length === 0) {

@@ -92,6 +92,13 @@ export default defineConfig({
       // so the no-DB unit runner would fail it on connect. Belongs to
       // vitest.integration.config.ts (registered in its include list).
       'src/routes/approvalsDecideAtomicity.integration.test.ts',
+      // Supervised plain-decide branch real-DB test (Task 6 fix round 1,
+      // finding 4): imports `__tests__/integration/setup` (real postgres pool
+      // + autoMigrate) and lives in src/routes/ outside the
+      // `src/__tests__/integration/**` glob, so the no-DB unit runner would
+      // fail it on connect. Belongs to vitest.integration.config.ts
+      // (registered in its include list).
+      'src/routes/approvalsDecideSupervised.integration.test.ts',
       // Create-path atomicity + tenant-isolation real-DB test (Task 7): imports
       // `__tests__/integration/setup` (real postgres pool + autoMigrate) and
       // lives in src/services/actionIntents/ outside the

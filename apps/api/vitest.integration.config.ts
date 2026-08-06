@@ -124,6 +124,14 @@ export default defineConfig({
       // expiry + outbox} roll back together — a rollback the mocked unit suite
       // (which mocks db.transaction) cannot exercise.
       'src/routes/approvalsDecideAtomicity.integration.test.ts',
+      // Co-located real-DB integration test for the Tier-3 supervised
+      // plain-decide branch (Task 6 fix round 1, finding 4): drives the real
+      // approve/deny route against genuine role/permission state to prove
+      // the live-RBAC re-check (buildAuthContextForIntent + checkToolPermission)
+      // actually wires up end to end — both are mocked wholesale in the unit
+      // suite (approvals.test.ts), so this is the only coverage that exercises
+      // the real modules against real Postgres.
+      'src/routes/approvalsDecideSupervised.integration.test.ts',
       // Co-located real-DB integration test for the create-path atomicity +
       // tenant isolation (Task 7): injects a DB-level fault into the
       // intent_created outbox insert to prove {intent insert + fan-out + outbox}
