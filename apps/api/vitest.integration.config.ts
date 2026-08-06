@@ -193,6 +193,15 @@ export default defineConfig({
       // `src/__tests__/integration/**` exclude; named here for discoverability
       // only (same pattern `staleBackupReaper.integration.test.ts` uses).
       'src/__tests__/integration/intentSupervisedFourEyes.integration.test.ts',
+      // Co-located real-DB coverage for the effect-digest TOCTOU chain: pins a
+      // real `scripts` row, approves, does a real UPDATE, and drives the real
+      // release path to `failed:content_changed` — plus the negative mirror,
+      // which is the only test anywhere that would catch deleting the
+      // `withSystemDbAccessContext` wrap around the release-time recompute
+      // (every unit test stubs that wrap as an identity passthrough). Under
+      // `src/__tests__/integration/**`, so already covered by the shared glob
+      // above; named here for discoverability only.
+      'src/__tests__/integration/effectDigestToctou.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;

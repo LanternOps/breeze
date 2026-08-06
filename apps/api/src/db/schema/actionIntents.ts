@@ -11,7 +11,7 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
-import type { AssuranceLevel } from '@breeze/shared';
+import { AI_APPROVAL_SCOPES, type AiApprovalScope, type AssuranceLevel } from '@breeze/shared';
 import { organizations, partners } from './orgs';
 import { users } from './users';
 import { apiKeys } from './apiKeys';
@@ -73,9 +73,19 @@ export type IntentOutboxEvent = (typeof intentOutboxEventEnum)[number];
  * Tier-3 supervised/four_eyes classification (spec
  * docs/superpowers/specs/ai-mcp/2026-08-05-tier3-supervised-four-eyes-split-design.md
  * §4.1). Decided once by checkGuardrails at createIntent time.
+ *
+ * Re-export of the single shared declaration (`AI_APPROVAL_SCOPES` in
+ * packages/shared/src/types/ai.ts) under the local schema-file naming
+ * convention — NOT an independent copy. The SQL CHECK constraint in
+ * 2026-08-14-intent-approval-scope-and-deadlines.sql is pinned to these
+ * members by a test in actionIntents.test.ts.
+ *
+ * There is deliberately no Zod schema for this column: approvalScope is never
+ * client-supplied, it is derived server-side by checkGuardrails at intent
+ * creation. Adding a validator would wrongly imply callers can pass it.
  */
-export const actionIntentApprovalScopeEnum = ['supervised', 'four_eyes'] as const;
-export type ActionIntentApprovalScope = (typeof actionIntentApprovalScopeEnum)[number];
+export const actionIntentApprovalScopeEnum = AI_APPROVAL_SCOPES;
+export type ActionIntentApprovalScope = AiApprovalScope;
 
 export const actionIntents = pgTable(
   'action_intents',

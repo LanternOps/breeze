@@ -33,6 +33,20 @@ import type { ActionIntentSource } from '../../db/schema/actionIntents';
  * 'not_sole_approver'`: a requester self-approving an intent whose org now
  * has another eligible approver. Both are failure outcomes (see
  * `FAILURE_OUTCOMES`).
+ *
+ * `effect_digest_unpinned` is the third addition beyond the spec's seven, and
+ * the only NON-failure one. It fires at CREATION time (intentService.ts) when
+ * services/actionIntents/effectDigest.ts had a resolver for the tool/action
+ * but produced nothing to pin — the id argument was missing/non-string, or
+ * the target row was absent/soft-deleted. Those intents store
+ * `effect_digest = NULL`, which is byte-identical to the entirely expected
+ * "this tool has no resolver at all" case, so without this event they are
+ * unobservable: nothing can count or alert on a surface that quietly stopped
+ * being pinnable. The WHICH-of-the-two lives in `details.reason`
+ * (`missing_arg` | `target_absent`), per the "WHY belongs in details" rule
+ * above. NOT a failure outcome — creation succeeded and the intent is
+ * perfectly valid; it is simply un-TOCTOU-protected, which is a
+ * coverage signal, not an error.
  */
 export type ActionIntentOutcome =
   | 'created'
@@ -44,7 +58,8 @@ export type ActionIntentOutcome =
   | 'revealed'
   | 'self_approved_sole_operator'
   | 'digest_mismatch'
-  | 'approver_unauthorized';
+  | 'approver_unauthorized'
+  | 'effect_digest_unpinned';
 
 interface ActionIntentMetricsRecorder {
   onEvent: (source: ActionIntentSource, action: string, outcome: ActionIntentOutcome) => void;

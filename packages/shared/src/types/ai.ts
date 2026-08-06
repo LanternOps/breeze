@@ -4,6 +4,33 @@
 
 export type AiApprovalMode = 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
 
+/**
+ * Tier-3 approval scope — the SINGLE declaration of this union for the whole
+ * repo (spec docs/superpowers/specs/ai-mcp/2026-08-05-tier3-supervised-four-eyes-split-design.md).
+ *
+ * `supervised` — the requester approves their own AI action with a plain click,
+ * gated on their existing RBAC. `four_eyes` — a second `approvals:decide`
+ * holder must decide, with a shorter deadline and a pinned argument digest.
+ *
+ * Everything that needs the union imports it from here rather than re-typing
+ * the literals: `apps/api/src/db/schema/actionIntents.ts` (column + enum),
+ * `apps/api/src/services/aiGuardrails.ts` (resolveApprovalScope +
+ * GuardrailCheck), and the `approval_required` SSE event below. Because
+ * TypeScript is structural, four independent `'supervised' | 'four_eyes'`
+ * literals would let a third member be added to one of them and compile clean
+ * everywhere else — the dual-map drift class this repo has been bitten by
+ * before. The SQL `CHECK (approval_scope IN (...))` in
+ * `apps/api/migrations/2026-08-14-intent-approval-scope-and-deadlines.sql` is
+ * pinned to AI_APPROVAL_SCOPES by a test in
+ * `apps/api/src/db/schema/actionIntents.test.ts`.
+ *
+ * Deliberately NOT exposed as a Zod schema: approvalScope is never
+ * client-supplied — it is derived server-side by checkGuardrails at intent
+ * creation. A validator here would wrongly imply callers may pass it.
+ */
+export const AI_APPROVAL_SCOPES = ['supervised', 'four_eyes'] as const;
+export type AiApprovalScope = (typeof AI_APPROVAL_SCOPES)[number];
+
 export interface ActionPlanStep {
   toolName: string;
   input: Record<string, unknown>;
@@ -118,7 +145,7 @@ export type AiStreamEvent =
   | { type: 'content_delta'; delta: string }
   | { type: 'tool_use_start'; toolName: string; toolUseId: string; input: Record<string, unknown> }
   | { type: 'tool_result'; toolUseId: string; output: unknown; isError: boolean }
-  | { type: 'approval_required'; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: 'supervised' | 'four_eyes'; intentExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean }
+  | { type: 'approval_required'; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean }
   | { type: 'plan_approval_required'; planId: string; steps: ActionPlanStep[] }
   | { type: 'plan_step_start'; planId: string; stepIndex: number; toolName: string }
   | { type: 'plan_step_complete'; planId: string; stepIndex: number; toolName: string; isError: boolean }

@@ -171,91 +171,57 @@ describe('intentExpiryReaper.reapExpiredIntents', () => {
     expect(recordActionIntentEvent).toHaveBeenCalledTimes(2);
   });
 
-  it('splits the deadline by status: pending_approval on approval_expires_at falling back to expires_at, approved on release_by falling back to expires_at', async () => {
-    executeMock.mockResolvedValueOnce({ rows: [] });
+  /**
+   * SCOPE WARNING — read before adding a test here.
+   *
+   * This suite mocks `db.execute` at the boundary, so Postgres NEVER
+   * evaluates the WHERE clause and the mocked rows come back regardless of
+   * what the predicate says. A test in this file therefore CANNOT prove which
+   * rows the reaper selects: seeding a "legacy NULL approval_expires_at" row
+   * and asserting it was reaped would pass identically if the predicate were
+   * `1=1`. Two such tests used to live here and have been deleted rather than
+   * left as false confidence.
+   *
+   * All row-selection behavior — the 59:59 trap, both legacy `expires_at`
+   * fallbacks, and their negative counterparts — is proved against real
+   * Postgres in `intentExpiryReaper.integration.test.ts`
+   * ('reapExpiredIntents (real PG) — status-split deadline').
+   *
+   * What the two tests below legitimately cover is narrower and stated as
+   * such: the SQL TEXT the reaper builds still anchors each status on the
+   * right deadline column. That is a cheap tripwire for a careless rewrite,
+   * not a behavioral guarantee.
+   */
+  describe('deadline predicate (SQL text only — row selection is proved in the integration suite)', () => {
+    /** Static SQL text with runs of whitespace collapsed, so assertions are
+     *  not hostage to drizzle's chunk-join spacing (the previous version
+     *  asserted `'COALESCE( approval_expires_at ,  expires_at )'` — double
+     *  space included — which broke on formatting alone and proved nothing
+     *  semantic). */
+    const builtSql = async (): Promise<string> => {
+      executeMock.mockResolvedValueOnce({ rows: [] });
+      await reapExpiredIntents();
+      return sqlText(executeMock.mock.calls[0]?.[0]).replace(/\s+/g, ' ');
+    };
 
-    await reapExpiredIntents();
-
-    const query = sqlText(executeMock.mock.calls[0]?.[0]);
-    // pending_approval branch checks approval_expires_at with an expires_at
-    // fallback for legacy writer rows that never set approval_expires_at.
-    expect(query).toContain('COALESCE( approval_expires_at ,  expires_at )');
-    expect(query).toMatch(/status\s*=\s*'pending_approval'\s+AND\s+COALESCE/);
-    // approved branch checks release_by with an expires_at fallback for
-    // legacy rows that predate the release-lease column.
-    expect(query).toContain('COALESCE( release_by ,  expires_at )');
-    expect(query).toMatch(/status\s*=\s*'approved'\s+AND\s+COALESCE/);
-  });
-
-  it('reaps a legacy pending_approval row with a NULL approval_expires_at once expires_at has passed', async () => {
-    // Legacy-writer row: approval_expires_at was never backfilled, but
-    // expires_at is the pre-split deadline and it has passed. Without the
-    // COALESCE fallback, `approval_expires_at < now()` on a NULL column is
-    // NULL (never true in SQL), so this row would never be reaped.
-    const past = new Date(Date.now() - 60_000);
-    executeMock.mockResolvedValueOnce({
-      rows: [
-        {
-          id: 'intent-legacy-null-approval-deadline',
-          org_id: 'org-1',
-          action_name: 'breeze.legacy',
-          argument_digest: 'digest-legacy',
-          source: 'chat',
-          requested_by_user_id: 'user-1',
-          expires_at: past,
-        },
-      ],
+    it('anchors pending_approval on approval_expires_at with an expires_at fallback', async () => {
+      expect(await builtSql()).toMatch(
+        /status\s*=\s*'pending_approval'\s+AND\s+COALESCE\(\s*approval_expires_at\s*,\s*expires_at\s*\)\s*<\s*now\(\)/,
+      );
     });
-    const chain = makeUpdateChain([]);
-    updateMock.mockReturnValue({ set: chain.set });
 
-    const reaped = await reapExpiredIntents();
-
-    expect(reaped).toBe(1);
-    expect(recordActionIntentEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ intentId: 'intent-legacy-null-approval-deadline', outcome: 'expired' }),
-    );
-  });
-
-  it('the 59:59 trap: an approved intent past approval_expires_at but with releaseBy still in the future is NOT reaped', async () => {
-    // The reaper's WHERE clause runs against a real database and this test
-    // mocks db.execute at the boundary, so it cannot exercise Postgres's
-    // actual row filtering. What it CAN prove — and what regresses the trap
-    // if broken — is that the approved branch's predicate is anchored on
-    // release_by (COALESCE'd with expires_at), not approval_expires_at. If a
-    // future edit swapped that back to approval_expires_at, this assertion
-    // fails; the query-shape assertions above are the regression guard for
-    // this exact scenario, verified end-to-end by the RLS/integration suite.
-    executeMock.mockResolvedValueOnce({ rows: [] });
-
-    await reapExpiredIntents();
-
-    const query = sqlText(executeMock.mock.calls[0]?.[0]);
-    expect(query).not.toMatch(/status\s*=\s*'approved'\s+AND\s+approval_expires_at\s*<\s*now\(\)/);
-  });
-
-  it('reaps an approved intent once release_by has passed', async () => {
-    const past = new Date(Date.now() - 60_000);
-    executeMock.mockResolvedValueOnce({
-      rows: [
-        {
-          id: 'intent-approved-leased',
-          org_id: 'org-1',
-          action_name: 'breeze.c',
-          argument_digest: 'd3',
-          source: 'chat',
-          requested_by_user_id: 'user-1',
-          expires_at: past,
-        },
-      ],
+    it('anchors approved on release_by with an expires_at fallback, never on approval_expires_at', async () => {
+      // The 59:59 trap in SQL-shape form: once an intent is approved,
+      // approval_expires_at no longer governs it — the fresh release_by lease
+      // does. Both directions are asserted because the negative alone (the
+      // previous version of this test) passes for any rewrite that merely
+      // spells the regression differently.
+      const query = await builtSql();
+      expect(query).toMatch(
+        /status\s*=\s*'approved'\s+AND\s+COALESCE\(\s*release_by\s*,\s*expires_at\s*\)\s*<\s*now\(\)/,
+      );
+      expect(query).not.toMatch(/status\s*=\s*'approved'\s+AND\s+approval_expires_at/);
     });
-    const chain = makeUpdateChain([]);
-    updateMock.mockReturnValue({ set: chain.set });
-
-    const reaped = await reapExpiredIntents();
-
-    expect(reaped).toBe(1);
-    expect(recordActionIntentEvent).toHaveBeenCalledTimes(1);
   });
 });
 

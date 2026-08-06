@@ -187,6 +187,10 @@ async function decideViaRoute(
   approvalRowId: string,
   action: 'approve' | 'deny' = 'approve',
 ): Promise<Response> {
+  return postViaRoute(s, approvalRowId, action);
+}
+
+async function postViaRoute(s: Scenario, approvalRowId: string, action: string): Promise<Response> {
   const token = await requesterAccessToken(s.requester, s.orgId, s.partnerId, s.requesterRoleId);
   const app = new Hono();
   app.route('/approvals', approvalRoutes);
@@ -194,6 +198,15 @@ async function decideViaRoute(
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({}),
+  });
+}
+
+async function getViaRoute(s: Scenario, approvalRowId: string): Promise<Response> {
+  const token = await requesterAccessToken(s.requester, s.orgId, s.partnerId, s.requesterRoleId);
+  const app = new Hono();
+  app.route('/approvals', approvalRoutes);
+  return app.request(`/approvals/${approvalRowId}`, {
+    headers: { Authorization: `Bearer ${token}` },
   });
 }
 
@@ -270,6 +283,88 @@ describe('supervised intent plain-decide branch (real Postgres, breeze_app)', ()
     await withSystemDbAccessContext(async () => {
       const [intent] = await db.select().from(actionIntents).where(eq(actionIntents.id, intentId));
       expect(intent?.status).toBe('rejected');
+    });
+  });
+});
+
+describe('GET /approvals/:id live-authorization filter (real Postgres, breeze_app)', () => {
+  runDb('the requester can read their own live supervised row, and it carries approvalScope', async () => {
+    const s = seeded!;
+    const { approvalRowId } = await seedSupervisedIntent(s);
+
+    const res = await getViaRoute(s, approvalRowId);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { approval: { approvalScope: string; actionToolName: string } };
+    expect(body.approval.approvalScope).toBe('supervised');
+    expect(body.approval.actionToolName).toBe('execute_command');
+  });
+
+  runDb('404s once the linked intent has left pending_approval — the detail endpoint stops disclosing arguments', async () => {
+    const s = seeded!;
+    const { approvalRowId } = await seedSupervisedIntent(s);
+
+    expect((await decideViaRoute(s, approvalRowId, 'approve')).status).toBe(200);
+
+    // Same rule /pending applies: the row is no longer live, so the detail
+    // endpoint no longer hands back actionArguments/actionLabel/riskSummary.
+    const res = await getViaRoute(s, approvalRowId);
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain('execute_command');
+  });
+});
+
+describe('POST /approvals/:id/report-suspicious losing the decide race (real Postgres, breeze_app)', () => {
+  /**
+   * Fix round 2, finding 2. The handler used to answer 204 — indistinguishable
+   * from "your report stopped it" — when its intent CAS matched zero rows,
+   * even though the intent was already `approved`, the `intent_approved`
+   * outbox event queued, and the durable release worker about to run the very
+   * action the user just flagged as malicious.
+   *
+   * The race is simulated by committing the intent transition out of band
+   * (exactly what a concurrent decide's transaction leaves behind) while this
+   * caller's own approval row is still `pending`, so the handler's unlocked
+   * pre-fetch enters the intent branch and the CAS then loses under the
+   * FOR UPDATE lock — the real, unmockable half of this path.
+   */
+  runDb('answers 409 already_decided with the terminal intent status, and leaves the approved intent intact', async () => {
+    const s = seeded!;
+    const { intentId, approvalRowId } = await seedSupervisedIntent(s);
+
+    await withSystemDbAccessContext(() =>
+      db
+        .update(actionIntents)
+        .set({ status: 'approved', decidedAt: new Date(), decidedByUserId: s.requester.id })
+        .where(eq(actionIntents.id, intentId)),
+    );
+
+    const res = await postViaRoute(s, approvalRowId, 'report-suspicious');
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'already_decided', finalStatus: 'approved' });
+
+    await withSystemDbAccessContext(async () => {
+      // The report never rolls back somebody else's win.
+      const [intent] = await db.select().from(actionIntents).where(eq(actionIntents.id, intentId));
+      expect(intent?.status).toBe('approved');
+    });
+  });
+
+  runDb('happy path still 204s and rejects the intent when the CAS wins', async () => {
+    const s = seeded!;
+    const { intentId, approvalRowId } = await seedSupervisedIntent(s);
+
+    const res = await postViaRoute(s, approvalRowId, 'report-suspicious');
+    expect(res.status).toBe(204);
+
+    await withSystemDbAccessContext(async () => {
+      const [intent] = await db.select().from(actionIntents).where(eq(actionIntents.id, intentId));
+      expect(intent?.status).toBe('rejected');
+
+      const [row] = await db
+        .select({ status: approvalRequests.status })
+        .from(approvalRequests)
+        .where(eq(approvalRequests.id, approvalRowId));
+      expect(row?.status).toBe('reported');
     });
   });
 });

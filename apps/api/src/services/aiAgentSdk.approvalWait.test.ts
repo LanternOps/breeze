@@ -298,14 +298,16 @@ describe('tier-3 approval scope propagation to the chat SSE approval event', () 
         intentBacked: true,
       }),
     );
-    // Push for the durable intent path is dispatched (and gated to four_eyes)
-    // entirely inside services/actionIntents/intentService.ts's
-    // createActionIntent — mocked wholesale here. This just proves aiAgentSdk
-    // itself never makes an independent push call on the tier-3 path (its
-    // one push call site is the unrelated Tier-2 legacy per_step bridge), so
-    // there is no second, ungated dispatch to worry about for either scope.
-    expect(mockDispatchApprovalPushToTokens).not.toHaveBeenCalled();
-    expect(mockGetUserPushTokens).not.toHaveBeenCalled();
+    // NOT asserted here: that push is skipped for supervised. Push for the
+    // durable intent path is dispatched — and gated on scope — entirely
+    // inside createActionIntent, which is mocked wholesale in this file, so
+    // there is no call site either way and
+    // `expect(mockDispatchApprovalPushToTokens).not.toHaveBeenCalled()`
+    // could not fail regardless of the gating. That assertion used to sit
+    // here and has been removed as false confidence. The real gate is proved
+    // against the real implementation in
+    // services/actionIntents/intentService.test.ts
+    // ('createActionIntent — supervised/four_eyes scope').
   });
 
   it('four_eyes: approval event carries approvalScope; aiAgentSdk still never dispatches push itself', async () => {
@@ -329,12 +331,33 @@ describe('tier-3 approval scope propagation to the chat SSE approval event', () 
         intentBacked: true,
       }),
     );
-    // four_eyes push fan-out is real production behavior (intentService.ts,
-    // gated on approvalScope === 'four_eyes') but happens inside the mocked
-    // createActionIntent here, not in aiAgentSdk.ts — same "no second
-    // dispatch site" assertion as the supervised case above.
-    expect(mockDispatchApprovalPushToTokens).not.toHaveBeenCalled();
+    // Same as the supervised case above: the four_eyes push fan-out is real
+    // production behavior, but it lives inside the mocked createActionIntent,
+    // so no assertion in this file can observe it. Covered for real in
+    // services/actionIntents/intentService.test.ts.
+  });
+
+  it('aiAgentSdk itself never dispatches an approval push on the tier-3 path', async () => {
+    // The one assertion in this area that IS meaningful here, stated once
+    // instead of twice: aiAgentSdk.ts does have a push call site (the legacy
+    // Tier-2 per_step bridge), so "no push from this module" is a real,
+    // falsifiable property of the tier-3 branch — it would fail if that
+    // bridge were ever reused for tier 3, producing a second, ungated
+    // dispatch alongside createActionIntent's.
+    tier3Guardrail('four_eyes');
+    mockInsertReturning({ id: 'exec-no-push' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-no-push' }));
+    mockWaitForIntentDecision.mockResolvedValue('rejected');
+    const session = makeActiveSession();
+
+    await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+    // Proof the tier-3 branch actually ran (without it the two assertions
+    // below would be trivially true for a call that never got that far).
+    expect(mockCreateActionIntent).toHaveBeenCalled();
     expect(mockGetUserPushTokens).not.toHaveBeenCalled();
+    expect(mockDispatchApprovalPushToTokens).not.toHaveBeenCalled();
   });
 });
 

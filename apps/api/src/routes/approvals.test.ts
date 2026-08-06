@@ -246,7 +246,9 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: vi.fn(() => (c: any, next: any) => next()),
 }));
 
+import { and, eq } from 'drizzle-orm';
 import { approvalRoutes } from './approvals';
+import { approvalRequests } from '../db/schema/approvals';
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
@@ -323,9 +325,14 @@ function txSelectExistsStub() {
 // `SELECT ... FOR UPDATE` lock on the intent row as its FIRST statement
 // (lock-order fix — see the route's own comment). This IS awaited directly,
 // so the stub's `.for(...)` must resolve.
-function txSelectForUpdateStub() {
+// Fix round 2, finding 2: report-suspicious now READS the locked intent row's
+// status from this same statement, so it must resolve a row (the decide
+// handler only selects `{id}` from it and ignores the result). Override the
+// resolved value per-test to simulate a concurrent decide having already
+// carried the intent to a terminal state.
+function txSelectForUpdateStub(rows: unknown[] = [{ id: 'intent-1', status: 'pending_approval' }]) {
   return vi.fn(() => ({
-    from: vi.fn(() => ({ where: vi.fn(() => ({ for: vi.fn().mockResolvedValue([]) })) })),
+    from: vi.fn(() => ({ where: vi.fn(() => ({ for: vi.fn().mockResolvedValue(rows) })) })),
   }));
 }
 
@@ -543,6 +550,44 @@ describe('GET /approvals/pending', () => {
     expect(body.approvals[0].id).toBe('a3');
   });
 
+  // Task 8 review finding: the projection read intent.approvalScope for its
+  // authorization decision and then threw it away, so a client could not tell
+  // a supervised row (plain click) from a four_eyes one (may need a step-up).
+  it('projects approvalScope onto each serialized row (supervised / four_eyes / null)', async () => {
+    mockPendingJoinResolves([
+      {
+        approval: buildPendingApproval({ id: 'sv', intentId: 'intent-sv', createdAt: new Date(Date.now()) }),
+        intent: {
+          id: 'intent-sv',
+          orgId: 'org-9',
+          status: 'pending_approval',
+          approvalScope: 'supervised',
+          requestedByUserId: TEST_USER.id,
+        },
+      },
+      {
+        approval: buildPendingApproval({ id: 'fe', intentId: 'intent-fe', createdAt: new Date(Date.now() - 1000) }),
+        intent: {
+          id: 'intent-fe',
+          orgId: 'org-9',
+          status: 'pending_approval',
+          approvalScope: 'four_eyes',
+          requestedByUserId: 'requester-9',
+        },
+      },
+      { approval: buildPendingApproval({ id: 'plain', createdAt: new Date(Date.now() - 2000) }), intent: null },
+    ]);
+
+    const res = await buildApp().request('/approvals/pending');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.approvals.map((a: any) => [a.id, a.approvalScope])).toEqual([
+      ['sv', 'supervised'],
+      ['fe', 'four_eyes'],
+      ['plain', null],
+    ]);
+  });
+
   it('excludes a supervised intent-linked row when the intent is no longer pending_approval', async () => {
     const approval = buildPendingApproval({ id: 'a4', intentId: 'intent-3' });
     const intent = {
@@ -644,32 +689,132 @@ describe('GET /approvals/:id', () => {
     expect(body.approval.intentId).toBeNull();
   });
 
+  const intentLinkedApproval = {
+    id: 'a1',
+    userId: TEST_USER.id,
+    requestingClientLabel: 'MCP API client',
+    requestingMachineLabel: null,
+    requestingClientId: null,
+    requestingSessionId: null,
+    actionLabel: 'Reboot devices',
+    actionToolName: 'breeze.devices.reboot',
+    actionArguments: { deviceIds: ['dev-secret-1'] },
+    riskTier: 'low',
+    riskSummary: 'Low risk operation.',
+    status: 'pending',
+    expiresAt: new Date(Date.now() + 60_000),
+    decidedAt: null,
+    decisionReason: null,
+    intentId: 'intent-42',
+    createdAt: new Date(),
+  };
+
+  // GET /:id now runs the SAME live-authorization filter /pending does, so an
+  // intent-linked row needs BOTH selects wired: 1) the approval row, 2) the
+  // linked intent (system context, by id).
+  function mockDetailWithIntent(intent: unknown | null) {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([intentLinkedApproval]),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(intent ? [intent] : []),
+        }),
+      } as any);
+  }
+
   it('serializes intentId so a consumer can correlate an approval row to its intent', async () => {
-    const approval = {
-      id: 'a1',
-      userId: TEST_USER.id,
-      requestingClientLabel: 'MCP API client',
-      requestingMachineLabel: null,
-      requestingClientId: null,
-      requestingSessionId: null,
-      actionLabel: 'Reboot devices',
-      actionToolName: 'breeze.devices.reboot',
-      actionArguments: {},
-      riskTier: 'low',
-      riskSummary: 'Low risk operation.',
-      status: 'pending',
-      expiresAt: new Date(Date.now() + 60_000),
-      decidedAt: null,
-      decisionReason: null,
-      intentId: 'intent-42',
-      createdAt: new Date(),
-    };
-    mockSelectResolves([approval]);
+    mockDetailWithIntent({
+      id: 'intent-42',
+      orgId: 'org-9',
+      status: 'pending_approval',
+      approvalScope: 'four_eyes',
+      requestedByUserId: 'requester-9',
+    });
 
     const res = await buildApp().request('/approvals/a1');
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.approval.intentId).toBe('intent-42');
+  });
+
+  // Task 8 review finding: /pending re-derives each row's authorization live so
+  // a demoted four_eyes approver stops seeing its arguments — but the DETAIL
+  // endpoint filtered on id+userId only, and a demoted approver still OWNS
+  // their pending row. The list hid it while this endpoint handed over
+  // actionArguments / actionLabel / riskSummary in full.
+  it('404s for a demoted four_eyes approver and never returns the action arguments (live-authz filter)', async () => {
+    mockDetailWithIntent({
+      id: 'intent-42',
+      orgId: 'org-9',
+      status: 'pending_approval',
+      approvalScope: 'four_eyes',
+      requestedByUserId: 'requester-9',
+    });
+    vi.mocked(userCanDecideApprovals).mockReturnValueOnce(false);
+
+    const res = await buildApp().request('/approvals/a1');
+    expect(res.status).toBe(404);
+    const raw = await res.text();
+    expect(raw).not.toContain('dev-secret-1');
+    expect(raw).not.toContain('Reboot devices');
+  });
+
+  it('404s when a supervised row is fetched by someone who is not the intent requester', async () => {
+    mockDetailWithIntent({
+      id: 'intent-42',
+      orgId: 'org-9',
+      status: 'pending_approval',
+      approvalScope: 'supervised',
+      requestedByUserId: 'someone-else',
+    });
+
+    const res = await buildApp().request('/approvals/a1');
+    expect(res.status).toBe(404);
+  });
+
+  it('404s once the linked intent is no longer pending_approval (same rule as /pending)', async () => {
+    mockDetailWithIntent({
+      id: 'intent-42',
+      orgId: 'org-9',
+      status: 'approved',
+      approvalScope: 'supervised',
+      requestedByUserId: TEST_USER.id,
+    });
+
+    const res = await buildApp().request('/approvals/a1');
+    expect(res.status).toBe(404);
+  });
+
+  it('serializes approvalScope from the linked intent (supervised)', async () => {
+    mockDetailWithIntent({
+      id: 'intent-42',
+      orgId: 'org-9',
+      status: 'pending_approval',
+      approvalScope: 'supervised',
+      requestedByUserId: TEST_USER.id,
+    });
+
+    const res = await buildApp().request('/approvals/a1');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.approval.approvalScope).toBe('supervised');
+  });
+
+  it('serializes approvalScope: null for a row with no linked intent', async () => {
+    mockSelectResolves([
+      { ...intentLinkedApproval, intentId: null, actionArguments: {} },
+    ]);
+
+    const res = await buildApp().request('/approvals/a1');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.approval.approvalScope).toBeNull();
+    // No intent link → no second (intent) select at all.
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -954,6 +1099,74 @@ describe('POST /approvals/:id/assertion-challenge', () => {
     expect(res.status).toBe(404);
     expect(generateApprovalAssertionOptions).not.toHaveBeenCalled();
     expect(issueMobileAssertionNonce).not.toHaveBeenCalled();
+  });
+
+  // Task 8 review finding: a demoted four_eyes approver still owns their
+  // pending row, so without the live-authz filter they could keep burning
+  // WebAuthn challenges / mobile nonces against an approval they can no
+  // longer act on. Refused BEFORE any challenge is minted.
+  it('404s for a demoted four_eyes approver and never mints a challenge or nonce', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ ...pendingRow, intentId: 'intent-42' }]),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            {
+              id: 'intent-42',
+              orgId: 'org-9',
+              status: 'pending_approval',
+              approvalScope: 'four_eyes',
+              requestedByUserId: 'requester-9',
+            },
+          ]),
+        }),
+      } as any);
+    vi.mocked(userCanDecideApprovals).mockReturnValueOnce(false);
+
+    const res = await buildApp().request('/approvals/a1/assertion-challenge', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(404);
+    expect(generateApprovalAssertionOptions).not.toHaveBeenCalled();
+    expect(issueMobileAssertionNonce).not.toHaveBeenCalled();
+  });
+
+  it('still mints a challenge for a four_eyes approver who is STILL authorized', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ ...pendingRow, intentId: 'intent-42' }]),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            {
+              id: 'intent-42',
+              orgId: 'org-9',
+              status: 'pending_approval',
+              approvalScope: 'four_eyes',
+              requestedByUserId: 'requester-9',
+            },
+          ]),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+      } as any);
+
+    const res = await buildApp().request('/approvals/a1/assertion-challenge', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(200);
+    expect(generateApprovalAssertionOptions).toHaveBeenCalled();
   });
 });
 
@@ -2107,6 +2320,146 @@ describe('Task 6: supervised intent plain-decide branch', () => {
     );
   });
 
+  // ------------------------------------------------------------------
+  // Fix round 2, finding 1: an OPTIONAL proof presented on a supervised
+  // decide used to be silently DISCARDED — `skipAssuranceLadder` never
+  // considered `proof`, so a Secure-Enclave signature was never verified, the
+  // anti-clone counter never bumped, the challenge left unconsumed, and the
+  // audit row recorded L1/session_tap/device NULL. A forged or replayed proof
+  // was ignored rather than 401'd.
+  // ------------------------------------------------------------------
+  const mobileProof = {
+    type: 'mobile_hw_key' as const,
+    credentialId: '00000000-0000-0000-0000-0000000000aa',
+    nonce: 'mobile-nonce-xyz',
+    signature: 'c2ln',
+  };
+
+  it('supervised approve WITH a valid proof verifies it and records the real assurance level (not session_tap)', async () => {
+    mockDecideWithSupervisedIntent({});
+    vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
+      requiredLevel: 3,
+      decidedAssuranceLevel: 3,
+      decidedVia: 'mobile_hw_key',
+      authenticatorDeviceId: 'authdev-1',
+    });
+    const { approvalCasSet, intentCasSet } = mockSupervisedFanInTx();
+
+    const res = await buildApp().request('/approvals/appr-1/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proof: mobileProof }),
+    });
+
+    expect(res.status).toBe(200);
+    // The ladder RAN (proof presented) even though the partner policy is
+    // non-enforcing — the signature is verified, not thrown away.
+    expect(assertApprovalAssurance).toHaveBeenCalledWith(
+      expect.objectContaining({
+        approvalId: 'appr-1',
+        userId: TEST_USER.id,
+        proof: expect.objectContaining({ type: 'mobile_hw_key', nonce: 'mobile-nonce-xyz' }),
+      }),
+    );
+    expect(approvalCasSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decidedVia: 'mobile_hw_key',
+        decidedAssuranceLevel: 3,
+        authenticatorDeviceId: 'authdev-1',
+      }),
+    );
+    expect(intentCasSet).toHaveBeenCalledWith(
+      expect.objectContaining({ decidedVia: 'mobile_hw_key', decidedAssuranceLevel: 3 }),
+    );
+  });
+
+  it('supervised approve with an INVALID/replayed proof is 401, never a silent L1 success', async () => {
+    mockDecideWithSupervisedIntent({});
+    mockSupervisedFanInTx();
+    vi.mocked(assertApprovalAssurance).mockRejectedValueOnce(new Error('signature verification failed'));
+
+    const res = await buildApp().request('/approvals/appr-1/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proof: mobileProof }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'assertion_failed' });
+    // Nothing was written — the decide transaction never opened.
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  // Fix round 2, finding 1 PART 2 regression guard: the sole-operator L3 gate
+  // fires on `requestedByUserId === userId`, which is UNCONDITIONALLY true for
+  // a supervised decide. Routing an optional proof through the ladder must not
+  // let a proof that only reaches L2 turn into a 403 on a decide that a plain
+  // click passes — an optional proof can only ever RAISE the recorded
+  // assurance under a non-enforcing policy.
+  it('supervised approve with an L2-only proof still succeeds (the sole-operator L3 gate must not fire)', async () => {
+    mockDecideWithSupervisedIntent({});
+    vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
+      requiredLevel: 3,
+      decidedAssuranceLevel: 2,
+      decidedVia: 'mobile_hw_key',
+      authenticatorDeviceId: 'authdev-1',
+    });
+    const { approvalCasSet } = mockSupervisedFanInTx();
+
+    const res = await buildApp().request('/approvals/appr-1/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proof: mobileProof }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(approvalCasSet).toHaveBeenCalledWith(
+      expect.objectContaining({ decidedVia: 'mobile_hw_key', decidedAssuranceLevel: 2 }),
+    );
+  });
+
+  // The other half of the same regression guard: no proof + non-enforcing
+  // partner must remain a plain click that skips the ladder entirely.
+  it('supervised approve with NO proof under a non-enforcing partner is still a plain click (ladder skipped)', async () => {
+    mockDecideWithSupervisedIntent({});
+    const { approvalCasSet } = mockSupervisedFanInTx();
+
+    const res = await buildApp().request('/approvals/appr-1/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+
+    expect(res.status).toBe(200);
+    expect(assertApprovalAssurance).not.toHaveBeenCalled();
+    expect(approvalCasSet).toHaveBeenCalledWith(
+      expect.objectContaining({ decidedVia: 'session_tap', decidedAssuranceLevel: 1 }),
+    );
+  });
+
+  // An ENFORCING partner policy is unchanged by finding 1: the L3 gate still
+  // applies there, so an L2-only proof is still refused.
+  it('an ENFORCING partner policy still refuses an L2-only proof on a supervised approve', async () => {
+    mockDecideWithSupervisedIntent({});
+    vi.mocked(isEnforcing).mockReturnValue(true);
+    vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
+      requiredLevel: 3,
+      decidedAssuranceLevel: 2,
+      decidedVia: 'mobile_hw_key',
+      authenticatorDeviceId: 'authdev-1',
+    });
+
+    const res = await buildApp().request('/approvals/appr-1/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proof: mobileProof }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'step_up_required', requiredLevel: 3 });
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
   it('supervised row rejects a NON-requester decide even with approvals:decide', async () => {
     // The row's userId happens to be the deciding user (Shape-6 self-visibility
     // in production would otherwise 404 this for anyone else — see the not_requester
@@ -2418,6 +2771,124 @@ describe('POST /approvals/:id/report-suspicious', () => {
     expect(siblingSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'expired' }));
     expect(recordActionIntentEvent).toHaveBeenCalledWith(
       expect.objectContaining({ intentId: 'intent-77', outcome: 'rejected' }),
+    );
+    // Fix round 2, finding 2: the flip is a CAS on status = 'pending'. Without
+    // that predicate a decide that committed between this handler's unlocked
+    // pre-fetch and this statement had its just-written 'approved' (plus
+    // decided_by / assurance columns) silently overwritten by 'reported'.
+    expect(flipSet.mock.results[0]!.value.where).toHaveBeenCalledWith(
+      and(
+        eq(approvalRequests.id, 'a1'),
+        eq(approvalRequests.userId, TEST_USER.id),
+        eq(approvalRequests.status, 'pending'),
+      ),
+    );
+  });
+
+  // Fix round 2, finding 2: a losing race used to fall through to the SAME 204
+  // a successful report returns, while the intent was already 'approved', the
+  // outbox event queued, and the durable release worker about to run the very
+  // action the user flagged as malicious.
+  it('returns 409 already_decided (never 204) when a concurrent decide already approved the intent', async () => {
+    const intentRow = { ...baseRow, executionId: null, intentId: 'intent-77' };
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([intentRow]),
+      }),
+    } as any);
+
+    const flipSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    // Intent CAS matches ZERO rows — the intent already left 'pending_approval'.
+    const intentCasSet = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+    });
+    const siblingSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    const tx = {
+      // The FOR UPDATE lock read reports the terminal state the CAS lost to.
+      select: txSelectForUpdateStub([{ id: 'intent-77', status: 'approved' }]),
+      update: vi
+        .fn()
+        .mockReturnValueOnce({ set: flipSet } as any)
+        .mockReturnValueOnce({ set: intentCasSet } as any)
+        .mockReturnValueOnce({ set: siblingSet } as any),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+    vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
+
+    const res = await buildApp().request('/approvals/a1/report-suspicious', { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'already_decided', finalStatus: 'approved' });
+
+    // No sibling expiry on a lost CAS, and no 'rejected' metric event.
+    expect(siblingSet).not.toHaveBeenCalled();
+    expect(recordActionIntentEvent).not.toHaveBeenCalled();
+
+    // The security response still happens — revoking the requesting OAuth
+    // client and writing the audit row is exactly what a user reporting a
+    // compromised client needs most when the action already slipped through.
+    const { revokeUserOauthClient } = await import('./lifecycle');
+    expect(revokeUserOauthClient).toHaveBeenCalledWith(
+      TEST_USER.id,
+      baseRow.requestingClientId,
+      TEST_USER.id,
+      'self-reported suspicious approval',
+    );
+    expect(db.insert).toHaveBeenCalled();
+  });
+
+  it('still 409s (finalStatus null) when the intent row vanished from under the lock', async () => {
+    const intentRow = { ...baseRow, executionId: null, intentId: 'intent-77' };
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([intentRow]),
+      }),
+    } as any);
+
+    const tx = {
+      select: txSelectForUpdateStub([]),
+      update: vi
+        .fn()
+        .mockReturnValueOnce({
+          set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+        } as any)
+        .mockReturnValueOnce({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+          }),
+        } as any),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+    vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
+
+    const res = await buildApp().request('/approvals/a1/report-suspicious', { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'already_decided', finalStatus: null });
+  });
+
+  // The legacy execution-linked branch is deliberately untouched by the CAS /
+  // 409 work above — it has no intent to lose a race to.
+  it('legacy execution-linked branch is unchanged: 204 plus the ai_tool_executions mirror', async () => {
+    const execRow = { ...baseRow, executionId: 'exec-9', intentId: null };
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([execRow]),
+      }),
+    } as any);
+    const flipSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    const mirrorSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    vi.mocked(db.update)
+      .mockReturnValueOnce({ set: flipSet } as any)
+      .mockReturnValueOnce({ set: mirrorSet } as any);
+    vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
+
+    const res = await buildApp().request('/approvals/a1/report-suspicious', { method: 'POST' });
+    expect(res.status).toBe(204);
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(flipSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'reported' }));
+    expect(mirrorSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'rejected', approvedBy: TEST_USER.id }),
     );
   });
 

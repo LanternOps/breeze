@@ -19,7 +19,7 @@ import { dispatchApprovalPushToTokens, getUserPushTokens } from '../expoPush';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 import { recordActionIntentEvent } from './metrics';
 import { resolveIntentApprovers } from './intentApprovers';
-import { computeEffectDigest } from './effectDigest';
+import { computeEffectDigestOutcome, type EffectDigestOutcome } from './effectDigest';
 
 /** Statuses the partial `action_intents_org_idem_uniq` index dedupes on
  * (IMPORTANT-4 — migration 2026-07-18-action-intents.sql). Kept as a single
@@ -255,6 +255,11 @@ interface CreationResult {
   /** userIds that received a fanned-out approval row, in the same order as approvalRequestIds — used for the post-commit push fan-out. Empty on an idempotent replay. */
   fanOutUserIds: string[];
   isNew: boolean;
+  /** Which of effectDigest.ts's three outcomes the pinning attempt produced.
+   * Carried out of the transaction so the `unresolved` cases can be audited
+   * AFTER commit (the intent id doesn't exist until the insert returns, and
+   * an event for a rolled-back intent would be a lie). */
+  effectDigestOutcome: EffectDigestOutcome;
 }
 
 export async function createActionIntent(
@@ -372,18 +377,28 @@ export async function createActionIntent(
   try {
     creation = await withSystemDbAccessContext(async (): Promise<CreationResult> => {
       // Effect-digest pinning (tier3-supervised-four-eyes design §4.1,
-      // effectDigest.ts) — four_eyes only; supervised intents (5-minute
-      // window, self-approved) skip pinning entirely. Computed INSIDE this
-      // transaction, via the ambient `db` (same connection/snapshot the
-      // insert below runs on), so the pinned content and the row it's
-      // attached to are read/written atomically — no window where a
-      // concurrent edit lands between "read the target" and "create the
-      // intent". A tool/action with no resolver (or a target that doesn't
-      // exist yet) yields null, which leaves effect_digest NULL on the row —
-      // the release worker treats a NULL stored digest as "nothing to
-      // check", not a failure.
-      const effectDigest =
-        approvalScope === 'four_eyes' ? await computeEffectDigest(input.toolName, input.input, db) : null;
+      // effectDigest.ts) — SCOPE-INDEPENDENT: pinned whenever a resolver
+      // exists, supervised as well as four_eyes. It used to be gated on
+      // `approvalScope === 'four_eyes'`, which made effectDigest.ts's own
+      // motivating resolver (run_script, a SUPERVISED tool) unreachable dead
+      // code while leaving its ~10-minute release lease open to exactly the
+      // script-body edit the module exists to catch. See effectDigest.ts's
+      // header for the full rationale.
+      //
+      // Computed INSIDE this transaction, via the ambient `db` (same
+      // connection/snapshot the insert below runs on), so the pinned content
+      // and the row it's attached to are read/written atomically — no window
+      // where a concurrent edit lands between "read the target" and "create
+      // the intent".
+      //
+      // Only `pinned` stores a digest. `not_applicable` (no resolver — the
+      // expected case for most tools) and `unresolved` (a resolver existed
+      // but the id arg was missing or the target row was absent) both leave
+      // effect_digest NULL, which both release paths treat as "nothing to
+      // check", not a failure. The `unresolved` cases are audited after
+      // commit — they are intents that SHOULD have been pinned and weren't.
+      const effectDigestOutcome = await computeEffectDigestOutcome(input.toolName, input.input, db);
+      const effectDigest = effectDigestOutcome.kind === 'pinned' ? effectDigestOutcome.digest : null;
 
       const [inserted] = await db
         .insert(actionIntents)
@@ -479,6 +494,7 @@ export async function createActionIntent(
             approvalRows.find((r) => r.userId === requesterId)?.id ?? null,
           fanOutUserIds: [],
           isNew: false,
+          effectDigestOutcome,
         };
       }
 
@@ -577,7 +593,14 @@ export async function createActionIntent(
         payload: { intentId: inserted.id, orgId },
       });
 
-      return { intent: finalIntent, approvalRequestIds, requesterApprovalRequestId, fanOutUserIds, isNew: true };
+      return {
+        intent: finalIntent,
+        approvalRequestIds,
+        requesterApprovalRequestId,
+        fanOutUserIds,
+        isNew: true,
+        effectDigestOutcome,
+      };
     });
   } catch (err) {
     // One transaction ⇒ any throw already rolled the intent insert back with
@@ -621,6 +644,31 @@ export async function createActionIntent(
         console.error('[intentService] approval push dispatch failed', approvalId, err);
       }
     }
+  }
+
+  // An intent that SHOULD have been pinned but wasn't (a resolver exists for
+  // this tool/action, but the id argument was missing or the target row was
+  // absent/soft-deleted) is indistinguishable from "no resolver at all" once
+  // it hits the column — all three store NULL, and both release paths read
+  // NULL as "nothing to check". Emitting the reason here is the only thing
+  // that makes those two silent cases countable and alertable; without it, a
+  // surface that quietly stopped being pinnable leaves no trace anywhere.
+  // Gated on isNew: a replay recomputes the same outcome for a row that
+  // already emitted this once.
+  if (creation.isNew && creation.effectDigestOutcome.kind === 'unresolved') {
+    recordActionIntentEvent({
+      orgId,
+      intentId: creation.intent.id,
+      actionName: input.toolName,
+      argumentDigest,
+      source: input.source,
+      outcome: 'effect_digest_unpinned',
+      actorId: requesterId,
+      details: {
+        reason: creation.effectDigestOutcome.reason,
+        approvalScope,
+      },
+    });
   }
 
   if (creation.isNew) {
@@ -726,6 +774,29 @@ export async function cancelActionIntent(
 // ---------------------------------------------------------------------------
 
 /**
+ * Which deadline column governs an intent in a given status. A tier-3 intent
+ * lives under TWO successive deadlines and they are not interchangeable:
+ *
+ *  - `pending_approval` is bounded by `approval_expires_at` — how long a human
+ *    has to decide.
+ *  - `approved` / `executing` are bounded by `release_by` — the fixed
+ *    RELEASE_LEASE_MS lease stamped at approval time. `approval_expires_at`
+ *    stops applying the moment an intent is approved (the "59:59 trap" —
+ *    jobs/intentExpiryReaper.ts's header).
+ *
+ * Terminal statuses have no live deadline at all, which is why they are absent
+ * here rather than mapped to something arbitrary: asking for an expiry check
+ * on a terminal `from` list is a caller bug, and transitionIntent throws.
+ */
+export type IntentDeadlinePhase = 'approval' | 'release';
+
+const DEADLINE_PHASE_BY_STATUS: Partial<Record<ActionIntentStatus, IntentDeadlinePhase>> = {
+  pending_approval: 'approval',
+  approved: 'release',
+  executing: 'release',
+};
+
+/**
  * `UPDATE ... WHERE id = $1 AND status IN (...from)`. Zero rows affected
  * (lost race / already-terminal / wrong starting state) returns `false`,
  * never throws — callers re-read on a lost race. Runs under system scope so
@@ -733,33 +804,66 @@ export async function cancelActionIntent(
  * release worker, reaper); `withDbAccessContext` no-ops into an ALREADY
  * active caller context rather than re-scoping it, which is fine here since
  * `breeze_has_org_access` also authorizes system scope.
+ *
+ * `opts.requireNotExpired` names WHICH deadline to fold into the CAS. It used
+ * to be a plain `boolean` that unconditionally applied the RELEASE deadline
+ * regardless of the `from` status — correct only by the accident that both
+ * callers pass `from: 'approved'`. A caller passing `from: 'pending_approval'`
+ * would have silently checked the wrong column. `true` is still accepted as a
+ * deprecated alias for `'release'` so the two call sites in files owned
+ * elsewhere (jobs/intentReleaseWorker.ts, services/aiAgentSdk.ts) keep
+ * compiling; both should move to `'release'`.
+ *
+ * Misuse is rejected loudly: the requested phase must be the phase EVERY
+ * status in `from` lives under. A mixed-phase list (e.g.
+ * `['pending_approval','approved']`) has no single correct deadline column and
+ * throws rather than picking one.
  */
 export async function transitionIntent(
   intentId: string,
   from: ActionIntentStatus | ActionIntentStatus[],
   to: ActionIntentStatus,
   patch?: ActionIntentTransitionPatch,
-  opts?: { requireNotExpired?: boolean },
+  opts?: { requireNotExpired?: IntentDeadlinePhase | boolean },
 ): Promise<boolean> {
   const fromList = Array.isArray(from) ? from : [from];
-  return withSystemDbAccessContext(async () => {
-    // requireNotExpired folds the deadline into the CAS predicate so a release
-    // claim is atomic with the intent still being live. The only caller today
-    // (the release worker's approved -> executing claim) checks the deadline
-    // that actually governs an APPROVED intent: release_by (falling back to
-    // expires_at for legacy rows approved before release_by existed), not
-    // approval_expires_at — that column stops applying the moment an intent
-    // is approved (see jobs/intentExpiryReaper.ts's header for the "59:59
-    // trap" this avoids). Without this check at all, an intent approved just
-    // before its deadline could be claimed approved -> executing in the
-    // window before the 30s expiry reaper terminalizes it, executing an
-    // action whose authorization window has already closed. Uses the DB clock
-    // (now()) rather than a JS timestamp so the comparison is against the same
-    // clock that stamped release_by/expires_at.
-    const conditions = [eq(actionIntents.id, intentId), inArray(actionIntents.status, fromList)];
-    if (opts?.requireNotExpired) {
-      conditions.push(sql`COALESCE(${actionIntents.releaseBy}, ${actionIntents.expiresAt}) > now()`);
+
+  // Resolve + validate BEFORE opening the DB context so a caller bug throws
+  // without ever taking a pooled connection.
+  let deadlineCondition: ReturnType<typeof sql> | null = null;
+  if (opts?.requireNotExpired) {
+    const requested: IntentDeadlinePhase =
+      opts.requireNotExpired === true ? 'release' : opts.requireNotExpired;
+    const fromPhases = new Set(fromList.map((status) => DEADLINE_PHASE_BY_STATUS[status]));
+    if (fromPhases.size !== 1 || !fromPhases.has(requested)) {
+      throw new ActionIntentError(
+        `requireNotExpired: '${requested}' is not the deadline phase governing from-status(es) ` +
+          `[${fromList.join(', ')}] — pending_approval is bounded by approval_expires_at, ` +
+          `approved/executing by release_by, and terminal statuses by neither`,
+        'invalid_deadline_phase',
+      );
     }
+    // Folds the deadline into the CAS predicate so a claim is atomic with the
+    // intent still being live. Without it, an intent approved just before its
+    // deadline could be claimed approved -> executing in the window before the
+    // 30s expiry reaper terminalizes it, executing an action whose
+    // authorization window has already closed. Uses the DB clock (now())
+    // rather than a JS timestamp so the comparison is against the same clock
+    // that stamped the deadline.
+    //
+    // Both branches keep their COALESCE fallback to `expires_at` on purpose:
+    // that is the rolling-upgrade mechanism for rows written by an older
+    // instance that only ever populated `expires_at` (release_by /
+    // approval_expires_at are both post-split columns). Do not remove it.
+    deadlineCondition =
+      requested === 'release'
+        ? sql`COALESCE(${actionIntents.releaseBy}, ${actionIntents.expiresAt}) > now()`
+        : sql`COALESCE(${actionIntents.approvalExpiresAt}, ${actionIntents.expiresAt}) > now()`;
+  }
+
+  return withSystemDbAccessContext(async () => {
+    const conditions = [eq(actionIntents.id, intentId), inArray(actionIntents.status, fromList)];
+    if (deadlineCondition) conditions.push(deadlineCondition);
     const rows = await db
       .update(actionIntents)
       .set({ status: to, ...patch })

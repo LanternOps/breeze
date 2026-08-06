@@ -10,7 +10,13 @@ import { elevationRequests, elevationAudit } from '../db/schema/elevations';
 import { aiToolExecutions, aiSessions } from '../db/schema/ai';
 import { delegantM365Connections } from '../db/schema/delegant';
 import { auditLogs } from '../db/schema/audit';
-import { actionIntents, intentOutbox, type ActionIntent, type ActionIntentStatus } from '../db/schema/actionIntents';
+import {
+  actionIntents,
+  intentOutbox,
+  type ActionIntent,
+  type ActionIntentApprovalScope,
+  type ActionIntentStatus,
+} from '../db/schema/actionIntents';
 import { dispatchApprovalPush } from '../services/expoPush';
 import { revokeUserOauthClient } from './lifecycle';
 import {
@@ -97,26 +103,65 @@ function isAfterPendingCursor(
   return row.id < cursor.id;
 }
 
+/** The only fields of a linked intent the live-authorization rule reads. */
+type LiveAuthzIntent = Pick<
+  ActionIntent,
+  'status' | 'approvalScope' | 'orgId' | 'requestedByUserId'
+>;
+
+/** An approval row paired with its linked intent's scope (null when the row
+ * has no intent). The scope is what lets a client tell a supervised row —
+ * decided with a plain click — from a four_eyes one that may demand a
+ * step-up, so it must not be dropped on the way out of the projection. */
+interface AuthorizedApproval {
+  approval: typeof approvalRequests.$inferSelect;
+  approvalScope: ActionIntentApprovalScope | null;
+}
+
 /**
- * The full, already-live-authorized set of this caller's pending approval
- * rows (spec docs/superpowers/specs/ai-mcp/2026-08-05-tier3-supervised-four-eyes-split-design.md
- * §4.2 / task-8 brief). Shared by `GET /pending` and `GET /pending/count` so
- * the two can never drift on what "pending and visible to me" means.
+ * "Does `userId` STILL hold `approvals:decide` + access for `orgId`?", memoised
+ * per org for the lifetime of one request. A caller can have several pending
+ * rows against the same org, and `getUserPermissions` is cached internally, but
+ * there's no reason to redo the canAccessOrg/userCanDecideApprovals pairing per
+ * row.
  *
- * approval_requests is Shape-6 (user-id-scoped) — `eq(approvalRequests.userId,
- * userId)` alone already limits this to the caller's own rows under normal
- * RLS. The join onto action_intents (Shape 1, org-scoped) is read under
- * system scope, mirroring the decide handler's own linked-intent read:
- * regardless of the caller's ambient scope, we need to see the intent's
- * current state to decide whether the row is still live — that's an
- * app-layer authorization decision made explicitly below, not something RLS
- * visibility should gate.
+ * System-scoped: the org membership/role reads must resolve regardless of the
+ * caller's ambient request scope (partner approvers have no
+ * `organization_users` row), and a bare (non-exited) `withSystemDbAccessContext`
+ * from inside a request context is a no-op passthrough (db/index.ts), hence
+ * `runOutsideDbContext`.
+ */
+function makeOrgDecideAuthorizer(
+  userId: string,
+  partnerId: string | null,
+): (orgId: string) => Promise<boolean> {
+  const cache = new Map<string, Promise<boolean>>();
+  return (orgId: string) => {
+    let resolved = cache.get(orgId);
+    if (!resolved) {
+      resolved = runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          getUserPermissions(userId, { partnerId: partnerId ?? undefined, orgId }),
+        ),
+      ).then((perms) => !!perms && canAccessOrg(perms, orgId) && userCanDecideApprovals(perms));
+      cache.set(orgId, resolved);
+    }
+    return resolved;
+  };
+}
+
+/**
+ * THE live-authorization rule for an intent-linked approval row (spec
+ * docs/superpowers/specs/ai-mcp/2026-08-05-tier3-supervised-four-eyes-split-design.md
+ * §4.2). Deliberately one function shared by every read surface that can hand
+ * back a row's contents — `GET /pending`, `GET /pending/count`, `GET /:id` and
+ * `POST /:id/assertion-challenge` — so a demoted approver can never be filtered
+ * out of the list yet still fetch the same row's `actionArguments` (script
+ * bodies, target user emails, device identifiers) from the detail endpoint, or
+ * burn a WebAuthn challenge against it.
  *
- * A row with NO intent (executionId/elevationRequestId-linked, or a plain
- * dev-seed row — the one_source constraint makes execution_id XOR intent_id)
- * has no scope/live-authz story to re-check and passes through unchanged.
- * An intent-linked row is included only when its intent is still
- * 'pending_approval' AND either:
+ * A row is authorized only when its intent is still 'pending_approval' AND
+ * either:
  *   - supervised: the caller is still the intent's requester (the row is
  *     always fanned out to the requester for a supervised intent, but this
  *     re-derives identity rather than trusting row ownership alone); or
@@ -125,10 +170,73 @@ function isAfterPendingCursor(
  *     stop seeing (and being able to act on) the row, exactly like the
  *     decide handler's own stale-approver re-check.
  */
+async function isIntentRowLiveAuthorized(
+  intent: LiveAuthzIntent | null,
+  userId: string,
+  orgDecideAuthorizer: (orgId: string) => Promise<boolean>,
+): Promise<boolean> {
+  if (!intent || intent.status !== 'pending_approval') return false;
+  if (intent.approvalScope === 'supervised') return intent.requestedByUserId === userId;
+  return orgDecideAuthorizer(intent.orgId);
+}
+
+/**
+ * Single-row form of the rule above, for the surfaces that read ONE
+ * already-owned approval row rather than the caller's whole queue. Loads the
+ * linked intent under system scope (same reason the pending join does) and
+ * returns both the verdict and the intent's scope so the caller can serialize
+ * it without a second read.
+ *
+ * A row with NO intent — executionId-linked (legacy AI SDK flow),
+ * elevationRequestId-linked (PAM), or a plain dev-seed row with none of the
+ * three; the `approval_requests_one_source_chk` constraint permits at most one
+ * of execution_id / elevation_request_id / intent_id to be set, and permits
+ * all three to be NULL — has no scope/live-authz story to re-check and is
+ * authorized unchanged.
+ */
+async function resolveRowLiveAuthorization(
+  row: typeof approvalRequests.$inferSelect,
+  userId: string,
+  partnerId: string | null,
+): Promise<{ authorized: boolean; approvalScope: ActionIntentApprovalScope | null }> {
+  if (!row.intentId) return { authorized: true, approvalScope: null };
+  const intentId = row.intentId;
+  const intent = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const [found] = await db
+        .select()
+        .from(actionIntents)
+        .where(eq(actionIntents.id, intentId));
+      return found ?? null;
+    }),
+  );
+  const authorized = await isIntentRowLiveAuthorized(
+    intent,
+    userId,
+    makeOrgDecideAuthorizer(userId, partnerId),
+  );
+  return { authorized, approvalScope: intent?.approvalScope ?? null };
+}
+
+/**
+ * The full, already-live-authorized set of this caller's pending approval
+ * rows (spec §4.2 / task-8 brief). Shared by `GET /pending` and
+ * `GET /pending/count` so the two can never drift on what "pending and visible
+ * to me" means.
+ *
+ * approval_requests is Shape-6 (user-id-scoped) — `eq(approvalRequests.userId,
+ * userId)` alone already limits this to the caller's own rows under normal
+ * RLS. The join onto action_intents (Shape 1, org-scoped) is read under
+ * system scope, mirroring the decide handler's own linked-intent read:
+ * regardless of the caller's ambient scope, we need to see the intent's
+ * current state to decide whether the row is still live — that's an
+ * app-layer authorization decision made explicitly by
+ * `isIntentRowLiveAuthorized`, not something RLS visibility should gate.
+ */
 async function fetchAuthorizedPendingApprovals(
   userId: string,
   partnerId: string | null,
-): Promise<Array<typeof approvalRequests.$inferSelect>> {
+): Promise<AuthorizedApproval[]> {
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db
@@ -146,35 +254,18 @@ async function fetchAuthorizedPendingApprovals(
     ),
   );
 
-  // One live-permission resolution per distinct four_eyes org in this page,
-  // not per row — a caller can have several pending rows against the same
-  // org, and getUserPermissions is already cached internally, but there's no
-  // reason to redo the canAccessOrg/userCanDecideApprovals pairing per row.
-  const fourEyesOrgIds = new Set<string>();
-  for (const { intent } of rows) {
-    if (intent && intent.approvalScope === 'four_eyes') fourEyesOrgIds.add(intent.orgId);
+  const orgDecideAuthorizer = makeOrgDecideAuthorizer(userId, partnerId);
+  const authorized: AuthorizedApproval[] = [];
+  for (const { approval, intent } of rows) {
+    if (!approval.intentId) {
+      authorized.push({ approval, approvalScope: null });
+      continue;
+    }
+    if (await isIntentRowLiveAuthorized(intent, userId, orgDecideAuthorizer)) {
+      authorized.push({ approval, approvalScope: intent?.approvalScope ?? null });
+    }
   }
-
-  const orgAuthorized = new Map<string, boolean>();
-  for (const orgId of fourEyesOrgIds) {
-    const perms = await runOutsideDbContext(() =>
-      withSystemDbAccessContext(() =>
-        getUserPermissions(userId, { partnerId: partnerId ?? undefined, orgId }),
-      ),
-    );
-    orgAuthorized.set(orgId, !!perms && canAccessOrg(perms, orgId) && userCanDecideApprovals(perms));
-  }
-
-  return rows
-    .filter(({ approval, intent }) => {
-      if (!approval.intentId) return true;
-      if (!intent || intent.status !== 'pending_approval') return false;
-      if (intent.approvalScope === 'supervised') {
-        return intent.requestedByUserId === userId;
-      }
-      return orgAuthorized.get(intent.orgId) ?? false;
-    })
-    .map(({ approval }) => approval);
+  return authorized;
 }
 
 approvalRoutes.get('/pending', async (c) => {
@@ -191,19 +282,26 @@ approvalRoutes.get('/pending', async (c) => {
   const cursor = cursorParam ? decodePendingCursor(cursorParam) : null;
 
   const authorized = await fetchAuthorizedPendingApprovals(userId, partnerId);
-  const afterCursor = cursor ? authorized.filter((r) => isAfterPendingCursor(r, cursor)) : authorized;
+  const afterCursor = cursor
+    ? authorized.filter((r) => isAfterPendingCursor(r.approval, cursor))
+    : authorized;
   const page = afterCursor.slice(0, limit);
+  const last = page[page.length - 1];
   const nextCursor =
-    afterCursor.length > limit
-      ? encodePendingCursor(page[page.length - 1]!.createdAt, page[page.length - 1]!.id)
+    afterCursor.length > limit && last
+      ? encodePendingCursor(last.approval.createdAt, last.approval.id)
       : null;
 
   // Batched lookup: one query resolves the customer tenant for ALL M365
   // mutation rows in this page (no N+1).
-  const tenants = await lookupCustomerTenants(page);
+  const tenants = await lookupCustomerTenants(page.map((r) => r.approval));
   return c.json({
-    approvals: page.map((r) =>
-      serialize(r, (r.executionId && tenants.get(r.executionId)) || null),
+    approvals: page.map(({ approval, approvalScope }) =>
+      serialize(
+        approval,
+        (approval.executionId && tenants.get(approval.executionId)) || null,
+        approvalScope,
+      ),
     ),
     nextCursor,
   });
@@ -289,6 +387,7 @@ approvalRoutes.post('/dev/seed', zValidator('json', seedSchema), async (c) => {
 
 approvalRoutes.get('/:id', async (c) => {
   const userId = c.get('auth').user.id;
+  const partnerId = c.get('auth').partnerId ?? null;
   const id = c.req.param('id');
   if (!id) return c.json({ error: 'Bad request' }, 400);
   const [row] = await db
@@ -297,9 +396,20 @@ approvalRoutes.get('/:id', async (c) => {
     .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
 
   if (!row) return c.json({ error: 'Not found' }, 404);
+
+  // Same live-authorization filter `/pending` applies (see
+  // isIntentRowLiveAuthorized). Row ownership alone is NOT sufficient here:
+  // this response carries actionArguments / actionLabel / riskSummary — script
+  // bodies, target user emails, device identifiers — so a four_eyes approver
+  // demoted after fan-out (or a supervised row whose intent already settled)
+  // must not be able to read them just because the row is still theirs.
+  // Indistinguishable-from-missing 404, matching the not-found branch above.
+  const live = await resolveRowLiveAuthorization(row, userId, partnerId);
+  if (!live.authorized) return c.json({ error: 'Not found' }, 404);
+
   const tenants = await lookupCustomerTenants([row]);
   const customerTenant = (row.executionId && tenants.get(row.executionId)) || null;
-  return c.json({ approval: serialize(row, customerTenant) });
+  return c.json({ approval: serialize(row, customerTenant, live.approvalScope) });
 });
 
 // Phase 2: issue a short-lived (120s) WebAuthn assertion challenge bound to
@@ -309,6 +419,7 @@ approvalRoutes.get('/:id', async (c) => {
 // and the console falls back to an L1 (session-tap) approval — P2 is opt-in.
 approvalRoutes.post('/:id/assertion-challenge', async (c) => {
   const userId = c.get('auth').user.id;
+  const partnerId = c.get('auth').partnerId ?? null;
   const id = c.req.param('id');
   if (!id) return c.json({ error: 'Bad request' }, 400);
 
@@ -323,6 +434,13 @@ approvalRoutes.post('/:id/assertion-challenge', async (c) => {
       ),
     );
   if (!existing) return c.json({ error: 'Not found' }, 404);
+
+  // Same live-authorization filter `/pending` and `GET /:id` apply. Ordered
+  // BEFORE the challenge is minted for the same reason the decide handler
+  // orders its stale-approver re-check ahead of the assurance proof: a caller
+  // who can no longer act on this row must never consume a challenge/nonce.
+  const live = await resolveRowLiveAuthorization(existing, userId, partnerId);
+  if (!live.authorized) return c.json({ error: 'Not found' }, 404);
 
   // Caller's active platform approver devices (RLS scopes to the user; the
   // userId predicate is defense-in-depth — see reference memory: admin-list IDOR).
@@ -420,10 +538,31 @@ approvalRoutes.post('/:id/deny', zValidator('json', denySchema), async (c) => {
 });
 
 // "This wasn't me." Reports the in-flight approval as malicious, denies it,
-// revokes the requesting OAuth client's grant + refresh tokens, and writes
-// a security audit row. Behaves identically to /deny from the SDK's
-// perspective — the linked ai_tool_executions row flips to 'rejected' so
-// waitForApproval resolves with denial.
+// revokes the requesting OAuth client's grant + refresh tokens, and writes a
+// security audit row. Revocation and the audit row are unconditional — the
+// report is authoritative for those regardless of how the decision race below
+// resolves.
+//
+// The denial itself takes one of two shapes, depending on how the row was
+// created:
+//   - INTENT-linked (durable supervised / four_eyes path): the report is a
+//     strong DENY of the whole intent. A single transaction CASes THIS row
+//     'pending' -> 'reported', CASes the intent 'pending_approval' ->
+//     'rejected', and expires every sibling approval row. `ai_tool_executions`
+//     is never touched — an intent-backed row has no execution link (the
+//     `approval_requests_one_source_chk` constraint permits at most one of
+//     execution_id / elevation_request_id / intent_id).
+//   - EXECUTION-linked (legacy AI mobile-push flow) or unlinked (dev seed /
+//     PAM): a single flip of this row plus a best-effort
+//     `ai_tool_executions` mirror to 'rejected', so the SDK's waitForApproval
+//     resolves with denial. Behaves identically to /deny from the SDK's
+//     perspective.
+//
+// Responses: 204 when the report actually stopped the action, 404 when the row
+// isn't the caller's, 409 `already_decided` when a concurrent decide won the
+// intent first (the flagged action IS going to run — the caller must never
+// read that as "your report stopped it"), 500 `report_suspicious_failed` when
+// the intent transaction rolled back.
 approvalRoutes.post('/:id/report-suspicious', async (c) => {
   const userId = c.get('auth').user.id;
   const orgId = c.get('auth').orgId ?? null;
@@ -437,6 +576,17 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
     .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
 
   if (!existing) return c.json({ error: 'Not found' }, 404);
+
+  // Set when the intent CAS below matched ZERO rows — i.e. a concurrent decide
+  // (or the reaper) already moved the intent out of 'pending_approval'. On an
+  // 'approved' terminal state the outbox event is queued and the durable
+  // release worker WILL run the very action the user just flagged, so the
+  // response must be distinguishable from "your report stopped it": the
+  // handler answers 409 `already_decided` at the end instead of 204.
+  // Deliberately NOT an early return — the OAuth-client revocation and the
+  // security audit row below are exactly what a user reporting a compromised
+  // client needs most when the action already slipped through.
+  let intentRaceLost: { finalStatus: ActionIntentStatus | null } | null = null;
 
   // Flip status to 'reported' if still pending, else leave as-is. Either way
   // we treat the report as authoritative for revocation + audit.
@@ -475,12 +625,32 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
       // back (flip + intent CAS + sibling expiry all undone) and the request
       // fails with a retryable 500 BEFORE revocation/audit run, rather than
       // silently leaving a half-applied state while still reporting success.
+      //
+      // Fix round 2, finding 2: BOTH writes in here are now compare-and-swap.
+      //  - The 'reported' flip predicates on `status = 'pending'`. Without it,
+      //    a decide transaction that committed between this handler's
+      //    unlocked pre-fetch above and this statement had its
+      //    just-written 'approved' (plus decided_by / assurance columns)
+      //    silently OVERWRITTEN by 'reported' — destroying the record of who
+      //    approved the action while the approval itself remained in force.
+      //    A zero-row flip is deliberately NOT fatal: the intent CAS below
+      //    still runs, and if IT wins the report has genuinely stopped the
+      //    action even though this row already records the racing decision.
+      //    That asymmetry is the safe direction — a deny always wins.
+      //  - A zero-row intent CAS is now reported to the caller (see
+      //    `intentRaceLost`) instead of falling through to a 204 that
+      //    is indistinguishable from a report that actually stopped the
+      //    action.
+      // The intent's terminal status comes from the FOR UPDATE lock row read
+      // at the top of the transaction: the lock serialises this transaction
+      // behind any in-flight decide, so what it reads is the committed state
+      // the CAS is about to be judged against.
       try {
-        const rejected = await runOutsideDbContext(() =>
+        const outcome = await runOutsideDbContext(() =>
           withSystemDbAccessContext(() =>
             db.transaction(async (tx) => {
-              await tx
-                .select({ id: actionIntents.id })
+              const [locked] = await tx
+                .select({ id: actionIntents.id, status: actionIntents.status })
                 .from(actionIntents)
                 .where(eq(actionIntents.id, intentId))
                 .for('update');
@@ -492,7 +662,13 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
                   decidedAt: new Date(),
                   decisionReason: 'Reported as suspicious by user',
                 })
-                .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
+                .where(
+                  and(
+                    eq(approvalRequests.id, id),
+                    eq(approvalRequests.userId, userId),
+                    eq(approvalRequests.status, 'pending'),
+                  ),
+                );
 
               const cas = await tx
                 .update(actionIntents)
@@ -509,7 +685,9 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
                   argumentDigest: actionIntents.argumentDigest,
                   source: actionIntents.source,
                 });
-              if (cas.length === 0) return null;
+              if (cas.length === 0) {
+                return { rejected: null, finalIntentStatus: locked?.status ?? null };
+              }
 
               await tx
                 .update(approvalRequests)
@@ -522,10 +700,11 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
                   ),
                 );
 
-              return cas[0] ?? null;
+              return { rejected: cas[0] ?? null, finalIntentStatus: null };
             }),
           ),
         );
+        const rejected = outcome.rejected;
         if (rejected) {
           recordActionIntentEvent({
             orgId: rejected.orgId,
@@ -537,6 +716,11 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
             actorId: userId,
             details: { reportedSuspicious: true, approvalRequestId: existing.id },
           });
+        } else {
+          // Lost the race. `finalStatus` can still be null if the intent row
+          // vanished from under the lock (FK cascade); surface the conflict
+          // either way rather than a misleading 204.
+          intentRaceLost = { finalStatus: outcome.finalIntentStatus };
         }
       } catch (err) {
         console.error('[approvals] report-suspicious: failed to reject linked action intent (rolled back):', err);
@@ -627,8 +811,37 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
     console.error('[approvals] report-suspicious: audit insert failed:', err);
   }
 
+  // The report did NOT stop the action — a concurrent decide already carried
+  // the intent to a terminal state (and, when that state is 'approved', the
+  // durable release worker is going to run it). Revocation + audit above have
+  // still happened; only the "did my report land?" answer differs.
+  if (intentRaceLost) {
+    return c.json({ error: 'already_decided', finalStatus: intentRaceLost.finalStatus }, 409);
+  }
+
   return c.body(null, 204);
 });
+
+/**
+ * The `release_by` patch for an intent decision (design §4.2), in ONE place so
+ * the rule can't drift between call sites.
+ *
+ * EVERY transition to `approved` gets a fresh, fixed `RELEASE_LEASE_MS` lease —
+ * unconditionally, never "only when it isn't already set". The downstream
+ * readers (jobs/intentExpiryReaper.ts, jobs/intentReleaseWorker.ts,
+ * services/actionIntents/intentService.ts) all evaluate
+ * `COALESCE(release_by, expires_at)`; that fallback is the ROLLING-UPGRADE
+ * mechanism for rows approved by an older instance that never stamped the
+ * column, and must stay — but a row approved by THIS code path should never
+ * be relying on it, because `expires_at` is the approval deadline, not an
+ * execution lease, and is typically already in the past by then.
+ *
+ * A rejected intent never executes, so it has no release window to bound.
+ */
+function stampReleaseLease(intentTargetStatus: ActionIntentStatus): { releaseBy?: Date } {
+  if (intentTargetStatus !== 'approved') return {};
+  return { releaseBy: new Date(Date.now() + RELEASE_LEASE_MS) };
+}
 
 async function decideHandler(
   c: import('hono').Context,
@@ -911,27 +1124,40 @@ async function decideHandler(
   //
   // Supervised self-decide (Task 6): skip the WHOLE assertion/assurance ladder
   // — no WebAuthn challenge, no partner-policy step-up floor, no
-  // ReauthRequiredError ceremony — UNLESS the partner's authenticator policy
-  // is actively ENFORCING (fix round 1, finding 5 — adjudicated requirement).
-  // An enforcing partner's step-up floor must not be silently bypassed just
-  // because an intent classified as supervised: the requester can still
-  // satisfy it with a WebAuthn L3 proof, exactly like the four_eyes
-  // sole-operator self-approve does. The ladder's own self-approve step-up
-  // gate below already keys off `requestedByUserId === userId` (never off
-  // approvalScope), which is unconditionally true for a supervised row, so no
-  // extra gate is needed there — routing an enforcing supervised approve
-  // through the shared ladder is sufficient. Only checked for an approve
-  // (deny is never blocked by assurance, so there's no reason to spend a
-  // partner-policy read on it) — `resolveApprovalAssurance` is the same
-  // synchronous "no proof presented" L1/session_tap default `proof===undefined`
-  // resolves to today; reusing it (rather than hand-rolling the literal) keeps
-  // the recorded factor byte-for-byte identical to that existing no-proof shape
-  // and impossible to drift from `assertDecisionConsistent`'s invariants.
+  // ReauthRequiredError ceremony — but ONLY when both of the following hold.
+  //
+  //  1. The partner's authenticator policy is not actively ENFORCING (fix
+  //     round 1, finding 5 — adjudicated requirement). An enforcing partner's
+  //     step-up floor must not be silently bypassed just because an intent
+  //     classified as supervised: the requester can still satisfy it with a
+  //     WebAuthn L3 proof, exactly like the four_eyes sole-operator
+  //     self-approve does.
+  //  2. NO proof was presented (fix round 2, finding 1). `skipAssuranceLadder`
+  //     used to ignore `proof` entirely, so a mobile approver device that
+  //     signed the decision in its Secure Enclave had that signature silently
+  //     DISCARDED: never verified, anti-clone signature counter never bumped,
+  //     challenge left unconsumed, and the audit row recorded L1 /
+  //     'session_tap' / device_id NULL. Worse, a FORGED or REPLAYED proof was
+  //     ignored rather than rejected, so the approve succeeded at L1 instead
+  //     of 401ing — contradicting this handler's own "a presented-but-invalid
+  //     proof throws → 401 (never silently L1)" invariant and the mobile
+  //     client's contract. An optional proof therefore always goes through the
+  //     real ladder; the sole-operator gate below is what keeps it from
+  //     turning into a NEW blocking requirement.
+  //
+  // Only checked for an approve (deny is never blocked by assurance, so
+  // there's no reason to spend a partner-policy read on it) —
+  // `resolveApprovalAssurance` is the same synchronous "no proof presented"
+  // L1/session_tap default `proof===undefined` resolves to today; reusing it
+  // (rather than hand-rolling the literal) keeps the recorded factor
+  // byte-for-byte identical to that existing no-proof shape and impossible to
+  // drift from `assertDecisionConsistent`'s invariants.
   const isPartnerEnforcingForSupervised =
     isSupervisedSelfDecide && status === 'approved'
       ? isEnforcing(await loadPartnerPolicy(c.get('auth').partnerId ?? null), new Date())
       : false;
-  const skipAssuranceLadder = isSupervisedSelfDecide && !isPartnerEnforcingForSupervised;
+  const skipAssuranceLadder =
+    isSupervisedSelfDecide && !isPartnerEnforcingForSupervised && proof === undefined;
 
   let assurance: AssuranceDecision;
   if (skipAssuranceLadder) {
@@ -965,15 +1191,22 @@ async function decideHandler(
     // supervised row under an enforcing partner policy) must present >= L3
     // assurance (webauthn_platform or mobile_hw_key). Checked BEFORE the CAS
     // so an under-assured self-approval never flips the row. Deny is
-    // unaffected — only an approve of one's own intent is gated. Never
-    // reached for a supervised self-decide under a NON-enforcing policy
-    // (handled by `skipAssuranceLadder` above, which always records L1 by
-    // design — this gate would otherwise refuse every plain-click supervised
-    // approve outright).
+    // unaffected — only an approve of one's own intent is gated.
+    //
+    // `requestedByUserId === userId` is UNCONDITIONALLY true for a supervised
+    // row (its sole approval row is always the requester's), so the gate must
+    // additionally exclude the non-enforcing supervised case — otherwise
+    // routing an OPTIONAL proof through the ladder (fix round 2, finding 1)
+    // would turn a proof that only reaches L2 (say, a stale challenge) into a
+    // 403 on a decide that a plain click passes. Under a non-enforcing partner
+    // policy an optional proof on a supervised decide can therefore only ever
+    // RAISE the recorded assurance, never block it. Under an ENFORCING policy
+    // the gate applies exactly as before, and four_eyes is untouched.
     if (
       linkedIntent &&
       status === 'approved' &&
-      linkedIntent.requestedByUserId === userId
+      linkedIntent.requestedByUserId === userId &&
+      (!isSupervisedSelfDecide || isPartnerEnforcingForSupervised)
     ) {
       const level = assurance.decidedAssuranceLevel ?? 0;
       if (level < 3) {
@@ -1140,12 +1373,7 @@ async function decideHandler(
                 decidedByUserId: userId,
                 decidedAssuranceLevel: assurance.decidedAssuranceLevel,
                 decidedVia: assurance.decidedVia,
-                // Fixed release lease (design §4.2), stamped only on an
-                // approval win — a rejected intent never executes, so it has
-                // no release window to bound.
-                ...(status === 'approved'
-                  ? { releaseBy: new Date(Date.now() + RELEASE_LEASE_MS) }
-                  : {}),
+                ...stampReleaseLease(intentTargetStatus),
               })
               .where(
                 and(
@@ -1339,7 +1567,7 @@ async function decideHandler(
     });
   }
 
-  return c.json({ approval: serialize(updated) });
+  return c.json({ approval: serialize(updated, null, linkedIntent?.approvalScope ?? null) });
 }
 
 // The two M365 mutation tools (tier 3) that create an approval card. Read-only
@@ -1391,6 +1619,14 @@ async function lookupCustomerTenants(
 function serialize(
   r: typeof approvalRequests.$inferSelect,
   customerTenant: string | null = null,
+  /**
+   * The linked intent's approval scope, or null when the row has no intent.
+   * Additive (task-8 review finding): without it a client cannot tell a
+   * `supervised` row — decided with a plain click — from a `four_eyes` one
+   * that may demand a WebAuthn/mobile step-up, so it can't shape the decide
+   * affordance ahead of the request.
+   */
+  approvalScope: ActionIntentApprovalScope | null = null,
 ) {
   return {
     id: r.id,
@@ -1408,6 +1644,7 @@ function serialize(
     decisionReason: r.decisionReason ?? null,
     executionId: r.executionId ?? null,
     intentId: r.intentId ?? null,
+    approvalScope,
     isRecursive: r.isRecursive,
     createdAt: r.createdAt.toISOString(),
   };

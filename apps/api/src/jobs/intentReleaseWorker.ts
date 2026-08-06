@@ -9,7 +9,7 @@ import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvent
 import { recordActionIntentEvent, recordActionIntentMetric } from '../services/actionIntents/metrics';
 import { transitionIntent } from '../services/actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
-import { computeEffectDigest } from '../services/actionIntents/effectDigest';
+import { computeEffectDigest, hasPinnedDigest } from '../services/actionIntents/effectDigest';
 import { executeTool, requiresLiveSession } from '../services/aiTools';
 import { dbAccessContextFromAuth } from '../middleware/auth';
 import { getToolTimeout, withToolTimeout } from '../services/toolTimeouts';
@@ -281,7 +281,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     'approved',
     'executing',
     { executedAt: null, executionStartedAt: new Date() },
-    { requireNotExpired: true },
+    { requireNotExpired: 'release' },
   );
   if (!claimed) {
     return;
@@ -338,16 +338,35 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // Effect-digest revalidation (tier3-supervised-four-eyes design §4.1,
   // services/actionIntents/effectDigest.ts) — the TOCTOU gap argumentDigest
   // alone cannot close: an approver approves a REFERENCE ("run script <id>",
-  // "send quote <id>"), and the referenced content can drift during the (up
-  // to 60-minute) four_eyes approval window while the intent's own arguments
-  // stay byte-identical. `intent.effectDigest` is NULL for supervised
-  // intents (never pinned — 5-minute self-approved window) and for
+  // "send quote <id>"), and the referenced content can drift during the
+  // approval window while the intent's own arguments stay byte-identical.
+  //
+  // That window is NOT one number. `computeExpiresAt`
+  // (services/actionIntents/intentService.ts) keys it off SOURCE first and
+  // approval scope only second:
+  //   - `CHAT_EXPIRY_MS` (5 min)            — source `chat`, supervised
+  //   - `FOUR_EYES_CHAT_EXPIRY_MS` (60 min) — source `chat`, four_eyes
+  //   - `MCP_EXPIRY_MS` (24 h)              — ANY non-chat source (`mcp_api`),
+  //                                           whatever the scope
+  // So the worst-case drift window this check has to cover is a full DAY (an
+  // `mcp_api` four_eyes intent), not an hour — matching this file's header
+  // ("possibly minutes to (for `mcp_api` intents) a day"). Do not restate the
+  // chat numbers as if they were universal.
+  //
+  // A pinned digest is ABSENT for supervised intents (never pinned) and for
   // legacy/unpinnable four_eyes intents (no resolver existed, or the target
-  // didn't exist yet, at creation); both skip this check by design. A
-  // non-null stored digest that no longer matches the freshly-recomputed one
-  // means the target changed underneath the approval — fail closed, never
-  // execute.
-  if (intent.effectDigest !== null) {
+  // didn't exist yet, at creation); both skip this check by design.
+  // `hasPinnedDigest` is the SHARED predicate with the inline chat release
+  // path (services/aiAgentSdk.ts): the two previously guarded the same
+  // invariant with different predicates (`!== null` here, truthiness there),
+  // which diverged on `undefined` (a narrower select shape) — this path
+  // failed CLOSED (a recompute never equals `undefined`, so EVERY pinned
+  // release would have been content_changed) while the SDK failed OPEN
+  // (skipped the check entirely). One predicate, one behavior.
+  //
+  // A pinned digest that no longer matches the freshly-recomputed one means
+  // the target changed underneath the approval — fail closed, never execute.
+  if (hasPinnedDigest(intent)) {
     // Runs in its own short system-scoped context (same discipline as Step 2
     // above) — this point in the function is between DB contexts (Step 2's
     // box already closed), and `db` falls back to the raw, GUC-less pool
@@ -355,9 +374,37 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     // would silently filter to zero rows rather than error on (see db/index.ts's
     // getCurrentDb). Without this wrap every resolver would read "not found"
     // and this check would fail EVERY pinned release, not just drifted ones.
-    const recomputedEffectDigest = await withSystemDbAccessContext(() =>
-      computeEffectDigest(intent.actionName, intent.arguments, db),
-    );
+    let recomputedEffectDigest: string | null;
+    try {
+      recomputedEffectDigest = await withSystemDbAccessContext(() =>
+        computeEffectDigest(intent.actionName, intent.arguments, db),
+      );
+    } catch (err) {
+      // Fail closed with a categorized code, like every other step in this
+      // worker. Left unwrapped, a transient DB fault here throws out of
+      // `releaseApprovedIntent` AFTER the intent has already been CASed to
+      // `executing`: BullMQ retries the job, the retry's claim CAS sees
+      // `executing` and returns silently, and the row then sits untouched
+      // until `reapStaleExecutingIntents` flips it to
+      // `failed:execution_lost` at STALE_EXECUTING_TIMEOUT_MINUTES (20).
+      // That code's contract is "the worker died mid-flight, unknown whether
+      // the tool ran" — but nothing ran here, so the operator signal would
+      // be actively wrong AND 20 minutes late. `executed` is deliberately
+      // NOT set: the digest check runs strictly before execution, so
+      // `executed_at` stays null (same as the other pre-execution stops).
+      console.error(
+        `[IntentReleaseWorker] effect-digest recompute failed for intent ${intent.id}:`,
+        err,
+      );
+      captureException(err instanceof Error ? err : new Error(String(err)));
+      await failIntent(intent, 'digest_check_failed', {
+        details: {
+          actionName: intent.actionName,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
+      return;
+    }
     if (recomputedEffectDigest !== intent.effectDigest) {
       await failIntent(intent, 'content_changed', { details: { actionName: intent.actionName } });
       return;

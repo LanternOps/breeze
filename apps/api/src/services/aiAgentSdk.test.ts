@@ -151,6 +151,14 @@ vi.mock('./actionIntents/revalidateRelease', () => ({
 const mockComputeEffectDigest = vi.fn((..._args: unknown[]) => Promise.resolve<string | null>(null));
 vi.mock('./actionIntents/effectDigest', () => ({
   computeEffectDigest: (...args: unknown[]) => mockComputeEffectDigest(...args),
+  // Faithful stand-in for the SHARED pinned-digest predicate both release
+  // paths now use (jobs/intentReleaseWorker.ts and the inline path here);
+  // its real semantics live in services/actionIntents/effectDigest.ts and
+  // are unit-tested there. Mocked rather than passed through because this
+  // file mocks `drizzle-orm` and `../db/schema/actionIntents`, which the
+  // real module's schema imports would not survive.
+  hasPinnedDigest: (intent: { effectDigest?: string | null }) =>
+    typeof intent?.effectDigest === 'string' && intent.effectDigest.length > 0,
 }));
 
 // Real actionIntents schema is imported by aiAgentSdk for the inline system
@@ -915,7 +923,7 @@ describe('createSessionPreToolUse', () => {
       // terminal return (Task 6) — this is what lets postToolUse seal
       // against the right intent without relying solely on the WeakMap.
       expect(result).toEqual({ allowed: true, intentId: 'intent-2' });
-      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-2', 'approved', 'executing', expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }), { requireNotExpired: true });
+      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-2', 'approved', 'executing', expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }), { requireNotExpired: 'release' });
       // ai_tool_executions ledger row marked executing (the inline path today's UX).
       expect(mockSet).toHaveBeenCalledWith({ status: 'executing' });
     });
@@ -941,7 +949,7 @@ describe('createSessionPreToolUse', () => {
         allowed: false,
         error: 'This action is already being completed by the approval worker; it will not run twice.',
       });
-      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-3', 'approved', 'executing', expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }), { requireNotExpired: true });
+      expect(mockTransitionIntent).toHaveBeenCalledWith('intent-3', 'approved', 'executing', expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }), { requireNotExpired: 'release' });
       // The intent-id link stamp (unconditional, ahead of the release CAS)
       // still happens, but no inline execution: the "mark as executing"
       // update never fires.
@@ -1058,6 +1066,120 @@ describe('createSessionPreToolUse', () => {
         executedAt: expect.any(Date),
         result: expect.objectContaining({ status: 'completed' }),
       }));
+    });
+
+    // ---------------------------------------------------------------------
+    // approvalMethod audit fidelity for the tier-3 scope split
+    // (tier3-supervised-four-eyes design §4.2). `supervised_self` had NO test
+    // anywhere: grepping for it in the suite hit only the route-side audit
+    // detail, which is a different code path. These pin both halves of the
+    // ternary AND membership in DECIDED_APPROVAL_METHODS — a supervised
+    // intent is still an explicit human decision (the requester's own), so
+    // it must audit `approved: true`, not be quietly demoted to `false` the
+    // way an un-decided auto-execution is.
+    // ---------------------------------------------------------------------
+    async function runTier3AndReadAudit(opts: {
+      approvalScope: 'supervised' | 'four_eyes';
+      intentId: string;
+      execId: string;
+    }) {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+        approvalScope: opts.approvalScope,
+      } as any);
+      mockInsertReturning({ id: opts.execId });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({ id: opts.intentId, approvalRequestIds: ['appr-x'] }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockTransitionIntent.mockResolvedValue(true);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+
+      const pre = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+      expect(pre).toEqual({ allowed: true, intentId: opts.intentId });
+
+      await createSessionPostToolUse(session)(
+        'execute_command',
+        { deviceId: 'd-1' },
+        JSON.stringify({ status: 'completed' }),
+        false,
+        10,
+      );
+
+      const auditCall = mockWriteAuditEvent.mock.calls.find(
+        (c) => (c[1] as any)?.action === 'ai.tool.execute_command',
+      );
+      expect(auditCall).toBeDefined();
+      return (auditCall![1] as any).details;
+    }
+
+    it('audits a SUPERVISED tier-3 release as approved:true / supervised_self', async () => {
+      const details = await runTier3AndReadAudit({
+        approvalScope: 'supervised',
+        intentId: 'intent-sup',
+        execId: 'exec-sup',
+      });
+
+      expect(details).toMatchObject({ approved: true, approvalMethod: 'supervised_self' });
+    });
+
+    it('audits a FOUR_EYES tier-3 release as approved:true / action_intent — the two scopes are not collapsed', async () => {
+      // Asserted alongside the supervised case on purpose: a ternary that
+      // returned one constant for both scopes would satisfy either test
+      // alone. `approvalMethod` is the only place the audit trail records
+      // whether a SECOND human signed off, so the two values must differ.
+      const details = await runTier3AndReadAudit({
+        approvalScope: 'four_eyes',
+        intentId: 'intent-fe-audit',
+        execId: 'exec-fe-audit',
+      });
+
+      expect(details).toMatchObject({ approved: true, approvalMethod: 'action_intent' });
+    });
+
+    it('defaults to action_intent when the guardrail carries no approvalScope (never the weaker supervised_self)', async () => {
+      // Fail-safe direction: an unclassified tier-3 tool must not be recorded
+      // as self-approved. Mirrors intentService.ts's own default-to-four_eyes
+      // rule for the same reason.
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-unscoped' });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({ id: 'intent-unscoped', approvalRequestIds: ['appr-u'] }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockTransitionIntent.mockResolvedValue(true);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+
+      await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+      await createSessionPostToolUse(session)(
+        'execute_command',
+        { deviceId: 'd-1' },
+        JSON.stringify({ status: 'completed' }),
+        false,
+        10,
+      );
+
+      const auditCall = mockWriteAuditEvent.mock.calls.find(
+        (c) => (c[1] as any)?.action === 'ai.tool.execute_command',
+      );
+      expect((auditCall![1] as any).details).toMatchObject({
+        approved: true,
+        approvalMethod: 'action_intent',
+      });
     });
 
     it('CASes the intent executing -> failed with an error code when the inline tool call fails', async () => {
@@ -2965,7 +3087,7 @@ describe('Task 3: a plan aborts when a tier-3 step does not execute', () => {
       'approved',
       'executing',
       expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }),
-      { requireNotExpired: true },
+      { requireNotExpired: 'release' },
     );
     expect(mockTransitionIntent).toHaveBeenNthCalledWith(
       2,

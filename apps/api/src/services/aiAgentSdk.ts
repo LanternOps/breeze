@@ -30,7 +30,7 @@ import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
 import { createActionIntent, waitForIntentDecision, transitionIntent } from './actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
 import { requiresDurableRelease } from './actionIntents/durableRelease';
-import { computeEffectDigest } from './actionIntents/effectDigest';
+import { computeEffectDigest, hasPinnedDigest } from './actionIntents/effectDigest';
 import {
   assertNoPlaintextSecret,
   isSecretBearingTool,
@@ -1008,6 +1008,34 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           }
 
           if (decisionStatus === 'pending_approval') {
+            // KNOWN OBSERVABILITY GAP (four_eyes) — documented deliberately,
+            // not an oversight, and NOT something to paper over with an ad-hoc
+            // notification here.
+            //
+            // APPROVAL_WAIT_BUDGET_MS is 300s while a four_eyes CHAT intent
+            // now lives for FOUR_EYES_CHAT_EXPIRY_MS (60 min) and an
+            // `mcp_api` one for MCP_EXPIRY_MS (24 h) — see
+            // services/actionIntents/intentService.ts. Timing out here and
+            // having a second human decide later is therefore the NORMAL
+            // four_eyes path, not an edge case.
+            //
+            // The requester is told "Approval still pending…" exactly once,
+            // below. After that they are told nothing at all — not when the
+            // intent is DENIED, not when it expires at its own deadline, and
+            // not when the durable release worker fails it
+            // (`content_changed` / `rbac_denied` / `session_required` /
+            // `connection_unavailable` — jobs/intentReleaseWorker.ts).
+            // `recordActionIntentEvent` (services/actionIntents/metrics.ts)
+            // writes an audit row and a Prometheus counter only; the push
+            // fan-out in `createActionIntent` targets APPROVERS at creation
+            // time, never the requester at outcome time.
+            //
+            // The real fix is the web approvals inbox, which is Plan 2 and
+            // explicitly out of scope for this PR. Until it lands, four_eyes
+            // outcomes are unobservable to the requester once this turn ends.
+            // Do not add a notification path here — it would become a second,
+            // divergent source of truth the inbox then has to reconcile.
+            //
             // The row can still READ `pending_approval` here even though the
             // intent's own deadline has already passed: `jobs/intentExpiryReaper.ts`
             // flips it to `expired` on a 30s sweep, and this wait's own local
@@ -1074,7 +1102,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // keys off a real execution-start time here too, not just the
             // decided_at COALESCE fallback.
             { executedAt: null, executionStartedAt: new Date() },
-            { requireNotExpired: true },
+            { requireNotExpired: 'release' },
           );
           if (!wonRelease) {
             // Lost the race: the release worker (or a duplicate outbox delivery)
@@ -1149,12 +1177,15 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // the intentRow/winningApproval read above) because the resolver needs
           // to read the current target row, which the ambient request context may
           // not make visible.
-          // Truthy check (not `!== null`): the column is either NULL or a
-          // real 64-char hex digest, never falsy-but-present, so this is
-          // equivalent for real rows — and it is what correctly treats an
-          // `undefined` effectDigest (e.g. a narrower row shape) as "no
-          // stored digest, skip" rather than a spurious mismatch.
-          if (intentRow.effectDigest) {
+          // `hasPinnedDigest` is the SHARED predicate with the durable worker
+          // (jobs/intentReleaseWorker.ts). The two release paths previously
+          // guarded this same invariant with DIFFERENT predicates — truthiness
+          // here, `!== null` there — which diverged on `undefined` (a narrower
+          // select shape): this path failed OPEN (skipped the check) while the
+          // worker failed CLOSED (a recompute never equals `undefined`, so
+          // every pinned release would have been content_changed). One
+          // predicate, one behavior, in one place.
+          if (hasPinnedDigest(intentRow)) {
             const recomputedEffectDigest = await runOutsideDbContext(() =>
               withSystemDbAccessContext(() =>
                 computeEffectDigest(intentRow.actionName, intentRow.arguments, db),

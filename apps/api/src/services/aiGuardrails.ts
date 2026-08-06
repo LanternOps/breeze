@@ -10,6 +10,7 @@
  * Also enforces RBAC permission checks and per-tool rate limiting.
  */
 
+import type { AiApprovalScope } from '@breeze/shared/types/ai';
 import { getToolTier } from './aiTools';
 import { getUserPermissions, hasPermission } from './permissions';
 import { rateLimiter } from './rate-limit';
@@ -216,8 +217,18 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
 // Spec 2026-08-05 §3: within tier 3, `four_eyes` requires a SECOND human
 // (approvals:decide holder other than the requester); everything else is
 // `supervised` — the requesting human approves their own AI action with a
-// plain click, gated on their existing RBAC. Unclassified tier-3 surfaces
-// resolve four_eyes (fail-safe); the contract test forbids relying on that.
+// plain click, gated on their existing RBAC.
+//
+// THE FAIL-SAFE IS PER-TOOL, NOT PER-ACTION. resolveApprovalScope's final
+// `return 'four_eyes'` is only reached by a tool that is in NEITHER whole-tool
+// set — an unknown/extension tool. A tool that IS in TIER3_SUPERVISED_TOOLS
+// short-circuits on the whole-tool lookup, so an action of that tool which is
+// listed in no *_ACTIONS table falls through to `supervised` — the WEAKER
+// scope, not the fail-safe. Tools in the supervised whole-tool set must
+// therefore enumerate every action they accept; the contract test
+// ("action-multiplexed tools in a whole-tool scope set enumerate every
+// action") enforces that against the tools' real action enums, so a new enum
+// member fails CI instead of silently self-approving.
 //
 // Three classification mechanisms, together covering the full tier-3 surface:
 //   1. Per-action pairs drawn from TIER3_ACTIONS above (TIER3_*_ACTIONS).
@@ -310,7 +321,14 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // complement of TIER3_FOUR_EYES_ACTIONS within TIER3_ACTIONS.
   file_operations: ['read', 'write', 'delete', 'mkdir', 'rename'],
   manage_services: ['start', 'stop', 'restart'],
-  security_scan: ['quarantine', 'remove', 'restore'],
+  // `scan`/`status` are NOT in TIER3_ACTIONS — they need no tier escalation,
+  // security_scan's BASE tier is already 3. They are listed here anyway
+  // because security_scan is also in TIER3_SUPERVISED_TOOLS: without an
+  // explicit entry they would reach `supervised` via the whole-tool
+  // short-circuit rather than by a decision, which is exactly the fall-through
+  // the enumeration contract test exists to forbid. (`vulnerabilities` is
+  // classified in TIER1_ACTIONS and never reaches tier 3 at all.)
+  security_scan: ['quarantine', 'remove', 'restore', 'scan', 'status'],
   disk_cleanup: ['execute'],
   manage_startup_items: ['disable', 'enable'],
   manage_scheduled_tasks: ['run', 'disable', 'enable'],
@@ -338,7 +356,13 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
   // discriminator cannot be action-classified (spec §3.1), so its scope is
   // resolved by resolveApprovalScope's override hook instead of this static
   // set. See TIER3_INPUT_AWARE_TOOLS.
-  'manage_services', 'security_scan', // whole-tool catch-all complementing their _ACTIONS entries above
+  // Whole-tool BACKSTOP complementing their _ACTIONS entries above — NOT the
+  // effective classifier. Every action these three accept is enumerated in a
+  // TIER1/TIER2/TIER3_*_ACTIONS table, enforced by the enumeration contract
+  // test; membership here only matters for a missing/unrecognized action.
+  // Reaching `supervised` here for a REAL action means someone added an enum
+  // member without classifying it, and the contract test fails.
+  'manage_services', 'security_scan',
   'manage_startup_items',
   'take_screenshot', 'analyze_screen',
   'apply_cis_remediation', 'manage_hyperv_vm', 'manage_peripheral_policy',
@@ -378,7 +402,7 @@ export function resolveApprovalScope(
   toolName: string,
   action: string | undefined,
   input: Record<string, unknown>,
-): 'supervised' | 'four_eyes' {
+): AiApprovalScope {
   // Input-aware overrides (spec §3.1) — scope depends on argument CONTENT,
   // not just the tool/action name, so these cannot live in the static
   // TIER3_*_ACTIONS / TIER3_*_TOOLS tables above. Checked first since neither
@@ -399,8 +423,15 @@ export function resolveApprovalScope(
   if (action && TIER3_FOUR_EYES_ACTIONS[toolName]?.includes(action)) return 'four_eyes';
   if (action && TIER3_SUPERVISED_ACTIONS[toolName]?.includes(action)) return 'supervised';
   if (TIER3_FOUR_EYES_TOOLS.has(toolName)) return 'four_eyes';
+  // NOTE: this whole-tool line is reached by an action-multiplexed tool whose
+  // action matched neither *_ACTIONS table — it yields the WEAKER scope, so it
+  // is a backstop, not a fail-safe. The enumeration contract test keeps every
+  // real action of these tools out of this line.
   if (TIER3_SUPERVISED_TOOLS.has(toolName)) return 'supervised';
-  return 'four_eyes'; // fail-safe; contract test keeps this unreachable for real tools
+  // Fail-safe for an unclassified TOOL — including extension tools, which are
+  // per-tenant/dynamic and therefore excluded from getAllRegisteredToolNames()
+  // by design, so they can never be enumerated into the static sets above.
+  return 'four_eyes';
 }
 
 // RBAC permission map: tool → { resource, action } (or action-based overrides)
@@ -1055,8 +1086,7 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   remediate_software_violation: { limit: 10, windowSeconds: 600 }, // mirrors apply_cis_remediation
 };
 
-export interface GuardrailCheck {
-  tier: AiToolTier;
+interface GuardrailCheckCommon {
   allowed: boolean;
   requiresApproval: boolean;
   /**
@@ -1065,16 +1095,38 @@ export interface GuardrailCheck {
    * — with the Tier-2 audit-ledger row — even under per_step approval mode.
    */
   readOnly?: boolean;
-  /**
-   * Set whenever the effective tier is exactly 3 (never for blocked tier 4):
-   * `supervised` — the requester approves their own AI action; `four_eyes` —
-   * a second `approvals:decide` holder must decide. See
-   * docs/superpowers/specs/ai-mcp/2026-08-05-tier3-supervised-four-eyes-split-design.md.
-   */
-  approvalScope?: 'supervised' | 'four_eyes';
   reason?: string;
   description?: string;
 }
+
+/**
+ * Discriminated on `tier` so "tier 3 ⇒ approvalScope is set" is a TYPE
+ * invariant rather than prose. A new tier-3 return path that forgets the field
+ * fails to compile; previously it silently produced an over-strict intent
+ * (four_eyes deadline + digest pinning + a second approver) for an action that
+ * was meant to be a plain supervised click — nothing errored, the feature just
+ * quietly didn't work for that tool.
+ *
+ * `approvalScope?: undefined` on the non-3 arm keeps `check.approvalScope`
+ * readable without narrowing (it widens to `AiApprovalScope | undefined`), so
+ * existing consumers — including intentService.ts's `?? 'four_eyes'`
+ * belt-and-braces default — are unaffected.
+ */
+export type GuardrailCheck =
+  | (GuardrailCheckCommon & {
+      tier: Exclude<AiToolTier, 3>;
+      /** Never set off tier 3 — tier 4 is blocked outright, tiers 1-2 auto-execute. */
+      approvalScope?: undefined;
+    })
+  | (GuardrailCheckCommon & {
+      tier: 3;
+      /**
+       * REQUIRED on tier 3. `supervised` — the requester approves their own AI
+       * action; `four_eyes` — a second `approvals:decide` holder must decide.
+       * See docs/superpowers/specs/ai-mcp/2026-08-05-tier3-supervised-four-eyes-split-design.md.
+       */
+      approvalScope: AiApprovalScope;
+    });
 
 /**
  * Check guardrails for a tool invocation.
@@ -1142,15 +1194,26 @@ export function checkGuardrails(
     };
   }
 
-  // Use base tier from tool registration
-  if (baseTier >= 3) {
+  // Use base tier from tool registration. Split by literal tier (rather than
+  // `baseTier >= 3` with a conditional spread) so the tier-3 arm's REQUIRED
+  // approvalScope is enforced by the compiler — see GuardrailCheck.
+  if (baseTier === 3) {
     return {
-      tier: baseTier,
+      tier: 3,
       allowed: true,
       requiresApproval: true,
-      // Only tier 3 gets a scope — a future base-Tier-4 tool would be blocked
-      // (no approval path at all), not a bigger approval scope.
-      ...(baseTier === 3 ? { approvalScope: resolveApprovalScope(toolName, action, input) } : {}),
+      approvalScope: resolveApprovalScope(toolName, action, input),
+      description: buildApprovalDescription(toolName, action, input)
+    };
+  }
+
+  if (baseTier === 4) {
+    // Only tier 3 gets a scope — a base-Tier-4 tool has no approval path at
+    // all, not a bigger approval scope.
+    return {
+      tier: 4,
+      allowed: true,
+      requiresApproval: true,
       description: buildApprovalDescription(toolName, action, input)
     };
   }

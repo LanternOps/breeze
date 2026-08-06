@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
+// Type-only (erased at runtime), so it is safe to reference inside vi.hoisted.
+import type { EffectDigestOutcome } from './effectDigest';
 
 // ---------------------------------------------------------------------------
 // Hoisted shared mock state
@@ -14,6 +16,10 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
     status: col('status'),
     expiresAt: col('expires_at'),
     releaseBy: col('release_by'),
+    // Needed by transitionIntent's `requireNotExpired: 'approval'` branch —
+    // without it the flattened SQL reads `COALESCE(undefined, expires_at)`
+    // and the deadline-column assertions pass/fail on a phantom.
+    approvalExpiresAt: col('approval_expires_at'),
   };
   // `userId` MUST be present here: createActionIntent projects
   // `approvalRequests.userId` on the idempotent-replay path and matches it
@@ -71,10 +77,13 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
     // Task 7 (effect-digest pinning): effectDigest.ts has its own dedicated
     // unit suite (effectDigest.test.ts) covering the resolver map itself —
     // mocked wholesale here so this file stays a test of createActionIntent's
-    // WIRING (calls it for four_eyes, skips it for supervised, persists the
-    // result) rather than re-deriving script/quote/invoice/contract/org
-    // table mocks this suite has no other reason to know about.
-    effectDigestState: { computeEffectDigest: vi.fn(async () => null as string | null) },
+    // WIRING (calls it for EVERY tier-3 intent regardless of scope, persists a
+    // digest only on `pinned`, audits the `unresolved` reasons) rather than
+    // re-deriving script/quote/invoice/contract/org table mocks this suite has
+    // no other reason to know about.
+    effectDigestState: {
+      computeEffectDigestOutcome: vi.fn(async () => ({ kind: 'not_applicable' }) as EffectDigestOutcome),
+    },
   };
 });
 
@@ -189,7 +198,7 @@ vi.mock('./metrics', () => ({
 }));
 
 vi.mock('./effectDigest', () => ({
-  computeEffectDigest: effectDigestState.computeEffectDigest,
+  computeEffectDigestOutcome: effectDigestState.computeEffectDigestOutcome,
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -225,7 +234,7 @@ import {
   type CreateActionIntentInput,
 } from './intentService';
 import { db, withDbAccessContext } from '../../db';
-import { computeEffectDigest } from './effectDigest';
+import { computeEffectDigestOutcome } from './effectDigest';
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -349,7 +358,7 @@ beforeEach(() => {
   // No eligible approvers by default — tests that need a fan-out opt in via
   // mockResolvedValueOnce.
   intentApproversState.resolveIntentApprovers.mockResolvedValue([]);
-  effectDigestState.computeEffectDigest.mockResolvedValue(null);
+  effectDigestState.computeEffectDigestOutcome.mockResolvedValue({ kind: 'not_applicable' });
 });
 
 // ---------------------------------------------------------------------------
@@ -769,31 +778,38 @@ describe('createActionIntent — supervised/four_eyes scope', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Task 7 — effect-digest pinning wiring (spec
+// Effect-digest pinning wiring (spec
 // docs/superpowers/specs/ai-mcp/2026-08-05-tier3-supervised-four-eyes-split-design.md
-// §4.1). computeEffectDigest itself is unit-tested in effectDigest.test.ts;
-// this suite only asserts createActionIntent CALLS it correctly — four_eyes
-// only, with the tool name/args/db it's supposed to, and persists whatever
-// it returns onto the inserted row.
+// §4.1). computeEffectDigestOutcome itself is unit-tested in
+// effectDigest.test.ts; this suite only asserts createActionIntent CALLS it
+// correctly — for EVERY tier-3 intent regardless of approval scope, with the
+// tool name/args/db it's supposed to — persists a digest ONLY on `pinned`,
+// and makes the two `unresolved` outcomes observable via an audit event.
 // ---------------------------------------------------------------------------
 
 describe('createActionIntent — effect-digest pinning wiring', () => {
+  const fourEyesGuardrail = {
+    tier: 3,
+    allowed: true,
+    requiresApproval: true,
+    description: 'Run a script on one or more devices',
+    approvalScope: 'four_eyes' as const,
+  };
+  const supervisedGuardrail = { ...fourEyesGuardrail, approvalScope: 'supervised' as const };
+
   it('computes and persists the effect digest for a four_eyes intent', async () => {
-    guardrailMock.checkGuardrails.mockReturnValue({
-      tier: 3,
-      allowed: true,
-      requiresApproval: true,
-      description: 'Run a script on one or more devices',
-      approvalScope: 'four_eyes',
-    });
+    guardrailMock.checkGuardrails.mockReturnValue(fourEyesGuardrail);
     intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID]);
-    effectDigestState.computeEffectDigest.mockResolvedValueOnce('d'.repeat(64));
+    effectDigestState.computeEffectDigestOutcome.mockResolvedValueOnce({
+      kind: 'pinned',
+      digest: 'd'.repeat(64),
+    });
     dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-fe-digest' }));
     dbState.insertApprovalRequestsResults.push([{ id: 'approval-fe-digest' }]);
 
     await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'key-fe-digest' }));
 
-    expect(computeEffectDigest).toHaveBeenCalledWith(
+    expect(computeEffectDigestOutcome).toHaveBeenCalledWith(
       'run_script',
       { scriptId: 'script-1', deviceIds: ['device-1'] },
       db,
@@ -801,34 +817,34 @@ describe('createActionIntent — effect-digest pinning wiring', () => {
     expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBe('d'.repeat(64));
   });
 
-  it('never calls computeEffectDigest for a supervised intent, and stores a null effect digest', async () => {
-    guardrailMock.checkGuardrails.mockReturnValue({
-      tier: 3,
-      allowed: true,
-      requiresApproval: true,
-      description: 'Run a script on one or more devices',
-      approvalScope: 'supervised',
-    });
+  // THE regression this guards: pinning used to be gated on
+  // `approvalScope === 'four_eyes'`, which made effectDigest.ts's own
+  // motivating resolver (run_script — a SUPERVISED tool) unreachable dead
+  // code and left the ~10-minute release lease open to a script-body edit.
+  it('ALSO computes and persists the effect digest for a SUPERVISED intent (pinning is scope-independent)', async () => {
+    guardrailMock.checkGuardrails.mockReturnValue(supervisedGuardrail);
     intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
+    effectDigestState.computeEffectDigestOutcome.mockResolvedValueOnce({
+      kind: 'pinned',
+      digest: 'e'.repeat(64),
+    });
     dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-sv-digest' }));
     dbState.insertApprovalRequestsResults.push([{ id: 'approval-sv-digest' }]);
 
     await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'key-sv-digest' }));
 
-    expect(computeEffectDigest).not.toHaveBeenCalled();
-    expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBeNull();
+    expect(computeEffectDigestOutcome).toHaveBeenCalledWith(
+      'run_script',
+      { scriptId: 'script-1', deviceIds: ['device-1'] },
+      db,
+    );
+    expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBe('e'.repeat(64));
   });
 
-  it('stores a null effect digest for a four_eyes intent whose tool/action has no resolver', async () => {
-    guardrailMock.checkGuardrails.mockReturnValue({
-      tier: 3,
-      allowed: true,
-      requiresApproval: true,
-      description: 'Send an email',
-      approvalScope: 'four_eyes',
-    });
+  it('stores a null effect digest for a tool/action with no resolver, and audits nothing', async () => {
+    guardrailMock.checkGuardrails.mockReturnValue({ ...fourEyesGuardrail, description: 'Send an email' });
     intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID]);
-    // Default beforeEach mock already resolves null — no resolver override needed.
+    // Default beforeEach mock already resolves `not_applicable`.
     dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-fe-unpinnable' }));
     dbState.insertApprovalRequestsResults.push([{ id: 'approval-fe-unpinnable' }]);
 
@@ -837,9 +853,41 @@ describe('createActionIntent — effect-digest pinning wiring', () => {
       baseInput({ toolName: 'm365_send_mail', input: { to: ['a@example.com'] }, idempotencyKey: 'key-fe-unpinnable' }),
     );
 
-    expect(computeEffectDigest).toHaveBeenCalledWith('m365_send_mail', { to: ['a@example.com'] }, db);
+    expect(computeEffectDigestOutcome).toHaveBeenCalledWith('m365_send_mail', { to: ['a@example.com'] }, db);
     expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBeNull();
+    // `not_applicable` is the expected, correct case — it must NOT pollute the
+    // unpinned signal.
+    expect(metricsMock.recordActionIntentEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: 'effect_digest_unpinned' }),
+    );
   });
+
+  // The observability gap this closes: `unresolved` intents SHOULD have been
+  // pinned and silently weren't, and the stored NULL is byte-identical to the
+  // `not_applicable` case, so the audit event is the only thing that can
+  // distinguish (and therefore count/alert on) them.
+  for (const reason of ['missing_arg', 'target_absent'] as const) {
+    it(`stores a null digest and audits effect_digest_unpinned when the resolver reports ${reason}`, async () => {
+      guardrailMock.checkGuardrails.mockReturnValue(fourEyesGuardrail);
+      intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID]);
+      effectDigestState.computeEffectDigestOutcome.mockResolvedValueOnce({ kind: 'unresolved', reason });
+      dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: `intent-unresolved-${reason}` }));
+      dbState.insertApprovalRequestsResults.push([{ id: `approval-unresolved-${reason}` }]);
+
+      await createActionIntent(makeAuth(), baseInput({ idempotencyKey: `key-unresolved-${reason}` }));
+
+      expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBeNull();
+      expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          intentId: `intent-unresolved-${reason}`,
+          actionName: 'run_script',
+          outcome: 'effect_digest_unpinned',
+          actorId: REQUESTER_ID,
+          details: expect.objectContaining({ reason, approvalScope: 'four_eyes' }),
+        }),
+      );
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -935,22 +983,26 @@ describe('transitionIntent', () => {
     });
   });
 
-  describe('requireNotExpired (release worker claim CAS)', () => {
-    it('folds COALESCE(release_by, expires_at) > now() into the where clause — not approval_expires_at', async () => {
+  describe('requireNotExpired (deadline-phase CAS)', () => {
+    const sqlConditionOf = (index = 0) => {
+      const whereArgs = (dbState.updateActionIntentsWheres[index] as { args: unknown[] }).args;
+      return whereArgs.find(
+        (c): c is { op: string; text: string } =>
+          typeof c === 'object' && c !== null && (c as { op?: string }).op === 'sql',
+      );
+    };
+
+    it("'release' folds COALESCE(release_by, expires_at) > now() into the where clause — not approval_expires_at", async () => {
       dbState.updateActionIntentsResults.push([{ id: 'intent-1' }]);
       await transitionIntent(
         'intent-1',
         'approved',
         'executing',
         { executedAt: null },
-        { requireNotExpired: true },
+        { requireNotExpired: 'release' },
       );
 
-      const whereArgs = (dbState.updateActionIntentsWheres[0] as { args: unknown[] }).args;
-      const sqlCondition = whereArgs.find(
-        (c): c is { op: string; text: string } =>
-          typeof c === 'object' && c !== null && (c as { op?: string }).op === 'sql',
-      );
+      const sqlCondition = sqlConditionOf();
       expect(sqlCondition).toBeDefined();
       // The 59:59 trap: this MUST be release_by (falling back to
       // expires_at), never approval_expires_at — approval_expires_at stops
@@ -959,6 +1011,62 @@ describe('transitionIntent', () => {
       expect(sqlCondition!.text).toContain('COALESCE(release_by, expires_at)');
       expect(sqlCondition!.text).not.toContain('approval_expires_at');
       expect(sqlCondition!.text).toContain('> now()');
+    });
+
+    // Backward compatibility: the two call sites that still pass the old
+    // boolean live in files owned by another workstream
+    // (jobs/intentReleaseWorker.ts, services/aiAgentSdk.ts). `true` must keep
+    // meaning exactly what it meant before — the RELEASE deadline.
+    it("accepts the deprecated boolean `true` as an alias for 'release'", async () => {
+      dbState.updateActionIntentsResults.push([{ id: 'intent-1' }]);
+      await transitionIntent('intent-1', 'approved', 'executing', { executedAt: null }, { requireNotExpired: true });
+
+      expect(sqlConditionOf()!.text).toContain('COALESCE(release_by, expires_at)');
+      expect(sqlConditionOf()!.text).not.toContain('approval_expires_at');
+    });
+
+    it("'approval' folds COALESCE(approval_expires_at, expires_at) > now() instead", async () => {
+      dbState.updateActionIntentsResults.push([{ id: 'intent-1' }]);
+      await transitionIntent(
+        'intent-1',
+        'pending_approval',
+        'cancelled',
+        undefined,
+        { requireNotExpired: 'approval' },
+      );
+
+      const sqlCondition = sqlConditionOf();
+      expect(sqlCondition).toBeDefined();
+      expect(sqlCondition!.text).toContain('COALESCE(approval_expires_at, expires_at)');
+      expect(sqlCondition!.text).not.toContain('release_by');
+      expect(sqlCondition!.text).toContain('> now()');
+    });
+
+    // Misuse must be unrepresentable rather than silently checking the wrong
+    // column — the pre-change boolean applied the RELEASE deadline to ANY
+    // from-status, and was correct only because both callers passed
+    // `from: 'approved'`.
+    it("throws when the requested phase doesn't govern the from-status", async () => {
+      await expect(
+        transitionIntent('intent-1', 'pending_approval', 'cancelled', undefined, { requireNotExpired: 'release' }),
+      ).rejects.toThrow(/not the deadline phase governing/);
+      expect(dbState.updateActionIntentsWheres).toHaveLength(0);
+    });
+
+    it('throws on a mixed-phase from list (no single correct deadline column)', async () => {
+      await expect(
+        transitionIntent('intent-1', ['pending_approval', 'approved'], 'cancelled', undefined, {
+          requireNotExpired: 'release',
+        }),
+      ).rejects.toThrow(/not the deadline phase governing/);
+      expect(dbState.updateActionIntentsWheres).toHaveLength(0);
+    });
+
+    it('throws when a terminal from-status is combined with an expiry check', async () => {
+      await expect(
+        transitionIntent('intent-1', 'completed', 'failed', undefined, { requireNotExpired: 'release' }),
+      ).rejects.toThrow(/not the deadline phase governing/);
+      expect(dbState.updateActionIntentsWheres).toHaveLength(0);
     });
 
     it('omits the expiry condition when requireNotExpired is not set', async () => {

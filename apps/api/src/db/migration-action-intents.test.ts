@@ -1,11 +1,88 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, beforeAll } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql as sqlTag } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from './index';
 import { partners, organizations, users, actionIntents } from './schema';
 import type { NewActionIntent } from './schema/actionIntents';
+
+// ---------------------------------------------------------------------------
+// action_intents_block_content_update() — discovered, not hand-listed
+// ---------------------------------------------------------------------------
+//
+// The immutability trigger's function is CREATE OR REPLACE'd by more than one
+// migration (2026-07-18 created it; 2026-08-06-e added the origin-principal
+// columns; 2026-08-14 added approval_scope/classification_version/
+// effect_digest). Reading only the 2026-07-18 file — which this suite used to
+// do — tests the trigger as it existed in July, not as it exists today, and
+// that is exactly how origin_principal_kind/origin_principal_id shipped with
+// zero immutability coverage.
+//
+// So: DISCOVER every migration that (re)defines the function, in localeCompare
+// (= apply) order, and treat the LAST one as the effective definition. A future
+// migration that extends the deny-list is picked up automatically.
+const MIGRATIONS_DIR = join(__dirname, '../../migrations');
+const TRIGGER_FUNCTION_NAME = 'action_intents_block_content_update';
+
+const CREATE_TRIGGER_FUNCTION_RE = new RegExp(
+  `CREATE\\s+(?:OR\\s+REPLACE\\s+)?FUNCTION\\s+${TRIGGER_FUNCTION_NAME}`,
+  'i',
+);
+
+/** Drops `--` comment lines so prose about the trigger is never mistaken for a definition. */
+function stripSqlComments(source: string): string {
+  return source
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('--'))
+    .join('\n');
+}
+
+const TRIGGER_MIGRATION_FILES = readdirSync(MIGRATIONS_DIR)
+  .filter((filename) => /^\d{4}-.*\.sql$/.test(filename))
+  .sort((a, b) => a.localeCompare(b))
+  .filter((filename) =>
+    CREATE_TRIGGER_FUNCTION_RE.test(
+      stripSqlComments(readFileSync(join(MIGRATIONS_DIR, filename), 'utf8')),
+    ),
+  );
+
+const EFFECTIVE_TRIGGER_MIGRATION = TRIGGER_MIGRATION_FILES[TRIGGER_MIGRATION_FILES.length - 1]!;
+
+/**
+ * Slices out the body of a `action_intents_block_content_update()` definition,
+ * from the CREATE ... FUNCTION header up to the RAISE EXCEPTION that ends the
+ * guard condition. Deliberately anchored on the RAISE rather than the
+ * `$$ LANGUAGE plpgsql;` terminator: the original 2026-07-18 definition ends
+ * `END $$ LANGUAGE plpgsql;` and the later ones end `END;\n$$ LANGUAGE plpgsql;`,
+ * so the RAISE is the only marker common to every version.
+ */
+function extractTriggerGuard(source: string): string {
+  const start = source.search(CREATE_TRIGGER_FUNCTION_RE);
+  const end = source.indexOf("RAISE EXCEPTION 'action_intents content is immutable'", start);
+  if (start < 0 || end < 0) {
+    throw new Error(
+      `could not locate the ${TRIGGER_FUNCTION_NAME}() guard body — the definition's shape changed, ` +
+        'update extractTriggerGuard() rather than deleting the drift gate it feeds',
+    );
+  }
+  return source.slice(start, end);
+}
+
+/**
+ * The set of columns the trigger actually guards, parsed out of a definition
+ * body. This is what makes the suite drift-proof: the expected list below is
+ * asserted EQUAL to this, so the next column added to the trigger fails this
+ * test instead of silently going untested.
+ */
+function parseDenyListedColumns(guardBody: string): string[] {
+  const matches = guardBody.matchAll(/NEW\.(\w+)\s+IS\s+DISTINCT\s+FROM\s+OLD\.\1\b/gi);
+  return [...matches].map((match) => match[1]!.toLowerCase()).sort();
+}
+
+const DENY_LISTED_COLUMNS = parseDenyListedColumns(
+  extractTriggerGuard(readFileSync(join(MIGRATIONS_DIR, EFFECTIVE_TRIGGER_MIGRATION), 'utf8')),
+);
 
 describe('Action intents migration', () => {
   const migrationPath = join(__dirname, '../../migrations/2026-07-18-action-intents.sql');
@@ -39,10 +116,23 @@ describe('Action intents migration', () => {
     expect(sql).toMatch(/id UUID PRIMARY KEY DEFAULT gen_random_uuid\(\)/);
   });
 
-  // The 12 spec-defined immutable content columns (§3.1/§3.4). Kept as a
-  // single source of truth for both the static trigger-body check below and
-  // the live-DB behavioral suite.
+  // Every column the immutability trigger guards TODAY, across all three
+  // migrations that have (re)defined the function. Hand-written on purpose so
+  // adding a column to the trigger is a deliberate, reviewed act — but it is
+  // asserted EQUAL to the list parsed out of the effective migration below, so
+  // it cannot silently drift the way it did for origin_principal_kind /
+  // origin_principal_id (2026-08-06-e) and approval_scope /
+  // classification_version / effect_digest (2026-08-14).
   const IMMUTABLE_CONTENT_COLUMNS = [
+    // §3.1/§3.4 identity + attribution
+    'org_id',
+    'requested_by_user_id',
+    'requesting_api_key_id',
+    'source',
+    // 2026-08-06-e: durable origin-principal fact
+    'origin_principal_kind',
+    'origin_principal_id',
+    // §3.1/§3.4 action content
     'action_name',
     'action_version',
     'arguments',
@@ -55,26 +145,72 @@ describe('Action intents migration', () => {
     'tenant_id',
     'idempotency_key',
     'correlation_id',
+    'created_at',
+    'expires_at',
+    // 2026-08-14: tier-3 supervised/four_eyes classification. approval_scope's
+    // immutability IS the security value of the column — an editable scope
+    // would let an intent switch classification after approvers acted on the
+    // original one.
+    'approval_scope',
+    'classification_version',
+    'effect_digest',
   ] as const;
+
+  // Deliberately MUTABLE. release_by is written by the approve fan-in
+  // (routes/approvals.ts stamps the RELEASE_LEASE_MS lease in the same CAS
+  // that flips the intent to approved) and approval_expires_at is a lifecycle
+  // deadline; adding either to the deny-list would break the decide path at
+  // runtime. Asserted absent here AND exercised positively against a live DB
+  // below, so a future "tighten the trigger" change fails a test instead of
+  // production.
+  const MUTABLE_LIFECYCLE_COLUMNS = [
+    'status',
+    'approval_expires_at',
+    'release_by',
+    'decided_at',
+    'decided_by_user_id',
+    'decided_assurance_level',
+    'decided_via',
+    'execution_started_at',
+    'executed_at',
+    'result',
+    'error_code',
+    'requesting_client_label',
+  ] as const;
+
+  it('discovers every migration that redefines the immutability trigger, base first', () => {
+    // The base migration CREATEs the table; every later definition is a
+    // CREATE OR REPLACE that must sort AFTER it, or a fresh-DB replay applies
+    // the replacement before the function's table exists.
+    expect(TRIGGER_MIGRATION_FILES[0]).toBe('2026-07-18-action-intents.sql');
+    expect(TRIGGER_MIGRATION_FILES.length).toBeGreaterThan(1);
+    for (const filename of TRIGGER_MIGRATION_FILES.slice(1)) {
+      const body = readFileSync(join(MIGRATIONS_DIR, filename), 'utf8');
+      expect(
+        body,
+        `${filename} must use CREATE OR REPLACE FUNCTION (a bare CREATE is not re-appliable)`,
+      ).toMatch(
+        new RegExp(`CREATE\\s+OR\\s+REPLACE\\s+FUNCTION\\s+${TRIGGER_FUNCTION_NAME}`, 'i'),
+      );
+    }
+  });
 
   it('declares the immutability trigger over exactly the content columns', () => {
     expect(sql).toMatch(/action_intents_block_content_update/);
     expect(sql).toMatch(/action_intents_immutable_trg/);
     expect(sql).toMatch(/RAISE EXCEPTION 'action_intents content is immutable'/);
-    const triggerBody = sql.slice(
-      sql.indexOf('action_intents_block_content_update() RETURNS trigger'),
-      sql.indexOf('END $$ LANGUAGE plpgsql;'),
-    );
-    // Every one of the 12 spec'd immutable content columns must be guarded.
-    for (const contentCol of IMMUTABLE_CONTENT_COLUMNS) {
+
+    // Drift gate: the hand-written list must be exactly the trigger's
+    // deny-list as of the LAST migration that defines it. Adding a column to
+    // the trigger without adding it here (or vice versa) fails right here.
+    expect(DENY_LISTED_COLUMNS).toEqual([...IMMUTABLE_CONTENT_COLUMNS].sort());
+
+    // ...and the lifecycle columns must NOT be in it.
+    for (const lifecycleCol of MUTABLE_LIFECYCLE_COLUMNS) {
       expect(
-        triggerBody,
-        `expected trigger body to guard content column ${contentCol}`,
-      ).toMatch(new RegExp(`NEW\\.${contentCol}\\b`));
-    }
-    // Lifecycle columns must NOT appear in the immutability check.
-    for (const lifecycleCol of ['status', 'decided_at', 'executed_at', 'result', 'error_code']) {
-      expect(triggerBody).not.toMatch(new RegExp(`NEW\\.${lifecycleCol}\\b`));
+        DENY_LISTED_COLUMNS,
+        `${lifecycleCol} must stay mutable — it is written after creation`,
+      ).not.toContain(lifecycleCol);
     }
   });
 
@@ -211,22 +347,66 @@ describe('Action intents migration', () => {
       });
     });
 
-    const contentColumnUpdates: Array<[string, Partial<NewActionIntent>]> = [
-      ['action_name', { actionName: 'm365.mailbox.enable' }],
-      ['action_version', { actionVersion: 2 }],
-      ['arguments', { arguments: { mailbox: 'someone-else@example.com' } }],
-      ['argument_digest', { argumentDigest: 'b'.repeat(64) }],
-      ['target_summary', { targetSummary: 'Disable mailbox someone-else@example.com' }],
-      ['impact_summary', { impactSummary: 'A different user loses access' }],
-      ['reason', { reason: 'Changed reason' }],
-      ['risk_tier', { riskTier: 2 }],
-      ['connection_id', { connectionId: randomUUID() }],
-      ['tenant_id', { tenantId: randomUUID() }],
-      ['idempotency_key', { idempotencyKey: `idem-changed-${randomUUID().slice(0, 8)}` }],
-      ['correlation_id', { correlationId: randomUUID() }],
-    ];
+    // One rejecting UPDATE per deny-listed column. Keyed by DB column name so
+    // the keys can be asserted equal to the parsed deny-list — that assertion
+    // (below) is what forces the NEXT column added to the trigger to arrive
+    // with a behavioral test rather than only a static one.
+    //
+    // Every value here also violates a CHECK/FK (or would, for org_id and the
+    // actor columns). That is fine and deliberate: action_intents_immutable_trg
+    // is a BEFORE UPDATE ... FOR EACH ROW trigger, and BEFORE-row triggers run
+    // ahead of CHECK and referential-integrity evaluation, so the immutability
+    // RAISE is always the error that surfaces. If one of these ever reports an
+    // FK/CHECK message instead, the trigger stopped firing — which is exactly
+    // the failure this suite exists to catch.
+    const CONTENT_COLUMN_UPDATES: Record<string, Partial<NewActionIntent>> = {
+      org_id: { orgId: randomUUID() },
+      requested_by_user_id: { requestedByUserId: randomUUID() },
+      requesting_api_key_id: { requestingApiKeyId: randomUUID() },
+      source: { source: 'mcp_api' },
+      origin_principal_kind: { originPrincipalKind: 'api_key' },
+      origin_principal_id: { originPrincipalId: `key-${randomUUID().slice(0, 8)}` },
+      action_name: { actionName: 'm365.mailbox.enable' },
+      action_version: { actionVersion: 2 },
+      arguments: { arguments: { mailbox: 'someone-else@example.com' } },
+      argument_digest: { argumentDigest: 'b'.repeat(64) },
+      target_summary: { targetSummary: 'Disable mailbox someone-else@example.com' },
+      impact_summary: { impactSummary: 'A different user loses access' },
+      reason: { reason: 'Changed reason' },
+      risk_tier: { riskTier: 2 },
+      connection_id: { connectionId: randomUUID() },
+      tenant_id: { tenantId: randomUUID() },
+      idempotency_key: { idempotencyKey: `idem-changed-${randomUUID().slice(0, 8)}` },
+      correlation_id: { correlationId: randomUUID() },
+      created_at: { createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+      expires_at: { expiresAt: new Date(Date.now() + 6 * 60 * 60 * 1000) },
+      approval_scope: { approvalScope: 'supervised' },
+      classification_version: { classificationVersion: 99 },
+      effect_digest: { effectDigest: 'c'.repeat(64) },
+    };
 
-    it.each(contentColumnUpdates)(
+    it('has a behavioral case for every column on the trigger deny-list', () => {
+      expect(Object.keys(CONTENT_COLUMN_UPDATES).sort()).toEqual(DENY_LISTED_COLUMNS);
+    });
+
+    it('the live function body matches the migration this suite parsed', async () => {
+      // Belt-and-braces on the drift gate: the static list is derived from the
+      // migration FILE, this checks the function actually installed in the
+      // database agrees. Catches a DB whose migration ledger is behind, and a
+      // hand-patched function in a long-lived environment.
+      const [fn] = await withSystemDbAccessContext(() =>
+        db.execute<{ prosrc: string }>(sqlTag`
+          SELECT p.prosrc AS prosrc
+          FROM pg_catalog.pg_proc p
+          JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = 'public' AND p.proname = ${TRIGGER_FUNCTION_NAME}
+        `),
+      );
+      expect(fn?.prosrc, 'immutability trigger function missing from the database').toBeDefined();
+      expect(parseDenyListedColumns(fn!.prosrc)).toEqual(DENY_LISTED_COLUMNS);
+    });
+
+    it.each(Object.entries(CONTENT_COLUMN_UPDATES) as Array<[string, Partial<NewActionIntent>]>)(
       'rejects an UPDATE that changes the content column %s',
       async (_column, patch) => {
         // Drizzle/postgres-js wraps the underlying Postgres error: the thrown
@@ -256,6 +436,44 @@ describe('Action intents migration', () => {
         db.select({ status: actionIntents.status }).from(actionIntents).where(eq(actionIntents.id, intentId)),
       );
       expect(row?.status).toBe('approved');
+    });
+
+    // The mirror image of the deny-list cases, and the reason they matter:
+    // release_by MUST be writable after creation or the approve fan-in
+    // (routes/approvals.ts, stamping the RELEASE_LEASE_MS lease in the same
+    // CAS that flips the intent to approved) throws at runtime, and the
+    // release worker's COALESCE(release_by, expires_at) claim never gets a
+    // fresh lease. Without this test, adding release_by to the trigger
+    // deny-list would break production with a green suite.
+    it('allows an UPDATE to release_by (the decide-path lease stamp)', async () => {
+      const lease = new Date(Date.now() + 10 * 60 * 1000);
+      await withSystemDbAccessContext(() =>
+        db.update(actionIntents).set({ releaseBy: lease }).where(eq(actionIntents.id, intentId)),
+      );
+      const [row] = await withSystemDbAccessContext(() =>
+        db
+          .select({ releaseBy: actionIntents.releaseBy })
+          .from(actionIntents)
+          .where(eq(actionIntents.id, intentId)),
+      );
+      expect(row?.releaseBy?.getTime()).toBe(lease.getTime());
+    });
+
+    it('allows an UPDATE to approval_expires_at (the pending-approval deadline)', async () => {
+      const deadline = new Date(Date.now() + 30 * 60 * 1000);
+      await withSystemDbAccessContext(() =>
+        db
+          .update(actionIntents)
+          .set({ approvalExpiresAt: deadline })
+          .where(eq(actionIntents.id, intentId)),
+      );
+      const [row] = await withSystemDbAccessContext(() =>
+        db
+          .select({ approvalExpiresAt: actionIntents.approvalExpiresAt })
+          .from(actionIntents)
+          .where(eq(actionIntents.id, intentId)),
+      );
+      expect(row?.approvalExpiresAt?.getTime()).toBe(deadline.getTime());
     });
   });
 });

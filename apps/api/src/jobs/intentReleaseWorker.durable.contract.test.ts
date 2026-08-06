@@ -37,7 +37,7 @@ describe('durable release: four_eyes tools must not be session_required', () => 
       ...TIER3_FOUR_EYES_TOOLS,
       ...Object.keys(TIER3_FOUR_EYES_ACTIONS),
       ...TIER3_INPUT_AWARE_TOOLS,
-      ...[...TIER3_INPUT_AWARE_ACTIONS].map((pair) => pair.split(':')[0]),
+      ...[...TIER3_INPUT_AWARE_ACTIONS].map((pair) => pair.split(':')[0] ?? pair),
     ]),
   );
 

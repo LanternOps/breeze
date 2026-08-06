@@ -95,6 +95,34 @@ function requesterAuth(
   };
 }
 
+/**
+ * FIXTURE SCOPE-SENSITIVITY — read before changing this tool name.
+ *
+ * This suite's whole point is the atomicity of a MULTI-APPROVER fan-out: the
+ * intent row, N cross-user `approval_requests` rows, and the `intent_created`
+ * outbox row committing (or rolling back) as one. That only happens for a
+ * `four_eyes` intent — a `supervised` one short-circuits to exactly ONE
+ * approval row owned by the requester (intentService.ts's supervised branch),
+ * which makes the fan-out trivially atomic and the test vacuous.
+ *
+ * It regressed exactly that way once already: the fixture used
+ * `execute_command`, which the 2026-08-05 tier3 supervised/four_eyes split
+ * reclassified to `supervised`. The assertions here are `toHaveLength(0)` and
+ * `toHaveLength(1)`, so the suite stayed GREEN while silently exercising a
+ * one-approver path. Hence `restore_snapshot` (same choice the PR made for
+ * `intentFanout` / `intentSelfApproveGuard`) plus the explicit
+ * `TWO_APPROVER_FAN_OUT` assertion below — if a future reclassification moves
+ * this tool to supervised, the fan-out assertion fails loudly instead of
+ * quietly degrading. Keep this tool in `TIER3_FOUR_EYES_TOOLS`
+ * (services/aiGuardrails.ts) or pick another four_eyes one.
+ */
+const FOUR_EYES_TOOL = 'restore_snapshot';
+const fourEyesInput = () => ({ snapshotId: randomUUID(), deviceId: randomUUID() });
+
+/** The two eligible approvers seeded below (org-member + partner-member),
+ * requester excluded — the fan-out shape a four_eyes intent MUST produce. */
+const TWO_APPROVER_FAN_OUT = 2;
+
 interface Scenario {
   partnerId: string;
   orgAId: string;
@@ -226,8 +254,8 @@ describe('createActionIntent — atomicity + RLS (real Postgres, breeze_app)', (
     await expect(
       withIntentCreatedOutboxFault(() =>
         createActionIntent(auth, {
-          toolName: 'execute_command',
-          input: { deviceId: randomUUID(), commandType: 'kill_process' },
+          toolName: FOUR_EYES_TOOL,
+          input: fourEyesInput(),
           source: 'chat',
           idempotencyKey,
         }),
@@ -273,11 +301,22 @@ describe('createActionIntent — atomicity + RLS (real Postgres, breeze_app)', (
     const auth = requesterAuth(s.requester, s.orgAId, s.partnerId, s.requesterRoleId);
 
     const snapshot = await createActionIntent(auth, {
-      toolName: 'execute_command',
-      input: { deviceId: randomUUID(), commandType: 'kill_process' },
+      toolName: FOUR_EYES_TOOL,
+      input: fourEyesInput(),
       source: 'chat',
     });
     expect(snapshot.status).toBe('pending_approval');
+
+    // Guards the fixture itself (see FIXTURE SCOPE-SENSITIVITY above): a
+    // four_eyes intent fans out to BOTH eligible approvers and NEVER to the
+    // requester. If this tool is ever reclassified `supervised`, this drops to
+    // a single requester-owned row and fails here — instead of silently
+    // turning the atomicity test above into a one-row no-op.
+    expect(snapshot.approvalRequestIds).toHaveLength(TWO_APPROVER_FAN_OUT);
+    expect(snapshot.requesterApprovalRequestId).toBeNull();
+    expect([...snapshot.fanOutUserIds].sort()).toEqual(
+      [s.orgApprover.id, s.partnerApprover.id].sort(),
+    );
 
     // Sanity: an org-A context (the same tenant) CAN read its own row through
     // the raw breeze_app handle — proves the probe below fails on RLS, not on a
