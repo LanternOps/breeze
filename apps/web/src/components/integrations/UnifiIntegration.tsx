@@ -91,11 +91,21 @@ interface UnifiCollector {
   lastPollError: string | null;
 }
 // Agent devices eligible to be a collector (from GET /devices).
+// Field names mirror the devices list response (apps/api/src/routes/devices/core.ts):
+// it returns `hostname` + `displayName`, never a `name`.
 interface AgentDevice {
   id: string;
-  name: string | null;
+  hostname: string | null;
+  displayName: string | null;
   siteId: string | null;
   status?: string | null;
+}
+
+// Label for a collector-agent <option>. `displayName ?? hostname` is the
+// repo-wide device-picker convention; the id is only ever a last resort for a
+// malformed row, not the normal case.
+function agentLabel(agent: AgentDevice): string {
+  return agent.displayName ?? agent.hostname ?? agent.id;
 }
 // Deep telemetry rows (from GET /unifi/telemetry?siteId=).
 interface TelemetryDevice {
@@ -1307,7 +1317,7 @@ export default function UnifiIntegration() {
                     )
                     .map((a) => (
                       <option key={a.id} value={a.id}>
-                        {a.name ?? a.id}
+                        {agentLabel(a)}
                       </option>
                     ))}
                 </select>
@@ -1719,7 +1729,7 @@ export default function UnifiIntegration() {
                         </option>
                         {eligibleAgents.map((a) => (
                           <option key={a.id} value={a.id}>
-                            {a.name ?? a.id}
+                            {agentLabel(a)}
                           </option>
                         ))}
                       </select>

@@ -1,4 +1,10 @@
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  waitFor,
+  fireEvent,
+  within,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import UnifiIntegration from "./UnifiIntegration";
 import { fetchWithAuth } from "../../stores/auth";
@@ -158,7 +164,16 @@ describe("UnifiIntegration self-hosted controller mapping (Task D2)", () => {
         return Promise.resolve(res({ collectors: [] }));
       if (url.startsWith("/devices"))
         return Promise.resolve(
-          res({ data: [{ id: "agent-1", name: "Edge", siteId: "site-1" }] }),
+          res({
+            data: [
+              {
+                id: "agent-1",
+                hostname: "edge-01",
+                displayName: "Edge",
+                siteId: "site-1",
+              },
+            ],
+          }),
         );
       if (url === "/unifi/controller-sites")
         return Promise.resolve(
@@ -281,6 +296,155 @@ describe("UnifiIntegration self-hosted controller mapping (Task D2)", () => {
         apiKey: "secret-key",
       });
     });
+  });
+});
+
+describe("UnifiIntegration collector-agent dropdown labels (#3121)", () => {
+  // The devices list endpoint returns `hostname` + `displayName` and has no
+  // `name` field, so a picker keyed on `name` silently falls through to the raw
+  // UUID for every row. Ids are deliberately UUID-shaped here so a regression
+  // shows up as the user-visible symptom rather than a generic string mismatch.
+  const AGENT_DEVICES = [
+    {
+      id: "6eae0f70-8da9-49ff-9e18-c241698975f3",
+      hostname: "edge-01.acme.local",
+      displayName: "HQ Edge Collector",
+      siteId: "site-1",
+    },
+    {
+      id: "9c1b2f44-1111-4222-8333-c44455566677",
+      hostname: "closet-sw-02",
+      displayName: null,
+      siteId: "site-1",
+    },
+  ];
+
+  function optionLabels(select: HTMLElement): string[] {
+    return within(select)
+      .getAllByRole("option")
+      .map((o) => o.textContent?.trim() ?? "");
+  }
+
+  it("labels the self-hosted controller agent picker by displayName, falling back to hostname", async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === "/unifi")
+        return Promise.resolve(
+          res({
+            connected: true,
+            status: "connected",
+            connectionType: "self_hosted",
+          }),
+        );
+      if (url.startsWith("/orgs/sites"))
+        return Promise.resolve(
+          res({ data: [{ id: "site-1", name: "HQ", orgId: "org-1" }] }),
+        );
+      if (url.startsWith("/orgs/organizations"))
+        return Promise.resolve(res({ data: [{ id: "org-1", name: "Acme" }] }));
+      if (url === "/unifi/mappings")
+        return Promise.resolve(res({ mappings: [] }));
+      if (url === "/unifi/collectors")
+        return Promise.resolve(res({ collectors: [] }));
+      if (url === "/unifi/controller-sites")
+        return Promise.resolve(res({ sites: [] }));
+      if (url.startsWith("/devices"))
+        return Promise.resolve(res({ data: AGENT_DEVICES }));
+      return Promise.resolve(res({ success: true }));
+    });
+    render(<UnifiIntegration />);
+
+    const select = await screen.findByTestId("unifi-controller-agent");
+    await waitFor(() =>
+      expect(optionLabels(select)).toContain("HQ Edge Collector"),
+    );
+    // Second device has no displayName → hostname, never the UUID.
+    expect(optionLabels(select)).toContain("closet-sw-02");
+    for (const device of AGENT_DEVICES) {
+      expect(optionLabels(select)).not.toContain(device.id);
+    }
+    // Values stay the device id — only the label changed.
+    expect(
+      within(select)
+        .getAllByRole("option")
+        .map((o) => (o as HTMLOptionElement).value),
+    ).toEqual(expect.arrayContaining(AGENT_DEVICES.map((d) => d.id)));
+  });
+
+  it("labels the per-console collector agent picker by displayName, falling back to hostname", async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === "/unifi")
+        return Promise.resolve(res({ connected: true, status: "connected" }));
+      if (url.startsWith("/orgs/sites"))
+        return Promise.resolve(
+          res({ data: [{ id: "site-1", name: "HQ", orgId: "org-1" }] }),
+        );
+      if (url.startsWith("/orgs/organizations"))
+        return Promise.resolve(res({ data: [{ id: "org-1", name: "Acme" }] }));
+      if (url === "/unifi/mappings")
+        return Promise.resolve(res({ mappings: [] }));
+      if (url === "/unifi/sync-runs") return Promise.resolve(res({ runs: [] }));
+      if (url === "/unifi/collectors")
+        return Promise.resolve(res({ collectors: [] }));
+      if (url === "/unifi/hosts")
+        return Promise.resolve(
+          res({
+            hosts: [
+              { id: "host-1", name: "UDM Pro", model: "UDMPRO", sites: [] },
+            ],
+          }),
+        );
+      if (url.startsWith("/devices"))
+        return Promise.resolve(res({ data: AGENT_DEVICES }));
+      return Promise.resolve(res({ success: true }));
+    });
+    render(<UnifiIntegration />);
+
+    const select = await screen.findByTestId("unifi-collector-agent");
+    await waitFor(() =>
+      expect(optionLabels(select)).toContain("HQ Edge Collector"),
+    );
+    expect(optionLabels(select)).toContain("closet-sw-02");
+    for (const device of AGENT_DEVICES) {
+      expect(optionLabels(select)).not.toContain(device.id);
+    }
+  });
+
+  it("falls back to the device id only when both name fields are missing", async () => {
+    const nameless = {
+      id: "deadbeef-0000-4000-8000-000000000001",
+      hostname: null,
+      displayName: null,
+      siteId: "site-1",
+    };
+    fetchMock.mockImplementation((url: string) => {
+      if (url === "/unifi")
+        return Promise.resolve(
+          res({
+            connected: true,
+            status: "connected",
+            connectionType: "self_hosted",
+          }),
+        );
+      if (url.startsWith("/orgs/sites"))
+        return Promise.resolve(
+          res({ data: [{ id: "site-1", name: "HQ", orgId: "org-1" }] }),
+        );
+      if (url.startsWith("/orgs/organizations"))
+        return Promise.resolve(res({ data: [{ id: "org-1", name: "Acme" }] }));
+      if (url === "/unifi/mappings")
+        return Promise.resolve(res({ mappings: [] }));
+      if (url === "/unifi/collectors")
+        return Promise.resolve(res({ collectors: [] }));
+      if (url === "/unifi/controller-sites")
+        return Promise.resolve(res({ sites: [] }));
+      if (url.startsWith("/devices"))
+        return Promise.resolve(res({ data: [nameless] }));
+      return Promise.resolve(res({ success: true }));
+    });
+    render(<UnifiIntegration />);
+
+    const select = await screen.findByTestId("unifi-controller-agent");
+    await waitFor(() => expect(optionLabels(select)).toContain(nameless.id));
   });
 });
 
