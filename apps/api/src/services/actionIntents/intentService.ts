@@ -2,7 +2,14 @@ import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { AssuranceLevel } from '@breeze/shared';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
-import { actionIntents, intentOutbox, type ActionIntent, type ActionIntentSource, type ActionIntentStatus } from '../../db/schema/actionIntents';
+import {
+  actionIntents,
+  intentOutbox,
+  type ActionIntent,
+  type ActionIntentApprovalScope,
+  type ActionIntentSource,
+  type ActionIntentStatus,
+} from '../../db/schema/actionIntents';
 import { approvalRequests } from '../../db/schema/approvals';
 import { type AuthContext, dbAccessContextFromAuth } from '../../middleware/auth';
 import { aiTools, resolveWritableToolOrgId } from '../aiTools';
@@ -94,12 +101,22 @@ export type ActionIntentSnapshot = {
   approvalRequestIds: string[];
   /**
    * The approval_requests row fanned out to the REQUESTER, when one exists —
-   * i.e. the sole-operator branch (requester is the only eligible approver).
-   * null on a multi-approver fan-out (spec §4: the requester is excluded) and
+   * i.e. the sole-operator branch (requester is the only eligible approver) OR
+   * a supervised intent (always exactly one requester-owned row). null on a
+   * multi-approver four_eyes fan-out (spec §4: the requester is excluded) and
    * when there are no approvers. The web chat card uses this to offer an
    * inline L3 self-approve (WebAuthn) for exactly this row and no other.
    */
   requesterApprovalRequestId: string | null;
+  /** Pending-approval deadline (Task 2's approvalExpiresAt column) — split
+   * from `expiresAt` by scope (see computeExpiresAt): 5min supervised-chat,
+   * 60min four_eyes-chat, 24h mcp_api either scope. */
+  approvalExpiresAt: Date | null;
+  /** userIds that received a fanned-out approval row on creation, in the same
+   * order as approvalRequestIds. Empty on an idempotent replay (no new
+   * fan-out happened) and on a read via getActionIntent (fan-out is a
+   * creation-time concept only). */
+  fanOutUserIds: string[];
 };
 
 export interface ActionIntentTransitionPatch {
@@ -117,11 +134,25 @@ export interface ActionIntentTransitionPatch {
 // Constants
 // ---------------------------------------------------------------------------
 
-// Expiry defaults (spec §3.4): chat matches the existing 5-minute
-// waitForApproval UX; mcp_api gets a day since there's no live session
-// blocking on it. Constants, not env vars, per the design.
+// Expiry defaults (spec §3.4, extended by the tier3-supervised-four-eyes
+// split design §4.2): chat matches the existing 5-minute waitForApproval UX
+// for supervised intents; four_eyes chat intents get a longer 60-minute
+// window since finding a second approver takes real wall-clock time. mcp_api
+// gets a day regardless of scope, since there's no live session blocking on
+// it. Constants, not env vars, per the design.
 const CHAT_EXPIRY_MS = 5 * 60 * 1000;
+const FOUR_EYES_CHAT_EXPIRY_MS = 60 * 60 * 1000;
 const MCP_EXPIRY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Version of the tier3-supervised-four-eyes classification ruleset
+ * (checkGuardrails' resolveApprovalScope) that produced a given intent's
+ * approvalScope. Stamped once at creation into action_intents.classification_version
+ * (Task 2) so a future ruleset change can be told apart from intents
+ * classified under an older version. Bump when the classification logic
+ * changes in a materially observable way.
+ */
+export const CLASSIFICATION_VERSION = 1;
 
 const MAX_ARG_VALUE_LEN = 80;
 
@@ -171,14 +202,17 @@ function deriveIdempotencyKey(actorId: string, actionName: string, digest: strin
   return createHash('sha256').update(`${actorId}:${actionName}:${digest}`).digest('hex');
 }
 
-function computeExpiresAt(source: ActionIntentSource): Date {
-  return new Date(Date.now() + (source === 'chat' ? CHAT_EXPIRY_MS : MCP_EXPIRY_MS));
+function computeExpiresAt(source: ActionIntentSource, approvalScope: ActionIntentApprovalScope): Date {
+  if (source !== 'chat') return new Date(Date.now() + MCP_EXPIRY_MS);
+  const ms = approvalScope === 'supervised' ? CHAT_EXPIRY_MS : FOUR_EYES_CHAT_EXPIRY_MS;
+  return new Date(Date.now() + ms);
 }
 
 function toSnapshot(
   intent: ActionIntent,
   approvalRequestIds: string[],
   requesterApprovalRequestId: string | null,
+  fanOutUserIds: string[] = [],
 ): ActionIntentSnapshot {
   return {
     id: intent.id,
@@ -191,6 +225,8 @@ function toSnapshot(
     errorCode: intent.errorCode,
     approvalRequestIds,
     requesterApprovalRequestId,
+    approvalExpiresAt: intent.approvalExpiresAt,
+    fanOutUserIds,
   };
 }
 
@@ -233,6 +269,12 @@ export async function createActionIntent(
   }
   const orgId = resolvedOrg.orgId;
   const requesterId = auth.user.id;
+  // Tier-3 supervised/four_eyes classification (Task 1's checkGuardrails).
+  // Pre-existing tools that haven't been classified yet (approvalScope
+  // absent) fall back to four_eyes — the stricter, pre-split behavior — never
+  // the weaker supervised path. Mirrors the column's own DEFAULT 'four_eyes'
+  // (migration 2026-08-14-intent-approval-scope-and-deadlines.sql).
+  const approvalScope: ActionIntentApprovalScope = guardrail.approvalScope ?? 'four_eyes';
 
   if (input.binding) {
     // Both columns are Postgres `uuid`. An uppercase or malformed GUID would
@@ -251,7 +293,7 @@ export async function createActionIntent(
   const idempotencyKey = input.idempotencyKey ?? deriveIdempotencyKey(requesterId, input.toolName, argumentDigest);
   const targetSummary = buildTargetSummary(input.toolName, input.input);
   const impactSummary = buildImpactSummary(input.toolName, guardrail);
-  const expiresAt = computeExpiresAt(input.source);
+  const expiresAt = computeExpiresAt(input.source, approvalScope);
   const requestingClientLabel = input.requestingClientLabel
     ?? (input.source === 'chat' ? 'Breeze AI' : 'MCP API client');
   // Tier → riskTier mapping mirrors aiAgentSdk.ts's mobile-approval bridge.
@@ -344,7 +386,17 @@ export async function createActionIntent(
           riskTier: guardrail.tier,
           idempotencyKey,
           correlationId: randomUUID(),
+          approvalScope,
+          classificationVersion: CLASSIFICATION_VERSION,
+          // `expiresAt` is the legacy column the pre-split reaper still reads;
+          // `approvalExpiresAt` is the new Task-2 column the post-split reaper
+          // reads. Dual-write the SAME value to both for rolling-upgrade
+          // compat during the deploy window where old and new API instances
+          // run side by side. Remove the `expiresAt` write (Plan 3 cleanup,
+          // once the reaper and every other legacy reader have migrated to
+          // approvalExpiresAt).
           expiresAt,
+          approvalExpiresAt: expiresAt,
         })
         // IMPORTANT-4: action_intents_org_idem_uniq is now a PARTIAL unique
         // index (migration 2026-07-18-action-intents.sql) covering only LIVE
@@ -422,7 +474,25 @@ export async function createActionIntent(
         isRecursive: false,
       });
 
-      if (eligibleApprovers.length > 0) {
+      if (approvalScope === 'supervised') {
+        // Supervised short-circuit (tier3-supervised-four-eyes split design
+        // §4.2): exactly one approval row, always owned by the requester,
+        // BEFORE the eligible-approver branch below — supervised does not
+        // require approvals:decide at all, so this must work even when
+        // eligibleApprovers is empty and requesterEligible is false (the
+        // requester holds no approval permission whatsoever). The
+        // assurance-level gate is enforced later in the decide handler
+        // (Task 5), same as the sole-operator four_eyes branch.
+        const rows = await db
+          .insert(approvalRequests)
+          .values([approvalRowFor(requesterId)])
+          .returning({ id: approvalRequests.id });
+        if (rows[0]) {
+          approvalRequestIds = [rows[0].id];
+          requesterApprovalRequestId = rows[0].id;
+          fanOutUserIds = [requesterId];
+        }
+      } else if (eligibleApprovers.length > 0) {
         const rows = await db
           .insert(approvalRequests)
           .values(eligibleApprovers.map(approvalRowFor))
@@ -493,7 +563,10 @@ export async function createActionIntent(
   // Best-effort push AFTER the creation transaction commits (#1105) — never
   // hold a DB transaction open across the push network round-trip. Token
   // reads happen inside a fresh context per approver; the sends happen after.
-  if (creation.isNew && creation.intent.status === 'pending_approval') {
+  // Supervised intents never push: the sole row belongs to the requester
+  // themselves, who is already looking at the chat/MCP response that created
+  // it — pushing would just notify them about their own pending action.
+  if (creation.isNew && creation.intent.status === 'pending_approval' && creation.intent.approvalScope === 'four_eyes') {
     for (let i = 0; i < creation.approvalRequestIds.length; i++) {
       const approvalId = creation.approvalRequestIds[i];
       const userId = creation.fanOutUserIds[i];
@@ -530,7 +603,7 @@ export async function createActionIntent(
     });
   }
 
-  return toSnapshot(creation.intent, creation.approvalRequestIds, creation.requesterApprovalRequestId);
+  return toSnapshot(creation.intent, creation.approvalRequestIds, creation.requesterApprovalRequestId, creation.fanOutUserIds);
 }
 
 // ---------------------------------------------------------------------------

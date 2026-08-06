@@ -24,7 +24,13 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
   return {
     schema: { actionIntentsTbl, approvalRequestsTbl, intentOutboxTbl },
     dbState: {
-      insertActionIntentsResults: [] as unknown[][],
+      // Most entries are a plain queued row array (existing convention). A
+      // few new scope/deadline tests instead queue a FUNCTION that receives
+      // the actual `.values(...)` the service passed to db.insert(...) — so
+      // the "returned" row echoes back whatever computeExpiresAt /
+      // approvalScope the service really computed, instead of a value the
+      // test pre-baked independently of production logic.
+      insertActionIntentsResults: [] as Array<unknown[] | ((values: Record<string, unknown>) => unknown[])>,
       insertApprovalRequestsResults: [] as unknown[][],
       selectActionIntentsResults: [] as unknown[][],
       selectApprovalRequestsResults: [] as unknown[][],
@@ -76,10 +82,15 @@ vi.mock('../../db', () => ({
     insert: vi.fn((table: unknown) => ({
       values: vi.fn((values: unknown) => {
         if (table === schema.actionIntentsTbl) {
-          dbState.insertedActionIntentValues.push(values as Record<string, unknown>);
+          const insertedValues = values as Record<string, unknown>;
+          dbState.insertedActionIntentValues.push(insertedValues);
           return {
             onConflictDoNothing: vi.fn(() => ({
-              returning: vi.fn(async () => dbState.insertActionIntentsResults.shift() ?? []),
+              returning: vi.fn(async () => {
+                const queued = dbState.insertActionIntentsResults.shift();
+                if (typeof queued === 'function') return queued(insertedValues);
+                return queued ?? [];
+              }),
             })),
           };
         }
@@ -255,9 +266,17 @@ function makeIntentRow(overrides?: Record<string, unknown>) {
     tenantId: null,
     idempotencyKey: 'idem-1',
     correlationId: 'corr-1',
+    // Defaults mirror the schema DEFAULT ('four_eyes' / classificationVersion
+    // 0) — tests exercising the tier3-supervised-four-eyes split override
+    // these explicitly (see createIntentWith / echoInsertedIntent below).
+    approvalScope: 'four_eyes',
+    classificationVersion: 1,
+    effectDigest: null,
     status: 'pending_approval',
     createdAt: new Date(),
     expiresAt: new Date(Date.now() + 300_000),
+    approvalExpiresAt: new Date(Date.now() + 300_000),
+    releaseBy: null,
     decidedAt: null,
     decidedByUserId: null,
     decidedAssuranceLevel: null,
@@ -267,6 +286,24 @@ function makeIntentRow(overrides?: Record<string, unknown>) {
     errorCode: null,
     ...overrides,
   };
+}
+
+/**
+ * Queues a `db.insert(actionIntents).values(...).returning()` result that
+ * echoes back whatever the service actually computed (approvalScope,
+ * approvalExpiresAt/expiresAt, classificationVersion, ...) instead of a value
+ * the test pre-baked independently — so assertions on the returned snapshot
+ * genuinely exercise computeExpiresAt / the approvalScope resolution in
+ * intentService.ts, not just the id plumbing.
+ */
+function echoInsertedIntent(overrides?: Record<string, unknown>) {
+  return (values: Record<string, unknown>) => [
+    { ...makeIntentRow(), ...values, id: 'intent-echo', ...overrides },
+  ];
+}
+
+function msUntil(date: Date): number {
+  return date.getTime() - Date.now();
 }
 
 beforeEach(() => {
@@ -537,6 +574,140 @@ describe('createActionIntent — approver fan-out', () => {
         details: expect.objectContaining({ errorCode: 'no_eligible_approvers' }),
       }),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tier3 supervised/four_eyes split — scope-aware creation, fan-out, deadlines
+// (spec docs/superpowers/specs/ai-mcp/2026-08-05-tier3-supervised-four-eyes-split-design.md)
+// ---------------------------------------------------------------------------
+
+describe('createActionIntent — supervised/four_eyes scope', () => {
+  it('supervised intent fans out a single requester-owned row and skips push', async () => {
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Run a script on one or more devices',
+      approvalScope: 'supervised',
+    });
+    // Nobody is eligible — not even the requester (no approvals:decide at
+    // all). Supervised must still create the requester's own row: it does
+    // not require approvals:decide.
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-supervised' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-supervised' }]);
+
+    const snap = await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'key-supervised' }));
+
+    expect(snap.status).toBe('pending_approval');
+    expect(snap.requesterApprovalRequestId).toBeDefined();
+    expect(snap.requesterApprovalRequestId).toBe('approval-supervised');
+    expect(snap.fanOutUserIds).toEqual([REQUESTER_ID]);
+    expect(pushState.dispatchApprovalPushToTokens).not.toHaveBeenCalled();
+  });
+
+  it('four_eyes chat intent gets a 60-minute approval deadline; supervised keeps 5', async () => {
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Run a script on one or more devices',
+      approvalScope: 'four_eyes',
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-fe-deadline' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-fe-deadline' }]);
+    const fe = await createActionIntent(
+      makeAuth(),
+      baseInput({ source: 'chat', idempotencyKey: 'key-fe-deadline' }),
+    );
+
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Run a script on one or more devices',
+      approvalScope: 'supervised',
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-sv-deadline' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-sv-deadline' }]);
+    const sv = await createActionIntent(
+      makeAuth(),
+      baseInput({ source: 'chat', idempotencyKey: 'key-sv-deadline' }),
+    );
+
+    expect(msUntil(fe.approvalExpiresAt!)).toBeCloseTo(60 * 60 * 1000, -4);
+    expect(msUntil(sv.approvalExpiresAt!)).toBeCloseTo(5 * 60 * 1000, -4);
+  });
+
+  it('four_eyes with no other active approver keeps sole-operator fallback', async () => {
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Run a script on one or more devices',
+      approvalScope: 'four_eyes',
+    });
+    // Only the requester is eligible → sole-operator single-row fan-out,
+    // same as the pre-split behavior (existing "creates a single
+    // sole-operator row" test), now asserted explicitly under four_eyes.
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-fe-solo' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-fe-solo' }]);
+
+    const snapshot = await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'key-fe-solo' }));
+
+    expect(snapshot.status).toBe('pending_approval');
+    expect(snapshot.approvalRequestIds).toEqual(['approval-fe-solo']);
+    expect(snapshot.requesterApprovalRequestId).toBe('approval-fe-solo');
+    expect(snapshot.fanOutUserIds).toEqual([REQUESTER_ID]);
+    const inserted = dbState.insertedApprovalRequestsValues[0] as Array<{ userId: string }>;
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0]?.userId).toBe(REQUESTER_ID);
+    expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ details: expect.objectContaining({ soleOperator: true }) }),
+    );
+  });
+
+  it('persists approvalScope and classificationVersion on the inserted row', async () => {
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Run a script on one or more devices',
+      approvalScope: 'supervised',
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-persist' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-persist' }]);
+
+    await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'key-persist' }));
+
+    const captured = dbState.insertedActionIntentValues[0];
+    expect(captured?.approvalScope).toBe('supervised');
+    expect(captured?.classificationVersion).toBe(1);
+    // Dual-write compat: legacy `expiresAt` still carries the same value as
+    // the new `approvalExpiresAt` column (Plan 3 removes the legacy write).
+    expect(captured?.expiresAt).toEqual(captured?.approvalExpiresAt);
+  });
+
+  it('defaults an unclassified tool (no guardrail.approvalScope) to four_eyes, never the weaker supervised path', async () => {
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Run a script on one or more devices',
+      // approvalScope intentionally omitted.
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-unclassified' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-unclassified' }]);
+
+    await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'key-unclassified' }));
+
+    expect(dbState.insertedActionIntentValues[0]?.approvalScope).toBe('four_eyes');
   });
 });
 

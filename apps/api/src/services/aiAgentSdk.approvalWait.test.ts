@@ -172,6 +172,8 @@ function makeIntentSnapshot(overrides: Partial<ActionIntentSnapshot> = {}): Acti
     errorCode: null,
     approvalRequestIds: ['appr-1'],
     requesterApprovalRequestId: null,
+    approvalExpiresAt: new Date(Date.now() + 300_000),
+    fanOutUserIds: [],
     ...overrides,
   };
 }

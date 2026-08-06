@@ -246,6 +246,8 @@ function makeIntentSnapshot(overrides: Partial<ActionIntentSnapshot> = {}): Acti
     approvalRequestIds: ['appr-1'],
     // Default is the FOUR-EYES case: the requester holds no approval row.
     requesterApprovalRequestId: null,
+    approvalExpiresAt: new Date(Date.now() + 300_000),
+    fanOutUserIds: [],
     ...overrides,
   };
 }
