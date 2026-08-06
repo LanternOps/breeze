@@ -61,7 +61,7 @@ import {
   applySoftwareInstallResult,
   SW_INSTALL_COMMAND_ID_REGEX,
 } from '../services/softwareDeploymentResult';
-import { UUID_REGEX } from '../utils/uuid';
+import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
 
 /** Capabilities advertised to agents in the post-connect `connected` message. */
 export const AGENT_WS_CAPABILITIES = ['terminal_output_base64', 'backup_run_async'] as const;
@@ -415,6 +415,20 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
   try {
     const payload = command.payload as Record<string, unknown> | null;
     const executionId = payload?.executionId as string | undefined;
+    // #3162: `script_executions.id` is a uuid column, so a non-uuid
+    // executionId makes the UPDATE below throw with `invalid input syntax for
+    // type uuid` — swallowed by the catch, taking the agent's stdout with it.
+    // The automation `execute_command` action still sends a synthetic
+    // `${runId}:${deviceId}:${actionIndex}` id (it runs ad-hoc content with no
+    // `scripts` row, so it can have no execution row) and the Go agent rejects
+    // a command with an empty executionId, so the id can't simply be dropped.
+    // Skip those explicitly instead of failing the whole handler on them.
+    if (executionId && !PG_UUID_REGEX.test(executionId)) {
+      console.warn(
+        `[AgentWs] Skipping script_executions update for non-uuid executionId ${executionId} (command ${command.id})`
+      );
+      return;
+    }
     if (executionId) {
       let scriptStatus: 'completed' | 'failed' | 'timeout';
       if (result.status === 'completed') {

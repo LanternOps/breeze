@@ -128,3 +128,81 @@ describe('AutomationRunHistory — live progress + per-device results (#2023)', 
     expect(screen.getByText('1 of 2 runs')).toBeTruthy();
   });
 });
+
+describe('AutomationRunHistory — script output (#3162)', () => {
+  const withScript: DeviceRunResult[] = [
+    {
+      deviceId: 'd-1',
+      deviceName: 'Reception PC',
+      status: 'success',
+      output: '[info] Queued run_script action',
+      scriptResults: [
+        {
+          executionId: 'exec-1',
+          scriptId: 'script-1',
+          scriptName: 'Collect logs',
+          status: 'completed',
+          exitCode: 0,
+          stdout: 'hello from the agent',
+          stderr: 'a warning',
+        },
+      ],
+    },
+    { deviceId: 'd-2', deviceName: 'HOST-2', status: 'success' },
+  ];
+
+  async function expandRun(deviceResults: DeviceRunResult[]) {
+    const onLoadRunDetail = vi.fn().mockResolvedValue({ deviceResults, logs: [] });
+    render(
+      <AutomationRunHistory
+        runs={[makeRun({ status: 'success', completedAt: '2026-07-08T00:01:00.000Z' })]}
+        isOpen
+        onClose={() => {}}
+        onLoadRunDetail={onLoadRunDetail}
+      />,
+    );
+    fireEvent.click(screen.getByText(/Manual - 4 devices/).closest('button')!);
+    await waitFor(() => expect(screen.getByText('Reception PC')).toBeTruthy());
+  }
+
+  it('offers a script-output toggle only for devices that ran a script', async () => {
+    await expandRun(withScript);
+    expect(screen.getAllByTestId('script-output-toggle')).toHaveLength(1);
+    // Collapsed by default — stdout is not in the DOM until asked for.
+    expect(screen.queryByTestId('script-stdout')).toBeNull();
+  });
+
+  it('reveals the real stdout and stderr on expand', async () => {
+    await expandRun(withScript);
+
+    fireEvent.click(screen.getByTestId('script-output-toggle'));
+
+    expect(screen.getByTestId('script-stdout').textContent).toContain('hello from the agent');
+    expect(screen.getByTestId('script-stderr').textContent).toContain('a warning');
+    expect(screen.getByText('Collect logs')).toBeTruthy();
+    expect(screen.getByText('Exit code 0')).toBeTruthy();
+  });
+
+  it('shows an explicit empty-output placeholder rather than a blank pane', async () => {
+    await expandRun([
+      {
+        deviceId: 'd-1',
+        deviceName: 'Reception PC',
+        status: 'success',
+        scriptResults: [
+          { executionId: 'exec-1', scriptId: 'script-1', status: 'completed', exitCode: 0 },
+        ],
+      },
+    ]);
+
+    fireEvent.click(screen.getByTestId('script-output-toggle'));
+    expect(screen.getByTestId('script-stdout').textContent).toBe('No output');
+    // Falls back to a generic label when the script name didn't resolve.
+    expect(screen.getByText('Script')).toBeTruthy();
+  });
+
+  it('renders no toggle when the run queued no scripts', async () => {
+    await expandRun([{ deviceId: 'd-1', deviceName: 'Reception PC', status: 'success' }]);
+    expect(screen.queryByTestId('script-output-toggle')).toBeNull();
+  });
+});

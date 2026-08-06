@@ -78,7 +78,8 @@ vi.mock('../db/schema', () => ({
   policyCompliance: {},
   organizations: {},
   devices: {},
-  scripts: {}
+  scripts: {},
+  scriptExecutions: {}
 }));
 
 // The run-detail route issues a final select for per-device results (#2023):
@@ -94,6 +95,14 @@ function deviceResultsSelectMock(rows: any[]) {
       }),
     }),
   } as any;
+}
+
+/**
+ * The run's script_executions rows (#3162) — same select shape as the
+ * per-device results query, issued right after it inside the same Promise.all.
+ */
+function scriptExecutionsSelectMock(rows: any[]) {
+  return deviceResultsSelectMock(rows);
 }
 
 vi.mock('../services/auditEvents', () => ({
@@ -1115,7 +1124,9 @@ describe('automations routes', () => {
         })
       } as any)
       // Third select: per-device results (#2023).
-      .mockReturnValueOnce(deviceResultsSelectMock([]));
+      .mockReturnValueOnce(deviceResultsSelectMock([]))
+      // Fourth select: the run's script executions (#3162).
+      .mockReturnValueOnce(scriptExecutionsSelectMock([]));
 
     const res = await app.request('/automations/runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', {
       method: 'GET',
@@ -1221,6 +1232,25 @@ describe('automations routes', () => {
           hostname: 'HOST-2',
           displayName: null,
         },
+      ]))
+      // Fourth select: the run's script executions (#3162) — the REAL stdout
+      // from `run_script` actions, which automation_run_device_results.output
+      // never carries.
+      .mockReturnValueOnce(scriptExecutionsSelectMock([
+        {
+          executionId: 'ee111111-1111-4111-8111-111111111111',
+          deviceId: 'device-1',
+          scriptId: 'script-1',
+          scriptName: 'Collect logs',
+          status: 'completed',
+          exitCode: 0,
+          stdout: 'hello from the agent',
+          stderr: null,
+          errorMessage: null,
+          startedAt: '2026-07-08T00:00:00.000Z',
+          completedAt: '2026-07-08T00:00:02.000Z',
+          createdAt: '2026-07-08T00:00:00.000Z',
+        },
       ]));
 
     const res = await app.request('/automations/runs/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', {
@@ -1254,6 +1284,19 @@ describe('automations routes', () => {
       duration: 2000,
       error: 'boom',
     });
+    // #3162: the script's real stdout rides along on the device that ran it,
+    // and only on that device.
+    expect(body.deviceResults[0].scriptResults).toEqual([
+      expect.objectContaining({
+        executionId: 'ee111111-1111-4111-8111-111111111111',
+        scriptId: 'script-1',
+        scriptName: 'Collect logs',
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'hello from the agent',
+      }),
+    ]);
+    expect(body.deviceResults[1].scriptResults).toBeUndefined();
   });
 
   // ============================================

@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, numeric, index, primaryKey, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { organizations, partners } from './orgs';
 import { devices } from './devices';
@@ -6,7 +7,7 @@ import { users } from './users';
 export const scriptLanguageEnum = pgEnum('script_language', ['powershell', 'bash', 'python', 'cmd']);
 export const scriptRunAsEnum = pgEnum('script_run_as', ['system', 'user', 'elevated']);
 export const executionStatusEnum = pgEnum('execution_status', ['pending', 'queued', 'running', 'completed', 'failed', 'timeout', 'cancelled']);
-export const triggerTypeEnum = pgEnum('trigger_type', ['manual', 'scheduled', 'alert', 'policy']);
+export const triggerTypeEnum = pgEnum('trigger_type', ['manual', 'scheduled', 'alert', 'policy', 'automation']);
 
 // Feature #3: severity-by-exit-code mapping. Keys are non-negative integer
 // strings (e.g. "0", "1"), values are AlertSeverity literals or null.
@@ -116,6 +117,13 @@ export const scriptExecutions = pgTable('script_executions', {
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   triggeredBy: uuid('triggered_by').references(() => users.id),
   triggerType: triggerTypeEnum('trigger_type').notNull().default('manual'),
+  // The automation run that queued this execution, when trigger_type is
+  // 'automation' (#3162). Deliberately NOT a Drizzle `.references()`:
+  // schema/automations.ts already imports this module, so pointing back at
+  // `automationRuns` would close an import cycle. Same reason
+  // `automation_runs.config_policy_id` is a bare uuid. Readers LEFT JOIN on it;
+  // a stale id after a run is purged simply yields no match.
+  automationRunId: uuid('automation_run_id'),
   parameters: jsonb('parameters'),
   status: executionStatusEnum('status').notNull().default('pending'),
   startedAt: timestamp('started_at'),
@@ -125,7 +133,11 @@ export const scriptExecutions = pgTable('script_executions', {
   stderr: text('stderr'),
   errorMessage: text('error_message'),
   createdAt: timestamp('created_at').defaultNow().notNull()
-});
+}, (table) => ({
+  automationRunIdIdx: index('script_executions_automation_run_id_idx')
+    .on(table.automationRunId)
+    .where(sql`automation_run_id IS NOT NULL`)
+}));
 
 export const scriptExecutionBatches = pgTable('script_execution_batches', {
   id: uuid('id').primaryKey().defaultRandom(),

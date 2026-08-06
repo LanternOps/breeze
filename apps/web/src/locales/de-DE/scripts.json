@@ -284,6 +284,16 @@
       "webhook": "Webhook",
       "manual": "Manuell",
       "api": "API-Aufruf"
+    },
+    "scriptOutput": {
+      "show_one": "Skriptausgabe anzeigen",
+      "show_other": "Skriptausgabe anzeigen ({{count}})",
+      "hide_one": "Skriptausgabe ausblenden",
+      "hide_other": "Skriptausgabe ausblenden ({{count}})",
+      "exitCode": "Exit-Code {{code}}",
+      "empty": "Keine Ausgabe",
+      "stderr": "stderr",
+      "untitled": "Skript"
     }
   },
   "automationsPage": {

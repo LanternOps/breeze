@@ -10,6 +10,8 @@ import {
   automationRunDeviceResults,
   configurationPolicies,
   devices,
+  scriptExecutions,
+  scripts,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
@@ -396,33 +398,100 @@ function serializeRunLogs(logs: unknown): string[] {
 }
 
 /**
+ * Fetch the `script_executions` rows minted by a run's `run_script` actions,
+ * grouped by device (#3162). These carry the script's REAL stdout/stderr/exit
+ * code, which `automation_run_device_results.output` never has — that column
+ * only holds the automation's own log lines. RLS on script_executions (org_id =
+ * device's org) scopes rows to the caller's tenancy, same as the device-results
+ * query below.
+ */
+async function fetchRunScriptExecutions(runId: string) {
+  const rows = await db
+    .select({
+      executionId: scriptExecutions.id,
+      deviceId: scriptExecutions.deviceId,
+      scriptId: scriptExecutions.scriptId,
+      scriptName: scripts.name,
+      status: scriptExecutions.status,
+      exitCode: scriptExecutions.exitCode,
+      stdout: scriptExecutions.stdout,
+      stderr: scriptExecutions.stderr,
+      errorMessage: scriptExecutions.errorMessage,
+      startedAt: scriptExecutions.startedAt,
+      completedAt: scriptExecutions.completedAt,
+      createdAt: scriptExecutions.createdAt,
+    })
+    .from(scriptExecutions)
+    .leftJoin(scripts, eq(scripts.id, scriptExecutions.scriptId))
+    .where(eq(scriptExecutions.automationRunId, runId))
+    .orderBy(scriptExecutions.createdAt);
+
+  const byDevice = new Map<string, Array<{
+    executionId: string;
+    scriptId: string;
+    scriptName?: string;
+    status: string;
+    exitCode?: number;
+    stdout?: string;
+    stderr?: string;
+    error?: string;
+    startedAt: Date | null;
+    completedAt: Date | null;
+  }>>();
+
+  for (const row of rows) {
+    const list = byDevice.get(row.deviceId) ?? [];
+    list.push({
+      executionId: row.executionId,
+      scriptId: row.scriptId,
+      scriptName: row.scriptName ?? undefined,
+      status: row.status,
+      exitCode: row.exitCode ?? undefined,
+      stdout: row.stdout ?? undefined,
+      stderr: row.stderr ?? undefined,
+      error: row.errorMessage ?? undefined,
+      startedAt: row.startedAt,
+      completedAt: row.completedAt,
+    });
+    byDevice.set(row.deviceId, list);
+  }
+
+  return byDevice;
+}
+
+/**
  * Fetch the consolidated per-device breakdown for one run (#2023), joined to
  * `devices` for a display name. Shaped to the web `DeviceRunResult` contract:
- * status + start/complete timestamps + duration (ms) + output/error. RLS on
+ * status + start/complete timestamps + duration (ms) + output/error, plus the
+ * per-device script executions the run queued (#3162). RLS on
  * automation_run_device_results (org_id = device's org) already scopes rows to
  * the caller's tenancy, so no extra org filter is needed here.
  */
 async function fetchRunDeviceResults(runId: string) {
-  const rows = await db
-    .select({
-      deviceId: automationRunDeviceResults.deviceId,
-      status: automationRunDeviceResults.status,
-      startedAt: automationRunDeviceResults.startedAt,
-      completedAt: automationRunDeviceResults.completedAt,
-      output: automationRunDeviceResults.output,
-      error: automationRunDeviceResults.error,
-      hostname: devices.hostname,
-      displayName: devices.displayName,
-    })
-    .from(automationRunDeviceResults)
-    .leftJoin(devices, eq(devices.id, automationRunDeviceResults.deviceId))
-    .where(eq(automationRunDeviceResults.runId, runId))
-    .orderBy(desc(automationRunDeviceResults.startedAt));
+  const [rows, scriptExecutionsByDevice] = await Promise.all([
+    db
+      .select({
+        deviceId: automationRunDeviceResults.deviceId,
+        status: automationRunDeviceResults.status,
+        startedAt: automationRunDeviceResults.startedAt,
+        completedAt: automationRunDeviceResults.completedAt,
+        output: automationRunDeviceResults.output,
+        error: automationRunDeviceResults.error,
+        hostname: devices.hostname,
+        displayName: devices.displayName,
+      })
+      .from(automationRunDeviceResults)
+      .leftJoin(devices, eq(devices.id, automationRunDeviceResults.deviceId))
+      .where(eq(automationRunDeviceResults.runId, runId))
+      .orderBy(desc(automationRunDeviceResults.startedAt)),
+    fetchRunScriptExecutions(runId),
+  ]);
 
   return rows.map((row) => {
     const duration = row.startedAt && row.completedAt
       ? new Date(row.completedAt).getTime() - new Date(row.startedAt).getTime()
       : undefined;
+    const scriptResults = scriptExecutionsByDevice.get(row.deviceId);
     return {
       deviceId: row.deviceId,
       deviceName: row.displayName ?? row.hostname ?? row.deviceId,
@@ -432,6 +501,7 @@ async function fetchRunDeviceResults(runId: string) {
       duration,
       output: row.output ?? undefined,
       error: row.error ?? undefined,
+      scriptResults: scriptResults && scriptResults.length > 0 ? scriptResults : undefined,
     };
   });
 }

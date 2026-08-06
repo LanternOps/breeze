@@ -122,9 +122,16 @@ export async function loadPartnerAggregates(): Promise<PartnerAggregates[]> {
       GROUP BY o.partner_id
     ),
     scripts AS (
+      -- resource.volume_outlier is about a HUMAN driving unusual script volume.
+      -- Automation-triggered executions (trigger_type = 'automation', #3162) are
+      -- scheduled machine activity with nobody behind them: one hourly
+      -- automation over a large fleet would otherwise pin this signal for a
+      -- perfectly ordinary MSP. Exclude them rather than raising the threshold,
+      -- which would blind the signal to real operator activity.
       SELECT o.partner_id, COUNT(*) AS scripts_24h
       FROM script_executions se JOIN organizations o ON o.id = se.org_id
       WHERE se.created_at > now() - interval '24 hours'
+        AND se.trigger_type <> 'automation'
       GROUP BY o.partner_id
     ),
     ips AS (

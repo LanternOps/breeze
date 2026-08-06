@@ -14,6 +14,7 @@ import {
   devices,
   notificationChannels,
   organizations,
+  scriptExecutions,
   scripts,
 } from '../db/schema';
 import { resolveDeploymentTargets } from './deploymentEngine';
@@ -834,7 +835,9 @@ type ActionExecutionResult = {
   log: AutomationLogEntry;
 };
 
-async function executeRunScriptAction(
+// Exported for direct unit coverage of the script_executions correlation
+// (#3162); the run loop still reaches it through executeAction below.
+export async function executeRunScriptAction(
   action: RunScriptAction,
   actionIndex: number,
   context: ActionExecutionContext,
@@ -868,15 +871,76 @@ async function executeRunScriptAction(
     };
   }
 
+  // queueCommandForExecution refuses any device that isn't `online`, so check
+  // first rather than minting an execution row we'd immediately have to fail
+  // (#3162). A daily automation over a fleet of asleep laptops would otherwise
+  // add one `failed` row per device per run, drowning the device's script
+  // history and skewing per-script success stats. A device that goes offline
+  // between this check and the queue call still lands a failed row below —
+  // that one is a genuine attempt.
+  if (context.device.status !== 'online') {
+    return {
+      success: false,
+      log: logEntry('Failed to queue run_script action command', 'error', {
+        actionType: action.type,
+        actionIndex,
+        deviceId: context.device.id,
+        details: {
+          error: `Device is ${context.device.status}, cannot execute command`,
+          scriptId: script.id,
+        },
+      }),
+    };
+  }
+
+  const parameters = action.parameters ?? {};
+
+  // #3162: mint a REAL script_executions row and use its uuid as the payload's
+  // executionId. The previous synthetic `${runId}:${deviceId}:${actionIndex}`
+  // string could never match `script_executions.id` (a uuid column), so
+  // handleScriptResult's UPDATE threw, got swallowed by its catch, and the
+  // agent's stdout was discarded. With a real row the existing result handler
+  // persists stdout/stderr/exitCode, and the run is visible in the device's
+  // script history alongside manual runs.
+  //
+  // org_id is the DEVICE's org — a partner-wide automation (automations.org_id
+  // NULL, #2133) owns no org of its own, so worker-created child rows always
+  // take the device's (playbook rule 5).
+  const [execution] = await db
+    .insert(scriptExecutions)
+    .values({
+      scriptId: script.id,
+      deviceId: context.device.id,
+      orgId: context.device.orgId,
+      triggeredBy: context.automation.createdBy ?? null,
+      triggerType: 'automation',
+      automationRunId: context.runId,
+      parameters,
+      status: 'pending',
+    })
+    .returning({ id: scriptExecutions.id });
+
+  if (!execution) {
+    return {
+      success: false,
+      log: logEntry('Failed to create script execution for run_script action', 'error', {
+        actionType: action.type,
+        actionIndex,
+        deviceId: context.device.id,
+        details: { scriptId: script.id },
+      }),
+    };
+  }
+
   const queueResult = await queueCommandForExecution(
     context.device.id,
     CommandTypes.SCRIPT,
     {
       scriptId: script.id,
-      executionId: `${context.runId}:${context.device.id}:${actionIndex}`,
+      executionId: execution.id,
       language: script.language,
       content: script.content,
-      parameters: action.parameters ?? {},
+      parameters,
       timeoutSeconds: script.timeoutSeconds,
       runAs: action.runAs ?? script.runAs,
     },
@@ -885,7 +949,27 @@ async function executeRunScriptAction(
     },
   );
 
+  // Both post-queue transitions are guarded on the row still being `pending`.
+  // queueCommandForExecution delivers over the WebSocket synchronously, so a
+  // fast agent can have already driven the row terminal through
+  // handleScriptResult by the time we get here — an unguarded write would flip
+  // a `completed` row (with its stdout) back to `queued`, and the stale-command
+  // reaper would later mark it `timeout`.
   if (!queueResult.command) {
+    // Don't strand the row in `pending` forever — the stale-command reaper only
+    // knows about executions that have a device_commands row behind them.
+    await db
+      .update(scriptExecutions)
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        errorMessage: queueResult.error ?? 'Failed to queue script command',
+      })
+      .where(and(
+        eq(scriptExecutions.id, execution.id),
+        eq(scriptExecutions.status, 'pending'),
+      ));
+
     return {
       success: false,
       log: logEntry('Failed to queue run_script action command', 'error', {
@@ -897,6 +981,20 @@ async function executeRunScriptAction(
     };
   }
 
+  // Mirror the manual path (services/scriptExecution.ts): once the command is
+  // actually on the wire the execution is `running` with a start time, which is
+  // what the UI derives a duration from. Otherwise it's merely `queued`.
+  const delivered = queueResult.command.status === 'sent';
+  await db
+    .update(scriptExecutions)
+    .set(delivered
+      ? { status: 'running', startedAt: queueResult.command.executedAt ?? new Date() }
+      : { status: 'queued' })
+    .where(and(
+      eq(scriptExecutions.id, execution.id),
+      eq(scriptExecutions.status, 'pending'),
+    ));
+
   return {
     success: true,
     log: logEntry('Queued run_script action', 'info', {
@@ -904,7 +1002,7 @@ async function executeRunScriptAction(
       actionIndex,
       deviceId: context.device.id,
       commandId: queueResult.command.id,
-      details: { scriptId: script.id },
+      details: { scriptId: script.id, executionId: execution.id },
     }),
   };
 }
