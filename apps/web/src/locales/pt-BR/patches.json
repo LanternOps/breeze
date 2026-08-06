@@ -235,7 +235,8 @@
     "sortBy": "Ordenar por {{label}}",
     "errors": {
       "approvePatches": "Falha ao aprovar patches",
-      "declinePatches": "Falha ao recusar patches"
+      "declinePatches": "Falha ao recusar patches",
+      "staleList": "{{message}} Exibindo a lista carregada anteriormente, que pode estar desatualizada."
     },
     "severity": {
       "critical": "Crítica",
@@ -325,7 +326,8 @@
       "noDevicesForScan": "Nenhum dispositivo disponível para verificação",
       "updateRing": "Falha ao atualizar anel",
       "createRing": "Falha ao criar anel de atualização",
-      "deleteRing": "Falha ao excluir anel"
+      "deleteRing": "Falha ao excluir anel",
+      "approveUnknown": "Status de aprovação desconhecido — não foi possível ler a resposta do servidor. Atualize para confirmar quais patches foram aprovados."
     },
     "toast": {
       "ringSaved": "Anel de atualização salvo",
@@ -354,7 +356,7 @@
       "editTitle": "Editar anel de atualização",
       "createTitle": "Criar anel de atualização"
     },
-    "truncatedNotice": "Exibindo os primeiros {{shown}} de {{total}} patches. Use os filtros acima para restringir a lista."
+    "truncatedNotice": "Exibindo {{shown}} de {{total}} patches. Os filtros aqui apenas restringem o que já foi carregado, então o restante não pode ser alcançado nesta visualização — use a API de patches para percorrer o catálogo completo."
   },
   "ringSelector": {
     "label": "Anel de atualização:",

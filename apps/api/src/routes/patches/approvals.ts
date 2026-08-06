@@ -116,7 +116,17 @@ approvalsRoutes.post(
           notes: data.note ?? null,
         }, auth);
         approved.push(patchId);
-      } catch {
+      } catch (err) {
+        // Log every per-id failure. The response only carries the failed ids,
+        // and the audit entry only a count, so without this an operator asked
+        // "why did 40 of my 333 patches fail to approve?" has nothing to
+        // correlate — RLS denials, conflict-target mismatches, a
+        // PartnerWideWriteDeniedError and a dropped connection all look
+        // identical from the outside.
+        console.error(
+          `[Patches] bulk approve failed for patch=${patchId} partner=${targetPartnerId} ring=${data.ringId ?? 'none'}:`,
+          err
+        );
         failed.push(patchId);
       }
     }

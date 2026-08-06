@@ -83,13 +83,17 @@ const DEFAULT_PAGE_SIZE = 25;
 // WARNING (sort divergence): this client-side severity sort uses SEMANTIC
 // priority (critical=0 … low=3), whereas the API sorts severity ALPHABETICALLY
 // (asc(patches.severity) in routes/patches/list.ts). These currently never
-// disagree because the web does 100% client-side sort/paginate over the fully
-// paged-in catalog (PatchesPage walks every page) and never sends
-// sortBy/sortDir. Whoever later pushes sorting down to the server (via
-// fetchPatches) MUST reconcile the two or severity ordering will silently
-// change. Note also that `os` and
-// `approvalStatus` are SortKeys here with no matching column in the API's
-// PATCH_SORT_COLUMNS — they can't be pushed down without server-side support.
+// disagree because the web does 100% client-side sort/paginate over the
+// paged-in catalog and never sends sortBy/sortDir. Whoever later pushes sorting
+// down to the server (via fetchPatches) MUST reconcile the two or severity
+// ordering will silently change. Note also that `os` and `approvalStatus` are
+// SortKeys here with no matching column in the API's PATCH_SORT_COLUMNS — they
+// can't be pushed down without server-side support.
+//
+// The "never disagree" claim has one limit: PatchesPage walks at most
+// PATCH_FETCH_MAX_PAGES x 200 = 5,000 patches. Past that the client holds only
+// the newest 5,000 by createdAt (and renders a truncation notice saying so), so
+// a server-side severity sort would rank a DIFFERENT subset than this one does.
 const severityRank: Record<PatchSeverity, number> = {
   critical: 0,
   important: 1,
@@ -204,9 +208,11 @@ export default function PatchList({
   const paginatedPatches = sortedPatches.slice(startIndex, startIndex + pageSize);
 
   const paginatedIds = useMemo(() => paginatedPatches.map(p => p.id), [paginatedPatches]);
-  // Every patch matching the active filters, across all pages — backs the
-  // "select all N matching" action so approving a >1-page result set doesn't
-  // require a select-all click per page (#3157).
+  // Every patch matching the active filters, across all pages PatchesPage
+  // managed to load — backs the "select all N matching" action so approving a
+  // >1-page result set doesn't require a select-all click per page (#3157). If
+  // the catalog was truncated at the fetch cap this is a subset of what truly
+  // matches; PatchesPage renders its truncation notice for exactly that case.
   const matchingIds = useMemo(() => sortedPatches.map(p => p.id), [sortedPatches]);
   const {
     selectedIds,
@@ -473,7 +479,8 @@ export default function PatchList({
           </span>
           {/* The header checkbox only ever covers the visible page, so once the
               filtered set spans more than one page offer a one-click way to
-              take the whole thing (#3157). */}
+              take the whole thing (#3157). This lives inside the bulk toolbar,
+              so it only appears after at least one row is selected. */}
           {!allMatchingSelected && matchingIds.length > paginatedIds.length && (
             <button
               type="button"
@@ -537,6 +544,30 @@ export default function PatchList({
       {bulkError && (
         <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-destructive">
           {bulkError}
+        </div>
+      )}
+
+      {/* A failed refresh leaves the PREVIOUS list on screen (PatchesPage only
+          commits `patches` on a fully successful walk). The full-page error
+          state below only renders when there's nothing to show, so without this
+          banner a failed reload — switching rings, hitting Refresh, a mid-walk
+          page failing — would silently display stale rows, potentially from a
+          different ring, with no indication anything went wrong (#3157). */}
+      {!loading && error && patches.length > 0 && (
+        <div
+          data-testid="patch-list-stale-error"
+          className="mt-4 flex flex-wrap items-center gap-3 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-destructive"
+        >
+          <span>{t('patchList.errors.staleList', { message: error })}</span>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="ml-auto rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium hover:bg-destructive/20"
+            >
+              {t('patchList.actions.tryAgain')}
+            </button>
+          )}
         </div>
       )}
 

@@ -235,7 +235,8 @@
     "sortBy": "Nach {{label}} sortieren",
     "errors": {
       "approvePatches": "Patches konnten nicht freigegeben werden",
-      "declinePatches": "Patches konnten nicht abgelehnt werden"
+      "declinePatches": "Patches konnten nicht abgelehnt werden",
+      "staleList": "{{message}} Es wird die zuvor geladene Liste angezeigt, die möglicherweise veraltet ist."
     },
     "severity": {
       "critical": "Kritisch",
@@ -325,7 +326,8 @@
       "noDevicesForScan": "Keine Geräte zum Scannen verfügbar",
       "updateRing": "Ring konnte nicht aktualisiert werden",
       "createRing": "Updatering konnte nicht erstellt werden",
-      "deleteRing": "Ring konnte nicht gelöscht werden"
+      "deleteRing": "Ring konnte nicht gelöscht werden",
+      "approveUnknown": "Freigabestatus unbekannt — die Serverantwort konnte nicht gelesen werden. Aktualisieren Sie, um zu prüfen, welche Patches freigegeben wurden."
     },
     "toast": {
       "ringSaved": "Updatering gespeichert",
@@ -354,7 +356,7 @@
       "editTitle": "Updatering bearbeiten",
       "createTitle": "Updatering erstellen"
     },
-    "truncatedNotice": "Es werden die ersten {{shown}} von {{total}} Patches angezeigt. Verwenden Sie die Filter oben, um die Liste einzugrenzen."
+    "truncatedNotice": "Es werden {{shown}} von {{total}} Patches angezeigt. Die Filter hier grenzen nur das bereits Geladene ein, der Rest ist über diese Ansicht nicht erreichbar — verwenden Sie die Patches-API für den vollständigen Katalog."
   },
   "ringSelector": {
     "label": "Updatering:",

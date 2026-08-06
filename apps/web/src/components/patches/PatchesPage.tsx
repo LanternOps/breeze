@@ -68,6 +68,13 @@ const PATCH_FETCH_PAGE_LIMIT = 200;
 // silently dropping the tail (which is exactly what #3157 was).
 const PATCH_FETCH_MAX_PAGES = 25;
 
+// Ids per POST /patches/bulk-approve request. The route upserts sequentially,
+// one awaited round trip per id, so request duration scales with batch size —
+// and "Select all N matching" can hand us the whole loaded catalog. Batching
+// keeps any single request short enough to finish well inside an edge-proxy
+// timeout, and gives each batch its own audit entry.
+const BULK_APPROVE_BATCH_SIZE = 200;
+
 export default function PatchesPage() {
   const { t } = useTranslation('patches');
   const { organizations, currentOrgId } = useOrgStore();
@@ -133,8 +140,9 @@ export default function PatchesPage() {
   const [patchesLoading, setPatchesLoading] = useState(true);
   const [patchesError, setPatchesError] = useState<string>();
   const [sourceCounts, setSourceCounts] = useState<Record<string, number>>({});
-  // Set when the catalog is larger than PATCH_FETCH_MAX_PAGES pages, so the
-  // truncation is visible rather than silently capping the list (#3157).
+  // Total reported by the API when the walk brought back fewer patches than
+  // that — the page cap, a mid-walk anomaly, or duplicate rows. Non-null means
+  // the list on screen is incomplete and the user is told so (#3157).
   const [patchesTruncatedTotal, setPatchesTruncatedTotal] = useState<number | null>(null);
   // Monotonic id for the in-flight catalog walk; see fetchPatches.
   const patchFetchGeneration = useRef(0);
@@ -207,7 +215,9 @@ export default function PatchesPage() {
       // selected. A single `limit=200` request therefore hard-capped the UI at
       // the API's MAX_PAGE_LIMIT: an org with 333 patches could only ever see
       // and approve the first 200 (#3157). Both endpoints return
-      // `pagination: { page, limit, total }`, so we page until exhausted.
+      // `pagination: { page, limit, total }`, so we page until exhausted — or
+      // until PATCH_FETCH_MAX_PAGES, after which the user is told the list is
+      // short. Whatever happens, a short list is never presented as complete.
       //
       // Note: this never sends sortBy/sortDir, so the server-side sort added to
       // the API (list.ts / schemas.ts) is NOT yet consumed by the web; wiring it
@@ -221,8 +231,9 @@ export default function PatchesPage() {
         : `/patches?limit=${PATCH_FETCH_PAGE_LIMIT}`;
 
       const collected: Patch[] = [];
+      const seenIds = new Set<string>();
       let counts: Record<string, number> | null = null;
-      let truncatedTotal: number | null = null;
+      let reportedTotal: number | null = null;
       let page = 1;
       let lastPage = 1;
 
@@ -244,9 +255,17 @@ export default function PatchesPage() {
         for (const patch of rows) {
           // normalizePatch's index only seeds a fallback id for rows with no
           // id; offsetting by the running total keeps those unique across pages.
-          collected.push(normalizePatch(patch as Record<string, unknown>, collected.length));
+          const normalized = normalizePatch(patch as Record<string, unknown>, collected.length);
+          // Offset paging can hand back the same row on two pages if rows are
+          // inserted or deleted mid-walk. Duplicates would collide on React
+          // keys and inflate the "select all N matching" count, so drop them —
+          // the completeness check below is what tells the user rows are short.
+          if (seenIds.has(normalized.id)) continue;
+          seenIds.add(normalized.id);
+          collected.push(normalized);
         }
-        // Counts are catalog-wide and identical on every page — take page 1's.
+        // Counts are catalog-wide and identical on every page — keep the first
+        // page that supplies them.
         if (counts === null && data && typeof data.counts === 'object' && data.counts !== null) {
           counts = data.counts as Record<string, number>;
         }
@@ -254,23 +273,29 @@ export default function PatchesPage() {
         const pagination = (data?.pagination ?? {}) as { total?: unknown; limit?: unknown };
         const total = Number(pagination.total);
         const pageLimit = Number(pagination.limit) || PATCH_FETCH_PAGE_LIMIT;
-        // Endpoints/mocks that omit pagination metadata, and pages that come
-        // back empty, both mean "nothing more to fetch" — stop rather than loop.
-        if (rows.length > 0 && Number.isFinite(total) && total > 0 && pageLimit > 0) {
+        if (rows.length > 0 && Number.isFinite(total) && total > 0) {
+          reportedTotal = total;
           lastPage = Math.ceil(total / pageLimit);
-          if (lastPage > PATCH_FETCH_MAX_PAGES) {
-            lastPage = PATCH_FETCH_MAX_PAGES;
-            truncatedTotal = total;
-          }
+          if (lastPage > PATCH_FETCH_MAX_PAGES) lastPage = PATCH_FETCH_MAX_PAGES;
         } else {
+          // On page 1 this is the ordinary "endpoint returned no pagination
+          // metadata, or the catalog is empty" case — one page IS the whole
+          // answer. From page 2 on it's an anomaly (page 1 already promised
+          // more), so stop here and let the completeness check flag the gap
+          // rather than silently serving a short list.
           lastPage = page;
         }
         page += 1;
       }
 
+      // A short list must never render as the complete catalog — that silence
+      // is precisely what #3157 was. Fires for the page cap, for a mid-walk
+      // anomaly, and for rows dropped as duplicates.
+      const shortOfTotal = reportedTotal !== null && collected.length < reportedTotal;
+
       setPatches(collected);
       setSourceCounts(counts ?? {});
-      setPatchesTruncatedTotal(truncatedTotal);
+      setPatchesTruncatedTotal(shortOfTotal ? reportedTotal : null);
     } catch (err) {
       if (isStale()) return;
       setPatchesError(err instanceof Error ? err.message : t('patchesPage.errors.fetchPatches'));
@@ -304,6 +329,16 @@ export default function PatchesPage() {
     setSelectedPatch(null);
   };
 
+  // Flip the given ids to approved in the local table.
+  const markApproved = useCallback((ids: string[]) => {
+    const approved = new Set(ids);
+    setPatches(prev =>
+      prev.map(patch =>
+        approved.has(patch.id) ? { ...patch, approvalStatus: 'approved' as PatchApprovalStatus } : patch
+      )
+    );
+  }, []);
+
   // NOTE: bulk-approve/decline and update-ring mutations intentionally use the inline bulkError/ringsError
   // feedback pattern (aggregate/partial-success semantics + PatchList-owned error UI) rather than
   // runAction's per-call toast. This is a deliberate, valid feedback pattern — not a silent failure.
@@ -315,29 +350,49 @@ export default function PatchesPage() {
     if (!canManageRings) {
       throw new Error(t('patchesPage.errors.partnerLevel'));
     }
-    // runaction-exempt: aggregate/partial-success — inline bulkError UI (see NOTE above)
-    const response = await fetchWithAuth('/patches/bulk-approve', {
-      method: 'POST',
-      body: JSON.stringify({
-        patchIds,
-        ringId: selectedRingId ?? undefined
-      })
-    });
-    if (!response.ok) {
-      if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-      throw new Error(t('patchesPage.errors.approvePatches'));
+    // Submit in batches. The API applies approvals one awaited upsert at a time
+    // (routes/patches/approvals.ts), so a single request for the whole
+    // selection scales linearly with it — and "Select all N matching" can now
+    // put thousands of ids behind one click. An edge-proxy timeout on such a
+    // request would abandon a batch that had already partly committed, and the
+    // route's audit entry is written after its loop, so those approvals would
+    // land with no audit record. Batching bounds each request, gives each one
+    // its own audit row, and keeps partial success attributable.
+    const approvedIds: string[] = [];
+    const failedIds: string[] = [];
+    for (let i = 0; i < patchIds.length; i += BULK_APPROVE_BATCH_SIZE) {
+      const batch = patchIds.slice(i, i + BULK_APPROVE_BATCH_SIZE);
+      // runaction-exempt: aggregate/partial-success — inline bulkError UI (see NOTE above)
+      const response = await fetchWithAuth('/patches/bulk-approve', {
+        method: 'POST',
+        body: JSON.stringify({
+          patchIds: batch,
+          ringId: selectedRingId ?? undefined
+        })
+      });
+      if (!response.ok) {
+        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
+        // Commit what earlier batches achieved before surfacing the failure, so
+        // the table doesn't show already-approved patches as still pending.
+        if (approvedIds.length > 0) markApproved(approvedIds);
+        throw new Error(t('patchesPage.errors.approvePatches'));
+      }
+      const body = await response.json().catch(() => null) as {
+        approved?: string[];
+        failed?: string[];
+      } | null;
+      if (body === null || !Array.isArray(body.approved)) {
+        // A 200 whose body we can't read is NOT evidence the approvals landed.
+        // Optimistically flipping the rows to "approved" here would assert a
+        // result we don't have; report it as indeterminate instead.
+        if (approvedIds.length > 0) markApproved(approvedIds);
+        throw new Error(t('patchesPage.errors.approveUnknown'));
+      }
+      approvedIds.push(...body.approved);
+      if (Array.isArray(body.failed)) failedIds.push(...body.failed);
     }
-    const body = await response.json().catch(() => ({})) as {
-      approved?: string[];
-      failed?: string[];
-    };
-    const approvedIds = Array.isArray(body.approved) ? body.approved : patchIds;
-    const failedIds = Array.isArray(body.failed) ? body.failed : [];
-    setPatches(prev =>
-      prev.map(patch =>
-        approvedIds.includes(patch.id) ? { ...patch, approvalStatus: 'approved' as PatchApprovalStatus } : patch
-      )
-    );
+
+    markApproved(approvedIds);
     if (failedIds.length > 0) {
       throw new Error(
         t(

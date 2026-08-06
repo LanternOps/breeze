@@ -235,7 +235,8 @@
     "sortBy": "Ordenar por {{label}}",
     "errors": {
       "approvePatches": "No se pudieron aprobar los parches",
-      "declinePatches": "No se pudieron rechazar los parches"
+      "declinePatches": "No se pudieron rechazar los parches",
+      "staleList": "{{message}} Se muestra la lista cargada anteriormente, que puede estar desactualizada."
     },
     "severity": {
       "critical": "Crítico",
@@ -325,7 +326,8 @@
       "noDevicesForScan": "No hay dispositivos disponibles para escanear",
       "updateRing": "No se pudo actualizar el anillo",
       "createRing": "No se pudo crear el anillo de actualización",
-      "deleteRing": "No se pudo eliminar el anillo"
+      "deleteRing": "No se pudo eliminar el anillo",
+      "approveUnknown": "Estado de aprobación desconocido: no se pudo leer la respuesta del servidor. Actualiza para confirmar qué parches se aprobaron."
     },
     "toast": {
       "ringSaved": "Anillo de actualización guardado",
@@ -354,7 +356,7 @@
       "editTitle": "Editar anillo de actualización",
       "createTitle": "Crear anillo de actualización"
     },
-    "truncatedNotice": "Se muestran los primeros {{shown}} de {{total}} parches. Usa los filtros de arriba para acotar la lista."
+    "truncatedNotice": "Se muestran {{shown}} de {{total}} parches. Los filtros de aquí solo acotan lo ya cargado, así que el resto no se puede alcanzar desde esta vista: usa la API de parches para recorrer el catálogo completo."
   },
   "ringSelector": {
     "label": "Anillo de actualización:",

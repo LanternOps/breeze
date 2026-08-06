@@ -235,7 +235,8 @@
     "sortBy": "Trier par {{label}}",
     "errors": {
       "approvePatches": "Impossible d’approuver les correctifs",
-      "declinePatches": "Impossible de refuser les correctifs"
+      "declinePatches": "Impossible de refuser les correctifs",
+      "staleList": "{{message}} La liste précédemment chargée est affichée ; elle peut être obsolète."
     },
     "severity": {
       "critical": "Critique",
@@ -325,7 +326,8 @@
       "noDevicesForScan": "Aucun appareil disponible pour la balayage",
       "updateRing": "Impossible de mettre à jour l’anneau",
       "createRing": "Impossible de créer un anneau de mise à jour",
-      "deleteRing": "Impossible de supprimer l’anneau"
+      "deleteRing": "Impossible de supprimer l’anneau",
+      "approveUnknown": "État d'approbation inconnu — la réponse du serveur n'a pas pu être lue. Actualisez pour confirmer quels correctifs ont été approuvés."
     },
     "toast": {
       "ringSaved": "Anneau de mise à jour enregistré",
@@ -354,7 +356,7 @@
       "editTitle": "Modifier l’anneau de mise à jour",
       "createTitle": "Créer un anneau de mise à jour"
     },
-    "truncatedNotice": "Affichage des {{shown}} premiers correctifs sur {{total}}. Utilisez les filtres ci-dessus pour réduire la liste."
+    "truncatedNotice": "Affichage de {{shown}} correctifs sur {{total}}. Les filtres ici ne réduisent que ce qui est déjà chargé ; le reste est donc inaccessible depuis cette vue — utilisez l'API des correctifs pour parcourir le catalogue complet."
   },
   "ringSelector": {
     "label": "Anneau de mise à jour :",

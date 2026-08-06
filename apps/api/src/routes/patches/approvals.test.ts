@@ -306,8 +306,11 @@ describe('patch approvals RBAC gating', () => {
 // #3157 was reported as "can't approve more than 200 patches". The 200 ceiling
 // lived entirely in the web client's single-page fetch — bulkApproveSchema has
 // no max on patchIds and the handler loops the whole array. Pin that here so a
-// well-meaning `.max(200)` on the schema can't silently re-create the ceiling
-// on the server side after the client fix.
+// `.max(200)` on the schema can't silently re-create the ceiling on the server
+// side after the client fix. (The web now batches at BULK_APPROVE_BATCH_SIZE
+// = 200 ids per request to bound request duration, but that's the client
+// bounding itself — the endpoint must stay able to accept more, and callers
+// like the MCP tools submit unbatched.)
 describe('bulk approve beyond one API page (#3157)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

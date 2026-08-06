@@ -1259,9 +1259,12 @@ describe('PatchesPage', () => {
         const url = String(input);
         if (url === '/update-rings') return makeJsonResponse({ data: [] });
         if (url.startsWith('/patches?limit=200')) {
+          // Distinct ids per page — the walk dedupes, so a mock that repeated
+          // ids would collapse to one page's worth and mask the cap.
+          const pageNum = Number(new URLSearchParams(url.split('?')[1]).get('page') ?? '1');
           return makeJsonResponse({
-            data: Array.from({ length: 200 }, (_, i) => makePatch(i + 1)),
-            pagination: { page: 1, limit: 200, total: 20000 },
+            data: Array.from({ length: 200 }, (_, i) => makePatch((pageNum - 1) * 200 + i + 1)),
+            pagination: { page: pageNum, limit: 200, total: 20000 },
           });
         }
         return makeJsonResponse({}, false, 404);
@@ -1288,6 +1291,184 @@ describe('PatchesPage', () => {
 
       await screen.findAllByText('Linux Update 1');
       expect(fetchMock).not.toHaveBeenCalledWith('/patches?limit=200&page=2');
+    });
+
+    it('drops rows repeated across pages and flags the list as short', async () => {
+      // Offset paging can repeat a row when the catalog shifts mid-walk.
+      // Duplicates would collide on React keys and inflate "select all N
+      // matching", so they're dropped — but the resulting short list must not
+      // be presented as the complete catalog.
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/update-rings') return makeJsonResponse({ data: [] });
+        if (url === '/patches?limit=200') {
+          return makeJsonResponse({
+            data: [makePatch(1), makePatch(2)],
+            pagination: { page: 1, limit: 2, total: 4 },
+          });
+        }
+        if (url === '/patches?limit=200&page=2') {
+          // patch-2 repeats; only patch-3 is new.
+          return makeJsonResponse({
+            data: [makePatch(2), makePatch(3)],
+            pagination: { page: 2, limit: 2, total: 4 },
+          });
+        }
+        return makeJsonResponse({}, false, 404);
+      });
+
+      render(<PatchesPage />);
+
+      const notice = await screen.findByTestId('patches-truncated-notice');
+      // 3 distinct rows survived of the 4 the server reported.
+      expect(notice.textContent).toContain('3');
+      expect(notice.textContent).toContain('4');
+      expect(desktop().getAllByRole('row').slice(1)).toHaveLength(3);
+    });
+
+    it('flags the list as short when a later page returns no pagination metadata', async () => {
+      // Page 1 promised 400; page 2 came back malformed. Stopping is fine —
+      // silently showing 200 rows as the whole catalog is not.
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/update-rings') return makeJsonResponse({ data: [] });
+        if (url === '/patches?limit=200') {
+          return makeJsonResponse({
+            data: Array.from({ length: 200 }, (_, i) => makePatch(i + 1)),
+            pagination: { page: 1, limit: 200, total: 400 },
+          });
+        }
+        if (url === '/patches?limit=200&page=2') {
+          return makeJsonResponse({ data: [] });
+        }
+        return makeJsonResponse({}, false, 404);
+      });
+
+      render(<PatchesPage />);
+
+      const notice = await screen.findByTestId('patches-truncated-notice');
+      expect(notice.textContent).toContain('200');
+      expect(notice.textContent).toContain('400');
+    });
+
+    it('keeps the source-filter counts from the walk', async () => {
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/update-rings') return makeJsonResponse({ data: [] });
+        if (url === '/patches?limit=200') {
+          return makeJsonResponse({
+            data: [makePatch(1), makePatch(2)],
+            counts: { microsoft: 0, apple: 0, linux: 333, third_party: 0, custom: 0 },
+            pagination: { page: 1, limit: 200, total: 2 },
+          });
+        }
+        return makeJsonResponse({}, false, 404);
+      });
+
+      render(<PatchesPage />);
+
+      // The Linux source chip reflects the catalog-wide count from the response.
+      const chip = await screen.findByTestId('patches-count-linux');
+      expect(chip.textContent).toContain('333');
+    });
+
+    it('shows an error over the stale list when a refresh fails, not a silent swap', async () => {
+      // Regression: PatchList's full-page error state only renders when the
+      // list is EMPTY, and a failed walk deliberately keeps the previous array.
+      // Without a banner, switching rings and having the walk fail would show
+      // the all-rings catalog under a ring selection with no indication at all.
+      let ringPageOneFails = false;
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/update-rings') {
+          return makeJsonResponse({
+            data: [{ id: 'ring-1', name: 'Ring 1', ringOrder: 1, deferralDays: 0, enabled: true }],
+          });
+        }
+        if (url === '/patches?limit=200') {
+          return makeJsonResponse({
+            data: [{ ...makePatch(1), title: 'All Rings Patch' }],
+            pagination: { page: 1, limit: 200, total: 1 },
+          });
+        }
+        if (url.startsWith('/update-rings/ring-1/patches')) {
+          ringPageOneFails = true;
+          return makeJsonResponse({}, false, 500);
+        }
+        return makeJsonResponse({}, false, 404);
+      });
+
+      render(<PatchesPage />);
+      await screen.findAllByText('All Rings Patch');
+
+      const ringOption = await screen.findByRole('option', { name: /All Rings/ });
+      fireEvent.change(ringOption.closest('select') as HTMLSelectElement, {
+        target: { value: 'ring-1' },
+      });
+
+      await waitFor(() => expect(ringPageOneFails).toBe(true));
+
+      // The stale rows are still on screen — so the failure MUST be visible.
+      const banner = await screen.findByTestId('patch-list-stale-error');
+      expect(banner.textContent).toContain('Failed to fetch patches');
+      expect(screen.getAllByText('All Rings Patch').length).toBeGreaterThan(0);
+    });
+
+    it('end-to-end: 333 patches walk in, select-all-matching, and all 333 are approved', async () => {
+      // The bug as reported, start to finish. The three other suites each cover
+      // one leg (walk / select / server accept); this is the only test that
+      // proves the legs connect, so a `.slice(0, 200)` anywhere along the path
+      // can't ship green.
+      const approvedBatches: string[][] = [];
+      fetchMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url === '/update-rings') return makeJsonResponse({ data: [] });
+        if (url === '/patches?limit=200') {
+          return makeJsonResponse({
+            data: Array.from({ length: 200 }, (_, i) => makePatch(i + 1)),
+            pagination: { page: 1, limit: 200, total: 333 },
+          });
+        }
+        if (url === '/patches?limit=200&page=2') {
+          return makeJsonResponse({
+            data: Array.from({ length: 133 }, (_, i) => makePatch(i + 201)),
+            pagination: { page: 2, limit: 200, total: 333 },
+          });
+        }
+        if (url === '/patches/bulk-approve') {
+          const body = JSON.parse(String((init as RequestInit).body)) as { patchIds: string[] };
+          approvedBatches.push(body.patchIds);
+          return makeJsonResponse({ success: true, approved: body.patchIds, failed: [] });
+        }
+        return makeJsonResponse({}, false, 404);
+      });
+
+      render(<PatchesPage />);
+
+      // All 333 loaded: 14 pages at the default page size of 25.
+      await screen.findByText('Page 1 of 14');
+
+      // Select the visible page, then escalate to the whole filtered set.
+      fireEvent.click(desktop().getByRole('button', { name: 'Select all patches' }));
+      fireEvent.click(await screen.findByTestId('patch-select-all-matching'));
+      expect(screen.getByText('333 selected')).toBeTruthy();
+
+      fireEvent.click(screen.getByTestId('patch-bulk-approve'));
+
+      await waitFor(() => {
+        const submitted = approvedBatches.flat();
+        expect(submitted).toHaveLength(333);
+        // Every id exactly once, including the tail that only page 2 supplied.
+        expect(new Set(submitted).size).toBe(333);
+        expect(submitted).toContain('patch-333');
+      });
+      // Batched to bound request duration, not sent as one 333-id request.
+      expect(approvedBatches).toEqual([
+        expect.objectContaining({ length: 200 }),
+        expect.objectContaining({ length: 133 }),
+      ]);
+      // No bulk error surfaced.
+      expect(screen.queryByText(/Failed to approve/)).toBeNull();
     });
 
     it('discards a superseded walk when the ring changes mid-walk', async () => {
