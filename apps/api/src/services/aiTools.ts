@@ -359,6 +359,22 @@ export function getToolTier(
 }
 
 /**
+ * All CORE (non-extension) registered tool names — the same three sources
+ * `getToolTier` reads: the headless `aiTools` execution registry plus the two
+ * session-aware M365/Google tier maps (those tools dispatch outside `aiTools`
+ * but still have a real tier). Extension tools are per-tenant/dynamic and
+ * deliberately excluded — classification contracts like the tier-3
+ * supervised/four_eyes split operate on the fixed core surface.
+ */
+export function getAllRegisteredToolNames(): string[] {
+  return [
+    ...aiTools.keys(),
+    ...Object.keys(m365ToolTiers),
+    ...Object.keys(googleToolTiers),
+  ];
+}
+
+/**
  * True iff a tool is recognized (getToolTier defined) but NOT executable by the
  * headless `executeTool` path — i.e. it only runs via the inline chat path's
  * makeSessionAwareHandler, which threads a live SSE session id to reach the
