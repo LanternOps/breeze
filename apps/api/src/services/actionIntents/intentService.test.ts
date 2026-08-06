@@ -12,6 +12,8 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
     orgId: col('org_id'),
     idempotencyKey: col('idempotency_key'),
     status: col('status'),
+    expiresAt: col('expires_at'),
+    releaseBy: col('release_by'),
   };
   // `userId` MUST be present here: createActionIntent projects
   // `approvalRequests.userId` on the idempotent-replay path and matches it
@@ -183,6 +185,17 @@ vi.mock('drizzle-orm', () => ({
   eq: vi.fn((...args: unknown[]) => ({ op: 'eq', args })),
   and: vi.fn((...args: unknown[]) => ({ op: 'and', args })),
   inArray: vi.fn((...args: unknown[]) => ({ op: 'inArray', args })),
+  // Flattens the tagged template to its static text, substituting each
+  // interpolated column mock's `.name` — enough to assert which columns a
+  // `sql\`...\`` fragment references without a real SQL builder.
+  sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({
+    op: 'sql',
+    text: strings.reduce(
+      (acc, str, i) =>
+        acc + str + (i < values.length ? String((values[i] as { name?: string })?.name ?? values[i]) : ''),
+      '',
+    ),
+  })),
 }));
 
 // ---------------------------------------------------------------------------
@@ -801,6 +814,44 @@ describe('transitionIntent', () => {
     expect(dbState.updateActionIntentsSets[0]).toMatchObject({
       status: 'executing',
       executedAt: new Date('2026-01-01'),
+    });
+  });
+
+  describe('requireNotExpired (release worker claim CAS)', () => {
+    it('folds COALESCE(release_by, expires_at) > now() into the where clause — not approval_expires_at', async () => {
+      dbState.updateActionIntentsResults.push([{ id: 'intent-1' }]);
+      await transitionIntent(
+        'intent-1',
+        'approved',
+        'executing',
+        { executedAt: null },
+        { requireNotExpired: true },
+      );
+
+      const whereArgs = (dbState.updateActionIntentsWheres[0] as { args: unknown[] }).args;
+      const sqlCondition = whereArgs.find(
+        (c): c is { op: string; text: string } =>
+          typeof c === 'object' && c !== null && (c as { op?: string }).op === 'sql',
+      );
+      expect(sqlCondition).toBeDefined();
+      // The 59:59 trap: this MUST be release_by (falling back to
+      // expires_at), never approval_expires_at — approval_expires_at stops
+      // governing an intent the moment it is approved (see
+      // jobs/intentExpiryReaper.ts's header).
+      expect(sqlCondition!.text).toContain('COALESCE(release_by, expires_at)');
+      expect(sqlCondition!.text).not.toContain('approval_expires_at');
+      expect(sqlCondition!.text).toContain('> now()');
+    });
+
+    it('omits the expiry condition when requireNotExpired is not set', async () => {
+      dbState.updateActionIntentsResults.push([{ id: 'intent-1' }]);
+      await transitionIntent('intent-1', 'pending_approval', 'cancelled');
+
+      const whereArgs = (dbState.updateActionIntentsWheres[0] as { args: unknown[] }).args;
+      const sqlCondition = whereArgs.find(
+        (c) => typeof c === 'object' && c !== null && (c as { op?: string }).op === 'sql',
+      );
+      expect(sqlCondition).toBeUndefined();
     });
   });
 });

@@ -56,6 +56,25 @@ function makeUpdateChain(returningValue: unknown = undefined) {
   return { set, where };
 }
 
+/**
+ * Flattens a drizzle sql`` object to its static SQL text (StringChunks and
+ * interpolated column identifiers only — bound params contribute nothing).
+ * Same introspection approach as ticketSlaWorker.test.ts's `sqlText`.
+ */
+function sqlText(q: unknown): string {
+  if (q == null) return '';
+  if (typeof q === 'string') return q;
+  const obj = q as { queryChunks?: unknown[]; value?: unknown[]; name?: string };
+  if (Array.isArray(obj.queryChunks)) {
+    return obj.queryChunks.map(sqlText).join(' ');
+  }
+  if (Array.isArray(obj.value)) {
+    return (obj.value as string[]).join('');
+  }
+  if (typeof obj.name === 'string') return obj.name;
+  return '';
+}
+
 describe('intentExpiryReaper.reapExpiredIntents', () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -150,6 +169,61 @@ describe('intentExpiryReaper.reapExpiredIntents', () => {
 
     expect(reaped).toBe(2);
     expect(recordActionIntentEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it('splits the deadline by status: pending_approval on approval_expires_at, approved on release_by falling back to expires_at', async () => {
+    executeMock.mockResolvedValueOnce({ rows: [] });
+
+    await reapExpiredIntents();
+
+    const query = sqlText(executeMock.mock.calls[0]?.[0]);
+    // pending_approval branch checks approval_expires_at, never expires_at.
+    expect(query).toMatch(/status\s*=\s*'pending_approval'\s+AND\s+approval_expires_at\s*<\s*now\(\)/);
+    // approved branch checks release_by with an expires_at fallback for
+    // legacy rows that predate the release-lease column.
+    expect(query).toContain('COALESCE( release_by ,  expires_at )');
+    expect(query).toMatch(/status\s*=\s*'approved'\s+AND\s+COALESCE/);
+  });
+
+  it('the 59:59 trap: an approved intent past approval_expires_at but with releaseBy still in the future is NOT reaped', async () => {
+    // The reaper's WHERE clause runs against a real database and this test
+    // mocks db.execute at the boundary, so it cannot exercise Postgres's
+    // actual row filtering. What it CAN prove — and what regresses the trap
+    // if broken — is that the approved branch's predicate is anchored on
+    // release_by (COALESCE'd with expires_at), not approval_expires_at. If a
+    // future edit swapped that back to approval_expires_at, this assertion
+    // fails; the query-shape assertions above are the regression guard for
+    // this exact scenario, verified end-to-end by the RLS/integration suite.
+    executeMock.mockResolvedValueOnce({ rows: [] });
+
+    await reapExpiredIntents();
+
+    const query = sqlText(executeMock.mock.calls[0]?.[0]);
+    expect(query).not.toMatch(/status\s*=\s*'approved'\s+AND\s+approval_expires_at\s*<\s*now\(\)/);
+  });
+
+  it('reaps an approved intent once release_by has passed', async () => {
+    const past = new Date(Date.now() - 60_000);
+    executeMock.mockResolvedValueOnce({
+      rows: [
+        {
+          id: 'intent-approved-leased',
+          org_id: 'org-1',
+          action_name: 'breeze.c',
+          argument_digest: 'd3',
+          source: 'chat',
+          requested_by_user_id: 'user-1',
+          expires_at: past,
+        },
+      ],
+    });
+    const chain = makeUpdateChain([]);
+    updateMock.mockReturnValue({ set: chain.set });
+
+    const reaped = await reapExpiredIntents();
+
+    expect(reaped).toBe(1);
+    expect(recordActionIntentEvent).toHaveBeenCalledTimes(1);
   });
 });
 

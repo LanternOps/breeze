@@ -51,10 +51,18 @@ vi.mock('../db/schema/actionIntents', () => ({
   },
 }));
 
-// Task 6: the decide handler now performs the intent CAS INLINE inside the
-// single system-scoped fan-in transaction (was a separate transitionIntent
-// call), so approvals.ts no longer imports intentService and there is nothing
-// to mock here — the CAS is asserted directly on the mocked tx.update below.
+// The decide handler performs the intent CAS INLINE inside the single
+// system-scoped fan-in transaction (not a separate transitionIntent call), so
+// the CAS itself is asserted directly on the mocked tx.update below. Task 5
+// adds one lightweight import from intentService.ts — the RELEASE_LEASE_MS
+// constant, stamped into release_by on an approval win — so this mocks the
+// module wholesale rather than letting the real one load: the real
+// intentService.ts pulls in ../aiTools (and its whole dependency graph),
+// which this file's narrow ../services/permissions mock below (missing the
+// PERMISSIONS export routes/monitors.ts needs at import time) can't support.
+vi.mock('../services/actionIntents/intentService', () => ({
+  RELEASE_LEASE_MS: 10 * 60 * 1000,
+}));
 
 vi.mock('../services/actionIntents/metrics', () => ({
   recordActionIntentEvent: vi.fn(),
@@ -1352,6 +1360,13 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     expect(intentCasSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'approved', decidedByUserId: TEST_USER.id }),
     );
+    // Task 5: an approval win stamps the fixed release lease (release_by) in
+    // the same CAS, so the reaper/worker have a deadline that starts at the
+    // approval moment rather than inheriting the (possibly near-expired)
+    // approval_expires_at window — the "59:59 trap".
+    const stampedCas = intentCasSet.mock.calls[0]![0] as { releaseBy?: Date };
+    expect(stampedCas.releaseBy).toBeInstanceOf(Date);
+    expect(stampedCas.releaseBy!.getTime()).toBeGreaterThan(Date.now());
     expect(siblingSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'expired' }),
     );
@@ -1426,6 +1441,9 @@ describe('Task 5: decide-handler bound to action_intents', () => {
     expect(intentCasSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'rejected' }),
     );
+    // A rejected intent never executes, so it gets no release lease.
+    const stampedCas = intentCasSet.mock.calls[0]![0] as { releaseBy?: Date };
+    expect(stampedCas.releaseBy).toBeUndefined();
     expect(siblingSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'expired' }),
     );

@@ -145,6 +145,19 @@ const FOUR_EYES_CHAT_EXPIRY_MS = 60 * 60 * 1000;
 const MCP_EXPIRY_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * Fixed release lease (tier3-supervised-four-eyes design §4.2): how long an
+ * `approved` intent has to actually execute before the reaper reclaims it.
+ * Stamped into `release_by` by the approve fan-in
+ * (`routes/approvals.ts`) in the same CAS that flips the intent to
+ * `approved` — independent of how much of the `approval_expires_at` window
+ * was left when the approval landed. Without this, an intent approved with
+ * only seconds left on its approval deadline would have only seconds to
+ * execute instead of a full lease (the "59:59 trap" — see
+ * `jobs/intentExpiryReaper.ts`'s header).
+ */
+export const RELEASE_LEASE_MS = 10 * 60 * 1000;
+
+/**
  * Version of the tier3-supervised-four-eyes classification ruleset
  * (checkGuardrails' resolveApprovalScope) that produced a given intent's
  * approvalScope. Stamped once at creation into action_intents.classification_version
@@ -706,15 +719,21 @@ export async function transitionIntent(
   const fromList = Array.isArray(from) ? from : [from];
   return withSystemDbAccessContext(async () => {
     // requireNotExpired folds the deadline into the CAS predicate so a release
-    // claim is atomic with the intent still being live. Without it, an intent
-    // approved just before expires_at could be claimed approved -> executing in
-    // the window before the 30s expiry reaper terminalizes it, executing an
+    // claim is atomic with the intent still being live. The only caller today
+    // (the release worker's approved -> executing claim) checks the deadline
+    // that actually governs an APPROVED intent: release_by (falling back to
+    // expires_at for legacy rows approved before release_by existed), not
+    // approval_expires_at — that column stops applying the moment an intent
+    // is approved (see jobs/intentExpiryReaper.ts's header for the "59:59
+    // trap" this avoids). Without this check at all, an intent approved just
+    // before its deadline could be claimed approved -> executing in the
+    // window before the 30s expiry reaper terminalizes it, executing an
     // action whose authorization window has already closed. Uses the DB clock
     // (now()) rather than a JS timestamp so the comparison is against the same
-    // clock that stamped expires_at.
+    // clock that stamped release_by/expires_at.
     const conditions = [eq(actionIntents.id, intentId), inArray(actionIntents.status, fromList)];
     if (opts?.requireNotExpired) {
-      conditions.push(sql`${actionIntents.expiresAt} > now()`);
+      conditions.push(sql`COALESCE(${actionIntents.releaseBy}, ${actionIntents.expiresAt}) > now()`);
     }
     const rows = await db
       .update(actionIntents)

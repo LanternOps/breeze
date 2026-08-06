@@ -15,6 +15,7 @@ import { dispatchApprovalPush } from '../services/expoPush';
 import { revokeUserOauthClient } from './lifecycle';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
 import { recordActionIntentEvent } from '../services/actionIntents/metrics';
+import { RELEASE_LEASE_MS } from '../services/actionIntents/intentService';
 import { resolveIntentApprovers } from '../services/actionIntents/intentApprovers';
 import { getUserPermissions, userCanDecideApprovals, canAccessOrg } from '../services/permissions';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
@@ -885,6 +886,13 @@ async function decideHandler(
                 decidedByUserId: userId,
                 decidedAssuranceLevel: assurance.decidedAssuranceLevel,
                 decidedVia: assurance.decidedVia,
+                // Fixed release lease (design §4.2), stamped only on an approval
+                // win — a rejected intent never executes, so it has no release
+                // window to bound. Task 6 makes this whole fan-in atomic with
+                // the release worker's claim; here it's just the field.
+                ...(status === 'approved'
+                  ? { releaseBy: new Date(Date.now() + RELEASE_LEASE_MS) }
+                  : {}),
               })
               .where(
                 and(

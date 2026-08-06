@@ -244,10 +244,17 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // (expiry, cancel, a prior delivery of this exact job, or the stale-
   // executing reaper already claimed it) — exit silently. This is what
   // makes repeated/duplicate `intent_approved` enqueues safe.
-  // requireNotExpired folds the deadline into the claim: an intent approved
-  // just before expires_at cannot be claimed for execution once past it (the
-  // 30s expiry reaper terminalizes the leftover approved row). Without this an
-  // action could execute after its authorization window closed.
+  // requireNotExpired folds the deadline into the claim: an approved intent
+  // cannot be claimed for execution once past its release_by lease (falling
+  // back to expires_at for legacy rows with no lease — see
+  // intentService.ts's transitionIntent). release_by, not
+  // approval_expires_at, is what governs an already-approved intent — an
+  // intent approved just before approval_expires_at gets a FRESH lease
+  // starting at approval time (the "59:59 trap" — jobs/intentExpiryReaper.ts's
+  // header), so it stays claimable here even though approval_expires_at has
+  // since passed. Once release_by itself passes, the 30s expiry reaper
+  // terminalizes the leftover approved row. Without this check an action
+  // could execute after its authorization window closed.
   const claimed = await transitionIntent(
     intentId,
     'approved',

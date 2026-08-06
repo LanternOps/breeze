@@ -312,6 +312,34 @@ describe('releaseApprovedIntent', () => {
     expect(actorContextMock.buildAuthContextForIntent).not.toHaveBeenCalled();
   });
 
+  it('the 59:59 trap: claims and executes an intent whose approval_expires_at is already past but releaseBy is still in the future', async () => {
+    // The worker itself never re-derives a deadline — it always defers to
+    // transitionIntent's requireNotExpired predicate (COALESCE(release_by,
+    // expires_at) > now(), proved directly against approval_expires_at in
+    // intentService.test.ts and end-to-end against real Postgres in
+    // intentExpiryReaper.integration.test.ts). This test documents the
+    // worker-level contract: as long as the CAS resolves true — which it
+    // will here, since release_by hasn't passed even though
+    // approval_expires_at has — the release proceeds to execution
+    // regardless of approval_expires_at.
+    const intent = baseIntent({
+      approvalExpiresAt: new Date(Date.now() - 60_000),
+      releaseBy: new Date(Date.now() + 5 * 60_000),
+    } as Partial<ActionIntent>);
+    primeThroughRevalidation(intent);
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith(
+      intent.id, 'approved', 'executing',
+      expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }),
+      { requireNotExpired: true },
+    );
+    expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+  });
+
   it('stamps execution_started_at when it claims the intent (approved -> executing)', async () => {
     intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // claim CAS
     dbState.selectActionIntentsResults.push([]); // short-circuit: intent row missing after CAS
