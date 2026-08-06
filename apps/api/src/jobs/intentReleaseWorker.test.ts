@@ -5,7 +5,7 @@ import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/can
 // Hoisted shared mock state
 // ---------------------------------------------------------------------------
 
-const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock } = vi.hoisted(() => {
+const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
   const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
@@ -48,6 +48,14 @@ const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, 
       isHeadlessM365Tool: vi.fn(() => false),
       executeM365ToolHeadless: vi.fn(),
     },
+    // Task 7: computeEffectDigest itself is unit-tested in
+    // services/actionIntents/effectDigest.test.ts (the resolver map). Mocked
+    // wholesale here, same treatment as buildAuthContextForIntent/
+    // getActiveOrgTenant/checkToolPermission above — this file only needs to
+    // prove the WORKER calls it and reacts correctly to a mismatch, not
+    // re-derive scripts/quotes/invoices table mocks it has no other reason
+    // to know about.
+    effectDigestMock: { computeEffectDigest: vi.fn(async () => null as string | null) },
   };
 });
 
@@ -92,6 +100,9 @@ vi.mock('../services/actionIntents/intentService', () => ({
 }));
 vi.mock('../services/actionIntents/actorContext', () => ({
   buildAuthContextForIntent: actorContextMock.buildAuthContextForIntent,
+}));
+vi.mock('../services/actionIntents/effectDigest', () => ({
+  computeEffectDigest: effectDigestMock.computeEffectDigest,
 }));
 vi.mock('../services/tenantStatus', () => ({
   getActiveOrgTenant: tenantStatusMock.getActiveOrgTenant,
@@ -209,6 +220,12 @@ function baseIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
     executedAt: null,
     result: null,
     errorCode: null,
+    // Task 7: NULL by default (matches supervised intents and legacy/
+    // unpinnable four_eyes intents) — the worker's effect-digest check
+    // short-circuits on null and never calls computeEffectDigest, so the
+    // existing fixtures/tests above don't need to know effectDigest exists.
+    // Tests that DO exercise the check override this explicitly.
+    effectDigest: null,
     ...overrides,
   } as ActionIntent;
 }
@@ -295,6 +312,7 @@ describe('releaseApprovedIntent', () => {
     resetGoogleSecretActions();
     googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(false);
     m365HeadlessMock.isHeadlessM365Tool.mockReturnValue(false);
+    effectDigestMock.computeEffectDigest.mockResolvedValue(null);
   });
 
   it('double delivery: CAS approved->executing returns false — exits without touching anything else', async () => {
@@ -637,6 +655,81 @@ describe('releaseApprovedIntent', () => {
     expect(metricsMock.recordActionIntentMetric).toHaveBeenCalledWith(intent.source, intent.actionName, 'executed');
   });
 
+  // Task 7 — effect-digest revalidation (tier3-supervised-four-eyes design
+  // §4.1): a four_eyes intent whose stored effect_digest no longer matches
+  // the freshly recomputed one (e.g. the approved script's body was edited
+  // during the approval window) must fail closed and never execute — this
+  // is the TOCTOU gap argumentDigest alone cannot close (see
+  // effectDigest.ts's header comment).
+  describe('effect-digest revalidation', () => {
+    it('content_changed: recomputed digest no longer matches the stored one — fails before executeTool, audit records the code', async () => {
+      const intent = baseIntent({ effectDigest: 'a'.repeat(64) });
+      primeThroughRevalidation(intent);
+      effectDigestMock.computeEffectDigest.mockResolvedValueOnce('b'.repeat(64)); // drifted
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(effectDigestMock.computeEffectDigest).toHaveBeenCalledWith(
+        intent.actionName,
+        intent.arguments,
+        expect.anything(),
+      );
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'failed',
+        expect.objectContaining({ errorCode: 'content_changed' }),
+      );
+      expect(auditMock.writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          result: 'failure',
+          details: expect.objectContaining({ errorCode: 'content_changed' }),
+        }),
+      );
+      expect(metricsMock.recordActionIntentMetric).toHaveBeenCalledWith(intent.source, intent.actionName, 'executed');
+    });
+
+    it('proceeds to execute when the recomputed digest still matches the stored one', async () => {
+      const digest = 'c'.repeat(64);
+      const intent = baseIntent({ effectDigest: digest });
+      primeThroughRevalidation(intent);
+      effectDigestMock.computeEffectDigest.mockResolvedValueOnce(digest); // unchanged
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'completed',
+        expect.anything(),
+      );
+    });
+
+    it('a NULL stored effect digest (supervised, or an unpinnable four_eyes intent) skips the check entirely', async () => {
+      const intent = baseIntent({ effectDigest: null });
+      primeThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(effectDigestMock.computeEffectDigest).not.toHaveBeenCalled();
+      expect(aiToolsMock.executeTool).toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'completed',
+        expect.anything(),
+      );
+    });
+  });
+
   it('fails a session-aware tool with session_required and never calls executeTool', async () => {
     // Not google_* or m365_disable_user/m365_reset_password (both headless as
     // of Task 9) — a generic session-aware, non-headless tool name so this
@@ -869,6 +962,7 @@ describe('secret-bearing release', () => {
     resetGoogleSecretActions();
     googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(false);
     m365HeadlessMock.isHeadlessM365Tool.mockReturnValue(false);
+    effectDigestMock.computeEffectDigest.mockResolvedValue(null);
   });
 
   it('seals a google_reset_password credential instead of storing prose', async () => {

@@ -19,6 +19,7 @@ import { dispatchApprovalPushToTokens, getUserPushTokens } from '../expoPush';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 import { recordActionIntentEvent } from './metrics';
 import { resolveIntentApprovers } from './intentApprovers';
+import { computeEffectDigest } from './effectDigest';
 
 /** Statuses the partial `action_intents_org_idem_uniq` index dedupes on
  * (IMPORTANT-4 — migration 2026-07-18-action-intents.sql). Kept as a single
@@ -370,6 +371,20 @@ export async function createActionIntent(
   let creation: CreationResult;
   try {
     creation = await withSystemDbAccessContext(async (): Promise<CreationResult> => {
+      // Effect-digest pinning (tier3-supervised-four-eyes design §4.1,
+      // effectDigest.ts) — four_eyes only; supervised intents (5-minute
+      // window, self-approved) skip pinning entirely. Computed INSIDE this
+      // transaction, via the ambient `db` (same connection/snapshot the
+      // insert below runs on), so the pinned content and the row it's
+      // attached to are read/written atomically — no window where a
+      // concurrent edit lands between "read the target" and "create the
+      // intent". A tool/action with no resolver (or a target that doesn't
+      // exist yet) yields null, which leaves effect_digest NULL on the row —
+      // the release worker treats a NULL stored digest as "nothing to
+      // check", not a failure.
+      const effectDigest =
+        approvalScope === 'four_eyes' ? await computeEffectDigest(input.toolName, input.input, db) : null;
+
       const [inserted] = await db
         .insert(actionIntents)
         .values({
@@ -401,6 +416,7 @@ export async function createActionIntent(
           correlationId: randomUUID(),
           approvalScope,
           classificationVersion: CLASSIFICATION_VERSION,
+          effectDigest,
           // `expiresAt` is the legacy column the pre-split reaper still reads;
           // `approvalExpiresAt` is the new Task-2 column the post-split reaper
           // reads. Dual-write the SAME value to both for rolling-upgrade

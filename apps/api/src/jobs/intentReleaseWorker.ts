@@ -9,6 +9,7 @@ import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvent
 import { recordActionIntentEvent, recordActionIntentMetric } from '../services/actionIntents/metrics';
 import { transitionIntent } from '../services/actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
+import { computeEffectDigest } from '../services/actionIntents/effectDigest';
 import { executeTool, requiresLiveSession } from '../services/aiTools';
 import { dbAccessContextFromAuth } from '../middleware/auth';
 import { getToolTimeout, withToolTimeout } from '../services/toolTimeouts';
@@ -313,6 +314,35 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     return;
   }
   const { auth } = revalidation;
+
+  // Effect-digest revalidation (tier3-supervised-four-eyes design §4.1,
+  // services/actionIntents/effectDigest.ts) — the TOCTOU gap argumentDigest
+  // alone cannot close: an approver approves a REFERENCE ("run script <id>",
+  // "send quote <id>"), and the referenced content can drift during the (up
+  // to 60-minute) four_eyes approval window while the intent's own arguments
+  // stay byte-identical. `intent.effectDigest` is NULL for supervised
+  // intents (never pinned — 5-minute self-approved window) and for
+  // legacy/unpinnable four_eyes intents (no resolver existed, or the target
+  // didn't exist yet, at creation); both skip this check by design. A
+  // non-null stored digest that no longer matches the freshly-recomputed one
+  // means the target changed underneath the approval — fail closed, never
+  // execute.
+  if (intent.effectDigest !== null) {
+    // Runs in its own short system-scoped context (same discipline as Step 2
+    // above) — this point in the function is between DB contexts (Step 2's
+    // box already closed), and `db` falls back to the raw, GUC-less pool
+    // outside any withDbAccessContext/withSystemDbAccessContext, which RLS
+    // would silently filter to zero rows rather than error on (see db/index.ts's
+    // getCurrentDb). Without this wrap every resolver would read "not found"
+    // and this check would fail EVERY pinned release, not just drifted ones.
+    const recomputedEffectDigest = await withSystemDbAccessContext(() =>
+      computeEffectDigest(intent.actionName, intent.arguments, db),
+    );
+    if (recomputedEffectDigest !== intent.effectDigest) {
+      await failIntent(intent, 'content_changed', { details: { actionName: intent.actionName } });
+      return;
+    }
+  }
 
   // Phase-1 deferral: the headless worker still cannot run session-aware M365
   // Delegant/inline tools. Google Tier-3 tools ARE headless-executable

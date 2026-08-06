@@ -5,7 +5,7 @@ import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 // Hoisted shared mock state
 // ---------------------------------------------------------------------------
 
-const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushState, metricsMock, intentApproversState } = vi.hoisted(() => {
+const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushState, metricsMock, intentApproversState, effectDigestState } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = {
     id: col('id'),
@@ -68,6 +68,13 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
     // getUserPermissions round-trips, so it's mocked wholesale here rather
     // than reconstructed from db-table mocks.
     intentApproversState: { resolveIntentApprovers: vi.fn(async () => [] as string[]) },
+    // Task 7 (effect-digest pinning): effectDigest.ts has its own dedicated
+    // unit suite (effectDigest.test.ts) covering the resolver map itself —
+    // mocked wholesale here so this file stays a test of createActionIntent's
+    // WIRING (calls it for four_eyes, skips it for supervised, persists the
+    // result) rather than re-deriving script/quote/invoice/contract/org
+    // table mocks this suite has no other reason to know about.
+    effectDigestState: { computeEffectDigest: vi.fn(async () => null as string | null) },
   };
 });
 
@@ -181,6 +188,10 @@ vi.mock('./metrics', () => ({
   recordActionIntentEvent: metricsMock.recordActionIntentEvent,
 }));
 
+vi.mock('./effectDigest', () => ({
+  computeEffectDigest: effectDigestState.computeEffectDigest,
+}));
+
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((...args: unknown[]) => ({ op: 'eq', args })),
   and: vi.fn((...args: unknown[]) => ({ op: 'and', args })),
@@ -214,6 +225,7 @@ import {
   type CreateActionIntentInput,
 } from './intentService';
 import { db, withDbAccessContext } from '../../db';
+import { computeEffectDigest } from './effectDigest';
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -337,6 +349,7 @@ beforeEach(() => {
   // No eligible approvers by default — tests that need a fan-out opt in via
   // mockResolvedValueOnce.
   intentApproversState.resolveIntentApprovers.mockResolvedValue([]);
+  effectDigestState.computeEffectDigest.mockResolvedValue(null);
 });
 
 // ---------------------------------------------------------------------------
@@ -721,6 +734,80 @@ describe('createActionIntent — supervised/four_eyes scope', () => {
     await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'key-unclassified' }));
 
     expect(dbState.insertedActionIntentValues[0]?.approvalScope).toBe('four_eyes');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 7 — effect-digest pinning wiring (spec
+// docs/superpowers/specs/ai-mcp/2026-08-05-tier3-supervised-four-eyes-split-design.md
+// §4.1). computeEffectDigest itself is unit-tested in effectDigest.test.ts;
+// this suite only asserts createActionIntent CALLS it correctly — four_eyes
+// only, with the tool name/args/db it's supposed to, and persists whatever
+// it returns onto the inserted row.
+// ---------------------------------------------------------------------------
+
+describe('createActionIntent — effect-digest pinning wiring', () => {
+  it('computes and persists the effect digest for a four_eyes intent', async () => {
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Run a script on one or more devices',
+      approvalScope: 'four_eyes',
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID]);
+    effectDigestState.computeEffectDigest.mockResolvedValueOnce('d'.repeat(64));
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-fe-digest' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-fe-digest' }]);
+
+    await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'key-fe-digest' }));
+
+    expect(computeEffectDigest).toHaveBeenCalledWith(
+      'run_script',
+      { scriptId: 'script-1', deviceIds: ['device-1'] },
+      db,
+    );
+    expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBe('d'.repeat(64));
+  });
+
+  it('never calls computeEffectDigest for a supervised intent, and stores a null effect digest', async () => {
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Run a script on one or more devices',
+      approvalScope: 'supervised',
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-sv-digest' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-sv-digest' }]);
+
+    await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'key-sv-digest' }));
+
+    expect(computeEffectDigest).not.toHaveBeenCalled();
+    expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBeNull();
+  });
+
+  it('stores a null effect digest for a four_eyes intent whose tool/action has no resolver', async () => {
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Send an email',
+      approvalScope: 'four_eyes',
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID]);
+    // Default beforeEach mock already resolves null — no resolver override needed.
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-fe-unpinnable' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-fe-unpinnable' }]);
+
+    await createActionIntent(
+      makeAuth(),
+      baseInput({ toolName: 'm365_send_mail', input: { to: ['a@example.com'] }, idempotencyKey: 'key-fe-unpinnable' }),
+    );
+
+    expect(computeEffectDigest).toHaveBeenCalledWith('m365_send_mail', { to: ['a@example.com'] }, db);
+    expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBeNull();
   });
 });
 
