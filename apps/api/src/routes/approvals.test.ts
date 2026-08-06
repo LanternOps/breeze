@@ -448,40 +448,162 @@ beforeEach(() => {
   });
 });
 
-describe('GET /approvals/pending', () => {
-  it('returns only pending non-expired approvals for the authed user', async () => {
-    vi.mocked(db.select).mockReturnValue({
-      from: vi.fn().mockReturnValue({
+// GET /pending now joins action_intents (Task 8) — db.select() for this
+// route returns `{approval, intent}` pairs via a `.from().leftJoin().where()
+// .orderBy()` chain, rather than raw approval_requests rows directly.
+function mockPendingJoinResolves(rows: Array<{ approval: unknown; intent: unknown | null }>) {
+  vi.mocked(db.select).mockReturnValue({
+    from: vi.fn().mockReturnValue({
+      leftJoin: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          orderBy: vi.fn().mockResolvedValue([
-            {
-              id: 'a1',
-              userId: TEST_USER.id,
-              requestingClientLabel: 'Claude Desktop',
-              requestingMachineLabel: "Todd's MacBook Pro",
-              requestingClientId: null,
-              requestingSessionId: null,
-              actionLabel: 'Delete 4 devices in Acme Corp',
-              actionToolName: 'breeze.devices.delete',
-              actionArguments: { ids: ['x'] },
-              riskTier: 'high',
-              riskSummary: 'High impact: deletes data.',
-              status: 'pending',
-              expiresAt: new Date(Date.now() + 60_000),
-              decidedAt: null,
-              decisionReason: null,
-              createdAt: new Date(),
-            },
-          ]),
+          orderBy: vi.fn().mockResolvedValue(rows),
         }),
       }),
-    } as any);
+    }),
+  } as any);
+}
+
+function buildPendingApproval(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'a1',
+    userId: TEST_USER.id,
+    requestingClientLabel: 'Claude Desktop',
+    requestingMachineLabel: "Todd's MacBook Pro",
+    requestingClientId: null,
+    requestingSessionId: null,
+    actionLabel: 'Delete 4 devices in Acme Corp',
+    actionToolName: 'breeze.devices.delete',
+    actionArguments: { ids: ['x'] },
+    riskTier: 'high',
+    riskSummary: 'High impact: deletes data.',
+    status: 'pending',
+    expiresAt: new Date(Date.now() + 60_000),
+    decidedAt: null,
+    decisionReason: null,
+    executionId: null,
+    intentId: null,
+    isRecursive: false,
+    createdAt: new Date(),
+    ...overrides,
+  };
+}
+
+describe('GET /approvals/pending', () => {
+  it('returns only pending non-expired approvals for the authed user', async () => {
+    mockPendingJoinResolves([{ approval: buildPendingApproval(), intent: null }]);
 
     const res = await buildApp().request('/approvals/pending');
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.approvals).toHaveLength(1);
     expect(body.approvals[0].id).toBe('a1');
+    expect(body.nextCursor).toBeNull();
+  });
+
+  it('excludes a four_eyes intent-linked row once the approver no longer holds approvals:decide (demoted approver)', async () => {
+    const approval = buildPendingApproval({ id: 'a2', intentId: 'intent-1' });
+    const intent = {
+      id: 'intent-1',
+      orgId: 'org-9',
+      status: 'pending_approval',
+      approvalScope: 'four_eyes',
+      requestedByUserId: 'requester-9',
+    };
+    mockPendingJoinResolves([{ approval, intent }]);
+    // Demoted: still org-accessible but no longer holds approvals:decide.
+    vi.mocked(userCanDecideApprovals).mockReturnValueOnce(false);
+
+    const pendingRes = await buildApp().request('/approvals/pending');
+    expect(pendingRes.status).toBe(200);
+    const pendingBody = await pendingRes.json();
+    expect(pendingBody.approvals).toEqual([]);
+    expect(pendingBody.nextCursor).toBeNull();
+
+    vi.mocked(userCanDecideApprovals).mockReturnValueOnce(false);
+    const countRes = await buildApp().request('/approvals/pending/count');
+    expect(countRes.status).toBe(200);
+    expect(await countRes.json()).toEqual({ count: 0 });
+  });
+
+  it('returns a row for a supervised intent when the caller is still the requester', async () => {
+    const approval = buildPendingApproval({ id: 'a3', intentId: 'intent-2' });
+    const intent = {
+      id: 'intent-2',
+      orgId: 'org-9',
+      status: 'pending_approval',
+      approvalScope: 'supervised',
+      requestedByUserId: TEST_USER.id,
+    };
+    mockPendingJoinResolves([{ approval, intent }]);
+
+    const res = await buildApp().request('/approvals/pending');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.approvals).toHaveLength(1);
+    expect(body.approvals[0].id).toBe('a3');
+  });
+
+  it('excludes a supervised intent-linked row when the intent is no longer pending_approval', async () => {
+    const approval = buildPendingApproval({ id: 'a4', intentId: 'intent-3' });
+    const intent = {
+      id: 'intent-3',
+      orgId: 'org-9',
+      status: 'approved',
+      approvalScope: 'supervised',
+      requestedByUserId: TEST_USER.id,
+    };
+    mockPendingJoinResolves([{ approval, intent }]);
+
+    const res = await buildApp().request('/approvals/pending');
+    const body = await res.json();
+    expect(body.approvals).toEqual([]);
+  });
+
+  it('paginates a 3-row seed with limit=2, walking the cursor to the last row', async () => {
+    const rows = [
+      { approval: buildPendingApproval({ id: 'r1', createdAt: new Date('2026-08-05T12:00:03.000Z') }), intent: null },
+      { approval: buildPendingApproval({ id: 'r2', createdAt: new Date('2026-08-05T12:00:02.000Z') }), intent: null },
+      { approval: buildPendingApproval({ id: 'r3', createdAt: new Date('2026-08-05T12:00:01.000Z') }), intent: null },
+    ];
+    mockPendingJoinResolves(rows);
+
+    const page1 = await buildApp().request('/approvals/pending?limit=2');
+    const body1 = await page1.json();
+    expect(body1.approvals.map((a: any) => a.id)).toEqual(['r1', 'r2']);
+    expect(body1.nextCursor).toBeTruthy();
+
+    const page2 = await buildApp().request(
+      `/approvals/pending?limit=2&cursor=${encodeURIComponent(body1.nextCursor)}`,
+    );
+    const body2 = await page2.json();
+    expect(body2.approvals.map((a: any) => a.id)).toEqual(['r3']);
+    expect(body2.nextCursor).toBeNull();
+  });
+
+  it('caps limit at 50 even when a larger limit is requested', async () => {
+    const rows = Array.from({ length: 3 }, (_, i) => ({
+      approval: buildPendingApproval({ id: `cap-${i}`, createdAt: new Date(Date.now() - i * 1000) }),
+      intent: null,
+    }));
+    mockPendingJoinResolves(rows);
+
+    const res = await buildApp().request('/approvals/pending?limit=9999');
+    const body = await res.json();
+    expect(body.approvals).toHaveLength(3);
+    expect(body.nextCursor).toBeNull();
+  });
+});
+
+describe('GET /approvals/pending/count', () => {
+  it('returns a bare integer count matching the same filters as /pending', async () => {
+    mockPendingJoinResolves([
+      { approval: buildPendingApproval({ id: 'c1' }), intent: null },
+      { approval: buildPendingApproval({ id: 'c2' }), intent: null },
+    ]);
+
+    const res = await buildApp().request('/approvals/pending/count');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ count: 2 });
   });
 });
 

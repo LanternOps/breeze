@@ -53,28 +53,171 @@ export const approvalRoutes = new Hono();
 
 approvalRoutes.use('*', authMiddleware);
 
+// Keyset page size (spec §4.2 / task-8 brief): capped at 50 regardless of what
+// the caller asks for, defaulting to 50 when omitted.
+const PENDING_PAGE_MAX = 50;
+
+/**
+ * Opaque `(createdAt, id)` keyset cursor. Base64 of `<isoTimestamp>|<uuid>` —
+ * deliberately simple (no signing) since it only encodes a position in an
+ * already-authorized, per-caller result set; a forged cursor can at most
+ * reorder/replay pages of rows the caller could already see.
+ */
+function encodePendingCursor(createdAt: Date, id: string): string {
+  return Buffer.from(`${createdAt.toISOString()}|${id}`, 'utf8').toString('base64');
+}
+
+function decodePendingCursor(raw: string): { createdAt: Date; id: string } | null {
+  try {
+    const decoded = Buffer.from(raw, 'base64').toString('utf8');
+    const sep = decoded.indexOf('|');
+    if (sep === -1) return null;
+    const iso = decoded.slice(0, sep);
+    const id = decoded.slice(sep + 1);
+    if (!id) return null;
+    const createdAt = new Date(iso);
+    if (Number.isNaN(createdAt.getTime())) return null;
+    return { createdAt, id };
+  } catch {
+    return null;
+  }
+}
+
+// Matches the `ORDER BY created_at DESC, id DESC` the join below is fetched
+// in: a row is "after" the cursor (i.e. belongs on the next page) if it sorts
+// strictly later in that same DESC sequence. Compared by value, not array
+// index, so a since-decided/filtered-out cursor row never stalls the walk.
+function isAfterPendingCursor(
+  row: { createdAt: Date; id: string },
+  cursor: { createdAt: Date; id: string },
+): boolean {
+  const rowMs = row.createdAt.getTime();
+  const cursorMs = cursor.createdAt.getTime();
+  if (rowMs !== cursorMs) return rowMs < cursorMs;
+  return row.id < cursor.id;
+}
+
+/**
+ * The full, already-live-authorized set of this caller's pending approval
+ * rows (spec docs/superpowers/specs/ai-mcp/2026-08-05-tier3-supervised-four-eyes-split-design.md
+ * §4.2 / task-8 brief). Shared by `GET /pending` and `GET /pending/count` so
+ * the two can never drift on what "pending and visible to me" means.
+ *
+ * approval_requests is Shape-6 (user-id-scoped) — `eq(approvalRequests.userId,
+ * userId)` alone already limits this to the caller's own rows under normal
+ * RLS. The join onto action_intents (Shape 1, org-scoped) is read under
+ * system scope, mirroring the decide handler's own linked-intent read:
+ * regardless of the caller's ambient scope, we need to see the intent's
+ * current state to decide whether the row is still live — that's an
+ * app-layer authorization decision made explicitly below, not something RLS
+ * visibility should gate.
+ *
+ * A row with NO intent (executionId/elevationRequestId-linked, or a plain
+ * dev-seed row — the one_source constraint makes execution_id XOR intent_id)
+ * has no scope/live-authz story to re-check and passes through unchanged.
+ * An intent-linked row is included only when its intent is still
+ * 'pending_approval' AND either:
+ *   - supervised: the caller is still the intent's requester (the row is
+ *     always fanned out to the requester for a supervised intent, but this
+ *     re-derives identity rather than trusting row ownership alone); or
+ *   - four_eyes: the caller currently still holds `approvals:decide` + org
+ *     access for the intent's org — an approver demoted after fan-out must
+ *     stop seeing (and being able to act on) the row, exactly like the
+ *     decide handler's own stale-approver re-check.
+ */
+async function fetchAuthorizedPendingApprovals(
+  userId: string,
+  partnerId: string | null,
+): Promise<Array<typeof approvalRequests.$inferSelect>> {
+  const rows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ approval: approvalRequests, intent: actionIntents })
+        .from(approvalRequests)
+        .leftJoin(actionIntents, eq(approvalRequests.intentId, actionIntents.id))
+        .where(
+          and(
+            eq(approvalRequests.userId, userId),
+            eq(approvalRequests.status, 'pending'),
+            gt(approvalRequests.expiresAt, new Date()),
+          ),
+        )
+        .orderBy(desc(approvalRequests.createdAt), desc(approvalRequests.id)),
+    ),
+  );
+
+  // One live-permission resolution per distinct four_eyes org in this page,
+  // not per row — a caller can have several pending rows against the same
+  // org, and getUserPermissions is already cached internally, but there's no
+  // reason to redo the canAccessOrg/userCanDecideApprovals pairing per row.
+  const fourEyesOrgIds = new Set<string>();
+  for (const { intent } of rows) {
+    if (intent && intent.approvalScope === 'four_eyes') fourEyesOrgIds.add(intent.orgId);
+  }
+
+  const orgAuthorized = new Map<string, boolean>();
+  for (const orgId of fourEyesOrgIds) {
+    const perms = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        getUserPermissions(userId, { partnerId: partnerId ?? undefined, orgId }),
+      ),
+    );
+    orgAuthorized.set(orgId, !!perms && canAccessOrg(perms, orgId) && userCanDecideApprovals(perms));
+  }
+
+  return rows
+    .filter(({ approval, intent }) => {
+      if (!approval.intentId) return true;
+      if (!intent || intent.status !== 'pending_approval') return false;
+      if (intent.approvalScope === 'supervised') {
+        return intent.requestedByUserId === userId;
+      }
+      return orgAuthorized.get(intent.orgId) ?? false;
+    })
+    .map(({ approval }) => approval);
+}
+
 approvalRoutes.get('/pending', async (c) => {
   const userId = c.get('auth').user.id;
-  const rows = await db
-    .select()
-    .from(approvalRequests)
-    .where(
-      and(
-        eq(approvalRequests.userId, userId),
-        eq(approvalRequests.status, 'pending'),
-        gt(approvalRequests.expiresAt, new Date()),
-      )
-    )
-    .orderBy(desc(approvalRequests.createdAt));
+  const partnerId = c.get('auth').partnerId ?? null;
+
+  const requestedLimit = Number(c.req.query('limit'));
+  const limit =
+    Number.isFinite(requestedLimit) && requestedLimit > 0
+      ? Math.min(Math.floor(requestedLimit), PENDING_PAGE_MAX)
+      : PENDING_PAGE_MAX;
+
+  const cursorParam = c.req.query('cursor');
+  const cursor = cursorParam ? decodePendingCursor(cursorParam) : null;
+
+  const authorized = await fetchAuthorizedPendingApprovals(userId, partnerId);
+  const afterCursor = cursor ? authorized.filter((r) => isAfterPendingCursor(r, cursor)) : authorized;
+  const page = afterCursor.slice(0, limit);
+  const nextCursor =
+    afterCursor.length > limit
+      ? encodePendingCursor(page[page.length - 1]!.createdAt, page[page.length - 1]!.id)
+      : null;
 
   // Batched lookup: one query resolves the customer tenant for ALL M365
-  // mutation rows in this list (no N+1).
-  const tenants = await lookupCustomerTenants(rows);
+  // mutation rows in this page (no N+1).
+  const tenants = await lookupCustomerTenants(page);
   return c.json({
-    approvals: rows.map((r) =>
+    approvals: page.map((r) =>
       serialize(r, (r.executionId && tenants.get(r.executionId)) || null),
     ),
+    nextCursor,
   });
+});
+
+// Registered BEFORE the `/:id` param route below so Hono never captures
+// 'count' as an :id. Same filters as `/pending`, unpaginated — the whole
+// live-authorized set's length, not a raw table count(*) (which couldn't
+// account for the app-layer four_eyes/supervised live-authz filter above).
+approvalRoutes.get('/pending/count', async (c) => {
+  const userId = c.get('auth').user.id;
+  const partnerId = c.get('auth').partnerId ?? null;
+  const authorized = await fetchAuthorizedPendingApprovals(userId, partnerId);
+  return c.json({ count: authorized.length });
 });
 
 const denySchema = z.object({
