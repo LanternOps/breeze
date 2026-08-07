@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { abuseScriptHosts } from '../../db/schema';
-import { scoreToSeverity, type SignalConfig } from './config';
+import { scoreToSeverity, type SignalConfig, type SignalConfigKey } from './config';
 import type { ComputedSignal } from './types';
 
 // ---------------------------------------------------------------------------
@@ -53,6 +53,43 @@ const RA_PRODUCT_SQL_RE =
 // Stage-1 gate, part B: ...AND carry an install/fetch primitive.
 const INSTALL_OR_FETCH =
   /msiexec|\/qn\b|\/quiet\b|\/silent\b|\/verysilent\b|invoke-webrequest|\biwr\b|webclient|downloadfile|downloaddata|start-bitstransfer|certutil\s+-urlcache/i;
+
+// SQL-side mirror of INSTALL_OR_FETCH, for the unbranded gate's prefilter.
+const INSTALL_OR_FETCH_SQL_RE =
+  'msiexec|/qn\\y|/quiet\\y|/silent\\y|/verysilent\\y|invoke-webrequest|\\yiwr\\y|webclient|downloadfile|downloaddata|start-bitstransfer|certutil\\s+-urlcache';
+
+// ---------------------------------------------------------------------------
+// Stage-1, UNBRANDED gate (rmm.unbranded_installer)
+//
+// The branded gate above requires the script to NAME a remote-access product.
+// That is one rename away from useless, and it was evaded in production: a
+// dropper fetched a random-word .msi from a random-word object-storage bucket
+// and saved it under a third unrelated name, with zero vendor tokens anywhere
+// in the script — so RA_PRODUCTS never matched and the row never even left
+// Postgres, because the gate is also the SQL prefilter below.
+//
+// This second gate keys on payload SHAPE instead of branding: a remote fetch
+// of an .msi/.exe from CLOUD OBJECT STORAGE. Object storage is the selective
+// half — it is the cheap anonymous-hosting option a dropper reaches for (no
+// domain to register, no operator-controlled takedown surface, and a bucket
+// name that carries no identity), whereas legitimate deployment pulls from a
+// vendor domain or the MSP's own branded host.
+//
+// Deliberate limit, stated plainly: this closes the object-storage evasion,
+// NOT every unbranded dropper. Move the payload to a self-hosted domain and
+// you are back to relying on unrelated_host + the shared-host corpus. Keeping
+// the predicate narrow is what lets the SQL prefilter stay bounded, which is
+// the constraint the whole loader is built around.
+// ---------------------------------------------------------------------------
+const OBJECT_STORAGE_HOST =
+  /(?:^|\.)(?:s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com|blob\.core\.windows\.net|storage\.googleapis\.com|r2\.dev|r2\.cloudflarestorage\.com|digitaloceanspaces\.com|backblazeb2\.com|b-cdn\.net|supabase\.co)$/i;
+
+const OBJECT_STORAGE_SQL_RE =
+  's3([.-][a-z0-9-]+)*\\.amazonaws\\.com|blob\\.core\\.windows\\.net|storage\\.googleapis\\.com|r2\\.dev|r2\\.cloudflarestorage\\.com|digitaloceanspaces\\.com|backblazeb2\\.com|b-cdn\\.net|supabase\\.co';
+
+/** An installer artifact by extension — the thing being fetched. */
+const INSTALLER_ARTIFACT = /\.(?:msi|exe)\b/i;
+const INSTALLER_ARTIFACT_SQL_RE = '\\.(msi|exe)\\y';
 
 // Stage-2 marker patterns.
 const TLS_BYPASS = /TrustAllCertsPolicy|ICertificatePolicy|ServerCertificateValidationCallback/i;
@@ -177,11 +214,52 @@ const overlaps = (label: string, tokens: readonly string[]): boolean =>
  * else is exactly the abuse fingerprint, so it stays unrelated.
  */
 function hostRelated(host: string, partnerTokens: readonly string[], productTokens: readonly string[]): boolean {
-  const labels = hostnameOf(host).split('.').slice(0, -1); // drop TLD label
-  const meaningful = labels.filter((l) => l.length >= 3 && !GENERIC_HOST_LABELS.has(l) && !/^\d+$/.test(l));
+  const meaningful = identityLabels(hostnameOf(host))
+    .filter((l) => l.length >= 3 && !GENERIC_HOST_LABELS.has(l) && !/^\d+$/.test(l));
   if (meaningful.length === 0) return false;
   if (meaningful.some((l) => overlaps(l, partnerTokens))) return true;
   return meaningful.every((l) => overlaps(l, productTokens));
+}
+
+/**
+ * The labels that carry OWNERSHIP for a hostname.
+ *
+ * For ordinary hosts that is every label but the TLD. For cloud object storage
+ * the provider suffix says nothing about who owns the payload — the BUCKET is
+ * the identity — so `acmeit-deploy.s3.eu-west-2.amazonaws.com` must relate to
+ * partner "Acme IT" while a random-word bucket must not. Without this, every
+ * S3 URL would score identically because `amazonaws`/`s3` dominate the labels.
+ *
+ * A bare provider host (`s3.amazonaws.com/<bucket>/…`, `storage.googleapis.com`)
+ * carries the bucket in the PATH, which extractHosts deliberately discards —
+ * returning [] leaves it unrelated, which is the safe direction.
+ */
+function identityLabels(hostname: string): string[] {
+  const objectStorage = OBJECT_STORAGE_HOST.exec(hostname);
+  if (objectStorage) {
+    return objectStorage.index > 0 ? hostname.slice(0, objectStorage.index).split('.') : [];
+  }
+  return hostname.split('.').slice(0, -1); // drop TLD label
+}
+
+/**
+ * Filename stems taken from the URL being fetched (last path segment, query
+ * stripped). The honest comparison for "misleading filename" is saved-name vs
+ * the name at the SOURCE: saving `somerandomword.msi` under an unrelated name
+ * is a lie, saving `sophos.msi` as `sophos.msi` is not. The older rule compared against
+ * product tokens only, which cannot work for an unbranded script (no product
+ * ⇒ no tokens ⇒ every saved name looks misleading).
+ */
+function extractUrlFilenameStems(text: string): string[] {
+  const stems = new Set<string>();
+  for (const match of text.matchAll(URL_AUTHORITY)) {
+    const url = match[1] ?? '';
+    const path = url.split('?')[0]?.split('#')[0] ?? '';
+    const base = path.split('/').pop() ?? '';
+    const stem = (base.split('.')[0] ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (stem.length >= 3) stems.add(stem);
+  }
+  return [...stems];
 }
 
 function extractSavedFilenameStems(text: string): string[] {
@@ -198,10 +276,24 @@ function extractSavedFilenameStems(text: string): string[] {
   return [...stems];
 }
 
+/** Which stage-1 gate admitted a finding — selects the emitted signal key. */
+type GateKind = 'branded' | 'unbranded';
+
+const GATE_SIGNAL_KEY: Record<GateKind, string> = {
+  branded: 'rmm.remote_access_installer',
+  unbranded: 'rmm.unbranded_installer',
+};
+
+const GATE_SCORE_KEY: Record<GateKind, SignalConfigKey> = {
+  branded: 'rmm.remote_access_installer.gate_score',
+  unbranded: 'rmm.unbranded_installer.gate_score',
+};
+
 interface ScoredFinding {
   score: number;
   markers: string[];
   hosts: string[];
+  gate: GateKind;
 }
 
 function scoreFinding(
@@ -211,10 +303,20 @@ function scoreFinding(
   indicators: ScriptIndicators,
 ): ScoredFinding | null {
   const text = [f.scriptContent, ...f.executionStdouts].join('\n');
-  const products = RA_PRODUCTS.filter((p) => p.pattern.test(text));
-  if (products.length === 0 || !INSTALL_OR_FETCH.test(text)) return null;
-
   const hosts = [...new Set([...extractHosts(text), ...f.persistedHosts.map((h) => h.toLowerCase())])];
+
+  const products = RA_PRODUCTS.filter((p) => p.pattern.test(text));
+  const hasFetch = INSTALL_OR_FETCH.test(text);
+
+  // Branded gate takes precedence: when the script names a product we keep the
+  // established signal key, thresholds and history rather than re-labelling it.
+  const gate: GateKind | null =
+    products.length > 0 && hasFetch
+      ? 'branded'
+      : hasFetch && INSTALLER_ARTIFACT.test(text) && hosts.some((h) => OBJECT_STORAGE_HOST.test(hostnameOf(h)))
+        ? 'unbranded'
+        : null;
+  if (gate === null) return null;
   const productTokens = products.flatMap((p) => p.tokens);
   const partnerTokens = [
     ...tokenize(f.partnerName),
@@ -241,8 +343,10 @@ function scoreFinding(
   if (BARE_IP_PORT_URL.test(text) || hosts.some((h) => BARE_IP_PORT_HOST.test(h))) {
     add('bare_ip_port', cfg['rmm.remote_access_installer.marker.bare_ip_port']);
   }
+  const urlStems = extractUrlFilenameStems(text);
   const misleadingStem = extractSavedFilenameStems(text).find(
-    (stem) => !GENERIC_FILENAME_STEMS.has(stem) && !overlaps(stem, productTokens),
+    (stem) =>
+      !GENERIC_FILENAME_STEMS.has(stem) && !overlaps(stem, productTokens) && !overlaps(stem, urlStems),
   );
   if (misleadingStem !== undefined) {
     add('misleading_filename', cfg['rmm.remote_access_installer.marker.misleading_filename']);
@@ -259,11 +363,12 @@ function scoreFinding(
     add('unattended_params', cfg['rmm.remote_access_installer.marker.unattended_params']);
   }
 
-  const raw = cfg['rmm.remote_access_installer.gate_score'] + markers.reduce((sum, m) => sum + m.weight, 0);
+  const raw = cfg[GATE_SCORE_KEY[gate]] + markers.reduce((sum, m) => sum + m.weight, 0);
   return {
     score: Math.min(100, Math.round(raw)),
     markers: markers.map((m) => m.name),
     hosts,
+    gate,
   };
 }
 
@@ -287,8 +392,12 @@ export function computeScriptSignals(
   for (const f of findings) {
     const scored = scoreFinding(f, sharedHosts, cfg, indicators);
     if (scored) {
-      const prev = bestInstaller.get(f.partnerId);
-      if (!prev || scored.score > prev.scored.score) bestInstaller.set(f.partnerId, { finding: f, scored });
+      // Keyed by gate as well as partner: a partner running both a branded and
+      // an unbranded dropper surfaces both signals rather than the louder one
+      // masking the other.
+      const key = `${f.partnerId}|${scored.gate}`;
+      const prev = bestInstaller.get(key);
+      if (!prev || scored.score > prev.scored.score) bestInstaller.set(key, { finding: f, scored });
     }
 
     // Shared-host correlation does not require the install gate: the corpus
@@ -308,7 +417,7 @@ export function computeScriptSignals(
   for (const { finding, scored } of bestInstaller.values()) {
     signals.push({
       partnerId: finding.partnerId,
-      signalKey: 'rmm.remote_access_installer',
+      signalKey: GATE_SIGNAL_KEY[scored.gate],
       score: scored.score,
       severity: scoreToSeverity(scored.score, cfg),
       // Evidence stays compact (formatSignalAlert truncates to 800 chars):
@@ -414,7 +523,14 @@ export async function loadScriptFindings(now: Date): Promise<ScriptFindingsResul
       WHERE s.deleted_at IS NULL
         AND s.is_system = false
         AND COALESCE(s.partner_id, o.partner_id) IS NOT NULL
-        AND left(s.content, ${TEXT_CAP}) ~* ${RA_PRODUCT_SQL_RE}
+        AND (
+          left(s.content, ${TEXT_CAP}) ~* ${RA_PRODUCT_SQL_RE}
+          OR (
+            left(s.content, ${TEXT_CAP}) ~* ${OBJECT_STORAGE_SQL_RE}
+            AND left(s.content, ${TEXT_CAP}) ~* ${INSTALLER_ARTIFACT_SQL_RE}
+            AND left(s.content, ${TEXT_CAP}) ~* ${INSTALL_OR_FETCH_SQL_RE}
+          )
+        )
     )
     SELECT c.id, c.content,
       c.owner_partner_id AS partner_id,
@@ -464,7 +580,14 @@ export async function loadScriptFindings(now: Date): Promise<ScriptFindingsResul
           WHERE se.created_at > ${since.toISOString()}::timestamptz
             AND se.created_at <= ${upperBound.toISOString()}::timestamptz
             AND se.stdout IS NOT NULL
-            AND left(se.stdout, ${TEXT_CAP}) ~* ${RA_PRODUCT_SQL_RE}
+            AND (
+              left(se.stdout, ${TEXT_CAP}) ~* ${RA_PRODUCT_SQL_RE}
+              OR (
+                left(se.stdout, ${TEXT_CAP}) ~* ${OBJECT_STORAGE_SQL_RE}
+                AND left(se.stdout, ${TEXT_CAP}) ~* ${INSTALLER_ARTIFACT_SQL_RE}
+                AND left(se.stdout, ${TEXT_CAP}) ~* ${INSTALL_OR_FETCH_SQL_RE}
+              )
+            )
         )
         SELECT m.script_id, m.stdout,
           m.owner_partner_id AS partner_id,

