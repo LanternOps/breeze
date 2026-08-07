@@ -350,6 +350,11 @@ jobs:
       - name: Shipped-migration immutability guard
         run: bash scripts/check-migration-immutability.sh
 
+      # Non-bypassable backstop for the pre-commit hook of the same name
+      # (`git commit --no-verify` skips that one).
+      - name: Migration filename convention guard
+        run: bash scripts/check-migration-naming.sh
+
       - name: Apply migrations against empty Postgres
         run: pnpm --filter @breeze/api run check:migrations
 
