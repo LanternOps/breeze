@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { calculateCostCents, checkAiRateLimit, checkBudget, recordUsage, recordUsageFromSdkResult } from './aiCostTracker';
+import { calculateCostCents, checkAiRateLimit, checkBudget, recordUsage, recordUsageFromSdkResult, sumInputTokens } from './aiCostTracker';
 import { db, withSystemDbAccessContext } from '../db';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { rateLimiter } from './rate-limit';
@@ -300,6 +300,143 @@ describe('recordUsageFromSdkResult', () => {
     });
 
     expect(mockDb.update).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================
+// Input-token accounting — cache reads/creations ARE input
+// ============================================
+
+/** The number added to ai_sessions.total_input_tokens / total_output_tokens. */
+function recordedTokens(captured: Record<string, unknown> | undefined, key: 'totalInputTokens' | 'totalOutputTokens'): number {
+  const expr = captured?.[key] as { values?: unknown[] } | undefined;
+  return Number(expr?.values?.[1]);
+}
+
+describe('recordUsageFromSdkResult — input token accounting', () => {
+  // Release QA: an 8-turn session showed total_input_tokens = 17 against
+  // total_output_tokens = 1029 and $0.57 of spend. Prompt caching routes almost
+  // the entire prompt through cache_read_input_tokens on every turn after the
+  // first, and only the uncached remainder was being accumulated.
+  it('counts cache-read and cache-creation tokens as input', async () => {
+    const captured = setupDbMocks(null);
+
+    await recordUsageFromSdkResult('sess-tokens', 'org-1', {
+      total_cost_usd: 0.5,
+      usage: {
+        input_tokens: 17,
+        output_tokens: 1_029,
+        cache_read_input_tokens: 120_000,
+        cache_creation_input_tokens: 4_500,
+      },
+      num_turns: 1,
+      model: 'claude-sonnet-4-6',
+    });
+
+    expect(recordedTokens(captured.sessionSet, 'totalInputTokens')).toBe(17 + 120_000 + 4_500);
+    expect(recordedTokens(captured.sessionSet, 'totalOutputTokens')).toBe(1_029);
+  });
+
+  it('records the same total on the daily/monthly org aggregates', async () => {
+    const captured = setupDbMocks(null);
+
+    await recordUsageFromSdkResult('sess-agg', 'org-1', {
+      total_cost_usd: 0.5,
+      usage: {
+        input_tokens: 17,
+        output_tokens: 1_029,
+        cache_read_input_tokens: 120_000,
+        cache_creation_input_tokens: 4_500,
+      },
+      num_turns: 1,
+      model: 'claude-sonnet-4-6',
+    });
+
+    // One insert per period (daily + monthly); both carry the summed input.
+    expect(captured.aggregateValues).toHaveLength(2);
+    for (const values of captured.aggregateValues) {
+      expect(values.inputTokens).toBe(17 + 120_000 + 4_500);
+      expect(values.outputTokens).toBe(1_029);
+    }
+  });
+
+  it('records a fully-cached turn as real input, not zero', async () => {
+    const captured = setupDbMocks(null);
+
+    await recordUsageFromSdkResult('sess-cached-only', 'org-1', {
+      total_cost_usd: 0,
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 1_000_000,
+        cache_creation_input_tokens: 0,
+      },
+      num_turns: 1,
+      model: 'claude-sonnet-4-6',
+    });
+
+    expect(recordedTokens(captured.sessionSet, 'totalInputTokens')).toBe(1_000_000);
+    // ...and the cost path is untouched by the summing: still priced off the
+    // SPLIT components (1M cache-read at 0.1x of 300 c/MTok = 30), never off the
+    // sum. Summing into the pricing call would have billed 300 here.
+    expect(recordedCostCents(captured.sessionSet)).toBe(30);
+  });
+
+  it('leaves cost alone when cache fields are present alongside real spend', async () => {
+    // Guards against the obvious mis-fix: feeding the summed input back into
+    // calculateCostCents would double-count cache tokens at the full input rate.
+    const captured = setupDbMocks(null);
+
+    await recordUsageFromSdkResult('sess-cost-guard', 'org-1', {
+      total_cost_usd: 0,
+      usage: {
+        input_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+        cache_read_input_tokens: 1_000_000,
+        cache_creation_input_tokens: 1_000_000,
+      },
+      num_turns: 1,
+      model: 'claude-sonnet-4-6',
+    });
+
+    expect(recordedTokens(captured.sessionSet, 'totalInputTokens')).toBe(3_000_000);
+    expect(recordedCostCents(captured.sessionSet)).toBe(2205); // unchanged from the pricing test above
+  });
+
+  it('is unaffected when the payload carries no cache fields at all', async () => {
+    // Older/partial usage payloads and the vLLM path have no prompt caching.
+    const captured = setupDbMocks(null);
+
+    await recordUsageFromSdkResult('sess-nocache', 'org-1', {
+      total_cost_usd: 0.1,
+      usage: { input_tokens: 5_000, output_tokens: 2_000 },
+      num_turns: 1,
+      model: 'claude-sonnet-4-6',
+    });
+
+    expect(recordedTokens(captured.sessionSet, 'totalInputTokens')).toBe(5_000);
+  });
+});
+
+describe('sumInputTokens', () => {
+  it('sums the three disjoint slices the SDK splits input across', () => {
+    expect(sumInputTokens({
+      input_tokens: 17,
+      cache_read_input_tokens: 120_000,
+      cache_creation_input_tokens: 4_500,
+    })).toBe(124_517);
+  });
+
+  it('treats missing and null components as 0', () => {
+    expect(sumInputTokens({})).toBe(0);
+    expect(sumInputTokens({ input_tokens: 10, cache_read_input_tokens: null })).toBe(10);
+  });
+
+  it('never throws on a nullish usage object', () => {
+    // It sits ahead of the `done` publish that returns the session to 'idle';
+    // a throw there strands the turn and hangs the client.
+    expect(sumInputTokens(null)).toBe(0);
+    expect(sumInputTokens(undefined)).toBe(0);
   });
 });
 

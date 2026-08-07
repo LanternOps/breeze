@@ -34,8 +34,17 @@ export const aiSessions = pgTable('ai_sessions', {
   model: varchar('model', { length: 100 }).notNull().default('claude-sonnet-4-5-20250929'),
   systemPrompt: text('system_prompt'),
   contextSnapshot: jsonb('context_snapshot'),
+  // TOTAL input across the session — uncached + cache-read + cache-creation.
+  // The SDK splits those three apart because they are priced differently, not
+  // because only the first is "input"; see sumInputTokens in aiCostTracker.
+  // Rows written before that fix carry the uncached slice only and read
+  // implausibly low (an 8-turn session at 17 tokens); they are NOT backfilled,
+  // since the split components were never persisted anywhere to recover from.
   totalInputTokens: integer('total_input_tokens').notNull().default(0),
   totalOutputTokens: integer('total_output_tokens').notNull().default(0),
+  // Independent of the token columns above: cost comes from the SDK's own
+  // total_cost_usd, or from per-component pricing when that is 0. It was
+  // correct throughout — do not "reconcile" it against the token columns.
   totalCostCents: real('total_cost_cents').notNull().default(0),
   turnCount: integer('turn_count').notNull().default(0),
   maxTurns: integer('max_turns').notNull().default(50),

@@ -40,7 +40,12 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
-vi.mock('./aiCostTracker', () => ({ recordUsageFromSdkResult: vi.fn(() => Promise.resolve()) }));
+vi.mock('./aiCostTracker', () => ({
+  recordUsageFromSdkResult: vi.fn(() => Promise.resolve()),
+  // Also consumed on the result/done path — see the note in clientLoop.test.ts.
+  sumInputTokens: (u: Record<string, number | null | undefined> | null | undefined) =>
+    (u?.input_tokens ?? 0) + (u?.cache_read_input_tokens ?? 0) + (u?.cache_creation_input_tokens ?? 0),
+}));
 vi.mock('./aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./aiAgentSdkTools', () => ({

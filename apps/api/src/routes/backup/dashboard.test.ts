@@ -491,6 +491,120 @@ describe('backup dashboard routes', () => {
       expect(body.data.lastJob.errorLog).toContain('read from the live volume');
     });
   });
+
+  describe('GET /status/:deviceId — which run is "last"', () => {
+    // created_at is the row-INSERT clock. The profile fan-out writes an entire
+    // occurrence's jobs in one transaction, so they share it to the microsecond
+    // and `ORDER BY created_at DESC` is not a total order. Each case below feeds
+    // the route rows in the order a created_at-only sort could legitimately
+    // return them, and asserts the route still picks the right run.
+    function mockJobRows(rows: Array<Record<string, unknown>>) {
+      resolveBackupConfigForDeviceMock.mockResolvedValueOnce(null);
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]))
+        .mockReturnValueOnce(chainMock(rows));
+    }
+
+    function run(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'job-run',
+        status: 'completed',
+        startedAt: new Date('2026-08-05T06:35:00.000Z'),
+        createdAt: new Date('2026-08-05T06:32:11.829738Z'),
+        completedAt: new Date('2026-08-05T06:50:00.000Z'),
+        errorLog: null,
+        vssMetadata: null,
+        ...overrides,
+      };
+    }
+
+    it('breaks an identical created_at tie in favour of the later started_at', async () => {
+      const sameCreatedAt = new Date('2026-08-05T06:32:11.829738Z');
+      mockJobRows([
+        run({
+          id: 'job-older',
+          createdAt: sameCreatedAt,
+          startedAt: new Date('2026-08-05T06:32:20.000Z'),
+          completedAt: new Date('2026-08-05T06:33:00.000Z'),
+        }),
+        run({
+          id: 'job-newer',
+          createdAt: sameCreatedAt,
+          startedAt: new Date('2026-08-05T06:40:00.000Z'),
+          completedAt: new Date('2026-08-05T06:55:00.000Z'),
+          vssMetadata: { shadowCopyId: 'set-9', writers: [] },
+        }),
+      ]);
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.lastJob.id).toBe('job-newer');
+      // The whole point of the defect: the VSS panel renders only off the
+      // chosen lastJob's metadata, so picking the loser blanks it.
+      expect(body.data.lastJob.vssMetadata).toEqual({ shadowCopyId: 'set-9', writers: [] });
+    });
+
+    it('does not let a never-started pending job displace a real completed run', async () => {
+      mockJobRows([
+        run({
+          id: 'job-pending',
+          status: 'pending',
+          startedAt: null,
+          createdAt: new Date('2026-08-05T07:00:00.000Z'),
+          completedAt: null,
+        }),
+        run({
+          id: 'job-completed',
+          startedAt: new Date('2026-08-05T06:35:00.000Z'),
+          createdAt: new Date('2026-08-05T06:32:00.000Z'),
+          completedAt: new Date('2026-08-05T06:50:00.000Z'),
+          vssMetadata: { shadowCopyId: 'set-1', writers: [] },
+        }),
+      ]);
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.lastJob.id).toBe('job-completed');
+      expect(body.data.lastJob.vssMetadata).toEqual({ shadowCopyId: 'set-1', writers: [] });
+      expect(body.data.lastSuccessAt).toBe('2026-08-05T06:50:00.000Z');
+    });
+
+    it('still reports a pending job when the device has never run one', async () => {
+      // NULLS LAST only demotes — it must never turn a queued-only device into
+      // "no backup jobs at all".
+      mockJobRows([
+        run({ id: 'p1', status: 'pending', startedAt: null, createdAt: new Date('2026-08-05T06:00:00.000Z'), completedAt: null }),
+        run({ id: 'p2', status: 'pending', startedAt: null, createdAt: new Date('2026-08-05T07:00:00.000Z'), completedAt: null }),
+      ]);
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      const body = await res.json();
+      expect(body.data.lastJob.id).toBe('p2');
+      expect(body.data.lastSuccessAt).toBeNull();
+    });
+
+    it('asks the database for the same order it applies in memory', async () => {
+      mockJobRows([run()]);
+      const jobsChain = selectMock.mock.results[1]?.value ?? null;
+
+      await app.request(`/backup/status/${DEVICE_ID}`);
+
+      const chain = jobsChain ?? (selectMock.mock.results[1]!.value as Record<string, any>);
+      const orderTerms = chain.orderBy.mock.calls[0];
+      expect(orderTerms).toHaveLength(3);
+      // started_at first, and explicitly NULLS LAST — a bare DESC would be
+      // NULLS FIRST in Postgres and float every queued job to the top.
+      expect(JSON.stringify(orderTerms[0])).toContain('nulls last');
+      expect(JSON.stringify(orderTerms[0])).toContain('backup_jobs.started_at');
+      expect(orderTerms[1]).toEqual({ op: 'desc', value: 'backup_jobs.created_at' });
+      expect(orderTerms[2]).toEqual({ op: 'desc', value: 'backup_jobs.id' });
+    });
+  });
 });
 
 function makeRecentJob(overrides: Record<string, unknown> = {}) {
