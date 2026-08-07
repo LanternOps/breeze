@@ -64,9 +64,9 @@ Constraints/indexes:
 
 ### 4.2 `fleet_finding_devices` (current membership — reconciled, prunable)
 
-`(finding_id, device_id)` PK, `org_id`, source ref (`source_kind`, `source_row_id`), `member_evidence` jsonb (excludedOpen), `first_seen_at`/`last_seen_at`. Composite FK `(finding_id, org_id) → fleet_findings(id, org_id)`.
+`(finding_id, device_id)` PK, `org_id`, source ref (`source_kind`, `source_row_id`), `member_evidence` jsonb (excludedOpen), `first_seen_at`/`last_seen_at`. **Single-column FK** `finding_id → fleet_findings(id)` `ON DELETE CASCADE` — deliberately NOT a same-org composite FK: membership keeps the standard `device_id` column name, so the device-move trigger (§4.4) rewrites this table's `org_id` on a cross-org move, and a composite `(finding_id, org_id)` FK would break mid-move. The transient mismatch (member re-tenanted, finding still in the old org) is resolved by the next reconcile pass, which prunes the member.
 
-**Reconciliation MUST delete members that cease qualifying.** The existing alert-group upsert pattern only inserts/updates — copying it verbatim would strand stale devices. On cross-org device move: delete membership in the old org and let the next reconcile pass re-add in the new org (do not rely on the device-child `org_id` rewrite trigger; see §4.4).
+**Reconciliation MUST delete members that cease qualifying.** The existing alert-group upsert pattern only inserts/updates — copying it verbatim would strand stale devices.
 
 ### 4.3 `fleet_remediation_runs`
 
@@ -74,7 +74,7 @@ Constraints/indexes:
 
 ### 4.4 `fleet_remediation_run_targets`
 
-`(run_id, target_device_uuid)` PK, `org_id`, **snapshot identity** (device uuid + hostname/site captured at dispatch), per-target `status`, link to the underlying execution row (`device_command_id` / `deployment_device_id`), bounded error/result summary, timestamps.
+`(run_id, target_device_uuid)` PK, `org_id`, **snapshot identity** (device uuid + hostname/site captured at dispatch), per-target `status`, link to the underlying execution row (`device_command_id` — v1 dispatches exclusively via the command chokepoint; scripts run as `execute_script` commands, so there is no deployment linkage), bounded error/result summary, timestamps.
 
 **Why snapshot, not a live `device_id` FK column:** the migration `2026-05-18-device-child-orgid-cascade.sql` installs a trigger that rewrites `org_id` on every table with uuid columns literally named `device_id` + `org_id` when a device moves orgs. Rewriting a historical run target's org would break the same-org composite FK to its run. The column is therefore named `target_device_uuid` (no FK, exempt from the trigger), preserving the historical record; the run row records the org it executed under, forever.
 
