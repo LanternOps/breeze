@@ -102,6 +102,12 @@ vi.mock('../db', () => {
       },
     },
     withSystemDbAccessContext: undefined,
+    // Required by createInstrumentedQueue, which getSnmpQueue() now builds
+    // through (#3215). Without it the import resolves to undefined and every
+    // enqueue throws inside processScheduler's per-device try/catch — the
+    // scheduler then reports `enqueued: 0` instead of failing loudly. Same
+    // one-line addition snmpQueue.test.ts / securityPostureWorker.test.ts carry.
+    assertOutsideHeldDbContext: vi.fn(),
   };
 });
 
