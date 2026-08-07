@@ -179,28 +179,68 @@ describe('#1105 DB-context tripwires', () => {
       // The TAG is the load-bearing part: extras are only visible inside a
       // single event, so an unfilterable bucket (BREEZE-A, ~7k events) stays
       // unfilterable if the label only lands in `extra`.
-      expect(capturedMessages[0]!.tags).toEqual({ dbContextLabel: 'agentWs.heartbeat' });
+      expect(capturedMessages[0]!.tags?.dbContextLabel).toBe('agentWs.heartbeat');
       // Also in the message, because Sentry groups by message — that is what
       // splits one bucket into per-handler issues.
       expect(capturedMessages[0]!.message).toContain('[agentWs.heartbeat]');
+      // #3218 added a second, derived tag alongside it. `dbContextLabel` must
+      // stay EXPLICIT-only so existing Sentry queries keep their meaning — the
+      // derived opener goes in its own key, never widening this one.
+      expect(capturedMessages[0]!.tags?.dbContextOpener).toEqual(expect.stringContaining('dbContextTripwire'));
     });
 
-    it('omits the tag entirely for an unlabelled context, leaving the message text unchanged', async () => {
-      // Grouping stability: every existing caller is unlabelled, so their
-      // message must be byte-identical to before this change or their Sentry
-      // history splits into a new issue for no reason.
+    it('derives a grouping label from the opener when the context is unlabelled (#3218)', async () => {
+      // Supersedes the previous contract ("unlabelled callers keep byte-identical
+      // message text"). That stability was deliberately traded away in #3218:
+      // most callers are unlabelled, so preserving their text meant they all
+      // landed in ONE opaque bucket that could not be attributed. Regrouping
+      // them per source is a one-time cost paid once, on purpose.
       process.env.DB_CONTEXT_HELD_WARN_MS = '50';
       process.env.DB_CONTEXT_HELD_CAPTURE_THROTTLE_MS = '0';
       __resetHeldContextCaptureThrottleForTests();
 
-      await withSystemDbAccessContext(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 90));
-      });
+      async function anUnlabelledCallerThatHolds(): Promise<void> {
+        await withSystemDbAccessContext(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 90));
+        });
+      }
+      await anUnlabelledCallerThatHolds();
 
       expect(capturedMessages).toHaveLength(1);
-      expect(capturedMessages[0]!.tags).toBeUndefined();
-      expect(capturedMessages[0]!.message).toContain('withDbAccessContext (scope=system) held');
-      expect(capturedMessages[0]!.message).not.toContain('[');
+      const event = capturedMessages[0]!;
+      expect(event.message).toContain('withDbAccessContext (scope=system)');
+      expect(event.message).toContain(HELD);
+      // No explicit label was passed, so only the derived tag is present.
+      expect(event.tags?.dbContextLabel).toBeUndefined();
+      expect(event.tags?.dbContextOpener).toContain('anUnlabelledCallerThatHolds');
+      // The derived name reaches the grouped message too...
+      expect(event.message).toContain('[');
+      expect(event.message).toContain('anUnlabelledCallerThatHolds');
+      // ...but the precise file:line must NOT, or every edit above the call site
+      // forks the Sentry issue. It belongs to the console line and the extra.
+      expect(event.message).not.toMatch(/\.ts:\d+/);
+      expect(String(event.extra?.openedAtFrame)).toMatch(/dbContextTripwire.*:\d+:\d+/);
+    });
+
+    it('names the opening caller in the CONSOLE line, not just in Sentry (#3218)', async () => {
+      // The whole point of #3218: during the incident the DSN rate limit was
+      // saturated by a concurrent hot error, so the throttled Sentry captures
+      // were dropped exactly when needed. The console line must stand alone.
+      process.env.DB_CONTEXT_HELD_WARN_MS = '50';
+
+      async function theConsoleAttributionCulprit(): Promise<void> {
+        await withSystemDbAccessContext(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 90));
+        });
+      }
+      await theConsoleAttributionCulprit();
+
+      const hits = heldWarns();
+      expect(hits).toHaveLength(1);
+      const line = String(hits[0]![0]);
+      expect(line).toContain('theConsoleAttributionCulprit');
+      // A real file:line an operator can jump to, straight from droplet logs.
+      expect(line).toMatch(/Opened at .*dbContextTripwire.*:\d+:\d+\./);
     });
 
     it('still warns when fn THROWS after holding the context too long (the finally path)', async () => {

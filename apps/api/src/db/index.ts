@@ -300,14 +300,33 @@ export interface HeldContextOpenerFrame {
 // `at Object.foo [as bar] (loc)` — the bracketed alias stays inside `fn`.
 const STACK_FRAME_RE = /^\s*at\s+(?:async\s+)?(?:(.+?)\s+\((.+)\)|(.+))$/;
 
+/**
+ * Reduce a V8 function name to its bare identifier: drop the receiver prefix
+ * (`Object.foo`), the `[as alias]` suffix, and the `new ` of a constructor
+ * frame, any of which would otherwise leak into a grouping label.
+ */
+function stripFramePrefixes(fnName: string): string {
+  return fnName
+    .replace(/\s*\[as .+?\]$/, '')
+    .replace(/^new\s+/, '')
+    .split('.')
+    .pop() ?? fnName;
+}
+
 function isNonApplicationFrame(location: string, fnName: string | null): boolean {
   if (location.includes('node_modules')) return true;
   // Node internals: `node:internal/...`, `internal/process/...`, `node:events`.
   if (location.startsWith('node:') || location.startsWith('internal/')) return true;
   // This module itself — the frame where `new Error()` was allocated. Matched on
   // the path so it also holds when the wrapper name is minified away in a build.
-  if (/(^|\/)db\/index\.[cm]?[jt]s(:|$)/.test(location)) return true;
-  return fnName !== null && DB_CONTEXT_WRAPPER_FUNCTIONS.has(fnName);
+  // Backslashes are normalized first so a Windows dev path is excluded too.
+  if (/(^|[/\\])db[/\\]index\.[cm]?[jt]s(:|$)/.test(location)) return true;
+  // Name-based fallback. Deliberately redundant with the path test above: if
+  // this file is ever split or renamed (the CLAUDE.md size guideline invites
+  // exactly that), the path test stops matching and the emitter's own frame
+  // would leak through as "the caller" — reproducing the BREEZE-9 bug this is
+  // meant to prevent. The wrappers keep their names across such a move.
+  return fnName !== null && DB_CONTEXT_WRAPPER_FUNCTIONS.has(stripFramePrefixes(fnName));
 }
 
 /** Strip the machine-specific prefix so log lines stay short and comparable. */
@@ -337,10 +356,9 @@ export function parseOpenerFrame(stack: string | undefined): HeldContextOpenerFr
     const location = toRepoRelative(rawLocation.trim());
     if (isNonApplicationFrame(location, fnName)) continue;
 
-    // `apps/api/src/routes/devices.ts:42:10` → `devices`; drop V8's receiver
-    // prefix and `[as alias]` suffix from `Object.getDevice [as handler]`.
+    // `apps/api/src/routes/devices.ts:42:10` → `devices`.
     const file = /([^/\\]+?)\.[cm]?[jt]sx?(?::\d+)*$/.exec(location)?.[1] ?? null;
-    const fn = fnName?.replace(/\s*\[as .+?\]$/, '').split('.').pop() || null;
+    const fn = fnName ? stripFramePrefixes(fnName) || null : null;
     const label = file && fn ? `${file}.${fn}` : (file ?? fn);
 
     return { location, label };
@@ -376,7 +394,15 @@ export function formatHeldContextWarning(input: {
   // fall back to the opening frame so unlabelled callers, which are most of
   // them, still group per source instead of arriving as one opaque bucket. This
   // is a one-time regrouping for previously-unlabelled callers, by design.
-  const label = explicitLabel ?? openerFrame?.label ?? null;
+  // Normalize ONCE, and gate both the message and the tag on the same value. A
+  // blank label must fall through to the derived one rather than winning and
+  // then rendering as nothing: `label: string` accepts '' at the call sites that
+  // treat the label as REQUIRED precisely to stop a shared closure collapsing
+  // into one anonymous bucket (agentWs, the ~7k-event BREEZE-A incident). With a
+  // bare `??` an empty string would silently defeat that safeguard AND suppress
+  // the fallback — strictly worse than passing no label at all.
+  const normalizedExplicit = explicitLabel?.trim() ? explicitLabel.trim() : null;
+  const label = normalizedExplicit ?? openerFrame?.label ?? null;
   const labelPart = label ? ` [${label}]` : '';
   const message =
     `withDbAccessContext (scope=${scope})${labelPart} held a pooled connection in an open `
@@ -388,7 +414,7 @@ export function formatHeldContextWarning(input: {
   // dashboards keep their meaning; the derived name gets its own tag rather
   // than silently widening that one.
   const tags: Record<string, string> = {};
-  if (explicitLabel) tags.dbContextLabel = explicitLabel;
+  if (normalizedExplicit) tags.dbContextLabel = normalizedExplicit;
   if (openerFrame?.label) tags.dbContextOpener = openerFrame.label;
 
   return {
@@ -477,8 +503,18 @@ export async function withDbAccessContext<T>(
             }
           }
         }
-      } catch {
-        // Detection instrumentation must never alter fn's real result/error.
+      } catch (instrumentationError) {
+        // Detection instrumentation must never alter fn's real result/error, so
+        // this stays broad. But it must not swallow itself into total silence
+        // either: #3218 exists because this warning was unattributable, and a
+        // future slip in the frame parsing above would otherwise make the whole
+        // warning vanish with no trace at all. Leave a breadcrumb, and guard
+        // even that — a throw from the reporter would defeat the purpose.
+        try {
+          console.warn('[db-context-hold-warning] instrumentation failed:', instrumentationError);
+        } catch {
+          // Truly last resort: console itself is unusable. Preserve fn's outcome.
+        }
       }
     }
   });

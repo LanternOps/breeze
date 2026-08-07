@@ -181,6 +181,45 @@ describe('parseOpenerFrame (#1105 hold-warning attribution)', () => {
     expect(parseOpenerFrame('Error: no frames here')).toBeNull();
   });
 
+  // Openers are not all in apps/ — a context can be opened from shared code.
+  it('attributes a frame in packages/ too', () => {
+    const result = parseOpenerFrame(frames(
+      '    at withDbAccessContext (/app/apps/api/src/db/index.ts:304:34)',
+      '    at dispatch (/app/packages/shared/src/queue/dispatch.ts:12:4)',
+    ));
+    expect(result).toEqual({
+      location: 'packages/shared/src/queue/dispatch.ts:12:4',
+      label: 'dispatch.dispatch',
+    });
+  });
+
+  // The path-based self-exclusion hardcodes today's filename. If this module is
+  // ever split or renamed, the emitter frame must STILL be skipped by name, or
+  // the BREEZE-9 bug (every event naming the emitter) silently returns.
+  it('still skips the emitter by function name if db/index.ts is renamed', () => {
+    const result = parseOpenerFrame(frames(
+      '    at withDbAccessContext (/app/apps/api/src/db/accessContext.ts:304:34)',
+      '    at withSystemDbAccessContext (/app/apps/api/src/db/accessContext.ts:353:10)',
+      '    at reconcile (/app/apps/api/src/workers/reconciler.ts:31:2)',
+    ));
+    expect(result?.label).toBe('reconciler.reconcile');
+  });
+
+  it('skips node_modules nested inside an app directory', () => {
+    const result = parseOpenerFrame(frames(
+      '    at q (/app/apps/api/node_modules/drizzle-orm/session.js:88:1)',
+      '    at tick (/app/apps/api/src/workers/tick.ts:4:4)',
+    ));
+    expect(result?.location).toBe('apps/api/src/workers/tick.ts:4:4');
+  });
+
+  it('normalizes a constructor frame instead of leaking "new " into the label', () => {
+    const result = parseOpenerFrame(frames(
+      '    at new PatchClient (/app/apps/api/src/workers/patchWorker.ts:5:1)',
+    ));
+    expect(result?.label).toBe('patchWorker.PatchClient');
+  });
+
   // Attribution must survive a compiled deploy — that is where it is needed.
   it('attributes a built .js frame the same way', () => {
     const result = parseOpenerFrame(frames(
@@ -188,6 +227,54 @@ describe('parseOpenerFrame (#1105 hold-warning attribution)', () => {
       '    at sweep (/app/apps/api/dist/workers/sweeper.js:77:9)',
     ));
     expect(result?.label).toBe('sweeper.sweep');
+  });
+});
+
+// The synthetic stacks above pin the parsing rules, but the feature rests on an
+// assumption they cannot test: the emitter allocates its Error INSIDE the
+// transaction callback, after ~6 `await tx.execute(...)` calls, so the opener's
+// synchronous frames are long gone by then. It only works because V8 keeps
+// async frames across awaits (rendered `at async fn (...)`). If that ever stops
+// holding, every warning silently degrades to naming nothing — so assert it
+// against a real, runtime-generated stack rather than a hand-written string.
+describe('parseOpenerFrame against a REAL V8 async stack', () => {
+  async function theCulpritThatHoldsTheConnection(): Promise<string | undefined> {
+    // `return await`, not a bare `return` — V8 only links an async frame into
+    // the trace at a real await point, so a tail `return f()` drops the caller
+    // from the stack entirely. Real openers all `await withDbAccessContext(...)`,
+    // which is the shape reproduced here.
+    return await emulateTransactionCallback();
+  }
+
+  async function emulateTransactionCallback(): Promise<string | undefined> {
+    // Mirror the awaits that precede the Error allocation in withDbAccessContext.
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    return new Error('withDbAccessContext opened here').stack;
+  }
+
+  it('still carries the caller frames after 6 awaits — the assumption the feature rests on', async () => {
+    const stack = await theCulpritThatHoldsTheConnection();
+    // The outer caller is several awaits and one frame above the allocation. If
+    // V8 ever drops async frames this goes empty and every warning degrades to
+    // naming nothing — which is the exact BREEZE-9 failure being fixed.
+    expect(stack).toContain('theCulpritThatHoldsTheConnection');
+  });
+
+  it('resolves a real runtime stack to the nearest application frame', async () => {
+    const stack = await theCulpritThatHoldsTheConnection();
+    const frame = parseOpenerFrame(stack);
+
+    expect(frame).not.toBeNull();
+    // The NEAREST app frame is the right answer: in production the equivalent
+    // intermediate (the transaction callback) lives in db/index.ts and is
+    // skipped, so the nearest remaining frame IS the true opener. Here that
+    // helper sits in this test file, so it is legitimately the nearest one.
+    expect(frame!.label).toContain('emulateTransactionCallback');
+    // A jumpable location, parsed out of genuine V8 output.
+    expect(frame!.location).toMatch(/heldContextCaptureThrottle\.test\.ts:\d+:\d+$/);
+    // Never the runtime or the emitter's own module.
+    expect(frame!.location).not.toContain('node_modules');
+    expect(frame!.location).not.toMatch(/^node:/);
   });
 });
 
@@ -224,6 +311,25 @@ describe('formatHeldContextWarning (#3218 console attribution)', () => {
     expect(tags).toEqual({ dbContextLabel: 'agentWs.heartbeat', dbContextOpener: 'sweeper.sweep' });
   });
 
+  // A blank label must not win the `??` race and then render as nothing: that
+  // would both defeat the REQUIRED-label safeguard on shared closures (agentWs,
+  // BREEZE-A) and suppress the derived fallback — strictly worse than passing
+  // no label at all.
+  it.each([['', 'empty'], ['   ', 'whitespace-only']])(
+    'treats a %s label as absent and falls back to the derived one',
+    (blank) => {
+      const { message, tags } = formatHeldContextWarning({ ...base, label: blank });
+      expect(message).toContain('[sweeper.sweep]');
+      expect(tags).toEqual({ dbContextOpener: 'sweeper.sweep' });
+    },
+  );
+
+  it('trims a padded explicit label rather than emitting the padding', () => {
+    const { message, tags } = formatHeldContextWarning({ ...base, label: '  agentWs.heartbeat  ' });
+    expect(message).toContain('[agentWs.heartbeat]');
+    expect(tags.dbContextLabel).toBe('agentWs.heartbeat');
+  });
+
   it('derives the label when no explicit one was passed', () => {
     const { message, tags } = formatHeldContextWarning(base);
     expect(message).toContain('[sweeper.sweep]');
@@ -235,6 +341,17 @@ describe('formatHeldContextWarning (#3218 console attribution)', () => {
     expect(message).toContain('withDbAccessContext (scope=system) held a pooled connection');
     expect(consoleLine).toBe(message);
     expect(tags).toEqual({});
+  });
+
+  it('omits the "Opened at" suffix when a label is given but no frame resolved', () => {
+    const { consoleLine, tags } = formatHeldContextWarning({
+      ...base,
+      openerFrame: null,
+      label: 'agentWs.heartbeat',
+    });
+    expect(consoleLine).toContain('[agentWs.heartbeat]');
+    expect(consoleLine).not.toContain('Opened at');
+    expect(tags).toEqual({ dbContextLabel: 'agentWs.heartbeat' });
   });
 
   it('still reports scope, threshold and the #1105 remediation pointer', () => {
