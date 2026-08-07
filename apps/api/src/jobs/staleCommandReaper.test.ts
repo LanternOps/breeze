@@ -941,6 +941,66 @@ describe('reapStaleSoftwareDeploymentResults', () => {
 // stamped `timeout` / "no response from agent". That is false whenever a terminal
 // device_commands row exists — the agent DID answer. On one live instance 89
 // executions read `timeout` while their command had completed with output.
+// #3190: the reaper used a flat 300s+grace deadline for every execution and
+// ignored the script's own `timeoutSeconds`, which is wrong in both directions.
+// These two cases are the issue's two symptoms, and each one flips if the
+// per-script deadline is reverted to a constant.
+describe('reapStaleScriptExecutions per-script timeout (#3190)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  function arrangeExec(opts: { timeoutSeconds: number; ageMs: number }) {
+    const createdAt = new Date(Date.now() - opts.ageMs);
+    selectMock
+      .mockReturnValueOnce(selectChain([
+        {
+          id: 'exec-1',
+          status: 'pending',
+          scriptId: 'script-1',
+          createdAt,
+          startedAt: null,
+          timeoutSeconds: opts.timeoutSeconds,
+        },
+      ]))
+      // the #3097 device-command lookup — no terminal row, so the guard is inert
+      .mockReturnValueOnce(selectChain([]));
+
+    const execSet = vi.fn((_values: Record<string, unknown>) => ({
+      where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'exec-1' }]) })),
+    }));
+    updateMock.mockImplementation((table: unknown) => {
+      if (table === scriptExecutionsTable) return { set: execSet };
+      throw new Error(`Unexpected table update: ${String(table)}`);
+    });
+    return { execSet };
+  }
+
+  it('reaps a short-timeout script once its own deadline has passed', async () => {
+    // 30s script => 30s + 5min grace = 5.5min. At 7 minutes it is overdue.
+    // Under the old flat 10-minute deadline this row was skipped, so the
+    // execution sat pending far past its own contract.
+    const { execSet } = arrangeExec({ timeoutSeconds: 30, ageMs: 7 * 60 * 1000 });
+
+    const reaped = await reapStaleScriptExecutions();
+
+    expect(reaped).toBe(1);
+    expect(execSet).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a long-timeout script alone while it is still within its deadline', async () => {
+    // 1h script => 1h + 5min grace. At 30 minutes it is still running legally.
+    // Under the old flat 10-minute deadline this was reaped and reported as
+    // "no response from agent" while the script was working correctly.
+    const { execSet } = arrangeExec({ timeoutSeconds: 3600, ageMs: 30 * 60 * 1000 });
+
+    const reaped = await reapStaleScriptExecutions();
+
+    expect(reaped).toBe(0);
+    expect(execSet).not.toHaveBeenCalled();
+  });
+});
+
 describe('reapStaleScriptExecutions terminal-command guard (#3097)', () => {
   const longAgo = new Date(Date.now() - 60 * 60 * 1000);
 
