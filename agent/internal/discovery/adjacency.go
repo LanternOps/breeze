@@ -70,7 +70,14 @@ func snmpValueToString(pdu gosnmp.SnmpPDU) string {
 	case string:
 		return v
 	case []byte:
-		return string(v)
+		// Same hazard as snmppoll.ParseValue. lldpRemPortId with
+		// portIdSubtype = macAddress(3) is a raw 6-octet MAC, and this is also
+		// the fallback in macFromBytes/ipFromBytes for payloads that aren't
+		// exactly 6/4 bytes. These values only key in-memory lookups today, but
+		// they populate LldpNeighbor.RemotePortID/.RemoteSysName and
+		// CdpNeighbor.RemoteDeviceID, so the moment anyone persists them a raw
+		// cast becomes the same NUL insert failure.
+		return snmppoll.OctetStringToText(v)
 	default:
 		if pdu.Value == nil {
 			return ""

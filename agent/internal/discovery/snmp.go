@@ -211,7 +211,11 @@ func snmpToString(variable gosnmp.SnmpPDU) string {
 	case string:
 		return value
 	case []byte:
-		return string(value)
+		// Same hazard as snmppoll.ParseValue: sysDescr/sysName/sysObjectID land
+		// in Postgres `text`, and a device that answers with raw binary would
+		// otherwise smuggle NUL bytes into the insert. Non-text payloads become
+		// lowercase hex; ordinary text is untouched.
+		return snmppoll.OctetStringToText(value)
 	default:
 		return gosnmp.ToBigInt(value).String()
 	}

@@ -337,7 +337,18 @@ async function rollupRawSnmpMetrics(options: MetricRollupRange): Promise<void> {
             || ':' || md5(sm.device_id::text || ':' || sm.oid),
           120
         ) AS metric_name,
+        -- Hex-encoded values are BYTES, never numerics, and must be excluded
+        -- BEFORE the digit regex ever sees them: a MAC hex-encodes to something
+        -- like '001122304050', which is all digits and would otherwise be
+        -- rolled up as the reading 1.12e11. The guard is keyed on value_type
+        -- rather than on the shape of the string because the string is
+        -- indistinguishable from a real counter. It covers both producers of a
+        -- 'hex' row — the agent's declared valueEncoding and the API's own
+        -- fallback encoding for NUL/lone-surrogate values (jobs/snmpWorker.ts).
+        -- value_type is nullable, so this deliberately only drops an exact
+        -- 'hex' match and leaves NULL/legacy rows on the numeric path.
         CASE
+          WHEN sm.value_type = 'hex' THEN NULL
           WHEN btrim(sm.value) ~ '^-?[0-9]+(\\.[0-9]+)?$'
             THEN btrim(sm.value)::double precision
           ELSE NULL

@@ -730,6 +730,9 @@ snmpRoutes.get(
         oid: snmpMetrics.oid,
         name: snmpMetrics.name,
         value: snmpMetrics.value,
+        // buildTopInterfaces drops value_type='hex' rows: a hex-encoded MAC is
+        // all digits and would otherwise rank as a huge octet counter.
+        valueType: snmpMetrics.valueType,
         timestamp: snmpMetrics.timestamp
       })
       .from(snmpMetrics)

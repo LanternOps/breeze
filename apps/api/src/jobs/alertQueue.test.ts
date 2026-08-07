@@ -69,16 +69,20 @@ describe('alert queue helpers', () => {
     vi.useRealTimers();
   });
 
-  it('uses a stable BullMQ job id for device evaluation requests', async () => {
+  // Hyphen-separated, not colon-separated: BullMQ rejects a custom jobId whose
+  // colon-split length !== 3.
+  it('uses a stable colon-free BullMQ job id for device evaluation requests', async () => {
     await triggerDeviceEvaluation('device-1', 'org-1');
 
     expect(addMock).toHaveBeenCalledWith(
       'evaluate-device',
       expect.objectContaining({ deviceId: 'device-1', orgId: 'org-1' }),
       expect.objectContaining({
-        jobId: expect.stringMatching(/^alert-evaluate-device:device-1:[a-z0-9]+$/),
+        jobId: expect.stringMatching(/^alert-evaluate-device-device-1-[a-z0-9]+$/),
       }),
     );
+    const jobId = (addMock.mock.calls[0] as unknown[])[2] as { jobId: string };
+    expect(jobId.jobId).not.toContain(':');
   });
 
   it('reuses an active full evaluation job within the dedupe window', async () => {

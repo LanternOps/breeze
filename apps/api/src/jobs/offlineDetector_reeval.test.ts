@@ -9,11 +9,12 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 // fixed to honor its own duration. This sweep re-evaluates still-offline
 // devices so those longer-duration rules fire when their duration elapses.
 
-const { evaluateFromPolicyMock, addBulkMock, addMock, getRepeatableJobsMock, deviceRowsState, fleetState, warnSpy } = vi.hoisted(() => ({
+const { evaluateFromPolicyMock, addBulkMock, addMock, getRepeatableJobsMock, queueCtorMock, deviceRowsState, fleetState, warnSpy } = vi.hoisted(() => ({
   evaluateFromPolicyMock: vi.fn(),
   addBulkMock: vi.fn(async () => undefined),
   addMock: vi.fn(async () => undefined),
   getRepeatableJobsMock: vi.fn(async () => [] as { key: string }[]),
+  queueCtorMock: vi.fn(),
   deviceRowsState: { rows: [] as Record<string, unknown>[] },
   fleetState: { fleet: [] as { id: string; orgId: string }[], chunkCalls: 0 },
   warnSpy: vi.fn(),
@@ -63,6 +64,9 @@ vi.mock('../db', () => ({
 
 vi.mock('bullmq', () => ({
   Queue: class {
+    constructor(...args: unknown[]) {
+      queueCtorMock(...args);
+    }
     addBulk = addBulkMock;
     add = addMock;
     getJob = vi.fn();
@@ -96,7 +100,7 @@ vi.mock('../services/alertConditions', () => ({ interpolateTemplate: vi.fn() }))
 
 vi.mock('../services/bullmqUtils', () => ({ isReusableState: vi.fn(() => false) }));
 
-import { processReevaluateOffline, processReevaluateOfflineSweep, scheduleOfflineJobs } from './offlineDetector';
+import { getOfflineQueue, processReevaluateOffline, processReevaluateOfflineSweep, scheduleOfflineJobs } from './offlineDetector';
 
 const buildFleet = (n: number) =>
   Array.from({ length: n }, (_, i) => ({ id: `device-${String(i).padStart(6, '0')}`, orgId: 'org-1' }));
@@ -235,6 +239,59 @@ describe('processReevaluateOfflineSweep — fan-out (issue #1982)', () => {
 
     expect(result.queued).toBe(0);
     expect(addBulkMock).not.toHaveBeenCalled();
+  });
+});
+
+// Unbounded Redis growth: BullMQ retains completed jobs forever by default, and
+// this sweep fans out one reevaluate-offline job per still-offline device every
+// 60s (~15.8k/day on US prod). The bounds live in the queue's defaultJobOptions
+// so every producer on the offline queue inherits them.
+describe('offline queue retention bounds', () => {
+  it('constructs the offline queue with bounded completed/failed retention', () => {
+    getOfflineQueue();
+
+    expect(queueCtorMock).toHaveBeenCalled();
+    const [name, opts] = queueCtorMock.mock.calls[0] as unknown as [
+      string,
+      { defaultJobOptions?: { removeOnComplete?: { count?: number }; removeOnFail?: { count?: number } } }
+    ];
+    expect(name).toBe('offline-detection');
+    const removeOnComplete = opts.defaultJobOptions?.removeOnComplete;
+    const removeOnFail = opts.defaultJobOptions?.removeOnFail;
+    expect(removeOnComplete?.count).toBeGreaterThan(0);
+    expect(removeOnComplete?.count).toBeLessThanOrEqual(5000);
+    // Failures are what people debug — keep them meaningfully longer.
+    expect(removeOnFail?.count).toBeGreaterThan(removeOnComplete!.count!);
+  });
+
+  it('enqueues the reevaluate-offline fan-out with no per-job opts, onto a queue that declares bounds', async () => {
+    fleetState.fleet = buildFleet(10);
+
+    await processReevaluateOfflineSweep();
+
+    expect(addBulkMock).toHaveBeenCalledTimes(1);
+    const jobs = (addBulkMock.mock.calls[0] as unknown[])[0] as { opts?: Record<string, unknown> }[];
+    expect(jobs).toHaveLength(10);
+
+    // Half one: the sweep carries NO per-job opts at all. BullMQ lets per-call
+    // options win over the queue defaults, so any opts here would be a second
+    // place retention has to be kept correct — and an unbounded one would
+    // silently un-bound the highest-volume producer on this queue.
+    for (const job of jobs) {
+      expect(job.opts).toBeUndefined();
+    }
+
+    // Half two: inheriting nothing is only safe because the queue these jobs
+    // were enqueued onto actually declares bounds. The sibling test above pins
+    // the numeric window; this one pins the LINKAGE — deleting defaultJobOptions
+    // from getOfflineQueue() must fail the fan-out test too, not just that one.
+    const ctorCall = queueCtorMock.mock.calls.find((call) => (call as unknown[])[0] === 'offline-detection');
+    expect(ctorCall, 'the reevaluate-offline sweep never constructed the offline-detection queue').toBeDefined();
+    const defaultJobOptions = ((ctorCall as unknown[])[1] as {
+      defaultJobOptions?: { removeOnComplete?: unknown; removeOnFail?: unknown };
+    }).defaultJobOptions;
+    expect(defaultJobOptions?.removeOnComplete).toEqual(expect.objectContaining({ count: expect.any(Number) }));
+    expect(defaultJobOptions?.removeOnFail).toEqual(expect.objectContaining({ count: expect.any(Number) }));
   });
 });
 

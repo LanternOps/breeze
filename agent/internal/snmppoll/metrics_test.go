@@ -1,9 +1,12 @@
 package snmppoll
 
 import (
+	"encoding/json"
 	"math"
 	"math/big"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/gosnmp/gosnmp"
 )
@@ -413,6 +416,237 @@ func TestParseValue_TableDriven(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ParseValue — octet-string sanitisation (binary payloads become hex)
+// ---------------------------------------------------------------------------
+
+func TestParseValue_OctetStringSanitization(t *testing.T) {
+	tests := []struct {
+		name string
+		pdu  gosnmp.SnmpPDU
+		want string
+	}{
+		{
+			// dot1dBaseBridgeAddress on a UniFi USW-24-PoE: a raw 6-octet MAC
+			// with an embedded NUL that Postgres `text` rejects.
+			name: "binary MAC with NUL byte",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{0x78, 0x8a, 0x20, 0x00, 0xd4, 0xe1}},
+			want: "788a2000d4e1",
+		},
+		{
+			name: "binary MAC without NUL byte",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{0x78, 0x8a, 0x20, 0xc3, 0xd4, 0xe1}},
+			want: "788a20c3d4e1",
+		},
+		{
+			name: "printable ASCII text unchanged",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("USW-24-PoE")},
+			want: "USW-24-PoE",
+		},
+		{
+			name: "printable sysDescr unchanged",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("Linux UBNT 3.18.24 #1 SMP Thu Jan 1 00:00:00 UTC 2026")},
+			want: "Linux UBNT 3.18.24 #1 SMP Thu Jan 1 00:00:00 UTC 2026",
+		},
+		{
+			name: "multi-line sysDescr keeps newlines and tabs",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("Cisco IOS Software\r\nTechnical Support:\thttp://example.test")},
+			want: "Cisco IOS Software\r\nTechnical Support:\thttp://example.test",
+		},
+		{
+			name: "non-ASCII valid UTF-8 unchanged",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("Café-Switch-Ω")},
+			want: "Café-Switch-Ω",
+		},
+		{
+			name: "invalid UTF-8 becomes hex",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{0xff, 0xfe, 0x41}},
+			want: "fffe41",
+		},
+		{
+			// C-based agents NUL-pad fixed-width fields; the name is clean text,
+			// not binary, and must not be hexed.
+			name: "NUL-padded fixed-width sysName recovers to text",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("switch-01\x00")},
+			want: "switch-01",
+		},
+		{
+			name: "multiple trailing NULs are trimmed",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("sw1\x00\x00\x00\x00")},
+			want: "sw1",
+		},
+		{
+			// Postgres stores NBSP fine, and sysLocation routinely carries one
+			// from pasted config or a non-English locale.
+			name: "NBSP in sysLocation passes through unchanged",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("Building A\u00a0Floor 3")},
+			want: "Building A\u00a0Floor 3",
+		},
+		{
+			name: "BOM and thin space pass through unchanged",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("\ufeffcore\u2009sw")},
+			want: "\ufeffcore\u2009sw",
+		},
+		{
+			name: "soft hyphen and ideographic space pass through unchanged",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("cata\u00adlyst\u30003850")},
+			want: "cata\u00adlyst\u30003850",
+		},
+		{
+			// Not text-unsafe for Postgres, so they survive: only NUL and
+			// invalid UTF-8 force hex.
+			name: "ordinary control characters pass through unchanged",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{0x01, 0x02, 0x1f}},
+			want: "\x01\x02\x1f",
+		},
+		{
+			// Preserved current behaviour: an empty octet string stays "".
+			name: "empty byte slice stays empty string",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{}},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ParseValue(tt.pdu)
+			s, ok := got.(string)
+			if !ok {
+				t.Fatalf("ParseValue() = %v (%T), want string", got, got)
+			}
+			if s != tt.want {
+				t.Errorf("ParseValue() = %q, want %q", s, tt.want)
+			}
+			if strings.ContainsRune(s, 0) {
+				t.Errorf("ParseValue() = %q contains a NUL byte", s)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildMetrics — ValueEncoding declaration
+// ---------------------------------------------------------------------------
+
+func TestBuildMetrics_ValueEncoding(t *testing.T) {
+	tests := []struct {
+		name         string
+		pdu          gosnmp.SnmpPDU
+		wantValue    any
+		wantEncoding string
+	}{
+		{
+			name:         "binary MAC is declared hex",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.17.1.1.0", Value: []byte{0x78, 0x8a, 0x20, 0x00, 0xd4, 0xe1}},
+			wantValue:    "788a2000d4e1",
+			wantEncoding: ValueEncodingHex,
+		},
+		{
+			// The case that motivates the field: hexed MAC is all digits and
+			// would otherwise be indistinguishable from a real numeric string.
+			name:         "all-digit hex MAC is declared hex",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.17.1.1.0", Value: []byte{0x00, 0x11, 0x22, 0x30, 0x40, 0x50}},
+			wantValue:    "001122304050",
+			wantEncoding: ValueEncodingHex,
+		},
+		{
+			name:         "invalid UTF-8 is declared hex",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.1.1.0", Value: []byte{0xff, 0xfe, 0x41}},
+			wantValue:    "fffe41",
+			wantEncoding: ValueEncodingHex,
+		},
+		{
+			name:         "plain text carries no encoding",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.1.5.0", Value: []byte("switch-01")},
+			wantValue:    "switch-01",
+			wantEncoding: "",
+		},
+		{
+			name:         "NUL-padded text carries no encoding",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.1.5.0", Value: []byte("switch-01\x00")},
+			wantValue:    "switch-01",
+			wantEncoding: "",
+		},
+		{
+			name:         "NBSP text carries no encoding",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.1.6.0", Value: []byte("Building A\u00a0Floor 3")},
+			wantValue:    "Building A\u00a0Floor 3",
+			wantEncoding: "",
+		},
+		{
+			name:         "a device reporting the literal string 788a2000d4e1 carries no encoding",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.1.5.0", Value: []byte("788a2000d4e1")},
+			wantValue:    "788a2000d4e1",
+			wantEncoding: "",
+		},
+		{
+			name:         "numeric value carries no encoding",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.1.3.0", Type: gosnmp.TimeTicks, Value: uint32(4242)},
+			wantValue:    int64(4242),
+			wantEncoding: "",
+		},
+		{
+			name:         "empty byte slice carries no encoding",
+			pdu:          gosnmp.SnmpPDU{Name: ".1.3.6.1.2.1.1.5.0", Value: []byte{}},
+			wantValue:    "",
+			wantEncoding: "",
+		},
+	}
+
+	stamp := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildMetrics([]gosnmp.SnmpPDU{tt.pdu}, stamp)
+			if len(got) != 1 {
+				t.Fatalf("buildMetrics() returned %d metrics, want 1", len(got))
+			}
+			m := got[0]
+			if m.Value != tt.wantValue {
+				t.Errorf("Value = %v (%T), want %v (%T)", m.Value, m.Value, tt.wantValue, tt.wantValue)
+			}
+			if m.ValueEncoding != tt.wantEncoding {
+				t.Errorf("ValueEncoding = %q, want %q", m.ValueEncoding, tt.wantEncoding)
+			}
+			if m.OID != tt.pdu.Name || m.Name != tt.pdu.Name {
+				t.Errorf("OID/Name = %q/%q, want %q", m.OID, m.Name, tt.pdu.Name)
+			}
+			if !m.Timestamp.Equal(stamp) {
+				t.Errorf("Timestamp = %v, want %v", m.Timestamp, stamp)
+			}
+
+			// The wire contract: `valueEncoding` must be absent — not empty —
+			// when the agent did not hex-encode, so older APIs and older agents
+			// stay interoperable.
+			raw, err := json.Marshal(m)
+			if err != nil {
+				t.Fatalf("json.Marshal(metric) = %v", err)
+			}
+			hasField := strings.Contains(string(raw), `"valueEncoding"`)
+			if tt.wantEncoding == "" && hasField {
+				t.Errorf("json = %s, want no valueEncoding field", raw)
+			}
+			if tt.wantEncoding != "" {
+				if !hasField {
+					t.Errorf("json = %s, want a valueEncoding field", raw)
+				}
+				if !strings.Contains(string(raw), `"valueEncoding":"`+tt.wantEncoding+`"`) {
+					t.Errorf("json = %s, want valueEncoding %q", raw, tt.wantEncoding)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildMetrics_EmptyPDUsYieldsEmptySlice(t *testing.T) {
+	got := buildMetrics(nil, time.Now().UTC())
+	if got == nil {
+		t.Fatal("buildMetrics(nil) = nil, want non-nil empty slice")
+	}
+	if len(got) != 0 {
+		t.Fatalf("buildMetrics(nil) returned %d metrics, want 0", len(got))
 	}
 }
 

@@ -104,6 +104,19 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // RECONCILE_MAX_LIMIT, and still far better than the whole-handler
   // transaction this registration replaces. Hoisting it out is a follow-up.
   { method: 'POST', pattern: /^\/api\/v1\/backup\/reconcile\/?$/ },
+  // Live WTS session enumeration. The handler awaits a round trip to the
+  // DEVICE's agent (`sendCommandToAgentAwaitResult`, LIST_SESSIONS_TIMEOUT_MS =
+  // 10s) and the timeout branch resolves at exactly the deadline, so an offline
+  // or unresponsive agent pins a pooled connection idle-in-transaction for a
+  // full 10 seconds while doing ZERO database work. The RDS session pickers poll
+  // this route, so a handful of unhealthy devices was enough to exhaust
+  // DB_POOL_MAX=35 and 503 EVERY dashboard route in US prod (the uniform
+  // `scope=partner … held … for 10004ms` warnings). The handler wraps its single
+  // device lookup in its own short `withDbAccessContext(dbAccessContextFromAuth(auth))`
+  // (see withLiveSessionsDbContext in routes/devices/sessions.ts) and runs the
+  // agent await after it closes. The sibling /sessions/{active,history,experience}
+  // routes are DB-only and deliberately keep the ambient transaction.
+  { method: 'GET', pattern: /^\/api\/v1\/devices\/[^/]+\/sessions\/live\/?$/ },
 ];
 
 /**

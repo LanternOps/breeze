@@ -56,6 +56,10 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/m365/consent/callback/'],
     ['POST', '/api/v1/m365/connections/44444444-4444-4444-8444-444444444444/retest'],
     ['POST', '/api/v1/m365/connections/44444444-4444-4444-8444-444444444444/retest/'],
+    // Live WTS session enumeration awaits a 10s agent round trip.
+    ['GET', '/api/v1/devices/44444444-4444-4444-8444-444444444444/sessions/live'],
+    ['GET', '/api/v1/devices/44444444-4444-4444-8444-444444444444/sessions/live/'],
+    ['get', '/api/v1/devices/44444444-4444-4444-8444-444444444444/sessions/live'], // method is case-insensitive
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
@@ -113,6 +117,14 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/m365/connections/44444444-4444-4444-8444-444444444444/retest', 'retest is POST-only'],
     ['POST', '/api/v1/m365/connections//retest', 'empty connection id must not match'],
     ['POST', '/api/v1/m365/connections/44444444-4444-4444-8444-444444444444/retest/extra', 'extra segment must not match'],
+    // The sibling session routes do only DB work and MUST keep the ambient
+    // RLS transaction — a wrong match here silently drops tenant scoping.
+    ['GET', '/api/v1/devices/44444444-4444-4444-8444-444444444444/sessions/active', 'inventoried active sessions are DB-only'],
+    ['GET', '/api/v1/devices/44444444-4444-4444-8444-444444444444/sessions/history', 'history is DB-only'],
+    ['GET', '/api/v1/devices/44444444-4444-4444-8444-444444444444/sessions/experience', 'experience aggregation is DB-only'],
+    ['POST', '/api/v1/devices/44444444-4444-4444-8444-444444444444/sessions/live', 'live enumeration is GET-only'],
+    ['GET', '/api/v1/devices//sessions/live', 'empty device id must not match'],
+    ['GET', '/api/v1/devices/44444444-4444-4444-8444-444444444444/sessions/live/extra', 'extra segment must not match'],
   ];
 
   it.each(MATCH)('opts out: %s %s', (method, path) => {

@@ -3,9 +3,15 @@ import { randomUUID } from 'node:crypto';
 import { zValidator } from '../../lib/validation';
 import { and, desc, eq, gte, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext } from '../../db';
 import { deviceSessions } from '../../db/schema';
-import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
+import {
+  authMiddleware,
+  dbAccessContextFromAuth,
+  requirePermission,
+  requireScope,
+  type AuthContext,
+} from '../../middleware/auth';
 import { sendCommandToAgentAwaitResult } from '../../services/agentCommandAwait';
 import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
@@ -96,6 +102,32 @@ export type LiveSessionItem = z.infer<typeof liveSessionItemSchema>;
 
 const LIST_SESSIONS_TIMEOUT_MS = 10_000;
 
+/**
+ * Short, request-scoped DB access context for GET /:id/sessions/live.
+ *
+ * That route is registered in `SELF_MANAGED_DB_CONTEXT_ROUTES`
+ * (middleware/selfManagedDbContextRoutes.ts), so `authMiddleware` runs it with
+ * NO ambient transaction — otherwise the up-to-10s `sendCommandToAgentAwaitResult`
+ * wait below would pin one of the 35 pooled connections idle-in-transaction for
+ * the full timeout on every dashboard poll against an offline agent, starving
+ * the pool and 503-ing every route (#1105 class; observed in US prod as
+ * `withDbAccessContext (scope=partner) held a pooled connection … for 10004ms`).
+ *
+ * `runOutsideDbContext` is belt-and-braces for the case where an ambient
+ * context DOES exist (a caller that reaches the handler through some other
+ * middleware chain): on its own it would NOT close an outer transaction, but it
+ * guarantees `withDbAccessContext` opens a genuinely fresh, correctly-scoped one
+ * rather than silently reusing the ambient store.
+ *
+ * Tenant scoping is preserved exactly: the context is rebuilt from the request's
+ * own `AuthContext` via `dbAccessContextFromAuth` → `buildDbAccessContext`, the
+ * same single source of truth `authMiddleware` uses. This is deliberately NOT a
+ * system context — that would widen a user-facing read past RLS.
+ */
+function withLiveSessionsDbContext<T>(auth: AuthContext, fn: () => Promise<T>): Promise<T> {
+  return runOutsideDbContext(() => withDbAccessContext(dbAccessContextFromAuth(auth), fn));
+}
+
 // Exported for tests. Agents return structured command output as a JSON string
 // in CommandResult.Stdout; malformed individual entries are dropped, a fully
 // malformed payload yields [] (the dialog shows "no sessions" rather than 500).
@@ -129,7 +161,12 @@ sessionsRoutes.get(
     const auth = c.get('auth');
     const { id: deviceId } = c.req.valid('param');
 
-    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    // The ONLY DB work this handler does. It runs in its own short context,
+    // which closes before the agent await below — so no pooled connection is
+    // held across the up-to-10s wait.
+    const device = await withLiveSessionsDbContext(auth, () =>
+      getDeviceWithOrgAndSiteCheck(c, deviceId, auth)
+    );
     if (device === SITE_ACCESS_DENIED) {
       return c.json({ error: 'Access to this site denied' }, 403);
     }

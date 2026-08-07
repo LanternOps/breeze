@@ -42,13 +42,33 @@ const ON_DEMAND_ALERT_DEDUPE_WINDOW_MS = 30 * 1000;
 // Singleton queue instance
 let alertQueue: Queue | null = null;
 
+// Bounded retention for EVERY producer on this queue.
+//
+// BullMQ retains completed jobs forever by default. The `evaluate-all` fan-out
+// enqueues one `evaluate-device` job per online device every 60s (~39/tick on
+// US prod, ~56k/day), so an unbounded `completed` set grows Redis without
+// limit. Set the bounds on the queue rather than on each `addBulk` call so any
+// future producer inherits them; per-call options still win where a caller
+// deliberately overrides (e.g. the on-demand triggers below).
+//
+// 1000 completed ≈ 25 minutes of fan-out history — enough to inspect the last
+// couple of sweeps, and a hard cap of ~1000 job hashes (single-digit MB).
+// Failed retention is 5x that: failures are what people actually debug, they
+// are rare in steady state, so 5000 is days-to-weeks of failure history while
+// still being a hard bound.
+const ALERT_QUEUE_DEFAULT_JOB_OPTIONS = {
+  removeOnComplete: { count: 1000 },
+  removeOnFail: { count: 5000 }
+} as const;
+
 /**
  * Get or create the alert evaluation queue
  */
 export function getAlertQueue(): Queue {
   if (!alertQueue) {
     alertQueue = new Queue(ALERT_QUEUE, {
-      connection: getBullMQConnection()
+      connection: getBullMQConnection(),
+      defaultJobOptions: { ...ALERT_QUEUE_DEFAULT_JOB_OPTIONS }
     });
   }
   return alertQueue;
@@ -363,7 +383,10 @@ async function scheduleAlertJobs(): Promise<void> {
 export async function triggerDeviceEvaluation(deviceId: string, orgId: string): Promise<string> {
   const queue = getAlertQueue();
   const slot = Math.floor(Date.now() / ON_DEMAND_ALERT_DEDUPE_WINDOW_MS).toString(36);
-  const jobId = `alert-evaluate-device:${deviceId}:${slot}`;
+  // No colons: BullMQ rejects a custom jobId whose colon-split length !== 3, so
+  // a deviceId that ever contained a colon would make this throw. Hyphens keep
+  // the id colon-free unconditionally (same fix as triggerFullEvaluation).
+  const jobId = `alert-evaluate-device-${deviceId}-${slot}`;
   const existing = await queue.getJob(jobId);
   if (existing) {
     const state = await existing.getState();

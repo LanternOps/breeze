@@ -302,8 +302,33 @@ The response includes a `recentMetrics` array with:
 | `oid` | The polled OID |
 | `name` | Human-readable metric name |
 | `value` | The collected value (string-encoded) |
-| `valueType` | Data type: `number`, `string`, `null`, or `object` |
+| `valueType` | Data type: `number`, `string`, `null`, `object`, or `hex` |
 | `timestamp` | ISO 8601 collection timestamp |
+
+#### The `hex` value type
+
+Some devices answer certain OIDs with a raw **binary** octet-string rather than
+text — the bridge and forwarding-database OIDs are the common case
+(`.1.3.6.1.2.1.17.1.1.0` `dot1dBaseBridgeAddress`,
+`.1.3.6.1.2.1.17.4.3.1.1.*`), where the "string" is really a six-byte MAC
+address. Those bytes cannot be stored in a text column: a NUL byte is rejected
+outright by PostgreSQL, and other byte sequences would be silently mangled.
+
+When that happens the reading is preserved as **lowercase, separator-free hex of
+the original bytes** and `valueType` is set to `hex`. For example a MAC of
+`78:8a:20:00:d4:e1` is stored as the value `788a2000d4e1`. The encoding is
+lossless — decode the value back to bytes to recover exactly what the device
+sent.
+
+Two things to know when consuming these:
+
+- **Never parse a `hex` value as a number.** The hex digits can be entirely
+  numeric (`001122304050`), so a naive numeric parse yields a nonsense reading
+  of ~1.1e11. Check `valueType` first. Breeze's own metric rollups and the
+  dashboard's top-interfaces ranking exclude `hex` rows for this reason.
+- The encoding may be done by the agent (which flags it on the wire) or by the
+  API as a fallback for older agents. Either way the stored `valueType` is
+  `hex`, so `valueType` is the only check you need.
 
 ### SNMP Dashboard
 

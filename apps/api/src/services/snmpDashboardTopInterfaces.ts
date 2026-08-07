@@ -25,8 +25,29 @@ export type SnmpInterfaceMetricRow = {
   oid: string | null;
   name: string | null;
   value: string | number | bigint | null;
+  /**
+   * `snmp_metrics.value_type`. Optional so existing callers/tests that only
+   * supply numerics keep compiling; 'hex' is the one value that changes
+   * behaviour (see HEX_VALUE_TYPE).
+   */
+  valueType?: string | null;
   timestamp: Date | string | null;
 };
+
+/**
+ * A hex-encoded value is a binary octet-string rendered as ASCII, not a counter.
+ * It has to be rejected on the declared type rather than on the shape of the
+ * string: a MAC hex-encodes to e.g. '001122304050', which parses cleanly as
+ * 1.12e11 and — being enormous — would dominate the "top interfaces" ranking.
+ * Both producers of a 'hex' row are covered: the agent's declared
+ * `valueEncoding` and the API's own fallback encoding of NUL/lone-surrogate
+ * values (jobs/snmpWorker.ts).
+ */
+const HEX_VALUE_TYPE = 'hex';
+
+function isHexEncoded(row: SnmpInterfaceMetricRow): boolean {
+  return row.valueType === HEX_VALUE_TYPE;
+}
 
 export type SnmpTopInterface = {
   deviceId: string;
@@ -162,6 +183,9 @@ export function buildTopInterfaces(
   const grouped = new Map<string, InterfaceStats>();
 
   for (const row of rows) {
+    // Drop hex before any numeric interpretation; see HEX_VALUE_TYPE.
+    if (isHexEncoded(row)) continue;
+
     const direction = resolveDirection(row);
     if (!direction) continue;
 

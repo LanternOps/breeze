@@ -126,6 +126,62 @@ func TestSnmpToString(t *testing.T) {
 			pdu:  gosnmp.SnmpPDU{Value: 42},
 			want: "42",
 		},
+		{
+			// A device answering a system OID with a raw MAC would otherwise
+			// smuggle a NUL byte into a Postgres `text` column.
+			name: "binary_mac_with_nul_becomes_hex",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{0x78, 0x8a, 0x20, 0x00, 0xd4, 0xe1}},
+			want: "788a2000d4e1",
+		},
+		{
+			name: "invalid_utf8_becomes_hex",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{0xff, 0xfe, 0x41}},
+			want: "fffe41",
+		},
+		{
+			name: "printable_sysdescr_unchanged",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("Linux UBNT 3.18.24 #1 SMP")},
+			want: "Linux UBNT 3.18.24 #1 SMP",
+		},
+		{
+			name: "multiline_sysdescr_unchanged",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("Cisco IOS Software\r\nCopyright (c) 2026")},
+			want: "Cisco IOS Software\r\nCopyright (c) 2026",
+		},
+		{
+			name: "multiline_tabbed_sysdescr_unchanged",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("Cisco IOS Software\r\nTechnical Support:\thttp://example.test\nCompiled\tMon")},
+			want: "Cisco IOS Software\r\nTechnical Support:\thttp://example.test\nCompiled\tMon",
+		},
+		{
+			// classify.go lowercases SysDescr and substring-matches vendor
+			// names. One hexed invisible byte would silently reclassify the
+			// device to unknown, so these must survive untouched.
+			name: "nbsp_in_syslocation_unchanged",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("Building A\u00a0Floor 3")},
+			want: "Building A\u00a0Floor 3",
+		},
+		{
+			name: "bom_and_thin_space_unchanged",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("\ufeffCisco IOS\u2009Software")},
+			want: "\ufeffCisco IOS\u2009Software",
+		},
+		{
+			name: "soft_hyphen_and_ideographic_space_unchanged",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("cata\u00adlyst\u30003850")},
+			want: "cata\u00adlyst\u30003850",
+		},
+		{
+			// C agents NUL-pad fixed-width sysName; that is text, not binary.
+			name: "nul_padded_sysname_recovers_to_text",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("switch-01\x00")},
+			want: "switch-01",
+		},
+		{
+			name: "empty_byte_slice_stays_empty",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{}},
+			want: "",
+		},
 	}
 
 	for _, tt := range tests {

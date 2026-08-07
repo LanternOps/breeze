@@ -161,6 +161,13 @@ describe('metric rollups service', () => {
     expect(snmpStatementSql).toContain('da.linked_device_id');
     expect(snmpStatementSql).toContain('JOIN devices');
     expect(snmpStatementSql).toContain("btrim(sm.value) ~ '^-?[0-9]+");
+    // Hex-encoded octet-strings must be excluded BEFORE the digit regex: a MAC
+    // hex-encodes to e.g. '001122304050', all digits, and would otherwise be
+    // rolled up as the reading 1.12e11.
+    expect(snmpStatementSql).toContain("WHEN sm.value_type = 'hex' THEN NULL");
+    expect(snmpStatementSql.indexOf("sm.value_type = 'hex'")).toBeLessThan(
+      snmpStatementSql.indexOf("btrim(sm.value) ~ '^-?[0-9]+")
+    );
     expect(snmpStatementSql).toContain("'snmp_metrics'");
     expect(snmpStatementSql).toContain("'snmp'");
     expect(snmpStatementSql).toContain('snmpDeviceId');
