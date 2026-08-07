@@ -38,6 +38,9 @@ vi.mock('../db', () => ({
 vi.mock('./aiCostTracker', () => ({
   recordUsageFromSdkResult: recordUsageMock,
   calculateCostCents: calculateCostCentsMock,
+  // Pure helper — kept real so these tests exercise the actual summing rule.
+  sumInputTokens: (u: Record<string, number | null | undefined>) =>
+    (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
 }));
 vi.mock('./aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
@@ -238,6 +241,51 @@ describe('fallback accumulation from assistant messages', () => {
     }));
     expect(recordExtraUsage).toHaveBeenCalledWith({ inputTokens: 500, outputTokens: 60, costCents: 42 });
     expect(calculateCostCentsMock).toHaveBeenCalledWith('claude-sonnet-4-5-20250929', 500, 60, 0, 0);
+  });
+
+  it('reports cache tokens as input on the per-user hook and the done event', async () => {
+    // Release QA: an 8-turn session read 17 input tokens / 1029 output / $0.57.
+    // On every turn past the first, prompt caching moves nearly the whole prompt
+    // into cache_read, so the uncached slice alone is meaningless.
+    mockSdkQuery([
+      resultMsg({
+        total_cost_usd: 0.57,
+        usage: {
+          input_tokens: 17,
+          output_tokens: 1_029,
+          cache_read_input_tokens: 120_000,
+          cache_creation_input_tokens: 4_500,
+        },
+      }),
+    ]);
+
+    const session = await manager.getOrCreate('sess-cache-surfaces', DB_SESSION, PARTNER_AUTH, undefined, 'PROMPT', undefined);
+    const recordExtraUsage = vi.fn(() => Promise.resolve());
+    session.recordExtraUsage = recordExtraUsage;
+
+    await session.processorPromise;
+
+    const done = session.eventBus.getReplayEvents().find((e: any) => e.type === 'done') as any;
+    expect(done?.usage).toEqual({
+      inputTokens: 17 + 120_000 + 4_500,
+      outputTokens: 1_029,
+      costCents: 57,
+    });
+    expect(recordExtraUsage).toHaveBeenCalledWith({
+      inputTokens: 17 + 120_000 + 4_500,
+      outputTokens: 1_029,
+      costCents: 57,
+    });
+    // The org-level recorder still receives the SPLIT components — it prices
+    // them at their different rates and does its own summing for the columns.
+    expect(recordUsageMock).toHaveBeenCalledWith('sess-cache-surfaces', ORG, expect.objectContaining({
+      usage: {
+        input_tokens: 17,
+        output_tokens: 1_029,
+        cache_read_input_tokens: 120_000,
+        cache_creation_input_tokens: 4_500,
+      },
+    }));
   });
 
   it('does not double-record when a completed turn is followed by teardown', async () => {

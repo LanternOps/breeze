@@ -28,6 +28,7 @@ import { createManualBackupJobIfIdle } from './backupJobCreation';
 import { enqueueBackupDispatch } from '../jobs/backupEnqueue';
 import { deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
+import { backupJobHistoryOrderBy, latestBackupRunOrderBy } from './backupJobOrdering';
 import { inArray } from 'drizzle-orm';
 
 type BackupHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
@@ -227,7 +228,10 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
           .leftJoin(devices, eq(backupJobs.deviceId, devices.id))
           .leftJoin(backupConfigs, eq(backupJobs.configId, backupConfigs.id))
           .where(conditions.length > 0 ? and(...conditions) : undefined)
-          .orderBy(desc(backupJobs.startedAt))
+          // Was `desc(startedAt)`, which in Postgres means NULLS **FIRST** — so
+          // every queued job floated above the real runs and, under `limit`,
+          // pushed them out of the answer entirely.
+          .orderBy(...backupJobHistoryOrderBy)
           .limit(limit);
 
         return JSON.stringify({ jobs: rows, showing: rows.length });
@@ -317,7 +321,11 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
           errorCount: backupJobs.errorCount,
         }).from(backupJobs)
           .where(and(eq(backupJobs.deviceId, deviceId), ...(jobOrgCond ? [jobOrgCond] : [])))
-          .orderBy(desc(backupJobs.startedAt))
+          // Same defect as the device Backup tab, mirrored: `desc(startedAt)` is
+          // NULLS FIRST in Postgres, so with limit(1) a single queued job made
+          // this tool report "latest backup: pending" for a device that had just
+          // finished (or just failed) a real run.
+          .orderBy(...latestBackupRunOrderBy)
           .limit(1);
 
         // Last successful backup time
