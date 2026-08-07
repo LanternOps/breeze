@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJobsTable, devicesTable, softwareDeploymentsTable, deploymentResultsTable, queueBackupStopCommandMock } = vi.hoisted(() => ({
+const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJobsTable, devicesTable, softwareDeploymentsTable, deploymentResultsTable, scriptExecutionsTable, scriptExecutionBatchesTable, queueBackupStopCommandMock } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   updateMock: vi.fn(),
   deviceCommandsTable: {
@@ -49,6 +49,23 @@ const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJob
     errorMessage: 'deployment_results.error_message',
     deviceCommandId: 'deployment_results.device_command_id',
   },
+  scriptExecutionsTable: {
+    id: 'script_executions.id',
+    status: 'script_executions.status',
+    scriptId: 'script_executions.script_id',
+    createdAt: 'script_executions.created_at',
+    startedAt: 'script_executions.started_at',
+    completedAt: 'script_executions.completed_at',
+    errorMessage: 'script_executions.error_message',
+  },
+  scriptExecutionBatchesTable: {
+    id: 'script_execution_batches.id',
+    devicesTargeted: 'script_execution_batches.devices_targeted',
+    devicesCompleted: 'script_execution_batches.devices_completed',
+    devicesFailed: 'script_execution_batches.devices_failed',
+    status: 'script_execution_batches.status',
+    completedAt: 'script_execution_batches.completed_at',
+  },
   queueBackupStopCommandMock: vi.fn(),
 }));
 
@@ -80,6 +97,8 @@ vi.mock('../db/schema', async (importOriginal) => {
     devices: devicesTable,
     softwareDeployments: softwareDeploymentsTable,
     deploymentResults: deploymentResultsTable,
+    scriptExecutions: scriptExecutionsTable,
+    scriptExecutionBatches: scriptExecutionBatchesTable,
   };
 });
 
@@ -108,6 +127,7 @@ import {
   resolveMaxReapPerRun,
   SOFTWARE_INSTALL_TIMEOUT_MS,
   SOFTWARE_QUEUED_EXPIRY_MS,
+  reapStaleScriptExecutions
 } from './staleCommandReaper';
 
 function selectChain(resolvedValue: unknown) {
@@ -912,5 +932,93 @@ describe('reapStaleSoftwareDeploymentResults', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+
+// #3097: script results submitted over the HTTP path never reach
+// `script_executions`, so the row stays pending, lands in this reaper, and was
+// stamped `timeout` / "no response from agent". That is false whenever a terminal
+// device_commands row exists — the agent DID answer. On one live instance 89
+// executions read `timeout` while their command had completed with output.
+describe('reapStaleScriptExecutions terminal-command guard (#3097)', () => {
+  const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  function arrange(cmdRow: Record<string, unknown> | undefined) {
+    // 1st select: the stale executions. 2nd: the related device command.
+    selectMock
+      .mockReturnValueOnce(selectChain([
+        { id: 'exec-1', status: 'pending', scriptId: 'script-1', createdAt: longAgo, startedAt: null },
+      ]))
+      .mockReturnValueOnce(selectChain(cmdRow ? [cmdRow] : []));
+
+    // Typed parameter so `execSet.mock.calls[0][0]` is the written row rather
+    // than `never` — the assertions below read it directly.
+    const execSet = vi.fn((_values: Record<string, unknown>) => ({
+      where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'exec-1' }]) })),
+    }));
+    updateMock.mockImplementation((table: unknown) => {
+      if (table === scriptExecutionsTable) return { set: execSet };
+      throw new Error(`Unexpected table update: ${String(table)}`);
+    });
+    return { execSet };
+  }
+
+  it('does not claim "no response from agent" when the command completed', async () => {
+    const { execSet } = arrange({
+      payload: { executionId: 'exec-1' },
+      status: 'completed',
+      result: { status: 'completed', stdout: 'it ran' },
+    });
+
+    await reapStaleScriptExecutions();
+
+    const written = execSet.mock.calls[0]![0];
+    expect(written.status).toBe('completed');
+    expect(String(written.errorMessage)).not.toContain('no response from agent');
+  });
+
+  it('records failed — not timeout — when the command failed', async () => {
+    const { execSet } = arrange({
+      payload: { executionId: 'exec-1' },
+      status: 'failed',
+      result: { status: 'failed', stderr: 'boom' },
+    });
+
+    await reapStaleScriptExecutions();
+
+    const written = execSet.mock.calls[0]![0];
+    expect(written.status).toBe('failed');
+    expect(String(written.errorMessage)).not.toContain('no response from agent');
+  });
+
+  it('still reports a genuine agent silence as timeout', async () => {
+    // Command never reached a terminal state — the original claim is true here
+    // and must survive, or the guard would mask real agent silence.
+    const { execSet } = arrange({
+      payload: { executionId: 'exec-1' },
+      status: 'sent',
+      result: null,
+    });
+
+    await reapStaleScriptExecutions();
+
+    const written = execSet.mock.calls[0]![0];
+    expect(written.status).toBe('timeout');
+    expect(String(written.errorMessage)).toContain('no response from agent');
+  });
+
+  it('still reports timeout when no command row exists at all', async () => {
+    const { execSet } = arrange(undefined);
+
+    await reapStaleScriptExecutions();
+
+    const written = execSet.mock.calls[0]![0];
+    expect(written.status).toBe('timeout');
+    expect(String(written.errorMessage)).toContain('no response from agent');
   });
 });
