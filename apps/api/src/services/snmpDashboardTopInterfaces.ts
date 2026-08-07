@@ -26,9 +26,14 @@ export type SnmpInterfaceMetricRow = {
   name: string | null;
   value: string | number | bigint | null;
   /**
-   * `snmp_metrics.value_type`. Optional so existing callers/tests that only
-   * supply numerics keep compiling; 'hex' is the one value that changes
-   * behaviour (see HEX_VALUE_TYPE).
+   * `snmp_metrics.value_type`. 'hex' is the only value that changes behaviour
+   * (see HEX_VALUE_TYPE); everything else stays on the numeric path.
+   *
+   * Optional and nullable because absence is a real, expected state, not just a
+   * typing convenience: rows written before `value_type` existed carry NULL, and
+   * a caller whose query doesn't select the column supplies nothing at all.
+   * Both are treated as NON-hex — the numeric path — so a legacy row is ranked
+   * as a counter rather than silently dropped.
    */
   valueType?: string | null;
   timestamp: Date | string | null;

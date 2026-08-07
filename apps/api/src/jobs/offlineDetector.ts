@@ -89,19 +89,43 @@ function isRelationNotFoundError(error: unknown): boolean {
 
 // Bounded retention for EVERY producer on this queue.
 //
-// BullMQ retains completed jobs forever by default. Both sweeps on this queue
-// fan out one job per device — `detect-offline` every 30s and the
-// `reevaluate-offline-sweep` every 60s (~11/tick on US prod, ~15.8k/day) — so
-// an unbounded `completed` set grows Redis without limit. Set the bounds on the
-// queue rather than on each `addBulk` call so any future producer inherits
-// them; per-call options still win where a caller deliberately overrides (e.g.
-// the repeatable schedules and on-demand triggers below).
+// BullMQ retains completed jobs forever by default, so any per-device fan-out
+// grows Redis without limit. Set the bounds on the queue rather than on each
+// `addBulk` call so any future producer inherits them; per-call options still
+// win where a caller deliberately overrides (e.g. the three repeatable
+// schedules and the on-demand triggers below, which each pin their own small
+// counts).
 //
-// 1000 completed ≈ 90 minutes of fan-out history — enough to inspect the last
-// several sweeps, and a hard cap of ~1000 job hashes (single-digit MB). Failed
-// retention is 5x that: failures are what people actually debug, they are rare
-// in steady state, so 5000 is days-to-weeks of failure history while still
-// being a hard bound.
+// Three repeatable producers run on this queue, and they do NOT fan out at the
+// same rate — only one of them contributes meaningfully in steady state:
+//
+//  - `detect-offline` (every 30s, always on) enqueues a `mark-offline` job ONLY
+//    for devices that are currently online/updating AND already past the stale
+//    threshold. In steady state that set is approximately EMPTY — it is not one
+//    job per device. It spikes only when a real batch of devices goes offline
+//    at once (site outage, network event), bounded per run by
+//    OFFLINE_DETECTOR_MAX_DEVICES_PER_RUN.
+//  - `reevaluate-offline-sweep` enqueues one `reevaluate-offline` per device
+//    that is already offline, within the reeval horizon, and non-ephemeral.
+//    This is the steady-state fan-out, and it tracks the size of the offline
+//    population, not the fleet. Env-gated by OFFLINE_DETECTOR_REEVAL_ENABLED
+//    (default on) with a tunable OFFLINE_DETECTOR_REEVAL_INTERVAL_MS (default
+//    60s), so it can be off or running at a different cadence entirely.
+//  - `reap-uninstall-intent` (always on, UNINSTALL_INTENT_REAP_INTERVAL_MS)
+//    does its work inline and fans out nothing.
+//
+// Sizing therefore keys off the reeval sweep alone. On US prod in 2026-08 that
+// was roughly 11 jobs/tick at the default 60s cadence (~15.8k/day), which puts
+// 1000 completed at somewhere around 90 minutes of history — enough to inspect
+// the last several sweeps. Treat that as an order-of-magnitude sanity check,
+// not a constant: it moves with the offline population, the interval, and
+// whether the sweep is enabled at all. What the bound actually guarantees
+// regardless of any of that is the part worth relying on — a hard cap of ~1000
+// job hashes (single-digit MB), whatever the fan-out rate turns out to be.
+//
+// Failed retention is 5x that: failures are what people actually debug, they
+// are rare in steady state, so 5000 is a much longer window of failure history
+// while still being a hard bound.
 const OFFLINE_QUEUE_DEFAULT_JOB_OPTIONS = {
   removeOnComplete: { count: 1000 },
   removeOnFail: { count: 5000 }

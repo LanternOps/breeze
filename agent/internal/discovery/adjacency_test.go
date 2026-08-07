@@ -74,6 +74,39 @@ func TestParseLLDPNeighborsSanitizesRawOctetStrings(t *testing.T) {
 			wantSysName: "switch-01",
 		},
 		{
+			// lldpRemPortId of an unconfigured/zeroed neighbour port. It must
+			// stay a flagged hex dump, not become the empty string that reads
+			// as "the neighbour reported no port".
+			name:        "all_nul_portid_becomes_hex",
+			portID:      []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+			sysName:     []byte("core-sw"),
+			wantPortID:  "000000000000",
+			wantSysName: "core-sw",
+		},
+		{
+			// A real MAC whose last two octets are NUL: trimming first would
+			// store "Test" and drop two octets with no marker.
+			name:        "mac_portid_with_printable_prefix_and_trailing_nuls_stays_hex",
+			portID:      []byte{0x54, 0x65, 0x73, 0x74, 0x00, 0x00},
+			sysName:     []byte("core-sw"),
+			wantPortID:  "546573740000",
+			wantSysName: "core-sw",
+		},
+		{
+			name:        "invalid_utf8_sysname_with_trailing_nul_hexes_original_bytes",
+			portID:      []byte("Gi0/1"),
+			sysName:     []byte{0xff, 0xfe, 0x41, 0x00},
+			wantPortID:  "Gi0/1",
+			wantSysName: "fffe4100",
+		},
+		{
+			name:        "nul_padded_sysname_with_two_nuls_recovers_to_text",
+			portID:      []byte("Gi0/1"),
+			sysName:     []byte("switch-01\x00\x00"),
+			wantPortID:  "Gi0/1",
+			wantSysName: "switch-01",
+		},
+		{
 			name:        "nbsp_sysname_unchanged",
 			portID:      []byte("Gi0/1"),
 			sysName:     []byte("core\u00a0sw"),

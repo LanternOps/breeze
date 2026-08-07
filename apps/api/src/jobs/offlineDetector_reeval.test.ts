@@ -243,9 +243,12 @@ describe('processReevaluateOfflineSweep — fan-out (issue #1982)', () => {
 });
 
 // Unbounded Redis growth: BullMQ retains completed jobs forever by default, and
-// this sweep fans out one reevaluate-offline job per still-offline device every
-// 60s (~15.8k/day on US prod). The bounds live in the queue's defaultJobOptions
-// so every producer on the offline queue inherits them.
+// this sweep fans out one reevaluate-offline job per still-offline device at
+// its configured interval (default 60s; order of ~15.8k/day on US prod as
+// measured in 2026-08 — it scales with the offline population, and the sweep
+// can be disabled entirely via OFFLINE_DETECTOR_REEVAL_ENABLED). The bounds
+// live in the queue's defaultJobOptions so every producer on the offline queue
+// inherits them.
 describe('offline queue retention bounds', () => {
   it('constructs the offline queue with bounded completed/failed retention', () => {
     getOfflineQueue();

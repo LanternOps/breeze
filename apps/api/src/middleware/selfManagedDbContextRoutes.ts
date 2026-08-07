@@ -106,15 +106,36 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/backup\/reconcile\/?$/ },
   // Live WTS session enumeration. The handler awaits a round trip to the
   // DEVICE's agent (`sendCommandToAgentAwaitResult`, LIST_SESSIONS_TIMEOUT_MS =
-  // 10s) and the timeout branch resolves at exactly the deadline, so an offline
-  // or unresponsive agent pins a pooled connection idle-in-transaction for a
-  // full 10 seconds while doing ZERO database work. The RDS session pickers poll
-  // this route, so a handful of unhealthy devices was enough to exhaust
-  // DB_POOL_MAX=35 and 503 EVERY dashboard route in US prod (the uniform
-  // `scope=partner … held … for 10004ms` warnings). The handler wraps its single
-  // device lookup in its own short `withDbAccessContext(dbAccessContextFromAuth(auth))`
-  // (see withLiveSessionsDbContext in routes/devices/sessions.ts) and runs the
-  // agent await after it closes. The sibling /sessions/{active,history,experience}
+  // 10s) and the timeout branch resolves at exactly the deadline.
+  //
+  // The expensive case is a CONNECTED-BUT-SILENT agent, not an offline one.
+  // `sendCommandToAgentAwaitResult` short-circuits before it arms the timer —
+  // `sendCommandToAgent` returns false for an agent with no live WS, and the
+  // helper resolves `{status:'failed', error:'agent offline'}` immediately (see
+  // services/agentCommandAwait.ts; the "502s when the agent is offline" case in
+  // sessions.live.test.ts covers it). An offline device therefore costs ~0ms.
+  // A device whose WS is still registered but which never answers the
+  // `list_sessions` command — wedged agent, half-open socket, a host that
+  // dropped off without the WS closing — runs the full 10s, and held inside the
+  // ambient request transaction that pins a pooled connection
+  // idle-in-transaction for the whole wait while doing ZERO database work.
+  //
+  // Volume is modest: the RDS session pickers hit this route once per modal
+  // open, not on a timer (SessionPickerModal.tsx fires a one-shot effect when
+  // the dialog opens; ScriptPickerModal.tsx fires one when the session-target
+  // dropdown is first shown — neither has a setInterval). So this alone does not
+  // drain a pool. It is a contributor that stacks: each concurrent tech opening
+  // a picker against a wedged device parks one connection for 10s, on top of the
+  // other #1105-class holds in the same incident. In US prod (2026-08) that
+  // combination exhausted the pool — sized by DB_POOL_MAX, which was 35 on that
+  // region at the time (repo default is 30) — and 503'd every dashboard route,
+  // with the uniform `scope=partner … held … for 10004ms` warnings as the
+  // signature of this particular hold.
+  //
+  // The handler wraps its single device lookup in its own short
+  // `withDbAccessContext(dbAccessContextFromAuth(auth))` (see
+  // withLiveSessionsDbContext in routes/devices/sessions.ts) and runs the agent
+  // await after it closes. The sibling /sessions/{active,history,experience}
   // routes are DB-only and deliberately keep the ambient transaction.
   { method: 'GET', pattern: /^\/api\/v1\/devices\/[^/]+\/sessions\/live\/?$/ },
 ];

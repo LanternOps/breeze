@@ -3,8 +3,9 @@ import { Hono } from 'hono';
 
 const { siteDenied, openContexts, contextLog, dbAccessContextFromAuthMock, PARTNER_AUTH } = vi.hoisted(() => ({
   siteDenied: Symbol('SITE_ACCESS_DENIED'),
-  // A partner-scoped caller — the exact shape prod 503'd under
-  // (`withDbAccessContext (scope=partner) held a pooled connection … 10004ms`).
+  // A partner-scoped caller — the exact shape prod 503'd under (US prod,
+  // 2026-08: `withDbAccessContext (scope=partner) held a pooled connection …
+  // 10004ms`, i.e. the 10s LIST_SESSIONS_TIMEOUT_MS deadline plus overhead).
   // Hoisted so the `../../middleware/auth` mock factory can close over it.
   PARTNER_AUTH: {
     user: { id: 'user-123' },
@@ -172,7 +173,8 @@ describe('GET /:id/sessions/live — pool-hold contract (#1105 class)', () => {
     let heldDuringAwait: Array<Record<string, unknown>> | undefined;
     vi.mocked(sendCommandToAgentAwaitResult).mockImplementation(async () => {
       // Snapshot at the exact moment the agent round trip is in flight — this
-      // is the window that pinned a pooled connection for 10004ms in prod.
+      // is the window that pinned a pooled connection for the full timeout in
+      // prod (logged at 10004ms against the 10s deadline, US prod 2026-08).
       heldDuringAwait = [...openContexts];
       return { status: 'completed', stdout: '{"sessions":[]}' };
     });

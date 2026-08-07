@@ -23,6 +23,8 @@ const h = vi.hoisted(() => ({
     sendDepths: [] as number[],
     rowsByTable: {} as Record<string, Record<string, unknown>[]>,
     insertedRows: [] as Record<string, unknown>[],
+    /** Every db.update(...).set(payload) the worker issued. */
+    updatedRows: [] as Record<string, unknown>[],
     capturedProcessor: null as null | ((job: { data: unknown }) => Promise<unknown>),
     /** Every queue.add(name, data, opts) call, arguments retained. */
     addCalls: [] as Array<{ name: string; data: unknown; opts: Record<string, unknown> }>,
@@ -62,12 +64,20 @@ vi.mock('bullmq', () => ({
   Job: class {},
 }));
 
-vi.mock('drizzle-orm', () => ({
-  eq: (col: unknown, val: unknown) => ({ op: 'eq', col, val }),
-  and: (...args: unknown[]) => ({ op: 'and', args }),
-  or: (...args: unknown[]) => ({ op: 'or', args }),
-  sql: (strings: TemplateStringsArray, ...vals: unknown[]) => ({ op: 'sql', strings: [...strings], vals }),
-}));
+// The query builders are stubbed, but DrizzleQueryError is deliberately the
+// REAL class: it is the exact wrapper production throws, and its `.code` is
+// undefined while the driver's SQLSTATE hides on `.cause`. A hand-rolled stub
+// would let the classifier regress to reading the top-level `.code` again.
+vi.mock('drizzle-orm', async () => {
+  const actual = await vi.importActual<typeof import('drizzle-orm')>('drizzle-orm');
+  return {
+    DrizzleQueryError: actual.DrizzleQueryError,
+    eq: (col: unknown, val: unknown) => ({ op: 'eq', col, val }),
+    and: (...args: unknown[]) => ({ op: 'and', args }),
+    or: (...args: unknown[]) => ({ op: 'or', args }),
+    sql: (strings: TemplateStringsArray, ...vals: unknown[]) => ({ op: 'sql', strings: [...strings], vals }),
+  };
+});
 
 vi.mock('../db/schema', () => ({
   snmpDevices: {
@@ -120,9 +130,10 @@ vi.mock('../db', () => {
         },
       }),
       update: () => ({
-        set: () => ({
+        set: (payload: Record<string, unknown>) => ({
           where: async () => {
             h.state.dbDepths.push(h.state.contextDepth);
+            h.state.updatedRows.push(payload);
           },
         }),
       }),
@@ -157,14 +168,18 @@ vi.mock('./workerObservability', () => ({
 }));
 
 import { UnrecoverableError } from 'bullmq';
+import { DrizzleQueryError } from 'drizzle-orm';
 import {
   clampToLength,
   encodeUtf8Hex,
   enqueueSnmpPollResults,
   initializeSnmpWorker,
+  isAgentHexPayload,
   isDeterministicDataError,
   isPostgresTextSafe,
+  resetSnmpDegradationThrottle,
   resolveDeclaredValueType,
+  resolveMetricTimestamp,
   sanitizeSnmpIdentifier,
   sanitizeSnmpMetricValue,
   shutdownSnmpWorker,
@@ -175,9 +190,30 @@ import {
  *  were already replaced upstream by Go's JSON encoder, but the NUL survives. */
 const BRIDGE_ADDRESS_VALUE = '\ufffd\ufffd\ufffd\u0000\u0011"';
 
-async function runJob(data: unknown): Promise<unknown> {
+/** BullMQ attempt bookkeeping the classifier reads off the job. */
+interface JobAttemptState {
+  attemptsMade?: number;
+  attemptsStarted?: number;
+  opts?: { attempts?: number };
+}
+
+async function runJob(data: unknown, attempt: JobAttemptState = {}): Promise<unknown> {
   if (!h.state.capturedProcessor) throw new Error('worker processor was never captured');
-  return h.state.capturedProcessor({ data });
+  return h.state.capturedProcessor({ data, ...attempt } as { data: unknown });
+}
+
+/** Rows the worker wrote to snmp_devices via db.update(...).set(...). */
+function deviceUpdates(): Record<string, unknown>[] {
+  return h.state.updatedRows;
+}
+
+/**
+ * A BARE postgres.js error. Production almost never produces this shape off a
+ * Drizzle query — every insert/update is wrapped — so a suite built only on it
+ * is false-green. Use it as the `.cause` of a DrizzleQueryError.
+ */
+function pgFailure(code: string): Error & { code: string } {
+  return Object.assign(new Error(`pg failure ${code}`), { code });
 }
 
 describe('snmpWorker', () => {
@@ -188,7 +224,9 @@ describe('snmpWorker', () => {
     h.state.contextDepth = 0;
     h.state.rowsByTable = {};
     h.state.insertedRows = [];
+    h.state.updatedRows = [];
     h.state.capturedProcessor = null;
+    resetSnmpDegradationThrottle();
 
     await initializeSnmpWorker();
 
@@ -249,8 +287,24 @@ describe('snmpWorker', () => {
       expect(clampToLength('abc', 10)).toBe('abc');
       // Slicing at 3 would strand the high surrogate of the emoji.
       expect(clampToLength('ab😀', 3)).toBe('ab');
-      expect(sanitizeSnmpIdentifier('x'.repeat(250), 200)).toBe('x'.repeat(200));
-      expect(sanitizeSnmpIdentifier('1.3.6.1.2.1.1.5.0', 200)).toBe('1.3.6.1.2.1.1.5.0');
+      expect(sanitizeSnmpIdentifier('x'.repeat(250), 200)).toEqual({
+        value: 'x'.repeat(200),
+        clamped: true,
+      });
+      expect(sanitizeSnmpIdentifier('1.3.6.1.2.1.1.5.0', 200)).toEqual({
+        value: '1.3.6.1.2.1.1.5.0',
+        clamped: false,
+      });
+    });
+
+    it('reports the clamp flag against the ENCODED length, not the input length', () => {
+      // A NUL-bearing identifier hex-expands 3x. Comparing to the raw input
+      // would call this a clamp when the column width was never reached.
+      const encodedShort = sanitizeSnmpIdentifier('a\u0000b', 200);
+      expect(encodedShort).toEqual({ value: '610062', clamped: false });
+
+      // ...and a genuine width overflow still reports true.
+      expect(sanitizeSnmpIdentifier('\u0000'.repeat(200), 200).clamped).toBe(true);
     });
   });
 
@@ -323,7 +377,6 @@ describe('snmpWorker', () => {
       expect(String(row.oid)).toBe(`1.3.6.1.${'9'.repeat(400)}`.slice(0, 200));
       expect(String(row.name)).toHaveLength(100);
       expect(String(row.name)).toBe('n'.repeat(100));
-      // Unchanged fields prove clamping did not disturb the rest of the row.
       expect(row.value).toBe('ok');
       expect(row.valueType).toBe('string');
     });
@@ -430,13 +483,51 @@ describe('snmpWorker', () => {
     });
 
     it('resolveDeclaredValueType only ever honours the exact literal', () => {
-      expect(resolveDeclaredValueType('hex', 'abc', 'string')).toBe('hex');
+      expect(resolveDeclaredValueType('hex', '788a2000d4e1', 'string')).toBe('hex');
       expect(resolveDeclaredValueType(undefined, 'abc', 'string')).toBe('string');
-      expect(resolveDeclaredValueType('Hex', 'abc', 'string')).toBe('string');
-      expect(resolveDeclaredValueType('hexadecimal', 'abc', 'string')).toBe('string');
+      expect(resolveDeclaredValueType('Hex', '788a', 'string')).toBe('string');
+      expect(resolveDeclaredValueType('hexadecimal', '788a', 'string')).toBe('string');
       // The API's own verdict is never downgraded by a missing declaration.
       expect(resolveDeclaredValueType(undefined, '00', 'hex')).toBe('hex');
       expect(resolveDeclaredValueType('hex', null, 'null')).toBe('null');
+    });
+
+    // A declared encoding that the value contradicts is worse than useless: a
+    // buggy or hostile agent stamping valueEncoding:'hex' on ordinary readings
+    // silently removes the device from numeric rollups AND from top-interfaces
+    // ranking (both key off value_type === 'hex'). Monitoring goes quiet with
+    // no error raised anywhere, which is why the declaration is checked against
+    // the value rather than trusted.
+    it('refuses a hex declaration the value does not match', () => {
+      expect(resolveDeclaredValueType('hex', 'hello world', 'string')).toBe('string');
+      expect(resolveDeclaredValueType('hex', '788A2000D4E1', 'string')).toBe('string'); // uppercase
+      expect(resolveDeclaredValueType('hex', '788a2', 'string')).toBe('string'); // odd length
+      expect(resolveDeclaredValueType('hex', '78 8a', 'string')).toBe('string'); // separated
+      expect(resolveDeclaredValueType('hex', '', 'string')).toBe('string'); // no octets
+      expect(resolveDeclaredValueType('hex', '0x788a', 'string')).toBe('string'); // prefixed
+      expect(resolveDeclaredValueType('hex', '42', 'number')).toBe('hex'); // real 1-byte hex
+
+      expect(isAgentHexPayload('001122304050')).toBe(true);
+      expect(isAgentHexPayload('zz')).toBe(false);
+    });
+
+    it('stores value_type=string when the agent lies about hex on every metric', async () => {
+      await runJob({
+        type: 'process-poll-results',
+        deviceId: 'snmp-device-1',
+        metrics: [
+          { oid: '1.3.6.1.2.1.2.2.1.10.1', name: 'ifInOctets', value: '918273645', valueEncoding: 'hex', timestamp: '' },
+          { oid: '1.3.6.1.2.1.1.5.0', name: 'sysName', value: 'switch-01', valueEncoding: 'hex', timestamp: '' },
+        ],
+      });
+
+      // Both stay numerically interpretable rather than vanishing from rollups.
+      expect(h.state.insertedRows.map((r) => r.valueType)).toEqual(['string', 'string']);
+      // ...and the refusal is not silent.
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining("Ignoring valueEncoding:'hex'"),
+        expect.objectContaining({ deviceId: 'snmp-device-1' })
+      );
     });
 
     it('keeps its DB work inside a system access context', async () => {
@@ -448,6 +539,283 @@ describe('snmpWorker', () => {
 
       expect(h.state.dbDepths.length).toBeGreaterThan(0);
       expect(h.state.dbDepths.every((d) => d > 0)).toBe(true);
+    });
+  });
+
+  // Nothing between the agent socket and this INSERT validated the payload:
+  // agentWs types a command result as z.any() and both SNMP call sites reach
+  // the worker through a bare `as { metrics?: SnmpMetricResult[] }` cast. A
+  // malformed metric therefore crashed the row builder with a TypeError or the
+  // driver with a RangeError — neither of which carries a SQLSTATE, so both
+  // were classified TRANSIENT and burned the full ~155s budget before the batch
+  // was dropped anyway.
+  describe('wire payload validation', () => {
+    beforeEach(() => {
+      h.state.rowsByTable.snmpDevices = [{ orgId: 'org-1' }];
+    });
+
+    it('drops the malformed metric and keeps the rest of the batch', async () => {
+      const result = await runJob({
+        type: 'process-poll-results',
+        deviceId: 'snmp-device-1',
+        metrics: [
+          { oid: '1.3.6.1.2.1.1.5.0', name: 'sysName', value: 'switch-01', timestamp: '' },
+          // `oid` non-string: passes isPostgresTextSafe vacuously, then throws
+          // `TypeError: value.slice is not a function` inside clampToLength.
+          { oid: 123, name: 'numeric oid', value: 'x', timestamp: '' },
+          { oid: null, name: 'null oid', value: 'x', timestamp: '' },
+          { oid: '', name: 'empty oid', value: 'x', timestamp: '' },
+          { oid: '1.3.6.1.2.1.1.3.0', name: 'sysUpTime', value: 123456, timestamp: '' },
+        ],
+      });
+
+      expect(result).toEqual({ metricsWritten: 2 });
+      expect(h.state.insertedRows.map((r) => r.oid)).toEqual([
+        '1.3.6.1.2.1.1.5.0',
+        '1.3.6.1.2.1.1.3.0',
+      ]);
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Dropped 3/5 malformed SNMP metrics'),
+        expect.objectContaining({ dropped: 3, received: 5 })
+      );
+    });
+
+    it('never burns a retry on a batch whose every metric is malformed', async () => {
+      await expect(
+        runJob({
+          type: 'process-poll-results',
+          deviceId: 'snmp-device-1',
+          metrics: [{ oid: 123 }, { name: 'no oid at all' }],
+        })
+      ).rejects.toBeInstanceOf(UnrecoverableError);
+
+      expect(h.state.insertedRows).toEqual([]);
+    });
+
+    it('rejects a non-array metrics payload without touching the database', async () => {
+      await expect(
+        runJob({ type: 'process-poll-results', deviceId: 'snmp-device-1', metrics: 'oops' })
+      ).rejects.toBeInstanceOf(UnrecoverableError);
+
+      // The device lookup never even ran: validation precedes the DB context.
+      expect(h.state.dbDepths).toEqual(
+        // only the abandon-path status write
+        [1]
+      );
+    });
+
+    it('keeps a reading whose timestamp is garbage, stamped with ingest time', async () => {
+      await runJob({
+        type: 'process-poll-results',
+        deviceId: 'snmp-device-1',
+        metrics: [
+          { oid: '1.3.6.1.2.1.1.5.0', name: 'sysName', value: 'switch-01', timestamp: 'not-a-date' },
+          { oid: '1.3.6.1.2.1.1.3.0', name: 'sysUpTime', value: 1, timestamp: { nested: true } },
+        ],
+      });
+
+      // Previously an Invalid Date bind parameter made the driver throw a
+      // RangeError with no SQLSTATE — classified transient, six attempts, batch
+      // lost. Both readings survive instead.
+      expect(h.state.insertedRows).toHaveLength(2);
+      for (const row of h.state.insertedRows) {
+        expect(row.timestamp).toBeInstanceOf(Date);
+        expect(Number.isNaN((row.timestamp as Date).getTime())).toBe(false);
+      }
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Unparseable metric timestamp'),
+        expect.objectContaining({ deviceId: 'snmp-device-1' })
+      );
+    });
+
+    it('resolveMetricTimestamp distinguishes absent from unparseable', () => {
+      const fallback = new Date('2026-08-06T00:00:00.000Z');
+      const good = resolveMetricTimestamp('2026-08-06T12:00:00.000Z', fallback);
+      expect(good.invalid).toBe(false);
+      expect(good.timestamp.toISOString()).toBe('2026-08-06T12:00:00.000Z');
+
+      // '' has always meant "no timestamp" on this path; it is not a defect.
+      for (const absent of ['', null, undefined]) {
+        expect(resolveMetricTimestamp(absent, fallback)).toEqual({ timestamp: fallback, invalid: false });
+      }
+      for (const bad of ['not-a-date', {}, [], true, Number.NaN]) {
+        expect(resolveMetricTimestamp(bad, fallback)).toEqual({ timestamp: fallback, invalid: true });
+      }
+    });
+  });
+
+  // Before this, nothing was logged when the worker altered or discarded data,
+  // and lastPolled/lastStatus were written ONLY on the success path — so a
+  // device whose batches kept failing went on reading lastStatus='online' with
+  // a frozen lastPolled while the graph quietly flatlined.
+  describe('observable degradation', () => {
+    beforeEach(() => {
+      h.state.rowsByTable.snmpDevices = [{ orgId: 'org-1' }];
+    });
+
+    it('warns when an identifier clamp actually fires, with the original length', async () => {
+      await runJob({
+        type: 'process-poll-results',
+        deviceId: 'snmp-device-1',
+        metrics: [{ oid: `1.3.6.1.${'9'.repeat(400)}`, name: 'ok', value: 'v', timestamp: '' }],
+      });
+
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Clamped snmp_metrics.oid to 200 chars'),
+        expect.objectContaining({ deviceId: 'snmp-device-1', field: 'oid', originalLength: 408 })
+      );
+    });
+
+    it('stays silent when nothing was clamped', async () => {
+      await runJob({
+        type: 'process-poll-results',
+        deviceId: 'snmp-device-1',
+        metrics: [{ oid: '1.3.6.1.2.1.1.5.0', name: 'sysName', value: 'switch-01', timestamp: '' }],
+      });
+
+      expect(console.warn).not.toHaveBeenCalledWith(
+        expect.stringContaining('Clamped'),
+        expect.anything()
+      );
+    });
+
+    it('throttles the clamp warning instead of emitting one per metric', async () => {
+      const metrics = Array.from({ length: 25 }, (_unused, i) => ({
+        oid: `1.3.6.1.4.1.${i}.${'9'.repeat(400)}`,
+        name: 'ok',
+        value: 'v',
+        timestamp: '',
+      }));
+
+      await runJob({ type: 'process-poll-results', deviceId: 'snmp-device-1', metrics });
+
+      const clampWarnings = vi
+        .mocked(console.warn)
+        .mock.calls.filter((c) => String(c[0]).includes('Clamped snmp_metrics.oid'));
+      expect(clampWarnings).toHaveLength(1);
+      // All 25 rows were still written — throttling suppresses the log, not the data.
+      expect(h.state.insertedRows).toHaveLength(25);
+    });
+
+    it('flags the device when a batch is abandoned deterministically', async () => {
+      const dbModule = await import('../db');
+      const insertSpy = vi.spyOn(dbModule.db, 'insert').mockImplementation((() => ({
+        values: async () => {
+          throw new DrizzleQueryError('insert into "snmp_metrics" ...', [], pgFailure('22021'));
+        },
+      })) as never);
+
+      try {
+        await expect(
+          runJob({
+            type: 'process-poll-results',
+            deviceId: 'snmp-device-1',
+            metrics: [{ oid: '1.3.6.1.2.1.1.5.0', name: 'sysName', value: 'x', timestamp: '' }],
+          })
+        ).rejects.toBeInstanceOf(UnrecoverableError);
+      } finally {
+        insertSpy.mockRestore();
+      }
+
+      expect(deviceUpdates()).toEqual([
+        { lastPolled: expect.any(Date), lastStatus: 'warning' },
+      ]);
+    });
+
+    it('leaves the device alone while retries remain, flags it on the last attempt', async () => {
+      const dbModule = await import('../db');
+      const transient = () => {
+        throw new DrizzleQueryError('insert into "snmp_metrics" ...', [], pgFailure('08006'));
+      };
+      const insertSpy = vi
+        .spyOn(dbModule.db, 'insert')
+        .mockImplementation((() => ({ values: async () => transient() })) as never);
+
+      const batch = {
+        type: 'process-poll-results',
+        deviceId: 'snmp-device-1',
+        metrics: [{ oid: '1.3.6.1.2.1.1.5.0', name: 'sysName', value: 'x', timestamp: '' }],
+      };
+
+      try {
+        // Attempt 1 of 6: BullMQ will retry, so claiming the batch is gone
+        // would be a lie and would flap the status every backoff.
+        await expect(runJob(batch, { attemptsStarted: 1, attemptsMade: 0 })).rejects.toThrow();
+        expect(deviceUpdates()).toEqual([]);
+
+        // Attempt 6 of 6: nothing further will run, the batch really is lost.
+        await expect(runJob(batch, { attemptsStarted: 6, attemptsMade: 5 })).rejects.toThrow();
+        expect(deviceUpdates()).toEqual([
+          { lastPolled: expect.any(Date), lastStatus: 'warning' },
+        ]);
+      } finally {
+        insertSpy.mockRestore();
+      }
+    });
+
+    it('caps the UnrecoverableError message and carries structured context', async () => {
+      const dbModule = await import('../db');
+      // What a DrizzleQueryError message really looks like: the SQL plus every
+      // bound parameter. Sentry truncates from the END, i.e. exactly where the
+      // poisoned row sits, so this must never be pasted in whole.
+      const huge = new DrizzleQueryError(
+        `insert into "snmp_metrics" values ${'($1, $2, $3), '.repeat(20_000)}`,
+        [],
+        pgFailure('22021')
+      );
+      const insertSpy = vi
+        .spyOn(dbModule.db, 'insert')
+        .mockImplementation((() => ({ values: async () => { throw huge; } })) as never);
+
+      let thrown: unknown;
+      try {
+        await runJob({
+          type: 'process-poll-results',
+          deviceId: 'snmp-device-1',
+          metrics: [
+            { oid: '.1.3.6.1.2.1.17.1.1.0', name: 'bridge', value: 'x', timestamp: '' },
+            { oid: '1.3.6.1.2.1.1.5.0', name: 'sysName', value: 'y', timestamp: '' },
+          ],
+        });
+      } catch (err) {
+        thrown = err;
+      } finally {
+        insertSpy.mockRestore();
+      }
+
+      expect(huge.message.length).toBeGreaterThan(100_000);
+      const message = (thrown as Error).message;
+      expect(message.length).toBeLessThan(1_000);
+      // The identifying facts survive the cap because they precede it.
+      expect(message).toContain('SQLSTATE 22021');
+      expect(message).toContain('device=snmp-device-1');
+      expect(message).toContain('metrics=2');
+      expect(message).toContain('firstOid=.1.3.6.1.2.1.17.1.1.0');
+    });
+
+    it('never lets the drop-path status write replace the real failure', async () => {
+      const dbModule = await import('../db');
+      const insertSpy = vi.spyOn(dbModule.db, 'insert').mockImplementation((() => ({
+        values: async () => {
+          throw new DrizzleQueryError('insert ...', [], pgFailure('22021'));
+        },
+      })) as never);
+      const updateSpy = vi.spyOn(dbModule.db, 'update').mockImplementation((() => {
+        throw new Error('database is gone too');
+      }) as never);
+
+      try {
+        await expect(
+          runJob({
+            type: 'process-poll-results',
+            deviceId: 'snmp-device-1',
+            metrics: [{ oid: '1.3.6.1.2.1.1.5.0', name: 'sysName', value: 'x', timestamp: '' }],
+          })
+        ).rejects.toBeInstanceOf(UnrecoverableError);
+      } finally {
+        updateSpy.mockRestore();
+        insertSpy.mockRestore();
+      }
     });
   });
 
@@ -588,8 +956,20 @@ describe('snmpWorker', () => {
       h.state.rowsByTable.snmpDevices = [{ orgId: 'org-1' }];
     });
 
-    function pgError(code: string): Error & { code: string } {
-      return Object.assign(new Error(`pg failure ${code}`), { code });
+    const pgError = pgFailure;
+
+    /**
+     * What `db.insert(...).values(...)` ACTUALLY throws: a DrizzleQueryError
+     * whose own `.code` is undefined, wrapping the real PostgresError on
+     * `.cause`. A classifier reading only the top-level `.code` sees nothing
+     * here and calls a permanent poison pill "transient".
+     */
+    function drizzleError(code: string): Error {
+      return new DrizzleQueryError(
+        'insert into "snmp_metrics" ("device_id", "org_id", "oid", ...) values ($1, $2, $3, ...)',
+        ['snmp-device-1', 'org-1', '.1.3.6.1.2.1.17.1.1.0'],
+        pgError(code)
+      );
     }
 
     async function runResultsFailingWith(err: unknown): Promise<unknown> {
@@ -618,6 +998,32 @@ describe('snmpWorker', () => {
       await expect(runResultsFailingWith(pgError('22001'))).rejects.toBeInstanceOf(
         UnrecoverableError
       );
+    });
+
+    // THE regression this suite previously missed entirely. Drizzle wraps every
+    // driver error, so on the real code path the SQLSTATE is one `.cause` hop
+    // down. Reading only `err.code` made isDeterministicDataError return false
+    // for 100% of production failures: UnrecoverableError never fired and a
+    // poisoned batch burned all 6 attempts over ~155s instead of failing once.
+    it('unwraps the DrizzleQueryError .cause chain to find the SQLSTATE', async () => {
+      const wrapped = drizzleError('22021');
+      expect((wrapped as { code?: unknown }).code).toBeUndefined(); // the trap
+      expect(isDeterministicDataError(wrapped)).toBe(true);
+
+      await expect(runResultsFailingWith(drizzleError('22021'))).rejects.toBeInstanceOf(
+        UnrecoverableError
+      );
+      await expect(runResultsFailingWith(drizzleError('22001'))).rejects.toBeInstanceOf(
+        UnrecoverableError
+      );
+    });
+
+    it('still lets a WRAPPED transient failure retry', async () => {
+      for (const code of ['08006', '57P01']) {
+        const err = drizzleError(code);
+        expect(isDeterministicDataError(err)).toBe(false);
+        await expect(runResultsFailingWith(err)).rejects.toBe(err);
+      }
     });
 
     it('lets a transient failure retry: connection, resources, shutdown', async () => {

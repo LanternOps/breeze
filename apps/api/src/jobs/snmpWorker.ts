@@ -14,6 +14,13 @@ import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
 import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
 import { decryptSnmpSecret } from '../services/snmpSecrets';
+import { pgErrorCode } from '../utils/pgErrors';
+import { createReportThrottle } from '../utils/reportThrottle';
+import {
+  describeMetricParseIssue,
+  snmpMetricResultSchema,
+  type ParsedSnmpMetricResult,
+} from './snmpResultSchemas';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -42,6 +49,15 @@ interface PollDeviceJobData {
   orgId: string;
 }
 
+/**
+ * The metric shape agents are DOCUMENTED to send.
+ *
+ * This is a description, not a guarantee: `routes/agentWs.ts` types a command
+ * result as `z.any()` and casts to it, so nothing enforces these types at the
+ * socket. Treat every field as untrusted — the runtime contract is
+ * `snmpMetricResultSchema` (jobs/snmpResultSchemas.ts), which the worker
+ * safe-parses before touching the database.
+ */
 export interface SnmpMetricResult {
   oid: string;
   name: string;
@@ -51,7 +67,9 @@ export interface SnmpMetricResult {
    * Optional encoding declared by the agent (`valueEncoding` in the Go payload).
    * Currently only 'hex' is meaningful: the agent already hex-encoded a binary
    * octet-string, so `value` arrives as plain ASCII hex. UNVALIDATED wire input —
-   * only the exact literal 'hex' is ever honoured (see AGENT_HEX_ENCODING).
+   * only the exact literal 'hex' is ever honoured, and only when `value` really
+   * is even-length lowercase hex (see AGENT_HEX_ENCODING /
+   * resolveDeclaredValueType).
    */
   valueEncoding?: string;
 }
@@ -89,7 +107,9 @@ function createSnmpWorker(): Worker<SnmpJobData> {
         case 'poll-device':
           return await processPollDevice(job.data);
         case 'process-poll-results':
-          return await runPollResultsWithFailureClassification(job.data);
+          // The job itself is passed only so the classifier can tell "will be
+          // retried" from "this was the last attempt, the batch is gone".
+          return await runPollResultsWithFailureClassification(job.data, job);
         default:
           throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
       }
@@ -116,7 +136,6 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
   // agent WebSocket send deliberately run after it closes, so no pooled
   // connection is held across them.
   const loaded = await runWithSystemDbAccess(async () => {
-    // Load the device config
     const [device] = await db
       .select()
       .from(snmpDevices)
@@ -199,13 +218,26 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
 }
 
 /**
- * SQLSTATE of a driver error, when there is one. postgres.js puts the raw
- * five-character SQLSTATE on `err.code`.
+ * SQLSTATE of a driver error, when there is one.
+ *
+ * MUST go through `pgErrorCode`, which walks the `.cause` chain. postgres.js
+ * puts the raw five-character SQLSTATE on `err.code`, but Drizzle wraps every
+ * query error in a `DrizzleQueryError` whose OWN `.code` is undefined — the
+ * real `PostgresError` sits on `.cause`. Since every insert here goes through
+ * Drizzle, a check that read only the top-level `.code` matched nothing in
+ * production: `isDeterministicDataError` always returned false, the
+ * `UnrecoverableError` below never fired, and a poisoned batch burned all six
+ * attempts over ~155s instead of failing once. Six other job files already use
+ * this helper for exactly this reason; do not hand-roll another walker.
+ *
+ * The five-character shape guard stays: `pgErrorCode` returns the first string
+ * `.code` it finds, which for a socket failure is an errno like 'ECONNRESET'.
+ * Requiring the SQLSTATE shape keeps those out of the class-22 comparison
+ * rather than relying on the prefix test to reject them by accident.
  */
 function sqlStateOf(err: unknown): string | null {
-  if (typeof err !== 'object' || err === null) return null;
-  const code = (err as { code?: unknown }).code;
-  return typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code) ? code : null;
+  const code = pgErrorCode(err);
+  return code !== undefined && /^[0-9A-Z]{5}$/.test(code) ? code : null;
 }
 
 /**
@@ -227,6 +259,85 @@ export function isDeterministicDataError(err: unknown): boolean {
 }
 
 /**
+ * Cap on the driver text folded into an `UnrecoverableError` message.
+ *
+ * A `DrizzleQueryError`'s `.message` is the full SQL text PLUS every bound
+ * parameter — for a 100-OID batch that is hundreds of KB. `attachWorkerObservability`
+ * captures failed jobs to Sentry, which truncates from the END, i.e. exactly
+ * where the poisoned row lives. Slice it and carry the identifying facts as
+ * structured context instead, where they cannot be cut off.
+ */
+const UNRECOVERABLE_MESSAGE_MAX = 400;
+
+function truncatedErrorText(err: unknown): string {
+  const text = err instanceof Error ? err.message : String(err);
+  return text.length <= UNRECOVERABLE_MESSAGE_MAX
+    ? text
+    : `${text.slice(0, UNRECOVERABLE_MESSAGE_MAX)}… [+${text.length - UNRECOVERABLE_MESSAGE_MAX} chars]`;
+}
+
+/**
+ * True on the LAST attempt BullMQ will make, so the drop path can record that
+ * the batch is gone rather than merely delayed.
+ *
+ * BullMQ 5 increments `attemptsStarted` when the job moves to active and
+ * `attemptsMade` only when it moves to failed, so during attempt N they read N
+ * and N-1 respectively. Taking the max tolerates either convention (and any
+ * future swap) — over-reporting the attempt number can only make us mark the
+ * device early, never miss the final failure entirely.
+ */
+function isFinalAttempt(job?: SnmpResultJobContext): boolean {
+  if (!job) return false;
+  const attempted = Math.max(job.attemptsMade ?? 0, job.attemptsStarted ?? 0);
+  const budget = job.opts?.attempts ?? SNMP_POLL_RESULTS_ATTEMPTS;
+  return attempted >= budget;
+}
+
+/** The only parts of a BullMQ Job the classifier reads. */
+interface SnmpResultJobContext {
+  attemptsMade?: number;
+  attemptsStarted?: number;
+  opts?: { attempts?: number };
+}
+
+/**
+ * Record that a metric batch was abandoned, so the operator sees a reason
+ * instead of a bare gap in the graph.
+ *
+ * Without this, `lastPolled`/`lastStatus` are only written on the SUCCESS path:
+ * a device whose batches keep failing goes on reading `lastStatus='online'`
+ * with a `lastPolled` frozen at the last good poll, and the dashboard shows a
+ * healthy device that has silently stopped producing data.
+ *
+ * `'warning'` (not `'error'`) is deliberate on two counts: it is what
+ * `routes/agentWs.ts` already writes on its Redis-unavailable drop branch, and
+ * it is one of the five statuses the UI actually renders — an invented value
+ * falls through to the muted `unknown` style AND drops out of the
+ * needs-attention filter in `MonitoringAssetsDashboard.tsx`, i.e. it would be
+ * one more silent degradation rather than a fix for one.
+ *
+ * NEVER throws. It runs inside a failure handler, where a second exception
+ * would replace the real classification (and could turn an `UnrecoverableError`
+ * back into a retried one). Its context is opened fresh and closed immediately,
+ * so it cannot extend a hold (#1105).
+ */
+async function markSnmpBatchAbandoned(deviceId: string, reason: string): Promise<void> {
+  try {
+    await runWithSystemDbAccess(async () => {
+      await db
+        .update(snmpDevices)
+        .set({ lastPolled: new Date(), lastStatus: 'warning' })
+        .where(eq(snmpDevices.id, deviceId));
+    });
+  } catch (err) {
+    console.error(
+      `[SnmpWorker] Could not flag device ${deviceId} after abandoning a metric batch (${reason}):`,
+      err
+    );
+  }
+}
+
+/**
  * Run the result processor, classifying its failures.
  *
  * A deterministic data error is converted to BullMQ's `UnrecoverableError`,
@@ -235,23 +346,179 @@ export function isDeterministicDataError(err: unknown): boolean {
  * failures that could actually clear.
  */
 async function runPollResultsWithFailureClassification(
-  data: ProcessPollResultsJobData
+  data: ProcessPollResultsJobData,
+  job?: SnmpResultJobContext
 ): Promise<{ metricsWritten: number }> {
   try {
     return await processPollResults(data);
   } catch (err) {
-    if (!isDeterministicDataError(err)) throw err;
     const sqlState = sqlStateOf(err);
+    const deterministic = sqlState !== null && sqlState.startsWith('22');
+    // A validation failure already arrives as an UnrecoverableError from
+    // parseSnmpMetricBatch; it is abandoned on this attempt too.
+    const abandoned = deterministic || err instanceof UnrecoverableError || isFinalAttempt(job);
+
+    if (!abandoned) throw err;
+
+    const metricCount = Array.isArray(data.metrics) ? data.metrics.length : 0;
+    const firstOid = firstOidOf(data.metrics);
+    const reason = deterministic ? `SQLSTATE ${sqlState}` : 'retries exhausted';
+
+    // Structured, un-truncatable context. `firstOid` is the batch's first OID,
+    // NOT a proof of which row offended: post-sanitization the driver error
+    // carries no row identity, so this is the handle for finding the batch
+    // again, not for blaming a metric.
     console.error(
-      `[SnmpWorker] Metric batch for device ${data.deviceId} failed deterministically (SQLSTATE ${sqlState}); not retrying:`,
+      `[SnmpWorker] Abandoning metric batch for device ${data.deviceId} (${reason})`,
+      { deviceId: data.deviceId, metrics: metricCount, firstOid, sqlState },
       err
     );
+
+    await markSnmpBatchAbandoned(data.deviceId, reason);
+
+    if (!deterministic) throw err;
+
     throw new UnrecoverableError(
-      `SNMP metric batch for device ${data.deviceId} failed with SQLSTATE ${sqlState}: ${
-        err instanceof Error ? err.message : String(err)
-      }`
+      `SNMP metric batch failed with SQLSTATE ${sqlState} `
+      + `(device=${data.deviceId} metrics=${metricCount} firstOid=${firstOid ?? 'none'}): `
+      + truncatedErrorText(err)
     );
   }
+}
+
+/** Best-effort handle on the batch for logs; never throws on a malformed payload. */
+function firstOidOf(metrics: unknown): string | null {
+  if (!Array.isArray(metrics)) return null;
+  for (const metric of metrics) {
+    const oid = (metric as { oid?: unknown } | null)?.oid;
+    if (typeof oid === 'string' && oid.length > 0) return oid.slice(0, 200);
+  }
+  return null;
+}
+
+/**
+ * Validate the wire payload before a single byte of it reaches the row builder.
+ *
+ * PER-METRIC drop, not whole-batch rejection. An SNMP poll is 20-100 OIDs off
+ * one template walk, and the realistic malformation is ONE entry from a device
+ * that answered a table walk oddly. Failing the batch would discard 99 good
+ * interface counters to punish one bad row — the same F13 mistake recorded in
+ * `routes/backup/resultSchemas.ts`, where a strict schema over a diagnostics
+ * field silently binned the snapshot id. Per-metric drop is still deterministic
+ * (the bytes are fixed, no retry can help), so nothing burns the retry budget
+ * either way; the difference is purely how much good data survives.
+ *
+ * Two cases DO fail the whole batch, both as `UnrecoverableError`:
+ *  - `metrics` is not an array. There is nothing to iterate; the payload shape
+ *    itself is wrong.
+ *  - every metric was dropped. That is a poisoned payload rather than a stray
+ *    bad row, and failing it surfaces the batch in BullMQ's failed set (and via
+ *    `markSnmpBatchAbandoned` on the device) instead of quietly reporting a
+ *    successful poll that wrote nothing.
+ */
+function parseSnmpMetricBatch(
+  deviceId: string,
+  raw: unknown
+): ParsedSnmpMetricResult[] {
+  if (!Array.isArray(raw)) {
+    throw new UnrecoverableError(
+      `SNMP metric payload for device ${deviceId} is not an array (got ${typeof raw}); dropping`
+    );
+  }
+
+  const metrics: ParsedSnmpMetricResult[] = [];
+  let firstIssue: string | null = null;
+  let firstBadOid: string | null = null;
+
+  for (const entry of raw) {
+    const parsed = snmpMetricResultSchema.safeParse(entry);
+    if (parsed.success) {
+      metrics.push(parsed.data);
+      continue;
+    }
+    if (firstIssue === null) {
+      firstIssue = describeMetricParseIssue(parsed.error);
+      const oid = (entry as { oid?: unknown } | null)?.oid;
+      firstBadOid = typeof oid === 'string' ? oid.slice(0, 120) : `<${typeof oid}>`;
+    }
+  }
+
+  const dropped = raw.length - metrics.length;
+  if (dropped === 0) return metrics;
+
+  if (metrics.length === 0) {
+    throw new UnrecoverableError(
+      `Every SNMP metric for device ${deviceId} failed validation `
+      + `(count=${raw.length} firstOid=${firstBadOid} issue=${firstIssue}); dropping`
+    );
+  }
+
+  console.warn(
+    `[SnmpWorker] Dropped ${dropped}/${raw.length} malformed SNMP metrics for device ${deviceId}`,
+    { deviceId, dropped, received: raw.length, firstOid: firstBadOid, issue: firstIssue }
+  );
+  return metrics;
+}
+
+/**
+ * Coerce a wire timestamp to a Date, falling back to the ingest clock.
+ *
+ * An `Invalid Date` bind parameter makes the driver throw a `RangeError`, which
+ * carries no SQLSTATE and was therefore classified transient — one bad clock
+ * string cost the batch all six attempts. Falling back is close to lossless
+ * (the poll completed seconds ago) and strictly better than dropping a real
+ * reading, but it IS a silent alteration, so it is counted and reported.
+ */
+export function resolveMetricTimestamp(
+  raw: unknown,
+  fallback: Date
+): { timestamp: Date; invalid: boolean } {
+  // '' has always meant "no timestamp" on this path and is not a malformation.
+  if (raw === null || raw === undefined || raw === '') return { timestamp: fallback, invalid: false };
+  if (typeof raw !== 'string' && typeof raw !== 'number') return { timestamp: fallback, invalid: true };
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return { timestamp: fallback, invalid: true };
+  return { timestamp: parsed, invalid: false };
+}
+
+/**
+ * One report per device per 15 minutes per condition. These fire once per
+ * affected METRIC — a table walk with long string indices clamps on every row
+ * of every poll — so unthrottled they would bury the signal and flood Sentry
+ * without adding information (see utils/reportThrottle.ts).
+ */
+const SNMP_DEGRADATION_WARN_INTERVAL_MS = 15 * 60 * 1000;
+const degradationThrottle = createReportThrottle(SNMP_DEGRADATION_WARN_INTERVAL_MS);
+
+/**
+ * Test seam. The throttle is module state, so without a reset the FIRST test to
+ * trip a condition would silence every later one and those assertions would
+ * pass vacuously.
+ */
+export function resetSnmpDegradationThrottle(): void {
+  degradationThrottle.reset();
+}
+
+/**
+ * Report an identifier clamp. This is NOT cosmetic truncation: `metric_rollups`
+ * keys a series on `md5(device_id || ':' || oid)`, so two OIDs that differ only
+ * past the cutoff hash to the SAME key and MERGE into one series — the
+ * dashboard then shows one interface where the device has two. `name` is the
+ * more exposed of the pair, because the agent sets it to the full OID string
+ * and table-walk OIDs with string indices routinely exceed varchar(100).
+ */
+function reportIdentifierClamp(
+  deviceId: string,
+  field: 'oid' | 'name',
+  original: string,
+  maxLength: number
+): void {
+  if (!degradationThrottle.shouldReport(`clamp:${deviceId}:${field}`)) return;
+  console.warn(
+    `[SnmpWorker] Clamped snmp_metrics.${field} to ${maxLength} chars for device ${deviceId}: `
+    + `identifiers differing only past the cutoff collapse into ONE metric series`,
+    { deviceId, field, originalLength: original.length, maxLength, prefix: original.slice(0, 60) }
+  );
 }
 
 /**
@@ -261,6 +528,10 @@ async function processPollResults(data: ProcessPollResultsJobData): Promise<{
   metricsWritten: number;
 }> {
   const now = new Date();
+
+  // Validate BEFORE any DB work, and outside the access context: a rejection is
+  // deterministic, so it must cost one attempt and zero connection time.
+  const metrics = parseSnmpMetricBatch(data.deviceId, data.metrics);
 
   // #1105: the reads, the insert and the lastPolled update stay inside ONE
   // short system context so they remain atomic; nothing slow (Redis, crypto,
@@ -275,16 +546,50 @@ async function processPollResults(data: ProcessPollResultsJobData): Promise<{
 
     if (!snmpDevice) return null;
 
-    const rows = data.metrics.map((metric) => {
+    const rows = metrics.map((metric) => {
       const { value, valueType } = sanitizeSnmpMetricValue(metric.value);
+      const declared = metric.valueEncoding ?? undefined;
+      const resolvedType = resolveDeclaredValueType(declared, value, valueType);
+
+      // A declaration we refused is a real signal: an agent stamping
+      // valueEncoding:'hex' on plain readings would otherwise remove the whole
+      // device from numeric rollups and from top-interfaces ranking, with
+      // nothing logged anywhere.
+      if (
+        declared === AGENT_HEX_ENCODING
+        && value !== null
+        && resolvedType !== AGENT_HEX_ENCODING
+        && degradationThrottle.shouldReport(`hex:${data.deviceId}`)
+      ) {
+        console.warn(
+          `[SnmpWorker] Ignoring valueEncoding:'hex' from device ${data.deviceId}: `
+          + 'the value is not even-length lowercase hex, so the sanitizer verdict stands',
+          { deviceId: data.deviceId, oid: metric.oid.slice(0, 120), valueType: resolvedType }
+        );
+      }
+
+      const oid = sanitizeSnmpIdentifier(metric.oid, SNMP_OID_MAX_LENGTH);
+      const rawName = metric.name || metric.oid;
+      const name = sanitizeSnmpIdentifier(rawName, SNMP_NAME_MAX_LENGTH);
+      if (oid.clamped) reportIdentifierClamp(data.deviceId, 'oid', metric.oid, SNMP_OID_MAX_LENGTH);
+      if (name.clamped) reportIdentifierClamp(data.deviceId, 'name', rawName, SNMP_NAME_MAX_LENGTH);
+
+      const { timestamp, invalid } = resolveMetricTimestamp(metric.timestamp, now);
+      if (invalid && degradationThrottle.shouldReport(`timestamp:${data.deviceId}`)) {
+        console.warn(
+          `[SnmpWorker] Unparseable metric timestamp from device ${data.deviceId}; using ingest time`,
+          { deviceId: data.deviceId, oid: metric.oid.slice(0, 120), received: String(metric.timestamp).slice(0, 60) }
+        );
+      }
+
       return {
         deviceId: data.deviceId,
         orgId: snmpDevice.orgId,
-        oid: sanitizeSnmpIdentifier(metric.oid, SNMP_OID_MAX_LENGTH),
-        name: sanitizeSnmpIdentifier(metric.name || metric.oid, SNMP_NAME_MAX_LENGTH),
+        oid: oid.value,
+        name: name.value,
         value,
-        valueType: resolveDeclaredValueType(metric.valueEncoding, value, valueType),
-        timestamp: metric.timestamp ? new Date(metric.timestamp) : now
+        valueType: resolvedType,
+        timestamp
       };
     });
 
@@ -337,8 +642,12 @@ const SNMP_NAME_MAX_LENGTH = 100;
  *    "UTF8": 0x00` (SQLSTATE 22021). Real-world source: a UniFi USW-24-PoE
  *    answers the bridge OIDs (.1.3.6.1.2.1.17.1.1.0 dot1dBaseBridgeAddress,
  *    .1.3.6.1.2.1.17.4.3.1.1.*) with raw binary octet-strings, and the Go
- *    agent's ParseValue does `case []byte: return string(value)` — so NULs
- *    arrive here inside an ordinary JSON string.
+ *    agent's ParseValue USED to do `case []byte: return string(value)` — so
+ *    NULs arrived here inside an ordinary JSON string. That cast is replaced in
+ *    this same change (`octetStringToText` hex-encodes anything that is invalid
+ *    UTF-8 or contains NUL), but this check is NOT redundant: it is the last
+ *    line of defence for every agent still running the old build, and older
+ *    agents are the normal case for weeks after a release.
  *  - A lone (unpaired) UTF-16 surrogate — NOT a crash, a silent corruption.
  *    Node's `Buffer.from(str, 'utf8')` (and TextEncoder) replace it with U+FFFD,
  *    which is perfectly valid UTF-8, so the insert SUCCEEDS and simply stores a
@@ -431,7 +740,7 @@ export function clampToLength(value: string, maxLength: number): string {
  * Text-safe values are stored exactly as before with exactly the previous
  * `value_type` ('null' | 'number' | 'string' | 'object') — dashboards read
  * those. Anything a text column cannot hold is hex-encoded instead and typed
- * 'hex' (7 chars, well inside varchar(20)) so the reading is preserved rather
+ * 'hex' (3 chars, well inside varchar(20)) so the reading is preserved rather
  * than dropped, and the insert stops being a poison pill.
  */
 export function sanitizeSnmpMetricValue(value: unknown): { value: string | null; valueType: string } {
@@ -466,28 +775,61 @@ const AGENT_HEX_ENCODING = 'hex';
  *  - Only the exact literal 'hex' is honoured. Anything else — 'HEX', 'base64',
  *    a 500-char injection attempt — is ignored and the sanitizer's own type is
  *    used, so nothing unvalidated reaches the varchar(20) column.
+ *  - The declaration must MATCH THE VALUE. The agent's own encoder emits
+ *    `hexOctets` — lowercase, separator-free, two chars per byte — so a
+ *    genuinely hex-encoded value is always even-length `[0-9a-f]`. Honouring the
+ *    word alone let a buggy or hostile agent stamp valueEncoding:'hex' on every
+ *    reading and silently remove the whole device from numeric rollups AND from
+ *    top-interfaces ranking (both key off value_type==='hex'): monitoring goes
+ *    quiet with no error raised anywhere. Checking the shape costs one regex and
+ *    makes that failure impossible to express.
  *  - A missing field (old agents) changes nothing: the API-side safety net in
  *    `sanitizeSnmpMetricValue` remains the last line of defence and still types
  *    NUL/lone-surrogate values 'hex' on its own.
  *  - A null value keeps value_type='null'; there are no bytes to describe.
  */
 export function resolveDeclaredValueType(
-  valueEncoding: string | undefined,
+  valueEncoding: string | null | undefined,
   value: string | null,
   sanitizedValueType: string
 ): string {
   if (value === null) return sanitizedValueType;
-  return valueEncoding === AGENT_HEX_ENCODING ? 'hex' : sanitizedValueType;
+  if (valueEncoding !== AGENT_HEX_ENCODING) return sanitizedValueType;
+  return isAgentHexPayload(value) ? AGENT_HEX_ENCODING : sanitizedValueType;
+}
+
+/**
+ * The exact shape `hexOctets` (agent/internal/snmppoll) produces: one or more
+ * lowercase byte pairs and nothing else. The `{2}` grouping enforces even
+ * length, so a truncated payload is rejected too; the empty string is not a
+ * hex-encoded octet string and fails on the `+`.
+ */
+const AGENT_HEX_PAYLOAD = /^(?:[0-9a-f]{2})+$/;
+
+export function isAgentHexPayload(value: string): boolean {
+  return AGENT_HEX_PAYLOAD.test(value);
 }
 
 /**
  * Sanitize an OID or metric name for its NOT NULL varchar column: make it
  * storable (same hex fallback as values — pathological in practice, since OIDs
  * and template names are ASCII) and clamp it to the column width.
+ *
+ * Returns `clamped` because the caller MUST be able to report it. A clamp is
+ * not cosmetic here: `metric_rollups` keys a series on
+ * `md5(device_id || ':' || oid)`, so two identifiers differing only past the
+ * cutoff hash identically and merge into one series. Detecting it against
+ * `safe.length` rather than the input length is deliberate — the hex fallback
+ * triples the length, and comparing to the raw input would report a clamp that
+ * the encoding, not the column width, caused.
  */
-export function sanitizeSnmpIdentifier(value: string, maxLength: number): string {
+export function sanitizeSnmpIdentifier(
+  value: string,
+  maxLength: number
+): { value: string; clamped: boolean } {
   const safe = isPostgresTextSafe(value) ? value : encodeUtf8Hex(value);
-  return clampToLength(safe, maxLength);
+  const clamped = clampToLength(safe, maxLength);
+  return { value: clamped, clamped: clamped.length < safe.length };
 }
 
 /**
@@ -570,18 +912,29 @@ export async function enqueueSnmpPoll(
 /**
  * Retry budget for a metric batch insert.
  *
- * 6 attempts with exponential backoff from 5s retries at roughly
- * 5s, 10s, 20s, 40s and 80s — a ~155s absorption window. That is sized to
- * outlast the real transient failures: a Postgres restart or managed-instance
- * failover (tens of seconds), and a pool-saturation spike. The previous 3
- * attempts / ~15s window silently discarded every in-flight batch in any of
- * those, which is a worse outcome than the poison pill the cap exists for.
+ * THE BASELINE, precisely: `origin/main` sets no `attempts` on this job and no
+ * `defaultJobOptions` on the queue, so BullMQ's default applied — ONE try, no
+ * retry, ever. A batch that met a Postgres restart, a managed-instance failover
+ * or a pool-saturation spike was discarded outright.
  *
- * The cap is still bounded because deterministic failures no longer consume it
- * at all: `isDeterministicDataError` converts SQLSTATE class 22 (encoding,
+ * The delta is therefore 1 attempt → 6, with exponential backoff from 5s:
+ * retries land at roughly 5s, 10s, 20s, 40s and 80s, a ~155s absorption window
+ * sized to outlast exactly those transients.
+ *
+ * Raising the budget is only safe because deterministic failures cannot spend
+ * it. `isDeterministicDataError` converts SQLSTATE class 22 (encoding,
  * over-length, bad text representation) into an `UnrecoverableError` on the
- * FIRST attempt, so a poison pill fails immediately instead of spinning — which
- * is stricter than the old attempts: 3 behaviour, not looser.
+ * FIRST attempt, and `parseSnmpMetricBatch` does the same for a payload that
+ * fails schema validation. So a poison pill still costs exactly one attempt —
+ * unchanged from main — while a genuinely transient failure now gets ~155s
+ * instead of zero.
+ *
+ * NB on the production symptom. The same 22021 insert appearing every ~60-80s
+ * was NOT BullMQ retrying one job: with a single attempt there was nothing to
+ * retry. It was the 60s poll scheduler enqueueing a NEW process-poll-results
+ * job under a new pollId each cycle, from a device that kept reporting the same
+ * poisoned octet-string. Nothing in this retry budget caused that recurrence or
+ * cures it; the agent-side encoder and the API-side sanitizer do.
  */
 export const SNMP_POLL_RESULTS_ATTEMPTS = 6;
 export const SNMP_POLL_RESULTS_BACKOFF = { type: 'exponential', delay: 5_000 } as const;
@@ -619,13 +972,15 @@ export async function enqueueSnmpPollResults(
     },
     {
       ...(stableJobId ? { jobId: stableJobId } : {}),
-      // Bounded retries. With no cap BullMQ retried a poisoned batch forever:
-      // production logged the same 22021 insert every ~60-80s indefinitely.
-      // Failures are now classified instead of counted — a deterministic data
-      // error (SQLSTATE 22xxx) fails on the first attempt via UnrecoverableError,
-      // while a transient one gets ~155s of backoff, enough to ride out a
-      // Postgres restart or failover. Either way the job ends up in failed and
-      // is retained by removeOnFail for diagnosis.
+      // Bounded retries. main passed no `attempts` at all, i.e. BullMQ's
+      // default of a single try, so any transient DB failure discarded the
+      // batch. Failures are now CLASSIFIED rather than merely counted: a
+      // deterministic data error (SQLSTATE 22xxx) or an unparseable payload
+      // fails on the first attempt via UnrecoverableError, while a transient one
+      // gets ~155s of backoff, enough to ride out a Postgres restart or
+      // failover. Either way the job ends up in failed and is retained by
+      // removeOnFail for diagnosis, and the device is flagged (see
+      // markSnmpBatchAbandoned) so the graph gap has a stated reason.
       attempts: SNMP_POLL_RESULTS_ATTEMPTS,
       backoff: { ...SNMP_POLL_RESULTS_BACKOFF },
       removeOnComplete: { count: 100 },

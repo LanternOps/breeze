@@ -730,8 +730,11 @@ snmpRoutes.get(
         oid: snmpMetrics.oid,
         name: snmpMetrics.name,
         value: snmpMetrics.value,
-        // buildTopInterfaces drops value_type='hex' rows: a hex-encoded MAC is
-        // all digits and would otherwise rank as a huge octet counter.
+        // buildTopInterfaces drops value_type='hex' rows: a hex-encoded MAC can
+        // come out all digits (e.g. '001122304050') and would otherwise rank as
+        // a huge octet counter. The guard keys on value_type, not on the shape
+        // of the string, because a hex value that happens to be all digits is
+        // indistinguishable from a real counter.
         valueType: snmpMetrics.valueType,
         timestamp: snmpMetrics.timestamp
       })

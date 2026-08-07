@@ -211,7 +211,7 @@ func snmpToString(variable gosnmp.SnmpPDU) string {
 	case string:
 		return value
 	case []byte:
-		// Same hazard as snmppoll.ParseValue: sysDescr/sysName/sysObjectID land
+		// Same hazard snmppoll.OctetStringToText guards: sysDescr/sysName/sysObjectID land
 		// in Postgres `text`, and a device that answers with raw binary would
 		// otherwise smuggle NUL bytes into the insert. Non-text payloads become
 		// lowercase hex; ordinary text is untouched.

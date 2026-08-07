@@ -314,21 +314,33 @@ text — the bridge and forwarding-database OIDs are the common case
 address. Those bytes cannot be stored in a text column: a NUL byte is rejected
 outright by PostgreSQL, and other byte sequences would be silently mangled.
 
-When that happens the reading is preserved as **lowercase, separator-free hex of
-the original bytes** and `valueType` is set to `hex`. For example a MAC of
-`78:8a:20:00:d4:e1` is stored as the value `788a2000d4e1`. The encoding is
-lossless — decode the value back to bytes to recover exactly what the device
-sent.
+When that happens the reading is stored as **lowercase, separator-free hex** and
+`valueType` is set to `hex`. A MAC of `78:8a:20:00:d4:e1` is stored as the value
+`788a2000d4e1`.
 
-Two things to know when consuming these:
+**Always check `valueType` before doing anything with a value, and never parse a
+`hex` value as a number.** Hex digits can come out entirely numeric
+(`001122304050`), so a naive numeric parse turns a MAC address into a nonsense
+reading of ~1.1e11. Breeze's own metric rollups and the dashboard's
+top-interfaces ranking exclude `hex` rows for exactly this reason.
 
-- **Never parse a `hex` value as a number.** The hex digits can be entirely
-  numeric (`001122304050`), so a naive numeric parse yields a nonsense reading
-  of ~1.1e11. Check `valueType` first. Breeze's own metric rollups and the
-  dashboard's top-interfaces ranking exclude `hex` rows for this reason.
-- The encoding may be done by the agent (which flags it on the wire) or by the
-  API as a fallback for older agents. Either way the stored `valueType` is
-  `hex`, so `valueType` is the only check you need.
+How faithful the hex is depends on which side encoded it:
+
+- **Encoded by the agent** — current agents detect these values and flag the
+  encoding on the wire. This path is lossless: decode the hex back to bytes and
+  you get exactly what the device sent, as in the `788a2000d4e1` example above.
+- **Encoded by the API as a fallback** — used for readings from older agents
+  that don't send that flag. Here the damage is already done before Breeze sees
+  the value: the older agent packs the reading into JSON first, and that step
+  replaces every byte that isn't valid text with the Unicode replacement
+  character. The API can only hex-encode what actually arrived, so those
+  replacements are what get stored. In practice you'll see runs of `efbfbd`
+  (the replacement character) where the device's real bytes used to be.
+
+So treat a `hex` value from the fallback path as a **stable identifier** for
+that reading — fine for matching, grouping, or spotting a change — but not as a
+faithful dump of the device's bytes. If you need the true bytes off a device,
+upgrade its agent so the agent-side encoding applies.
 
 ### SNMP Dashboard
 

@@ -178,6 +178,29 @@ func TestSnmpToString(t *testing.T) {
 			want: "switch-01",
 		},
 		{
+			// A zeroed sysName/chassis id must not collapse to "": querySNMP
+			// treats an all-empty SysDescr/SysName/SysObjectID as "not SNMP
+			// capable" and would demote a live switch to unmanaged.
+			name: "all_nul_payload_becomes_hex_not_empty",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+			want: "000000000000",
+		},
+		{
+			name: "binary_with_printable_prefix_and_trailing_nuls_becomes_hex",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{0x54, 0x65, 0x73, 0x74, 0x00, 0x00}},
+			want: "546573740000",
+		},
+		{
+			name: "invalid_utf8_with_trailing_nul_hexes_original_bytes",
+			pdu:  gosnmp.SnmpPDU{Value: []byte{0xff, 0xfe, 0x41, 0x00}},
+			want: "fffe4100",
+		},
+		{
+			name: "nul_padded_sysname_with_two_nuls_recovers_to_text",
+			pdu:  gosnmp.SnmpPDU{Value: []byte("switch-01\x00\x00")},
+			want: "switch-01",
+		},
+		{
 			name: "empty_byte_slice_stays_empty",
 			pdu:  gosnmp.SnmpPDU{Value: []byte{}},
 			want: "",
@@ -191,6 +214,24 @@ func TestSnmpToString(t *testing.T) {
 				t.Fatalf("snmpToString() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// querySNMP and querySNMPv3 both return nil — "this host is not SNMP capable" —
+// when SysDescr, SysName and SysObjectID are all empty. Any octet-string payload
+// must therefore render as something non-empty, or a device that answers with a
+// zeroed/binary sysName silently drops out of discovery altogether.
+func TestSNMPToStringNeverEmptiesANonEmptyPayload(t *testing.T) {
+	payloads := [][]byte{
+		{0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+		{0x00},
+		{0x54, 0x65, 0x73, 0x74, 0x00, 0x00},
+		[]byte("sw\x00\x00\x00"),
+	}
+	for _, payload := range payloads {
+		if got := snmpToString(gosnmp.SnmpPDU{Value: payload}); got == "" {
+			t.Errorf("snmpToString(% x) = %q, want a non-empty rendering", payload, got)
+		}
 	}
 }
 

@@ -186,8 +186,9 @@ describe('alertWorker.processEvaluateAll cursor fan-out', () => {
 
 // Unbounded Redis growth: BullMQ retains completed jobs forever by default, and
 // this fan-out enqueues one evaluate-device job per online device every 60s
-// (~56k/day on US prod). The bounds live in the queue's defaultJobOptions so
-// every producer inherits them.
+// (order of ~56k/day on US prod as measured in 2026-08 — it scales with the
+// online fleet). The bounds live in the queue's defaultJobOptions so every
+// producer inherits them.
 describe('alertWorker queue retention bounds', () => {
   afterEach(() => {
     vi.restoreAllMocks();

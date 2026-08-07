@@ -107,17 +107,32 @@ const LIST_SESSIONS_TIMEOUT_MS = 10_000;
  *
  * That route is registered in `SELF_MANAGED_DB_CONTEXT_ROUTES`
  * (middleware/selfManagedDbContextRoutes.ts), so `authMiddleware` runs it with
- * NO ambient transaction — otherwise the up-to-10s `sendCommandToAgentAwaitResult`
- * wait below would pin one of the 35 pooled connections idle-in-transaction for
- * the full timeout on every dashboard poll against an offline agent, starving
- * the pool and 503-ing every route (#1105 class; observed in US prod as
- * `withDbAccessContext (scope=partner) held a pooled connection … for 10004ms`).
+ * NO ambient transaction. THAT REGISTRATION IS WHAT MAKES THIS SAFE — see below.
+ * Without it, the up-to-10s `sendCommandToAgentAwaitResult` wait would pin a
+ * pooled connection idle-in-transaction for the full timeout, starving the pool
+ * and 503-ing every route (#1105 class; observed in US prod as
+ * `withDbAccessContext (scope=partner) held a pooled connection … for 10004ms`,
+ * against a pool sized by DB_POOL_MAX — 35 on US prod in 2026-08, repo default
+ * 30). Note the costly case is a CONNECTED-BUT-SILENT agent, not an offline one:
+ * `sendCommandToAgentAwaitResult` returns immediately when the agent has no live
+ * WS, so an offline device never reaches the timer at all.
  *
- * `runOutsideDbContext` is belt-and-braces for the case where an ambient
- * context DOES exist (a caller that reaches the handler through some other
- * middleware chain): on its own it would NOT close an outer transaction, but it
- * guarantees `withDbAccessContext` opens a genuinely fresh, correctly-scoped one
- * rather than silently reusing the ambient store.
+ * `runOutsideDbContext` here is NOT harmless redundancy — its safety is
+ * conditional on that registration. Exiting the ALS store and opening a fresh
+ * context while an OUTER transaction is still held is precisely the shape that
+ * caused the 2026-07-24 US prod outage (see SELF_MANAGED_DB_CONTEXT_ACTIONS in
+ * middleware/agentAuth.ts): `runOutsideDbContext` does not release the outer
+ * transaction, so every agent poll held TWO pooled connections at once and the
+ * pool self-deadlocked — all slots pinned by outer transactions parked
+ * idle-in-transaction waiting for an inner connection.
+ *
+ * So: with the route registered there is no outer transaction, and this call
+ * only guarantees `withDbAccessContext` opens a genuinely fresh, correctly-scoped
+ * context instead of silently reusing an ambient store. If this route were ever
+ * REMOVED from `SELF_MANAGED_DB_CONTEXT_ROUTES`, this helper would flip from
+ * redundant to actively harmful — doubling connection usage per request rather
+ * than merely failing to help. Keep the two in sync; do not "clean up" one
+ * without the other.
  *
  * Tenant scoping is preserved exactly: the context is rebuilt from the request's
  * own `AuthContext` via `dbAccessContextFromAuth` → `buildDbAccessContext`, the

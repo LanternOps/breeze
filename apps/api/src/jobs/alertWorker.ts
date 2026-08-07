@@ -45,17 +45,23 @@ let alertQueue: Queue | null = null;
 // Bounded retention for EVERY producer on this queue.
 //
 // BullMQ retains completed jobs forever by default. The `evaluate-all` fan-out
-// enqueues one `evaluate-device` job per online device every 60s (~39/tick on
-// US prod, ~56k/day), so an unbounded `completed` set grows Redis without
-// limit. Set the bounds on the queue rather than on each `addBulk` call so any
-// future producer inherits them; per-call options still win where a caller
-// deliberately overrides (e.g. the on-demand triggers below).
+// enqueues one `evaluate-device` job per online device every 60s, so an
+// unbounded `completed` set grows Redis without limit. Set the bounds on the
+// queue rather than on each `addBulk` call so any future producer inherits
+// them; per-call options still win where a caller deliberately overrides (e.g.
+// the on-demand triggers below).
 //
-// 1000 completed ≈ 25 minutes of fan-out history — enough to inspect the last
-// couple of sweeps, and a hard cap of ~1000 job hashes (single-digit MB).
+// Unlike a fixed-rate sweep, this fan-out scales with the ONLINE FLEET, so the
+// retention window it buys shrinks as the fleet grows. On US prod in 2026-08 it
+// was roughly 39 jobs/tick (~56k/day), putting 1000 completed at somewhere
+// around 25 minutes of history — enough to inspect the last couple of sweeps.
+// Those figures are a point-in-time reading, not a constant; re-measure rather
+// than trusting them. The guarantee that does not drift with fleet size is the
+// hard cap of ~1000 job hashes (single-digit MB).
+//
 // Failed retention is 5x that: failures are what people actually debug, they
-// are rare in steady state, so 5000 is days-to-weeks of failure history while
-// still being a hard bound.
+// are rare in steady state, so 5000 is a much longer window of failure history
+// while still being a hard bound.
 const ALERT_QUEUE_DEFAULT_JOB_OPTIONS = {
   removeOnComplete: { count: 1000 },
   removeOnFail: { count: 5000 }
