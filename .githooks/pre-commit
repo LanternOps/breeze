@@ -3,15 +3,30 @@
 # Breeze pre-commit hook. Auto-installed by the root package.json "prepare"
 # script (sets core.hooksPath=.githooks on pnpm install).
 #
-# Blocks confidential infrastructure identifiers / secrets from being committed.
-# Bypass in a genuine emergency with `git commit --no-verify` — CI runs the same
-# scan on push/PR, so it cannot be smuggled past that way.
+# Runs two staged-file guards. Bypass in a genuine emergency with
+# `git commit --no-verify` — CI runs both again, so neither can be smuggled
+# past that way.
+#
+#   1. scan-confidential.sh — blocks confidential infrastructure identifiers
+#      and secrets.
+#   2. check-migration-naming.sh — blocks migration filenames the runner would
+#      silently skip, and additions to the closed reserved date block. These
+#      only ever failed in CI before, via three ordering tests that named the
+#      wave rather than the offending file (#3016).
 #
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
-scanner="$repo_root/scripts/security/scan-confidential.sh"
 
-[[ -x "$scanner" ]] || scanner="bash $repo_root/scripts/security/scan-confidential.sh"
+run_guard() {
+  local script="$repo_root/scripts/$1"
+  shift
+  if [[ -x "$script" ]]; then
+    "$script" "$@"
+  else
+    bash "$script" "$@"
+  fi
+}
 
-exec $scanner --staged
+run_guard security/scan-confidential.sh --staged
+run_guard check-migration-naming.sh --staged

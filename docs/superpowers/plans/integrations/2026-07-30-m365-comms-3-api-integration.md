@@ -28,7 +28,7 @@
 - **User axis, N users from day one.** Allowlists are user-id lists (`isM365CommsToolsEnabledForUser` / `isM365CommsOnboardingEnabledForUser`, Plan 1). Nothing may hardcode a single user (§10). Site-restricted sessions are refused (mirrors `readActionService.ts:109-115`).
 - **`m365_connections` user-owned rows have `org_id NULL`** — the org cascade/export contracts cannot see them; the behavioural RLS suite (task 5, shipped #2928) is the tenancy proof. Say so in the PR (§3.4).
 - **New columns on org-cascade tables must be classified in `CORE_TENANT_EXPORT_POLICY`** (`services/tenantExportPolicyRegistry.ts`) in the same task that adds them. This plan adds two: `action_intents.plan_digest` (Task 16) and `m365_connections.delegated_user_upn` (Task 14). Both enforcing suites need a live DB — run them explicitly; they cannot fail in the Test API job.
-- **Migrations:** idempotent, no inner BEGIN/COMMIT, never edit shipped files. ⚠️ **Naming is a correctness issue here, not style.** The tree already carries future-dated migrations up to `2026-08-06-f-…`, and `2026-08-06-e-action-intents-origin-principal.sql` RE-CREATES `action_intents_block_content_update()`. A comms migration named with today's date would sort before it, and a fresh-DB replay would clobber the plan-digest trigger version (the replay-clobbers-newer trap). This plan's three migrations are therefore named `2026-08-06-g-…`/`-h-`/`-i-` to sort after every shipped definition. **At execution time, run `ls apps/api/migrations | sort | tail` and bump the letters so they still sort last** — Plans 1/2's execution may have added files.
+- **Migrations:** idempotent, no inner BEGIN/COMMIT, never edit shipped files. ⚠️ **Naming is a correctness issue here, not style.** The tree already carries future-dated migrations up to `2026-08-06-f-…`, and `2026-08-06-e-action-intents-origin-principal.sql` RE-CREATES `action_intents_block_content_update()`. A comms migration named with today's date would sort before it, and a fresh-DB replay would clobber the plan-digest trigger version (the replay-clobbers-newer trap). This plan's three migrations must therefore sort after every shipped definition — but **the way to get that is a later DATE, not a later letter.** The `2026-08-06` block is CLOSED (its `-a-`…`-f-` slots are the shipped remediation waves); appending `-g-`/`-h-`/`-i-` to it reds `main` and is now rejected by `scripts/check-migration-naming.sh` at commit time. Three separate authors made exactly that mistake (#2995, #3008, and an earlier revision of this very plan — see #3016). The migrations are therefore named `2026-08-14-a-…`/`-b-`/`-c-`, where the `-a-/-b-/-c-` infixes order them **among themselves on that one date** and nothing else. **At execution time, run `ls apps/api/migrations | sort | tail` and, if a later-dated file has landed, move all three to a date after it** — keeping the relative `-a-/-b-/-c-` order. Plans 1/2's execution may have added files.
 - **Consent sessions FK has NO `ON UPDATE CASCADE`** (Plan 1 correction 3, verified against a real DB): delete the attempt's `m365_user_consent_sessions` rows BEFORE rotating `consent_attempt_id`, in the same locked transaction — exactly as `connectionService.ts:392-397` / `:727-731` do via `deleteConsentSessionsForAttemptInTransaction`.
 - **Tests needing a real DB** run against Postgres `:5433` via `vitest.integration.config.ts`. `pnpm test` does NOT run the separate-config contract suites. Co-located integration tests must be dual-listed (include in `vitest.integration.config.ts`, exclude in `vitest.config.ts`) — `intentReleaseWorkerM365Headless.integration.test.ts`'s header comment explains the failure modes.
 - **Never commit** real tenant ids, client ids, secrets, or infra hostnames. Fixtures use the all-1s/2s/3s GUID style.
@@ -331,7 +331,7 @@ outcome} — correspondence content never reaches audit, logs, or metrics."
 Spec §4.1–§4.2, §14 task 14. A third consent phase beside `admin_consent`/`identity_verification`, on the user axis, against `/common`, with verify-then-persist delegated to the executor's ephemeral-cache redemption (Plan 2 task 11) and the atomic promotion + supersede-cleanup ordering from §4.1.
 
 **Files:**
-- Create: `apps/api/migrations/2026-08-06-g-m365-comms-delegated-upn.sql`
+- Create: `apps/api/migrations/2026-08-14-a-m365-comms-delegated-upn.sql`
 - Modify: `apps/api/src/db/schema/m365.ts` — add `delegatedUserUpn` to `m365Connections`
 - Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts` — classify the new column
 - Modify: `apps/api/src/services/m365ControlPlane/browserBinding.ts` — third phase + third instance
@@ -356,7 +356,7 @@ Spec §4.1–§4.2, §14 task 14. A third consent phase beside `admin_consent`/`
 
 - [ ] **Step 1: Migration — the UPN column**
 
-`apps/api/migrations/2026-08-06-g-m365-comms-delegated-upn.sql`:
+`apps/api/migrations/2026-08-14-a-m365-comms-delegated-upn.sql`:
 
 ```sql
 -- Sender identity for display: the approval projection ("Signed in as <UPN>",
@@ -532,7 +532,7 @@ cd apps/api && DATABASE_URL="postgresql://breeze_test:breeze_test@localhost:5433
     src/__tests__/integration/m365CommsUserRls.integration.test.ts
 pnpm db:check-drift
 NODE_OPTIONS=--max-old-space-size=8192 pnpm exec tsc --noEmit --project apps/api/tsconfig.json
-git add apps/api/migrations/2026-08-06-g-m365-comms-delegated-upn.sql apps/api/src/db/schema/m365.ts \
+git add apps/api/migrations/2026-08-14-a-m365-comms-delegated-upn.sql apps/api/src/db/schema/m365.ts \
         apps/api/src/services/tenantExportPolicyRegistry.ts \
         apps/api/src/services/m365ControlPlane/browserBinding.ts apps/api/src/services/m365ControlPlane/browserBinding.test.ts \
         apps/api/src/services/m365ControlPlane/commsConsent*.ts apps/api/src/routes/m365CommsConsent*.ts apps/api/src/index.ts \
@@ -698,7 +698,7 @@ control)."
 Spec §0.a, §5.2–§5.3, §8, §14 task 16. The send tool creates intents whose `arguments` ARE the envelope; the release funnel is one function taking an intent id; the worker gets a fourth dispatch branch.
 
 **Files:**
-- Create: `apps/api/migrations/2026-08-06-h-m365-comms-plan-digest.sql`
+- Create: `apps/api/migrations/2026-08-14-b-m365-comms-plan-digest.sql`
 - Modify: `apps/api/src/db/schema/actionIntents.ts` — `planDigest` column
 - Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts` — classify `plan_digest`
 - Modify: `apps/api/src/services/actionIntents/intentService.ts` — `planDigest?` + `summaries?` on `CreateActionIntentInput`
@@ -724,7 +724,7 @@ Spec §0.a, §5.2–§5.3, §8, §14 task 16. The send tool creates intents whos
 
 - [ ] **Step 1: Migration — `plan_digest` + trigger**
 
-`apps/api/migrations/2026-08-06-h-m365-comms-plan-digest.sql`:
+`apps/api/migrations/2026-08-14-b-m365-comms-plan-digest.sql`:
 
 ```sql
 -- Second digest of the two-digest send contract (design §5.3(b)): sha256 of
@@ -747,7 +747,7 @@ BEGIN
 END $$ LANGUAGE plpgsql;
 ```
 
-Copy the function body from `apps/api/migrations/2026-08-06-e-action-intents-origin-principal.sql` — the **latest** shipped definition (it added the `origin_principal_kind`/`origin_principal_id` columns to the immutable list; the original at `2026-07-18-action-intents.sql:95-125` is stale) — plus the one new `plan_digest` line. This file's `-h-` name sorts after `-e-` precisely so a fresh-DB replay applies this version last; re-verify the sort position at execution time (Global Constraints). Schema: `planDigest: char('plan_digest', { length: 64 })` — match `argumentDigest`'s declaration style in `actionIntents.ts` (read it; if it is `varchar(64)`, use `varchar` for both the column and this migration). Export policy: `plan_digest` → `included`, beside `argument_digest`. `pnpm db:migrate && pnpm db:check-drift`.
+Copy the function body from `apps/api/migrations/2026-08-06-e-action-intents-origin-principal.sql` — the **latest** shipped definition (it added the `origin_principal_kind`/`origin_principal_id` columns to the immutable list; the original at `2026-07-18-action-intents.sql:95-125` is stale) — plus the one new `plan_digest` line. This file's `2026-08-14-b-` name sorts after `2026-08-06-e-` (by date, not by letter) precisely so a fresh-DB replay applies this version last; re-verify the sort position at execution time (Global Constraints). Schema: `planDigest: char('plan_digest', { length: 64 })` — match `argumentDigest`'s declaration style in `actionIntents.ts` (read it; if it is `varchar(64)`, use `varchar` for both the column and this migration). Export policy: `plan_digest` → `included`, beside `argument_digest`. `pnpm db:migrate && pnpm db:check-drift`.
 
 - [ ] **Step 2: `intentService` extensions — failing tests first**
 
@@ -947,7 +947,7 @@ catalog so the funnel stays closed as tools are added."
 Spec §5.4, §14 task 15b. The approver must see exactly what will be sent, from the immutable record, with hostile text neutralized — and the mutable display copy stops being trusted anywhere.
 
 **Files:**
-- Create: `apps/api/migrations/2026-08-06-i-approval-arguments-immutable.sql`
+- Create: `apps/api/migrations/2026-08-14-c-approval-arguments-immutable.sql`
 - Modify: `apps/api/src/routes/actionIntents.ts` — `GET /:id` (the gated read; today the router has only `/:id/reveal-secret`)
 - Modify: `apps/api/src/routes/actionIntents.test.ts` (or create beside it — read the reveal route's test first and extend its harness)
 - Modify: `apps/api/src/routes/approvals.ts` — detail serves the intent's arguments for intent-linked approvals (decision 9)
@@ -966,7 +966,7 @@ Spec §5.4, §14 task 15b. The approver must see exactly what will be sent, from
 
 - [ ] **Step 1: Migration — freeze the displayed copy**
 
-`2026-08-06-i-approval-arguments-immutable.sql`, cloning the `2026-07-18-action-intents.sql:95-125` pattern:
+`2026-08-14-c-approval-arguments-immutable.sql`, cloning the `2026-07-18-action-intents.sql:95-125` pattern:
 
 ```sql
 -- approval_requests.action_arguments is a COPY of intent.arguments that the
