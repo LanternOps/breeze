@@ -492,7 +492,12 @@ updateRingRoutes.get(
       })
       .from(patches)
       .where(whereClause)
-      .orderBy(desc(patches.createdAt))
+      // `patches.id` is a mandatory tiebreaker — see the same note in
+      // routes/patches/list.ts. `created_at` ties en masse (agent ingest runs
+      // in a transaction, so `now()` is identical for a whole scan report), and
+      // without a unique second key a client paging this endpoint gets some
+      // rows twice and never sees others.
+      .orderBy(desc(patches.createdAt), desc(patches.id))
       .limit(limit)
       .offset(offset);
 

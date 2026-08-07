@@ -235,7 +235,8 @@
     "sortBy": "Sort by {{label}}",
     "errors": {
       "approvePatches": "Failed to approve patches",
-      "declinePatches": "Failed to decline patches"
+      "declinePatches": "Failed to decline patches",
+      "staleList": "{{message}} Showing the previously loaded list, which may be out of date."
     },
     "severity": {
       "critical": "Critical",
@@ -274,7 +275,8 @@
       "selectAllPatches": "Select all patches",
       "deselectAllPatches": "Deselect all patches",
       "selectPatch": "Select {{title}}",
-      "deselectPatch": "Deselect {{title}}"
+      "deselectPatch": "Deselect {{title}}",
+      "selectAllMatching": "Select all {{count}} matching"
     },
     "table": {
       "patch": "Patch",
@@ -324,7 +326,9 @@
       "noDevicesForScan": "No devices available for scanning",
       "updateRing": "Failed to update ring",
       "createRing": "Failed to create update ring",
-      "deleteRing": "Failed to delete ring"
+      "deleteRing": "Failed to delete ring",
+      "approveUnknown": "Approval status unknown — the server response could not be read. Refresh to confirm which patches were approved.",
+      "approveAbortedWithFailures": "{{message}} ({{count}} patches were also rejected by the server before this.)"
     },
     "toast": {
       "ringSaved": "Update ring saved",
@@ -352,7 +356,9 @@
     "ringModal": {
       "editTitle": "Edit update ring",
       "createTitle": "Create update ring"
-    }
+    },
+    "truncatedNotice": "Showing {{shown}} of {{total}} patches. The filters here only narrow what's already loaded, so the rest can't be reached from this view — use the patches API to work through the full catalog.",
+    "shiftedNotice": "Showing {{shown}} of {{total}} patches — the catalog changed while it was loading. Reload to see the rest."
   },
   "ringSelector": {
     "label": "Update Ring:",

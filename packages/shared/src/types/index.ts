@@ -370,7 +370,10 @@ export interface MtlsCertData {
 export type ScriptLanguage = 'powershell' | 'bash' | 'python' | 'cmd';
 export type ScriptRunAs = 'system' | 'user' | 'elevated';
 export type ExecutionStatus = 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'timeout' | 'cancelled';
-export type TriggerType = 'manual' | 'scheduled' | 'alert' | 'policy';
+// 'automation' is read-only provenance: only the automation runtime mints it
+// (#3162), never an API caller — the execute-script request schema deliberately
+// still accepts only the first four.
+export type TriggerType = 'manual' | 'scheduled' | 'alert' | 'policy' | 'automation';
 
 export interface Script {
   id: string;

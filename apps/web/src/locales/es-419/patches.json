@@ -235,7 +235,8 @@
     "sortBy": "Ordenar por {{label}}",
     "errors": {
       "approvePatches": "No se pudieron aprobar los parches",
-      "declinePatches": "No se pudieron rechazar los parches"
+      "declinePatches": "No se pudieron rechazar los parches",
+      "staleList": "{{message}} Se muestra la lista cargada anteriormente, que puede estar desactualizada."
     },
     "severity": {
       "critical": "Crítico",
@@ -274,7 +275,8 @@
       "selectAllPatches": "Seleccionar todos los parches",
       "deselectAllPatches": "Deseleccionar todos los parches",
       "selectPatch": "Seleccione {{title}}",
-      "deselectPatch": "Deseleccionar {{title}}"
+      "deselectPatch": "Deseleccionar {{title}}",
+      "selectAllMatching": "Seleccionar los {{count}} coincidentes"
     },
     "table": {
       "patch": "Parche",
@@ -324,7 +326,9 @@
       "noDevicesForScan": "No hay dispositivos disponibles para escanear",
       "updateRing": "No se pudo actualizar el anillo",
       "createRing": "No se pudo crear el anillo de actualización",
-      "deleteRing": "No se pudo eliminar el anillo"
+      "deleteRing": "No se pudo eliminar el anillo",
+      "approveUnknown": "Estado de aprobación desconocido: no se pudo leer la respuesta del servidor. Actualiza para confirmar qué parches se aprobaron.",
+      "approveAbortedWithFailures": "{{message}} (El servidor también rechazó {{count}} parches antes de esto.)"
     },
     "toast": {
       "ringSaved": "Anillo de actualización guardado",
@@ -352,7 +356,9 @@
     "ringModal": {
       "editTitle": "Editar anillo de actualización",
       "createTitle": "Crear anillo de actualización"
-    }
+    },
+    "truncatedNotice": "Se muestran {{shown}} de {{total}} parches. Los filtros de aquí solo acotan lo ya cargado, así que el resto no se puede alcanzar desde esta vista: usa la API de parches para recorrer el catálogo completo.",
+    "shiftedNotice": "Se muestran {{shown}} de {{total}} parches: el catálogo cambió mientras se cargaba. Vuelve a cargar para ver el resto."
   },
   "ringSelector": {
     "label": "Anillo de actualización:",
