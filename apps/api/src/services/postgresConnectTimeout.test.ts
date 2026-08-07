@@ -1,6 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import {
+  getDbConnectTimeoutStats,
+  __resetDbConnectTimeoutStatsForTests,
+} from './dbConnectTimeoutStats';
 import {
   CONNECT_TIMEOUT_CODE,
   POSTGRES_CONNECT_TIMEOUT_SECONDS,
@@ -225,5 +229,53 @@ describe('safeDiagnoseConnectTimeout', () => {
     const err = connectTimeoutError();
     expect(safeDiagnoseConnectTimeout(err)?.cause).toBe(diagnoseConnectTimeout(err)?.cause);
     expect(safeDiagnoseConnectTimeout(new Error('unrelated'))).toBeNull();
+  });
+});
+
+describe('safeDiagnoseConnectTimeout feeds the #3214 rolling counter', () => {
+  beforeEach(() => {
+    __resetDbConnectTimeoutStatsForTests();
+  });
+
+  afterEach(() => {
+    __resetDbConnectTimeoutStatsForTests();
+  });
+
+  it('records a connect timeout', () => {
+    // This wrapper is the ONLY feed into the counter the pool-health watchdog
+    // alerts on. Remove the recording call and the watchdog reads an empty
+    // window forever — reporting below-threshold straight through an incident,
+    // with nothing else going red.
+    safeDiagnoseConnectTimeout(connectTimeoutError());
+    expect(getDbConnectTimeoutStats(60_000).timeouts).toBe(1);
+  });
+
+  it('does NOT record an unrelated error', () => {
+    // Without the `if (diagnosis)` guard every API error would count as a
+    // connect timeout, so the watchdog would probe and alert continuously.
+    safeDiagnoseConnectTimeout(new Error('unrelated'));
+    safeDiagnoseConnectTimeout(new TypeError('also unrelated'));
+    expect(getDbConnectTimeoutStats(60_000).timeouts).toBe(0);
+  });
+
+  it('records a Drizzle-wrapped connect timeout too', () => {
+    safeDiagnoseConnectTimeout(drizzleWrapped(connectTimeoutError()));
+    expect(getDbConnectTimeoutStats(60_000).timeouts).toBe(1);
+  });
+
+  it('counts one error object once even when classified twice', () => {
+    // app.onError classifies, then captureException classifies the same object.
+    const err = connectTimeoutError();
+    safeDiagnoseConnectTimeout(err);
+    safeDiagnoseConnectTimeout(err);
+    expect(getDbConnectTimeoutStats(60_000).timeouts).toBe(1);
+  });
+
+  it('records the diagnosed cause, not a fixed one', () => {
+    safeDiagnoseConnectTimeout(connectTimeoutError());
+    const stats = getDbConnectTimeoutStats(60_000);
+    // With no event-loop monitor running, diagnosis is correctly 'unknown'.
+    expect(stats.byCause.unknown).toBe(1);
+    expect(stats.byCause.connectivity).toBe(0);
   });
 });

@@ -73,6 +73,15 @@ const ALLOWED_TAG_NAMES = new Set([
   // bucketEventLoopLag); neither carries a tenant, device, or host identifier.
   'connect_timeout_cause',
   'event_loop_lag_bucket',
+  // #3214: the pool-health watchdog's verdict is the ONLY part of its report
+  // that can survive to Sentry — `scrubEvent` deletes `message`, `logentry` and
+  // `extra` from every event, so an unallowlisted verdict would arrive as a
+  // contentless, ungroupable blank. It is also the field that decides the
+  // operator's action: `pool-degraded` means restart the API, and
+  // `database-unreachable` means explicitly do not. Closed 5-value set
+  // (DB_POOL_HEALTH_VERDICTS plus the `check-failed` self-report); carries no
+  // tenant, device, or host identifier.
+  'db_pool_health_verdict',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;
@@ -294,6 +303,25 @@ export function captureException(
   c?: Context,
   tags?: Record<string, string>,
 ): void {
+  // Classify BEFORE the init guard. The classifier is no longer only a tag
+  // source: it also feeds the rolling CONNECT_TIMEOUT rate that the #3214
+  // pool-health watchdog alerts on. Left below the guard, that counter was blind
+  // on every instance without a DSN — the self-hosted default — because
+  // `app.onError` was then its only feed, and every worker, scheduler,
+  // unhandledRejection and agent-WS path contributed nothing. That is precisely
+  // the profile of the original incident (see the note below: the loudest
+  // signature was the patch scheduler, not any route), so a watchdog fed only by
+  // the request path would have reported the pool healthy right through it.
+  //
+  // Guarded, because this now runs on instances where nothing else in this
+  // function does: a classifier fault must cost two tags, never the report.
+  let diagnosis: ConnectTimeoutDiagnosis | null = null;
+  try {
+    diagnosis = connectTimeoutClassifier?.(err) ?? null;
+  } catch {
+    // Classification is diagnostic only — never let it displace the report.
+  }
+
   if (!initialized) {
     return;
   }
@@ -321,24 +349,16 @@ export function captureException(
       }
     }
 
-    // #3022. Tagged HERE rather than in the HTTP error handler because a
+    // #3022. Classified HERE rather than in the HTTP error handler because a
     // CONNECT_TIMEOUT is just as likely to surface from a BullMQ worker as from
     // a request — in the original incident the loudest signature in Sentry was
     // the patch scheduler, not any route. captureException is the one chokepoint
-    // every path already goes through, so tagging it here covers all of them.
-    // The injected classifier is expected to be the never-throwing
-    // `safeDiagnoseConnectTimeout`, but this is the last line before an error
-    // report is emitted, so it is guarded here too: a classifier fault must cost
-    // two tags, never the report itself. `Sentry.captureException` below is
-    // deliberately outside the try.
-    try {
-      const diagnosis = connectTimeoutClassifier?.(err) ?? null;
-      if (diagnosis) {
-        scope.setTag('connect_timeout_cause', diagnosis.cause);
-        scope.setTag('event_loop_lag_bucket', diagnosis.lagBucket);
-      }
-    } catch {
-      // Classification is diagnostic only — never let it displace the report.
+    // every path already goes through, so covering it here covers all of them.
+    // The classification itself now happens above the `initialized` guard (see
+    // there for why); this only applies its result.
+    if (diagnosis) {
+      scope.setTag('connect_timeout_cause', diagnosis.cause);
+      scope.setTag('event_loop_lag_bucket', diagnosis.lagBucket);
     }
 
     Sentry.captureException(err);

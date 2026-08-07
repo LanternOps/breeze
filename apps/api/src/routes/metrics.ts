@@ -14,6 +14,17 @@ import { deviceMetrics, devices, metricRollups, recoveryReadiness as recoveryRea
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { getEventLoopLagStats, readLatestEventLoopLag } from '../services/eventLoopMonitor';
+import {
+  getDbConnectTimeoutStats,
+  setDbConnectTimeoutMetricsRecorder,
+} from '../services/dbConnectTimeoutStats';
+import {
+  DB_POOL_HEALTH_VERDICTS,
+  getDbPoolHealthCheckFailures,
+  getDbPoolHealthProbeCloseFailures,
+  getDbPoolHealthWindowMs,
+  getLastDbPoolHealthAssessment,
+} from '../db/dbPoolHealthMonitor';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { BACKUP_LOW_READINESS_THRESHOLD } from './backup/constants';
 import {
@@ -465,6 +476,76 @@ const eventLoopMonitoredGauge = new Gauge({
   registers: [register]
 });
 
+// #3214 — Postgres CONNECT_TIMEOUT as a first-class series. During the incident
+// this signal existed only as individual Sentry events and console lines, so the
+// thing that actually mattered — the RATE, sustained at ~144/min for hours while
+// the pool decayed from 35 live connections to 9 — was invisible. `cause` comes
+// from services/postgresConnectTimeout.ts, so a starved event loop (#3022) can
+// be told apart from a genuine connect failure on the same chart.
+const dbConnectTimeoutsTotal = new Counter({
+  name: 'breeze_db_connect_timeouts_total',
+  help: 'Total Postgres CONNECT_TIMEOUT errors observed, by diagnosed cause',
+  labelNames: ['cause'] as const,
+  registers: [register]
+});
+
+// The same rate the watchdog evaluates, republished so an alert rule and the
+// warning in the logs derive from one number instead of two definitions that can
+// drift apart.
+const dbConnectTimeoutRateGauge = new Gauge({
+  name: 'breeze_db_connect_timeout_rate_per_min',
+  help: 'Postgres CONNECT_TIMEOUT errors per minute over the pool-health window',
+  registers: [register]
+});
+
+// Enum-style gauge: exactly one verdict carries 1, the rest carry 0. Modelled as
+// a label rather than a numeric code because the operational response differs per
+// verdict and an alert must be able to name which — `pool-degraded` means restart
+// the API (the pool cannot self-heal, #3214), `database-unreachable` means do NOT
+// restart, the fault is downstream. Before the first evaluation, whenever the
+// watchdog is disabled, and after a failed evaluation, ALL series stay 0.
+//
+// Note there is no `healthy` verdict to publish — the quiet one is
+// `below-threshold`, because the underlying count is a floor and pool occupancy
+// is never observed. Alert on `verdict="pool-degraded" == 1`, never on the
+// negation of a healthy series.
+const dbPoolHealthGauge = new Gauge({
+  name: 'breeze_db_pool_health',
+  help: '1 for the pool-health watchdog current verdict, 0 for the others (all 0 before the first evaluation)',
+  labelNames: ['verdict'] as const,
+  registers: [register]
+});
+
+// Freshness, without which the gauge above cannot be trusted. A watchdog that
+// starts throwing every tick would otherwise leave its last verdict asserted
+// indefinitely; `lastAssessment` is cleared on failure so the verdict series go
+// to 0, and this timestamp is what lets an alert require recency rather than
+// merely a value. 0 = never evaluated.
+const dbPoolHealthLastCheckGauge = new Gauge({
+  name: 'breeze_db_pool_health_last_check_timestamp_seconds',
+  help: 'Unix time of the last completed pool-health evaluation (0 = never)',
+  registers: [register]
+});
+
+// Gauges, not Counters, and therefore deliberately WITHOUT the `_total` suffix
+// (which OpenMetrics reserves for counters). The underlying values are
+// process-lifetime totals owned by dbPoolHealthMonitor and read absolutely on
+// each scrape, so there is no per-event increment to drive a Counter with.
+const dbPoolHealthCheckFailuresGauge = new Gauge({
+  name: 'breeze_db_pool_health_check_failures',
+  help: 'Pool-health evaluations that threw before producing a verdict, since process start',
+  registers: [register]
+});
+
+// Each failed close is a probe socket that may have been leaked — against the
+// database the watchdog is diagnosing. Surfaced so the watchdog cannot quietly
+// become a contributor to connection exhaustion.
+const dbPoolHealthProbeCloseFailuresGauge = new Gauge({
+  name: 'breeze_db_pool_health_probe_close_failures',
+  help: 'Pool-health probe clients whose end() failed since process start, each a possible leaked connection',
+  registers: [register]
+});
+
 function initializeMetricDefaults(): void {
   httpRequestsInFlight.set(0);
   devicesActiveGauge.set(0);
@@ -507,6 +588,18 @@ function initializeMetricDefaults(): void {
   eventLoopLagWindowMaxGauge.set(0);
   eventLoopLagWindowMeanGauge.set(0);
   eventLoopStarvedGauge.set(0);
+  // #3214. Seeded at 0 for the same reason: an alert on the connect-timeout rate
+  // must not silently match nothing on an instance that has not yet timed out.
+  dbConnectTimeoutsTotal.labels('event-loop-starvation').inc(0);
+  dbConnectTimeoutsTotal.labels('connectivity').inc(0);
+  dbConnectTimeoutsTotal.labels('unknown').inc(0);
+  dbConnectTimeoutRateGauge.set(0);
+  for (const verdict of DB_POOL_HEALTH_VERDICTS) {
+    dbPoolHealthGauge.labels(verdict).set(0);
+  }
+  dbPoolHealthLastCheckGauge.set(0);
+  dbPoolHealthCheckFailuresGauge.set(0);
+  dbPoolHealthProbeCloseFailuresGauge.set(0);
 }
 
 initializeMetricDefaults();
@@ -557,6 +650,28 @@ function normalizeMetricLabel(value: string, fallback: string): string {
 function updateProcessMetrics(): void {
   processStartTimeGauge.set(Math.floor(Date.now() / 1000 - process.uptime()));
   updateEventLoopMetrics();
+  updateDbPoolHealthMetrics();
+}
+
+/**
+ * Republishes the watchdog's latest verdict (#3214). Read on scrape rather than
+ * pushed on evaluation so a scrape always reflects the most recent check even if
+ * the watchdog interval and the scrape interval differ.
+ *
+ * The rate is recomputed here over the SAME window the watchdog uses, so the
+ * gauge and the log warning cannot disagree. When no verdict exists yet, every
+ * verdict series is left at 0 — see the gauge's declaration for why "not
+ * observed" must not collapse into "healthy".
+ */
+function updateDbPoolHealthMetrics(): void {
+  dbConnectTimeoutRateGauge.set(getDbConnectTimeoutStats(getDbPoolHealthWindowMs()).ratePerMin);
+  const assessment = getLastDbPoolHealthAssessment();
+  for (const verdict of DB_POOL_HEALTH_VERDICTS) {
+    dbPoolHealthGauge.labels(verdict).set(assessment?.verdict === verdict ? 1 : 0);
+  }
+  dbPoolHealthLastCheckGauge.set(assessment ? Math.floor(assessment.at / 1000) : 0);
+  dbPoolHealthCheckFailuresGauge.set(getDbPoolHealthCheckFailures());
+  dbPoolHealthProbeCloseFailuresGauge.set(getDbPoolHealthProbeCloseFailures());
 }
 
 function updateEventLoopMetrics(): void {
@@ -857,6 +972,15 @@ function recordExtensionOrgInstallDenyMetric(
 }
 
 function bindMetricsRecorders(): void {
+  // #3214. The stats module is a zero-import leaf (it sits in the graph of
+  // services/sentry.ts), so the Prometheus counter is pushed IN from here rather
+  // than pulled by it — same inversion as setConnectTimeoutClassifier.
+  setDbConnectTimeoutMetricsRecorder({
+    onConnectTimeout: (cause) => {
+      dbConnectTimeoutsTotal.labels(cause).inc();
+    },
+  });
+
   setS1MetricsRecorder({
     onSyncRun: (job, outcome, durationMs) => {
       const safeDuration = Number.isFinite(durationMs) ? Math.max(durationMs, 0) : 0;

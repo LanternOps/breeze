@@ -222,6 +222,66 @@ an unauthenticated prober measure whether its own traffic is starving the
 instance. Readiness is also not gated on lag — starvation is a load symptom, and
 failing readiness under load would shift traffic onto peers and starve those too.
 
+### Database pool-health watchdog
+
+The API's Postgres driver (postgres.js) can leave a pooled connection permanently
+unable to reconnect if that connection's socket dies while a write is still
+buffered. The affected pool slot then retries forever, failing every time with
+`write CONNECT_TIMEOUT` — **against a database that is completely healthy**. Slots
+are lost one at a time, so the pool decays over hours until most queries fail at
+connect. Nothing in the API can repair it: only restarting the API process
+recovers the pool.
+
+The watchdog exists because that failure is very easy to misread as a database
+outage. When the `CONNECT_TIMEOUT` rate breaches the threshold, it opens **one
+brand-new connection** to the same database, outside the pool. A fresh connection
+is unaffected by the defect, so the result separates the two causes:
+
+- the fresh connection **succeeds** → the database is fine and the **pool** is
+  broken. Restart the API.
+- the fresh connection **also fails** → a genuine database, network, TLS, or auth
+  fault. Restarting the API will not help.
+
+The full verdict — with counts, rates and probe timing — is written to the
+container log. Sentry receives a throttled event carrying the
+`db_pool_health_verdict` tag only; Breeze strips message text and structured
+extras from every outgoing Sentry event, so treat Sentry as the alert channel
+and the log or `/metrics` as the detail. The numbers are exported on
+`/metrics/scrape`:
+
+| Series | Meaning |
+|---|---|
+| `breeze_db_pool_health{verdict="…"}` | `1` for the current verdict, `0` for the others. Verdicts are `below-threshold`, `pool-degraded`, `database-unreachable`, `unknown`. |
+| `breeze_db_connect_timeouts_total{cause="…"}` | Connect timeouts by diagnosed cause (`connectivity`, `event-loop-starvation`, `unknown`). |
+| `breeze_db_connect_timeout_rate_per_min` | The rate the watchdog evaluates. |
+| `breeze_db_pool_health_last_check_timestamp_seconds` | When the last evaluation completed. `0` = never. |
+| `breeze_db_pool_health_check_failures` | Evaluations that threw before producing a verdict. |
+| `breeze_db_pool_health_probe_close_failures` | Probe clients whose close failed — each a possible leaked connection. |
+
+**Alert on `breeze_db_pool_health{verdict="pool-degraded"} == 1`.** There is
+deliberately no `healthy` verdict: the quiet one is `below-threshold`, because
+the underlying count only sees timeouts that reach an error handler and the
+watchdog never observes pool slot occupancy. It can tell you something is wrong;
+it cannot certify that nothing is. For the same reason, all verdict series read
+`0` before the first evaluation and after a failed one — never infer health from
+the absence of a bad verdict, and pair any alert with a freshness check on
+`breeze_db_pool_health_last_check_timestamp_seconds`.
+
+The watchdog runs by default; you do not need to set any of these.
+
+| Variable | Default | Description |
+|---|---|---|
+| `DB_POOL_HEALTH_INTERVAL_MS` | `60000` | How often the watchdog evaluates. Floored at 5000. |
+| `DB_POOL_HEALTH_WINDOW_MS` | `300000` | Trailing window the `CONNECT_TIMEOUT` count is taken over. Floored at 30000. |
+| `DB_POOL_HEALTH_MIN_TIMEOUTS` | `10` | Timeouts within the window that trigger the fresh-connection probe. Below this, no probe runs and no connection is opened. |
+| `DB_POOL_HEALTH_PROBE_TIMEOUT_MS` | `5000` | Hard bound on the probe. Keep it well under the interval so a slow probe cannot overlap the next tick. |
+| `DB_POOL_HEALTH_CAPTURE_THROTTLE_MS` | `900000` | Minimum gap between Sentry captures of the same verdict. A degraded pool stays degraded until restart, so an unthrottled capture would report it every tick. `0` disables the throttle. Console logging is never throttled. |
+| `DB_POOL_HEALTH_DISABLED` | — | Set to `1`, `true`, `yes`, or `on` to turn the watchdog off. With it off, a poisoned pool decays silently until someone notices the 503s. |
+
+Like event-loop lag, these figures are kept off the unauthenticated
+`/health/ready` for the same reason — they describe how close the instance is to
+falling over.
+
 ## Sentry
 
 Both API and web Sentry integrations are off by default. Leave the DSN variables blank to disable. See [Error Tracking & Privacy](/security/error-tracking/) for what gets collected and how scrubbing works.

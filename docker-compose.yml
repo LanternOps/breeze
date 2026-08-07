@@ -92,6 +92,16 @@ services:
       DATABASE_URL_APP: ${DATABASE_URL_APP:-}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       BREEZE_APP_DB_PASSWORD: ${BREEZE_APP_DB_PASSWORD:-}
+      # Pool-health watchdog (#3214). Threaded because deploy/environment.mdx
+      # documents these as working knobs, and an unmapped var set in .env is
+      # silently inert — the IS_HOSTED / #570 failure mode. All optional: an
+      # empty value reads as unset and the code applies its own defaults.
+      DB_POOL_HEALTH_DISABLED: ${DB_POOL_HEALTH_DISABLED:-}
+      DB_POOL_HEALTH_INTERVAL_MS: ${DB_POOL_HEALTH_INTERVAL_MS:-}
+      DB_POOL_HEALTH_WINDOW_MS: ${DB_POOL_HEALTH_WINDOW_MS:-}
+      DB_POOL_HEALTH_MIN_TIMEOUTS: ${DB_POOL_HEALTH_MIN_TIMEOUTS:-}
+      DB_POOL_HEALTH_PROBE_TIMEOUT_MS: ${DB_POOL_HEALTH_PROBE_TIMEOUT_MS:-}
+      DB_POOL_HEALTH_CAPTURE_THROTTLE_MS: ${DB_POOL_HEALTH_CAPTURE_THROTTLE_MS:-}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD_FILE: /run/secrets/redis_password
