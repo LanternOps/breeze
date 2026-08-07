@@ -167,6 +167,11 @@ export interface DbAccessContext {
    * to an anonymous arrow inside `onMessage`. The stack alone cannot tell
    * `heartbeat` from `command_result`. Set this wherever several distinct paths
    * share a context helper.
+   *
+   * When omitted, the warning falls back to a name derived from the opening
+   * stack frame (#3218), which is adequate for the common case of one call site
+   * per path — so an explicit label is only REQUIRED for the shared-closure
+   * case above, where the derived name would collapse several paths into one.
    */
   label?: string;
 }
@@ -264,6 +269,170 @@ export function shouldCaptureHeldContext(scope: string, now: number, throttleMs:
   return false;
 }
 
+// #3218 — the console warning must name the caller on its own. The `openedAt`
+// stack was captured but only ever shipped to Sentry, so an operator reading
+// droplet logs during an incident could not attribute a single hold. That is
+// exactly when Sentry is least likely to have it: the hot error that causes the
+// holds also saturates the DSN rate limit and drops the throttled hold captures.
+// So we format ONE frame from the already-captured stack into the log line.
+//
+// Frames that name this module or its wrappers describe the emitter, not the
+// caller, and node_modules / node-internal frames describe the runtime — both
+// are skipped so the frame we print is the first APPLICATION frame.
+const DB_CONTEXT_WRAPPER_FUNCTIONS = new Set([
+  'withDbAccessContext',
+  'withSystemDbAccessContext',
+  'withResolvedDbAccessContext',
+]);
+
+export interface HeldContextOpenerFrame {
+  /** Human-readable `path:line:col`, trimmed to a repo-relative path. */
+  readonly location: string;
+  /**
+   * Low-cardinality `basename.fn` name derived from the frame, suitable for
+   * Sentry grouping. Deliberately excludes line/column: those shift on every
+   * unrelated edit, which would fork one issue into a new one per release.
+   */
+  readonly label: string | null;
+}
+
+// `at fn (loc)` | `at async fn (loc)` | `at loc`. Also handles V8's
+// `at Object.foo [as bar] (loc)` — the bracketed alias stays inside `fn`.
+const STACK_FRAME_RE = /^\s*at\s+(?:async\s+)?(?:(.+?)\s+\((.+)\)|(.+))$/;
+
+/**
+ * Reduce a V8 function name to its bare identifier: drop the receiver prefix
+ * (`Object.foo`), the `[as alias]` suffix, and the `new ` of a constructor
+ * frame, any of which would otherwise leak into a grouping label.
+ */
+function stripFramePrefixes(fnName: string): string {
+  return fnName
+    .replace(/\s*\[as .+?\]$/, '')
+    .replace(/^new\s+/, '')
+    .split('.')
+    .pop() ?? fnName;
+}
+
+function isNonApplicationFrame(location: string, fnName: string | null): boolean {
+  if (location.includes('node_modules')) return true;
+  // Node internals: `node:internal/...`, `internal/process/...`, `node:events`.
+  if (location.startsWith('node:') || location.startsWith('internal/')) return true;
+  // This module itself — the frame where `new Error()` was allocated. Matched on
+  // the path so it also holds when the wrapper name is minified away in a build.
+  // Backslashes are normalized first so a Windows dev path is excluded too.
+  if (/(^|[/\\])db[/\\]index\.[cm]?[jt]s(:|$)/.test(location)) return true;
+  // Name-based fallback. Deliberately redundant with the path test above: if
+  // this file is ever split or renamed (the CLAUDE.md size guideline invites
+  // exactly that), the path test stops matching and the emitter's own frame
+  // would leak through as "the caller" — reproducing the BREEZE-9 bug this is
+  // meant to prevent. The wrappers keep their names across such a move.
+  return fnName !== null && DB_CONTEXT_WRAPPER_FUNCTIONS.has(stripFramePrefixes(fnName));
+}
+
+/**
+ * Strip the machine-specific prefix so log lines stay short and comparable.
+ * MUST run only AFTER a frame has been accepted as application code: it cuts
+ * from the first `apps|packages|agent|scripts` segment found ANYWHERE, and
+ * `scripts/` is a common directory inside third-party packages (undici,
+ * react-native, chrome-launcher, …). Shortening first would hide the
+ * `node_modules` prefix from the rejection test and promote a dependency's
+ * frame to "the caller".
+ */
+function toRepoRelative(location: string): string {
+  const match = /(?:^|\/)((?:apps|packages|agent|scripts)\/.+)$/.exec(location);
+  return match?.[1] ?? location;
+}
+
+/**
+ * Pick the first application frame out of a captured stack and describe it.
+ * Returns null when the stack is absent or contains no application frame (e.g.
+ * a context opened directly from a node-internal callback). Pure — exported for
+ * unit testing.
+ */
+export function parseOpenerFrame(stack: string | undefined): HeldContextOpenerFrame | null {
+  if (!stack) return null;
+
+  for (const line of stack.split('\n')) {
+    const match = STACK_FRAME_RE.exec(line);
+    if (!match) continue;
+
+    const fnName = match[1] ?? null;
+    const rawLocation = match[2] ?? match[3];
+    if (!rawLocation) continue;
+
+    // Reject against the FULL path (see toRepoRelative), then shorten.
+    const fullLocation = rawLocation.trim().replace(/^file:\/\//, '');
+    if (isNonApplicationFrame(fullLocation, fnName)) continue;
+    const location = toRepoRelative(fullLocation);
+
+    // `apps/api/src/routes/devices.ts:42:10` → `devices`.
+    const file = /([^/\\]+?)\.[cm]?[jt]sx?(?::\d+)*$/.exec(location)?.[1] ?? null;
+    const fn = fnName ? stripFramePrefixes(fnName) || null : null;
+    const label = file && fn ? `${file}.${fn}` : (file ?? fn);
+
+    return { location, label };
+  }
+
+  return null;
+}
+
+/**
+ * Compose the #1105 hold warning. Split out from the emitter so the exact text
+ * that reaches the console — the thing #3218 is about — is unit-testable
+ * without a live pool.
+ *
+ * Deliberately returns TWO strings. `message` is the Sentry-facing text and
+ * carries only the low-cardinality label; `consoleLine` adds the precise
+ * `file:line`. Sentry groups by message text, so a line number in `message`
+ * would fork one issue into a new one on every unrelated edit above the call
+ * site. The console has no such constraint and is where precision is needed.
+ */
+export function formatHeldContextWarning(input: {
+  scope: DbAccessScope;
+  label?: string | null;
+  openerFrame: HeldContextOpenerFrame | null;
+  heldMs: number;
+  warnMs: number;
+}): { message: string; consoleLine: string; tags: Record<string, string> } {
+  const { scope, label: explicitLabel, openerFrame, heldMs, warnMs } = input;
+
+  // The label goes in the MESSAGE, not just the tag: Sentry groups by message,
+  // so including it splits one bucket into per-source issues that can be
+  // resolved independently. An explicit label wins — it is curated and can
+  // separate paths that share one helper closure (the agent-WS case). Otherwise
+  // fall back to the opening frame so unlabelled callers, which are most of
+  // them, still group per source instead of arriving as one opaque bucket. This
+  // is a one-time regrouping for previously-unlabelled callers, by design.
+  // Normalize ONCE, and gate both the message and the tag on the same value. A
+  // blank label must fall through to the derived one rather than winning and
+  // then rendering as nothing: `label: string` accepts '' at the call sites that
+  // treat the label as REQUIRED precisely to stop a shared closure collapsing
+  // into one anonymous bucket (agentWs, the ~7k-event BREEZE-A incident). With a
+  // bare `??` an empty string would silently defeat that safeguard AND suppress
+  // the fallback — strictly worse than passing no label at all.
+  const normalizedExplicit = explicitLabel?.trim() ? explicitLabel.trim() : null;
+  const label = normalizedExplicit ?? openerFrame?.label ?? null;
+  const labelPart = label ? ` [${label}]` : '';
+  const message =
+    `withDbAccessContext (scope=${scope})${labelPart} held a pooled connection in an open `
+    + `transaction for ${heldMs}ms (>= ${warnMs}ms) — long enough that it likely did slow `
+    + `non-DB work (Redis/HTTP/loops) or a slow query inside the context. If the former, `
+    + `move it after the context closes or wrap it in runOutsideDbContext (#1105).`;
+
+  // `dbContextLabel` stays EXPLICIT-only so existing Sentry queries and
+  // dashboards keep their meaning; the derived name gets its own tag rather
+  // than silently widening that one.
+  const tags: Record<string, string> = {};
+  if (normalizedExplicit) tags.dbContextLabel = normalizedExplicit;
+  if (openerFrame?.label) tags.dbContextOpener = openerFrame.label;
+
+  return {
+    message,
+    consoleLine: openerFrame ? `${message} Opened at ${openerFrame.location}.` : message,
+    tags,
+  };
+}
+
 export async function withDbAccessContext<T>(
   context: DbAccessContext,
   fn: () => Promise<T>
@@ -271,6 +440,27 @@ export async function withDbAccessContext<T>(
   if (dbContextStorage.getStore()) {
     return fn();
   }
+
+  const warnMs = getHeldContextWarnMs();
+  // Capture the OPENER's stack HERE — at function entry, before any await and
+  // before the transaction callback — so the caller's frame is genuinely live
+  // on the synchronous stack.
+  //
+  // This used to be allocated inside the transaction callback, after six
+  // `await tx.execute(...)` hops. That only ever worked via V8's async-stack
+  // reconstruction, which links a frame ONLY at a real `await`: a caller doing
+  // `return withSystemDbAccessContext(...)` (a bare return, no await — 66 call
+  // sites in this repo, including most BullMQ job workers) was dropped from the
+  // trace entirely. Those degraded to an unattributed warning, or worse, named
+  // the next function out and misidentified the culprit. Allocating at entry is
+  // idiom-independent: the caller's frame is on the stack at call time no matter
+  // how it invoked us.
+  //
+  // Cost is unchanged: `new Error()` captures the structured trace but V8 only
+  // formats it on first `.stack` access, which happens ONLY when a hold actually
+  // breaches the threshold. The hot path pays one small allocation, not stack
+  // serialization, and only when the tripwire is armed at all.
+  const opener = warnMs > 0 ? new Error('withDbAccessContext opened here') : undefined;
 
   return baseDb.transaction(async (tx) => {
     const serializedOrgIds = serializeAccessibleIds(context.scope, context.accessibleOrgIds);
@@ -284,24 +474,10 @@ export async function withDbAccessContext<T>(
     await tx.execute(sql`select set_config('breeze.user_id', ${serializedUserId}, true)`);
     await tx.execute(sql`select set_config('breeze.current_partner_id', ${context.currentPartnerId ?? ''}, true)`);
 
-    const warnMs = getHeldContextWarnMs();
+    // Timed from HERE, not from function entry: the hold being measured is the
+    // one on a pooled connection, which only starts once the transaction owns
+    // one. Time spent waiting for the pool is a different problem.
     const startedAt = warnMs > 0 ? Date.now() : 0;
-    // Capture the OPENER's stack here, synchronously, while the call chain that
-    // opened this context is still on the stack.
-    //
-    // The warning below used to build its stack inside the `finally`, which runs
-    // after `await` — by then the synchronous frames are gone and all that
-    // remains is the microtask trampoline plus whatever host loop is at the
-    // bottom (`processTicksAndRejections` / `sql.begin` / bullmq's worker.js).
-    // That is why BREEZE-9 accumulated ~12k events that name nothing
-    // actionable: every one pointed at this emitter instead of at the code
-    // holding the connection. Allocating the Error here records the real opener.
-    //
-    // Cost: `new Error()` captures the structured trace but V8 only formats it
-    // on first `.stack` access, which we do ONLY when a hold actually breaches
-    // the threshold. So the hot path pays one small allocation, not stack
-    // serialization, and only when the tripwire is armed at all.
-    const opener = warnMs > 0 ? new Error('withDbAccessContext opened here') : undefined;
     try {
       return await dbContextStorage.run(tx as unknown as typeof baseDb, () =>
         dbContextMetaStorage.run(context, fn),
@@ -315,18 +491,17 @@ export async function withDbAccessContext<T>(
         if (warnMs > 0) {
           const heldMs = Date.now() - startedAt;
           if (heldMs >= warnMs) {
-            // The label goes in the MESSAGE, not just the tag: Sentry groups by
-            // message, so including it splits one bucket into per-source issues
-            // that can be resolved independently. Unlabelled callers keep the
-            // exact previous message text, so their existing grouping is not
-            // disturbed by this change.
-            const labelPart = context.label ? ` [${context.label}]` : '';
-            const message =
-              `withDbAccessContext (scope=${context.scope})${labelPart} held a pooled connection in an open `
-              + `transaction for ${heldMs}ms (>= ${warnMs}ms) — long enough that it likely did slow `
-              + `non-DB work (Redis/HTTP/loops) or a slow query inside the context. If the former, `
-              + `move it after the context closes or wrap it in runOutsideDbContext (#1105).`;
-            console.warn(message);
+            // Formatting the stack costs a `.stack` access, so it happens here —
+            // only once a hold has actually breached the threshold (#3218).
+            const openerFrame = parseOpenerFrame(opener?.stack);
+            const { message, consoleLine, tags } = formatHeldContextWarning({
+              scope: context.scope,
+              label: context.label,
+              openerFrame,
+              heldMs,
+              warnMs,
+            });
+            console.warn(consoleLine);
             // Throttle the Sentry capture per scope (see getHeldContextCaptureThrottleMs)
             // so a recurring conn-hold can't flood the org's event quota.
             if (shouldCaptureHeldContext(context.scope, Date.now(), getHeldContextCaptureThrottleMs())) {
@@ -337,14 +512,25 @@ export async function withDbAccessContext<T>(
                 // opened the context. `stack` is kept (emitter-side, i.e. the
                 // await trampoline) only because the previous shape had it and
                 // dropping a field silently is worse than an extra one.
+                openedAtFrame: openerFrame?.location,
                 openedAt: opener?.stack,
                 stack: new Error().stack,
-              }, context.label ? { dbContextLabel: context.label } : undefined);
+              }, Object.keys(tags).length > 0 ? tags : undefined);
             }
           }
         }
-      } catch {
-        // Detection instrumentation must never alter fn's real result/error.
+      } catch (instrumentationError) {
+        // Detection instrumentation must never alter fn's real result/error, so
+        // this stays broad. But it must not swallow itself into total silence
+        // either: #3218 exists because this warning was unattributable, and a
+        // future slip in the frame parsing above would otherwise make the whole
+        // warning vanish with no trace at all. Leave a breadcrumb, and guard
+        // even that — a throw from the reporter would defeat the purpose.
+        try {
+          console.warn('[db-context-hold-warning] instrumentation failed:', instrumentationError);
+        } catch {
+          // Truly last resort: console itself is unusable. Preserve fn's outcome.
+        }
       }
     }
   });
