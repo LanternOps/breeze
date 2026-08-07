@@ -17,6 +17,7 @@ import {
   checkAutoResolveFromConfigPolicy,
 } from '../services/alertService';
 import { isReusableState } from '../services/bullmqUtils';
+import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { attachWorkerObservability } from './workerObservability';
 import { envInt } from '../utils/envInt';
 
@@ -47,9 +48,11 @@ let alertQueue: Queue | null = null;
  */
 export function getAlertQueue(): Queue {
   if (!alertQueue) {
-    alertQueue = new Queue(ALERT_QUEUE, {
-      connection: getBullMQConnection()
-    });
+    // Instrumented so an enqueue made from inside a held DB context trips the
+    // #1105 tripwire instead of silently pinning a pooled connection. The bare
+    // `new Queue` that used to be here is exactly why the evaluate-all addBulk
+    // hold (BREEZE-9, ~5s every 60s) went unnoticed for months (#3216).
+    alertQueue = createInstrumentedQueue(ALERT_QUEUE);
   }
   return alertQueue;
 }
@@ -80,23 +83,28 @@ export function createAlertWorker(): Worker<AlertJobData> {
   return new Worker<AlertJobData>(
     ALERT_QUEUE,
     async (job: Job<AlertJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        const startTime = Date.now();
+      const data = job.data;
 
-        switch (job.data.type) {
-          case 'evaluate-all':
-            return await processEvaluateAll(job.data);
+      switch (data.type) {
+        case 'evaluate-all':
+          // Deliberately NOT wrapped. `processEvaluateAll` self-manages its DB
+          // context: it reads each fleet page inside a SHORT system context that
+          // closes before that page's Redis fan-out. A blanket wrap here pinned a
+          // pooled connection idle-in-transaction for the entire ~5s enqueue loop
+          // on every 60s cycle (#1105 / BREEZE-9, #3216). Mirrors
+          // monitorWorker's `monitor-scheduler` and securityPostureWorker's
+          // `scan-orgs`, which are structurally the same fan-out job.
+          return await processEvaluateAll(data);
 
-          case 'evaluate-device':
-            return await processEvaluateDevice(job.data);
+        case 'evaluate-device':
+          return await runWithSystemDbAccess(() => processEvaluateDevice(data));
 
-          case 'auto-resolve':
-            return await processAutoResolve(job.data);
+        case 'auto-resolve':
+          return await runWithSystemDbAccess(() => processAutoResolve(data));
 
-          default:
-            throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
-        }
-      });
+        default:
+          throw new Error(`Unknown job type: ${(data as { type: string }).type}`);
+      }
     },
     {
       connection: getBullMQConnection(),
@@ -110,7 +118,22 @@ export function createAlertWorker(): Worker<AlertJobData> {
 
 /**
  * Process evaluate-all job
- * Fetches devices with recent metrics and queues individual device evaluations
+ * Fetches devices with recent metrics and queues individual device evaluations.
+ *
+ * #1105 CONTRACT (BREEZE-9 / #3216): this function must be called with NO DB
+ * context open — the worker handler intentionally does not wrap it. It opens one
+ * short-lived system context per DB read and lets each close before the Redis
+ * fan-out for that page runs, so no pooled connection is ever held
+ * idle-in-transaction across `queue.addBulk`. Wrapping the whole call in
+ * `withSystemDbAccessContext` re-creates the original bug: nested
+ * `withDbAccessContext` calls short-circuit to the ambient transaction, so every
+ * read below would silently rejoin the outer context and the enqueue loop would
+ * again pin a connection for the full ~5s sweep.
+ *
+ * Pagination therefore spans transactions. That is intentional and safe: the
+ * keyset cursor (`devices.id` ascending) stays stable, `recentThreshold` is
+ * computed once so the eligibility window does not drift between pages, and a
+ * device whose status flips mid-sweep is simply picked up on the next 60s cycle.
  */
 export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
   queued: number;
@@ -132,13 +155,15 @@ export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
   // for RLS reasons, so it is NOT filtered out for us — every fleet sweep has to
   // exclude it explicitly. Alert evaluation is the path that pages on-call staff,
   // so ephemeral devices are excluded at both the org and the device level.
-  const orgs = await db
-    .select({ id: organizations.id })
-    .from(organizations)
-    .where(and(
-      eq(organizations.status, 'active'),
-      ne(organizations.type, 'quick_support')
-    ));
+  const orgs = await runWithSystemDbAccess(async () =>
+    db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(and(
+        eq(organizations.status, 'active'),
+        ne(organizations.type, 'quick_support')
+      ))
+  );
 
   if (orgs.length === 0) {
     return { queued: 0, skipped: 0, durationMs: Date.now() - startTime };
@@ -173,12 +198,16 @@ export async function processEvaluateAll(data: EvaluateAllJobData): Promise<{
     ];
     if (cursor) conditions.push(gt(devices.id, cursor));
 
-    const chunk = await db
-      .select({ id: devices.id, orgId: devices.orgId })
-      .from(devices)
-      .where(and(...conditions))
-      .orderBy(asc(devices.id))
-      .limit(limit);
+    // Page read inside its own system context, which CLOSES before the addBulk
+    // below (#1105).
+    const chunk = await runWithSystemDbAccess(async () =>
+      db
+        .select({ id: devices.id, orgId: devices.orgId })
+        .from(devices)
+        .where(and(...conditions))
+        .orderBy(asc(devices.id))
+        .limit(limit)
+    );
 
     if (chunk.length === 0) break;
 
