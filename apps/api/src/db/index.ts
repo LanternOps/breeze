@@ -167,6 +167,11 @@ export interface DbAccessContext {
    * to an anonymous arrow inside `onMessage`. The stack alone cannot tell
    * `heartbeat` from `command_result`. Set this wherever several distinct paths
    * share a context helper.
+   *
+   * When omitted, the warning falls back to a name derived from the opening
+   * stack frame (#3218), which is adequate for the common case of one call site
+   * per path — so an explicit label is only REQUIRED for the shared-closure
+   * case above, where the derived name would collapse several paths into one.
    */
   label?: string;
 }
@@ -264,6 +269,135 @@ export function shouldCaptureHeldContext(scope: string, now: number, throttleMs:
   return false;
 }
 
+// #3218 — the console warning must name the caller on its own. The `openedAt`
+// stack was captured but only ever shipped to Sentry, so an operator reading
+// droplet logs during an incident could not attribute a single hold. That is
+// exactly when Sentry is least likely to have it: the hot error that causes the
+// holds also saturates the DSN rate limit and drops the throttled hold captures.
+// So we format ONE frame from the already-captured stack into the log line.
+//
+// Frames that name this module or its wrappers describe the emitter, not the
+// caller, and node_modules / node-internal frames describe the runtime — both
+// are skipped so the frame we print is the first APPLICATION frame.
+const DB_CONTEXT_WRAPPER_FUNCTIONS = new Set([
+  'withDbAccessContext',
+  'withSystemDbAccessContext',
+  'withResolvedDbAccessContext',
+]);
+
+export interface HeldContextOpenerFrame {
+  /** Human-readable `path:line:col`, trimmed to a repo-relative path. */
+  readonly location: string;
+  /**
+   * Low-cardinality `basename.fn` name derived from the frame, suitable for
+   * Sentry grouping. Deliberately excludes line/column: those shift on every
+   * unrelated edit, which would fork one issue into a new one per release.
+   */
+  readonly label: string | null;
+}
+
+// `at fn (loc)` | `at async fn (loc)` | `at loc`. Also handles V8's
+// `at Object.foo [as bar] (loc)` — the bracketed alias stays inside `fn`.
+const STACK_FRAME_RE = /^\s*at\s+(?:async\s+)?(?:(.+?)\s+\((.+)\)|(.+))$/;
+
+function isNonApplicationFrame(location: string, fnName: string | null): boolean {
+  if (location.includes('node_modules')) return true;
+  // Node internals: `node:internal/...`, `internal/process/...`, `node:events`.
+  if (location.startsWith('node:') || location.startsWith('internal/')) return true;
+  // This module itself — the frame where `new Error()` was allocated. Matched on
+  // the path so it also holds when the wrapper name is minified away in a build.
+  if (/(^|\/)db\/index\.[cm]?[jt]s(:|$)/.test(location)) return true;
+  return fnName !== null && DB_CONTEXT_WRAPPER_FUNCTIONS.has(fnName);
+}
+
+/** Strip the machine-specific prefix so log lines stay short and comparable. */
+function toRepoRelative(location: string): string {
+  const withoutScheme = location.replace(/^file:\/\//, '');
+  const match = /(?:^|\/)((?:apps|packages|agent|scripts)\/.+)$/.exec(withoutScheme);
+  return match?.[1] ?? withoutScheme;
+}
+
+/**
+ * Pick the first application frame out of a captured stack and describe it.
+ * Returns null when the stack is absent or contains no application frame (e.g.
+ * a context opened directly from a node-internal callback). Pure — exported for
+ * unit testing.
+ */
+export function parseOpenerFrame(stack: string | undefined): HeldContextOpenerFrame | null {
+  if (!stack) return null;
+
+  for (const line of stack.split('\n')) {
+    const match = STACK_FRAME_RE.exec(line);
+    if (!match) continue;
+
+    const fnName = match[1] ?? null;
+    const rawLocation = match[2] ?? match[3];
+    if (!rawLocation) continue;
+
+    const location = toRepoRelative(rawLocation.trim());
+    if (isNonApplicationFrame(location, fnName)) continue;
+
+    // `apps/api/src/routes/devices.ts:42:10` → `devices`; drop V8's receiver
+    // prefix and `[as alias]` suffix from `Object.getDevice [as handler]`.
+    const file = /([^/\\]+?)\.[cm]?[jt]sx?(?::\d+)*$/.exec(location)?.[1] ?? null;
+    const fn = fnName?.replace(/\s*\[as .+?\]$/, '').split('.').pop() || null;
+    const label = file && fn ? `${file}.${fn}` : (file ?? fn);
+
+    return { location, label };
+  }
+
+  return null;
+}
+
+/**
+ * Compose the #1105 hold warning. Split out from the emitter so the exact text
+ * that reaches the console — the thing #3218 is about — is unit-testable
+ * without a live pool.
+ *
+ * Deliberately returns TWO strings. `message` is the Sentry-facing text and
+ * carries only the low-cardinality label; `consoleLine` adds the precise
+ * `file:line`. Sentry groups by message text, so a line number in `message`
+ * would fork one issue into a new one on every unrelated edit above the call
+ * site. The console has no such constraint and is where precision is needed.
+ */
+export function formatHeldContextWarning(input: {
+  scope: DbAccessScope;
+  label?: string | null;
+  openerFrame: HeldContextOpenerFrame | null;
+  heldMs: number;
+  warnMs: number;
+}): { message: string; consoleLine: string; tags: Record<string, string> } {
+  const { scope, label: explicitLabel, openerFrame, heldMs, warnMs } = input;
+
+  // The label goes in the MESSAGE, not just the tag: Sentry groups by message,
+  // so including it splits one bucket into per-source issues that can be
+  // resolved independently. An explicit label wins — it is curated and can
+  // separate paths that share one helper closure (the agent-WS case). Otherwise
+  // fall back to the opening frame so unlabelled callers, which are most of
+  // them, still group per source instead of arriving as one opaque bucket. This
+  // is a one-time regrouping for previously-unlabelled callers, by design.
+  const label = explicitLabel ?? openerFrame?.label ?? null;
+  const labelPart = label ? ` [${label}]` : '';
+  const message =
+    `withDbAccessContext (scope=${scope})${labelPart} held a pooled connection in an open `
+    + `transaction for ${heldMs}ms (>= ${warnMs}ms) — long enough that it likely did slow `
+    + `non-DB work (Redis/HTTP/loops) or a slow query inside the context. If the former, `
+    + `move it after the context closes or wrap it in runOutsideDbContext (#1105).`;
+
+  // `dbContextLabel` stays EXPLICIT-only so existing Sentry queries and
+  // dashboards keep their meaning; the derived name gets its own tag rather
+  // than silently widening that one.
+  const tags: Record<string, string> = {};
+  if (explicitLabel) tags.dbContextLabel = explicitLabel;
+  if (openerFrame?.label) tags.dbContextOpener = openerFrame.label;
+
+  return {
+    message,
+    consoleLine: openerFrame ? `${message} Opened at ${openerFrame.location}.` : message,
+    tags,
+  };
+}
+
 export async function withDbAccessContext<T>(
   context: DbAccessContext,
   fn: () => Promise<T>
@@ -315,18 +449,17 @@ export async function withDbAccessContext<T>(
         if (warnMs > 0) {
           const heldMs = Date.now() - startedAt;
           if (heldMs >= warnMs) {
-            // The label goes in the MESSAGE, not just the tag: Sentry groups by
-            // message, so including it splits one bucket into per-source issues
-            // that can be resolved independently. Unlabelled callers keep the
-            // exact previous message text, so their existing grouping is not
-            // disturbed by this change.
-            const labelPart = context.label ? ` [${context.label}]` : '';
-            const message =
-              `withDbAccessContext (scope=${context.scope})${labelPart} held a pooled connection in an open `
-              + `transaction for ${heldMs}ms (>= ${warnMs}ms) — long enough that it likely did slow `
-              + `non-DB work (Redis/HTTP/loops) or a slow query inside the context. If the former, `
-              + `move it after the context closes or wrap it in runOutsideDbContext (#1105).`;
-            console.warn(message);
+            // Formatting the stack costs a `.stack` access, so it happens here —
+            // only once a hold has actually breached the threshold (#3218).
+            const openerFrame = parseOpenerFrame(opener?.stack);
+            const { message, consoleLine, tags } = formatHeldContextWarning({
+              scope: context.scope,
+              label: context.label,
+              openerFrame,
+              heldMs,
+              warnMs,
+            });
+            console.warn(consoleLine);
             // Throttle the Sentry capture per scope (see getHeldContextCaptureThrottleMs)
             // so a recurring conn-hold can't flood the org's event quota.
             if (shouldCaptureHeldContext(context.scope, Date.now(), getHeldContextCaptureThrottleMs())) {
@@ -337,9 +470,10 @@ export async function withDbAccessContext<T>(
                 // opened the context. `stack` is kept (emitter-side, i.e. the
                 // await trampoline) only because the previous shape had it and
                 // dropping a field silently is worse than an extra one.
+                openedAtFrame: openerFrame?.location,
                 openedAt: opener?.stack,
                 stack: new Error().stack,
-              }, context.label ? { dbContextLabel: context.label } : undefined);
+              }, Object.keys(tags).length > 0 ? tags : undefined);
             }
           }
         }

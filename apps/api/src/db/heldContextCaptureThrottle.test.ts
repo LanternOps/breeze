@@ -10,6 +10,8 @@ vi.mock('../services/sentry', () => ({
 import {
   shouldCaptureHeldContext,
   shouldReportHeldContextSite,
+  parseOpenerFrame,
+  formatHeldContextWarning,
   __resetHeldContextCaptureThrottleForTests,
   __resetHeldContextAssertDedupeForTests,
 } from './index';
@@ -91,5 +93,154 @@ describe('shouldReportHeldContextSite (enqueue-tripwire Sentry-capture dedupe)',
     expect(shouldReportHeldContextSite('stack-a')).toBe(true);
     __resetHeldContextAssertDedupeForTests();
     expect(shouldReportHeldContextSite('stack-a')).toBe(true);
+  });
+});
+
+// #3218: the console warning has to name the caller by itself. The `openedAt`
+// stack was already captured but only reached Sentry — which is exactly the
+// channel that drops these warnings during the incident that produces them
+// (the concurrent hot error saturates the DSN rate limit). These guard the
+// frame picker that turns that stack into one log-line attribution.
+describe('parseOpenerFrame (#1105 hold-warning attribution)', () => {
+  const frames = (...lines: string[]) =>
+    ['Error: withDbAccessContext opened here', ...lines].join('\n');
+
+  // The emitter allocates the Error inside withDbAccessContext, so the top
+  // frame is ALWAYS this module. Returning it would reproduce the exact BREEZE-9
+  // failure: 12k events all naming the emitter instead of the caller.
+  it('skips this module and the context wrappers to reach the caller', () => {
+    const result = parseOpenerFrame(frames(
+      '    at withDbAccessContext (/app/apps/api/src/db/index.ts:304:34)',
+      '    at withSystemDbAccessContext (/app/apps/api/src/db/index.ts:353:10)',
+      '    at pollDevices (/app/apps/api/src/workers/devicePoller.ts:88:12)',
+    ));
+    expect(result).toEqual({
+      location: 'apps/api/src/workers/devicePoller.ts:88:12',
+      label: 'devicePoller.pollDevices',
+    });
+  });
+
+  it('skips node_modules and node-internal frames', () => {
+    const result = parseOpenerFrame(frames(
+      '    at withDbAccessContext (/app/apps/api/src/db/index.ts:304:34)',
+      '    at Object.begin (/app/node_modules/postgres/cjs/src/index.js:512:9)',
+      '    at processTicksAndRejections (node:internal/process/task_queues:95:5)',
+      '    at handleHeartbeat (/app/apps/api/src/routes/agent/heartbeat.ts:120:3)',
+    ));
+    expect(result?.location).toBe('apps/api/src/routes/agent/heartbeat.ts:120:3');
+    expect(result?.label).toBe('heartbeat.handleHeartbeat');
+  });
+
+  it('handles async frames, receiver prefixes and [as alias] suffixes', () => {
+    const result = parseOpenerFrame(frames(
+      '    at async Object.getDevice [as handler] (/app/apps/api/src/routes/devices.ts:42:10)',
+    ));
+    expect(result).toEqual({
+      location: 'apps/api/src/routes/devices.ts:42:10',
+      label: 'devices.getDevice',
+    });
+  });
+
+  it('handles a bare location frame with no function name', () => {
+    const result = parseOpenerFrame(frames(
+      '    at /app/apps/api/src/services/alertEngine.ts:17:5',
+    ));
+    expect(result).toEqual({
+      location: 'apps/api/src/services/alertEngine.ts:17:5',
+      label: 'alertEngine',
+    });
+  });
+
+  it('strips the file:// scheme ESM stacks carry', () => {
+    const result = parseOpenerFrame(frames(
+      '    at run (file:///app/apps/api/src/workers/patchWorker.ts:9:1)',
+    ));
+    expect(result?.location).toBe('apps/api/src/workers/patchWorker.ts:9:1');
+  });
+
+  // The label feeds a Sentry tag and the grouped message; line numbers move on
+  // every unrelated edit above the call site, so they must NOT reach it or one
+  // issue forks into a new one per release.
+  it('keeps line/column out of the grouping label', () => {
+    const a = parseOpenerFrame(frames('    at run (/app/apps/api/src/workers/w.ts:9:1)'));
+    const b = parseOpenerFrame(frames('    at run (/app/apps/api/src/workers/w.ts:412:7)'));
+    expect(a?.label).toBe(b?.label);
+    expect(a?.location).not.toBe(b?.location);
+  });
+
+  it('returns null when there is no application frame, rather than naming the runtime', () => {
+    expect(parseOpenerFrame(frames(
+      '    at withDbAccessContext (/app/apps/api/src/db/index.ts:304:34)',
+      '    at processTicksAndRejections (node:internal/process/task_queues:95:5)',
+    ))).toBeNull();
+  });
+
+  it('returns null for an absent or frameless stack', () => {
+    expect(parseOpenerFrame(undefined)).toBeNull();
+    expect(parseOpenerFrame('')).toBeNull();
+    expect(parseOpenerFrame('Error: no frames here')).toBeNull();
+  });
+
+  // Attribution must survive a compiled deploy — that is where it is needed.
+  it('attributes a built .js frame the same way', () => {
+    const result = parseOpenerFrame(frames(
+      '    at withDbAccessContext (/app/apps/api/dist/db/index.js:1204:34)',
+      '    at sweep (/app/apps/api/dist/workers/sweeper.js:77:9)',
+    ));
+    expect(result?.label).toBe('sweeper.sweep');
+  });
+});
+
+// The payoff of #3218: what actually lands in the droplet log. The console line
+// must be self-sufficient for attribution while the Sentry-facing `message`
+// stays stable enough to group.
+describe('formatHeldContextWarning (#3218 console attribution)', () => {
+  const frame = { location: 'apps/api/src/workers/sweeper.ts:77:9', label: 'sweeper.sweep' };
+  const base = { scope: 'system' as const, openerFrame: frame, heldMs: 40_000, warnMs: 2_000 };
+
+  it('names the caller in the console line — the whole point of the issue', () => {
+    const { consoleLine } = formatHeldContextWarning(base);
+    expect(consoleLine).toContain('apps/api/src/workers/sweeper.ts:77:9');
+    expect(consoleLine).toContain('[sweeper.sweep]');
+    expect(consoleLine).toContain('40000ms');
+  });
+
+  it('keeps file:line OUT of the Sentry message so grouping survives edits', () => {
+    const early = formatHeldContextWarning(base);
+    const later = formatHeldContextWarning({
+      ...base,
+      openerFrame: { location: 'apps/api/src/workers/sweeper.ts:412:9', label: 'sweeper.sweep' },
+    });
+    expect(early.message).not.toContain(':77:9');
+    expect(early.message).toBe(later.message);
+    expect(early.consoleLine).not.toBe(later.consoleLine);
+  });
+
+  it('prefers an explicit label over the derived one, and tags them separately', () => {
+    const { message, tags } = formatHeldContextWarning({ ...base, label: 'agentWs.heartbeat' });
+    expect(message).toContain('[agentWs.heartbeat]');
+    expect(message).not.toContain('[sweeper.sweep]');
+    // Existing Sentry queries on dbContextLabel keep meaning explicit-only.
+    expect(tags).toEqual({ dbContextLabel: 'agentWs.heartbeat', dbContextOpener: 'sweeper.sweep' });
+  });
+
+  it('derives the label when no explicit one was passed', () => {
+    const { message, tags } = formatHeldContextWarning(base);
+    expect(message).toContain('[sweeper.sweep]');
+    expect(tags).toEqual({ dbContextOpener: 'sweeper.sweep' });
+  });
+
+  it('degrades to the previous message shape when no frame is resolvable', () => {
+    const { message, consoleLine, tags } = formatHeldContextWarning({ ...base, openerFrame: null });
+    expect(message).toContain('withDbAccessContext (scope=system) held a pooled connection');
+    expect(consoleLine).toBe(message);
+    expect(tags).toEqual({});
+  });
+
+  it('still reports scope, threshold and the #1105 remediation pointer', () => {
+    const { consoleLine } = formatHeldContextWarning({ ...base, scope: 'organization' });
+    expect(consoleLine).toContain('scope=organization');
+    expect(consoleLine).toContain('>= 2000ms');
+    expect(consoleLine).toContain('runOutsideDbContext (#1105)');
   });
 });
