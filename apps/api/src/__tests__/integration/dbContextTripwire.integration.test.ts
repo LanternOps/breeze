@@ -222,6 +222,33 @@ describe('#1105 DB-context tripwires', () => {
       expect(String(event.extra?.openedAtFrame)).toMatch(/dbContextTripwire.*:\d+:\d+/);
     });
 
+    it('attributes a caller that uses a bare `return` instead of `await` (#3218)', async () => {
+      // 66 call sites in this repo do `return withSystemDbAccessContext(...)`
+      // with no await — most BullMQ job workers among them, which are a prime
+      // suspect for real long holds. V8 links an async frame only at a genuine
+      // await, so while the opener stack was allocated inside the transaction
+      // callback (after six awaits) every one of those callers was dropped from
+      // the trace: unattributed, or misattributed to the next function out.
+      // The stack is now allocated at withDbAccessContext ENTRY, where the
+      // caller's frame is live on the synchronous stack regardless of idiom.
+      process.env.DB_CONTEXT_HELD_WARN_MS = '50';
+      process.env.DB_CONTEXT_HELD_CAPTURE_THROTTLE_MS = '0';
+      __resetHeldContextCaptureThrottleForTests();
+
+      // Deliberately a bare return — no await anywhere in the chain.
+      function aBareReturnWorkerCallsite(): Promise<void> {
+        return withSystemDbAccessContext(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 90));
+        });
+      }
+      await aBareReturnWorkerCallsite();
+
+      const hits = heldWarns();
+      expect(hits).toHaveLength(1);
+      expect(String(hits[0]![0])).toContain('aBareReturnWorkerCallsite');
+      expect(capturedMessages[0]!.tags?.dbContextOpener).toContain('aBareReturnWorkerCallsite');
+    });
+
     it('names the opening caller in the CONSOLE line, not just in Sentry (#3218)', async () => {
       // The whole point of #3218: during the incident the DSN rate limit was
       // saturated by a concurrent hot error, so the throttled Sentry captures

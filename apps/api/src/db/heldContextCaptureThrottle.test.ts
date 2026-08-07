@@ -213,6 +213,23 @@ describe('parseOpenerFrame (#1105 hold-warning attribution)', () => {
     expect(result?.location).toBe('apps/api/src/workers/tick.ts:4:4');
   });
 
+  // Path-shortening cuts from the first apps|packages|agent|scripts segment
+  // found anywhere. `scripts/` is a real directory inside many published
+  // packages, so shortening BEFORE the node_modules test would hide the
+  // prefix and promote a dependency's frame to "the caller".
+  it.each([
+    '/app/node_modules/undici/scripts/build.js:10:5',
+    '/app/node_modules/react-native/scripts/launch.js:3:1',
+    '/app/node_modules/@scope/pkg/packages/core/dist/run.js:7:2',
+  ])('does not mistake %s for application code', (depFrame) => {
+    const result = parseOpenerFrame(frames(
+      `    at build (${depFrame})`,
+      '    at realOpener (/app/apps/api/src/jobs/backupWorker.ts:64:8)',
+    ));
+    expect(result?.location).toBe('apps/api/src/jobs/backupWorker.ts:64:8');
+    expect(result?.label).toBe('backupWorker.realOpener');
+  });
+
   it('normalizes a constructor frame instead of leaking "new " into the label', () => {
     const result = parseOpenerFrame(frames(
       '    at new PatchClient (/app/apps/api/src/workers/patchWorker.ts:5:1)',
@@ -230,13 +247,13 @@ describe('parseOpenerFrame (#1105 hold-warning attribution)', () => {
   });
 });
 
-// The synthetic stacks above pin the parsing rules, but the feature rests on an
-// assumption they cannot test: the emitter allocates its Error INSIDE the
-// transaction callback, after ~6 `await tx.execute(...)` calls, so the opener's
-// synchronous frames are long gone by then. It only works because V8 keeps
-// async frames across awaits (rendered `at async fn (...)`). If that ever stops
-// holding, every warning silently degrades to naming nothing — so assert it
-// against a real, runtime-generated stack rather than a hand-written string.
+// Characterization tests for the V8 behavior that dictated where the emitter
+// allocates its Error. Allocating it AFTER awaits (as the emitter originally
+// did, inside the transaction callback) relies on V8's async-stack
+// reconstruction — which links a frame only at a genuine `await`. These pin
+// that limitation with real, runtime-generated stacks and document why
+// withDbAccessContext now allocates at ENTRY instead, where the caller's frame
+// is live synchronously and no reconstruction is needed.
 describe('parseOpenerFrame against a REAL V8 async stack', () => {
   async function theCulpritThatHoldsTheConnection(): Promise<string | undefined> {
     // `return await`, not a bare `return` — V8 only links an async frame into

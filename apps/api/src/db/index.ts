@@ -329,11 +329,18 @@ function isNonApplicationFrame(location: string, fnName: string | null): boolean
   return fnName !== null && DB_CONTEXT_WRAPPER_FUNCTIONS.has(stripFramePrefixes(fnName));
 }
 
-/** Strip the machine-specific prefix so log lines stay short and comparable. */
+/**
+ * Strip the machine-specific prefix so log lines stay short and comparable.
+ * MUST run only AFTER a frame has been accepted as application code: it cuts
+ * from the first `apps|packages|agent|scripts` segment found ANYWHERE, and
+ * `scripts/` is a common directory inside third-party packages (undici,
+ * react-native, chrome-launcher, …). Shortening first would hide the
+ * `node_modules` prefix from the rejection test and promote a dependency's
+ * frame to "the caller".
+ */
 function toRepoRelative(location: string): string {
-  const withoutScheme = location.replace(/^file:\/\//, '');
-  const match = /(?:^|\/)((?:apps|packages|agent|scripts)\/.+)$/.exec(withoutScheme);
-  return match?.[1] ?? withoutScheme;
+  const match = /(?:^|\/)((?:apps|packages|agent|scripts)\/.+)$/.exec(location);
+  return match?.[1] ?? location;
 }
 
 /**
@@ -353,8 +360,10 @@ export function parseOpenerFrame(stack: string | undefined): HeldContextOpenerFr
     const rawLocation = match[2] ?? match[3];
     if (!rawLocation) continue;
 
-    const location = toRepoRelative(rawLocation.trim());
-    if (isNonApplicationFrame(location, fnName)) continue;
+    // Reject against the FULL path (see toRepoRelative), then shorten.
+    const fullLocation = rawLocation.trim().replace(/^file:\/\//, '');
+    if (isNonApplicationFrame(fullLocation, fnName)) continue;
+    const location = toRepoRelative(fullLocation);
 
     // `apps/api/src/routes/devices.ts:42:10` → `devices`.
     const file = /([^/\\]+?)\.[cm]?[jt]sx?(?::\d+)*$/.exec(location)?.[1] ?? null;
@@ -432,6 +441,27 @@ export async function withDbAccessContext<T>(
     return fn();
   }
 
+  const warnMs = getHeldContextWarnMs();
+  // Capture the OPENER's stack HERE — at function entry, before any await and
+  // before the transaction callback — so the caller's frame is genuinely live
+  // on the synchronous stack.
+  //
+  // This used to be allocated inside the transaction callback, after six
+  // `await tx.execute(...)` hops. That only ever worked via V8's async-stack
+  // reconstruction, which links a frame ONLY at a real `await`: a caller doing
+  // `return withSystemDbAccessContext(...)` (a bare return, no await — 66 call
+  // sites in this repo, including most BullMQ job workers) was dropped from the
+  // trace entirely. Those degraded to an unattributed warning, or worse, named
+  // the next function out and misidentified the culprit. Allocating at entry is
+  // idiom-independent: the caller's frame is on the stack at call time no matter
+  // how it invoked us.
+  //
+  // Cost is unchanged: `new Error()` captures the structured trace but V8 only
+  // formats it on first `.stack` access, which happens ONLY when a hold actually
+  // breaches the threshold. The hot path pays one small allocation, not stack
+  // serialization, and only when the tripwire is armed at all.
+  const opener = warnMs > 0 ? new Error('withDbAccessContext opened here') : undefined;
+
   return baseDb.transaction(async (tx) => {
     const serializedOrgIds = serializeAccessibleIds(context.scope, context.accessibleOrgIds);
     const serializedPartnerIds = serializeAccessibleIds(context.scope, context.accessiblePartnerIds);
@@ -444,24 +474,10 @@ export async function withDbAccessContext<T>(
     await tx.execute(sql`select set_config('breeze.user_id', ${serializedUserId}, true)`);
     await tx.execute(sql`select set_config('breeze.current_partner_id', ${context.currentPartnerId ?? ''}, true)`);
 
-    const warnMs = getHeldContextWarnMs();
+    // Timed from HERE, not from function entry: the hold being measured is the
+    // one on a pooled connection, which only starts once the transaction owns
+    // one. Time spent waiting for the pool is a different problem.
     const startedAt = warnMs > 0 ? Date.now() : 0;
-    // Capture the OPENER's stack here, synchronously, while the call chain that
-    // opened this context is still on the stack.
-    //
-    // The warning below used to build its stack inside the `finally`, which runs
-    // after `await` — by then the synchronous frames are gone and all that
-    // remains is the microtask trampoline plus whatever host loop is at the
-    // bottom (`processTicksAndRejections` / `sql.begin` / bullmq's worker.js).
-    // That is why BREEZE-9 accumulated ~12k events that name nothing
-    // actionable: every one pointed at this emitter instead of at the code
-    // holding the connection. Allocating the Error here records the real opener.
-    //
-    // Cost: `new Error()` captures the structured trace but V8 only formats it
-    // on first `.stack` access, which we do ONLY when a hold actually breaches
-    // the threshold. So the hot path pays one small allocation, not stack
-    // serialization, and only when the tripwire is armed at all.
-    const opener = warnMs > 0 ? new Error('withDbAccessContext opened here') : undefined;
     try {
       return await dbContextStorage.run(tx as unknown as typeof baseDb, () =>
         dbContextMetaStorage.run(context, fn),
