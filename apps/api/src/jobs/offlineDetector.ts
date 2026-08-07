@@ -146,27 +146,36 @@ export function createOfflineWorker(): Worker<OfflineJobData> {
   return new Worker<OfflineJobData>(
     OFFLINE_QUEUE,
     async (job: Job<OfflineJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        switch (job.data.type) {
-          case 'detect-offline':
-            return await processDetectOffline(job.data);
+      switch (job.data.type) {
+        // The three sweep jobs are deliberately NOT wrapped. Each self-manages
+        // its DB context: it reads a page inside a SHORT system context that
+        // closes before that page's Redis fan-out (or its per-row writes). A
+        // blanket wrap here pinned a pooled connection idle-in-transaction for
+        // the entire chunked loop on every cycle (#1105 / #3233), which is the
+        // same shape fixed for alertWorker `evaluate-all` (#3216) and
+        // snmpWorker `poll-scheduler` (#3215). detect-offline runs every 30s
+        // and its hold grows with fleet size, so it was the worst of the three.
+        case 'detect-offline':
+          return await processDetectOffline(job.data);
 
-          case 'mark-offline':
-            return await processMarkOffline(job.data);
+        case 'reevaluate-offline-sweep':
+          return await processReevaluateOfflineSweep();
 
-          case 'reevaluate-offline-sweep':
-            return await processReevaluateOfflineSweep();
+        case 'reap-uninstall-intent':
+          return await processReapUninstallIntent();
 
-          case 'reevaluate-offline':
-            return await processReevaluateOffline(job.data);
+        // Per-device jobs read+write a single row and do no fan-out, so a
+        // whole-job context is appropriate here — mirrors alertWorker's
+        // `evaluate-device` / `auto-resolve`.
+        case 'mark-offline':
+          return await runWithSystemDbAccess(() => processMarkOffline(job.data as MarkOfflineJobData));
 
-          case 'reap-uninstall-intent':
-            return await processReapUninstallIntent();
+        case 'reevaluate-offline':
+          return await runWithSystemDbAccess(() => processReevaluateOffline(job.data as ReevaluateOfflineJobData));
 
-          default:
-            throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
-        }
-      });
+        default:
+          throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
+      }
     },
     {
       connection: getBullMQConnection(),
@@ -180,6 +189,25 @@ export function createOfflineWorker(): Worker<OfflineJobData> {
 /**
  * Process detect-offline job
  * Finds devices that haven't sent heartbeats within threshold
+ *
+ * #1105 CONTRACT (#3233): this function must be called with NO DB context open —
+ * the worker handler intentionally does not wrap it. It opens one short-lived
+ * system context per page read and lets it close before that page's Redis
+ * fan-out, so no pooled connection is held idle-in-transaction across
+ * `queue.addBulk`. Wrapping the whole call in `withSystemDbAccessContext`
+ * re-creates the original bug: nested `withDbAccessContext` calls short-circuit
+ * to the ambient transaction, so every read below would silently rejoin the
+ * outer context and the enqueue loop would again pin one connection for the
+ * full sweep. This job runs every 30s and its hold scales with fleet size.
+ *
+ * Note `runOutsideDbContext` is NOT a substitute: it only exits the
+ * AsyncLocalStorage, it does not release the pooled connection held by the
+ * enclosing `baseDb.transaction()`.
+ *
+ * Pagination therefore spans transactions. That is intentional and safe: the
+ * keyset cursor (`devices.id` ascending) stays stable, `thresholdTime` is
+ * computed once so the eligibility window does not drift between pages, and a
+ * device whose status flips mid-sweep is picked up on the next cycle.
  */
 export async function processDetectOffline(data: DetectOfflineJobData): Promise<{
   detected: number;
@@ -212,18 +240,22 @@ export async function processDetectOffline(data: DetectOfflineJobData): Promise<
     ];
     if (cursor) conditions.push(gt(devices.id, cursor));
 
-    const chunk = await db
-      .select({
-        id: devices.id,
-        orgId: devices.orgId,
-        hostname: devices.hostname,
-        displayName: devices.displayName,
-        lastSeenAt: devices.lastSeenAt
-      })
-      .from(devices)
-      .where(and(...conditions))
-      .orderBy(asc(devices.id))
-      .limit(limit);
+    // Page read inside its own system context, which CLOSES before the addBulk
+    // below (#1105 / #3233).
+    const chunk = await runWithSystemDbAccess(async () =>
+      db
+        .select({
+          id: devices.id,
+          orgId: devices.orgId,
+          hostname: devices.hostname,
+          displayName: devices.displayName,
+          lastSeenAt: devices.lastSeenAt
+        })
+        .from(devices)
+        .where(and(...conditions))
+        .orderBy(asc(devices.id))
+        .limit(limit)
+    );
 
     if (chunk.length === 0) break;
 
@@ -616,12 +648,16 @@ export async function processReevaluateOfflineSweep(): Promise<{
     ];
     if (cursor) conditions.push(gt(devices.id, cursor));
 
-    const chunk = await db
-      .select({ id: devices.id, orgId: devices.orgId })
-      .from(devices)
-      .where(and(...conditions))
-      .orderBy(asc(devices.id))
-      .limit(limit);
+    // Page read inside its own system context, which CLOSES before the addBulk
+    // below (#1105 / #3233).
+    const chunk = await runWithSystemDbAccess(async () =>
+      db
+        .select({ id: devices.id, orgId: devices.orgId })
+        .from(devices)
+        .where(and(...conditions))
+        .orderBy(asc(devices.id))
+        .limit(limit)
+    );
 
     if (chunk.length === 0) break;
 
@@ -727,45 +763,59 @@ export async function processReapUninstallIntent(): Promise<{
     const selectConditions = [...reapPredicate];
     if (cursor) selectConditions.push(gt(devices.id, cursor));
 
-    const chunk = await db
-      .select({
-        id: devices.id,
-        orgId: devices.orgId,
-        hostname: devices.hostname,
-        displayName: devices.displayName
-      })
-      .from(devices)
-      .where(and(...selectConditions))
-      .orderBy(asc(devices.id))
-      .limit(limit);
+    // Page read inside its own short system context, which CLOSES before the
+    // per-candidate writes below (#1105 / #3233).
+    const chunk = await runWithSystemDbAccess(async () =>
+      db
+        .select({
+          id: devices.id,
+          orgId: devices.orgId,
+          hostname: devices.hostname,
+          displayName: devices.displayName
+        })
+        .from(devices)
+        .where(and(...selectConditions))
+        .orderBy(asc(devices.id))
+        .limit(limit)
+    );
 
     if (chunk.length === 0) break;
 
     for (const candidate of chunk) {
-      const [updated] = await db
-        .update(devices)
-        .set({ status: 'decommissioned', updatedAt: new Date() })
-        .where(and(eq(devices.id, candidate.id), ...reapPredicate))
-        .returning({ id: devices.id });
+      // Both writes for one candidate share a single short context so the
+      // decommission and the replacement-linkage clear still commit together;
+      // the context closes between candidates rather than spanning the whole
+      // chunk (#3233).
+      const reaped = await runWithSystemDbAccess(async () => {
+        const [updated] = await db
+          .update(devices)
+          .set({ status: 'decommissioned', updatedAt: new Date() })
+          .where(and(eq(devices.id, candidate.id), ...reapPredicate))
+          .returning({ id: devices.id });
 
-      if (!updated) continue; // Re-heartbeated between SELECT and UPDATE — skip.
+        if (!updated) return false; // Re-heartbeated between SELECT and UPDATE — skip.
 
-      // Same resolution the admin decommission route performs (#2764): a
-      // newer device carrying possible_replacement_of_device_id = <this row>
-      // is showing a human a "review possible replacement" prompt. Reaping
-      // the old device answers that question, so clear the linkage or the
-      // banner/badge persists forever with nothing left to compare against.
-      // Scoped to the reaped device's own org, matching the surrounding
-      // per-candidate write pattern.
-      await db
-        .update(devices)
-        .set({ possibleReplacementOfDeviceId: null, updatedAt: new Date() })
-        .where(
-          and(
-            eq(devices.possibleReplacementOfDeviceId, candidate.id),
-            eq(devices.orgId, candidate.orgId)
-          )
-        );
+        // Same resolution the admin decommission route performs (#2764): a
+        // newer device carrying possible_replacement_of_device_id = <this row>
+        // is showing a human a "review possible replacement" prompt. Reaping
+        // the old device answers that question, so clear the linkage or the
+        // banner/badge persists forever with nothing left to compare against.
+        // Scoped to the reaped device's own org, matching the surrounding
+        // per-candidate write pattern.
+        await db
+          .update(devices)
+          .set({ possibleReplacementOfDeviceId: null, updatedAt: new Date() })
+          .where(
+            and(
+              eq(devices.possibleReplacementOfDeviceId, candidate.id),
+              eq(devices.orgId, candidate.orgId)
+            )
+          );
+
+        return true;
+      });
+
+      if (!reaped) continue;
 
       totalDecommissioned++;
 
