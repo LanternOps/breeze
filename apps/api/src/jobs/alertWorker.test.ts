@@ -20,6 +20,11 @@ const {
     orgReadDepths: [] as number[],
     deviceReadDepths: [] as number[],
     addBulkDepths: [] as number[],
+    // Every operation the #1105 guard was consulted for. Asserting this is
+    // non-empty is what pins the queue to createInstrumentedQueue — checking
+    // only `tripwireViolations` would pass just as happily against a bare
+    // `new Queue`, which never calls the guard at all.
+    tripwireCalls: [] as string[],
     tripwireViolations: [] as string[]
   };
   return {
@@ -110,6 +115,7 @@ vi.mock('../db', () => ({
   // Mirrors the production guard wired into createInstrumentedQueue: record the
   // enqueue call sites that ran while a transaction was still held.
   assertOutsideHeldDbContext: (operation: string) => {
+    ctx.tripwireCalls.push(operation);
     if (ctx.depth > 0) ctx.tripwireViolations.push(operation);
   }
 }));
@@ -151,6 +157,7 @@ const resetCtx = () => {
   ctx.orgReadDepths.length = 0;
   ctx.deviceReadDepths.length = 0;
   ctx.addBulkDepths.length = 0;
+  ctx.tripwireCalls.length = 0;
   ctx.tripwireViolations.length = 0;
 };
 
@@ -272,7 +279,15 @@ describe('alertWorker evaluate-all #1105 DB-context scoping', () => {
     expect(ctx.addBulkDepths).toHaveLength(3);
     expect(ctx.addBulkDepths).toEqual([0, 0, 0]);
 
-    // ...and the instrumented queue's #1105 tripwire agrees.
+    // ...and the instrumented queue's #1105 tripwire agrees. Both halves are
+    // load-bearing: the first pins getAlertQueue() to createInstrumentedQueue
+    // (a bare `new Queue` never consults the guard, so the second assertion
+    // alone would pass vacuously); the second pins the context boundary.
+    expect(ctx.tripwireCalls).toEqual([
+      'bullmq.addBulk(alert-evaluation)',
+      'bullmq.addBulk(alert-evaluation)',
+      'bullmq.addBulk(alert-evaluation)'
+    ]);
     expect(ctx.tripwireViolations).toEqual([]);
 
     // The context must be scoped, not removed: reads still run inside one, or
@@ -302,6 +317,7 @@ describe('alertWorker evaluate-all #1105 DB-context scoping', () => {
 
     expect(result.queued).toBe(600);
     expect(ctx.addBulkDepths).toEqual([0, 0]);
+    expect(ctx.tripwireCalls).toHaveLength(2);
     expect(ctx.tripwireViolations).toEqual([]);
   });
 

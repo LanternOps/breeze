@@ -50,8 +50,9 @@ export function getAlertQueue(): Queue {
   if (!alertQueue) {
     // Instrumented so an enqueue made from inside a held DB context trips the
     // #1105 tripwire instead of silently pinning a pooled connection. The bare
-    // `new Queue` that used to be here is exactly why the evaluate-all addBulk
-    // hold (BREEZE-9, ~5s every 60s) went unnoticed for months (#3216).
+    // `new Queue` that used to be here left this queue outside the tripwire's
+    // (still incrementally adopted) coverage, so the evaluate-all addBulk hold
+    // — BREEZE-9, ~5s every 60s — had to be found by hand from Sentry (#3216).
     alertQueue = createInstrumentedQueue(ALERT_QUEUE);
   }
   return alertQueue;
