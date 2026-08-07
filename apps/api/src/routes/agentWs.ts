@@ -401,7 +401,15 @@ async function handleSnmpPollResult({ agentId, command, result }: Parameters<Com
         const { snmpDevices } = await import('../db/schema');
         await db
           .update(snmpDevices)
-          .set({ lastPolled: new Date(), lastStatus: 'warning' })
+          .set({
+            lastPolled: new Date(),
+            // The device answered; only our own pipeline failed. Clear the
+            // failure backoff (#3217) so a Redis outage doesn't march every
+            // healthy SNMP target to 'offline' and a one-hour interval.
+            lastPollAttemptedAt: new Date(),
+            consecutiveFailures: 0,
+            lastStatus: 'warning'
+          })
           .where(eq(snmpDevices.id, expectedDeviceId));
       }
     }
@@ -1171,7 +1179,14 @@ export async function processOrphanedCommandResult(
         const { snmpDevices } = await import('../db/schema');
         await db
           .update(snmpDevices)
-          .set({ lastPolled: new Date(), lastStatus: 'warning' })
+          .set({
+            lastPolled: new Date(),
+            // See the sibling branch above: the device replied, so the failure
+            // backoff must not accumulate on a Redis outage (#3217).
+            lastPollAttemptedAt: new Date(),
+            consecutiveFailures: 0,
+            lastStatus: 'warning'
+          })
           .where(eq(snmpDevices.id, snmpData.deviceId));
       }
     } catch (err) {

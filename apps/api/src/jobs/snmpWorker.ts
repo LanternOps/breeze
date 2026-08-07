@@ -24,6 +24,30 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 const SNMP_QUEUE = 'snmp';
 
+/**
+ * Failure backoff for SNMP polling (issue #3217).
+ *
+ * A device's effective polling interval is multiplied by 2^consecutiveFailures,
+ * shift-capped so the multiplier cannot run away, then absolute-capped, then
+ * floored back at the configured pollingInterval so backoff can only ever slow
+ * polling down.
+ *
+ * Because the floor is applied outside the cap, a device already configured at
+ * or above MAX_BACKOFF_SECONDS gets no backoff at all — it simply keeps its own
+ * interval. That is intentional: such a device was never polling often enough to
+ * be worth backing off.
+ */
+const MAX_BACKOFF_SHIFT = 6; // multiplier caps at 2^6 = 64x
+const MAX_BACKOFF_SECONDS = 3600; // sub-hour intervals never stretch past an hour
+
+/**
+ * Consecutive failed polls before the device is surfaced as offline. One missed
+ * poll is noise; three in a row is worth showing in the UI. 'offline' is an
+ * existing lastStatus value the monitoring dashboard already styles and flags
+ * as needing attention.
+ */
+const FAILURE_STATUS_THRESHOLD = 3;
+
 let snmpQueue: Queue | null = null;
 
 export function getSnmpQueue(): Queue {
@@ -106,6 +130,65 @@ export function createSnmpWorker(): Worker<SnmpJobData> {
       maxStalledCount: 2,
     }
   );
+}
+
+/**
+ * Record that the scheduler acted on this device (issue #3217).
+ *
+ * Stamped for *every* poll job, including the ones that turn out to be
+ * undispatchable, because this timestamp is what the scheduler's due-check
+ * reads. Without it a device whose poll never leaves the building stays NULL
+ * and is re-selected on every 60s tick — the original bug.
+ *
+ * Deliberately separate from `markPollDispatched`: this says "we looked at the
+ * device", not "the device failed".
+ *
+ * Errors are not swallowed. This is a single-row UPDATE against the same table
+ * the scheduler just read from, so a failure here means the database is not
+ * writable — dispatching a poll we cannot account for would leave the device
+ * with no record that it was attempted. Letting the job fail routes it to
+ * `attachWorkerObservability` instead of degrading silently.
+ */
+async function markPollAttempted(deviceId: string): Promise<void> {
+  await db
+    .update(snmpDevices)
+    .set({ lastPollAttemptedAt: new Date() })
+    .where(eq(snmpDevices.id, deviceId));
+}
+
+/**
+ * Count a poll as failed the moment it is handed to an agent (issue #3217).
+ *
+ * The counter is incremented *before* dispatch and cleared only by
+ * `processPollResults`, once metrics are actually persisted. That inversion is
+ * the point: a poll can die in places no catch block in this worker covers. The
+ * agent may accept the command and never reply (unreachable target, bad
+ * credentials), or it may reply and result persistence may throw on the way to
+ * the database — the production incident behind #3217 was exactly that second
+ * case, a failure *after* dispatch. Marking up front means every one of those
+ * outcomes backs the device off; only a genuine end-to-end success clears it.
+ *
+ * It must also run before `sendCommandToAgent`, not after: a fast agent on a
+ * local switch can round-trip the result and reset the counter to 0 while this
+ * worker is still running, and a post-dispatch increment would then leave a
+ * perfectly healthy device stuck at 1 failure forever.
+ *
+ * Callers must only reach this once the poll is genuinely going out. A device
+ * with no OIDs configured, or an org with no online agent, is a Breeze-side
+ * condition — counting it would mark healthy switches offline and back them off
+ * for an hour every time an MSP's only agent host reboots.
+ */
+async function markPollDispatched(deviceId: string): Promise<void> {
+  const nextFailures = sql`${snmpDevices.consecutiveFailures} + 1`;
+  await db
+    .update(snmpDevices)
+    .set({
+      consecutiveFailures: nextFailures,
+      // Only surface 'offline' once the device has failed repeatedly; leave the
+      // existing status alone before that so one slow poll doesn't flap the UI.
+      lastStatus: sql`CASE WHEN ${nextFailures} >= ${FAILURE_STATUS_THRESHOLD} THEN 'offline' ELSE ${snmpDevices.lastStatus} END`
+    })
+    .where(eq(snmpDevices.id, deviceId));
 }
 
 /**
@@ -203,8 +286,20 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
   dispatched: boolean;
   agentId: string | null;
 }> {
-  // Phase 1 — all DB reads inside a short system DB context, which then CLOSES.
-  const inputs = await runWithSystemDbAccess(() => loadPollDispatchInputs(data));
+  // Phase 1 — the attempt stamp plus all DB reads inside ONE short system DB
+  // context, which then CLOSES.
+  //
+  // `markPollAttempted` runs first and shares the context with the reads on
+  // purpose (#3217 + #1105). It must precede every early return below, because
+  // the scheduler's due-check reads `lastPollAttemptedAt` — a device whose poll
+  // never leaves the building must still be stamped, or it stays NULL and is
+  // re-selected on every 60s tick, which is the original bug. Sharing one
+  // context keeps that write atomic with the reads without adding a second
+  // connection acquisition per poll.
+  const inputs = await runWithSystemDbAccess(async () => {
+    await markPollAttempted(data.deviceId);
+    return loadPollDispatchInputs(data);
+  });
 
   // Phase 2 — connectivity check, credential decrypt and the agent WebSocket
   // dispatch, all with NO DB context open (#1105). sendCommandToAgent writes to
@@ -228,6 +323,16 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
     console.warn(`[SnmpWorker] No online agent for org ${data.orgId}`);
     return { dispatched: false, agentId: null };
   }
+
+  // From here the poll is genuinely going out, so it counts against the device
+  // until results come back and clear it (issue #3217).
+  //
+  // Its own short context, not the phase-1 one: this write has to land AFTER
+  // the `isAgentConnected` guard above (a device we never dispatch to must not
+  // be counted as failing), and phase 1 has to close before that guard so the
+  // WebSocket dispatch below holds no pooled connection (#1105). One single-row
+  // UPDATE per genuinely-dispatched poll is the cost of keeping both.
+  await runWithSystemDbAccess(() => markPollDispatched(data.deviceId));
 
   // Build and send the command payload
   const command = buildSnmpPollCommand(data.deviceId, device, oids);
@@ -285,12 +390,17 @@ async function processPollResults(data: ProcessPollResultsJobData): Promise<{
       await db.insert(snmpMetrics).values(rows);
     }
 
-    // Update device lastPolled and status
+    // Update device lastPolled and status. Clearing consecutiveFailures here is
+    // the only thing that cancels the backoff started at dispatch (#3217) — it
+    // must stay after the metric insert, and inside the same context, so a
+    // persistence failure rolls back the clear and keeps the count.
     await db
       .update(snmpDevices)
       .set({
         lastPolled: now,
-        lastStatus: 'online'
+        lastPollAttemptedAt: now,
+        lastStatus: 'online',
+        consecutiveFailures: 0
       })
       .where(eq(snmpDevices.id, data.deviceId));
   });
@@ -426,10 +536,11 @@ export async function enqueueSnmpPollResults(
 /**
  * Schedule repeatable polling jobs for all active SNMP devices.
  *
- * Runs a "poll-scheduler" job every 60 seconds. That job scans
- * `snmp_devices` for rows whose `pollingInterval` has elapsed since
- * `lastPolled` (or that have never been polled) and enqueues individual
- * `poll-device` jobs for each.
+ * Runs a "poll-scheduler" job every 60 seconds. That job scans `snmp_devices`
+ * for rows whose effective interval has elapsed since the last poll *attempt*
+ * (or that have never been attempted) and enqueues individual `poll-device`
+ * jobs for each. Keying off attempts rather than successes, and stretching the
+ * interval for repeatedly-failing devices, is issue #3217.
  */
 async function scheduleSnmpPolling(): Promise<void> {
   const queue = getSnmpQueue();
@@ -465,14 +576,35 @@ async function scheduleSnmpPolling(): Promise<void> {
 async function processScheduler(): Promise<{ enqueued: number }> {
   const now = new Date();
 
+  // The due-check runs off the last *attempt*, not the last success (#3217).
+  // `lastPolled` is stamped only when results are persisted, so keying off it
+  // meant a device that never succeeds stayed NULL forever and matched the
+  // `IS NULL` branch on every 60s tick — the broken devices got polled hardest.
+  // GREATEST is NULL-tolerant in Postgres, so it yields whichever timestamp is
+  // more recent and stays NULL only for devices never touched at all.
+  const lastAttempt = sql`GREATEST(${snmpDevices.lastPollAttemptedAt}, ${snmpDevices.lastPolled})`;
+
+  // Effective interval = pollingInterval * 2^min(failures, MAX_BACKOFF_SHIFT),
+  // absolute-capped, then floored back at pollingInterval so backoff can only
+  // slow a device down — never speed one up past its configured interval.
+  // The `::int` casts pin the bind-parameter types; without them Postgres has
+  // to infer them through POWER/LEAST overloads and can fail to resolve.
+  const effectiveIntervalSeconds = sql`GREATEST(
+    ${snmpDevices.pollingInterval},
+    LEAST(
+      ${snmpDevices.pollingInterval} * POWER(2, LEAST(${snmpDevices.consecutiveFailures}, ${MAX_BACKOFF_SHIFT}::int)),
+      ${MAX_BACKOFF_SECONDS}::int
+    )
+  )`;
+
   // Phase 1 — read the due devices inside a short system DB context, then let
   // it CLOSE. Everything after this is pure Redis/BullMQ work; the enqueue loop
   // below calls queue.getJob / getState / remove / add per device, and holding
   // those round-trips inside the context is what left this select sitting
   // `idle in transaction` for 51 seconds in production (#1105).
   //
-  // Find all active devices that are due for polling:
-  //   lastPolled IS NULL  OR  lastPolled + pollingInterval <= now
+  // Find all active devices whose effective interval has elapsed since the last
+  // attempt (or that have never been attempted).
   const dueDevices = await runWithSystemDbAccess(() =>
     db
       .select({
@@ -485,7 +617,7 @@ async function processScheduler(): Promise<{ enqueued: number }> {
       .where(
         and(
           eq(snmpDevices.isActive, true),
-          sql`(${snmpDevices.lastPolled} IS NULL OR ${snmpDevices.lastPolled} + make_interval(secs => ${snmpDevices.pollingInterval}) <= ${now.toISOString()})`
+          sql`(${lastAttempt} IS NULL OR ${lastAttempt} + make_interval(secs => ${effectiveIntervalSeconds}) <= ${now.toISOString()})`
         )
       )
   );
@@ -508,6 +640,24 @@ async function processScheduler(): Promise<{ enqueued: number }> {
   }
   return { enqueued };
 }
+
+/**
+ * Internal job handlers, exported for tests only. Production code reaches these
+ * through the BullMQ worker in `createSnmpWorker`.
+ *
+ * Each handler opens its own short-lived system DB access context around just
+ * its DB statements (#1105/#3215) — the worker deliberately does NOT wrap the
+ * job body, so calling these directly is safe from a context standpoint. What
+ * you lose is the BullMQ retry/observability envelope.
+ */
+export const __testables = {
+  processScheduler,
+  processPollDevice,
+  processPollResults,
+  MAX_BACKOFF_SHIFT,
+  MAX_BACKOFF_SECONDS,
+  FAILURE_STATUS_THRESHOLD
+};
 
 // Worker instance
 let snmpWorkerInstance: Worker<SnmpJobData> | null = null;

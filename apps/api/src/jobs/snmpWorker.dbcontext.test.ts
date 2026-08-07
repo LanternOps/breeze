@@ -146,6 +146,30 @@ function selectWhereChain(rows: unknown[], label: string) {
   };
 }
 
+/**
+ * A `.update().set().where()` chain that logs the depth it ran at, labelled by
+ * WHICH write it is (#3217 added two more, all against `snmp_devices`, so the
+ * table argument cannot tell them apart — the `set` payload can):
+ *
+ *   attemptStamp   — markPollAttempted: lastPollAttemptedAt only
+ *   dispatchCount  — markPollDispatched: increments consecutiveFailures
+ *   clearFailures  — processPollResults: resets consecutiveFailures to 0
+ */
+function updateChain() {
+  return {
+    set: (payload: Record<string, unknown>) => ({
+      where: async () => {
+        const label = !('consecutiveFailures' in payload)
+          ? 'attemptStamp'
+          : payload.consecutiveFailures === 0
+            ? 'clearFailures'
+            : 'dispatchCount';
+        ctxState.events.push(`${label}@depth${ctxState.depth}`);
+      },
+    }),
+  };
+}
+
 function runJob(data: unknown): Promise<unknown> {
   const processor = workerProcessors[0];
   if (!processor) throw new Error('worker processor was not registered');
@@ -172,6 +196,7 @@ describe('snmpWorker DB-context scoping (#3215)', () => {
       ctxState.events.push(`wsDispatch@depth${ctxState.depth}`);
       return true;
     });
+    mockDb.update.mockImplementation(updateChain as never);
 
     createSnmpWorker();
   });
@@ -243,17 +268,30 @@ describe('snmpWorker DB-context scoping (#3215)', () => {
     const result = await runJob({ type: 'poll-device', deviceId: 'd1', orgId: 'o1' });
 
     expect(result).toEqual({ dispatched: true, agentId: 'agent-1' });
-    // All three reads share ONE context; the WS connectivity check and the
-    // socket write happen only after it closes.
+    // The attempt stamp and all three reads share ONE context; the WS
+    // connectivity check and the socket write happen only after it closes.
+    //
+    // The dispatch counter (#3217) sits in its OWN short context between them:
+    // it must land after `isAgentConnected` (a poll we never send must not count
+    // against the device) and before `wsDispatch` (a fast agent can round-trip
+    // the result and clear the counter while this handler is still running, so a
+    // post-dispatch increment would strand a healthy device at 1 failure). It
+    // must NOT be inside phase 1 — that context has to close before the socket
+    // write, or the #1105 hold this file exists to prevent comes straight back.
     expect(ctxState.events).toEqual([
       'ctx:enter',
+      'attemptStamp@depth1',
       'deviceSelect@depth1',
       'templateSelect@depth1',
       'agentSelect@depth1',
       'ctx:exit',
       'isAgentConnected@depth0',
+      'ctx:enter',
+      'dispatchCount@depth1',
+      'ctx:exit',
       'wsDispatch@depth0',
     ]);
+    expect(ctxState.events.some((e) => e.startsWith('tripwire-violation'))).toBe(false);
   });
 
   it('poll-device does not dispatch — and holds no context — when the device is missing', async () => {
@@ -263,7 +301,15 @@ describe('snmpWorker DB-context scoping (#3215)', () => {
 
     expect(result).toEqual({ dispatched: false, agentId: null });
     expect(agentWsMock.sendCommandToAgent).not.toHaveBeenCalled();
-    expect(ctxState.events).toEqual(['ctx:enter', 'deviceSelect@depth1', 'ctx:exit']);
+    // The attempt is still stamped (#3217 — an undispatchable device that stays
+    // NULL is re-selected on every 60s tick), but no dispatch count is taken and
+    // no second context opens.
+    expect(ctxState.events).toEqual([
+      'ctx:enter',
+      'attemptStamp@depth1',
+      'deviceSelect@depth1',
+      'ctx:exit',
+    ]);
   });
 
   it('process-poll-results parses metrics between two short contexts, writes inside one', async () => {
@@ -273,13 +319,6 @@ describe('snmpWorker DB-context scoping (#3215)', () => {
       ctxState.events.push(`insert@depth${ctxState.depth}`);
     });
     mockDb.insert.mockReturnValue({ values: valuesMock } as never);
-    mockDb.update.mockReturnValue({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockImplementation(async () => {
-          ctxState.events.push(`update@depth${ctxState.depth}`);
-        }),
-      }),
-    } as never);
 
     const result = await runJob({
       type: 'process-poll-results',
@@ -293,13 +332,19 @@ describe('snmpWorker DB-context scoping (#3215)', () => {
     // Two separate short contexts — the lookup, then the writes. The metric
     // mapping in between happens with no transaction held, and the insert +
     // status stamp still share one context so they commit together.
+    //
+    // `clearFailures` AFTER `insert`, inside the same context, is the #3217
+    // contract: this reset is the only thing that cancels the backoff started at
+    // dispatch, so a metric-persistence failure must roll it back and keep the
+    // count. Reordering these two, or splitting them into separate contexts,
+    // would let a device that never persists metrics look healthy forever.
     expect(ctxState.events).toEqual([
       'ctx:enter',
       'orgSelect@depth1',
       'ctx:exit',
       'ctx:enter',
       'insert@depth1',
-      'update@depth1',
+      'clearFailures@depth1',
       'ctx:exit',
     ]);
   });
