@@ -505,15 +505,31 @@ groupRoutes.post(
       }
     });
 
-    // If dynamic group with filter, evaluate membership
+    // If dynamic group with filter, materialize membership before responding.
+    //
+    // This used to be fire-and-forget (`evaluateGroupMembership(id).catch(...)`),
+    // which never worked: the detached promise resumed AFTER the request's
+    // `withDbAccessContext` transaction had committed and released its pooled
+    // connection, so its next query was queued on a dead transaction handle and
+    // never executed. The promise never settled, the `.catch` never ran, and the
+    // group stayed permanently empty with nothing in the logs. Awaiting inside
+    // the request keeps the evaluation in the caller's own org-scoped RLS
+    // context — the correct tenant, enforced by Postgres — and lets the response
+    // carry the real device count. The evaluation is a handful of statements
+    // (bounded filter query + bulk insert), not a per-device loop.
+    let deviceCount = 0;
     if (group.type === 'dynamic' && group.filterConditions) {
-      // Run membership evaluation asynchronously (don't block the response)
-      evaluateGroupMembership(group.id).catch((err) => {
+      try {
+        await evaluateGroupMembership(group.id);
+        deviceCount = await getDeviceCountForGroup(group.id);
+      } catch (err) {
+        // The group itself was created; failing the request would invite a
+        // duplicate on retry. Surface the failure instead of swallowing it.
         console.error(`Failed to evaluate membership for new group ${group.id}:`, err);
-      });
+      }
     }
 
-    return c.json({ data: mapGroupRow(group, 0) }, 201);
+    return c.json({ data: mapGroupRow(group, deviceCount) }, 201);
   }
 );
 
@@ -628,16 +644,17 @@ groupRoutes.patch(
       }
     });
 
-    // Site changes are security-boundary changes, so finish evaluation before
-    // returning. Filter-only changes retain the existing asynchronous behavior.
+    // Always finish the re-evaluation before returning. Site changes are
+    // security-boundary changes and always had to be awaited; the filter-only
+    // branch used to be fire-and-forget, which silently did nothing at all —
+    // the detached promise resumed after this request's `withDbAccessContext`
+    // transaction had committed, so its queries were stranded on a closed
+    // transaction handle and never ran (no rows, no error, no log). Awaiting
+    // also means the `deviceCount` returned below reflects the new filter.
+    // A failure propagates (PATCH is idempotent, so a 500 is retryable) rather
+    // than leaving membership silently stale against the new filter or site.
     if (effectiveType === 'dynamic' && (filterChanged || siteChanged) && updated.filterConditions) {
-      if (siteChanged) {
-        await evaluateGroupMembership(updated.id);
-      } else {
-        evaluateGroupMembership(updated.id).catch((err) => {
-          console.error(`Failed to re-evaluate membership for group ${updated.id}:`, err);
-        });
-      }
+      await evaluateGroupMembership(updated.id);
     }
 
     const deviceCount = await getDeviceCountForGroup(id);
