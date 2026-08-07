@@ -24,6 +24,25 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 const SNMP_QUEUE = 'snmp';
 
+/**
+ * Failure backoff for SNMP polling (issue #3217).
+ *
+ * A device's effective polling interval is multiplied by 2^consecutiveFailures,
+ * shift-capped so the multiplier cannot run away, and absolute-capped so a
+ * long-interval device never disappears for days. The result is floored at the
+ * configured pollingInterval, so backoff can only ever slow polling down.
+ */
+const MAX_BACKOFF_SHIFT = 6; // multiplier caps at 2^6 = 64x
+const MAX_BACKOFF_SECONDS = 3600; // and never waits longer than an hour
+
+/**
+ * Consecutive failed polls before the device is surfaced as offline. One missed
+ * poll is noise; three in a row is worth showing in the UI. 'offline' is an
+ * existing lastStatus value the monitoring dashboard already styles and flags
+ * as needing attention.
+ */
+const FAILURE_STATUS_THRESHOLD = 3;
+
 let snmpQueue: Queue | null = null;
 
 export function getSnmpQueue(): Queue {
@@ -106,6 +125,37 @@ export function createSnmpWorker(): Worker<SnmpJobData> {
       maxStalledCount: 2,
     }
   );
+}
+
+/**
+ * Stamp a poll attempt and optimistically count it as a failure (issue #3217).
+ *
+ * The failure counter is incremented *here*, at dispatch, rather than in a
+ * failure handler — and cleared only by `processPollResults` once metrics are
+ * actually persisted. That inversion is the point: a poll can die in places no
+ * catch block in this worker covers. The agent may accept the command and never
+ * reply (unreachable target, bad credentials), or it may reply and result
+ * persistence may throw on the way to the database — the production incident
+ * behind #3217 was exactly that second case, a failure *after* dispatch. Marking
+ * up front means every one of those outcomes backs the device off; only a
+ * genuine end-to-end success clears the count.
+ *
+ * Errors are deliberately not swallowed. If this write fails the device would
+ * silently fall back to being re-polled every scheduler tick, which is the bug
+ * being fixed, so the job is allowed to fail loudly instead.
+ */
+async function markPollAttempt(deviceId: string): Promise<void> {
+  const nextFailures = sql`${snmpDevices.consecutiveFailures} + 1`;
+  await db
+    .update(snmpDevices)
+    .set({
+      lastPollAttemptedAt: new Date(),
+      consecutiveFailures: nextFailures,
+      // Only surface 'offline' once the device has failed repeatedly; leave the
+      // existing status alone before that so one slow poll doesn't flap the UI.
+      lastStatus: sql`CASE WHEN ${nextFailures} >= ${FAILURE_STATUS_THRESHOLD} THEN 'offline' ELSE ${snmpDevices.lastStatus} END`
+    })
+    .where(eq(snmpDevices.id, deviceId));
 }
 
 /**
@@ -203,8 +253,20 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
   dispatched: boolean;
   agentId: string | null;
 }> {
-  // Phase 1 — all DB reads inside a short system DB context, which then CLOSES.
-  const inputs = await runWithSystemDbAccess(() => loadPollDispatchInputs(data));
+  // Phase 1 — the attempt stamp plus all DB reads inside ONE short system DB
+  // context, which then CLOSES.
+  //
+  // `markPollAttempt` runs first and shares the context with the reads on
+  // purpose (#3217 + #1105). It must precede every early return below, because
+  // the scheduler's due-check reads `lastPollAttemptedAt` — a device whose poll
+  // never leaves the building must still be stamped, or it stays NULL and is
+  // re-selected on every 60s tick, which is the original bug. Sharing one
+  // context keeps that write atomic with the reads without adding a second
+  // connection acquisition per poll.
+  const inputs = await runWithSystemDbAccess(async () => {
+    await markPollAttempt(data.deviceId);
+    return loadPollDispatchInputs(data);
+  });
 
   // Phase 2 — connectivity check, credential decrypt and the agent WebSocket
   // dispatch, all with NO DB context open (#1105). sendCommandToAgent writes to
@@ -285,12 +347,17 @@ async function processPollResults(data: ProcessPollResultsJobData): Promise<{
       await db.insert(snmpMetrics).values(rows);
     }
 
-    // Update device lastPolled and status
+    // Update device lastPolled and status. Clearing consecutiveFailures here is
+    // the only thing that cancels the backoff started at dispatch (#3217) — it
+    // must stay after the metric insert, and inside the same context, so a
+    // persistence failure rolls back the clear and keeps the count.
     await db
       .update(snmpDevices)
       .set({
         lastPolled: now,
-        lastStatus: 'online'
+        lastPollAttemptedAt: now,
+        lastStatus: 'online',
+        consecutiveFailures: 0
       })
       .where(eq(snmpDevices.id, data.deviceId));
   });
@@ -465,14 +532,35 @@ async function scheduleSnmpPolling(): Promise<void> {
 async function processScheduler(): Promise<{ enqueued: number }> {
   const now = new Date();
 
+  // The due-check runs off the last *attempt*, not the last success (#3217).
+  // `lastPolled` is stamped only when results are persisted, so keying off it
+  // meant a device that never succeeds stayed NULL forever and matched the
+  // `IS NULL` branch on every 60s tick — the broken devices got polled hardest.
+  // GREATEST is NULL-tolerant in Postgres, so it yields whichever timestamp is
+  // more recent and stays NULL only for devices never touched at all.
+  const lastAttempt = sql`GREATEST(${snmpDevices.lastPollAttemptedAt}, ${snmpDevices.lastPolled})`;
+
+  // Effective interval = pollingInterval * 2^min(failures, MAX_BACKOFF_SHIFT),
+  // absolute-capped, then floored back at pollingInterval so backoff can only
+  // slow a device down — never speed one up past its configured interval.
+  // The `::int` casts pin the bind-parameter types; without them Postgres has
+  // to infer them through POWER/LEAST overloads and can fail to resolve.
+  const effectiveIntervalSeconds = sql`GREATEST(
+    ${snmpDevices.pollingInterval},
+    LEAST(
+      ${snmpDevices.pollingInterval} * POWER(2, LEAST(${snmpDevices.consecutiveFailures}, ${MAX_BACKOFF_SHIFT}::int)),
+      ${MAX_BACKOFF_SECONDS}::int
+    )
+  )`;
+
   // Phase 1 — read the due devices inside a short system DB context, then let
   // it CLOSE. Everything after this is pure Redis/BullMQ work; the enqueue loop
   // below calls queue.getJob / getState / remove / add per device, and holding
   // those round-trips inside the context is what left this select sitting
   // `idle in transaction` for 51 seconds in production (#1105).
   //
-  // Find all active devices that are due for polling:
-  //   lastPolled IS NULL  OR  lastPolled + pollingInterval <= now
+  // Find all active devices whose effective interval has elapsed since the last
+  // attempt (or that have never been attempted).
   const dueDevices = await runWithSystemDbAccess(() =>
     db
       .select({
@@ -485,7 +573,7 @@ async function processScheduler(): Promise<{ enqueued: number }> {
       .where(
         and(
           eq(snmpDevices.isActive, true),
-          sql`(${snmpDevices.lastPolled} IS NULL OR ${snmpDevices.lastPolled} + make_interval(secs => ${snmpDevices.pollingInterval}) <= ${now.toISOString()})`
+          sql`(${lastAttempt} IS NULL OR ${lastAttempt} + make_interval(secs => ${effectiveIntervalSeconds}) <= ${now.toISOString()})`
         )
       )
   );
@@ -508,6 +596,20 @@ async function processScheduler(): Promise<{ enqueued: number }> {
   }
   return { enqueued };
 }
+
+/**
+ * Internal job handlers, exported for tests only. Production code reaches these
+ * through the BullMQ worker in `createSnmpWorker`, which wraps them in a system
+ * DB access context — call them directly outside tests and you lose that.
+ */
+export const __testables = {
+  processScheduler,
+  processPollDevice,
+  processPollResults,
+  MAX_BACKOFF_SHIFT,
+  MAX_BACKOFF_SECONDS,
+  FAILURE_STATUS_THRESHOLD
+};
 
 // Worker instance
 let snmpWorkerInstance: Worker<SnmpJobData> | null = null;

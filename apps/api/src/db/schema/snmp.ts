@@ -35,6 +35,12 @@ export const snmpDevices = pgTable('snmp_devices', {
   templateId: uuid('template_id').references(() => snmpTemplates.id),
   isActive: boolean('is_active').notNull().default(true),
   lastPolled: timestamp('last_polled'),
+  // Stamped at dispatch regardless of outcome; the scheduler's due-check runs
+  // off this so never-succeeding devices still honour pollingInterval (#3217).
+  lastPollAttemptedAt: timestamp('last_poll_attempted_at'),
+  // Incremented at dispatch, cleared only when results are persisted. Drives
+  // exponential backoff of the effective polling interval (#3217).
+  consecutiveFailures: integer('consecutive_failures').notNull().default(0),
   lastStatus: varchar('last_status', { length: 20 }),
   createdAt: timestamp('created_at').defaultNow().notNull()
 });
