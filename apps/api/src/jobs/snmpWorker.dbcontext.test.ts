@@ -316,9 +316,15 @@ describe('snmpWorker DB-context scoping (#3215)', () => {
   });
 
   it('the worker handler does not wrap job bodies in an outer context', async () => {
-    // Guard against reintroducing the outer runWithSystemDbAccess: because
-    // withDbAccessContext re-entry is a no-op, an outer wrap would make the
-    // scheduler's enqueues run at depth 1 and never emit a second ctx:enter.
+    // Guard against reintroducing the outer runWithSystemDbAccess.
+    //
+    // Careful about WHY this fails, because prod and this mock differ: in prod
+    // `withDbAccessContext` short-circuits on re-entry, so an outer wrap would
+    // leave one transaction open across the enqueues. This mock does NOT model
+    // that short-circuit — it increments depth unconditionally — so an outer
+    // wrap here shows up as TWO ctx:enter events with the select at depth 2 and
+    // the enqueues at depth 1. Either way the assertions below fail (verified by
+    // mutation), which is what matters; don't read the mock as prod semantics.
     mockDb.select.mockReturnValueOnce(
       selectWhereChain([{ id: 'd1', orgId: 'o1', pollingInterval: 60, lastPolled: null }], 'dueSelect') as never
     );

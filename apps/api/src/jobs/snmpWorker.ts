@@ -28,10 +28,19 @@ let snmpQueue: Queue | null = null;
 
 export function getSnmpQueue(): Queue {
   if (!snmpQueue) {
-    // Instrumented so an enqueue made inside a held DB context trips the #1105
-    // tripwire instead of silently pinning a pooled connection
-    // idle-in-transaction (the bare `new Queue` here is how the scheduler's
-    // 51-second connection hold went unnoticed in production).
+    // Instrumented so an `add`/`addBulk` made inside a held DB context trips the
+    // #1105 tripwire instead of silently pinning a pooled connection
+    // idle-in-transaction.
+    //
+    // Partial coverage, deliberately stated: createInstrumentedQueue wraps only
+    // Queue.add/addBulk. `enqueueSnmpPoll` does up to three Redis round-trips
+    // BEFORE that (`queue.getJob`, then `job.getState` / `job.remove` on the Job
+    // object, which a Queue-level factory cannot reach), and on the reusable-state
+    // dedupe path it returns without ever calling add. In the steady state of a
+    // busy poll queue that is most iterations — so the tripwire alone would NOT
+    // have caught the 51-second scheduler hold. The depth assertions in
+    // snmpWorker.dbcontext.test.ts are the real regression fence; this is
+    // defense-in-depth on top of them.
     snmpQueue = createInstrumentedQueue(SNMP_QUEUE);
   }
   return snmpQueue;
@@ -99,11 +108,28 @@ export function createSnmpWorker(): Worker<SnmpJobData> {
   );
 }
 
-interface PollDispatchInputs {
-  device: typeof snmpDevices.$inferSelect | null;
-  oids: string[];
-  agentId: string | null;
-}
+/**
+ * Outcome of the poll-device read phase.
+ *
+ * Discriminated on purpose: `{ device: null }`, "no OIDs" and "no online agent"
+ * are three different causes, and a bare `{device, oids, agentId}` struct only
+ * distinguishes them via the ORDER the caller happens to check them in. That
+ * made the log line a function of guard order rather than of the actual cause —
+ * reorder the guards and "No OIDs configured" silently becomes "No online
+ * agent", pointing ops at agent connectivity for a template misconfiguration.
+ * Note `agentId` is also genuinely *unknown* (not "none found") on the no-OIDs
+ * path, because the agent query is skipped there.
+ */
+type PollDispatchInputs =
+  | { status: 'device-missing' }
+  | { status: 'no-oids' }
+  | { status: 'no-agent' }
+  | {
+      status: 'ok';
+      device: typeof snmpDevices.$inferSelect;
+      oids: string[];
+      agentId: string;
+    };
 
 /**
  * Phase 1 of a poll-device job: read every row the dispatch needs inside ONE
@@ -119,7 +145,7 @@ async function loadPollDispatchInputs(data: PollDeviceJobData): Promise<PollDisp
     .limit(1);
 
   if (!device) {
-    return { device: null, oids: [], agentId: null };
+    return { status: 'device-missing' };
   }
 
   // Load template OIDs if device has a template
@@ -140,7 +166,7 @@ async function loadPollDispatchInputs(data: PollDeviceJobData): Promise<PollDisp
   }
 
   if (oids.length === 0) {
-    return { device, oids, agentId: null };
+    return { status: 'no-oids' };
   }
 
   // Find an online agent for this org.
@@ -162,7 +188,12 @@ async function loadPollDispatchInputs(data: PollDeviceJobData): Promise<PollDisp
     )
     .limit(1);
 
-  return { device, oids, agentId: onlineAgent?.agentId ?? null };
+  const agentId = onlineAgent?.agentId ?? null;
+  if (!agentId) {
+    return { status: 'no-agent' };
+  }
+
+  return { status: 'ok', device, oids, agentId };
 }
 
 /**
@@ -173,25 +204,27 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
   agentId: string | null;
 }> {
   // Phase 1 — all DB reads inside a short system DB context, which then CLOSES.
-  const { device, oids, agentId } = await runWithSystemDbAccess(() =>
-    loadPollDispatchInputs(data)
-  );
+  const inputs = await runWithSystemDbAccess(() => loadPollDispatchInputs(data));
 
   // Phase 2 — connectivity check, credential decrypt and the agent WebSocket
   // dispatch, all with NO DB context open (#1105). sendCommandToAgent writes to
   // a socket whose peer may be slow or wedged; holding the transaction across
   // it is what pinned pooled connections for tens of seconds.
-  if (!device) {
-    console.error(`[SnmpWorker] Device ${data.deviceId} not found`);
-    return { dispatched: false, agentId: null };
+  switch (inputs.status) {
+    case 'device-missing':
+      console.error(`[SnmpWorker] Device ${data.deviceId} not found`);
+      return { dispatched: false, agentId: null };
+    case 'no-oids':
+      console.warn(`[SnmpWorker] No OIDs configured for device ${data.deviceId}`);
+      return { dispatched: false, agentId: null };
+    case 'no-agent':
+      console.warn(`[SnmpWorker] No online agent for org ${data.orgId}`);
+      return { dispatched: false, agentId: null };
   }
 
-  if (oids.length === 0) {
-    console.warn(`[SnmpWorker] No OIDs configured for device ${data.deviceId}`);
-    return { dispatched: false, agentId: null };
-  }
+  const { device, oids, agentId } = inputs;
 
-  if (!agentId || !isAgentConnected(agentId)) {
+  if (!isAgentConnected(agentId)) {
     console.warn(`[SnmpWorker] No online agent for org ${data.orgId}`);
     return { dispatched: false, agentId: null };
   }
