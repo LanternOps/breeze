@@ -81,11 +81,57 @@ const INSTALL_OR_FETCH_SQL_RE =
 // the predicate narrow is what lets the SQL prefilter stay bounded, which is
 // the constraint the whole loader is built around.
 // ---------------------------------------------------------------------------
-const OBJECT_STORAGE_HOST =
-  /(?:^|\.)(?:s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com|blob\.core\.windows\.net|storage\.googleapis\.com|r2\.dev|r2\.cloudflarestorage\.com|digitaloceanspaces\.com|backblazeb2\.com|b-cdn\.net|supabase\.co)$/i;
+const OBJECT_STORAGE_SUFFIXES: readonly string[] = [
+  'blob.core.windows.net',
+  'storage.googleapis.com',
+  'r2.dev',
+  'r2.cloudflarestorage.com',
+  'digitaloceanspaces.com',
+  'backblazeb2.com',
+  'b-cdn.net',
+  'supabase.co',
+];
 
+const AWS_SUFFIX = 'amazonaws.com';
+
+/**
+ * Index at which the object-storage provider suffix begins, or -1 if the host
+ * is not object storage. Everything before that index is the bucket.
+ *
+ * Deliberately string-based rather than a regex. The first cut of this used
+ * `s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com`, which CodeQL correctly flagged as
+ * exponentially backtrackable (js/redos): `-` belongs to BOTH the separator
+ * class and the body class, so `.s3-` followed by many `--` has no unambiguous
+ * parse. That is not theoretical here — this hostname is extracted from
+ * ATTACKER-AUTHORED script content, so a crafted host would hang the very
+ * sweep meant to catch it. Linear scanning removes the class of bug outright.
+ */
+function objectStorageSuffixIndex(hostname: string): number {
+  for (const suffix of OBJECT_STORAGE_SUFFIXES) {
+    if (hostname === suffix) return 0;
+    if (hostname.endsWith(`.${suffix}`)) return hostname.length - suffix.length - 1;
+  }
+  // AWS S3 in all its endpoint spellings: s3.amazonaws.com,
+  // s3.<region>.amazonaws.com, s3-<region>.amazonaws.com,
+  // s3.dualstack.<region>.amazonaws.com, and <bucket>.<any of those>.
+  if (hostname === AWS_SUFFIX || hostname.endsWith(`.${AWS_SUFFIX}`)) {
+    const labels = hostname.split('.');
+    const s3At = labels.findIndex((l) => l === 's3' || l.startsWith('s3-'));
+    if (s3At >= 0) return s3At === 0 ? 0 : labels.slice(0, s3At).join('.').length;
+  }
+  return -1;
+}
+
+const isObjectStorageHost = (hostname: string): boolean => objectStorageSuffixIndex(hostname) >= 0;
+
+/**
+ * SQL-side prefilter mirror. Deliberately a SUPERSET of the predicate above —
+ * a prefilter that is narrower than the real gate would drop rows the scorer
+ * would have caught. Single quantifier per alternative, no nesting, so it
+ * carries none of the backtracking risk the original had.
+ */
 const OBJECT_STORAGE_SQL_RE =
-  's3([.-][a-z0-9-]+)*\\.amazonaws\\.com|blob\\.core\\.windows\\.net|storage\\.googleapis\\.com|r2\\.dev|r2\\.cloudflarestorage\\.com|digitaloceanspaces\\.com|backblazeb2\\.com|b-cdn\\.net|supabase\\.co';
+  's3[a-z0-9.-]*\\.amazonaws\\.com|blob\\.core\\.windows\\.net|storage\\.googleapis\\.com|r2\\.dev|r2\\.cloudflarestorage\\.com|digitaloceanspaces\\.com|backblazeb2\\.com|b-cdn\\.net|supabase\\.co';
 
 /** An installer artifact by extension — the thing being fetched. */
 const INSTALLER_ARTIFACT = /\.(?:msi|exe)\b/i;
@@ -235,9 +281,9 @@ function hostRelated(host: string, partnerTokens: readonly string[], productToke
  * returning [] leaves it unrelated, which is the safe direction.
  */
 function identityLabels(hostname: string): string[] {
-  const objectStorage = OBJECT_STORAGE_HOST.exec(hostname);
-  if (objectStorage) {
-    return objectStorage.index > 0 ? hostname.slice(0, objectStorage.index).split('.') : [];
+  const suffixAt = objectStorageSuffixIndex(hostname);
+  if (suffixAt >= 0) {
+    return suffixAt > 0 ? hostname.slice(0, suffixAt).split('.') : [];
   }
   return hostname.split('.').slice(0, -1); // drop TLD label
 }
@@ -313,7 +359,7 @@ function scoreFinding(
   const gate: GateKind | null =
     products.length > 0 && hasFetch
       ? 'branded'
-      : hasFetch && INSTALLER_ARTIFACT.test(text) && hosts.some((h) => OBJECT_STORAGE_HOST.test(hostnameOf(h)))
+      : hasFetch && INSTALLER_ARTIFACT.test(text) && hosts.some((h) => isObjectStorageHost(hostnameOf(h)))
         ? 'unbranded'
         : null;
   if (gate === null) return null;

