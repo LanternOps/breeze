@@ -174,7 +174,13 @@ describe('processScheduler due-check (#3217)', () => {
 });
 
 describe('processPollDevice attempt marking (#3217)', () => {
-  it('stamps the attempt and increments failures before loading the device', async () => {
+  const dispatchable = () => [
+    [{ id: 'dev-1', orgId: 'org-1', templateId: 'tpl-1', ipAddress: '10.0.0.1', port: 161, snmpVersion: 'v2c' }],
+    [{ oids: [{ oid: '1.3.6.1.2.1.1.1.0' }] }],
+    [{ agentId: 'agent-1' }],
+  ];
+
+  it('stamps the attempt before loading the device', async () => {
     selectResults = [[]]; // device lookup finds nothing
 
     await processPollDevice({ type: 'poll-device', deviceId: 'dev-1', orgId: 'org-1' });
@@ -183,32 +189,69 @@ describe('processPollDevice attempt marking (#3217)', () => {
     // otherwise leave last_poll_attempted_at NULL and re-poll in 60s.
     expect(captured.order[0]).toBe('update');
     expect(captured.updateSets).toHaveLength(1);
-
-    const set = captured.updateSets[0]!;
-    expect(set.lastPollAttemptedAt).toBeInstanceOf(Date);
-    expect(render(set.consecutiveFailures).sql).toMatch(/"consecutive_failures"\s*\+\s*1/i);
-  });
-
-  it('marks the attempt even when no online agent exists to dispatch to', async () => {
-    selectResults = [
-      [{ id: 'dev-1', orgId: 'org-1', templateId: 'tpl-1', ipAddress: '10.0.0.1', port: 161, snmpVersion: 'v2c' }],
-      [{ oids: [{ oid: '1.3.6.1.2.1.1.1.0' }] }],
-      [], // no online agent
-    ];
-
-    const result = await processPollDevice({ type: 'poll-device', deviceId: 'dev-1', orgId: 'org-1' });
-
-    expect(result).toEqual({ dispatched: false, agentId: null });
-    expect(captured.updateSets).toHaveLength(1);
     expect(captured.updateSets[0]!.lastPollAttemptedAt).toBeInstanceOf(Date);
   });
 
-  it('only surfaces the device as offline once it has failed repeatedly', async () => {
-    selectResults = [[]];
+  it.each([
+    ['the device row is gone', () => [[]]],
+    ['the device has no OIDs configured', () => [
+      [{ id: 'dev-1', orgId: 'org-1', templateId: null, ipAddress: '10.0.0.1' }],
+    ]],
+    ['the org has no online agent', () => [
+      [{ id: 'dev-1', orgId: 'org-1', templateId: 'tpl-1', ipAddress: '10.0.0.1', port: 161, snmpVersion: 'v2c' }],
+      [{ oids: [{ oid: '1.3.6.1.2.1.1.1.0' }] }],
+      [],
+    ]],
+  ])('stamps but does NOT count a failure when %s', async (_label, results) => {
+    // None of these say anything about the SNMP target — the poll never left
+    // the building. Counting them would mark healthy switches offline and back
+    // them off for an hour whenever an MSP's only agent host reboots.
+    selectResults = results() as unknown[][];
+    isAgentConnectedMock.mockReturnValue(false);
 
     await processPollDevice({ type: 'poll-device', deviceId: 'dev-1', orgId: 'org-1' });
 
-    const { sql: text, params } = render(captured.updateSets[0]!.lastStatus);
+    expect(captured.updateSets).toHaveLength(1);
+    expect(captured.updateSets[0]).not.toHaveProperty('consecutiveFailures');
+    expect(captured.updateSets[0]!.lastPollAttemptedAt).toBeInstanceOf(Date);
+  });
+
+  it('counts a failure once the poll is genuinely dispatched', async () => {
+    selectResults = dispatchable() as unknown[][];
+    isAgentConnectedMock.mockReturnValue(true);
+    sendCommandToAgentMock.mockReturnValue(true);
+
+    const result = await processPollDevice({ type: 'poll-device', deviceId: 'dev-1', orgId: 'org-1' });
+
+    expect(result).toEqual({ dispatched: true, agentId: 'agent-1' });
+    expect(captured.updateSets).toHaveLength(2);
+    expect(render(captured.updateSets[1]!.consecutiveFailures).sql).toMatch(/"consecutive_failures"\s*\+\s*1/i);
+  });
+
+  it('increments before the command is sent, so a fast reply cannot be overwritten', async () => {
+    // A local switch can round-trip results while this worker is still running.
+    // If the increment landed after the send, processPollResults' reset could be
+    // clobbered and a healthy device would sit at 1 failure forever.
+    selectResults = dispatchable() as unknown[][];
+    isAgentConnectedMock.mockReturnValue(true);
+    sendCommandToAgentMock.mockImplementation(() => {
+      expect(captured.updateSets).toHaveLength(2);
+      return true;
+    });
+
+    await processPollDevice({ type: 'poll-device', deviceId: 'dev-1', orgId: 'org-1' });
+
+    expect(sendCommandToAgentMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('only surfaces the device as offline once it has failed repeatedly', async () => {
+    selectResults = dispatchable() as unknown[][];
+    isAgentConnectedMock.mockReturnValue(true);
+    sendCommandToAgentMock.mockReturnValue(true);
+
+    await processPollDevice({ type: 'poll-device', deviceId: 'dev-1', orgId: 'org-1' });
+
+    const { sql: text, params } = render(captured.updateSets[1]!.lastStatus);
     expect(text).toMatch(/case when .* then 'offline' else "snmp_devices"\."last_status" end/i);
     expect(params).toContain(FAILURE_STATUS_THRESHOLD);
   });
@@ -217,8 +260,8 @@ describe('processPollDevice attempt marking (#3217)', () => {
     updateError = new Error('db down');
     selectResults = [[]];
 
-    // Swallowing this would silently restore the every-60s hammering the fix
-    // exists to stop, so the error must propagate.
+    // Dispatching a poll we cannot account for would leave the device with no
+    // record that it was attempted, so the error must propagate.
     await expect(
       processPollDevice({ type: 'poll-device', deviceId: 'dev-1', orgId: 'org-1' })
     ).rejects.toThrow('db down');

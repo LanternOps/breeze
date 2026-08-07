@@ -416,7 +416,14 @@ describe('monitoring routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(updateSet).toHaveBeenCalledWith({ pollingInterval: 600 });
+      // Masked secrets are dropped, so only pollingInterval survives from the
+      // body. The two scheduler fields are added unconditionally to re-arm poll
+      // backoff on any config change (#3217).
+      expect(updateSet).toHaveBeenCalledWith({
+        pollingInterval: 600,
+        consecutiveFailures: 0,
+        lastPollAttemptedAt: null,
+      });
     });
 
     it('returns 404 when no SNMP config exists', async () => {

@@ -471,6 +471,13 @@ monitoringRoutes.put(
     }
     else if (!existing) setValues.privPassword = null;
 
+    // Re-arm the poll scheduler on any config change (#3217). A device that
+    // backed off to the one-hour cap because of, say, a wrong community string
+    // must exercise the corrected config on the next tick — otherwise the fix
+    // looks like it did nothing and the device reads 'offline' for an hour.
+    setValues.consecutiveFailures = 0;
+    setValues.lastPollAttemptedAt = null;
+
     const upserted = await (async () => {
       if (existing) {
         const [row] = await db.update(snmpDevices)
@@ -584,6 +591,16 @@ monitoringRoutes.patch(
     }
     if (Object.keys(setValues).length === 0) return c.json({ error: 'No fields to update' }, 400);
 
+    // Captured before the scheduler fields below are mixed in, so the audit
+    // trail records what the caller actually changed.
+    const changedFields = Object.keys(setValues);
+
+    // Re-arm the poll scheduler on any config change (#3217) — see the upsert
+    // route above. Applied after the empty-body guard so a no-op PATCH still
+    // 400s rather than silently resetting the backoff.
+    setValues.consecutiveFailures = 0;
+    setValues.lastPollAttemptedAt = null;
+
     const [updated] = await db.update(snmpDevices)
       .set(setValues)
       .where(eq(snmpDevices.id, existing.id))
@@ -595,7 +612,7 @@ monitoringRoutes.patch(
       action: 'monitoring.snmp.patch',
       resourceType: 'discovered_asset',
       resourceId: assetId,
-      details: { snmpDeviceId: updated.id, changes: Object.keys(setValues) }
+      details: { snmpDeviceId: updated.id, changes: changedFields }
     });
 
     return c.json({
