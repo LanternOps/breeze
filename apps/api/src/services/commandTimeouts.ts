@@ -13,7 +13,11 @@ const TWO_HOURS = 2 * 60 * 60 * 1000;
 // sit before the generic reaper closes it out.
 const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = THIRTY_MINUTES;
-const SCRIPT_GRACE_BUFFER_MS = 5 * 60 * 1000; // extra buffer on top of per-script timeout
+// Extra buffer on top of a script's own timeout, so the agent-side timeout
+// always fires first. Exported because the stale reaper needs it as the floor
+// for its SQL pre-filter: every per-script deadline is at least this long, so
+// nothing younger than the buffer can be due (#3190).
+export const SCRIPT_GRACE_BUFFER_MS = 5 * 60 * 1000;
 const DEFAULT_SCRIPT_TIMEOUT_S = 300;
 
 // ── Commands that should never be reaped (interactive sessions) ───

@@ -6,6 +6,7 @@ import {
   deviceCommands,
   scriptExecutions,
   scriptExecutionBatches,
+  scripts,
   patchJobs,
   patchJobResults,
   deployments,
@@ -21,11 +22,11 @@ import {
   STALE_BACKUP_REAP_MARKER,
 } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
-import { getCommandTimeoutMs, EXCLUDED_COMMAND_TYPES } from '../services/commandTimeouts';
+import { getCommandTimeoutMs, EXCLUDED_COMMAND_TYPES, SCRIPT_GRACE_BUFFER_MS } from '../services/commandTimeouts';
 import { captureException } from '../services/sentry';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
-import { queueBackupStopCommand } from '../services/commandQueue';
+import { queueBackupStopCommand, CommandTypes } from '../services/commandQueue';
 import { envInt } from '../utils/envInt';
 
 const QUEUE_NAME = 'stale-command-reaper';
@@ -287,9 +288,23 @@ export async function reapStaleDeviceCommands(): Promise<number> {
 }
 
 export async function reapStaleScriptExecutions(): Promise<number> {
-  // Default script timeout + grace buffer (300s script + 300s grace = 10 min)
-  const defaultTimeoutMs = 300 * 1000 + 5 * 60 * 1000;
-  const conservativeCutoff = new Date(Date.now() - defaultTimeoutMs);
+  // #3190: this used to be a flat `300s + 5min grace` for every execution,
+  // ignoring the script's own `timeoutSeconds`. That is wrong in both
+  // directions: a legitimately long script was reaped and reported as stale
+  // while it was still running correctly, and a short-timeout script sat
+  // pending far past its own contract.
+  //
+  // The deadline now comes from the script row, through the same
+  // `getCommandTimeoutMs` used by the device-command reaper above — one source
+  // of truth for "how long may a script take", rather than a second copy that
+  // can drift from it.
+  //
+  // The SQL pre-filter uses the grace buffer alone as a conservative floor:
+  // `timeoutSeconds` is a non-negative integer, so every per-script deadline is
+  // at least SCRIPT_GRACE_BUFFER_MS and nothing younger than that can be due.
+  // Rows selected here are re-checked per row below against their own script's
+  // deadline, mirroring reapStaleDeviceCommands.
+  const conservativeCutoff = new Date(Date.now() - SCRIPT_GRACE_BUFFER_MS);
 
   const staleExecs = await db
     .select({
@@ -298,8 +313,10 @@ export async function reapStaleScriptExecutions(): Promise<number> {
       scriptId: scriptExecutions.scriptId,
       createdAt: scriptExecutions.createdAt,
       startedAt: scriptExecutions.startedAt,
+      timeoutSeconds: scripts.timeoutSeconds,
     })
     .from(scriptExecutions)
+    .innerJoin(scripts, eq(scripts.id, scriptExecutions.scriptId))
     .where(
       and(
         inArray(scriptExecutions.status, ['pending', 'queued', 'running']),
@@ -313,11 +330,17 @@ export async function reapStaleScriptExecutions(): Promise<number> {
   let reaped = 0;
 
   for (const exec of staleExecs) {
+    // The per-row deadline must use the script's own value too. Leaving this
+    // check on a fixed constant would keep enforcing the old floor and make
+    // the fix inert for exactly the short-timeout case #3190 describes.
+    const timeoutMs = getCommandTimeoutMs(CommandTypes.SCRIPT, {
+      timeoutSeconds: exec.timeoutSeconds,
+    });
     const referenceTime = exec.status === 'running' && exec.startedAt
       ? exec.startedAt.getTime()
       : exec.createdAt.getTime();
 
-    if (now - referenceTime < defaultTimeoutMs) continue;
+    if (now - referenceTime < timeoutMs) continue;
 
     // #3097: this lookup used to happen AFTER the update, purely to find the
     // batch. It runs first now because it also answers whether the agent
