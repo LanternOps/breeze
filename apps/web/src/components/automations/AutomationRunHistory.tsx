@@ -20,6 +20,38 @@ import { formatNumber } from '@/lib/i18n/format';
 
 type ScriptsT = TFunction<'scripts'>;
 
+/**
+ * One `run_script` action's real script output on one device (#3162). Distinct
+ * from `DeviceRunResult.output`, which only carries the automation's own log
+ * lines — this is what the agent actually printed.
+ */
+export type DeviceScriptResult = {
+  executionId: string;
+  scriptId: string;
+  scriptName?: string;
+  status: string;
+  exitCode?: number;
+  stdout?: string;
+  stdoutTruncated?: boolean;
+  stderr?: string;
+  stderrTruncated?: boolean;
+  error?: string;
+};
+
+/**
+ * An execution the agent hasn't reported on yet. Its stdout is legitimately
+ * absent, which must NOT read as "the script printed nothing" — that ambiguity
+ * is the whole reason #3162 was filed.
+ */
+const PENDING_SCRIPT_STATUSES = new Set(['pending', 'queued', 'running']);
+
+export function isScriptResultPending(status: string): boolean {
+  return PENDING_SCRIPT_STATUSES.has(status);
+}
+
+/** How often an expanded run re-checks for script output still in flight. */
+const SCRIPT_RESULT_POLL_MS = 5000;
+
 export type DeviceRunResult = {
   deviceId: string;
   deviceName: string;
@@ -29,6 +61,7 @@ export type DeviceRunResult = {
   duration?: number;
   output?: string;
   error?: string;
+  scriptResults?: DeviceScriptResult[];
 };
 
 /** Lazy loader for a run's per-device detail, fetched on expand (#2023). */
@@ -142,6 +175,112 @@ function formatRelativeTime(dateString: string, timezone: string, t: ScriptsT): 
   return date.toLocaleDateString([], { timeZone: timezone });
 }
 
+/**
+ * One device's row inside an expanded run, with a collapsible block for the
+ * real stdout/stderr of any `run_script` actions the run fired (#3162).
+ */
+function DeviceResultRow({ result, t }: { result: DeviceRunResult; t: ScriptsT }) {
+  const [showScriptOutput, setShowScriptOutput] = useState(false);
+  const DeviceStatusIcon = statusConfig[result.status].icon;
+  const scriptResults = result.scriptResults ?? [];
+
+  return (
+    <div className="rounded-md border bg-background" data-testid="device-result-row">
+      <div className="flex items-center justify-between p-3">
+        <div className="flex items-center gap-3">
+          <Monitor className="h-4 w-4 text-muted-foreground" />
+          <div>
+            <p className="text-sm font-medium">{result.deviceName}</p>
+            {result.error && (
+              <p className="text-xs text-red-600">{result.error}</p>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          {result.duration && (
+            <span className="flex items-center gap-1 text-xs text-muted-foreground">
+              <Timer className="h-3 w-3" />
+              {formatDuration(result.duration)}
+            </span>
+          )}
+          <DeviceStatusIcon
+            className={cn('h-4 w-4', statusConfig[result.status].color)}
+          />
+        </div>
+      </div>
+
+      {scriptResults.length > 0 && (
+        <div className="border-t px-3 py-2">
+          <button
+            type="button"
+            onClick={() => setShowScriptOutput(!showScriptOutput)}
+            className="flex items-center gap-1 text-xs text-primary hover:underline"
+            data-testid="script-output-toggle"
+          >
+            <Terminal className="h-3 w-3" />
+            {showScriptOutput
+              ? t('automationRunHistory.scriptOutput.hide', { count: scriptResults.length })
+              : t('automationRunHistory.scriptOutput.show', { count: scriptResults.length })}
+          </button>
+
+          {showScriptOutput && (
+            <div className="mt-2 space-y-2">
+              {scriptResults.map(script => (
+                <div key={script.executionId} data-testid="script-output-block">
+                  <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground">
+                      {script.scriptName ?? t('automationRunHistory.scriptOutput.untitled')}
+                    </span>
+                    {script.exitCode != null && (
+                      <span>{t('automationRunHistory.scriptOutput.exitCode', { code: script.exitCode })}</span>
+                    )}
+                  </div>
+                  {isScriptResultPending(script.status) ? (
+                    // Distinct from "no output": the agent simply hasn't
+                    // reported yet. Rendering the empty placeholder here would
+                    // recreate the exact ambiguity #3162 set out to remove.
+                    <p className="text-xs text-muted-foreground" data-testid="script-awaiting">
+                      {t('automationRunHistory.scriptOutput.awaiting')}
+                    </p>
+                  ) : (
+                    <pre
+                      className="max-h-64 overflow-auto rounded-md bg-gray-900 p-3 text-xs font-mono whitespace-pre-wrap text-gray-100"
+                      data-testid="script-stdout"
+                    >
+                      {script.stdout ?? t('automationRunHistory.scriptOutput.empty')}
+                    </pre>
+                  )}
+                  {script.stdoutTruncated && (
+                    <p className="mt-1 text-xs text-muted-foreground" data-testid="script-stdout-truncated">
+                      {t('automationRunHistory.scriptOutput.truncated')}
+                    </p>
+                  )}
+                  {script.stderr && (
+                    <pre
+                      className="mt-1 max-h-40 overflow-auto rounded-md bg-gray-900 p-3 text-xs font-mono whitespace-pre-wrap text-red-300"
+                      data-testid="script-stderr"
+                    >
+                      {`${t('automationRunHistory.scriptOutput.stderr')}\n${script.stderr}`}
+                    </pre>
+                  )}
+                  {script.stderrTruncated && (
+                    <p className="mt-1 text-xs text-muted-foreground" data-testid="script-stderr-truncated">
+                      {t('automationRunHistory.scriptOutput.truncated')}
+                    </p>
+                  )}
+                  {script.error && (
+                    <p className="mt-1 text-xs text-red-600">{script.error}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RunItem({
   run,
   timezone,
@@ -158,6 +297,8 @@ function RunItem({
   const [detail, setDetail] = useState<{ deviceResults: DeviceRunResult[]; logs?: string[] } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState(false);
+  // Bumped by the script-result poll below to re-run the fetch effect.
+  const [scriptPollTick, setScriptPollTick] = useState(0);
 
   const isRunning = run.status === 'running';
 
@@ -186,11 +327,27 @@ function RunItem({
     return () => {
       cancelled = true;
     };
-    // Re-fetch when counts change (live progress) or the run terminates.
-  }, [expanded, onLoadRunDetail, run.id, run.status, run.devicesSuccess, run.devicesFailed]);
+    // Re-fetch when counts change (live progress), the run terminates, or the
+    // script-result poll below ticks.
+  }, [expanded, onLoadRunDetail, run.id, run.status, run.devicesSuccess, run.devicesFailed, scriptPollTick]);
 
   const deviceResults = detail?.deviceResults ?? run.deviceResults;
   const logs = detail?.logs ?? run.logs;
+
+  // An automation run goes terminal as soon as its commands are QUEUED — the
+  // agents report their script output seconds to minutes later (#3162). The
+  // parent's run-list poll stops at that point, so without this the first look
+  // at a finished run would freeze on "waiting on agent" until the user
+  // collapsed and re-expanded the row. Keep polling the detail while any
+  // execution is still non-terminal.
+  const hasPendingScripts = deviceResults.some(
+    (result) => result.scriptResults?.some((script) => isScriptResultPending(script.status)),
+  );
+  useEffect(() => {
+    if (!expanded || !onLoadRunDetail || !hasPendingScripts) return;
+    const timer = setInterval(() => setScriptPollTick((tick) => tick + 1), SCRIPT_RESULT_POLL_MS);
+    return () => clearInterval(timer);
+  }, [expanded, onLoadRunDetail, hasPendingScripts]);
 
   const StatusIcon = statusConfig[run.status].icon;
   const duration = run.completedAt
@@ -310,36 +467,9 @@ function RunItem({
           )}
 
           <div className="space-y-2">
-            {deviceResults.map(result => {
-              const DeviceStatusIcon = statusConfig[result.status].icon;
-              return (
-                <div
-                  key={result.deviceId}
-                  className="flex items-center justify-between rounded-md border bg-background p-3"
-                >
-                  <div className="flex items-center gap-3">
-                    <Monitor className="h-4 w-4 text-muted-foreground" />
-                    <div>
-                      <p className="text-sm font-medium">{result.deviceName}</p>
-                      {result.error && (
-                        <p className="text-xs text-red-600">{result.error}</p>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    {result.duration && (
-                      <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                        <Timer className="h-3 w-3" />
-                        {formatDuration(result.duration)}
-                      </span>
-                    )}
-                    <DeviceStatusIcon
-                      className={cn('h-4 w-4', statusConfig[result.status].color)}
-                    />
-                  </div>
-                </div>
-              );
-            })}
+            {deviceResults.map(result => (
+              <DeviceResultRow key={result.deviceId} result={result} t={t} />
+            ))}
           </div>
 
           <div className="mt-4 flex items-center gap-4 text-xs text-muted-foreground">

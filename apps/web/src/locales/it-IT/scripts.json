@@ -284,6 +284,18 @@
       "webhook": "Webhook",
       "manual": "Manuale",
       "api": "Chiamata API"
+    },
+    "scriptOutput": {
+      "show_one": "Mostra output dello script",
+      "show_other": "Mostra output degli script ({{count}})",
+      "hide_one": "Nascondi output dello script",
+      "hide_other": "Nascondi output degli script ({{count}})",
+      "exitCode": "Codice di uscita {{code}}",
+      "empty": "Nessun output",
+      "stderr": "stderr",
+      "untitled": "Script",
+      "awaiting": "In attesa della risposta dell'agente…",
+      "truncated": "Output troncato: consulta la cronologia degli script del dispositivo per il testo completo."
     }
   },
   "automationsPage": {

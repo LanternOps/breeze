@@ -204,6 +204,10 @@ export const executeScriptSchema = z
       (val) => JSON.stringify(val).length <= 65536,
       { message: 'Object too large (max 64KB)' }
     ).optional(),
+    // Deliberately omits 'automation' even though the DB enum has it (#3162):
+    // that value is provenance minted only by the automation runtime, and an
+    // API caller must not be able to forge it. Don't "fix" this to match the
+    // column type.
     triggerType: z.enum(['manual', 'scheduled', 'alert', 'policy']).optional(),
     runAs: z.enum(['system', 'user']).optional(),
     // Windows session to run the user-context script in (RDS session
