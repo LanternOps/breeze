@@ -286,7 +286,7 @@ export async function reapStaleDeviceCommands(): Promise<number> {
   return reaped;
 }
 
-async function reapStaleScriptExecutions(): Promise<number> {
+export async function reapStaleScriptExecutions(): Promise<number> {
   // Default script timeout + grace buffer (300s script + 300s grace = 10 min)
   const defaultTimeoutMs = 300 * 1000 + 5 * 60 * 1000;
   const conservativeCutoff = new Date(Date.now() - defaultTimeoutMs);
@@ -319,12 +319,56 @@ async function reapStaleScriptExecutions(): Promise<number> {
 
     if (now - referenceTime < defaultTimeoutMs) continue;
 
+    // #3097: this lookup used to happen AFTER the update, purely to find the
+    // batch. It runs first now because it also answers whether the agent
+    // actually replied.
+    //
+    // Script results submitted over the HTTP path never reach `script_executions`
+    // (only agentWs registers `script: handleScriptResult`), so the row stays
+    // pending and lands here — where the reaper stamped it `timeout` with
+    // "no response from agent". That claim is false whenever a terminal
+    // `device_commands` row exists: the agent DID respond, the result simply was
+    // not mirrored. On one live instance 89 executions read `timeout` while their
+    // command had completed successfully with captured output.
+    //
+    // This does not persist the result — that belongs with the shared-handler
+    // work. It stops the reaper asserting something it cannot know, and records
+    // the outcome the command actually reached.
+    const relatedCmd = await db
+      .select({
+        payload: deviceCommands.payload,
+        status: deviceCommands.status,
+        result: deviceCommands.result,
+      })
+      .from(deviceCommands)
+      .where(
+        and(
+          eq(deviceCommands.type, 'script'),
+          sql`${deviceCommands.payload}->>'executionId' = ${exec.id}`,
+        ),
+      )
+      .limit(1);
+
+    const cmd = relatedCmd[0];
+    const cmdIsTerminal = cmd?.status === 'completed' || cmd?.status === 'failed';
+    const cmdResultStatus = (cmd?.result as Record<string, unknown> | null | undefined)?.status;
+    // Mirror handleScriptResult's mapping so a reaped row agrees with what the
+    // WS path would have written for the same command.
+    const reapedStatus: 'timeout' | 'completed' | 'failed' = !cmdIsTerminal
+      ? 'timeout'
+      : cmd?.status === 'completed' && cmdResultStatus !== 'failed' && cmdResultStatus !== 'timeout'
+        ? 'completed'
+        : 'failed';
+    const reapedError = cmdIsTerminal
+      ? 'Agent result was delivered but never recorded on this execution; recovered from the device command (#3097)'
+      : 'Server-side timeout: no response from agent';
+
     const updated = await db
       .update(scriptExecutions)
       .set({
-        status: 'timeout',
+        status: reapedStatus,
         completedAt: new Date(),
-        errorMessage: 'Server-side timeout: no response from agent',
+        errorMessage: reapedError,
       })
       .where(
         and(
@@ -337,27 +381,20 @@ async function reapStaleScriptExecutions(): Promise<number> {
     if (updated.length === 0) continue;
     reaped++;
 
-    // Find the parent batch via the deviceCommand that references this execution
-    const relatedCmd = await db
-      .select({ payload: deviceCommands.payload })
-      .from(deviceCommands)
-      .where(
-        and(
-          eq(deviceCommands.type, 'script'),
-          sql`${deviceCommands.payload}->>'executionId' = ${exec.id}`,
-        ),
-      )
-      .limit(1);
-
-    const batchId = (relatedCmd[0]?.payload as Record<string, unknown>)?.batchId as string | undefined;
+    // Batch attribution reuses the row fetched above (same query, one round-trip).
+    const batchId = (cmd?.payload as Record<string, unknown>)?.batchId as string | undefined;
     if (batchId) {
       // Atomic: increment counter + check completion in a transaction
       await db.transaction(async (tx) => {
+        // A recovered success must not be counted as a batch failure — that was
+        // the same false claim one level up.
         await tx
           .update(scriptExecutionBatches)
-          .set({
-            devicesFailed: sql`${scriptExecutionBatches.devicesFailed} + 1`,
-          })
+          .set(
+            reapedStatus === 'completed'
+              ? { devicesCompleted: sql`${scriptExecutionBatches.devicesCompleted} + 1` }
+              : { devicesFailed: sql`${scriptExecutionBatches.devicesFailed} + 1` },
+          )
           .where(eq(scriptExecutionBatches.id, batchId));
 
         const [batch] = await tx
