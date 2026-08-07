@@ -27,7 +27,9 @@ vi.mock('../services/redis', () => ({
 
 vi.mock('../db', () => ({
   db: {},
-
+  // getAlertQueue now builds an instrumented Queue, whose add/addBulk call the
+  // #1105 tripwire guard (services/bullmqQueue.ts).
+  assertOutsideHeldDbContext: vi.fn(),
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
