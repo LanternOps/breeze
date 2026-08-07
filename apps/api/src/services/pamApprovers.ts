@@ -3,8 +3,9 @@
  *
  * Given an org, returns the distinct set of user ids who may approve a
  * uac_intercept elevation on their phone: a user is eligible iff
- *   1. their role in (or covering) the org grants DEVICES_EXECUTE, AND
- *   2. they have at least one active mobile device with notifications enabled
+ *   1. their account is active (users.status = 'active'), AND
+ *   2. their role in (or covering) the org grants DEVICES_EXECUTE, AND
+ *   3. they have at least one active mobile device with notifications enabled
  *      (mobile_devices.status = 'active' AND notifications_enabled = true).
  *
  * Org membership mirrors how permissions.ts resolves access:
@@ -26,6 +27,7 @@ import {
   rolePermissions,
   permissions,
   mobileDevices,
+  users,
 } from '../db/schema';
 import { PERMISSIONS } from './permissions';
 
@@ -64,19 +66,27 @@ export async function resolveElevationApprovers(orgId: string): Promise<string[]
 
     const candidateUserIds = new Set<string>();
 
-    // 1. Direct org members holding a devices:execute role.
+    // 1. Direct org members holding a devices:execute role. Joined against
+    // `users` and gated on status='active' (#3174) so a disabled or still-
+    // invited account is never counted as an eligible approver: memberships
+    // are retained when an account is disabled, so without this the approver
+    // set is inflated with people who can never respond, and any logic keyed
+    // on the approver count is skewed by those ghosts.
     const orgMembers = await db
       .select({ userId: organizationUsers.userId })
       .from(organizationUsers)
+      .innerJoin(users, eq(users.id, organizationUsers.userId))
       .where(
         and(
           eq(organizationUsers.orgId, orgId),
           inArray(organizationUsers.roleId, grantingRoleIds),
+          eq(users.status, 'active'),
         ),
       );
     for (const m of orgMembers) candidateUserIds.add(m.userId);
 
     // 2. Partner members of the org's partner whose org_access covers this org.
+    // Same `users` join + status='active' gate as above (#3174).
     if (org?.partnerId) {
       const partnerMembers = await db
         .select({
@@ -85,10 +95,12 @@ export async function resolveElevationApprovers(orgId: string): Promise<string[]
           orgIds: partnerUsers.orgIds,
         })
         .from(partnerUsers)
+        .innerJoin(users, eq(users.id, partnerUsers.userId))
         .where(
           and(
             eq(partnerUsers.partnerId, org.partnerId),
             inArray(partnerUsers.roleId, grantingRoleIds),
+            eq(users.status, 'active'),
           ),
         );
       for (const m of partnerMembers) {

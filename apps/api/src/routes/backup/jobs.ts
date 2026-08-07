@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { eq, and, desc, gte, lte, sql, inArray } from 'drizzle-orm';
+import { eq, and, gte, lte, sql, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import { backupJobs, backupConfigs, devices } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
@@ -12,6 +12,7 @@ import { resolveBackupConfigForDevice, resolveAllBackupAssignedDevices } from '.
 import { queueBackupStopCommand } from '../../services/commandQueue';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
+import { backupJobHistoryOrderBy } from '../../services/backupJobOrdering';
 import { jobListSchema } from './schemas';
 
 // Legacy `?status=` spellings this API has always accepted, mapped to the real
@@ -127,7 +128,12 @@ jobsRoutes.get('/jobs', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMIS
     .leftJoin(devices, eq(backupJobs.deviceId, devices.id))
     .leftJoin(backupConfigs, eq(backupJobs.configId, backupConfigs.id))
     .where(and(...conditions))
-    .orderBy(desc(backupJobs.createdAt));
+    // History list: created_at stays primary because the ?from/?to/?date
+    // filters above are all on created_at, and a just-queued job must not sink
+    // to the bottom of the operator's list. started_at + id only make the order
+    // total, so a same-transaction profile fan-out stops reshuffling between
+    // requests. See services/backupJobOrdering.
+    .orderBy(...backupJobHistoryOrderBy);
 
   return c.json({
     data: rows.map((r) => ({

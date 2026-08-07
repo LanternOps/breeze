@@ -195,6 +195,27 @@
     expression path_regexp('^/api/v1/agents/[0-9a-fA-F]{64}(?:/.*)?$') || path('/api/v1/agents/renew-cert/confirm') || path_regexp('^/api/v1/agent-ws/[0-9a-fA-F]{64}/ws$') || path_regexp('^/api/v1/(?:ext/)?[a-z0-9][a-z0-9-]*/agent/[0-9a-fA-F]{64}(?:/.*)?$')
   }
 
+  # --- Apple app-site association (iOS password autofill) ---
+  # Lets iCloud Keychain / 1Password match a saved credential to the Breeze RMM
+  # iOS app instead of offering a generic list. Paired with the
+  # `webcredentials:` entries in apps/mobile/app.json — BOTH halves are required
+  # and neither does anything alone.
+  #
+  # Served from Caddy rather than the API on purpose: it is a static two-key
+  # document, and putting it here means it does not depend on an api image
+  # rebuild. Apple's CDN requires application/json, HTTP 200, and NO redirect.
+  # Deliberately NOT compressed — some Apple fetchers have historically been
+  # picky here, and the payload is ~60 bytes.
+  #
+  # `D8W6N2JYMA` is the Apple Team ID, `com.breeze.rmm` the bundle id; the
+  # AppID is the two joined. Changing either means changing this.
+  @appleAasa path /.well-known/apple-app-site-association
+  handle @appleAasa {
+    header Content-Type application/json
+    header Cache-Control "public, max-age=3600"
+    respond `{"webcredentials":{"apps":["D8W6N2JYMA.com.breeze.rmm"]}}` 200
+  }
+
   # --- API routes (with compression) ---
   @api path /api/* /s/* /health /health/* /ready /metrics/* /i/* /activate/*
   handle @api {
