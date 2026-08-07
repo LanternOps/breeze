@@ -936,11 +936,6 @@ describe('reapStaleSoftwareDeploymentResults', () => {
 });
 
 
-// #3097: script results submitted over the HTTP path never reach
-// `script_executions`, so the row stays pending, lands in this reaper, and was
-// stamped `timeout` / "no response from agent". That is false whenever a terminal
-// device_commands row exists — the agent DID answer. On one live instance 89
-// executions read `timeout` while their command had completed with output.
 // #3190: the reaper used a flat 300s+grace deadline for every execution and
 // ignored the script's own `timeoutSeconds`, which is wrong in both directions.
 // These two cases are the issue's two symptoms, and each one flips if the
@@ -988,6 +983,42 @@ describe('reapStaleScriptExecutions per-script timeout (#3190)', () => {
     expect(execSet).toHaveBeenCalledTimes(1);
   });
 
+  // Pins the `running` reference-time branch, which had no coverage anywhere in
+  // this file. It only mattered once the deadline became per-script: "which
+  // timestamp do we measure from" and "how long is the budget" now interact, so
+  // a regression in either could otherwise ship green. Old createdAt, recent
+  // startedAt, short script — measuring from createdAt would reap it, measuring
+  // from startedAt correctly does not.
+  it('measures a running execution from startedAt, not createdAt', async () => {
+    const createdAt = new Date(Date.now() - 60 * 60 * 1000);
+    const startedAt = new Date(Date.now() - 60 * 1000);
+    selectMock
+      .mockReturnValueOnce(selectChain([
+        {
+          id: 'exec-1',
+          status: 'running',
+          scriptId: 'script-1',
+          createdAt,
+          startedAt,
+          timeoutSeconds: 30,
+        },
+      ]))
+      .mockReturnValueOnce(selectChain([]));
+
+    const execSet = vi.fn((_values: Record<string, unknown>) => ({
+      where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'exec-1' }]) })),
+    }));
+    updateMock.mockImplementation((table: unknown) => {
+      if (table === scriptExecutionsTable) return { set: execSet };
+      throw new Error(`Unexpected table update: ${String(table)}`);
+    });
+
+    const reaped = await reapStaleScriptExecutions();
+
+    expect(reaped).toBe(0);
+    expect(execSet).not.toHaveBeenCalled();
+  });
+
   it('leaves a long-timeout script alone while it is still within its deadline', async () => {
     // 1h script => 1h + 5min grace. At 30 minutes it is still running legally.
     // Under the old flat 10-minute deadline this was reaped and reported as
@@ -1001,6 +1032,11 @@ describe('reapStaleScriptExecutions per-script timeout (#3190)', () => {
   });
 });
 
+// #3097: script results submitted over the HTTP path never reach
+// `script_executions`, so the row stays pending, lands in this reaper, and was
+// stamped `timeout` / "no response from agent". That is false whenever a terminal
+// device_commands row exists — the agent DID answer. On one live instance 89
+// executions read `timeout` while their command had completed with output.
 describe('reapStaleScriptExecutions terminal-command guard (#3097)', () => {
   const longAgo = new Date(Date.now() - 60 * 60 * 1000);
 
