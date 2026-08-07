@@ -1,0 +1,189 @@
+import { EventEmitter } from 'node:events';
+import postgres from 'postgres';
+import { describe, expect, it } from 'vitest';
+
+/**
+ * KNOWN-DEFECT PIN for the postgres.js pool-poisoning bug behind #3214.
+ *
+ * ---------------------------------------------------------------------------
+ * THE DEFECT (postgres.js 3.4.9, `src/connection.js`)
+ * ---------------------------------------------------------------------------
+ * The driver batches small writes behind a `setImmediate`, guarded by a
+ * "already scheduled?" check:
+ *
+ *     function write(x, fn) {                                        // :246
+ *       chunk = chunk ? Buffer.concat([chunk, x]) : Buffer.from(x)
+ *       if (fn || chunk.length >= 1024)
+ *         return nextWrite(fn)
+ *       nextWriteTimer === null && (nextWriteTimer = setImmediate(nextWrite))
+ *       return true
+ *     }
+ *
+ *     function nextWrite(fn) {                                       // :254
+ *       const x = socket.write(chunk, fn)
+ *       nextWriteTimer !== null && clearImmediate(nextWriteTimer)
+ *       chunk = nextWriteTimer = null                                // <- only reset
+ *       return x
+ *     }
+ *
+ * `nextWrite` actually running is the ONLY thing that ever resets
+ * `nextWriteTimer` to null. But the two teardown paths cancel the immediate
+ * WITHOUT clearing the variable (and without dropping the buffered `chunk`):
+ *
+ *     function terminate() { ... clearImmediate(nextWriteTimer) ... }      // :427
+ *     async function closed(hadError) { ... clearImmediate(nextWriteTimer) // :440
+ *                                        ... socket = null ... }
+ *
+ * So a pooled connection whose socket dies while a deferred write is still
+ * queued is left with `nextWriteTimer` permanently non-null. From then on the
+ * guard at :250 is false forever, no flush is ever scheduled again, and the
+ * StartupMessage written by `connected()` on every subsequent reconnect is
+ * appended to `chunk` and never reaches the socket. The handshake therefore
+ * cannot complete, `connect_timeout` expires, `connectTimedOut()` reports
+ * `CONNECT_TIMEOUT` and destroys the socket, `closed()` reconnects — and the
+ * cycle repeats for the life of the process.
+ *
+ * That accounts for every symptom reported in #3214: `TLSSocket.closed` errors
+ * appearing days before the outage (each one poisoning a slot), the pool
+ * decaying 35 -> 9 over hours, ~144 CONNECT_TIMEOUT/min sustained against a
+ * database that was demonstrably healthy, and full recovery within seconds of a
+ * process restart (fresh closures).
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS TEST ASSERTS THE BUG RATHER THAN THE FIX
+ * ---------------------------------------------------------------------------
+ * postgres.js 3.4.9 is the LATEST published release — there is no version to
+ * upgrade to, and the broken state lives inside a closure that nothing outside
+ * the driver can reach. The repo therefore ships a WATCHDOG
+ * (`db/dbPoolHealthMonitor.ts`), not a repair.
+ *
+ * This test pins the defect so that:
+ *   1. the mechanism is documented executably rather than in prose that rots;
+ *   2. there is a dependency-free reproduction to attach to an upstream report;
+ *   3. the day the driver is fixed (or patched locally), this test FAILS and
+ *      says so — which is the signal to drop the watchdog and its metrics.
+ *
+ * A test that goes red on an upstream *improvement* is deliberate. Read the
+ * failure message before "fixing" it.
+ */
+
+interface FakeSocket extends EventEmitter {
+  readyState: string;
+  bytesWritten: number;
+  setKeepAlive(): void;
+  write(buf: Buffer | string): boolean;
+  destroy(): void;
+  end(): void;
+}
+
+function createFakeSocket(): FakeSocket {
+  const s = new EventEmitter() as FakeSocket;
+  s.readyState = 'open';
+  s.bytesWritten = 0;
+  s.setKeepAlive = () => {};
+  s.write = (buf: Buffer | string) => {
+    s.bytesWritten += Buffer.byteLength(buf as Buffer);
+    return true;
+  };
+  s.destroy = () => {
+    s.readyState = 'closed';
+  };
+  s.end = () => {
+    s.readyState = 'closed';
+  };
+  return s;
+}
+
+/**
+ * Drives postgres.js against fake sockets supplied through its `socket` option.
+ * With that option set, `connect()` short-circuits straight to `connected()`
+ * (no TCP, no TLS, no real host), which writes the StartupMessage — the small,
+ * callback-less write that takes the deferred path we are probing.
+ *
+ * `killAttempts` names the attempts whose socket is destroyed while that
+ * deferred flush is still queued. The kill is scheduled with `setImmediate`
+ * from inside the socket factory, which runs BEFORE `connected()` does, so it
+ * is queued ahead of the driver's own `setImmediate(nextWrite)` and always wins
+ * the race — no timing luck involved.
+ */
+async function runHandshakeAttempts(options: {
+  killAttempts: ReadonlySet<number>;
+  settleMs: number;
+}): Promise<number[]> {
+  const sockets: FakeSocket[] = [];
+
+  // `socket` is a genuine postgres.js option — `parseOptions` copies it
+  // (`src/index.js`: `socket: o.socket`) and `createSocket` calls it
+  // (`src/connection.js:132`) — but it is absent from the shipped `.d.ts`, so
+  // the cast is unavoidable. It is what makes this test hermetic: no TCP, no
+  // TLS, no database, no network timeouts.
+  const driverOptions = {
+    host: 'pool-poisoning.invalid',
+    port: 5432,
+    database: 'breeze',
+    user: 'breeze',
+    pass: '',
+    max: 1,
+    ssl: false,
+    connect_timeout: 1,
+    socket: () => {
+      const socket = createFakeSocket();
+      sockets.push(socket);
+      const attempt = sockets.length;
+      if (options.killAttempts.has(attempt)) {
+        setImmediate(() => socket.emit('close', false));
+      }
+      return socket;
+    },
+  };
+
+  const sql = postgres(driverOptions as unknown as Parameters<typeof postgres>[0]);
+
+  // Never resolves against a fake socket; we only care about the bytes the
+  // driver puts (or fails to put) on the wire.
+  void sql`select 1`.catch(() => undefined);
+
+  await new Promise((resolve) => setTimeout(resolve, options.settleMs));
+  await sql.end({ timeout: 0 }).catch(() => undefined);
+
+  return sockets.map((s) => s.bytesWritten);
+}
+
+describe('postgres.js deferred-write pool poisoning (#3214)', () => {
+  it('control: an undisturbed connection flushes its StartupMessage', async () => {
+    // Proves the harness itself works — without this, the poisoning assertion
+    // below could pass simply because the fake socket never receives anything.
+    const written = await runHandshakeAttempts({
+      killAttempts: new Set(),
+      settleMs: 250,
+    });
+
+    expect(written.length).toBeGreaterThanOrEqual(1);
+    expect(written[0]).toBeGreaterThan(0);
+  }, 10_000);
+
+  it('a socket that dies with a buffered write leaves the connection permanently unable to flush', async () => {
+    // Attempt 1's socket is closed while the StartupMessage flush is still
+    // queued. `closed()` cancels the immediate but leaves `nextWriteTimer`
+    // non-null, so attempt 2 — a full reconnect with a brand-new socket —
+    // schedules no flush at all and writes zero bytes.
+    const written = await runHandshakeAttempts({
+      killAttempts: new Set([1]),
+      settleMs: 1_500,
+    });
+
+    expect(
+      written.length,
+      'expected the driver to reconnect after the socket closed',
+    ).toBeGreaterThanOrEqual(2);
+
+    expect(
+      written[1],
+      'postgres.js appears to FLUSH after a socket death with a buffered write — the '
+        + 'deferred-write defect behind #3214 looks fixed. Confirm against '
+        + 'src/connection.js (does closed()/terminate() now reset nextWriteTimer and '
+        + 'chunk to null?), then delete this pin AND the db/dbPoolHealthMonitor.ts '
+        + 'watchdog it exists to justify.',
+    ).toBe(0);
+  }, 15_000);
+});

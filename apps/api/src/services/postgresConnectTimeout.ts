@@ -37,6 +37,7 @@
  */
 
 import { pgErrorCode } from '../utils/pgErrors';
+import { recordDbConnectTimeout } from './dbConnectTimeoutStats';
 import {
   bucketEventLoopLag,
   getEventLoopStarvationThresholdMs,
@@ -200,7 +201,15 @@ function describe(
  */
 export function safeDiagnoseConnectTimeout(err: unknown): ConnectTimeoutDiagnosis | null {
   try {
-    return diagnoseConnectTimeout(err);
+    const diagnosis = diagnoseConnectTimeout(err);
+    // Feed the rolling rate (#3214). Deliberately here and not in
+    // `diagnoseConnectTimeout`: this wrapper is what BOTH production call sites
+    // use, whereas the bare classifier is also called directly by its own unit
+    // tests, which must not mutate process-wide counters. `recordDbConnectTimeout`
+    // is idempotent per error object, so the two call sites seeing the same
+    // error (onError, then captureException) count it once.
+    if (diagnosis) recordDbConnectTimeout(err, diagnosis.cause);
+    return diagnosis;
   } catch {
     // Diagnosis is commentary on someone else's failure; it must never become
     // the failure. Silence here costs two Sentry tags and a log line.

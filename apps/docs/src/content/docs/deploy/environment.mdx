@@ -222,6 +222,49 @@ an unauthenticated prober measure whether its own traffic is starving the
 instance. Readiness is also not gated on lag — starvation is a load symptom, and
 failing readiness under load would shift traffic onto peers and starve those too.
 
+### Database pool-health watchdog
+
+The API's Postgres driver (postgres.js) can leave a pooled connection permanently
+unable to reconnect if that connection's socket dies while a write is still
+buffered. The affected pool slot then retries forever, failing every time with
+`write CONNECT_TIMEOUT` — **against a database that is completely healthy**. Slots
+are lost one at a time, so the pool decays over hours until most queries fail at
+connect. Nothing in the API can repair it: only restarting the API process
+recovers the pool.
+
+The watchdog exists because that failure is very easy to misread as a database
+outage. When the `CONNECT_TIMEOUT` rate breaches the threshold, it opens **one
+brand-new connection** to the same database, outside the pool. A fresh connection
+is unaffected by the defect, so the result separates the two causes:
+
+- the fresh connection **succeeds** → the database is fine and the **pool** is
+  broken. Restart the API.
+- the fresh connection **also fails** → a genuine database, network, TLS, or auth
+  fault. Restarting the API will not help.
+
+The verdict is logged and sent to Sentry (throttled), and exported on
+`/metrics/scrape` as `breeze_db_pool_health{verdict="…"}` alongside
+`breeze_db_connect_timeouts_total{cause="…"}` and
+`breeze_db_connect_timeout_rate_per_min`. Before the first evaluation every
+verdict series reads `0` — absence of a verdict is not the same as a healthy
+pool, so alert on `breeze_db_pool_health{verdict="pool-degraded"} == 1` rather
+than on the negation of `healthy`.
+
+The watchdog runs by default; you do not need to set any of these.
+
+| Variable | Default | Description |
+|---|---|---|
+| `DB_POOL_HEALTH_INTERVAL_MS` | `60000` | How often the watchdog evaluates. Floored at 5000. |
+| `DB_POOL_HEALTH_WINDOW_MS` | `300000` | Trailing window the `CONNECT_TIMEOUT` count is taken over. Floored at 30000. |
+| `DB_POOL_HEALTH_MIN_TIMEOUTS` | `10` | Timeouts within the window that trigger the fresh-connection probe. Below this, no probe runs and no connection is opened. |
+| `DB_POOL_HEALTH_PROBE_TIMEOUT_MS` | `5000` | Hard bound on the probe. Keep it well under the interval so a slow probe cannot overlap the next tick. |
+| `DB_POOL_HEALTH_CAPTURE_THROTTLE_MS` | `900000` | Minimum gap between Sentry captures of the same verdict. A degraded pool stays degraded until restart, so an unthrottled capture would report it every tick. `0` disables the throttle. Console logging is never throttled. |
+| `DB_POOL_HEALTH_DISABLED` | — | Set to `1`, `true`, `yes`, or `on` to turn the watchdog off. With it off, a poisoned pool decays silently until someone notices the 503s. |
+
+Like event-loop lag, these figures are kept off the unauthenticated
+`/health/ready` for the same reason — they describe how close the instance is to
+falling over.
+
 ## Sentry
 
 Both API and web Sentry integrations are off by default. Leave the DSN variables blank to disable. See [Error Tracking & Privacy](/security/error-tracking/) for what gets collected and how scrubbing works.

@@ -179,6 +179,12 @@ import {
   getConnectTimeoutStarvationThresholdMs,
   safeDiagnoseConnectTimeout,
 } from './services/postgresConnectTimeout';
+import {
+  getDbPoolHealthMinTimeouts,
+  getDbPoolHealthWindowMs,
+  startDbPoolHealthMonitor,
+  stopDbPoolHealthMonitor,
+} from './db/dbPoolHealthMonitor';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
@@ -1579,6 +1585,11 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   // requirement — it just stops starvation warnings from being emitted about a
   // process that is deliberately winding down and no longer serving traffic.
   stopEventLoopMonitor();
+  // #3214. Also already unref'd, so this is tidiness — but it additionally stops
+  // the watchdog opening a fresh probe connection while the pool is draining,
+  // which would report `database-unreachable` about a process that is simply
+  // shutting down.
+  stopDbPoolHealthMonitor();
   if (auditRetryInterval) {
     clearInterval(auditRetryInterval);
     auditRetryInterval = null;
@@ -1871,6 +1882,26 @@ async function bootstrap(): Promise<void> {
   // startEventLoopMonitor: before the monitor runs, every diagnosis correctly
   // reports 'unknown' rather than guessing.
   setConnectTimeoutClassifier(safeDiagnoseConnectTimeout);
+
+  // #3214 — pool-health watchdog. Must follow setConnectTimeoutClassifier: the
+  // watchdog alerts on the CONNECT_TIMEOUT rate, and nothing is counted until the
+  // classifier is wired, so starting it earlier would only give it an empty window.
+  //
+  // Steady-state cost is one unref'd timer tick; the fresh-connection probe opens
+  // a socket only once the timeout rate has already breached the threshold.
+  const dbPoolHealthIntervalMs = startDbPoolHealthMonitor();
+  if (dbPoolHealthIntervalMs === null) {
+    console.warn(
+      '[db-pool-health] Watchdog DISABLED via DB_POOL_HEALTH_DISABLED — a poisoned '
+      + 'postgres.js pool will decay silently until someone notices the 503s (#3214).',
+    );
+  } else {
+    console.log(
+      `[db-pool-health] Watchdog started (interval ${dbPoolHealthIntervalMs}ms, `
+      + `window ${getDbPoolHealthWindowMs()}ms, probe threshold `
+      + `${getDbPoolHealthMinTimeouts()} CONNECT_TIMEOUT(s) per window)`,
+    );
+  }
 
   // Validate configuration before anything else — fail fast on missing/insecure secrets.
   // The validated config is stored as a singleton; retrieve later via getConfig().
