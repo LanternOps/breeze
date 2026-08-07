@@ -216,13 +216,18 @@ describe('createActionIntent — approver fan-out across org+partner axes (real 
     const s = seeded!;
     const auth = requesterAuth(s.requester, s.orgId, s.partnerId, s.requesterRoleId);
 
-    // execute_command is a base Tier-3 tool (registerScriptTools,
-    // aiToolsScripts.ts) — no `action` field needed to hit TIER3_ACTIONS,
-    // and createActionIntent never verifies the device exists (that happens
-    // later, at release/execution time), so a bare random UUID is fine here.
+    // restore_snapshot is a base Tier-3 tool classified whole-tool
+    // `four_eyes` (TIER3_FOUR_EYES_TOOLS, aiGuardrails.ts) — required for
+    // this fixture's two-approver fan-out. execute_command was used here
+    // pre-tier3-supervised-four-eyes-split, but that split classifies it
+    // `supervised`, which fans out to exactly ONE (requester-owned) row and
+    // silently broke this test's `toHaveLength(2)` assertion below — the
+    // same fix `approvalsDecideAtomicity.integration.test.ts` made for its
+    // own fixture. createActionIntent never verifies the snapshot/device
+    // exist (that happens at release time), so bare random UUIDs are fine.
     const snapshot = await createActionIntent(auth, {
-      toolName: 'execute_command',
-      input: { deviceId: randomUUID(), commandType: 'kill_process' },
+      toolName: 'restore_snapshot',
+      input: { snapshotId: randomUUID(), deviceId: randomUUID() },
       source: 'chat',
     });
 
@@ -268,9 +273,16 @@ describe('createActionIntent — approver fan-out across org+partner axes (real 
     const s = seededSolo!;
     const auth = requesterAuth(s.requester, s.orgId, s.partnerId, s.requesterRoleId);
 
+    // restore_snapshot (four_eyes) so this actually exercises the four_eyes
+    // SOLE-OPERATOR branch (`intentService.ts`'s `else if (requesterEligible)`)
+    // this test is documented to cover. execute_command is `supervised`
+    // post-split, whose unconditional single-row short-circuit fires BEFORE
+    // the eligible-approver branch regardless of eligibility — leaving this
+    // test green for the wrong reason (never reaching the sole-operator
+    // branch at all) if left unchanged.
     const snapshot = await createActionIntent(auth, {
-      toolName: 'execute_command',
-      input: { deviceId: randomUUID(), commandType: 'kill_process' },
+      toolName: 'restore_snapshot',
+      input: { snapshotId: randomUUID(), deviceId: randomUUID() },
       source: 'chat',
     });
 
@@ -297,9 +309,14 @@ describe('createActionIntent — approver fan-out across org+partner axes (real 
   it('creates a NEW intent for an identical duplicate request once the prior intent has terminalized (partial idempotency index)', async () => {
     const s = seeded!;
     const auth = requesterAuth(s.requester, s.orgId, s.partnerId, s.requesterRoleId);
+    // restore_snapshot (four_eyes) — this test's assertions ride on the
+    // seeded scenario's two-approver fan-out (both on the first AND the
+    // re-derived second creation), which execute_command's post-split
+    // `supervised` classification no longer produces. See the top test's
+    // comment for the full rationale.
     const input = {
-      toolName: 'execute_command',
-      input: { deviceId: randomUUID(), commandType: 'kill_process' },
+      toolName: 'restore_snapshot',
+      input: { snapshotId: randomUUID(), deviceId: randomUUID() },
       source: 'chat' as const,
     };
 

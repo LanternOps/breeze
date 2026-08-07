@@ -30,6 +30,7 @@ import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
 import { createActionIntent, waitForIntentDecision, transitionIntent } from './actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
 import { requiresDurableRelease } from './actionIntents/durableRelease';
+import { computeEffectDigest, hasPinnedDigest } from './actionIntents/effectDigest';
 import {
   assertNoPlaintextSecret,
   isSecretBearingTool,
@@ -223,7 +224,8 @@ const pendingIntentBySession = new WeakMap<ActiveSession, string>();
  */
 type ApprovalMethod =
   | 'per_step_user' // human decided the lightweight Tier-2 approval card
-  | 'action_intent' // durable Tier-3 intent decided via the approvals surface
+  | 'action_intent' // durable Tier-3 four_eyes intent decided via the approvals surface
+  | 'supervised_self' // Task 6: durable Tier-3 SUPERVISED intent self-decided by the requester (no external approver, no assertion — tier3-supervised-four-eyes split design §4.2)
   | 'pam' // helper session — PAM elevation policy/approver decision
   | 'plan_step' // pre-authorized step of a human-approved action plan
   | 'auto_approve_mode' // session runs auto_approve; Tier 2 executes unprompted
@@ -233,9 +235,12 @@ const lastApprovalBySession = new WeakMap<ActiveSession, { toolName: string; met
 // Methods that represent an explicit decision on this specific call (a human
 // approver, or the PAM policy ceremony for helper sessions). Plan steps count:
 // the user approved exactly this step (digest-matched) when approving the plan.
+// `supervised_self` counts too — the requester explicitly decided this call,
+// just without an external approver or assertion.
 const DECIDED_APPROVAL_METHODS: ReadonlySet<ApprovalMethod> = new Set([
   'per_step_user',
   'action_intent',
+  'supervised_self',
   'pam',
   'plan_step',
 ]);
@@ -960,6 +965,15 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // org the requester holds no row and this stays undefined; the
             // card keeps its waiting state (four-eyes preserved).
             selfApprovalRequestId: intent.requesterApprovalRequestId ?? undefined,
+            // The tier3-supervised-four-eyes split (Task 1's checkGuardrails):
+            // 'supervised' means the card's self-approve button is the
+            // requester's OWN authorization, no second approver needed;
+            // 'four_eyes' preserves the pre-split waiting-for-someone-else
+            // semantics even when selfApprovalRequestId also happens to be
+            // set (the four_eyes sole-operator branch). The web card
+            // (AiApprovalDialog) uses this to decide whether the self-approve
+            // button is itself the whole decision or just this user's half of one.
+            approvalScope: guardrailCheck.approvalScope,
             // The intent's real server-side deadline, so the self-approve card's
             // countdown reflects actual expiry (created_at + CHAT_EXPIRY_MS)
             // rather than a mount-relative client constant that can silently drift
@@ -994,6 +1008,34 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           }
 
           if (decisionStatus === 'pending_approval') {
+            // KNOWN OBSERVABILITY GAP (four_eyes) — documented deliberately,
+            // not an oversight, and NOT something to paper over with an ad-hoc
+            // notification here.
+            //
+            // APPROVAL_WAIT_BUDGET_MS is 300s while a four_eyes CHAT intent
+            // now lives for FOUR_EYES_CHAT_EXPIRY_MS (60 min) and an
+            // `mcp_api` one for MCP_EXPIRY_MS (24 h) — see
+            // services/actionIntents/intentService.ts. Timing out here and
+            // having a second human decide later is therefore the NORMAL
+            // four_eyes path, not an edge case.
+            //
+            // The requester is told "Approval still pending…" exactly once,
+            // below. After that they are told nothing at all — not when the
+            // intent is DENIED, not when it expires at its own deadline, and
+            // not when the durable release worker fails it
+            // (`content_changed` / `rbac_denied` / `session_required` /
+            // `connection_unavailable` — jobs/intentReleaseWorker.ts).
+            // `recordActionIntentEvent` (services/actionIntents/metrics.ts)
+            // writes an audit row and a Prometheus counter only; the push
+            // fan-out in `createActionIntent` targets APPROVERS at creation
+            // time, never the requester at outcome time.
+            //
+            // The real fix is the web approvals inbox, which is Plan 2 and
+            // explicitly out of scope for this PR. Until it lands, four_eyes
+            // outcomes are unobservable to the requester once this turn ends.
+            // Do not add a notification path here — it would become a second,
+            // divergent source of truth the inbox then has to reconcile.
+            //
             // The row can still READ `pending_approval` here even though the
             // intent's own deadline has already passed: `jobs/intentExpiryReaper.ts`
             // flips it to `expired` on a 30s sweep, and this wait's own local
@@ -1060,7 +1102,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // keys off a real execution-start time here too, not just the
             // decided_at COALESCE fallback.
             { executedAt: null, executionStartedAt: new Date() },
-            { requireNotExpired: true },
+            { requireNotExpired: 'release' },
           );
           if (!wonRelease) {
             // Lost the race: the release worker (or a duplicate outbox delivery)
@@ -1119,6 +1161,48 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               allowed: false,
               error: 'Authorization for this action could no longer be verified; it was not executed.',
             });
+          }
+
+          // Effect-digest revalidation (tier3-supervised-four-eyes design §4.1,
+          // services/actionIntents/effectDigest.ts) — mirrors the durable release
+          // worker's same-named check (jobs/intentReleaseWorker.ts) so the inline
+          // chat-session release path closes the exact same TOCTOU gap: an
+          // approver approves a REFERENCE ("run script <id>"), and the referenced
+          // content can drift during the approval window while the intent's own
+          // arguments/argumentDigest stay byte-identical. `intentRow.effectDigest`
+          // is NULL for supervised intents (never pinned) and unpinnable four_eyes
+          // intents (no resolver, or target didn't exist yet at creation) — both
+          // skip this check by design, same as the worker. Wrapped in
+          // withSystemDbAccessContext (via runOutsideDbContext, same discipline as
+          // the intentRow/winningApproval read above) because the resolver needs
+          // to read the current target row, which the ambient request context may
+          // not make visible.
+          // `hasPinnedDigest` is the SHARED predicate with the durable worker
+          // (jobs/intentReleaseWorker.ts). The two release paths previously
+          // guarded this same invariant with DIFFERENT predicates — truthiness
+          // here, `!== null` there — which diverged on `undefined` (a narrower
+          // select shape): this path failed OPEN (skipped the check) while the
+          // worker failed CLOSED (a recompute never equals `undefined`, so
+          // every pinned release would have been content_changed). One
+          // predicate, one behavior, in one place.
+          if (hasPinnedDigest(intentRow)) {
+            const recomputedEffectDigest = await runOutsideDbContext(() =>
+              withSystemDbAccessContext(() =>
+                computeEffectDigest(intentRow.actionName, intentRow.arguments, db),
+              ),
+            );
+            if (recomputedEffectDigest !== intentRow.effectDigest) {
+              await transitionIntent(intent.id, 'executing', 'failed', {
+                errorCode: 'content_changed',
+              });
+              console.error(
+                `[AI-SDK] inline release effect-digest mismatch for intent ${intent.id}: content_changed`,
+              );
+              return await failMatchedPlanStep({
+                allowed: false,
+                error: 'The referenced content changed after approval; it was not executed.',
+              });
+            }
           }
 
           // Won the release: track the intent id so createSessionPostToolUse can
@@ -1422,10 +1506,16 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
     if (guardrailCheck.tier >= 2) {
       // Reaching here inside the tier>=2 block means the call was explicitly
       // decided: the durable tier-3 intent flow (approver via the approvals
-      // surface) or the tier-2 lightweight card (user clicked Approve).
+      // surface, or the requester self-deciding a SUPERVISED intent — Task 6)
+      // or the tier-2 lightweight card (user clicked Approve).
       lastApprovalBySession.set(session, {
         toolName,
-        method: guardrailCheck.tier >= 3 ? 'action_intent' : 'per_step_user',
+        method:
+          guardrailCheck.tier >= 3
+            ? guardrailCheck.approvalScope === 'supervised'
+              ? 'supervised_self'
+              : 'action_intent'
+            : 'per_step_user',
       });
     }
     return { allowed: true, intentId: createdIntentId };

@@ -9,6 +9,7 @@ import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvent
 import { recordActionIntentEvent, recordActionIntentMetric } from '../services/actionIntents/metrics';
 import { transitionIntent } from '../services/actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
+import { computeEffectDigest, hasPinnedDigest } from '../services/actionIntents/effectDigest';
 import { executeTool, requiresLiveSession } from '../services/aiTools';
 import { dbAccessContextFromAuth } from '../middleware/auth';
 import { getToolTimeout, withToolTimeout } from '../services/toolTimeouts';
@@ -167,6 +168,26 @@ function auditReleaseFailure(
 }
 
 /**
+ * True iff this durable worker cannot release `toolName` because it requires
+ * a live chat SSE session (services/aiTools.ts's requiresLiveSession) and has
+ * no headless Google/M365 dispatch path (googleToolsHeadless.ts /
+ * m365ToolsHeadless.ts). Exported so
+ * jobs/intentReleaseWorker.durable.contract.test.ts (tier3-supervised-four-eyes
+ * design task 9) can assert every four_eyes-classified tool is durably
+ * releasable — a four_eyes intent's whole reason for existing is to survive
+ * past the requesting chat session (a second approver may decide it minutes
+ * or hours later), so if the tool is ALSO session_required here, an approved
+ * four_eyes intent could sit forever with nothing able to execute it.
+ */
+export function isSessionRequiredForRelease(toolName: string): boolean {
+  return (
+    !isHeadlessGoogleTool(toolName)
+    && !isHeadlessM365Tool(toolName)
+    && requiresLiveSession(toolName)
+  );
+}
+
+/**
  * CAS `executing -> failed` with the given `error_code`, then (only if the
  * CAS actually won) writes the failure audit/metric. `executed: true` also
  * stamps `executedAt` — used for `execution_error` and
@@ -244,16 +265,23 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // (expiry, cancel, a prior delivery of this exact job, or the stale-
   // executing reaper already claimed it) — exit silently. This is what
   // makes repeated/duplicate `intent_approved` enqueues safe.
-  // requireNotExpired folds the deadline into the claim: an intent approved
-  // just before expires_at cannot be claimed for execution once past it (the
-  // 30s expiry reaper terminalizes the leftover approved row). Without this an
-  // action could execute after its authorization window closed.
+  // requireNotExpired folds the deadline into the claim: an approved intent
+  // cannot be claimed for execution once past its release_by lease (falling
+  // back to expires_at for legacy rows with no lease — see
+  // intentService.ts's transitionIntent). release_by, not
+  // approval_expires_at, is what governs an already-approved intent — an
+  // intent approved just before approval_expires_at gets a FRESH lease
+  // starting at approval time (the "59:59 trap" — jobs/intentExpiryReaper.ts's
+  // header), so it stays claimable here even though approval_expires_at has
+  // since passed. Once release_by itself passes, the 30s expiry reaper
+  // terminalizes the leftover approved row. Without this check an action
+  // could execute after its authorization window closed.
   const claimed = await transitionIntent(
     intentId,
     'approved',
     'executing',
     { executedAt: null, executionStartedAt: new Date() },
-    { requireNotExpired: true },
+    { requireNotExpired: 'release' },
   );
   if (!claimed) {
     return;
@@ -307,6 +335,82 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   }
   const { auth } = revalidation;
 
+  // Effect-digest revalidation (tier3-supervised-four-eyes design §4.1,
+  // services/actionIntents/effectDigest.ts) — the TOCTOU gap argumentDigest
+  // alone cannot close: an approver approves a REFERENCE ("run script <id>",
+  // "send quote <id>"), and the referenced content can drift during the
+  // approval window while the intent's own arguments stay byte-identical.
+  //
+  // That window is NOT one number. `computeExpiresAt`
+  // (services/actionIntents/intentService.ts) keys it off SOURCE first and
+  // approval scope only second:
+  //   - `CHAT_EXPIRY_MS` (5 min)            — source `chat`, supervised
+  //   - `FOUR_EYES_CHAT_EXPIRY_MS` (60 min) — source `chat`, four_eyes
+  //   - `MCP_EXPIRY_MS` (24 h)              — ANY non-chat source (`mcp_api`),
+  //                                           whatever the scope
+  // So the worst-case drift window this check has to cover is a full DAY (an
+  // `mcp_api` four_eyes intent), not an hour — matching this file's header
+  // ("possibly minutes to (for `mcp_api` intents) a day"). Do not restate the
+  // chat numbers as if they were universal.
+  //
+  // A pinned digest is ABSENT for supervised intents (never pinned) and for
+  // legacy/unpinnable four_eyes intents (no resolver existed, or the target
+  // didn't exist yet, at creation); both skip this check by design.
+  // `hasPinnedDigest` is the SHARED predicate with the inline chat release
+  // path (services/aiAgentSdk.ts): the two previously guarded the same
+  // invariant with different predicates (`!== null` here, truthiness there),
+  // which diverged on `undefined` (a narrower select shape) — this path
+  // failed CLOSED (a recompute never equals `undefined`, so EVERY pinned
+  // release would have been content_changed) while the SDK failed OPEN
+  // (skipped the check entirely). One predicate, one behavior.
+  //
+  // A pinned digest that no longer matches the freshly-recomputed one means
+  // the target changed underneath the approval — fail closed, never execute.
+  if (hasPinnedDigest(intent)) {
+    // Runs in its own short system-scoped context (same discipline as Step 2
+    // above) — this point in the function is between DB contexts (Step 2's
+    // box already closed), and `db` falls back to the raw, GUC-less pool
+    // outside any withDbAccessContext/withSystemDbAccessContext, which RLS
+    // would silently filter to zero rows rather than error on (see db/index.ts's
+    // getCurrentDb). Without this wrap every resolver would read "not found"
+    // and this check would fail EVERY pinned release, not just drifted ones.
+    let recomputedEffectDigest: string | null;
+    try {
+      recomputedEffectDigest = await withSystemDbAccessContext(() =>
+        computeEffectDigest(intent.actionName, intent.arguments, db),
+      );
+    } catch (err) {
+      // Fail closed with a categorized code, like every other step in this
+      // worker. Left unwrapped, a transient DB fault here throws out of
+      // `releaseApprovedIntent` AFTER the intent has already been CASed to
+      // `executing`: BullMQ retries the job, the retry's claim CAS sees
+      // `executing` and returns silently, and the row then sits untouched
+      // until `reapStaleExecutingIntents` flips it to
+      // `failed:execution_lost` at STALE_EXECUTING_TIMEOUT_MINUTES (20).
+      // That code's contract is "the worker died mid-flight, unknown whether
+      // the tool ran" — but nothing ran here, so the operator signal would
+      // be actively wrong AND 20 minutes late. `executed` is deliberately
+      // NOT set: the digest check runs strictly before execution, so
+      // `executed_at` stays null (same as the other pre-execution stops).
+      console.error(
+        `[IntentReleaseWorker] effect-digest recompute failed for intent ${intent.id}:`,
+        err,
+      );
+      captureException(err instanceof Error ? err : new Error(String(err)));
+      await failIntent(intent, 'digest_check_failed', {
+        details: {
+          actionName: intent.actionName,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
+      return;
+    }
+    if (recomputedEffectDigest !== intent.effectDigest) {
+      await failIntent(intent, 'content_changed', { details: { actionName: intent.actionName } });
+      return;
+    }
+  }
+
   // Phase-1 deferral: the headless worker still cannot run session-aware M365
   // Delegant/inline tools. Google Tier-3 tools ARE headless-executable
   // (org-keyed connection, resolved by intent.orgId) as of Phase 2, and M365
@@ -316,11 +420,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // session_required fail on "not a headless Google tool AND not a headless
   // M365 tool". See docs/superpowers/specs/
   // 2026-07-19-action-intents-phase2-google-headless-design.md.
-  if (
-    !isHeadlessGoogleTool(intent.actionName)
-    && !isHeadlessM365Tool(intent.actionName)
-    && requiresLiveSession(intent.actionName)
-  ) {
+  if (isSessionRequiredForRelease(intent.actionName)) {
     await failIntent(intent, 'session_required', { details: { actionName: intent.actionName } });
     return;
   }

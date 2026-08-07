@@ -172,6 +172,8 @@ function makeIntentSnapshot(overrides: Partial<ActionIntentSnapshot> = {}): Acti
     errorCode: null,
     approvalRequestIds: ['appr-1'],
     requesterApprovalRequestId: null,
+    approvalExpiresAt: new Date(Date.now() + 300_000),
+    fanOutUserIds: [],
     ...overrides,
   };
 }
@@ -199,12 +201,13 @@ async function until(fn: () => boolean, ms = 2000): Promise<void> {
   }
 }
 
-function tier3Guardrail() {
+function tier3Guardrail(approvalScope: 'supervised' | 'four_eyes' = 'four_eyes') {
   vi.mocked(checkGuardrails).mockReturnValue({
     allowed: true,
     tier: 3,
     requiresApproval: true,
     description: 'Execute command',
+    approvalScope,
   } as any);
 }
 
@@ -266,6 +269,95 @@ describe('shared approval-wait budget (#3089)', () => {
     expect(session.eventBus.publish).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'approval_required', executionId: 'exec-2' }),
     );
+  });
+});
+
+// ============================================
+// Tier-3 approval scope propagation (2026-08-05 tier3-supervised-four-eyes)
+// ============================================
+
+describe('tier-3 approval scope propagation to the chat SSE approval event', () => {
+  it('supervised: approval event carries approvalScope + selfApprovalRequestId; aiAgentSdk never dispatches push itself', async () => {
+    tier3Guardrail('supervised');
+    mockInsertReturning({ id: 'exec-supervised' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-supervised', requesterApprovalRequestId: 'appr-self' }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('rejected');
+    const session = makeActiveSession();
+
+    await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+    expect(session.eventBus.publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'approval_required',
+        executionId: 'exec-supervised',
+        approvalScope: 'supervised',
+        selfApprovalRequestId: 'appr-self',
+        intentBacked: true,
+      }),
+    );
+    // NOT asserted here: that push is skipped for supervised. Push for the
+    // durable intent path is dispatched — and gated on scope — entirely
+    // inside createActionIntent, which is mocked wholesale in this file, so
+    // there is no call site either way and
+    // `expect(mockDispatchApprovalPushToTokens).not.toHaveBeenCalled()`
+    // could not fail regardless of the gating. That assertion used to sit
+    // here and has been removed as false confidence. The real gate is proved
+    // against the real implementation in
+    // services/actionIntents/intentService.test.ts
+    // ('createActionIntent — supervised/four_eyes scope').
+  });
+
+  it('four_eyes: approval event carries approvalScope; aiAgentSdk still never dispatches push itself', async () => {
+    tier3Guardrail('four_eyes');
+    mockInsertReturning({ id: 'exec-four-eyes' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-four-eyes', requesterApprovalRequestId: null }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('rejected');
+    const session = makeActiveSession();
+
+    await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+    expect(session.eventBus.publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'approval_required',
+        executionId: 'exec-four-eyes',
+        approvalScope: 'four_eyes',
+        selfApprovalRequestId: undefined,
+        intentBacked: true,
+      }),
+    );
+    // Same as the supervised case above: the four_eyes push fan-out is real
+    // production behavior, but it lives inside the mocked createActionIntent,
+    // so no assertion in this file can observe it. Covered for real in
+    // services/actionIntents/intentService.test.ts.
+  });
+
+  it('aiAgentSdk itself never dispatches an approval push on the tier-3 path', async () => {
+    // The one assertion in this area that IS meaningful here, stated once
+    // instead of twice: aiAgentSdk.ts does have a push call site (the legacy
+    // Tier-2 per_step bridge), so "no push from this module" is a real,
+    // falsifiable property of the tier-3 branch — it would fail if that
+    // bridge were ever reused for tier 3, producing a second, ungated
+    // dispatch alongside createActionIntent's.
+    tier3Guardrail('four_eyes');
+    mockInsertReturning({ id: 'exec-no-push' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-no-push' }));
+    mockWaitForIntentDecision.mockResolvedValue('rejected');
+    const session = makeActiveSession();
+
+    await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+    // Proof the tier-3 branch actually ran (without it the two assertions
+    // below would be trivially true for a call that never got that far).
+    expect(mockCreateActionIntent).toHaveBeenCalled();
+    expect(mockGetUserPushTokens).not.toHaveBeenCalled();
+    expect(mockDispatchApprovalPushToTokens).not.toHaveBeenCalled();
   });
 });
 

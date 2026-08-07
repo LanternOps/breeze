@@ -2,7 +2,14 @@ import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { AssuranceLevel } from '@breeze/shared';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
-import { actionIntents, intentOutbox, type ActionIntent, type ActionIntentSource, type ActionIntentStatus } from '../../db/schema/actionIntents';
+import {
+  actionIntents,
+  intentOutbox,
+  type ActionIntent,
+  type ActionIntentApprovalScope,
+  type ActionIntentSource,
+  type ActionIntentStatus,
+} from '../../db/schema/actionIntents';
 import { approvalRequests } from '../../db/schema/approvals';
 import { type AuthContext, dbAccessContextFromAuth } from '../../middleware/auth';
 import { aiTools, resolveWritableToolOrgId } from '../aiTools';
@@ -12,6 +19,7 @@ import { dispatchApprovalPushToTokens, getUserPushTokens } from '../expoPush';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 import { recordActionIntentEvent } from './metrics';
 import { resolveIntentApprovers } from './intentApprovers';
+import { computeEffectDigestOutcome, type EffectDigestOutcome } from './effectDigest';
 
 /** Statuses the partial `action_intents_org_idem_uniq` index dedupes on
  * (IMPORTANT-4 — migration 2026-07-18-action-intents.sql). Kept as a single
@@ -94,12 +102,22 @@ export type ActionIntentSnapshot = {
   approvalRequestIds: string[];
   /**
    * The approval_requests row fanned out to the REQUESTER, when one exists —
-   * i.e. the sole-operator branch (requester is the only eligible approver).
-   * null on a multi-approver fan-out (spec §4: the requester is excluded) and
+   * i.e. the sole-operator branch (requester is the only eligible approver) OR
+   * a supervised intent (always exactly one requester-owned row). null on a
+   * multi-approver four_eyes fan-out (spec §4: the requester is excluded) and
    * when there are no approvers. The web chat card uses this to offer an
    * inline L3 self-approve (WebAuthn) for exactly this row and no other.
    */
   requesterApprovalRequestId: string | null;
+  /** Pending-approval deadline (Task 2's approvalExpiresAt column) — split
+   * from `expiresAt` by scope (see computeExpiresAt): 5min supervised-chat,
+   * 60min four_eyes-chat, 24h mcp_api either scope. */
+  approvalExpiresAt: Date | null;
+  /** userIds that received a fanned-out approval row on creation, in the same
+   * order as approvalRequestIds. Empty on an idempotent replay (no new
+   * fan-out happened) and on a read via getActionIntent (fan-out is a
+   * creation-time concept only). */
+  fanOutUserIds: string[];
 };
 
 export interface ActionIntentTransitionPatch {
@@ -117,11 +135,38 @@ export interface ActionIntentTransitionPatch {
 // Constants
 // ---------------------------------------------------------------------------
 
-// Expiry defaults (spec §3.4): chat matches the existing 5-minute
-// waitForApproval UX; mcp_api gets a day since there's no live session
-// blocking on it. Constants, not env vars, per the design.
+// Expiry defaults (spec §3.4, extended by the tier3-supervised-four-eyes
+// split design §4.2): chat matches the existing 5-minute waitForApproval UX
+// for supervised intents; four_eyes chat intents get a longer 60-minute
+// window since finding a second approver takes real wall-clock time. mcp_api
+// gets a day regardless of scope, since there's no live session blocking on
+// it. Constants, not env vars, per the design.
 const CHAT_EXPIRY_MS = 5 * 60 * 1000;
+const FOUR_EYES_CHAT_EXPIRY_MS = 60 * 60 * 1000;
 const MCP_EXPIRY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Fixed release lease (tier3-supervised-four-eyes design §4.2): how long an
+ * `approved` intent has to actually execute before the reaper reclaims it.
+ * Stamped into `release_by` by the approve fan-in
+ * (`routes/approvals.ts`) in the same CAS that flips the intent to
+ * `approved` — independent of how much of the `approval_expires_at` window
+ * was left when the approval landed. Without this, an intent approved with
+ * only seconds left on its approval deadline would have only seconds to
+ * execute instead of a full lease (the "59:59 trap" — see
+ * `jobs/intentExpiryReaper.ts`'s header).
+ */
+export const RELEASE_LEASE_MS = 10 * 60 * 1000;
+
+/**
+ * Version of the tier3-supervised-four-eyes classification ruleset
+ * (checkGuardrails' resolveApprovalScope) that produced a given intent's
+ * approvalScope. Stamped once at creation into action_intents.classification_version
+ * (Task 2) so a future ruleset change can be told apart from intents
+ * classified under an older version. Bump when the classification logic
+ * changes in a materially observable way.
+ */
+export const CLASSIFICATION_VERSION = 1;
 
 const MAX_ARG_VALUE_LEN = 80;
 
@@ -171,14 +216,17 @@ function deriveIdempotencyKey(actorId: string, actionName: string, digest: strin
   return createHash('sha256').update(`${actorId}:${actionName}:${digest}`).digest('hex');
 }
 
-function computeExpiresAt(source: ActionIntentSource): Date {
-  return new Date(Date.now() + (source === 'chat' ? CHAT_EXPIRY_MS : MCP_EXPIRY_MS));
+function computeExpiresAt(source: ActionIntentSource, approvalScope: ActionIntentApprovalScope): Date {
+  if (source !== 'chat') return new Date(Date.now() + MCP_EXPIRY_MS);
+  const ms = approvalScope === 'supervised' ? CHAT_EXPIRY_MS : FOUR_EYES_CHAT_EXPIRY_MS;
+  return new Date(Date.now() + ms);
 }
 
 function toSnapshot(
   intent: ActionIntent,
   approvalRequestIds: string[],
   requesterApprovalRequestId: string | null,
+  fanOutUserIds: string[] = [],
 ): ActionIntentSnapshot {
   return {
     id: intent.id,
@@ -191,6 +239,8 @@ function toSnapshot(
     errorCode: intent.errorCode,
     approvalRequestIds,
     requesterApprovalRequestId,
+    approvalExpiresAt: intent.approvalExpiresAt,
+    fanOutUserIds,
   };
 }
 
@@ -205,6 +255,11 @@ interface CreationResult {
   /** userIds that received a fanned-out approval row, in the same order as approvalRequestIds — used for the post-commit push fan-out. Empty on an idempotent replay. */
   fanOutUserIds: string[];
   isNew: boolean;
+  /** Which of effectDigest.ts's three outcomes the pinning attempt produced.
+   * Carried out of the transaction so the `unresolved` cases can be audited
+   * AFTER commit (the intent id doesn't exist until the insert returns, and
+   * an event for a rolled-back intent would be a lie). */
+  effectDigestOutcome: EffectDigestOutcome;
 }
 
 export async function createActionIntent(
@@ -233,6 +288,12 @@ export async function createActionIntent(
   }
   const orgId = resolvedOrg.orgId;
   const requesterId = auth.user.id;
+  // Tier-3 supervised/four_eyes classification (Task 1's checkGuardrails).
+  // Pre-existing tools that haven't been classified yet (approvalScope
+  // absent) fall back to four_eyes — the stricter, pre-split behavior — never
+  // the weaker supervised path. Mirrors the column's own DEFAULT 'four_eyes'
+  // (migration 2026-08-14-intent-approval-scope-and-deadlines.sql).
+  const approvalScope: ActionIntentApprovalScope = guardrail.approvalScope ?? 'four_eyes';
 
   if (input.binding) {
     // Both columns are Postgres `uuid`. An uppercase or malformed GUID would
@@ -251,7 +312,7 @@ export async function createActionIntent(
   const idempotencyKey = input.idempotencyKey ?? deriveIdempotencyKey(requesterId, input.toolName, argumentDigest);
   const targetSummary = buildTargetSummary(input.toolName, input.input);
   const impactSummary = buildImpactSummary(input.toolName, guardrail);
-  const expiresAt = computeExpiresAt(input.source);
+  const expiresAt = computeExpiresAt(input.source, approvalScope);
   const requestingClientLabel = input.requestingClientLabel
     ?? (input.source === 'chat' ? 'Breeze AI' : 'MCP API client');
   // Tier → riskTier mapping mirrors aiAgentSdk.ts's mobile-approval bridge.
@@ -315,6 +376,30 @@ export async function createActionIntent(
   let creation: CreationResult;
   try {
     creation = await withSystemDbAccessContext(async (): Promise<CreationResult> => {
+      // Effect-digest pinning (tier3-supervised-four-eyes design §4.1,
+      // effectDigest.ts) — SCOPE-INDEPENDENT: pinned whenever a resolver
+      // exists, supervised as well as four_eyes. It used to be gated on
+      // `approvalScope === 'four_eyes'`, which made effectDigest.ts's own
+      // motivating resolver (run_script, a SUPERVISED tool) unreachable dead
+      // code while leaving its ~10-minute release lease open to exactly the
+      // script-body edit the module exists to catch. See effectDigest.ts's
+      // header for the full rationale.
+      //
+      // Computed INSIDE this transaction, via the ambient `db` (same
+      // connection/snapshot the insert below runs on), so the pinned content
+      // and the row it's attached to are read/written atomically — no window
+      // where a concurrent edit lands between "read the target" and "create
+      // the intent".
+      //
+      // Only `pinned` stores a digest. `not_applicable` (no resolver — the
+      // expected case for most tools) and `unresolved` (a resolver existed
+      // but the id arg was missing or the target row was absent) both leave
+      // effect_digest NULL, which both release paths treat as "nothing to
+      // check", not a failure. The `unresolved` cases are audited after
+      // commit — they are intents that SHOULD have been pinned and weren't.
+      const effectDigestOutcome = await computeEffectDigestOutcome(input.toolName, input.input, db);
+      const effectDigest = effectDigestOutcome.kind === 'pinned' ? effectDigestOutcome.digest : null;
+
       const [inserted] = await db
         .insert(actionIntents)
         .values({
@@ -344,7 +429,18 @@ export async function createActionIntent(
           riskTier: guardrail.tier,
           idempotencyKey,
           correlationId: randomUUID(),
+          approvalScope,
+          classificationVersion: CLASSIFICATION_VERSION,
+          effectDigest,
+          // `expiresAt` is the legacy column the pre-split reaper still reads;
+          // `approvalExpiresAt` is the new Task-2 column the post-split reaper
+          // reads. Dual-write the SAME value to both for rolling-upgrade
+          // compat during the deploy window where old and new API instances
+          // run side by side. Remove the `expiresAt` write (Plan 3 cleanup,
+          // once the reaper and every other legacy reader have migrated to
+          // approvalExpiresAt).
           expiresAt,
+          approvalExpiresAt: expiresAt,
         })
         // IMPORTANT-4: action_intents_org_idem_uniq is now a PARTIAL unique
         // index (migration 2026-07-18-action-intents.sql) covering only LIVE
@@ -398,6 +494,7 @@ export async function createActionIntent(
             approvalRows.find((r) => r.userId === requesterId)?.id ?? null,
           fanOutUserIds: [],
           isNew: false,
+          effectDigestOutcome,
         };
       }
 
@@ -422,7 +519,42 @@ export async function createActionIntent(
         isRecursive: false,
       });
 
-      if (eligibleApprovers.length > 0) {
+      // Shared by the supervised short-circuit and the four_eyes sole-operator
+      // branch below: both create exactly one approval_requests row owned by
+      // a single user and derive the same trio of locals from it.
+      const insertSingleApproverRow = async (
+        userId: string,
+      ): Promise<{
+        approvalRequestIds: string[];
+        requesterApprovalRequestId: string | null;
+        fanOutUserIds: string[];
+      }> => {
+        const rows = await db
+          .insert(approvalRequests)
+          .values([approvalRowFor(userId)])
+          .returning({ id: approvalRequests.id });
+        if (rows[0]) {
+          return {
+            approvalRequestIds: [rows[0].id],
+            requesterApprovalRequestId: rows[0].id,
+            fanOutUserIds: [userId],
+          };
+        }
+        return { approvalRequestIds: [], requesterApprovalRequestId: null, fanOutUserIds: [] };
+      };
+
+      if (approvalScope === 'supervised') {
+        // Supervised short-circuit (tier3-supervised-four-eyes split design
+        // §4.2): exactly one approval row, always owned by the requester,
+        // BEFORE the eligible-approver branch below — supervised does not
+        // require approvals:decide at all, so this must work even when
+        // eligibleApprovers is empty and requesterEligible is false (the
+        // requester holds no approval permission whatsoever). The
+        // assurance-level gate is enforced later in the decide handler
+        // (Task 5), same as the sole-operator four_eyes branch.
+        ({ approvalRequestIds, requesterApprovalRequestId, fanOutUserIds } =
+          await insertSingleApproverRow(requesterId));
+      } else if (eligibleApprovers.length > 0) {
         const rows = await db
           .insert(approvalRequests)
           .values(eligibleApprovers.map(approvalRowFor))
@@ -433,15 +565,8 @@ export async function createActionIntent(
         // Sole-operator branch: the only eligible approver is the requester.
         // Create one row carrying the digest; the assurance-level >= 3 gate is
         // enforced later, in the decide handler (Task 5), not here.
-        const rows = await db
-          .insert(approvalRequests)
-          .values([approvalRowFor(requesterId)])
-          .returning({ id: approvalRequests.id });
-        if (rows[0]) {
-          approvalRequestIds = [rows[0].id];
-          requesterApprovalRequestId = rows[0].id;
-          fanOutUserIds = [requesterId];
-        }
+        ({ approvalRequestIds, requesterApprovalRequestId, fanOutUserIds } =
+          await insertSingleApproverRow(requesterId));
       }
 
       let finalIntent: ActionIntent = inserted;
@@ -468,7 +593,14 @@ export async function createActionIntent(
         payload: { intentId: inserted.id, orgId },
       });
 
-      return { intent: finalIntent, approvalRequestIds, requesterApprovalRequestId, fanOutUserIds, isNew: true };
+      return {
+        intent: finalIntent,
+        approvalRequestIds,
+        requesterApprovalRequestId,
+        fanOutUserIds,
+        isNew: true,
+        effectDigestOutcome,
+      };
     });
   } catch (err) {
     // One transaction ⇒ any throw already rolled the intent insert back with
@@ -493,7 +625,10 @@ export async function createActionIntent(
   // Best-effort push AFTER the creation transaction commits (#1105) — never
   // hold a DB transaction open across the push network round-trip. Token
   // reads happen inside a fresh context per approver; the sends happen after.
-  if (creation.isNew && creation.intent.status === 'pending_approval') {
+  // Supervised intents never push: the sole row belongs to the requester
+  // themselves, who is already looking at the chat/MCP response that created
+  // it — pushing would just notify them about their own pending action.
+  if (creation.isNew && creation.intent.status === 'pending_approval' && creation.intent.approvalScope === 'four_eyes') {
     for (let i = 0; i < creation.approvalRequestIds.length; i++) {
       const approvalId = creation.approvalRequestIds[i];
       const userId = creation.fanOutUserIds[i];
@@ -511,6 +646,31 @@ export async function createActionIntent(
     }
   }
 
+  // An intent that SHOULD have been pinned but wasn't (a resolver exists for
+  // this tool/action, but the id argument was missing or the target row was
+  // absent/soft-deleted) is indistinguishable from "no resolver at all" once
+  // it hits the column — all three store NULL, and both release paths read
+  // NULL as "nothing to check". Emitting the reason here is the only thing
+  // that makes those two silent cases countable and alertable; without it, a
+  // surface that quietly stopped being pinnable leaves no trace anywhere.
+  // Gated on isNew: a replay recomputes the same outcome for a row that
+  // already emitted this once.
+  if (creation.isNew && creation.effectDigestOutcome.kind === 'unresolved') {
+    recordActionIntentEvent({
+      orgId,
+      intentId: creation.intent.id,
+      actionName: input.toolName,
+      argumentDigest,
+      source: input.source,
+      outcome: 'effect_digest_unpinned',
+      actorId: requesterId,
+      details: {
+        reason: creation.effectDigestOutcome.reason,
+        approvalScope,
+      },
+    });
+  }
+
   if (creation.isNew) {
     const cancelledForNoApprovers = creation.intent.status === 'cancelled';
     recordActionIntentEvent({
@@ -525,12 +685,21 @@ export async function createActionIntent(
         ? { errorCode: creation.intent.errorCode ?? 'no_eligible_approvers' }
         : {
           approverCount: creation.approvalRequestIds.length,
-          soleOperator: creation.fanOutUserIds.length === 1 && creation.fanOutUserIds[0] === requesterId,
+          // Gated on four_eyes: supervised intents always have exactly one
+          // fan-out row owned by the requester (the short-circuit at line
+          // ~530), but that is the *normal* supervised shape, not a
+          // four_eyes sole-operator L3 self-approval — `soleOperator: true`
+          // must keep meaning the latter, or it pollutes the sole-operator
+          // audit signal with every supervised creation.
+          soleOperator:
+            approvalScope === 'four_eyes' &&
+            creation.fanOutUserIds.length === 1 &&
+            creation.fanOutUserIds[0] === requesterId,
         },
     });
   }
 
-  return toSnapshot(creation.intent, creation.approvalRequestIds, creation.requesterApprovalRequestId);
+  return toSnapshot(creation.intent, creation.approvalRequestIds, creation.requesterApprovalRequestId, creation.fanOutUserIds);
 }
 
 // ---------------------------------------------------------------------------
@@ -605,6 +774,29 @@ export async function cancelActionIntent(
 // ---------------------------------------------------------------------------
 
 /**
+ * Which deadline column governs an intent in a given status. A tier-3 intent
+ * lives under TWO successive deadlines and they are not interchangeable:
+ *
+ *  - `pending_approval` is bounded by `approval_expires_at` — how long a human
+ *    has to decide.
+ *  - `approved` / `executing` are bounded by `release_by` — the fixed
+ *    RELEASE_LEASE_MS lease stamped at approval time. `approval_expires_at`
+ *    stops applying the moment an intent is approved (the "59:59 trap" —
+ *    jobs/intentExpiryReaper.ts's header).
+ *
+ * Terminal statuses have no live deadline at all, which is why they are absent
+ * here rather than mapped to something arbitrary: asking for an expiry check
+ * on a terminal `from` list is a caller bug, and transitionIntent throws.
+ */
+export type IntentDeadlinePhase = 'approval' | 'release';
+
+const DEADLINE_PHASE_BY_STATUS: Partial<Record<ActionIntentStatus, IntentDeadlinePhase>> = {
+  pending_approval: 'approval',
+  approved: 'release',
+  executing: 'release',
+};
+
+/**
  * `UPDATE ... WHERE id = $1 AND status IN (...from)`. Zero rows affected
  * (lost race / already-terminal / wrong starting state) returns `false`,
  * never throws — callers re-read on a lost race. Runs under system scope so
@@ -612,27 +804,66 @@ export async function cancelActionIntent(
  * release worker, reaper); `withDbAccessContext` no-ops into an ALREADY
  * active caller context rather than re-scoping it, which is fine here since
  * `breeze_has_org_access` also authorizes system scope.
+ *
+ * `opts.requireNotExpired` names WHICH deadline to fold into the CAS. It used
+ * to be a plain `boolean` that unconditionally applied the RELEASE deadline
+ * regardless of the `from` status — correct only by the accident that both
+ * callers pass `from: 'approved'`. A caller passing `from: 'pending_approval'`
+ * would have silently checked the wrong column. `true` is still accepted as a
+ * deprecated alias for `'release'` so the two call sites in files owned
+ * elsewhere (jobs/intentReleaseWorker.ts, services/aiAgentSdk.ts) keep
+ * compiling; both should move to `'release'`.
+ *
+ * Misuse is rejected loudly: the requested phase must be the phase EVERY
+ * status in `from` lives under. A mixed-phase list (e.g.
+ * `['pending_approval','approved']`) has no single correct deadline column and
+ * throws rather than picking one.
  */
 export async function transitionIntent(
   intentId: string,
   from: ActionIntentStatus | ActionIntentStatus[],
   to: ActionIntentStatus,
   patch?: ActionIntentTransitionPatch,
-  opts?: { requireNotExpired?: boolean },
+  opts?: { requireNotExpired?: IntentDeadlinePhase | boolean },
 ): Promise<boolean> {
   const fromList = Array.isArray(from) ? from : [from];
-  return withSystemDbAccessContext(async () => {
-    // requireNotExpired folds the deadline into the CAS predicate so a release
-    // claim is atomic with the intent still being live. Without it, an intent
-    // approved just before expires_at could be claimed approved -> executing in
-    // the window before the 30s expiry reaper terminalizes it, executing an
-    // action whose authorization window has already closed. Uses the DB clock
-    // (now()) rather than a JS timestamp so the comparison is against the same
-    // clock that stamped expires_at.
-    const conditions = [eq(actionIntents.id, intentId), inArray(actionIntents.status, fromList)];
-    if (opts?.requireNotExpired) {
-      conditions.push(sql`${actionIntents.expiresAt} > now()`);
+
+  // Resolve + validate BEFORE opening the DB context so a caller bug throws
+  // without ever taking a pooled connection.
+  let deadlineCondition: ReturnType<typeof sql> | null = null;
+  if (opts?.requireNotExpired) {
+    const requested: IntentDeadlinePhase =
+      opts.requireNotExpired === true ? 'release' : opts.requireNotExpired;
+    const fromPhases = new Set(fromList.map((status) => DEADLINE_PHASE_BY_STATUS[status]));
+    if (fromPhases.size !== 1 || !fromPhases.has(requested)) {
+      throw new ActionIntentError(
+        `requireNotExpired: '${requested}' is not the deadline phase governing from-status(es) ` +
+          `[${fromList.join(', ')}] — pending_approval is bounded by approval_expires_at, ` +
+          `approved/executing by release_by, and terminal statuses by neither`,
+        'invalid_deadline_phase',
+      );
     }
+    // Folds the deadline into the CAS predicate so a claim is atomic with the
+    // intent still being live. Without it, an intent approved just before its
+    // deadline could be claimed approved -> executing in the window before the
+    // 30s expiry reaper terminalizes it, executing an action whose
+    // authorization window has already closed. Uses the DB clock (now())
+    // rather than a JS timestamp so the comparison is against the same clock
+    // that stamped the deadline.
+    //
+    // Both branches keep their COALESCE fallback to `expires_at` on purpose:
+    // that is the rolling-upgrade mechanism for rows written by an older
+    // instance that only ever populated `expires_at` (release_by /
+    // approval_expires_at are both post-split columns). Do not remove it.
+    deadlineCondition =
+      requested === 'release'
+        ? sql`COALESCE(${actionIntents.releaseBy}, ${actionIntents.expiresAt}) > now()`
+        : sql`COALESCE(${actionIntents.approvalExpiresAt}, ${actionIntents.expiresAt}) > now()`;
+  }
+
+  return withSystemDbAccessContext(async () => {
+    const conditions = [eq(actionIntents.id, intentId), inArray(actionIntents.status, fromList)];
+    if (deadlineCondition) conditions.push(deadlineCondition);
     const rows = await db
       .update(actionIntents)
       .set({ status: to, ...patch })

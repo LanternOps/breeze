@@ -159,12 +159,17 @@ async function seedScenario(): Promise<Scenario> {
  * row id (the row we'll decide through the real route). */
 async function seedIntentWithTwoApprovers(s: Scenario): Promise<{ intentId: string; approverARowId: string }> {
   const auth = requesterAuth(s.requester, s.orgId, s.partnerId, s.requesterRoleId);
-  // execute_command is a base Tier-3 tool — no `action` field needed, and
-  // createActionIntent never verifies the device exists (that happens at
-  // release time), so a bare random UUID is fine (mirrors intentFanout).
+  // restore_snapshot is a base Tier-3 tool classified whole-tool `four_eyes`
+  // (TIER3_FOUR_EYES_TOOLS, aiGuardrails.ts) — required for this fixture's
+  // two-approver fan-out. execute_command was used here pre-Task-6, but the
+  // tier3-supervised-four-eyes split (Task 1) classifies it `supervised`,
+  // which fans out to exactly ONE (requester-owned) row and silently broke
+  // this fixture's `toHaveLength(2)` assertion below. createActionIntent
+  // never verifies the snapshot/device exist (that happens at release time),
+  // so bare random UUIDs are fine (mirrors intentFanout).
   const snapshot = await createActionIntent(auth, {
-    toolName: 'execute_command',
-    input: { deviceId: randomUUID(), commandType: 'kill_process' },
+    toolName: 'restore_snapshot',
+    input: { snapshotId: randomUUID(), deviceId: randomUUID() },
     source: 'chat',
   });
   expect(snapshot.status).toBe('pending_approval');
@@ -266,23 +271,29 @@ describe('decide-path intent fan-in atomicity (real Postgres, breeze_app)', () =
     });
   });
 
-  runDb('fault injection: a failing intent_approved outbox insert rolls the intent CAS back — never approved-without-outbox', async () => {
+  runDb('fault injection: a failing intent_approved outbox insert rolls back the ENTIRE decide write (approval CAS included) and returns a retryable 500', async () => {
     const s = seeded!;
     const { intentId, approverARowId } = await seedIntentWithTwoApprovers(s);
 
-    // The intent-mirror failure is swallowed by design (the approver's own
-    // approval row already committed), so the decide call still returns 200 —
-    // but the whole {CAS + sibling expiry + outbox} must roll back together.
+    // Task 6: the approval-row CAS, the intent CAS, the sibling expiry, and
+    // the intent_approved outbox insert are now ONE transaction — a fault
+    // anywhere inside it rolls back EVERYTHING, including the approver's own
+    // approval_requests row, and the caller gets a retryable 500. (Pre-Task-6,
+    // the approval CAS committed independently in its own transaction before
+    // the intent fan-in ever opened, so this same fault left the approval row
+    // decided while the intent silently never got its outbox row — a 200
+    // response masking a half-applied decision. That is the exact bug this
+    // task closes: assert 500 here, not 200.)
     const res = await withIntentApprovedOutboxFault(() => approveViaRoute(s, approverARowId));
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.retryable).toBe(true);
 
     await withSystemDbAccessContext(async () => {
       const [intent] = await db.select().from(actionIntents).where(eq(actionIntents.id, intentId));
       // THE property this task delivers: with the outbox insert faulted, the
       // intent CAS rolled back too — the intent is NOT left `approved` (the
-      // release worker would never see an outbox row for it). On the pre-Task-6
-      // three-transaction code the CAS committed independently and this is
-      // `approved` → the bug.
+      // release worker would never see an outbox row for it).
       expect(intent?.status).toBe('pending_approval');
 
       const outbox = await db
@@ -291,14 +302,45 @@ describe('decide-path intent fan-in atomicity (real Postgres, breeze_app)', () =
         .where(and(eq(intentOutbox.intentId, intentId), eq(intentOutbox.eventType, 'intent_approved')));
       expect(outbox).toHaveLength(0);
 
+      // The approver's OWN approval_requests row rolled back with everything
+      // else — it must NOT be left `approved` with no corresponding intent
+      // transition (the half-applied state this task eliminates).
+      const [ownRow] = await db
+        .select({ status: approvalRequests.status })
+        .from(approvalRequests)
+        .where(eq(approvalRequests.id, approverARowId));
+      expect(ownRow?.status).toBe('pending');
+
       // Sibling expiry is part of the same rolled-back transaction, so
-      // partnerApprover's row is still pending (the reaper / a retry can still
-      // drive the intent to a terminal state).
+      // partnerApprover's row is still pending too.
       const pendingSiblings = await db
         .select({ id: approvalRequests.id })
         .from(approvalRequests)
         .where(and(eq(approvalRequests.intentId, intentId), eq(approvalRequests.status, 'pending')));
       expect(pendingSiblings.length).toBeGreaterThan(0);
+    });
+
+    // A retry (fault no longer installed — withIntentApprovedOutboxFault
+    // dropped the trigger in its `finally`) succeeds cleanly: same approval
+    // row, same intent, now genuinely committed together.
+    const retryRes = await approveViaRoute(s, approverARowId);
+    expect(retryRes.status).toBe(200);
+
+    await withSystemDbAccessContext(async () => {
+      const [intent] = await db.select().from(actionIntents).where(eq(actionIntents.id, intentId));
+      expect(intent?.status).toBe('approved');
+
+      const outbox = await db
+        .select()
+        .from(intentOutbox)
+        .where(and(eq(intentOutbox.intentId, intentId), eq(intentOutbox.eventType, 'intent_approved')));
+      expect(outbox).toHaveLength(1);
+
+      const [ownRow] = await db
+        .select({ status: approvalRequests.status })
+        .from(approvalRequests)
+        .where(eq(approvalRequests.id, approverARowId));
+      expect(ownRow?.status).toBe('approved');
     });
   });
 });

@@ -5,7 +5,7 @@ import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/can
 // Hoisted shared mock state
 // ---------------------------------------------------------------------------
 
-const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock } = vi.hoisted(() => {
+const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
   const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
@@ -47,6 +47,30 @@ const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, 
     m365HeadlessMock: {
       isHeadlessM365Tool: vi.fn(() => false),
       executeM365ToolHeadless: vi.fn(),
+    },
+    // Task 7: computeEffectDigest itself is unit-tested in
+    // services/actionIntents/effectDigest.test.ts (the resolver map). Mocked
+    // wholesale here, same treatment as buildAuthContextForIntent/
+    // getActiveOrgTenant/checkToolPermission above — this file only needs to
+    // prove the WORKER calls it and reacts correctly to a mismatch, not
+    // re-derive scripts/quotes/invoices table mocks it has no other reason
+    // to know about.
+    effectDigestMock: {
+      computeEffectDigest: vi.fn(async () => null as string | null),
+      // hasPinnedDigest is the SHARED "is a digest pinned on this intent?"
+      // predicate both release paths must use (the worker here and the
+      // inline chat path in services/aiAgentSdk.ts) — they previously
+      // hand-rolled DIFFERENT predicates and diverged on `undefined`. Its
+      // real semantics (including that `undefined` case) are unit-tested
+      // where it lives, services/actionIntents/effectDigest.test.ts; this
+      // spy is a faithful stand-in because the real module cannot be loaded
+      // here at all — `drizzle-orm` is mocked wholesale in this file, so
+      // effectDigest.ts's db/schema barrel import would not resolve. What
+      // THIS file proves is that the worker consults the shared predicate
+      // instead of re-deriving one.
+      hasPinnedDigest: vi.fn((intent: { effectDigest?: string | null }) =>
+        typeof intent.effectDigest === 'string' && intent.effectDigest.length > 0,
+      ),
     },
   };
 });
@@ -92,6 +116,10 @@ vi.mock('../services/actionIntents/intentService', () => ({
 }));
 vi.mock('../services/actionIntents/actorContext', () => ({
   buildAuthContextForIntent: actorContextMock.buildAuthContextForIntent,
+}));
+vi.mock('../services/actionIntents/effectDigest', () => ({
+  computeEffectDigest: effectDigestMock.computeEffectDigest,
+  hasPinnedDigest: effectDigestMock.hasPinnedDigest,
 }));
 vi.mock('../services/tenantStatus', () => ({
   getActiveOrgTenant: tenantStatusMock.getActiveOrgTenant,
@@ -163,6 +191,10 @@ vi.mock('bullmq', () => ({
 // ---------------------------------------------------------------------------
 
 import { releaseApprovedIntent, processIntentReleaseJob } from './intentReleaseWorker';
+// The mocked db handle the worker threads into computeEffectDigest — imported
+// so that call can be asserted against the real object rather than
+// expect.anything().
+import { db as mockedDb } from '../db';
 import type { ActionIntent } from '../db/schema/actionIntents';
 import { GoogleConnectionUnavailableError } from '../services/googleToolsHeadless';
 import { M365ConnectionUnavailableError } from '../services/m365ToolsHeadless';
@@ -209,6 +241,12 @@ function baseIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
     executedAt: null,
     result: null,
     errorCode: null,
+    // Task 7: NULL by default (matches supervised intents and legacy/
+    // unpinnable four_eyes intents) — the worker's effect-digest check
+    // short-circuits on null and never calls computeEffectDigest, so the
+    // existing fixtures/tests above don't need to know effectDigest exists.
+    // Tests that DO exercise the check override this explicitly.
+    effectDigest: null,
     ...overrides,
   } as ActionIntent;
 }
@@ -295,6 +333,7 @@ describe('releaseApprovedIntent', () => {
     resetGoogleSecretActions();
     googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(false);
     m365HeadlessMock.isHeadlessM365Tool.mockReturnValue(false);
+    effectDigestMock.computeEffectDigest.mockResolvedValue(null);
   });
 
   it('double delivery: CAS approved->executing returns false — exits without touching anything else', async () => {
@@ -306,10 +345,110 @@ describe('releaseApprovedIntent', () => {
     expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith(
       'intent-1', 'approved', 'executing',
       expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }),
-      { requireNotExpired: true },
+      { requireNotExpired: 'release' },
     );
     expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
     expect(actorContextMock.buildAuthContextForIntent).not.toHaveBeenCalled();
+  });
+
+  describe('release-lease claim (the 59:59 trap)', () => {
+    /**
+     * Primes the happy path EXCEPT the claim CAS, which is given an
+     * implementation that actually evaluates the deadline the way
+     * `transitionIntent`'s SQL predicate does — `COALESCE(release_by,
+     * expires_at) > now()`, proved against real Postgres in
+     * `intentExpiryReaper.integration.test.ts`
+     * ('transitionIntent requireNotExpired (real PG)').
+     *
+     * This exists because the previous single test here set a past
+     * `approvalExpiresAt` and a future `releaseBy` and then stubbed the CAS
+     * to `true` UNCONDITIONALLY — so the fixture dates had zero causal
+     * effect and the test passed identically with `releaseBy` in the past,
+     * i.e. it asserted the exact opposite of its own title. With the
+     * predicate emulated, the dates decide the outcome and the two cases
+     * below genuinely diverge.
+     */
+    function leaseAwareClaimOnce(intent: ActionIntent) {
+      // mockImplementationOnce (not mockImplementation): vi.clearAllMocks()
+      // in beforeEach clears CALLS but not implementations, so a persistent
+      // stub here would leak into every later test in the file. For the same
+      // reason nothing DOWNSTREAM of the claim is primed by this helper — an
+      // unconsumed `*Once` queued by a test whose claim is refused leaks into
+      // the next test and silently answers ITS first call.
+      intentServiceMock.transitionIntent.mockImplementationOnce(
+        async (
+          _id: string,
+          _from: string,
+          _to: string,
+          _patch?: unknown,
+          opts?: { requireNotExpired?: unknown },
+        ) => {
+          if (!opts?.requireNotExpired) return true;
+          const deadline = ((intent as ActionIntent & { releaseBy?: Date | null }).releaseBy
+            ?? intent.expiresAt) as Date;
+          return deadline.getTime() > Date.now();
+        },
+      );
+    }
+
+    /** Everything `primeThroughRevalidation` sets up EXCEPT its unconditional
+     *  claim stub, which `leaseAwareClaimOnce` replaces. */
+    function primeAfterClaim(intent: ActionIntent) {
+      dbState.selectActionIntentsResults.push([intent]);
+      dbState.selectApprovalRequestsResults.push([
+        { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+      ]);
+      aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+      actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(fakeAuth);
+      tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+      aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce(null);
+      toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
+    }
+
+    it('claims and executes when approval_expires_at is already past but the release lease is still live', async () => {
+      const intent = baseIntent({
+        approvalExpiresAt: new Date(Date.now() - 60_000),
+        releaseBy: new Date(Date.now() + 5 * 60_000),
+      } as Partial<ActionIntent>);
+      leaseAwareClaimOnce(intent);
+      primeAfterClaim(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith(
+        intent.id, 'approved', 'executing',
+        expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }),
+        { requireNotExpired: 'release' },
+      );
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'completed', expect.anything(),
+      );
+    });
+
+    it('does NOT claim or execute once the release lease itself has passed, even with approval_expires_at still in the future', async () => {
+      // The inverse of the case above, and the reason the worker delegates
+      // the deadline to the CAS instead of re-deriving one: a refused claim
+      // must be a SILENT exit — no execution, and no second transition that
+      // would terminalize a row the reaper owns.
+      const intent = baseIntent({
+        approvalExpiresAt: new Date(Date.now() + 60 * 60_000),
+        releaseBy: new Date(Date.now() - 1_000),
+      } as Partial<ActionIntent>);
+      // Only the claim is primed: a refused claim must not reach anything
+      // downstream, so priming past it would both weaken the test and leak
+      // unconsumed `*Once` stubs into the next one.
+      leaseAwareClaimOnce(intent);
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenCalledTimes(1);
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(actorContextMock.buildAuthContextForIntent).not.toHaveBeenCalled();
+      expect(auditMock.writeAuditEvent).not.toHaveBeenCalled();
+    });
   });
 
   it('stamps execution_started_at when it claims the intent (approved -> executing)', async () => {
@@ -321,7 +460,7 @@ describe('releaseApprovedIntent', () => {
     expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith(
       'intent-3', 'approved', 'executing',
       expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }),
-      { requireNotExpired: true },
+      { requireNotExpired: 'release' },
     );
   });
 
@@ -609,6 +748,150 @@ describe('releaseApprovedIntent', () => {
     expect(metricsMock.recordActionIntentMetric).toHaveBeenCalledWith(intent.source, intent.actionName, 'executed');
   });
 
+  // Task 7 — effect-digest revalidation (tier3-supervised-four-eyes design
+  // §4.1): a four_eyes intent whose stored effect_digest no longer matches
+  // the freshly recomputed one (e.g. the approved script's body was edited
+  // during the approval window) must fail closed and never execute — this
+  // is the TOCTOU gap argumentDigest alone cannot close (see
+  // effectDigest.ts's header comment).
+  describe('effect-digest revalidation', () => {
+    it('content_changed: recomputed digest no longer matches the stored one — fails before executeTool, audit records the code', async () => {
+      const intent = baseIntent({ effectDigest: 'a'.repeat(64) });
+      primeThroughRevalidation(intent);
+      effectDigestMock.computeEffectDigest.mockResolvedValueOnce('b'.repeat(64)); // drifted
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      // The third argument is asserted as the ACTUAL db handle, not
+      // expect.anything(): the recompute has to run against the same
+      // system-scoped handle the worker wrapped in withSystemDbAccessContext.
+      // With expect.anything() this assertion still passed when the wrong
+      // handle (or any truthy value) was threaded through — and a resolver
+      // reading through a GUC-less handle silently returns zero rows, which
+      // would fail EVERY pinned release as content_changed.
+      expect(effectDigestMock.computeEffectDigest).toHaveBeenCalledWith(
+        intent.actionName,
+        intent.arguments,
+        mockedDb,
+      );
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'failed',
+        expect.objectContaining({ errorCode: 'content_changed' }),
+      );
+      expect(auditMock.writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          result: 'failure',
+          details: expect.objectContaining({ errorCode: 'content_changed' }),
+        }),
+      );
+      expect(metricsMock.recordActionIntentMetric).toHaveBeenCalledWith(intent.source, intent.actionName, 'executed');
+    });
+
+    it('proceeds to execute when the recomputed digest still matches the stored one', async () => {
+      const digest = 'c'.repeat(64);
+      const intent = baseIntent({ effectDigest: digest });
+      primeThroughRevalidation(intent);
+      effectDigestMock.computeEffectDigest.mockResolvedValueOnce(digest); // unchanged
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'completed',
+        expect.anything(),
+      );
+    });
+
+    it('a NULL stored effect digest (supervised, or an unpinnable four_eyes intent) skips the check entirely', async () => {
+      const intent = baseIntent({ effectDigest: null });
+      primeThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      // The skip must come from the SHARED predicate, not a locally
+      // re-derived one — that divergence (`!== null` here vs truthiness in
+      // services/aiAgentSdk.ts) is what made the two release paths behave
+      // oppositely on an `undefined` effectDigest.
+      expect(effectDigestMock.hasPinnedDigest).toHaveBeenCalledWith(intent);
+      expect(effectDigestMock.computeEffectDigest).not.toHaveBeenCalled();
+      expect(aiToolsMock.executeTool).toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'completed',
+        expect.anything(),
+      );
+    });
+
+    it('digest_check_failed: a throwing recompute fails the intent closed and categorized, instead of stranding it for the 20-minute stale-executing reaper', async () => {
+      // The recompute is issued AFTER the intent is already CASed to
+      // `executing`. Left unwrapped, a transient DB fault here escapes
+      // releaseApprovedIntent -> BullMQ retries -> the retry's claim CAS
+      // sees `executing` and returns silently -> the row sits until
+      // reapStaleExecutingIntents flips it to failed:execution_lost at
+      // STALE_EXECUTING_TIMEOUT_MINUTES. That code means "the worker died
+      // mid-flight, unknown whether the tool ran" — provably false here,
+      // since the failure happens strictly before execution.
+      const intent = baseIntent({ effectDigest: 'd'.repeat(64) });
+      primeThroughRevalidation(intent);
+      effectDigestMock.computeEffectDigest.mockRejectedValueOnce(new Error('connection terminated'));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
+
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'failed',
+        // No executedAt: nothing ran, so the row must NOT look like a
+        // post-execution failure.
+        { errorCode: 'digest_check_failed' },
+      );
+      expect(auditMock.writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          result: 'failure',
+          details: expect.objectContaining({
+            errorCode: 'digest_check_failed',
+            error: 'connection terminated',
+          }),
+        }),
+      );
+      expect(metricsMock.recordActionIntentMetric).toHaveBeenCalledWith(
+        intent.source, intent.actionName, 'executed',
+      );
+      expect(sentryMock.captureException).toHaveBeenCalled();
+    });
+
+    it('digest_check_failed is distinct from content_changed — a drifted digest is not reported as an infrastructure fault', async () => {
+      // Two different operator signals: "the target changed under the
+      // approval" (a real security stop) vs "we could not check". Collapsing
+      // them would make a DB blip read as tampering.
+      const intent = baseIntent({ effectDigest: 'e'.repeat(64) });
+      primeThroughRevalidation(intent);
+      effectDigestMock.computeEffectDigest.mockResolvedValueOnce('f'.repeat(64));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      const patch = intentServiceMock.transitionIntent.mock.lastCall![3] as { errorCode: string };
+      expect(patch.errorCode).toBe('content_changed');
+      expect(patch.errorCode).not.toBe('digest_check_failed');
+    });
+  });
+
   it('fails a session-aware tool with session_required and never calls executeTool', async () => {
     // Not google_* or m365_disable_user/m365_reset_password (both headless as
     // of Task 9) — a generic session-aware, non-headless tool name so this
@@ -841,6 +1124,7 @@ describe('secret-bearing release', () => {
     resetGoogleSecretActions();
     googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(false);
     m365HeadlessMock.isHeadlessM365Tool.mockReturnValue(false);
+    effectDigestMock.computeEffectDigest.mockResolvedValue(null);
   });
 
   it('seals a google_reset_password credential instead of storing prose', async () => {
@@ -963,7 +1247,7 @@ describe('processIntentReleaseJob', () => {
     expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith(
       'intent-1', 'approved', 'executing',
       expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }),
-      { requireNotExpired: true },
+      { requireNotExpired: 'release' },
     );
   });
 });

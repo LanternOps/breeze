@@ -1,11 +1,35 @@
-import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it, beforeAll } from 'vitest';
-import { eq } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from './index';
-import { partners, organizations, users, actionIntents } from './schema';
-import type { NewActionIntent } from './schema/actionIntents';
+import { describe, expect, it } from 'vitest';
+import {
+  DENY_LISTED_COLUMNS,
+  MIGRATIONS_DIR,
+  TRIGGER_FUNCTION_NAME,
+  TRIGGER_MIGRATION_FILES,
+} from '../testUtils/actionIntentsTriggerDenyList';
+
+// ---------------------------------------------------------------------------
+// action_intents_block_content_update() — static half
+// ---------------------------------------------------------------------------
+//
+// This file is the DDL/text half of the immutability contract and runs under
+// the no-database unit runner (`vitest.config.ts`, blocking `test-api` job).
+// The deny-list it asserts against is DISCOVERED from the migrations rather
+// than hand-listed here — see `src/testUtils/actionIntentsTriggerDenyList.ts`
+// for why (the trigger function is CREATE OR REPLACE'd by three migrations and
+// reading only the first one is how origin_principal_kind/origin_principal_id
+// shipped with zero coverage).
+//
+// The BEHAVIORAL half — one rejecting UPDATE per deny-listed column against a
+// real Postgres, plus the positive controls for the mutable lifecycle columns
+// — lives in
+// `src/__tests__/integration/actionIntentsImmutabilityTrigger.integration.test.ts`
+// and runs in the blocking `integration-test` job. It used to live here behind
+// `describe.runIf(!!process.env.DATABASE_URL)`, where it never executed in CI
+// at all: `test-api` has no Postgres service and this file was not in
+// `vitest.integration.config.ts`'s include list, so all ~28 cases silently
+// skipped and approval_scope's immutability — the entire security value of the
+// column — was asserted nowhere. Do not move them back.
 
 describe('Action intents migration', () => {
   const migrationPath = join(__dirname, '../../migrations/2026-07-18-action-intents.sql');
@@ -39,10 +63,23 @@ describe('Action intents migration', () => {
     expect(sql).toMatch(/id UUID PRIMARY KEY DEFAULT gen_random_uuid\(\)/);
   });
 
-  // The 12 spec-defined immutable content columns (§3.1/§3.4). Kept as a
-  // single source of truth for both the static trigger-body check below and
-  // the live-DB behavioral suite.
+  // Every column the immutability trigger guards TODAY, across all three
+  // migrations that have (re)defined the function. Hand-written on purpose so
+  // adding a column to the trigger is a deliberate, reviewed act — but it is
+  // asserted EQUAL to the list parsed out of the effective migration below, so
+  // it cannot silently drift the way it did for origin_principal_kind /
+  // origin_principal_id (2026-08-06-e) and approval_scope /
+  // classification_version / effect_digest (2026-08-14).
   const IMMUTABLE_CONTENT_COLUMNS = [
+    // §3.1/§3.4 identity + attribution
+    'org_id',
+    'requested_by_user_id',
+    'requesting_api_key_id',
+    'source',
+    // 2026-08-06-e: durable origin-principal fact
+    'origin_principal_kind',
+    'origin_principal_id',
+    // §3.1/§3.4 action content
     'action_name',
     'action_version',
     'arguments',
@@ -55,26 +92,72 @@ describe('Action intents migration', () => {
     'tenant_id',
     'idempotency_key',
     'correlation_id',
+    'created_at',
+    'expires_at',
+    // 2026-08-14: tier-3 supervised/four_eyes classification. approval_scope's
+    // immutability IS the security value of the column — an editable scope
+    // would let an intent switch classification after approvers acted on the
+    // original one.
+    'approval_scope',
+    'classification_version',
+    'effect_digest',
   ] as const;
+
+  // Deliberately MUTABLE. release_by is written by the approve fan-in
+  // (routes/approvals.ts stamps the RELEASE_LEASE_MS lease in the same CAS
+  // that flips the intent to approved) and approval_expires_at is a lifecycle
+  // deadline; adding either to the deny-list would break the decide path at
+  // runtime. Asserted absent here AND exercised positively against a live DB
+  // below, so a future "tighten the trigger" change fails a test instead of
+  // production.
+  const MUTABLE_LIFECYCLE_COLUMNS = [
+    'status',
+    'approval_expires_at',
+    'release_by',
+    'decided_at',
+    'decided_by_user_id',
+    'decided_assurance_level',
+    'decided_via',
+    'execution_started_at',
+    'executed_at',
+    'result',
+    'error_code',
+    'requesting_client_label',
+  ] as const;
+
+  it('discovers every migration that redefines the immutability trigger, base first', () => {
+    // The base migration CREATEs the table; every later definition is a
+    // CREATE OR REPLACE that must sort AFTER it, or a fresh-DB replay applies
+    // the replacement before the function's table exists.
+    expect(TRIGGER_MIGRATION_FILES[0]).toBe('2026-07-18-action-intents.sql');
+    expect(TRIGGER_MIGRATION_FILES.length).toBeGreaterThan(1);
+    for (const filename of TRIGGER_MIGRATION_FILES.slice(1)) {
+      const body = readFileSync(join(MIGRATIONS_DIR, filename), 'utf8');
+      expect(
+        body,
+        `${filename} must use CREATE OR REPLACE FUNCTION (a bare CREATE is not re-appliable)`,
+      ).toMatch(
+        new RegExp(`CREATE\\s+OR\\s+REPLACE\\s+FUNCTION\\s+${TRIGGER_FUNCTION_NAME}`, 'i'),
+      );
+    }
+  });
 
   it('declares the immutability trigger over exactly the content columns', () => {
     expect(sql).toMatch(/action_intents_block_content_update/);
     expect(sql).toMatch(/action_intents_immutable_trg/);
     expect(sql).toMatch(/RAISE EXCEPTION 'action_intents content is immutable'/);
-    const triggerBody = sql.slice(
-      sql.indexOf('action_intents_block_content_update() RETURNS trigger'),
-      sql.indexOf('END $$ LANGUAGE plpgsql;'),
-    );
-    // Every one of the 12 spec'd immutable content columns must be guarded.
-    for (const contentCol of IMMUTABLE_CONTENT_COLUMNS) {
+
+    // Drift gate: the hand-written list must be exactly the trigger's
+    // deny-list as of the LAST migration that defines it. Adding a column to
+    // the trigger without adding it here (or vice versa) fails right here.
+    expect(DENY_LISTED_COLUMNS).toEqual([...IMMUTABLE_CONTENT_COLUMNS].sort());
+
+    // ...and the lifecycle columns must NOT be in it.
+    for (const lifecycleCol of MUTABLE_LIFECYCLE_COLUMNS) {
       expect(
-        triggerBody,
-        `expected trigger body to guard content column ${contentCol}`,
-      ).toMatch(new RegExp(`NEW\\.${contentCol}\\b`));
-    }
-    // Lifecycle columns must NOT appear in the immutability check.
-    for (const lifecycleCol of ['status', 'decided_at', 'executed_at', 'result', 'error_code']) {
-      expect(triggerBody).not.toMatch(new RegExp(`NEW\\.${lifecycleCol}\\b`));
+        DENY_LISTED_COLUMNS,
+        `${lifecycleCol} must stay mutable — it is written after creation`,
+      ).not.toContain(lifecycleCol);
     }
   });
 
@@ -152,110 +235,5 @@ describe('Action intents migration', () => {
     expect(sql).toMatch(
       /event_type TEXT NOT NULL CHECK \(event_type IN \('intent_created','intent_approved'\)\)/,
     );
-  });
-
-  // Live-DB behavioral coverage for the immutability trigger (Finding 1).
-  // Runs only when a real database is reachable (DATABASE_URL set) — e.g.
-  // under vitest.integration.config.ts, or a manual local run against the
-  // docker-compose test Postgres. Under the plain unit runner (no
-  // DATABASE_URL) these are skipped, leaving the static trigger-body checks
-  // above as the fallback coverage.
-  describe.runIf(!!process.env.DATABASE_URL)('immutability trigger (live DB)', () => {
-    let intentId: string;
-
-    beforeAll(async () => {
-      const sfx = randomUUID().slice(0, 8);
-      await withSystemDbAccessContext(async () => {
-        const [partner] = await db
-          .insert(partners)
-          .values({ name: `Intent Test Partner ${sfx}`, slug: `intent-test-${sfx}` })
-          .returning({ id: partners.id });
-        const [org] = await db
-          .insert(organizations)
-          .values({ partnerId: partner!.id, name: 'Intent Test Org', slug: `intent-test-org-${sfx}` })
-          .returning({ id: organizations.id });
-        const [user] = await db
-          .insert(users)
-          .values({
-            partnerId: partner!.id,
-            orgId: org!.id,
-            email: `intent-test-${sfx}@example.com`,
-            name: 'Intent Test User',
-            status: 'active',
-          })
-          .returning({ id: users.id });
-
-        const values: NewActionIntent = {
-          orgId: org!.id,
-          partnerId: partner!.id,
-          requestedByUserId: user!.id,
-          source: 'chat',
-          actionName: 'm365.mailbox.disable',
-          actionVersion: 1,
-          arguments: { mailbox: 'user@example.com' },
-          argumentDigest: 'a'.repeat(64),
-          targetSummary: 'Disable mailbox user@example.com',
-          impactSummary: 'User loses mailbox access immediately',
-          reason: 'Offboarding',
-          riskTier: 3,
-          connectionId: randomUUID(),
-          tenantId: randomUUID(),
-          idempotencyKey: `idem-${sfx}`,
-          correlationId: randomUUID(),
-          expiresAt: new Date(Date.now() + 60 * 60 * 1000),
-        };
-        const [intent] = await db.insert(actionIntents).values(values).returning({
-          id: actionIntents.id,
-        });
-        intentId = intent!.id;
-      });
-    });
-
-    const contentColumnUpdates: Array<[string, Partial<NewActionIntent>]> = [
-      ['action_name', { actionName: 'm365.mailbox.enable' }],
-      ['action_version', { actionVersion: 2 }],
-      ['arguments', { arguments: { mailbox: 'someone-else@example.com' } }],
-      ['argument_digest', { argumentDigest: 'b'.repeat(64) }],
-      ['target_summary', { targetSummary: 'Disable mailbox someone-else@example.com' }],
-      ['impact_summary', { impactSummary: 'A different user loses access' }],
-      ['reason', { reason: 'Changed reason' }],
-      ['risk_tier', { riskTier: 2 }],
-      ['connection_id', { connectionId: randomUUID() }],
-      ['tenant_id', { tenantId: randomUUID() }],
-      ['idempotency_key', { idempotencyKey: `idem-changed-${randomUUID().slice(0, 8)}` }],
-      ['correlation_id', { correlationId: randomUUID() }],
-    ];
-
-    it.each(contentColumnUpdates)(
-      'rejects an UPDATE that changes the content column %s',
-      async (_column, patch) => {
-        // Drizzle/postgres-js wraps the underlying Postgres error: the thrown
-        // error's own `.message` is a generic "Failed query: ..." summary,
-        // and the actual RAISE EXCEPTION text lands on `.cause.message`.
-        let caught: unknown;
-        try {
-          await withSystemDbAccessContext(() =>
-            db.update(actionIntents).set(patch).where(eq(actionIntents.id, intentId)),
-          );
-        } catch (err) {
-          caught = err;
-        }
-        expect(caught, 'expected the immutability trigger to reject the UPDATE').toBeDefined();
-        const cause = (caught as { cause?: unknown })?.cause;
-        const causeMessage = cause instanceof Error ? cause.message : undefined;
-        const topMessage = caught instanceof Error ? caught.message : String(caught);
-        expect(causeMessage ?? topMessage).toMatch(/action_intents content is immutable/);
-      },
-    );
-
-    it('allows an UPDATE to a lifecycle column (status) to succeed', async () => {
-      await withSystemDbAccessContext(() =>
-        db.update(actionIntents).set({ status: 'approved' }).where(eq(actionIntents.id, intentId)),
-      );
-      const [row] = await withSystemDbAccessContext(() =>
-        db.select({ status: actionIntents.status }).from(actionIntents).where(eq(actionIntents.id, intentId)),
-      );
-      expect(row?.status).toBe('approved');
-    });
   });
 });

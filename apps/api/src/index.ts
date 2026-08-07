@@ -1042,6 +1042,18 @@ api.route('/update-rings', updateRingRoutes);
 api.use('/mobile/*', mobileDeviceBlockedMiddleware);
 api.route('/mobile', mobileRoutes);
 api.route('/mobile/approvals', approvalRoutes);
+// Task 8 (tier3-supervised-four-eyes): transport-neutral alias so a web/CLI
+// caller doesn't need the `/mobile` prefix to reach the same live-authorized
+// pending/decide surface. `/api/v1/mobile/approvals` stays mounted above
+// unchanged (mobile app's PREFIX constant, apps/mobile/src/services/approvals.ts).
+// Same `approvalRoutes` instance, so its own `authMiddleware` applies
+// identically either way — but it sits OUTSIDE `/mobile/*`, so it needs its
+// own mobileDeviceBlockedMiddleware registration; otherwise a blocked phone
+// could dodge the device-block check entirely by calling this prefix instead
+// (same reasoning as the /authenticator and /me/approver-devices mounts
+// below).
+api.use('/approvals/*', mobileDeviceBlockedMiddleware);
+api.route('/approvals', approvalRoutes);
 api.route('/action-intents', actionIntentsRoutes);
 // /authenticator is where the phone enrols its approver key, so it must be
 // behind the same check — a revoked handset registering a signing key is

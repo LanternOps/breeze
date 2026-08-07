@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { getTableColumns } from 'drizzle-orm';
+import { AI_APPROVAL_SCOPES } from '@breeze/shared';
 import {
   actionIntents,
   intentOutbox,
   actionIntentStatusEnum,
   actionIntentSourceEnum,
+  actionIntentApprovalScopeEnum,
   intentOutboxEventEnum,
 } from './actionIntents';
 import { approvalRequests } from './approvals';
@@ -33,6 +36,46 @@ describe('actionIntentSourceEnum', () => {
 describe('intentOutboxEventEnum', () => {
   it('has exactly intent_created and intent_approved', () => {
     expect(intentOutboxEventEnum).toEqual(['intent_created', 'intent_approved']);
+  });
+});
+
+describe('actionIntentApprovalScopeEnum', () => {
+  it('has exactly supervised and four_eyes', () => {
+    expect(actionIntentApprovalScopeEnum).toEqual(['supervised', 'four_eyes']);
+  });
+
+  it('is the shared declaration, not a local copy', () => {
+    // The union is declared ONCE (packages/shared/src/types/ai.ts) and
+    // re-exported here; four structurally-identical literals would let a third
+    // member be added to one and compile clean everywhere else.
+    expect(actionIntentApprovalScopeEnum).toBe(AI_APPROVAL_SCOPES);
+  });
+
+  it('matches the SQL CHECK constraint literals exactly', () => {
+    // The only mechanism that keeps the DB and TS sides pinned to each other:
+    // adding a member to AI_APPROVAL_SCOPES without a follow-up migration (or
+    // vice versa) fails here. Parses the shipped migration's CHECK literal
+    // list rather than trusting a hand-copied duplicate.
+    const sqlPath = new URL(
+      '../../../migrations/2026-08-14-intent-approval-scope-and-deadlines.sql',
+      import.meta.url,
+    );
+    const sql = readFileSync(sqlPath, 'utf8');
+
+    const check = /CHECK\s*\(\s*approval_scope\s+IN\s*\(([^)]*)\)\s*\)/i.exec(sql);
+    const memberList = check?.[1];
+    expect(memberList, 'approval_scope CHECK constraint not found in the migration').toBeDefined();
+
+    const literals = (memberList ?? '')
+      .split(',')
+      .map((raw) => raw.trim())
+      .filter((raw) => raw.length > 0)
+      .map((raw) => {
+        expect(raw, `CHECK member ${raw} is not a single-quoted literal`).toMatch(/^'[^']*'$/);
+        return raw.slice(1, -1);
+      });
+
+    expect([...literals].sort()).toEqual([...actionIntentApprovalScopeEnum].sort());
   });
 });
 
@@ -108,6 +151,24 @@ describe('action_intents schema', () => {
     expect(cols.errorCode).toBeDefined();
   });
 
+  it('exposes the supervised/four_eyes classification and split-deadline columns', () => {
+    const cols = getTableColumns(actionIntents);
+    // Immutable classification content, decided once at creation.
+    expect(cols.approvalScope).toBeDefined();
+    expect(cols.approvalScope.notNull).toBe(true);
+    expect(cols.approvalScope.default).toBe('four_eyes');
+    expect(cols.classificationVersion).toBeDefined();
+    expect(cols.classificationVersion.notNull).toBe(true);
+    expect(cols.classificationVersion.default).toBe(0);
+    expect(cols.effectDigest).toBeDefined();
+    expect(cols.effectDigest.notNull).toBe(false);
+    // Lifecycle: mutable, NOT covered by the immutability trigger.
+    expect(cols.approvalExpiresAt).toBeDefined();
+    expect(cols.approvalExpiresAt.notNull).toBe(false);
+    expect(cols.releaseBy).toBeDefined();
+    expect(cols.releaseBy.notNull).toBe(false);
+  });
+
   it('has no extra/missing top-level columns', () => {
     const cols = Object.keys(getTableColumns(actionIntents)).sort();
     expect(cols).toEqual(
@@ -133,9 +194,14 @@ describe('action_intents schema', () => {
         'tenantId',
         'idempotencyKey',
         'correlationId',
+        'approvalScope',
+        'classificationVersion',
+        'effectDigest',
         'status',
         'createdAt',
         'expiresAt',
+        'approvalExpiresAt',
+        'releaseBy',
         'decidedAt',
         'decidedByUserId',
         'decidedAssuranceLevel',

@@ -124,6 +124,14 @@ export default defineConfig({
       // expiry + outbox} roll back together — a rollback the mocked unit suite
       // (which mocks db.transaction) cannot exercise.
       'src/routes/approvalsDecideAtomicity.integration.test.ts',
+      // Co-located real-DB integration test for the Tier-3 supervised
+      // plain-decide branch (Task 6 fix round 1, finding 4): drives the real
+      // approve/deny route against genuine role/permission state to prove
+      // the live-RBAC re-check (buildAuthContextForIntent + checkToolPermission)
+      // actually wires up end to end — both are mocked wholesale in the unit
+      // suite (approvals.test.ts), so this is the only coverage that exercises
+      // the real modules against real Postgres.
+      'src/routes/approvalsDecideSupervised.integration.test.ts',
       // Co-located real-DB integration test for the create-path atomicity +
       // tenant isolation (Task 7): injects a DB-level fault into the
       // intent_created outbox insert to prove {intent insert + fan-out + outbox}
@@ -175,6 +183,39 @@ export default defineConfig({
       // mocked route suite can only assert the predicate's shape and cannot
       // see the ON DELETE CASCADE at all.
       'src/routes/enrollmentKeysPurgeExpired.integration.test.ts',
+      // Co-located real-DB end-to-end coverage for the tier3-supervised-four-eyes
+      // split (Task 10): four_eyes fan-out ownership (both admins, never the
+      // requester), a t+30min approve/release proving the new 60-minute
+      // four_eyes window (vs. the old 5-minute supervised one) via direct DB
+      // timestamp manipulation, and the disabled-second-admin sole-operator
+      // fallback. Lives under `src/__tests__/integration/**`, already covered
+      // by the shared glob above and the unit runner's wholesale
+      // `src/__tests__/integration/**` exclude; named here for discoverability
+      // only (same pattern `staleBackupReaper.integration.test.ts` uses).
+      'src/__tests__/integration/intentSupervisedFourEyes.integration.test.ts',
+      // Co-located real-DB coverage for the effect-digest TOCTOU chain: pins a
+      // real `scripts` row, approves, does a real UPDATE, and drives the real
+      // release path to `failed:content_changed` — plus the negative mirror,
+      // which is the only test anywhere that would catch deleting the
+      // `withSystemDbAccessContext` wrap around the release-time recompute
+      // (every unit test stubs that wrap as an identity passthrough). Under
+      // `src/__tests__/integration/**`, so already covered by the shared glob
+      // above; named here for discoverability only.
+      'src/__tests__/integration/effectDigestToctou.integration.test.ts',
+      // Live-Postgres behavioral half of the action_intents immutability
+      // contract: one rejecting UPDATE per column on the
+      // `action_intents_block_content_update()` deny-list (incl. the tier-3
+      // `approval_scope`, whose immutability IS the security value of the
+      // column), plus positive controls proving the lifecycle columns stayed
+      // mutable. These cases previously sat inside the UNIT suite
+      // `src/db/migration-action-intents.test.ts` behind
+      // `describe.runIf(!!process.env.DATABASE_URL)` and executed in NO CI job
+      // at all — `test-api` has no Postgres, and that file was never in this
+      // include list. Moving them under `src/__tests__/integration/**` puts
+      // them in the blocking `integration-test` job via the shared glob above;
+      // named here for discoverability only (same pattern
+      // `staleBackupReaper.integration.test.ts` uses).
+      'src/__tests__/integration/actionIntentsImmutabilityTrigger.integration.test.ts',
       // Co-located real-DB integration test for the enrollment-key list
       // filter (#3191): drives GET /enrollment-keys?expired= to prove
       // Postgres evaluates the live-installer-token carve-out per row, so

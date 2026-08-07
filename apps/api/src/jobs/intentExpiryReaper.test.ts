@@ -56,6 +56,25 @@ function makeUpdateChain(returningValue: unknown = undefined) {
   return { set, where };
 }
 
+/**
+ * Flattens a drizzle sql`` object to its static SQL text (StringChunks and
+ * interpolated column identifiers only — bound params contribute nothing).
+ * Same introspection approach as ticketSlaWorker.test.ts's `sqlText`.
+ */
+function sqlText(q: unknown): string {
+  if (q == null) return '';
+  if (typeof q === 'string') return q;
+  const obj = q as { queryChunks?: unknown[]; value?: unknown[]; name?: string };
+  if (Array.isArray(obj.queryChunks)) {
+    return obj.queryChunks.map(sqlText).join(' ');
+  }
+  if (Array.isArray(obj.value)) {
+    return (obj.value as string[]).join('');
+  }
+  if (typeof obj.name === 'string') return obj.name;
+  return '';
+}
+
 describe('intentExpiryReaper.reapExpiredIntents', () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -150,6 +169,59 @@ describe('intentExpiryReaper.reapExpiredIntents', () => {
 
     expect(reaped).toBe(2);
     expect(recordActionIntentEvent).toHaveBeenCalledTimes(2);
+  });
+
+  /**
+   * SCOPE WARNING — read before adding a test here.
+   *
+   * This suite mocks `db.execute` at the boundary, so Postgres NEVER
+   * evaluates the WHERE clause and the mocked rows come back regardless of
+   * what the predicate says. A test in this file therefore CANNOT prove which
+   * rows the reaper selects: seeding a "legacy NULL approval_expires_at" row
+   * and asserting it was reaped would pass identically if the predicate were
+   * `1=1`. Two such tests used to live here and have been deleted rather than
+   * left as false confidence.
+   *
+   * All row-selection behavior — the 59:59 trap, both legacy `expires_at`
+   * fallbacks, and their negative counterparts — is proved against real
+   * Postgres in `intentExpiryReaper.integration.test.ts`
+   * ('reapExpiredIntents (real PG) — status-split deadline').
+   *
+   * What the two tests below legitimately cover is narrower and stated as
+   * such: the SQL TEXT the reaper builds still anchors each status on the
+   * right deadline column. That is a cheap tripwire for a careless rewrite,
+   * not a behavioral guarantee.
+   */
+  describe('deadline predicate (SQL text only — row selection is proved in the integration suite)', () => {
+    /** Static SQL text with runs of whitespace collapsed, so assertions are
+     *  not hostage to drizzle's chunk-join spacing (the previous version
+     *  asserted `'COALESCE( approval_expires_at ,  expires_at )'` — double
+     *  space included — which broke on formatting alone and proved nothing
+     *  semantic). */
+    const builtSql = async (): Promise<string> => {
+      executeMock.mockResolvedValueOnce({ rows: [] });
+      await reapExpiredIntents();
+      return sqlText(executeMock.mock.calls[0]?.[0]).replace(/\s+/g, ' ');
+    };
+
+    it('anchors pending_approval on approval_expires_at with an expires_at fallback', async () => {
+      expect(await builtSql()).toMatch(
+        /status\s*=\s*'pending_approval'\s+AND\s+COALESCE\(\s*approval_expires_at\s*,\s*expires_at\s*\)\s*<\s*now\(\)/,
+      );
+    });
+
+    it('anchors approved on release_by with an expires_at fallback, never on approval_expires_at', async () => {
+      // The 59:59 trap in SQL-shape form: once an intent is approved,
+      // approval_expires_at no longer governs it — the fresh release_by lease
+      // does. Both directions are asserted because the negative alone (the
+      // previous version of this test) passes for any rewrite that merely
+      // spells the regression differently.
+      const query = await builtSql();
+      expect(query).toMatch(
+        /status\s*=\s*'approved'\s+AND\s+COALESCE\(\s*release_by\s*,\s*expires_at\s*\)\s*<\s*now\(\)/,
+      );
+      expect(query).not.toMatch(/status\s*=\s*'approved'\s+AND\s+approval_expires_at/);
+    });
   });
 });
 

@@ -11,7 +11,7 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
-import type { AssuranceLevel } from '@breeze/shared';
+import { AI_APPROVAL_SCOPES, type AiApprovalScope, type AssuranceLevel } from '@breeze/shared';
 import { organizations, partners } from './orgs';
 import { users } from './users';
 import { apiKeys } from './apiKeys';
@@ -68,6 +68,24 @@ export type ActionIntentOriginPrincipalKind =
 
 export const intentOutboxEventEnum = ['intent_created', 'intent_approved'] as const;
 export type IntentOutboxEvent = (typeof intentOutboxEventEnum)[number];
+
+/**
+ * Tier-3 supervised/four_eyes classification (spec
+ * docs/superpowers/specs/ai-mcp/2026-08-05-tier3-supervised-four-eyes-split-design.md
+ * §4.1). Decided once by checkGuardrails at createIntent time.
+ *
+ * Re-export of the single shared declaration (`AI_APPROVAL_SCOPES` in
+ * packages/shared/src/types/ai.ts) under the local schema-file naming
+ * convention — NOT an independent copy. The SQL CHECK constraint in
+ * 2026-08-14-intent-approval-scope-and-deadlines.sql is pinned to these
+ * members by a test in actionIntents.test.ts.
+ *
+ * There is deliberately no Zod schema for this column: approvalScope is never
+ * client-supplied, it is derived server-side by checkGuardrails at intent
+ * creation. Adding a validator would wrongly imply callers can pass it.
+ */
+export const actionIntentApprovalScopeEnum = AI_APPROVAL_SCOPES;
+export type ActionIntentApprovalScope = AiApprovalScope;
 
 export const actionIntents = pgTable(
   'action_intents',
@@ -130,11 +148,43 @@ export const actionIntents = pgTable(
     tenantId: uuid('tenant_id'),
     idempotencyKey: text('idempotency_key').notNull(),
     correlationId: uuid('correlation_id').notNull(),
+    /**
+     * Tier-3 classification from checkGuardrails, decided once at creation.
+     * Immutable — covered by action_intents_immutable_trg (extended in
+     * 2026-08-14-intent-approval-scope-and-deadlines.sql). Live
+     * pre-migration rows backfill as 'four_eyes' via the column DEFAULT.
+     */
+    approvalScope: text('approval_scope')
+      .notNull()
+      .default('four_eyes')
+      .$type<ActionIntentApprovalScope>(),
+    /** Version of the classification ruleset that produced approvalScope. Immutable. */
+    classificationVersion: integer('classification_version').notNull().default(0),
+    /**
+     * Content-pinning digest for four_eyes intents (script content hash /
+     * quote-invoice revision / target state-version), pinned at creation and
+     * revalidated by the release worker (content_changed on drift).
+     * Supervised intents leave this NULL. Immutable.
+     */
+    effectDigest: char('effect_digest', { length: 64 }),
 
     // Lifecycle (mutable).
     status: text('status').notNull().default('pending_approval').$type<ActionIntentStatus>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    /**
+     * Pending-approval deadline, split out of expiresAt (advisor-confirmed
+     * trap: a single expires_at could reap an intent approved at 59:59
+     * before the release worker claims it). Backfilled from expiresAt for
+     * rows that predate the split.
+     */
+    approvalExpiresAt: timestamp('approval_expires_at', { withTimezone: true }),
+    /**
+     * Execution lease deadline, stamped atomically by the decide-path when
+     * an approval wins. The reaper expires on approvalExpiresAt for pending
+     * intents and releaseBy for approved ones.
+     */
+    releaseBy: timestamp('release_by', { withTimezone: true }),
     decidedAt: timestamp('decided_at', { withTimezone: true }),
     decidedByUserId: uuid('decided_by_user_id').references(() => users.id, {
       onDelete: 'set null',

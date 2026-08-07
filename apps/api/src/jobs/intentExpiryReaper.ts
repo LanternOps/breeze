@@ -25,11 +25,25 @@ import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
  *
  * Two sweeps run every pass:
  *
- * 1. `reapExpiredIntents` — `pending_approval`/`approved` intents whose
- *    `expires_at` has passed → `expired`. Approval does NOT stop the clock:
- *    an approved-but-not-yet-released intent still expires if execution
- *    never begins in time. Linked `approval_requests` rows still `pending`
- *    for that intent are expired in the same pass. Uses
+ * 1. `reapExpiredIntents` — `pending_approval`/`approved` intents past their
+ *    respective deadline → `expired`. The two statuses no longer share one
+ *    deadline column (tier3-supervised-four-eyes design §4.2): `pending_approval`
+ *    rows expire on `approval_expires_at` (the decide-by deadline; backfilled
+ *    from the legacy `expires_at` for pre-split rows) — falling back to
+ *    `expires_at` when `approval_expires_at IS NULL`, since some legacy
+ *    writers still leave the column unset.
+ *    `approved` rows expire on `release_by` — the fixed lease the approve
+ *    fan-in (`routes/approvals.ts`) stamps when it flips the intent to
+ *    `approved` — falling back to `expires_at` when `release_by IS NULL`
+ *    (rows approved before this deploy, which never got a lease stamped).
+ *    Approval does NOT stop the clock: an approved-but-not-yet-released
+ *    intent still expires if execution never begins within its lease. This
+ *    split matters at the boundary: an intent approved just before
+ *    `approval_expires_at` gets a FRESH `release_by` lease starting from the
+ *    approval moment, so it must NOT be reaped just because
+ *    `approval_expires_at` (a deadline that no longer applies once approved)
+ *    has since passed — the "59:59 trap". Linked `approval_requests` rows
+ *    still `pending` for that intent are expired in the same pass. Uses
  *    `recordActionIntentEvent(..., outcome: 'expired')` — `expired` is one
  *    of the seven canonical outcomes Task 4's metrics helper models (spec
  *    §7), so both the audit row and the Prometheus counter come from one
@@ -119,20 +133,29 @@ function extractRows<T>(result: unknown): T[] {
 }
 
 /**
- * Flips `pending_approval`/`approved` intents whose `expires_at` is in the
- * past to `expired`, expires their still-`pending` linked approval rows, and
- * writes one `action_intent.expired` audit event per intent. Bounded to
- * MAX_REAP_PER_RUN via a CTE so a backlog spike can't lock the table for
- * too long. Returns the number of intents transitioned.
+ * Flips `pending_approval` intents past `approval_expires_at` and `approved`
+ * intents past `release_by` (falling back to `expires_at` for legacy rows
+ * with no lease stamped) to `expired`, expires their still-`pending` linked
+ * approval rows, and writes one `action_intent.expired` audit event per
+ * intent. Bounded to MAX_REAP_PER_RUN via a CTE so a backlog spike can't
+ * lock the table for too long. Returns the number of intents transitioned.
  */
 export async function reapExpiredIntents(): Promise<number> {
   const transitioned = await db.execute<ExpiredIntentRow>(sql`
     WITH due AS (
       SELECT id
       FROM ${actionIntents}
-      WHERE ${actionIntents.status} IN ('pending_approval', 'approved')
-        AND ${actionIntents.expiresAt} < now()
-      ORDER BY ${actionIntents.expiresAt} ASC
+      WHERE (
+        ${actionIntents.status} = 'pending_approval'
+        AND COALESCE(${actionIntents.approvalExpiresAt}, ${actionIntents.expiresAt}) < now()
+      ) OR (
+        ${actionIntents.status} = 'approved'
+        AND COALESCE(${actionIntents.releaseBy}, ${actionIntents.expiresAt}) < now()
+      )
+      ORDER BY CASE
+        WHEN ${actionIntents.status} = 'pending_approval' THEN COALESCE(${actionIntents.approvalExpiresAt}, ${actionIntents.expiresAt})
+        ELSE COALESCE(${actionIntents.releaseBy}, ${actionIntents.expiresAt})
+      END ASC
       LIMIT ${MAX_REAP_PER_RUN}
       FOR UPDATE SKIP LOCKED
     )
