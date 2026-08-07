@@ -116,6 +116,7 @@ vi.mock('../middleware/auth', () => ({
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { validateFilter } from '../services/filterEngine';
+import { evaluateGroupMembership } from '../services/groupMembership';
 
 function makeGroup(overrides: Record<string, unknown> = {}) {
   return {
@@ -399,6 +400,88 @@ describe('groups routes', () => {
       expect(res.status).toBe(400);
       const body = await res.json();
       expect(body.error).toContain('Invalid filter');
+    });
+
+    // Regression guard for the silent zero-row materialization: the route used
+    // to call `evaluateGroupMembership(id).catch(...)` without awaiting it. The
+    // detached promise resumed only AFTER the request's withDbAccessContext
+    // transaction had committed and released its pooled connection, so its next
+    // query was stranded on a dead transaction handle and never ran — no rows,
+    // no rejection, no log. Holding the evaluation open here proves the handler
+    // genuinely waits for it, which is what keeps the write inside the caller's
+    // live org-scoped RLS context.
+    it('waits for dynamic membership materialization before responding', async () => {
+      const created = makeGroup({
+        type: 'dynamic',
+        filterConditions: { operator: 'AND', conditions: [{ field: 'osType', operator: 'equals', value: 'windows' }] }
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([created]) })
+      } as any);
+      // Earlier cases in this file leave unconsumed `mockReturnValueOnce`
+      // entries on db.select, and clearAllMocks does not drain that queue.
+      vi.mocked(db.select).mockReset();
+      // getDeviceCountForGroup, read AFTER materialization finishes.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 3 }]) })
+      } as any);
+
+      let releaseEvaluation!: () => void;
+      const evaluationHeld = new Promise<void>((resolve) => { releaseEvaluation = resolve; });
+      vi.mocked(evaluateGroupMembership).mockReturnValueOnce(evaluationHeld as any);
+
+      let settled = false;
+      const pending = Promise.resolve(app.request('/groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Dynamic Group',
+          type: 'dynamic',
+          filterConditions: { operator: 'AND', conditions: [{ field: 'osType', operator: 'equals', value: 'windows' }] }
+        })
+      })).then((res: Response) => { settled = true; return res; });
+
+      // Let the event loop drain: if the route were still fire-and-forget it
+      // would already have responded here.
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+
+      releaseEvaluation();
+      const res = await pending;
+
+      expect(res.status).toBe(201);
+      expect(evaluateGroupMembership).toHaveBeenCalledWith(GROUP_ID);
+      const body = await res.json();
+      // The response carries the real materialized count, not a hardcoded 0.
+      expect(body.data.deviceCount).toBe(3);
+    });
+
+    it('still returns 201 (and logs) when materialization fails', async () => {
+      const created = makeGroup({
+        type: 'dynamic',
+        filterConditions: { operator: 'AND', conditions: [{ field: 'osType', operator: 'equals', value: 'windows' }] }
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([created]) })
+      } as any);
+      vi.mocked(db.select).mockReset();
+      vi.mocked(evaluateGroupMembership).mockRejectedValueOnce(new Error('boom'));
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const res = await app.request('/groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Dynamic Group',
+          type: 'dynamic',
+          filterConditions: { operator: 'AND', conditions: [{ field: 'osType', operator: 'equals', value: 'windows' }] }
+        })
+      });
+
+      expect(res.status).toBe(201);
+      expect(errorSpy).toHaveBeenCalled();
+      expect(String(errorSpy.mock.calls[0]?.[0])).toContain(GROUP_ID);
+      errorSpy.mockRestore();
     });
 
     it('should validate parent group exists and belongs to same org', async () => {
