@@ -143,6 +143,12 @@ export default defineConfig({
       // so the no-DB unit runner would fail it on connect. Belongs to
       // vitest.integration.config.ts (registered in its include list).
       'src/routes/enrollmentKeysPurgeExpired.integration.test.ts',
+      // Enrollment-key list-filter real-DB test (#3191 live-installer-token
+      // carve-out on ?expired=): same story as the two above — imports
+      // `__tests__/integration/setup` and lives outside the
+      // `src/__tests__/integration/**` glob, so the no-DB unit runner would
+      // fail it on connect. Belongs to vitest.integration.config.ts.
+      'src/routes/enrollmentKeysExpiredFilter.integration.test.ts',
     ],
     setupFiles: ['src/__tests__/setup.ts'],
     coverage: {
