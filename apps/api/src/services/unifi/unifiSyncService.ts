@@ -1,4 +1,5 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql, type SQL } from 'drizzle-orm';
+import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import { unifiSiteMappings, unifiDevices, unifiSyncRuns, discoveredAssets } from '../../db/schema';
 import type { DbExecutor } from './unifiConnectionService';
 import type { UnifiClient, UnifiDeviceDto, UnifiIspMetrics } from './unifiClient';
@@ -60,6 +61,12 @@ function unifiToBreezeDeviceType(
   }
 }
 
+// Column-checked write set. `DbExecutor` is deliberately loosely typed, and
+// drizzle silently DROPS set keys that don't name a column — so a typo in a
+// bare object literal would compile, pass the mocked tests, and no-op at
+// runtime. Naming the type restores that check.
+type AssetWriteSet = PgUpdateSetSource<typeof discoveredAssets>;
+
 // Find-or-create a discovered_assets row for a UniFi device; return its id.
 async function reconcileDiscoveredAsset(
   db: DbExecutor,
@@ -70,6 +77,25 @@ async function reconcileDiscoveredAsset(
   if (!device.ip) return null;
 
   const aType = assetType(device.deviceType);
+
+  // `assetType()` only recognises UniFi *network* gear (switch / AP / gateway /
+  // firewall). For anything else — Protect cameras, doorbells — it returns
+  // 'unknown', which means "this sync has no opinion", not "the device really is
+  // of unknown type". Writing that back would erase a better classification made
+  // by another source, so leave both type columns alone unless we recognised it.
+  const classified = aType === 'unknown' ? null : aType;
+
+  // A type a user set by hand outranks telemetry classification (#3011).
+  //
+  // The guard is evaluated in SQL, not JS, on BOTH write paths. On the conflict
+  // path we never read the colliding row at all; on the update path we did read
+  // it, but `type_source` can change between that SELECT and the UPDATE — and a
+  // user saving a manual type mid-sync is exactly the race this issue is about.
+  // Inside UPDATE ... SET and ON CONFLICT DO UPDATE SET, a reference qualified
+  // with the target table reads the *existing* row, while `excluded` is the row
+  // we proposed to insert.
+  const preserveManualType = (proposed: SQL) =>
+    sql`case when ${discoveredAssets.typeSource} = 'manual' then ${discoveredAssets.assetType} else ${proposed} end`;
 
   // 1. Match by (org_id, mac) first — the stable identifier.
   let existing: { id: string } | null = null;
@@ -102,31 +128,57 @@ async function reconcileDiscoveredAsset(
     existing = byIp[0] ?? null;
   }
 
+  // asset_type is deliberately NOT in here — it is applied per-branch below so a
+  // manual override survives the sync (#3011).
   const enrich = {
     macAddress: device.mac ?? undefined,
     hostname: device.name ?? undefined,
     manufacturer: 'Ubiquiti',
     model: device.model ?? undefined,
-    assetType: aType,
     isOnline: device.adoptionState === 'CONNECTED',
     lastSeenAt: new Date(),
   };
 
   if (existing) {
+    const updateSet: AssetWriteSet = { ...enrich };
+    if (classified) {
+      // Always record what this sync would have assigned, so "reset to auto"
+      // has a value to restore...
+      updateSet.detectedAssetType = classified;
+      // ...but only apply it when the type was not set by hand.
+      updateSet.assetType = preserveManualType(sql`${classified}`);
+    }
     await db
       .update(discoveredAssets)
-      .set(enrich)
+      .set(updateSet)
       .where(eq(discoveredAssets.id, existing.id));
     return existing.id;
   }
 
   // Net-new: insert, absorbing a race with agent discovery via the (org,ip) unique key.
+  const conflictSet: AssetWriteSet = { ...enrich };
+  if (classified) {
+    conflictSet.detectedAssetType = classified;
+    conflictSet.assetType = preserveManualType(
+      sql.raw(`excluded.${discoveredAssets.assetType.name}`),
+    );
+  }
+
   const inserted = await db
     .insert(discoveredAssets)
-    .values({ orgId: mapping.orgId, siteId: mapping.siteId, ipAddress: device.ip, ...enrich })
+    .values({
+      orgId: mapping.orgId,
+      siteId: mapping.siteId,
+      ipAddress: device.ip,
+      ...enrich,
+      // typeSource is set only on the INSERT side; the conflict branch must
+      // never reset an existing row's type_source back to 'auto'.
+      typeSource: 'auto',
+      ...(classified ? { assetType: classified, detectedAssetType: classified } : {}),
+    })
     .onConflictDoUpdate({
       target: [discoveredAssets.orgId, discoveredAssets.ipAddress],
-      set: enrich,
+      set: conflictSet,
     })
     .returning({ id: discoveredAssets.id });
   return inserted[0]?.id ?? null;
