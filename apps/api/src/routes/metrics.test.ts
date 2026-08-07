@@ -487,8 +487,8 @@ describe('metrics routes', () => {
           `breeze_db_pool_health{verdict="${verdict}"} 0`,
         );
       }
-      expect(getMetricLine(body, 'breeze_db_pool_health_check_failures_total')).toBe(
-        'breeze_db_pool_health_check_failures_total 1',
+      expect(getMetricLine(body, 'breeze_db_pool_health_check_failures')).toBe(
+        'breeze_db_pool_health_check_failures 1',
       );
     });
 

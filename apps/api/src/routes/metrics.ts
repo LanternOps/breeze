@@ -527,9 +527,13 @@ const dbPoolHealthLastCheckGauge = new Gauge({
   registers: [register]
 });
 
+// Gauges, not Counters, and therefore deliberately WITHOUT the `_total` suffix
+// (which OpenMetrics reserves for counters). The underlying values are
+// process-lifetime totals owned by dbPoolHealthMonitor and read absolutely on
+// each scrape, so there is no per-event increment to drive a Counter with.
 const dbPoolHealthCheckFailuresGauge = new Gauge({
-  name: 'breeze_db_pool_health_check_failures_total',
-  help: 'Pool-health evaluations that threw before producing a verdict',
+  name: 'breeze_db_pool_health_check_failures',
+  help: 'Pool-health evaluations that threw before producing a verdict, since process start',
   registers: [register]
 });
 
@@ -537,8 +541,8 @@ const dbPoolHealthCheckFailuresGauge = new Gauge({
 // database the watchdog is diagnosing. Surfaced so the watchdog cannot quietly
 // become a contributor to connection exhaustion.
 const dbPoolHealthProbeCloseFailuresGauge = new Gauge({
-  name: 'breeze_db_pool_health_probe_close_failures_total',
-  help: 'Pool-health probe clients whose end() failed, each a possible leaked connection',
+  name: 'breeze_db_pool_health_probe_close_failures',
+  help: 'Pool-health probe clients whose end() failed since process start, each a possible leaked connection',
   registers: [register]
 });
 

@@ -403,6 +403,7 @@ describe('scrubEvent', () => {
         prior_status: 'failed:server-timeout',
         connect_timeout_cause: 'event-loop-starvation',
         event_loop_lag_bucket: 'over-10s',
+        db_pool_health_verdict: 'pool-degraded',
         path: '/public/quotes/raw-capability',
         arbitrary: 'raw-capability',
       },
@@ -455,6 +456,11 @@ describe('scrubEvent', () => {
       // invisible in Sentry, which is the entire point of adding it.
       connect_timeout_cause: 'event-loop-starvation',
       event_loop_lag_bucket: 'over-10s',
+      // #3214: scrubEvent deletes message/logentry/extra from every event, so
+      // this tag is the ONLY part of a pool-health capture that reaches Sentry —
+      // and it is the field that decides whether the operator restarts the API.
+      // Dropped here, the watchdog's alerts arrive as contentless blanks.
+      db_pool_health_verdict: 'pool-degraded',
     });
     expect(out.exception).toEqual({
       values: [{

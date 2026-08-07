@@ -87,10 +87,16 @@ export interface DbPoolHealthAssessment {
   message: string;
   /**
    * Short, STABLE headline used as the Sentry event title. Deliberately free of
-   * counts and durations: Sentry groups by message text, so interpolating a rate
-   * would mint a fresh issue on every capture, and an alert bound to an issue
-   * that never repeats never fires twice. The numbers live in `message` (console)
-   * and in the tags.
+   * counts and durations, because Sentry groups by message text and an
+   * interpolated rate would mint a fresh issue on every capture — an alert bound
+   * to an issue that never repeats never fires twice.
+   *
+   * Be aware of what actually ships: `services/sentry.ts`'s `scrubEvent` deletes
+   * `message`, `logentry` and `extra` from every outgoing event, so today the
+   * only part of a capture that reaches Sentry is its ALLOWLISTED TAGS — which
+   * is why `db_pool_health_verdict` had to be added to `ALLOWED_TAG_NAMES`. The
+   * full numbers live on `console.warn` and in Prometheus. This field is kept
+   * stable anyway so the grouping is correct if that scrubbing ever relaxes.
    */
   headline: string;
   at: number;
@@ -362,28 +368,36 @@ export async function assessDbPoolHealth(
     };
   }
 
-  // A probe that timed out while most timeouts were attributed to a blocked
-  // event loop proves nothing: the probe needs that same loop to run its socket
-  // callbacks, so its budget expires for the same reason theirs did. Calling
-  // this `database-unreachable` would send an operator hunting a DB incident and
-  // explicitly tell them a restart will not help — while the actual fault is a
-  // pegged main thread (#3022).
-  const starvationDominates =
-    stats.byCause['event-loop-starvation'] * 2 > stats.timeouts;
-  if (probeTimedOut && starvationDominates) {
+  // A probe that merely TIMED OUT proves very little on its own: its budget is a
+  // plain in-process timer, so it expires when the main thread is pegged for the
+  // same reason the connect timeouts did (#3022). Calling that
+  // `database-unreachable` would send an operator hunting a DB incident and
+  // explicitly tell them a restart will not help, while the real fault is a
+  // blocked loop.
+  //
+  // The test is deliberately framed as "is there positive evidence FOR a
+  // connectivity fault", not "is there positive evidence against one". Framing
+  // it the other way leaves the hole this branch exists to close: when the
+  // event-loop monitor is disabled, still warming up, or sampling coarser than
+  // the connect window, `diagnoseConnectTimeout` returns `unknown` for EVERY
+  // timeout — so a starvation-dominance test would see a starvation count of 0,
+  // find no dominance, and emit the confident wrong verdict in precisely the
+  // configuration where the module has the least evidence.
+  const connectivityDominates = stats.byCause.connectivity * 2 > stats.timeouts;
+  if (probeTimedOut && !connectivityDominates) {
     return {
       verdict: 'unknown',
       stats,
       thresholdTimeouts,
       probeMs,
       probeError,
-      headline: '[db-pool-health] probe timed out under event-loop starvation',
+      headline: '[db-pool-health] probe timed out inconclusively',
       message:
-        `[db-pool-health] UNKNOWN — ${rate}, and the probe timed out after ${probeMs}ms, but `
-        + `${stats.byCause['event-loop-starvation']} of those timeouts were attributed to `
-        + `event-loop starvation (#3022). The probe's budget is an in-process timer that needs `
-        + `the same blocked loop, so its expiry is NOT evidence about the database. Investigate `
-        + `main-thread starvation first. Causes: ${causes}.`,
+        `[db-pool-health] UNKNOWN — ${rate}, and the probe timed out after ${probeMs}ms, but the `
+        + `timeouts are not predominantly attributed to connectivity (${causes}). The probe's `
+        + `budget is an in-process timer that needs the same event loop, so under starvation — `
+        + `or with no event-loop measurement at all — its expiry is NOT evidence about the `
+        + `database (#3022). Rule out main-thread starvation before treating this as a DB fault.`,
       at: now,
     };
   }
@@ -493,23 +507,31 @@ export async function runDbPoolHealthCheck(
     const throttleMs = getDbPoolHealthCaptureThrottleMs();
     if (claimDbPoolHealthCaptureSlot(assessment.verdict, assessment.at, throttleMs)) {
       const suppressed = takeSuppressedCount(assessment.verdict);
-      // The TITLE is the stable headline (Sentry groups by message text, so an
-      // interpolated rate would mint a new issue every capture and no alert
-      // bound to it could ever fire twice). Detail rides on the low-cardinality
-      // tags; the full prose is already on console.warn above.
-      captureMessage(assessment.headline, 'warning', {
-        message: assessment.message,
-        verdict: assessment.verdict,
-        timeouts: assessment.stats.timeouts,
-        ratePerMin: assessment.stats.ratePerMin,
-        windowMs: assessment.stats.windowMs,
-        byCause: assessment.stats.byCause,
-        probeMs: assessment.probeMs,
-        probeError: assessment.probeError,
-        // States this event's own sampling rate, so the throttle cannot make a
-        // storm look like a single occurrence.
-        suppressedSinceLastCapture: suppressed,
-      }, { dbPoolHealthVerdict: assessment.verdict });
+      // Wrapped: a valid assessment has already been stored, and the outer catch
+      // now CLEARS `lastAssessment`. Letting a reporter fault fall through to it
+      // would erase a real `pool-degraded` verdict from /metrics at the exact
+      // moment it fired, and show the operator a reporting error instead.
+      try {
+        // `db_pool_health_verdict` is the only field that survives — scrubEvent
+        // deletes message/extra from every event — so it carries the actionable
+        // part. The extras are passed anyway (correct shape, and free) and the
+        // full prose is already on console.warn above.
+        captureMessage(assessment.headline, 'warning', {
+          message: assessment.message,
+          verdict: assessment.verdict,
+          timeouts: assessment.stats.timeouts,
+          ratePerMin: assessment.stats.ratePerMin,
+          windowMs: assessment.stats.windowMs,
+          byCause: assessment.stats.byCause,
+          probeMs: assessment.probeMs,
+          probeError: assessment.probeError,
+          // States this event's own sampling rate, so the throttle cannot make a
+          // storm look like a single occurrence.
+          suppressedSinceLastCapture: suppressed,
+        }, { db_pool_health_verdict: assessment.verdict });
+      } catch (captureErr) {
+        console.error('[db-pool-health] failed to report verdict to Sentry:', captureErr);
+      }
     }
     return assessment;
   } catch (err) {
@@ -536,7 +558,8 @@ export async function runDbPoolHealthCheck(
         captureMessage('[db-pool-health] watchdog evaluation failed', 'warning', {
           error: err instanceof Error ? err.message : String(err),
           checkFailures,
-        }, { dbPoolHealthVerdict: 'check-failed' });
+          suppressedSinceLastCapture: takeSuppressedCount('check-failed'),
+        }, { db_pool_health_verdict: 'check-failed' });
       } catch {
         // The reporter is the thing that failed; the console line above stands.
       }

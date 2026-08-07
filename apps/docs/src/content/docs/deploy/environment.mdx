@@ -242,7 +242,11 @@ is unaffected by the defect, so the result separates the two causes:
 - the fresh connection **also fails** → a genuine database, network, TLS, or auth
   fault. Restarting the API will not help.
 
-The verdict is logged and sent to Sentry (throttled), and exported on
+The full verdict — with counts, rates and probe timing — is written to the
+container log. Sentry receives a throttled event carrying the
+`db_pool_health_verdict` tag only; Breeze strips message text and structured
+extras from every outgoing Sentry event, so treat Sentry as the alert channel
+and the log or `/metrics` as the detail. The numbers are exported on
 `/metrics/scrape`:
 
 | Series | Meaning |
@@ -251,8 +255,8 @@ The verdict is logged and sent to Sentry (throttled), and exported on
 | `breeze_db_connect_timeouts_total{cause="…"}` | Connect timeouts by diagnosed cause (`connectivity`, `event-loop-starvation`, `unknown`). |
 | `breeze_db_connect_timeout_rate_per_min` | The rate the watchdog evaluates. |
 | `breeze_db_pool_health_last_check_timestamp_seconds` | When the last evaluation completed. `0` = never. |
-| `breeze_db_pool_health_check_failures_total` | Evaluations that threw before producing a verdict. |
-| `breeze_db_pool_health_probe_close_failures_total` | Probe clients whose close failed — each a possible leaked connection. |
+| `breeze_db_pool_health_check_failures` | Evaluations that threw before producing a verdict. |
+| `breeze_db_pool_health_probe_close_failures` | Probe clients whose close failed — each a possible leaked connection. |
 
 **Alert on `breeze_db_pool_health{verdict="pool-degraded"} == 1`.** There is
 deliberately no `healthy` verdict: the quiet one is `below-threshold`, because

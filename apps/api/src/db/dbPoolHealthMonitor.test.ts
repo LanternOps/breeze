@@ -134,7 +134,7 @@ describe('dbPoolHealthMonitor (#3214)', () => {
       expect(result.message).not.toContain('POOL DEGRADED');
     });
 
-    it('reports unknown when the probe times out and starvation dominates the causes', async () => {
+    it('reports unknown when the probe times out under event-loop starvation', async () => {
       // The probe's budget is an in-process setTimeout, so it expires when the
       // main thread is pegged just as readily as when the DB is unreachable —
       // the #3022 ambiguity, one layer up. Calling this `database-unreachable`
@@ -155,13 +155,40 @@ describe('dbPoolHealthMonitor (#3214)', () => {
       });
 
       expect(result.verdict).toBe('unknown');
-      expect(result.message).toContain('event-loop starvation');
+      expect(result.message).toContain('starvation');
       expect(result.message).not.toContain('DATABASE UNREACHABLE');
     });
 
-    it('still reports database-unreachable on a probe timeout when starvation does NOT dominate', async () => {
-      // A genuinely unreachable database also makes the probe time out. Only the
-      // starvation-dominated case is inconclusive.
+    it('reports unknown on a probe timeout when NO cause could be measured at all', async () => {
+      // With EVENT_LOOP_MONITOR_DISABLED (or the monitor still warming up) every
+      // timeout is classified `unknown`. A "does starvation dominate?" test would
+      // see a starvation count of 0, find no dominance, and emit the confident
+      // `database-unreachable` in exactly the configuration where this module has
+      // the LEAST evidence. The verdict must require positive evidence FOR a
+      // connectivity fault, not merely the absence of evidence against one.
+      const result = await assessDbPoolHealth({
+        readStats: () => ({
+          timeouts: 40,
+          byCause: { 'event-loop-starvation': 0, connectivity: 0, unknown: 40 },
+          windowMs: 300_000,
+          ratePerMin: 8,
+          totalSinceStart: 40,
+        }),
+        probe: async () => {
+          throw new DbPoolProbeTimedOutError('pool-health probe exceeded 5000ms');
+        },
+        thresholdTimeouts: 10,
+      });
+
+      expect(result.verdict).toBe('unknown');
+      expect(result.message).not.toContain('DATABASE UNREACHABLE');
+      expect(result.message).not.toContain('Restarting the API will not help');
+    });
+
+    it('still reports database-unreachable on a probe timeout when connectivity dominates', async () => {
+      // A genuinely unreachable database also makes the probe time out, and here
+      // the timeouts themselves were measured as connectivity faults on a healthy
+      // loop — that IS positive evidence, so the confident verdict is warranted.
       const result = await assessDbPoolHealth({
         readStats: () => ({
           timeouts: 40,
@@ -172,6 +199,27 @@ describe('dbPoolHealthMonitor (#3214)', () => {
         }),
         probe: async () => {
           throw new DbPoolProbeTimedOutError('pool-health probe exceeded 5000ms');
+        },
+        thresholdTimeouts: 10,
+      });
+
+      expect(result.verdict).toBe('database-unreachable');
+    });
+
+    it('a driver-reported failure is database-unreachable regardless of cause mix', async () => {
+      // Only a TIMEOUT is ambiguous. An ECONNREFUSED came from the network stack,
+      // not from an in-process timer, so it stands on its own even when every
+      // timeout was classified `unknown`.
+      const result = await assessDbPoolHealth({
+        readStats: () => ({
+          timeouts: 40,
+          byCause: { 'event-loop-starvation': 0, connectivity: 0, unknown: 40 },
+          windowMs: 300_000,
+          ratePerMin: 8,
+          totalSinceStart: 40,
+        }),
+        probe: async () => {
+          throw new Error('connect ECONNREFUSED 10.0.0.5:5432');
         },
         thresholdTimeouts: 10,
       });
@@ -231,7 +279,7 @@ describe('dbPoolHealthMonitor (#3214)', () => {
         expect.stringContaining('POOL DEGRADED'),
         'warning',
         expect.objectContaining({ verdict: 'pool-degraded', timeouts: 40 }),
-        { dbPoolHealthVerdict: 'pool-degraded' },
+        { db_pool_health_verdict: 'pool-degraded' },
       );
     });
 
@@ -272,6 +320,29 @@ describe('dbPoolHealthMonitor (#3214)', () => {
       expect(getLastDbPoolHealthAssessment()).toBeNull();
     });
 
+    it('keeps a valid verdict when the Sentry report itself throws', async () => {
+      // The outer catch now CLEARS lastAssessment. A reporter fault must not
+      // reach it — that would erase a real pool-degraded verdict from /metrics
+      // at the exact moment it fired, and show a reporting error instead.
+      captureMessage.mockImplementationOnce(() => {
+        throw new Error('sentry transport exploded');
+      });
+
+      const result = await runDbPoolHealthCheck({
+        readStats: () => stats(40),
+        probe: async () => {},
+        thresholdTimeouts: 10,
+      });
+
+      expect(result?.verdict).toBe('pool-degraded');
+      expect(getLastDbPoolHealthAssessment()?.verdict).toBe('pool-degraded');
+      expect(getDbPoolHealthCheckFailures()).toBe(0);
+      expect(console.error).toHaveBeenCalledWith(
+        '[db-pool-health] failed to report verdict to Sentry:',
+        expect.any(Error),
+      );
+    });
+
     it('reports its own failure to Sentry, not only to the console', async () => {
       // A watchdog failing every tick is otherwise console-only, which is
       // exactly the invisibility this module exists to remove.
@@ -285,7 +356,7 @@ describe('dbPoolHealthMonitor (#3214)', () => {
         '[db-pool-health] watchdog evaluation failed',
         'warning',
         expect.objectContaining({ error: 'stats exploded', checkFailures: 1 }),
-        { dbPoolHealthVerdict: 'check-failed' },
+        { db_pool_health_verdict: 'check-failed' },
       );
     });
 

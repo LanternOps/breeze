@@ -73,6 +73,15 @@ const ALLOWED_TAG_NAMES = new Set([
   // bucketEventLoopLag); neither carries a tenant, device, or host identifier.
   'connect_timeout_cause',
   'event_loop_lag_bucket',
+  // #3214: the pool-health watchdog's verdict is the ONLY part of its report
+  // that can survive to Sentry — `scrubEvent` deletes `message`, `logentry` and
+  // `extra` from every event, so an unallowlisted verdict would arrive as a
+  // contentless, ungroupable blank. It is also the field that decides the
+  // operator's action: `pool-degraded` means restart the API, and
+  // `database-unreachable` means explicitly do not. Closed 5-value set
+  // (DB_POOL_HEALTH_VERDICTS plus the `check-failed` self-report); carries no
+  // tenant, device, or host identifier.
+  'db_pool_health_verdict',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;
