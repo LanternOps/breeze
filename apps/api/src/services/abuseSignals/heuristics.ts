@@ -122,9 +122,24 @@ export async function loadPartnerAggregates(): Promise<PartnerAggregates[]> {
       GROUP BY o.partner_id
     ),
     scripts AS (
+      -- Automation-triggered executions (trigger_type = 'automation', #3162)
+      -- are scheduled machine activity, so they're excluded from the scripts
+      -- axis: before #3162 automations produced no script_executions rows at
+      -- all, and letting them start counting would silently re-baseline this
+      -- signal for every MSP that runs a scheduled script.
+      --
+      -- NOTE this does NOT fully de-noise the signal: it fires on
+      -- commands_24h >= X OR scripts_24h >= Y, and the cmds CTE above is
+      -- unfiltered — every automation run_script action still queues a
+      -- device_commands row. A high-cadence automation can therefore still pin
+      -- resource.volume_outlier through the commands branch.
+      --
+      -- Trade-off: script volume driven THROUGH an automation is now invisible
+      -- to this signal. Accepted, because the commands axis still sees it.
       SELECT o.partner_id, COUNT(*) AS scripts_24h
       FROM script_executions se JOIN organizations o ON o.id = se.org_id
       WHERE se.created_at > now() - interval '24 hours'
+        AND se.trigger_type <> 'automation'
       GROUP BY o.partner_id
     ),
     ips AS (

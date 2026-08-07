@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { FilterConditionGroup } from './filterEngine';
-import { db } from '../db';
+import { db, getCurrentDbAccessContext, hasDbAccessContext } from '../db';
 import { deviceGroups, deviceGroupMemberships, devices, groupMembershipLog } from '../db/schema';
 import { deviceMatchesFilter, evaluateFilter, extractFieldsFromFilter } from './filterEngine';
 
@@ -12,6 +12,32 @@ export interface MembershipUpdateSummary {
   evaluatedGroups: number;
   added: number;
   removed: number;
+  /**
+   * Devices the group's filter matched, i.e. the same number the server-side
+   * preview endpoint reports for that filter. Only set by the whole-group
+   * evaluation (`evaluateGroupMembership`).
+   */
+  matched?: number;
+  /**
+   * Membership rows actually READABLE for the group once the writes finished.
+   * Compared against `matched` to turn a silent zero-row materialization into
+   * a logged error — see `evaluateGroupMembership`.
+   */
+  materialized?: number;
+}
+
+/**
+ * Short description of the RLS access context the current call is running in,
+ * for diagnostics only. `none` is the dangerous one: under the forced-RLS
+ * `breeze_app` role a contextless SELECT silently returns zero rows, which is
+ * exactly how a dynamic group ends up with an empty membership and no error
+ * anywhere in the logs.
+ */
+function describeDbContext(): string {
+  if (!hasDbAccessContext()) return 'none';
+  const context = getCurrentDbAccessContext();
+  if (!context) return 'unknown';
+  return context.orgId ? `${context.scope}:${context.orgId}` : context.scope;
 }
 
 function isFilterConditionGroup(value: unknown): value is FilterConditionGroup {
@@ -69,6 +95,35 @@ export async function logMembershipChange(
     action,
     reason
   });
+}
+
+/**
+ * Bulk variant of `logMembershipChange`. A whole-group evaluation can add or
+ * remove every device in an org at once; one INSERT per device turned the
+ * evaluation into an O(devices) round-trip storm, which is what made running
+ * it inside the request unattractive in the first place. One multi-row INSERT
+ * keeps the whole evaluation to a handful of statements regardless of size.
+ */
+async function logMembershipChanges(
+  groupId: string,
+  deviceIds: string[],
+  action: MembershipAction,
+  reason: MembershipReason,
+  orgId: string,
+  database: GroupMembershipDatabase = db,
+): Promise<void> {
+  if (deviceIds.length === 0) return;
+  await database.insert(groupMembershipLog).values(
+    deviceIds.map((deviceId) => ({ groupId, deviceId, orgId, action, reason })),
+  );
+}
+
+async function countGroupMemberships(groupId: string): Promise<number> {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(deviceGroupMemberships)
+    .where(eq(deviceGroupMemberships.groupId, groupId));
+  return Number(row?.count ?? 0);
 }
 
 export async function evaluateDeviceMembershipForGroup(
@@ -175,7 +230,20 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
     .where(eq(deviceGroups.id, groupId))
     .limit(1);
 
-  if (!group || group.type !== 'dynamic' || !isFilterConditionGroup(group.filterConditions)) {
+  if (!group) {
+    // Every caller evaluates a group it has just created, updated or read, so
+    // an invisible group row is never "the group is gone" — it means the SELECT
+    // was filtered by RLS because this call is running with the wrong access
+    // context (or none at all). Returning a zero summary here is what made the
+    // whole materialization vanish without a single log line, so say it loudly.
+    console.error(
+      `[groupMembership] group ${groupId} is not visible to this DB access context ` +
+      `(dbAccessContext=${describeDbContext()}) — membership was NOT materialized`,
+    );
+    return { evaluatedGroups: 0, added: 0, removed: 0, matched: 0, materialized: 0 };
+  }
+
+  if (group.type !== 'dynamic' || !isFilterConditionGroup(group.filterConditions)) {
     return { evaluatedGroups: 0, added: 0, removed: 0 };
   }
 
@@ -224,9 +292,7 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
         }))
       )
       .onConflictDoNothing();
-    await Promise.all(
-      toAdd.map(deviceId => logMembershipChange(groupId, deviceId, 'added', 'filter_match', group.orgId))
-    );
+    await logMembershipChanges(groupId, toAdd, 'added', 'filter_match', group.orgId);
   }
 
   if (toRemove.length > 0) {
@@ -238,12 +304,39 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
           inArray(deviceGroupMemberships.deviceId, toRemove)
         )
       );
-    await Promise.all(
-      toRemove.map(deviceId => logMembershipChange(groupId, deviceId, 'removed', 'filter_unmatch', group.orgId))
-    );
+    await logMembershipChanges(groupId, toRemove, 'removed', 'filter_unmatch', group.orgId);
   }
 
-  return { evaluatedGroups: 1, added: toAdd.length, removed: toRemove.length };
+  // Verify what actually landed whenever we wrote something. `matched` is the
+  // same number the server-side preview endpoint reports for this filter, so a
+  // shortfall is precisely the "preview says 3, membership says 0" symptom —
+  // the one that previously left no trace anywhere. Pinned members survive a
+  // filter miss, so they count towards the expected total too.
+  const matched = matchingIds.size;
+  let materialized: number | undefined;
+  if (toAdd.length > 0 || toRemove.length > 0) {
+    const expected = new Set(matchingIds);
+    for (const membership of currentMemberships) {
+      if (membership.isPinned) expected.add(membership.deviceId);
+    }
+    materialized = await countGroupMemberships(groupId);
+    if (materialized < expected.size) {
+      console.error(
+        `[groupMembership] materialization shortfall for group ${groupId} (org ${group.orgId}): ` +
+        `filter matched ${matched} device(s), expected ${expected.size} membership row(s), ` +
+        `found ${materialized} after add=${toAdd.length} remove=${toRemove.length} ` +
+        `(dbAccessContext=${describeDbContext()})`,
+      );
+    }
+  }
+
+  return {
+    evaluatedGroups: 1,
+    added: toAdd.length,
+    removed: toRemove.length,
+    matched,
+    materialized,
+  };
 }
 
 /**

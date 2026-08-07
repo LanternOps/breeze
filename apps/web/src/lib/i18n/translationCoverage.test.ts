@@ -47,7 +47,9 @@ const namespaceDuplicateBaselines = {
     'quick.json': 1,
     'remote.json': 12,
     'reports.json': 39,
-    'scripts.json': 55,
+    // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
+    // wording, and "Script" is the standard loanword in this locale (#3162).
+    'scripts.json': 57,
     'security.json': 140,
     // +1: the it-IT locale's self-name is intentionally identical in every catalog.
     'settings.json': 110,
@@ -86,7 +88,9 @@ const namespaceDuplicateBaselines = {
     'quick.json': 1,
     'remote.json': 12,
     'reports.json': 32,
-    'scripts.json': 57,
+    // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
+    // wording, and "Script" is the standard loanword in this locale (#3162).
+    'scripts.json': 59,
     'security.json': 114,
     'settings.json': 113,
     'tickets.json': 13,
@@ -126,7 +130,9 @@ const namespaceDuplicateBaselines = {
     'quick.json': 1,
     'remote.json': 18,
     'reports.json': 43,
-    'scripts.json': 60,
+    // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
+    // wording, and "Script" is the standard loanword in this locale (#3162).
+    'scripts.json': 62,
     'security.json': 144,
     // +1: orgDefaultsEditor.enrollment.capMinutes — "{{minutes}} minutes" is
     // spelled identically in French.
@@ -162,7 +168,9 @@ const namespaceDuplicateBaselines = {
     'quick.json': 1,
     'remote.json': 17,
     'reports.json': 43,
-    'scripts.json': 60,
+    // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
+    // wording, and "Script" is the standard loanword in this locale (#3162).
+    'scripts.json': 62,
     'security.json': 144,
     // +1: orgDefaultsEditor.enrollment.capMinutes — "{{minutes}} minutes" is
     // spelled identically in French.
@@ -202,7 +210,9 @@ const namespaceDuplicateBaselines = {
     'quick.json': 1,
     'remote.json': 14,
     'reports.json': 53,
-    'scripts.json': 53,
+    // +1: automationRunHistory.scriptOutput.stderr — a stream name, not
+    // wording; intentionally identical in every catalog (#3162).
+    'scripts.json': 54,
     'security.json': 166,
     'settings.json': 165,
     'tickets.json': 13,
@@ -233,7 +243,9 @@ const namespaceDuplicateBaselines = {
     'quick.json': 1,
     'remote.json': 14,
     'reports.json': 51,
-    'scripts.json': 57,
+    // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
+    // wording, and "Script" is the standard loanword in this locale (#3162).
+    'scripts.json': 59,
     'security.json': 163,
     'settings.json': 155,
     'tickets.json': 6,

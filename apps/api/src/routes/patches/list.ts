@@ -84,14 +84,26 @@ listRoutes.get(
     // to the whitelist keys by listPatchesSchema, so the lookup never misses.
     //
     // sortBy/sortDir are API-ready but NOT yet consumed by the web client: the
-    // patches page (apps/web/.../PatchesPage.tsx) fetches a fixed `limit=200`
-    // and sorts/paginates entirely client-side, so this server-side ordering is
-    // currently exercised only by direct API callers. Wiring the web to send
-    // these is a follow-up — see the severity-divergence NOTE on
-    // PATCH_SORT_COLUMNS above before doing so.
+    // patches page (apps/web/.../PatchesPage.tsx) walks pages at `limit=200`
+    // (up to its own cap) and then sorts/paginates entirely client-side, so
+    // this server-side ordering is currently exercised only by direct API
+    // callers. Wiring the web to send these (and thereby drop the page walk) is
+    // a follow-up — see the severity-divergence NOTE on PATCH_SORT_COLUMNS
+    // above before doing so.
     const sortColumn = (query.sortBy && PATCH_SORT_COLUMNS[query.sortBy]) || patches.createdAt;
     const sortDirection = query.sortDir ?? (query.sortBy ? 'asc' : 'desc');
-    const orderByClause = sortDirection === 'asc' ? asc(sortColumn) : desc(sortColumn);
+    // `id` is a mandatory tiebreaker, NOT a cosmetic nicety: every sortable
+    // column here has mass ties. `created_at` is `defaultNow()` and patch
+    // ingest runs inside `db.transaction` (routes/agents/patches.ts), and
+    // Postgres `now()` is the TRANSACTION timestamp — so all 333 patches from
+    // one device's scan report share a byte-identical `created_at`. Sorting on
+    // a tied key alone leaves row order undefined between two LIMIT/OFFSET
+    // queries (different OFFSETs can even pick different plans), so a client
+    // paging through the catalog would get some rows twice and miss others
+    // entirely. That silently reproduces #3157 behind a correct-looking count.
+    const orderByClause = sortDirection === 'asc'
+      ? [asc(sortColumn), asc(patches.id)]
+      : [desc(sortColumn), desc(patches.id)];
 
     // Get patches with optional approval status for the org
     const patchList = await db
@@ -122,7 +134,7 @@ listRoutes.get(
       })
       .from(patches)
       .where(whereClause)
-      .orderBy(orderByClause)
+      .orderBy(...orderByClause)
       .limit(limit)
       .offset(offset);
 

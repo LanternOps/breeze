@@ -14,9 +14,11 @@ import {
   devices,
   notificationChannels,
   organizations,
+  scriptExecutions,
   scripts,
 } from '../db/schema';
 import { resolveDeploymentTargets } from './deploymentEngine';
+import { captureException } from './sentry';
 import { canAccessSite, type UserPermissions } from './permissions';
 import { CommandTypes, queueCommandForExecution } from './commandQueue';
 import { publishEvent } from './eventBus';
@@ -834,7 +836,44 @@ type ActionExecutionResult = {
   log: AutomationLogEntry;
 };
 
-async function executeRunScriptAction(
+/**
+ * Remove a `script_executions` row that was minted for a `run_script` action
+ * whose command never made it onto the queue (#3162).
+ *
+ * Guarded on `pending` purely as a safety interlock: if the command was never
+ * queued no agent can have reported against the row, so a 0-row result means
+ * something unexpected happened (row already gone, wrong id, wrong DB context)
+ * and is worth surfacing rather than swallowing — this whole issue existed
+ * because a script-result DB write failed silently.
+ */
+async function discardQueuelessExecution(executionId: string, deviceId: string): Promise<void> {
+  try {
+    const deleted = await db
+      .delete(scriptExecutions)
+      .where(and(
+        eq(scriptExecutions.id, executionId),
+        eq(scriptExecutions.status, 'pending'),
+      ))
+      .returning({ id: scriptExecutions.id });
+
+    if (deleted.length === 0) {
+      console.warn(
+        `[AutomationRuntime] script execution ${executionId} (device ${deviceId}) was not pending at discard time; leaving it alone`,
+      );
+    }
+  } catch (err) {
+    // Never let cleanup mask the original queue failure the caller is reporting.
+    console.error(
+      `[AutomationRuntime] failed to discard unqueued script execution ${executionId}:`,
+      err,
+    );
+    captureException(err);
+  }
+}
+
+// Exported for direct unit coverage of the script_executions correlation
+// (#3162); the run loop still reaches it through executeAction below.
+export async function executeRunScriptAction(
   action: RunScriptAction,
   actionIndex: number,
   context: ActionExecutionContext,
@@ -868,24 +907,81 @@ async function executeRunScriptAction(
     };
   }
 
-  const queueResult = await queueCommandForExecution(
-    context.device.id,
-    CommandTypes.SCRIPT,
-    {
+  const parameters = action.parameters ?? {};
+
+  // #3162: mint a REAL script_executions row and use its uuid as the payload's
+  // executionId. The previous synthetic `${runId}:${deviceId}:${actionIndex}`
+  // string could never match `script_executions.id` (a uuid column), so
+  // handleScriptResult's UPDATE threw, got swallowed by its catch, and the
+  // agent's stdout was discarded. With a real row the existing result handler
+  // persists stdout/stderr/exitCode, and the run is visible in the device's
+  // script history alongside manual runs.
+  //
+  // org_id is the DEVICE's org — a partner-wide automation (automations.org_id
+  // NULL, #2133) owns no org of its own, so worker-created child rows always
+  // take the device's (playbook rule 5).
+  const [execution] = await db
+    .insert(scriptExecutions)
+    .values({
       scriptId: script.id,
-      executionId: `${context.runId}:${context.device.id}:${actionIndex}`,
-      language: script.language,
-      content: script.content,
-      parameters: action.parameters ?? {},
-      timeoutSeconds: script.timeoutSeconds,
-      runAs: action.runAs ?? script.runAs,
-    },
-    {
-      userId: context.automation.createdBy ?? undefined,
-    },
-  );
+      deviceId: context.device.id,
+      orgId: context.device.orgId,
+      triggeredBy: context.automation.createdBy ?? null,
+      triggerType: 'automation',
+      automationRunId: context.runId,
+      parameters,
+      status: 'pending',
+    })
+    .returning({ id: scriptExecutions.id });
+
+  if (!execution) {
+    return {
+      success: false,
+      log: logEntry('Failed to create script execution for run_script action', 'error', {
+        actionType: action.type,
+        actionIndex,
+        deviceId: context.device.id,
+        details: { scriptId: script.id },
+      }),
+    };
+  }
+
+  let queueResult: Awaited<ReturnType<typeof queueCommandForExecution>>;
+  try {
+    queueResult = await queueCommandForExecution(
+      context.device.id,
+      CommandTypes.SCRIPT,
+      {
+        scriptId: script.id,
+        executionId: execution.id,
+        language: script.language,
+        content: script.content,
+        parameters,
+        timeoutSeconds: script.timeoutSeconds,
+        runAs: action.runAs ?? script.runAs,
+      },
+      {
+        userId: context.automation.createdBy ?? undefined,
+      },
+    );
+  } catch (err) {
+    // queueCommandForExecution does several DB round-trips plus a JIT decrypt,
+    // any of which can THROW rather than return `{ error }`. Without this the
+    // row would sit at `pending` until the reaper relabelled it `timeout` —
+    // "no response from agent", which is a lie: no command ever reached one.
+    await discardQueuelessExecution(execution.id, context.device.id);
+    throw err;
+  }
 
   if (!queueResult.command) {
+    // Nothing was queued, so no execution happened — drop the row rather than
+    // leaving a `failed` one behind. Pre-#3162 this produced no row at all, and
+    // the failure is already recorded in the automation run's own log below.
+    // Keeping it would add one row per offline device per run (a daily
+    // automation over a fleet of asleep laptops), drowning the device's script
+    // history and skewing per-script success stats.
+    await discardQueuelessExecution(execution.id, context.device.id);
+
     return {
       success: false,
       log: logEntry('Failed to queue run_script action command', 'error', {
@@ -897,6 +993,30 @@ async function executeRunScriptAction(
     };
   }
 
+  // Guarded on the row still being `pending`: queueCommandForExecution hands the
+  // command to `ws.send` synchronously, so a fast agent can already have driven
+  // the row terminal through handleScriptResult by the time we get here. An
+  // unguarded write would flip a `completed` row (with its stdout) back to
+  // `running`, and the stale-command reaper — which scans script_executions
+  // directly for pending/queued/running past its cutoff — would later relabel it
+  // `timeout`. A 0-row result here is expected and deliberately not reported.
+  //
+  // The delivered branch matches the manual path (services/scriptExecution.ts):
+  // once the command is on the wire the execution is `running` with a start
+  // time, which is what the UI derives a duration from. The undelivered branch
+  // sets `queued`; the manual path leaves such a row at its `pending` insert
+  // default, which the reaper treats identically.
+  const delivered = queueResult.command.status === 'sent';
+  await db
+    .update(scriptExecutions)
+    .set(delivered
+      ? { status: 'running', startedAt: queueResult.command.executedAt ?? new Date() }
+      : { status: 'queued' })
+    .where(and(
+      eq(scriptExecutions.id, execution.id),
+      eq(scriptExecutions.status, 'pending'),
+    ));
+
   return {
     success: true,
     log: logEntry('Queued run_script action', 'info', {
@@ -904,7 +1024,7 @@ async function executeRunScriptAction(
       actionIndex,
       deviceId: context.device.id,
       commandId: queueResult.command.id,
-      details: { scriptId: script.id },
+      details: { scriptId: script.id, executionId: execution.id },
     }),
   };
 }
@@ -931,7 +1051,14 @@ async function executeCommandAction(
     CommandTypes.SCRIPT,
     {
       scriptId: `automation:${context.automation.id}`,
-      executionId: `${context.runId}:${context.device.id}:${actionIndex}`,
+      // No executionId: execute_command runs ad-hoc content with no `scripts`
+      // row, and `script_executions.script_id` is NOT NULL, so it can never
+      // have an execution row to correlate against. It used to send a synthetic
+      // `${runId}:${deviceId}:${actionIndex}` string, which handleScriptResult
+      // then fed to a uuid column — the #3162 crash. The agent doesn't need it
+      // (agent/internal/heartbeat/handlers_script.go keys the execution on the
+      // command id); only the separate `script_cancel` command type reads an
+      // executionId payload field.
       language: shell === 'cmd' ? 'cmd' : shell,
       content: action.command,
       timeoutSeconds: 300,

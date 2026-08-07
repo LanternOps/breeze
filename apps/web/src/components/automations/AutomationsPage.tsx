@@ -6,6 +6,7 @@ import AutomationList, { type Automation } from './AutomationList';
 import AutomationRunHistory, {
   type AutomationRun as RunHistoryRun,
   type DeviceRunResult,
+  type DeviceScriptResult,
 } from './AutomationRunHistory';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
@@ -107,6 +108,40 @@ const RUN_HISTORY_POLL_MS = 4000;
 
 const DEVICE_RESULT_STATUSES = ['pending', 'running', 'success', 'failed', 'skipped'] as const;
 
+/** Parse the per-device script executions a run queued (#3162). */
+function toDeviceScriptResults(raw: unknown): DeviceScriptResult[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const parsed = raw
+    .map((entry): DeviceScriptResult | null => {
+      if (!isPlainRecord(entry)) return null;
+      const executionId = asString(entry.executionId);
+      const scriptId = asString(entry.scriptId);
+      if (!executionId || !scriptId) return null;
+      return {
+        executionId,
+        scriptId,
+        scriptName: asString(entry.scriptName),
+        status: asString(entry.status) ?? 'pending',
+        exitCode: typeof entry.exitCode === 'number' ? entry.exitCode : undefined,
+        stdout: asString(entry.stdout),
+        stdoutTruncated: entry.stdoutTruncated === true,
+        stderr: asString(entry.stderr),
+        stderrTruncated: entry.stderrTruncated === true,
+        error: asString(entry.error),
+      };
+    })
+    .filter((entry): entry is DeviceScriptResult => entry !== null);
+  // Dropping every row silently would render identically to "this run queued no
+  // scripts", hiding a backend contract break (renamed field, null scriptId)
+  // behind an empty panel. Say so.
+  if (raw.length > 0 && parsed.length === 0) {
+    console.warn(
+      `[AutomationsPage] discarded all ${raw.length} script result(s) for a device — unexpected payload shape`,
+    );
+  }
+  return parsed.length > 0 ? parsed : undefined;
+}
+
 function toDeviceRunResult(raw: unknown): DeviceRunResult | null {
   if (!isPlainRecord(raw)) return null;
   const deviceId = asString(raw.deviceId);
@@ -125,6 +160,7 @@ function toDeviceRunResult(raw: unknown): DeviceRunResult | null {
     duration,
     output: asString(raw.output),
     error: asString(raw.error),
+    scriptResults: toDeviceScriptResults(raw.scriptResults),
   };
 }
 

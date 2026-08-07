@@ -133,6 +133,42 @@ async function getSessionModel(sessionId: string): Promise<string | null> {
   }
 }
 
+/** The three components the Anthropic/SDK usage object splits input across. */
+export interface SdkInputTokenUsage {
+  input_tokens?: number | null;
+  cache_read_input_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+}
+
+/**
+ * Total input tokens for a turn — uncached + cache-read + cache-creation.
+ *
+ * The SDK reports these three separately because they are PRICED differently
+ * (see the multipliers above), not because only the first one is "input". They
+ * are three disjoint slices of one prompt: every token in the request lands in
+ * exactly one of them, so summing cannot double-count.
+ *
+ * The `*_input_tokens` columns store this sum. Recording only `input_tokens`
+ * made them worse than useless on any multi-turn session, where prompt caching
+ * routes almost the whole prompt through cache_read: release QA saw an 8-turn
+ * session report 17 input tokens against 1029 output tokens and $0.57 of spend.
+ * Cost was never affected — it is computed from the three split values, and
+ * still is (this sum is deliberately NOT fed back into the pricing call).
+ *
+ * Total by construction: a nullish usage object or component yields 0 rather
+ * than throwing. This sits on the streaming `done` path, ahead of both the
+ * per-user usage hook and the `done` publish that returns the session to
+ * 'idle' — a throw there would strand the turn and hang the client, so it must
+ * not have a failure mode.
+ */
+export function sumInputTokens(usage: SdkInputTokenUsage | null | undefined): number {
+  return (
+    (usage?.input_tokens ?? 0) +
+    (usage?.cache_read_input_tokens ?? 0) +
+    (usage?.cache_creation_input_tokens ?? 0)
+  );
+}
+
 export function calculateCostCents(
   model: string,
   inputTokens: number,
@@ -415,6 +451,10 @@ export async function recordUsageFromSdkResult(
     cache_creation_input_tokens: cacheCreationTokens = 0,
   } = result.usage;
 
+  // What the `*_input_tokens` COLUMNS store. Kept distinct from the three
+  // variables above, which stay split because each is billed at its own rate.
+  const recordedInputTokens = sumInputTokens(result.usage);
+
   // Prefer the SDK's self-reported cost. Fall back to token-based pricing only when
   // the SDK reports 0/missing cost but actually consumed tokens — this is the case
   // that was silently producing $0.00 sessions (the SDK can't price a model id newer
@@ -458,7 +498,7 @@ export async function recordUsageFromSdkResult(
     await db
       .update(aiSessions)
       .set({
-        totalInputTokens: sql`${aiSessions.totalInputTokens} + ${inputTokens}`,
+        totalInputTokens: sql`${aiSessions.totalInputTokens} + ${recordedInputTokens}`,
         totalOutputTokens: sql`${aiSessions.totalOutputTokens} + ${outputTokens}`,
         totalCostCents: sql`${aiSessions.totalCostCents} + ${costCents}`,
         turnCount: sql`${aiSessions.turnCount} + ${result.num_turns}`,
@@ -480,7 +520,7 @@ export async function recordUsageFromSdkResult(
           orgId,
           period,
           periodKey,
-          inputTokens,
+          inputTokens: recordedInputTokens,
           outputTokens,
           totalCostCents: costCents,
           sessionCount: 0,
@@ -490,7 +530,7 @@ export async function recordUsageFromSdkResult(
         .onConflictDoUpdate({
           target: [aiCostUsage.orgId, aiCostUsage.period, aiCostUsage.periodKey],
           set: {
-            inputTokens: sql`${aiCostUsage.inputTokens} + ${inputTokens}`,
+            inputTokens: sql`${aiCostUsage.inputTokens} + ${recordedInputTokens}`,
             outputTokens: sql`${aiCostUsage.outputTokens} + ${outputTokens}`,
             totalCostCents: sql`${aiCostUsage.totalCostCents} + ${costCents}`,
             messageCount: sql`${aiCostUsage.messageCount} + 1`,

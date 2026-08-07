@@ -216,6 +216,13 @@ export default defineConfig({
       // named here for discoverability only (same pattern
       // `staleBackupReaper.integration.test.ts` uses).
       'src/__tests__/integration/actionIntentsImmutabilityTrigger.integration.test.ts',
+      // Co-located real-DB integration test for the enrollment-key list
+      // filter (#3191): drives GET /enrollment-keys?expired= to prove
+      // Postgres evaluates the live-installer-token carve-out per row, so
+      // "Hide expired" stops hiding keys the status badge renders "Active".
+      // The mocked list suite returns whatever rows it is handed regardless
+      // of the predicate and cannot test this at all.
+      'src/routes/enrollmentKeysExpiredFilter.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;

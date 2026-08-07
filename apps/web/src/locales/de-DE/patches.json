@@ -235,7 +235,8 @@
     "sortBy": "Nach {{label}} sortieren",
     "errors": {
       "approvePatches": "Patches konnten nicht freigegeben werden",
-      "declinePatches": "Patches konnten nicht abgelehnt werden"
+      "declinePatches": "Patches konnten nicht abgelehnt werden",
+      "staleList": "{{message}} Es wird die zuvor geladene Liste angezeigt, die möglicherweise veraltet ist."
     },
     "severity": {
       "critical": "Kritisch",
@@ -274,7 +275,8 @@
       "selectAllPatches": "Alle Patches auswählen",
       "deselectAllPatches": "Auswahl für alle Patches aufheben",
       "selectPatch": "{{title}} auswählen",
-      "deselectPatch": "Auswahl für {{title}} aufheben"
+      "deselectPatch": "Auswahl für {{title}} aufheben",
+      "selectAllMatching": "Alle {{count}} Treffer auswählen"
     },
     "table": {
       "patch": "Patch",
@@ -324,7 +326,9 @@
       "noDevicesForScan": "Keine Geräte zum Scannen verfügbar",
       "updateRing": "Ring konnte nicht aktualisiert werden",
       "createRing": "Updatering konnte nicht erstellt werden",
-      "deleteRing": "Ring konnte nicht gelöscht werden"
+      "deleteRing": "Ring konnte nicht gelöscht werden",
+      "approveUnknown": "Freigabestatus unbekannt — die Serverantwort konnte nicht gelesen werden. Aktualisieren Sie, um zu prüfen, welche Patches freigegeben wurden.",
+      "approveAbortedWithFailures": "{{message}} ({{count}} Patches wurden zuvor außerdem vom Server abgelehnt.)"
     },
     "toast": {
       "ringSaved": "Updatering gespeichert",
@@ -352,7 +356,9 @@
     "ringModal": {
       "editTitle": "Updatering bearbeiten",
       "createTitle": "Updatering erstellen"
-    }
+    },
+    "truncatedNotice": "Es werden {{shown}} von {{total}} Patches angezeigt. Die Filter hier grenzen nur das bereits Geladene ein, der Rest ist über diese Ansicht nicht erreichbar — verwenden Sie die Patches-API für den vollständigen Katalog.",
+    "shiftedNotice": "Es werden {{shown}} von {{total}} Patches angezeigt — der Katalog hat sich während des Ladens geändert. Laden Sie neu, um den Rest zu sehen."
   },
   "ringSelector": {
     "label": "Updatering:",

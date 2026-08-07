@@ -40,8 +40,14 @@ Add a `POST /purge-expired` route to `enrollmentKeysRoutes`:
 - No request body. Scope: delete all enrollment keys **visible to the caller** (same
   org/partner/system scoping the `GET /` list route builds, see lines 530-608) where
   `expires_at IS NOT NULL AND expires_at < now()`. Reuse/extract the same condition the
-  list route builds for `?expired=true` (`lt(enrollmentKeys.expiresAt, new Date())`,
-  line ~575).
+  list route builds for `?expired=true`.
+
+  > **Superseded (#3191, 2026-08):** the list route's `?expired=true` is no longer just
+  > the parent-expiry test — it also excludes keys still backed by a live, unexhausted
+  > installer bootstrap token (gated on `short_code IS NULL`, mirroring
+  > `reportsInstallerCapacity`). The purge condition is now the parent-expiry
+  > **conjunct** plus `hasNoLiveUnexhaustedBootstrapToken()` (#2832), applied to every
+  > key with no short-code gate. Both live in `services/enrollmentKeyPurgeGuards.ts`.
 - Implementation: single `db.delete(enrollmentKeys).where(and(scopeCondition, expiredCondition)).returning({ id: enrollmentKeys.id })`.
 - Response: `200 { success: true, deletedCount: n }`.
 - Audit: if `DELETE /:id` writes an audit log entry, write one equivalent entry for the bulk

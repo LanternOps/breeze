@@ -31,6 +31,8 @@ func TestWindowsDesktopDemandNeverSpawnsOutsideLifecycleRegistry(t *testing.T) {
 }
 
 func TestStartDesktopViaHelperPreservesTargetSessionOnRetry(t *testing.T) {
+	shrinkDesktopStartRetryBackoff(t, time.Millisecond)
+
 	serverConn1, clientConn1 := createTestSocketPair(t)
 	serverIPC1 := ipc.NewConn(serverConn1)
 	clientIPC1 := ipc.NewConn(clientConn1)

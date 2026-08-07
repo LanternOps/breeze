@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useCallback } from 'react';
+import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import { Layers, FileCog, BarChart3, Plus, Loader2, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import PatchList, {
@@ -55,6 +55,25 @@ function resolveTab(tab: TabKey, canManageRings: boolean): TabKey {
 }
 
 const DEVICE_SCAN_PAGE_LIMIT = 100;
+
+// Page size used when walking the patch catalog. 200 is MAX_PAGE_LIMIT in
+// apps/api/src/routes/patches/helpers.ts — the API clamps anything larger, so
+// asking for more just wastes a round trip.
+const PATCH_FETCH_PAGE_LIMIT = 200;
+
+// Hard ceiling on how many pages we walk (25 x 200 = 5,000 patches). PatchList
+// filters, sorts and paginates the whole array client-side, so an unbounded
+// walk would both hammer the API and put an arbitrarily large list in memory.
+// Beyond this we stop and tell the user the view is truncated instead of
+// silently dropping the tail (which is exactly what #3157 was).
+const PATCH_FETCH_MAX_PAGES = 25;
+
+// Ids per POST /patches/bulk-approve request. The route upserts sequentially,
+// one awaited round trip per id, so request duration scales with batch size —
+// and "Select all N matching" can hand us the whole loaded catalog. Batching
+// keeps any single request short enough to finish well inside an edge-proxy
+// timeout, and gives each batch its own audit entry.
+const BULK_APPROVE_BATCH_SIZE = 200;
 
 export default function PatchesPage() {
   const { t } = useTranslation('patches');
@@ -121,6 +140,16 @@ export default function PatchesPage() {
   const [patchesLoading, setPatchesLoading] = useState(true);
   const [patchesError, setPatchesError] = useState<string>();
   const [sourceCounts, setSourceCounts] = useState<Record<string, number>>({});
+  // Set when the walk brought back fewer patches than the API reported, i.e.
+  // the list on screen is incomplete and the user must be told (#3157). The
+  // cause decides the advice: hitting the fetch cap genuinely can't be resolved
+  // from this view, whereas a catalog that shifted mid-walk (an agent ingesting
+  // patches while we page — rows land at the front under createdAt DESC, so the
+  // offset window slides) is fixed by simply reloading.
+  const [patchesIncomplete, setPatchesIncomplete] =
+    useState<{ total: number; cause: 'cap' | 'shifted' } | null>(null);
+  // Monotonic id for the in-flight catalog walk; see fetchPatches.
+  const patchFetchGeneration = useRef(0);
   const [sourceFilter, setSourceFilter] = useState<'all' | 'microsoft' | 'apple' | 'linux' | 'third_party'>('all');
   const [scanLoading, setScanLoading] = useState(false);
   const [pendingScan, setPendingScan] = useState<{ deviceIds: string[]; orgNames: string[] } | null>(null);
@@ -172,42 +201,118 @@ export default function PatchesPage() {
   }, []);
 
   const fetchPatches = useCallback(async () => {
+    // Only the newest walk may write state. A walk is now up to
+    // PATCH_FETCH_MAX_PAGES sequential requests, so switching rings (or hitting
+    // Refresh) mid-walk leaves a much wider window in which a superseded walk
+    // could finish last and repaint the list with the previous ring's patches.
+    const generation = patchFetchGeneration.current + 1;
+    patchFetchGeneration.current = generation;
+    const isStale = () => patchFetchGeneration.current !== generation;
+
     try {
       setPatchesLoading(true);
       setPatchesError(undefined);
-      // Fixed `limit=200` fetch: PatchList sorts AND paginates entirely
-      // client-side over this already-loaded array (issue #1316), so the
-      // page-size selector (up to 200) is fully populated. Caveat: for an org
-      // with >200 patches, only the loaded subset is sorted/searched — the rest
-      // are never fetched. Note: this never sends sortBy/sortDir, so the
-      // server-side sort added to the API (list.ts / schemas.ts) is NOT yet
-      // consumed by the web; wiring it up is a follow-up (see list.ts comment).
-      // Ring-scoped patches use a dedicated endpoint; send the same `limit=200`
-      // so selecting a ring doesn't collapse the list to the endpoint's default
-      // page of 50 (the ring endpoint now shares the /patches 200 cap).
-      const url = selectedRingId
-        ? `/update-rings/${selectedRingId}/patches?limit=200`
-        : '/patches?limit=200';
-      const response = await fetchWithAuth(url);
-      if (!response.ok) {
-        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-        throw new Error(t('patchesPage.errors.fetchPatches'));
+      // Walk every page of the catalog, not just the first. PatchList sorts AND
+      // paginates entirely client-side over this array (issue #1316), so
+      // whatever isn't fetched here can never be searched, sorted, paged to, or
+      // selected. A single `limit=200` request therefore hard-capped the UI at
+      // the API's MAX_PAGE_LIMIT: an org with 333 patches could only ever see
+      // and approve the first 200 (#3157). Both endpoints return
+      // `pagination: { page, limit, total }`, so we page until exhausted — or
+      // until PATCH_FETCH_MAX_PAGES, after which the user is told the list is
+      // short. Whatever happens, a short list is never presented as complete.
+      //
+      // Note: this never sends sortBy/sortDir, so the server-side sort added to
+      // the API (list.ts / schemas.ts) is NOT yet consumed by the web; wiring it
+      // up (along with server-side filtering and select-all) is the scalable
+      // follow-up that would let us drop the page walk entirely.
+      //
+      // Ring-scoped patches use a dedicated endpoint with the same page shape
+      // and the same 200 cap, so the walk is identical for both.
+      const baseUrl = selectedRingId
+        ? `/update-rings/${selectedRingId}/patches?limit=${PATCH_FETCH_PAGE_LIMIT}`
+        : `/patches?limit=${PATCH_FETCH_PAGE_LIMIT}`;
+
+      const collected: Patch[] = [];
+      const seenIds = new Set<string>();
+      let counts: Record<string, number> | null = null;
+      let reportedTotal: number | null = null;
+      let hitPageCap = false;
+      let page = 1;
+      let lastPage = 1;
+
+      while (page <= lastPage) {
+        // Page 1 keeps the bare `?limit=200` URL it has always used so the
+        // request is byte-identical to the pre-fix single-page fetch.
+        const url = page === 1 ? baseUrl : `${baseUrl}&page=${page}`;
+        const response = await fetchWithAuth(url);
+        // A newer walk started while this request was in flight — abandon this
+        // one silently; the newer walk owns the loading/error state now.
+        if (isStale()) return;
+        if (!response.ok) {
+          if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
+          throw new Error(t('patchesPage.errors.fetchPatches'));
+        }
+        const data = await response.json();
+        const patchData = asList(data, 'patches', 'items');
+        const rows = Array.isArray(patchData) ? patchData : [];
+        for (const patch of rows) {
+          // normalizePatch's index only seeds a fallback id for rows with no
+          // id; offsetting by the running total keeps those unique across pages.
+          const normalized = normalizePatch(patch as Record<string, unknown>, collected.length);
+          // Offset paging can hand back the same row on two pages if rows are
+          // inserted or deleted mid-walk. Duplicates would collide on React
+          // keys and inflate the "select all N matching" count, so drop them —
+          // the completeness check below is what tells the user rows are short.
+          if (seenIds.has(normalized.id)) continue;
+          seenIds.add(normalized.id);
+          collected.push(normalized);
+        }
+        // Counts are catalog-wide and identical on every page — keep the first
+        // page that supplies them.
+        if (counts === null && data && typeof data.counts === 'object' && data.counts !== null) {
+          counts = data.counts as Record<string, number>;
+        }
+
+        const pagination = (data?.pagination ?? {}) as { total?: unknown; limit?: unknown };
+        const total = Number(pagination.total);
+        const pageLimit = Number(pagination.limit) || PATCH_FETCH_PAGE_LIMIT;
+        if (rows.length > 0 && Number.isFinite(total) && total > 0) {
+          reportedTotal = total;
+          lastPage = Math.ceil(total / pageLimit);
+          if (lastPage > PATCH_FETCH_MAX_PAGES) {
+            lastPage = PATCH_FETCH_MAX_PAGES;
+            hitPageCap = true;
+          }
+        } else {
+          // On page 1 this is the ordinary "endpoint returned no pagination
+          // metadata, or the catalog is empty" case — one page IS the whole
+          // answer. From page 2 on it's an anomaly (page 1 already promised
+          // more), so stop here and let the completeness check flag the gap
+          // rather than silently serving a short list.
+          lastPage = page;
+        }
+        page += 1;
       }
-      const data = await response.json();
-      const patchData = asList(data, 'patches', 'items');
-      const normalized = Array.isArray(patchData)
-        ? patchData.map((patch: Record<string, unknown>, index: number) => normalizePatch(patch, index))
-        : [];
-      setPatches(normalized);
-      if (data && typeof data.counts === 'object' && data.counts !== null) {
-        setSourceCounts(data.counts as Record<string, number>);
-      } else {
-        setSourceCounts({});
-      }
+
+      // A short list must never render as the complete catalog — that silence
+      // is precisely what #3157 was. Fires for the page cap, for a mid-walk
+      // anomaly, and for rows dropped as duplicates.
+      const shortOfTotal = reportedTotal !== null && collected.length < reportedTotal;
+
+      setPatches(collected);
+      setSourceCounts(counts ?? {});
+      setPatchesIncomplete(
+        shortOfTotal && reportedTotal !== null
+          ? { total: reportedTotal, cause: hitPageCap ? 'cap' : 'shifted' }
+          : null
+      );
     } catch (err) {
+      if (isStale()) return;
       setPatchesError(err instanceof Error ? err.message : t('patchesPage.errors.fetchPatches'));
     } finally {
-      setPatchesLoading(false);
+      // A superseded walk must not clear the spinner the newer walk turned on.
+      if (!isStale()) setPatchesLoading(false);
     }
   }, [selectedRingId, t]);
 
@@ -235,6 +340,16 @@ export default function PatchesPage() {
     setSelectedPatch(null);
   };
 
+  // Flip the given ids to approved in the local table.
+  const markApproved = useCallback((ids: string[]) => {
+    const approved = new Set(ids);
+    setPatches(prev =>
+      prev.map(patch =>
+        approved.has(patch.id) ? { ...patch, approvalStatus: 'approved' as PatchApprovalStatus } : patch
+      )
+    );
+  }, []);
+
   // NOTE: bulk-approve/decline and update-ring mutations intentionally use the inline bulkError/ringsError
   // feedback pattern (aggregate/partial-success semantics + PatchList-owned error UI) rather than
   // runAction's per-call toast. This is a deliberate, valid feedback pattern — not a silent failure.
@@ -246,29 +361,59 @@ export default function PatchesPage() {
     if (!canManageRings) {
       throw new Error(t('patchesPage.errors.partnerLevel'));
     }
-    // runaction-exempt: aggregate/partial-success — inline bulkError UI (see NOTE above)
-    const response = await fetchWithAuth('/patches/bulk-approve', {
-      method: 'POST',
-      body: JSON.stringify({
-        patchIds,
-        ringId: selectedRingId ?? undefined
-      })
-    });
-    if (!response.ok) {
-      if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
-      throw new Error(t('patchesPage.errors.approvePatches'));
-    }
-    const body = await response.json().catch(() => ({})) as {
-      approved?: string[];
-      failed?: string[];
+    // Submit in batches. The API applies approvals one awaited upsert at a time
+    // (routes/patches/approvals.ts), so a single request for the whole
+    // selection scales linearly with it — and "Select all N matching" can now
+    // put thousands of ids behind one click. An edge-proxy timeout on such a
+    // request would abandon a batch that had already partly committed, and the
+    // route's audit entry is written after its loop, so those approvals would
+    // land with no audit record. Batching bounds each request, gives each one
+    // its own audit row, and keeps partial success attributable.
+    const approvedIds: string[] = [];
+    const failedIds: string[] = [];
+    // Commit what earlier batches achieved, then report the abort — but don't
+    // drop per-id rejections those batches already reported, or "40 of your
+    // first 200 were refused" vanishes behind the generic abort message.
+    const abortError = (message: string): Error => {
+      if (approvedIds.length > 0) markApproved(approvedIds);
+      return new Error(
+        failedIds.length > 0
+          ? t('patchesPage.errors.approveAbortedWithFailures', {
+              message,
+              count: failedIds.length,
+            })
+          : message
+      );
     };
-    const approvedIds = Array.isArray(body.approved) ? body.approved : patchIds;
-    const failedIds = Array.isArray(body.failed) ? body.failed : [];
-    setPatches(prev =>
-      prev.map(patch =>
-        approvedIds.includes(patch.id) ? { ...patch, approvalStatus: 'approved' as PatchApprovalStatus } : patch
-      )
-    );
+    for (let i = 0; i < patchIds.length; i += BULK_APPROVE_BATCH_SIZE) {
+      const batch = patchIds.slice(i, i + BULK_APPROVE_BATCH_SIZE);
+      // runaction-exempt: aggregate/partial-success — inline bulkError UI (see NOTE above)
+      const response = await fetchWithAuth('/patches/bulk-approve', {
+        method: 'POST',
+        body: JSON.stringify({
+          patchIds: batch,
+          ringId: selectedRingId ?? undefined
+        })
+      });
+      if (!response.ok) {
+        if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
+        throw abortError(t('patchesPage.errors.approvePatches'));
+      }
+      const body = await response.json().catch(() => null) as {
+        approved?: string[];
+        failed?: string[];
+      } | null;
+      if (body === null || !Array.isArray(body.approved)) {
+        // A 200 whose body we can't read is NOT evidence the approvals landed.
+        // Optimistically flipping the rows to "approved" here would assert a
+        // result we don't have; report it as indeterminate instead.
+        throw abortError(t('patchesPage.errors.approveUnknown'));
+      }
+      approvedIds.push(...body.approved);
+      if (Array.isArray(body.failed)) failedIds.push(...body.failed);
+    }
+
+    markApproved(approvedIds);
     if (failedIds.length > 0) {
       throw new Error(
         t(
@@ -668,6 +813,32 @@ export default function PatchesPage() {
             value={sourceFilter}
             onChange={setSourceFilter}
           />
+          {patchesIncomplete !== null && (
+            <div
+              data-testid="patches-truncated-notice"
+              data-cause={patchesIncomplete.cause}
+              className="mt-4 flex flex-wrap items-center gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm text-amber-700 dark:text-amber-400"
+            >
+              <span>
+                {t(
+                  /* i18n-dynamic */ patchesIncomplete.cause === 'cap'
+                    ? 'patchesPage.truncatedNotice'
+                    : 'patchesPage.shiftedNotice',
+                  { shown: patches.length, total: patchesIncomplete.total }
+                )}
+              </span>
+              {patchesIncomplete.cause === 'shifted' && (
+                <button
+                  type="button"
+                  onClick={fetchPatches}
+                  data-testid="patches-reload"
+                  className="ml-auto rounded-md border border-amber-500/40 px-2 py-1 text-xs font-medium hover:bg-amber-500/20"
+                >
+                  {t('patchList.actions.tryAgain')}
+                </button>
+              )}
+            </div>
+          )}
           <PatchList
             patches={sourceFilter === 'all' ? patches : patches.filter((p) => p.source === sourceFilter)}
             loading={patchesLoading}

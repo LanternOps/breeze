@@ -2380,7 +2380,7 @@ describe('#2434 — secret redaction on non-device_commands persistence surfaces
     const preValidatedAgent = { deviceId: 'device-se', orgId: 'org-se' };
     const { handlers, ws } = await connectedAgent('agent-se', preValidatedAgent);
     vi.mocked(db.select).mockReturnValueOnce(selectOwnedCommandResult([
-      { id: 'cmd-se', type: 'script', payload: { executionId: 'exec-1' }, deviceId: 'device-se' },
+      { id: 'cmd-se', type: 'script', payload: { executionId: '0e1c1e1a-1111-4111-8111-111111111111' }, deviceId: 'device-se' },
     ]) as any);
 
     // 1st update: device_commands terminal transition. 2nd: script_executions.
@@ -2413,6 +2413,99 @@ describe('#2434 — secret redaction on non-device_commands persistence surfaces
       expect(stored[field]).toContain('[PRIVATE_KEY_REDACTED]');
       expect(stored[field]).not.toContain('BEGIN RSA PRIVATE KEY');
     }
+  });
+
+  // #3162: `script_executions.id` is a uuid column. A non-uuid executionId
+  // (the automation `execute_command` action still mints a synthetic
+  // `${runId}:${deviceId}:${actionIndex}` one, and the Go agent rejects an
+  // empty executionId) used to make the UPDATE raise 22P02, which the handler's
+  // catch swallowed. Skip those explicitly rather than throwing.
+  it('skips the script_executions update for a non-uuid executionId instead of throwing', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const preValidatedAgent = { deviceId: 'device-syn', orgId: 'org-syn' };
+      const { handlers, ws } = await connectedAgent('agent-syn', preValidatedAgent);
+      vi.mocked(db.select).mockReturnValueOnce(selectOwnedCommandResult([
+        {
+          id: 'cmd-syn',
+          type: 'script',
+          payload: { executionId: 'run-1:device-syn:0' },
+          deviceId: 'device-syn',
+        },
+      ]) as any);
+
+      const scriptSetSpy = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+      });
+      vi.mocked(db.update)
+        .mockReturnValueOnce(updateResult([{ id: 'cmd-syn' }]) as any)
+        .mockReturnValueOnce({ set: scriptSetSpy } as any);
+
+      await handlers.onMessage({
+        data: JSON.stringify({
+          type: 'command_result',
+          commandId: '88888888-8888-4888-8888-888888888888',
+          status: 'completed',
+          exitCode: 0,
+          stdout: 'ok',
+        }),
+      } as any, ws as any);
+
+      expect(scriptSetSpy).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('non-uuid executionId run-1:device-syn:0'),
+      );
+      // The old behaviour landed in the catch — prove it no longer does.
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('Failed to process script result'),
+        expect.anything(),
+      );
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  // Pins PG_UUID_REGEX (any hex) over UUID_REGEX (RFC-4122 version+variant).
+  // Postgres casts this id happily, so "tightening" the guard to UUID_REGEX
+  // would start silently discarding real script output again — the exact class
+  // of bug #3162 was.
+  it('still persists results for a uuid Postgres accepts but RFC-4122 rejects', async () => {
+    const preValidatedAgent = { deviceId: 'device-nil', orgId: 'org-nil' };
+    const { handlers, ws } = await connectedAgent('agent-nil', preValidatedAgent);
+    vi.mocked(db.select).mockReturnValueOnce(selectOwnedCommandResult([
+      {
+        id: 'cmd-nil',
+        type: 'script',
+        // Version nibble 0 and variant nibble 0: valid for `uuid`, rejected by UUID_REGEX.
+        payload: { executionId: '00000000-0000-0000-0000-000000000000' },
+        deviceId: 'device-nil',
+      },
+    ]) as any);
+
+    const scriptSetSpy = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'exec-nil', scriptId: 'script-1' }]),
+      }),
+    });
+    vi.mocked(db.update)
+      .mockReturnValueOnce(updateResult([{ id: 'cmd-nil' }]) as any)
+      .mockReturnValueOnce({ set: scriptSetSpy } as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '77777777-7777-4777-8777-777777777777',
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'output that must not be dropped',
+      }),
+    } as any, ws as any);
+
+    expect(scriptSetSpy).toHaveBeenCalledTimes(1);
+    expect((scriptSetSpy.mock.calls[0]![0] as { stdout: string }).stdout)
+      .toBe('output that must not be dropped');
   });
 
   it('redacts tunnel_sessions.errorMessage on a failed tun-open result (orphaned-path chokepoint)', async () => {
@@ -2689,7 +2782,7 @@ describe('#3021: command_result opens no message-level org context', () => {
     const commandRow = {
       id: 'cmd-3021',
       type: 'script',
-      payload: { executionId: 'exec-3021' },
+      payload: { executionId: '0e1c1e1a-3021-4021-8021-302130213021' },
       deviceId: 'device-3021',
     };
     vi.mocked(db.select).mockImplementation((() => ({
@@ -2801,7 +2894,7 @@ describe('#3021: command_result opens no message-level org context', () => {
     const commandRow = {
       id: 'cmd-3021c',
       type: 'script',
-      payload: { executionId: 'exec-3021c' },
+      payload: { executionId: '0e1c1e1a-302c-402c-802c-302c302c302c' },
       deviceId: 'device-3021c',
       targetRole: 'agent',
     };

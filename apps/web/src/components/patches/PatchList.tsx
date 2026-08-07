@@ -83,12 +83,17 @@ const DEFAULT_PAGE_SIZE = 25;
 // WARNING (sort divergence): this client-side severity sort uses SEMANTIC
 // priority (critical=0 … low=3), whereas the API sorts severity ALPHABETICALLY
 // (asc(patches.severity) in routes/patches/list.ts). These currently never
-// disagree because the web does 100% client-side sort/paginate over a fixed
-// `limit=200` fetch and never sends sortBy/sortDir. Whoever later pushes
-// sorting down to the server (via fetchPatches) MUST reconcile the two or
-// severity ordering will silently change. Note also that `os` and
-// `approvalStatus` are SortKeys here with no matching column in the API's
-// PATCH_SORT_COLUMNS — they can't be pushed down without server-side support.
+// disagree because the web does 100% client-side sort/paginate over the
+// paged-in catalog and never sends sortBy/sortDir. Whoever later pushes sorting
+// down to the server (via fetchPatches) MUST reconcile the two or severity
+// ordering will silently change. Note also that `os` and `approvalStatus` are
+// SortKeys here with no matching column in the API's PATCH_SORT_COLUMNS — they
+// can't be pushed down without server-side support.
+//
+// The "never disagree" claim has one limit: PatchesPage walks at most
+// PATCH_FETCH_MAX_PAGES x 200 = 5,000 patches. Past that the client holds only
+// the newest 5,000 by createdAt (and renders a truncation notice saying so), so
+// a server-side severity sort would rank a DIFFERENT subset than this one does.
 const severityRank: Record<PatchSeverity, number> = {
   critical: 0,
   important: 1,
@@ -203,7 +208,22 @@ export default function PatchList({
   const paginatedPatches = sortedPatches.slice(startIndex, startIndex + pageSize);
 
   const paginatedIds = useMemo(() => paginatedPatches.map(p => p.id), [paginatedPatches]);
-  const { selectedIds, allPageSelected, somePageSelected, toggleSelect, toggleSelectAll, clearSelection } = usePatchSelection(paginatedIds);
+  // Every patch matching the active filters, across all pages PatchesPage
+  // managed to load — backs the "select all N matching" action so approving a
+  // >1-page result set doesn't require a select-all click per page (#3157). If
+  // the catalog was truncated at the fetch cap this is a subset of what truly
+  // matches; PatchesPage renders its truncation notice for exactly that case.
+  const matchingIds = useMemo(() => sortedPatches.map(p => p.id), [sortedPatches]);
+  const {
+    selectedIds,
+    allPageSelected,
+    somePageSelected,
+    allMatchingSelected,
+    selectAllMatching,
+    toggleSelect,
+    toggleSelectAll,
+    clearSelection,
+  } = usePatchSelection(paginatedIds, matchingIds);
 
   const selectedPatches = useMemo(
     () => patches.filter(p => selectedIds.has(p.id)),
@@ -457,6 +477,20 @@ export default function PatchList({
           <span className="text-sm font-medium">
             {t('patchList.selection.selected', { count: selectedIds.size })}
           </span>
+          {/* The header checkbox only ever covers the visible page, so once the
+              filtered set spans more than one page offer a one-click way to
+              take the whole thing (#3157). This lives inside the bulk toolbar,
+              so it only appears after at least one row is selected. */}
+          {!allMatchingSelected && matchingIds.length > paginatedIds.length && (
+            <button
+              type="button"
+              onClick={selectAllMatching}
+              data-testid="patch-select-all-matching"
+              className="text-sm font-medium text-primary underline-offset-2 hover:underline"
+            >
+              {t('patchList.selection.selectAllMatching', { count: matchingIds.length })}
+            </button>
+          )}
           <div className="h-4 w-px bg-border" />
           {onBulkApprove && selectedPendingIds.length > 0 && (
             <button
@@ -510,6 +544,30 @@ export default function PatchList({
       {bulkError && (
         <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-destructive">
           {bulkError}
+        </div>
+      )}
+
+      {/* A failed refresh leaves the PREVIOUS list on screen (PatchesPage only
+          commits `patches` on a fully successful walk). The full-page error
+          state below only renders when there's nothing to show, so without this
+          banner a failed reload — switching rings, hitting Refresh, a mid-walk
+          page failing — would silently display stale rows, potentially from a
+          different ring, with no indication anything went wrong (#3157). */}
+      {!loading && error && patches.length > 0 && (
+        <div
+          data-testid="patch-list-stale-error"
+          className="mt-4 flex flex-wrap items-center gap-3 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-destructive"
+        >
+          <span>{t('patchList.errors.staleList', { message: error })}</span>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="ml-auto rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium hover:bg-destructive/20"
+            >
+              {t('patchList.actions.tryAgain')}
+            </button>
+          )}
         </div>
       )}
 
