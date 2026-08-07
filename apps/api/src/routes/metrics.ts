@@ -19,9 +19,11 @@ import {
   setDbConnectTimeoutMetricsRecorder,
 } from '../services/dbConnectTimeoutStats';
 import {
+  DB_POOL_HEALTH_VERDICTS,
+  getDbPoolHealthCheckFailures,
+  getDbPoolHealthProbeCloseFailures,
   getDbPoolHealthWindowMs,
   getLastDbPoolHealthAssessment,
-  type DbPoolHealthVerdict,
 } from '../db/dbPoolHealthMonitor';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { BACKUP_LOW_READINESS_THRESHOLD } from './backup/constants';
@@ -500,9 +502,13 @@ const dbConnectTimeoutRateGauge = new Gauge({
 // a label rather than a numeric code because the operational response differs per
 // verdict and an alert must be able to name which — `pool-degraded` means restart
 // the API (the pool cannot self-heal, #3214), `database-unreachable` means do NOT
-// restart, the fault is downstream. Before the first evaluation, and whenever the
-// watchdog is disabled, ALL series stay 0: absence of a verdict must never read
-// as 'healthy'.
+// restart, the fault is downstream. Before the first evaluation, whenever the
+// watchdog is disabled, and after a failed evaluation, ALL series stay 0.
+//
+// Note there is no `healthy` verdict to publish — the quiet one is
+// `below-threshold`, because the underlying count is a floor and pool occupancy
+// is never observed. Alert on `verdict="pool-degraded" == 1`, never on the
+// negation of a healthy series.
 const dbPoolHealthGauge = new Gauge({
   name: 'breeze_db_pool_health',
   help: '1 for the pool-health watchdog current verdict, 0 for the others (all 0 before the first evaluation)',
@@ -510,12 +516,31 @@ const dbPoolHealthGauge = new Gauge({
   registers: [register]
 });
 
-const DB_POOL_HEALTH_VERDICTS: readonly DbPoolHealthVerdict[] = [
-  'healthy',
-  'pool-degraded',
-  'database-unreachable',
-  'unknown',
-];
+// Freshness, without which the gauge above cannot be trusted. A watchdog that
+// starts throwing every tick would otherwise leave its last verdict asserted
+// indefinitely; `lastAssessment` is cleared on failure so the verdict series go
+// to 0, and this timestamp is what lets an alert require recency rather than
+// merely a value. 0 = never evaluated.
+const dbPoolHealthLastCheckGauge = new Gauge({
+  name: 'breeze_db_pool_health_last_check_timestamp_seconds',
+  help: 'Unix time of the last completed pool-health evaluation (0 = never)',
+  registers: [register]
+});
+
+const dbPoolHealthCheckFailuresGauge = new Gauge({
+  name: 'breeze_db_pool_health_check_failures_total',
+  help: 'Pool-health evaluations that threw before producing a verdict',
+  registers: [register]
+});
+
+// Each failed close is a probe socket that may have been leaked — against the
+// database the watchdog is diagnosing. Surfaced so the watchdog cannot quietly
+// become a contributor to connection exhaustion.
+const dbPoolHealthProbeCloseFailuresGauge = new Gauge({
+  name: 'breeze_db_pool_health_probe_close_failures_total',
+  help: 'Pool-health probe clients whose end() failed, each a possible leaked connection',
+  registers: [register]
+});
 
 function initializeMetricDefaults(): void {
   httpRequestsInFlight.set(0);
@@ -568,6 +593,9 @@ function initializeMetricDefaults(): void {
   for (const verdict of DB_POOL_HEALTH_VERDICTS) {
     dbPoolHealthGauge.labels(verdict).set(0);
   }
+  dbPoolHealthLastCheckGauge.set(0);
+  dbPoolHealthCheckFailuresGauge.set(0);
+  dbPoolHealthProbeCloseFailuresGauge.set(0);
 }
 
 initializeMetricDefaults();
@@ -637,6 +665,9 @@ function updateDbPoolHealthMetrics(): void {
   for (const verdict of DB_POOL_HEALTH_VERDICTS) {
     dbPoolHealthGauge.labels(verdict).set(assessment?.verdict === verdict ? 1 : 0);
   }
+  dbPoolHealthLastCheckGauge.set(assessment ? Math.floor(assessment.at / 1000) : 0);
+  dbPoolHealthCheckFailuresGauge.set(getDbPoolHealthCheckFailures());
+  dbPoolHealthProbeCloseFailuresGauge.set(getDbPoolHealthProbeCloseFailures());
 }
 
 function updateEventLoopMetrics(): void {

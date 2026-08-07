@@ -1883,9 +1883,18 @@ async function bootstrap(): Promise<void> {
   // reports 'unknown' rather than guessing.
   setConnectTimeoutClassifier(safeDiagnoseConnectTimeout);
 
-  // #3214 — pool-health watchdog. Must follow setConnectTimeoutClassifier: the
-  // watchdog alerts on the CONNECT_TIMEOUT rate, and nothing is counted until the
-  // classifier is wired, so starting it earlier would only give it an empty window.
+  // Validate configuration before anything else — fail fast on missing/insecure secrets.
+  // The validated config is stored as a singleton; retrieve later via getConfig().
+  const config = validateConfig();
+
+  // #3214 — pool-health watchdog.
+  //
+  // Ordering, both constraints: it must follow setConnectTimeoutClassifier
+  // (nothing is counted until that is wired, so an earlier start would only give
+  // it an empty window), and it must follow validateConfig — its probe builds a
+  // connection URL straight from the environment, so starting first lets a short
+  // interval fire a probe against unvalidated config and report the resulting
+  // misconfiguration as a database fault.
   //
   // Steady-state cost is one unref'd timer tick; the fresh-connection probe opens
   // a socket only once the timeout rate has already breached the threshold.
@@ -1903,9 +1912,6 @@ async function bootstrap(): Promise<void> {
     );
   }
 
-  // Validate configuration before anything else — fail fast on missing/insecure secrets.
-  // The validated config is stored as a singleton; retrieve later via getConfig().
-  const config = validateConfig();
   await initializeDatabaseForStartup({
     autoMigrateEnabled: process.env.AUTO_MIGRATE !== 'false',
     production: config.NODE_ENV === 'production',

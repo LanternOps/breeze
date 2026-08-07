@@ -109,6 +109,13 @@ function createFakeSocket(): FakeSocket {
 async function runHandshakeAttempts(options: {
   killAttempts: ReadonlySet<number>;
   settleMs: number;
+  /**
+   * When set, the kill is deferred by this many ms instead of being queued as an
+   * immediate — long enough for the driver's own flush to have already run. That
+   * is the negative control: the socket still dies, but with NO buffered write,
+   * so `nextWriteTimer` was legitimately reset and the connection recovers.
+   */
+  killDelayMs?: number;
 }): Promise<number[]> {
   const sockets: FakeSocket[] = [];
 
@@ -131,7 +138,11 @@ async function runHandshakeAttempts(options: {
       sockets.push(socket);
       const attempt = sockets.length;
       if (options.killAttempts.has(attempt)) {
-        setImmediate(() => socket.emit('close', false));
+        if (options.killDelayMs === undefined) {
+          setImmediate(() => socket.emit('close', false));
+        } else {
+          setTimeout(() => socket.emit('close', false), options.killDelayMs);
+        }
       }
       return socket;
     },
@@ -162,6 +173,28 @@ describe('postgres.js deferred-write pool poisoning (#3214)', () => {
     expect(written[0]).toBeGreaterThan(0);
   }, 10_000);
 
+  it('negative control: a socket that dies AFTER its flush leaves the connection able to write again', async () => {
+    // Without this, `written[1] === 0` in the test below would also be satisfied
+    // by "the driver stopped writing on reconnect for some unrelated reason".
+    // Here the socket dies just as hard, but with nothing buffered — so
+    // `nextWrite` had already run and reset `nextWriteTimer`, and attempt 2
+    // completes its handshake write normally. That isolates the buffered write
+    // as the actual cause, which is the claim an upstream report has to make.
+    const written = await runHandshakeAttempts({
+      killAttempts: new Set([1]),
+      killDelayMs: 60,
+      settleMs: 1_500,
+    });
+
+    expect(written.length).toBeGreaterThanOrEqual(2);
+    expect(written[0]).toBeGreaterThan(0);
+    expect(
+      written[1],
+      'the reconnect after a FLUSHED socket death should still write — if this is 0, '
+        + 'the poisoning assertion below is no longer isolating the buffered write.',
+    ).toBeGreaterThan(0);
+  }, 15_000);
+
   it('a socket that dies with a buffered write leaves the connection permanently unable to flush', async () => {
     // Attempt 1's socket is closed while the StartupMessage flush is still
     // queued. `closed()` cancels the immediate but leaves `nextWriteTimer`
@@ -174,7 +207,9 @@ describe('postgres.js deferred-write pool poisoning (#3214)', () => {
 
     expect(
       written.length,
-      'expected the driver to reconnect after the socket closed',
+      'expected the driver to reconnect after the socket closed. If it no longer '
+        + 'reconnects at all, that is also an upstream behaviour change — re-read this '
+        + 'pin against src/connection.js rather than adjusting the harness.',
     ).toBeGreaterThanOrEqual(2);
 
     expect(

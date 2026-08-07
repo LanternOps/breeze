@@ -136,4 +136,63 @@ describe('dbConnectTimeoutStats (#3214)', () => {
     const stats = getDbConnectTimeoutStats(0, 1);
     expect(stats.windowMs).toBe(5 * 60_000);
   });
+
+  it('a narrow reader does not destroy a wider reader’s evidence', () => {
+    // Samples are shared module state. Trimming to the caller's own window would
+    // let a future 60s /health readout silently truncate the watchdog's 5-minute
+    // window, drop its count below threshold, and produce a below-threshold
+    // verdict during a live storm — with nothing going red.
+    const start = 1_000_000;
+    for (let i = 0; i < 20; i += 1) {
+      recordDbConnectTimeout(new Error(`t${i}`), 'connectivity', start);
+    }
+    const now = start + 120_000; // 2 minutes later
+
+    // A narrow (60s) reader sees none of them...
+    expect(getDbConnectTimeoutStats(60_000, now).timeouts).toBe(0);
+    // ...and must not have discarded them for the 5-minute reader.
+    expect(getDbConnectTimeoutStats(5 * 60_000, now).timeouts).toBe(20);
+  });
+
+  it('drops the OLDEST samples when the retention cap is hit', () => {
+    // Inverting this trim would keep the oldest and discard the newest, zeroing
+    // the rate during exactly the storm the cap exists for — while the
+    // totalSinceStart assertions elsewhere kept passing.
+    const now = 1_000_000;
+    for (let i = 0; i < 10_050; i += 1) {
+      recordDbConnectTimeout(new Error(`t${i}`), 'connectivity', now - 10_050 + i);
+    }
+
+    const stats = getDbConnectTimeoutStats(5 * 60_000, now);
+    expect(stats.timeouts).toBe(10_000);
+    expect(stats.totalSinceStart).toBe(10_050);
+  });
+
+  it('logs once — not on every call — when the recorder keeps throwing', () => {
+    // The recorder is a stable closure, so one throw means the Prometheus
+    // counter is dead for the process. Say so once: silence hides a flatlined
+    // chart during a storm, and logging every time floods.
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      setDbConnectTimeoutMetricsRecorder({
+        onConnectTimeout: () => {
+          throw new Error('prom-client exploded');
+        },
+      });
+
+      recordDbConnectTimeout(new Error('a'), 'connectivity', 1);
+      recordDbConnectTimeout(new Error('b'), 'connectivity', 1);
+      recordDbConnectTimeout(new Error('c'), 'connectivity', 1);
+
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('breeze_db_connect_timeouts_total will not advance'),
+        expect.any(Error),
+      );
+      // The internal window is unaffected — the recorder fires after the push.
+      expect(getDbConnectTimeoutStats(60_000, 1).timeouts).toBe(3);
+    } finally {
+      error.mockRestore();
+    }
+  });
 });

@@ -26,6 +26,16 @@
  * That is exactly the manual step ("`psql` from the same host connected in under
  * a second") that ended the incident's guessing, performed automatically.
  *
+ * WHAT THIS MODULE NEVER CLAIMS. There is no `healthy` verdict, on purpose. The
+ * only evidence it has is a connect-timeout count that `dbConnectTimeoutStats`
+ * documents as a FLOOR, and it does not observe pool slot occupancy at all — so
+ * a pool that has quietly lost most of its slots while producing few
+ * request-visible timeouts is below threshold, not proven well. The quiet verdict
+ * is therefore named `below-threshold`, and every message states the measurement
+ * rather than only the conclusion. Publishing an affirmative all-clear from
+ * evidence that cannot support one is the failure mode this whole area of the
+ * codebase exists to avoid.
+ *
  * WHAT IT DELIBERATELY DOES NOT DO. It does not recycle or replace the `sql`
  * instance. `db/index.ts` hands the client to Drizzle at module load, and the
  * resulting `baseDb` is captured by the exported proxy, by every open
@@ -45,14 +55,24 @@ import {
 import { resolveRequestDatabaseConfig } from './requestDatabaseConfig';
 
 export type DbPoolHealthVerdict =
-  /** Connect-timeout rate is below the alert threshold. No probe was run. */
-  | 'healthy'
+  /**
+   * Connect-timeout rate is below the alert threshold, so no probe was run.
+   * NOT a clean bill of health — see the module docblock.
+   */
+  | 'below-threshold'
   /** Timeouts are sustained, but a fresh connection succeeds — the #3214 signature. */
   | 'pool-degraded'
   /** Timeouts are sustained and a fresh connection fails too — a real DB fault. */
   | 'database-unreachable'
-  /** The probe could not be carried out, so nothing may be concluded. */
+  /** The probe could not be carried out or its result proves nothing. */
   | 'unknown';
+
+export const DB_POOL_HEALTH_VERDICTS: readonly DbPoolHealthVerdict[] = [
+  'below-threshold',
+  'pool-degraded',
+  'database-unreachable',
+  'unknown',
+];
 
 export interface DbPoolHealthAssessment {
   verdict: DbPoolHealthVerdict;
@@ -65,6 +85,14 @@ export interface DbPoolHealthAssessment {
   probeError: string | null;
   /** Operator-facing one-liner. Always states the measurement, not just the verdict. */
   message: string;
+  /**
+   * Short, STABLE headline used as the Sentry event title. Deliberately free of
+   * counts and durations: Sentry groups by message text, so interpolating a rate
+   * would mint a fresh issue on every capture, and an alert bound to an issue
+   * that never repeats never fires twice. The numbers live in `message` (console)
+   * and in the tags.
+   */
+  headline: string;
   at: number;
 }
 
@@ -106,11 +134,22 @@ export function getDbPoolHealthMinTimeouts(): number {
 }
 
 /**
- * Hard bound on the probe. Must stay comfortably under the watchdog interval so
- * a hung probe can never overlap the next tick.
+ * Hard bound on the probe, CLAMPED to half the watchdog interval.
+ *
+ * The clamp is not decoration. `DB_POOL_HEALTH_PROBE_TIMEOUT_MS` has a floor and
+ * no natural ceiling while the interval floors at 5s, so the two knobs can
+ * legally be set such that every probe outlives its tick. Combined with the
+ * in-flight guard in `startDbPoolHealthMonitor`, this keeps the watchdog from
+ * opening a growing number of fresh connections to a database that — in the
+ * `pool-degraded` case it is diagnosing — is already the scarce resource.
  */
-export function getDbPoolHealthProbeTimeoutMs(): number {
-  return envInt('DB_POOL_HEALTH_PROBE_TIMEOUT_MS', 5_000, 1_000);
+export function getDbPoolHealthProbeTimeoutMs(
+  intervalMs: number = getDbPoolHealthIntervalMs(),
+): number {
+  return Math.min(
+    envInt('DB_POOL_HEALTH_PROBE_TIMEOUT_MS', 5_000, 1_000),
+    Math.floor(intervalMs / 2),
+  );
 }
 
 /**
@@ -143,6 +182,25 @@ export class DbPoolProbeUnavailableError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
     this.name = 'DbPoolProbeUnavailableError';
+  }
+}
+
+/**
+ * Thrown when the probe's own wall-clock budget expired.
+ *
+ * Separate from a driver-reported failure because this budget is a plain
+ * `setTimeout`, and a `setTimeout` expires just as readily when the main thread
+ * is too busy to run the socket callbacks as when the connection genuinely
+ * failed — the precise ambiguity `services/postgresConnectTimeout.ts` was
+ * written to resolve for `connect_timeout` (#3022). Treating it as proof the
+ * database is unreachable would reintroduce that bug one layer up: a pegged
+ * event loop would be reported as a database fault, with an explicit
+ * "restarting the API will not help" attached to it.
+ */
+export class DbPoolProbeTimedOutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DbPoolProbeTimedOutError';
   }
 }
 
@@ -189,7 +247,7 @@ export async function probeFreshDatabaseConnection(
       client`select 1`.then(() => undefined),
       new Promise<never>((_, reject) => {
         timer = setTimeout(
-          () => reject(new Error(`pool-health probe exceeded ${timeoutMs}ms`)),
+          () => reject(new DbPoolProbeTimedOutError(`pool-health probe exceeded ${timeoutMs}ms`)),
           timeoutMs,
         );
         timer.unref?.();
@@ -198,11 +256,36 @@ export async function probeFreshDatabaseConnection(
       if (timer) clearTimeout(timer);
     });
   } finally {
-    // `timeout: 0` destroys immediately instead of waiting to drain. A probe
-    // that already timed out must not then block shutdown on the same stuck
-    // connection it was diagnosing.
-    await client.end({ timeout: 0 }).catch(() => undefined);
+    // Swallowed deliberately: this is cleanup on a diagnostic path, and a failed
+    // close must not displace the probe's verdict. It is NOT free, though — a
+    // failed close leaks the probe socket, and `pool-degraded` persists until
+    // someone restarts, so this would run every tick until then and add one
+    // leaked connection per tick to a database that is already under connection
+    // pressure. Counted and logged rather than hidden.
+    //
+    // Routed through `Promise.resolve().then(...)` so a SYNCHRONOUS throw from
+    // `end()` also lands in the catch instead of escaping this `finally` and
+    // replacing the probe's real outcome.
+    // `timeout: 0` destroys immediately instead of waiting to drain, so a probe
+    // that already timed out cannot block on the connection it was diagnosing.
+    await Promise.resolve()
+      .then(() => client.end({ timeout: 0 }))
+      .catch((endErr: unknown) => {
+        probeCloseFailures += 1;
+        console.warn(
+          `[db-pool-health] probe client end() failed (${probeCloseFailures} total); the probe `
+          + 'connection may be leaked against a database already under connection pressure:',
+          endErr,
+        );
+      });
   }
+}
+
+let probeCloseFailures = 0;
+
+/** Probe connections whose close failed — each one is a possible leaked socket. */
+export function getDbPoolHealthProbeCloseFailures(): number {
+  return probeCloseFailures;
 }
 
 export interface AssessDbPoolHealthDeps {
@@ -227,17 +310,25 @@ export async function assessDbPoolHealth(
   const probe = deps.probe ?? probeFreshDatabaseConnection;
 
   const stats = readStats(windowMs, now);
+  const rate =
+    `${stats.timeouts} CONNECT_TIMEOUT(s) in ${windowMs}ms (${stats.ratePerMin.toFixed(1)}/min)`;
+  const causes =
+    `starvation=${stats.byCause['event-loop-starvation']} `
+    + `connectivity=${stats.byCause.connectivity} unknown=${stats.byCause.unknown}`;
 
   if (stats.timeouts < thresholdTimeouts) {
     return {
-      verdict: 'healthy',
+      verdict: 'below-threshold',
       stats,
       thresholdTimeouts,
       probeMs: null,
       probeError: null,
+      headline: '[db-pool-health] below threshold',
       message:
-        `[db-pool-health] ${stats.timeouts} CONNECT_TIMEOUT(s) in the last ${windowMs}ms `
-        + `(${stats.ratePerMin.toFixed(1)}/min), below the ${thresholdTimeouts} threshold.`,
+        `[db-pool-health] ${rate}, below the ${thresholdTimeouts} threshold — no probe run. `
+        + `This is NOT a clean bill of health: the count is a floor (only timeouts that reach `
+        + `app.onError or captureException are recorded) and pool slot occupancy is not `
+        + `observed at all. Causes: ${causes}.`,
       at: now,
     };
   }
@@ -245,18 +336,15 @@ export async function assessDbPoolHealth(
   const startedAt = Date.now();
   let probeError: string | null = null;
   let probeUnavailable = false;
+  let probeTimedOut = false;
   try {
     await probe();
   } catch (err) {
     probeError = err instanceof Error ? err.message : String(err);
     probeUnavailable = err instanceof DbPoolProbeUnavailableError;
+    probeTimedOut = err instanceof DbPoolProbeTimedOutError;
   }
   const probeMs = Date.now() - startedAt;
-
-  const rate = `${stats.timeouts} CONNECT_TIMEOUT(s) in ${windowMs}ms (${stats.ratePerMin.toFixed(1)}/min)`;
-  const causes =
-    `starvation=${stats.byCause['event-loop-starvation']} `
-    + `connectivity=${stats.byCause.connectivity} unknown=${stats.byCause.unknown}`;
 
   if (probeUnavailable) {
     return {
@@ -265,10 +353,37 @@ export async function assessDbPoolHealth(
       thresholdTimeouts,
       probeMs,
       probeError,
+      headline: '[db-pool-health] probe unavailable',
       message:
         `[db-pool-health] UNKNOWN — ${rate}, but the fresh-connection probe could not be `
         + `attempted (${probeError}), so nothing may be concluded about the pool OR the `
         + `database. Fix the probe's configuration before reading this signal. Causes: ${causes}.`,
+      at: now,
+    };
+  }
+
+  // A probe that timed out while most timeouts were attributed to a blocked
+  // event loop proves nothing: the probe needs that same loop to run its socket
+  // callbacks, so its budget expires for the same reason theirs did. Calling
+  // this `database-unreachable` would send an operator hunting a DB incident and
+  // explicitly tell them a restart will not help — while the actual fault is a
+  // pegged main thread (#3022).
+  const starvationDominates =
+    stats.byCause['event-loop-starvation'] * 2 > stats.timeouts;
+  if (probeTimedOut && starvationDominates) {
+    return {
+      verdict: 'unknown',
+      stats,
+      thresholdTimeouts,
+      probeMs,
+      probeError,
+      headline: '[db-pool-health] probe timed out under event-loop starvation',
+      message:
+        `[db-pool-health] UNKNOWN — ${rate}, and the probe timed out after ${probeMs}ms, but `
+        + `${stats.byCause['event-loop-starvation']} of those timeouts were attributed to `
+        + `event-loop starvation (#3022). The probe's budget is an in-process timer that needs `
+        + `the same blocked loop, so its expiry is NOT evidence about the database. Investigate `
+        + `main-thread starvation first. Causes: ${causes}.`,
       at: now,
     };
   }
@@ -280,6 +395,7 @@ export async function assessDbPoolHealth(
       thresholdTimeouts,
       probeMs,
       probeError: null,
+      headline: '[db-pool-health] POOL DEGRADED (#3214)',
       message:
         `[db-pool-health] POOL DEGRADED — ${rate}, yet a brand-new connection to the same `
         + `database succeeded in ${probeMs}ms. The database is reachable; the request pool is `
@@ -298,6 +414,7 @@ export async function assessDbPoolHealth(
     thresholdTimeouts,
     probeMs,
     probeError,
+    headline: '[db-pool-health] DATABASE UNREACHABLE',
     message:
       `[db-pool-health] DATABASE UNREACHABLE — ${rate}, and a brand-new connection to the same `
       + `database ALSO failed after ${probeMs}ms (${probeError}). This is NOT the #3214 pool `
@@ -309,31 +426,54 @@ export async function assessDbPoolHealth(
 
 let timer: NodeJS.Timeout | null = null;
 let activeIntervalMs: number | null = null;
+let checkInFlight = false;
 let lastAssessment: DbPoolHealthAssessment | null = null;
-let lastCaptureAtByVerdict = new Map<DbPoolHealthVerdict, number>();
+let checkFailures = 0;
+let lastCaptureAtByKey = new Map<string, number>();
+let suppressedSinceCaptureByKey = new Map<string, number>();
 
 /**
- * Latest verdict, or null when the watchdog has not evaluated yet (including
- * when it is disabled). `routes/metrics.ts` reads this; a null must be published
- * as "not observed", never as "healthy".
+ * Latest verdict, or null when the watchdog has not evaluated yet, is disabled,
+ * or its last evaluation FAILED. Consumers must publish a null as "not
+ * observed" — never as a healthy pool.
  */
 export function getLastDbPoolHealthAssessment(): DbPoolHealthAssessment | null {
   return lastAssessment;
 }
 
-/** Exported for testing the throttle without waiting on real clocks. */
-export function shouldCaptureDbPoolHealth(
-  verdict: DbPoolHealthVerdict,
+/** Evaluations that threw before producing a verdict. Monotonic. */
+export function getDbPoolHealthCheckFailures(): number {
+  return checkFailures;
+}
+
+/**
+ * Throttle gate. Returns true — and RECORDS the claim — at most once per
+ * `throttleMs` per key.
+ *
+ * Named `claim…` rather than `should…` because it mutates: a caller who
+ * evaluates it twice (the natural "if I'm going to capture, also do X" refactor)
+ * would silently lose every subsequent alert, and no test would catch it. The
+ * name is the guard.
+ */
+export function claimDbPoolHealthCaptureSlot(
+  key: string,
   now: number,
   throttleMs: number,
 ): boolean {
   if (throttleMs === 0) return true;
-  const lastAt = lastCaptureAtByVerdict.get(verdict);
+  const lastAt = lastCaptureAtByKey.get(key);
   if (lastAt === undefined || now - lastAt >= throttleMs) {
-    lastCaptureAtByVerdict.set(verdict, now);
+    lastCaptureAtByKey.set(key, now);
     return true;
   }
+  suppressedSinceCaptureByKey.set(key, (suppressedSinceCaptureByKey.get(key) ?? 0) + 1);
   return false;
+}
+
+function takeSuppressedCount(key: string): number {
+  const n = suppressedSinceCaptureByKey.get(key) ?? 0;
+  suppressedSinceCaptureByKey.delete(key);
+  return n;
 }
 
 /**
@@ -347,17 +487,18 @@ export async function runDbPoolHealthCheck(
     const assessment = await assessDbPoolHealth(deps);
     lastAssessment = assessment;
 
-    if (assessment.verdict === 'healthy') return assessment;
+    if (assessment.verdict === 'below-threshold') return assessment;
 
     console.warn(assessment.message);
-    if (
-      shouldCaptureDbPoolHealth(
-        assessment.verdict,
-        assessment.at,
-        getDbPoolHealthCaptureThrottleMs(),
-      )
-    ) {
-      captureMessage(assessment.message, 'warning', {
+    const throttleMs = getDbPoolHealthCaptureThrottleMs();
+    if (claimDbPoolHealthCaptureSlot(assessment.verdict, assessment.at, throttleMs)) {
+      const suppressed = takeSuppressedCount(assessment.verdict);
+      // The TITLE is the stable headline (Sentry groups by message text, so an
+      // interpolated rate would mint a new issue every capture and no alert
+      // bound to it could ever fire twice). Detail rides on the low-cardinality
+      // tags; the full prose is already on console.warn above.
+      captureMessage(assessment.headline, 'warning', {
+        message: assessment.message,
         verdict: assessment.verdict,
         timeouts: assessment.stats.timeouts,
         ratePerMin: assessment.stats.ratePerMin,
@@ -365,11 +506,41 @@ export async function runDbPoolHealthCheck(
         byCause: assessment.stats.byCause,
         probeMs: assessment.probeMs,
         probeError: assessment.probeError,
+        // States this event's own sampling rate, so the throttle cannot make a
+        // storm look like a single occurrence.
+        suppressedSinceLastCapture: suppressed,
       }, { dbPoolHealthVerdict: assessment.verdict });
     }
     return assessment;
   } catch (err) {
+    checkFailures += 1;
+    // Do NOT leave the previous verdict standing. `lastAssessment` drives the
+    // Prometheus verdict series, so keeping a stale value here would republish
+    // an old below-threshold reading on every scrape, for hours, about a
+    // watchdog that has been dead the whole time — an affirmative wrong answer,
+    // which is worse than the "not observed" that null produces.
+    lastAssessment = null;
     console.error('[db-pool-health] check failed:', err);
+    // Reaching Sentry matters as much here as for the verdicts themselves: a
+    // watchdog failing on every tick is otherwise console-only, which is exactly
+    // the invisibility this module exists to remove. Throttled on its own key so
+    // it cannot flood, and wrapped because the reporter may be what failed.
+    if (
+      claimDbPoolHealthCaptureSlot(
+        'check-failed',
+        Date.now(),
+        getDbPoolHealthCaptureThrottleMs(),
+      )
+    ) {
+      try {
+        captureMessage('[db-pool-health] watchdog evaluation failed', 'warning', {
+          error: err instanceof Error ? err.message : String(err),
+          checkFailures,
+        }, { dbPoolHealthVerdict: 'check-failed' });
+      } catch {
+        // The reporter is the thing that failed; the console line above stands.
+      }
+    }
     return null;
   }
 }
@@ -388,7 +559,22 @@ export function startDbPoolHealthMonitor(): number | null {
 
   activeIntervalMs = getDbPoolHealthIntervalMs();
   timer = setInterval(() => {
-    void runDbPoolHealthCheck();
+    // A probe can outlive its tick (a saturated server, a blocked loop). Without
+    // this guard those ticks stack, and each one opens another fresh connection
+    // to a database that in the `pool-degraded` case is already the scarce
+    // resource — the watchdog would then worsen the condition it is diagnosing.
+    // Never silent: a skipped tick is itself a signal.
+    if (checkInFlight) {
+      console.warn(
+        '[db-pool-health] skipping tick — the previous check is still in flight, '
+        + 'so the probe outlived its interval.',
+      );
+      return;
+    }
+    checkInFlight = true;
+    void runDbPoolHealthCheck().finally(() => {
+      checkInFlight = false;
+    });
   }, activeIntervalMs);
   // Unref'd: the watchdog must never be the reason the process stays alive.
   timer.unref?.();
@@ -405,6 +591,10 @@ export function stopDbPoolHealthMonitor(): void {
 
 export function __resetDbPoolHealthMonitorForTests(): void {
   stopDbPoolHealthMonitor();
+  checkInFlight = false;
   lastAssessment = null;
-  lastCaptureAtByVerdict = new Map();
+  checkFailures = 0;
+  probeCloseFailures = 0;
+  lastCaptureAtByKey = new Map();
+  suppressedSinceCaptureByKey = new Map();
 }

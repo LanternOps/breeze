@@ -19,11 +19,18 @@
  * exists to warn about. Keep this file dependency-free.
  *
  * WHAT THE NUMBER IS AND IS NOT. It is a FLOOR, not an exact count. Recording
- * happens in `safeDiagnoseConnectTimeout`, which both production call sites (the
- * Hono `app.onError` handler and `services/sentry.ts`'s `captureException`) run
- * — but a background worker that swallows a DB error without reporting it will
- * not be counted. Treat a rising rate as evidence; never treat a zero as proof
- * that no timeouts occurred.
+ * happens in `safeDiagnoseConnectTimeout`, which both production call sites run:
+ * the Hono `app.onError` handler and `services/sentry.ts`'s `captureException`.
+ * The latter classifies ABOVE its `initialized` guard specifically so that
+ * worker, scheduler and unhandledRejection paths are still counted on instances
+ * with no Sentry DSN — without that, this counter saw only HTTP requests, which
+ * is the one shape the original incident did NOT have.
+ *
+ * It is still a floor: a background path that swallows a DB error without
+ * reporting it anywhere is invisible here, and the retention cap below biases
+ * down. Treat a rising rate as evidence; NEVER treat a low or zero count as
+ * proof that the pool is healthy. `db/dbPoolHealthMonitor.ts` is written to that
+ * contract — its below-threshold verdict deliberately does not say "healthy".
  */
 
 /** Causes mirror `ConnectTimeoutCause` in `services/postgresConnectTimeout.ts`. */
@@ -79,6 +86,12 @@ interface Sample {
 
 let samples: Sample[] = [];
 let totalSinceStart = 0;
+let recorderFailureLogged = false;
+/**
+ * The widest window any consumer has asked for. Retention is trimmed against
+ * THIS, never the current caller's window — see `getDbConnectTimeoutStats`.
+ */
+let maxRequestedWindowMs = DEFAULT_CONNECT_TIMEOUT_WINDOW_MS;
 
 /**
  * Marks an error object as already counted.
@@ -136,36 +149,69 @@ export function recordDbConnectTimeout(
     samples.push({ at: now, cause });
     totalSinceStart += 1;
     if (samples.length > MAX_RETAINED_SAMPLES) {
+      // Drop the OLDEST — see MAX_RETAINED_SAMPLES. Trimming the newest instead
+      // would zero the rate during exactly the storm the cap exists for.
       samples = samples.slice(samples.length - MAX_RETAINED_SAMPLES);
     }
-    recorder?.onConnectTimeout(cause);
   } catch {
     // Counting a failure must never become one.
+  }
+
+  // Separate try, and deliberately AFTER the sample is recorded: a throwing
+  // recorder must not be able to corrupt the internal window count.
+  try {
+    recorder?.onConnectTimeout(cause);
+  } catch (recorderErr) {
+    // The recorder is a stable closure over a prom-client counter, so a throw
+    // here is not one lost increment — it will throw every time, and
+    // `breeze_db_connect_timeouts_total` then flatlines at its seeded 0 for the
+    // life of the process while this module's own window keeps working. A
+    // dashboard would show a clean chart during an active storm. Latched so the
+    // condition is stated once rather than either hidden or flooding the log.
+    if (!recorderFailureLogged) {
+      recorderFailureLogged = true;
+      console.error(
+        '[db-connect-timeout-stats] metrics recorder threw; '
+        + 'breeze_db_connect_timeouts_total will not advance for the rest of this process:',
+        recorderErr,
+      );
+    }
   }
 }
 
 /**
  * Summarise the trailing `windowMs`. Trims expired samples as a side effect, so
  * a quiet process does not retain a storm from an hour ago.
+ *
+ * Retention is trimmed against the WIDEST window any caller has ever requested,
+ * not this caller's. The samples are shared module state, so trimming to the
+ * caller's own window would let a narrow reader permanently destroy evidence a
+ * wider reader depends on: a future 60s `/health` readout or debug endpoint
+ * would silently truncate the watchdog's 5-minute window, drop its count below
+ * threshold, and produce a below-threshold verdict in the middle of a live
+ * storm — with nothing going red.
  */
 export function getDbConnectTimeoutStats(
   windowMs: number = DEFAULT_CONNECT_TIMEOUT_WINDOW_MS,
   now: number = Date.now(),
 ): DbConnectTimeoutWindowStats {
   const effectiveWindowMs = windowMs > 0 ? windowMs : DEFAULT_CONNECT_TIMEOUT_WINDOW_MS;
+  maxRequestedWindowMs = Math.max(maxRequestedWindowMs, effectiveWindowMs);
+  samples = samples.filter((s) => s.at >= now - maxRequestedWindowMs);
+
   const cutoff = now - effectiveWindowMs;
-  samples = samples.filter((s) => s.at >= cutoff);
+  const inWindow = samples.filter((s) => s.at >= cutoff);
 
   const byCause: Record<DbConnectTimeoutCause, number> = {
     'event-loop-starvation': 0,
     connectivity: 0,
     unknown: 0,
   };
-  for (const s of samples) {
+  for (const s of inWindow) {
     byCause[s.cause] += 1;
   }
 
-  const timeouts = samples.length;
+  const timeouts = inWindow.length;
   return {
     timeouts,
     byCause,
@@ -179,4 +225,6 @@ export function __resetDbConnectTimeoutStatsForTests(): void {
   samples = [];
   totalSinceStart = 0;
   recorder = null;
+  recorderFailureLogged = false;
+  maxRequestedWindowMs = DEFAULT_CONNECT_TIMEOUT_WINDOW_MS;
 }

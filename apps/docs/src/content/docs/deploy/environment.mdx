@@ -243,12 +243,25 @@ is unaffected by the defect, so the result separates the two causes:
   fault. Restarting the API will not help.
 
 The verdict is logged and sent to Sentry (throttled), and exported on
-`/metrics/scrape` as `breeze_db_pool_health{verdict="…"}` alongside
-`breeze_db_connect_timeouts_total{cause="…"}` and
-`breeze_db_connect_timeout_rate_per_min`. Before the first evaluation every
-verdict series reads `0` — absence of a verdict is not the same as a healthy
-pool, so alert on `breeze_db_pool_health{verdict="pool-degraded"} == 1` rather
-than on the negation of `healthy`.
+`/metrics/scrape`:
+
+| Series | Meaning |
+|---|---|
+| `breeze_db_pool_health{verdict="…"}` | `1` for the current verdict, `0` for the others. Verdicts are `below-threshold`, `pool-degraded`, `database-unreachable`, `unknown`. |
+| `breeze_db_connect_timeouts_total{cause="…"}` | Connect timeouts by diagnosed cause (`connectivity`, `event-loop-starvation`, `unknown`). |
+| `breeze_db_connect_timeout_rate_per_min` | The rate the watchdog evaluates. |
+| `breeze_db_pool_health_last_check_timestamp_seconds` | When the last evaluation completed. `0` = never. |
+| `breeze_db_pool_health_check_failures_total` | Evaluations that threw before producing a verdict. |
+| `breeze_db_pool_health_probe_close_failures_total` | Probe clients whose close failed — each a possible leaked connection. |
+
+**Alert on `breeze_db_pool_health{verdict="pool-degraded"} == 1`.** There is
+deliberately no `healthy` verdict: the quiet one is `below-threshold`, because
+the underlying count only sees timeouts that reach an error handler and the
+watchdog never observes pool slot occupancy. It can tell you something is wrong;
+it cannot certify that nothing is. For the same reason, all verdict series read
+`0` before the first evaluation and after a failed one — never infer health from
+the absence of a bad verdict, and pair any alert with a freshness check on
+`breeze_db_pool_health_last_check_timestamp_seconds`.
 
 The watchdog runs by default; you do not need to set any of these.
 

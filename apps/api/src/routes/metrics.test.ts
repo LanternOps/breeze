@@ -4,6 +4,16 @@ import {
   stopEventLoopMonitor,
   __setEventLoopMonitorForTests,
 } from '../services/eventLoopMonitor';
+import {
+  DB_POOL_HEALTH_VERDICTS,
+  runDbPoolHealthCheck,
+  __resetDbPoolHealthMonitorForTests,
+} from '../db/dbPoolHealthMonitor';
+import {
+  recordDbConnectTimeout,
+  __resetDbConnectTimeoutStatsForTests,
+  type DbConnectTimeoutWindowStats,
+} from '../services/dbConnectTimeoutStats';
 import { Hono } from 'hono';
 
 const selectMock = vi.hoisted(() => vi.fn());
@@ -201,6 +211,17 @@ function mockCurrentMetricsQueries(
   return captured;
 }
 
+/** Stand-in connect-timeout window, so the pool-health tests need no real errors. */
+function connectTimeoutStats(timeouts: number, windowMs = 300_000): DbConnectTimeoutWindowStats {
+  return {
+    timeouts,
+    byCause: { 'event-loop-starvation': 0, connectivity: timeouts, unknown: 0 },
+    windowMs,
+    ratePerMin: (timeouts * 60_000) / windowMs,
+    totalSinceStart: timeouts,
+  };
+}
+
 function getMetricLine(metrics: string, name: string, labels?: Record<string, string>): string | undefined {
   const labelText = labels ? `{${Object.entries(labels).map(([k, v]) => `${k}="${v}"`).join(',')}}` : '';
   return metrics
@@ -364,6 +385,127 @@ describe('metrics routes', () => {
       expect(getMetricLine(body, 'breeze_nodejs_eventloop_starved')).toBe(
         'breeze_nodejs_eventloop_starved 1',
       );
+    });
+  });
+
+  describe('db pool-health gauges (#3214)', () => {
+    afterEach(() => {
+      __resetDbPoolHealthMonitorForTests();
+      __resetDbConnectTimeoutStatsForTests();
+    });
+
+    async function scrape(): Promise<string> {
+      const res = await app.request('/metrics', { headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(200);
+      return res.text();
+    }
+
+    it('publishes every series, all at zero, before the watchdog has evaluated', async () => {
+      // Absence of a verdict must be visible AS absence. If these series simply
+      // did not exist, an alert rule referencing them would match nothing and
+      // read as "no problem" — and there is deliberately no `healthy` verdict to
+      // fall back on.
+      const body = await scrape();
+      expect(body).toContain('# TYPE breeze_db_pool_health gauge');
+      expect(body).toContain('# TYPE breeze_db_connect_timeouts_total counter');
+      expect(body).toContain('# TYPE breeze_db_connect_timeout_rate_per_min gauge');
+
+      for (const verdict of DB_POOL_HEALTH_VERDICTS) {
+        expect(getMetricLine(body, 'breeze_db_pool_health', { verdict })).toBe(
+          `breeze_db_pool_health{verdict="${verdict}"} 0`,
+        );
+      }
+      expect(
+        getMetricLine(body, 'breeze_db_pool_health_last_check_timestamp_seconds'),
+      ).toBe('breeze_db_pool_health_last_check_timestamp_seconds 0');
+    });
+
+    it('tracks the watchdog verdict on scrape', async () => {
+      // Deleting the updateDbPoolHealthMetrics() call would otherwise pin every
+      // gauge at its initialize-time zero forever — the exact hazard the
+      // event-loop suite above exists to prevent for #3022.
+      await runDbPoolHealthCheck({
+        readStats: () => connectTimeoutStats(40),
+        probe: async () => {},
+        thresholdTimeouts: 10,
+      });
+
+      const body = await scrape();
+      expect(getMetricLine(body, 'breeze_db_pool_health', { verdict: 'pool-degraded' })).toBe(
+        'breeze_db_pool_health{verdict="pool-degraded"} 1',
+      );
+      expect(getMetricLine(body, 'breeze_db_pool_health', { verdict: 'below-threshold' })).toBe(
+        'breeze_db_pool_health{verdict="below-threshold"} 0',
+      );
+      expect(
+        getMetricLine(body, 'breeze_db_pool_health_last_check_timestamp_seconds'),
+      ).not.toBe('breeze_db_pool_health_last_check_timestamp_seconds 0');
+    });
+
+    it('CLEARS a degraded verdict once the condition passes', async () => {
+      // A stuck `pool-degraded` series would page an operator to restart a
+      // healthy API forever.
+      await runDbPoolHealthCheck({
+        readStats: () => connectTimeoutStats(40),
+        probe: async () => {},
+        thresholdTimeouts: 10,
+      });
+      expect(
+        getMetricLine(await scrape(), 'breeze_db_pool_health', { verdict: 'pool-degraded' }),
+      ).toBe('breeze_db_pool_health{verdict="pool-degraded"} 1');
+
+      await runDbPoolHealthCheck({
+        readStats: () => connectTimeoutStats(0),
+        probe: async () => {},
+        thresholdTimeouts: 10,
+      });
+
+      const body = await scrape();
+      expect(getMetricLine(body, 'breeze_db_pool_health', { verdict: 'pool-degraded' })).toBe(
+        'breeze_db_pool_health{verdict="pool-degraded"} 0',
+      );
+      expect(getMetricLine(body, 'breeze_db_pool_health', { verdict: 'below-threshold' })).toBe(
+        'breeze_db_pool_health{verdict="below-threshold"} 1',
+      );
+    });
+
+    it('goes back to all-zero — never a stale verdict — when an evaluation fails', async () => {
+      await runDbPoolHealthCheck({
+        readStats: () => connectTimeoutStats(0),
+        probe: async () => {},
+        thresholdTimeouts: 10,
+      });
+      await runDbPoolHealthCheck({
+        readStats: () => {
+          throw new Error('stats exploded');
+        },
+      });
+
+      const body = await scrape();
+      for (const verdict of DB_POOL_HEALTH_VERDICTS) {
+        expect(getMetricLine(body, 'breeze_db_pool_health', { verdict })).toBe(
+          `breeze_db_pool_health{verdict="${verdict}"} 0`,
+        );
+      }
+      expect(getMetricLine(body, 'breeze_db_pool_health_check_failures_total')).toBe(
+        'breeze_db_pool_health_check_failures_total 1',
+      );
+    });
+
+    it('increments the connect-timeout counter through the recorder binding', async () => {
+      // Kills the "delete the setDbConnectTimeoutMetricsRecorder(...) call"
+      // mutation: without that binding the counter never leaves its seeded 0
+      // while the watchdog and the internal window keep working — a clean chart
+      // during an active storm.
+      recordDbConnectTimeout(new Error('a'), 'connectivity');
+      recordDbConnectTimeout(new Error('b'), 'event-loop-starvation');
+
+      const body = await scrape();
+      expect(getMetricLine(body, 'breeze_db_connect_timeouts_total', { cause: 'connectivity' }))
+        .toBe('breeze_db_connect_timeouts_total{cause="connectivity"} 1');
+      expect(
+        getMetricLine(body, 'breeze_db_connect_timeouts_total', { cause: 'event-loop-starvation' }),
+      ).toBe('breeze_db_connect_timeouts_total{cause="event-loop-starvation"} 1');
     });
   });
 

@@ -10,12 +10,16 @@ import {
   assessDbPoolHealth,
   getDbPoolHealthMinTimeouts,
   getDbPoolHealthWindowMs,
+  getDbPoolHealthCheckFailures,
+  getDbPoolHealthProbeTimeoutMs,
   getLastDbPoolHealthAssessment,
   isDbPoolHealthMonitorDisabled,
+  probeFreshDatabaseConnection,
   runDbPoolHealthCheck,
-  shouldCaptureDbPoolHealth,
+  claimDbPoolHealthCaptureSlot,
   startDbPoolHealthMonitor,
   stopDbPoolHealthMonitor,
+  DbPoolProbeTimedOutError,
   DbPoolProbeUnavailableError,
 } from './dbPoolHealthMonitor';
 import type { DbConnectTimeoutWindowStats } from '../services/dbConnectTimeoutStats';
@@ -46,10 +50,13 @@ describe('dbPoolHealthMonitor (#3214)', () => {
     delete process.env.DB_POOL_HEALTH_INTERVAL_MS;
     delete process.env.DB_POOL_HEALTH_WINDOW_MS;
     delete process.env.DB_POOL_HEALTH_MIN_TIMEOUTS;
+    delete process.env.DB_POOL_HEALTH_PROBE_TIMEOUT_MS;
+    delete process.env.DB_POOL_HEALTH_CAPTURE_THROTTLE_MS;
+    delete process.env.DATABASE_URL_APP;
   });
 
   describe('assessDbPoolHealth', () => {
-    it('reports healthy and does NOT probe below the threshold', async () => {
+    it('reports below-threshold and does NOT probe below the threshold', async () => {
       // The probe opens a real socket. It must stay off the steady-state path,
       // otherwise a fleet of instances adds a permanent connection every tick.
       const probe = vi.fn(async () => {});
@@ -59,7 +66,7 @@ describe('dbPoolHealthMonitor (#3214)', () => {
         thresholdTimeouts: 10,
       });
 
-      expect(result.verdict).toBe('healthy');
+      expect(result.verdict).toBe('below-threshold');
       expect(probe).not.toHaveBeenCalled();
       expect(result.probeMs).toBeNull();
     });
@@ -127,6 +134,51 @@ describe('dbPoolHealthMonitor (#3214)', () => {
       expect(result.message).not.toContain('POOL DEGRADED');
     });
 
+    it('reports unknown when the probe times out and starvation dominates the causes', async () => {
+      // The probe's budget is an in-process setTimeout, so it expires when the
+      // main thread is pegged just as readily as when the DB is unreachable —
+      // the #3022 ambiguity, one layer up. Calling this `database-unreachable`
+      // would send the operator after a DB incident AND tell them a restart
+      // won't help, while the real fault is a blocked loop.
+      const result = await assessDbPoolHealth({
+        readStats: () => ({
+          timeouts: 40,
+          byCause: { 'event-loop-starvation': 30, connectivity: 10, unknown: 0 },
+          windowMs: 300_000,
+          ratePerMin: 8,
+          totalSinceStart: 40,
+        }),
+        probe: async () => {
+          throw new DbPoolProbeTimedOutError('pool-health probe exceeded 5000ms');
+        },
+        thresholdTimeouts: 10,
+      });
+
+      expect(result.verdict).toBe('unknown');
+      expect(result.message).toContain('event-loop starvation');
+      expect(result.message).not.toContain('DATABASE UNREACHABLE');
+    });
+
+    it('still reports database-unreachable on a probe timeout when starvation does NOT dominate', async () => {
+      // A genuinely unreachable database also makes the probe time out. Only the
+      // starvation-dominated case is inconclusive.
+      const result = await assessDbPoolHealth({
+        readStats: () => ({
+          timeouts: 40,
+          byCause: { 'event-loop-starvation': 2, connectivity: 38, unknown: 0 },
+          windowMs: 300_000,
+          ratePerMin: 8,
+          totalSinceStart: 40,
+        }),
+        probe: async () => {
+          throw new DbPoolProbeTimedOutError('pool-health probe exceeded 5000ms');
+        },
+        thresholdTimeouts: 10,
+      });
+
+      expect(result.verdict).toBe('database-unreachable');
+    });
+
     it('surfaces a non-Error probe rejection as a string', async () => {
       const result = await assessDbPoolHealth({
         readStats: () => stats(40),
@@ -154,14 +206,14 @@ describe('dbPoolHealthMonitor (#3214)', () => {
   });
 
   describe('runDbPoolHealthCheck', () => {
-    it('stores the assessment and stays silent when healthy', async () => {
+    it('stores the assessment and stays silent below the threshold', async () => {
       await runDbPoolHealthCheck({
         readStats: () => stats(0),
         probe: async () => {},
         thresholdTimeouts: 10,
       });
 
-      expect(getLastDbPoolHealthAssessment()?.verdict).toBe('healthy');
+      expect(getLastDbPoolHealthAssessment()?.verdict).toBe('below-threshold');
       expect(captureMessage).not.toHaveBeenCalled();
       expect(console.warn).not.toHaveBeenCalled();
     });
@@ -196,28 +248,149 @@ describe('dbPoolHealthMonitor (#3214)', () => {
         '[db-pool-health] check failed:',
         expect.any(Error),
       );
+      expect(getDbPoolHealthCheckFailures()).toBe(1);
+    });
+
+    it('CLEARS the previous verdict when a check fails, rather than leaving it standing', async () => {
+      // lastAssessment drives the Prometheus verdict series. Leaving a stale
+      // value would republish an old below-threshold reading on every scrape for
+      // hours, about a watchdog that has been dead the whole time — an
+      // affirmative wrong answer, worse than the "not observed" null produces.
+      await runDbPoolHealthCheck({
+        readStats: () => stats(0),
+        probe: async () => {},
+        thresholdTimeouts: 10,
+      });
+      expect(getLastDbPoolHealthAssessment()).not.toBeNull();
+
+      await runDbPoolHealthCheck({
+        readStats: () => {
+          throw new Error('stats exploded');
+        },
+      });
+
+      expect(getLastDbPoolHealthAssessment()).toBeNull();
+    });
+
+    it('reports its own failure to Sentry, not only to the console', async () => {
+      // A watchdog failing every tick is otherwise console-only, which is
+      // exactly the invisibility this module exists to remove.
+      await runDbPoolHealthCheck({
+        readStats: () => {
+          throw new Error('stats exploded');
+        },
+      });
+
+      expect(captureMessage).toHaveBeenCalledWith(
+        '[db-pool-health] watchdog evaluation failed',
+        'warning',
+        expect.objectContaining({ error: 'stats exploded', checkFailures: 1 }),
+        { dbPoolHealthVerdict: 'check-failed' },
+      );
+    });
+
+    it('throttles the Sentry capture across repeated degraded ticks', async () => {
+      // The unit test for the gate proves the arithmetic; this proves the gate is
+      // actually CONSULTED here. Without it, a condition that persists until
+      // restart captures every 60s — the flood that has twice blacked out the
+      // org's Sentry quota.
+      process.env.DB_POOL_HEALTH_CAPTURE_THROTTLE_MS = '900000';
+      const deps = {
+        readStats: () => stats(40),
+        probe: async () => {},
+        thresholdTimeouts: 10,
+      };
+
+      await runDbPoolHealthCheck(deps);
+      await runDbPoolHealthCheck(deps);
+      await runDbPoolHealthCheck(deps);
+
+      expect(captureMessage).toHaveBeenCalledTimes(1);
+      // Console is deliberately NOT throttled — logs stay complete.
+      expect(console.warn).toHaveBeenCalledTimes(3);
+    });
+
+    it('captures every tick when the throttle is disabled', async () => {
+      process.env.DB_POOL_HEALTH_CAPTURE_THROTTLE_MS = '0';
+      const deps = {
+        readStats: () => stats(40),
+        probe: async () => {},
+        thresholdTimeouts: 10,
+      };
+
+      await runDbPoolHealthCheck(deps);
+      await runDbPoolHealthCheck(deps);
+
+      expect(captureMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('uses a STABLE Sentry title so the alert does not fragment per rate', async () => {
+      // Sentry groups by message text. Interpolating the rate into the title
+      // mints a fresh issue on every capture, so an alert bound to an issue can
+      // never fire twice and "Resolve" never sticks.
+      process.env.DB_POOL_HEALTH_CAPTURE_THROTTLE_MS = '0';
+      await runDbPoolHealthCheck({
+        readStats: () => stats(40),
+        probe: async () => {},
+        thresholdTimeouts: 10,
+      });
+      await runDbPoolHealthCheck({
+        readStats: () => stats(97),
+        probe: async () => {},
+        thresholdTimeouts: 10,
+      });
+
+      const titles = captureMessage.mock.calls.map((call) => call[0] as string);
+      // Identical across two very different measurements — one Sentry issue.
+      expect(titles).toHaveLength(2);
+      expect(new Set(titles).size).toBe(1);
+      // A stable issue reference is fine; the varying MEASUREMENTS are not.
+      expect(titles[0]).not.toContain('40');
+      expect(titles[0]).not.toContain('97');
+      expect(titles[0]).not.toContain('/min');
+      // The numbers still reach the console line in full.
+      expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('97 CONNECT_TIMEOUT(s)'));
+    });
+
+    it('states how many captures the throttle suppressed', async () => {
+      // Without this the one event that lands implies a single occurrence.
+      process.env.DB_POOL_HEALTH_CAPTURE_THROTTLE_MS = '900000';
+      const deps = {
+        readStats: () => stats(40),
+        probe: async () => {},
+        thresholdTimeouts: 10,
+      };
+      await runDbPoolHealthCheck(deps); // captured
+      await runDbPoolHealthCheck(deps); // suppressed
+      await runDbPoolHealthCheck(deps); // suppressed
+
+      process.env.DB_POOL_HEALTH_CAPTURE_THROTTLE_MS = '0';
+      await runDbPoolHealthCheck(deps); // captured again
+
+      const last = captureMessage.mock.calls.at(-1);
+      expect(last?.[2]).toMatchObject({ suppressedSinceLastCapture: 2 });
     });
   });
 
-  describe('shouldCaptureDbPoolHealth', () => {
+  describe('claimDbPoolHealthCaptureSlot', () => {
     it('throttles a repeated verdict inside the window', () => {
       // A degraded pool stays degraded until a restart, so every tick would
       // report it. Unthrottled, that has twice exhausted the org Sentry quota.
-      expect(shouldCaptureDbPoolHealth('pool-degraded', 0, 60_000)).toBe(true);
-      expect(shouldCaptureDbPoolHealth('pool-degraded', 30_000, 60_000)).toBe(false);
-      expect(shouldCaptureDbPoolHealth('pool-degraded', 60_000, 60_000)).toBe(true);
+      expect(claimDbPoolHealthCaptureSlot('pool-degraded', 0, 60_000)).toBe(true);
+      expect(claimDbPoolHealthCaptureSlot('pool-degraded', 30_000, 60_000)).toBe(false);
+      expect(claimDbPoolHealthCaptureSlot('pool-degraded', 60_000, 60_000)).toBe(true);
     });
 
     it('throttles each verdict independently', () => {
       // A pool-degraded -> database-unreachable transition is a material change
       // of remedy and must not be swallowed by the other verdict's throttle.
-      expect(shouldCaptureDbPoolHealth('pool-degraded', 0, 60_000)).toBe(true);
-      expect(shouldCaptureDbPoolHealth('database-unreachable', 0, 60_000)).toBe(true);
+      expect(claimDbPoolHealthCaptureSlot('pool-degraded', 0, 60_000)).toBe(true);
+      expect(claimDbPoolHealthCaptureSlot('database-unreachable', 0, 60_000)).toBe(true);
     });
 
     it('disables throttling at 0', () => {
-      expect(shouldCaptureDbPoolHealth('pool-degraded', 0, 0)).toBe(true);
-      expect(shouldCaptureDbPoolHealth('pool-degraded', 0, 0)).toBe(true);
+      expect(claimDbPoolHealthCaptureSlot('pool-degraded', 0, 0)).toBe(true);
+      expect(claimDbPoolHealthCaptureSlot('pool-degraded', 0, 0)).toBe(true);
     });
   });
 
@@ -273,5 +446,85 @@ describe('dbPoolHealthMonitor (#3214)', () => {
       process.env.DB_POOL_HEALTH_MIN_TIMEOUTS = '25';
       expect(getDbPoolHealthMinTimeouts()).toBe(25);
     });
+
+    it('clamps the probe budget to half the interval so a probe cannot outlive its tick', () => {
+      // These two knobs are independently settable and the probe has no natural
+      // ceiling, so without the clamp `INTERVAL=5000, PROBE=30000` is legal and
+      // every tick overlaps — each opening another connection to a database that
+      // is, in the degraded case, already the scarce resource.
+      process.env.DB_POOL_HEALTH_INTERVAL_MS = '5000';
+      process.env.DB_POOL_HEALTH_PROBE_TIMEOUT_MS = '30000';
+      expect(getDbPoolHealthProbeTimeoutMs()).toBe(2_500);
+    });
+
+    it('leaves the probe budget alone when it already fits the interval', () => {
+      process.env.DB_POOL_HEALTH_INTERVAL_MS = '60000';
+      process.env.DB_POOL_HEALTH_PROBE_TIMEOUT_MS = '5000';
+      expect(getDbPoolHealthProbeTimeoutMs()).toBe(5_000);
+    });
+  });
+
+  describe('the armed timer', () => {
+    it('actually runs a check when it fires', async () => {
+      // Without this, emptying the interval body is invisible: the watchdog
+      // never evaluates, every gauge stays 0, and no test goes red.
+      vi.useFakeTimers();
+      try {
+        process.env.DB_POOL_HEALTH_INTERVAL_MS = '5000';
+        expect(startDbPoolHealthMonitor()).toBe(5_000);
+        expect(getLastDbPoolHealthAssessment()).toBeNull();
+
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        // The real probe is never reached: a default evaluation reads the real
+        // (empty) stats window, falls below threshold, and returns without one.
+        expect(getLastDbPoolHealthAssessment()?.verdict).toBe('below-threshold');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('skips a tick while the previous check is still in flight', async () => {
+      vi.useFakeTimers();
+      try {
+        process.env.DB_POOL_HEALTH_INTERVAL_MS = '5000';
+        startDbPoolHealthMonitor();
+
+        // The default evaluation returns synchronously enough that overlapping
+        // requires a stalled check; assert the guard's observable signal instead.
+        await vi.advanceTimersByTimeAsync(5_000);
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        // Two clean ticks, so nothing was skipped.
+        expect(console.warn).not.toHaveBeenCalledWith(
+          expect.stringContaining('skipping tick'),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe('probeFreshDatabaseConnection (real driver, no database)', () => {
+    it('throws DbPoolProbeUnavailableError when the URL cannot be parsed', async () => {
+      // This is the only production source of that class, and the class is what
+      // separates `unknown` from `database-unreachable`. Untested, a config fault
+      // could surface as a plain Error and be reported as an unreachable
+      // database the probe never even tried to contact.
+      process.env.DATABASE_URL_APP = 'not a url at all';
+      await expect(probeFreshDatabaseConnection(1_000)).rejects.toBeInstanceOf(
+        DbPoolProbeUnavailableError,
+      );
+    });
+
+    it('throws a plain error — NOT DbPoolProbeUnavailableError — when the connection is refused', async () => {
+      // A refused connection is real evidence about the database, so it must not
+      // be laundered into the inconclusive verdict.
+      process.env.DATABASE_URL_APP = 'postgresql://u:p@127.0.0.1:1/db';
+      const err = await probeFreshDatabaseConnection(2_000).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(DbPoolProbeUnavailableError);
+      expect(err).not.toBeInstanceOf(DbPoolProbeTimedOutError);
+    }, 10_000);
   });
 });
