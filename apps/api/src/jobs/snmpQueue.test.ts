@@ -23,6 +23,9 @@ vi.mock('../db', () => ({
     update: vi.fn(),
   },
   withSystemDbAccessContext: undefined,
+  // #1105 tripwire used by createInstrumentedQueue (the factory getSnmpQueue
+  // now builds through). No-op here — these tests hold no DB context.
+  assertOutsideHeldDbContext: vi.fn(),
 }));
 
 vi.mock('../db/schema', () => ({

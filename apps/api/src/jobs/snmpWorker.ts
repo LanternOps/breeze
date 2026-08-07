@@ -10,6 +10,7 @@ import * as dbModule from '../db';
 import { snmpDevices, snmpMetrics, snmpTemplates, devices } from '../db/schema';
 import { eq, and, or, sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
+import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
 import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
@@ -27,9 +28,20 @@ let snmpQueue: Queue | null = null;
 
 export function getSnmpQueue(): Queue {
   if (!snmpQueue) {
-    snmpQueue = new Queue(SNMP_QUEUE, {
-      connection: getBullMQConnection()
-    });
+    // Instrumented so an `add`/`addBulk` made inside a held DB context trips the
+    // #1105 tripwire instead of silently pinning a pooled connection
+    // idle-in-transaction.
+    //
+    // Partial coverage, deliberately stated: createInstrumentedQueue wraps only
+    // Queue.add/addBulk. `enqueueSnmpPoll` does up to three Redis round-trips
+    // BEFORE that (`queue.getJob`, then `job.getState` / `job.remove` on the Job
+    // object, which a Queue-level factory cannot reach), and on the reusable-state
+    // dedupe path it returns without ever calling add. In the steady state of a
+    // busy poll queue that is most iterations — so the tripwire alone would NOT
+    // have caught the 51-second scheduler hold. The depth assertions in
+    // snmpWorker.dbcontext.test.ts are the real regression fence; this is
+    // defense-in-depth on top of them.
+    snmpQueue = createInstrumentedQueue(SNMP_QUEUE);
   }
   return snmpQueue;
 }
@@ -62,22 +74,29 @@ interface PollSchedulerJobData {
 
 type SnmpJobData = PollDeviceJobData | ProcessPollResultsJobData | PollSchedulerJobData;
 
-function createSnmpWorker(): Worker<SnmpJobData> {
+export function createSnmpWorker(): Worker<SnmpJobData> {
   return new Worker<SnmpJobData>(
     SNMP_QUEUE,
     async (job: Job<SnmpJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        switch (job.data.type) {
-          case 'poll-scheduler':
-            return await processScheduler();
-          case 'poll-device':
-            return await processPollDevice(job.data);
-          case 'process-poll-results':
-            return await processPollResults(job.data);
-          default:
-            throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
-        }
-      });
+      // #1105: every job type below manages its OWN short-lived system DB
+      // context, so the Redis fan-out (poll-scheduler) and the agent WebSocket
+      // dispatch (poll-device) run with no pooled connection pinned
+      // idle-in-transaction.
+      //
+      // Do NOT reintroduce an outer runWithSystemDbAccess here:
+      // withDbAccessContext re-entry is a no-op (`if (dbContextStorage.getStore())
+      // return fn()`), so an outer wrap silently defeats every inner scope and
+      // restores the whole-job hold this fix removed.
+      switch (job.data.type) {
+        case 'poll-scheduler':
+          return await processScheduler();
+        case 'poll-device':
+          return await processPollDevice(job.data);
+        case 'process-poll-results':
+          return await processPollResults(job.data);
+        default:
+          throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
+      }
     },
     {
       connection: getBullMQConnection(),
@@ -90,12 +109,34 @@ function createSnmpWorker(): Worker<SnmpJobData> {
 }
 
 /**
- * Dispatch an SNMP poll command to an agent
+ * Outcome of the poll-device read phase.
+ *
+ * Discriminated on purpose: `{ device: null }`, "no OIDs" and "no online agent"
+ * are three different causes, and a bare `{device, oids, agentId}` struct only
+ * distinguishes them via the ORDER the caller happens to check them in. That
+ * made the log line a function of guard order rather than of the actual cause —
+ * reorder the guards and "No OIDs configured" silently becomes "No online
+ * agent", pointing ops at agent connectivity for a template misconfiguration.
+ * Note `agentId` is also genuinely *unknown* (not "none found") on the no-OIDs
+ * path, because the agent query is skipped there.
  */
-async function processPollDevice(data: PollDeviceJobData): Promise<{
-  dispatched: boolean;
-  agentId: string | null;
-}> {
+type PollDispatchInputs =
+  | { status: 'device-missing' }
+  | { status: 'no-oids' }
+  | { status: 'no-agent' }
+  | {
+      status: 'ok';
+      device: typeof snmpDevices.$inferSelect;
+      oids: string[];
+      agentId: string;
+    };
+
+/**
+ * Phase 1 of a poll-device job: read every row the dispatch needs inside ONE
+ * short-lived system DB context. Nothing here talks to Redis or the agent
+ * WebSocket, so the pooled connection is released before dispatch (#1105).
+ */
+async function loadPollDispatchInputs(data: PollDeviceJobData): Promise<PollDispatchInputs> {
   // Load the device config
   const [device] = await db
     .select()
@@ -104,8 +145,7 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
     .limit(1);
 
   if (!device) {
-    console.error(`[SnmpWorker] Device ${data.deviceId} not found`);
-    return { dispatched: false, agentId: null };
+    return { status: 'device-missing' };
   }
 
   // Load template OIDs if device has a template
@@ -126,8 +166,7 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
   }
 
   if (oids.length === 0) {
-    console.warn(`[SnmpWorker] No OIDs configured for device ${data.deviceId}`);
-    return { dispatched: false, agentId: null };
+    return { status: 'no-oids' };
   }
 
   // Find an online agent for this org.
@@ -150,8 +189,42 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
     .limit(1);
 
   const agentId = onlineAgent?.agentId ?? null;
+  if (!agentId) {
+    return { status: 'no-agent' };
+  }
 
-  if (!agentId || !isAgentConnected(agentId)) {
+  return { status: 'ok', device, oids, agentId };
+}
+
+/**
+ * Dispatch an SNMP poll command to an agent
+ */
+async function processPollDevice(data: PollDeviceJobData): Promise<{
+  dispatched: boolean;
+  agentId: string | null;
+}> {
+  // Phase 1 — all DB reads inside a short system DB context, which then CLOSES.
+  const inputs = await runWithSystemDbAccess(() => loadPollDispatchInputs(data));
+
+  // Phase 2 — connectivity check, credential decrypt and the agent WebSocket
+  // dispatch, all with NO DB context open (#1105). sendCommandToAgent writes to
+  // a socket whose peer may be slow or wedged; holding the transaction across
+  // it is what pinned pooled connections for tens of seconds.
+  switch (inputs.status) {
+    case 'device-missing':
+      console.error(`[SnmpWorker] Device ${data.deviceId} not found`);
+      return { dispatched: false, agentId: null };
+    case 'no-oids':
+      console.warn(`[SnmpWorker] No OIDs configured for device ${data.deviceId}`);
+      return { dispatched: false, agentId: null };
+    case 'no-agent':
+      console.warn(`[SnmpWorker] No online agent for org ${data.orgId}`);
+      return { dispatched: false, agentId: null };
+  }
+
+  const { device, oids, agentId } = inputs;
+
+  if (!isAgentConnected(agentId)) {
     console.warn(`[SnmpWorker] No online agent for org ${data.orgId}`);
     return { dispatched: false, agentId: null };
   }
@@ -177,18 +250,24 @@ async function processPollResults(data: ProcessPollResultsJobData): Promise<{
 }> {
   const now = new Date();
 
-  // Look up orgId from the SNMP device so every metric row carries it for RLS.
-  const [snmpDevice] = await db
-    .select({ orgId: snmpDevices.orgId })
-    .from(snmpDevices)
-    .where(eq(snmpDevices.id, data.deviceId))
-    .limit(1);
+  // Phase 1 — look up orgId from the SNMP device so every metric row carries it
+  // for RLS. Its own short context, which then closes.
+  const [snmpDevice] = await runWithSystemDbAccess(() =>
+    db
+      .select({ orgId: snmpDevices.orgId })
+      .from(snmpDevices)
+      .where(eq(snmpDevices.id, data.deviceId))
+      .limit(1)
+  );
 
   if (!snmpDevice) {
     console.error(`[SnmpWorker] SNMP device ${data.deviceId} not found; cannot write metrics`);
     return { metricsWritten: 0 };
   }
 
+  // Phase 2 — parse/shape the agent-supplied metrics with NO DB context open.
+  // An agent can return thousands of OIDs; this is pure CPU work and must not
+  // run while a pooled connection sits idle-in-transaction (#1105).
   const rows = data.metrics.map((metric) => ({
     deviceId: data.deviceId,
     orgId: snmpDevice.orgId,
@@ -199,18 +278,22 @@ async function processPollResults(data: ProcessPollResultsJobData): Promise<{
     timestamp: metric.timestamp ? new Date(metric.timestamp) : now
   }));
 
-  if (rows.length > 0) {
-    await db.insert(snmpMetrics).values(rows);
-  }
+  // Phase 3 — the writes, in one context so the metric insert and the device
+  // status stamp commit together.
+  await runWithSystemDbAccess(async () => {
+    if (rows.length > 0) {
+      await db.insert(snmpMetrics).values(rows);
+    }
 
-  // Update device lastPolled and status
-  await db
-    .update(snmpDevices)
-    .set({
-      lastPolled: now,
-      lastStatus: 'online'
-    })
-    .where(eq(snmpDevices.id, data.deviceId));
+    // Update device lastPolled and status
+    await db
+      .update(snmpDevices)
+      .set({
+        lastPolled: now,
+        lastStatus: 'online'
+      })
+      .where(eq(snmpDevices.id, data.deviceId));
+  });
 
   console.log(`[SnmpWorker] Wrote ${rows.length} metrics for device ${data.deviceId}`);
   return { metricsWritten: rows.length };
@@ -382,25 +465,34 @@ async function scheduleSnmpPolling(): Promise<void> {
 async function processScheduler(): Promise<{ enqueued: number }> {
   const now = new Date();
 
+  // Phase 1 — read the due devices inside a short system DB context, then let
+  // it CLOSE. Everything after this is pure Redis/BullMQ work; the enqueue loop
+  // below calls queue.getJob / getState / remove / add per device, and holding
+  // those round-trips inside the context is what left this select sitting
+  // `idle in transaction` for 51 seconds in production (#1105).
+  //
   // Find all active devices that are due for polling:
   //   lastPolled IS NULL  OR  lastPolled + pollingInterval <= now
-  const dueDevices = await db
-    .select({
-      id: snmpDevices.id,
-      orgId: snmpDevices.orgId,
-      pollingInterval: snmpDevices.pollingInterval,
-      lastPolled: snmpDevices.lastPolled
-    })
-    .from(snmpDevices)
-    .where(
-      and(
-        eq(snmpDevices.isActive, true),
-        sql`(${snmpDevices.lastPolled} IS NULL OR ${snmpDevices.lastPolled} + make_interval(secs => ${snmpDevices.pollingInterval}) <= ${now.toISOString()})`
+  const dueDevices = await runWithSystemDbAccess(() =>
+    db
+      .select({
+        id: snmpDevices.id,
+        orgId: snmpDevices.orgId,
+        pollingInterval: snmpDevices.pollingInterval,
+        lastPolled: snmpDevices.lastPolled
+      })
+      .from(snmpDevices)
+      .where(
+        and(
+          eq(snmpDevices.isActive, true),
+          sql`(${snmpDevices.lastPolled} IS NULL OR ${snmpDevices.lastPolled} + make_interval(secs => ${snmpDevices.pollingInterval}) <= ${now.toISOString()})`
+        )
       )
-    );
+  );
 
   if (dueDevices.length === 0) return { enqueued: 0 };
 
+  // Phase 2 — enqueue the per-device polls with NO DB context open.
   let enqueued = 0;
   for (const device of dueDevices) {
     try {
