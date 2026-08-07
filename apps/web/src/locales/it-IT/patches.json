@@ -235,7 +235,8 @@
     "sortBy": "Ordina per {{label}}",
     "errors": {
       "approvePatches": "Impossibile approvare le patch",
-      "declinePatches": "Impossibile rifiutare le patch"
+      "declinePatches": "Impossibile rifiutare le patch",
+      "staleList": "{{message}} Viene mostrato l'elenco caricato in precedenza, che potrebbe non essere aggiornato."
     },
     "severity": {
       "critical": "Critica",
@@ -274,7 +275,8 @@
       "selectAllPatches": "Seleziona tutte le patch",
       "deselectAllPatches": "Deseleziona tutte le patch",
       "selectPatch": "Seleziona {{title}}",
-      "deselectPatch": "Deseleziona {{title}}"
+      "deselectPatch": "Deseleziona {{title}}",
+      "selectAllMatching": "Seleziona tutte le {{count}} corrispondenti"
     },
     "table": {
       "patch": "Patch",
@@ -324,7 +326,9 @@
       "noDevicesForScan": "Nessun dispositivo disponibile per la scansione",
       "updateRing": "Impossibile aggiornare l'anello",
       "createRing": "Impossibile creare l'anello di aggiornamento",
-      "deleteRing": "Impossibile eliminare l'anello"
+      "deleteRing": "Impossibile eliminare l'anello",
+      "approveUnknown": "Stato di approvazione sconosciuto: non è stato possibile leggere la risposta del server. Aggiorna per verificare quali patch sono state approvate.",
+      "approveAbortedWithFailures": "{{message}} (Il server aveva inoltre rifiutato {{count}} patch in precedenza.)"
     },
     "toast": {
       "ringSaved": "Anello di aggiornamento salvato",
@@ -352,7 +356,9 @@
     "ringModal": {
       "editTitle": "Modifica anello di aggiornamento",
       "createTitle": "Crea anello di aggiornamento"
-    }
+    },
+    "truncatedNotice": "Vengono mostrate {{shown}} patch su {{total}}. I filtri qui restringono solo ciò che è già caricato, quindi il resto non è raggiungibile da questa vista: usa l'API delle patch per consultare il catalogo completo.",
+    "shiftedNotice": "Vengono mostrate {{shown}} patch su {{total}}: il catalogo è cambiato durante il caricamento. Ricarica per vedere il resto."
   },
   "ringSelector": {
     "label": "Anello di aggiornamento:",

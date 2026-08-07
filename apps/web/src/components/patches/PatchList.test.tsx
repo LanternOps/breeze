@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import '@/lib/i18n';
 
@@ -188,5 +188,79 @@ describe('PatchList header sorting', () => {
 
     fireEvent.click(screen.getByTestId('patch-sort-title'));
     expect(screen.getByText('Page 1 of 3')).toBeTruthy();
+  });
+});
+
+// #3157: the header checkbox only ever covers the visible page. With a
+// catalog spanning many pages that meant one select-all click per page before
+// a bulk approve could cover everything, so the toolbar offers a single
+// "select all N matching" action over the full filtered set.
+describe('PatchList select-all across pages (#3157)', () => {
+  const selectAllHeader = () =>
+    within(screen.getByTestId('responsive-table-desktop')).getByRole('button', {
+      name: 'Select all patches',
+    });
+
+  it('offers "select all matching" once the filtered set spans more than one page', () => {
+    // 60 patches at the default page size of 25 => 3 pages.
+    render(<PatchList patches={makePatches(60)} onBulkApprove={async () => {}} />);
+
+    // No selection yet — the toolbar (and the action) are hidden.
+    expect(screen.queryByTestId('patch-select-all-matching')).toBeNull();
+
+    fireEvent.click(selectAllHeader());
+    expect(screen.getByText('25 selected')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('patch-select-all-matching'));
+    expect(screen.getByText('60 selected')).toBeTruthy();
+    // Every matching patch is now selected, so the action retires itself.
+    expect(screen.queryByTestId('patch-select-all-matching')).toBeNull();
+  });
+
+  it('passes every selected id to the bulk approve handler, not just the visible page', async () => {
+    const approved: string[][] = [];
+    render(
+      <PatchList patches={makePatches(60)} onBulkApprove={async (ids) => { approved.push(ids); }} />
+    );
+
+    fireEvent.click(selectAllHeader());
+    fireEvent.click(screen.getByTestId('patch-select-all-matching'));
+    fireEvent.click(screen.getByTestId('patch-bulk-approve'));
+
+    await waitFor(() => expect(approved).toHaveLength(1));
+    expect(approved[0]).toHaveLength(60);
+  });
+
+  it('does not offer the action when everything already fits on one page', () => {
+    render(<PatchList patches={makePatches(10)} onBulkApprove={async () => {}} />);
+
+    fireEvent.click(selectAllHeader());
+    expect(screen.getByText('10 selected')).toBeTruthy();
+    expect(screen.queryByTestId('patch-select-all-matching')).toBeNull();
+  });
+
+  it('scopes "select all matching" to the active filter, not the whole catalog', () => {
+    const patches = [
+      ...makePatches(40),
+      ...Array.from({ length: 30 }, (_, i) =>
+        makePatch({
+          id: `11111111-0000-0000-0000-${String(i + 1).padStart(12, '0')}`,
+          title: `Critical ${i + 1}`,
+          severity: 'critical',
+        })
+      ),
+    ];
+    render(<PatchList patches={patches} onBulkApprove={async () => {}} />);
+
+    // The severity <select> owns the "All severities" option.
+    const severitySelect = screen
+      .getByRole('option', { name: 'All Severities' })
+      .closest('select') as HTMLSelectElement;
+    fireEvent.change(severitySelect, { target: { value: 'critical' } });
+    fireEvent.click(selectAllHeader());
+    fireEvent.click(screen.getByTestId('patch-select-all-matching'));
+
+    // 30 criticals, not all 70 patches.
+    expect(screen.getByText('30 selected')).toBeTruthy();
   });
 });

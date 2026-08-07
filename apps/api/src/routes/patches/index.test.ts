@@ -216,14 +216,17 @@ function selectPatchListResult(rows: unknown[]) {
 // can assert how sort + pagination params were translated into the query.
 function selectPatchListCapture(rows: unknown[], capture: {
   orderBy?: unknown;
+  orderByAll?: unknown[];
   limit?: unknown;
   offset?: unknown;
 }) {
   return {
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
-        orderBy: vi.fn().mockImplementation((arg: unknown) => {
+        orderBy: vi.fn().mockImplementation((...args: unknown[]) => {
+          const [arg] = args;
           capture.orderBy = arg;
+          capture.orderByAll = args;
           return {
             limit: vi.fn().mockImplementation((lim: unknown) => {
               capture.limit = lim;
@@ -397,6 +400,50 @@ describe('patch routes', () => {
 
     expect(res.status).toBe(200);
     expect(capture.orderBy).toEqual({ op: 'desc', value: 'patches.createdAt' });
+  });
+
+  // #3157: the web now pages through this endpoint instead of taking only the
+  // first page, which makes row order across pages load-bearing. `created_at`
+  // is defaultNow() and agent ingest runs inside a transaction, so an entire
+  // scan report shares one timestamp — LIMIT/OFFSET over that alone has no
+  // defined order between pages, and a walk would get some rows twice and miss
+  // others. The unique `id` tiebreaker is what makes the walk an enumeration.
+  it('appends a unique id tiebreaker to the sort so paging is stable', async () => {
+    const capture: { orderBy?: unknown; orderByAll?: unknown[] } = {};
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchListCapture([], capture) as any)
+      .mockReturnValueOnce(selectWhereResult([{ count: 0 }]) as any)
+      .mockReturnValueOnce(selectSourceCountsResult() as any);
+
+    const res = await app.request('/patches', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(capture.orderByAll).toEqual([
+      { op: 'desc', value: 'patches.createdAt' },
+      { op: 'desc', value: 'patches.id' },
+    ]);
+  });
+
+  it('keeps the id tiebreaker aligned with an ascending explicit sort', async () => {
+    const capture: { orderBy?: unknown; orderByAll?: unknown[] } = {};
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchListCapture([], capture) as any)
+      .mockReturnValueOnce(selectWhereResult([{ count: 0 }]) as any)
+      .mockReturnValueOnce(selectSourceCountsResult() as any);
+
+    const res = await app.request('/patches?sortBy=severity&sortDir=asc', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(capture.orderByAll).toEqual([
+      { op: 'asc', value: 'patches.severity' },
+      { op: 'asc', value: 'patches.id' },
+    ]);
   });
 
   it('maps a whitelisted sortBy/sortDir to the matching column and direction', async () => {
