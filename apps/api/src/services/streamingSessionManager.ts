@@ -21,7 +21,7 @@ import type { AuthContext } from '../middleware/auth';
 import { buildOrgAccessClosures } from '../middleware/auth';
 import type { AiStreamEvent, AiApprovalMode } from '@breeze/shared/types/ai';
 import { AsyncEventQueue } from '../utils/asyncQueue';
-import { recordUsageFromSdkResult, calculateCostCents } from './aiCostTracker';
+import { recordUsageFromSdkResult, calculateCostCents, sumInputTokens } from './aiCostTracker';
 import { sanitizeErrorForClient } from './aiAgent';
 import { captureException } from './sentry';
 import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
@@ -1093,10 +1093,15 @@ export class StreamingSessionManager {
             // Per-user usage hook (AI for Office): runs alongside the org-level
             // recordUsageFromSdkResult above, never instead of it.
             const turnCostCents = Math.round(usageData.total_cost_usd * 100 * 100) / 100;
+            // Cache-read and cache-creation tokens are input tokens — they are
+            // split out for PRICING only. Reporting the uncached slice alone made
+            // per-user ledgers and the client's turn summary read near-zero on
+            // any cached (i.e. any multi-turn) session. See sumInputTokens.
+            const turnInputTokens = sumInputTokens(usageData.usage);
             if (session.recordExtraUsage) {
               try {
                 await session.recordExtraUsage({
-                  inputTokens: usageData.usage.input_tokens,
+                  inputTokens: turnInputTokens,
                   outputTokens: usageData.usage.output_tokens,
                   costCents: turnCostCents,
                 });
@@ -1112,7 +1117,7 @@ export class StreamingSessionManager {
             session.eventBus.publish({
               type: 'done',
               usage: {
-                inputTokens: usageData.usage.input_tokens,
+                inputTokens: turnInputTokens,
                 outputTokens: usageData.usage.output_tokens,
                 costCents: turnCostCents,
               },

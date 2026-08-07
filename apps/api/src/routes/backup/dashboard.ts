@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { eq, and, sql, gte, lte, desc, inArray } from 'drizzle-orm';
+import { eq, and, sql, gte, lte, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import { requirePermission } from '../../middleware/auth';
 import {
@@ -12,6 +12,12 @@ import {
 } from '../../db/schema';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import { resolveBackupConfigForDevice, resolveAllBackupAssignedDevices } from '../../services/featureConfigResolver';
+import {
+  backupJobHistoryOrderBy,
+  compareBackupRunRecency,
+  latestBackupRunOrderBy,
+  latestBackupRunWindowOrder,
+} from '../../services/backupJobOrdering';
 import { getNextRun, resolveScopedOrgId } from './helpers';
 import { usageHistoryQuerySchema } from './schemas';
 
@@ -71,7 +77,12 @@ async function resolveAttentionItems(
         errorLog: backupJobs.errorLog,
         completedAt: backupJobs.completedAt,
         createdAt: backupJobs.createdAt,
-        rn: sql<number>`row_number() over (partition by ${backupJobs.deviceId} order by ${backupJobs.createdAt} desc)`.as('rn'),
+        // rn=1 must be the device's most recent RUN, not the most recently
+        // inserted row — see backupJobOrdering. Ordering this window by
+        // created_at alone let a queued job (or the loser of a same-transaction
+        // fan-out tie) take rn=1 and mask the failed run underneath it, so the
+        // device never showed up in attention items at all.
+        rn: sql<number>`row_number() over (partition by ${backupJobs.deviceId} order by ${latestBackupRunWindowOrder})`.as('rn'),
       })
       .from(backupJobs)
       .where(and(eq(backupJobs.orgId, orgId), jobDeviceScope))
@@ -340,7 +351,10 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
         .leftJoin(devices, eq(backupJobs.deviceId, devices.id))
         .leftJoin(backupConfigs, eq(backupJobs.configId, backupConfigs.id))
         .where(and(eq(backupJobs.orgId, orgId), jobDeviceScope))
-        .orderBy(desc(backupJobs.createdAt))
+        // Activity feed, so created_at stays primary (a job queued seconds ago
+        // belongs at the top) — but the order has to be TOTAL, or a
+        // same-transaction fan-out reshuffles the top 5 between refreshes.
+        .orderBy(...backupJobHistoryOrderBy)
         .limit(5),
       resolveAttentionItems(orgId, jobDeviceScope, allowedDeviceIds, noSiteAllowedDevices),
     ]);
@@ -434,14 +448,26 @@ dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ
   // Resolve backup config via configuration policy system
   const resolved = await resolveBackupConfigForDevice(deviceId);
 
-  // Get recent jobs for this device
-  const jobs = await db
+  // Get recent jobs for this device, most-recent RUN first.
+  //
+  // `created_at` is only the insert timestamp: the profile fan-out writes a
+  // whole occurrence's jobs in one transaction, so they share it exactly and
+  // `ORDER BY created_at DESC` is not a total order. QA hit that tie and the
+  // planner handed back the OLDER run, which silently hid the VSS Status panel
+  // (it renders only when the chosen lastJob carries vss_metadata).
+  const jobRows = await db
     .select()
     .from(backupJobs)
     .where(
       and(eq(backupJobs.orgId, orgId), eq(backupJobs.deviceId, deviceId))
     )
-    .orderBy(desc(backupJobs.createdAt));
+    .orderBy(...latestBackupRunOrderBy);
+
+  // This one array answers three questions below (last job / last success /
+  // last failure), so recency is applied once here through the comparator that
+  // mirrors latestBackupRunOrderBy — the three answers can't drift apart, and
+  // the rule is unit-testable without a live planner.
+  const jobs = [...jobRows].sort(compareBackupRunRecency);
 
   const lastJob = jobs[0] ?? null;
   // A partial run counts here for the same reason it counts for RPO: it left a

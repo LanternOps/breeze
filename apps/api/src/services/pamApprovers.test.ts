@@ -14,6 +14,7 @@ vi.mock('../db/schema', () => ({
   rolePermissions: { roleId: 'role_id', permissionId: 'permission_id' },
   permissions: { id: 'id', resource: 'resource', action: 'action' },
   mobileDevices: { userId: 'user_id', status: 'status', notificationsEnabled: 'notifications_enabled' },
+  users: { id: 'users.id', status: 'users.status' },
 }));
 
 import { db } from '../db';
@@ -23,11 +24,29 @@ import { resolveElevationApprovers } from './pamApprovers';
  * The resolver issues these selects in order:
  *   1. granting roles:  select().from(rolePermissions).innerJoin(permissions).where()
  *   2. org partner:     select().from(organizations).where().limit()
- *   3. org members:     select().from(organizationUsers).where()
- *   4. partner members: select().from(partnerUsers).where()
+ *   3. org members:     select().from(organizationUsers).innerJoin(users).where()
+ *   4. partner members: select().from(partnerUsers).innerJoin(users).where()
  *   5. mobile devices:  select().from(mobileDevices).where()
  * (4 is skipped when the org has no partner; 5 is skipped when no candidates.)
+ *
+ * 3 and 4 gained their `users` innerJoin in #3174. `spies` exposes the
+ * arguments those two calls actually received so a test can assert on the real
+ * join target and predicate rather than on what the mock was told to return —
+ * the mock resolves its rows regardless of the WHERE, so a test that only
+ * checked returned ids could not fail if the status gate were deleted.
  */
+const spies = {
+  orgMembersInnerJoin: vi.fn(),
+  orgMembersWhere: vi.fn(),
+  partnerMembersInnerJoin: vi.fn(),
+  partnerMembersWhere: vi.fn(),
+};
+
+/** Serialize a drizzle condition so a test can look for a column/value in it. */
+function conditionText(cond: unknown): string {
+  return JSON.stringify(cond, (_k, v) => (typeof v === 'bigint' ? String(v) : v)) ?? '';
+}
+
 function queueSelects(opts: {
   grantingRoles: Array<{ roleId: string }>;
   org: Array<{ partnerId: string | null }>;
@@ -50,18 +69,18 @@ function queueSelects(opts: {
     }),
   } as any);
 
-  // 3. org members (where())
+  // 3. org members (innerJoin().where())
+  spies.orgMembersWhere.mockResolvedValue(opts.orgMembers);
+  spies.orgMembersInnerJoin.mockReturnValue({ where: spies.orgMembersWhere });
   vi.mocked(db.select).mockReturnValueOnce({
-    from: vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(opts.orgMembers),
-    }),
+    from: vi.fn().mockReturnValue({ innerJoin: spies.orgMembersInnerJoin }),
   } as any);
 
-  // 4. partner members (where())
+  // 4. partner members (innerJoin().where())
+  spies.partnerMembersWhere.mockResolvedValue(opts.partnerMembers);
+  spies.partnerMembersInnerJoin.mockReturnValue({ where: spies.partnerMembersWhere });
   vi.mocked(db.select).mockReturnValueOnce({
-    from: vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(opts.partnerMembers),
-    }),
+    from: vi.fn().mockReturnValue({ innerJoin: spies.partnerMembersInnerJoin }),
   } as any);
 
   // 5. mobile devices (where())
@@ -76,6 +95,7 @@ describe('resolveElevationApprovers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(db.select).mockReset();
+    for (const s of Object.values(spies)) s.mockReset();
   });
 
   it('returns distinct userIds with an active mobile device (org + partner members)', async () => {
@@ -127,6 +147,52 @@ describe('resolveElevationApprovers', () => {
     expect(result).toEqual([]);
     // Short-circuits before any membership lookup.
     expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  // #3174: memberships survive an account being disabled or left in 'invited',
+  // so both candidate queries must join `users` and require status='active'.
+  // These assert the join target and the predicate that reach drizzle, not the
+  // ids the mock was primed to return — the latter cannot fail if the gate goes.
+  it('gates direct org members on an active user account', async () => {
+    queueSelects({
+      grantingRoles: [{ roleId: 'role-exec' }],
+      org: [{ partnerId: 'partner-1' }],
+      orgMembers: [{ userId: 'u-org' }],
+      partnerMembers: [],
+      mobile: [{ userId: 'u-org' }],
+    });
+
+    await resolveElevationApprovers('org-1');
+
+    expect(spies.orgMembersInnerJoin).toHaveBeenCalledTimes(1);
+    expect(spies.orgMembersInnerJoin.mock.calls[0]?.[0]).toEqual({
+      id: 'users.id',
+      status: 'users.status',
+    });
+    const where = conditionText(spies.orgMembersWhere.mock.calls[0]?.[0]);
+    expect(where).toContain('users.status');
+    expect(where).toContain('active');
+  });
+
+  it('gates partner members on an active user account', async () => {
+    queueSelects({
+      grantingRoles: [{ roleId: 'role-exec' }],
+      org: [{ partnerId: 'partner-1' }],
+      orgMembers: [],
+      partnerMembers: [{ userId: 'u-all', orgAccess: 'all', orgIds: null }],
+      mobile: [{ userId: 'u-all' }],
+    });
+
+    await resolveElevationApprovers('org-1');
+
+    expect(spies.partnerMembersInnerJoin).toHaveBeenCalledTimes(1);
+    expect(spies.partnerMembersInnerJoin.mock.calls[0]?.[0]).toEqual({
+      id: 'users.id',
+      status: 'users.status',
+    });
+    const where = conditionText(spies.partnerMembersWhere.mock.calls[0]?.[0]);
+    expect(where).toContain('users.status');
+    expect(where).toContain('active');
   });
 
   it('returns [] when eligible members have no active mobile device', async () => {
