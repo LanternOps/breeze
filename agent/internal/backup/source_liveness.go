@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -113,6 +114,18 @@ func newShadowRootLiveness(shadowPaths map[string]string) sourceLivenessFn {
 		roots = append(roots, root)
 	}
 	if len(roots) == 0 {
+		if len(shadowPaths) > 0 {
+			// VSS really was active for this run, yet not one of its roots
+			// could be watched — so the #3260 guard is OFF and a shadow copy
+			// that dies mid-run will once again be recorded as a pile of
+			// per-file failures. Warn, not Debug: at production verbosity a
+			// silent nil here is indistinguishable from "the guard is armed
+			// and saw nothing wrong", which is exactly the ambiguity this
+			// whole change exists to remove.
+			log.Warn("VSS is active but no shadow copy root could be watched; mid-run snapshot-loss detection is disabled for this run",
+				"rootsOffered", len(shadowPaths),
+			)
+		}
 		return nil
 	}
 	// Longest root first so prefix matching picks the most specific one, and
@@ -126,6 +139,13 @@ func newShadowRootLiveness(shadowPaths map[string]string) sourceLivenessFn {
 
 	log.Debug("watching shadow copy roots for mid-run disappearance", "roots", len(roots))
 
+	// warnedInconclusive tracks roots already reported as un-checkable, so the
+	// warning below fires once per root per run rather than once per failing
+	// file. Guarded because nothing in the contract promises the probe is only
+	// ever called from the single upload goroutine.
+	var mu sync.Mutex
+	warnedInconclusive := map[string]bool{}
+
 	return func(sourcePath string) error {
 		root, ok := matchShadowRoot(roots, sourcePath)
 		if !ok {
@@ -135,13 +155,33 @@ func newShadowRootLiveness(shadowPaths map[string]string) sourceLivenessFn {
 			// There is no snapshot behind it to have gone away.
 			return nil
 		}
-		if !shadowRootMissing(root) {
+		missing, inconclusive := shadowRootMissing(root)
+		if inconclusive != nil {
+			// The stat failed for a reason other than "does not exist", so it
+			// is not evidence of anything and the run continues. But a root
+			// that answers this way every time leaves the guard unable to
+			// decide, for the rest of the run, whether a failure is the file's
+			// fault or the snapshot's — the same ambiguity as having no guard
+			// at all, so it has to be visible above Debug.
+			mu.Lock()
+			first := !warnedInconclusive[root]
+			warnedInconclusive[root] = true
+			mu.Unlock()
+			if first {
+				log.Warn("shadow copy root liveness check is inconclusive; treating the snapshot as alive and cannot confirm this root for the rest of the run",
+					"root", root,
+					"error", inconclusive.Error(),
+				)
+			}
+			return nil
+		}
+		if !missing {
 			return nil
 		}
 		// Confirm before killing the run. A root that is genuinely gone stays
 		// gone; a one-off anomalous stat resolves on the second look.
 		time.Sleep(shadowRootConfirmDelay)
-		if !shadowRootMissing(root) {
+		if confirmed, _ := shadowRootMissing(root); !confirmed {
 			log.Warn("shadow copy root briefly failed to resolve but came back, continuing",
 				"root", root,
 			)
@@ -153,9 +193,19 @@ func newShadowRootLiveness(shadowPaths map[string]string) sourceLivenessFn {
 
 // matchShadowRoot returns the watched root that sourcePath was read through.
 // roots must be ordered longest-first.
+//
+// The match is on a path BOUNDARY, not a bare string prefix: shadow-copy device
+// paths are numbered (`...HarddiskVolumeShadowCopy2` vs `...ShadowCopy26`), so a
+// bare prefix test would let a file under ShadowCopy26 be checked against
+// ShadowCopy2's root whenever 26 itself is unwatched — and abort a healthy run
+// because some other volume's snapshot went away.
 func matchShadowRoot(roots []string, sourcePath string) (string, bool) {
 	for _, root := range roots {
-		if strings.HasPrefix(sourcePath, root) {
+		if !strings.HasPrefix(sourcePath, root) {
+			continue
+		}
+		rest := sourcePath[len(root):]
+		if rest == "" || rest[0] == '\\' || rest[0] == '/' {
 			return root, true
 		}
 	}
@@ -164,21 +214,19 @@ func matchShadowRoot(roots []string, sourcePath string) (string, bool) {
 
 // shadowRootMissing reports whether a root has stopped existing.
 //
-// Only a not-exist answer counts. Any OTHER stat error — a momentary I/O
-// hiccup, a permission oddity — is NOT evidence that the snapshot went away,
-// and aborting a whole run on it would recreate the bug this guards against in
-// a new form.
-func shadowRootMissing(root string) bool {
+// Three-way, not boolean: (false, nil) alive, (true, nil) confirmed gone, and
+// (false, err) inconclusive. Only a not-exist answer counts as gone. Any OTHER
+// stat error — a momentary I/O hiccup, a permission oddity — is NOT evidence
+// that the snapshot went away, and aborting a whole run on it would recreate
+// the bug this guards against in a new form. The error is returned rather than
+// swallowed so the caller can surface a root it can no longer vouch for.
+func shadowRootMissing(root string) (missing bool, inconclusive error) {
 	_, err := snapshotRootStat(root)
 	if err == nil {
-		return false
+		return false, nil
 	}
 	if errors.Is(err, fs.ErrNotExist) {
-		return true
+		return true, nil
 	}
-	log.Debug("shadow copy root liveness check was inconclusive, treating the snapshot as alive",
-		"root", root,
-		"error", err.Error(),
-	)
-	return false
+	return false, err
 }

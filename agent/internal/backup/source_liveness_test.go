@@ -192,6 +192,60 @@ func TestNewShadowRootLiveness(t *testing.T) {
 	}
 }
 
+// Shadow-copy device paths are NUMBERED, so `...ShadowCopy2` is a bare string
+// prefix of `...ShadowCopy26`. Matching must be on a path boundary: otherwise a
+// file rooted under an UNWATCHED ShadowCopy26 would be checked against
+// ShadowCopy2, and losing that unrelated volume would abort a healthy run.
+func TestMatchShadowRoot_MatchesOnPathBoundaryNotBarePrefix(t *testing.T) {
+	const shortRoot = `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy2`
+	// Longest-first, as newShadowRootLiveness orders them.
+	roots := []string{shadowC, shortRoot}
+
+	tests := []struct {
+		name     string
+		path     string
+		wantRoot string
+		wantOK   bool
+	}{
+		{
+			name:     "path under the short root matches it",
+			path:     shortRoot + `\Users\u\a.txt`,
+			wantRoot: shortRoot,
+			wantOK:   true,
+		},
+		{
+			name:     "path under the long root matches the long root, not the short one",
+			path:     shadowC + `\Users\u\a.txt`,
+			wantRoot: shadowC,
+			wantOK:   true,
+		},
+		{
+			// The regression this boundary check exists for: ShadowCopy27 is
+			// not watched, and must NOT fall through onto ShadowCopy2.
+			name:   "path under an unwatched sibling root matches nothing",
+			path:   shadowD + `\Data\db.mdf`,
+			wantOK: false,
+		},
+		{
+			name:     "the bare root itself matches",
+			path:     shortRoot,
+			wantRoot: shortRoot,
+			wantOK:   true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root, ok := matchShadowRoot(roots, tc.path)
+			if ok != tc.wantOK {
+				t.Fatalf("matchShadowRoot(%q) ok = %v, want %v (root %q)", tc.path, ok, tc.wantOK, root)
+			}
+			if ok && root != tc.wantRoot {
+				t.Fatalf("matchShadowRoot(%q) = %q, want %q", tc.path, root, tc.wantRoot)
+			}
+		})
+	}
+}
+
 // A stat that fails for a reason OTHER than "does not exist" is not evidence
 // the snapshot went away. Aborting a whole run on a transient I/O hiccup would
 // recreate #3260 in a new form.

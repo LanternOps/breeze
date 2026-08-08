@@ -1253,7 +1253,7 @@ jobs:
           CGO_ENABLED: "0"
         shell: pwsh
         run: |
-          $out = go test ./internal/backup -run 'TestPermanentWindowsErrnoConstantsMatchWin32|TestClassifyPermanentUploadError|TestLookupPermanentWindowsErrno|TestRewritePathsForVSS|TestReportableLiveReads|TestSummarizeLiveReads' -v 2>&1
+          $out = go test ./internal/backup -run 'TestWindowsUploadErrnoConstantsMatchWin32|TestClassifyUploadFailure|TestLookupWindowsUploadErrno|TestRewritePathsForVSS|TestReportableLiveReads|TestSummarizeLiveReads' -v 2>&1
           $exit = $LASTEXITCODE
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
