@@ -243,6 +243,21 @@ describe('analyze_fleet_metrics AI tool', () => {
     expect(parsed.topDevices[1].deviceId).toBe('d2');
     expect(parsed.fleetSummary.max).toBe(90);
     expect(parsed.fleetSummary.sampleCount).toBe(25);
+    // Fleet-level p95 is an explicitly-approximate figure (average of each
+    // device's peak p95: (85+15)/2 = 50) — named accordingly so a model
+    // consuming this output can't mistake it for a true fleet-wide
+    // percentile. Must NOT be exposed under a bare `p95` key.
+    expect(parsed.fleetSummary.p95ApproxAvgOfDevicePeaks).toBe(50);
+    expect(parsed.fleetSummary).not.toHaveProperty('p95');
+  });
+
+  it('discloses the fleet p95 approximation in the tool description (not just a source comment)', () => {
+    const registry = new Map<string, AiTool>();
+    registerPerformanceTools(registry);
+    const description = registry.get('analyze_fleet_metrics')!.definition.description!;
+
+    expect(description).toContain('p95ApproxAvgOfDevicePeaks');
+    expect(description.toLowerCase()).toContain('approximation');
   });
 
   it('caps topDevices at topN while still reporting the full deviceCount', async () => {
@@ -271,6 +286,7 @@ describe('analyze_fleet_metrics AI tool', () => {
     expect(parsed.deviceCount).toBe(0);
     expect(parsed.topDevices).toEqual([]);
     expect(typeof parsed.note).toBe('string');
+    expect(parsed.fleetSummary.p95ApproxAvgOfDevicePeaks).toBeNull();
     expect(mockDb.select).not.toHaveBeenCalled();
   });
 

@@ -320,7 +320,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
     tier: 1 as AiToolTier,
     definition: {
       name: 'analyze_fleet_metrics',
-      description: 'Aggregate a metric (CPU/RAM/disk percent) across the fleet from pre-computed rollups: per-device avg / peak-p95 / max over a time window, ranked by peak p95 descending, plus a fleet-wide summary. Read-only.',
+      description: 'Aggregate a metric (CPU/RAM/disk percent) across the fleet from pre-computed rollups: per-device avg / peak-p95 / max over a time window, ranked by peak p95 descending, plus a fleet-wide summary. The fleet summary\'s p95 (p95ApproxAvgOfDevicePeaks) is an approximation — the average of each device\'s peak per-bucket p95, not a true recomputed fleet-wide percentile. Read-only.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -364,7 +364,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
           bucketSeconds,
           topN,
           deviceCount: 0,
-          fleetSummary: { avg: null, p95: null, max: null, sampleCount: 0 },
+          fleetSummary: { avg: null, p95ApproxAvgOfDevicePeaks: null, max: null, sampleCount: 0 },
           topDevices: [],
           note: SITE_SCOPE_EMPTY_NOTE,
         });
@@ -450,7 +450,12 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
         deviceCount: perDevice.length,
         fleetSummary: {
           avg: fleetAvg,
-          p95: fleetP95Values.length > 0
+          // Self-describing key (not a bare `p95`): this is the AVERAGE of
+          // each device's peak per-bucket p95, not a true recomputed
+          // fleet-wide percentile — see the aggregation-caveat comment above
+          // and the tool description. A bare `p95` name would silently read
+          // as a real percentile to a model consuming this output.
+          p95ApproxAvgOfDevicePeaks: fleetP95Values.length > 0
             ? round2(fleetP95Values.reduce((a, b) => a + b, 0) / fleetP95Values.length)
             : null,
           max: fleetMaxValues.length > 0 ? round2(Math.max(...fleetMaxValues)) : null,
