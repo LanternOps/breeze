@@ -35,11 +35,17 @@ import (
 // Deliberately NOT called "expired": a VSS_CTX_BACKUP shadow copy has no TTL,
 // so nothing here times out. It becomes unavailable — deleted by the provider,
 // lost to diff-area exhaustion, removed externally, or auto-released when
-// IVssBackupComponents is released (Microsoft-documented behaviour for
-// auto-release VSS_CTX_BACKUP copies; the contrary note in
-// vss.CreateShadowCopy, which claims reclamation only at requester process
-// exit, is tracked as #3269). The guard is agnostic about which; it only
-// reports that the source went away.
+// IVssBackupComponents is released. That last cause was the likely trigger of
+// the field repro above and has since been FIXED (#3269): vss.CreateShadowCopy
+// no longer releases the components object on its way out, and the session now
+// holds it open on a dedicated COM thread until the run ends.
+//
+// This guard stays as defence in depth. The other three causes are real and
+// entirely outside our control, and the whole point of the guard is that it is
+// agnostic about which one fired — it only reports that the source went away.
+// Removing it because one known cause was fixed would put us back to recording
+// a dead snapshot as a pile of per-file faults the next time one of the others
+// happens.
 var errSourceSnapshotGone = errors.New("backup source snapshot is no longer available (VSS shadow copy deleted or became unavailable mid-run)")
 
 // sourceLivenessFn reports a non-nil error when the point-in-time source that
