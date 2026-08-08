@@ -787,7 +787,13 @@ export function requireMfa() {
     }
 
     if (!hasSatisfiedMfa(auth)) {
-      throw new HTTPException(403, { message: 'MFA required' });
+      // Coded directly via c.json rather than HTTPException: the global
+      // onError handler (index.ts) only ever forwards `err.message` for a
+      // caught HTTPException, so a `code` set on the exception itself would
+      // never reach the response body. Returning here matches the coded-error
+      // shape used elsewhere (e.g. REMOTE_ACCESS_POLICY_DENIED in tunnels.ts)
+      // so callers can branch on `code` instead of parsing the message.
+      return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
     }
 
     await next();

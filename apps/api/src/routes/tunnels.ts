@@ -4,7 +4,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, desc, inArray, isNull, lt, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { tunnelSessions, tunnelAllowlists, devices, users, remoteSessions, sites, auditLogs } from '../db/schema';
+import { tunnelSessions, tunnelAllowlists, devices, users, remoteSessions, sites, auditLogs, discoveredAssets } from '../db/schema';
 import { captureException } from '../services/sentry';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
@@ -78,6 +78,14 @@ const updateAllowlistSchema = z.object({
   pattern: z.string().min(1).max(255).optional(),
   description: z.string().max(500).optional(),
   enabled: z.boolean().optional(),
+});
+
+const proxyConnectSchema = z.object({
+  deviceId: z.string().guid(),
+  discoveredAssetId: z.string().guid(),
+  port: z.number().int().min(1).max(65535),
+  scheme: z.enum(['http', 'https']),
+  skipTlsVerify: z.boolean(),
 });
 
 // --- Helpers ---
@@ -433,6 +441,186 @@ tunnelRoutes.post(
     );
 
     return c.json(session, 201);
+  }
+);
+
+// POST /tunnels/proxy-connect — idempotent "Connect" for a discovered asset's
+// open port (design spec Architecture C). Folds the old two-step "Enable Proxy
+// Access" + "Connect" flow into one op: ensure a single-port destination
+// allowlist rule for the asset:port exists (insert-if-absent against the
+// Task-1 unique index on tunnel_allowlists), then create the proxy tunnel
+// session exactly as POST /tunnels does for type:'proxy'. Response is
+// `{tunnel}` only — no ticket; ProxyTunnelPage always mints its own on load,
+// so bundling one here would be one-time capability material minted for
+// nothing.
+tunnelRoutes.post(
+  '/proxy-connect',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  requireMfa(),
+  zValidator('json', proxyConnectSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const body = c.req.valid('json');
+    const sourceIp = getClientIp(c);
+
+    const device = await getDeviceForTunnel(c, body.deviceId, auth);
+    if (device === 'SITE_ACCESS_DENIED') {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+    if (!device) {
+      return c.json({ error: 'Device not found or access denied' }, 404);
+    }
+
+    if (device.status !== 'online') {
+      return c.json({ error: 'Device is not online' }, 400);
+    }
+
+    if (!device.agentId || !isAgentConnected(device.agentId)) {
+      return c.json({ error: 'Agent is not connected' }, 400);
+    }
+
+    // Remote access policy enforcement (mirrors POST /tunnels).
+    const policyCheck = await checkRemoteAccess(body.deviceId, 'proxy');
+    if (!policyCheck.allowed) {
+      return c.json({
+        error: policyCheck.reason,
+        code: 'REMOTE_ACCESS_POLICY_DENIED',
+        capability: 'proxy',
+        policyName: policyCheck.policyName,
+      }, 403);
+    }
+
+    // Resolve the discovered asset, org-checked against the bridge device's
+    // org (the same boundary getDeviceForTunnel already enforced above).
+    const [asset] = await db
+      .select()
+      .from(discoveredAssets)
+      .where(and(eq(discoveredAssets.id, body.discoveredAssetId), eq(discoveredAssets.orgId, device.orgId)))
+      .limit(1);
+    if (!asset) {
+      return c.json({ error: 'Discovered asset not found or access denied' }, 404);
+    }
+
+    const ip = String(asset.ipAddress);
+    const siteId = asset.siteId;
+
+    // Source IP + blocked-CIDR checks mirror POST /tunnels' non-VNC path.
+    if (!(await isSourceIpAllowed(sourceIp, device.orgId))) {
+      return c.json({ error: 'Source IP not permitted' }, 403);
+    }
+
+    const blockResult = isTargetBlocked(ip, body.port, false);
+    if (blockResult.blocked) {
+      return c.json({ error: `Target blocked: ${blockResult.reason}` }, 403);
+    }
+
+    // Ensure a single-port destination rule for this asset:port. Attempt the
+    // insert; on a unique-violation (index: org_id, direction, pattern,
+    // COALESCE(site_id, nil)) re-select the existing row by the same key — the
+    // index guarantees exactly one match. Mirrors POST /tunnels/allowlist's own
+    // duplicate handling; sidesteps fighting Drizzle's .onConflict API against
+    // an expression index.
+    const pattern = `${ip}/32:${body.port}`;
+    let rule: typeof tunnelAllowlists.$inferSelect | undefined;
+    let ruleCreated = false;
+    try {
+      [rule] = await db
+        .insert(tunnelAllowlists)
+        .values({
+          orgId: device.orgId,
+          siteId: siteId || null,
+          direction: 'destination',
+          pattern,
+          source: 'discovery',
+          discoveredAssetId: asset.id,
+          createdBy: auth.user.id,
+        })
+        .returning();
+      ruleCreated = true;
+    } catch (err) {
+      if (!isPgUniqueViolation(err)) throw err;
+      [rule] = await db
+        .select()
+        .from(tunnelAllowlists)
+        .where(and(
+          eq(tunnelAllowlists.orgId, device.orgId),
+          eq(tunnelAllowlists.direction, 'destination'),
+          eq(tunnelAllowlists.pattern, pattern),
+          siteId ? eq(tunnelAllowlists.siteId, siteId) : isNull(tunnelAllowlists.siteId),
+        ))
+        .limit(1);
+    }
+
+    if (!rule) {
+      // Unreachable in practice — a unique-violation guarantees a matching row
+      // under the same key. Guard against a null deref if it somehow isn't.
+      return c.json({ error: 'Failed to resolve allowlist rule' }, 500);
+    }
+
+    // An admin explicitly disabled this target — Connect must never silently
+    // re-enable it.
+    if (!rule.enabled) {
+      return c.json({
+        error: 'This target has been disabled by an administrator',
+        code: 'PROXY_TARGET_DISABLED',
+      }, 403);
+    }
+
+    if (ruleCreated) {
+      await logTunnelAudit(
+        'tunnel.allowlist.create',
+        'tunnel_allowlist',
+        rule.id,
+        auth.user.id,
+        device.orgId,
+        { direction: 'destination', pattern, siteId: siteId || null, discoveredAssetId: asset.id, via: 'proxy_connect' },
+        sourceIp,
+      );
+    }
+
+    // skipTlsVerify is only meaningful for https (mirrors POST /tunnels).
+    const skipTlsVerify = body.scheme === 'https' ? body.skipTlsVerify : false;
+
+    // Create session record — same row shape as the proxy branch of
+    // POST /tunnels. tunnel_open is never sent for type:'proxy' (see above):
+    // the raw TCP socket it opens is unused on the HTTP-proxy path.
+    const [session] = await db
+      .insert(tunnelSessions)
+      .values({
+        deviceId: device.id,
+        userId: auth.user.id,
+        orgId: device.orgId,
+        type: 'proxy',
+        status: 'pending',
+        targetHost: ip,
+        targetPort: body.port,
+        scheme: body.scheme,
+        skipTlsVerify,
+        sourceIp,
+      })
+      .returning();
+
+    await logTunnelAudit(
+      'tunnel.open',
+      'tunnel_session',
+      session!.id,
+      auth.user.id,
+      device.orgId,
+      {
+        deviceId: device.id,
+        type: 'proxy',
+        targetHost: ip,
+        targetPort: body.port,
+        scheme: body.scheme,
+        skipTlsVerify,
+        via: 'proxy_connect',
+        discoveredAssetId: asset.id,
+      },
+      sourceIp,
+    );
+
+    return c.json({ tunnel: session }, 201);
   }
 );
 

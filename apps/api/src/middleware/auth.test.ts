@@ -1009,8 +1009,8 @@ describe('requireMfa', () => {
     const res = await app.request('/test');
 
     expect(res.status).toBe(403);
-    const body = await res.text();
-    expect(body).toBe('MFA required');
+    const body = await res.json();
+    expect(body).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
   });
 
   it('allows when token.mfa is true', async () => {
