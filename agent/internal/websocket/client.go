@@ -750,10 +750,11 @@ func (c *Client) SendResult(result CommandResult) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal result: %w", err)
 	}
-	if len(data) > wire.MaxCommandResultBytes {
+	if len(data) > wire.CommandResultBudget {
 		// Only pay for the precise per-field measurement once the whole frame
-		// is over the cap — the `result` field is a subset of it, so a frame
-		// under the cap cannot contain an oversize field.
+		// is over the budget — the `result` field's encoded bytes are a subset
+		// of the frame's, so a frame under the budget cannot contain a field
+		// over it.
 		if bounded, ok := boundResultFieldForServer(result); ok {
 			result = bounded
 			data, err = json.Marshal(result)
@@ -816,14 +817,22 @@ func boundResultFieldForServer(result CommandResult) (CommandResult, bool) {
 		}
 		return result, true
 	}
-	if len(encoded) <= wire.MaxCommandResultBytes {
+	// Measured against the BUDGET, not the bare cap. The server does not check
+	// these bytes: it re-encodes with JSON.stringify after JSON.parse and checks
+	// the result of that, so Go's count is a close proxy but not the same
+	// number. Spending the headroom here is nearly free — it drops a body only
+	// in the narrow band just under the cap, and the terminal status still
+	// lands — whereas being wrong by one byte costs the entire message. For
+	// every command type other than backup this is the only guard there is.
+	if len(encoded) <= wire.CommandResultBudget {
 		return result, false
 	}
 
-	log.Error("command result body exceeds the server's result cap and was dropped to preserve the terminal status",
+	log.Error("command result body exceeds the server's result budget and was dropped to preserve the terminal status",
 		"commandId", result.CommandID,
 		"status", result.Status,
 		"resultBytes", len(encoded),
+		"budgetBytes", wire.CommandResultBudget,
 		"limitBytes", wire.MaxCommandResultBytes,
 	)
 	result.Result = map[string]any{

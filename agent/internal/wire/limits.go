@@ -40,20 +40,31 @@ package wire
 const MaxCommandResultBytes = 1024 * 1024
 
 // CommandResultHeadroom is subtracted from MaxCommandResultBytes to get the
-// budget an agent-side producer should actually target.
+// budget agent-side code should actually target.
 //
-// It covers the gap between what Go measures and what the server measures. The
-// server re-encodes with JSON.stringify AFTER JSON.parse, so the byte count it
-// checks is not the byte count Go produced. Go's encoding/json is the more
-// verbose of the two in every direction that matters — it HTML-escapes `<`,
-// `>` and `&` to six-byte </>/& sequences and escapes U+2028 and
-// U+2029, none of which JSON.stringify does — so Go's length is a conservative
-// (>=) proxy for the server's on any object body. The headroom covers the
-// residual: number re-formatting, and the case where a producer's JSON text is
-// not an object at all and reaches the wire as a JSON *string*, where quoting
-// and escaping make the server's measurement LARGER than the raw text.
+// It exists because NOBODY on this side measures the same bytes the server
+// does. The server re-encodes with JSON.stringify AFTER JSON.parse and checks
+// the length of that, so every agent-side measurement is a proxy:
+//
+//   - The backup helper measures the RAW JSON TEXT it produced (len(Stdout)),
+//     before that text is even parsed. When the text is not an object it
+//     reaches the wire as a JSON *string*, and the quoting and escaping make
+//     the server's measurement LARGER than the text — the one direction where
+//     the proxy under-reports.
+//   - The websocket client measures Go's encoding of the value. Go's
+//     encoding/json is the more verbose of the two in every direction that
+//     matters — it HTML-escapes `<`, `>` and `&` to six-byte </>/
+//     & sequences and escapes U+2028/U+2029, none of which JSON.stringify
+//     does — so this proxy is conservative except for number re-formatting.
+//
+// Rather than reason about which proxy is safe where, every producer targets
+// the budget. Overshooting the margin costs a degraded body in a narrow band
+// below the cap; undershooting it costs the whole message, which is the failure
+// this package exists to prevent.
 const CommandResultHeadroom = 64 * 1024
 
-// CommandResultBudget is the size an agent-side producer should keep its
-// encoded result body under so the server accepts it.
+// CommandResultBudget is the size agent-side code should keep its encoded
+// result body under so the server accepts it. Prefer this over
+// MaxCommandResultBytes at every comparison site; the bare cap is for reporting
+// the server's contract in logs and markers, not for deciding whether to send.
 const CommandResultBudget = MaxCommandResultBytes - CommandResultHeadroom

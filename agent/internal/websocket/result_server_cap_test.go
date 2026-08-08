@@ -39,9 +39,9 @@ func TestBoundResultFieldDropsOversizeBodyAndKeepsTerminalStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal fixture: %v", err)
 	}
-	if len(encoded) <= wire.MaxCommandResultBytes {
-		t.Fatalf("fixture is only %d bytes, not over the %d cap — the test would prove nothing",
-			len(encoded), wire.MaxCommandResultBytes)
+	if len(encoded) <= wire.CommandResultBudget {
+		t.Fatalf("fixture is only %d bytes, not over the %d budget — the test would prove nothing",
+			len(encoded), wire.CommandResultBudget)
 	}
 
 	in := CommandResult{
@@ -83,8 +83,8 @@ func TestBoundResultFieldDropsOversizeBodyAndKeepsTerminalStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal bounded body: %v", err)
 	}
-	if len(reencoded) > wire.MaxCommandResultBytes {
-		t.Fatalf("bounded body is still %d bytes, over the %d cap", len(reencoded), wire.MaxCommandResultBytes)
+	if len(reencoded) > wire.CommandResultBudget {
+		t.Fatalf("bounded body is still %d bytes, over the %d budget", len(reencoded), wire.CommandResultBudget)
 	}
 }
 
@@ -98,7 +98,7 @@ func TestBoundResultFieldLeavesInBudgetResultsAlone(t *testing.T) {
 	}{
 		{"nil body", nil},
 		{"small object", map[string]any{"filesBackedUp": 1200, "status": "completed"}},
-		{"just under the cap", oversizeResultBody(1200)},
+		{"just under the budget", oversizeResultBody(1200)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.body != nil {
@@ -106,9 +106,9 @@ func TestBoundResultFieldLeavesInBudgetResultsAlone(t *testing.T) {
 				if err != nil {
 					t.Fatalf("marshal fixture: %v", err)
 				}
-				if len(encoded) > wire.MaxCommandResultBytes {
-					t.Fatalf("fixture is %d bytes, over the %d cap — it belongs in the oversize test",
-						len(encoded), wire.MaxCommandResultBytes)
+				if len(encoded) > wire.CommandResultBudget {
+					t.Fatalf("fixture is %d bytes, over the %d budget — it belongs in the oversize test",
+						len(encoded), wire.CommandResultBudget)
 				}
 			}
 			in := CommandResult{CommandID: "c1", Status: "completed", Result: tc.body}
@@ -120,6 +120,42 @@ func TestBoundResultFieldLeavesInBudgetResultsAlone(t *testing.T) {
 				t.Fatal("result body was dropped")
 			}
 		})
+	}
+}
+
+// TestBoundResultFieldUsesTheBudgetNotTheBareCap pins the margin.
+//
+// A body sitting in the band between the budget and the cap is the case where
+// Go's byte count and the server's JSON.stringify re-measurement can disagree.
+// Comparing against wire.MaxCommandResultBytes here would let such a body
+// through on a coin-flip, which for every non-backup command type — the ones
+// with no producer-side bounding at all — means the whole message is refused
+// and the terminal status is lost. That is #3001 exactly.
+func TestBoundResultFieldUsesTheBudgetNotTheBareCap(t *testing.T) {
+	// {"p":"<padding>"} — 10 bytes of structure around the padding, sized to
+	// land midway between the budget and the cap.
+	target := wire.CommandResultBudget + wire.CommandResultHeadroom/2
+	body := map[string]any{"p": strings.Repeat("x", target-10)}
+
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	if len(encoded) <= wire.CommandResultBudget || len(encoded) > wire.MaxCommandResultBytes {
+		t.Fatalf("fixture is %d bytes; it must land strictly between the budget (%d) and the cap (%d)",
+			len(encoded), wire.CommandResultBudget, wire.MaxCommandResultBytes)
+	}
+
+	out, changed := boundResultFieldForServer(CommandResult{
+		CommandID: "c1", Status: "completed", Result: body,
+	})
+	if !changed {
+		t.Fatalf("a %d-byte body was left in place; the backstop is comparing against the bare cap (%d) "+
+			"instead of the budget (%d), and has no margin for the server's re-encoding",
+			len(encoded), wire.MaxCommandResultBytes, wire.CommandResultBudget)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("terminal status lost: %+v", out)
 	}
 }
 
@@ -165,9 +201,9 @@ func TestSendResultBoundsOversizeBodyBeforeEnqueue(t *testing.T) {
 
 	select {
 	case queued := <-c.resultChan:
-		if len(queued.data) > wire.MaxCommandResultBytes {
-			t.Fatalf("enqueued frame is %d bytes; the server caps `result` at %d and would refuse it",
-				len(queued.data), wire.MaxCommandResultBytes)
+		if len(queued.data) > wire.CommandResultBudget {
+			t.Fatalf("enqueued frame is %d bytes, over the %d budget; the server caps `result` at %d",
+				len(queued.data), wire.CommandResultBudget, wire.MaxCommandResultBytes)
 		}
 		var decoded struct {
 			CommandID string         `json:"commandId"`
