@@ -695,6 +695,12 @@
     "vlan": "VLAN {{vlan}}",
     "escToCancel": "· Échap pour annuler"
   },
+  "proxyConnect": {
+    "title": "Proxy vers {{target}}",
+    "throughAgent": "Via l'agent",
+    "connect": "Se connecter",
+    "allowSelfSigned": "Autoriser les certificats auto-signés (courant pour les imprimantes, iLO/IPMI, commutateurs)"
+  },
   "assetTypes": {
     "workstation": "Poste de travail",
     "server": "Serveur",

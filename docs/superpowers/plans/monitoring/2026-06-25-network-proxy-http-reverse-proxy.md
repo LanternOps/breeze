@@ -1,3 +1,12 @@
+> **Superseded (2026-08-08):** This plan shipped without its 40 checklist boxes
+> being ticked and without live-target verification (see
+> `docs/testing/FEATURE_TEST_LOG.md`). It is superseded by
+> `docs/superpowers/specs/monitoring/2026-08-08-proxy-access-consolidation-design.md`
+> and `docs/superpowers/plans/open/2026-08-08-proxy-access-consolidation.md`, which
+> fix the session-lifetime and entry-point defects this plan left behind. Kept
+> below as historical record only — do not treat it as a description of current
+> or complete behavior.
+
 # Network Proxy — Agent HTTP-Fetch Reverse Proxy + Asset-Modal UX Rework
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

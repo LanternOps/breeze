@@ -198,35 +198,37 @@ The agent dynamically switches input handling when the console transitions to or
 
 ### Network Proxy
 
-Network Proxy lets you access TCP services on an agent's local network without a VPN — router web interfaces, NAS management panels, printer admin pages, switch management ports, and similar resources. Traffic tunnels over the existing agent WebSocket connection, so there is no additional network configuration required on either end.
+Network Proxy lets you access web-based admin UIs on an agent's local network without a VPN — router web interfaces, NAS management panels, printer admin pages, switch management ports, and similar resources. There is no persistent tunnel: each request the browser makes to the target device is relayed as a separate command over the agent's existing connection, fetched locally by the agent, and returned. This keeps the network footprint minimal, but it does mean the target's own web UI runs through a per-request proxy rather than a raw socket — no WebSocket-based device UIs, and individual responses are capped at 16 MiB.
 
 **Starting a proxy session:**
 
 <Steps>
 
-1. Open **Network Discovery** and click on a discovered asset to open the asset modal.
+1. Go to **Devices → Network** and open the discovered device's detail page.
 
-2. Go to the **Proxy Access** section of the asset modal.
+2. Find the open port for the service you want to reach (80, 443, 8080, and similar web ports are detected automatically) and click **Open Web UI** on that port.
 
-3. Pick a **bridge agent** from the dropdown. The dropdown lists only online agents; it defaults to the device that was linked to the asset, if that device is currently online.
+3. In the **Proxy to `ip:port`** popover, pick the agent to proxy **through**. This defaults to the agent that discovered the device on its network — not any device you've linked to this asset for identity purposes, since bridging traffic through the identity-linked device would be a loopback. Choose a different online agent if needed, set the scheme, and check **Allow self-signed certificate** up front if you already know the target uses one (common for printers, iLO/IPMI, and switches).
 
-4. Click **Connect**. The LAN device's web UI (router admin page, NAS management panel, printer interface, etc.) loads in an iframe inside Breeze.
-
-5. Use the **Open in new tab** button to detach the UI into its own browser tab if you prefer a full-window view.
+4. Click **Connect**. The LAN device's web UI opens in a new tab.
 
 </Steps>
 
 <Aside type="note">
-  If the target device uses a self-signed certificate, the first request will fail with an untrusted-certificate error and the session will surface a **Reconnect (allow self-signed)** option. Re-opening the proxy with that option skips TLS verification for that session only — it does not change any persistent trust settings (PR #1916).
+  If the target device uses a self-signed certificate and you didn't check the box up front, the request fails with an untrusted-certificate error and the session shows a **Reconnect allowing self-signed certificate** button in place. Clicking it opens a fresh session to the same target with certificate verification skipped — it does not change any persistent trust settings, and it only applies to that session.
 </Aside>
+
+**Session lifetime:**
+
+A proxy session stays alive as long as it's actively used: each request slides the session's expiry forward, so there's no fixed cutoff while you're working — up to an absolute cap of 12 hours from when the session started. If the session sits idle for several minutes with no requests, it stops sliding and the page shows a **Session expired — Reconnect** state instead of silently failing behind the scenes. Clicking **Reconnect** reloads the embedded page from scratch, so any in-progress form state on the target device's own web UI (for example, a partially filled-out printer configuration page) is lost — save your work on the target's UI before stepping away for a while.
 
 **Security model:**
 
-- **Default-deny allowlists** control which destinations agents can connect to. Configure allowlists per-site in **Settings → Remote Access**.
-- **Source IP restrictions** limit which users or networks can open tunnels.
-- Idle timeout and concurrent session limits apply to prevent resource exhaustion.
-- A built-in SSRF-safe blocklist prevents tunnels to internal metadata endpoints and loopback addresses.
-- Each tunnel session is associated with a specific user and fully audit logged.
+- **Default-deny allowlists** control which destinations agents can proxy to. Configure allowlists per-site in **Settings → Remote Access**. Connecting through the popover automatically allowlists the single `ip:port` you connected to — it does not open the whole host.
+- **Source IP restrictions** limit which users or networks can open proxy sessions.
+- Idle timeout and an absolute 12-hour session cap apply to prevent long-lived, unattended sessions.
+- A built-in SSRF-safe blocklist prevents proxying to internal metadata endpoints and loopback addresses.
+- Each proxy session is associated with a specific user and fully audit logged.
 
 ### Wake-on-LAN
 

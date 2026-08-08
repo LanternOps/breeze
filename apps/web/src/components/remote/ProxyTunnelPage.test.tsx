@@ -90,7 +90,7 @@ describe('ProxyTunnelPage', () => {
     });
   });
 
-  it('shows the recreate-with-self-signed banner on tls_cert_untrusted', async () => {
+  it('shows the untrusted-certificate error on tls_cert_untrusted', async () => {
     fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
       if (url === `/tunnels/${TUNNEL_ID}/http-ticket` && opts?.method === 'POST') {
         return makeResponse({ ticket: { ticket: 'TKT-abc', expiresInSeconds: 300 } });
@@ -103,7 +103,11 @@ describe('ProxyTunnelPage', () => {
 
     render(<ProxyTunnelPage tunnelId={TUNNEL_ID} target="10.1.2.209:8443" />);
 
-    await screen.findByText(/self-signed certificate/i);
-    expect(screen.getByText(/recreate the proxy session/i)).toBeInTheDocument();
+    // The in-place "Reconnect allowing self-signed certificate" retry button
+    // lands with Task 5 of the proxy-access-consolidation plan; this only
+    // covers the (already rewritten) error copy shown today.
+    expect(
+      await screen.findByText('This device presented an untrusted or self-signed certificate.'),
+    ).toBeInTheDocument();
   });
 });

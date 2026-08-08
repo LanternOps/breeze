@@ -314,15 +314,21 @@
   },
   "proxyTunnelPage": {
     "errors": {
-      "invalidTicket": "Failed to invalid ticket",
+      "invalidTicket": "This link is invalid or has expired.",
       "obtainTicket": "Failed to obtain ticket",
       "prepareConnection": "Failed to prepare connection",
-      "tlsUntrusted": "This device presented an untrusted or self-signed certificate. Recreate the proxy session with \"Allow self-signed certificate\" enabled to proceed.",
-      "tunnelFailed": "Failed to tunnel failed"
+      "tlsUntrusted": "This device presented an untrusted or self-signed certificate.",
+      "tunnelFailed": "Tunnel failed to open"
     },
     "openInNewTab": "Open In New Tab",
     "preparingConnection": "Preparing proxy connection…",
     "proxiedService": "Proxied Service",
+    "reconnectSelfSigned": "Reconnect allowing self-signed certificate",
+    "sessionExpired": {
+      "title": "Session expired",
+      "body": "Your proxy session has timed out.",
+      "reconnect": "Reconnect"
+    },
     "status": {
       "connected": "Connected",
       "connecting": "Connecting...",
