@@ -58,6 +58,8 @@ When MSI signing is configured on the server, Windows installer downloads are au
 
 From the enrollment key list or detail view, click **Download Installer** and choose the platform (Windows or macOS). The installer is generated on the fly and downloaded to your browser.
 
+The Enrollment Keys list shows each key's **installer capacity** — how many of the installer's enrollment slots have been used (for example `2 / 7` after downloading an installer for seven devices and enrolling two). The figure and the key's status badge are derived from the installer's **live** (unexpired) enrollment slots, so a fully expired installer shows as expired rather than as unused capacity, and the **Hide expired** filter agrees with the badge.
+
 ### Downloading via API
 
 ```bash

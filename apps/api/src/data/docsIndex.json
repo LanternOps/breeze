@@ -142,6 +142,7 @@
       "Downloading via API",
       "Public Download Links",
       "Short Codes (`/s/<code>`)",
+      "Installer Bootstrap Tokens",
       "Enrollment Key Lifecycle",
       "Creating a Key",
       "Listing Keys",
@@ -156,6 +157,10 @@
       "Re-enrollment",
       "Audit Trail",
       "Multi-Tenant Access Control",
+      "Partner & Organization Enrollment Defaults",
+      "Rejected vs. clamped",
+      "The practical consequence: this also shortens the completion window, not just the download window",
+      "\"Never expires\" is not offered",
       "Environment Variables",
       "API Reference",
       "Troubleshooting",
@@ -369,6 +374,7 @@
       "Where Backups Are Stored",
       "How It Works",
       "The Backup Dashboard",
+      "The Device Backup Tab",
       "Quick Start",
       "Backup Binary Architecture"
     ],
@@ -520,9 +526,14 @@
   {
     "path": "/deploy/antivirus-exceptions/",
     "title": "Antivirus Exceptions",
-    "description": "Required antivirus and security software exclusions for the Breeze agent when using unsigned binaries.",
+    "description": "Antivirus and security software exclusions for the Breeze agent, plus how to report a false positive on a signed binary.",
     "headings": [
       "Why Exclusions Are Needed",
+      "Signed Binaries Flagged as Malware",
+      "Step 1: Confirm the binary is actually signed",
+      "Step 2: Read the detection name",
+      "Step 3: Report the false positive to the vendor",
+      "Step 4: Add a temporary exclusion",
       "Paths to Exclude",
       "Agent Binary",
       "Configuration Directory",
@@ -638,16 +649,22 @@
       "Object Storage",
       "WebRTC / TURN",
       "Monitoring",
+      "Event-loop lag monitor",
+      "Database pool-health watchdog",
       "Sentry",
       "Rate Limiting",
       "Database",
       "Remote Sessions & Storage",
+      "Rollout Modes",
+      "Security Enforcement (opt-in)",
       "Feature Flags",
       "MCP Server",
       "Cloudflare mTLS",
       "Cloudflare Access JWT trust",
       "Cloud-to-Cloud Backup (M365)",
       "Ticket Mailbox (M365 email-to-ticket)",
+      "Customer Microsoft 365 Graph-read consent (optional)",
+      "Customer Microsoft 365 Graph-actions (write) executor (optional)",
       "Docker Deployment",
       "MSI Installer Signing",
       "Billing",
@@ -670,6 +687,28 @@
       "Resource Tuning",
       "Redis Authentication",
       "Updating"
+    ],
+    "section": "deploy"
+  },
+  {
+    "path": "/deploy/rollout-modes/",
+    "title": "Rollout Modes & Compatibility Switches",
+    "description": "Why Breeze asks you to set upgrade-mode variables explicitly, what each one does, and which ones you still need to close out after a release.",
+    "headings": [
+      "The problem they solve",
+      "Four kinds of switch",
+      "Required in production",
+      "`EVENT_PERMISSION_EPOCH_MODE` — transition",
+      "`REMOTE_WS_AUTH_MODE` — transition",
+      "`REMOTE_ACCESS_ADMISSION_MODE` — operational",
+      "`REMOTE_WS_REDIS_TOPOLOGY` — attestation",
+      "Opt-in, off by default",
+      "`AGENT_MTLS_BINDING_MODE`",
+      "`MANAGED_SOFTWARE_POLICY_MODE`",
+      "`AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID`",
+      "Retention",
+      "`DEVICE_METRICS_RETENTION_DAYS`",
+      "What you still owe after an upgrade"
     ],
     "section": "deploy"
   },
@@ -727,6 +766,7 @@
       "Setting a maintenance window",
       "When no window is configured",
       "Migration Failure Recovery",
+      "Remote-access lease cutover",
       "Zero-Downtime Upgrades",
       "Rolling Back",
       "Checking Versions",
@@ -934,6 +974,7 @@
     "headings": [
       "Risk tiers and assurance levels",
       "Configuring approval assurance",
+      "Enrolling an approver device",
       "How it interacts with PAM and Breeze Authenticator",
       "Related"
     ],
@@ -1220,6 +1261,7 @@
     "headings": [
       "Policy ownership: organization vs. partner-wide",
       "Feature types",
+      "Alerts vs. Monitoring",
       "Enforcement modes",
       "Creating a policy",
       "Adding features to a policy",
@@ -1432,6 +1474,9 @@
     "description": "Connect Pax8 and TD SYNNEX from the Distributors tab to sync license subscriptions and pull live distributor pricing into your Product Catalog.",
     "headings": [
       "Connecting a distributor",
+      "Prepare an organization for ordering",
+      "Build and submit a direct order",
+      "Complete an order staged from a quote",
       "Related"
     ],
     "section": "features"
@@ -1537,6 +1582,15 @@
     "section": "features"
   },
   {
+    "path": "/features/extensions/",
+    "title": "Extensions",
+    "description": "Signed runtime bundles that extend Breeze with additional routes, AI tools, background jobs, and web surfaces.",
+    "headings": [
+      "Tenant-scoped installs"
+    ],
+    "section": "features"
+  },
+  {
     "path": "/features/filesystem-analysis/",
     "title": "Filesystem Analysis & Disk Cleanup",
     "description": "Deep filesystem scanning, disk usage analysis, and automated cleanup of temporary files, caches, and large files.",
@@ -1594,6 +1648,7 @@
       "AI-Assisted Identity Actions",
       "Google Workspace actions",
       "Microsoft 365 actions",
+      "Retrieving a Microsoft 365 reset password",
       "Fix with AI",
       "Troubleshooting"
     ],
@@ -1608,9 +1663,9 @@
       "Credentials required",
       "Connect",
       "Domain-wide delegation scopes",
-      "Credentials required",
-      "Connect",
-      "Microsoft Graph permissions required",
+      "Customer Graph Read (recommended for read-only inventory)",
+      "Legacy direct (existing client-secret method)",
+      "Remove Customer Graph Read consent",
       "After connecting",
       "Troubleshooting",
       "Related"
@@ -2528,18 +2583,24 @@
     "description": "Build priced quotes from your catalog, present them with images and titles, take a deposit on acceptance, and turn accepted quotes straight into invoices and recurring contracts -- all inside Breeze.",
     "headings": [
       "The Quote Editor",
+      "Reordering, Bulk Edit, and Undo",
+      "Internal Cost Details",
       "Quote Title",
       "Line Titles and Descriptions",
       "Two-Way Markup",
       "Auto-fill from Web",
       "Line Images",
       "One-Time and Recurring Pricing",
+      "Customer Bill-To (\"Prepared for\")",
       "Inline Editing of Line Items",
       "Searching Distributor Products from a Quote",
       "Deposits",
       "Deposit-First Invoicing",
       "What Happens on Acceptance",
+      "Ordering What You Sold",
       "Sending and Tracking",
+      "Cloning a Quote",
+      "Changing the Customer on a Draft",
       "Permissions",
       "Related"
     ],
@@ -2607,6 +2668,7 @@
       "Remote Terminal",
       "Starting a terminal session",
       "Connection flow",
+      "Quick Support (ad-hoc sessions)",
       "Session Lifecycle",
       "Rate Limits",
       "Security",
@@ -2708,6 +2770,7 @@
     "headings": [
       "Script Library",
       "Browsing and searching",
+      "Partner-wide vs. organization scripts",
       "Importing from the system library",
       "Creating a script",
       "Version history and rollback",
@@ -2839,7 +2902,7 @@
   {
     "path": "/features/service-monitoring/",
     "title": "Service & Process Monitoring",
-    "description": "Keep Windows services and processes running, alert on event-log activity and metric thresholds, and view per-device monitoring results.",
+    "description": "Keep Windows services and processes running, with optional auto-restart, and view per-device monitoring results.",
     "headings": [
       "Overview",
       "Define monitors in a configuration policy",
@@ -2848,7 +2911,8 @@
       "A device shows no monitoring rows",
       "A watch stays `not_found`",
       "Auto-restart isn't recovering a service",
-      "Alerts aren't firing",
+      "A watch alert isn't firing",
+      "An event-log or metric alert isn't firing",
       "Partner-wide policy edits are greyed out",
       "Related"
     ],
@@ -3446,6 +3510,7 @@
       "HTTP Metrics (from the API)",
       "Business Metrics",
       "Infrastructure Metrics",
+      "Event-Loop Metrics",
       "Log Aggregation with Loki",
       "Querying Logs in Grafana",
       "Adding Custom Prometheus Alert Rules",
@@ -3913,15 +3978,21 @@
       "Terminal not connecting",
       "Performance Issues",
       "High API response times",
+      "Postgres `write CONNECT_TIMEOUT` while the database is healthy",
       "Redis memory growing",
       "Disk space running low",
       "Container Issues",
       "Container won't start",
       "Health check failing",
-      "Installer Issues",
+      "Windows MSI Installer",
+      "Always install with a log",
+      "Reading the Breeze agent log",
+      "MSI exits non-zero / device never appears",
+      "MSI install succeeds but agent shows offline",
+      "Server-Side Installer Issues",
       "\"Generate Link\" fails with `Server URL not configured (set PUBLIC_API_URL or API_URL)`",
       "\"Generate Link\" fails with `MSI build pipeline not reachable. Retry`",
-      "Getting Help"
+      "Reporting an Issue"
     ],
     "section": "reference"
   },
@@ -3949,6 +4020,7 @@
       "MFA During Login",
       "Disabling MFA",
       "Recovery Codes",
+      "Admin MFA Reset (Lost Authenticator)",
       "Password Management",
       "Forgot Password",
       "Reset Password",
@@ -4053,6 +4125,7 @@
     "headings": [
       "How It Works",
       "Setup",
+      "Edge Assertion Contract",
       "Certificate Lifecycle",
       "Quarantine",
       "Organization Settings"
