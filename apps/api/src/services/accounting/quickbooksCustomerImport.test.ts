@@ -218,6 +218,24 @@ describe('importQuickbooksCustomers', () => {
     expect(insertMock).not.toHaveBeenCalled();
   });
 
+  it('skips a customer whose link row was created by the CSV/bulk org import (cross-importer, #3242)', async () => {
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-77', displayName: 'Acme' }]);
+    // Org created by the bulk org-import path (routes/orgs.ts /import): it has
+    // NO legacy accounting_* columns — only an organization_external_links row
+    // with system='quickbooks'. The union read must still match it so the QB
+    // importer does not mint a duplicate org.
+    stubSelects(
+      [{ id: 'org-csv', slug: 'acme', accountingProvider: null, accountingExternalId: null }],
+      [{ orgId: 'org-csv', externalId: 'qb-77' }],
+    );
+    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['qb-77'] });
+    expect(summary.imported).toEqual([]);
+    expect(summary.skipped).toEqual([
+      { customerId: 'qb-77', displayName: 'Acme', organizationId: 'org-csv', reason: 'already_imported' },
+    ]);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
   it('suffixes the slug when the base collides with an existing org slug', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
     // Slug reservation now spans ALL partner orgs, not just QB-linked ones.

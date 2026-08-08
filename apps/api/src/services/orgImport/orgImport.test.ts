@@ -9,7 +9,15 @@ const { selectMock, insertMock, updateMock, restoreOrgAccessMock } = vi.hoisted(
 }));
 
 vi.mock('../../db', () => ({
-  db: { select: selectMock, insert: insertMock, update: updateMock },
+  db: {
+    select: selectMock,
+    insert: insertMock,
+    update: updateMock,
+    // createGroup wraps the whole group in db.transaction; hand the callback a
+    // tx backed by the same mocks so rejections propagate like a rollback.
+    transaction: (fn: (tx: unknown) => unknown) =>
+      fn({ select: selectMock, insert: insertMock, update: updateMock }),
+  },
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
@@ -282,7 +290,7 @@ describe('commitOrgImport — create', () => {
 
   it('reclassifies a concurrent link unique-violation as skipped', async () => {
     stubState([], [], [[{ orgId: 'org-winner' }]]);
-    const dup = Object.assign(new Error('dup'), { code: '23505' });
+    const dup = Object.assign(new Error('dup'), { code: '23505', constraint: 'organization_external_links_uniq' });
     // Org insert succeeds; the link insert hits the unique index.
     stubInserts({ failOn: (v) => ('externalId' in v ? dup : null) });
     const summary = await commitOrgImport(
@@ -292,6 +300,57 @@ describe('commitOrgImport — create', () => {
     expect(summary.errors).toEqual([]);
     expect(summary.skipped).toEqual([
       { index: 0, organization: 'Acme', organizationId: 'org-winner', reason: 'created_concurrently' },
+    ]);
+  });
+
+  it('also takes the concurrent-link path for the legacy accounting constraint (postgres.js constraint_name field)', async () => {
+    stubState([], [], [[{ orgId: 'org-winner' }]]);
+    const dup = Object.assign(new Error('dup'), { code: '23505', constraint_name: 'organizations_accounting_external_uniq' });
+    stubInserts({ failOn: (v) => ('externalId' in v ? dup : null) });
+    const summary = await commitOrgImport(
+      [{ organization: 'Acme', externalId: '1' }],
+      'p1', { userId: null }, 'skip',
+    );
+    expect(summary.errors).toEqual([]);
+    expect(summary.skipped).toEqual([
+      { index: 0, organization: 'Acme', organizationId: 'org-winner', reason: 'created_concurrently' },
+    ]);
+  });
+
+  it('reports a NON-link unique violation as a per-group error, never created_concurrently (#3242)', async () => {
+    stubState([], []);
+    // A site unique index trips inside the group transaction. Before the
+    // constraint check this misreported as created_concurrently with a null
+    // organizationId; it must surface as an ordinary error naming the index.
+    const dup = Object.assign(
+      new Error('duplicate key value violates unique constraint "sites_org_id_name_uniq"'),
+      { code: '23505', constraint: 'sites_org_id_name_uniq' },
+    );
+    stubInserts({ failOn: (v) => ('timezone' in v ? dup : null) });
+    const summary = await commitOrgImport(
+      [{ organization: 'Acme', site: 'HQ', externalId: '1' }],
+      'p1', { userId: null }, 'skip',
+    );
+    expect(summary.skipped).toEqual([]);
+    expect(summary.imported).toEqual([]);
+    expect(summary.errors).toHaveLength(1);
+    expect(summary.errors[0]!.error).toMatch(/sites_org_id_name_uniq/);
+  });
+
+  it('fails the WHOLE group when a site insert fails — no stranded org with partial sites', async () => {
+    stubState([], []);
+    // Second site insert fails; org + link + first site must roll back with it
+    // (single transaction), reporting one per-group error for every row.
+    stubInserts({ failOn: (v) => (v.name === 'Depot' ? new Error('site boom') : null) });
+    const summary = await commitOrgImport([
+      { organization: 'Acme', site: 'HQ', externalId: '1' },
+      { organization: 'Acme', site: 'Depot', externalId: '1' },
+    ], 'p1', { userId: null }, 'skip');
+    expect(summary.imported).toEqual([]);
+    expect(summary.skipped).toEqual([]);
+    expect(summary.errors).toEqual([
+      { index: 0, organization: 'Acme', error: 'site boom' },
+      { index: 1, organization: 'Acme', error: 'site boom' },
     ]);
   });
 });
@@ -383,6 +442,51 @@ describe('commitOrgImport — expectation guard', () => {
     ]);
     expect(updatedValues[0]!.set).toMatchObject({ deletedAt: null, status: 'active' });
     expect(restoreOrgAccessMock).toHaveBeenCalledWith('org-1');
+  });
+});
+
+describe('commitOrgImport — skip-mode link persistence (#3242)', () => {
+  it('writes the link row for an acknowledged name-match with an externalId even in skip mode', async () => {
+    stubState([{ id: 'org-1', name: 'Acme', slug: 'acme' }], []);
+    const rows: CommitRowInput[] = [
+      { organization: 'Acme', externalId: '42', externalSystem: 'datto_rmm', expectedAnnotation: 'name-match' },
+    ];
+    const summary = await commitOrgImport(rows, 'p1', { userId: 'u1' }, 'skip');
+    expect(summary.errors).toEqual([]);
+    expect(summary.skipped).toEqual([
+      { index: 0, organization: 'Acme', organizationId: 'org-1', reason: 'name_match_confirmed', createdLink: true },
+    ]);
+    // Exactly ONE insert — the link row. The org itself stays untouched (skip).
+    expect(insertedValues).toHaveLength(1);
+    expect(insertedValues[0]!.values).toMatchObject({
+      orgId: 'org-1', partnerId: 'p1', system: 'datto_rmm', externalId: '42', createdBy: 'u1',
+    });
+  });
+
+  it('treats a lost race on the skip-mode link insert as already linked (no createdLink flag)', async () => {
+    stubState([{ id: 'org-1', name: 'Acme', slug: 'acme' }], []);
+    const dup = Object.assign(new Error('dup'), { code: '23505', constraint: 'organization_external_links_uniq' });
+    stubInserts({ failOn: () => dup });
+    const summary = await commitOrgImport(
+      [{ organization: 'Acme', externalId: '42', expectedAnnotation: 'name-match' } as CommitRowInput],
+      'p1', { userId: null }, 'skip',
+    );
+    expect(summary.errors).toEqual([]);
+    expect(summary.skipped).toEqual([
+      { index: 0, organization: 'Acme', organizationId: 'org-1', reason: 'name_match_confirmed' },
+    ]);
+  });
+
+  it('writes no link row for an acknowledged name-match WITHOUT an externalId', async () => {
+    stubState([{ id: 'org-1', name: 'Acme', slug: 'acme' }], []);
+    const summary = await commitOrgImport(
+      [{ organization: 'Acme', expectedAnnotation: 'name-match' } as CommitRowInput],
+      'p1', { userId: null }, 'skip',
+    );
+    expect(summary.skipped).toEqual([
+      { index: 0, organization: 'Acme', organizationId: 'org-1', reason: 'name_match_confirmed' },
+    ]);
+    expect(insertMock).not.toHaveBeenCalled();
   });
 });
 

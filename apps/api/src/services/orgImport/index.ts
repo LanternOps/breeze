@@ -430,12 +430,22 @@ async function commitGroup(
     }
 
     if (mode === 'skip' && !reactivated) {
+      // An acknowledged name-match carrying an externalId persists its link row
+      // even in skip mode: the acknowledgement is the durable fact ("this
+      // external id IS this org"), and without the link row every subsequent
+      // import would re-derive a name-match and re-prompt for the same
+      // confirmation. checkExpectation already guaranteed the acknowledgement
+      // for every surviving row in this group.
+      const createdLink = group.annotation === 'name-match' && group.externalId
+        ? await attachExternalLink(group, partnerId, actor, orgId)
+        : false;
       for (const r of rows) {
         summary.skipped.push({
           index: r.index,
           organization: r.organization,
           organizationId: orgId,
           reason: group.annotation === 'link-match' ? 'already_linked' : 'name_match_confirmed',
+          ...(createdLink && r === rows[0] ? { createdLink: true } : {}),
         });
       }
       return;
@@ -458,6 +468,48 @@ async function commitGroup(
   }
 }
 
+/**
+ * Insert the organization_external_links row for a matched group, treating a
+ * unique violation as "already linked" (idempotent re-acknowledgement or a
+ * concurrent import winning the race). Returns true when a new row was written.
+ */
+async function attachExternalLink(
+  group: RowGroup,
+  partnerId: string,
+  actor: OrgImportActor,
+  orgId: string,
+): Promise<boolean> {
+  try {
+    await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+      db.insert(organizationExternalLinks).values({
+        orgId,
+        partnerId,
+        system: group.system,
+        externalId: group.externalId!,
+        createdBy: actor.userId,
+      })
+    ));
+    return true;
+  } catch (err) {
+    if (!isPgUniqueViolation(err)) throw err;
+    return false;
+  }
+}
+
+// The two idempotency guards for external-id linkage: the link table's unique
+// index and the legacy accounting-columns partial unique index. Only a
+// violation of one of THESE means "another import won the race for this
+// external id" — any other unique violation (e.g. a sites index) is an
+// ordinary failure and must not be reported as created_concurrently.
+const LINK_UNIQUE_CONSTRAINTS = [
+  'organization_external_links_uniq',
+  'organizations_accounting_external_uniq',
+] as const;
+
+function isConcurrentLinkViolation(err: unknown): boolean {
+  return LINK_UNIQUE_CONSTRAINTS.some((constraint) => isPgUniqueViolation(err, constraint));
+}
+
 async function createGroup(
   group: RowGroup,
   rows: NormalizedRow[],
@@ -467,38 +519,70 @@ async function createGroup(
 ): Promise<void> {
   const firstContact = rows.find((r) => r.row.contact)?.row.contact;
 
+  // Sites: one per row that names a site; a group with none gets a default
+  // site named after the org (matching the QuickBooks importer).
+  const siteRows = rows.filter((r) => r.site);
+  const effective = siteRows.length > 0 ? siteRows : [rows[0]!];
+
   let orgId: string;
   let createdLink = false;
+  let siteIdByIndex: Map<number, { id: string; name: string }>;
   try {
-    const created = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-      const [org] = await db.insert(organizations).values({
-        partnerId,
-        name: clamp(group.organization, 255)!,
-        // annotateGroups always resolves a slug for 'create' groups.
-        slug: group.slug!,
-        type: 'customer' as const,
-        ...(firstContact ? { billingContact: firstContact } : {}),
-      }).returning();
-      let linked = false;
-      if (group.externalId) {
-        await db.insert(organizationExternalLinks).values({
-          orgId: org!.id,
+    // One all-or-nothing transaction for the whole group: a failing site
+    // insert must not strand a freshly created org with no default site — the
+    // org, its link row, and every site commit or roll back together, and a
+    // failure reports as one per-group error.
+    const created = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+      db.transaction(async (tx) => {
+        const [org] = await tx.insert(organizations).values({
           partnerId,
-          system: group.system,
-          externalId: group.externalId,
-          createdBy: actor.userId,
-        });
-        linked = true;
-      }
-      return { orgId: org!.id as string, linked };
-    }));
+          name: clamp(group.organization, 255)!,
+          // annotateGroups always resolves a slug for 'create' groups.
+          slug: group.slug!,
+          type: 'customer' as const,
+          ...(firstContact ? { billingContact: firstContact } : {}),
+        }).returning();
+        let linked = false;
+        if (group.externalId) {
+          await tx.insert(organizationExternalLinks).values({
+            orgId: org!.id,
+            partnerId,
+            system: group.system,
+            externalId: group.externalId,
+            createdBy: actor.userId,
+          });
+          linked = true;
+        }
+        const createdSiteNames = new Set<string>();
+        const siteMap = new Map<number, { id: string; name: string }>();
+        for (const r of effective) {
+          const siteName = r.site ?? group.organization;
+          if (createdSiteNames.has(siteName.toLowerCase())) continue;
+          const [site] = await tx.insert(sites).values({
+            orgId: org!.id,
+            name: clamp(siteName, 255)!,
+            timezone: r.row.timezone ?? 'UTC',
+            ...(r.row.address !== undefined ? { address: r.row.address } : {}),
+            ...(r.row.contact ? { contact: r.row.contact } : {}),
+          }).returning();
+          createdSiteNames.add(siteName.toLowerCase());
+          siteMap.set(r.index, { id: site!.id as string, name: siteName });
+        }
+        return { orgId: org!.id as string, linked, siteMap };
+      })
+    ));
     orgId = created.orgId;
     createdLink = created.linked;
+    siteIdByIndex = created.siteMap;
   } catch (err) {
-    // Unique violation on the link row: a concurrent import linked this
-    // external id after our snapshot — honor the skip contract instead of
-    // reporting a raw constraint error. Re-read the winning org id.
-    if (isPgUniqueViolation(err) && group.externalId) {
+    // Unique violation on the LINK unique index (or its legacy accounting
+    // twin): a concurrent import linked this external id after our snapshot —
+    // honor the skip contract instead of reporting a raw constraint error.
+    // Re-read the winning org id. Constraint-checked so a site (or slug)
+    // unique violation inside the transaction is NOT misreported as
+    // created_concurrently — it propagates as an ordinary per-group error
+    // whose message carries the violated constraint.
+    if (group.externalId && isConcurrentLinkViolation(err)) {
       const existing = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
         db.select({ orgId: organizationExternalLinks.orgId })
           .from(organizationExternalLinks)
@@ -522,40 +606,8 @@ async function createGroup(
     throw err;
   }
 
-  // Sites: one per row that names a site; a group with none gets a default
-  // site named after the org (matching the QuickBooks importer).
-  const siteRows = rows.filter((r) => r.site);
-  const effective = siteRows.length > 0 ? siteRows : [rows[0]!];
-  const createdSiteNames = new Set<string>();
-  const siteIdByIndex = new Map<number, { id: string; name: string }>();
-
-  for (const r of effective) {
-    const siteName = r.site ?? group.organization;
-    if (createdSiteNames.has(siteName.toLowerCase())) continue;
-    try {
-      const [site] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-        db.insert(sites).values({
-          orgId,
-          name: clamp(siteName, 255)!,
-          timezone: r.row.timezone ?? 'UTC',
-          ...(r.row.address !== undefined ? { address: r.row.address } : {}),
-          ...(r.row.contact ? { contact: r.row.contact } : {}),
-        }).returning()
-      ));
-      createdSiteNames.add(siteName.toLowerCase());
-      siteIdByIndex.set(r.index, { id: site!.id as string, name: siteName });
-    } catch (err) {
-      summary.errors.push({
-        index: r.index,
-        organization: r.organization,
-        error: `Organization created but site "${siteName}" failed: ${err instanceof Error ? err.message : String(err)}`,
-      });
-    }
-  }
-
   let first = true;
   for (const r of rows) {
-    if (summary.errors.some((e) => e.index === r.index)) continue;
     const site = siteIdByIndex.get(r.index) ?? null;
     summary.imported.push({
       index: r.index,
@@ -594,24 +646,11 @@ async function updateGroup(
     }
   }
 
-  // Attach the link row for an acknowledged name-match carrying an externalId
-  // (in update mode only — 'skip' leaves matches untouched), so the NEXT
-  // import matches by id instead of name.
+  // Attach the link row for an acknowledged name-match (or reactivated
+  // soft-deleted match) carrying an externalId, so the NEXT import matches by
+  // id instead of name. Skip-mode name-matches get theirs in commitGroup.
   if (mode === 'update' && group.externalId && group.annotation !== 'link-match') {
-    try {
-      await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-        db.insert(organizationExternalLinks).values({
-          orgId,
-          partnerId,
-          system: group.system,
-          externalId: group.externalId!,
-          createdBy: actor.userId,
-        })
-      ));
-      createdLink = true;
-    } catch (err) {
-      if (!isPgUniqueViolation(err)) throw err;
-    }
+    createdLink = await attachExternalLink(group, partnerId, actor, orgId);
   }
 
   const existingSites = mode === 'update'

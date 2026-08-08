@@ -111,6 +111,11 @@ export interface OrgImportSummary {
     organization: string;
     organizationId: string | null;
     reason: string;
+    /**
+     * True on the group's first row when a skip-mode commit persisted the link
+     * row for an acknowledged name-match (so future imports resolve by id).
+     */
+    createdLink?: boolean;
   }>;
   errors: Array<{
     index: number;
