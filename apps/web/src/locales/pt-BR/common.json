@@ -1923,7 +1923,9 @@
         "skipReasons": {
           "siteDenied": "Site não acessível para você",
           "notMember": "Não é mais afetado por esta constatação",
-          "decommissioned": "Dispositivo está descomissionado"
+          "decommissioned": "Dispositivo está descomissionado",
+          "timeout": "Expirou após 30 minutos",
+          "dispatchEnqueueFailed": "Nunca despachado — falha ao enfileirar"
         },
         "viewProgress": "Ver progresso",
         "errors": {

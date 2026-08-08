@@ -1923,7 +1923,9 @@
         "skipReasons": {
           "siteDenied": "Sede non accessibile per te",
           "notMember": "Non più interessato da questo rilievo",
-          "decommissioned": "Dispositivo dismesso"
+          "decommissioned": "Dispositivo dismesso",
+          "timeout": "Scaduto dopo 30 minuti",
+          "dispatchEnqueueFailed": "Mai inviato: accodamento non riuscito"
         },
         "viewProgress": "Vedi avanzamento",
         "errors": {

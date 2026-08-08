@@ -11,6 +11,9 @@ export type FleetFindingKind =
   | 'reliability_offenders';
 export type FleetFindingSeverity = 'info' | 'warning' | 'error' | 'critical';
 export type FleetFindingStatus = 'open' | 'acknowledged' | 'dismissed' | 'resolved';
+// `cancelled` is RESERVED for a future "cancel this run" affordance — no API
+// path writes it today. Kept so adding cancellation is a behaviour change, not
+// a type + i18n + chip migration.
 export type FleetRunStatus =
   | 'queued'
   | 'running'
@@ -100,15 +103,21 @@ export type RemediationSkipReason = 'site_denied' | 'not_member' | 'decommission
 
 export type FleetTargetStatus = 'pending' | 'queued' | 'succeeded' | 'failed' | 'skipped';
 
-export interface RemediateRequest {
-  actionKind: 'script' | 'command';
-  scriptId?: string;
-  commandType?: RemediationCommandType;
+interface RemediateRequestBase {
   parameters: Record<string, unknown>;
   /** Omitted = every current member. `[]` is rejected by the API with a 400 —
    *  never send one; callers must gate confirm on a non-empty selection. */
   deviceIds?: string[];
 }
+
+/** Discriminated on `actionKind`, mirroring `RemediateRequest` in
+ *  apps/api/src/services/fleetFindings/dispatch.ts. The API's zod schema is a
+ *  `discriminatedUnion` of `.strict()` branches, so a body carrying BOTH
+ *  `scriptId` and `commandType` is a 400 — this type makes that unbuildable
+ *  rather than a runtime surprise. */
+export type RemediateRequest =
+  | (RemediateRequestBase & { actionKind: 'script'; scriptId: string })
+  | (RemediateRequestBase & { actionKind: 'command'; commandType: RemediationCommandType });
 
 export interface RemediationSkippedTarget {
   deviceId: string;
@@ -141,8 +150,12 @@ export interface FleetRemediationRunDetail extends FleetFindingRun {
   targets: FleetRemediationRunTarget[];
 }
 
+/** Positive list, identical to `isTerminalRunStatus` in the API's dispatch
+ *  service. A negative list ("anything that isn't queued or running") silently
+ *  classifies any status added later as terminal — which for the polling panel
+ *  means it stops refreshing a run that is still in flight. */
 export function isTerminalRunStatus(status: FleetRunStatus): boolean {
-  return status !== 'queued' && status !== 'running';
+  return status === 'succeeded' || status === 'failed' || status === 'partial' || status === 'cancelled';
 }
 
 /** Reads the runId the API attaches to its 502 body ("the run was created but

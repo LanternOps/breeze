@@ -1,7 +1,7 @@
 import { AlertOctagon, AlertTriangle, Info, XCircle } from 'lucide-react';
 import type {
   FleetFindingKind, FleetFindingSeverity, FleetFindingStatus, FleetRunStatus,
-  FleetTargetStatus, RemediationSkipReason,
+  FleetTargetStatus,
 } from '@/services/fleetFindings';
 
 // Shared badge vocabulary for the fleet findings feed + drawer. Kept in its own
@@ -72,20 +72,31 @@ export const TARGET_STATUS_CHIP_CLASSES: Record<FleetTargetStatus, string> = {
   skipped: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400',
 };
 
-/** Mirrors `RemediationSkipReason` in the API's dispatch service. Anything the
- *  API adds later renders as its raw token rather than blank — see
- *  `skipReasonLabelKey`. */
-export const SKIP_REASON_LABEL_KEYS: Record<RemediationSkipReason, string> = {
+/** Mirrors `RemediationSkipReason` in the API's dispatch service — the reasons
+ *  a device is rejected at RUN-CREATION time.
+ *
+ *  `skip_reason` is also written later, on a target row, by two paths that are
+ *  not `RemediationSkipReason` values: `timeout` (pollRunProgress, after
+ *  REMEDIATION_TIMEOUT_MS) and `dispatch_enqueue_failed`
+ *  (markRunDispatchFailed, when the BullMQ enqueue itself failed). Both reach
+ *  the run-progress panel, so both need real labels — without them they
+ *  rendered as raw snake_case tokens next to properly translated ones.
+ *
+ *  Anything the API adds beyond these still renders as its raw token rather
+ *  than blank — see `skipReasonLabelKey`. */
+export const SKIP_REASON_LABEL_KEYS: Record<string, string> = {
   site_denied: 'longTail.fleet.FixPicker.skipReasons.siteDenied',
   not_member: 'longTail.fleet.FixPicker.skipReasons.notMember',
   decommissioned: 'longTail.fleet.FixPicker.skipReasons.decommissioned',
+  timeout: 'longTail.fleet.FixPicker.skipReasons.timeout',
+  dispatch_enqueue_failed: 'longTail.fleet.FixPicker.skipReasons.dispatchEnqueueFailed',
 };
 
 /** `null` for an unrecognised reason so callers fall back to the raw token —
  *  a future server-side reason must never render as an empty cell. */
 export function skipReasonLabelKey(reason: string | null): string | null {
   if (!reason) return null;
-  return SKIP_REASON_LABEL_KEYS[reason as RemediationSkipReason] ?? null;
+  return SKIP_REASON_LABEL_KEYS[reason] ?? null;
 }
 
 export const SEVERITY_ICONS: Record<

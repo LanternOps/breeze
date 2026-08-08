@@ -220,6 +220,40 @@ describe('FixPickerModal — step 3 confirm + dispatch', () => {
     });
   });
 
+  it('posts the script path as actionKind "script" with scriptId + parameters and NO commandType', async () => {
+    // The script branch was the one dispatch shape with no coverage here, and
+    // it is the one the API now rejects outright if it carries a commandType
+    // (the remediate schema is a discriminatedUnion of `.strict()` branches).
+    fetchWithAuthMock.mockResolvedValue(
+      scriptsResponse([{ name: 'olderThanDays', type: 'number', required: true, defaultValue: 7 }])
+    );
+    renderPicker();
+
+    fireEvent.click(screen.getByTestId('fix-picker-action-script'));
+    fireEvent.click(screen.getByTestId('fix-picker-choose-script'));
+    await waitFor(() => expect(screen.getByText('Clear temp files')).toBeTruthy());
+    fireEvent.click(screen.getByText('Clear temp files'));
+    // A parameterised script routes through ScriptPickerModal's parameter
+    // form, so selection completes on its confirm button, not the row click.
+    await waitFor(() => expect(screen.getByText('Run Script')).toBeTruthy());
+    fireEvent.click(screen.getByText('Run Script'));
+    await waitFor(() => expect(screen.getByTestId('fix-picker-selected-script')).toBeTruthy());
+
+    goToTargets();
+    fireEvent.click(screen.getByTestId('fix-picker-next'));
+    fireEvent.click(screen.getByTestId('fix-picker-confirm'));
+
+    await waitFor(() => expect(remediateFindingMock).toHaveBeenCalledTimes(1));
+    const [findingId, payload] = remediateFindingMock.mock.calls[0];
+    expect(findingId).toBe(FINDING_ID);
+    expect(Object.keys(payload).sort()).toEqual(['actionKind', 'deviceIds', 'parameters', 'scriptId']);
+    expect(payload.actionKind).toBe('script');
+    expect(payload.scriptId).toBe(SCRIPT_ID);
+    expect(payload.deviceIds).toEqual([DEVICE_A, DEVICE_B]);
+    expect(payload.parameters).toBeTypeOf('object');
+    expect(payload).not.toHaveProperty('commandType');
+  });
+
   it('sends the service name under the agent payload key `name`', async () => {
     renderPicker();
     advanceToConfirm('restart_service');
