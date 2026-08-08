@@ -5,10 +5,14 @@ import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../stores/auth';
 import { handleActionError, runAction } from '../../lib/runAction';
 
-const AVAILABLE_SCOPES = [
+const READ_SCOPES = [
   'organizations:read', 'sites:read', 'devices:read', 'inventory:read',
   'configuration:read', 'scripts:read', 'backup-configuration:read', 'custom-fields:read',
 ] as const;
+// Provisioning write scopes (#3243): opt-in per principal, NEVER part of the
+// default selection — a default-scoped principal must stay read-only.
+const WRITE_SCOPES = ['organizations:write', 'sites:write', 'enrollment-keys:write'] as const;
+const AVAILABLE_SCOPES = [...READ_SCOPES, ...WRITE_SCOPES] as const;
 
 type PrincipalKey = {
   id: string;
@@ -40,7 +44,7 @@ type PrincipalDraft = {
 };
 
 const EMPTY_DRAFT: PrincipalDraft = {
-  name: '', description: '', scopes: [...AVAILABLE_SCOPES], expiresAt: '', sourceCidrs: '',
+  name: '', description: '', scopes: [...READ_SCOPES], expiresAt: '', sourceCidrs: '',
 };
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -78,7 +82,7 @@ export default function PartnerServicePrincipalsPage() {
   useEffect(() => { void load(); }, [load]);
 
   const closeReveal = () => setNewKey(null);
-  const openCreate = () => { setEditing('new'); setDraft({ ...EMPTY_DRAFT, scopes: [...AVAILABLE_SCOPES] }); };
+  const openCreate = () => { setEditing('new'); setDraft({ ...EMPTY_DRAFT, scopes: [...READ_SCOPES] }); };
   const openEdit = (principal: Principal) => {
     setEditing(principal);
     setDraft({

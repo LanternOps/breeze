@@ -239,7 +239,7 @@ export function buildEnvelope<T extends ExportSourceRow>(input: {
   };
 }
 
-function jsonField(record: unknown, names: string[]): string | null {
+export function jsonField(record: unknown, names: string[]): string | null {
   if (!record || typeof record !== 'object' || Array.isArray(record)) return null;
   for (const name of names) {
     const value = (record as Record<string, unknown>)[name];

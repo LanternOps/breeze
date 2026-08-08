@@ -167,6 +167,41 @@ curl -X POST https://breeze.yourdomain.com/api/v1/auth/refresh \
 | `DELETE` | `/api-keys/:id` | Revoke API key |
 | `POST` | `/api-keys/:id/rotate` | Rotate API key |
 
+## Partner API (Service Principals)
+
+Machine-to-machine surface authenticated with a **partner service principal**
+key (`X-API-Key: brz_sp_…`), not a user JWT. Reads are cursor-paginated
+exports; the provisioning writes let migration scripts and integrations
+create tenancy unattended — no MFA challenge is involved because no human is.
+Each route requires the listed scope on the principal.
+
+| Method | Path | Scope | Description |
+|---|---|---|---|
+| `GET` | `/partner-api/organizations` | `organizations:read` | Export organizations |
+| `GET` | `/partner-api/sites` | `sites:read` | Export sites |
+| `GET` | `/partner-api/devices` | `devices:read` | Export devices |
+| `GET` | `/partner-api/device-inventory` | `inventory:read` | Export device inventory |
+| `GET` | `/partner-api/device-software` | `inventory:read` | Export installed software |
+| `GET` | `/partner-api/device-relationships` | `inventory:read` | Export topology/relationship edges |
+| `GET` | `/partner-api/configuration-policies` | `configuration:read` | Export configuration policies |
+| `GET` | `/partner-api/configuration-assignments` | `configuration:read` | Export policy assignments |
+| `GET` | `/partner-api/scripts` | `scripts:read` | Export scripts |
+| `GET` | `/partner-api/automations` | `configuration:read` | Export automations |
+| `GET` | `/partner-api/backup-configurations` | `backup-configuration:read` | Export backup configuration |
+| `GET` | `/partner-api/custom-fields` | `custom-fields:read` | Export custom field definitions |
+| `GET` | `/partner-api/custom-field-values` | `custom-fields:read` | Export custom field values |
+| `POST` | `/partner-api/organizations` | `organizations:write` | Create an organization under the principal's partner. Enforces the partner's `maxOrganizations` cap (409 when reached). Body: `name`, `slug`, `type?`, `status?` (`active`/`trial`). |
+| `POST` | `/partner-api/sites` | `sites:write` | Create a site. `orgId` must be in the principal's accessible organizations (403 otherwise). Body: `orgId`, `name`, `timezone?`, `address?`, `contact?`. |
+| `POST` | `/partner-api/enrollment-keys` | `enrollment-keys:write` | Create an enrollment key. Body: `orgId`, `name`, `siteId?`, `maxUsage?`, and `ttlMinutes` **or** `expiresAt` (never both). The raw key is returned once in the 201 body. |
+
+Provisioning is deliberately **create-only**: there are no `DELETE` routes on
+this surface, and organization deletion remains a human, MFA-gated action on
+the main API. `partnerId` never appears in any write body — it always comes
+from the authenticated principal. Writes share the principal's hourly rate
+limit but are additionally capped by a tighter per-principal write budget
+(120/hour), and every write is attributed to the service principal in the
+audit log.
+
 ## Alerts
 
 | Method | Path | Description |

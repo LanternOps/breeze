@@ -1,4 +1,26 @@
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
+
+/**
+ * Mints a raw enrollment key value (64-char hex) for the Partner API
+ * provisioning route (#3243). Identical format/entropy to the human route's
+ * local generator in routes/enrollmentKeys.ts (which stays local because a
+ * dozen test suites mock this module with only the hash functions).
+ */
+export function generateEnrollmentKey(): string {
+  return randomBytes(32).toString('hex');
+}
+
+/**
+ * Default lifetime applied when a create request supplies neither
+ * `ttlMinutes` nor `expiresAt`. Same env knob the human route has always
+ * read; resolved per call so tests can vary the env.
+ */
+export function getDefaultEnrollmentKeyTtlMinutes(): number {
+  const raw = process.env.ENROLLMENT_KEY_DEFAULT_TTL_MINUTES;
+  if (!raw) return 60;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : 60;
+}
 
 // Primary pepper used for ALL new enrollment-key hashes. Required in production.
 function getPrimaryPepper(): string {

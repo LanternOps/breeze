@@ -46,6 +46,16 @@ const PARTNER_API_KEY_PATTERN = /^brz_sp_[A-Za-z0-9_-]{43}$/;
 const AUTH_REQUIRED_MESSAGE = 'Partner API authentication required';
 const INVALID_CREDENTIALS_MESSAGE = 'Invalid partner API credentials';
 
+/**
+ * Ceiling for non-GET requests, counted per principal+key per hour in a
+ * bucket separate from (and always at most equal to) the key's own limit.
+ * Provisioning writes are low-volume by nature — an onboarding run creating
+ * an org, a handful of sites, and per-site enrollment keys for 80 customers
+ * fits comfortably — while an unattended credential minting organizations at
+ * read-export speed is a billing/abuse signal, not a workload (#3243).
+ */
+export const PARTNER_API_WRITE_RATE_LIMIT_PER_HOUR = 120;
+
 function invalidCredentials(): HTTPException {
   return new HTTPException(401, { message: INVALID_CREDENTIALS_MESSAGE });
 }
@@ -137,6 +147,25 @@ async function bootstrapCredential(
       rateLimit: credential.rateLimit,
     };
   });
+}
+
+// The hidden per-partner 'quick_support' org is an internal Quick Support
+// artifact, never a customer tenant — it must not enter the Partner API's
+// accessible set (which every export route derives its org filter from,
+// including the caller-supplied ?orgId, validated against this list).
+// Verified: the Partner API mounts no support-session routes, so removing
+// it here costs no functionality.
+async function discoverAccessibleOrgIds(partnerId: string): Promise<string[]> {
+  const activeOrganizations = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(and(
+      eq(organizations.partnerId, partnerId),
+      eq(organizations.status, 'active'),
+      isNull(organizations.deletedAt),
+      ne(organizations.type, 'quick_support'),
+    ));
+  return activeOrganizations.map((organization) => organization.id);
 }
 
 function setRateLimitHeaders(
@@ -265,6 +294,60 @@ export async function partnerApiAuthMiddleware(c: Context, next: Next): Promise<
   // or RLS context switch itself fails before downstream routing begins.
   let principal: PartnerApiPrincipalContext = { ...bootstrap, accessibleOrgIds: [] };
   let downstreamError: unknown;
+
+  if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+    // Non-GET (#3243): provisioning writes run OUTSIDE the read path's held
+    // partner-RLS snapshot transaction, for two reasons:
+    //
+    // 1. The held read transaction takes the partner discovery advisory lock
+    //    SHARED for the whole request, while an `organizations` INSERT fires
+    //    a statement trigger that must take the same lock EXCLUSIVE
+    //    (2026-07-21-partner-export-canonical-org-mutations.sql). Running
+    //    that insert from a nested system transaction on a second pooled
+    //    connection would wait on our own request's shared lock — an
+    //    application-level self-deadlock that only a statement timeout ends.
+    //
+    // 2. Writes take no export snapshot, so the consistency machinery the
+    //    lock exists for does not apply. This mirrors the human /orgs/*
+    //    write routes, which also run their inserts in bounded contexts.
+    //
+    // Handlers therefore receive NO ambient DB context and must open their
+    // own bounded withDbAccessContext / withSystemDbAccessContext per
+    // operation (the contextless-write guard enforces this).
+    const writeLimit = Math.min(bootstrap.rateLimit, PARTNER_API_WRITE_RATE_LIMIT_PER_HOUR);
+    const writeCheck = await rateLimiter(
+      getRedis(),
+      `partner_api_write_rate:${bootstrap.partnerServicePrincipalId}:${bootstrap.keyId}`,
+      writeLimit,
+      3600,
+    );
+    setRateLimitHeaders(c, writeLimit, writeCheck);
+    if (!writeCheck.allowed) {
+      c.header('Retry-After', String(Math.max(
+        1,
+        Math.ceil((writeCheck.resetAt.getTime() - Date.now()) / 1000),
+      )));
+      throw new HTTPException(429, { message: 'Partner API rate limit exceeded' });
+    }
+
+    try {
+      const accessibleOrgIds = await withSystemDbAccessContext(() =>
+        discoverAccessibleOrgIds(bootstrap.partnerId),
+      );
+      principal = { ...bootstrap, accessibleOrgIds };
+      c.set('partnerApiPrincipal', principal);
+      await next();
+    } catch (error) {
+      downstreamError = error;
+    }
+
+    const writeStatus = downstreamStatus(c, downstreamError);
+    const writeResult = downstreamError || c.error || writeStatus >= 400 ? 'failure' : 'success';
+    await recordMachineUse(c, principal, writeResult, writeStatus);
+    if (downstreamError) throw downstreamError;
+    return;
+  }
+
   try {
     await withResolvedDbAccessContext(async () => {
       // Hold partner discovery shared from allowlist discovery through the
@@ -274,24 +357,9 @@ export async function partnerApiAuthMiddleware(c: Context, next: Next): Promise<
       await db.execute(sql`SELECT public.breeze_partner_export_lock_partners_shared(
         ARRAY[${bootstrap.partnerId}::uuid]
       )`);
-      // The hidden per-partner 'quick_support' org is an internal Quick Support
-      // artifact, never a customer tenant — it must not enter the Partner API's
-      // accessible set (which every export route derives its org filter from,
-      // including the caller-supplied ?orgId, validated against this list).
-      // Verified: the Partner API mounts no support-session routes, so removing
-      // it here costs no functionality.
-      const activeOrganizations = await db
-        .select({ id: organizations.id })
-        .from(organizations)
-        .where(and(
-          eq(organizations.partnerId, bootstrap.partnerId),
-          eq(organizations.status, 'active'),
-          isNull(organizations.deletedAt),
-          ne(organizations.type, 'quick_support'),
-        ));
       const resolvedPrincipal: PartnerApiPrincipalContext = {
         ...bootstrap,
-        accessibleOrgIds: activeOrganizations.map((organization) => organization.id),
+        accessibleOrgIds: await discoverAccessibleOrgIds(bootstrap.partnerId),
       };
       return {
         context: {

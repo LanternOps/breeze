@@ -197,6 +197,26 @@ All routes are prefixed with `/api/v1/service-principals`, require JWT (user-ses
 
 Every mutation is recorded in the audit log (`service_principal.create`, `service_principal.rotate_key`, `service_principal.disable`, `service_principal.migrate_key`) with the acting user, the principal, and -- for key operations -- the new key's prefix only. The raw key material is never logged.
 
+### Partner Service Principal Scopes
+
+**Partner** service principals (keys prefixed `brz_sp_`, managed from Settings → Partner Service Principals) authenticate the [Partner API](/reference/api/#partner-api-service-principals) and carry their own scope vocabulary:
+
+| Scope | Grants |
+|--------|--------|
+| `organizations:read` | Export organizations |
+| `sites:read` | Export sites |
+| `devices:read` | Export devices |
+| `inventory:read` | Export device inventory, software, and relationships |
+| `configuration:read` | Export configuration policies, assignments, and automations |
+| `scripts:read` | Export scripts |
+| `backup-configuration:read` | Export backup configuration |
+| `custom-fields:read` | Export custom field definitions and values |
+| `organizations:write` | Create organizations (bounded by the partner's organization cap) |
+| `sites:write` | Create sites in the principal's accessible organizations |
+| `enrollment-keys:write` | Create enrollment keys (raw key returned once) |
+
+The three `:write` scopes exist for unattended tenancy provisioning -- migration scripts, scheduled syncs, and partner-built integrations. They are **opt-in at principal creation and never part of the default scope set**: a default-scoped principal stays read-only. Grant them only to credentials that genuinely provision tenancy, and prefer a dedicated principal for provisioning so rotation and revocation stay surgical. Provisioning is create-only -- deleting organizations, sites, or enrollment keys remains a human, MFA-gated action.
+
 ---
 
 ## Enrollment Keys

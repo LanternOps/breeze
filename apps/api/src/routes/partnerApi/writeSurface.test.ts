@@ -42,7 +42,12 @@ import { partnerApiRoutes } from './index';
  * API), a dedicated `:write` scope, per-principal write rate limiting, and
  * audit attribution to the service principal.
  */
-const PARTNER_API_NON_GET_ROUTE_ALLOWLIST: readonly string[] = [];
+const PARTNER_API_NON_GET_ROUTE_ALLOWLIST: readonly string[] = [
+  // #3243 — unattended tenancy provisioning (partner service principal).
+  'POST /enrollment-keys', // enrollment-keys:write; TTL cap enforced; raw key returned once
+  'POST /organizations', // organizations:write; partner.maxOrganizations quota enforced
+  'POST /sites', // sites:write; orgId must be in the principal's accessible set
+];
 
 describe('partner API write surface', () => {
   function nonGetRoutes(): string[] {

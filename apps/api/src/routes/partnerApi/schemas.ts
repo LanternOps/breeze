@@ -477,6 +477,58 @@ export const customFieldValueExportEnvelopeSchema = createPartnerExportEnvelopeS
   partnerCustomFieldValueExportRecordSchema,
 );
 
+// --- Provisioning create responses (#3243) -------------------------------
+//
+// Created-object responses reuse the exact read-side export record schemas
+// (same strict allowlists, same revision contract), so `dtoSafety` /
+// `exportSafety` apply to writes exactly as they do to reads. `data` is null
+// only when the post-insert safety inspection blocked the record — the row
+// exists either way, and `blocked` then carries the identity.
+export function createPartnerProvisioningResponseSchema<T extends z.ZodType>(recordSchema: T) {
+  return z.object({
+    schemaVersion: z.literal('1'),
+    data: recordSchema.nullable(),
+    blocked: z.array(partnerExportBlockedRecordSchema).max(1).optional(),
+  }).strict().superRefine((value, ctx) => {
+    if ((value.data === null) !== (value.blocked !== undefined && value.blocked.length > 0)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['data'],
+        message: 'blocked must be present exactly when data is null',
+      });
+    }
+  });
+}
+
+export const organizationCreateResponseSchema = createPartnerProvisioningResponseSchema(
+  partnerOrganizationExportRecordSchema,
+);
+export const siteCreateResponseSchema = createPartnerProvisioningResponseSchema(
+  partnerSiteExportRecordSchema,
+);
+
+// Enrollment keys are not an export resource, so this record is a bespoke
+// strict allowlist rather than a reuse of a read DTO. The hashed `key`
+// column and `keySecretHash` are deliberately absent; the one-time raw key
+// travels in the response's top-level `key` field, never inside `data`.
+export const partnerEnrollmentKeyCreateRecordSchema = z.object({
+  id: z.string().uuid(),
+  orgId: z.string().uuid(),
+  siteId: z.string().uuid().nullable(),
+  name: z.string().min(1).max(255),
+  usageCount: z.number().int().nonnegative(),
+  maxUsage: z.number().int().positive().nullable(),
+  expiresAt: partnerExportTimestampSchema.nullable(),
+  createdAt: partnerExportTimestampSchema,
+}).strict();
+
+export const enrollmentKeyCreateResponseSchema = z.object({
+  schemaVersion: z.literal('1'),
+  data: partnerEnrollmentKeyCreateRecordSchema,
+  /** Returned exactly once, at creation. 64-char hex, as on the human route. */
+  key: z.string().regex(/^[0-9a-f]{64}$/u),
+}).strict();
+
 export type PartnerExportEnvelope<T extends PartnerExportRecordBase> = {
   schemaVersion: '1';
   snapshotAt: string;

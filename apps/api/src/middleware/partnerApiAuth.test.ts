@@ -142,13 +142,13 @@ const ORG_2 = '55555555-5555-4555-8555-555555555555';
 
 type TestContext = Context & { _headers: Record<string, string> };
 
-function createContext(apiKey: string | null = RAW_KEY): TestContext {
+function createContext(apiKey: string | null = RAW_KEY, method = 'GET'): TestContext {
   const responseHeaders: Record<string, string> = {};
   const store = new Map<string, unknown>();
   return {
     req: {
       path: '/api/v1/partner-api/organizations',
-      method: 'GET',
+      method,
       header: (name: string) => {
         if (name.toLowerCase() === 'x-api-key') return apiKey;
         if (name.toLowerCase() === 'user-agent') return 'partner-client/1.0';
@@ -747,6 +747,100 @@ describe('partnerApiAuthMiddleware', () => {
 
     expect(withResolvedDbAccessContext).not.toHaveBeenCalled();
     expect(next).not.toHaveBeenCalled();
+  });
+
+  describe('non-GET write branch (#3243)', () => {
+    it('resolves the principal WITHOUT a held request context and lets handlers open their own', async () => {
+      mockBootstrap();
+      const context = createContext(RAW_KEY, 'POST');
+      const next = vi.fn(async () => {
+        // The provisioning handlers must NOT run inside a held transaction:
+        // an org INSERT from a nested system tx would wait on this request's
+        // own shared partner advisory lock forever (see partnerApiAuth.ts).
+        expect(mocks.insideSystemContext).toBe(false);
+        expect(mocks.insidePartnerContext).toBe(false);
+      });
+
+      await partnerApiAuthMiddleware(context, next);
+
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(withResolvedDbAccessContext).not.toHaveBeenCalled();
+      // Org discovery still ran (in a short bounded system context) so scope
+      // and org-access checks see the same accessible set reads do.
+      expect(mocks.systemContextCalls).toBeGreaterThanOrEqual(1);
+      expect(context.get('partnerApiPrincipal')).toMatchObject({
+        partnerServicePrincipalId: PRINCIPAL_ID,
+        partnerId: PARTNER_ID,
+        accessibleOrgIds: [ORG_1, ORG_2],
+      });
+    });
+
+    it('applies a tighter per-principal write rate limit in its own bucket', async () => {
+      mockBootstrap();
+      const context = createContext(RAW_KEY, 'POST');
+      const next = vi.fn();
+
+      await partnerApiAuthMiddleware(context, next);
+
+      // Call 1: pre-lookup probe throttle; call 2: the key's own limit;
+      // call 3: the write ceiling — min(key limit 600, 120) = 120.
+      expect(rateLimiter).toHaveBeenNthCalledWith(
+        3,
+        { redis: true },
+        `partner_api_write_rate:${PRINCIPAL_ID}:${KEY_ID}`,
+        120,
+        3600,
+      );
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects with 429 and Retry-After when the write bucket is exhausted', async () => {
+      mockBootstrap();
+      const resetAt = new Date(Date.now() + 30_000);
+      mocks.rateLimiter
+        .mockResolvedValueOnce({ allowed: true, remaining: 299, resetAt })
+        .mockResolvedValueOnce({ allowed: true, remaining: 299, resetAt })
+        .mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt });
+      const context = createContext(RAW_KEY, 'POST');
+      const next = vi.fn();
+
+      await expect(partnerApiAuthMiddleware(context, next)).rejects.toMatchObject({
+        status: 429,
+        message: 'Partner API rate limit exceeded',
+      });
+      expect(next).not.toHaveBeenCalled();
+      expect(context._headers['Retry-After']).toBeDefined();
+    });
+
+    it('records machine use for a failed write and rethrows the downstream error', async () => {
+      mockBootstrap();
+      const context = createContext(RAW_KEY, 'POST');
+      const boom = new HTTPException(500, { message: 'write exploded' });
+      const next = vi.fn(async () => { throw boom; });
+
+      await expect(partnerApiAuthMiddleware(context, next)).rejects.toBe(boom);
+
+      expect(mocks.writeAuditEvent).toHaveBeenCalledWith(context, expect.objectContaining({
+        action: 'partner_api.request',
+        actorType: 'api_key',
+        actorId: KEY_ID,
+        result: 'failure',
+        details: expect.objectContaining({ method: 'POST', status: 500 }),
+      }));
+    });
+
+    it('records machine use for a successful write', async () => {
+      mockBootstrap();
+      const context = createContext(RAW_KEY, 'POST');
+
+      await partnerApiAuthMiddleware(context, vi.fn());
+
+      expect(mocks.writeAuditEvent).toHaveBeenCalledWith(context, expect.objectContaining({
+        action: 'partner_api.request',
+        result: 'success',
+        details: expect.objectContaining({ method: 'POST' }),
+      }));
+    });
   });
 });
 
