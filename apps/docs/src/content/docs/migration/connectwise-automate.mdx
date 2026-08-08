@@ -1,0 +1,183 @@
+---
+title: ConnectWise Automate → Breeze
+description: Export clients, locations, computers and EDFs from Automate (LabTech), push the Breeze agent via an Automate script, and remove LTService cleanly.
+sidebar:
+  order: 5
+  label: ConnectWise Automate
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+ConnectWise Automate (formerly LabTech) is the **most expensive migration** in this section, and it is worth being honest about why: its scripts, internal monitors, and remote monitors are all proprietary step-based objects with no export path into anything else. None of them port. Everything else — the client tree, the computer list, the EDFs — moves fine.
+
+Plan for re-authoring, not converting. In exchange, most MSPs find that a decade of accumulated Automate scripting compresses into a fraction of its original size.
+
+Read [Migrating to Breeze](/migration/overview/) first.
+
+---
+
+## Hierarchy Mapping
+
+| Automate | Breeze | Notes |
+|---|---|---|
+| Automate instance | Partner | |
+| **Client** | **Organization** | Direct match. |
+| **Location** | **Site** | Direct match. Automate always creates a default location per client. |
+| Computer group (static/auto-join) | Device Group | Auto-join groups map to Breeze [dynamic device groups](/features/device-groups/). |
+| Computer | Device | |
+| Contact | — | Breeze cannot create contacts programmatically today; enter them by hand or keep them in your PSA. |
+
+---
+
+## Phase 0 — Export from Automate
+
+You have two routes. The REST API is the supported one; direct SQL against the `labtech` MySQL database is faster and far more complete, and is what most migration projects actually use for a bulk export. Use SQL for the export, and the API for anything you need to write back.
+
+### Option A — Direct SQL (recommended for export)
+
+```sql
+-- Client → Location tree, ready for Recipe 1
+SELECT c.Name AS organization, l.Name AS site
+FROM clients c
+JOIN locations l ON l.ClientID = c.ClientID
+WHERE c.Name NOT IN ('Deleted Clients')
+ORDER BY c.Name, l.Name;
+```
+
+```sql
+-- Device inventory + last-contact, for reconciliation and licence cleanup
+SELECT c.Name AS client, l.Name AS location, comp.Name AS hostname,
+       comp.OS, comp.LastContact,
+       DATEDIFF(NOW(), comp.LastContact) AS days_stale
+FROM computers comp
+JOIN clients   c ON c.ClientID   = comp.ClientID
+JOIN locations l ON l.LocationID = comp.LocationID
+ORDER BY days_stale DESC;
+```
+
+```sql
+-- EDFs (Extra Data Fields) at computer scope
+SELECT comp.Name AS hostname, ef.Name AS field, ed.Value
+FROM extradatavalues ed
+JOIN extrafield ef ON ef.ID = ed.ExtraFieldID
+JOIN computers comp ON comp.ComputerID = ed.ExtraDataID
+WHERE ed.EDFType = 2 AND ed.Value <> '';
+```
+
+Export to CSV, reshape to `organization,site`, and feed [Recipe 1](/migration/toolkit/#recipe-1--bootstrap-the-tenancy-tree-from-csv).
+
+### Option B — REST API
+
+Automate's REST API lives at `https://<your-automate>/cwa/api/v1`, authenticated by `POST /apitoken` with an Automate username and password (and a two-factor code where enforced).
+
+```bash
+TOKEN=$(curl -sf -X POST "https://$AUTOMATE/cwa/api/v1/apitoken" \
+  -H 'Content-Type: application/json' \
+  -d "{\"UserName\":\"$USER\",\"Password\":\"$PASS\"}" | jq -r .AccessToken)
+
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "https://$AUTOMATE/cwa/api/v1/Clients?pageSize=1000" | jq -r '.[] | [.Id,.Name] | @tsv'
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "https://$AUTOMATE/cwa/api/v1/Computers?pageSize=1000" \
+  | jq -r '.[] | [.Client.Name, .Location.Name, .ComputerName, .OperatingSystemName, .LastContact] | @tsv'
+```
+
+<Aside type="tip" title="This is your best licence audit in years">
+  Automate estates accumulate stale computer records more than any other RMM — agents on decommissioned hardware, duplicates from re-imaged machines, and `Deleted Clients` leftovers. Sort by `days_stale` and expect 10–20% of the list to be fictional. None of it should migrate.
+</Aside>
+
+---
+
+## Phase 3 — Deploy the Breeze Agent with an Automate Script
+
+<Steps>
+
+1. **Create a script.** In the Automate Control Center: **Automation → Scripts → New Script**, script type **Computer Script**. You need exactly one function — a `Script Execute` / `Shell` step that runs PowerShell as SYSTEM (LTService already runs as SYSTEM, so no elevation is needed).
+
+2. **Use a script parameter for the key.** Define a `@breezekey@` script parameter and pass the per-location enrollment key from [Recipe 2](/migration/toolkit/#recipe-2--mint-bulk-enrollment-keys) when scheduling. Alternatively store the key in a location-level EDF and read it with `@edf(...)@` so one script serves every client.
+
+3. **Body:** the Windows PowerShell payload from [Recipe 3](/migration/toolkit/#recipe-3--the-push-payload). Keep the `agent.yaml` existence check — it is what makes the scheduled re-runs safe.
+
+   <Aside type="caution">
+     Write the payload to a `.ps1` file and invoke it, rather than pasting a long inline one-liner. Automate's script-step escaping mangles quoting in long inline PowerShell, and the failure mode is a silent no-op that looks like a successful run.
+   </Aside>
+
+4. **Add AV/EDR exclusions in both directions** before the push — see [Antivirus Exceptions](/deploy/antivirus-exceptions/).
+
+5. **Schedule against a group, daily.** Create an auto-join group for the target client and schedule the script daily for the length of your rollout window. This picks up machines that were offline, and — importantly for Automate estates — retries against machines where LTService is wedged and recovers on its next check-in.
+
+</Steps>
+
+---
+
+## Scripts: Plan to Re-author
+
+Automate scripts are step lists stored in the database and exported as proprietary XML. There is no converter, and building one is not a good use of the migration budget.
+
+The practical approach:
+
+<Steps>
+
+1. **Rank by actual use.** Query what has actually run:
+
+   ```sql
+   SELECT s.ScriptName, COUNT(*) AS runs, MAX(sl.DateRan) AS last_run
+   FROM scriptlogs sl JOIN scripts s ON s.ScriptId = sl.ScriptId
+   WHERE sl.DateRan > DATE_SUB(NOW(), INTERVAL 12 MONTH)
+   GROUP BY s.ScriptName ORDER BY runs DESC;
+   ```
+
+2. **Delete the tail.** Anything with zero runs in 12 months does not migrate. On a typical Automate estate this removes 70–85% of the library.
+
+3. **Check the Breeze system library** (`GET /scripts/system-library`) before re-authoring anything. Disk cleanup, service restart, printer spooler, profile cleanup, reboot-required checks — the standard Automate toolkit is largely already there.
+
+4. **Re-author what remains** as plain PowerShell or bash. Scripts whose steps were `Shell`, `Execute Script`, or `File Download` translate almost mechanically; scripts built from `If/Then` step logic against Automate's own database do not translate at all and should be reconsidered rather than reproduced.
+
+5. **Bulk-load** with [Recipe 6](/migration/toolkit/#recipe-6--bulk-script-import), `availability: "partner"`.
+
+</Steps>
+
+---
+
+## Monitors
+
+Automate has two kinds and neither ports:
+
+- **Internal monitors** are SQL queries against the Automate database. They have no meaning outside Automate. Re-express the *intent* as Breeze [monitors](/features/service-monitoring/) and [alert rules](/features/alerts/).
+- **Remote monitors** are agent-side checks (service state, performance counter, event log, drive space). These map well onto Breeze's equivalents — service monitoring, [event log forwarding](/features/event-log-forwarding/), and disk thresholds.
+
+Rank by alert volume over the last 90 days and rebuild the top of the list partner-wide. Automate estates typically carry hundreds of monitors of which a dozen generate every ticket that mattered.
+
+---
+
+## EDFs → Custom Fields
+
+Map computer-scope EDFs to Breeze [custom fields](/features/custom-fields/), and client/location-scope EDFs to organization-level fields or your PSA. Backfill by joining the EDF export against Breeze devices on hostname.
+
+---
+
+## Phase 6 — Decommission LTService
+
+Only after [Recipe 4](/migration/toolkit/#recipe-4--reconcile-enrollment) is clean for that client.
+
+<Steps>
+
+1. **Disable alerting** — remove the client's computers from monitor targets. Leave the agent installed.
+2. **Wait one full patch cycle.**
+3. **Uninstall via Automate.** Use the built-in *Agent Uninstall* script, or run ConnectWise's `Agent_Uninstall.exe` from the LTSVC directory:
+
+   ```powershell
+   $u = "$env:windir\LTSvc\Agent_Uninstall.exe"
+   if (Test-Path $u) { Start-Process $u -Wait }
+   ```
+
+   Automate agents are notoriously persistent. If the standard uninstaller leaves remnants, ConnectWise's own `LabTechUninstaller`/`Agent_Uninstall` cleanup routine removes the `LTService` and `LTSvcMon` services, `%windir%\LTSvc`, and the `HKLM\SOFTWARE\LabTech` keys.
+
+4. **Verify from Breeze.** [Recipe 5](/migration/toolkit/#recipe-5--find-endpoints-still-running-the-old-agent) — Breeze [Management Posture](/features/management-posture/) fingerprints both ConnectWise Automate and ScreenConnect independently, so it will tell you if the remote-access component survived the RMM uninstall. That distinction matters: leftover ScreenConnect is an unmanaged remote-access path into your customers' networks.
+5. **Delete the client in Automate** and reduce your agent count.
+
+</Steps>
+
+<Aside type="caution">
+  Automate and ScreenConnect (ConnectWise Control) are separately installed. Uninstalling the Automate agent does **not** remove ScreenConnect. Check Management Posture for both and remove them deliberately — an orphaned ScreenConnect instance you no longer monitor is a standing security exposure.
+</Aside>

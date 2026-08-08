@@ -168,7 +168,6 @@ export default defineConfig({
                 },
                 { slug: 'features/identity-console' },
                 { slug: 'features/webhooks' },
-                { slug: 'features/extensions' },
                 { slug: 'features/plugins' },
                 { slug: 'features/branding' },
                 { slug: 'features/portal' },
@@ -177,6 +176,10 @@ export default defineConfig({
               ],
             },
           ],
+        },
+        {
+          label: 'Migrating to Breeze',
+          items: [{ autogenerate: { directory: 'migration' } }],
         },
         {
           label: 'Monitoring',

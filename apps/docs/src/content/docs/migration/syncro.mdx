@@ -1,0 +1,157 @@
+---
+title: Syncro → Breeze
+description: Export customers and assets from Syncro, deploy the Breeze agent via a Syncro script, and remove the Syncro agent cleanly.
+sidebar:
+  order: 9
+  label: Syncro
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Syncro is a straightforward migration on the RMM side — clean REST API, plain PowerShell and shell scripts, shallow hierarchy. What makes a Syncro migration a *project* is that Syncro is an all-in-one: RMM, PSA, ticketing, invoicing, and inventory in one product. Breeze covers the RMM half and has its own [ticketing](/features/ticketing/), [invoicing](/features/invoices/), and [contracts](/features/contracts/) — but you must decide, up front, which of Syncro's non-RMM functions you are replacing with Breeze and which with a separate PSA.
+
+Do that before Phase 0. Everything else follows from it.
+
+Read [Migrating to Breeze](/migration/overview/) first.
+
+---
+
+## Hierarchy Mapping
+
+Syncro is flat — Customers own Assets, with no site layer.
+
+| Syncro | Breeze | Notes |
+|---|---|---|
+| Account | Partner | |
+| **Customer** | **Organization** | Direct match. |
+| — | **Site** | Create one `Main` site per organization. Use the customer's address to set a real timezone. |
+| Asset tag / policy folder | Device Group | Map to Breeze [dynamic device groups](/features/device-groups/). |
+| Asset | Device | Syncro assets include non-agent records (manually added hardware) — filter to agent-managed only. |
+| Contact | — | Breeze cannot create contacts programmatically today. |
+
+---
+
+## Phase 0 — Export from Syncro
+
+Generate an API token under **Admin → API Tokens** with read permissions on customers and assets. The base URL is your subdomain: `https://<subdomain>.syncromsp.com/api/v1`.
+
+<Steps>
+
+1. **Export customers** — your Breeze organization list:
+
+   ```bash
+   H="Authorization: Bearer $SYNCRO_TOKEN"
+   BASE="https://$SYNCRO_SUB.syncromsp.com/api/v1"
+
+   echo 'organization,site' > tree.csv
+   page=1
+   while :; do
+     r=$(curl -sf -H "$H" "$BASE/customers?page=$page")
+     echo "$r" | jq -r '.customers[] | [(.business_name // .fullname), "Main"] | @csv' >> tree.csv
+     [ "$page" -ge "$(echo "$r" | jq -r .meta.total_pages)" ] && break
+     page=$((page+1))
+   done
+   ```
+
+   Syncro customers may be businesses or individuals — `business_name` is null for the latter, hence the fallback. Feed `tree.csv` to [Recipe 1](/migration/toolkit/#recipe-1--bootstrap-the-tenancy-tree-from-csv).
+
+2. **Export assets** — your reconciliation checklist:
+
+   ```bash
+   page=1
+   while :; do
+     r=$(curl -sf -H "$H" "$BASE/customer_assets?page=$page")
+     echo "$r" | jq -r '.assets[] | [.customer.business_name, .name, .asset_type,
+                                     .properties."kabuto_information".general.os_name,
+                                     .updated_at] | @tsv'
+     [ "$page" -ge "$(echo "$r" | jq -r .meta.total_pages)" ] && break
+     page=$((page+1))
+   done > syncro-assets.tsv
+   ```
+
+   Filter on `asset_type` — only Syncro RMM assets have an agent. Manually created asset records are inventory, not migration targets.
+
+3. **Export what you are keeping from the PSA side.** If you are leaving Syncro entirely: `GET /tickets`, `GET /invoices`, `GET /contacts`, `GET /estimates`. None of this migrates into Breeze automatically. Export it to storage before you cancel — Syncro is your system of record for billing history.
+
+</Steps>
+
+<Aside type="caution" title="Do not cancel Syncro on the RMM timeline">
+  Because Syncro holds your invoicing and ticket history, its cancellation date is driven by your finance and records-retention needs, not by when the last agent enrolls. Plan for a read-only Syncro tail well past RMM cutover, and export everything before the account closes.
+</Aside>
+
+---
+
+## Phase 3 — Deploy the Breeze Agent with a Syncro Script
+
+<Steps>
+
+1. **Create the script.** **Admin → Scripts → New Script**, platform **Windows**, language **PowerShell**. Paste the Windows payload from [Recipe 3](/migration/toolkit/#recipe-3--the-push-payload). Syncro scripts run as SYSTEM by default.
+
+2. **Parameterise the key.** Syncro supports script variables — declare `Server`, `Key`, and `Secret`, and supply the per-customer enrollment key from [Recipe 2](/migration/toolkit/#recipe-2--mint-bulk-enrollment-keys) when you attach the script to a policy.
+
+3. **Add AV/EDR exclusions in both directions** first — see [Antivirus Exceptions](/deploy/antivirus-exceptions/).
+
+4. **Attach to a policy on a daily schedule.** Syncro runs scripts via **Policies**, so create a migration policy targeting one customer's assets with a daily schedule for the length of your rollout window. The `agent.yaml` check makes repeat runs a no-op and the schedule sweeps up offline machines.
+
+</Steps>
+
+---
+
+## Migrating Scripts
+
+Syncro's script library is PowerShell, batch, and shell — bodies port directly.
+
+| Syncro | Breeze |
+|---|---|
+| Script variables (`$variableName`) | Script [parameters](/features/scripts/) |
+| `Rmm-Alert` (raise an alert from a script) | `exitCodeSeverityMapping` on the script |
+| `Set-Asset-Field` | [Custom field](/features/custom-fields/) writes via the API |
+| `Create-Syncro-Ticket` | Alert rule bound to [Breeze ticketing](/features/ticketing/) or a [PSA integration](/features/psa-integrations/) |
+| Policy-attached scripts | [Automations](/features/automations/) |
+
+The Syncro-specific cmdlets (`Rmm-Alert`, `Set-Asset-Field`, `Create-Syncro-Ticket`, `Log-Activity`) are injected into the runtime and will fail on any other platform, so every script that uses one needs that line replaced. Grep your library for `Syncro` before you start — it tells you exactly how much rewriting there is.
+
+Bulk-load with [Recipe 6](/migration/toolkit/#recipe-6--bulk-script-import), `availability: "partner"`.
+
+---
+
+## Policies and Alerting
+
+Syncro's **Policies** bundle monitoring thresholds, patching, and scheduled scripts into one object per customer. Breeze splits these three concerns apart:
+
+| Syncro policy section | Breeze |
+|---|---|
+| Monitoring / thresholds | [Monitors](/features/service-monitoring/) + [alert rules](/features/alerts/) |
+| Patching | [Patch policies](/features/patch-management/) + [update rings](/features/update-rings/) |
+| Scheduled scripts | [Automations](/features/automations/) |
+| Applied per customer | Define **partner-wide** instead — one definition covers every organization |
+
+Most Syncro estates have one policy per customer that differs only cosmetically. Consolidate to two or three partner-wide definitions.
+
+---
+
+## Phase 6 — Decommission the Syncro Agent
+
+Only after [Recipe 4](/migration/toolkit/#recipe-4--reconcile-enrollment) is clean for that customer.
+
+<Steps>
+
+1. **Disable the customer's Syncro policy alerts.** Leave the agent installed.
+2. **Wait one full patch cycle.**
+3. **Uninstall via Syncro.** Deleting the asset in Syncro triggers agent removal. By script:
+
+   ```powershell
+   $p = Get-CimInstance Win32_Product | Where-Object { $_.Name -like 'Syncro*' -or $_.Name -like 'Kabuto*' }
+   foreach ($x in $p) { msiexec /x $x.IdentifyingNumber /qn /norestart }
+   ```
+
+   Syncro's agent runs as the `Syncro` and `SyncroLive` services (historically `Kabuto`); confirm both are gone.
+
+4. **Verify from Breeze.** [Recipe 5](/migration/toolkit/#recipe-5--find-endpoints-still-running-the-old-agent) — Breeze [Management Posture](/features/management-posture/) fingerprints SyncroMSP. Drive the count to zero.
+5. **Keep the Syncro account open** until your billing and ticket-history retention needs are met — see the caution above — then export and cancel.
+
+</Steps>
+
+<Aside type="caution">
+  Syncro bundles Splashtop for remote access as a separate install. Removing the Syncro agent does not always remove it. Check for it and remove it deliberately.
+</Aside>
