@@ -161,7 +161,6 @@ function auditProvisioningCreate(
 }
 
 function createdResponse(
-  c: Parameters<typeof writeAuditEventAsync>[0] & { json: Function },
   resource: PartnerExportResource,
   identity: { id: string; orgId: string },
   record: Record<string, unknown>,
@@ -281,7 +280,7 @@ partnerProvisioningRoutes.post(
       details: { status: organization.status, type: organization.type },
     });
 
-    const body = createdResponse(c, 'organizations', { id: organization.id, orgId: organization.id }, {
+    const body = createdResponse('organizations', { id: organization.id, orgId: organization.id }, {
       id: organization.id,
       orgId: organization.id,
       siteId: null,
@@ -345,7 +344,7 @@ partnerProvisioningRoutes.post(
       resourceName: site.name,
     });
 
-    const body = createdResponse(c, 'sites', { id: site.id, orgId: site.orgId }, {
+    const body = createdResponse('sites', { id: site.id, orgId: site.orgId }, {
       id: site.id,
       orgId: site.orgId,
       siteId: site.id,
