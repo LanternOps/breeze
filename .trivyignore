@@ -39,3 +39,26 @@ CVE-2026-55698
 GHSA-72r4-9c5j-mj57
 GHSA-fr4h-3cph-29xv
 GHSA-qrv3-253h-g69c
+
+# ──────────────────────────────────────────────────────────────────────────
+# image-size 1.2.1 — no upstream fix
+# ──────────────────────────────────────────────────────────────────────────
+# Both are denial-of-service via a crafted image buffer (zero-valued size
+# fields, and a malformed ICNS). Trivy reports them as `affected` with an empty
+# Fixed Version — there is no release to move to, so an override cannot clear
+# them the way the nanoid one does.
+#
+# Reachability is narrow. image-size@1.2.1 has exactly ONE consumer in the
+# tree, metro@0.84.4, and metro is declared only by apps/mobile — the React
+# Native bundler. It is build-time tooling for the mobile app: no Dockerfile
+# under docker/ builds apps/mobile, and the api image ships only
+# `pnpm --filter @breeze/api deploy --prod` output, so neither metro nor
+# image-size reaches any runtime container. The path that would parse a
+# hostile image is the developer's own bundler run over the repo's own assets.
+#
+# This is the filesystem scan flagging the monorepo lockfile rather than a
+# shipped artifact — the same distinction the pnpm block above draws.
+#
+# Added 2026-08-08; remove as soon as image-size publishes a fixed release.
+CVE-2025-71329
+CVE-2025-71330
