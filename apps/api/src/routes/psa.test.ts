@@ -383,7 +383,7 @@ describe('psa routes', () => {
 
   it('updates name without touching credentials', async () => {
     selectMock.mockReturnValueOnce(makeChain([connectionRow()]) as never);
-    const setSpy = vi.fn(() => ({
+    const setSpy = vi.fn((_values: Record<string, unknown>) => ({
       where: vi.fn(() => ({
         returning: vi.fn(async () => [connectionRow({ name: 'Renamed PSA' })])
       }))
@@ -404,7 +404,7 @@ describe('psa routes', () => {
 
   it('merges PATCHed credentials over the stored blob (untouched secrets survive)', async () => {
     selectMock.mockReturnValueOnce(makeChain([connectionRow()]) as never);
-    const setSpy = vi.fn(() => ({
+    const setSpy = vi.fn((_values: Record<string, unknown>) => ({
       where: vi.fn(() => ({
         returning: vi.fn(async () => [connectionRow()])
       }))
@@ -453,7 +453,7 @@ describe('psa routes', () => {
 
   it('runs a real connection test and persists verified on success', async () => {
     selectMock.mockReturnValueOnce(makeChain([connectionRow()]) as never);
-    const setSpy = vi.fn(() => ({ where: vi.fn(async () => []) }));
+    const setSpy = vi.fn((_values: Record<string, unknown>) => ({ where: vi.fn(async () => []) }));
     updateMock.mockReturnValueOnce({ set: setSpy } as any);
     const testConnection = vi.fn(async () => ({ success: true, message: 'Connected as Admin' }));
     createPSAProviderMock.mockReturnValueOnce({ testConnection });
@@ -477,7 +477,7 @@ describe('psa routes', () => {
 
   it('returns success:false and persists failed when the provider rejects the credentials', async () => {
     selectMock.mockReturnValueOnce(makeChain([connectionRow()]) as never);
-    const setSpy = vi.fn(() => ({ where: vi.fn(async () => []) }));
+    const setSpy = vi.fn((_values: Record<string, unknown>) => ({ where: vi.fn(async () => []) }));
     updateMock.mockReturnValueOnce({ set: setSpy } as any);
     createPSAProviderMock.mockReturnValueOnce({
       testConnection: vi.fn(async () => ({ success: false, message: 'Jira API error (401): bad token' }))
