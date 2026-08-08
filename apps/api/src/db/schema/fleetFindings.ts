@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, integer, bigint, jsonb, timestamp, index, uniqueIndex, foreignKey } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, integer, bigint, jsonb, timestamp, index, uniqueIndex, foreignKey, primaryKey } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { organizations } from './orgs';
 import { users } from './users';
@@ -52,7 +52,7 @@ export const fleetFindingDevices = pgTable('fleet_finding_devices', {
   firstSeenAt: timestamp('first_seen_at').notNull(),
   lastSeenAt: timestamp('last_seen_at').notNull(),
 }, (t) => ({
-  pk: uniqueIndex('fleet_finding_devices_pk').on(t.findingId, t.deviceId),
+  pk: primaryKey({ columns: [t.findingId, t.deviceId] }),
   // Single-column FK on finding_id ONLY (no same-org composite FK): the
   // device-move trigger rewrites this table's org_id when a device changes
   // orgs; a composite (finding_id, org_id) FK would break mid-move. The
@@ -99,7 +99,7 @@ export const fleetRemediationRunTargets = pgTable('fleet_remediation_run_targets
   queuedAt: timestamp('queued_at'),
   completedAt: timestamp('completed_at'),
 }, (t) => ({
-  pk: uniqueIndex('fleet_remediation_run_targets_pk').on(t.runId, t.targetDeviceUuid),
+  pk: primaryKey({ columns: [t.runId, t.targetDeviceUuid] }),
   orgIdx: index('fleet_remediation_run_targets_org_idx').on(t.orgId),
   statusIdx: index('fleet_remediation_run_targets_status_idx').on(t.runId, t.status),
 }));
