@@ -74,7 +74,7 @@ Constraints/indexes:
 
 ### 4.4 `fleet_remediation_run_targets`
 
-`(run_id, target_device_uuid)` PK, `org_id`, **snapshot identity** (device uuid + hostname/site captured at dispatch), per-target `status`, link to the underlying execution row (`device_command_id` — v1 dispatches exclusively via the command chokepoint; scripts run as `execute_script` commands, so there is no deployment linkage), bounded error/result summary, timestamps.
+`(run_id, target_device_uuid)` PK, `org_id`, **snapshot identity** (device uuid + hostname/site captured at dispatch), per-target `status`, link to the underlying execution row (`device_command_id` — v1 dispatches exclusively via the command chokepoint; scripts run as `CommandTypes.SCRIPT` (commandType `'script'`) commands, so there is no deployment linkage), bounded error/result summary, timestamps.
 
 **Why snapshot, not a live `device_id` FK column:** the migration `2026-05-18-device-child-orgid-cascade.sql` installs a trigger that rewrites `org_id` on every table with uuid columns literally named `device_id` + `org_id` when a device moves orgs. Rewriting a historical run target's org would break the same-org composite FK to its run. The column is therefore named `target_device_uuid` (no FK, exempt from the trigger), preserving the historical record; the run row records the org it executed under, forever.
 
@@ -122,9 +122,9 @@ Dispatch semantics for `remediate`:
 
 - **Findings feed** front and center: severity icon, kind badge, title, org badge, "N devices", age, status. Filters (org/kind/severity/status) + tab-style status toggle. Existing stat cards demoted to a compact summary strip above the feed. Partial endpoint failure stays honest (existing `failedEndpoints` pattern).
 - **Detail drawer**: summary, evidence, member device list (links to device pages), lifecycle actions, run history.
-- **Fix picker modal**: choose action — script from the script library (with param form) or command preset (restart service, clear temp/disk cleanup, reboot, etc.) → review target list (deselect devices) → confirm → live run progress with per-device outcomes and bounded failure summaries (reuse bulk-action progress patterns from `DevicesPage`).
+- **Fix picker modal**: choose action — script from the script library (with param form) or command preset (`restart_service`, `reboot`) → review target list (deselect devices) → confirm → live run progress with per-device outcomes and bounded failure summaries (reuse bulk-action progress patterns from `DevicesPage`). No `clear_temp_files` preset shipped: the real disk-cleanup primitive (`disk_cleanup`) needs an existing filesystem snapshot plus a caller-selected path set, which has no single fire-and-forget command shape compatible with this dispatcher's one-command-per-target model — that cleanup stays a script, not a command preset.
 - All mutations wrapped in `runAction`; selected finding via `window.location.hash`.
-- "Ask AI" on a finding opens the AI sidebar seeded with the finding context (tools below make this real).
+- **Follow-up, not shipped in v1**: "Ask AI" on a finding opening the AI sidebar seeded with the finding context.
 
 ## 8. AI tools (read-only, Tier-1)
 
