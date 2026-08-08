@@ -1835,12 +1835,15 @@
         "deviceCount_one": "{{count}} Gerät",
         "deviceCount_other": "{{count}} Geräte",
         "showing": "{{shown}} von {{total}} werden angezeigt",
+        "loadMore": "Weitere laden",
         "empty": {
           "title": "Die Flotte ist sauber",
+          "noMatchesTitle": "Keine passenden Befunde",
           "body": "Derzeit passt kein Befund zu diesen Filtern."
         },
         "errors": {
-          "loadFailed": "Flotten-Befunde konnten nicht geladen werden"
+          "loadFailed": "Flotten-Befunde konnten nicht geladen werden",
+          "banner": "Die Flotten-Befunde konnten nicht geladen werden"
         }
       },
       "FindingDrawer": {
@@ -1850,6 +1853,11 @@
           "lastSeen": "Zuletzt gesehen {{when}}"
         },
         "summaryHeading": "Zusammenfassung",
+        "resolvedNote": {
+          "heading": "Warum dies geschlossen ist",
+          "body": "Dieser Befund wurde behoben, weil das zugrunde liegende Signal nicht mehr vorliegt. Er wird als neuer Befund erneut angezeigt, falls das Muster wieder auftritt.",
+          "reason": "Grund der Behebung: {{reason}}"
+        },
         "dismissNotesHeading": "Verwerfungsnotiz",
         "evidenceHeading": "Nachweise",
         "membersHeading": "Betroffene Geräte",
@@ -1879,6 +1887,7 @@
           "remediate": "Auf {{count}} Geräten beheben",
           "remediate_one": "Auf {{count}} Gerät beheben",
           "remediate_other": "Auf {{count}} Geräten beheben",
+          "remediateDisabledReason": "Für diesen Befund sind keine Geräte mehr zu beheben.",
           "acknowledge": "Bestätigen",
           "dismiss": "Verwerfen",
           "reopen": "Wieder öffnen"
@@ -1909,6 +1918,10 @@
         "selectNone": "Auswahl aufheben",
         "selectedCount": "{{selected}} von {{total}} Geräten ausgewählt",
         "noTargets": "Wählen Sie mindestens ein Gerät aus, um fortzufahren.",
+        "osIncompatibleNotice": "{{count}} Geräte können dieses Skript nicht ausführen und wurden ausgeschlossen. Es unterstützt nur {{os}}.",
+        "osIncompatibleNotice_one": "{{count}} Gerät kann dieses Skript nicht ausführen und wurde ausgeschlossen. Es unterstützt nur {{os}}.",
+        "osIncompatibleNotice_other": "{{count}} Geräte können dieses Skript nicht ausführen und wurden ausgeschlossen. Es unterstützt nur {{os}}.",
+        "osIncompatibleReason": "Erfordert {{os}}",
         "confirmAction": "Gewählte Maßnahme",
         "confirmTargets": "Geräte",
         "confirmRestartService": "Dienst {{name}} neu starten",

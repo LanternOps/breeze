@@ -119,6 +119,11 @@ export default function FindingDrawer({
   const canAcknowledge = status === 'open';
   const canDismiss = status === 'open' || status === 'acknowledged';
   const canReopen = status === 'acknowledged' || status === 'dismissed';
+  // A closed finding (resolved or dismissed) can no longer be remediated —
+  // its device membership may be stale, and dismissal was a deliberate call
+  // not to act. Reopening (see canReopen) is the only way back to actionable.
+  const canRemediate = status === 'open' || status === 'acknowledged';
+  const hasRemediationTargets = (finding?.deviceCount ?? 0) > 0;
   const busy = pendingAction !== null;
 
   return (
@@ -199,6 +204,30 @@ export default function FindingDrawer({
 
           {finding && !error && (
             <div className="space-y-6">
+              {finding.status === 'resolved' && (
+                <section
+                  data-testid="finding-resolved-note"
+                  className="rounded-lg border bg-muted/30 p-3"
+                >
+                  <h3 className="mb-1 text-sm font-semibold">
+                    {t('longTail.fleet.FindingDrawer.resolvedNote.heading')}
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    {t('longTail.fleet.FindingDrawer.resolvedNote.body')}
+                  </p>
+                  {finding.resolutionReason && (
+                    <p
+                      className="mt-1 text-sm text-muted-foreground"
+                      data-testid="finding-resolved-reason"
+                    >
+                      {t('longTail.fleet.FindingDrawer.resolvedNote.reason', {
+                        reason: finding.resolutionReason,
+                      })}
+                    </p>
+                  )}
+                </section>
+              )}
+
               {finding.summary && (
                 <section>
                   <h3 className="mb-2 text-sm font-semibold">
@@ -368,15 +397,37 @@ export default function FindingDrawer({
             )}
 
             <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => onRemediate?.(finding)}
-                data-testid="finding-remediate"
-                className="flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-              >
-                <Wrench className="h-4 w-4" />
-                {t('longTail.fleet.FindingDrawer.actions.remediate', { count: finding.deviceCount })}
-              </button>
+              {canRemediate && (
+                <div className="flex flex-col gap-1">
+                  <button
+                    type="button"
+                    onClick={() => onRemediate?.(finding)}
+                    data-testid="finding-remediate"
+                    disabled={!hasRemediationTargets}
+                    title={
+                      hasRemediationTargets
+                        ? undefined
+                        : t('longTail.fleet.FindingDrawer.actions.remediateDisabledReason')
+                    }
+                    aria-describedby={
+                      hasRemediationTargets ? undefined : 'finding-remediate-disabled-reason'
+                    }
+                    className="flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-primary"
+                  >
+                    <Wrench className="h-4 w-4" />
+                    {t('longTail.fleet.FindingDrawer.actions.remediate', { count: finding.deviceCount })}
+                  </button>
+                  {!hasRemediationTargets && (
+                    <p
+                      id="finding-remediate-disabled-reason"
+                      data-testid="finding-remediate-disabled-reason"
+                      className="text-xs text-muted-foreground"
+                    >
+                      {t('longTail.fleet.FindingDrawer.actions.remediateDisabledReason')}
+                    </p>
+                  )}
+                </div>
+              )}
 
               {canAcknowledge && (
                 <button

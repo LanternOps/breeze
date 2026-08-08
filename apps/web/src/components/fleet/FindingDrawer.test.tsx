@@ -55,6 +55,7 @@ function detail(overrides: Partial<FleetFindingDetail> = {}): FleetFindingDetail
         displayName: null,
         siteId: '33333333-3333-4333-8333-333333333333',
         sourceKind: 'reliability_score',
+        osType: 'windows',
         memberEvidence: { crashes: 9 },
         firstSeenAt: '2026-08-01T10:00:00.000Z',
         lastSeenAt: '2026-08-07T10:00:00.000Z',
@@ -188,6 +189,43 @@ describe('FindingDrawer lifecycle', () => {
     expect(screen.queryByTestId('finding-ack')).toBeNull();
     expect(screen.queryByTestId('finding-dismiss')).toBeNull();
     expect(screen.queryByTestId('finding-reopen')).toBeNull();
+  });
+
+  it('hides remediate on a resolved finding and explains the closed state', async () => {
+    getFindingMock.mockResolvedValue(
+      detail({
+        status: 'resolved',
+        resolvedAt: '2026-08-07T00:00:00.000Z',
+        resolutionReason: 'crash rate returned to baseline',
+      })
+    );
+    render(<FindingDrawer findingId={FINDING_ID} onClose={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByTestId('finding-resolved-note')).toBeTruthy());
+    expect(screen.queryByTestId('finding-remediate')).toBeNull();
+    expect(screen.getByTestId('finding-resolved-reason').textContent).toContain(
+      'crash rate returned to baseline'
+    );
+  });
+
+  it('hides remediate on a dismissed finding', async () => {
+    getFindingMock.mockResolvedValue(detail({ status: 'dismissed', dismissNotes: 'not real' }));
+    render(<FindingDrawer findingId={FINDING_ID} onClose={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByTestId('finding-reopen')).toBeTruthy());
+    expect(screen.queryByTestId('finding-remediate')).toBeNull();
+    expect(screen.queryByTestId('finding-resolved-note')).toBeNull();
+  });
+
+  it('disables remediate and explains why when a finding has zero devices left', async () => {
+    getFindingMock.mockResolvedValue(detail({ status: 'open', deviceCount: 0, members: [] }));
+    render(<FindingDrawer findingId={FINDING_ID} onClose={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByTestId('finding-remediate')).toBeTruthy());
+    const button = screen.getByTestId('finding-remediate') as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute('aria-describedby')).toBe('finding-remediate-disabled-reason');
+    expect(screen.getByTestId('finding-remediate-disabled-reason')).toBeTruthy();
   });
 
   it('routes a lifecycle failure through handleActionError rather than swallowing it', async () => {

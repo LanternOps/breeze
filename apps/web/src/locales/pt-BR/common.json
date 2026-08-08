@@ -1835,12 +1835,15 @@
         "deviceCount_one": "{{count}} dispositivo",
         "deviceCount_other": "{{count}} dispositivos",
         "showing": "Exibindo {{shown}} de {{total}}",
+        "loadMore": "Carregar mais",
         "empty": {
           "title": "A frota está limpa",
+          "noMatchesTitle": "Nenhuma descoberta correspondente",
           "body": "Nenhuma descoberta corresponde a estes filtros no momento."
         },
         "errors": {
-          "loadFailed": "Falha ao carregar as descobertas da frota"
+          "loadFailed": "Falha ao carregar as descobertas da frota",
+          "banner": "Não foi possível carregar as descobertas da frota"
         }
       },
       "FindingDrawer": {
@@ -1850,6 +1853,11 @@
           "lastSeen": "Vista pela última vez {{when}}"
         },
         "summaryHeading": "Resumo",
+        "resolvedNote": {
+          "heading": "Por que isto está encerrado",
+          "body": "Esta descoberta foi resolvida porque o sinal subjacente foi eliminado. Ela reaparecerá como uma nova descoberta se o padrão ocorrer novamente.",
+          "reason": "Motivo da resolução: {{reason}}"
+        },
         "dismissNotesHeading": "Nota de descarte",
         "evidenceHeading": "Evidências",
         "membersHeading": "Dispositivos afetados",
@@ -1879,6 +1887,7 @@
           "remediate": "Remediar em {{count}} dispositivos",
           "remediate_one": "Remediar em {{count}} dispositivo",
           "remediate_other": "Remediar em {{count}} dispositivos",
+          "remediateDisabledReason": "Não há mais dispositivos nesta descoberta para remediar.",
           "acknowledge": "Reconhecer",
           "dismiss": "Descartar",
           "reopen": "Reabrir"
@@ -1909,6 +1918,10 @@
         "selectNone": "Limpar seleção",
         "selectedCount": "{{selected}} de {{total}} dispositivos selecionados",
         "noTargets": "Selecione pelo menos um dispositivo para continuar.",
+        "osIncompatibleNotice": "{{count}} dispositivos não podem executar este script e foram excluídos. Ele só é compatível com {{os}}.",
+        "osIncompatibleNotice_one": "{{count}} dispositivo não pode executar este script e foi excluído. Ele só é compatível com {{os}}.",
+        "osIncompatibleNotice_other": "{{count}} dispositivos não podem executar este script e foram excluídos. Ele só é compatível com {{os}}.",
+        "osIncompatibleReason": "Requer {{os}}",
         "confirmAction": "Correção escolhida",
         "confirmTargets": "Dispositivos",
         "confirmRestartService": "Reiniciar o serviço {{name}}",

@@ -1835,12 +1835,15 @@
         "deviceCount_one": "{{count}} appareil",
         "deviceCount_other": "{{count}} appareils",
         "showing": "Affichage de {{shown}} sur {{total}}",
+        "loadMore": "Charger plus",
         "empty": {
           "title": "Le parc est sain",
+          "noMatchesTitle": "Aucun constat correspondant",
           "body": "Aucun constat ne correspond à ces filtres pour l'instant."
         },
         "errors": {
-          "loadFailed": "Échec du chargement des constats du parc"
+          "loadFailed": "Échec du chargement des constats du parc",
+          "banner": "Nous n'avons pas pu charger les constats du parc"
         }
       },
       "FindingDrawer": {
@@ -1850,6 +1853,11 @@
           "lastSeen": "Dernière détection {{when}}"
         },
         "summaryHeading": "Sommaire",
+        "resolvedNote": {
+          "heading": "Pourquoi ce constat est fermé",
+          "body": "Ce constat a été résolu parce que le signal sous-jacent a disparu. Il réapparaîtra comme un nouveau constat si le problème se reproduit.",
+          "reason": "Motif de résolution : {{reason}}"
+        },
         "dismissNotesHeading": "Note de rejet",
         "evidenceHeading": "Éléments probants",
         "membersHeading": "Appareils touchés",
@@ -1879,6 +1887,7 @@
           "remediate": "Corriger sur {{count}} appareils",
           "remediate_one": "Corriger sur {{count}} appareil",
           "remediate_other": "Corriger sur {{count}} appareils",
+          "remediateDisabledReason": "Il ne reste aucun appareil à corriger dans ce constat.",
           "acknowledge": "Prendre en charge",
           "dismiss": "Rejeter",
           "reopen": "Rouvrir"
@@ -1909,6 +1918,10 @@
         "selectNone": "Vider la sélection",
         "selectedCount": "{{selected}} appareils sélectionnés sur {{total}}",
         "noTargets": "Sélectionnez au moins un appareil pour poursuivre.",
+        "osIncompatibleNotice": "{{count}} appareils ne peuvent pas exécuter ce script et ont été exclus. Il ne prend en charge que {{os}}.",
+        "osIncompatibleNotice_one": "{{count}} appareil ne peut pas exécuter ce script et a été exclu. Il ne prend en charge que {{os}}.",
+        "osIncompatibleNotice_other": "{{count}} appareils ne peuvent pas exécuter ce script et ont été exclus. Il ne prend en charge que {{os}}.",
+        "osIncompatibleReason": "Nécessite {{os}}",
         "confirmAction": "Correctif retenu",
         "confirmTargets": "Appareils",
         "confirmRestartService": "Redémarrer le service {{name}}",

@@ -1835,12 +1835,15 @@
         "deviceCount_one": "{{count}} device",
         "deviceCount_other": "{{count}} devices",
         "showing": "Showing {{shown}} of {{total}}",
+        "loadMore": "Load more",
         "empty": {
           "title": "Fleet is clean",
+          "noMatchesTitle": "No matching findings",
           "body": "No findings match these filters right now."
         },
         "errors": {
-          "loadFailed": "Failed to load fleet findings"
+          "loadFailed": "Failed to load fleet findings",
+          "banner": "We couldn't load fleet findings"
         }
       },
       "FindingDrawer": {
@@ -1850,6 +1853,11 @@
           "lastSeen": "Last seen {{when}}"
         },
         "summaryHeading": "Summary",
+        "resolvedNote": {
+          "heading": "Why this is closed",
+          "body": "This finding was resolved because its underlying signal cleared. It will reappear as a new finding if the pattern recurs.",
+          "reason": "Resolution reason: {{reason}}"
+        },
         "dismissNotesHeading": "Dismissal note",
         "evidenceHeading": "Evidence",
         "membersHeading": "Affected devices",
@@ -1879,6 +1887,7 @@
           "remediate": "Remediate across {{count}} devices",
           "remediate_one": "Remediate on {{count}} device",
           "remediate_other": "Remediate across {{count}} devices",
+          "remediateDisabledReason": "No devices remain in this finding to remediate.",
           "acknowledge": "Acknowledge",
           "dismiss": "Dismiss",
           "reopen": "Reopen"
@@ -1909,6 +1918,10 @@
         "selectNone": "Clear selection",
         "selectedCount": "{{selected}} of {{total}} devices selected",
         "noTargets": "Select at least one device to continue.",
+        "osIncompatibleNotice": "{{count}} devices can't run this script and were excluded. It only supports {{os}}.",
+        "osIncompatibleNotice_one": "{{count}} device can't run this script and was excluded. It only supports {{os}}.",
+        "osIncompatibleNotice_other": "{{count}} devices can't run this script and were excluded. It only supports {{os}}.",
+        "osIncompatibleReason": "Requires {{os}}",
         "confirmAction": "Chosen fix",
         "confirmTargets": "Devices",
         "confirmRestartService": "Restart the service {{name}}",

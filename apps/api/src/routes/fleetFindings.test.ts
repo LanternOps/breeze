@@ -68,7 +68,7 @@ const h = vi.hoisted(() => {
 vi.mock('../db', () => ({ db: { select: h.mockSelect, update: h.mockUpdate } }));
 
 vi.mock('../db/schema', () => ({
-  devices: { id: 'd.id', siteId: 'd.siteId', hostname: 'd.hostname', displayName: 'd.displayName' },
+  devices: { id: 'd.id', siteId: 'd.siteId', hostname: 'd.hostname', displayName: 'd.displayName', osType: 'd.osType' },
   organizations: { id: 'o.id', name: 'o.name' },
 }));
 
@@ -550,6 +550,7 @@ describe('GET /fleet/findings/:id', () => {
         hostname: 'WS-01',
         displayName: null,
         siteId: SITE_1,
+        osType: 'windows',
       },
     ]);
     h.selectQueue.push([
@@ -576,7 +577,7 @@ describe('GET /fleet/findings/:id', () => {
     expect(body.id).toBe(FINDING_1);
     expect(body.deviceCount).toBe(1);
     expect(body.members).toEqual([
-      expect.objectContaining({ deviceId: DEVICE_1, hostname: 'WS-01', siteId: SITE_1 }),
+      expect.objectContaining({ deviceId: DEVICE_1, hostname: 'WS-01', siteId: SITE_1, osType: 'windows' }),
     ]);
     expect(body.runs).toEqual([expect.objectContaining({ id: 'run-1', status: 'succeeded' })]);
   });
@@ -594,6 +595,7 @@ describe('GET /fleet/findings/:id', () => {
         hostname: 'WS-01',
         displayName: null,
         siteId: SITE_1,
+        osType: 'windows',
       },
       {
         deviceId: DEVICE_2,
@@ -605,6 +607,7 @@ describe('GET /fleet/findings/:id', () => {
         hostname: 'WS-02',
         displayName: null,
         siteId: SITE_2,
+        osType: 'macos',
       },
     ]);
     h.selectQueue.push([]);
@@ -630,6 +633,7 @@ describe('GET /fleet/findings/:id', () => {
         hostname: 'WS-02',
         displayName: null,
         siteId: SITE_2,
+        osType: 'windows',
       },
     ]);
 

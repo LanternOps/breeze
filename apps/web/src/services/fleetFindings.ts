@@ -59,11 +59,21 @@ export interface FleetFinding {
   resolutionReason: string | null;
 }
 
+// Mirrors `devices.osType` (API's `db/schema/devices.ts` `osTypeEnum`) via
+// `FleetFindingMember.osType` in apps/api/src/services/fleetFindings/query.ts.
+// Kept as a local literal union for the same reason as the other API-mirrored
+// unions above — no cross-bundle schema import.
+export type DeviceOsType = 'windows' | 'macos' | 'linux';
+
 export interface FleetFindingMember {
   deviceId: string;
   hostname: string;
   displayName: string | null;
   siteId: string;
+  /** Lets the fix picker warn/exclude devices incompatible with a chosen
+   *  script's `os_types` before dispatch, instead of the run failing per
+   *  device at execution time. */
+  osType: DeviceOsType;
   sourceKind: string;
   memberEvidence: Record<string, unknown>;
   firstSeenAt: string;

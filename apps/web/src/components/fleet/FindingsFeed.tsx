@@ -65,7 +65,9 @@ export default function FindingsFeed({ onRemediate }: FindingsFeedProps) {
   const [findings, setFindings] = useState<FleetFinding[]>([]);
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
 
   const [orgId, setOrgId] = useState<string>('');
   const [kind, setKind] = useState<FleetFindingKind | ''>('');
@@ -86,11 +88,17 @@ export default function FindingsFeed({ onRemediate }: FindingsFeedProps) {
   // A monotonic request id so a slow earlier fetch can't overwrite a newer one.
   const requestSeq = useRef(0);
 
+  // Full (re)load from the top of the result set — every filter change and
+  // every reload (refresh button, retry button, a lifecycle change that moves
+  // a finding out of the active filter) goes through here, which is what
+  // resets any pages accumulated via `loadMore` below.
   useEffect(() => {
     const seq = ++requestSeq.current;
     let cancelled = false;
     setIsLoading(true);
+    setIsLoadingMore(false);
     setError(null);
+    setLoadMoreError(null);
 
     listFindings({
       orgId: orgId || undefined,
@@ -98,6 +106,7 @@ export default function FindingsFeed({ onRemediate }: FindingsFeedProps) {
       severity: severity || undefined,
       statuses: STATUS_GROUPS[statusGroup],
       limit: PAGE_SIZE,
+      offset: 0,
     })
       .then((result) => {
         if (cancelled || seq !== requestSeq.current) return;
@@ -127,6 +136,45 @@ export default function FindingsFeed({ onRemediate }: FindingsFeedProps) {
     };
   }, [orgId, kind, severity, statusGroup, reloadToken, t]);
 
+  // Appends the next page onto the current list. Uses the same monotonic
+  // `requestSeq` counter as the effect above, so a slow load-more that lands
+  // after the user has already changed a filter (which bumps the counter via
+  // a fresh full load) is discarded instead of corrupting the new view.
+  const loadMore = useCallback(() => {
+    const seq = ++requestSeq.current;
+    setIsLoadingMore(true);
+    setLoadMoreError(null);
+
+    listFindings({
+      orgId: orgId || undefined,
+      kind: kind || undefined,
+      severity: severity || undefined,
+      statuses: STATUS_GROUPS[statusGroup],
+      limit: PAGE_SIZE,
+      offset: findings.length,
+    })
+      .then((result) => {
+        if (seq !== requestSeq.current) return;
+        setFindings((prev) => [...prev, ...result.findings]);
+        setTotal(result.total);
+        setOrgOptions((prev) => mergeOrgOptions(prev, result.findings));
+      })
+      .catch((err: unknown) => {
+        if (seq !== requestSeq.current) return;
+        // Keep the rows already on screen — a failed next-page fetch is not
+        // "we could not load", it just means Load more can be retried.
+        setLoadMoreError(
+          err instanceof Error && err.message
+            ? err.message
+            : t('longTail.fleet.FindingsFeed.errors.loadFailed')
+        );
+      })
+      .finally(() => {
+        if (seq !== requestSeq.current) return;
+        setIsLoadingMore(false);
+      });
+  }, [orgId, kind, severity, statusGroup, findings.length, t]);
+
   const selectFinding = useCallback((id: string) => {
     setSelectedId(id);
     window.location.hash = id;
@@ -138,14 +186,30 @@ export default function FindingsFeed({ onRemediate }: FindingsFeedProps) {
   }, []);
 
   const applyStatusChange = useCallback((updated: FleetFinding) => {
+    if (!STATUS_GROUPS[statusGroup].includes(updated.status)) {
+      // The finding's new status (e.g. dismissed) no longer belongs in the
+      // active filter view — refetch from the top rather than patching it in
+      // place, so the row actually leaves the list and "Showing X of Y" stays
+      // accurate instead of showing a stale chip until a manual refresh. The
+      // drawer renders off `selectedId`, not `findings`, so it keeps working
+      // through the refetch even though it may still be open on this finding.
+      setReloadToken((n) => n + 1);
+      return;
+    }
     setFindings((prev) => prev.map((f) => (f.id === updated.id ? { ...f, ...updated } : f)));
-  }, []);
+  }, [statusGroup]);
 
   const selectClasses =
     'rounded-md border bg-background px-2 py-1.5 text-sm text-foreground ' +
     'focus:outline-none focus:ring-2 focus:ring-ring';
 
   const showEmpty = !isLoading && !error && findings.length === 0;
+  const hasMore = findings.length < total;
+  // "Fleet is clean" is only true when nothing is narrowing the view — an
+  // empty result under an active org/kind/severity/status filter just means
+  // the filters exclude everything, not that the fleet has no findings.
+  const hasActiveFilters =
+    orgId !== '' || kind !== '' || severity !== '' || statusGroup !== 'active';
 
   const orgSelectOptions = useMemo(
     () => [...orgOptions].sort((a, b) => a.name.localeCompare(b.name)),
@@ -250,10 +314,22 @@ export default function FindingsFeed({ onRemediate }: FindingsFeedProps) {
           className="m-4 rounded-lg border border-destructive/40 bg-destructive/10 p-4"
           data-testid="findings-error"
         >
-          <div className="flex items-center gap-2 text-destructive">
+          <div className="flex flex-wrap items-center gap-2 text-destructive">
             <XCircle className="h-4 w-4 shrink-0" />
-            <span className="text-sm font-medium">{error}</span>
+            <span className="text-sm font-medium">
+              {t('longTail.fleet.FindingsFeed.errors.banner')}
+            </span>
+            <button
+              type="button"
+              onClick={() => setReloadToken((n) => n + 1)}
+              data-testid="findings-retry"
+              className="ml-auto flex items-center gap-1 rounded-md border border-destructive/40 px-2 py-1 text-xs transition-colors hover:bg-destructive/10"
+            >
+              <RefreshCw className="h-3 w-3" />
+              {t('actions.retry')}
+            </button>
           </div>
+          <p className="mt-1 text-xs text-muted-foreground">{error}</p>
         </div>
       )}
 
@@ -265,8 +341,18 @@ export default function FindingsFeed({ onRemediate }: FindingsFeedProps) {
 
       {showEmpty && (
         <div className="flex flex-col items-center gap-2 p-10 text-center" data-testid="findings-empty">
-          <Sparkles className="h-8 w-8 text-green-600 dark:text-green-400" />
-          <p className="text-base font-medium">{t('longTail.fleet.FindingsFeed.empty.title')}</p>
+          {hasActiveFilters ? (
+            <Info className="h-8 w-8 text-muted-foreground" />
+          ) : (
+            <Sparkles className="h-8 w-8 text-green-600 dark:text-green-400" />
+          )}
+          <p className="text-base font-medium">
+            {t(
+              /* i18n-dynamic */ hasActiveFilters
+                ? 'longTail.fleet.FindingsFeed.empty.noMatchesTitle'
+                : 'longTail.fleet.FindingsFeed.empty.title'
+            )}
+          </p>
           <p className="text-sm text-muted-foreground">{t('longTail.fleet.FindingsFeed.empty.body')}</p>
         </div>
       )}
@@ -280,12 +366,35 @@ export default function FindingsFeed({ onRemediate }: FindingsFeedProps) {
               </li>
             ))}
           </ul>
-          <div className="border-t p-3 text-xs text-muted-foreground">
-            {t('longTail.fleet.FindingsFeed.showing', {
-              shown: formatNumber(findings.length),
-              total: formatNumber(total),
-            })}
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t p-3 text-xs text-muted-foreground">
+            <span>
+              {t('longTail.fleet.FindingsFeed.showing', {
+                shown: formatNumber(findings.length),
+                total: formatNumber(total),
+              })}
+            </span>
+            {hasMore && (
+              <button
+                type="button"
+                onClick={loadMore}
+                disabled={isLoadingMore}
+                data-testid="findings-load-more"
+                className="flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isLoadingMore && <Loader2 className="h-3 w-3 animate-spin" />}
+                {t('longTail.fleet.FindingsFeed.loadMore')}
+              </button>
+            )}
           </div>
+          {loadMoreError && (
+            <div
+              className="flex items-center gap-2 border-t p-3 text-xs text-destructive"
+              data-testid="findings-load-more-error"
+            >
+              <XCircle className="h-3 w-3 shrink-0" />
+              <span>{loadMoreError}</span>
+            </div>
+          )}
         </>
       )}
 

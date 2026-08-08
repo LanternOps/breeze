@@ -28,15 +28,20 @@ import type { FleetFindingDetail } from '@/services/fleetFindings';
 const FINDING_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const DEVICE_A = 'dddddddd-dddd-4ddd-8ddd-dddddddddda1';
 const DEVICE_B = 'dddddddd-dddd-4ddd-8ddd-ddddddddddb2';
+const DEVICE_C = 'dddddddd-dddd-4ddd-8ddd-ddddddddddc3';
 const RUN_ID = 'rrrrrrrr-rrrr-4rrr-8rrr-rrrrrrrrrrrr';
 const SCRIPT_ID = '55555555-5555-4555-8555-555555555555';
 
-function member(id: string, hostname: string) {
+// Defaults to 'windows' so every pre-existing test (whose scripts all declare
+// osTypes: ['windows']) keeps seeing every member as OS-compatible — only
+// tests that explicitly pass 'macos'/'linux' exercise the new exclusion path.
+function member(id: string, hostname: string, osType: 'windows' | 'macos' | 'linux' = 'windows') {
   return {
     deviceId: id,
     hostname,
     displayName: null,
     siteId: '33333333-3333-4333-8333-333333333333',
+    osType,
     sourceKind: 'reliability_score',
     memberEvidence: {},
     firstSeenAt: '2026-08-01T10:00:00.000Z',
@@ -193,6 +198,105 @@ describe('FixPickerModal — step 2 target review', () => {
   });
 });
 
+describe('FixPickerModal — OS compatibility (scripts)', () => {
+  // A macOS device in a finding whose "Clear temp files" script (from
+  // scriptsResponse()) declares osTypes: ['windows'] — the exact repro from
+  // the live-stack bug report (an OS-incompatible script dispatched to
+  // e2e-macos.local with no warning).
+  function findingWithMacDevice() {
+    return detail({
+      deviceCount: 3,
+      members: [
+        member(DEVICE_A, 'WS-ACME-01', 'windows'),
+        member(DEVICE_B, 'WS-ACME-02', 'windows'),
+        member(DEVICE_C, 'e2e-macos.local', 'macos'),
+      ],
+    });
+  }
+
+  async function chooseWindowsOnlyScript() {
+    fireEvent.click(screen.getByTestId('fix-picker-action-script'));
+    fireEvent.click(screen.getByTestId('fix-picker-choose-script'));
+    await waitFor(() => expect(screen.getByText('Clear temp files')).toBeTruthy());
+    fireEvent.click(screen.getByText('Clear temp files'));
+    await waitFor(() => expect(screen.getByTestId('fix-picker-selected-script')).toBeTruthy());
+  }
+
+  it('excludes the OS-incompatible device from the default target selection and marks it non-selectable', async () => {
+    renderPicker({ finding: findingWithMacDevice() });
+
+    await chooseWindowsOnlyScript();
+    goToTargets();
+
+    expect((screen.getByTestId(`fix-picker-target-${DEVICE_A}`) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId(`fix-picker-target-${DEVICE_B}`) as HTMLInputElement).checked).toBe(true);
+    const macTarget = screen.getByTestId(`fix-picker-target-${DEVICE_C}`) as HTMLInputElement;
+    expect(macTarget.checked).toBe(false);
+    expect(macTarget.disabled).toBe(true);
+    expect(screen.getByTestId(`fix-picker-target-incompatible-${DEVICE_C}`).textContent).toContain('Windows');
+  });
+
+  it('does not let a click re-check the disabled incompatible device', async () => {
+    renderPicker({ finding: findingWithMacDevice() });
+
+    await chooseWindowsOnlyScript();
+    goToTargets();
+
+    fireEvent.click(screen.getByTestId(`fix-picker-target-${DEVICE_C}`));
+
+    expect((screen.getByTestId(`fix-picker-target-${DEVICE_C}`) as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('excludes the OS-incompatible device from "Select all"', async () => {
+    renderPicker({ finding: findingWithMacDevice() });
+
+    await chooseWindowsOnlyScript();
+    goToTargets();
+    // Deselect a compatible device first so "select all" has to do
+    // something, then confirm it brings back only the compatible ones.
+    fireEvent.click(screen.getByTestId(`fix-picker-target-${DEVICE_A}`));
+    fireEvent.click(screen.getByTestId('fix-picker-select-all'));
+
+    expect((screen.getByTestId(`fix-picker-target-${DEVICE_A}`) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId(`fix-picker-target-${DEVICE_B}`) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId(`fix-picker-target-${DEVICE_C}`) as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('never sends the OS-incompatible device in the remediate request', async () => {
+    renderPicker({ finding: findingWithMacDevice() });
+
+    await chooseWindowsOnlyScript();
+    goToTargets();
+    fireEvent.click(screen.getByTestId('fix-picker-next'));
+    fireEvent.click(screen.getByTestId('fix-picker-confirm'));
+
+    await waitFor(() => expect(remediateFindingMock).toHaveBeenCalledTimes(1));
+    expect(remediateFindingMock.mock.calls[0][1].deviceIds).toEqual([DEVICE_A, DEVICE_B]);
+  });
+
+  it('shows an incompatibility notice naming the excluded count and required OS', async () => {
+    renderPicker({ finding: findingWithMacDevice() });
+
+    await chooseWindowsOnlyScript();
+    goToTargets();
+
+    const notice = screen.getByTestId('fix-picker-os-incompatible-notice');
+    expect(notice.textContent).toContain('1');
+    expect(notice.textContent).toContain('Windows');
+  });
+
+  it('does not restrict targets for non-script fix kinds (reboot has no OS constraint)', () => {
+    renderPicker({ finding: findingWithMacDevice() });
+
+    fireEvent.click(screen.getByTestId('fix-picker-action-reboot'));
+    goToTargets();
+
+    expect((screen.getByTestId(`fix-picker-target-${DEVICE_C}`) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId(`fix-picker-target-${DEVICE_C}`) as HTMLInputElement).disabled).toBe(false);
+    expect(screen.queryByTestId('fix-picker-os-incompatible-notice')).toBeNull();
+  });
+});
+
 describe('FixPickerModal — step 3 confirm + dispatch', () => {
   function advanceToConfirm(action: 'reboot' | 'restart_service' = 'reboot') {
     fireEvent.click(screen.getByTestId(`fix-picker-action-${action}`));
@@ -292,6 +396,33 @@ describe('FixPickerModal — step 3 confirm + dispatch', () => {
 
     fireEvent.click(screen.getByTestId('fix-picker-confirm'));
 
+    await waitFor(() => expect(onRunStarted).toHaveBeenCalledWith(RUN_ID));
+  });
+
+  it('disables the confirm button and shows a spinner while the request is in flight, and ignores a second click', async () => {
+    // The dispatch endpoint measured 8-18s against a live stack — a deferred
+    // promise stands in for that window so the test can assert the busy
+    // state WHILE the request is pending, not just before/after.
+    let resolveRequest: (value: { runId: string; targetCount: number; skipped: never[] }) => void = () => {};
+    remediateFindingMock.mockReturnValue(
+      new Promise((resolve) => { resolveRequest = resolve; })
+    );
+    const { onRunStarted } = renderPicker();
+    advanceToConfirm();
+
+    const confirmButton = screen.getByTestId('fix-picker-confirm') as HTMLButtonElement;
+    expect(confirmButton.disabled).toBe(false);
+
+    fireEvent.click(confirmButton);
+
+    expect(confirmButton.disabled).toBe(true);
+    expect(confirmButton.querySelector('.animate-spin')).toBeTruthy();
+
+    // A click on a disabled button must not fire a second dispatch.
+    fireEvent.click(confirmButton);
+    expect(remediateFindingMock).toHaveBeenCalledTimes(1);
+
+    resolveRequest({ runId: RUN_ID, targetCount: 2, skipped: [] });
     await waitFor(() => expect(onRunStarted).toHaveBeenCalledWith(RUN_ID));
   });
 

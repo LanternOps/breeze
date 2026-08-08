@@ -17,6 +17,18 @@ import { skipReasonLabelKey } from './findingLabels';
  *  temp cleanup belongs in a script from the library. */
 type FixKind = 'script' | 'restart_service' | 'reboot';
 
+/** OS platform names are proper nouns, not translated strings — same
+ *  precedent as `DeviceInfoTab.tsx`'s `osTypeLabels` (not an i18n key). */
+const OS_NAME_LABELS: Record<string, string> = {
+  windows: 'Windows',
+  macos: 'macOS',
+  linux: 'Linux',
+};
+
+function osNameLabel(os: string): string {
+  return OS_NAME_LABELS[os] ?? os;
+}
+
 type Step = 'action' | 'targets' | 'confirm' | 'result';
 
 interface FixPickerModalProps {
@@ -54,6 +66,43 @@ export default function FixPickerModal({ finding, onClose, onRunStarted }: FixPi
     for (const m of finding.members) map.set(m.deviceId, m.displayName || m.hostname);
     return map;
   }, [finding.members]);
+
+  // A script's `os_types` is the only fix kind that declares OS
+  // compatibility today — restart_service/reboot have no such constraint.
+  // The API dispatches to every requested device regardless of OS (see
+  // dispatch.ts's RemediationSkipReason: site_denied/not_member/
+  // decommissioned only, nothing OS-related), so an incompatible dispatch
+  // would otherwise only surface per-device at agent execution time. This
+  // must be enforced client-side.
+  const osIncompatibility = useMemo(() => {
+    const requiredOsTypes = kind === 'script' ? script?.osTypes : undefined;
+    const deviceIds = new Set<string>();
+    if (!requiredOsTypes || requiredOsTypes.length === 0) {
+      return { deviceIds, requiredLabel: '' };
+    }
+    const allowed = new Set<string>(requiredOsTypes);
+    for (const m of finding.members) {
+      if (!allowed.has(m.osType)) deviceIds.add(m.deviceId);
+    }
+    return { deviceIds, requiredLabel: requiredOsTypes.map(osNameLabel).join(', ') };
+  }, [kind, script, finding.members]);
+
+  // Prunes newly-incompatible devices out of the current selection — e.g. the
+  // moment a script with a narrower `os_types` is chosen. Devices that later
+  // become compatible again (a different script picked) are NOT auto-added
+  // back: the operator explicitly re-selects them, same as any other manual
+  // deselection.
+  useEffect(() => {
+    if (osIncompatibility.deviceIds.size === 0) return;
+    setSelectedIds((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const id of osIncompatibility.deviceIds) {
+        if (next.delete(id)) changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [osIncompatibility.deviceIds]);
 
   // ── Step gating ───────────────────────────────────────────────────────
   const actionReady =
@@ -255,7 +304,15 @@ export default function FixPickerModal({ finding, onClose, onRunStarted }: FixPi
                     <button
                       type="button"
                       data-testid="fix-picker-select-all"
-                      onClick={() => setSelectedIds(new Set(finding.members.map((m) => m.deviceId)))}
+                      onClick={() =>
+                        setSelectedIds(
+                          new Set(
+                            finding.members
+                              .filter((m) => !osIncompatibility.deviceIds.has(m.deviceId))
+                              .map((m) => m.deviceId)
+                          )
+                        )
+                      }
                       className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-muted"
                     >
                       {t('longTail.fleet.FixPicker.selectAll')}
@@ -278,22 +335,54 @@ export default function FixPickerModal({ finding, onClose, onRunStarted }: FixPi
                   })}
                 </p>
 
+                {osIncompatibility.deviceIds.size > 0 && (
+                  <p
+                    data-testid="fix-picker-os-incompatible-notice"
+                    className="flex items-start gap-2 rounded-md border border-yellow-500/40 bg-yellow-500/10 p-3 text-xs text-yellow-800 dark:text-yellow-400"
+                  >
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>
+                      {t('longTail.fleet.FixPicker.osIncompatibleNotice', {
+                        count: osIncompatibility.deviceIds.size,
+                        os: osIncompatibility.requiredLabel,
+                      })}
+                    </span>
+                  </p>
+                )}
+
                 <ul className="divide-y rounded-md border">
-                  {finding.members.map((m) => (
-                    <li key={m.deviceId} className="flex items-center gap-3 p-2 text-sm">
-                      <input
-                        type="checkbox"
-                        id={`fix-picker-target-${m.deviceId}`}
-                        data-testid={`fix-picker-target-${m.deviceId}`}
-                        checked={selectedIds.has(m.deviceId)}
-                        onChange={() => toggleTarget(m.deviceId)}
-                        className="h-4 w-4 rounded border-border"
-                      />
-                      <label htmlFor={`fix-picker-target-${m.deviceId}`} className="min-w-0 flex-1 truncate">
-                        {m.displayName || m.hostname}
-                      </label>
-                    </li>
-                  ))}
+                  {finding.members.map((m) => {
+                    const incompatible = osIncompatibility.deviceIds.has(m.deviceId);
+                    return (
+                      <li
+                        key={m.deviceId}
+                        className={cn('flex items-center gap-3 p-2 text-sm', incompatible && 'opacity-60')}
+                      >
+                        <input
+                          type="checkbox"
+                          id={`fix-picker-target-${m.deviceId}`}
+                          data-testid={`fix-picker-target-${m.deviceId}`}
+                          checked={selectedIds.has(m.deviceId) && !incompatible}
+                          disabled={incompatible}
+                          onChange={() => { if (!incompatible) toggleTarget(m.deviceId); }}
+                          className="h-4 w-4 rounded border-border disabled:cursor-not-allowed"
+                        />
+                        <label htmlFor={`fix-picker-target-${m.deviceId}`} className="min-w-0 flex-1 truncate">
+                          {m.displayName || m.hostname}
+                        </label>
+                        {incompatible && (
+                          <span
+                            data-testid={`fix-picker-target-incompatible-${m.deviceId}`}
+                            className="shrink-0 text-xs text-muted-foreground"
+                          >
+                            {t('longTail.fleet.FixPicker.osIncompatibleReason', {
+                              os: osIncompatibility.requiredLabel,
+                            })}
+                          </span>
+                        )}
+                      </li>
+                    );
+                  })}
                 </ul>
 
                 {selectedCount === 0 && (

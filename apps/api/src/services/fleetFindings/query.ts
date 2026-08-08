@@ -68,11 +68,21 @@ export interface FleetFindingRow {
   updatedAt: string;
 }
 
+/** Mirrors `devices.osType` (`db/schema/devices.ts`'s `osTypeEnum`). Local
+ *  literal union rather than an import so this module doesn't pull in the
+ *  full devices schema module surface just for one enum — same precedent as
+ *  `routes/scriptLibrary.ts`'s local `OsType`. */
+export type DeviceOsType = 'windows' | 'macos' | 'linux';
+
 export interface FleetFindingMember {
   deviceId: string;
   hostname: string;
   displayName: string | null;
   siteId: string;
+  /** Lets remediation UIs (fix picker) cross-reference a chosen script's
+   *  `os_types` against each member device BEFORE dispatch, rather than
+   *  discovering the mismatch per-device at agent execution time. */
+  osType: DeviceOsType;
   sourceKind: string;
   sourceRowId: string | null;
   memberEvidence: Record<string, unknown>;
@@ -325,6 +335,7 @@ export async function getFleetFinding(auth: AuthContext, id: string): Promise<Fl
       hostname: devices.hostname,
       displayName: devices.displayName,
       siteId: devices.siteId,
+      osType: devices.osType,
     })
     .from(fleetFindingDevices)
     .innerJoin(devices, eq(fleetFindingDevices.deviceId, devices.id))
@@ -369,6 +380,7 @@ export async function getFleetFinding(auth: AuthContext, id: string): Promise<Fl
       hostname: m.hostname,
       displayName: m.displayName ?? null,
       siteId: m.siteId,
+      osType: m.osType as DeviceOsType,
       sourceKind: m.sourceKind,
       sourceRowId: m.sourceRowId ?? null,
       memberEvidence: (m.memberEvidence ?? {}) as Record<string, unknown>,
