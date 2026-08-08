@@ -320,6 +320,57 @@ func TestRunBackupContext_VSSProviderReturningNoSessionDoesNotPanic(t *testing.T
 	}
 }
 
+// TestRunBackupContext_ConcurrentSessionRejectionDegradesToLiveRead pins what a
+// run does when it gives up waiting for the process-wide snapshot-creation gate
+// (#3269): it backs the data up from the live volume and says so, loudly.
+//
+// It matters because that gate is new. breeze-backup dispatches every IPC command
+// in its own goroutine and builds an ephemeral BackupManager per
+// server-dispatched backup_run, so overlapping runs are ordinary, not exotic.
+// They normally all get a shadow copy — creation is merely queued — but a run
+// whose creation deadline expires while it waits comes back with
+// ErrVSSSessionInProgress, and it must NOT fail: a live-read backup is worth
+// vastly more than no backup. It must also not be silent, or it becomes #3027 (a
+// run indistinguishable from a clean VSS-backed backup while every locked file
+// was skipped).
+func TestRunBackupContext_ConcurrentSessionRejectionDegradesToLiveRead(t *testing.T) {
+	srcDir := t.TempDir()
+	createTempFile(t, srcDir, "a.txt", "alpha")
+
+	vssProvider := &fakeVSSProvider{createErr: vss.ErrVSSSessionInProgress}
+
+	mgr := NewBackupManager(BackupConfig{
+		Provider:    newMockProvider(),
+		Paths:       []string{srcDir},
+		VSSEnabled:  true,
+		VSSProvider: vssProvider,
+		StagingDir:  t.TempDir(),
+	})
+
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("losing the VSS session race must not fail the run, got %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Errorf("job.Status = %q, want %q", job.Status, jobStatusCompleted)
+	}
+	if job.Snapshot == nil || len(job.Snapshot.Files) != 1 {
+		t.Errorf("the file must still be backed up from the live volume, got %+v", job.Snapshot)
+	}
+	if job.Warning == "" {
+		t.Error("a live-read run must carry a warning saying so; an unwarned one is #3027")
+	}
+	if job.VSSMetadata != nil {
+		t.Errorf("no session means no VSS metadata, got %+v", job.VSSMetadata)
+	}
+	// Nothing was created, so nothing may be released — releasing a session the
+	// provider never handed out is how the real provider would tear down another
+	// run's live snapshot.
+	if create, release := vssProvider.counts(); create != 1 || release != 0 {
+		t.Errorf("createCalls=%d releaseCalls=%d, want 1 and 0", create, release)
+	}
+}
+
 // TestResolveVSSProvider pins the resolution matrix itself, including the one
 // judgement call in it: an injected provider overrides the runtime.GOOS gate,
 // because that gate is about the built-in provider being a stub off Windows,

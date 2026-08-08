@@ -77,6 +77,7 @@ const (
 	vtblGetWriterStatusCount  = 17
 	vtblFreeWriterStatus      = 18
 	vtblGetWriterStatus       = 19
+	vtblSetBackupSucceeded    = 20
 	vtblBackupComplete        = 27
 	vtblStartSnapshotSet      = 36
 	vtblAddToSnapshotSet      = 37
@@ -183,8 +184,66 @@ type vssSnapshotProp struct {
 // WindowsProvider implements the Provider interface using the native VSS COM API.
 type WindowsProvider struct {
 	config Config
-	mu     sync.Mutex
+
+	mu sync.Mutex
+	// live is the session this provider is currently holding COM resources for,
+	// nil between runs. Its presence is what makes the shadow copies survive:
+	// see liveSession.
+	live *liveSession
 }
+
+// liveSession is the COM state that has to outlive CreateShadowCopy.
+//
+// Before #3269 nothing here existed, because CreateShadowCopy released its
+// IVssBackupComponents on the way out. A VSS_CTX_BACKUP shadow copy is
+// auto-release, so that Release is what let the snapshot vanish mid-run
+// (#3260): every field below is here so that it cannot.
+type liveSession struct {
+	// id is the snapshot set ID, matched against the session the caller hands
+	// back to ReleaseShadowCopy.
+	id string
+
+	// thread is the pinned, COM-initialised OS thread that owns bc. Every call
+	// against bc — including its final Release — must be dispatched onto it.
+	thread *serialThread
+
+	// bc is the IVssBackupComponents. It is a raw COM pointer owned by thread;
+	// touching it from any other goroutine is a bug.
+	bc uintptr
+
+	createdAt time.Time
+
+	// staleAlarm logs — and only logs — when a session has been held for
+	// implausibly long. See sessionStaleAfter.
+	staleAlarm *time.Timer
+}
+
+// sessionStaleAfter is how long a session may be held before it is reported as
+// probably leaked. The alarm is NON-DESTRUCTIVE: it writes an ERROR and nothing
+// else.
+//
+// It is tempting to make it force-release, and that would be a bug. There is no
+// elapsed-time signal that distinguishes an abandoned session from a slow but
+// perfectly healthy one: RunBackupContext has no maximum duration, a large
+// dataset over a slow link can legitimately run for many hours, and wall-clock
+// time keeps passing while a laptop is suspended mid-run. A timer that deleted
+// the snapshot on a threshold would therefore delete live snapshots out from
+// under healthy runs — which is #3260, recreated deliberately by the very change
+// meant to fix it.
+//
+// So the backstop for a genuinely leaked session stays what it always was:
+// process exit, at which point the auto-release copies are reclaimed normally.
+// The gate this file serialises is snapshot *creation* only, so a leaked session
+// costs one held snapshot, not the machine's ability to take further ones.
+//
+// A package var so tests can shrink it.
+var sessionStaleAfter = 12 * time.Hour
+
+// backupCompleteTimeout bounds the BackupComplete handshake on the release
+// path. It is much shorter than the provider's snapshot budget on purpose:
+// telling the writers the backup is over is best-effort cleanup, and a single
+// wedged writer must not hold up the end of a run that has already succeeded.
+const backupCompleteTimeout = 60 * time.Second
 
 // NewProvider creates a WindowsProvider.
 func NewProvider(config Config) Provider {
@@ -195,6 +254,26 @@ func NewProvider(config Config) Provider {
 // CreateShadowCopy
 // ---------------------------------------------------------------------------
 
+// CreateShadowCopy creates a VSS snapshot set and KEEPS IT ALIVE until
+// ReleaseShadowCopy is called.
+//
+// The whole requester sequence runs as a single closure on a dedicated,
+// COM-initialised, permanently pinned OS thread (serialThread), and the
+// IVssBackupComponents it produces stays open on that thread for the rest of the
+// run. That is the #3269 fix, and the reason for all the machinery: a
+// VSS_CTX_BACKUP shadow copy is an *auto-release* copy, so Windows is entitled
+// to delete it as soon as the requester drops its last reference. The previous
+// implementation released the interface before returning — on the strength of an
+// in-code claim that reclamation only happened at process exit — and a field run
+// duly lost its shadow copy ~390 seconds in, after which every remaining file
+// failed with ERROR_PATH_NOT_FOUND and was recorded as a per-file fault (#3260).
+//
+// Dispatching the body as ONE closure rather than marshalling each COM call
+// individually is also load-bearing. callVtable is //go:uintptrescapes, and its
+// soundness rests on every uintptr(unsafe.Pointer(&x)) conversion appearing
+// directly in a callVtable(...) argument list; per-call marshalling would have
+// meant building argument values on one goroutine and consuming them on another,
+// which is exactly the pattern the directive cannot protect.
 func (p *WindowsProvider) CreateShadowCopy(ctx context.Context, volumes []string) (*VSSSession, error) {
 	if len(volumes) == 0 {
 		return nil, ErrVSSNoVolumes
@@ -203,40 +282,124 @@ func (p *WindowsProvider) CreateShadowCopy(ctx context.Context, volumes []string
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// One provider, one live session. Creating a second would strand the first
+	// one's COM objects with no handle left to release them by.
+	if p.live != nil {
+		return nil, fmt.Errorf("%w: this provider already holds session %s",
+			ErrVSSSessionInProgress, p.live.id)
+	}
+
 	start := time.Now()
 
-	// Lock this goroutine to an OS thread for COM.
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	if err := ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED); err != nil {
-		// S_FALSE (1) means COM was already initialized on this thread — that's OK.
-		if hr, ok := err.(*ole.OleError); !ok || hr.Code() != sFalse {
-			return nil, fmt.Errorf("vss: CoInitializeEx failed: %w", err)
-		}
+	// Snapshot creation — and only creation — is serialised process-wide, since
+	// the provider mutex cannot see the other ephemeral providers a concurrent
+	// backup_run builds. See snapshotCreationGate for why the scope stops here
+	// rather than covering the whole session.
+	if snapshotCreationBusy() {
+		slog.Info("vss: another run is creating a snapshot set; waiting for it before starting ours")
 	}
-	defer ole.CoUninitialize()
+	releaseCreationGate, err := acquireSnapshotCreation(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: waited %s for another run's snapshot creation",
+			err, time.Since(start).Round(time.Second))
+	}
+	defer releaseCreationGate()
 
-	// --- Create IVssBackupComponents ---
-	backupComponents, err := createBackupComponents()
+	// The COM work lives on this thread, and so does everything created inside
+	// it. It is torn down in exactly two places: the failure path just below,
+	// and ReleaseShadowCopy.
+	thread, err := newSerialThread(coInitializeForVSS, ole.CoUninitialize)
 	if err != nil {
 		return nil, err
 	}
 
-	// The shadow copies created below are non-persistent VSS_CTX_BACKUP copies,
-	// which Windows reclaims when the requester *process* exits — not when this
-	// interface is released. breeze-backup runs one job per process and the
-	// caller only needs the device paths, so releasing here is safe. Verified on
-	// Server 2022: the device stays readable after Release and CoUninitialize
-	// for the life of the process (TestLive_CreateShadowCopy_EndToEnd reads
-	// through it after this function has returned).
-	defer callVtable(backupComponents, vtblRelease) //nolint:errcheck
+	var (
+		session          *VSSSession
+		backupComponents uintptr
+		createErr        error
+	)
+	if dispatchErr := thread.do(func() {
+		session, backupComponents, createErr = p.createShadowCopyOnThread(ctx, volumes)
+	}); dispatchErr != nil {
+		thread.close()
+		return nil, dispatchErr
+	}
+	if createErr != nil {
+		// createShadowCopyOnThread has already released everything it made.
+		thread.close()
+		return nil, createErr
+	}
+
+	p.live = &liveSession{
+		id:        session.ID,
+		thread:    thread,
+		bc:        backupComponents,
+		createdAt: time.Now(),
+	}
+	sessionID := session.ID
+	p.live.staleAlarm = time.AfterFunc(sessionStaleAfter, func() {
+		p.reportStaleSession(sessionID)
+	})
+
+	slog.Info("vss: shadow copy created",
+		"sessionId", session.ID,
+		"volumesRequested", len(volumes),
+		"volumesProtected", len(session.ShadowPaths),
+		"volumesUnprotected", len(session.UnprotectedVolumes),
+		"writers", len(session.Writers),
+		"durationMs", time.Since(start).Milliseconds(),
+	)
+	return session, nil
+}
+
+// coInitializeForVSS initialises the calling thread's COM apartment. Must run on
+// the serialThread.
+func coInitializeForVSS() error {
+	if err := ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED); err != nil {
+		// S_FALSE (1) means COM was already initialized on this thread — that's OK.
+		if hr, ok := err.(*ole.OleError); !ok || hr.Code() != sFalse {
+			return fmt.Errorf("vss: CoInitializeEx failed: %w", err)
+		}
+	}
+	return nil
+}
+
+// createShadowCopyOnThread runs the VSS requester sequence. It MUST be called on
+// the session's serialThread, which owns the COM apartment.
+//
+// On success it returns the session and a LIVE IVssBackupComponents whose
+// ownership passes to the caller. On failure it releases everything it created
+// and returns a zero components pointer, so the caller never has to decide.
+func (p *WindowsProvider) createShadowCopyOnThread(ctx context.Context, volumes []string) (*VSSSession, uintptr, error) {
+	backupComponents, err := createBackupComponents()
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Ownership transfers to the caller only when handoff is set, on the very
+	// last line. Until then every return below tears the components object down
+	// here. This replaced a plain `defer Release`, and the difference is the
+	// entire bug: releasing on the success path is what deleted the auto-release
+	// shadow copy mid-run. Releasing on the *failure* paths is still required —
+	// a stranded IVssBackupComponents would hold the process-wide session slot
+	// with nothing left able to free it.
+	handoff := false
+	metadataGathered := false
+	defer func() {
+		if handoff {
+			return
+		}
+		if metadataGathered {
+			callVtable(backupComponents, vtblFreeWriterMetadata) //nolint:errcheck
+		}
+		callVtable(backupComponents, vtblRelease) //nolint:errcheck
+	}()
 
 	slog.Info("vss: backup components created")
 
 	// InitializeForBackup(bstrXML = NULL)
 	if _, err := callVtable(backupComponents, vtblInitializeForBackup, 0); err != nil {
-		return nil, fmt.Errorf("vss: InitializeForBackup failed: %w", err)
+		return nil, 0, fmt.Errorf("vss: InitializeForBackup failed: %w", err)
 	}
 
 	// SetBackupState(bSelectComponents=false, bBackupBootableSystemState=false,
@@ -244,21 +407,23 @@ func (p *WindowsProvider) CreateShadowCopy(ctx context.Context, volumes []string
 	if _, err := callVtable(backupComponents, vtblSetBackupState,
 		vssBoolFalse, vssBoolFalse,
 		uintptr(vssBackupTypeCopy), vssBoolFalse); err != nil {
-		return nil, fmt.Errorf("vss: SetBackupState failed: %w", err)
+		return nil, 0, fmt.Errorf("vss: SetBackupState failed: %w", err)
 	}
 
 	// GatherWriterMetadata → IVssAsync
 	var gatherAsync uintptr
 	if _, err := callVtable(backupComponents, vtblGatherWriterMetadata,
 		uintptr(unsafe.Pointer(&gatherAsync))); err != nil {
-		return nil, fmt.Errorf("vss: GatherWriterMetadata failed: %w", err)
+		return nil, 0, fmt.Errorf("vss: GatherWriterMetadata failed: %w", err)
 	}
 	if err := p.waitForAsync(ctx, gatherAsync, "GatherWriterMetadata"); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	// Deferred rather than called at the end: every early return below would
-	// otherwise leak the writer metadata for the rest of the process.
-	defer callVtable(backupComponents, vtblFreeWriterMetadata) //nolint:errcheck
+	// Freed by the handoff defer above on every failure path, and by
+	// ReleaseShadowCopy on the success path. It cannot simply be freed at the
+	// end of this function any more: the writer metadata belongs to the
+	// components object, which now outlives the call.
+	metadataGathered = true
 	slog.Info("vss: writer metadata gathered")
 
 	// StartSnapshotSet must precede AddToSnapshotSet; without it every
@@ -266,7 +431,7 @@ func (p *WindowsProvider) CreateShadowCopy(ctx context.Context, volumes []string
 	var snapshotSetID windows.GUID
 	if _, err := callVtable(backupComponents, vtblStartSnapshotSet,
 		uintptr(unsafe.Pointer(&snapshotSetID))); err != nil {
-		return nil, fmt.Errorf("vss: StartSnapshotSet failed: %w", err)
+		return nil, 0, fmt.Errorf("vss: StartSnapshotSet failed: %w", err)
 	}
 
 	// Any failure from here on leaves a half-built snapshot set that the
@@ -310,7 +475,7 @@ func (p *WindowsProvider) CreateShadowCopy(ctx context.Context, volumes []string
 		mountPoint := volumeMountPoint(vol)
 		volUTF16, err := syscall.UTF16PtrFromString(mountPoint)
 		if err != nil {
-			return nil, fmt.Errorf("vss: invalid volume %q: %w", vol, err)
+			return nil, 0, fmt.Errorf("vss: invalid volume %q: %w", vol, err)
 		}
 		var snapID windows.GUID
 		_, callErr := callVtable(backupComponents, vtblAddToSnapshotSet,
@@ -320,7 +485,7 @@ func (p *WindowsProvider) CreateShadowCopy(ctx context.Context, volumes []string
 		)
 		runtime.KeepAlive(volUTF16)
 		if callErr != nil {
-			return nil, fmt.Errorf("vss: AddToSnapshotSet(%s) failed: %w", mountPoint, callErr)
+			return nil, 0, fmt.Errorf("vss: AddToSnapshotSet(%s) failed: %w", mountPoint, callErr)
 		}
 		entries = append(entries, snapEntry{volume: vol, snapID: snapID})
 		slog.Info("vss: volume added to snapshot set", "volume", vol, "mountPoint", mountPoint)
@@ -330,10 +495,10 @@ func (p *WindowsProvider) CreateShadowCopy(ctx context.Context, volumes []string
 	var prepareAsync uintptr
 	if _, err := callVtable(backupComponents, vtblPrepareForBackup,
 		uintptr(unsafe.Pointer(&prepareAsync))); err != nil {
-		return nil, fmt.Errorf("vss: PrepareForBackup failed: %w", err)
+		return nil, 0, fmt.Errorf("vss: PrepareForBackup failed: %w", err)
 	}
 	if err := p.waitForAsync(ctx, prepareAsync, "PrepareForBackup"); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	slog.Info("vss: prepare for backup completed")
 
@@ -341,10 +506,10 @@ func (p *WindowsProvider) CreateShadowCopy(ctx context.Context, volumes []string
 	var doSnapAsync uintptr
 	if _, err := callVtable(backupComponents, vtblDoSnapshotSet,
 		uintptr(unsafe.Pointer(&doSnapAsync))); err != nil {
-		return nil, fmt.Errorf("vss: DoSnapshotSet failed: %w", err)
+		return nil, 0, fmt.Errorf("vss: DoSnapshotSet failed: %w", err)
 	}
 	if err := p.waitForAsync(ctx, doSnapAsync, "DoSnapshotSet"); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	slog.Info("vss: snapshot set created")
 
@@ -401,7 +566,7 @@ func (p *WindowsProvider) CreateShadowCopy(ctx context.Context, volumes []string
 	// HRESULTs into the error: the caller logs only this string, so dropping
 	// them leaves "VSS silently isn't working" with no diagnostic content.
 	if len(shadowPaths) == 0 {
-		return nil, fmt.Errorf("vss: no shadow copy device paths resolved for %d volume(s): %s",
+		return nil, 0, fmt.Errorf("vss: no shadow copy device paths resolved for %d volume(s): %s",
 			len(entries), strings.Join(warnings, "; "))
 	}
 
@@ -417,39 +582,33 @@ func (p *WindowsProvider) CreateShadowCopy(ctx context.Context, volumes []string
 		CreatedAt:          time.Now().UTC(),
 	}
 
-	slog.Info("vss: shadow copy created",
-		"sessionId", session.ID,
-		"volumesRequested", len(volumes),
-		"volumesProtected", len(shadowPaths),
-		"volumesUnprotected", len(unprotected),
-		"writers", len(writers),
-		"durationMs", time.Since(start).Milliseconds(),
-	)
-
-	return session, nil
+	// The components object — and with it the auto-release shadow copies —
+	// now belongs to the caller, which parks it on the session until
+	// ReleaseShadowCopy. Nothing below this line may fail.
+	handoff = true
+	return session, backupComponents, nil
 }
 
 // ---------------------------------------------------------------------------
 // ReleaseShadowCopy
 // ---------------------------------------------------------------------------
 
-// ReleaseShadowCopy is deliberately a no-op that always returns nil.
+// ReleaseShadowCopy ends the session: it tells the writers the backup is over
+// and then drops the last reference to the IVssBackupComponents, which is what
+// lets Windows reclaim the auto-release shadow copies.
 //
-// The shadow copies CreateShadowCopy makes are non-persistent VSS_CTX_BACKUP
-// copies; Windows reclaims them when the breeze-backup process exits, and that
-// process runs exactly one job. There is nothing left to delete here. What this
-// replaced was worse than nothing: it created a *second* IVssBackupComponents
-// and called BackupComplete on it, which cannot work — that instance has no
-// backup in progress.
+// This used to be a no-op, and the two things it did not do were the two halves
+// of #3269. It did not signal BackupComplete, so every writer stayed parked in
+// VSS_WS_WAITING_FOR_BACKUP_COMPLETE until the process exited; and there was
+// nothing left to release, because CreateShadowCopy had already released the
+// components object on its way out — which is what allowed the snapshot to
+// disappear mid-run (#3260).
 //
-// What it does NOT do: signal BackupComplete to the writers, which are
-// therefore left in VSS_WS_WAITING_FOR_BACKUP_COMPLETE until the process exits.
-// Doing that properly means keeping the IVssBackupComponents alive for the
-// session on a dedicated COM thread, which is a lifetime rewrite of this
-// package rather than part of the #2999 fix. Tracked as a follow-up on #2999.
-//
-// The error return exists only to satisfy the Provider interface; a caller
-// checking it is checking a constant.
+// Everything here is best-effort in the sense that it never fails the backup:
+// the run has already finished by the time this is called, and a writer that
+// will not acknowledge completion is not a reason to fail a good backup. It is
+// NOT best-effort about releasing: the COM objects and the process-wide session
+// slot are freed on every path, including when the handshake fails.
 func (p *WindowsProvider) ReleaseShadowCopy(session *VSSSession) error {
 	if session == nil {
 		// A caller bug rather than a normal state — don't let it vanish.
@@ -460,9 +619,128 @@ func (p *WindowsProvider) ReleaseShadowCopy(session *VSSSession) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	slog.Info("vss: shadow copy released (no-op; writers were not sent BackupComplete)",
-		"sessionId", session.ID)
+	live := p.live
+	if live == nil {
+		// Releasing twice, or releasing a session this provider never created.
+		// Idempotent rather than an error: RunBackupContext's deferred release
+		// is the normal path, and a second call must not manufacture a failure.
+		slog.Warn("vss: ReleaseShadowCopy called with no live session on this provider",
+			"sessionId", session.ID)
+		return nil
+	}
+	if live.id != session.ID {
+		// A foreign session. Tearing our own down to satisfy it would be
+		// strictly worse than refusing: it would delete a snapshot some other
+		// run is still reading through.
+		slog.Error("vss: ReleaseShadowCopy called with a session this provider does not hold; refusing to release",
+			"requestedSessionId", session.ID, "liveSessionId", live.id)
+		return fmt.Errorf("vss: session %s is not the live session (%s)", session.ID, live.id)
+	}
+
+	p.live = nil
+	return p.teardownLocked(live)
+}
+
+// teardownLocked runs the writer handshake and releases every resource the
+// session holds. The caller must hold p.mu and must already have cleared
+// p.live, so that a failure here can never leave a half-released session
+// reachable.
+func (p *WindowsProvider) teardownLocked(live *liveSession) error {
+	if live.staleAlarm != nil {
+		live.staleAlarm.Stop()
+	}
+
+	var completeErr error
+	if dispatchErr := live.thread.do(func() {
+		completeErr = p.finishBackupOnThread(live.bc)
+	}); dispatchErr != nil {
+		completeErr = dispatchErr
+	}
+
+	// Closing the thread runs CoUninitialize on it and then lets it exit while
+	// still locked, so the OS thread is destroyed rather than handed back to the
+	// scheduler carrying our COM state. The snapshot is already gone by this
+	// point: the Release inside finishBackupOnThread is what reclaims it.
+	live.thread.close()
+
+	if completeErr != nil {
+		// Warned, not returned as a failure: the backup is already complete and
+		// its data is already uploaded. What this costs is writer hygiene, and
+		// the caller (backup.go) only logs the error anyway. Surfacing it here
+		// keeps the antecedent for a later VSS_E_SNAPSHOT_SET_IN_PROGRESS.
+		slog.Warn("vss: writer completion handshake failed; writers may remain in "+
+			"VSS_WS_WAITING_FOR_BACKUP_COMPLETE until this process exits",
+			"sessionId", live.id, "error", completeErr.Error())
+	}
+
+	slog.Info("vss: shadow copy released",
+		"sessionId", live.id,
+		"heldMs", time.Since(live.createdAt).Milliseconds(),
+		"writersSignalled", completeErr == nil,
+	)
 	return nil
+}
+
+// finishBackupOnThread performs the writer-completion handshake and releases the
+// components object. It MUST run on the session's serialThread.
+//
+// Note what is NOT called here: SetBackupSucceeded (vtblSetBackupSucceeded).
+// That method marks an individual *component* as backed up, and it is only
+// meaningful for a component-based backup. CreateShadowCopy calls
+// SetBackupState with bSelectComponents=FALSE and never calls AddComponent, so
+// this requester has no components to mark — BackupComplete alone is the
+// complete handshake for a non-component backup. The constant is declared and
+// ABI-pinned anyway (see vss_windows_layout_test.go) so that the day someone
+// adds component selection, the slot number is already checked rather than
+// guessed; guessing a slot is exactly how #2999 shipped.
+func (p *WindowsProvider) finishBackupOnThread(bc uintptr) error {
+	// BackupComplete → IVssAsync. This is the call that moves writers out of
+	// VSS_WS_WAITING_FOR_BACKUP_COMPLETE.
+	var completeAsync uintptr
+	if _, err := callVtable(bc, vtblBackupComplete,
+		uintptr(unsafe.Pointer(&completeAsync))); err != nil {
+		// Still release below — a failed BackupComplete is not a reason to leak
+		// the interface and strand the snapshot.
+		callVtable(bc, vtblFreeWriterMetadata) //nolint:errcheck
+		callVtable(bc, vtblRelease)            //nolint:errcheck
+		return fmt.Errorf("vss: BackupComplete failed: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), backupCompleteTimeout)
+	waitErr := p.waitForAsync(ctx, completeAsync, "BackupComplete")
+	cancel()
+
+	callVtable(bc, vtblFreeWriterMetadata) //nolint:errcheck
+	callVtable(bc, vtblRelease)            //nolint:errcheck
+
+	if waitErr != nil {
+		return waitErr
+	}
+	return nil
+}
+
+// reportStaleSession is the sessionStaleAfter alarm. It REPORTS and does not
+// release: see sessionStaleAfter for why forcing a release on a timer would
+// reintroduce #3260. A run this old is either genuinely leaked or genuinely
+// slow, and nothing here can tell which — so it makes the condition visible and
+// leaves the decision to a human.
+func (p *WindowsProvider) reportStaleSession(id string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	live := p.live
+	// Re-checked under the lock: a normal release racing the timer clears
+	// p.live first, and this must then say nothing at all.
+	if live == nil || live.id != id {
+		return
+	}
+	slog.Error("vss: shadow copy session has been held for an implausibly long time and may have been leaked; "+
+		"it is NOT being released automatically (doing so would delete a snapshot a slow run may still be reading). "+
+		"The copies will be reclaimed when this process exits",
+		"sessionId", id,
+		"heldMs", time.Since(live.createdAt).Milliseconds(),
+		"staleAfter", sessionStaleAfter.String(),
+	)
 }
 
 // ---------------------------------------------------------------------------
