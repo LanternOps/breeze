@@ -330,7 +330,7 @@ export function getTrustedClientIp(c: RequestLike, fallback = 'unknown'): string
  * per-address bucket means every rate limit in the API is trivially bypassed
  * by anyone with IPv6 by incrementing the low 64 bits. Keying on the /64 fixes
  * that, but it is ONLY correct for rate limiting. It is deliberately not folded
- * into getTrustedClientIp, whose ~120 call sites need the client's actual
+ * into getTrustedClientIp, whose dozens of call sites need the client's actual
  * address:
  *   - audit logs / `ipAddress`, `signupIp`, `enrollmentIp` columns would start
  *     recording a prefix, destroying forensic precision irreversibly;

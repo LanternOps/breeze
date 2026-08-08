@@ -817,7 +817,8 @@
     },
     "errors": {
       "create": "Impossible de créer la session d'assistance",
-      "list": "Impossible de charger les sessions d'assistance récentes"
+      "list": "Impossible de charger les sessions d'assistance récentes",
+      "notFound": "Cette session d’assistance n’est plus disponible."
     },
     "list": {
       "heading": "Sessions d'assistance récentes",

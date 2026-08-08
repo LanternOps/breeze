@@ -221,6 +221,16 @@ function httpsOnlyUrl(raw: unknown): string | null {
   }
 }
 
+/**
+ * `/download/:platform?code=<CODE>` is a GET with the bearer code in the URL
+ * itself (not just the path — /check's `no-store, private` reasoning applies
+ * identically here). The successful binary response already sets `no-store`
+ * (see proxyBinary and the disk-serving Response below); every early-return
+ * JSON response in this handler must match so a proxy or the browser's own
+ * disk cache never retains an answer keyed by a live code.
+ */
+const DOWNLOAD_CACHE_HEADERS = { 'Cache-Control': 'no-store' } as const;
+
 /** Phase 1 ships a Windows client only; macOS is accepted-but-declined below. */
 const SUPPORT_CLIENT_PLATFORMS = new Set(['windows', 'macos']);
 
@@ -308,26 +318,26 @@ supportPublicRoutes.get('/download/:platform', async (c) => {
   // Shares the /check budget deliberately: both are "an anonymous stranger
   // poking at a code", and a separate bucket would just widen the guess rate.
   const limit = await rateLimiter(redis, `support-check:${rateLimitIpKey(ip)}`, CHECK_LIMIT, RATE_WINDOW_SECONDS);
-  if (!limit.allowed) return c.json({ error: 'rate limited' }, 429);
+  if (!limit.allowed) return c.json({ error: 'rate limited' }, 429, DOWNLOAD_CACHE_HEADERS);
 
   // Platform is checked before the code so an unsupported platform never
   // costs a DB round-trip — and so the macOS answer is the same honest
   // "coming soon" whether or not the caller holds a real code.
   const platform = c.req.param('platform');
   if (!SUPPORT_CLIENT_PLATFORMS.has(platform)) {
-    return c.json({ error: `Unsupported platform: ${platform}` }, 400);
+    return c.json({ error: `Unsupported platform: ${platform}` }, 400, DOWNLOAD_CACHE_HEADERS);
   }
   if (platform === 'macos') {
-    return c.json({ error: 'macOS support client coming soon' }, 400);
+    return c.json({ error: 'macOS support client coming soon' }, 400, DOWNLOAD_CACHE_HEADERS);
   }
 
   const code = normalizeSupportCode(c.req.query('code') ?? '');
-  if (!code) return c.json({ error: 'invalid or expired code' }, 404);
+  if (!code) return c.json({ error: 'invalid or expired code' }, 404, DOWNLOAD_CACHE_HEADERS);
 
   // Same deployment-wide guess budget as /check and /redeem, and the same
   // indistinguishable 429 when it is spent.
   if (await isSupportCodeMissBudgetExhausted(redis)) {
-    return c.json({ error: 'rate limited' }, 429);
+    return c.json({ error: 'rate limited' }, 429, DOWNLOAD_CACHE_HEADERS);
   }
 
   const [row] = await withSystemDbAccessContext(() => db
@@ -341,7 +351,7 @@ supportPublicRoutes.get('/download/:platform', async (c) => {
 
   if (!row || row.status !== 'pending' || row.codeExpiresAt <= new Date()) {
     await recordSupportCodeMiss(redis);
-    return c.json({ error: 'invalid or expired code' }, 404);
+    return c.json({ error: 'invalid or expired code' }, 404, DOWNLOAD_CACHE_HEADERS);
   }
 
   const apiHost = supportDownloadApiHost();
@@ -349,7 +359,7 @@ supportPublicRoutes.get('/download/:platform', async (c) => {
     // Serving a client whose filename cannot carry a server URL would produce
     // a download that can never connect — fail loudly instead (#2341).
     console.error('[support-download] PUBLIC_API_URL is unset or unparseable; cannot build filename');
-    return c.json({ error: 'support client unavailable' }, 503);
+    return c.json({ error: 'support client unavailable' }, 503, DOWNLOAD_CACHE_HEADERS);
   }
 
   const filename = `breeze-support-${code}-${apiHost}.exe`;

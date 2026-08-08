@@ -817,7 +817,8 @@
     },
     "errors": {
       "create": "Impossible de créer la séance de soutien",
-      "list": "Impossible de charger les séances de soutien récentes"
+      "list": "Impossible de charger les séances de soutien récentes",
+      "notFound": "Cette séance de soutien n’est plus disponible."
     },
     "list": {
       "heading": "Séances de soutien récentes",

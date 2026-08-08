@@ -14,7 +14,7 @@ import { z } from 'zod';
 // top of that removes the last ambiguous pairs (O/0, I/l/1).
 //
 // MUST stay a subset of [a-z2-9]. Already-released agent binaries parse the
-// code out of the download filename with `[a-z2-9]{9}` (see
+// code out of the download filename with `[a-z0-9]{9}` (case-insensitive; see
 // agent/internal/agentapp/support.go) — anything outside that set would
 // silently strand every client already in the wild. Digits 2-9 qualify.
 //

@@ -39,6 +39,11 @@
     "body": "La connessione a Internet potrebbe essersi interrotta. Controlla la connessione e riprova con il codice.",
     "retry": "Riprova"
   },
+  "rateLimited": {
+    "title": "Troppi tentativi",
+    "body": "Hai provato un codice troppe volte. Attendi un momento e riprova.",
+    "retry": "Riprova"
+  },
   "ready": {
     "title": "Il tuo codice è valido",
     "codeIntro": "Il tuo codice è {{code}}."

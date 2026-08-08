@@ -39,6 +39,11 @@
     "body": "Es posible que se haya cortado la conexión a internet. Revise su conexión e intente el código de nuevo.",
     "retry": "Intentar de nuevo"
   },
+  "rateLimited": {
+    "title": "Demasiados intentos",
+    "body": "Ha intentado un código demasiadas veces. Espere un momento y vuelva a intentarlo.",
+    "retry": "Intentar de nuevo"
+  },
   "ready": {
     "title": "Su código es válido",
     "codeIntro": "Su código es {{code}}."

@@ -817,7 +817,8 @@
     },
     "errors": {
       "create": "Impossibile creare la sessione di supporto",
-      "list": "Impossibile caricare le sessioni di supporto recenti"
+      "list": "Impossibile caricare le sessioni di supporto recenti",
+      "notFound": "Questa sessione di supporto non è più disponibile."
     },
     "list": {
       "heading": "Sessioni di supporto recenti",

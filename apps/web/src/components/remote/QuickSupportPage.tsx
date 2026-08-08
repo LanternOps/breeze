@@ -109,6 +109,14 @@ export default function QuickSupportPage() {
     setSelectedDetail((current) => (current && current.id === selectedId ? current : null));
   }, [selectedId]);
 
+  const closeDetail = useCallback(() => {
+    setSelectedDetail(null);
+    setSelectedId(null);
+    // Strip the fragment without leaving a bare "#" (and without a hashchange
+    // round-trip — the state is already cleared above).
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+  }, [setSelectedId]);
+
   // Poll the selected session until it reaches a terminal state. The first pass
   // doubles as the loader for a hash-restored selection.
   useEffect(() => {
@@ -133,6 +141,18 @@ export default function QuickSupportPage() {
             setSelectedDetail(data);
             terminal = TERMINAL_STATUSES.has(data.status);
           }
+        } else if (response.status === 404 || response.status === 403) {
+          // The hash now seeds selection on mount, so it can point at a session
+          // that was deleted, hard-expired, or belongs to another org. Those
+          // are definitively terminal — not transient — so give up polling,
+          // clear the dead selection (closing the panel and stripping the
+          // hash), and tell the tech why the panel vanished. Anything else
+          // (5xx, and the network `catch` below) stays on the retry path.
+          if (cancelled) return;
+          stopTimer();
+          closeDetail();
+          showToast({ message: t('quickSupport.errors.notFound'), type: 'warning' });
+          return;
         }
       } catch {
         /* transient network error — keep polling */
@@ -153,7 +173,7 @@ export default function QuickSupportPage() {
       cancelled = true;
       stopTimer();
     };
-  }, [selectedId, loadSessions]);
+  }, [selectedId, loadSessions, closeDetail, t]);
 
   const openSession = useCallback(
     (session: SupportSessionView) => {
@@ -164,14 +184,6 @@ export default function QuickSupportPage() {
     },
     [setSelectedId],
   );
-
-  const closeDetail = useCallback(() => {
-    setSelectedDetail(null);
-    setSelectedId(null);
-    // Strip the fragment without leaving a bare "#" (and without a hashchange
-    // round-trip — the state is already cleared above).
-    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
-  }, [setSelectedId]);
 
   const copy = useCallback(
     async (value: string, successMessage: string) => {

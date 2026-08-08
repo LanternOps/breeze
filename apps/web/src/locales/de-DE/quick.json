@@ -39,6 +39,11 @@
     "body": "Möglicherweise ist die Internetverbindung abgebrochen. Prüfen Sie Ihre Verbindung und versuchen Sie es mit dem Code noch einmal.",
     "retry": "Erneut versuchen"
   },
+  "rateLimited": {
+    "title": "Zu viele Versuche",
+    "body": "Sie haben zu oft einen Code eingegeben. Bitte warten Sie einen Moment und versuchen Sie es dann erneut.",
+    "retry": "Erneut versuchen"
+  },
   "ready": {
     "title": "Ihr Code ist gültig",
     "codeIntro": "Ihr Code lautet {{code}}."

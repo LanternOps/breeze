@@ -376,6 +376,58 @@ describe('QuickSupportPage', () => {
     expect(screen.queryByTestId('quick-support-code')).not.toBeInTheDocument();
   });
 
+  it('closes the panel, clears the hash and warns when the selected session 404s', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // A hash pointing at a deleted/expired/other-org session now seeds the
+    // selection on mount, so the /detail GET can legitimately 404.
+    window.location.hash = `#${SESSION_ID}`;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === LIST_URL) return makeResponse({ sessions: [] });
+      if (url === DETAIL_URL) return makeResponse({ error: 'not_found' }, false, 404);
+      return makeResponse({});
+    });
+    render(<QuickSupportPage />);
+
+    // The panel flashes from the hash seed, then the 404 poll tears it down.
+    await waitFor(() => expect(detailCallCount()).toBe(1));
+    await waitFor(() =>
+      expect(screen.queryByTestId('quick-support-detail')).not.toBeInTheDocument(),
+    );
+    expect(showToastMock).toHaveBeenCalledWith({
+      message: 'That support session is no longer available.',
+      type: 'warning',
+    });
+    // Hash stripped (no bare '#'), search untouched — same as the close button.
+    expect(window.location.hash).toBe('');
+    expect(window.location.search).toBe('');
+
+    // A definitive 404 is terminal: the dead session is never polled again.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30000);
+    });
+    expect(detailCallCount()).toBe(1);
+  });
+
+  it('keeps polling a transient 5xx on the selected session', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    window.location.hash = `#${SESSION_ID}`;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === LIST_URL) return makeResponse({ sessions: [] });
+      if (url === DETAIL_URL) return makeResponse({ error: 'boom' }, false, 503);
+      return makeResponse({});
+    });
+    render(<QuickSupportPage />);
+
+    await waitFor(() => expect(detailCallCount()).toBe(1));
+    // A 5xx is transient — the panel stays open and the poll keeps retrying.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(detailCallCount()).toBe(2);
+    expect(screen.getByTestId('quick-support-detail')).toBeInTheDocument();
+    expect(showToastMock).not.toHaveBeenCalled();
+  });
+
   it('ends a re-opened session from the detail panel', async () => {
     installFetch({
       list: [view({ status: 'active', attributionLabel: 'Reception PC' })],

@@ -9,8 +9,9 @@ import type { Redis } from 'ioredis';
  * length 9 => 8^9 ~= 134M codes). Per-IP limits alone do not bound a
  * DISTRIBUTED guesser: 1,000 hosts each staying under the 30/min per-IP bucket
  * is 30,000 guesses/min deployment-wide, which walks a 134M space with ~10 live
- * codes in a couple of days. This counter is the control that makes the guess
- * rate a property of the DEPLOYMENT rather than of the attacker's IP budget.
+ * codes (~13.4M expected guesses to a hit) in well under a day (≈7-8 hours).
+ * This counter is the control that makes the guess rate a property of the
+ * DEPLOYMENT rather than of the attacker's IP budget.
  *
  * THE MATH
  * --------

@@ -73,6 +73,15 @@ describe('detectQuickClient', () => {
     expect(detectQuickClient(UA.iphone).os).toBe('ios');
   });
 
+  it('reads a touch iPad (desktop Mac UA) as iOS, but a real Mac as macOS', () => {
+    // iPadOS Safari sends a "Macintosh; Intel Mac OS X" UA and no
+    // userAgentData; maxTouchPoints is the only tell.
+    expect(detectQuickClient(UA.macSafari, undefined, 5).os).toBe('ios');
+    // A genuine Mac reports 0 touch points and must stay macOS.
+    expect(detectQuickClient(UA.macSafari, undefined, 0).os).toBe('macos');
+    expect(detectQuickClient(UA.macSafari).os).toBe('macos');
+  });
+
   it('falls back to unknown rather than guessing', () => {
     expect(detectQuickClient('').os).toBe('unknown');
     expect(detectQuickClient('Mozilla/5.0 (jsdom)').os).toBe('unknown');
@@ -200,6 +209,22 @@ describe('QuickLandingPage', () => {
     expect(await screen.findByTestId('quick-code-format-error')).toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(screen.queryByTestId('quick-download-windows')).not.toBeInTheDocument();
+  });
+
+  it('shows a rate-limit notice, not an invalid-code error, on a 429', async () => {
+    // A rate-limited code may be perfectly valid; the user just tried too fast.
+    mockFetch(
+      () => ({ ok: false, status: 429, json: async () => ({}) }) as unknown as Response,
+    );
+    window.history.replaceState({}, '', '/quick?code=234-567-892');
+
+    render(<QuickLandingPage />);
+
+    expect(await screen.findByTestId('quick-rate-limited')).toBeInTheDocument();
+    expect(screen.queryByTestId('quick-invalid-code')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quick-download-windows')).not.toBeInTheDocument();
+    // The code entry form stays available so the user can retry.
+    expect(screen.getByTestId('quick-code-input')).toBeInTheDocument();
   });
 
   it('does not claim the code is dead when the network request fails', async () => {
@@ -373,6 +398,24 @@ describe('QuickLandingPage', () => {
 
       const notice = await screen.findByTestId('quick-mobile-notice');
       expect(notice).toHaveTextContent('Open this page on the Windows computer that needs help');
+      expect(screen.queryByTestId('quick-download-windows')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('quick-download-macos')).not.toBeInTheDocument();
+    });
+
+    it('treats a touch iPad (desktop Mac UA) as mobile and shows the go-to-PC notice', async () => {
+      // iPadOS Safari sends a Mac UA; only maxTouchPoints separates it from a
+      // real Mac. Without this it would land on the useless Mac download block.
+      vi.stubGlobal('navigator', {
+        ...window.navigator,
+        userAgent: UA.macSafari,
+        maxTouchPoints: 5,
+      });
+      mockFetch(() => jsonResponse({ valid: true }));
+      window.history.replaceState({}, '', '/quick?code=234-567-892');
+
+      render(<QuickLandingPage />);
+
+      expect(await screen.findByTestId('quick-mobile-notice')).toBeInTheDocument();
       expect(screen.queryByTestId('quick-download-windows')).not.toBeInTheDocument();
       expect(screen.queryByTestId('quick-download-macos')).not.toBeInTheDocument();
     });

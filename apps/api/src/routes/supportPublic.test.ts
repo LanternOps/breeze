@@ -91,6 +91,10 @@ const selectResults: unknown[][] = [];
 const updateResults: unknown[][] = [];
 const insertedValues: unknown[] = [];
 let updateWhereCalled = 0;
+// Every builder handed back by db.select(), in call order — lets a test
+// inspect what a specific `.where(...)` call was actually built with instead
+// of just trusting a mock that returns a fixed row regardless of the query.
+const selectBuilders: Array<Record<string, unknown>> = [];
 
 vi.mock('../db', () => {
   const select = vi.fn(() => {
@@ -98,6 +102,7 @@ vi.mock('../db', () => {
     const builder: Record<string, unknown> = {};
     for (const m of ['from', 'where', 'leftJoin', 'innerJoin']) builder[m] = vi.fn(() => builder);
     builder.limit = vi.fn(() => Promise.resolve(rows));
+    selectBuilders.push(builder);
     return builder;
   });
 
@@ -179,6 +184,32 @@ function redeem(body: Record<string, unknown> = {}) {
   });
 }
 
+// Drizzle's `eq`/`and` (used for real here — only ../db and ../db/schema are
+// mocked) build a real SQL AST even though the mocked schema columns are
+// plain strings rather than real Column objects: `sql`${left} = ${right}``
+// inserts both raw operands directly into queryChunks (neither side satisfies
+// isDriverValueEncoder, so neither gets wrapped in a Param). That makes the
+// exact identifiers a `.where(...)` call was built with recoverable by
+// walking the tree — see automationWorker.resolveAssignment.test.ts for the
+// same pattern.
+function collectSqlLeafStrings(node: unknown, seen = new Set<unknown>(), acc: string[] = []): string[] {
+  if (typeof node === 'string') {
+    acc.push(node);
+    return acc;
+  }
+  if (node === null || typeof node !== 'object' || seen.has(node)) return acc;
+  seen.add(node);
+  if (Array.isArray(node)) {
+    for (const item of node) collectSqlLeafStrings(item, seen, acc);
+    return acc;
+  }
+  const queryChunks = (node as { queryChunks?: unknown[] }).queryChunks;
+  if (Array.isArray(queryChunks)) {
+    for (const item of queryChunks) collectSqlLeafStrings(item, seen, acc);
+  }
+  return acc;
+}
+
 /** Stands in for the ~60 MB agent asset — a real body, three bytes long. */
 const fetchMock = vi.fn(() => Promise.resolve(
   new Response(new Uint8Array([0x4d, 0x5a, 0x90]), {
@@ -191,6 +222,7 @@ beforeEach(() => {
   selectResults.length = 0;
   updateResults.length = 0;
   insertedValues.length = 0;
+  selectBuilders.length = 0;
   updateWhereCalled = 0;
   vi.clearAllMocks();
   _resetSupportCodeMissBudgetStateForTests();
@@ -373,6 +405,38 @@ describe('GET /check/:code', () => {
     rateLimiter.mockResolvedValue({ allowed: false, currentCount: 99 });
     const res = await supportPublicRoutes.request(`/check/${CODE}`);
     expect(res.status).toBe(429);
+  });
+
+  /**
+   * `rateLimitIpKey` is unit-tested exhaustively in clientIp.test.ts, but
+   * nothing proves the ROUTE actually wraps the client IP with it before
+   * building the limiter key — a revert of `rateLimitIpKey(ip)` back to raw
+   * `ip` (e.g. during a refactor) would pass every existing supportPublic
+   * test unnoticed, since getTrustedClientIp is mocked to a fixed IPv4 value
+   * everywhere else here. rateLimitIpKey itself is NOT mocked (see the
+   * '../services/clientIp' mock above), so driving the mocked
+   * getTrustedClientIp with real IPv6 addresses exercises the true
+   * fold-to-/64 pipeline end to end.
+   */
+  it('folds an IPv6 client IP to its /64 network before keying the rate limiter', async () => {
+    selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
+    getTrustedClientIp.mockReturnValue('2001:db8:1:2:3:4:5:6');
+    await supportPublicRoutes.request(`/check/${CODE}`);
+    expect(rateLimiter).toHaveBeenCalledWith(expect.anything(), 'support-check:2001:db8:1:2::', 30, 60);
+
+    // A different host within the SAME /64 lands on the SAME bucket.
+    rateLimiter.mockClear();
+    selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
+    getTrustedClientIp.mockReturnValue('2001:db8:1:2:ffff:ffff:ffff:ffff');
+    await supportPublicRoutes.request(`/check/${CODE}`);
+    expect(rateLimiter).toHaveBeenCalledWith(expect.anything(), 'support-check:2001:db8:1:2::', 30, 60);
+
+    // A DIFFERENT /64 is a distinct bucket.
+    rateLimiter.mockClear();
+    selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
+    getTrustedClientIp.mockReturnValue('2001:db8:1:3::1');
+    await supportPublicRoutes.request(`/check/${CODE}`);
+    expect(rateLimiter).toHaveBeenCalledWith(expect.anything(), 'support-check:2001:db8:1:3::', 30, 60);
   });
 });
 
@@ -591,7 +655,15 @@ describe('POST /redeem', () => {
   it('hashes the code before lookup — the plaintext is never queried', async () => {
     selectResults.push([]);
     await redeem();
-    expect(hashSupportCode(CODE)).toMatch(/^[0-9a-f]{64}$/);
+
+    // Walk the ACTUAL where() predicate the route built, rather than merely
+    // checking hashSupportCode's return shape — a regression that queried by
+    // the plaintext code would still pass a shape-only assertion.
+    const codeLookupWhere = selectBuilders[0]?.where as ReturnType<typeof vi.fn> | undefined;
+    expect(codeLookupWhere).toHaveBeenCalledTimes(1);
+    const leaves = collectSqlLeafStrings(codeLookupWhere!.mock.calls[0]![0]);
+    expect(leaves).toContain(hashSupportCode(CODE));
+    expect(leaves).not.toContain(CODE);
   });
 });
 

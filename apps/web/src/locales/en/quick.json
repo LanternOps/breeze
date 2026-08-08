@@ -39,6 +39,11 @@
     "body": "The connection to the internet may have dropped. Check your connection and try the code again.",
     "retry": "Try again"
   },
+  "rateLimited": {
+    "title": "Too many attempts",
+    "body": "You have tried a code too many times. Please wait a moment, then try again.",
+    "retry": "Try again"
+  },
   "ready": {
     "title": "Your code works",
     "codeIntro": "Your code is {{code}}."

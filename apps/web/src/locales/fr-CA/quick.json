@@ -39,6 +39,11 @@
     "body": "Votre connexion à Internet a peut-être été coupée. Vérifiez la connexion, puis essayez le code de nouveau.",
     "retry": "Essayer de nouveau"
   },
+  "rateLimited": {
+    "title": "Trop de tentatives",
+    "body": "Vous avez essayé un code trop de fois. Patientez un moment, puis essayez de nouveau.",
+    "retry": "Essayer de nouveau"
+  },
   "ready": {
     "title": "Votre code est valide",
     "codeIntro": "Votre code est {{code}}."

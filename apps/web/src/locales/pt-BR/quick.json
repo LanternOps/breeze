@@ -39,6 +39,11 @@
     "body": "A conexão com a internet pode ter caído. Verifique sua conexão e tente o código novamente.",
     "retry": "Tentar novamente"
   },
+  "rateLimited": {
+    "title": "Tentativas em excesso",
+    "body": "Você tentou um código vezes demais. Aguarde um momento e tente novamente.",
+    "retry": "Tentar novamente"
+  },
   "ready": {
     "title": "Seu código é válido",
     "codeIntro": "Seu código é {{code}}."

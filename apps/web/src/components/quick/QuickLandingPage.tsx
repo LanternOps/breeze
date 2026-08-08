@@ -31,6 +31,7 @@ type CheckState =
   | { phase: 'checking' }
   | { phase: 'valid'; code: string; branding: QuickBranding | null }
   | { phase: 'invalid' }
+  | { phase: 'rateLimited'; code: string }
   | { phase: 'unreachable'; code: string };
 
 export type QuickOs = 'windows' | 'macos' | 'ios' | 'android' | 'linux' | 'unknown';
@@ -47,11 +48,18 @@ export type QuickClient = { os: QuickOs; browser: QuickBrowser };
  * Detection is advisory, never a gate: `unknown` keeps the full Windows flow
  * visible rather than stranding a user behind a UA string we failed to parse.
  */
-export function detectQuickClient(userAgent: string, platformHint?: string | null): QuickClient {
-  return { os: detectOs(userAgent ?? '', platformHint ?? ''), browser: detectBrowser(userAgent ?? '') };
+export function detectQuickClient(
+  userAgent: string,
+  platformHint?: string | null,
+  maxTouchPoints = 0,
+): QuickClient {
+  return {
+    os: detectOs(userAgent ?? '', platformHint ?? '', maxTouchPoints ?? 0),
+    browser: detectBrowser(userAgent ?? ''),
+  };
 }
 
-function detectOs(userAgent: string, platformHint: string): QuickOs {
+function detectOs(userAgent: string, platformHint: string, maxTouchPoints: number): QuickOs {
   // navigator.userAgentData.platform is the reliable signal where it exists
   // ("Windows", "macOS", "Android", "Linux"), so it wins over UA sniffing.
   const hint = platformHint.toLowerCase();
@@ -66,7 +74,14 @@ function detectOs(userAgent: string, platformHint: string): QuickOs {
   if (/android/i.test(userAgent)) return 'android';
   if (/iphone|ipad|ipod/i.test(userAgent)) return 'ios';
   if (/windows/i.test(userAgent)) return 'windows';
-  if (/mac os x|macintosh/i.test(userAgent)) return 'macos';
+  if (/mac os x|macintosh/i.test(userAgent)) {
+    // iPadOS Safari sends a desktop "Macintosh; Intel Mac OS X" UA and exposes
+    // no userAgentData, so a genuine Mac and an iPad are indistinguishable by
+    // string alone. A real Mac reports maxTouchPoints 0; a touch iPad reports
+    // >1. Treat the touch case as iOS so the mobile "go to the PC" notice shows
+    // instead of a useless Windows/Mac download block.
+    return maxTouchPoints > 1 ? 'ios' : 'macos';
+  }
   if (/linux|x11|cros/i.test(userAgent)) return 'linux';
   return 'unknown';
 }
@@ -103,13 +118,21 @@ export default function QuickLandingPage() {
 
   useEffect(() => {
     const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
-    setClient(detectQuickClient(nav.userAgent, nav.userAgentData?.platform));
+    setClient(detectQuickClient(nav.userAgent, nav.userAgentData?.platform, nav.maxTouchPoints));
   }, []);
 
   const checkCode = useCallback(async (code: string) => {
     setState({ phase: 'checking' });
     try {
       const response = await fetch(`${API_BASE}/api/v1/support/check/${encodeURIComponent(code)}`);
+      if (response.status === 429) {
+        // Rate limited (per-IP, or the deployment-wide miss budget) — the code
+        // may be perfectly good, the user has just tried too fast. Never fold
+        // this into the "invalid code" UI; that sends a legitimate user back to
+        // the technician for a fresh code that would fail the same way.
+        setState({ phase: 'rateLimited', code });
+        return;
+      }
       const body = (await response.json()) as
         | { valid?: boolean; branding?: QuickBranding | null }
         | null;
@@ -269,6 +292,24 @@ export default function QuickLandingPage() {
             onClick={() => void checkCode(state.code)}
           >
             {t('checkFailed.retry')}
+          </button>
+        </div>
+      )}
+
+      {state.phase === 'rateLimited' && (
+        <div
+          data-testid="quick-rate-limited"
+          role="status"
+          className="space-y-2 rounded-lg border bg-card p-4"
+        >
+          <p className="text-sm font-semibold">{t('rateLimited.title')}</p>
+          <p className="text-sm text-muted-foreground">{t('rateLimited.body')}</p>
+          <button
+            type="button"
+            className="h-9 rounded-md border px-3 text-sm font-medium transition hover:bg-muted"
+            onClick={() => void checkCode(state.code)}
+          >
+            {t('rateLimited.retry')}
           </button>
         </div>
       )}

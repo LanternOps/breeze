@@ -817,7 +817,8 @@
     },
     "errors": {
       "create": "Could not create the support session",
-      "list": "Could not load recent support sessions"
+      "list": "Could not load recent support sessions",
+      "notFound": "That support session is no longer available."
     },
     "list": {
       "heading": "Recent support sessions",
