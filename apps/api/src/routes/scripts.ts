@@ -79,8 +79,10 @@ type RescopeAuth = {
   // #3262: the partner-wide capability is NOT derivable from the other fields —
   // a 'selected' user whose selection happens to cover every current org still
   // must not administer partner-wide state. Carried explicitly so the widening
-  // branch below can check it.
-  partnerOrgAccess?: AuthContext['partnerOrgAccess'];
+  // branch below can check it. The KEY is deliberately required (the value may
+  // be undefined): every caller must consciously thread the capability through
+  // rather than silently omitting it and failing closed by accident.
+  partnerOrgAccess: AuthContext['partnerOrgAccess'];
   accessibleOrgIds: string[] | null;
   canAccessOrg: (orgId: string) => boolean;
 };
@@ -146,6 +148,43 @@ function resolveRescopeTarget(
     return { error: 'Access to this organization denied', status: 403 };
   }
   return { orgId: requestedOrgId, partnerId };
+}
+
+/**
+ * Shared guard for writes (PUT/DELETE) against an EXISTING partner-wide script
+ * (org_id NULL, partner_id set). Returns the error to send, or null when the
+ * write may proceed. One helper for both handlers so the rules can never drift
+ * between them (#3262 review):
+ * - System scope administers every partner's rows.
+ * - Cross-partner: RLS normally makes another partner's row invisible (the
+ *   read 404s first), but the app layer must not depend on row invisibility
+ *   alone — enforce same-partner ownership here too, as 404 (not 403, which
+ *   would leak that the script id exists).
+ * - Org-scope users of the owning partner see it read-only.
+ * - Within the partner, only a full-partner admin
+ *   (canManagePartnerWidePolicies) may write — same reasoning as the create
+ *   path: the script body runs as SYSTEM on every org under the partner.
+ */
+function partnerWideScriptWriteError(
+  script: { orgId: string | null; partnerId: string | null },
+  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'partnerOrgAccess'>
+): { error: string; status: 403 | 404 } | null {
+  if (script.orgId !== null || script.partnerId === null) {
+    return null; // not partner-wide — org/system guards elsewhere apply
+  }
+  if (auth.scope === 'system') {
+    return null;
+  }
+  if (script.partnerId !== auth.partnerId) {
+    return { error: 'Script not found', status: 404 };
+  }
+  if (auth.scope === 'organization') {
+    return { error: 'This script is shared across your organization and is read-only here', status: 403 };
+  }
+  if (!canManagePartnerWidePolicies(auth)) {
+    return { error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, status: 403 };
+  }
+  return null;
 }
 
 function getAllowedSiteIds(c: { get: (key: string) => unknown }): string[] | undefined {
@@ -612,16 +651,14 @@ scriptRoutes.put(
       return c.json({ error: 'Script not found' }, 404);
     }
 
-    // Partner-wide records belong to the MSP: only partner/system scope may edit.
-    if (script.orgId === null && script.partnerId !== null && auth.scope === 'organization') {
-      return c.json({ error: 'This script is shared across your organization and is read-only here' }, 403);
-    }
-    // #3262: and within the partner, only a full-partner admin. Someone who
+    // Partner-wide records belong to the MSP — ownership, read-only, and
+    // capability rules live in partnerWideScriptWriteError (#3262). Someone who
     // cannot create a partner-wide script must not be able to edit one either —
     // otherwise the body of a script already running as SYSTEM everywhere is
     // rewritable by a 'selected'-access user.
-    if (script.orgId === null && script.partnerId !== null && !canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    const partnerWideErr = partnerWideScriptWriteError(script, auth);
+    if (partnerWideErr) {
+      return c.json({ error: partnerWideErr.error }, partnerWideErr.status);
     }
     // Cannot edit system scripts unless system scope
     if (script.isSystem && auth.scope !== 'system') {
@@ -639,7 +676,9 @@ scriptRoutes.put(
     // stays closed).
     if (data.availability !== undefined) {
       const target = resolveRescopeTarget(
-        auth,
+        // partnerOrgAccess is an optional KEY on AuthContext but a required one
+        // on RescopeAuth — spell it out so the compiler proves it was threaded.
+        { ...auth, partnerOrgAccess: auth.partnerOrgAccess },
         data.availability,
         data.orgId,
         { orgId: script.orgId, partnerId: script.partnerId }
@@ -787,15 +826,13 @@ scriptRoutes.delete(
       return c.json({ error: 'Script not found' }, 404);
     }
 
-    // Partner-wide records belong to the MSP: only partner/system scope may delete.
-    if (script.orgId === null && script.partnerId !== null && auth.scope === 'organization') {
-      return c.json({ error: 'This script is shared across your organization and is read-only here' }, 403);
-    }
-    // #3262: and within the partner, only a full-partner admin — same reasoning
-    // as the edit path. Deleting a partner-wide script removes automation from
-    // every org under the partner.
-    if (script.orgId === null && script.partnerId !== null && !canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    // Partner-wide records belong to the MSP — ownership, read-only, and
+    // capability rules live in partnerWideScriptWriteError (#3262), same
+    // reasoning as the edit path. Deleting a partner-wide script removes
+    // automation from every org under the partner.
+    const partnerWideErr = partnerWideScriptWriteError(script, auth);
+    if (partnerWideErr) {
+      return c.json({ error: partnerWideErr.error }, partnerWideErr.status);
     }
     // Cannot delete system scripts unless system scope
     if (script.isSystem && auth.scope !== 'system') {

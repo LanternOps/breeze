@@ -8,6 +8,7 @@ const SCRIPT_ID_2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const ORG_ID_2 = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const PARTNER_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+const OTHER_PARTNER_ID = 'abababab-abab-4bab-8bab-abababababab';
 const EXECUTION_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 
 // Mock all services
@@ -1395,6 +1396,48 @@ describe('scripts routes', () => {
       expect(getSet().deletedAt).toBeInstanceOf(Date);
     });
 
+    // ── #3262 review: same-partner ownership enforced in the APP layer ──────
+    // In production, RLS makes another partner's row invisible and the read
+    // 404s first. These tests bypass RLS (mocked db serves partner A's row to
+    // a partner-B admin) to prove the app layer alone still rejects the write
+    // — with 404, not 403, so the response doesn't leak that the id exists.
+    it('#3262: an admin of another partner cannot edit a partner-wide script (app-layer 404)', async () => {
+      await withAuth({ ...makePartnerAuth('all'), partnerId: OTHER_PARTNER_ID });
+      mockScriptLookup({
+        id: SCRIPT_ID_1, name: 'Partner Script', orgId: null, partnerId: PARTNER_ID,
+        isSystem: false, content: 'echo hi', version: 1,
+      }, 0);
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ content: 'echo pwned' }),
+      });
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Script not found');
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
+    it('#3262: an admin of another partner cannot delete a partner-wide script (app-layer 404)', async () => {
+      await withAuth({ ...makePartnerAuth('all'), partnerId: OTHER_PARTNER_ID });
+      mockScriptLookup({
+        id: SCRIPT_ID_1, name: 'Partner Script', orgId: null, partnerId: PARTNER_ID,
+        isSystem: false, content: 'echo hi', version: 1,
+      }, 0);
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer valid-token' },
+      });
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Script not found');
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
     it('partner user moves a script org→org (when no references exist)', async () => {
       await withAuth(makePartnerAuth());
       mockScriptLookup({
@@ -1491,10 +1534,13 @@ describe('scripts routes', () => {
       expect(getSet().partnerId).toBeUndefined();
     });
 
-    it('partner user cannot re-scope a script owned by a different partner → 403 (cross-partner forge guard)', async () => {
+    it('partner user cannot re-scope a script owned by a different partner → 404 (cross-partner forge guard)', async () => {
       await withAuth(makePartnerAuth());
       // Script belongs to a DIFFERENT partner (and would be unreachable via RLS
       // in prod, but this asserts the route-level ownership guard explicitly).
+      // #3262 review: the partner-wide ownership guard now fires before the
+      // re-scope path and answers 404, not 403 — a cross-partner probe must
+      // not learn that the script id exists.
       mockScriptLookup({
         id: SCRIPT_ID_1, name: 'Other Partner Script', orgId: null,
         partnerId: 'b0000000-0000-4000-8000-000000000000',
@@ -1507,9 +1553,10 @@ describe('scripts routes', () => {
         body: JSON.stringify({ availability: 'org', orgId: ORG_ID }),
       });
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
       const body = await res.json();
-      expect(body.error).toMatch(/not owned by your partner/i);
+      expect(body.error).toBe('Script not found');
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
     });
 
     it('partner user choosing availability=org without an orgId → 400', async () => {
