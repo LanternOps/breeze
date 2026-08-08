@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 vi.mock('../db', () => ({
   db: {
@@ -153,5 +155,165 @@ describe('analyze_metrics AI tool', () => {
     expect(parsed.summary.cpu.current).toBe(40);
     expect(parsed.source).toBeUndefined();
     expect(mockDb.select).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('analyze_fleet_metrics AI tool', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function authWith(overrides: Partial<AuthContext> = {}): AuthContext {
+    return { ...makeAuth(), ...overrides } as AuthContext;
+  }
+
+  it('rejects an unknown metricName without querying the db, and advertises the real rollup names', async () => {
+    const result = await handlerFor('analyze_fleet_metrics')({ metricName: 'memory_percent' }, makeAuth());
+    const parsed = JSON.parse(result);
+
+    expect(parsed.error).toContain('Invalid metricName');
+    // The task brief's "memory_percent" isn't a real rollup name — the tool
+    // must advertise the actual column, ram_percent.
+    expect(parsed.error).toContain('ram_percent');
+    expect(parsed.error).not.toContain('memory_percent,');
+    expect(mockDb.select).not.toHaveBeenCalled();
+  });
+
+  it('denies an inaccessible orgId without querying the db', async () => {
+    const restrictedAuth = authWith({ canAccessOrg: () => false });
+    const result = await handlerFor('analyze_fleet_metrics')(
+      { metricName: 'cpu_percent', orgId: 'org-other' },
+      restrictedAuth
+    );
+    const parsed = JSON.parse(result);
+
+    expect(parsed.error).toBe('Access to this organization denied');
+    expect(mockDb.select).not.toHaveBeenCalled();
+  });
+
+  it('defaults to a 24h window, topN 10, and the 5-minute bucket tier', async () => {
+    mockSelectOnce([]);
+    const result = await handlerFor('analyze_fleet_metrics')({ metricName: 'cpu_percent' }, makeAuth());
+    const parsed = JSON.parse(result);
+
+    expect(parsed.windowHours).toBe(24);
+    expect(parsed.topN).toBe(10);
+    expect(parsed.bucketSeconds).toBe(300);
+  });
+
+  it('clamps windowHours to 168 and topN to 50, switching to the hourly bucket tier above 24h', async () => {
+    mockSelectOnce([]);
+    const result = await handlerFor('analyze_fleet_metrics')(
+      { metricName: 'cpu_percent', windowHours: 9999, topN: 9999 },
+      makeAuth()
+    );
+    const parsed = JSON.parse(result);
+
+    expect(parsed.windowHours).toBe(168);
+    expect(parsed.topN).toBe(50);
+    expect(parsed.bucketSeconds).toBe(3600);
+  });
+
+  it('treats a negative windowHours/topN as invalid input and floors to 1 (matches analyze_metrics convention: 0/falsy falls back to the default)', async () => {
+    mockSelectOnce([]);
+    const result = await handlerFor('analyze_fleet_metrics')(
+      { metricName: 'cpu_percent', windowHours: -5, topN: -5 },
+      makeAuth()
+    );
+    const parsed = JSON.parse(result);
+
+    expect(parsed.windowHours).toBe(1);
+    expect(parsed.topN).toBe(1);
+  });
+
+  it('aggregates per-device avg (weighted)/peak-p95 (max)/max across buckets and ranks by peak p95 desc', async () => {
+    mockSelectOnce([
+      { deviceId: 'd1', hostname: 'host-1', avgValue: 40, maxValue: 60, p95Value: 55, sampleCount: 10 },
+      { deviceId: 'd1', hostname: 'host-1', avgValue: 60, maxValue: 90, p95Value: 85, sampleCount: 10 },
+      { deviceId: 'd2', hostname: 'host-2', avgValue: 10, maxValue: 20, p95Value: 15, sampleCount: 5 },
+    ]);
+
+    const result = await handlerFor('analyze_fleet_metrics')({ metricName: 'cpu_percent' }, makeAuth());
+    const parsed = JSON.parse(result);
+
+    expect(parsed.deviceCount).toBe(2);
+    expect(parsed.topDevices[0]).toEqual({
+      deviceId: 'd1', hostname: 'host-1', avg: 50, p95: 85, max: 90, sampleCount: 20,
+    });
+    expect(parsed.topDevices[1].deviceId).toBe('d2');
+    expect(parsed.fleetSummary.max).toBe(90);
+    expect(parsed.fleetSummary.sampleCount).toBe(25);
+  });
+
+  it('caps topDevices at topN while still reporting the full deviceCount', async () => {
+    const rows = Array.from({ length: 5 }, (_, i) => ({
+      deviceId: `d${i}`, hostname: `host-${i}`, avgValue: i, maxValue: i, p95Value: i, sampleCount: 1,
+    }));
+    mockSelectOnce(rows);
+
+    const result = await handlerFor('analyze_fleet_metrics')(
+      { metricName: 'cpu_percent', topN: 2 },
+      makeAuth()
+    );
+    const parsed = JSON.parse(result);
+
+    expect(parsed.topDevices).toHaveLength(2);
+    expect(parsed.deviceCount).toBe(5);
+    // Ranked by p95 desc: d4 (p95=4), d3 (p95=3)
+    expect(parsed.topDevices.map((d: { deviceId: string }) => d.deviceId)).toEqual(['d4', 'd3']);
+  });
+
+  it('short-circuits for a zero-site restricted caller without querying the db', async () => {
+    const restrictedAuth = authWith({ allowedSiteIds: [], canAccessSite: () => false });
+    const result = await handlerFor('analyze_fleet_metrics')({ metricName: 'cpu_percent' }, restrictedAuth);
+    const parsed = JSON.parse(result);
+
+    expect(parsed.deviceCount).toBe(0);
+    expect(parsed.topDevices).toEqual([]);
+    expect(typeof parsed.note).toBe('string');
+    expect(mockDb.select).not.toHaveBeenCalled();
+  });
+
+  it('adds a devices.siteId inArray condition to the query for a site-restricted caller', async () => {
+    let capturedCondition: SQL | undefined;
+    mockDb.select.mockImplementationOnce(() => {
+      const chain: Record<string, any> = {};
+      chain.from = () => chain;
+      chain.innerJoin = () => chain;
+      chain.where = (condition: SQL) => {
+        capturedCondition = condition;
+        return chain;
+      };
+      chain.then = (onFulfilled?: (value: unknown) => unknown) => Promise.resolve([]).then(onFulfilled);
+      return chain;
+    });
+
+    const restrictedAuth = authWith({ allowedSiteIds: ['site-A'], canAccessSite: (s) => s === 'site-A' });
+    await handlerFor('analyze_fleet_metrics')({ metricName: 'cpu_percent' }, restrictedAuth);
+
+    expect(capturedCondition).toBeDefined();
+    const rendered = new PgDialect().sqlToQuery(capturedCondition!);
+    expect(rendered.params).toContain('site-A');
+  });
+
+  it('does not add a site condition for an unrestricted caller (no regression)', async () => {
+    let capturedCondition: SQL | undefined;
+    mockDb.select.mockImplementationOnce(() => {
+      const chain: Record<string, any> = {};
+      chain.from = () => chain;
+      chain.innerJoin = () => chain;
+      chain.where = (condition: SQL) => {
+        capturedCondition = condition;
+        return chain;
+      };
+      chain.then = (onFulfilled?: (value: unknown) => unknown) => Promise.resolve([]).then(onFulfilled);
+      return chain;
+    });
+
+    await handlerFor('analyze_fleet_metrics')({ metricName: 'cpu_percent' }, makeAuth());
+
+    expect(capturedCondition).toBeDefined();
+    const rendered = new PgDialect().sqlToQuery(capturedCondition!);
+    expect(rendered.params).not.toContain('site-A');
   });
 });
