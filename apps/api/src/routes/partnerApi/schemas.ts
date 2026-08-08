@@ -490,7 +490,10 @@ export function createPartnerProvisioningResponseSchema<T extends z.ZodType>(rec
     data: recordSchema.nullable(),
     blocked: z.array(partnerExportBlockedRecordSchema).max(1).optional(),
   }).strict().superRefine((value, ctx) => {
-    if ((value.data === null) !== (value.blocked !== undefined && value.blocked.length > 0)) {
+    // The generic record type defeats inference on the refined object shape,
+    // so narrow explicitly — only the null/blocked pairing is inspected here.
+    const view = value as unknown as { data: unknown; blocked?: unknown[] };
+    if ((view.data === null) !== (view.blocked !== undefined && view.blocked.length > 0)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['data'],
