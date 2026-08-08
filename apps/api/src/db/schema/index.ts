@@ -25,6 +25,7 @@ export * from './unifi';
 export * from './portal';
 export * from './emailInbound';
 export * from './analytics';
+export * from './fleetFindings';
 export * from './plugins';
 export * from './discovery';
 export * from './mobile';
