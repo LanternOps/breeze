@@ -1,4 +1,4 @@
-export const PARTNER_SERVICE_PRINCIPAL_SCOPES = Object.freeze([
+export const PARTNER_SERVICE_PRINCIPAL_READ_SCOPES = Object.freeze([
   'organizations:read',
   'sites:read',
   'devices:read',
@@ -9,11 +9,30 @@ export const PARTNER_SERVICE_PRINCIPAL_SCOPES = Object.freeze([
   'custom-fields:read',
 ] as const);
 
+// Provisioning write scopes (#3243). Create/update only by design — deletion
+// of tenancy stays a human + MFA action on the main API and must never grow a
+// scope here. These are opt-in at principal creation and are deliberately NOT
+// part of any default scope set.
+export const PARTNER_SERVICE_PRINCIPAL_WRITE_SCOPES = Object.freeze([
+  'organizations:write',
+  'sites:write',
+  'enrollment-keys:write',
+] as const);
+
+export const PARTNER_SERVICE_PRINCIPAL_SCOPES = Object.freeze([
+  ...PARTNER_SERVICE_PRINCIPAL_READ_SCOPES,
+  ...PARTNER_SERVICE_PRINCIPAL_WRITE_SCOPES,
+] as const);
+
 export type PartnerServicePrincipalScope =
   (typeof PARTNER_SERVICE_PRINCIPAL_SCOPES)[number];
 
+// Read-only on purpose: the Weavestream default existed before the write
+// scopes did, and silently widening a DEFAULT to include tenancy writes would
+// grant every default-scoped principal provisioning power. Write scopes are
+// opt-in per principal, never implicit (#3243).
 export const DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES = Object.freeze(
-  [...PARTNER_SERVICE_PRINCIPAL_SCOPES] as PartnerServicePrincipalScope[],
+  [...PARTNER_SERVICE_PRINCIPAL_READ_SCOPES] as PartnerServicePrincipalScope[],
 );
 
 const PARTNER_SERVICE_PRINCIPAL_SCOPE_SET = new Set<string>(

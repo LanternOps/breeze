@@ -49,10 +49,29 @@ describe('partner partner-service-principal scopes', () => {
     expect(hasPartnerServicePrincipalScope(['devices'], 'devices:read')).toBe(false);
   });
 
-  it('publishes a frozen default Weavestream delegation containing all eight scopes', () => {
-    expect(DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES).toEqual(
-      PARTNER_SERVICE_PRINCIPAL_SCOPES,
-    );
+  it('publishes a frozen default Weavestream delegation of exactly the eight read scopes', () => {
+    // Named explicitly on purpose — NOT derived from PARTNER_SERVICE_PRINCIPAL_SCOPES.
+    // Since #3243 the full scope list also contains tenancy WRITE scopes, and the
+    // default delegation must never absorb a new scope implicitly: adding one
+    // here has to be a deliberate human decision, because every default-scoped
+    // principal inherits it.
+    expect(DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES).toEqual([
+      'organizations:read',
+      'sites:read',
+      'devices:read',
+      'inventory:read',
+      'configuration:read',
+      'scripts:read',
+      'backup-configuration:read',
+      'custom-fields:read',
+    ]);
     expect(Object.isFrozen(DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES)).toBe(true);
+  });
+
+  it('never includes a write scope in the default delegation', () => {
+    // Provisioning writes (#3243) are opt-in at principal creation only.
+    for (const scope of DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES) {
+      expect(scope.endsWith(':read')).toBe(true);
+    }
   });
 });
