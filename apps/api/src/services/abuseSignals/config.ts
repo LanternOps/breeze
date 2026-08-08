@@ -47,6 +47,14 @@ export const SIGNAL_DEFAULTS = {
   'rmm.remote_access_installer.marker.unrelated_host': 25,
   'rmm.remote_access_installer.marker.exec_policy_bypass': 20,
   'rmm.remote_access_installer.marker.unattended_params': 15,
+  // Unbranded-installer gate (same detector, shape-based stage 1): a remote
+  // fetch of an .msi/.exe from cloud object storage, with no vendor named.
+  // Same gate score as the branded path — fetching an installer is what an RMM
+  // does, so the gate alone stays below watch and the SAME marker weights
+  // above supply the discrimination. Markers are deliberately NOT duplicated
+  // per gate: 'unrelated_host' means the same thing either way, and one set
+  // keeps tuning honest.
+  'rmm.unbranded_installer.gate_score': 20,
   'rmm.shared_installer_host.min_partners': 2,
   'rmm.shared_installer_host.base_score': 60,
   'rmm.shared_installer_host.per_extra_partner': 20,

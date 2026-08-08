@@ -1,11 +1,19 @@
 /**
- * Static contract (#1105, BREEZE-H): every BullMQ enqueue call site in
- * agentWs.ts runs under runOutsideDbContext. The whole command_result pipeline
+ * Static contract (#1105, BREEZE-H): every BullMQ enqueue call site in the
+ * command_result pipeline runs under runOutsideDbContext. That pipeline
  * executes inside a held org-scoped transaction (runWithAgentDbAccess), so an
  * unwrapped enqueue pins a pooled Postgres connection idle-in-transaction
  * across Redis round-trips — and for instrumented queues fires the
  * assertOutsideHeldDbContext tripwire straight into Sentry. Seven sites were
  * fixed in one pass; this scan keeps the next one from regressing silently.
+ *
+ * #3097 split the pipeline across two files: the per-command-type handlers moved
+ * to services/commandResultHandlers.ts so the HTTP transport could dispatch them
+ * too, taking the discovery and SNMP enqueues with them. The contract is about
+ * the pipeline, not the file, so the scan covers both — otherwise moving a call
+ * site out of agentWs.ts would silently drop it from the guard, and the HTTP
+ * path runs these same handlers inside the request-long org context, where an
+ * unwrapped enqueue has exactly the same cost.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -13,29 +21,42 @@ import path from 'node:path';
 import { backupProcessResultSchema } from '../jobs/queueSchemas';
 
 const source = readFileSync(path.join(__dirname, 'agentWs.ts'), 'utf8');
+const handlerSource = readFileSync(
+  path.join(__dirname, '..', 'services', 'commandResultHandlers.ts'),
+  'utf8'
+);
 
 describe('agentWs enqueue context contract (#1105)', () => {
   it('every enqueue* call site is wrapped in runOutsideDbContext', () => {
-    const lines = source.split('\n');
-    const callSites: number[] = [];
-    lines.forEach((line, idx) => {
-      if (!/\benqueue[A-Z]\w*\s*\(/.test(line)) return;
-      if (/^\s*import\b/.test(line) || /\bfrom '/.test(line) || /await import\(/.test(line)) return;
-      callSites.push(idx);
-    });
+    const scanned: Array<{ file: string; lines: string[] }> = [
+      { file: 'agentWs.ts', lines: source.split('\n') },
+      { file: 'services/commandResultHandlers.ts', lines: handlerSource.split('\n') },
+    ];
+
+    let total = 0;
+    for (const { file, lines } of scanned) {
+      const callSites: number[] = [];
+      lines.forEach((line, idx) => {
+        if (!/\benqueue[A-Z]\w*\s*\(/.test(line)) return;
+        if (/^\s*import\b/.test(line) || /\bfrom '/.test(line) || /await import\(/.test(line)) return;
+        callSites.push(idx);
+      });
+      total += callSites.length;
+
+      for (const idx of callSites) {
+        const window = lines.slice(Math.max(0, idx - 3), idx + 1).join('\n');
+        expect(
+          window.includes('runOutsideDbContext('),
+          `enqueue call at ${file}:${idx + 1} must be wrapped in runOutsideDbContext (#1105):\n${lines[idx]}`
+        ).toBe(true);
+      }
+    }
 
     // Known sites: monitor, SNMP (orphaned + tracked), discovery x2, backup,
-    // DR reconcile. If the scan finds fewer, the regex rotted — fix the scan,
-    // don't delete the assertion.
-    expect(callSites.length).toBeGreaterThanOrEqual(7);
-
-    for (const idx of callSites) {
-      const window = lines.slice(Math.max(0, idx - 3), idx + 1).join('\n');
-      expect(
-        window.includes('runOutsideDbContext('),
-        `enqueue call at agentWs.ts:${idx + 1} must be wrapped in runOutsideDbContext (#1105):\n${lines[idx]}`
-      ).toBe(true);
-    }
+    // DR reconcile — five now in agentWs.ts and two in the extracted handlers.
+    // If the scan finds fewer, the regex rotted or a site moved to a third file
+    // — fix the scan, don't delete the assertion.
+    expect(total).toBeGreaterThanOrEqual(7);
   });
 });
 
