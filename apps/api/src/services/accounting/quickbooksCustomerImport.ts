@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { organizations, sites } from '../../db/schema';
+import { organizations, organizationExternalLinks, sites } from '../../db/schema';
 import { getConnection } from './accountingConnectionService';
 import { getValidAccessToken, ReauthRequiredError } from './accountingTokens';
 import { getAccountingProvider } from './providerRegistry';
@@ -53,23 +53,10 @@ export interface QbImportSummary {
   errors: Array<{ customerId: string; displayName?: string; error: string }>;
 }
 
-export function slugify(name: string): string {
-  const slug = name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 90)
-    .replace(/-+$/, ''); // re-trim: the 90-char slice can leave a dangling hyphen
-  return slug || 'org';
-}
-
-export function generateUniqueSlug(base: string, taken: Set<string>): string {
-  if (!taken.has(base)) return base;
-  for (let n = 2; ; n++) {
-    const candidate = `${base}-${n}`;
-    if (!taken.has(candidate)) return candidate;
-  }
-}
+// Slug helpers moved to the shared org import pipeline (#3242); re-exported
+// here for back-compat with existing importers/tests.
+export { generateUniqueSlug, slugify } from '../orgImport/slug';
+import { generateUniqueSlug, slugify } from '../orgImport/slug';
 
 // Resolve the partner's QB connection + a fresh access token, then fetch all
 // customers from QuickBooks. These DB ops run in SYSTEM context (the connection
@@ -114,21 +101,37 @@ async function fetchCustomers(partnerId: string): Promise<RemoteCustomer[]> {
   }
 }
 
-// Map external id -> { organizationId, slug } for every org already linked to
-// this partner's QB realm. Used for dedup + slug-uniqueness. Same self-managed
-// system-context rule as fetchCustomers (the routes opt out of the request tx).
+// Map external id -> organizationId for every org already linked to this
+// partner's QB realm. Reads the UNION of organization_external_links and the
+// legacy accounting_* columns (#3242) so an org linked by either mechanism
+// matches — a link-table-only read would miss orgs created before the link
+// table existed on a database whose backfill hasn't run, and a columns-only
+// read would miss future link-only rows once the columns are dropped. Same
+// self-managed system-context rule as fetchCustomers (the routes opt out of
+// the request tx).
 async function loadExistingOrgs(partnerId: string): Promise<{ byExternalId: Map<string, string>; slugs: Set<string> }> {
-  const rows = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-    db.select({ id: organizations.id, accountingExternalId: organizations.accountingExternalId, slug: organizations.slug })
+  const { orgRows, linkRows } = await runOutsideDbContext(() => withSystemDbAccessContext(async () => ({
+    orgRows: await db.select({ id: organizations.id, accountingProvider: organizations.accountingProvider, accountingExternalId: organizations.accountingExternalId, slug: organizations.slug })
       .from(organizations)
-      .where(and(eq(organizations.partnerId, partnerId), eq(organizations.accountingProvider, PROVIDER)))
-  )) as Array<{ id: string; accountingExternalId: string | null; slug: string | null }>;
+      .where(eq(organizations.partnerId, partnerId)),
+    linkRows: await db.select({ orgId: organizationExternalLinks.orgId, externalId: organizationExternalLinks.externalId })
+      .from(organizationExternalLinks)
+      .where(and(eq(organizationExternalLinks.partnerId, partnerId), eq(organizationExternalLinks.system, PROVIDER))),
+  }))) as {
+    orgRows: Array<{ id: string; accountingProvider: string | null; accountingExternalId: string | null; slug: string | null }>;
+    linkRows: Array<{ orgId: string; externalId: string }>;
+  };
 
   const byExternalId = new Map<string, string>();
   const slugs = new Set<string>();
-  for (const row of rows) {
-    if (row.accountingExternalId) byExternalId.set(row.accountingExternalId, row.id);
+  for (const row of orgRows) {
+    if (row.accountingProvider === PROVIDER && row.accountingExternalId) byExternalId.set(row.accountingExternalId, row.id);
+    // Slug uniqueness is per partner, not per QB linkage — reserve them all.
     if (row.slug) slugs.add(row.slug);
+  }
+  // The link table wins over the legacy columns on conflict.
+  for (const row of linkRows) {
+    byExternalId.set(row.externalId, row.orgId);
   }
   return { byExternalId, slugs };
 }
@@ -213,6 +216,17 @@ export async function importQuickbooksCustomers(
             accountingProvider: PROVIDER,
             accountingExternalId: customerId,
           }).returning();
+          // DUAL-WRITE (#3242): the link row must be written alongside the
+          // legacy accounting_* columns for as long as the columns exist.
+          // Readers are moving to the link table; an org created with only
+          // the columns would not match on the next import and would be
+          // duplicated — the exact failure the link table exists to prevent.
+          await db.insert(organizationExternalLinks).values({
+            orgId: org!.id,
+            partnerId,
+            system: PROVIDER,
+            externalId: customerId,
+          });
           const [site] = await db.insert(sites).values({
             orgId: org!.id,
             name: clamp(customer.displayName, 255)!,
@@ -230,13 +244,24 @@ export async function importQuickbooksCustomers(
       // — honor the documented "skip dupes" contract instead of reporting a raw
       // constraint error. Re-read the winning org id under system context.
       if (isUniqueViolation(err)) {
-        const existing = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-          db.select({ id: organizations.id }).from(organizations).where(and(
+        // The violation can come from either idempotency guard — the link
+        // table's unique index or the legacy partial unique index. Re-read
+        // the union (link table first: it wins on conflict).
+        const existing = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+          const [link] = await db.select({ id: organizationExternalLinks.orgId })
+            .from(organizationExternalLinks)
+            .where(and(
+              eq(organizationExternalLinks.partnerId, partnerId),
+              eq(organizationExternalLinks.system, PROVIDER),
+              eq(organizationExternalLinks.externalId, customerId),
+            )).limit(1);
+          if (link) return [link];
+          return db.select({ id: organizations.id }).from(organizations).where(and(
             eq(organizations.partnerId, partnerId),
             eq(organizations.accountingProvider, PROVIDER),
             eq(organizations.accountingExternalId, customerId),
-          )).limit(1)
-        )) as Array<{ id: string }>;
+          )).limit(1);
+        })) as Array<{ id: string }>;
         if (existing[0]) {
           byExternalId.set(customerId, existing[0].id);
           summary.skipped.push({ customerId, displayName: customer.displayName, organizationId: existing[0].id, reason: 'already_imported' });
