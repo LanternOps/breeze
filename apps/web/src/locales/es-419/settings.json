@@ -2761,6 +2761,66 @@
     },
     "empty": "No se encontraron organizaciones. Intente ajustar su búsqueda o filtros."
   },
+  "bulkOrgImport": {
+    "title": "Importación masiva",
+    "description": "Importa organizaciones y sitios desde un CSV exportado de tu RMM anterior.",
+    "dropzone": "Suelta un archivo CSV aquí o haz clic para buscar",
+    "dropzoneHint": "Columnas: organización (obligatoria), sitio, ID externo, sistema externo, zona horaria",
+    "actions": {
+      "close": "Cerrar",
+      "preview": "Previsualizar {{count}} filas",
+      "previewing": "Previsualizando…",
+      "import": "Importar {{count}} seleccionadas",
+      "importing": "Importando…"
+    },
+    "mapping": {
+      "title": "Asignación de columnas",
+      "unmapped": "Sin asignar",
+      "organization": "Organización",
+      "site": "Sitio",
+      "externalId": "ID externo",
+      "externalSystem": "Sistema externo",
+      "timezone": "Zona horaria",
+      "organizationRequired": "Asigna la columna de organización para continuar."
+    },
+    "mode": {
+      "label": "Organizaciones existentes",
+      "skip": "Omitir (dejar sin cambios)",
+      "update": "Actualizar desde el archivo"
+    },
+    "preview": {
+      "title": "Vista previa",
+      "selectAll": "Seleccionar todo",
+      "organization": "Organización",
+      "site": "Sitio",
+      "externalId": "ID externo",
+      "status": "Estado",
+      "matches": "coincide con “{{name}}”",
+      "reactivateHint": "Seleccionarla reactivará la organización eliminada"
+    },
+    "badges": {
+      "create": "Nueva",
+      "linkMatch": "Ya vinculada",
+      "nameMatch": "Coincidencia de nombre — confirmar",
+      "softDeleted": "Coincide con organización eliminada",
+      "conflict": "Conflicto"
+    },
+    "summary": {
+      "imported": "{{count}} importadas",
+      "updated": "{{count}} actualizadas",
+      "skipped": "{{count}} omitidas",
+      "failed": "{{count}} con errores",
+      "allFailed": "La importación falló — {{summary}}."
+    },
+    "failures": {
+      "title_one": "{{count}} fila falló",
+      "title_other": "{{count}} filas fallaron"
+    },
+    "errors": {
+      "previewFailed": "No se pudo previsualizar la importación.",
+      "importFailed": "No se pudieron importar las organizaciones."
+    }
+  },
   "organizationsPage": {
     "loading": "Cargando organizaciones...",
     "title": "Organizaciones y sitios",

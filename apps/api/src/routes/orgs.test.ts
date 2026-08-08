@@ -135,6 +135,19 @@ vi.mock('../services/ticketConfigService', () => ({
   seedSystemTicketStatuses: vi.fn().mockResolvedValue(undefined)
 }));
 
+// Bulk org/site import (#3242): the service is unit-tested in
+// services/orgImport/orgImport.test.ts — these route tests only cover gating,
+// validation, partner resolution, and the audit fan-out.
+const orgImportMocks = vi.hoisted(() => ({
+  previewOrgImport: vi.fn(),
+  commitOrgImport: vi.fn(),
+}));
+vi.mock('../services/orgImport', () => ({
+  previewOrgImport: orgImportMocks.previewOrgImport,
+  commitOrgImport: orgImportMocks.commitOrgImport,
+  MAX_IMPORT_ROWS: 1000,
+}));
+
 vi.mock('../db/schema', () => ({
   partners: {},
   // #2879 — sentinel columns (same pattern as sites.id below) so the
@@ -4483,6 +4496,146 @@ describe('org routes', () => {
       expect(captureSpy).toHaveBeenCalled();
 
       consoleSpy.mockRestore();
+    });
+  });
+
+  describe('POST /orgs/import/preview and /orgs/import (#3242)', () => {
+    const previewBody = { rows: [{ organization: 'Acme', site: 'HQ' }] };
+
+    it('preview returns the annotated rows for the partner scope caller', async () => {
+      setAuthContext({ scope: 'partner' });
+      orgImportMocks.previewOrgImport.mockResolvedValue([
+        { index: 0, organization: 'Acme', site: 'HQ', annotation: 'create', slug: 'acme', organizationId: null },
+      ]);
+
+      const res = await app.request('/orgs/import/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(previewBody),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.rows).toHaveLength(1);
+      expect(body.rows[0]).toMatchObject({ annotation: 'create', slug: 'acme' });
+      expect(orgImportMocks.previewOrgImport).toHaveBeenCalledWith(previewBody.rows, 'partner-123');
+    });
+
+    it('rejects the organization scope (partner/system only)', async () => {
+      setAuthContext({ scope: 'organization' });
+      const res = await app.request('/orgs/import/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(previewBody),
+      });
+      expect(res.status).toBe(403);
+      expect(orgImportMocks.previewOrgImport).not.toHaveBeenCalled();
+    });
+
+    it('403s when the caller lacks orgs:write', async () => {
+      permissionMockState.granted = false;
+      const res = await app.request('/orgs/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(previewBody),
+      });
+      expect(res.status).toBe(403);
+      expect(orgImportMocks.commitOrgImport).not.toHaveBeenCalled();
+    });
+
+    it('rejects a partner-scope body naming a different partner', async () => {
+      setAuthContext({ scope: 'partner' });
+      const res = await app.request('/orgs/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...previewBody, partnerId: '99999999-9999-9999-9999-999999999999' }),
+      });
+      expect(res.status).toBe(403);
+      expect(orgImportMocks.commitOrgImport).not.toHaveBeenCalled();
+    });
+
+    it('400s when system scope supplies no partnerId', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      const res = await app.request('/orgs/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(previewBody),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('enforces the 1000-row cap at validation time', async () => {
+      const rows = Array.from({ length: 1001 }, (_, i) => ({ organization: `Org ${i}` }));
+      const res = await app.request('/orgs/import/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows }),
+      });
+      expect(res.status).toBe(400);
+      expect(orgImportMocks.previewOrgImport).not.toHaveBeenCalled();
+    });
+
+    it('rejects an invalid IANA timezone at validation time', async () => {
+      const res = await app.request('/orgs/import/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows: [{ organization: 'Acme', timezone: 'Not/AZone' }] }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('commit forwards rows, partner, actor, and mode to the service and returns its summary', async () => {
+      setAuthContext({ scope: 'partner' });
+      const summary = {
+        imported: [{
+          index: 0, organization: 'Acme', organizationId: 'org-1', siteId: 'site-1', siteName: 'HQ',
+          createdOrganization: true, createdLink: true, slug: 'acme',
+        }],
+        updated: [],
+        skipped: [],
+        errors: [],
+      };
+      orgImportMocks.commitOrgImport.mockResolvedValue(summary);
+
+      const res = await app.request('/orgs/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          rows: [{ organization: 'Acme', site: 'HQ', externalId: '1', externalSystem: 'datto_rmm', expectedAnnotation: 'create' }],
+          mode: 'update',
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(summary);
+      expect(orgImportMocks.commitOrgImport).toHaveBeenCalledWith(
+        [expect.objectContaining({ organization: 'Acme', expectedAnnotation: 'create' })],
+        'partner-123',
+        { userId: 'user-123' },
+        'update',
+      );
+    });
+
+    it('commit defaults mode to skip', async () => {
+      orgImportMocks.commitOrgImport.mockResolvedValue({ imported: [], updated: [], skipped: [], errors: [] });
+      const res = await app.request('/orgs/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(previewBody),
+      });
+      expect(res.status).toBe(200);
+      expect(orgImportMocks.commitOrgImport).toHaveBeenCalledWith(
+        expect.anything(), expect.anything(), expect.anything(), 'skip',
+      );
+    });
+
+    it('rejects an unknown expectedAnnotation value', async () => {
+      const res = await app.request('/orgs/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows: [{ organization: 'Acme', expectedAnnotation: 'conflict' }] }),
+      });
+      expect(res.status).toBe(400);
     });
   });
 });

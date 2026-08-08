@@ -52,7 +52,9 @@ const namespaceDuplicateBaselines = {
     'scripts.json': 57,
     'security.json': 140,
     // +1: the it-IT locale's self-name is intentionally identical in every catalog.
-    'settings.json': 110,
+    // +1: bulkOrgImport.preview.status — "Status" is the same cognate in pt-BR
+    // (already accepted for billing.json).
+    'settings.json': 111,
     'tickets.json': 13,
     'vulnerabilities.json': 13,
   },
@@ -136,7 +138,9 @@ const namespaceDuplicateBaselines = {
     'security.json': 144,
     // +1: orgDefaultsEditor.enrollment.capMinutes — "{{minutes}} minutes" is
     // spelled identically in French.
-    'settings.json': 144,
+    // +2: bulkOrgImport.mapping.site + preview.site — "Site" is the same word
+    // in French.
+    'settings.json': 146,
     'tickets.json': 21,
     'vulnerabilities.json': 15,
   },
@@ -174,7 +178,9 @@ const namespaceDuplicateBaselines = {
     'security.json': 144,
     // +1: orgDefaultsEditor.enrollment.capMinutes — "{{minutes}} minutes" is
     // spelled identically in French.
-    'settings.json': 149,
+    // +2: bulkOrgImport.mapping.site + preview.site — "Site" is the same word
+    // in French.
+    'settings.json': 151,
     'tickets.json': 20,
     'vulnerabilities.json': 15,
   },
@@ -214,7 +220,8 @@ const namespaceDuplicateBaselines = {
     // wording; intentionally identical in every catalog (#3162).
     'scripts.json': 54,
     'security.json': 166,
-    'settings.json': 165,
+    // +1: bulkOrgImport.preview.status — "Status" is the German word too.
+    'settings.json': 166,
     'tickets.json': 13,
     'vulnerabilities.json': 20,
   },

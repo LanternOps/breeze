@@ -4,6 +4,7 @@ export * from './approvals';
 export * from './elevations';
 export * from './pam';
 export * from './orgs';
+export * from './orgExternalLinks';
 export * from './oauth';
 export * from './users';
 export * from './userPasskeys';

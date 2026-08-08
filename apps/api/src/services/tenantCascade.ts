@@ -234,6 +234,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'oauth_refresh_tokens',
   'onedrive_device_state',
   'org_ticket_settings',
+  // organization_external_links (#3242): external-system linkage rows. The
+  // composite FK to organizations (id, partner_id) carries ON DELETE CASCADE,
+  // but the table is enumerated here per the cascade contract test's
+  // requirement that every org_id-columned table be listed for auditability.
+  'organization_external_links',
   'organization_users',
   'pam_org_config',
   'pam_rules',

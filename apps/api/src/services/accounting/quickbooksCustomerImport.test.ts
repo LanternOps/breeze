@@ -51,9 +51,26 @@ function connectedConn() {
   return { id: 'c1', partnerId: 'p1', provider: 'quickbooks', realmId: 'r1', accessToken: 'tok', environment: 'sandbox', status: 'connected' };
 }
 
-// Helper to stub `db.select(...).from(...).where(...)` returning `rows`.
+// Stub the selects in call order: loadExistingOrgs reads org rows then link
+// rows (#3242 union read); any further selects (the unique-violation catch
+// re-query) come from `extra`, each supporting an optional `.limit()`.
+function stubSelects(orgRows: unknown[], linkRows: unknown[] = [], extra: unknown[][] = []) {
+  const queue: unknown[][] = [orgRows, linkRows, ...extra];
+  selectMock.mockImplementation(() => ({
+    from: () => {
+      const rows = queue.shift() ?? [];
+      return {
+        where: () => {
+          const p = Promise.resolve(rows) as Promise<unknown[]> & { limit: () => Promise<unknown[]> };
+          p.limit = () => Promise.resolve(rows.slice(0, 1));
+          return p;
+        },
+      };
+    },
+  }));
+}
 function stubSelect(rows: unknown[]) {
-  selectMock.mockReturnValue({ from: () => ({ where: () => Promise.resolve(rows) }) });
+  stubSelects(rows, []);
 }
 
 // Captures the object passed to each `db.insert(...).values(OBJ)` call, in order,
@@ -98,7 +115,7 @@ describe('listQuickbooksCustomersAnnotated', () => {
     listRemoteCustomersMock.mockResolvedValue([
       { id: '1', displayName: 'A' }, { id: '2', displayName: 'B' },
     ]);
-    stubSelect([{ id: 'org-1', accountingExternalId: '1' }]);
+    stubSelect([{ id: 'org-1', accountingProvider: 'quickbooks', accountingExternalId: '1' }]);
 
     const result = await listQuickbooksCustomersAnnotated('p1');
 
@@ -140,8 +157,14 @@ describe('importQuickbooksCustomers', () => {
       billingAddressLine1: '1 Bill St', billingAddressCity: 'Austin',
       billingAddressRegion: 'TX', billingAddressPostalCode: '78701', billingAddressCountry: 'US',
     });
-    // Site insert (second values() call) used shipping address.
-    const siteInsertArg = valuesSpy.mock.calls[1]![0];
+    // Link-row DUAL-WRITE (#3242): second values() call is the
+    // organization_external_links insert alongside the legacy columns.
+    const linkInsertArg = valuesSpy.mock.calls[1]![0];
+    expect(linkInsertArg).toMatchObject({
+      orgId: 'org-1', partnerId: 'p1', system: 'quickbooks', externalId: '1',
+    });
+    // Site insert (third values() call) used shipping address.
+    const siteInsertArg = valuesSpy.mock.calls[2]![0];
     expect(siteInsertArg).toMatchObject({
       orgId: 'org-1', name: 'Acme Co',
       address: { addressLine1: '2 Ship Rd', city: 'Dallas' },
@@ -154,7 +177,7 @@ describe('importQuickbooksCustomers', () => {
     stubSelect([]);
     stubInserts([[{ id: 'org-1' }], [{ id: 'site-1' }]]);
     await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
-    expect(valuesSpy.mock.calls[1]![0]).toMatchObject({ address: { addressLine1: '1 Bill St', city: 'Austin' } });
+    expect(valuesSpy.mock.calls[2]![0]).toMatchObject({ address: { addressLine1: '1 Bill St', city: 'Austin' } });
   });
 
   it('nulls billingAddressCountry when QB Country is not a 2-char code (char(2) guard)', async () => {
@@ -165,7 +188,7 @@ describe('importQuickbooksCustomers', () => {
     // Org column is char(2): the long country must NOT be written (would throw + drop the customer).
     expect(valuesSpy.mock.calls[0]![0].billingAddressCountry).toBeNull();
     // …but the full country is preserved on the site address JSONB (no length cap).
-    expect(valuesSpy.mock.calls[1]![0].address).toMatchObject({ country: 'United States' });
+    expect(valuesSpy.mock.calls[2]![0].address).toMatchObject({ country: 'United States' });
   });
 
   it('uppercases a genuine 2-char country code into billingAddressCountry', async () => {
@@ -176,9 +199,19 @@ describe('importQuickbooksCustomers', () => {
     expect(valuesSpy.mock.calls[0]![0].billingAddressCountry).toBe('US');
   });
 
-  it('skips customers already linked to an org', async () => {
+  it('skips customers already linked to an org via the legacy accounting columns', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
-    stubSelect([{ id: 'org-9', accountingExternalId: '1' }]);
+    stubSelect([{ id: 'org-9', accountingProvider: 'quickbooks', accountingExternalId: '1' }]);
+    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+    expect(summary.imported).toEqual([]);
+    expect(summary.skipped).toEqual([{ customerId: '1', displayName: 'Acme', organizationId: 'org-9', reason: 'already_imported' }]);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('skips customers linked ONLY via organization_external_links (union read, #3242)', async () => {
+    listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
+    // No legacy columns on the org — the link table alone must match.
+    stubSelects([{ id: 'org-9', slug: 'acme' }], [{ orgId: 'org-9', externalId: '1' }]);
     const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
     expect(summary.imported).toEqual([]);
     expect(summary.skipped).toEqual([{ customerId: '1', displayName: 'Acme', organizationId: 'org-9', reason: 'already_imported' }]);
@@ -187,7 +220,8 @@ describe('importQuickbooksCustomers', () => {
 
   it('suffixes the slug when the base collides with an existing org slug', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
-    stubSelect([{ id: 'org-x', accountingExternalId: '99', slug: 'acme' }]);
+    // Slug reservation now spans ALL partner orgs, not just QB-linked ones.
+    stubSelect([{ id: 'org-x', slug: 'acme' }]);
     stubInserts([[{ id: 'org-1' }], [{ id: 'site-1' }]]);
     await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
     expect(valuesSpy.mock.calls[0]![0]).toMatchObject({ slug: 'acme-2' });
@@ -234,8 +268,9 @@ describe('importQuickbooksCustomers', () => {
     stubSelect([]);
     stubInserts([[{ id: 'o1' }], [{ id: 's1' }], [{ id: 'o2' }], [{ id: 's2' }]]);
     await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1', '2'] });
+    // values() call order per customer: org, link, site.
     expect(valuesSpy.mock.calls[0]![0].slug).toBe('acme');   // first org
-    expect(valuesSpy.mock.calls[2]![0].slug).toBe('acme-2'); // second org (third values() call)
+    expect(valuesSpy.mock.calls[3]![0].slug).toBe('acme-2'); // second org (fourth values() call)
   });
 
   it('clamps over-long name + city to the column widths (lossless: full value stays in site JSONB)', async () => {
@@ -254,15 +289,14 @@ describe('importQuickbooksCustomers', () => {
     stubSelect([]);
     stubInserts([[{ id: 'org-1' }], [{ id: 'site-1' }]]);
     await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
-    expect(valuesSpy.mock.calls[1]![0].address).toMatchObject({ state: 'TX', city: 'Austin' });
+    expect(valuesSpy.mock.calls[2]![0].address).toMatchObject({ state: 'TX', city: 'Austin' });
   });
 
-  it('reclassifies a concurrent unique-violation as skipped (honors the partial unique index)', async () => {
+  it('reclassifies a concurrent unique-violation as skipped (honors the unique indexes)', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
-    // 1st select = loadExistingOrgs (none); 2nd select = catch re-query (winner org).
-    selectMock
-      .mockImplementationOnce(() => ({ from: () => ({ where: () => Promise.resolve([]) }) }))
-      .mockImplementationOnce(() => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'org-dup' }]) }) }) }));
+    // Selects: loadExistingOrgs orgs (none), links (none); catch re-query
+    // hits the link table first and finds the winner.
+    stubSelects([], [], [[{ id: 'org-dup' }]]);
     const dupErr = Object.assign(new Error('dup'), { code: '23505' });
     insertMock.mockImplementation(() => ({ values: () => ({ returning: () => Promise.reject(dupErr) }) }));
     const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
