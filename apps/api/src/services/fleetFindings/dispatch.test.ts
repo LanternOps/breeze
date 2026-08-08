@@ -186,6 +186,7 @@ import {
 } from './dispatch';
 
 const ORG_1 = '11111111-1111-4111-8111-111111111111';
+const ORG_2 = '22222222-2222-4222-8222-222222222222';
 const USER_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const FINDING_1 = 'f1111111-1111-4111-8111-111111111111';
 const RUN_1 = 'ee111111-1111-4111-8111-111111111111';
@@ -361,6 +362,30 @@ describe('createRemediationRun — device revalidation matrix', () => {
 
     expect(result.skipped).toEqual([{ deviceId: DEVICE_1, reason: 'not_member' }]);
     expect(result.targetCount).toBe(1);
+  });
+
+  it('regression: skips a member device that has moved to a DIFFERENT org the caller can ALSO access (not_member) — cross-org script-content guard', async () => {
+    // A membership row re-tenanted by the device-move trigger during its
+    // pre-prune window can reference a device whose live org no longer
+    // matches the finding's org. For a partner-scoped caller whose
+    // accessibleOrgIds spans multiple orgs, canAccessOrg(device.orgId) alone
+    // is not enough to catch this — the check must compare device.orgId
+    // against finding.orgId directly.
+    getFleetFindingMock.mockResolvedValue(findingDetail({ orgId: ORG_1 }));
+    h.selectQueue.push([{ deviceId: DEVICE_1 }]); // membership
+    h.selectQueue.push([deviceRow({ orgId: ORG_2 })]); // device lookup: live org is ORG_2, not ORG_1
+    h.insertReturningQueue.push([{ id: RUN_1 }]);
+
+    const req: RemediateRequest = {
+      actionKind: 'command',
+      commandType: 'reboot',
+      parameters: {},
+      deviceIds: [DEVICE_1],
+    };
+    // Caller is a partner-scoped tech who can access BOTH orgs.
+    const result = await createRemediationRun(makeAuth({ accessibleOrgIds: [ORG_1, ORG_2] }), FINDING_1, req);
+
+    expect(result.skipped).toEqual([{ deviceId: DEVICE_1, reason: 'not_member' }]);
   });
 
   it('skips a member device whose live org is outside the caller\'s accessibleOrgIds (not_member)', async () => {
@@ -671,7 +696,7 @@ describe('dispatchRunChunk', () => {
   it('dispatches a "script" target with the resolved script content and marks it queued', async () => {
     h.selectQueue.push([runRow({ status: 'running', actionKind: 'script', commandType: null, scriptId: SCRIPT_1 })]);
     h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
-    h.selectQueue.push([{ language: 'bash', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' }]);
+    h.selectQueue.push([{ orgId: ORG_1, language: 'bash', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' }]);
     h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
     queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-2' } });
 
@@ -682,6 +707,49 @@ describe('dispatchRunChunk', () => {
       'script',
       expect.objectContaining({ scriptId: SCRIPT_1, language: 'bash', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' }),
       { userId: USER_ID, expectedOrgId: ORG_1 }
+    );
+  });
+
+  it('regression: fails a script target when the script was soft-deleted between run creation and dispatch', async () => {
+    h.selectQueue.push([runRow({ status: 'running', actionKind: 'script', commandType: null, scriptId: SCRIPT_1 })]);
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([]); // script re-fetch: isNull(deletedAt) excludes it -> not found
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    const failedUpdate = h.capturedUpdates.find((u) => (u.values as Record<string, unknown>).status === 'failed')!;
+    expect(failedUpdate.values).toMatchObject({ status: 'failed', resultSummary: 'Script no longer available' });
+  });
+
+  it('regression: fails a script target when the script has moved to a DIFFERENT non-null org since run creation', async () => {
+    h.selectQueue.push([runRow({ status: 'running', actionKind: 'script', commandType: null, scriptId: SCRIPT_1, orgId: ORG_1 })]);
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ orgId: 'some-other-org', language: 'bash', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' }]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    const failedUpdate = h.capturedUpdates.find((u) => (u.values as Record<string, unknown>).status === 'failed')!;
+    expect(failedUpdate.values).toMatchObject({ status: 'failed', resultSummary: 'Script no longer available' });
+  });
+
+  it('dispatches a script target whose script orgId is null (system/universal script, still allowed at dispatch time)', async () => {
+    h.selectQueue.push([runRow({ status: 'running', actionKind: 'script', commandType: null, scriptId: SCRIPT_1 })]);
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ orgId: null, language: 'bash', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' }]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
+    queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-4' } });
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    expect(queueCommandForExecutionMock).toHaveBeenCalledWith(
+      DEVICE_1,
+      'script',
+      expect.objectContaining({ content: 'echo hi' }),
+      expect.anything()
     );
   });
 

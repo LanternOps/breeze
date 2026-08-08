@@ -195,7 +195,14 @@ export async function createRemediationRun(
       continue;
     }
     const device = deviceById.get(deviceId);
-    if (!device || !auth.canAccessOrg(device.orgId)) {
+    // A membership row re-tenanted by the device-move trigger during its
+    // pre-prune window can still reference a device whose CURRENT org has
+    // moved out from under the finding. `auth.canAccessOrg` alone isn't
+    // enough to catch this for a partner-scoped caller, whose accessible org
+    // set spans every org under the partner — the device's new org can still
+    // pass that check even though it's no longer the finding's org. Require
+    // an exact match against the finding's own org.
+    if (!device || device.orgId !== finding.orgId || !auth.canAccessOrg(device.orgId)) {
       skipped.push({ deviceId, reason: 'not_member' });
       continue;
     }
@@ -340,17 +347,24 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
 
   let scriptPayload: { language: string; content: string; timeoutSeconds: number; runAs: string } | null = null;
   if (run.actionKind === 'script' && run.scriptId) {
+    // Re-fetch under the SAME guards as validateRemediationScript at
+    // creation time: non-deleted, and either org-less (system/universal
+    // script) or belonging to the run's own org. Without this, a script
+    // soft-deleted or moved to another org between run creation and
+    // dispatch would still have its (now-stale) content read and executed
+    // against every target device.
     const [script] = await db
       .select({
+        orgId: scripts.orgId,
         language: scripts.language,
         content: scripts.content,
         timeoutSeconds: scripts.timeoutSeconds,
         runAs: scripts.runAs,
       })
       .from(scripts)
-      .where(eq(scripts.id, run.scriptId))
+      .where(and(eq(scripts.id, run.scriptId), isNull(scripts.deletedAt)))
       .limit(1);
-    scriptPayload = script ?? null;
+    scriptPayload = script && (script.orgId === null || script.orgId === run.orgId) ? script : null;
   }
 
   for (const target of pendingTargets) {

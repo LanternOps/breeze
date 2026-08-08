@@ -94,10 +94,6 @@ export interface FleetFindingDetail extends FleetFinding {
  *  `clear_temp_files` — it was cut in Task 7 for want of a single-command
  *  primitive; that cleanup is a script, not a command preset. */
 export type RemediationCommandType = 'restart_service' | 'reboot';
-export const REMEDIATION_COMMAND_TYPES: readonly RemediationCommandType[] = [
-  'restart_service',
-  'reboot',
-];
 
 /** Mirrors `RemediationSkipReason` (dispatch.ts). */
 export type RemediationSkipReason = 'site_denied' | 'not_member' | 'decommissioned';

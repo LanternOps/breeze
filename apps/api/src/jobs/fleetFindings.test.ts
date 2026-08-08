@@ -90,6 +90,7 @@ vi.mock('./workerObservability', () => ({
 
 import {
   buildFleetFindingsOrgJobId,
+  fleetFindingsScanSlot,
   isFleetFindingsEnabled,
   scheduleFleetFindingsJobs,
   shutdownFleetFindingsJobs,
@@ -135,9 +136,22 @@ describe('fleet findings queue helpers', () => {
     vi.useRealTimers();
   });
 
-  it('builds per-org job ids with no colons', () => {
-    expect(buildFleetFindingsOrgJobId('org-1')).toBe('fleet-findings-org-org-1');
-    expect(buildFleetFindingsOrgJobId('org-1')).not.toContain(':');
+  it('builds per-org job ids windowed by scan slot, with no colons', () => {
+    const slot = new Date('2026-08-07T12:00:00.000Z');
+    expect(buildFleetFindingsOrgJobId('org-1', slot)).toBe('fleet-findings-org-org-1-20260807T120000000Z');
+    expect(buildFleetFindingsOrgJobId('org-1', slot)).not.toContain(':');
+  });
+
+  it('produces the SAME jobId for two adds within the same 10-minute scan slot (in-cycle dedupe preserved)', () => {
+    const first = fleetFindingsScanSlot(new Date('2026-08-07T12:00:00.000Z'));
+    const second = fleetFindingsScanSlot(new Date('2026-08-07T12:09:59.000Z'));
+    expect(buildFleetFindingsOrgJobId('org-1', first)).toBe(buildFleetFindingsOrgJobId('org-1', second));
+  });
+
+  it('produces a DIFFERENT jobId for two different 10-minute scan slots (cross-cycle dedupe key changes)', () => {
+    const cycle1 = fleetFindingsScanSlot(new Date('2026-08-07T12:00:00.000Z'));
+    const cycle2 = fleetFindingsScanSlot(new Date('2026-08-07T12:10:00.000Z'));
+    expect(buildFleetFindingsOrgJobId('org-1', cycle1)).not.toBe(buildFleetFindingsOrgJobId('org-1', cycle2));
   });
 
   describe('isFleetFindingsEnabled', () => {
@@ -173,7 +187,7 @@ describe('fleet findings queue helpers', () => {
     expect('fleet-findings-scan').not.toContain(':');
   });
 
-  it('fans out the scan into per-org jobs with jobId fleet-findings-org-<orgId>', async () => {
+  it('fans out the scan into per-org jobs with jobId fleet-findings-org-<orgId>-<scanSlot>', async () => {
     groupByMock.mockResolvedValue([{ orgId: 'org-1' }, { orgId: 'org-2' }]);
 
     await scheduleFleetFindingsJobs();
@@ -181,18 +195,36 @@ describe('fleet findings queue helpers', () => {
 
     await workerProcessorMock({ data: { type: 'scan-orgs' } });
 
+    // Fake system time is 2026-08-07T12:00:00.000Z, itself a 10-minute
+    // boundary, so the scan slot equals that timestamp exactly.
     expect(addBulkMock).toHaveBeenCalledWith([
       expect.objectContaining({
         name: 'process-org',
         data: expect.objectContaining({ type: 'process-org', orgId: 'org-1' }),
-        opts: expect.objectContaining({ jobId: 'fleet-findings-org-org-1' }),
+        opts: expect.objectContaining({ jobId: 'fleet-findings-org-org-1-20260807T120000000Z' }),
       }),
       expect.objectContaining({
         name: 'process-org',
         data: expect.objectContaining({ type: 'process-org', orgId: 'org-2' }),
-        opts: expect.objectContaining({ jobId: 'fleet-findings-org-org-2' }),
+        opts: expect.objectContaining({ jobId: 'fleet-findings-org-org-2-20260807T120000000Z' }),
       }),
     ]);
+  });
+
+  it('regression: two scan cycles 10 minutes apart produce different jobIds for the same org (no cross-cycle dedupe swallow)', async () => {
+    groupByMock.mockResolvedValue([{ orgId: 'org-1' }]);
+    await scheduleFleetFindingsJobs();
+    addBulkMock.mockClear();
+
+    await workerProcessorMock({ data: { type: 'scan-orgs' } });
+    const firstJobId = (addBulkMock.mock.calls[0]![0] as Array<{ opts: { jobId: string } }>)[0]!.opts.jobId;
+
+    vi.setSystemTime(new Date('2026-08-07T12:10:00.000Z'));
+    addBulkMock.mockClear();
+    await workerProcessorMock({ data: { type: 'scan-orgs' } });
+    const secondJobId = (addBulkMock.mock.calls[0]![0] as Array<{ opts: { jobId: string } }>)[0]!.opts.jobId;
+
+    expect(firstJobId).not.toBe(secondJobId);
   });
 
   it('scans orgs and fans out inside a system DB context established outside the request context', async () => {

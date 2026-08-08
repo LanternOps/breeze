@@ -41,8 +41,28 @@ export function getFleetFindingsQueue(): Queue<FleetFindingsJobData> {
   return fleetFindingsQueue;
 }
 
-export function buildFleetFindingsOrgJobId(orgId: string): string {
-  return `fleet-findings-org-${orgId}`;
+function compactIso(value: Date | string): string {
+  return new Date(value).toISOString().replace(/[^0-9A-Za-z]/g, '');
+}
+
+// Must match SCAN_REPEAT_CRON's cadence: floors `now` to the 10-minute slot
+// it falls in, so every scan cycle mints a fresh dedupe key while duplicate
+// adds within the same cycle (e.g. a retried scan-orgs job) still collapse
+// onto the same jobId. Mirrors jobs/metricRollups.ts's buildMetricRollupJobId
+// windowing scheme exactly — see that file's recentWindow() for the sibling
+// bucket-floor logic.
+const SCAN_SLOT_BUCKET_MS = 10 * 60 * 1000;
+
+export function fleetFindingsScanSlot(now: Date = new Date()): Date {
+  return new Date(Math.floor(now.getTime() / SCAN_SLOT_BUCKET_MS) * SCAN_SLOT_BUCKET_MS);
+}
+
+// BullMQ dedupes new `add`/`addBulk` calls against a job's key even after
+// it's completed and retained via `removeOnComplete`, so a static per-org
+// jobId (no scan-slot suffix) would silently swallow every scan after the
+// first one. Windowing by scanSlot gives each 10-minute cycle a fresh key.
+export function buildFleetFindingsOrgJobId(orgId: string, scanSlot: Date | string): string {
+  return ['fleet-findings-org', orgId, compactIso(scanSlot)].join('-');
 }
 
 // Same fan-out source as metricRollups: orgs with at least one live, non-ephemeral
@@ -79,7 +99,9 @@ async function processScanOrgs(): Promise<{ queued: number }> {
     return { queued: 0 };
   }
 
-  const queuedAt = new Date().toISOString();
+  const now = new Date();
+  const queuedAt = now.toISOString();
+  const scanSlot = fleetFindingsScanSlot(now);
   const queue = getFleetFindingsQueue();
   await queue.addBulk(
     orgRows.map((row) => ({
@@ -90,7 +112,7 @@ async function processScanOrgs(): Promise<{ queued: number }> {
         queuedAt,
       },
       opts: {
-        jobId: buildFleetFindingsOrgJobId(row.orgId),
+        jobId: buildFleetFindingsOrgJobId(row.orgId, scanSlot),
         removeOnComplete: { count: 100 },
         removeOnFail: { count: 200 },
       },

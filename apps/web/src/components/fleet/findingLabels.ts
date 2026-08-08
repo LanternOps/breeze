@@ -1,7 +1,7 @@
 import { AlertOctagon, AlertTriangle, Info, XCircle } from 'lucide-react';
 import type {
   FleetFindingKind, FleetFindingSeverity, FleetFindingStatus, FleetRunStatus,
-  FleetTargetStatus, RemediationCommandType, RemediationSkipReason,
+  FleetTargetStatus, RemediationSkipReason,
 } from '@/services/fleetFindings';
 
 // Shared badge vocabulary for the fleet findings feed + drawer. Kept in its own
@@ -87,11 +87,6 @@ export function skipReasonLabelKey(reason: string | null): string | null {
   if (!reason) return null;
   return SKIP_REASON_LABEL_KEYS[reason as RemediationSkipReason] ?? null;
 }
-
-export const COMMAND_TYPE_LABEL_KEYS: Record<RemediationCommandType, string> = {
-  restart_service: 'longTail.fleet.FixPicker.actions.restartService',
-  reboot: 'longTail.fleet.FixPicker.actions.reboot',
-};
 
 export const SEVERITY_ICONS: Record<
   FleetFindingSeverity,
