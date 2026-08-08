@@ -40,6 +40,10 @@ export default defineConfig({
           items: [{ autogenerate: { directory: 'agents' } }],
         },
         {
+          label: 'Migration',
+          items: [{ autogenerate: { directory: 'migration' } }],
+        },
+        {
           label: 'Security Architecture',
           items: [{ autogenerate: { directory: 'security' } }],
         },
