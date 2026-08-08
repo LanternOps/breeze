@@ -190,10 +190,10 @@ describe('NetworkDeviceDetailPage', () => {
     expect(screen.queryByTestId('network-detail-overview')).toBeNull();
   });
 
-  it('renders a link to the managed device when the asset is linked', async () => {
+  it('renders a link to the managed device when the asset is linked, labeled "auto-detected"', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
       makeJsonResponse({
-        data: { ...baseAsset, linkedDeviceId: 'dev-9', linkedDeviceName: 'agent-host' },
+        data: { ...baseAsset, linkedDeviceId: 'dev-9', linkedDeviceName: 'agent-host', linkSource: 'auto' },
       }),
     );
 
@@ -204,9 +204,10 @@ describe('NetworkDeviceDetailPage', () => {
     const link = await screen.findByTestId('network-detail-linked-device');
     expect(link.getAttribute('href')).toBe('/devices/dev-9');
     expect(link.textContent).toContain('agent-host');
+    expect(screen.getByTestId('network-detail-link-provenance').textContent).toContain('auto-detected');
   });
 
-  it('shows Unlink for a manually linked asset', async () => {
+  it('shows Unlink for a manually linked asset, labeled "set manually"', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
       makeJsonResponse({
         data: { ...baseAsset, linkedDeviceId: 'dev-9', linkedDeviceName: 'agent-host', linkSource: 'manual' },
@@ -218,9 +219,13 @@ describe('NetworkDeviceDetailPage', () => {
     fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
 
     expect(await screen.findByTestId('network-detail-unlink')).toBeTruthy();
+    expect(screen.getByTestId('network-detail-link-provenance').textContent).toContain('set manually');
   });
 
-  it('hides Unlink for an auto-linked asset', async () => {
+  // #3261 regression: unlink used to be hidden for auto-links (the 2026-06-27
+  // manual-only rule). Suppression makes unlink meaningful for both
+  // provenances, so the server accepts it and the button must render.
+  it('shows Unlink for an auto-linked asset too (#3261)', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
       makeJsonResponse({
         data: { ...baseAsset, linkedDeviceId: 'dev-9', linkedDeviceName: 'agent-host', linkSource: 'auto' },
@@ -232,7 +237,109 @@ describe('NetworkDeviceDetailPage', () => {
     fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
 
     await screen.findByTestId('network-detail-linked-device');
-    expect(screen.queryByTestId('network-detail-unlink')).toBeNull();
+    expect(screen.getByTestId('network-detail-unlink')).toBeTruthy();
+  });
+
+  it('shows the "Auto-linking disabled" line when unlinked and suppressed', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        data: { ...baseAsset, linkedDeviceId: null, autoLinkSuppressedAt: '2026-08-08T00:00:00.000Z' },
+      }),
+    );
+
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+    fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
+
+    await screen.findByTestId('network-detail-monitoring');
+    expect(screen.getByTestId('network-detail-suppressed').textContent).toContain(
+      'Auto-linking disabled',
+    );
+  });
+
+  it('shows no suppressed-state line when unlinked and not suppressed', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ data: { ...baseAsset, linkedDeviceId: null, autoLinkSuppressedAt: null } }),
+    );
+
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+    fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
+
+    await screen.findByTestId('network-detail-monitoring');
+    expect(screen.queryByTestId('network-detail-suppressed')).toBeNull();
+  });
+
+  describe('"Link manually…" picker (#3261)', () => {
+    it('fetches devices scoped to the asset\'s site and links the chosen device via runAction', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(
+          makeJsonResponse({ data: { ...baseAsset, linkedDeviceId: null, siteId: 'site-1' } }),
+        )
+        .mockResolvedValueOnce(devicesResponse([])) // mount's unscoped proxy-popover device fetch
+        .mockResolvedValueOnce(
+          devicesResponse([{ id: 'dev-5', displayName: 'WS-5', status: 'online' }]),
+        ) // site-scoped picker fetch
+        .mockResolvedValueOnce(makeJsonResponse({ success: true }))
+        .mockResolvedValueOnce(
+          makeJsonResponse({ data: { ...baseAsset, linkedDeviceId: 'dev-5', linkedDeviceName: 'WS-5', linkSource: 'manual' } }),
+        );
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+      fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
+
+      fireEvent.click(await screen.findByTestId('network-detail-link-manually'));
+
+      await waitFor(() =>
+        expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices?siteId=site-1'),
+      );
+
+      const select = (await screen.findByTestId(
+        'network-detail-link-manually-select',
+      )) as HTMLSelectElement;
+      fireEvent.change(select, { target: { value: 'dev-5' } });
+
+      fireEvent.click(screen.getByTestId('network-detail-link-manually-submit'));
+
+      await waitFor(() =>
+        expect(fetchWithAuthMock).toHaveBeenCalledWith(
+          `/discovery/assets/${ASSET_ID}/link`,
+          expect.objectContaining({ method: 'POST', body: JSON.stringify({ deviceId: 'dev-5' }) }),
+        ),
+      );
+    });
+
+    it('surfaces a server error inline without closing the picker', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(
+          makeJsonResponse({ data: { ...baseAsset, linkedDeviceId: null, siteId: 'site-1' } }),
+        )
+        .mockResolvedValueOnce(devicesResponse([]))
+        .mockResolvedValueOnce(
+          devicesResponse([{ id: 'dev-5', displayName: 'WS-5', status: 'online' }]),
+        )
+        .mockResolvedValueOnce(
+          makeJsonResponse({ error: 'Device belongs to a different site' }, false, 400),
+        );
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+      fireEvent.click(screen.getByTestId('network-detail-tab-monitoring'));
+
+      fireEvent.click(await screen.findByTestId('network-detail-link-manually'));
+      const select = (await screen.findByTestId(
+        'network-detail-link-manually-select',
+      )) as HTMLSelectElement;
+      fireEvent.change(select, { target: { value: 'dev-5' } });
+      fireEvent.click(screen.getByTestId('network-detail-link-manually-submit'));
+
+      expect(
+        await screen.findByTestId('network-detail-link-manually-error'),
+      ).toHaveTextContent('Device belongs to a different site');
+      // The picker stays open on failure so the user can retry.
+      expect(screen.getByTestId('network-detail-link-manually-picker')).toBeTruthy();
+    });
   });
 
   it('hides Unlink for an unlinked asset', async () => {

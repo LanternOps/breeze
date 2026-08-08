@@ -1263,6 +1263,10 @@ discoveryRoutes.get(
         linkedDeviceId: row.linkedDeviceId ?? null,
         linkedDeviceName: row.linkedDeviceDisplayName ?? row.linkedDeviceHostname ?? null,
         linkSource: row.linkedDeviceId ? a.linkSource : null,
+        // Set by a manual unlink (Task 2 of #3261); cleared by any manual
+        // link. Only meaningful while unlinked — the web override surface
+        // uses it to explain why auto-linking hasn't re-found this asset.
+        autoLinkSuppressedAt: a.autoLinkSuppressedAt?.toISOString() ?? null,
         suggestedBridgeDeviceId: row.suggestedBridgeDeviceId ?? null,
         typeSource: a.typeSource,
         detectedAssetType: a.detectedAssetType,

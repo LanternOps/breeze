@@ -1,6 +1,23 @@
-import { describe, expect, it } from 'vitest';
+import '@/lib/i18n';
 
-import { mapAsset, toDetail, type ApiDiscoveryAsset } from './DiscoveredAssetList';
+import { render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import DiscoveredAssetList, { mapAsset, toDetail, type ApiDiscoveryAsset } from './DiscoveredAssetList';
+import { fetchWithAuth } from '../../stores/auth';
+
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+}));
+
+const fetchMock = vi.mocked(fetchWithAuth);
+
+const jsonResponse = (payload: unknown, ok = true): Response =>
+  ({
+    ok,
+    status: ok ? 200 : 500,
+    json: vi.fn().mockResolvedValue(payload),
+  }) as unknown as Response;
 
 // These guard the load-bearing transform seam for #1731: the API now projects
 // snmpData, but the modal is fed through mapAsset → toDetail. If either transform
@@ -71,4 +88,72 @@ it('mapAsset preserves a manual typeSource', () => {
   const mapped = mapAsset({ id: 'a5', assetType: 'server', typeSource: 'manual' } as any);
   expect(mapped.typeSource).toBe('manual');
 });
-import '@/lib/i18n';
+
+// #3261: replaces the old bare check + name with a labeled "Same device as"
+// badge, and the modal no longer needs a devices prop (its picker is gone).
+describe('DiscoveredAssetList — "Same device as" badge (#3261)', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+  });
+
+  it('renders a labeled badge linking to the linked device', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        data: [
+          {
+            id: 'asset-1',
+            assetType: 'workstation',
+            approvalStatus: 'approved',
+            isOnline: true,
+            hostname: 'ws-01',
+            ipAddress: '10.0.0.5',
+            linkedDeviceId: 'dev-1',
+            linkedDeviceName: 'WS-FRONTDESK',
+            linkSource: 'auto',
+          },
+        ],
+      }),
+    );
+
+    render(<DiscoveredAssetList />);
+
+    // ResponsiveTable renders both a desktop table and a mobile card view of
+    // the same row (one hidden via CSS, not the DOM) — assert on the first.
+    const badges = await screen.findAllByTestId('discovered-asset-same-device-badge');
+    expect(badges.length).toBeGreaterThan(0);
+    expect(badges[0]).toHaveTextContent('Same device as WS-FRONTDESK');
+    expect(badges[0]!.getAttribute('href')).toBe('/devices/dev-1');
+  });
+
+  it('renders no badge for an unlinked asset', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        data: [
+          {
+            id: 'asset-2',
+            assetType: 'workstation',
+            approvalStatus: 'pending',
+            isOnline: true,
+            hostname: 'ws-02',
+            ipAddress: '10.0.0.6',
+            linkedDeviceId: null,
+          },
+        ],
+      }),
+    );
+
+    render(<DiscoveredAssetList />);
+
+    await waitFor(() => expect(screen.getAllByText('ws-02').length).toBeGreaterThan(0));
+    expect(screen.queryByTestId('discovered-asset-same-device-badge')).not.toBeInTheDocument();
+  });
+
+  it('never fetches /devices now that the modal has no device picker to feed', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ data: [] }));
+
+    render(<DiscoveredAssetList />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(fetchMock.mock.calls.some(([url]) => url === '/devices')).toBe(false);
+  });
+});

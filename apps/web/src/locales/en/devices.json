@@ -555,7 +555,9 @@
     "lastSeen": "Last Seen",
     "loggedInUser": "Logged-in User",
     "rail": "rail",
-    "strip": "strip"
+    "strip": "strip",
+    "networkAsset": "Network asset",
+    "networkAssets": "Network assets"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Failed to isolate device",
@@ -2126,11 +2128,27 @@
       "typeUpdateFailed": "Type Update Failed",
       "typeUpdated": "Type Updated",
       "unlinkFailed": "Unlink Failed",
-      "unlinked": "Unlinked"
+      "unlinked": "Unlinked",
+      "linked": "Device linked",
+      "linkFailed": "Failed to link device"
     },
     "unlink": "Unlink",
     "unlinking": "Unlinking…",
-    "viewManagedDevice": "View managed device"
+    "viewManagedDevice": "View managed device",
+    "autoLinkSuppressed": "Auto-linking disabled — unlinked by a user",
+    "linkManually": "Link manually…",
+    "linkManuallySelectDevice": "Select a device",
+    "linkManuallyLinking": "Linking…",
+    "linkManuallyErrors": {
+      "loadDevices": "Failed to load devices",
+      "noDevices": "No managed devices at this site.",
+      "noSite": "Unable to determine this asset's site."
+    },
+    "provenance": {
+      "auto": "— auto-detected",
+      "manual": "— set manually"
+    },
+    "sameDeviceAs": "Same device as {{name}}"
   },
   "osIcons": {
     "linux": "Linux",

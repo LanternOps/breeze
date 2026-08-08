@@ -8,7 +8,7 @@ import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { extractApiError } from '../../lib/apiError';
 import { formatDateTime } from '@/lib/dateTimeFormat';
-import { isManualLink, type DiscoveredAssetLinkSource } from './networkTypes';
+import type { DiscoveredAssetLinkSource } from './networkTypes';
 import { formatNumber } from '@/lib/i18n/format';
 
 export type AssetDetail = DiscoveredAsset & {
@@ -38,10 +38,7 @@ type AssetDetailModalProps = {
   asset?: AssetDetail | null;
   /** While the detail is being fetched (topology click / deep link). */
   loading?: boolean;
-  devices?: { id: string; name: string; online?: boolean }[];
   onClose: () => void;
-  onLinked?: (assetId: string, deviceId: string) => void;
-  onUnlinked?: (assetId: string) => void;
   onDeleted?: (assetId: string) => void;
   onUpdated?: (assetId: string) => void;
 };
@@ -50,18 +47,11 @@ export default function AssetDetailModal({
   open,
   asset,
   loading = false,
-  devices = [],
   onClose,
-  onLinked,
-  onUnlinked,
   onDeleted,
   onUpdated
 }: AssetDetailModalProps) {
   const { t } = useTranslation('discovery');
-  const [selectedDevice, setSelectedDevice] = useState(asset?.linkedDeviceId ?? '');
-  const [linking, setLinking] = useState(false);
-  const [linkError, setLinkError] = useState<string>();
-  const [linkSuccess, setLinkSuccess] = useState<string>();
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string>();
   const [editLabel, setEditLabel] = useState('');
@@ -73,13 +63,6 @@ export default function AssetDetailModal({
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   useEffect(() => {
-    if (asset?.linkedDeviceId) {
-      setSelectedDevice(asset.linkedDeviceId);
-    } else if (asset) {
-      setSelectedDevice('');
-    }
-    setLinkError(undefined);
-    setLinkSuccess(undefined);
     setDeleteError(undefined);
     setEditLabel(asset?.label ?? '');
     setEditNotes(asset?.notes ?? '');
@@ -88,74 +71,6 @@ export default function AssetDetailModal({
     setSaveError(undefined);
     setSaveSuccess(false);
   }, [asset]);
-
-  const handleLink = async () => {
-    if (!asset) return;
-    if (!selectedDevice) {
-      setLinkSuccess(undefined);
-      setLinkError(t('assetDetailModal.errors.selectDeviceToLink'));
-      return;
-    }
-
-    try {
-      setLinking(true);
-      setLinkError(undefined);
-      setLinkSuccess(undefined);
-      const response = await fetchWithAuth(`/discovery/assets/${asset.id}/link`, {
-        method: 'POST',
-        body: JSON.stringify({ deviceId: selectedDevice })
-      });
-
-      if (!response.ok) {
-        throw new Error(t('assetDetailModal.errors.link'));
-      }
-
-      const deviceName = devices.find(d => d.id === selectedDevice)?.name;
-      setLinkSuccess(
-        deviceName
-          ? t('assetDetailModal.messages.linkedToDevice', { device: deviceName })
-          : t('assetDetailModal.messages.linked')
-      );
-      onLinked?.(asset.id, selectedDevice);
-    } catch (err) {
-      setLinkError(err instanceof Error ? err.message : t('assetDetailModal.errors.generic'));
-    } finally {
-      setLinking(false);
-    }
-  };
-
-  // The Unlink button only renders for manual links (see render guard below) and
-  // the server independently rejects non-manual unlinks; this handler guards only
-  // that a link exists. Mirrors handleLink's inline success/error messaging, but
-  // surfaces the server's actual error text (e.g. a stale modal hitting 403/404).
-  const handleUnlink = async () => {
-    if (!asset?.linkedDeviceId) return;
-    if (typeof window !== 'undefined' && !window.confirm(t('assetDetailModal.confirmUnlink'))) {
-      return;
-    }
-
-    try {
-      setLinking(true);
-      setLinkError(undefined);
-      setLinkSuccess(undefined);
-      const response = await fetchWithAuth(`/discovery/assets/${asset.id}/link`, {
-        method: 'DELETE'
-      });
-
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        throw new Error(extractApiError(body, t('assetDetailModal.errors.unlink')));
-      }
-
-      setSelectedDevice('');
-      setLinkSuccess(t('assetDetailModal.messages.unlinked'));
-      onUnlinked?.(asset.id);
-    } catch (err) {
-      setLinkError(err instanceof Error ? err.message : t('assetDetailModal.errors.generic'));
-    } finally {
-      setLinking(false);
-    }
-  };
 
   const handleDelete = async () => {
     if (!asset) return;
@@ -451,60 +366,19 @@ export default function AssetDetailModal({
               </div>
             </div>
 
-            <div className="rounded-md border bg-muted/30 p-4">
-              <h3 className="text-sm font-semibold">{t('assetDetailModal.linkManagedDeviceTitle')}</h3>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {t('assetDetailModal.linkManagedDeviceDescription')}
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {t('assetDetailModal.identityOnlyBefore')} <strong>{t('assetDetailModal.notText')}</strong>{' '}
-                {t('assetDetailModal.identityOnlyAfter')}
-              </p>
-              <div className="mt-3 flex items-center gap-3">
-                <select
-                  data-testid="asset-modal-link-select"
-                  value={selectedDevice}
-                  onChange={event => setSelectedDevice(event.target.value)}
-                  className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+            {asset.linkedDeviceId && (
+              <div className="rounded-md border bg-muted/30 px-4 py-3">
+                <a
+                  href={`/devices/${asset.linkedDeviceId}`}
+                  data-testid="asset-modal-same-device-link"
+                  className="text-sm text-primary hover:underline"
                 >
-                  <option value="">{t('assetDetailModal.options.selectManagedDevice')}</option>
-                  {devices.map(device => (
-                    <option key={device.id} value={device.id}>
-                      {device.name}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={handleLink}
-                  disabled={linking}
-                  className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70"
-                >
-                  {linking ? t('assetDetailModal.actions.linking') : t('assetDetailModal.actions.linkAsset')}
-                </button>
-                {asset.linkedDeviceId && isManualLink(asset.linkSource) && (
-                  <button
-                    type="button"
-                    data-testid="asset-modal-unlink"
-                    onClick={handleUnlink}
-                    disabled={linking}
-                    className="h-9 rounded-md border border-destructive/40 px-4 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-70"
-                  >
-                    {linking ? t('assetDetailModal.actions.working') : t('assetDetailModal.actions.unlink')}
-                  </button>
-                )}
+                  {t('assetDetailModal.sameDeviceAs', {
+                    name: asset.linkedDeviceName || t('common:states.unknown')
+                  })}
+                </a>
               </div>
-              {linkSuccess && (
-                <div className="mt-3 rounded-md border border-success/40 bg-success/10 px-3 py-2 text-xs text-success">
-                  {linkSuccess}
-                </div>
-              )}
-              {linkError && (
-                <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                  {linkError}
-                </div>
-              )}
-            </div>
+            )}
 
             <div className="rounded-md border bg-muted/30 p-4">
               <h3 className="text-sm font-semibold flex items-center gap-2">

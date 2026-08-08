@@ -71,7 +71,8 @@
     "snmpFields": {
       "systemName": "Nom du système",
       "objectId": "ID d’objet"
-    }
+    },
+    "sameDeviceAs": "Même appareil que {{name}}"
   },
   "assetMonitoringSection": {
     "actions": {
@@ -146,7 +147,8 @@
     "loading": "Chargement des ressources découvertes...",
     "monitored": "Surveillé",
     "title": "Actifs découverts",
-    "tryAgain": "Réessayer"
+    "tryAgain": "Réessayer",
+    "sameDeviceAs": "Même appareil que {{name}}"
   },
   "discoveryJobList": {
     "actions": {
