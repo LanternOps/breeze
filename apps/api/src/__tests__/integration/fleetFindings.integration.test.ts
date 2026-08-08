@@ -117,6 +117,7 @@ interface Fixture {
   orgC: Awaited<ReturnType<typeof createOrganization>>;
   partnerUser: TokenSubject;
   orgAUser: TokenSubject;
+  readOnlyUser: TokenSubject;
   /** Org-A user whose organization_users.site_ids restricts them to siteA1. */
   siteRestrictedUser: TokenSubject;
   foreignUser: TokenSubject;
@@ -229,6 +230,8 @@ async function createTenantUser(opts: {
   partnerId: string;
   orgId: string | null;
   scope: 'partner' | 'organization';
+  /** Defaults to full access. Narrow it to prove a permission gate bites. */
+  permissions?: Array<{ resource: string; action: string }>;
 }): Promise<TokenSubject> {
   const user = await createUser({ partnerId: opts.partnerId, orgId: opts.orgId, withMembership: false });
   const role = await createRole({
@@ -236,7 +239,7 @@ async function createTenantUser(opts: {
     partnerId: opts.scope === 'partner' ? opts.partnerId : undefined,
     orgId: opts.scope === 'organization' ? (opts.orgId ?? undefined) : undefined,
   });
-  await grantRolePermissions(role.id, [{ resource: '*', action: '*' }]);
+  await grantRolePermissions(role.id, opts.permissions ?? [{ resource: '*', action: '*' }]);
 
   if (opts.scope === 'partner') {
     await assignUserToPartner(user.id, opts.partnerId, role.id, 'all');
@@ -269,6 +272,13 @@ async function buildFixture(): Promise<Fixture> {
   const partnerUser = await createTenantUser({ partnerId: partner.id, orgId: null, scope: 'partner' });
   const orgAUser = await createTenantUser({ partnerId: partner.id, orgId: orgA.id, scope: 'organization' });
   const foreignUser = await createTenantUser({ partnerId: foreignPartner.id, orgId: orgC.id, scope: 'organization' });
+  // Read-only org-A tech: can see findings, must not be able to remediate.
+  const readOnlyUser = await createTenantUser({
+    partnerId: partner.id,
+    orgId: orgA.id,
+    scope: 'organization',
+    permissions: [{ resource: 'devices', action: 'read' }],
+  });
 
   // Site-restricted org-A user: a fresh membership row with site_ids narrowed
   // to siteA1 only (services/permissions.ts populates allowedSiteIds from
@@ -323,6 +333,7 @@ async function buildFixture(): Promise<Fixture> {
     orgC,
     partnerUser,
     orgAUser,
+    readOnlyUser,
     siteRestrictedUser,
     foreignUser,
     devA1,
@@ -393,6 +404,61 @@ describe('fleet findings — end-to-end (Task 11)', () => {
     // only devA2 (site A1) is in scope — recomputed down to 1.
     const anomaly = byKind.get('metric_anomaly_pattern');
     expect(anomaly?.deviceCount).toBe(1);
+  });
+
+  runDb('(b2) POST /remediate is gated on MFA and devices:execute, before any run row is created', async () => {
+    // The remediate route is the only write path in this feature that reaches
+    // real devices, and its two gates (requireMfa + requireFindingsExecute)
+    // are middleware — nothing in the handler re-checks them. A middleware
+    // reorder or a dropped gate is exactly the kind of change unit tests
+    // (which mock authMiddleware to a pass-through) cannot see.
+    const f = await buildFixture();
+    const app = buildApp();
+
+    const [findingRow] = await withSystemDbAccessContext(() =>
+      db
+        .select()
+        .from(fleetFindings)
+        .where(and(eq(fleetFindings.orgId, f.orgA.id), eq(fleetFindings.kind, 'reliability_offenders')))
+    );
+    if (!findingRow) throw new Error('reliability_offenders finding not found');
+
+    const body = JSON.stringify({
+      actionKind: 'command',
+      commandType: 'restart_service',
+      parameters: {},
+      deviceIds: [f.devA1],
+    });
+
+    // (i) A fully-permissioned org user WITHOUT an MFA-stamped token.
+    const noMfaRes = await app.request(`/fleet/findings/${findingRow.id}/remediate`, {
+      method: 'POST',
+      headers: await tokenHeaders(f.orgAUser, { mfa: false }),
+      body,
+    });
+    expect([401, 403]).toContain(noMfaRes.status);
+
+    // (ii) An MFA'd user holding devices:read but NOT devices:execute.
+    const readOnlyRes = await app.request(`/fleet/findings/${findingRow.id}/remediate`, {
+      method: 'POST',
+      headers: await tokenHeaders(f.readOnlyUser, { mfa: true }),
+      body,
+    });
+    expect(readOnlyRes.status).toBe(403);
+
+    // The same read-only token CAN read the finding — proving the 403 above
+    // is the execute gate biting, not a broken fixture.
+    const readRes = await app.request(`/fleet/findings/${findingRow.id}`, {
+      headers: await tokenHeaders(f.readOnlyUser, { mfa: true }),
+    });
+    expect(readRes.status).toBe(200);
+
+    // Neither rejected call may leave a run or a target behind.
+    const runs = await getTestDb()
+      .select()
+      .from(fleetRemediationRuns)
+      .where(eq(fleetRemediationRuns.findingId, findingRow.id));
+    expect(runs).toHaveLength(0);
   });
 
   runDb('(c) createRemediationRun + dispatchRunChunk against the real device_commands table', async () => {
