@@ -42,6 +42,39 @@ import {
 export const commandsRoutes = new Hono();
 const ACCEPTED_COMMAND_RESULT_STATUSES = ['pending', 'sent'] as const;
 
+/**
+ * #3097 — registry-backed command types this route dispatches to the shared
+ * handlers in `services/commandResultHandlers.ts`.
+ *
+ * Those handlers used to live inside `agentWs.ts` and were only ever reachable
+ * over the websocket, so a result submitted over HTTP silently skipped them.
+ * For `script` that meant `script_executions` was never updated: measured on a
+ * live instance, 394 of 1070 executions (37%) carried a `timeout` status that
+ * did not match reality, 89 of them having completed successfully with output
+ * sitting in `device_commands.result`.
+ *
+ * This set is deliberately NOT the whole registry. Thirteen of its eighteen
+ * keys already have an equivalent inline block further down this handler
+ * (backup_verify, backup_test_restore, backup_restore, bmr_recover,
+ * vm_restore_from_backup, vm_instant_boot, vault_sync, sensitive_data_scan,
+ * encrypt_file, secure_delete_file, quarantine_file, cis_benchmark,
+ * apply_cis_remediation) — dispatching those here as well would run each of
+ * them twice. Only the five the HTTP path never handled at all are listed.
+ *
+ * Converging the overlapping thirteen onto the registry is left as follow-up
+ * rather than folded in here: the CIS and sensitive-data handlers forward the
+ * *derived* stdout while this route's inline blocks forward `normalizedData`
+ * verbatim, so replacing them would change what those two post-processors
+ * receive — a behaviour change beyond this PR's one intentional one.
+ */
+const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
+  'network_discovery',
+  'hyperv_backup',
+  'mssql_backup',
+  'snmp_poll',
+  'script',
+]);
+
 function commandResultToStdout(data: z.infer<typeof commandResultSchema>): string | undefined {
   return data.stdout ??
     (data.result !== undefined ? JSON.stringify(data.result) : undefined);
@@ -524,6 +557,49 @@ commandsRoutes.post(
       } catch (err) {
         console.error(`[agents] DR command post-processing failed for ${commandId}:`, err);
         captureException(err);
+      }
+    }
+
+    // #3097 — the shared per-type handlers this transport never registered.
+    //
+    // No DB-context wrap here, unlike the websocket twin's
+    // `runWithAgentOrgDbAccess`: agentAuthMiddleware already holds an
+    // org-scoped `withDbAccessContext` open around this whole request, with the
+    // same shape the websocket wrap builds (scope 'organization', the device's
+    // orgId, accessibleOrgIds [orgId], no partner access). The websocket needs
+    // its own wrap only because that path deliberately runs contextless (#3021).
+    // This route is not one of the SELF_MANAGED_DB_CONTEXT_ACTIONS — those match
+    // on the final path segment, which here is `result`, not `commands` — so the
+    // request-long wrap is active. Adding a nested one would be a no-op anyway:
+    // `withDbAccessContext` returns `fn()` unchanged when a context is already
+    // on the async-local store, and opening a second real transaction is the
+    // #1105 double-hold this route was explicitly cleaned up to avoid.
+    if (REGISTRY_DISPATCHED_COMMAND_TYPES.has(command.type)) {
+      // Imported dynamically, like the DR handler below: the registry pulls in
+      // the discovery and SNMP workers, and through them the Drizzle schema
+      // module, which is more than this hot route should carry in its static
+      // graph — and enough to break suites that partially mock `db/schema`.
+      const { commandResultHandlers } = await import('../../services/commandResultHandlers');
+      const handler = commandResultHandlers[command.type];
+      if (handler) {
+        try {
+          await handler({
+            // Handlers use this for log lines and one audit `actorId`, never a
+            // lookup. Prefer the authenticated agent record over the path
+            // param, matching this route's own writeAuditEvent actor below.
+            agentId: agent.agentId ?? agentId,
+            command,
+            commandId,
+            result: normalizedData,
+            // The lookup above constrains deviceId to the authenticated agent's
+            // device, so these are the same value the websocket resolves.
+            resolvedDeviceId: command.deviceId,
+            stdout,
+          });
+        } catch (err) {
+          console.error(`[agents] shared ${command.type} result handler failed for ${commandId}:`, err);
+          captureException(err);
+        }
       }
     }
 
