@@ -102,6 +102,16 @@ services:
       DB_POOL_HEALTH_MIN_TIMEOUTS: ${DB_POOL_HEALTH_MIN_TIMEOUTS:-}
       DB_POOL_HEALTH_PROBE_TIMEOUT_MS: ${DB_POOL_HEALTH_PROBE_TIMEOUT_MS:-}
       DB_POOL_HEALTH_CAPTURE_THROTTLE_MS: ${DB_POOL_HEALTH_CAPTURE_THROTTLE_MS:-}
+      # Event-loop lag monitor (#3024). Same reasoning as the pool-health block
+      # above: deploy/environment.mdx documents these as working knobs, and an
+      # unmapped var set in .env is silently inert. The monitor runs on its
+      # defaults either way, so this only ever blocked tuning — but an operator
+      # raising the warn threshold to cut noise, or setting DISABLED to turn it
+      # off, saw no change and no error. All optional: an empty value reads as
+      # unset and the code applies its own defaults.
+      EVENT_LOOP_MONITOR_INTERVAL_MS: ${EVENT_LOOP_MONITOR_INTERVAL_MS:-}
+      EVENT_LOOP_STARVATION_WARN_MS: ${EVENT_LOOP_STARVATION_WARN_MS:-}
+      EVENT_LOOP_MONITOR_DISABLED: ${EVENT_LOOP_MONITOR_DISABLED:-}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD_FILE: /run/secrets/redis_password
