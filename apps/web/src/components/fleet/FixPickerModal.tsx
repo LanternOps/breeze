@@ -164,7 +164,11 @@ export default function FixPickerModal({ finding, onClose, onRunStarted }: FixPi
 
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
             {step === 'action' && (
-              <div className="space-y-3">
+              <div
+                className="space-y-3"
+                role="radiogroup"
+                aria-label={t('longTail.fleet.FixPicker.title')}
+              >
                 <FixOption
                   kind="script"
                   active={kind === 'script'}

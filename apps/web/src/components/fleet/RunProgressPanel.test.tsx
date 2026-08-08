@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { getRunMock } = vi.hoisted(() => ({ getRunMock: vi.fn() }));
@@ -180,5 +180,38 @@ describe('RunProgressPanel rendering', () => {
 
     await waitFor(() => expect(screen.getByTestId('run-progress-error')).toBeTruthy());
     expect(screen.getByTestId('run-progress-error').textContent).toContain('run gone');
+  });
+
+  it('keeps the last good snapshot under the error and re-arms polling on retry', async () => {
+    vi.useFakeTimers();
+    try {
+      getRunMock
+        .mockResolvedValueOnce(run('running'))
+        .mockRejectedValueOnce(new Error('network blip'))
+        .mockResolvedValue(run('succeeded', { succeededCount: 2 }));
+
+      render(<RunProgressPanel runId={RUN_ID} onClose={vi.fn()} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(screen.getByTestId('run-progress-summary')).toBeTruthy();
+
+      // Second poll fails — the run stays on screen rather than vanishing,
+      // and polling stops instead of hammering a failing endpoint.
+      await act(async () => { await vi.advanceTimersByTimeAsync(RUN_POLL_INTERVAL_MS); });
+      expect(screen.getByTestId('run-progress-error')).toBeTruthy();
+      expect(screen.getByTestId(`run-progress-target-${DEVICE_A}`)).toBeTruthy();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(RUN_POLL_INTERVAL_MS * 4); });
+      expect(getRunMock).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('run-progress-retry'));
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      expect(getRunMock).toHaveBeenCalledTimes(3);
+      expect(screen.queryByTestId('run-progress-error')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

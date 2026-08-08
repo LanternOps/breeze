@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Loader2, X, XCircle } from 'lucide-react';
+import { Loader2, RefreshCw, X, XCircle } from 'lucide-react';
 import { cn, formatRelativeTime } from '@/lib/utils';
 import { formatNumber } from '@/lib/i18n/format';
 import { getRun, isTerminalRunStatus } from '@/services/fleetFindings';
@@ -34,6 +34,8 @@ export default function RunProgressPanel({ runId, onClose }: RunProgressPanelPro
   const [run, setRun] = useState<FleetRemediationRunDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Bumped by the retry button to re-arm the effect after a poll failure.
+  const [retryToken, setRetryToken] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,6 +58,9 @@ export default function RunProgressPanel({ runId, onClose }: RunProgressPanelPro
         if (cancelled) return;
         // Stop polling and say so, rather than hammering a failing endpoint
         // every 5s or (worse) leaving a stale run on screen as if it were live.
+        // The last good snapshot stays rendered UNDER the banner so the
+        // operator keeps the context, and Retry re-arms the loop — one blip
+        // must not strand a long fleet run behind a dead panel.
         setError(
           err instanceof Error && err.message
             ? err.message
@@ -73,7 +78,7 @@ export default function RunProgressPanel({ runId, onClose }: RunProgressPanelPro
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [runId, t]);
+  }, [runId, retryToken, t]);
 
   const terminal = run ? isTerminalRunStatus(run.status) : false;
 
@@ -124,9 +129,18 @@ export default function RunProgressPanel({ runId, onClose }: RunProgressPanelPro
             className="mb-4 rounded-lg border border-destructive/40 bg-destructive/10 p-4"
             data-testid="run-progress-error"
           >
-            <div className="flex items-center gap-2 text-destructive">
+            <div className="flex flex-wrap items-center gap-2 text-destructive">
               <XCircle className="h-4 w-4 shrink-0" />
               <span className="text-sm font-medium">{error}</span>
+              <button
+                type="button"
+                data-testid="run-progress-retry"
+                onClick={() => setRetryToken((v) => v + 1)}
+                className="ml-auto flex items-center gap-1 rounded-md border border-destructive/40 px-2 py-1 text-xs transition-colors hover:bg-destructive/10"
+              >
+                <RefreshCw className="h-3 w-3" />
+                {t('actions.retry')}
+              </button>
             </div>
           </div>
         )}
