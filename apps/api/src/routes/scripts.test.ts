@@ -904,11 +904,16 @@ describe('scripts routes', () => {
 
   // ── Task 8: Partner-wide create + edit/delete guard ───────────────────────
   describe('Task 8: partner-wide create + org-user read-only guard', () => {
-    function makePartnerAuth() {
+    // #3262: partner-wide writes need the CAPABILITY (org_access = 'all'), not
+    // just partner scope. These helpers default to a full-partner admin so the
+    // existing positive cases keep describing the user they always meant; pass
+    // 'selected' to exercise the denial.
+    function makePartnerAuth(partnerOrgAccess: 'all' | 'selected' = 'all') {
       return {
         user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
         scope: 'partner' as const,
         partnerId: PARTNER_ID,
+        partnerOrgAccess,
         orgId: null,
         token: {
           sub: 'user-123', email: 'test@example.com', roleId: 'role-123',
@@ -974,10 +979,80 @@ describe('scripts routes', () => {
       expect(insertedValues?.partnerId).toBe(PARTNER_ID);
     });
 
+    // #3262: the reported vector — partner scope alone was enough to create a
+    // script that runs as SYSTEM across every org under the partner.
+    it('#3262: a selected-access partner user cannot create a partner-wide script', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', makePartnerAuth('selected'));
+        return next();
+      });
+
+      const res = await app.request('/scripts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({
+          name: 'Partner Script',
+          osTypes: ['windows'],
+          language: 'powershell',
+          content: 'echo hi',
+          availability: 'partner'
+        })
+      });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
     it('partner user with availability=org + orgId creates an org-specific script', async () => {
       const { authMiddleware } = await import('../middleware/auth');
       vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
         c.set('auth', makePartnerAuth());
+        return next();
+      });
+
+      let insertedValues: any;
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockImplementation((vals: any) => {
+          insertedValues = vals;
+          return {
+            returning: vi.fn().mockResolvedValue([{
+              id: SCRIPT_ID_1,
+              name: 'Org Script',
+              orgId: ORG_ID,
+              partnerId: PARTNER_ID,
+              isSystem: false
+            }])
+          };
+        })
+      } as any);
+
+      const res = await app.request('/scripts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({
+          name: 'Org Script',
+          osTypes: ['windows'],
+          language: 'powershell',
+          content: 'echo hi',
+          orgId: ORG_ID,
+          availability: 'org'
+        })
+      });
+
+      expect(res.status).toBe(201);
+      expect(insertedValues?.orgId).toBe(ORG_ID);
+      expect(insertedValues?.partnerId).toBe(PARTNER_ID);
+    });
+
+    // #3262 control: the capability gate covers ONLY partner-wide writes. A
+    // selected-access user must keep every org-scoped ability — without this,
+    // a refactor that hoists the gate above the availability branch (denying
+    // ALL partner-scope writes) would pass the suite green.
+    it('#3262: a selected-access partner user still creates an org-scoped script', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', makePartnerAuth('selected'));
         return next();
       });
 
@@ -1117,11 +1192,16 @@ describe('scripts routes', () => {
   });
 
   describe('Task 9: re-scope on edit (issue #1734)', () => {
-    function makePartnerAuth() {
+    // #3262: partner-wide writes need the CAPABILITY (org_access = 'all'), not
+    // just partner scope. These helpers default to a full-partner admin so the
+    // existing positive cases keep describing the user they always meant; pass
+    // 'selected' to exercise the denial.
+    function makePartnerAuth(partnerOrgAccess: 'all' | 'selected' = 'all') {
       return {
         user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
         scope: 'partner' as const,
         partnerId: PARTNER_ID,
+        partnerOrgAccess,
         orgId: null,
         token: {
           sub: 'user-123', email: 'test@example.com', roleId: 'role-123',
@@ -1212,6 +1292,107 @@ describe('scripts routes', () => {
       expect(res.status).toBe(200);
       expect(getSet().orgId).toBeNull();
       expect(getSet().partnerId).toBe(PARTNER_ID);
+    });
+
+    // ── #3262: partner-wide writes require org_access = 'all' ───────────────
+    // Scripts run as SYSTEM on every endpoint, and a partner-wide script covers
+    // every org under the partner including ones onboarded later. Partner SCOPE
+    // is not the capability; `partnerOrgAccess: 'all'` is.
+    it('#3262: a selected-access partner user cannot widen a script to partner-wide', async () => {
+      await withAuth(makePartnerAuth('selected'));
+      mockScriptLookup({
+        id: SCRIPT_ID_1, name: 'Org Script', orgId: ORG_ID, partnerId: PARTNER_ID,
+        isSystem: false, content: 'echo hi', version: 1,
+      }, 0);
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ availability: 'partner' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
+    it('#3262: a selected-access partner user cannot edit an existing partner-wide script', async () => {
+      await withAuth(makePartnerAuth('selected'));
+      mockScriptLookup({
+        id: SCRIPT_ID_1, name: 'Partner Script', orgId: null, partnerId: PARTNER_ID,
+        isSystem: false, content: 'echo hi', version: 1,
+      }, 0);
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        // A plain content edit — no re-scope. The script is already partner-wide,
+        // so rewriting its body is rewriting code that runs everywhere.
+        body: JSON.stringify({ content: 'echo pwned' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
+    it('#3262: a selected-access partner user cannot delete an existing partner-wide script', async () => {
+      await withAuth(makePartnerAuth('selected'));
+      mockScriptLookup({
+        id: SCRIPT_ID_1, name: 'Partner Script', orgId: null, partnerId: PARTNER_ID,
+        isSystem: false, content: 'echo hi', version: 1,
+      }, 0);
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer valid-token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
+    // Control: the gate denies on capability, not on partner scope generally —
+    // without this, all three assertions above would pass on a handler that
+    // simply rejected every partner write.
+    it('#3262: a full-partner admin still can widen a script to partner-wide', async () => {
+      await withAuth(makePartnerAuth('all'));
+      mockScriptLookup({
+        id: SCRIPT_ID_1, name: 'Org Script', orgId: ORG_ID, partnerId: PARTNER_ID,
+        isSystem: false, content: 'echo hi', version: 1,
+      }, 0);
+      const getSet = captureUpdate({
+        id: SCRIPT_ID_1, name: 'Org Script', orgId: null, partnerId: PARTNER_ID, version: 1,
+      });
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ availability: 'partner' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(getSet().orgId).toBeNull();
+    });
+
+    // Control for the DELETE gate: it must deny on capability, not on partner
+    // scope generally — a gate that 403'd every partner delete of a
+    // partner-wide script would pass the denial tests above.
+    it('#3262: a full-partner admin still deletes a partner-wide script', async () => {
+      await withAuth(makePartnerAuth('all'));
+      // Serves the script lookup AND the active-executions count (0 = none).
+      mockScriptLookup({
+        id: SCRIPT_ID_1, name: 'Partner Script', orgId: null, partnerId: PARTNER_ID,
+        isSystem: false, content: 'echo hi', version: 1,
+      }, 0);
+      const getSet = captureUpdate({ id: SCRIPT_ID_1 });
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer valid-token' },
+      });
+
+      expect(res.status).toBe(200);
+      // Soft delete: the handler stamps deletedAt rather than issuing a DELETE.
+      expect(getSet().deletedAt).toBeInstanceOf(Date);
     });
 
     it('partner user moves a script org→org (when no references exist)', async () => {
