@@ -1895,6 +1895,9 @@
         "errors": {
           "loadFailed": "Falha ao carregar a descoberta",
           "lifecycleFailed": "Falha ao atualizar a descoberta"
+        },
+        "resolutionReasons": {
+          "sourceCleared": "o sinal subjacente desapareceu"
         }
       },
       "FixPicker": {

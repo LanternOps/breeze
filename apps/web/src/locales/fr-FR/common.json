@@ -1895,6 +1895,9 @@
         "errors": {
           "loadFailed": "Échec du chargement du constat",
           "lifecycleFailed": "Échec de la mise à jour du constat"
+        },
+        "resolutionReasons": {
+          "sourceCleared": "le signal sous-jacent a disparu"
         }
       },
       "FixPicker": {

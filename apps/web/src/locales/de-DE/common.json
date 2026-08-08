@@ -1895,6 +1895,9 @@
         "errors": {
           "loadFailed": "Befund konnte nicht geladen werden",
           "lifecycleFailed": "Befund konnte nicht aktualisiert werden"
+        },
+        "resolutionReasons": {
+          "sourceCleared": "das zugrunde liegende Signal ist verschwunden"
         }
       },
       "FixPicker": {

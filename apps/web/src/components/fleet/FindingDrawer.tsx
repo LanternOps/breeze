@@ -9,6 +9,7 @@ import type {
   FleetFinding, FleetFindingDetail, FleetFindingLifecycleAction,
 } from '@/services/fleetFindings';
 import {
+  RESOLUTION_REASON_LABEL_KEYS,
   RUN_STATUS_CHIP_CLASSES, RUN_STATUS_LABEL_KEYS, STATUS_CHIP_CLASSES, STATUS_LABEL_KEYS,
 } from './findingLabels';
 
@@ -221,7 +222,9 @@ export default function FindingDrawer({
                       data-testid="finding-resolved-reason"
                     >
                       {t('longTail.fleet.FindingDrawer.resolvedNote.reason', {
-                        reason: finding.resolutionReason,
+                        reason: RESOLUTION_REASON_LABEL_KEYS[finding.resolutionReason]
+                          ? t(/* i18n-dynamic */ RESOLUTION_REASON_LABEL_KEYS[finding.resolutionReason])
+                          : finding.resolutionReason,
                       })}
                     </p>
                   )}

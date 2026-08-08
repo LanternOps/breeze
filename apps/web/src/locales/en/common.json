@@ -1895,6 +1895,9 @@
         "errors": {
           "loadFailed": "Failed to load finding",
           "lifecycleFailed": "Failed to update finding"
+        },
+        "resolutionReasons": {
+          "sourceCleared": "the underlying signal cleared"
         }
       },
       "FixPicker": {

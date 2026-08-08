@@ -131,3 +131,12 @@ export const RUN_STATUS_CHIP_CLASSES: Record<FleetRunStatus, string> = {
   failed: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
   cancelled: 'bg-muted text-muted-foreground',
 };
+
+/** `fleet_findings.resolution_reason` is a free-form varchar, but the
+ *  reconciler only ever writes 'source_cleared' (services/fleetFindings/
+ *  reconcile.ts). Map the known value to translated copy and fall back to the
+ *  raw string, so a reason added later degrades to something readable rather
+ *  than rendering a blank. */
+export const RESOLUTION_REASON_LABEL_KEYS: Record<string, string> = {
+  source_cleared: 'longTail.fleet.FindingDrawer.resolutionReasons.sourceCleared',
+};

@@ -1895,6 +1895,9 @@
         "errors": {
           "loadFailed": "Impossibile caricare la rilevazione",
           "lifecycleFailed": "Impossibile aggiornare la rilevazione"
+        },
+        "resolutionReasons": {
+          "sourceCleared": "il segnale sottostante è scomparso"
         }
       },
       "FixPicker": {

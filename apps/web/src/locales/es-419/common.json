@@ -1895,6 +1895,9 @@
         "errors": {
           "loadFailed": "No se pudo cargar el hallazgo",
           "lifecycleFailed": "No se pudo actualizar el hallazgo"
+        },
+        "resolutionReasons": {
+          "sourceCleared": "la señal subyacente desapareció"
         }
       },
       "FixPicker": {
