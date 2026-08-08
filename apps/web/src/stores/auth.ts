@@ -49,6 +49,13 @@ export interface User {
   // the UI can hide nav/actions the user can't use. UX only — the server still
   // enforces every route. Absent on sessions persisted before this field.
   permissions?: Permission[];
+  // #3262: whether the user may create/modify partner-wide ("All organizations")
+  // state — false for partner users with org_access = 'selected'. Surfaced by
+  // /users/me so owner-scope pickers don't offer an option the server will 403.
+  // UX only — the server still gates every partner-wide write. Absent on
+  // sessions persisted before this field (treat absent as capable; the server
+  // enforces regardless).
+  canManagePartnerWide?: boolean;
   preferences?: UserPreferences;
 }
 
@@ -1019,6 +1026,9 @@ export async function fetchAndApplyPreferences(): Promise<void> {
     // the field existed still pick up their grants without a re-login.
     if (Array.isArray(data.permissions)) {
       useAuthStore.getState().updateUser({ permissions: data.permissions });
+    }
+    if (typeof data.canManagePartnerWide === 'boolean') {
+      useAuthStore.getState().updateUser({ canManagePartnerWide: data.canManagePartnerWide });
     }
     if (data.preferences) {
       useAuthStore.getState().updateUser({ preferences: data.preferences });

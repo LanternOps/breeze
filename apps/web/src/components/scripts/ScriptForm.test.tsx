@@ -53,6 +53,7 @@ vi.mock('@/stores/orgStore', async () => {
 });
 
 import ScriptForm from './ScriptForm';
+import { useAuthStore } from '@/stores/auth';
 
 describe('ScriptForm Monaco lifecycle (issue #1186)', () => {
   beforeEach(() => {
@@ -217,5 +218,68 @@ describe('ScriptForm availability picker — partner-scope gate', () => {
     const { queryByText } = render(<ScriptForm isSystemScript />);
     await waitFor(() => expect(editorInstances.length).toBeGreaterThan(0));
     expect(queryByText('Available to')).toBeNull();
+  });
+});
+
+// #3262: the server 403s partner-wide writes for partner users without
+// org_access = 'all', so the picker must not offer (or default to) an option
+// the save would reject. Capability rides on /users/me → auth store.
+describe('ScriptForm availability picker — partner-wide capability gate (#3262)', () => {
+  const baseUser = {
+    id: 'u-1', email: 'tech@example.com', name: 'Selected Tech', mfaEnabled: true
+  };
+
+  beforeEach(() => {
+    editorInstances.length = 0;
+    getJwtClaimsMock.mockReturnValue({ scope: 'partner', partnerId: 'p-1', orgId: null });
+    orgStoreMock.mockReturnValue({
+      organizations: [{ id: 'o-1', name: 'Org One' }, { id: 'o-2', name: 'Org Two' }],
+      partners: [],
+      sites: []
+    });
+  });
+  afterEach(() => {
+    useAuthStore.setState({ user: null });
+    vi.clearAllMocks();
+  });
+
+  it('disables "All my organizations" and defaults to a specific org for a selected-access user', async () => {
+    useAuthStore.setState({ user: { ...baseUser, canManagePartnerWide: false } });
+    const { findByText, getByLabelText } = render(<ScriptForm isNew />);
+    await findByText('Available to');
+
+    const partnerRadio = getByLabelText('All my organizations') as HTMLInputElement;
+    const orgRadio = getByLabelText(/A specific organization/) as HTMLInputElement;
+    expect(partnerRadio.disabled).toBe(true);
+    expect(partnerRadio.checked).toBe(false);
+    expect(orgRadio.checked).toBe(true);
+    expect(await findByText(/Requires full partner org access/)).toBeTruthy();
+  });
+
+  it('keeps the partner-wide default enabled for a full-access user', async () => {
+    useAuthStore.setState({ user: { ...baseUser, canManagePartnerWide: true } });
+    const { findByText, getByLabelText, queryByText } = render(<ScriptForm isNew />);
+    await findByText('Available to');
+
+    const partnerRadio = getByLabelText('All my organizations') as HTMLInputElement;
+    expect(partnerRadio.disabled).toBe(false);
+    expect(partnerRadio.checked).toBe(true);
+    expect(queryByText(/Requires full partner org access/)).toBeNull();
+  });
+
+  it('treats an absent capability field (pre-field session) as capable — server still enforces', async () => {
+    useAuthStore.setState({ user: { ...baseUser } });
+    const { findByText, getByLabelText } = render(<ScriptForm isNew />);
+    await findByText('Available to');
+    expect((getByLabelText('All my organizations') as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it('warns that an existing partner-wide script is read-only for a selected-access user', async () => {
+    useAuthStore.setState({ user: { ...baseUser, canManagePartnerWide: false } });
+    const { findByText } = render(
+      <ScriptForm defaultValues={{ availability: 'partner' }} />
+    );
+    await findByText('Available to');
+    expect(await findByText(/Editing it requires full partner org access/)).toBeTruthy();
   });
 });

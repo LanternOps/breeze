@@ -26,6 +26,7 @@ import { useScriptAiStore } from '@/stores/scriptAiStore';
 import type { ScriptFormBridge } from '@/stores/scriptAiStore';
 import type { OSType } from './ScriptList';
 import { useOrgStore } from '@/stores/orgStore';
+import { useAuthStore } from '@/stores/auth';
 import { getJwtClaims } from '@/lib/authScope';
 import {
   scriptSchema, languageOptions, categoryOptions,
@@ -134,6 +135,12 @@ export default function ScriptForm({
   // navigation — scripts-list -> editor — because this component is unmounted
   // on the list page. See that file for the full rationale.
 
+  // #3262: partner users with org_access = 'selected' cannot create or modify
+  // partner-wide scripts — the server 403s them — so don't default the form to
+  // an option they can't save. Absent (sessions persisted before /users/me
+  // carried the field) is treated as capable: UX only, the server enforces.
+  const canManagePartnerWide = useAuthStore(s => s.user?.canManagePartnerWide ?? true);
+
   const {
     register,
     handleSubmit,
@@ -156,7 +163,7 @@ export default function ScriptForm({
       timeoutSeconds: 300,
       runAs: 'system',
       exitCodeSeverityMapping: [],
-      availability: 'partner',
+      availability: canManagePartnerWide ? 'partner' : 'org',
       ...defaultValues
     }
   });
@@ -335,14 +342,31 @@ export default function ScriptForm({
               {t('scriptForm.availability.description')}
             </p>
           )}
-          <label className="flex items-center gap-2 text-sm">
+          {/* #3262: an edit of a partner-wide script (any field, not just
+              re-scope) is server-rejected without the capability — say so up
+              front instead of letting the save 403 and discard the edits. */}
+          {!canManagePartnerWide && !isNew && defaultValues?.availability === 'partner' && (
+            <p className="text-xs text-amber-600 dark:text-amber-500">
+              {t('scriptForm.availability.partnerWideReadOnly')}
+            </p>
+          )}
+          <label className={cn(
+            'flex items-center gap-2 text-sm',
+            !canManagePartnerWide && 'text-muted-foreground'
+          )}>
             <input
               type="radio"
               value="partner"
+              disabled={!canManagePartnerWide}
               {...register('availability')}
             />
             {t('scriptForm.availability.partner')}
           </label>
+          {!canManagePartnerWide && (
+            <p className="pl-6 text-xs text-muted-foreground">
+              {t('scriptForm.availability.requiresFullPartnerAccess')}
+            </p>
+          )}
           <label className="flex items-center gap-2 text-sm">
             <input
               type="radio"

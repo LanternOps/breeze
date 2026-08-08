@@ -902,7 +902,9 @@
       "description": "Altere quais organizações podem ver e executar este script. “Todas as minhas organizações” o torna disponível em todo o parceiro.",
       "partner": "Todas as minhas organizações",
       "organization": "Uma organização específica",
-      "selectOrganization": "Selecione uma organização"
+      "selectOrganization": "Selecione uma organização",
+      "requiresFullPartnerAccess": "Requer acesso completo às organizações do parceiro. Procure um administrador do parceiro com acesso a todas as organizações.",
+      "partnerWideReadOnly": "Este script se aplica a todas as suas organizações. Editá-lo requer acesso completo às organizações do parceiro."
     },
     "fields": {
       "name": "Nome do script",

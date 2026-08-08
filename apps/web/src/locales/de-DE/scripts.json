@@ -902,7 +902,9 @@
       "description": "Ändern Sie, welche Organisationen dieses Skript sehen und ausführen können. „Alle meine Organisationen“ macht es partnerweit.",
       "partner": "Alle meine Organisationen",
       "organization": "Eine bestimmte Organisation",
-      "selectOrganization": "Wählen Sie eine Organisation aus"
+      "selectOrganization": "Wählen Sie eine Organisation aus",
+      "requiresFullPartnerAccess": "Erfordert vollen Partner-Organisationszugriff. Wenden Sie sich an einen Partner-Administrator mit Zugriff auf alle Organisationen.",
+      "partnerWideReadOnly": "Dieses Skript gilt für alle Ihre Organisationen. Zum Bearbeiten ist voller Partner-Organisationszugriff erforderlich."
     },
     "fields": {
       "name": "Skriptname",

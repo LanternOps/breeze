@@ -23,6 +23,7 @@ import {
   getUserPermissions,
   PERMISSIONS
 } from '../services/permissions';
+import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import {
   getScopeContext,
   getScopedRole,
@@ -393,6 +394,11 @@ userRoutes.get('/me', async (c) => {
     scope: auth.scope,
     partnerDefaultLocale,
     permissions: userPerms?.permissions ?? [],
+    // #3262: lets forms with an "All organizations" owner option (scripts,
+    // policies) hide/disable it for partner users without org_access = 'all'.
+    // UX only — every partner-wide write is still gated server-side via
+    // canManagePartnerWidePolicies.
+    canManagePartnerWide: canManagePartnerWidePolicies(auth),
     requiresSetup
   });
 });

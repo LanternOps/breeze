@@ -902,7 +902,9 @@
       "description": "Change which organizations can see and run this script. “All my organizations” makes it partner-wide.",
       "partner": "All my organizations",
       "organization": "A specific organization",
-      "selectOrganization": "Select an organization"
+      "selectOrganization": "Select an organization",
+      "requiresFullPartnerAccess": "Requires full partner org access. Ask a partner admin with access to all organizations.",
+      "partnerWideReadOnly": "This script applies to all your organizations. Editing it requires full partner org access."
     },
     "fields": {
       "name": "Script name",
