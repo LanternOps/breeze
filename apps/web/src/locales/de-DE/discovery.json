@@ -39,10 +39,7 @@
       "ping": "Ping",
       "tags": "Tags (durch Kommas getrennt)"
     },
-    "identityOnlyBefore": "Nur Identitäts-/Asset-Tracking – das ist der Fall",
     "lastSeen": "Zuletzt gesehen {{time}}",
-    "linkManagedDeviceDescription": "Verknüpfen Sie dieses erkannte Asset mit einem vorhandenen, von einem Agenten verwalteten Gerät, damit Breeze es als denselben Computer behandelt. Dadurch wird weder ein Agent installiert noch ein neues Gerät erstellt. Das Asset wird als genehmigt markiert.",
-    "linkManagedDeviceTitle": "Link zum verwalteten Gerät",
     "loadingDetails": "Gerätedetails werden geladen…",
     "messages": {
       "linked": "Asset verknüpft. Es ist nun als genehmigt gekennzeichnet.",
@@ -66,8 +63,6 @@
       "title": "Proxy-Zugriff"
     },
     "snmpDataTitle": "SNMP Daten",
-    "notText": "nicht",
-    "identityOnlyAfter": "Steuern Sie den Proxy-Zugriff oder wählen Sie den Proxy-Agenten aus (legen Sie diese unten unter „Proxy-Zugriff“ fest).",
     "snmpFields": {
       "systemName": "Systemname",
       "objectId": "Objekt-ID"

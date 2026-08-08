@@ -39,10 +39,7 @@
       "ping": "Ping",
       "tags": "Tag (separati da virgole)"
     },
-    "identityOnlyBefore": "Solo per identità e tracciamento dell'asset: questa operazione",
     "lastSeen": "Ultimo rilevamento {{time}}",
-    "linkManagedDeviceDescription": "Associa questo asset rilevato a un dispositivo esistente gestito da un agente, in modo che Breeze li consideri la stessa macchina. Questa operazione non installa un agente né crea un nuovo dispositivo. L'asset verrà contrassegnato come approvato.",
-    "linkManagedDeviceTitle": "Collega a un dispositivo gestito",
     "loadingDetails": "Caricamento dei dettagli del dispositivo…",
     "messages": {
       "linked": "Asset collegato. Ora è contrassegnato come approvato.",
@@ -66,8 +63,6 @@
       "title": "Accesso proxy"
     },
     "snmpDataTitle": "Dati SNMP",
-    "notText": "non",
-    "identityOnlyAfter": "controlla l'accesso proxy né seleziona l'agente proxy; configura queste opzioni nella sezione Accesso proxy qui sotto.",
     "snmpFields": {
       "systemName": "Nome sistema",
       "objectId": "ID oggetto"
