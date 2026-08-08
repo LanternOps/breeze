@@ -1887,6 +1887,64 @@
           "loadFailed": "Befund konnte nicht geladen werden",
           "lifecycleFailed": "Befund konnte nicht aktualisiert werden"
         }
+      },
+      "FixPicker": {
+        "title": "Befund beheben",
+        "actions": {
+          "script": "Skript ausführen",
+          "scriptHint": "Wählen Sie ein Skript aus Ihrer Bibliothek und füllen Sie dessen Parameter aus.",
+          "restartService": "Dienst neu starten",
+          "restartServiceHint": "Startet einen einzelnen benannten Dienst auf jedem ausgewählten Gerät neu.",
+          "reboot": "Geräte neu starten",
+          "rebootHint": "Startet die ausgewählten Geräte neu, sobald der Lauf versendet wird."
+        },
+        "chooseScript": "Skript auswählen…",
+        "changeScript": "Skript wechseln",
+        "selectedScript": "Skript: {{name}}",
+        "serviceNameLabel": "Dienstname",
+        "serviceNamePlaceholder": "z. B. Spooler",
+        "rebootWarning": "Die ausgewählten Geräte starten sofort neu, sobald dieser Lauf versendet wird. Aktive Sitzungen enden und nicht gespeicherte Arbeit geht verloren.",
+        "targetsHeading": "Zu behebende Geräte",
+        "selectAll": "Alle auswählen",
+        "selectNone": "Auswahl aufheben",
+        "selectedCount": "{{selected}} von {{total}} Geräten ausgewählt",
+        "noTargets": "Wählen Sie mindestens ein Gerät aus, um fortzufahren.",
+        "confirmAction": "Gewählte Maßnahme",
+        "confirmTargets": "Geräte",
+        "confirmRestartService": "Dienst {{name}} neu starten",
+        "confirmRebootNotice": "{{count}} Geräte starten sofort neu.",
+        "confirmRebootNotice_one": "{{count}} Gerät startet sofort neu.",
+        "confirmRebootNotice_other": "{{count}} Geräte starten sofort neu.",
+        "confirm": "Behebung starten",
+        "dispatchedSummary": "{{count}} Geräte wurden von diesem Lauf angesteuert.",
+        "dispatchedSummary_one": "{{count}} Gerät wurde von diesem Lauf angesteuert.",
+        "dispatchedSummary_other": "{{count}} Geräte wurden von diesem Lauf angesteuert.",
+        "skippedHeading": "Übersprungene Geräte",
+        "skipReasons": {
+          "siteDenied": "Standort für Sie nicht zugänglich",
+          "notMember": "Von diesem Befund nicht mehr betroffen",
+          "decommissioned": "Gerät ist außer Betrieb genommen"
+        },
+        "viewProgress": "Fortschritt anzeigen",
+        "errors": {
+          "dispatchFailed": "Behebung konnte nicht gestartet werden"
+        }
+      },
+      "RunProgress": {
+        "heading": "Behebungslauf",
+        "counts": "{{succeeded}} erfolgreich, {{failed}} fehlgeschlagen, {{skipped}} übersprungen von {{targets}} Zielen",
+        "polling": "Wird aktualisiert, solange der Lauf aktiv ist…",
+        "targetsEmpty": "Kein Gerät dieses Laufs ist für Sie sichtbar.",
+        "targetStatuses": {
+          "pending": "Ausstehend",
+          "queued": "In Warteschlange",
+          "succeeded": "Erfolgreich",
+          "failed": "Fehlgeschlagen",
+          "skipped": "Übersprungen"
+        },
+        "errors": {
+          "loadFailed": "Behebungslauf konnte nicht geladen werden"
+        }
       }
     },
     "help": {

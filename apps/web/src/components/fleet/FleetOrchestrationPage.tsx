@@ -11,6 +11,9 @@ import { fetchWithAuth } from '../../stores/auth';
 import { getOrgScope } from '@/hooks/useOrgScope';
 import { useAiStore } from '@/stores/aiStore';
 import FindingsFeed from './FindingsFeed';
+import FixPickerModal from './FixPickerModal';
+import RunProgressPanel from './RunProgressPanel';
+import type { FleetFindingDetail } from '@/services/fleetFindings';
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -221,6 +224,12 @@ export default function FleetOrchestrationPage() {
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
 
+  // Remediation flow: the drawer raises the intent, the picker builds the
+  // request, and the progress panel takes over once a run exists. Kept here
+  // (not in the drawer) so the progress panel survives closing the drawer.
+  const [remediationTarget, setRemediationTarget] = useState<FleetFindingDetail | null>(null);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+
   const loadStats = async () => {
     try {
       setIsLoading(true);
@@ -393,7 +402,37 @@ export default function FleetOrchestrationPage() {
       )}
 
       {/* Findings feed — the primary content of this page. */}
-      <FindingsFeed />
+      <FindingsFeed onRemediate={setRemediationTarget} />
+
+      {remediationTarget && (
+        <FixPickerModal
+          finding={remediationTarget}
+          onClose={() => setRemediationTarget(null)}
+          onRunStarted={(runId) => {
+            setRemediationTarget(null);
+            setActiveRunId(runId);
+          }}
+        />
+      )}
+
+      {activeRunId && (
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-black/40"
+            onClick={() => setActiveRunId(null)}
+            data-testid="run-progress-backdrop"
+            aria-hidden="true"
+          />
+          <aside
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('longTail.fleet.RunProgress.heading')}
+            className="fixed right-0 top-0 z-50 h-full w-full max-w-2xl shadow-2xl"
+          >
+            <RunProgressPanel runId={activeRunId} onClose={() => setActiveRunId(null)} />
+          </aside>
+        </>
+      )}
 
       {/* Quick Actions */}
       <div className="rounded-lg border bg-card p-6 shadow-xs">

@@ -1,6 +1,7 @@
 import { AlertOctagon, AlertTriangle, Info, XCircle } from 'lucide-react';
 import type {
   FleetFindingKind, FleetFindingSeverity, FleetFindingStatus, FleetRunStatus,
+  FleetTargetStatus, RemediationCommandType, RemediationSkipReason,
 } from '@/services/fleetFindings';
 
 // Shared badge vocabulary for the fleet findings feed + drawer. Kept in its own
@@ -50,6 +51,46 @@ export const RUN_STATUS_LABEL_KEYS: Record<FleetRunStatus, string> = {
   succeeded: 'longTail.fleet.FindingDrawer.runStatuses.succeeded',
   failed: 'longTail.fleet.FindingDrawer.runStatuses.failed',
   cancelled: 'longTail.fleet.FindingDrawer.runStatuses.cancelled',
+};
+
+/** Per-device target status inside a remediation run. Distinct from the RUN
+ *  status above — a run can be `running` while its targets are still
+ *  `pending`. */
+export const TARGET_STATUS_LABEL_KEYS: Record<FleetTargetStatus, string> = {
+  pending: 'longTail.fleet.RunProgress.targetStatuses.pending',
+  queued: 'longTail.fleet.RunProgress.targetStatuses.queued',
+  succeeded: 'longTail.fleet.RunProgress.targetStatuses.succeeded',
+  failed: 'longTail.fleet.RunProgress.targetStatuses.failed',
+  skipped: 'longTail.fleet.RunProgress.targetStatuses.skipped',
+};
+
+export const TARGET_STATUS_CHIP_CLASSES: Record<FleetTargetStatus, string> = {
+  pending: 'bg-muted text-muted-foreground',
+  queued: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
+  succeeded: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
+  failed: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
+  skipped: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400',
+};
+
+/** Mirrors `RemediationSkipReason` in the API's dispatch service. Anything the
+ *  API adds later renders as its raw token rather than blank — see
+ *  `skipReasonLabelKey`. */
+export const SKIP_REASON_LABEL_KEYS: Record<RemediationSkipReason, string> = {
+  site_denied: 'longTail.fleet.FixPicker.skipReasons.siteDenied',
+  not_member: 'longTail.fleet.FixPicker.skipReasons.notMember',
+  decommissioned: 'longTail.fleet.FixPicker.skipReasons.decommissioned',
+};
+
+/** `null` for an unrecognised reason so callers fall back to the raw token —
+ *  a future server-side reason must never render as an empty cell. */
+export function skipReasonLabelKey(reason: string | null): string | null {
+  if (!reason) return null;
+  return SKIP_REASON_LABEL_KEYS[reason as RemediationSkipReason] ?? null;
+}
+
+export const COMMAND_TYPE_LABEL_KEYS: Record<RemediationCommandType, string> = {
+  restart_service: 'longTail.fleet.FixPicker.actions.restartService',
+  reboot: 'longTail.fleet.FixPicker.actions.reboot',
 };
 
 export const SEVERITY_ICONS: Record<

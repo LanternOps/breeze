@@ -1,6 +1,6 @@
 import { fetchWithAuth } from '@/stores/auth';
 import { extractApiError } from '@/lib/apiError';
-import { runAction } from '@/lib/runAction';
+import { ActionError, runAction } from '@/lib/runAction';
 
 // Mirrors apps/api/src/db/schema/fleetFindings.ts — kept as a local literal
 // union rather than imported from @breeze/shared so the web bundle doesn't
@@ -87,6 +87,80 @@ export interface FleetFindingDetail extends FleetFinding {
   runs: FleetFindingRun[];
 }
 
+// ─── Remediation ────────────────────────────────────────────────────────
+
+/** Mirrors `REMEDIATION_COMMAND_TYPE_ALLOWLIST` in
+ *  apps/api/src/services/fleetFindings/dispatch.ts. There is deliberately no
+ *  `clear_temp_files` — it was cut in Task 7 for want of a single-command
+ *  primitive; that cleanup is a script, not a command preset. */
+export type RemediationCommandType = 'restart_service' | 'reboot';
+export const REMEDIATION_COMMAND_TYPES: readonly RemediationCommandType[] = [
+  'restart_service',
+  'reboot',
+];
+
+/** Mirrors `RemediationSkipReason` (dispatch.ts). */
+export type RemediationSkipReason = 'site_denied' | 'not_member' | 'decommissioned';
+
+export type FleetTargetStatus = 'pending' | 'queued' | 'succeeded' | 'failed' | 'skipped';
+
+export interface RemediateRequest {
+  actionKind: 'script' | 'command';
+  scriptId?: string;
+  commandType?: RemediationCommandType;
+  parameters: Record<string, unknown>;
+  /** Omitted = every current member. `[]` is rejected by the API with a 400 —
+   *  never send one; callers must gate confirm on a non-empty selection. */
+  deviceIds?: string[];
+}
+
+export interface RemediationSkippedTarget {
+  deviceId: string;
+  reason: RemediationSkipReason;
+}
+
+export interface RemediateResponse {
+  runId: string;
+  targetCount: number;
+  skipped: RemediationSkippedTarget[];
+}
+
+export interface FleetRemediationRunTarget {
+  deviceId: string;
+  hostname: string | null;
+  siteId: string | null;
+  status: FleetTargetStatus;
+  skipReason: string | null;
+  deviceCommandId: string | null;
+  resultSummary: string | null;
+  queuedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface FleetRemediationRunDetail extends FleetFindingRun {
+  orgId: string;
+  findingId: string;
+  findingRevision: number;
+  parameterSnapshot: Record<string, unknown>;
+  targets: FleetRemediationRunTarget[];
+}
+
+export function isTerminalRunStatus(status: FleetRunStatus): boolean {
+  return status !== 'queued' && status !== 'running';
+}
+
+/** Reads the runId the API attaches to its 502 body ("the run was created but
+ *  dispatch could not be enqueued — it is marked failed"). Without this the UI
+ *  would treat a 502 as "nothing happened", when in fact a real, failed run
+ *  exists and the user needs to see it. */
+export function runIdFromFailure(err: unknown): string | null {
+  if (!(err instanceof ActionError)) return null;
+  const body = err.body;
+  if (!body || typeof body !== 'object') return null;
+  const runId = (body as Record<string, unknown>).runId;
+  return typeof runId === 'string' && runId.length > 0 ? runId : null;
+}
+
 export interface FleetFindingListResult {
   findings: FleetFinding[];
   total: number;
@@ -159,6 +233,40 @@ const LIFECYCLE_FAILURE: Record<FleetFindingLifecycleAction, string> = {
   dismiss: 'Failed to dismiss finding',
   reopen: 'Failed to reopen finding',
 };
+
+/**
+ * `POST /fleet/findings/:id/remediate`. MFA-gated route: the global MFA
+ * challenge flow owns the 401/403 handshake, so this deliberately does NOT
+ * pass `treatUnauthorizedAsError` — a real session-expiry 401 still redirects,
+ * and a 403 is toasted with the API's own message rather than flattened into a
+ * generic failure.
+ *
+ * Answers 202 on success (not 200) — `isApiFailure` keys off `status >= 400`,
+ * so runAction treats it correctly without special-casing.
+ */
+export async function remediateFinding(
+  id: string,
+  req: RemediateRequest
+): Promise<RemediateResponse> {
+  return runAction<RemediateResponse>({
+    request: () =>
+      fetchWithAuth(`/fleet/findings/${encodeURIComponent(id)}/remediate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req),
+      }),
+    errorFallback: 'Failed to start remediation',
+  });
+}
+
+/** `GET /fleet/findings/runs/:runId`. Throws on failure so the progress panel
+ *  renders an explicit error rather than a stale/empty run. */
+export async function getRun(runId: string): Promise<FleetRemediationRunDetail> {
+  return readJson<FleetRemediationRunDetail>(
+    `/fleet/findings/runs/${encodeURIComponent(runId)}`,
+    'Failed to load remediation run'
+  );
+}
 
 export async function patchFinding(
   id: string,

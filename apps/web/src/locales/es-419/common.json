@@ -1887,6 +1887,64 @@
           "loadFailed": "No se pudo cargar el hallazgo",
           "lifecycleFailed": "No se pudo actualizar el hallazgo"
         }
+      },
+      "FixPicker": {
+        "title": "Remediar hallazgo",
+        "actions": {
+          "script": "Ejecutar un script",
+          "scriptHint": "Elige un script de tu biblioteca y completa sus parámetros.",
+          "restartService": "Reiniciar un servicio",
+          "restartServiceHint": "Reinicia un solo servicio con nombre en cada dispositivo seleccionado.",
+          "reboot": "Reiniciar dispositivos",
+          "rebootHint": "Reinicia los dispositivos seleccionados apenas se despache la ejecución."
+        },
+        "chooseScript": "Elegir un script…",
+        "changeScript": "Cambiar script",
+        "selectedScript": "Script elegido: {{name}}",
+        "serviceNameLabel": "Nombre del servicio",
+        "serviceNamePlaceholder": "p. ej. Spooler",
+        "rebootWarning": "Los dispositivos seleccionados se reinician de inmediato apenas se despache esta ejecución. Las sesiones activas terminan y se pierde el trabajo sin guardar.",
+        "targetsHeading": "Dispositivos por remediar",
+        "selectAll": "Seleccionar todos",
+        "selectNone": "Borrar selección",
+        "selectedCount": "{{selected}} de {{total}} dispositivos seleccionados",
+        "noTargets": "Selecciona al menos un dispositivo para continuar.",
+        "confirmAction": "Corrección elegida",
+        "confirmTargets": "Dispositivos",
+        "confirmRestartService": "Reiniciar el servicio {{name}}",
+        "confirmRebootNotice": "{{count}} dispositivos se reiniciarán de inmediato.",
+        "confirmRebootNotice_one": "{{count}} dispositivo se reiniciará de inmediato.",
+        "confirmRebootNotice_other": "{{count}} dispositivos se reiniciarán de inmediato.",
+        "confirm": "Iniciar remediación",
+        "dispatchedSummary": "{{count}} dispositivos fueron objetivo de esta ejecución.",
+        "dispatchedSummary_one": "{{count}} dispositivo fue objetivo de esta ejecución.",
+        "dispatchedSummary_other": "{{count}} dispositivos fueron objetivo de esta ejecución.",
+        "skippedHeading": "Dispositivos omitidos",
+        "skipReasons": {
+          "siteDenied": "Sitio no accesible para ti",
+          "notMember": "Ya no está afectado por este hallazgo",
+          "decommissioned": "El dispositivo está dado de baja"
+        },
+        "viewProgress": "Ver progreso",
+        "errors": {
+          "dispatchFailed": "No se pudo iniciar la remediación"
+        }
+      },
+      "RunProgress": {
+        "heading": "Ejecución de remediación",
+        "counts": "{{succeeded}} con éxito, {{failed}} con error, {{skipped}} omitidos de {{targets}} objetivos",
+        "polling": "Actualizando mientras la ejecución está activa…",
+        "targetsEmpty": "Ningún dispositivo de esta ejecución es visible para ti.",
+        "targetStatuses": {
+          "pending": "Pendiente",
+          "queued": "En cola",
+          "succeeded": "Con éxito",
+          "failed": "Con error",
+          "skipped": "Omitido"
+        },
+        "errors": {
+          "loadFailed": "No se pudo cargar la ejecución de remediación"
+        }
       }
     },
     "help": {

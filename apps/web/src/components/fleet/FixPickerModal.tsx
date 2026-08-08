@@ -1,0 +1,494 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { AlertTriangle, ChevronLeft, Loader2, Power, RotateCcw, Terminal } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { formatNumber } from '@/lib/i18n/format';
+import { handleActionError } from '@/lib/runAction';
+import { Dialog } from '../shared/Dialog';
+import ScriptPickerModal, { type Script } from '../devices/ScriptPickerModal';
+import { remediateFinding, runIdFromFailure } from '@/services/fleetFindings';
+import type {
+  FleetFindingDetail, RemediateRequest, RemediateResponse,
+} from '@/services/fleetFindings';
+import { skipReasonLabelKey } from './findingLabels';
+
+/** Step 1's three offers. There is deliberately NO `clear_temp_files`: it was
+ *  cut in Task 7 because no single agent command primitive implements it —
+ *  temp cleanup belongs in a script from the library. */
+type FixKind = 'script' | 'restart_service' | 'reboot';
+
+type Step = 'action' | 'targets' | 'confirm' | 'result';
+
+interface FixPickerModalProps {
+  finding: FleetFindingDetail;
+  onClose: () => void;
+  /** Handoff to `RunProgressPanel`. Also fired on a 502 whose body carries a
+   *  runId — that run genuinely exists (marked failed), so the operator must
+   *  see it rather than a bare "something went wrong". */
+  onRunStarted: (runId: string) => void;
+}
+
+export default function FixPickerModal({ finding, onClose, onRunStarted }: FixPickerModalProps) {
+  const { t } = useTranslation('common');
+
+  const [step, setStep] = useState<Step>('action');
+  const [kind, setKind] = useState<FixKind | null>(null);
+  const [script, setScript] = useState<Script | null>(null);
+  const [scriptParameters, setScriptParameters] = useState<Record<string, unknown>>({});
+  const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
+  const [serviceName, setServiceName] = useState('');
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(
+    () => new Set(finding.members.map((m) => m.deviceId))
+  );
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState<RemediateResponse | null>(null);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
+  const hostnameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const m of finding.members) map.set(m.deviceId, m.displayName || m.hostname);
+    return map;
+  }, [finding.members]);
+
+  // ── Step gating ───────────────────────────────────────────────────────
+  const actionReady =
+    kind === 'reboot' ||
+    (kind === 'script' && script !== null) ||
+    (kind === 'restart_service' && serviceName.trim().length > 0);
+
+  const targetsReady = selectedIds.size > 0;
+
+  const canAdvance = step === 'action' ? actionReady : step === 'targets' ? targetsReady : false;
+
+  const toggleTarget = (deviceId: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(deviceId)) next.delete(deviceId);
+      else next.add(deviceId);
+      return next;
+    });
+  };
+
+  const handleScriptSelect = useCallback(
+    (selected: Script, _runAs: unknown, parameters?: Record<string, unknown>) => {
+      // `runAs` is intentionally ignored: the remediation dispatcher reads
+      // runAs from the stored script row, so honouring a picker override here
+      // would be a lie (see dispatch.ts — `runAs: scriptPayload.runAs`).
+      setScript(selected);
+      setScriptParameters(parameters ?? {});
+      setScriptPickerOpen(false);
+    },
+    []
+  );
+
+  const buildRequest = (): RemediateRequest => {
+    // Send the explicit id list rather than relying on "absent = all members":
+    // membership can change between the drawer load and the POST, and the
+    // operator confirmed THIS list. Never `[]` — the API 400s on it, and
+    // `targetsReady` gates confirm on a non-empty selection.
+    const deviceIds = finding.members
+      .map((m) => m.deviceId)
+      .filter((id) => selectedIds.has(id));
+
+    if (kind === 'script') {
+      return {
+        actionKind: 'script',
+        scriptId: script!.id,
+        parameters: scriptParameters,
+        deviceIds,
+      };
+    }
+    if (kind === 'restart_service') {
+      // The agent's RestartService handler reads `name` from the payload
+      // (agent/internal/remote/tools/services.go) and the single-device route
+      // sends the same key — a `serviceName` key would restart nothing.
+      return {
+        actionKind: 'command',
+        commandType: 'restart_service',
+        parameters: { name: serviceName.trim() },
+        deviceIds,
+      };
+    }
+    return { actionKind: 'command', commandType: 'reboot', parameters: {}, deviceIds };
+  };
+
+  const submit = async () => {
+    setSubmitting(true);
+    try {
+      const response = await remediateFinding(finding.id, buildRequest());
+      if (!mounted.current) return;
+      if (response.skipped.length === 0) {
+        onRunStarted(response.runId);
+        return;
+      }
+      // Per-device skip reasons are the whole point of the API's `skipped`
+      // list; hand off only after the operator has had a chance to read them.
+      setResult(response);
+      setStep('result');
+    } catch (err) {
+      const runId = runIdFromFailure(err);
+      if (runId) {
+        // 502: the run was committed and then marked failed because dispatch
+        // could not be enqueued. Land on it — a toast alone would leave the
+        // operator believing nothing happened.
+        onRunStarted(runId);
+        return;
+      }
+      handleActionError(err, t('longTail.fleet.FixPicker.errors.dispatchFailed'));
+    } finally {
+      if (mounted.current) setSubmitting(false);
+    }
+  };
+
+  const selectedCount = selectedIds.size;
+
+  return (
+    <>
+      <Dialog
+        open
+        onClose={onClose}
+        title={t('longTail.fleet.FixPicker.title')}
+        maxWidth="2xl"
+        className="flex max-h-[85vh] flex-col"
+      >
+        <div data-testid="fix-picker" className="flex min-h-0 flex-col">
+          <div className="border-b px-6 py-4">
+            <h2 className="text-lg font-semibold">{t('longTail.fleet.FixPicker.title')}</h2>
+            <p className="mt-1 text-xs text-muted-foreground">{finding.title}</p>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+            {step === 'action' && (
+              <div className="space-y-3">
+                <FixOption
+                  kind="script"
+                  active={kind === 'script'}
+                  icon={Terminal}
+                  label={t('longTail.fleet.FixPicker.actions.script')}
+                  hint={t('longTail.fleet.FixPicker.actions.scriptHint')}
+                  onSelect={() => setKind('script')}
+                />
+                {kind === 'script' && (
+                  <div className="ml-8 space-y-2">
+                    <button
+                      type="button"
+                      data-testid="fix-picker-choose-script"
+                      onClick={() => setScriptPickerOpen(true)}
+                      className="rounded-md border px-3 py-1.5 text-sm transition-colors hover:bg-muted"
+                    >
+                      {script
+                        ? t('longTail.fleet.FixPicker.changeScript')
+                        : t('longTail.fleet.FixPicker.chooseScript')}
+                    </button>
+                    {script && (
+                      <p data-testid="fix-picker-selected-script" className="text-sm">
+                        {t('longTail.fleet.FixPicker.selectedScript', { name: script.name })}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <FixOption
+                  kind="restart_service"
+                  active={kind === 'restart_service'}
+                  icon={RotateCcw}
+                  label={t('longTail.fleet.FixPicker.actions.restartService')}
+                  hint={t('longTail.fleet.FixPicker.actions.restartServiceHint')}
+                  onSelect={() => setKind('restart_service')}
+                />
+                {kind === 'restart_service' && (
+                  <div className="ml-8">
+                    <label
+                      htmlFor="fix-picker-service-name"
+                      className="mb-1 block text-xs font-medium"
+                    >
+                      {t('longTail.fleet.FixPicker.serviceNameLabel')}
+                    </label>
+                    <input
+                      id="fix-picker-service-name"
+                      data-testid="fix-picker-service-name"
+                      value={serviceName}
+                      onChange={(e) => setServiceName(e.target.value)}
+                      maxLength={200}
+                      placeholder={t('longTail.fleet.FixPicker.serviceNamePlaceholder')}
+                      className="h-9 w-full max-w-sm rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </div>
+                )}
+
+                <FixOption
+                  kind="reboot"
+                  active={kind === 'reboot'}
+                  icon={Power}
+                  label={t('longTail.fleet.FixPicker.actions.reboot')}
+                  hint={t('longTail.fleet.FixPicker.actions.rebootHint')}
+                  onSelect={() => setKind('reboot')}
+                />
+                {kind === 'reboot' && (
+                  <div
+                    data-testid="fix-picker-reboot-warning"
+                    className="ml-8 flex items-start gap-2 rounded-md border border-yellow-500/40 bg-yellow-500/10 p-3 text-xs text-yellow-800 dark:text-yellow-400"
+                  >
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>{t('longTail.fleet.FixPicker.rebootWarning')}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {step === 'targets' && (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-sm font-semibold">
+                    {t('longTail.fleet.FixPicker.targetsHeading')}
+                  </h3>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      data-testid="fix-picker-select-all"
+                      onClick={() => setSelectedIds(new Set(finding.members.map((m) => m.deviceId)))}
+                      className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-muted"
+                    >
+                      {t('longTail.fleet.FixPicker.selectAll')}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="fix-picker-select-none"
+                      onClick={() => setSelectedIds(new Set())}
+                      className="rounded-md border px-2 py-1 text-xs transition-colors hover:bg-muted"
+                    >
+                      {t('longTail.fleet.FixPicker.selectNone')}
+                    </button>
+                  </div>
+                </div>
+
+                <p data-testid="fix-picker-target-count" className="text-xs text-muted-foreground">
+                  {t('longTail.fleet.FixPicker.selectedCount', {
+                    selected: formatNumber(selectedCount),
+                    total: formatNumber(finding.members.length),
+                  })}
+                </p>
+
+                <ul className="divide-y rounded-md border">
+                  {finding.members.map((m) => (
+                    <li key={m.deviceId} className="flex items-center gap-3 p-2 text-sm">
+                      <input
+                        type="checkbox"
+                        id={`fix-picker-target-${m.deviceId}`}
+                        data-testid={`fix-picker-target-${m.deviceId}`}
+                        checked={selectedIds.has(m.deviceId)}
+                        onChange={() => toggleTarget(m.deviceId)}
+                        className="h-4 w-4 rounded border-border"
+                      />
+                      <label htmlFor={`fix-picker-target-${m.deviceId}`} className="min-w-0 flex-1 truncate">
+                        {m.displayName || m.hostname}
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+
+                {selectedCount === 0 && (
+                  <p data-testid="fix-picker-no-targets" className="text-xs text-destructive">
+                    {t('longTail.fleet.FixPicker.noTargets')}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {step === 'confirm' && (
+              <div className="space-y-4 text-sm">
+                <div>
+                  <span className="text-xs font-medium text-muted-foreground">
+                    {t('longTail.fleet.FixPicker.confirmAction')}
+                  </span>
+                  <p data-testid="fix-picker-confirm-action">{describeAction(kind, script, serviceName, t)}</p>
+                </div>
+                <div>
+                  <span className="text-xs font-medium text-muted-foreground">
+                    {t('longTail.fleet.FixPicker.confirmTargets')}
+                  </span>
+                  <p>
+                    {t('longTail.fleet.FixPicker.selectedCount', {
+                      selected: formatNumber(selectedCount),
+                      total: formatNumber(finding.members.length),
+                    })}
+                  </p>
+                </div>
+                {kind === 'reboot' && (
+                  <div
+                    data-testid="fix-picker-confirm-reboot"
+                    className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-destructive"
+                  >
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>
+                      {t('longTail.fleet.FixPicker.confirmRebootNotice', { count: selectedCount })}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {step === 'result' && result && (
+              <div className="space-y-4 text-sm">
+                <p>
+                  {t('longTail.fleet.FixPicker.dispatchedSummary', {
+                    count: result.targetCount,
+                  })}
+                </p>
+                <div data-testid="fix-picker-skipped">
+                  <h3 className="mb-2 text-sm font-semibold">
+                    {t('longTail.fleet.FixPicker.skippedHeading')}
+                  </h3>
+                  <ul className="divide-y rounded-md border">
+                    {result.skipped.map((s) => {
+                      const key = skipReasonLabelKey(s.reason);
+                      return (
+                        <li
+                          key={s.deviceId}
+                          data-testid={`fix-picker-skipped-${s.deviceId}`}
+                          className="flex items-center justify-between gap-3 p-2 text-xs"
+                        >
+                          <span className="min-w-0 truncate">
+                            {hostnameById.get(s.deviceId) ?? s.deviceId}
+                          </span>
+                          {/* Falls back to the raw token so a reason the API
+                              adds later is visible, not blank. */}
+                          <span className="shrink-0 text-muted-foreground">
+                            {key ? t(/* i18n-dynamic */ key) : s.reason}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="flex items-center justify-between gap-2 border-t px-6 py-4">
+            <button
+              type="button"
+              data-testid="fix-picker-cancel"
+              onClick={onClose}
+              className="rounded-md border px-3 py-2 text-sm transition-colors hover:bg-muted"
+            >
+              {step === 'result' ? t('actions.close') : t('actions.cancel')}
+            </button>
+
+            <div className="flex items-center gap-2">
+              {(step === 'targets' || step === 'confirm') && (
+                <button
+                  type="button"
+                  data-testid="fix-picker-back"
+                  onClick={() => setStep(step === 'confirm' ? 'targets' : 'action')}
+                  className="flex items-center gap-1 rounded-md border px-3 py-2 text-sm transition-colors hover:bg-muted"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                  {t('actions.back')}
+                </button>
+              )}
+
+              {(step === 'action' || step === 'targets') && (
+                <button
+                  type="button"
+                  data-testid="fix-picker-next"
+                  disabled={!canAdvance}
+                  onClick={() => setStep(step === 'action' ? 'targets' : 'confirm')}
+                  className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {t('actions.next')}
+                </button>
+              )}
+
+              {step === 'confirm' && (
+                <button
+                  type="button"
+                  data-testid="fix-picker-confirm"
+                  disabled={submitting || selectedCount === 0}
+                  onClick={submit}
+                  className="flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+                  {t('longTail.fleet.FixPicker.confirm')}
+                </button>
+              )}
+
+              {step === 'result' && result && (
+                <button
+                  type="button"
+                  data-testid="fix-picker-view-progress"
+                  onClick={() => onRunStarted(result.runId)}
+                  className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                >
+                  {t('longTail.fleet.FixPicker.viewProgress')}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* The device bulk run-script picker, reused verbatim: it already owns
+          the library fetch, the OS/category filters and the parameter form. */}
+      {scriptPickerOpen && (
+        <ScriptPickerModal
+          isOpen
+          onClose={() => setScriptPickerOpen(false)}
+          onSelect={handleScriptSelect}
+        />
+      )}
+    </>
+  );
+}
+
+// ─── Sub-components ──────────────────────────────────────────────────────
+
+function FixOption({
+  kind, active, icon: Icon, label, hint, onSelect,
+}: {
+  kind: FixKind;
+  active: boolean;
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  hint: string;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={active}
+      data-testid={`fix-picker-action-${kind}`}
+      onClick={onSelect}
+      className={cn(
+        'flex w-full items-start gap-3 rounded-md border p-3 text-left transition-colors hover:bg-muted/50',
+        active && 'border-primary bg-primary/5'
+      )}
+    >
+      <Icon className={cn('mt-0.5 h-4 w-4 shrink-0', active ? 'text-primary' : 'text-muted-foreground')} />
+      <span className="min-w-0">
+        <span className="block text-sm font-medium">{label}</span>
+        <span className="block text-xs text-muted-foreground">{hint}</span>
+      </span>
+    </button>
+  );
+}
+
+function describeAction(
+  kind: FixKind | null,
+  script: Script | null,
+  serviceName: string,
+  t: (key: string, opts?: Record<string, unknown>) => string
+): string {
+  if (kind === 'script') return t('longTail.fleet.FixPicker.selectedScript', { name: script?.name ?? '' });
+  if (kind === 'restart_service') {
+    return t('longTail.fleet.FixPicker.confirmRestartService', { name: serviceName.trim() });
+  }
+  return t('longTail.fleet.FixPicker.actions.reboot');
+}

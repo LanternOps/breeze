@@ -1887,6 +1887,64 @@
           "loadFailed": "Impossibile caricare la rilevazione",
           "lifecycleFailed": "Impossibile aggiornare la rilevazione"
         }
+      },
+      "FixPicker": {
+        "title": "Correggi il rilievo",
+        "actions": {
+          "script": "Esegui uno script",
+          "scriptHint": "Scegli uno script dalla tua libreria e compila i suoi parametri.",
+          "restartService": "Riavvia un servizio",
+          "restartServiceHint": "Riavvia un singolo servizio indicato su ogni dispositivo selezionato.",
+          "reboot": "Riavvia i dispositivi",
+          "rebootHint": "Riavvia i dispositivi selezionati non appena l'esecuzione viene inviata."
+        },
+        "chooseScript": "Scegli uno script…",
+        "changeScript": "Cambia script",
+        "selectedScript": "Script scelto: {{name}}",
+        "serviceNameLabel": "Nome del servizio",
+        "serviceNamePlaceholder": "es. Spooler",
+        "rebootWarning": "I dispositivi selezionati si riavviano subito non appena questa esecuzione viene inviata. Le sessioni attive terminano e il lavoro non salvato va perso.",
+        "targetsHeading": "Dispositivi da correggere",
+        "selectAll": "Seleziona tutti",
+        "selectNone": "Azzera la selezione",
+        "selectedCount": "{{selected}} di {{total}} dispositivi selezionati",
+        "noTargets": "Seleziona almeno un dispositivo per continuare.",
+        "confirmAction": "Correzione scelta",
+        "confirmTargets": "Dispositivi",
+        "confirmRestartService": "Riavvia il servizio {{name}}",
+        "confirmRebootNotice": "{{count}} dispositivi si riavvieranno subito.",
+        "confirmRebootNotice_one": "{{count}} dispositivo si riavvierà subito.",
+        "confirmRebootNotice_other": "{{count}} dispositivi si riavvieranno subito.",
+        "confirm": "Avvia la correzione",
+        "dispatchedSummary": "{{count}} dispositivi sono stati destinatari di questa esecuzione.",
+        "dispatchedSummary_one": "{{count}} dispositivo è stato destinatario di questa esecuzione.",
+        "dispatchedSummary_other": "{{count}} dispositivi sono stati destinatari di questa esecuzione.",
+        "skippedHeading": "Dispositivi saltati",
+        "skipReasons": {
+          "siteDenied": "Sede non accessibile per te",
+          "notMember": "Non più interessato da questo rilievo",
+          "decommissioned": "Dispositivo dismesso"
+        },
+        "viewProgress": "Vedi avanzamento",
+        "errors": {
+          "dispatchFailed": "Impossibile avviare la correzione"
+        }
+      },
+      "RunProgress": {
+        "heading": "Esecuzione di correzione",
+        "counts": "{{succeeded}} riuscite, {{failed}} fallite, {{skipped}} saltate su {{targets}} destinazioni",
+        "polling": "Aggiornamento in corso mentre l'esecuzione è attiva…",
+        "targetsEmpty": "Nessun dispositivo di questa esecuzione è visibile per te.",
+        "targetStatuses": {
+          "pending": "In attesa",
+          "queued": "In coda",
+          "succeeded": "Riuscita",
+          "failed": "Fallita",
+          "skipped": "Saltata"
+        },
+        "errors": {
+          "loadFailed": "Impossibile caricare l'esecuzione di correzione"
+        }
       }
     },
     "help": {

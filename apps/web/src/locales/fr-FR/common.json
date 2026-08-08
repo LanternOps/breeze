@@ -1887,6 +1887,64 @@
           "loadFailed": "Échec du chargement du constat",
           "lifecycleFailed": "Échec de la mise à jour du constat"
         }
+      },
+      "FixPicker": {
+        "title": "Remédier au constat",
+        "actions": {
+          "script": "Exécuter un script",
+          "scriptHint": "Choisissez un script de votre bibliothèque et renseignez ses paramètres.",
+          "restartService": "Redémarrer un service",
+          "restartServiceHint": "Redémarre un seul service nommé sur chaque appareil sélectionné.",
+          "reboot": "Redémarrer les appareils",
+          "rebootHint": "Redémarre les appareils sélectionnés dès l'envoi de l'exécution."
+        },
+        "chooseScript": "Choisir un script…",
+        "changeScript": "Changer de script",
+        "selectedScript": "Script : {{name}}",
+        "serviceNameLabel": "Nom du service",
+        "serviceNamePlaceholder": "ex. : Spooler",
+        "rebootWarning": "Les appareils sélectionnés redémarrent immédiatement dès l'envoi de cette exécution. Les sessions actives se terminent et le travail non enregistré est perdu.",
+        "targetsHeading": "Appareils à remédier",
+        "selectAll": "Tout sélectionner",
+        "selectNone": "Effacer la sélection",
+        "selectedCount": "{{selected}} appareils sélectionnés sur {{total}}",
+        "noTargets": "Sélectionnez au moins un appareil pour continuer.",
+        "confirmAction": "Correctif choisi",
+        "confirmTargets": "Appareils",
+        "confirmRestartService": "Redémarrer le service {{name}}",
+        "confirmRebootNotice": "{{count}} appareils vont redémarrer immédiatement.",
+        "confirmRebootNotice_one": "{{count}} appareil va redémarrer immédiatement.",
+        "confirmRebootNotice_other": "{{count}} appareils vont redémarrer immédiatement.",
+        "confirm": "Lancer la remédiation",
+        "dispatchedSummary": "{{count}} appareils ont été ciblés par cette exécution.",
+        "dispatchedSummary_one": "{{count}} appareil a été ciblé par cette exécution.",
+        "dispatchedSummary_other": "{{count}} appareils ont été ciblés par cette exécution.",
+        "skippedHeading": "Appareils ignorés",
+        "skipReasons": {
+          "siteDenied": "Site auquel vous n'avez pas accès",
+          "notMember": "N'est plus concerné par ce constat",
+          "decommissioned": "Appareil déclassé"
+        },
+        "viewProgress": "Voir la progression",
+        "errors": {
+          "dispatchFailed": "Échec du lancement de la remédiation"
+        }
+      },
+      "RunProgress": {
+        "heading": "Exécution de remédiation",
+        "counts": "{{succeeded}} réussies, {{failed}} en échec, {{skipped}} ignorées sur {{targets}} ciblées",
+        "polling": "Actualisation tant que l'exécution est active…",
+        "targetsEmpty": "Aucun appareil de cette exécution ne vous est visible.",
+        "targetStatuses": {
+          "pending": "En attente",
+          "queued": "En file d'attente",
+          "succeeded": "Réussi",
+          "failed": "En échec",
+          "skipped": "Ignoré"
+        },
+        "errors": {
+          "loadFailed": "Échec du chargement de l'exécution de remédiation"
+        }
       }
     },
     "help": {

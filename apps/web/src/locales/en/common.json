@@ -1887,6 +1887,64 @@
           "loadFailed": "Failed to load finding",
           "lifecycleFailed": "Failed to update finding"
         }
+      },
+      "FixPicker": {
+        "title": "Remediate finding",
+        "actions": {
+          "script": "Run a script",
+          "scriptHint": "Pick a script from your library and fill in its parameters.",
+          "restartService": "Restart a service",
+          "restartServiceHint": "Restarts a single named service on every selected device.",
+          "reboot": "Reboot devices",
+          "rebootHint": "Restarts the selected devices as soon as the run dispatches."
+        },
+        "chooseScript": "Choose a script…",
+        "changeScript": "Change script",
+        "selectedScript": "Script: {{name}}",
+        "serviceNameLabel": "Service name",
+        "serviceNamePlaceholder": "e.g. Spooler",
+        "rebootWarning": "The selected devices restart immediately once this run dispatches. Active sessions end and unsaved work is lost.",
+        "targetsHeading": "Devices to remediate",
+        "selectAll": "Select all",
+        "selectNone": "Clear selection",
+        "selectedCount": "{{selected}} of {{total}} devices selected",
+        "noTargets": "Select at least one device to continue.",
+        "confirmAction": "Chosen fix",
+        "confirmTargets": "Devices",
+        "confirmRestartService": "Restart the service {{name}}",
+        "confirmRebootNotice": "{{count}} devices will restart immediately.",
+        "confirmRebootNotice_one": "{{count}} device will restart immediately.",
+        "confirmRebootNotice_other": "{{count}} devices will restart immediately.",
+        "confirm": "Start remediation",
+        "dispatchedSummary": "{{count}} devices were targeted by this run.",
+        "dispatchedSummary_one": "{{count}} device was targeted by this run.",
+        "dispatchedSummary_other": "{{count}} devices were targeted by this run.",
+        "skippedHeading": "Skipped devices",
+        "skipReasons": {
+          "siteDenied": "Site not accessible to you",
+          "notMember": "No longer affected by this finding",
+          "decommissioned": "Device is decommissioned"
+        },
+        "viewProgress": "View progress",
+        "errors": {
+          "dispatchFailed": "Failed to start remediation"
+        }
+      },
+      "RunProgress": {
+        "heading": "Remediation run",
+        "counts": "{{succeeded}} succeeded, {{failed}} failed, {{skipped}} skipped of {{targets}} targeted",
+        "polling": "Refreshing while the run is active…",
+        "targetsEmpty": "No devices on this run are visible to you.",
+        "targetStatuses": {
+          "pending": "Pending",
+          "queued": "Queued",
+          "succeeded": "Succeeded",
+          "failed": "Failed",
+          "skipped": "Skipped"
+        },
+        "errors": {
+          "loadFailed": "Failed to load remediation run"
+        }
       }
     },
     "help": {

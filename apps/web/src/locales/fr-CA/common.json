@@ -1887,6 +1887,64 @@
           "loadFailed": "Échec du chargement du constat",
           "lifecycleFailed": "Échec de la mise à jour du constat"
         }
+      },
+      "FixPicker": {
+        "title": "Corriger le constat",
+        "actions": {
+          "script": "Lancer un script",
+          "scriptHint": "Sélectionnez un script de votre bibliothèque et remplissez ses paramètres.",
+          "restartService": "Redémarrer un service",
+          "restartServiceHint": "Redémarre un seul service nommé sur chacun des appareils sélectionnés.",
+          "reboot": "Redémarrer les appareils",
+          "rebootHint": "Redémarre les appareils sélectionnés dès que l'exécution est transmise."
+        },
+        "chooseScript": "Sélectionner un script…",
+        "changeScript": "Changer de script",
+        "selectedScript": "Script : {{name}}",
+        "serviceNameLabel": "Nom du service",
+        "serviceNamePlaceholder": "p. ex. Spooler",
+        "rebootWarning": "Les appareils sélectionnés redémarrent immédiatement dès que cette exécution est transmise. Les sessions actives prennent fin et le travail non enregistré est perdu.",
+        "targetsHeading": "Appareils à corriger",
+        "selectAll": "Tout sélectionner",
+        "selectNone": "Vider la sélection",
+        "selectedCount": "{{selected}} appareils sélectionnés sur {{total}}",
+        "noTargets": "Sélectionnez au moins un appareil pour poursuivre.",
+        "confirmAction": "Correctif retenu",
+        "confirmTargets": "Appareils",
+        "confirmRestartService": "Redémarrer le service {{name}}",
+        "confirmRebootNotice": "{{count}} appareils redémarreront immédiatement.",
+        "confirmRebootNotice_one": "{{count}} appareil redémarrera immédiatement.",
+        "confirmRebootNotice_other": "{{count}} appareils redémarreront immédiatement.",
+        "confirm": "Démarrer la correction",
+        "dispatchedSummary": "{{count}} appareils ont été visés par cette exécution.",
+        "dispatchedSummary_one": "{{count}} appareil a été visé par cette exécution.",
+        "dispatchedSummary_other": "{{count}} appareils ont été visés par cette exécution.",
+        "skippedHeading": "Appareils ignorés",
+        "skipReasons": {
+          "siteDenied": "Site auquel vous n'avez pas accès",
+          "notMember": "N'est plus visé par ce constat",
+          "decommissioned": "Appareil mis hors service"
+        },
+        "viewProgress": "Voir l'avancement",
+        "errors": {
+          "dispatchFailed": "Échec du démarrage de la correction"
+        }
+      },
+      "RunProgress": {
+        "heading": "Exécution de correction",
+        "counts": "{{succeeded}} réussis, {{failed}} en échec, {{skipped}} ignorés sur {{targets}} visés",
+        "polling": "Actualisation en cours tant que l'exécution est active…",
+        "targetsEmpty": "Aucun appareil de cette exécution ne vous est visible.",
+        "targetStatuses": {
+          "pending": "En attente",
+          "queued": "En file",
+          "succeeded": "Réussi",
+          "failed": "Échec",
+          "skipped": "Ignoré"
+        },
+        "errors": {
+          "loadFailed": "Échec du chargement de l'exécution de correction"
+        }
       }
     },
     "help": {
