@@ -127,6 +127,19 @@ vi.mock('../db/schema/fleetFindings', () => ({
     startedAt: 'frr.startedAt',
     completedAt: 'frr.completedAt',
   },
+  fleetRemediationRunTargets: {
+    runId: 'frt.runId',
+    orgId: 'frt.orgId',
+    targetDeviceUuid: 'frt.targetDeviceUuid',
+    hostnameSnapshot: 'frt.hostnameSnapshot',
+    siteIdSnapshot: 'frt.siteIdSnapshot',
+    status: 'frt.status',
+    deviceCommandId: 'frt.deviceCommandId',
+    resultSummary: 'frt.resultSummary',
+    skipReason: 'frt.skipReason',
+    queuedAt: 'frt.queuedAt',
+    completedAt: 'frt.completedAt',
+  },
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -140,13 +153,36 @@ vi.mock('../middleware/auth', () => ({
   authMiddleware: (_c: unknown, next: () => Promise<void>) => next(),
   requireScope: () => (_c: unknown, next: () => Promise<void>) => next(),
   requirePermission: () => (_c: unknown, next: () => Promise<void>) => next(),
+  requireMfa: () => (_c: unknown, next: () => Promise<void>) => next(),
 }));
 
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 
+const { createRemediationRunMock, RemediationRequestErrorMock } = vi.hoisted(() => {
+  class RemediationRequestErrorMock extends Error {
+    status: number;
+    constructor(message: string, status = 400) {
+      super(message);
+      this.status = status;
+    }
+  }
+  return { createRemediationRunMock: vi.fn(), RemediationRequestErrorMock };
+});
+
+vi.mock('../services/fleetFindings/dispatch', () => ({
+  createRemediationRun: createRemediationRunMock,
+  RemediationRequestError: RemediationRequestErrorMock,
+  REMEDIATION_COMMAND_TYPE_ALLOWLIST: ['restart_service', 'reboot'],
+}));
+
+const { enqueueRemediationDispatchMock } = vi.hoisted(() => ({ enqueueRemediationDispatchMock: vi.fn() }));
+vi.mock('../jobs/fleetRemediationDispatch', () => ({
+  enqueueRemediationDispatch: enqueueRemediationDispatchMock,
+}));
+
 import { fleetFindingsRoutes } from './fleetFindings';
 import { writeRouteAudit } from '../services/auditEvents';
-import { fleetFindings } from '../db/schema/fleetFindings';
+import { fleetFindings, fleetRemediationRuns } from '../db/schema/fleetFindings';
 
 const ORG_1 = '11111111-1111-4111-8111-111111111111';
 const ORG_2 = '22222222-2222-4222-8222-222222222222';
@@ -226,6 +262,14 @@ function patch(auth: ReturnType<typeof makeAuth>, path: string, body: unknown) {
   });
 }
 
+function post(auth: ReturnType<typeof makeAuth>, path: string, body: unknown) {
+  return appWithAuth(auth).request(urlFor(path), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
 function findingRow(overrides: Record<string, unknown> = {}) {
   return {
     id: FINDING_1,
@@ -266,6 +310,8 @@ beforeEach(() => {
   h.mockSelect.mockClear();
   h.mockUpdate.mockClear();
   vi.mocked(writeRouteAudit).mockClear();
+  createRemediationRunMock.mockReset();
+  enqueueRemediationDispatchMock.mockReset().mockResolvedValue(undefined);
 });
 
 describe('GET /fleet/findings — org scoping', () => {
@@ -694,5 +740,209 @@ describe('PATCH /fleet/findings/:id — lifecycle transitions', () => {
     const res = await patch(makeAuth(), `/${FINDING_1}`, { action: 'delete' });
     expect(res.status).toBe(400);
     expect(h.mockSelect).not.toHaveBeenCalled();
+  });
+});
+
+function runRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'run-1',
+    orgId: ORG_1,
+    findingId: FINDING_1,
+    findingRevision: 1,
+    actionKind: 'command',
+    scriptId: null,
+    commandType: 'reboot',
+    parameterSnapshot: {},
+    status: 'running',
+    targetCount: 2,
+    succeededCount: 0,
+    failedCount: 0,
+    skippedCount: 0,
+    createdBy: USER_ID,
+    createdAt: new Date('2026-07-03T00:00:00.000Z'),
+    startedAt: new Date('2026-07-03T00:01:00.000Z'),
+    completedAt: null,
+    ...overrides,
+  };
+}
+
+describe('GET /fleet/findings/runs/:runId', () => {
+  it('returns 404 for an unknown run id', async () => {
+    h.selectQueue.push([]);
+    const res = await get(makeAuth(), '/runs/run-1');
+    expect(res.status).toBe(404);
+  });
+
+  it('org token cannot see a run belonging to a foreign org (404, org-condition applied)', async () => {
+    h.selectQueue.push([]);
+    const res = await get(makeAuth({ scope: 'organization', orgId: ORG_1 }), '/runs/run-1');
+    expect(res.status).toBe(404);
+
+    const where = h.capturedWheres[0] as { args: unknown[] };
+    expect(where.args).toContainEqual({ op: 'eq', column: fleetRemediationRuns.orgId, value: ORG_1 });
+  });
+
+  it('assembles the run + its targets for an unrestricted caller', async () => {
+    h.selectQueue.push([runRow()]);
+    h.selectQueue.push([
+      {
+        runId: 'run-1',
+        orgId: ORG_1,
+        targetDeviceUuid: DEVICE_1,
+        hostnameSnapshot: 'WS-01',
+        siteIdSnapshot: SITE_1,
+        status: 'queued',
+        deviceCommandId: 'cmd-1',
+        resultSummary: null,
+        skipReason: null,
+        queuedAt: new Date('2026-07-03T00:02:00.000Z'),
+        completedAt: null,
+      },
+    ]);
+
+    const res = await get(makeAuth(), '/runs/run-1');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.id).toBe('run-1');
+    expect(body.targets).toEqual([
+      expect.objectContaining({ deviceId: DEVICE_1, hostname: 'WS-01', status: 'queued' }),
+    ]);
+  });
+
+  it('site-restricted caller sees only in-site targets', async () => {
+    h.selectQueue.push([runRow()]);
+    h.selectQueue.push([
+      {
+        runId: 'run-1',
+        orgId: ORG_1,
+        targetDeviceUuid: DEVICE_1,
+        hostnameSnapshot: 'WS-01',
+        siteIdSnapshot: SITE_1,
+        status: 'queued',
+        deviceCommandId: 'cmd-1',
+        resultSummary: null,
+        skipReason: null,
+        queuedAt: null,
+        completedAt: null,
+      },
+      {
+        runId: 'run-1',
+        orgId: ORG_1,
+        targetDeviceUuid: DEVICE_2,
+        hostnameSnapshot: 'WS-02',
+        siteIdSnapshot: SITE_2,
+        status: 'queued',
+        deviceCommandId: 'cmd-2',
+        resultSummary: null,
+        skipReason: null,
+        queuedAt: null,
+        completedAt: null,
+      },
+    ]);
+
+    const res = await get(makeAuth({ allowedSiteIds: [SITE_1] }), '/runs/run-1');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.targets).toHaveLength(1);
+    expect(body.targets[0].deviceId).toBe(DEVICE_1);
+  });
+});
+
+describe('GET /fleet/findings/:id/runs', () => {
+  it('returns 404 for an unknown finding id', async () => {
+    h.selectQueue.push([]);
+    const res = await get(makeAuth(), `/${FINDING_1}/runs`);
+    expect(res.status).toBe(404);
+  });
+
+  it("returns the finding's runs (delegates to getFleetFinding)", async () => {
+    h.selectQueue.push([findingRow()]);
+    h.selectQueue.push([]); // members
+    h.selectQueue.push([runRow({ id: 'run-9' })]); // runs
+
+    const res = await get(makeAuth(), `/${FINDING_1}/runs`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.runs).toEqual([expect.objectContaining({ id: 'run-9' })]);
+  });
+});
+
+describe('POST /fleet/findings/:id/remediate', () => {
+  it('rejects a non-allowlisted commandType at the zod validation layer (400)', async () => {
+    const res = await post(makeAuth(), `/${FINDING_1}/remediate`, {
+      actionKind: 'command',
+      commandType: 'clear_temp_files',
+      parameters: {},
+    });
+    expect(res.status).toBe(400);
+    expect(createRemediationRunMock).not.toHaveBeenCalled();
+  });
+
+  it('maps a RemediationRequestError to its status (403 when the finding is inaccessible)', async () => {
+    createRemediationRunMock.mockRejectedValue(new RemediationRequestErrorMock('Finding not found or access denied', 403));
+
+    const res = await post(makeAuth(), `/${FINDING_1}/remediate`, {
+      actionKind: 'command',
+      commandType: 'reboot',
+      parameters: {},
+    });
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('Finding not found or access denied');
+    expect(enqueueRemediationDispatchMock).not.toHaveBeenCalled();
+  });
+
+  it('creates a run, enqueues dispatch, audits, and returns the skipped list', async () => {
+    createRemediationRunMock.mockResolvedValue({
+      runId: 'run-1',
+      targetCount: 2,
+      skipped: [{ deviceId: DEVICE_2, reason: 'decommissioned' }],
+      orgId: ORG_1,
+    });
+
+    const res = await post(makeAuth(), `/${FINDING_1}/remediate`, {
+      actionKind: 'command',
+      commandType: 'reboot',
+      parameters: {},
+      deviceIds: [DEVICE_1, DEVICE_2],
+    });
+
+    expect(res.status).toBe(202);
+    const body = await res.json();
+    expect(body).toEqual({
+      runId: 'run-1',
+      targetCount: 2,
+      skipped: [{ deviceId: DEVICE_2, reason: 'decommissioned' }],
+    });
+
+    expect(enqueueRemediationDispatchMock).toHaveBeenCalledWith('run-1', 2);
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'fleet_finding.remediate',
+        orgId: ORG_1,
+        resourceId: FINDING_1,
+        details: expect.objectContaining({ runId: 'run-1', targetCount: 2, skippedCount: 1 }),
+      })
+    );
+  });
+
+  it('passes the validated body through to createRemediationRun', async () => {
+    createRemediationRunMock.mockResolvedValue({ runId: 'run-1', targetCount: 1, skipped: [], orgId: ORG_1 });
+
+    const auth = makeAuth();
+    const scriptId = 'c1111111-1111-4111-8111-111111111111';
+    const res = await post(auth, `/${FINDING_1}/remediate`, {
+      actionKind: 'script',
+      scriptId,
+      parameters: { foo: 'bar' },
+    });
+
+    expect(res.status).toBe(202);
+    expect(createRemediationRunMock).toHaveBeenCalledWith(
+      expect.anything(),
+      FINDING_1,
+      expect.objectContaining({ actionKind: 'script', scriptId, parameters: { foo: 'bar' } })
+    );
   });
 });

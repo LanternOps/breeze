@@ -30,11 +30,13 @@ import { devices, organizations } from '../../db/schema';
 import {
   fleetFindingDevices,
   fleetFindings,
+  fleetRemediationRunTargets,
   fleetRemediationRuns,
   type FleetFindingKind,
   type FleetFindingSeverity,
   type FleetFindingStatus,
   type FleetRunStatus,
+  type FleetTargetStatus,
 } from '../../db/schema/fleetFindings';
 import type { AuthContext } from '../../middleware/auth';
 
@@ -387,6 +389,91 @@ export async function getFleetFinding(auth: AuthContext, id: string): Promise<Fl
       createdAt: r.createdAt.toISOString(),
       startedAt: isoOrNull(r.startedAt),
       completedAt: isoOrNull(r.completedAt),
+    })),
+  };
+}
+
+export interface FleetRemediationRunTargetRow {
+  deviceId: string;
+  hostname: string | null;
+  siteId: string | null;
+  status: FleetTargetStatus;
+  skipReason: string | null;
+  deviceCommandId: string | null;
+  resultSummary: string | null;
+  queuedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface FleetRemediationRunDetail extends FleetFindingRun {
+  orgId: string;
+  findingId: string;
+  findingRevision: number;
+  parameterSnapshot: Record<string, unknown>;
+  targets: FleetRemediationRunTargetRow[];
+}
+
+/**
+ * Fetch a single remediation run by id (used by `GET /fleet/findings/runs/:runId`),
+ * scoped to `auth` the same way `getFleetFinding` scopes a finding: RLS/org
+ * condition on the run's own `orgId` column, then an app-layer site filter on
+ * its target rows (a caller's site grant can shrink after a run was created,
+ * so this is re-applied on every read rather than trusted from creation
+ * time). Returns `null` when not found, inaccessible, or the caller has no
+ * accessible sites at all.
+ */
+export async function getRemediationRun(auth: AuthContext, runId: string): Promise<FleetRemediationRunDetail | null> {
+  const conditions: SQL[] = [eq(fleetRemediationRuns.id, runId)];
+  const orgCondition = auth.orgCondition(fleetRemediationRuns.orgId);
+  if (orgCondition) conditions.push(orgCondition);
+
+  const [run] = await db
+    .select()
+    .from(fleetRemediationRuns)
+    .where(and(...conditions))
+    .limit(1);
+
+  if (!run) return null;
+
+  const targetRows = await db
+    .select()
+    .from(fleetRemediationRunTargets)
+    .where(eq(fleetRemediationRunTargets.runId, runId));
+
+  const allowedSiteIds = auth.allowedSiteIds;
+  const visibleTargets =
+    allowedSiteIds === undefined
+      ? targetRows
+      : targetRows.filter((t) => t.siteIdSnapshot && allowedSiteIds.includes(t.siteIdSnapshot));
+
+  return {
+    id: run.id,
+    orgId: run.orgId,
+    findingId: run.findingId,
+    findingRevision: run.findingRevision,
+    actionKind: run.actionKind,
+    scriptId: run.scriptId ?? null,
+    commandType: run.commandType ?? null,
+    parameterSnapshot: (run.parameterSnapshot ?? {}) as Record<string, unknown>,
+    status: run.status,
+    targetCount: run.targetCount,
+    succeededCount: run.succeededCount,
+    failedCount: run.failedCount,
+    skippedCount: run.skippedCount,
+    createdBy: run.createdBy ?? null,
+    createdAt: run.createdAt.toISOString(),
+    startedAt: isoOrNull(run.startedAt),
+    completedAt: isoOrNull(run.completedAt),
+    targets: visibleTargets.map((t) => ({
+      deviceId: t.targetDeviceUuid,
+      hostname: t.hostnameSnapshot ?? null,
+      siteId: t.siteIdSnapshot ?? null,
+      status: t.status,
+      skipReason: t.skipReason ?? null,
+      deviceCommandId: t.deviceCommandId ?? null,
+      resultSummary: t.resultSummary ?? null,
+      queuedAt: isoOrNull(t.queuedAt),
+      completedAt: isoOrNull(t.completedAt),
     })),
   };
 }
