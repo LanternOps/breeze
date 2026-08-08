@@ -160,9 +160,15 @@ export async function createRemediationRun(
   // insert two rows with the same key — the insert throws AFTER the run row
   // is already committed, leaving an orphaned run stuck in `queued` with no
   // targets and no dispatch/poll ever enqueued.
-  const candidateIds = Array.from(
-    new Set(req.deviceIds && req.deviceIds.length > 0 ? req.deviceIds : Array.from(memberIds))
-  );
+  //
+  // Branch on `!== undefined`, not truthiness/length: an explicit `[]` means
+  // "remediate zero devices", not "fall back to full membership". Collapsing
+  // the two would let a caller who forgot to populate `deviceIds` silently
+  // remediate every member of the finding instead of failing loudly (the
+  // route's zod schema also rejects `[]` with `.min(1)`, but this function is
+  // called directly in tests/other callers too, so the guard lives here as
+  // well — defense in depth, not just at the HTTP boundary).
+  const candidateIds = Array.from(new Set(req.deviceIds !== undefined ? req.deviceIds : Array.from(memberIds)));
 
   const deviceRows =
     candidateIds.length > 0
@@ -348,6 +354,32 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
   }
 
   for (const target of pendingTargets) {
+    // Claim the target atomically BEFORE dispatching: a plain SELECT-then-
+    // UPDATE-after gives no protection against two concurrent workers
+    // processing the same chunk (BullMQ stalled-job recovery re-running a
+    // job it thinks died, or a crash mid-loop followed by a retry) — both
+    // would observe the same `pending` row in their in-memory page and both
+    // would call `queueCommandForExecution`, double-sending the command
+    // (e.g. two reboots). The conditional UPDATE below only succeeds for
+    // whichever caller gets there first; Postgres resolves the race at the
+    // row level. A retry that finds the row already claimed (0 rows
+    // returned) skips it — no re-dispatch, no error.
+    const claimed = await db
+      .update(fleetRemediationRunTargets)
+      .set({ status: 'queued', queuedAt: new Date() })
+      .where(
+        and(
+          eq(fleetRemediationRunTargets.runId, runId),
+          eq(fleetRemediationRunTargets.targetDeviceUuid, target.targetDeviceUuid),
+          eq(fleetRemediationRunTargets.status, 'pending')
+        )
+      )
+      .returning({ targetDeviceUuid: fleetRemediationRunTargets.targetDeviceUuid });
+
+    if (claimed.length === 0) {
+      continue;
+    }
+
     try {
       let type: string;
       let payload: Record<string, unknown>;
@@ -381,13 +413,11 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
         continue;
       }
 
+      // The claim already flipped status/queuedAt; just attach the resulting
+      // command id onto the now-`queued` row.
       await db
         .update(fleetRemediationRunTargets)
-        .set({
-          status: 'queued',
-          deviceCommandId: result.command.id,
-          queuedAt: new Date(),
-        })
+        .set({ deviceCommandId: result.command.id })
         .where(
           and(
             eq(fleetRemediationRunTargets.runId, runId),
@@ -494,5 +524,44 @@ export async function pollRunProgress(runId: string): Promise<void> {
       status,
       completedAt: nowTerminal ? run.completedAt ?? now : run.completedAt ?? null,
     })
+    .where(eq(fleetRemediationRuns.id, runId));
+}
+
+/** `skip_reason` (varchar(80)) stamped on a run's still-`pending` targets when `enqueueRemediationDispatch` itself fails. */
+export const DISPATCH_ENQUEUE_FAILED_REASON = 'dispatch_enqueue_failed';
+
+/**
+ * Called by the route when `enqueueRemediationDispatch` throws (e.g. a Redis
+ * outage) AFTER `createRemediationRun` already committed the run + its
+ * `pending` targets. Without this, that run is stranded forever: `queued`/
+ * `running` with no dispatch job ever enqueued and no poll job to notice.
+ * Marks every still-`pending` target `skipped` (never dispatched — distinct
+ * from `failed`, which means a dispatch attempt actually happened) and
+ * recomputes the run to a terminal `failed` state so it stops showing as
+ * in-progress.
+ */
+export async function markRunDispatchFailed(
+  runId: string,
+  reason: string = DISPATCH_ENQUEUE_FAILED_REASON
+): Promise<void> {
+  const now = new Date();
+
+  await db
+    .update(fleetRemediationRunTargets)
+    .set({ status: 'skipped', skipReason: reason, completedAt: now })
+    .where(and(eq(fleetRemediationRunTargets.runId, runId), eq(fleetRemediationRunTargets.status, 'pending')));
+
+  const allTargets = await db
+    .select()
+    .from(fleetRemediationRunTargets)
+    .where(eq(fleetRemediationRunTargets.runId, runId));
+
+  const succeededCount = allTargets.filter((t) => t.status === 'succeeded').length;
+  const failedCount = allTargets.filter((t) => t.status === 'failed').length;
+  const skippedCount = allTargets.filter((t) => t.status === 'skipped').length;
+
+  await db
+    .update(fleetRemediationRuns)
+    .set({ status: 'failed', succeededCount, failedCount, skippedCount, completedAt: now })
     .where(eq(fleetRemediationRuns.id, runId));
 }

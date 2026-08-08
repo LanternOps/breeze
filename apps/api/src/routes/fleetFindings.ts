@@ -6,6 +6,7 @@ import { authMiddleware, requireMfa, requirePermission, requireScope } from '../
 import { writeRouteAudit } from '../services/auditEvents';
 import {
   createRemediationRun,
+  markRunDispatchFailed,
   REMEDIATION_COMMAND_TYPE_ALLOWLIST,
   RemediationRequestError,
   type RemediateRequest,
@@ -66,14 +67,18 @@ const remediateBodySchema = z.object({
   scriptId: z.string().guid().optional(),
   commandType: z.enum(REMEDIATION_COMMAND_TYPE_ALLOWLIST).optional(),
   parameters: z.record(z.string(), z.unknown()).default({}),
-  // Subset of finding membership; absent = all current members. Bounded to
-  // cap request-body size / worst-case validation cost from an authenticated
-  // caller — this is NOT `BULK_COMMAND_MAX_DEVICES` (500, chosen for a
-  // *synchronous* bulk-command endpoint bounded by Cloudflare's proxy
-  // timeout): remediation dispatch is async (BullMQ chunks of its own,
-  // ≤500 each), so a single fleet-wide finding legitimately spanning
-  // thousands of devices is an expected shape, not an abuse signal.
-  deviceIds: z.array(z.string().guid()).max(5000).optional(),
+  // Subset of finding membership; ABSENT = all current members, `[]` is
+  // rejected outright (`.min(1)`) rather than silently treated the same as
+  // absent — a caller who meant to scope the run to specific devices but
+  // sent an empty array must get a 400, not an unintended fleet-wide run.
+  // Bounded to cap request-body size / worst-case validation cost from an
+  // authenticated caller — this is NOT `BULK_COMMAND_MAX_DEVICES` (500,
+  // chosen for a *synchronous* bulk-command endpoint bounded by
+  // Cloudflare's proxy timeout): remediation dispatch is async (BullMQ
+  // chunks of its own, ≤500 each), so a single fleet-wide finding
+  // legitimately spanning thousands of devices is an expected shape, not
+  // an abuse signal.
+  deviceIds: z.array(z.string().guid()).min(1).max(5000).optional(),
 });
 
 const requireFindingsRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -165,13 +170,29 @@ fleetFindingsRoutes.post(
       throw err;
     }
 
-    await enqueueRemediationDispatch(result.runId, result.targetCount);
+    // The run + its `pending` targets are already committed at this point
+    // (createRemediationRun succeeded). If enqueueing the dispatch/poll jobs
+    // itself fails (e.g. Redis is down), that run would otherwise be
+    // stranded forever — `queued` with targets nothing will ever pick up,
+    // and no poll job to notice. Catch it, fail the run out explicitly
+    // (mirrors a run whose devices were all invalid: terminal `failed`,
+    // its pending targets marked `skipped`), and still audit — the outcome
+    // is exactly the kind of thing an audit trail exists for.
+    let dispatchEnqueueFailed = false;
+    try {
+      await enqueueRemediationDispatch(result.runId, result.targetCount);
+    } catch (err) {
+      dispatchEnqueueFailed = true;
+      await markRunDispatchFailed(result.runId);
+      console.error(`[fleetFindings] Failed to enqueue remediation dispatch for run ${result.runId}:`, err);
+    }
 
     writeRouteAudit(c, {
       orgId: result.orgId,
       action: 'fleet_finding.remediate',
       resourceType: 'fleet_finding',
       resourceId: id,
+      result: dispatchEnqueueFailed ? 'failure' : 'success',
       details: {
         runId: result.runId,
         actionKind: body.actionKind,
@@ -179,8 +200,16 @@ fleetFindingsRoutes.post(
         scriptId: body.scriptId ?? null,
         targetCount: result.targetCount,
         skippedCount: result.skipped.length,
+        dispatchEnqueueFailed,
       },
     });
+
+    if (dispatchEnqueueFailed) {
+      return c.json(
+        { error: 'Failed to enqueue remediation dispatch', runId: result.runId },
+        502
+      );
+    }
 
     return c.json(
       { runId: result.runId, targetCount: result.targetCount, skipped: result.skipped },

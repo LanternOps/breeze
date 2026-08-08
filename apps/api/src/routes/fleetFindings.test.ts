@@ -158,7 +158,7 @@ vi.mock('../middleware/auth', () => ({
 
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 
-const { createRemediationRunMock, RemediationRequestErrorMock } = vi.hoisted(() => {
+const { createRemediationRunMock, markRunDispatchFailedMock, RemediationRequestErrorMock } = vi.hoisted(() => {
   class RemediationRequestErrorMock extends Error {
     status: number;
     constructor(message: string, status = 400) {
@@ -166,11 +166,12 @@ const { createRemediationRunMock, RemediationRequestErrorMock } = vi.hoisted(() 
       this.status = status;
     }
   }
-  return { createRemediationRunMock: vi.fn(), RemediationRequestErrorMock };
+  return { createRemediationRunMock: vi.fn(), markRunDispatchFailedMock: vi.fn(), RemediationRequestErrorMock };
 });
 
 vi.mock('../services/fleetFindings/dispatch', () => ({
   createRemediationRun: createRemediationRunMock,
+  markRunDispatchFailed: markRunDispatchFailedMock,
   RemediationRequestError: RemediationRequestErrorMock,
   REMEDIATION_COMMAND_TYPE_ALLOWLIST: ['restart_service', 'reboot'],
 }));
@@ -311,6 +312,7 @@ beforeEach(() => {
   h.mockUpdate.mockClear();
   vi.mocked(writeRouteAudit).mockClear();
   createRemediationRunMock.mockReset();
+  markRunDispatchFailedMock.mockReset().mockResolvedValue(undefined);
   enqueueRemediationDispatchMock.mockReset().mockResolvedValue(undefined);
 });
 
@@ -889,6 +891,17 @@ describe('POST /fleet/findings/:id/remediate', () => {
     expect(createRemediationRunMock).not.toHaveBeenCalled();
   });
 
+  it('rejects an empty deviceIds array at the zod validation layer (400) instead of falling back to "all members"', async () => {
+    const res = await post(makeAuth(), `/${FINDING_1}/remediate`, {
+      actionKind: 'command',
+      commandType: 'reboot',
+      parameters: {},
+      deviceIds: [],
+    });
+    expect(res.status).toBe(400);
+    expect(createRemediationRunMock).not.toHaveBeenCalled();
+  });
+
   it('maps a RemediationRequestError to its status (403 when the finding is inaccessible)', async () => {
     createRemediationRunMock.mockRejectedValue(new RemediationRequestErrorMock('Finding not found or access denied', 403));
 
@@ -934,6 +947,39 @@ describe('POST /fleet/findings/:id/remediate', () => {
         orgId: ORG_1,
         resourceId: FINDING_1,
         details: expect.objectContaining({ runId: 'run-1', targetCount: 2, skippedCount: 1 }),
+      })
+    );
+  });
+
+  it('marks the run dispatch-failed, audits a failure, and returns 502 when enqueueRemediationDispatch throws', async () => {
+    createRemediationRunMock.mockResolvedValue({
+      runId: 'run-1',
+      targetCount: 2,
+      skipped: [],
+      orgId: ORG_1,
+    });
+    enqueueRemediationDispatchMock.mockRejectedValue(new Error('Redis unreachable'));
+
+    const res = await post(makeAuth(), `/${FINDING_1}/remediate`, {
+      actionKind: 'command',
+      commandType: 'reboot',
+      parameters: {},
+    });
+
+    // The run was already committed by createRemediationRun — surface the
+    // failure with its runId so the caller can see/investigate the stranded
+    // run, rather than a bare 500 with no way to find it.
+    expect(res.status).toBe(502);
+    const body = await res.json();
+    expect(body.runId).toBe('run-1');
+
+    expect(markRunDispatchFailedMock).toHaveBeenCalledWith('run-1');
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'fleet_finding.remediate',
+        result: 'failure',
+        details: expect.objectContaining({ runId: 'run-1', dispatchEnqueueFailed: true }),
       })
     );
   });

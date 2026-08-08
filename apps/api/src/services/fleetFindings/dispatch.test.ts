@@ -11,6 +11,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => {
   const selectQueue: unknown[][] = [];
   const insertReturningQueue: unknown[][] = [];
+  // Consumed only by an UPDATE call that chains `.returning(...)` (the
+  // claim-before-dispatch UPDATE in dispatchRunChunk); every other UPDATE in
+  // this module resolves via the plain thenable and never touches this queue.
+  // An empty array (the default when nothing is queued) simulates "0 rows
+  // matched" — i.e. the claim lost the race / the target was already claimed.
+  const updateReturningQueue: unknown[][] = [];
   const capturedWheres: unknown[] = [];
   const capturedInserts: Array<{ table: unknown; values: unknown }> = [];
   const capturedUpdates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
@@ -62,7 +68,11 @@ const h = vi.hoisted(() => {
       return {
         where: (cond: unknown) => {
           capturedWheres.push(cond);
-          return Promise.resolve(undefined);
+          return {
+            returning: () => Promise.resolve(updateReturningQueue.shift() ?? []),
+            then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
+              Promise.resolve(undefined).then(resolve, reject),
+          };
         },
       };
     },
@@ -71,6 +81,7 @@ const h = vi.hoisted(() => {
   return {
     selectQueue,
     insertReturningQueue,
+    updateReturningQueue,
     capturedWheres,
     capturedInserts,
     capturedUpdates,
@@ -240,6 +251,7 @@ async function expectRemediationError(promise: Promise<unknown>, status: 400 | 4
 beforeEach(() => {
   h.selectQueue.length = 0;
   h.insertReturningQueue.length = 0;
+  h.updateReturningQueue.length = 0;
   h.capturedWheres.length = 0;
   h.capturedInserts.length = 0;
   h.capturedUpdates.length = 0;
@@ -461,6 +473,23 @@ describe('createRemediationRun — device revalidation matrix', () => {
     expect(result.skipped).toEqual([]);
   });
 
+  it('regression: an explicit empty deviceIds array means "remediate zero devices", NOT "fall back to full membership"', async () => {
+    getFleetFindingMock.mockResolvedValue(findingDetail());
+    h.selectQueue.push([{ deviceId: DEVICE_1 }, { deviceId: DEVICE_2 }]); // membership has 2 members
+    h.insertReturningQueue.push([{ id: RUN_1 }]);
+
+    const req: RemediateRequest = { actionKind: 'command', commandType: 'reboot', parameters: {}, deviceIds: [] };
+    const result = await createRemediationRun(makeAuth(), FINDING_1, req);
+
+    // Must NOT silently target the 2 real members — zero candidates, zero
+    // targets, run immediately finalized as failed (nothing to do).
+    expect(result.targetCount).toBe(0);
+    expect(result.skipped).toEqual([]);
+    const runInsert = h.capturedInserts[0]!.values as Record<string, unknown>;
+    expect(runInsert.status).toBe('failed');
+    expect(runInsert.targetCount).toBe(0);
+  });
+
   it('honors a requested subset of membership, ignoring unrequested members', async () => {
     getFleetFindingMock.mockResolvedValue(findingDetail());
     h.selectQueue.push([{ deviceId: DEVICE_1 }, { deviceId: DEVICE_2 }]); // membership includes both
@@ -610,6 +639,7 @@ describe('dispatchRunChunk', () => {
   it('dispatches a "command" target via queueCommandForExecution with expectedOrgId, and marks it queued', async () => {
     h.selectQueue.push([runRow({ status: 'running', commandType: 'restart_service' })]);
     h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]); // claim succeeds
     queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-1' } });
 
     await dispatchRunChunk(RUN_1, 0);
@@ -620,14 +650,17 @@ describe('dispatchRunChunk', () => {
       { delay: 5 },
       { userId: USER_ID, expectedOrgId: ORG_1 }
     );
-    const targetUpdate = h.capturedUpdates.find((u) => (u.values as Record<string, unknown>).status === 'queued')!;
-    expect(targetUpdate.values).toMatchObject({ status: 'queued', deviceCommandId: 'cmd-1' });
-    expect(targetUpdate.values.queuedAt).toBeInstanceOf(Date);
+    // The claim UPDATE flips status/queuedAt; a second UPDATE attaches deviceCommandId.
+    const claimUpdate = h.capturedUpdates.find((u) => (u.values as Record<string, unknown>).status === 'queued')!;
+    expect(claimUpdate.values.queuedAt).toBeInstanceOf(Date);
+    const commandIdUpdate = h.capturedUpdates.find((u) => (u.values as Record<string, unknown>).deviceCommandId === 'cmd-1')!;
+    expect(commandIdUpdate).toBeDefined();
   });
 
   it('maps the "reboot" commandType to the literal reboot command type', async () => {
     h.selectQueue.push([runRow({ status: 'running', commandType: 'reboot' })]);
     h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
     queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-1' } });
 
     await dispatchRunChunk(RUN_1, 0);
@@ -639,6 +672,7 @@ describe('dispatchRunChunk', () => {
     h.selectQueue.push([runRow({ status: 'running', actionKind: 'script', commandType: null, scriptId: SCRIPT_1 })]);
     h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
     h.selectQueue.push([{ language: 'bash', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' }]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
     queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-2' } });
 
     await dispatchRunChunk(RUN_1, 0);
@@ -654,6 +688,7 @@ describe('dispatchRunChunk', () => {
   it('marks a target failed when queueCommandForExecution returns an error (no throw)', async () => {
     h.selectQueue.push([runRow({ status: 'running' })]);
     h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]); // claim succeeds, then dispatch itself fails
     queueCommandForExecutionMock.mockResolvedValue({ error: 'Device is offline, cannot execute command' });
 
     await dispatchRunChunk(RUN_1, 0);
@@ -665,6 +700,7 @@ describe('dispatchRunChunk', () => {
   it('marks a target failed when queueCommandForExecution throws', async () => {
     h.selectQueue.push([runRow({ status: 'running' })]);
     h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
     queueCommandForExecutionMock.mockRejectedValue(new Error('boom'));
 
     await dispatchRunChunk(RUN_1, 0);
@@ -679,6 +715,7 @@ describe('dispatchRunChunk', () => {
       { runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' },
       { runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_2, status: 'pending' },
     ]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }], [{ targetDeviceUuid: DEVICE_2 }]); // both claims succeed
     queueCommandForExecutionMock
       .mockResolvedValueOnce({ error: 'offline' })
       .mockResolvedValueOnce({ command: { id: 'cmd-3' } });
@@ -689,6 +726,23 @@ describe('dispatchRunChunk', () => {
     const statuses = h.capturedUpdates.map((u) => (u.values as Record<string, unknown>).status);
     expect(statuses).toContain('failed');
     expect(statuses).toContain('queued');
+  });
+
+  it('claims a target atomically before dispatching, and skips a target that loses the claim race (no double-dispatch)', async () => {
+    // Two concurrent workers (a genuine retry, or BullMQ stalled-job
+    // recovery) both fetch the same page and both see DEVICE_1 as `pending`.
+    // Only one of them can win the atomic claim UPDATE; the other must see 0
+    // rows returned and skip the target entirely — never calling
+    // queueCommandForExecution at all (not even attempting and then
+    // reconciling after the fact).
+    h.selectQueue.push([runRow({ status: 'running' })]);
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    // No push to h.updateReturningQueue -> defaults to [] -> claim lost the race.
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    expect(h.capturedUpdates.some((u) => (u.values as Record<string, unknown>).status === 'failed')).toBe(false);
   });
 
   it('returns early (no-op) when the run does not exist', async () => {
@@ -710,6 +764,7 @@ describe('dispatchRunChunk', () => {
       { runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'queued', deviceCommandId: 'cmd-already' },
       { runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_2, status: 'pending' },
     ]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_2 }]); // DEVICE_2's claim succeeds
     queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-new' } });
 
     await dispatchRunChunk(RUN_1, 1);
