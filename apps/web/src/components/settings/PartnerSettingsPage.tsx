@@ -3,7 +3,6 @@ import {
   Bell,
   Building2,
   Globe,
-  LifeBuoy,
   Loader2,
   LogIn,
   MonitorSmartphone,
@@ -32,7 +31,6 @@ import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
 import PartnerCompanyTab from './PartnerCompanyTab';
 import PartnerRegionalTab, { DEFAULT_BUSINESS_HOURS } from './PartnerRegionalTab';
 import LoginBrandingCard from './LoginBrandingCard';
-import QuickSupportDomainCard from './QuickSupportDomainCard';
 import type {
   PartnerSettings,
   SupportedLocale,
@@ -56,7 +54,7 @@ import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 import { normalizeLocale } from '@/lib/appearance';
 
-type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'remoteAccess' | 'quickSupport' | 'ticketing';
+type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'remoteAccess' | 'ticketing';
 
 type Partner = {
   id: string;
@@ -99,7 +97,6 @@ const TAB_GROUPS: { label: string; tabs: TabDef[] }[] = [
     tabs: [
       { key: 'security', hash: 'security', label: 'partnerSettingsPage.tabs.security.label', description: 'partnerSettingsPage.tabs.security.description', icon: Shield, enforced: true },
       { key: 'remoteAccess', hash: 'remote-access', label: 'partnerSettingsPage.tabs.remoteAccess.label', description: 'partnerSettingsPage.tabs.remoteAccess.description', icon: MonitorSmartphone, enforced: true },
-      { key: 'quickSupport', hash: 'quick-support', label: 'partnerSettingsPage.tabs.quickSupport.label', description: 'partnerSettingsPage.tabs.quickSupport.description', icon: LifeBuoy, selfSaving: true },
       { key: 'eventLogs', hash: 'event-logs', label: 'partnerSettingsPage.tabs.eventLogs.label', description: 'partnerSettingsPage.tabs.eventLogs.description', icon: ScrollText, enforced: true },
     ],
   },
@@ -146,9 +143,9 @@ function getTabFromHash(): TabKey | null {
 }
 
 // The per-tab keys whose form state participates in dirty tracking. Self-saving
-// tabs (Ticketing, Login Branding, Quick Support) persist independently and are
-// never "dirty" from this page's perspective.
-type SnapshotKey = Exclude<TabKey, 'ticketing' | 'loginBranding' | 'quickSupport'>;
+// tabs (Ticketing, Login Branding) persist independently and are never "dirty"
+// from this page's perspective.
+type SnapshotKey = Exclude<TabKey, 'ticketing' | 'loginBranding'>;
 type Snapshot = Record<SnapshotKey, string>;
 
 // Exported for unit-testing without mounting the full component.
@@ -641,9 +638,6 @@ export default function PartnerSettingsPage() {
           {/* Login Branding: self-contained card with its own load/save (the
               top-level "Save Settings" button does not apply here). */}
           {activeTab === 'loginBranding' && <LoginBrandingCard />}
-
-          {/* Quick Support domain: self-contained card with its own load/save. */}
-          {activeTab === 'quickSupport' && <QuickSupportDomainCard />}
 
           {activeTab === 'aiBudgets' && (
             <section className="rounded-lg border bg-card p-6 shadow-xs">

@@ -399,10 +399,6 @@
         "label": "Fernzugriff",
         "description": "Remote-Desktop-Anbieter"
       },
-      "quickSupport": {
-        "label": "Schnellsupport",
-        "description": "Eigene Support-Domain"
-      },
       "eventLogs": {
         "label": "Ereignisprotokolle",
         "description": "Weitergabe und Aufbewahrung"
@@ -466,21 +462,6 @@
     "previewHeadline": "Melden Sie sich bei Ihrem Konto an",
     "previewDescription": "Ungefähre Vorschau des Techniker-Anmeldebildschirms.",
     "save": "Branding speichern"
-  },
-  "quickSupportDomain": {
-    "title": "Schnellsupport-Domain",
-    "description": "Stellen Sie die Schnellsupport-Landingpage über einen eigenen Hostnamen bereit, damit der Link, den Sie Kunden senden, Ihre Marke statt der Standard-Breeze-Adresse trägt.",
-    "loadFailed": "Ihre aktuellen Einstellungen konnten nicht geladen werden — laden Sie die Seite vor dem Speichern neu.",
-    "label": "Eigene Support-Domain",
-    "placeholder": "support.ihrmsp.de",
-    "invalid": "Geben Sie einen reinen Hostnamen wie support.ihrmsp.de ein — ohne https://, Port, Pfad oder Leerzeichen.",
-    "dnsHelp": "Richten Sie einen <code>CNAME</code>- (oder <code>A</code>-) Eintrag für diesen Hostnamen auf Ihren Breeze-Webserver.",
-    "linkHelp": "Die Schaltfläche „Link kopieren“ im Schnellsupport gibt dann https://support.yourmsp.com/quick?code=… statt der Standardadresse aus.",
-    "operatorNote": "DNS und TLS-Routing für diesen Hostnamen liegen in Ihrer Verantwortung — Breeze prüft den Eintrag nicht und stellt kein Zertifikat aus.",
-    "clearHelp": "Leer lassen, um die Standard-Breeze-Adresse zu verwenden.",
-    "save": "Domain speichern",
-    "saved": "Schnellsupport-Domain gespeichert",
-    "saveFailed": "Schnellsupport-Domain konnte nicht gespeichert werden"
   },
   "brandingEditor": {
     "imagePreview": "{{title}} Vorschau",

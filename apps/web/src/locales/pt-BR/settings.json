@@ -399,10 +399,6 @@
         "label": "Acesso remoto",
         "description": "Provedores de desktop remoto"
       },
-      "quickSupport": {
-        "label": "Suporte rápido",
-        "description": "Domínio de suporte personalizado"
-      },
       "eventLogs": {
         "label": "Logs de eventos",
         "description": "Encaminhamento e retenção"
@@ -466,21 +462,6 @@
     "previewHeadline": "Entre na sua conta",
     "previewDescription": "Prévia aproximada da tela de login dos técnicos.",
     "save": "Salvar identidade visual"
-  },
-  "quickSupportDomain": {
-    "title": "Domínio de suporte rápido",
-    "description": "Publique a página de suporte rápido em um nome de host próprio, para que o link enviado aos clientes leve sua marca em vez do endereço padrão do Breeze.",
-    "loadFailed": "Não foi possível carregar suas configurações atuais — recarregue a página antes de salvar.",
-    "label": "Domínio de suporte personalizado",
-    "placeholder": "suporte.seumsp.com.br",
-    "invalid": "Informe apenas um nome de host, como suporte.seumsp.com.br — sem https://, porta, caminho ou espaços.",
-    "dnsHelp": "Aponte um registro <code>CNAME</code> (ou <code>A</code>) desse nome de host para o seu servidor web do Breeze.",
-    "linkHelp": "O botão “Copiar link” do suporte rápido passará a entregar https://support.yourmsp.com/quick?code=… em vez do endereço padrão.",
-    "operatorNote": "DNS e roteamento TLS desse nome de host são responsabilidade sua — o Breeze não verifica o registro nem emite certificado.",
-    "clearHelp": "Deixe em branco para usar o endereço padrão do Breeze.",
-    "save": "Salvar domínio",
-    "saved": "Domínio de suporte rápido salvo",
-    "saveFailed": "Não foi possível salvar o domínio de suporte rápido"
   },
   "brandingEditor": {
     "imagePreview": "Prévia de {{title}}",

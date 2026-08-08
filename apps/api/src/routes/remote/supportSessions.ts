@@ -12,7 +12,6 @@ import {
   hashSupportCode,
 } from '../../services/quickSupportCode';
 import { getTrustedClientIp } from '../../services/clientIp';
-import { getPartnerQuickSupportDomain } from '../../services/quickSupportDomain';
 import { endSupportSession } from '../../services/quickSupportEnd';
 import { logSessionAudit } from './helpers';
 
@@ -116,13 +115,7 @@ supportSessionRoutes.post(
       getTrustedClientIp(c, 'unknown'),
     );
 
-    // Per-partner custom support domain, when configured and still well-formed
-    // (getPartnerQuickSupportDomain re-validates the stored hostname); otherwise
-    // the global web URL. Never fail session creation over this — the code has
-    // already been minted and audited by here.
-    const customDomain = await getPartnerQuickSupportDomain(auth.partnerId);
     const webBase = process.env.PUBLIC_WEB_URL ?? '';
-    const landingBase = customDomain ? `https://${customDomain}` : webBase;
 
     return c.json({
       id: session.id,
@@ -130,7 +123,7 @@ supportSessionRoutes.post(
       code: formatSupportCode(code),
       codeExpiresAt: session.codeExpiresAt,
       hardExpiresAt: session.hardExpiresAt,
-      landingUrl: `${landingBase}/quick?code=${code}`,
+      landingUrl: `${webBase}/quick?code=${code}`,
     }, 201);
   },
 );

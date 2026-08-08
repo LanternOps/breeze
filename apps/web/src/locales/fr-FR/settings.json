@@ -399,10 +399,6 @@
         "label": "Accès à distance",
         "description": "Fournisseurs de bureau à distance"
       },
-      "quickSupport": {
-        "label": "Assistance rapide",
-        "description": "Domaine d'assistance personnalisé"
-      },
       "eventLogs": {
         "label": "Journaux d’événements",
         "description": "Transfert et conservation"
@@ -466,21 +462,6 @@
     "previewHeadline": "Connectez-vous à votre compte",
     "previewDescription": "Aperçu approximatif de l’écran de connexion du technicien.",
     "save": "Enregistrer l’identité visuelle"
-  },
-  "quickSupportDomain": {
-    "title": "Domaine d'assistance rapide",
-    "description": "Diffusez la page d'assistance rapide depuis un nom d'hôte qui vous appartient, afin que le lien envoyé aux clients porte votre marque plutôt que l'adresse Breeze par défaut.",
-    "loadFailed": "Impossible de charger vos paramètres actuels — rechargez la page avant d'enregistrer.",
-    "label": "Domaine d'assistance personnalisé",
-    "placeholder": "assistance.votremsp.fr",
-    "invalid": "Saisissez un nom d'hôte seul, comme assistance.votremsp.fr — sans https://, port, chemin ni espaces.",
-    "dnsHelp": "Faites pointer un enregistrement <code>CNAME</code> (ou <code>A</code>) de ce nom d'hôte vers votre serveur web Breeze.",
-    "linkHelp": "Le bouton « Copier le lien » de l'assistance rapide fournira alors https://support.yourmsp.com/quick?code=… au lieu de l'adresse par défaut.",
-    "operatorNote": "Le DNS et le routage TLS de ce nom d'hôte relèvent de votre responsabilité — Breeze ne vérifie pas l'enregistrement et n'émet aucun certificat.",
-    "clearHelp": "Laissez vide pour utiliser l'adresse Breeze par défaut.",
-    "save": "Enregistrer le domaine",
-    "saved": "Domaine d'assistance rapide enregistré",
-    "saveFailed": "Échec de l'enregistrement du domaine d'assistance rapide"
   },
   "brandingEditor": {
     "imagePreview": "{{title}} aperçu",

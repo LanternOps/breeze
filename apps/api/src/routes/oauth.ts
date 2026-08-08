@@ -57,9 +57,11 @@ if (MCP_OAUTH_ENABLED) {
   }
 
   oauthRoutes.use('*', async (c, next) => {
-    // Rate-limit bucket identity only (IPv6 folded to its /64) — never used for
-    // audit attribution here, so folding at the source is safe.
-    const ip = rateLimitIpKey(getTrustedClientIp(c, c.env?.incoming?.socket?.remoteAddress ?? 'unknown'));
+    // Rate-limit BUCKET IDENTITY, not the client's address: rateLimitIpKey folds
+    // IPv6 to its /64 so a client that owns the whole subnet can't mint a fresh
+    // bucket per request. Named `ipKey` so it is never mistaken for an address
+    // and reused for audit attribution — nothing on this path records one.
+    const ipKey = rateLimitIpKey(getTrustedClientIp(c, c.env?.incoming?.socket?.remoteAddress ?? 'unknown'));
     const sub = c.req.path.replace(/^\/oauth/, '');
     const isRegistrationPath = sub === '/reg' || sub.startsWith('/reg/');
     const hasRegistrationBody =
@@ -72,19 +74,19 @@ if (MCP_OAUTH_ENABLED) {
     if (isRegistrationPath && (c.req.method === 'POST' || c.req.method === 'PUT' || c.req.method === 'PATCH' || c.req.method === 'DELETE' || c.req.method === 'GET')) {
       limit = 10;
       windowSeconds = 3600;
-      key = `oauth:register:${ip}`;
+      key = `oauth:register:${ipKey}`;
     } else if (c.req.method === 'POST' && sub === '/token') {
       limit = 60;
       windowSeconds = 60;
-      key = `oauth:token:ip:${ip}`;
+      key = `oauth:token:ip:${ipKey}`;
     } else if (c.req.method === 'POST' && sub === '/token/revocation') {
       limit = 60;
       windowSeconds = 60;
-      key = `oauth:revocation:ip:${ip}`;
+      key = `oauth:revocation:ip:${ipKey}`;
     } else if ((c.req.method === 'GET' || c.req.method === 'POST') && sub === '/auth') {
       limit = 20;
       windowSeconds = 60;
-      key = `oauth:authorize:${ip}`;
+      key = `oauth:authorize:${ipKey}`;
     }
 
     if (limit) {

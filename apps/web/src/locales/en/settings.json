@@ -399,10 +399,6 @@
         "label": "Remote Access",
         "description": "Remote desktop providers"
       },
-      "quickSupport": {
-        "label": "Quick Support",
-        "description": "Custom support domain"
-      },
       "eventLogs": {
         "label": "Event Logs",
         "description": "Forwarding and retention"
@@ -466,21 +462,6 @@
     "previewHeadline": "Sign in to your account",
     "previewDescription": "Approximate preview of the technician login screen.",
     "save": "Save branding"
-  },
-  "quickSupportDomain": {
-    "title": "Quick Support Domain",
-    "description": "Serve the Quick Support landing page from a hostname of your own, so the link you send customers carries your brand instead of the default Breeze address.",
-    "loadFailed": "Couldn't load your current settings — reload the page before saving.",
-    "label": "Custom support domain",
-    "placeholder": "support.yourmsp.com",
-    "invalid": "Enter a bare hostname such as support.yourmsp.com — no https://, port, path, or spaces.",
-    "dnsHelp": "Point a <code>CNAME</code> (or <code>A</code>) record for this hostname at your Breeze web server.",
-    "linkHelp": "The Quick Support “Copy link” button will then hand out https://support.yourmsp.com/quick?code=… instead of the default address.",
-    "operatorNote": "DNS and TLS routing for this hostname are your responsibility — Breeze does not verify the record or issue a certificate.",
-    "clearHelp": "Leave blank to use the default Breeze address.",
-    "save": "Save domain",
-    "saved": "Quick Support domain saved",
-    "saveFailed": "Failed to save Quick Support domain"
   },
   "brandingEditor": {
     "imagePreview": "{{title}} preview",
