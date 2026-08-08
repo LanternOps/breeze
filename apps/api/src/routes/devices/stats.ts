@@ -1,10 +1,11 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices } from '../../db/schema';
 import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { buildDeviceScope } from './scope';
 import { z } from 'zod';
 
 export const statsRoutes = new Hono();
@@ -43,31 +44,24 @@ statsRoutes.get(
     const query = c.req.valid('query');
     const permissions = c.get('permissions') as UserPermissions | undefined;
 
+    // Tenant narrowing shared with the posture-report endpoints (scope.ts):
+    // orgCondition + optional ?orgId (403 when inaccessible) + site allowlist.
+    const scoped = buildDeviceScope(auth, permissions, query.orgId);
+    if ('forbidden' in scoped) {
+      return c.json({ error: 'Access to this organization denied' }, 403);
+    }
+    if ('emptyAllowlist' in scoped) {
+      return c.json({ data: { total: 0, online: 0, offline: 0, byStatus: {} } });
+    }
+
     // Ephemeral Quick Support devices live in the hidden 'quick_support' org,
     // which stays in accessibleOrgIds for RLS — exclude them from tech-facing counts.
     const conditions: SQL[] = [
       sql`${devices.status} != 'decommissioned'`,
       eq(devices.isEphemeral, false),
     ];
-
-    const orgFilter = auth.orgCondition(devices.orgId);
-    if (orgFilter) {
-      conditions.push(orgFilter);
-    }
-
-    if (query.orgId) {
-      if (!auth.canAccessOrg(query.orgId)) {
-        return c.json({ error: 'Access to this organization denied' }, 403);
-      }
-      conditions.push(eq(devices.orgId, query.orgId));
-    }
-
-    const allowedSiteIds = permissions?.allowedSiteIds;
-    if (allowedSiteIds) {
-      if (allowedSiteIds.length === 0) {
-        return c.json({ data: { total: 0, online: 0, offline: 0, byStatus: {} } });
-      }
-      conditions.push(inArray(devices.siteId, allowedSiteIds));
+    if (scoped.scope) {
+      conditions.push(scoped.scope);
     }
 
     const rows = await db

@@ -390,15 +390,26 @@ export const sensitiveDataCommandTypes = {
 // Management Posture
 // ============================================
 
+/**
+ * Category keys of the management-posture ingest payload. Single source of
+ * truth — reused by the fleet posture report (services/managementPostureReport)
+ * to validate the `category` query param before it reaches SQL.
+ */
+export const MANAGEMENT_POSTURE_CATEGORIES = [
+  'mdm', 'rmm', 'remoteAccess', 'endpointSecurity',
+  'policyEngine', 'backup', 'identityMfa', 'siem',
+  'dnsFiltering', 'zeroTrustVpn', 'patchManagement',
+] as const;
+
+export type ManagementPostureCategory = (typeof MANAGEMENT_POSTURE_CATEGORIES)[number];
+
 export const managementPostureIngestSchema = z.object({
   collectedAt: z.string().datetime(),
   scanDurationMs: z.number().int().nonnegative(),
   // v4: z.record(enum, …) is exhaustive; agents report only the categories they
   // detect, so partialRecord preserves the v3 partial-ingest behavior.
   categories: z.partialRecord(
-    z.enum(['mdm', 'rmm', 'remoteAccess', 'endpointSecurity',
-            'policyEngine', 'backup', 'identityMfa', 'siem',
-            'dnsFiltering', 'zeroTrustVpn', 'patchManagement']),
+    z.enum(MANAGEMENT_POSTURE_CATEGORIES),
     z.array(z.object({
       name: z.string(),
       version: z.string().optional(),

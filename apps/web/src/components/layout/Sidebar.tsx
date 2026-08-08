@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import {
   LayoutDashboard,
   Monitor,
+  Radar,
   FileCode,
   Bell,
   ShieldAlert,
@@ -275,6 +276,9 @@ export const navSections: NavSection[] = [
     items: [
       { name: 'Reports', labelKey: 'nav.reports', href: '/reports', icon: FileText, requiredPermission: { resource: 'reports', action: 'read' } },
       { name: 'Analytics', labelKey: 'nav.analytics', href: '/analytics', icon: BarChart3, requiredPermission: { resource: 'reports', action: 'read' } },
+      // Fleet migration/decommission posture report (#3244) — backed by
+      // GET /devices/management-posture/summary, which enforces devices:read.
+      { name: 'Fleet Posture', labelKey: 'nav.fleetPosture', href: '/devices/posture', icon: Radar, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Audit Trail', labelKey: 'nav.auditTrail', href: '/audit', icon: FileText, requiredPermission: { resource: 'audit', action: 'read' } },
       { name: 'Event Logs', labelKey: 'nav.eventLogs', href: '/logs', icon: ScrollText, requiredPermission: { resource: 'audit', action: 'read' } },
     ],

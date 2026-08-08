@@ -1,5 +1,6 @@
 {
   "nav": {
+    "fleetPosture": "Posture du parc",
     "dashboard": "Tableau de bord",
     "devices": "Dispositifs",
     "alerts": "Alertes",

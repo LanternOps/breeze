@@ -96,6 +96,20 @@ If posture data has not yet been collected for a device, the Management tab disp
 
 ---
 
+## Fleet Posture report
+
+Beyond the per-device tab, the **Fleet Posture** page (sidebar → Reporting → Fleet Posture, or `/devices/posture`) aggregates posture across the whole fleet — the primary surface for RMM migrations and decommissions:
+
+- **Counts by detected product and status** for a chosen category (RMM by default), with the device list behind each count one click away.
+- **Coverage denominators next to every count**: total devices, never scanned, stale scans, and scanned-with-nothing-detected. A device that has never reported posture is shown as **unknown** — never as clean. "0 devices still run the old RMM" only means "safe to uninstall" when the scans backing it are fresh.
+- **Per-organization migration progress**: enrolled in Breeze, running both agents (the healthy mid-migration state), Breeze-only (verified clean), and unknown.
+- **Orphaned remote-access agents flagged as a security finding.** ScreenConnect survives a ConnectWise Automate uninstall; Splashtop survives Atera and Syncro uninstalls. These are called out separately as a standing exposure, not migration housekeeping.
+- **CSV export**, so the report can go to the customer as evidence of a completed migration.
+
+The fleet report is served by two aggregate endpoints (see the API reference below) — one request for the whole fleet instead of one call per device.
+
+---
+
 ## Data freshness
 
 - Posture is collected every **15 minutes** as part of the agent heartbeat cycle.
@@ -109,7 +123,11 @@ If posture data has not yet been collected for a device, the Management tab disp
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/v1/devices/:id/management-posture` | Get the management posture snapshot for a device |
+| GET | `/api/v1/devices/management-posture/summary` | Fleet-wide counts by product/status plus coverage denominators. Query: `orgId?`, `category?` (default `rmm`), `stalenessDays?` (default 7) |
+| GET | `/api/v1/devices/management-posture/devices` | Devices carrying a given product — the drill-down behind a summary count. Query: `product`, `category?`, `status?`, `orgId?`, `page?`, `limit?` |
 | PUT | `/api/v1/agents/:id/management/posture` | (Agent only) Submit a posture scan result |
+
+The summary response reports, per organization: `totalDevices`, `neverScanned`, `stale`, `scannedNoneDetected`, `detectedDevices`, `freshDetectedDevices`, and a `products` array of `{ product, status, deviceCount, freshDeviceCount }`. Devices that have never reported posture are counted in `neverScanned` — they are **unknown**, not clean.
 
 ### Response fields — `GET /api/v1/devices/:id/management-posture`
 

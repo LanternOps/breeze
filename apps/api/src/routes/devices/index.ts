@@ -27,6 +27,7 @@ import { networkRoutes } from './network';
 import { customFieldValuesRoutes } from './customFieldValues';
 import { linksRoutes } from './links';
 import { statsRoutes } from './stats';
+import { postureRoutes } from './posture';
 
 export const deviceRoutes = new Hono();
 
@@ -67,6 +68,11 @@ deviceRoutes.route('/', linksRoutes);
 // Mount fleet stats BEFORE core routes — `GET /stats` is a static path that
 // must not be eaten by the `/:id` matcher in coreRoutes.
 deviceRoutes.route('/', statsRoutes);
+
+// Mount the fleet posture report (#3244) BEFORE core routes — the static
+// `/management-posture/*` paths must not be eaten by the `/:id` matcher
+// (which would read `management-posture` as a device id).
+deviceRoutes.route('/', postureRoutes);
 
 // Mount core routes (/, /:id, PATCH /:id, DELETE /:id)
 deviceRoutes.route('/', coreRoutes);
