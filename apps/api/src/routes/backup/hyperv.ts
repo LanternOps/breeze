@@ -11,6 +11,7 @@ import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services
 import { resolveScopedOrgId } from './helpers';
 import { resolveAllBackupAssignedDevices, resolveBackupConfigForDevice, effectiveBackupModes } from '../../services/featureConfigResolver';
 import { backupCommandResultSchema } from './resultSchemas';
+import { describeZodIssues } from '../../lib/zodIssues';
 import {
   applyBackupCommandResultToJob,
   markBackupJobFailedIfInFlight,
@@ -329,7 +330,7 @@ hypervRoutes.post(
       parsedData = result.stdout ? JSON.parse(result.stdout) : {};
       const parsedBackup = backupCommandResultSchema.safeParse(parsedData);
       if (!parsedBackup.success) {
-        throw new Error(parsedBackup.error.issues.map((issue) => issue.message).join(', '));
+        throw new Error(describeZodIssues(parsedBackup.error));
       }
       const persisted = await applyBackupCommandResultToJob({
         jobId: backupJob.id,

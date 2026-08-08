@@ -230,6 +230,35 @@ func setUploadRetryDelayForTest(d time.Duration) (restore func()) {
 	return func() { uploadRetryDelay = old }
 }
 
+// shortUploadRetryDelay is the backoff for a source-permission denial
+// (retryAfterShortDelay — see classifyUploadFailure). An NTFS ACL never clears,
+// so the wait exists purely to ride out an AV/indexer/filter-driver hold.
+//
+// One second is an operational tradeoff, not a guarantee: Windows promises
+// nothing about how quickly such a hold clears, so this does narrow the
+// recovery window compared with the 30s backoff. It is still the right call —
+// the retry itself (the thing that actually recovers a transient hold) is
+// preserved, and the 27-29s per denied file it removes is what let a run
+// outlive its own shadow copy and lose EVERY file (#3259 -> #3260).
+var shortUploadRetryDelay = 1 * time.Second
+
+// setShortUploadRetryDelayForTest overrides shortUploadRetryDelay. Call the
+// returned restore func (typically via defer) to put the real delay back.
+func setShortUploadRetryDelayForTest(d time.Duration) (restore func()) {
+	old := shortUploadRetryDelay
+	shortUploadRetryDelay = d
+	return func() { shortUploadRetryDelay = old }
+}
+
+// retryDelayFor maps a retry policy to the wall-clock the upload loop spends
+// before its single retry.
+func retryDelayFor(policy uploadRetryPolicy) time.Duration {
+	if policy == retryAfterShortDelay {
+		return shortUploadRetryDelay
+	}
+	return uploadRetryDelay
+}
+
 // CreateSnapshot creates a new snapshot and uploads files via the provider.
 func CreateSnapshot(provider providers.BackupProvider, files []backupFile) (*Snapshot, error) {
 	return CreateSnapshotContext(context.Background(), provider, files)
@@ -241,7 +270,7 @@ func CreateSnapshot(provider providers.BackupProvider, files []backupFile) (*Sna
 // dedupe against a previous manifest (always a full backup); see
 // createSnapshotWithProgress for all three.
 func CreateSnapshotContext(ctx context.Context, provider providers.BackupProvider, files []backupFile) (*Snapshot, error) {
-	return createSnapshotWithProgress(ctx, provider, files, nil, nil, nil)
+	return createSnapshotWithProgress(ctx, provider, files, nil, nil, nil, nil)
 }
 
 // createSnapshotWithProgress creates a new snapshot using the provided
@@ -282,9 +311,19 @@ func CreateSnapshotContext(ctx context.Context, provider providers.BackupProvide
 // the very same snapshot ID) and is authoritative for it; the reference
 // index only offers to point at an OLDER snapshot's object. Checking
 // resumedFiles first in the loop below implements that priority.
-func createSnapshotWithProgress(ctx context.Context, provider providers.BackupProvider, files []backupFile, onProgress ProgressFn, journal *snapshotJournal, prevSnapshot *Snapshot) (*Snapshot, error) {
+//
+// sourceLiveness, if non-nil, reports whether the point-in-time source the
+// files were read from still exists (the VSS shadow copy — see
+// newShadowRootLiveness). It is consulted only after a per-file upload has
+// already failed, and a positive answer aborts the whole run rather than
+// letting every remaining file be recorded as individually bad (#3260). nil
+// means the run reads the live filesystem and has nothing to defend.
+func createSnapshotWithProgress(ctx context.Context, provider providers.BackupProvider, files []backupFile, onProgress ProgressFn, journal *snapshotJournal, prevSnapshot *Snapshot, sourceLiveness sourceLivenessFn) (*Snapshot, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if sourceLiveness == nil {
+		sourceLiveness = func(string) error { return nil }
 	}
 
 	// Register the journal's fd cleanup before any other return path so
@@ -435,6 +474,71 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		return nil, errBackupStopped
 	}
 
+	// abortSourceGone is the single exit point for the abort taken when the
+	// source snapshot goes away mid-run (#3260). The run stops either way; what
+	// differs is what happens to the objects already uploaded, and that turns
+	// entirely on whether this run has a checkpoint journal.
+	//
+	//   journal != nil — the prefix plus the journal ARE the resume state, and
+	//     the next attempt resumes into this very snapshot ID. No manifest:
+	//     publishing one now would stake a completed-snapshot claim on an ID
+	//     the next run is still filling in. Nothing is deleted.
+	//
+	//   journal == nil — there is no resume state, so leaving the prefix
+	//     unpublished would strand the uploaded objects as unreachable orphans.
+	//     Publish a PARTIAL manifest instead, making them a real restore point.
+	//     This is not a "snapshot that lies": a manifest enumerates what the
+	//     snapshot contains, it does not assert completeness, and the run is
+	//     still reported as FAILED with the source-loss reason and the counts.
+	//     Deleting them would be a regression against the pre-#3260 behaviour,
+	//     where the same run finished as a flagged partial success and left a
+	//     usable restore point behind.
+	//
+	// The error carries the counts because #3260's whole complaint is that the
+	// operator-visible failure said nothing useful about what happened.
+	abortSourceGone := func(cause error) (*Snapshot, error) {
+		detail := fmt.Errorf("%w (aborted after %d of %d files uploaded, %d failed)",
+			cause, len(snapshot.Files), filesTotal, len(errs))
+		log.Error("backup source snapshot is gone mid-run, aborting the run",
+			"snapshotId", snapshot.ID,
+			"filesUploaded", len(snapshot.Files),
+			"filesFailed", len(errs),
+			"filesTotal", filesTotal,
+			"resumable", journal != nil,
+			"error", cause.Error(),
+		)
+		if journal != nil {
+			return nil, detail
+		}
+		if len(snapshot.Files) == 0 {
+			// Nothing landed, so there is no restore point to preserve and the
+			// prefix holds no recoverable data. Same disposal as any other
+			// journal-less abort.
+			cleanupSnapshotPrefix(provider, snapshot.ID)
+			return nil, detail
+		}
+		snapshot.UploadFailures = errs
+		if pubErr := publishSnapshotManifest(ctx, provider, snapshot, prefix); pubErr != nil {
+			// Deliberately NOT followed by cleanupSnapshotPrefix. Deletion is
+			// irreversible and this is a data-protection product: retained
+			// orphans cost storage, deleted backups cost the customer their
+			// files. Log loudly enough that an operator can find them.
+			log.Error("could not publish a partial manifest for the aborted run; the uploaded objects are RETAINED but unreachable without one",
+				"snapshotId", snapshot.ID,
+				"prefix", prefix,
+				"filesUploaded", len(snapshot.Files),
+				"error", pubErr.Error(),
+			)
+			return snapshot, errors.Join(detail, pubErr)
+		}
+		log.Warn("published a PARTIAL manifest for the aborted run; it restores the files that landed before the source snapshot went away",
+			"snapshotId", snapshot.ID,
+			"filesUploaded", len(snapshot.Files),
+			"filesTotal", filesTotal,
+		)
+		return snapshot, detail
+	}
+
 	for _, file := range files {
 		if err := ctx.Err(); err != nil {
 			return abortStopped()
@@ -482,7 +586,16 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		uploadStart := time.Now()
 		uploadErr := attemptFileUpload(ctx, provider, file, backupPath)
 		if uploadErr != nil && !errors.Is(uploadErr, errBackupStopped) {
-			if reason, permanent := classifyPermanentUploadError(uploadErr, file.sourcePath); permanent {
+			// Before spending anything else on this failure, make sure the
+			// source we are reading from still exists. If the shadow copy died,
+			// this file is not bad and neither is any file after it — sleeping
+			// on a retry, and then blaming the file, is exactly the behaviour
+			// that turned 15 unreadable files into 40 lost ones (#3260).
+			if goneErr := sourceLiveness(file.sourcePath); goneErr != nil {
+				return abortSourceGone(goneErr)
+			}
+			policy, reason := classifyUploadFailure(uploadErr, file.sourcePath)
+			if policy == skipWithoutRetry {
 				// The source is locked by a live process, already gone, or an
 				// unhydratable cloud placeholder. A retry cannot change that,
 				// so skip immediately instead of burning uploadRetryDelay on a
@@ -505,21 +618,35 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 				// converted to a plain error). Job-context cancel during the
 				// backoff wait aborts immediately — never retried.
 				//
+				// retryDelayFor picks the wait: the full backoff for an
+				// unrecognised (probably transient) failure, or the short one
+				// for a source-permission denial, which is nearly always a
+				// structural ACL (#3259).
+				//
 				// Warn, not debug: a single retry is the first observable symptom
 				// of a stalling destination, and it is the point at which we have
 				// already burned the full per-file deadline.
+				retryDelay := retryDelayFor(policy)
+				if reason == "" {
+					// The failure was not attributable to the source file (a
+					// destination outage, a provider-side error, an
+					// unrecognised errno). Say so rather than logging an empty
+					// field, which reads like a dropped value.
+					reason = "unclassified"
+				}
 				log.Warn("file upload failed, retrying once",
 					"path", file.sourcePath,
 					"bytes", file.size,
 					"elapsedMs", time.Since(uploadStart).Milliseconds(),
 					"deadlineMs", deadline.Milliseconds(),
-					"retryDelayMs", uploadRetryDelay.Milliseconds(),
+					"retryDelayMs", retryDelay.Milliseconds(),
+					"reason", reason,
 					"error", uploadErr.Error(),
 				)
 				select {
 				case <-ctx.Done():
 					uploadErr = errBackupStopped
-				case <-time.After(uploadRetryDelay):
+				case <-time.After(retryDelay):
 					uploadErr = attemptFileUpload(ctx, provider, file, backupPath)
 				}
 			}
@@ -527,6 +654,15 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		if uploadErr != nil {
 			if errors.Is(uploadErr, errBackupStopped) {
 				return abortStopped()
+			}
+			// Probed a second time on purpose: the retry above is the window in
+			// which the snapshot most often dies, and #3260's own tell was a
+			// file whose error flipped from ACCESS_DENIED to PATH_NOT_FOUND
+			// between the first attempt and the retry. Costs one stat per
+			// failing file, and the very first one to see a dead root ends the
+			// run — so at most one extra stat beyond the abort itself.
+			if goneErr := sourceLiveness(file.sourcePath); goneErr != nil {
+				return abortSourceGone(goneErr)
 			}
 			err := fmt.Errorf("failed to upload %s: %w", file.sourcePath, uploadErr)
 			errs = append(errs, err)
@@ -618,9 +754,38 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		return abortStopped()
 	}
 
+	if err := publishSnapshotManifest(ctx, provider, snapshot, prefix); err != nil {
+		if errors.Is(err, errBackupStopped) {
+			// A manifest-upload deadline expiry is fatal for the snapshot too
+			// (unlike a per-file data upload): without the manifest the
+			// snapshot isn't restorable, so there's nothing to keep going for.
+			return abortStopped()
+		}
+		return snapshot, err
+	}
+
+	if journal != nil {
+		if err := journal.Complete(); err != nil {
+			log.Warn("failed to remove completed checkpoint journal", "error", err.Error())
+		}
+		completed = true
+	}
+
+	return snapshot, nil
+}
+
+// publishSnapshotManifest serializes snapshot's manifest and uploads it under
+// prefix, making the objects already stored there a reachable restore point.
+//
+// Extracted so the mid-run source-loss abort can publish the partial set it
+// managed to store (see abortSourceGone) using exactly the same code path as a
+// normal completion — a second, subtly different manifest writer is how the two
+// would drift apart. errBackupStopped is returned unwrapped so callers can tell
+// a job cancel from a genuine manifest failure.
+func publishSnapshotManifest(ctx context.Context, provider providers.BackupProvider, snapshot *Snapshot, prefix string) error {
 	manifestPath, manifestErr := writeSnapshotManifest(snapshot)
 	if manifestErr != nil {
-		return snapshot, manifestErr
+		return manifestErr
 	}
 	defer os.Remove(manifestPath)
 
@@ -635,22 +800,11 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	cancelAttempt()
 	if manifestUploadErr != nil {
 		if errors.Is(manifestUploadErr, errBackupStopped) {
-			// A manifest-upload deadline expiry is fatal for the snapshot too
-			// (unlike a per-file data upload): without the manifest the
-			// snapshot isn't restorable, so there's nothing to keep going for.
-			return abortStopped()
+			return manifestUploadErr
 		}
-		return snapshot, fmt.Errorf("failed to upload snapshot manifest: %w", manifestUploadErr)
+		return fmt.Errorf("failed to upload snapshot manifest: %w", manifestUploadErr)
 	}
-
-	if journal != nil {
-		if err := journal.Complete(); err != nil {
-			log.Warn("failed to remove completed checkpoint journal", "error", err.Error())
-		}
-		completed = true
-	}
-
-	return snapshot, nil
+	return nil
 }
 
 // attemptFileUpload runs a single upload attempt for file against a fresh

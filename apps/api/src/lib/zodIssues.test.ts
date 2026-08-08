@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
   describeFirstZodIssue,
+  describeZodIssues,
   flattenZodIssues,
   flattenedZodDetails,
   zodValidationErrorBody,
@@ -88,5 +89,42 @@ describe('describeFirstZodIssue', () => {
 
   it('returns null when there are no issues at all', () => {
     expect(describeFirstZodIssue({ issues: [] })).toBeNull();
+  });
+});
+
+describe('describeZodIssues', () => {
+  // The #3260 case verbatim: the agent sent a null backup result payload and
+  // the operator-visible error read "Invalid input: expected object, received
+  // null" with no indication of WHAT was null.
+  it('labels a root-level failure as <root> instead of dropping the path', () => {
+    const error = z.object({ status: z.string() }).safeParse(null).error!;
+    const described = describeZodIssues(error);
+    expect(described).toContain('<root>');
+    expect(described).toContain('expected object, received null');
+  });
+
+  it('names the offending field for a nested failure', () => {
+    const error = z.object({ result: z.object({ status: z.string() }) }).safeParse({ result: { status: 5 } })
+      .error!;
+    expect(describeZodIssues(error)).toMatch(/^result\.status: /);
+  });
+
+  it('lists every issue, path-qualified', () => {
+    const error = z.object({ a: z.string(), b: z.number() }).safeParse({ a: 1, b: 'x' }).error!;
+    const described = describeZodIssues(error);
+    expect(described).toContain('a: ');
+    expect(described).toContain('b: ');
+    expect(described).toContain('; ');
+  });
+
+  it('unwraps union noise rather than reporting a bare "Invalid input"', () => {
+    const error = nested.safeParse({ items: [{ conditions: [{ type: 'a', value: 'nope' }] }] }).error!;
+    const described = describeZodIssues(error);
+    expect(described).toContain('items.0.conditions.0.value');
+    expect(described).not.toBe('<root>: Invalid input');
+  });
+
+  it('degrades to a stated placeholder rather than an empty string', () => {
+    expect(describeZodIssues({ issues: [] })).toBe('no validation detail available');
   });
 });

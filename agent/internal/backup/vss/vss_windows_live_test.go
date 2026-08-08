@@ -108,6 +108,29 @@ func TestLive_CreateShadowCopy_EndToEnd(t *testing.T) {
 		t.Errorf("%q is empty through the shadow copy", shadowWindows)
 	}
 
+	// Which form of the ROOT itself is stat-able, recorded on real hardware.
+	//
+	// This is the arming precondition for the #3260 mid-run snapshot-loss guard
+	// (backup.newShadowRootLiveness): it calibrates by os.Stat-ing each shadow
+	// root and watches only the roots that answer. Everything above goes through
+	// a SUBDIRECTORY, so none of it says whether the bare device path — which is
+	// what CreateShadowCopy returns, and what the guard is handed — resolves.
+	// If neither form did, the guard would silently disarm on every real run.
+	//
+	// Not a hard failure on the bare form: the guard tries `root + "\\"` as a
+	// fallback precisely because the bare device object may not be stat-able.
+	// At least ONE of them must work, and the log line records which, so a
+	// future change to resolveStatablePath can be checked against reality.
+	_, bareErr := os.Stat(shadow)
+	withSep := shadow + `\`
+	_, sepErr := os.Stat(withSep)
+	t.Logf("shadow root stat: bare %q -> %v; with separator %q -> %v", shadow, bareErr, withSep, sepErr)
+	if bareErr != nil && sepErr != nil {
+		t.Errorf("neither shadow root form is stat-able (bare: %v; with separator: %v) — "+
+			"backup.newShadowRootLiveness would exclude every root and the #3260 guard would be inert",
+			bareErr, sepErr)
+	}
+
 	t.Logf("shadow copy %s -> %s (%d entries under \\Windows, %d writers)",
 		vol, shadow, len(entries), len(session.Writers))
 }
