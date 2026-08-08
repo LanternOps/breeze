@@ -143,3 +143,24 @@ export function describeFirstZodIssue(error: { issues: readonly ZodIssueLike[] }
   const path = first.path.length > 0 ? `${formatIssuePath(first.path)}: ` : '';
   return `${path}${first.message}`;
 }
+
+/** Rendered for an issue whose path is empty — the value as a whole is wrong. */
+const ROOT_PATH_LABEL = '<root>';
+
+/**
+ * Every issue as `path: message`, joined — for a single operator-facing error
+ * string that has to identify WHICH field was rejected.
+ *
+ * Unlike `describeFirstZodIssue`, an empty path renders as `<root>` rather than
+ * being omitted. That distinction is the whole point: a run whose entire result
+ * payload was null produced `Invalid input: expected object, received null`
+ * with an empty path, and dropping the path made it impossible to tell "the
+ * payload is null" from "some unnamed field inside it is null" (#3260).
+ */
+export function describeZodIssues(error: { issues: readonly ZodIssueLike[] }): string {
+  const issues = flattenZodIssues(error.issues);
+  if (issues.length === 0) return 'no validation detail available';
+  return issues
+    .map((issue) => `${formatIssuePath(issue.path) || ROOT_PATH_LABEL}: ${issue.message}`)
+    .join('; ');
+}

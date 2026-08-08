@@ -37,6 +37,7 @@ import {
   tryParseBackupResultPayload,
 } from '../services/backupProgress';
 import { backupCommandResultSchema } from './backup/resultSchemas';
+import { describeZodIssues } from '../lib/zodIssues';
 import { matchRoleScopedAgentTokenHash, suspendAgentToken, type AgentCredentialRole } from '../middleware/agentAuth';
 import { AGENT_TOKEN_SUSPEND_REASON } from '../services/agentTokenSuspension';
 import {
@@ -1231,7 +1232,7 @@ export async function processOrphanedCommandResult(
       const backupData = parsedBackup.success ? parsedBackup.data : undefined;
       const malformedPayloadError = parsedBackup.success
         ? null
-        : `Malformed backup result payload: ${parsedBackup.error.issues.map((issue) => issue.message).join(', ')}`;
+        : `Malformed backup result payload: ${describeZodIssues(parsedBackup.error)}`;
 
       if (isRedisAvailable()) {
         // Exit the held org-scoped transaction context for the Redis

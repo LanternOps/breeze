@@ -38,6 +38,7 @@ import {
 import * as backupEnqueue from './backupEnqueue';
 import { resolveBackupStorageEncryptionPlan } from '../services/backupEncryption';
 import { backupCommandResultSchema } from '../routes/backup/resultSchemas';
+import { describeZodIssues } from '../lib/zodIssues';
 import { getDueOccurrenceKey } from '../routes/backup/helpers';
 import { applyBackupCommandResultToJob } from '../services/backupResultPersistence';
 import { markBackupJobFailedIfInFlight } from '../services/backupResultPersistence';
@@ -711,7 +712,7 @@ async function processResults(
   if (!parsed.success) {
     await markBackupJobFailedIfInFlight(
       data.jobId,
-      `Malformed backup result payload: ${parsed.error.issues.map((issue) => issue.message).join(', ')}`,
+      `Malformed backup result payload: ${describeZodIssues(parsed.error)}`,
     );
     return { processed: false };
   }

@@ -427,8 +427,18 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		}
 	}
 
+	// sourceLiveness watches the shadow-copy roots this run reads from so the
+	// upload loop can tell "the snapshot died" apart from "these files are
+	// bad" (#3260). Built here, immediately after the session is created and
+	// the paths are rewritten onto it, so its self-calibrating stat sees the
+	// roots at their freshest — the file walk below can itself take minutes.
+	// Stays nil for a non-VSS run: reading the live filesystem has nothing to
+	// defend.
+	var sourceLiveness sourceLivenessFn
+
 	// Rewrite paths to shadow copy device paths when VSS is active
 	if vssSession != nil {
+		sourceLiveness = newShadowRootLiveness(vssSession.ShadowPaths)
 		var unmappedIdx []int
 		backupPaths, unmappedIdx = rewritePathsForVSS(backupPaths, vssSession.ShadowPaths, systemStateStagingIdx)
 		if liveReads := reportableLiveReads(backupPaths, unmappedIdx, systemStateStagingIdx); len(liveReads) > 0 {
@@ -629,7 +639,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		}
 	}
 
-	snapshot, snapErr := createSnapshotWithProgress(runCtx, m.config.Provider, files, progressFn, journal, prevSnapshot)
+	snapshot, snapErr := createSnapshotWithProgress(runCtx, m.config.Provider, files, progressFn, journal, prevSnapshot, sourceLiveness)
 	if errors.Is(snapErr, errBackupStopped) {
 		return stopBackupRun()
 	}

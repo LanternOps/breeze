@@ -341,7 +341,7 @@ func TestSnapshotProgressCallback(t *testing.T) {
 	restore := setProgressThrottleForTest(0) // emit every file in tests
 	defer restore()
 	_, err := createSnapshotWithProgress(context.Background(), p, files,
-		func(fd, ft int, bd, bt int64, snapshotID string) { got = append(got, bd) }, nil, nil)
+		func(fd, ft int, bd, bt int64, snapshotID string) { got = append(got, bd) }, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +374,7 @@ func TestSnapshotProgressCarriesSnapshotIDFromFirstEmission(t *testing.T) {
 	snapshot, err := createSnapshotWithProgress(context.Background(), p, files,
 		func(fd, ft int, bd, bt int64, snapshotID string) {
 			got = append(got, emission{filesDone: fd, bytesDone: bd, snapshotID: snapshotID})
-		}, nil, nil)
+		}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -709,7 +709,7 @@ func TestCreateSnapshotWithProgress_StopWithoutJournal_CleansUpPrefix(t *testing
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := createSnapshotWithProgress(ctx, provider, files, nil, nil, nil)
+		_, err := createSnapshotWithProgress(ctx, provider, files, nil, nil, nil, nil)
 		errCh <- err
 	}()
 
@@ -759,7 +759,7 @@ func TestCreateSnapshotWithProgress_StopWithJournal_PreservesPrefixAndJournal(t 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := createSnapshotWithProgress(ctx, provider, files, nil, journal, nil)
+		_, err := createSnapshotWithProgress(ctx, provider, files, nil, journal, nil, nil)
 		errCh <- err
 	}()
 
@@ -830,7 +830,7 @@ func TestCreateSnapshotWithProgress_ResumeAfterInterruption(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := createSnapshotWithProgress(ctx, provider, files, nil, journal1, nil)
+		_, err := createSnapshotWithProgress(ctx, provider, files, nil, journal1, nil, nil)
 		errCh <- err
 	}()
 	select {
@@ -873,7 +873,7 @@ func TestCreateSnapshotWithProgress_ResumeAfterInterruption(t *testing.T) {
 		recording.files[k] = v
 	}
 
-	snapshot2, err := createSnapshotWithProgress(context.Background(), recording, files, nil, journal2, nil)
+	snapshot2, err := createSnapshotWithProgress(context.Background(), recording, files, nil, journal2, nil, nil)
 	if err != nil {
 		t.Fatalf("run 2 failed: %v", err)
 	}
@@ -947,7 +947,7 @@ func TestSnapshotRegistrationEmissionReportsResumedCounters(t *testing.T) {
 	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files,
 		func(fd, ft int, bd, bt int64, snapshotID string) {
 			got = append(got, emission{filesDone: fd, bytesDone: bd, snapshotID: snapshotID})
-		}, journal, nil)
+		}, journal, nil, nil)
 	if err != nil {
 		t.Fatalf("createSnapshotWithProgress failed: %v", err)
 	}
@@ -997,7 +997,7 @@ func TestCreateSnapshotWithProgress_ChangedFileReuploadsAndSupersedes(t *testing
 		{sourcePath: changedPath, snapshotPath: "path_0/changed.txt", size: int64(len("new content")), modTime: newModTime},
 	}
 
-	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, journal, nil)
+	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, journal, nil, nil)
 	if err != nil {
 		t.Fatalf("createSnapshotWithProgress failed: %v", err)
 	}
@@ -1033,7 +1033,7 @@ func TestCreateSnapshotWithProgress_JournalRecordFailureDoesNotFailBackup(t *tes
 		t.Fatalf("test setup: failed to close journal file: %v", err)
 	}
 
-	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, journal, nil)
+	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, journal, nil, nil)
 	if err != nil {
 		t.Fatalf("a broken journal must not fail the backup, got: %v", err)
 	}
@@ -1093,7 +1093,7 @@ func TestCreateSnapshotWithProgress_VSSOriginalPathResumeMatch(t *testing.T) {
 		modTime:      modTime,
 	}
 
-	snapshot, err := createSnapshotWithProgress(context.Background(), provider, []backupFile{run2File}, nil, journal2, nil)
+	snapshot, err := createSnapshotWithProgress(context.Background(), provider, []backupFile{run2File}, nil, journal2, nil, nil)
 	if err != nil {
 		t.Fatalf("run 2 failed: %v", err)
 	}
@@ -1124,7 +1124,7 @@ func TestCreateSnapshotWithProgress_NonVSSFilesCarryNoOriginalPath(t *testing.T)
 		{sourcePath: writeTempFile(t, "plain"), snapshotPath: "a", size: 5}, // originalPath left zero-value
 	}
 
-	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, nil, nil)
+	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("createSnapshotWithProgress failed: %v", err)
 	}
@@ -1442,7 +1442,7 @@ func TestSnapshotProgressKeepalive_EmitsDuringInFlightUpload(t *testing.T) {
 				case progressed <- emission{fd, ft, bd, bt}:
 				default:
 				}
-			}, nil, nil)
+			}, nil, nil, nil)
 		done <- err
 	}()
 
@@ -1543,7 +1543,7 @@ func TestCreateSnapshotWithProgress_IncrementalTwoRun_ReferencesUnchangedFiles(t
 		{sourcePath: f2, snapshotPath: "path_0/f2.txt", size: 3, modTime: modTime},
 		{sourcePath: f3, snapshotPath: "path_0/f3.txt", size: 5, modTime: modTime},
 	}
-	snapshot1, err := createSnapshotWithProgress(context.Background(), provider, run1Files, nil, nil, nil)
+	snapshot1, err := createSnapshotWithProgress(context.Background(), provider, run1Files, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("run 1 failed: %v", err)
 	}
@@ -1583,7 +1583,7 @@ func TestCreateSnapshotWithProgress_IncrementalTwoRun_ReferencesUnchangedFiles(t
 		{sourcePath: f2, snapshotPath: "path_0/f2.txt", size: int64(len("TWO-CHANGED")), modTime: newModTime}, // changed
 		// f3 deliberately absent — deleted from disk before this run's walk.
 	}
-	snapshot2, err := createSnapshotWithProgress(context.Background(), provider, run2Files, nil, nil, prev)
+	snapshot2, err := createSnapshotWithProgress(context.Background(), provider, run2Files, nil, nil, prev, nil)
 	if err != nil {
 		t.Fatalf("run 2 failed: %v", err)
 	}
@@ -1674,7 +1674,7 @@ func TestIncrementalBackup_FetchFailureFallsBackToFullRun(t *testing.T) {
 	}
 	provider.listErr = nil // the run itself must still be able to list/delete normally
 
-	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, nil, prev)
+	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, nil, prev, nil)
 	if err != nil {
 		t.Fatalf("full-run fallback failed: %v", err)
 	}
@@ -1732,7 +1732,7 @@ func TestCreateSnapshotWithProgress_JournalResumeWinsOverReference(t *testing.T)
 	provider := newMockProvider()
 	files := []backupFile{{sourcePath: filePath, snapshotPath: "path_0/f.txt", size: int64(len("content")), modTime: modTime}}
 
-	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, journal, prevSnapshot)
+	snapshot, err := createSnapshotWithProgress(context.Background(), provider, files, nil, journal, prevSnapshot, nil)
 	if err != nil {
 		t.Fatalf("createSnapshotWithProgress failed: %v", err)
 	}

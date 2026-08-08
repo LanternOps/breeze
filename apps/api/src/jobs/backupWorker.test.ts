@@ -447,3 +447,55 @@ describe('processResults — agent terminal status hop (#3000)', () => {
     );
   });
 });
+
+// #3260: a malformed `result` payload used to report
+// `Malformed backup result payload: expected object, received null` with no
+// indication of WHICH field was wrong, because the old message only joined
+// `issue.message` and dropped `issue.path` — indistinguishable from "some
+// named field inside the payload is null". describeZodIssues fixes this by
+// rendering an issue's empty path as the literal `<root>` instead of
+// silently omitting it.
+//
+// NOTE: a literal top-level `result: null` cannot be driven through this
+// function as a regression case — `data.result.status` (evaluated one line
+// above the schema parse, to capture the outer command status) dereferences
+// `data.result` before `backupCommandResultSchema.safeParse` ever runs, so a
+// null `result` throws a TypeError instead of reaching the malformed-payload
+// branch this test targets. An array reproduces the same root-level
+// "expected object" Zod failure (empty `issue.path`) without that crash, so
+// it exercises the same describeZodIssues code path #3260 was about.
+describe('processResults — malformed payload path rendering (#3260)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('labels a root-level schema failure as <root> instead of dropping the path', async () => {
+    await __testOnly.processResults({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      result: [],
+    } as any);
+
+    expect(markBackupJobFailedIfInFlightMock).toHaveBeenCalledWith(
+      'job-1',
+      expect.stringMatching(/^Malformed backup result payload:.*<root>/)
+    );
+  });
+
+  it('labels a malformed named field with its own path, not <root>', async () => {
+    await __testOnly.processResults({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      // filesBackedUp must be a nonnegative int — a negative number fails
+      // validation at a named path, which must NOT collapse to <root>.
+      result: { status: 'completed', filesBackedUp: -1 },
+    } as any);
+
+    const [, message] = markBackupJobFailedIfInFlightMock.mock.calls[0]!;
+    expect(message).toMatch(/^Malformed backup result payload:/);
+    expect(message).toContain('filesBackedUp');
+    expect(message).not.toContain('<root>');
+  });
+});

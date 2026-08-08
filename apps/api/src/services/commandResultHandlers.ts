@@ -29,6 +29,7 @@ import { processBackupVerificationResult } from '../routes/backup/verificationSe
 import { applyBackupCommandResultToJob } from './backupResultPersistence';
 import { applyVaultSyncCommandResult } from './vaultSyncPersistence';
 import { backupCommandResultSchema } from '../routes/backup/resultSchemas';
+import { describeZodIssues } from '../lib/zodIssues';
 import { redactSecretsFromOutput, redactOptionalSecretText } from './secretRedaction';
 import { updateRestoreJobByCommandId } from './restoreResultPersistence';
 import { captureException } from './sentry';
@@ -228,7 +229,7 @@ async function handleProviderBackedBackupResult({ agentId, command, result, reso
             deviceId: backupJob.deviceId,
             resultStatus: 'failed',
             result: {
-              error: `Malformed backup result payload: ${parsedBackup.error.issues.map((issue) => issue.message).join(', ')}`,
+              error: `Malformed backup result payload: ${describeZodIssues(parsedBackup.error)}`,
             },
           });
         } else {
