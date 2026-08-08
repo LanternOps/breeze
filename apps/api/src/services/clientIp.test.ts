@@ -4,6 +4,7 @@ import {
   getTrustedClientIpOrUndefined,
   getImmediatePeerIpOrUndefined,
   isTrustedProxySource,
+  rateLimitIpKey,
   setProxyTrustMetricsRecorder,
   trustsForwardedHeadersFrom,
   _resetProxyTrustWarnStateForTests,
@@ -521,6 +522,44 @@ describe('clientIp', () => {
 
     it('returns undefined when there is no socket (non-Node runtime / test shim)', () => {
       expect(getImmediatePeerIpOrUndefined(makeContext({}))).toBeUndefined();
+    });
+  });
+  describe('rateLimitIpKey', () => {
+    // Rate-limit BUCKET identity only. Audit logging, allowlists and WS-ticket
+    // IP binding keep the full address on purpose — see the helper's doc.
+    it('passes IPv4 through unchanged', () => {
+      expect(rateLimitIpKey('203.0.113.9')).toBe('203.0.113.9');
+      expect(rateLimitIpKey('10.0.0.1')).toBe('10.0.0.1');
+    });
+
+    it('collapses every address in one /64 onto a single bucket', () => {
+      // A residential IPv6 subscriber routinely controls this whole range, so
+      // per-address buckets would make the limit free to bypass.
+      const bucket = rateLimitIpKey('2001:db8:1:2::1');
+      expect(rateLimitIpKey('2001:db8:1:2::2')).toBe(bucket);
+      expect(rateLimitIpKey('2001:db8:1:2:ffff:ffff:ffff:ffff')).toBe(bucket);
+      expect(rateLimitIpKey('2001:0db8:0001:0002:0000:0000:0000:00ff')).toBe(bucket);
+      expect(bucket).toBe('2001:db8:1:2::');
+    });
+
+    it('keeps different /64s in different buckets', () => {
+      const a = rateLimitIpKey('2001:db8:1:2::1');
+      expect(rateLimitIpKey('2001:db8:1:3::1')).not.toBe(a);
+      expect(rateLimitIpKey('2001:db8:2:2::1')).not.toBe(a);
+      expect(rateLimitIpKey('2001:db9:1:2::1')).not.toBe(a);
+    });
+
+    it('does not fold IPv4-mapped IPv6 — that would pool every IPv4 client', () => {
+      // ::ffff:a.b.c.d all share ::/64, so truncating would give a dual-stack
+      // listener ONE bucket for the entire IPv4 internet.
+      expect(rateLimitIpKey('::ffff:203.0.113.9')).toBe('::ffff:203.0.113.9');
+      expect(rateLimitIpKey('::ffff:198.51.100.1')).toBe('::ffff:198.51.100.1');
+    });
+
+    it('passes non-IP sentinels and junk through so they keep their existing bucket', () => {
+      expect(rateLimitIpKey('unknown')).toBe('unknown');
+      expect(rateLimitIpKey('')).toBe('');
+      expect(rateLimitIpKey('2001:db8::junk::1')).toBe('2001:db8::junk::1');
     });
   });
 });

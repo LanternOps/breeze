@@ -791,6 +791,12 @@
       "copiedLink": "Lien de téléchargement copié dans le presse-papiers",
       "copyFailed": "Impossible de copier dans le presse-papiers"
     },
+    "detail": {
+      "heading": "Détail de la session",
+      "noCode": "Le code à usage unique n'a été affiché qu'à la création de cette session et ne peut pas être récupéré. Démarrez une nouvelle session si la personne a besoin d'un autre code.",
+      "attribution": "Référence",
+      "close": "Fermer le détail de la session"
+    },
     "status": {
       "heading": "Avancement de la session",
       "pending": "En attente du lancement du client par l'utilisateur…",
@@ -818,7 +824,8 @@
       "empty": "Aucune session d'assistance pour l'instant.",
       "columnCreated": "Début",
       "columnEnded": "Fin",
-      "unlabeled": "Session sans libellé"
+      "unlabeled": "Session sans libellé",
+      "openSession": "Ouvrir le détail de la session"
     }
   }
 }

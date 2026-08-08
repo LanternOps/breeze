@@ -16,7 +16,55 @@ const { rateLimiter, getRedis, logSessionAudit, getTrustedClientIp } = vi.hoiste
 vi.mock('../services/rate-limit', () => ({ rateLimiter }));
 vi.mock('../services/redis', () => ({ getRedis }));
 vi.mock('./remote/helpers', () => ({ logSessionAudit }));
-vi.mock('../services/clientIp', () => ({ getTrustedClientIp }));
+// clientIp is mocked, but rateLimitIpKey is NOT stubbed to identity — the real
+// implementation is re-exported so the key-shape assertions below stay honest.
+vi.mock('../services/clientIp', async () => {
+  const actual = await vi.importActual<typeof import('../services/clientIp')>('../services/clientIp');
+  return { getTrustedClientIp, rateLimitIpKey: actual.rateLimitIpKey };
+});
+
+/**
+ * The deployment-wide miss budget is exercised for real (not mocked) against a
+ * tiny in-memory stand-in for the Redis sorted set it uses. Mocking the budget
+ * module would only prove the route calls it; what actually needs proving is
+ * that misses from ONE caller degrade the endpoint for EVERY caller, which is
+ * the whole point of the control.
+ */
+function createFakeRedis() {
+  const zsets = new Map<string, Array<{ score: number; member: string }>>();
+  const entries = (key: string) => {
+    let v = zsets.get(key);
+    if (!v) { v = []; zsets.set(key, v); }
+    return v;
+  };
+  const multi = () => {
+    const ops: Array<() => unknown> = [];
+    const chain = {
+      zremrangebyscore(key: string, _min: string, max: number) {
+        ops.push(() => { zsets.set(key, entries(key).filter((e) => e.score > max)); return 0; });
+        return chain;
+      },
+      zadd(key: string, score: number, member: string) {
+        ops.push(() => { entries(key).push({ score, member }); return 1; });
+        return chain;
+      },
+      zcard(key: string) {
+        ops.push(() => entries(key).length);
+        return chain;
+      },
+      expire() { ops.push(() => 1); return chain; },
+      exec: () => Promise.resolve(ops.map((op) => [null, op()] as [null, unknown])),
+    };
+    return chain;
+  };
+  return {
+    multi,
+    /** Test-only: how much budget has been spent. */
+    missCount: () => (zsets.get('support-code:miss-budget') ?? []).length,
+  };
+}
+
+let fakeRedis: ReturnType<typeof createFakeRedis>;
 
 // Binary resolution is stubbed so the download tests never touch the network.
 const { getBinarySource, getGithubAgentUrl, isS3Configured, getPresignedUrl, isS3NotFound } =
@@ -48,7 +96,7 @@ vi.mock('../db', () => {
   const select = vi.fn(() => {
     const rows = selectResults.shift() ?? [];
     const builder: Record<string, unknown> = {};
-    for (const m of ['from', 'where']) builder[m] = vi.fn(() => builder);
+    for (const m of ['from', 'where', 'leftJoin', 'innerJoin']) builder[m] = vi.fn(() => builder);
     builder.limit = vi.fn(() => Promise.resolve(rows));
     return builder;
   });
@@ -85,12 +133,29 @@ vi.mock('../db/schema', () => ({
   },
   enrollmentKeys: {},
   sites: { id: 'sites.id', orgId: 'sites.orgId' },
+  organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' },
+  partners: { id: 'partners.id', name: 'partners.name' },
+  partnerLoginBranding: {
+    partnerId: 'partnerLoginBranding.partnerId',
+    logoUrl: 'partnerLoginBranding.logoUrl',
+    accentColor: 'partnerLoginBranding.accentColor',
+    headline: 'partnerLoginBranding.headline',
+  },
 }));
 
 import { hashSupportCode } from '../services/quickSupportCode';
+import {
+  MISS_BUDGET_PER_WINDOW,
+  _resetSupportCodeMissBudgetStateForTests,
+} from '../services/supportCodeMissBudget';
 import { supportPublicRoutes } from './supportPublic';
 
-const CODE = 'KTM4H7P2X';
+// The mint alphabet is digits 2-9 (a code is read aloud over the phone), so
+// the digit form is the ordinary case here. LEGACY_CODE covers the
+// letters+digits codes minted before the switch, which must still check and
+// redeem — validity is decided by the hash lookup, not by the syntax filter.
+const CODE = '234567892';
+const LEGACY_CODE = 'KTM4H7P2X';
 const FUTURE = new Date(Date.now() + 10 * 60_000);
 const PAST = new Date(Date.now() - 60_000);
 
@@ -128,6 +193,9 @@ beforeEach(() => {
   insertedValues.length = 0;
   updateWhereCalled = 0;
   vi.clearAllMocks();
+  _resetSupportCodeMissBudgetStateForTests();
+  fakeRedis = createFakeRedis();
+  getRedis.mockReturnValue(fakeRedis as unknown);
   rateLimiter.mockResolvedValue({ allowed: true, currentCount: 1 });
   getTrustedClientIp.mockReturnValue('203.0.113.9');
   getBinarySource.mockReturnValue('github');
@@ -147,10 +215,70 @@ afterEach(() => {
 });
 
 describe('GET /check/:code', () => {
+  /** A live session joined to its partner and that partner's login branding. */
+  function brandedRow(overrides: Record<string, unknown> = {}) {
+    return {
+      status: 'pending',
+      codeExpiresAt: FUTURE,
+      partnerName: 'Northwind IT',
+      logoUrl: 'https://cdn.example.com/northwind.png',
+      accentColor: '#1B4F9C',
+      headline: 'Support you can call',
+      ...overrides,
+    };
+  }
+
   it('reports a pending unexpired code as valid', async () => {
     selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
     const body = await (await supportPublicRoutes.request(`/check/${CODE}`)).json();
-    expect(body).toEqual({ valid: true });
+    expect(body).toEqual({ valid: true, branding: null });
+  });
+
+  it('returns the partner branding for a valid code', async () => {
+    selectResults.push([brandedRow()]);
+    const body = await (await supportPublicRoutes.request(`/check/${CODE}`)).json();
+    expect(body).toEqual({
+      valid: true,
+      branding: {
+        partnerName: 'Northwind IT',
+        logoUrl: 'https://cdn.example.com/northwind.png',
+        accentColor: '#1B4F9C',
+        headline: 'Support you can call',
+      },
+    });
+  });
+
+  it('falls back to the partner name when no branding row exists', async () => {
+    selectResults.push([brandedRow({ logoUrl: null, accentColor: null, headline: null })]);
+    const body = await (await supportPublicRoutes.request(`/check/${CODE}`)).json();
+    expect(body).toEqual({
+      valid: true,
+      branding: { partnerName: 'Northwind IT', logoUrl: null, accentColor: null, headline: null },
+    });
+  });
+
+  it('drops an accent color that is not a plain 6-digit hex', async () => {
+    // The value lands in an inline style on a public page — anything that is
+    // not exactly #RRGGBB is dropped rather than echoed.
+    selectResults.push([brandedRow({ accentColor: 'red; background:url(javascript:1)' })]);
+    const body = await (await supportPublicRoutes.request(`/check/${CODE}`)).json();
+    expect(body.branding.accentColor).toBeNull();
+    expect(body.branding.partnerName).toBe('Northwind IT');
+  });
+
+  it('never returns tenant identifiers alongside the branding', async () => {
+    selectResults.push([brandedRow()]);
+    const body = await (await supportPublicRoutes.request(`/check/${CODE}`)).json();
+    expect(Object.keys(body.branding).sort())
+      .toEqual(['accentColor', 'headline', 'logoUrl', 'partnerName']);
+    expect(JSON.stringify(body)).not.toMatch(/partnerId|orgId|sessionId/);
+  });
+
+  it('reveals nothing for an invalid code even when branding exists', async () => {
+    selectResults.push([brandedRow({ status: 'claimed' })]);
+    const body = await (await supportPublicRoutes.request(`/check/${CODE}`)).json();
+    expect(body).toEqual({ valid: false });
+    expect(JSON.stringify(body)).not.toContain('Northwind');
   });
 
   it('reports an expired code as invalid', async () => {
@@ -176,14 +304,173 @@ describe('GET /check/:code', () => {
 
   it('accepts the human-formatted code', async () => {
     selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
-    expect(await (await supportPublicRoutes.request('/check/KTM-4H7-P2X')).json())
-      .toEqual({ valid: true });
+    expect(await (await supportPublicRoutes.request('/check/234-567-892')).json())
+      .toEqual({ valid: true, branding: null });
+  });
+
+  it('still accepts a legacy letters+digits code minted before the alphabet switch', async () => {
+    selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
+    expect(await (await supportPublicRoutes.request(`/check/${LEGACY_CODE}`)).json())
+      .toEqual({ valid: true, branding: null });
+  });
+
+  it('truncates an over-long partner name and headline rather than dropping branding', async () => {
+    selectResults.push([brandedRow({
+      partnerName: 'N'.repeat(500),
+      headline: 'H'.repeat(500),
+    })]);
+    const body = await (await supportPublicRoutes.request(`/check/${CODE}`)).json();
+    expect(body.valid).toBe(true);
+    expect(body.branding.partnerName).toBe('N'.repeat(120));
+    expect(body.branding.headline).toBe('H'.repeat(200));
+  });
+
+  it('drops a logo URL that is not https', async () => {
+    // The value lands in an <img src> on an unauthenticated page. http: is a
+    // plaintext beacon and mixed content; javascript:/data: are worse.
+    for (const logoUrl of ['http://cdn.example.com/l.png', 'javascript:alert(1)', 'data:image/png;base64,AAA', 'not a url']) {
+      selectResults.push([brandedRow({ logoUrl })]);
+      const body = await (await supportPublicRoutes.request(`/check/${CODE}`)).json();
+      expect(body.branding.logoUrl, logoUrl).toBeNull();
+      expect(body.branding.partnerName).toBe('Northwind IT');
+    }
+  });
+
+  it('keeps an https logo URL', async () => {
+    selectResults.push([brandedRow({ logoUrl: 'https://cdn.example.com/northwind.png' })]);
+    const body = await (await supportPublicRoutes.request(`/check/${CODE}`)).json();
+    expect(body.branding.logoUrl).toBe('https://cdn.example.com/northwind.png');
+  });
+
+  it('omits the branding block when the partner name is blank', async () => {
+    selectResults.push([brandedRow({ partnerName: '   ' })]);
+    const body = await (await supportPublicRoutes.request(`/check/${CODE}`)).json();
+    expect(body).toEqual({ valid: true, branding: null });
+  });
+
+  it('sets no-store, private on valid, invalid, malformed and 429 responses', async () => {
+    // The code is in the path and the answer flips from valid to invalid within
+    // 15 minutes — nothing about /check is cacheable, including the 429 (a
+    // cached one would be wrong for the next visitor behind the same NAT).
+    selectResults.push([brandedRow()]);
+    const valid = await supportPublicRoutes.request(`/check/${CODE}`);
+    expect(valid.headers.get('Cache-Control')).toBe('no-store, private');
+
+    selectResults.push([]);
+    const invalid = await supportPublicRoutes.request(`/check/${CODE}`);
+    expect(invalid.headers.get('Cache-Control')).toBe('no-store, private');
+
+    const malformed = await supportPublicRoutes.request('/check/not-a-code');
+    expect(malformed.headers.get('Cache-Control')).toBe('no-store, private');
+
+    rateLimiter.mockResolvedValue({ allowed: false, currentCount: 99 });
+    const limited = await supportPublicRoutes.request(`/check/${CODE}`);
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('Cache-Control')).toBe('no-store, private');
   });
 
   it('429s when rate limited', async () => {
     rateLimiter.mockResolvedValue({ allowed: false, currentCount: 99 });
     const res = await supportPublicRoutes.request(`/check/${CODE}`);
     expect(res.status).toBe(429);
+  });
+});
+
+/**
+ * The control that actually bounds a DISTRIBUTED guesser. Per-IP limits only
+ * ever constrain one host; these tests are about the deployment-wide counter.
+ */
+describe('deployment-wide miss budget', () => {
+  /** Burn `n` well-formed misses through /check. */
+  async function burnMisses(n: number) {
+    for (let i = 0; i < n; i++) {
+      selectResults.push([]);
+      await supportPublicRoutes.request(`/check/${CODE}`);
+    }
+  }
+
+  it('counts a well-formed miss on check, download and redeem alike', async () => {
+    selectResults.push([]);
+    await supportPublicRoutes.request(`/check/${CODE}`);
+    expect(fakeRedis.missCount()).toBe(1);
+
+    selectResults.push([]);
+    await supportPublicRoutes.request(`/download/windows?code=${CODE}`);
+    expect(fakeRedis.missCount()).toBe(2);
+
+    selectResults.push([]);
+    await redeem();
+    expect(fakeRedis.missCount()).toBe(3);
+  });
+
+  it('does not charge a successful lookup', async () => {
+    selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
+    expect((await supportPublicRoutes.request(`/check/${CODE}`)).status).toBe(200);
+
+    const session = pendingSession();
+    selectResults.push([session]);
+    updateResults.push([{ ...session, status: 'claimed' }]);
+    selectResults.push([{ id: 'site-1' }]);
+    expect((await redeem()).status).toBe(200);
+
+    expect(fakeRedis.missCount()).toBe(0);
+  });
+
+  it('does not charge malformed input', async () => {
+    // Not a guess against the code space — it can never match a stored hash.
+    await supportPublicRoutes.request('/check/not-a-code');
+    await supportPublicRoutes.request('/download/windows?code=nope');
+    // 9 chars so it clears the zod length check, but 0/1 are outside the code
+    // alphabet so normalizeSupportCode still rejects it.
+    await redeem({ code: '111111111' });
+    expect(fakeRedis.missCount()).toBe(0);
+  });
+
+  it('does not charge a lost claim race — that code was real', async () => {
+    const session = pendingSession();
+    selectResults.push([session]);
+    updateResults.push([]); // the racer already flipped it
+    expect((await redeem()).status).toBe(404);
+    expect(fakeRedis.missCount()).toBe(0);
+  });
+
+  it('429s a DIFFERENT IP once one guesser has spent the budget', async () => {
+    getTrustedClientIp.mockReturnValue('198.51.100.1'); // the misser
+    await burnMisses(MISS_BUDGET_PER_WINDOW);
+    expect(fakeRedis.missCount()).toBe(MISS_BUDGET_PER_WINDOW);
+
+    // A completely unrelated caller, well under its own per-IP limit.
+    getTrustedClientIp.mockReturnValue('203.0.113.77');
+    rateLimiter.mockResolvedValue({ allowed: true, currentCount: 1 });
+
+    const check = await supportPublicRoutes.request(`/check/${CODE}`);
+    expect(check.status).toBe(429);
+    expect(check.headers.get('Cache-Control')).toBe('no-store, private');
+    expect((await supportPublicRoutes.request(`/download/windows?code=${CODE}`)).status).toBe(429);
+    expect((await redeem()).status).toBe(429);
+
+    // The exhausted answer is byte-identical to the per-IP-limited one — a
+    // guesser must not learn that a global control exists.
+    expect(await check.json()).toEqual({ error: 'rate limited' });
+    // And nothing reached the database.
+    expect(selectResults).toHaveLength(0);
+  });
+
+  it('warns exactly once per trip rather than per request', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await burnMisses(MISS_BUDGET_PER_WINDOW + 5);
+    const budgetWarns = warn.mock.calls.filter((args) => String(args[0]).includes('[support-code-budget]'));
+    expect(budgetWarns).toHaveLength(1);
+    expect(String(budgetWarns[0]?.[0])).toContain(String(MISS_BUDGET_PER_WINDOW));
+    warn.mockRestore();
+  });
+
+  it('lets a caller holding a real code through right up to exhaustion', async () => {
+    await burnMisses(MISS_BUDGET_PER_WINDOW - 1);
+    selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
+    const res = await supportPublicRoutes.request(`/check/${CODE}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ valid: true, branding: null });
   });
 });
 
@@ -320,7 +607,7 @@ describe('GET /download/:platform', () => {
     expect(res.status).toBe(200);
     // Exact wire format — the Go client parses this filename (Task 12).
     expect(res.headers.get('Content-Disposition'))
-      .toBe('attachment; filename="breeze-support-KTM4H7P2X-us.2breeze.app.exe"');
+      .toBe('attachment; filename="breeze-support-234567892-us.2breeze.app.exe"');
     expect(res.headers.get('Content-Type')).toBe('application/octet-stream');
     // The code is in the filename, so the response must never be cached.
     expect(res.headers.get('Cache-Control')).toBe('no-store');
@@ -338,9 +625,9 @@ describe('GET /download/:platform', () => {
 
   it('normalizes the human-formatted code into the filename', async () => {
     selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
-    const res = await download('windows', '?code=ktm-4h7-p2x');
+    const res = await download('windows', '?code=234-567-892');
     expect(res.headers.get('Content-Disposition'))
-      .toBe('attachment; filename="breeze-support-KTM4H7P2X-us.2breeze.app.exe"');
+      .toBe('attachment; filename="breeze-support-234567892-us.2breeze.app.exe"');
   });
 
   it('encodes a nonstandard port as host_PORT, never host:PORT', async () => {
@@ -350,7 +637,7 @@ describe('GET /download/:platform', () => {
     selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
     const res = await download();
     expect(res.headers.get('Content-Disposition'))
-      .toBe('attachment; filename="breeze-support-KTM4H7P2X-breeze.example.com_8443.exe"');
+      .toBe('attachment; filename="breeze-support-234567892-breeze.example.com_8443.exe"');
   });
 
   it('404s an unknown code', async () => {
@@ -431,6 +718,6 @@ describe('GET /download/:platform', () => {
     expect(getPresignedUrl).toHaveBeenCalledWith('agent/breeze-agent-windows-amd64.exe');
     expect(fetchMock).toHaveBeenCalledWith('https://s3.test/agent.exe');
     expect(res.headers.get('Content-Disposition'))
-      .toBe('attachment; filename="breeze-support-KTM4H7P2X-us.2breeze.app.exe"');
+      .toBe('attachment; filename="breeze-support-234567892-us.2breeze.app.exe"');
   });
 });

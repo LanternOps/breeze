@@ -399,6 +399,10 @@
         "label": "Acceso remoto",
         "description": "Proveedores de escritorio remoto"
       },
+      "quickSupport": {
+        "label": "Soporte rápido",
+        "description": "Dominio de soporte personalizado"
+      },
       "eventLogs": {
         "label": "Registros de eventos",
         "description": "Reenvío y retención"
@@ -462,6 +466,21 @@
     "previewHeadline": "Inicie sesión en su cuenta",
     "previewDescription": "Vista previa aproximada de la pantalla de inicio de sesión del técnico.",
     "save": "Guardar marca"
+  },
+  "quickSupportDomain": {
+    "title": "Dominio de soporte rápido",
+    "description": "Publique la página de destino de soporte rápido en un nombre de host propio, para que el enlace que envía a los clientes lleve su marca en lugar de la dirección predeterminada de Breeze.",
+    "loadFailed": "No se pudieron cargar tus configuraciones actuales: recarga la página antes de guardar.",
+    "label": "Dominio de soporte personalizado",
+    "placeholder": "soporte.tumsp.com",
+    "invalid": "Ingresa solo un nombre de host, como soporte.tumsp.com: sin https://, puerto, ruta ni espacios.",
+    "dnsHelp": "Apunta un registro <code>CNAME</code> (o <code>A</code>) de este nombre de host a tu servidor web de Breeze.",
+    "linkHelp": "El botón «Copiar enlace» de soporte rápido entregará entonces https://support.yourmsp.com/quick?code=… en lugar de la dirección predeterminada.",
+    "operatorNote": "El DNS y el enrutamiento TLS de este nombre de host son tu responsabilidad: Breeze no verifica el registro ni emite un certificado.",
+    "clearHelp": "Déjalo en blanco para usar la dirección predeterminada de Breeze.",
+    "save": "Guardar dominio",
+    "saved": "Dominio de soporte rápido guardado",
+    "saveFailed": "No se pudo guardar el dominio de soporte rápido"
   },
   "brandingEditor": {
     "imagePreview": "Vista previa de {{title}}",

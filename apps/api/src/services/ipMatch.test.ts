@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ipMatchesAny, isValidIpOrCidr } from './ipMatch';
+import { ipMatchesAny, ipv6NetworkPrefix64, isValidIpOrCidr } from './ipMatch';
 
 describe('ipMatchesAny — IPv4', () => {
   it('matches an exact IPv4 address', () => {
@@ -78,5 +78,28 @@ describe('isValidIpOrCidr', () => {
     expect(isValidIpOrCidr('2001:db8::/129')).toBe(false);
     expect(isValidIpOrCidr('not-an-ip')).toBe(false);
     expect(isValidIpOrCidr('')).toBe(false);
+  });
+});
+
+describe('ipv6NetworkPrefix64', () => {
+  // Rate-limit key derivation only — never allowlists or audit rows.
+  it('truncates a global-unicast IPv6 address to its /64 in canonical form', () => {
+    expect(ipv6NetworkPrefix64('2001:db8:1:2:3:4:5:6')).toBe('2001:db8:1:2::');
+    expect(ipv6NetworkPrefix64('2001:0db8:0001:0002::ff')).toBe('2001:db8:1:2::');
+    expect(ipv6NetworkPrefix64('fe80::1%eth0')).toBe('fe80::');
+  });
+
+  it('returns null for IPv4 and for anything unparseable', () => {
+    expect(ipv6NetworkPrefix64('203.0.113.10')).toBeNull();
+    expect(ipv6NetworkPrefix64('not-an-ip')).toBeNull();
+    expect(ipv6NetworkPrefix64('')).toBeNull();
+    expect(ipv6NetworkPrefix64('2001:db8::a::b')).toBeNull();
+  });
+
+  it('returns null for the IPv4-embedding ranges, which all share ::/64', () => {
+    // Folding these would put the entire IPv4 internet in one bucket on a
+    // dual-stack listener.
+    expect(ipv6NetworkPrefix64('::ffff:203.0.113.10')).toBeNull();
+    expect(ipv6NetworkPrefix64('::1')).toBeNull();
   });
 });

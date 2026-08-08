@@ -34,6 +34,12 @@ import { isValidIpOrCidr } from '../services/ipMatch';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
+import {
+  QUICK_SUPPORT_DOMAIN_ERROR,
+  QUICK_SUPPORT_DOMAIN_MAX_LENGTH,
+  isValidQuickSupportDomain,
+  normalizeQuickSupportDomain,
+} from '../services/quickSupportDomain';
 import { clearPartnerAllowlistCache, ipAllowlistMode, readPartnerAllowlist } from '../services/ipAllowlist';
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
@@ -579,6 +585,18 @@ const partnerSettingsSchema = z.object({
     approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional(),
   }).optional(),
   organizationOrder: z.array(z.string().guid()).max(10_000).optional(),
+  // Per-partner Quick Support landing domain (services/quickSupportDomain.ts).
+  // Trimmed + lowercased on write; empty/whitespace/null clears it. Validated
+  // as a BARE hostname because the value is interpolated into
+  // `https://<value>/quick?code=…` when a support session is created — a
+  // scheme, port, path or '@' here would re-target that link.
+  quickSupportDomain: z
+    .string()
+    .max(QUICK_SUPPORT_DOMAIN_MAX_LENGTH, QUICK_SUPPORT_DOMAIN_ERROR)
+    .transform(normalizeQuickSupportDomain)
+    .refine((v) => v === null || isValidQuickSupportDomain(v), QUICK_SUPPORT_DOMAIN_ERROR)
+    .nullable()
+    .optional(),
   remoteAccessProviders: z.object({
     defaultProviderId: z.string().max(100).optional(),
     providers: z.array(z.object({

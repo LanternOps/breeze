@@ -3,13 +3,31 @@
     "title": "Démarrer une session de soutien technique",
     "intro": "Une personne qui vous aide avec cet ordinateur vous a demandé d’ouvrir cette page. Rien ne démarre tant que vous n’avez pas téléchargé et lancé le programme vous-même."
   },
+  "branding": {
+    "title": "Soutien rapide {{partner}}",
+    "subtitle": "{{partner}} vous aide. Rien ne démarre tant que vous n’avez pas téléchargé et lancé le programme vous-même."
+  },
+  "steps": {
+    "one": {
+      "title": "Entrez le code que votre technicien vous a donné",
+      "body": "Le code compte 9 chiffres et il ne demeure valide que quelques minutes."
+    },
+    "two": {
+      "title": "Téléchargez le programme de soutien",
+      "body": "Le bouton ci-dessous enregistre un petit programme qui connaît déjà votre code."
+    },
+    "three": {
+      "title": "Lancez-le et acceptez la demande de Windows",
+      "body": "Ouvrez le fichier que vous venez d’enregistrer, puis autorisez son exécution. Vous n’avez rien d’autre à faire."
+    }
+  },
   "code": {
     "heading": "Entrez le code qu’on vous a donné",
-    "help": "La personne qui vous aide va vous dicter un code de 9 lettres et chiffres, par exemple KTM-4H7-P2X. Les majuscules et les traits d’union n’ont aucune importance.",
+    "help": "La personne qui vous aide va vous dicter un code de 9 chiffres, par exemple 234-567-892. Les traits d’union n’ont aucune importance.",
     "label": "Code de soutien",
-    "placeholder": "XXX-XXX-XXX",
+    "placeholder": "234-567-892",
     "submit": "Poursuivre",
-    "formatError": "Ce code n’est pas encore complet. Un code compte 9 lettres et chiffres, par exemple KTM-4H7-P2X."
+    "formatError": "Ce code n’est pas encore complet. Un code compte 9 caractères, par exemple 234-567-892."
   },
   "checking": "Vérification du code en cours…",
   "invalid": {
@@ -25,12 +43,23 @@
     "title": "Votre code est valide",
     "codeIntro": "Votre code est {{code}}."
   },
+  "mobile": {
+    "title": "Ouvrez cette page sur l’ordinateur Windows qui a besoin d’aide",
+    "body": "Ce téléphone ou cette tablette ne peut pas être partagé avec la personne qui vous aide. Allez à l’ordinateur Windows qui a le problème et ouvrez cette page là-dessus.",
+    "downloadHidden": "Il n’y a rien à télécharger sur cet appareil."
+  },
   "download": {
     "windows": "Télécharger pour Windows",
     "manualFallback": "Si le téléchargement demande un code, entrez : {{code}}",
+    "hintEdge": "Microsoft Edge peut mentionner que ce fichier est rarement téléchargé. Choisissez Conserver, puis Conserver quand même, pour terminer l’enregistrement.",
+    "hintChrome": "Google Chrome peut afficher un avertissement au sujet du fichier au bas de la fenêtre. Choisissez Conserver pour terminer l’enregistrement.",
+    "hintGeneric": "Si votre navigateur demande s’il faut conserver le fichier, choisissez de le conserver.",
+    "windowsOnly": "Pour l’instant, le programme de soutien n’existe que pour les ordinateurs Windows.",
     "macosLabel": "macOS (ordinateurs Mac)",
     "macosBadge": "Bientôt offert",
-    "macosBody": "Le programme n’est pas encore offert pour les ordinateurs Mac. Demandez à la personne qui vous aide comment procéder autrement."
+    "macosBody": "Le programme n’est pas encore offert pour les ordinateurs Mac. Demandez à la personne qui vous aide comment procéder autrement.",
+    "macosPrimaryTitle": "Le programme de soutien n’est pas encore offert pour les ordinateurs Mac",
+    "macosPrimaryBody": "Demandez à la personne qui vous aide comment procéder autrement, ou ouvrez cette page sur un ordinateur Windows qui a besoin d’aide."
   },
   "windowsPrompt": {
     "title": "Windows vous demandera votre accord",

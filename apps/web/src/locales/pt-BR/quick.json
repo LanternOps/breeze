@@ -3,13 +3,31 @@
     "title": "Iniciar uma sessão de suporte",
     "intro": "Alguém que está ajudando você com este computador pediu para abrir esta página. Nada acontece até que você mesmo baixe e execute o programa."
   },
+  "branding": {
+    "title": "Suporte rápido da {{partner}}",
+    "subtitle": "{{partner}} está ajudando você. Nada acontece até que você mesmo baixe e execute o programa."
+  },
+  "steps": {
+    "one": {
+      "title": "Digite o código que o técnico passou para você",
+      "body": "O código tem 9 números e só funciona por alguns minutos."
+    },
+    "two": {
+      "title": "Baixe o programa de suporte",
+      "body": "O botão abaixo salva um programa pequeno que já conhece o seu código."
+    },
+    "three": {
+      "title": "Execute o programa e aceite o aviso do Windows",
+      "body": "Abra o arquivo que você acabou de salvar e permita que ele seja executado. Não é preciso fazer mais nada."
+    }
+  },
   "code": {
     "heading": "Digite o código que você recebeu",
-    "help": "A pessoa que está ajudando você vai ditar um código de 9 letras e números, por exemplo KTM-4H7-P2X. Maiúsculas e hifens não fazem diferença.",
+    "help": "A pessoa que está ajudando você vai ditar um código de 9 números, por exemplo 234-567-892. Os hifens não fazem diferença.",
     "label": "Código de suporte",
-    "placeholder": "XXX-XXX-XXX",
+    "placeholder": "234-567-892",
     "submit": "Continuar",
-    "formatError": "Esse código ainda não está completo. Um código tem 9 letras e números, por exemplo KTM-4H7-P2X."
+    "formatError": "Esse código ainda não está completo. Um código tem 9 caracteres, por exemplo 234-567-892."
   },
   "checking": "Verificando o código…",
   "invalid": {
@@ -25,12 +43,23 @@
     "title": "Seu código é válido",
     "codeIntro": "Seu código é {{code}}."
   },
+  "mobile": {
+    "title": "Abra esta página no computador com Windows que precisa de ajuda",
+    "body": "Este celular ou tablet não pode ser compartilhado com quem está ajudando você. Vá até o computador com Windows que está com o problema e abra esta página nele.",
+    "downloadHidden": "Não há nada para baixar neste aparelho."
+  },
   "download": {
     "windows": "Baixar para Windows",
     "manualFallback": "Se o download pedir um código, digite: {{code}}",
+    "hintEdge": "O Microsoft Edge pode avisar que o arquivo é baixado com pouca frequência. Escolha Manter e depois Manter mesmo assim para concluir o download.",
+    "hintChrome": "O Google Chrome pode mostrar um aviso sobre o arquivo na parte de baixo da janela. Escolha Manter para concluir o download.",
+    "hintGeneric": "Se o seu navegador perguntar se quer manter o arquivo, escolha mantê-lo.",
+    "windowsOnly": "Por enquanto, o programa de suporte existe apenas para computadores com Windows.",
     "macosLabel": "macOS (computadores Mac)",
     "macosBadge": "Em breve",
-    "macosBody": "O programa ainda não está pronto para computadores Mac. Pergunte a quem está ajudando você o que fazer nesse caso."
+    "macosBody": "O programa ainda não está pronto para computadores Mac. Pergunte a quem está ajudando você o que fazer nesse caso.",
+    "macosPrimaryTitle": "O programa de suporte ainda não está pronto para computadores Mac",
+    "macosPrimaryBody": "Pergunte a quem está ajudando você o que fazer nesse caso, ou abra esta página em um computador com Windows que precisa de ajuda."
   },
   "windowsPrompt": {
     "title": "O Windows vai perguntar antes de executar",

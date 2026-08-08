@@ -44,6 +44,7 @@ import {
 import { setAnomalyMetricsRecorder } from '../services/anomalyMetrics';
 import { setAbuseMetricsRecorder } from '../services/abuseMetrics';
 import { setProxyTrustMetricsRecorder } from '../services/clientIp';
+import { setSupportCodeMetricsRecorder } from '../services/supportCodeMissBudget';
 import {
   registerM365CustomerGraphActionsPrometheusCounter,
   registerM365CustomerGraphReadPrometheusCounter,
@@ -343,6 +344,25 @@ const proxyTrustUntrustedPeerTotal = new Counter({
   registers: [register]
 });
 
+// Quick Support one-time-code guessing signals. A "miss" is a syntactically
+// valid support code that matched no live session on /support/check,
+// /support/download or /support/redeem. Legit misses are near zero (the code
+// normally rides in the download filename), so any sustained rate is an online
+// guessing attack against the ~27-bit code space; the trip counter fires when
+// the deployment-wide miss budget is spent and all three endpoints start 429ing.
+// `services/supportCodeMissBudget.ts` holds the thin recorder (same
+// import-cycle rationale as `abuseMetrics.ts`).
+const supportCodeLookupMissesTotal = new Counter({
+  name: 'breeze_support_code_lookup_misses_total',
+  help: 'Well-formed Quick Support codes that matched no live session (check/download/redeem)',
+  registers: [register]
+});
+const supportCodeMissBudgetTripsTotal = new Counter({
+  name: 'breeze_support_code_miss_budget_trips_total',
+  help: 'Times the deployment-wide Quick Support miss budget was exhausted in a rolling window',
+  registers: [register]
+});
+
 // ── Runtime-extension request + job signals ──────────────────────────────────
 // Labels are restricted to the manifest-bounded closed sets `extension`,
 // `route`, and `job` (plus a fixed `outcome` enum). URLs, org/tenant, device,
@@ -575,6 +595,8 @@ function initializeMetricDefaults(): void {
   abuseSweepRunsTotal.labels('success').inc(0);
   opsAlertDeliveriesTotal.labels('webhook', 'success').inc(0);
   proxyTrustUntrustedPeerTotal.inc(0);
+  supportCodeLookupMissesTotal.inc(0);
+  supportCodeMissBudgetTripsTotal.inc(0);
   extensionRequestsTotal.labels('unknown', 'unknown').inc(0);
   extensionRequestErrorsTotal.labels('unknown', 'unknown').inc(0);
   extensionJobsTotal.labels('unknown', 'unknown').inc(0);
@@ -1018,6 +1040,11 @@ function bindMetricsRecorders(): void {
 
   setProxyTrustMetricsRecorder({
     onForwardedHeadersFromUntrustedPeer: () => proxyTrustUntrustedPeerTotal.inc(),
+  });
+
+  setSupportCodeMetricsRecorder({
+    onMiss: () => supportCodeLookupMissesTotal.inc(),
+    onBudgetTrip: () => supportCodeMissBudgetTripsTotal.inc(),
   });
 
   setExtensionMetricsRecorder({

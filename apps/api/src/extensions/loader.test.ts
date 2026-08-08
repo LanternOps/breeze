@@ -53,7 +53,12 @@ vi.mock('../services/secretCrypto', () => ({
 // src/__tests__/integration/extensionTenancyRls.integration.test.ts.
 vi.mock('../db', () => ({ db: { execute: vi.fn().mockResolvedValue([]) } }));
 vi.mock('../services/redis', () => ({ getRedis: () => null }));
-vi.mock('../services/clientIp', () => ({ getTrustedClientIp: () => 'extension-loader-test' }));
+vi.mock('../services/clientIp', async () => {
+  // Partial: rateLimitIpKey (used by globalRateLimit to build its bucket key)
+  // must stay real.
+  const actual = await vi.importActual<typeof import('../services/clientIp')>('../services/clientIp');
+  return { ...actual, getTrustedClientIp: () => 'extension-loader-test' };
+});
 
 import { loadSourceExtensions } from './loader';
 import { ExtensionContributionRegistry } from './contributionRegistry';

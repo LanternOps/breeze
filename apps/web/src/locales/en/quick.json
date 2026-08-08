@@ -3,13 +3,31 @@
     "title": "Start a support session",
     "intro": "Someone helping you with this computer asked you to open this page. Nothing happens until you download and run the program yourself."
   },
+  "branding": {
+    "title": "{{partner}} Quick Support",
+    "subtitle": "You are getting help from {{partner}}. Nothing happens until you download and run the program yourself."
+  },
+  "steps": {
+    "one": {
+      "title": "Enter the code your technician gave you",
+      "body": "The code is 9 numbers. It only works for a few minutes."
+    },
+    "two": {
+      "title": "Download the support app",
+      "body": "The button below saves a small program that already knows your code."
+    },
+    "three": {
+      "title": "Run it and approve the Windows prompt",
+      "body": "Open the file you just saved, then allow it to run. That is all you have to do."
+    }
+  },
   "code": {
     "heading": "Enter the code you were given",
-    "help": "The person helping you will read out a code of 9 letters and numbers, like KTM-4H7-P2X. Capitals and dashes do not matter.",
+    "help": "The person helping you will read out a code of 9 numbers, like 234-567-892. Dashes do not matter.",
     "label": "Support code",
-    "placeholder": "XXX-XXX-XXX",
+    "placeholder": "234-567-892",
     "submit": "Continue",
-    "formatError": "That is not a complete code yet. A code has 9 letters and numbers, for example KTM-4H7-P2X."
+    "formatError": "That is not a complete code yet. A code has 9 characters, for example 234-567-892."
   },
   "checking": "Checking that code…",
   "invalid": {
@@ -25,12 +43,23 @@
     "title": "Your code works",
     "codeIntro": "Your code is {{code}}."
   },
+  "mobile": {
+    "title": "Open this page on the Windows computer that needs help",
+    "body": "This phone or tablet cannot be shared with the person helping you. Go to the Windows computer with the problem and open this page there.",
+    "downloadHidden": "There is nothing to download on this device."
+  },
   "download": {
     "windows": "Download for Windows",
     "manualFallback": "If the download prompts for a code, enter: {{code}}",
+    "hintEdge": "Microsoft Edge may say the file is not downloaded very often. Choose Keep, and then Keep anyway, to finish saving it.",
+    "hintChrome": "Google Chrome may show a warning about the file at the bottom of the window. Choose Keep to finish saving it.",
+    "hintGeneric": "If your browser asks whether to keep the file, choose to keep it.",
+    "windowsOnly": "The support program is only available for Windows computers today.",
     "macosLabel": "macOS (Mac computers)",
     "macosBadge": "Coming soon",
-    "macosBody": "The program is not ready for Mac computers yet. Ask the person helping you what to do instead."
+    "macosBody": "The program is not ready for Mac computers yet. Ask the person helping you what to do instead.",
+    "macosPrimaryTitle": "The support program is not ready for Mac computers yet",
+    "macosPrimaryBody": "Ask the person helping you what to do instead, or open this page on a Windows computer that needs help."
   },
   "windowsPrompt": {
     "title": "Windows will ask you before it runs",

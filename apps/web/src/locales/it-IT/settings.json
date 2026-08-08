@@ -399,6 +399,10 @@
         "label": "Accesso remoto",
         "description": "Provider desktop remoto"
       },
+      "quickSupport": {
+        "label": "Supporto rapido",
+        "description": "Dominio di supporto personalizzato"
+      },
       "eventLogs": {
         "label": "Log eventi",
         "description": "Inoltro e conservazione"
@@ -462,6 +466,21 @@
     "previewHeadline": "Accedi al tuo account",
     "previewDescription": "Anteprima approssimativa della schermata di accesso dei tecnici.",
     "save": "Salva branding"
+  },
+  "quickSupportDomain": {
+    "title": "Dominio di supporto rapido",
+    "description": "Pubblica la pagina di destinazione del supporto rapido su un nome host di tua proprietà, così il link inviato ai clienti porta il tuo marchio invece dell'indirizzo Breeze predefinito.",
+    "loadFailed": "Impossibile caricare le impostazioni attuali: ricarica la pagina prima di salvare.",
+    "label": "Dominio di supporto personalizzato",
+    "placeholder": "supporto.tuomsp.it",
+    "invalid": "Inserisci solo un nome host, ad esempio supporto.tuomsp.it: senza https://, porta, percorso o spazi.",
+    "dnsHelp": "Fai puntare un record <code>CNAME</code> (o <code>A</code>) di questo nome host al tuo server web Breeze.",
+    "linkHelp": "Il pulsante «Copia link» del supporto rapido restituirà quindi https://support.yourmsp.com/quick?code=… invece dell'indirizzo predefinito.",
+    "operatorNote": "DNS e routing TLS per questo nome host sono una tua responsabilità: Breeze non verifica il record né rilascia un certificato.",
+    "clearHelp": "Lascia vuoto per usare l'indirizzo Breeze predefinito.",
+    "save": "Salva dominio",
+    "saved": "Dominio di supporto rapido salvato",
+    "saveFailed": "Impossibile salvare il dominio di supporto rapido"
   },
   "brandingEditor": {
     "imagePreview": "Anteprima {{title}}",

@@ -61,6 +61,9 @@ vi.mock('../../db', () => {
     db: { select, insert },
     runOutsideDbContext: vi.fn(<T>(fn: () => T): T => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+    // Named import used by db/partnerAxisRead (the custom-domain lookup runs
+    // through it); omitting it here would fail the import loudly.
+    getCurrentDbAccessContext: vi.fn(() => undefined),
   };
 });
 
@@ -75,6 +78,7 @@ vi.mock('../../db/schema', () => ({
   },
   remoteSessions: { id: 'remoteSessions.id', deviceId: 'remoteSessions.deviceId', status: 'remoteSessions.status' },
   devices: { id: 'devices.id', status: 'devices.status' },
+  partners: { id: 'partners.id', settings: 'partners.settings' },
 }));
 
 import { hashSupportCode } from '../../services/quickSupportCode';
@@ -144,13 +148,51 @@ describe('POST /support-sessions', () => {
 
     expect(res.status).toBe(201);
     const body = await res.json();
-    expect(body.code).toMatch(/^[A-Z2-9]{3}-[A-Z2-9]{3}-[A-Z2-9]{3}$/);
+    // Digits 2-9 in 3-3-3 groups (234-567-892): the technician reads this down
+    // a phone line, so no letters and no 0/1.
+    expect(body.code).toMatch(/^[2-9]{3}-[2-9]{3}-[2-9]{3}$/);
 
     // The stored hash must be the sha256 of the RAW code we handed the tech.
     const raw = body.code.replace(/-/g, '');
     expect((insertedValues[0] as { codeHash: string }).codeHash).toBe(hashSupportCode(raw));
     expect(body.landingUrl).toBe(`https://us.2breeze.app/quick?code=${raw}`);
     expect((insertedValues[0] as { orgId: string }).orgId).toBe('qs-org');
+  });
+
+  // Landing URL: the partner's custom Quick Support domain wins over
+  // PUBLIC_WEB_URL, but only when the stored value is still a bare hostname —
+  // the value is interpolated straight into the link handed to an end user.
+  async function createAndReadLandingUrl(partnerSettings: unknown): Promise<string> {
+    insertReturns.push([SESSION_ROW]);
+    selectResults.push(partnerSettings === undefined ? [] : [{ settings: partnerSettings }]);
+    const res = await buildApp().request('/support-sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(201);
+    return (await res.json()).landingUrl as string;
+  }
+
+  it("uses the partner's custom support domain when one is configured", async () => {
+    const url = await createAndReadLandingUrl({ quickSupportDomain: 'support.acme.com' });
+    expect(url.startsWith('https://support.acme.com/quick?code=')).toBe(true);
+    expect(url.length).toBeGreaterThan('https://support.acme.com/quick?code='.length);
+  });
+
+  it('falls back to PUBLIC_WEB_URL when no custom domain is configured', async () => {
+    expect(await createAndReadLandingUrl({})).toMatch(/^https:\/\/us\.2breeze\.app\/quick\?code=/);
+    expect(await createAndReadLandingUrl(undefined)).toMatch(/^https:\/\/us\.2breeze\.app\/quick\?code=/);
+  });
+
+  it('falls back to PUBLIC_WEB_URL when the stored domain is malformed', async () => {
+    // Defense in depth: a row written by some path that skipped validation must
+    // not be able to re-target the landing link at another host.
+    for (const bad of ['https://evil.example.com', 'acme.com/../evil', 'evil.com:8443', 'localhost', '']) {
+      expect(await createAndReadLandingUrl({ quickSupportDomain: bad })).toMatch(
+        /^https:\/\/us\.2breeze\.app\/quick\?code=/,
+      );
+    }
   });
 
   it('never returns the code hash to the caller', async () => {

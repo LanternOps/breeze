@@ -3,13 +3,31 @@
     "title": "Support-Sitzung starten",
     "intro": "Jemand, der Ihnen mit diesem Computer hilft, hat Sie gebeten, diese Seite zu öffnen. Es passiert nichts, solange Sie das Programm nicht selbst herunterladen und starten."
   },
+  "branding": {
+    "title": "{{partner}} Schnellsupport",
+    "subtitle": "{{partner}} hilft Ihnen. Es passiert nichts, solange Sie das Programm nicht selbst herunterladen und starten."
+  },
+  "steps": {
+    "one": {
+      "title": "Geben Sie den Code ein, den Ihr Techniker Ihnen genannt hat",
+      "body": "Der Code besteht aus 9 Ziffern. Er gilt nur wenige Minuten."
+    },
+    "two": {
+      "title": "Laden Sie das Support-Programm herunter",
+      "body": "Über die Schaltfläche unten speichern Sie ein kleines Programm, das Ihren Code bereits kennt."
+    },
+    "three": {
+      "title": "Starten Sie es und bestätigen Sie die Windows-Abfrage",
+      "body": "Öffnen Sie die gerade gespeicherte Datei und erlauben Sie die Ausführung. Mehr müssen Sie nicht tun."
+    }
+  },
   "code": {
     "heading": "Geben Sie den Code ein, den Sie erhalten haben",
-    "help": "Die Person, die Ihnen hilft, nennt Ihnen einen Code aus 9 Buchstaben und Zahlen, zum Beispiel KTM-4H7-P2X. Groß- und Kleinschreibung sowie Bindestriche spielen keine Rolle.",
+    "help": "Die Person, die Ihnen hilft, nennt Ihnen einen Code aus 9 Ziffern, zum Beispiel 234-567-892. Bindestriche spielen keine Rolle.",
     "label": "Support-Code",
-    "placeholder": "XXX-XXX-XXX",
+    "placeholder": "234-567-892",
     "submit": "Weiter",
-    "formatError": "Das ist noch kein vollständiger Code. Ein Code besteht aus 9 Buchstaben und Zahlen, zum Beispiel KTM-4H7-P2X."
+    "formatError": "Das ist noch kein vollständiger Code. Ein Code besteht aus 9 Zeichen, zum Beispiel 234-567-892."
   },
   "checking": "Code wird geprüft…",
   "invalid": {
@@ -25,12 +43,23 @@
     "title": "Ihr Code ist gültig",
     "codeIntro": "Ihr Code lautet {{code}}."
   },
+  "mobile": {
+    "title": "Öffnen Sie diese Seite auf dem Windows-Computer, der Hilfe braucht",
+    "body": "Dieses Telefon oder Tablet lässt sich nicht mit der Person teilen, die Ihnen hilft. Gehen Sie zu dem Windows-Computer mit dem Problem und öffnen Sie diese Seite dort.",
+    "downloadHidden": "Auf diesem Gerät gibt es nichts herunterzuladen."
+  },
   "download": {
     "windows": "Für Windows herunterladen",
     "manualFallback": "Falls beim Herunterladen nach einem Code gefragt wird, geben Sie ein: {{code}}",
+    "hintEdge": "Microsoft Edge weist möglicherweise darauf hin, dass die Datei selten heruntergeladen wird. Wählen Sie „Behalten“ und anschließend „Trotzdem behalten“, um den Download abzuschließen.",
+    "hintChrome": "Google Chrome zeigt unten im Fenster möglicherweise eine Warnung zu der Datei. Wählen Sie „Behalten“, um den Download abzuschließen.",
+    "hintGeneric": "Wenn Ihr Browser fragt, ob die Datei behalten werden soll, entscheiden Sie sich fürs Behalten.",
+    "windowsOnly": "Das Support-Programm gibt es derzeit nur für Windows-Computer.",
     "macosLabel": "macOS (Mac-Computer)",
     "macosBadge": "Demnächst verfügbar",
-    "macosBody": "Für Mac-Computer ist das Programm noch nicht verfügbar. Fragen Sie die Person, die Ihnen hilft, wie Sie stattdessen vorgehen."
+    "macosBody": "Für Mac-Computer ist das Programm noch nicht verfügbar. Fragen Sie die Person, die Ihnen hilft, wie Sie stattdessen vorgehen.",
+    "macosPrimaryTitle": "Für Mac-Computer ist das Support-Programm noch nicht verfügbar",
+    "macosPrimaryBody": "Fragen Sie die Person, die Ihnen hilft, wie Sie stattdessen vorgehen, oder öffnen Sie diese Seite auf einem Windows-Computer, der Hilfe braucht."
   },
   "windowsPrompt": {
     "title": "Windows fragt Sie vor dem Start",

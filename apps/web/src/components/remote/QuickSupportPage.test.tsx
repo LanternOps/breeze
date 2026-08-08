@@ -125,6 +125,9 @@ beforeEach(() => {
   runActionMock.mockClear();
   showToastMock.mockClear();
   writeText.mockClear();
+  // Selection lives in the fragment — a leftover hash would auto-open a detail
+  // panel (and start a poll) in the next test.
+  window.location.hash = '';
   Object.defineProperty(navigator, 'clipboard', {
     value: { writeText },
     configurable: true,
@@ -133,6 +136,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  window.location.hash = '';
 });
 
 describe('QuickSupportPage', () => {
@@ -325,6 +329,96 @@ describe('QuickSupportPage', () => {
     const list = await screen.findByTestId('quick-support-list');
     await waitFor(() => expect(list).toHaveTextContent('Reception PC'));
     expect(list).toHaveTextContent('Session expired');
+  });
+
+  it('re-opens a session from a history row, without ever re-showing a code', async () => {
+    installFetch({
+      list: [
+        view({
+          status: 'ready',
+          deviceId: 'dev-9',
+          deviceOnline: true,
+          attributionLabel: 'Reception PC',
+        }),
+      ],
+      detail: [view({ status: 'ready', deviceId: 'dev-9', deviceOnline: true })],
+    });
+    render(<QuickSupportPage />);
+
+    fireEvent.click(await screen.findByTestId('quick-support-row'));
+
+    const detail = screen.getByTestId('quick-support-detail');
+    expect(detail).toHaveTextContent('Reception PC');
+    expect(screen.getByTestId('quick-support-status')).toHaveTextContent('Ready to connect');
+    // The one-time code is gone forever once the page that minted it moved on.
+    expect(screen.queryByTestId('quick-support-code')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quick-support-copy-link')).not.toBeInTheDocument();
+    // Device is enrolled and online, so the tech can connect straight away.
+    expect(screen.getByTestId('quick-support-connect')).toHaveTextContent('connect-dev-9');
+    // Selection is deep-linkable via the fragment, never a query param.
+    expect(window.location.hash).toBe(`#${SESSION_ID}`);
+    expect(window.location.search).toBe('');
+  });
+
+  it('restores the hash-selected session on mount and polls it', async () => {
+    window.location.hash = `#${SESSION_ID}`;
+    installFetch({
+      list: [view({ status: 'active', attributionLabel: 'Reception PC' })],
+      detail: [view({ status: 'active' })],
+    });
+    render(<QuickSupportPage />);
+
+    expect(await screen.findByTestId('quick-support-detail')).toBeInTheDocument();
+    await waitFor(() => expect(detailCallCount()).toBeGreaterThanOrEqual(1));
+    await waitFor(() =>
+      expect(screen.getByTestId('quick-support-status')).toHaveTextContent('Session in progress'),
+    );
+    expect(screen.queryByTestId('quick-support-code')).not.toBeInTheDocument();
+  });
+
+  it('ends a re-opened session from the detail panel', async () => {
+    installFetch({
+      list: [view({ status: 'active', attributionLabel: 'Reception PC' })],
+      detail: [view({ status: 'active' })],
+    });
+    render(<QuickSupportPage />);
+
+    fireEvent.click(await screen.findByTestId('quick-support-row'));
+    // Let the first poll land so it cannot overwrite the optimistic end below.
+    await waitFor(() => expect(detailCallCount()).toBe(1));
+
+    runActionMock.mockClear();
+    fireEvent.click(screen.getByTestId('quick-support-end'));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        `${DETAIL_URL}/end`,
+        expect.objectContaining({ method: 'POST' }),
+      ),
+    );
+    expect(runActionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ successMessage: 'Support session ended' }),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('quick-support-status')).toHaveTextContent('Session ended'),
+    );
+    expect(screen.queryByTestId('quick-support-end')).not.toBeInTheDocument();
+  });
+
+  it('drops the freshly minted code when another session is opened from history', async () => {
+    installFetch({
+      list: [view({ id: 'ss-old', status: 'active', attributionLabel: 'Reception PC' })],
+    });
+    render(<QuickSupportPage />);
+    await createSession();
+
+    expect(screen.getByTestId('quick-support-code')).toHaveTextContent('ABC-DEF-GHI');
+
+    fireEvent.click(await screen.findByTestId('quick-support-row'));
+
+    expect(screen.queryByTestId('quick-support-code')).not.toBeInTheDocument();
+    expect(screen.getByTestId('quick-support-detail')).toHaveTextContent('Reception PC');
+    expect(window.location.hash).toBe('#ss-old');
   });
 
   it('surfaces a list load failure', async () => {

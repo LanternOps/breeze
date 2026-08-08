@@ -5,9 +5,16 @@ vi.mock('../services/redis', () => ({
   getRedis: () => null,
 }));
 
-vi.mock('../services/clientIp', () => ({
-  getTrustedClientIp: vi.fn(() => 'global-rate-limit-test'),
-}));
+// Only the IP SOURCE is stubbed. rateLimitIpKey (the IPv6 /64 bucket folding
+// the middleware applies to the key) is the real implementation, so these
+// tests exercise the actual key derivation.
+vi.mock('../services/clientIp', async () => {
+  const actual = await vi.importActual<typeof import('../services/clientIp')>('../services/clientIp');
+  return {
+    ...actual,
+    getTrustedClientIp: vi.fn(() => 'global-rate-limit-test'),
+  };
+});
 
 import {
   __resetSkipPrefixesForTests,
