@@ -16,11 +16,18 @@ var (
 	ErrVSSWriterFailed = errors.New("vss: one or more writers failed")
 	ErrVSSNoVolumes    = errors.New("vss: no volumes specified")
 
-	// ErrVSSSessionInProgress means another VSS session is already live in this
-	// process. Only one may be, because a session now holds a real
-	// IVssBackupComponents open for the whole run (#3269) and a second requester
-	// signalling BackupComplete would move writers out from under the first
-	// run's snapshot.
+	// ErrVSSSessionInProgress means this run could not start creating a snapshot
+	// set because another one was being created. It does NOT mean only one
+	// session may be live at a time: concurrent runs on separate providers each
+	// get their own shadow copy, and only the creation interval is serialised
+	// (#3269 — see snapshotCreationGate for why the scope stops there).
+	//
+	// It is returned in two situations:
+	//   - the caller's context ended while waiting for the process-wide
+	//     creation gate, i.e. another run's snapshot creation outlasted this
+	//     run's creation deadline; and
+	//   - CreateShadowCopy was called on a provider that is already holding a
+	//     live session, which is a caller bug and fails immediately.
 	//
 	// Callers should treat it as "no VSS for this run" and degrade to a live
 	// read with a visible warning, exactly as they do for any other creation
@@ -98,8 +105,14 @@ type Provider interface {
 	//
 	// On Windows the returned session is backed by real COM resources held open
 	// on a dedicated thread, so a successful call MUST be paired with exactly
-	// one ReleaseShadowCopy. Only one session may be live per process; a second
-	// concurrent call fails with ErrVSSSessionInProgress rather than queuing.
+	// one ReleaseShadowCopy.
+	//
+	// Concurrency, precisely: snapshot *creation* is serialised process-wide, so
+	// a call made while another run is creating a snapshot set QUEUES rather
+	// than failing, and then proceeds — two concurrent runs on two providers may
+	// each end up holding their own live session. ErrVSSSessionInProgress means
+	// only that this call gave up: either ctx ended while it was queued, or it
+	// was made on a provider that already holds a live session.
 	CreateShadowCopy(ctx context.Context, volumes []string) (*VSSSession, error)
 
 	// ReleaseShadowCopy ends the session. On Windows it signals BackupComplete

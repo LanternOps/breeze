@@ -665,9 +665,19 @@ func (p *WindowsProvider) teardownLocked(live *liveSession) error {
 
 	if completeErr != nil {
 		// Warned, not returned as a failure: the backup is already complete and
-		// its data is already uploaded. What this costs is writer hygiene, and
-		// the caller (backup.go) only logs the error anyway. Surfacing it here
-		// keeps the antecedent for a later VSS_E_SNAPSHOT_SET_IN_PROGRESS.
+		// its data is already uploaded. The snapshot is reclaimed either way —
+		// finishBackupOnThread releases the components object on both branches —
+		// so what this costs is writer hygiene, and it self-heals at process
+		// exit.
+		//
+		// KNOWN GAP, deliberately not closed here: this lands in the agent log
+		// only. Every other VSS anomaly in this package is promoted into
+		// job.Warning so an MSP tech sees it (#3027), but the release runs from
+		// a defer in RunBackupContext after the job is already built, so
+		// plumbing it through means mutating a completed job — not a change
+		// worth making inside a data-loss fix. The consequence of leaving it is
+		// that a writer wedging on EVERY run for one customer is only visible by
+		// pulling raw agent logs, never from the job history.
 		slog.Warn("vss: writer completion handshake failed; writers may remain in "+
 			"VSS_WS_WAITING_FOR_BACKUP_COMPLETE until this process exits",
 			"sessionId", live.id, "error", completeErr.Error())
