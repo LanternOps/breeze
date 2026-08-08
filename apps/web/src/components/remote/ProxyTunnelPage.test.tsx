@@ -1,5 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ProxyTunnelPage from './ProxyTunnelPage';
 import { fetchWithAuth } from '@/stores/auth';
@@ -18,10 +18,51 @@ const makeResponse = (payload: unknown = {}, ok = true): Response =>
   } as unknown as Response);
 
 const TUNNEL_ID = 'tunnel-123';
+const NEW_TUNNEL_ID = 'tunnel-456';
+const ASSET_ID = 'asset-789';
+const DEVICE_ID = 'device-abc';
+
+// jsdom refuses real navigation, so swap `window.location` for a recorder
+// (pattern from VncViewerPage.test.tsx). It is a configurable accessor
+// property here, so it restores cleanly in afterEach.
+const originalLocationDescriptor = Object.getOwnPropertyDescriptor(window, 'location')!;
+let navigations: string[] = [];
+
+const installLocationRecorder = () => {
+  navigations = [];
+  Object.defineProperty(window, 'location', {
+    configurable: true,
+    writable: true,
+    value: {
+      origin: 'http://localhost:3000',
+      _href: 'http://localhost:3000/remote/proxy/tunnel-123',
+      get href() {
+        return this._href;
+      },
+      set href(next: string) {
+        navigations.push(next);
+        this._href = next;
+      },
+    },
+  });
+};
 
 beforeEach(() => {
   fetchMock.mockReset();
+  installLocationRecorder();
 });
+
+afterEach(() => {
+  Object.defineProperty(window, 'location', originalLocationDescriptor);
+});
+
+const sessionFieldsPayload = {
+  deviceId: DEVICE_ID,
+  targetHost: '10.1.2.209',
+  targetPort: 80,
+  scheme: 'http',
+  skipTlsVerify: false,
+};
 
 describe('ProxyTunnelPage', () => {
   it('mints an http-ticket and renders the proxied service in an iframe', async () => {
@@ -56,6 +97,9 @@ describe('ProxyTunnelPage', () => {
     // "Open in new tab" points at the same proxy URL.
     const openLink = screen.getByRole('link', { name: /open in new tab/i });
     expect(openLink.getAttribute('href')).toContain(`/api/v1/tunnel-http/${TUNNEL_ID}/?__bzt=TKT-abc`);
+
+    // No expiry overlay while connectable and fresh.
+    expect(screen.queryByTestId('proxy-session-expired-overlay')).not.toBeInTheDocument();
   });
 
   it('shows an error when the ticket cannot be minted', async () => {
@@ -72,42 +116,173 @@ describe('ProxyTunnelPage', () => {
     expect(screen.queryByTestId('network-proxy-frame')).not.toBeInTheDocument();
   });
 
-  it('surfaces a server-side tunnel failure from the status poll', async () => {
+  it('shows the session-expired overlay on a server-side terminal failure and Reconnect creates a new tunnel', async () => {
     fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
       if (url === `/tunnels/${TUNNEL_ID}/http-ticket` && opts?.method === 'POST') {
         return makeResponse({ ticket: { ticket: 'TKT-abc', expiresInSeconds: 300 } });
       }
       if (url === `/tunnels/${TUNNEL_ID}`) {
-        return makeResponse({ status: 'failed', error: 'Tunnel open failed on agent' });
+        return makeResponse({
+          status: 'failed',
+          error: 'Tunnel open failed on agent',
+          idleSeconds: 12,
+          ...sessionFieldsPayload,
+        });
+      }
+      if (url === '/tunnels' && opts?.method === 'POST') {
+        return makeResponse({ id: NEW_TUNNEL_ID });
+      }
+      return makeResponse({});
+    });
+
+    render(<ProxyTunnelPage tunnelId={TUNNEL_ID} target="10.1.2.209:80" assetId={ASSET_ID} />);
+
+    // The overlay appears for a terminal status.
+    const overlay = await screen.findByTestId('proxy-session-expired-overlay');
+    expect(overlay).toBeInTheDocument();
+    // The stale status badge is not shown alongside the overlay.
+    expect(screen.queryByText('Failed')).not.toBeInTheDocument();
+
+    const reconnectButton = screen.getByRole('button', { name: /^reconnect$/i });
+    reconnectButton.click();
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tunnels',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            deviceId: DEVICE_ID,
+            type: 'proxy',
+            targetHost: '10.1.2.209',
+            targetPort: 80,
+            scheme: 'http',
+            skipTlsVerify: false,
+          }),
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(navigations).toEqual([
+        `/remote/proxy/${NEW_TUNNEL_ID}?target=${encodeURIComponent('10.1.2.209:80')}&asset=${ASSET_ID}`,
+      ]);
+    });
+  });
+
+  it('shows the session-expired overlay when idleSeconds exceeds the threshold and Reconnect re-mints the ticket in place', async () => {
+    let pollCount = 0;
+    fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (url === `/tunnels/${TUNNEL_ID}/http-ticket` && opts?.method === 'POST') {
+        pollCount += 1;
+        return makeResponse({ ticket: { ticket: `TKT-${pollCount}`, expiresInSeconds: 300 } });
+      }
+      if (url === `/tunnels/${TUNNEL_ID}`) {
+        return makeResponse({
+          status: 'active',
+          idleSeconds: 400, // > 330 threshold
+          ...sessionFieldsPayload,
+        });
       }
       return makeResponse({});
     });
 
     render(<ProxyTunnelPage tunnelId={TUNNEL_ID} target="10.1.2.209:80" />);
 
+    const overlay = await screen.findByTestId('proxy-session-expired-overlay');
+    expect(overlay).toBeInTheDocument();
+
+    const mintCallsBefore = fetchMock.mock.calls.filter(
+      ([url, o]) => url === `/tunnels/${TUNNEL_ID}/http-ticket` && (o as RequestInit)?.method === 'POST',
+    ).length;
+
+    const reconnectButton = screen.getByRole('button', { name: /^reconnect$/i });
+    reconnectButton.click();
+
     await waitFor(() => {
-      expect(screen.getByText('Tunnel open failed on agent')).toBeInTheDocument();
+      const mintCallsAfter = fetchMock.mock.calls.filter(
+        ([url, o]) => url === `/tunnels/${TUNNEL_ID}/http-ticket` && (o as RequestInit)?.method === 'POST',
+      ).length;
+      expect(mintCallsAfter).toBeGreaterThan(mintCallsBefore);
     });
+
+    // No new tunnel was created — this is an in-place re-mint, not a re-create.
+    expect(fetchMock.mock.calls.some(([url, o]) => url === '/tunnels' && (o as RequestInit)?.method === 'POST')).toBe(false);
+    expect(navigations).toEqual([]);
   });
 
-  it('shows the untrusted-certificate error on tls_cert_untrusted', async () => {
+  it('shows the untrusted-certificate screen on tls_cert_untrusted with a working self-signed retry button', async () => {
     fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
       if (url === `/tunnels/${TUNNEL_ID}/http-ticket` && opts?.method === 'POST') {
         return makeResponse({ ticket: { ticket: 'TKT-abc', expiresInSeconds: 300 } });
       }
       if (url === `/tunnels/${TUNNEL_ID}`) {
-        return makeResponse({ status: 'failed', errorMessage: 'tls_cert_untrusted' });
+        return makeResponse({
+          status: 'failed',
+          errorMessage: 'tls_cert_untrusted',
+          idleSeconds: 5,
+          ...sessionFieldsPayload,
+          scheme: 'https',
+          targetPort: 8443,
+          skipTlsVerify: false,
+        });
+      }
+      if (url === '/tunnels' && opts?.method === 'POST') {
+        return makeResponse({ id: NEW_TUNNEL_ID });
       }
       return makeResponse({});
     });
 
     render(<ProxyTunnelPage tunnelId={TUNNEL_ID} target="10.1.2.209:8443" />);
 
-    // The in-place "Reconnect allowing self-signed certificate" retry button
-    // lands with Task 5 of the proxy-access-consolidation plan; this only
-    // covers the (already rewritten) error copy shown today.
     expect(
       await screen.findByText('This device presented an untrusted or self-signed certificate.'),
     ).toBeInTheDocument();
+
+    // The generic expiry overlay must NOT also appear — the TLS screen owns
+    // this failure mode with its own dedicated retry.
+    expect(screen.queryByTestId('proxy-session-expired-overlay')).not.toBeInTheDocument();
+
+    const retryButton = screen.getByRole('button', { name: /reconnect allowing self-signed certificate/i });
+    retryButton.click();
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tunnels',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            deviceId: DEVICE_ID,
+            type: 'proxy',
+            targetHost: '10.1.2.209',
+            targetPort: 8443,
+            scheme: 'https',
+            skipTlsVerify: true, // forced true regardless of the row's original value
+          }),
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(navigations).toEqual([`/remote/proxy/${NEW_TUNNEL_ID}?target=${encodeURIComponent('10.1.2.209:8443')}`]);
+    });
+  });
+
+  it('targets the asset page for Back when an assetId is present, else falls back to /remote', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === `/tunnels/${TUNNEL_ID}`) return makeResponse({ status: 'connecting' });
+      return makeResponse({ ticket: { ticket: 'TKT-abc', expiresInSeconds: 300 } });
+    });
+
+    const { unmount } = render(
+      <ProxyTunnelPage tunnelId={TUNNEL_ID} target="10.1.2.209:80" assetId={ASSET_ID} />,
+    );
+    const backLinkWithAsset = await screen.findByRole('link', { name: /back/i });
+    expect(backLinkWithAsset.getAttribute('href')).toBe(`/devices/network/${ASSET_ID}`);
+    unmount();
+
+    render(<ProxyTunnelPage tunnelId={TUNNEL_ID} target="10.1.2.209:80" />);
+    const backLinkNoAsset = await screen.findByRole('link', { name: /back/i });
+    expect(backLinkNoAsset.getAttribute('href')).toBe('/remote');
   });
 });

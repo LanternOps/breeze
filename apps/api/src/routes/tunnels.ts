@@ -947,6 +947,32 @@ tunnelRoutes.get(
       return c.json({ error: 'Tunnel session not found' }, 404);
     }
 
+    // Lazy expiry on read (mirrors GET /tunnels — see PROXY_IDLE_EXPIRY_MS
+    // above): with `tunnel_open` skipped for proxy tunnels, ProxyTunnelPage's
+    // 5s poll of THIS route is the only thing that ever observes a stale row,
+    // so it must do the same flip the list route does rather than serve a
+    // row that reads "active"/"pending" forever.
+    const now = new Date();
+    if (session.type === 'proxy') {
+      const staleCutoff = new Date(now.getTime() - PROXY_IDLE_EXPIRY_MS);
+      const isStaleActive =
+        session.status === 'active' &&
+        session.lastActivityAt != null &&
+        new Date(session.lastActivityAt) < staleCutoff;
+      const isAbandonedPending =
+        session.status === 'pending' &&
+        session.lastActivityAt == null &&
+        new Date(session.createdAt) < staleCutoff;
+      if (isStaleActive || isAbandonedPending) {
+        await db
+          .update(tunnelSessions)
+          .set({ status: 'disconnected', endedAt: now })
+          .where(eq(tunnelSessions.id, session.id));
+        session.status = 'disconnected';
+        session.endedAt = now;
+      }
+    }
+
     // Site-scope (app-layer-only) re-enforcement: deny when the session's device
     // sits outside the caller's allowed sites. Fail closed on null siteId.
     const perms = c.get('permissions') as UserPermissions | undefined;
@@ -954,7 +980,13 @@ tunnelRoutes.get(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
-    return c.json(session);
+    // Server-computed idle time, never raw timestamps (same rule as GET
+    // /tunnels — the client must not diff a server timestamp against its own
+    // clock).
+    const lastActive = session.lastActivityAt ?? session.createdAt;
+    const idleSeconds = Math.max(0, Math.floor((now.getTime() - new Date(lastActive).getTime()) / 1000));
+
+    return c.json({ ...session, idleSeconds });
   }
 );
 

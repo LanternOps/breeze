@@ -970,6 +970,113 @@ describe('GET /tunnels/:id — site-scope enforcement', () => {
   });
 });
 
+// ─── GET /tunnels/:id — lazy expiry + idleSeconds (#3199) ─────────────────────
+// ProxyTunnelPage's 5s poll hits this route directly (not the list route), so
+// it needs the SAME stale-row flip + idleSeconds the list route already has
+// (see the "GET /tunnels — lazy expiry + siteId + idleSeconds" block above) —
+// otherwise a proxy row can read "active"/"pending" forever once tunnel_open
+// stops being sent for proxy tunnels.
+describe('GET /tunnels/:id — lazy expiry + idleSeconds', () => {
+  let app: Hono;
+  const FIXED_NOW = new Date('2026-08-08T12:00:00.000Z');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.update).mockReset();
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_NOW);
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function rigUpdate() {
+    const updateWhereSpy = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnValue({ where: updateWhereSpy }),
+    } as any);
+    return updateWhereSpy;
+  }
+
+  it('returns idleSeconds computed from lastActivityAt and never sweeps a fresh row', async () => {
+    const lastActivity = new Date(FIXED_NOW.getTime() - 45 * 1000);
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{
+      ...sessionRecord,
+      type: 'proxy',
+      status: 'active',
+      lastActivityAt: lastActivity,
+    }]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, { method: 'GET' });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.idleSeconds).toBe(45);
+    expect(body.status).toBe('active');
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('flips a stale active proxy row to disconnected on read', async () => {
+    const staleLastActivity = new Date(FIXED_NOW.getTime() - 11 * 60 * 1000); // >10min
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{
+      ...sessionRecord,
+      type: 'proxy',
+      status: 'active',
+      lastActivityAt: staleLastActivity,
+    }]) as any);
+    const updateWhereSpy = rigUpdate();
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, { method: 'GET' });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.status).toBe('disconnected');
+    expect(db.update).toHaveBeenCalledTimes(1);
+    expect(updateWhereSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('flips an abandoned pending proxy row (no lastActivityAt, >10min old) to disconnected on read', async () => {
+    const staleCreatedAt = new Date(FIXED_NOW.getTime() - 15 * 60 * 1000);
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{
+      ...sessionRecord,
+      type: 'proxy',
+      status: 'pending',
+      lastActivityAt: null,
+      createdAt: staleCreatedAt,
+    }]) as any);
+    const updateWhereSpy = rigUpdate();
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, { method: 'GET' });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.status).toBe('disconnected');
+    expect(db.update).toHaveBeenCalledTimes(1);
+    expect(updateWhereSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves non-proxy tunnel types unaffected by the sweep', async () => {
+    const staleLastActivity = new Date(FIXED_NOW.getTime() - 11 * 60 * 1000);
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{
+      ...sessionRecord,
+      type: 'vnc',
+      status: 'active',
+      lastActivityAt: staleLastActivity,
+    }]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, { method: 'GET' });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.status).toBe('active');
+    expect(db.update).not.toHaveBeenCalled();
+  });
+});
+
 // ─── POST /tunnels/:id/connect-code ───────────────────────────────────────────
 
 describe('POST /tunnels/:id/connect-code', () => {
