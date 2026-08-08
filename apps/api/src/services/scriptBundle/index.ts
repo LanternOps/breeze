@@ -33,7 +33,14 @@ import {
   type ScriptScopeError,
   type ScriptWriteAuth
 } from '../scriptWrite';
-import { SCRIPT_BUNDLE_VERSION, type ScriptBundle, type ScriptBundleEntry } from './schema';
+import {
+  SCRIPT_BUNDLE_VERSION,
+  bundleScriptEntrySchema,
+  formatEntryIssues,
+  type ScriptBundle,
+  type ScriptBundleEntry,
+  type ScriptBundleEnvelope
+} from './schema';
 
 export type BundleAuth = ScriptWriteAuth & Pick<AuthContext, 'user'>;
 export type BundleImportMode = 'skip' | 'rename' | 'new-version';
@@ -112,32 +119,62 @@ export async function exportBundle(auth: BundleAuth, ids: string[]): Promise<Scr
   };
 }
 
-function sameNameCondition(scope: ScriptCreateScope, name: string) {
+/**
+ * Scope condition for conflict lookups. `is_system = false` is load-bearing:
+ * a system-library script can share a name with a tenant script, and matching
+ * it here would let a `new-version` import rewrite the body of an `is_system`
+ * row — the exact edit `PUT /scripts/:id` rejects with "System scripts are
+ * read-only". System rows are a different namespace; never conflict against
+ * them, never update them from a bundle.
+ */
+function scopeCondition(scope: ScriptCreateScope) {
   if (scope.orgId) {
-    return and(eq(scripts.name, name), eq(scripts.orgId, scope.orgId), isNull(scripts.deletedAt));
+    return and(eq(scripts.orgId, scope.orgId), eq(scripts.isSystem, false), isNull(scripts.deletedAt));
   }
   // Partner-wide target: conflict against the partner's own partner-wide rows.
   return and(
-    eq(scripts.name, name),
     isNull(scripts.orgId),
     eq(scripts.partnerId, scope.partnerId!),
+    eq(scripts.isSystem, false),
     isNull(scripts.deletedAt)
   );
 }
 
+function sameNameCondition(scope: ScriptCreateScope, name: string) {
+  return and(eq(scripts.name, name), scopeCondition(scope));
+}
+
 async function findExistingByName(scope: ScriptCreateScope, name: string) {
+  // Duplicate names are not prevented by any unique index; order by creation
+  // so a conflict deterministically resolves to the OLDEST matching row
+  // instead of whichever row the query plan happens to return first.
   const [existing] = await db
     .select()
     .from(scripts)
     .where(sameNameCondition(scope, name))
+    .orderBy(scripts.createdAt)
     .limit(1);
   return existing;
+}
+
+/**
+ * A bundle import creates ordinary (non-system) rows, which must belong to
+ * SOME tenant. A system-scope caller who supplies no orgId would otherwise
+ * resolve to `{ orgId: null, partnerId: null }` — rows invisible to every
+ * tenant and conflict lookups comparing `partner_id = NULL` (never true).
+ */
+function unownedScopeError(scope: ScriptCreateScope): ScriptScopeError | null {
+  if (scope.orgId === null && scope.partnerId === null) {
+    return { error: 'orgId is required when importing with a system-scope token', status: 400 };
+  }
+  return null;
 }
 
 export type BundlePreviewEntry = {
   index: number;
   name: string;
-  status: 'new' | 'name-conflict';
+  status: 'new' | 'name-conflict' | 'invalid';
+  error?: string;
   existingScriptId?: string;
   existingVersion?: number;
 };
@@ -147,24 +184,49 @@ export type BundlePreviewResult = {
   entries: BundlePreviewEntry[];
 };
 
+type ParsedEntry =
+  | { ok: true; entry: ScriptBundleEntry; name: string }
+  | { ok: false; error: string; name: string };
+
+function parseEntry(raw: unknown): ParsedEntry {
+  const parsed = bundleScriptEntrySchema.safeParse(raw);
+  const rawName =
+    raw && typeof raw === 'object' && typeof (raw as { name?: unknown }).name === 'string'
+      ? ((raw as { name: string }).name)
+      : '(unnamed)';
+  if (!parsed.success) {
+    return { ok: false, error: formatEntryIssues(parsed.error), name: rawName.slice(0, 255) };
+  }
+  return { ok: true, entry: parsed.data, name: parsed.data.name };
+}
+
 /**
- * Annotate each bundle entry as `new` or `name-conflict` against the resolved
- * target scope. Performs no writes.
+ * Annotate each bundle entry as `new` / `name-conflict` / `invalid` against
+ * the resolved target scope. Performs no writes. Entry validation happens
+ * here (per entry), not at the route, so one bad entry doesn't reject the
+ * whole bundle.
  */
 export async function previewBundle(
   auth: BundleAuth,
-  bundle: ScriptBundle,
+  bundle: ScriptBundleEnvelope,
   options: BundleTargetOptions
 ): Promise<BundlePreviewResult | ScriptScopeError> {
   const scope = resolveScriptCreateScope(auth, options.availability, options.orgId);
   if (isScriptScopeError(scope)) return scope;
+  const unowned = unownedScopeError(scope);
+  if (unowned) return unowned;
 
   const entries: BundlePreviewEntry[] = [];
-  for (const [index, entry] of bundle.scripts.entries()) {
-    const existing = await findExistingByName(scope, entry.name);
+  for (const [index, raw] of bundle.scripts.entries()) {
+    const parsed = parseEntry(raw);
+    if (!parsed.ok) {
+      entries.push({ index, name: parsed.name, status: 'invalid', error: parsed.error });
+      continue;
+    }
+    const existing = await findExistingByName(scope, parsed.entry.name);
     entries.push({
       index,
-      name: entry.name,
+      name: parsed.entry.name,
       status: existing ? 'name-conflict' : 'new',
       ...(existing ? { existingScriptId: existing.id, existingVersion: existing.version } : {})
     });
@@ -219,14 +281,21 @@ async function linkTags(scriptId: string, tagIds: string[], isExistingScript: bo
 const MAX_RENAME_ATTEMPTS = 100;
 
 async function findFreeName(scope: ScriptCreateScope, base: string): Promise<string | null> {
+  // Generate all candidates up front and resolve them with ONE query per
+  // entry, not one per candidate — a fully-conflicting 200-entry bundle would
+  // otherwise issue up to 20,000 sequential SELECTs.
+  const candidates: string[] = [];
   for (let i = 2; i < 2 + MAX_RENAME_ATTEMPTS; i++) {
     // Respect the 255-char column limit when suffixing.
     const suffix = ` (${i})`;
-    const candidate = base.slice(0, 255 - suffix.length) + suffix;
-    const existing = await findExistingByName(scope, candidate);
-    if (!existing) return candidate;
+    candidates.push(base.slice(0, 255 - suffix.length) + suffix);
   }
-  return null;
+  const taken = await db
+    .select({ name: scripts.name })
+    .from(scripts)
+    .where(and(inArray(scripts.name, candidates), scopeCondition(scope)));
+  const takenNames = new Set(taken.map((t) => t.name));
+  return candidates.find((c) => !takenNames.has(c)) ?? null;
 }
 
 export type BundleImportEntryResult = {
@@ -255,11 +324,13 @@ export type BundleImportResult = {
  */
 export async function importBundle(
   auth: BundleAuth,
-  bundle: ScriptBundle,
+  bundle: ScriptBundleEnvelope,
   options: BundleTargetOptions & { mode: BundleImportMode }
 ): Promise<BundleImportResult | ScriptScopeError> {
   const scope = resolveScriptCreateScope(auth, options.availability, options.orgId);
   if (isScriptScopeError(scope)) return scope;
+  const unowned = unownedScopeError(scope);
+  if (unowned) return unowned;
 
   const result: BundleImportResult = {
     target: { ...scope, availability: options.availability },
@@ -271,11 +342,26 @@ export async function importBundle(
     scripts: []
   };
 
-  for (const [index, entry] of bundle.scripts.entries()) {
+  for (const [index, raw] of bundle.scripts.entries()) {
+    const parsed = parseEntry(raw);
+    if (!parsed.ok) {
+      result.errors.push({ index, name: parsed.name, error: parsed.error });
+      continue;
+    }
+    const entry = parsed.entry;
     try {
       const existing = await findExistingByName(scope, entry.name);
 
       if (existing && options.mode === 'skip') {
+        result.skipped++;
+        result.scripts.push({ index, name: entry.name, action: 'skipped', scriptId: existing.id });
+        continue;
+      }
+
+      if (existing && options.mode === 'new-version' && existing.content === entry.content) {
+        // Idempotent re-import: identical content must not pad version
+        // history — re-running the same bundle N times would otherwise
+        // produce N no-op versions and N identical snapshots.
         result.skipped++;
         result.scripts.push({ index, name: entry.name, action: 'skipped', scriptId: existing.id });
         continue;

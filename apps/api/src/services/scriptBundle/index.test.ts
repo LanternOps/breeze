@@ -15,14 +15,19 @@ const TAG_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const h = vi.hoisted(() => {
   const state = {
     selectQueue: [] as unknown[][],
+    selectWheres: [] as unknown[],
     inserts: [] as Array<{ table: unknown; values: unknown }>,
     updates: [] as Array<{ table: unknown; values: unknown }>
   };
   function chain(get: () => unknown) {
     const c: Record<string, unknown> = {};
-    for (const m of ['from', 'where', 'limit', 'orderBy', 'offset', 'innerJoin', 'leftJoin']) {
+    for (const m of ['from', 'limit', 'orderBy', 'offset', 'innerJoin', 'leftJoin']) {
       c[m] = () => c;
     }
+    c.where = (cond: unknown) => {
+      state.selectWheres.push(cond);
+      return c;
+    };
     (c as { then: unknown }).then = (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) =>
       Promise.resolve().then(get).then(res, rej);
     return c;
@@ -89,9 +94,31 @@ const baseEntry = {
 beforeEach(() => {
   vi.clearAllMocks();
   h.state.selectQueue = [];
+  h.state.selectWheres = [];
   h.state.inserts = [];
   h.state.updates = [];
 });
+
+/**
+ * Recursively walk a Drizzle SQL condition tree looking for a column named
+ * `columnName` (used to prove a WHERE clause filters on it). Handles the
+ * circular table<->column references with a seen-set.
+ */
+function conditionMentionsColumn(cond: unknown, columnName: string, seen = new Set<object>()): boolean {
+  if (!cond || typeof cond !== 'object') return false;
+  const obj = cond as Record<string, unknown>;
+  if (seen.has(obj)) return false;
+  seen.add(obj);
+  if (obj.name === columnName && 'table' in obj) return true;
+  for (const value of Object.values(obj)) {
+    if (Array.isArray(value)) {
+      if (value.some((v) => conditionMentionsColumn(v, columnName, seen))) return true;
+    } else if (value && typeof value === 'object' && !('columns' in (value as object) && seen.has(value as object))) {
+      if (conditionMentionsColumn(value, columnName, seen)) return true;
+    }
+  }
+  return false;
+}
 
 // ---------------------------------------------------------------------------
 // Schema (intake hardening — Task 4)
@@ -203,10 +230,12 @@ describe('scriptBundleSchema', () => {
 // ---------------------------------------------------------------------------
 describe('importBundle', () => {
   it('never writes isSystem: true — even when the caller is system scope and the raw bundle asked for it', async () => {
-    // Raw (attacker-supplied) JSON claims isSystem + a foreign tenant.
-    const bundle = validBundle([
-      { ...baseEntry, isSystem: true, orgId: OTHER_ORG_ID, partnerId: OTHER_PARTNER_ID }
-    ]);
+    // RAW (attacker-supplied) envelope, not pre-parsed: the service's own
+    // per-entry validation must strip isSystem + foreign tenancy.
+    const bundle = {
+      bundleVersion: 1 as const,
+      scripts: [{ ...baseEntry, isSystem: true, orgId: OTHER_ORG_ID, partnerId: OTHER_PARTNER_ID }]
+    };
     const auth = makeAuth({ scope: 'system', orgId: null, partnerId: null, accessibleOrgIds: null });
 
     h.state.selectQueue.push([]); // findExistingByName → none
@@ -287,12 +316,11 @@ describe('importBundle', () => {
     expect(h.state.updates).toHaveLength(0);
   });
 
-  it('rename mode suffixes until a free name is found', async () => {
+  it('rename mode suffixes until a free name is found (one candidate query per entry)', async () => {
     const bundle = validBundle([baseEntry]);
     h.state.selectQueue.push(
       [{ id: SCRIPT_ID, name: baseEntry.name, version: 1, content: 'old' }], // conflict
-      [{ id: 'other', name: `${baseEntry.name} (2)` }], // (2) taken
-      [] // (3) free
+      [{ name: `${baseEntry.name} (2)` }] // single candidates query: (2) taken, (3) free
     );
     const result = await importBundle(makeAuth(), bundle, { mode: 'rename', availability: 'org' });
     expect('error' in result).toBe(false);
@@ -375,6 +403,63 @@ describe('importBundle', () => {
     const linkInsert = h.state.inserts.find((i) => i.table === scriptToTags);
     expect(linkInsert).toBeDefined();
     expect((linkInsert!.values as unknown[]).length).toBe(2);
+  });
+
+  it('rejects a system-scope import with no orgId instead of creating tenantless orphan rows', async () => {
+    const auth = makeAuth({ scope: 'system', orgId: null, partnerId: null, accessibleOrgIds: null });
+    const result = await importBundle(auth, validBundle([baseEntry]), {
+      mode: 'skip',
+      availability: 'org'
+    });
+    expect(result).toMatchObject({ status: 400 });
+    expect(h.state.inserts).toHaveLength(0);
+  });
+
+  it('new-version mode with byte-identical content is a no-op skip (no version padding)', async () => {
+    const bundle = validBundle([baseEntry]);
+    h.state.selectQueue.push([
+      { id: SCRIPT_ID, name: baseEntry.name, version: 4, content: baseEntry.content }
+    ]);
+    const result = await importBundle(makeAuth(), bundle, {
+      mode: 'new-version',
+      availability: 'org'
+    });
+    expect('error' in result).toBe(false);
+    if ('skipped' in result) {
+      expect(result.skipped).toBe(1);
+      expect(result.versioned).toBe(0);
+    }
+    expect(h.state.inserts).toHaveLength(0);
+    expect(h.state.updates).toHaveLength(0);
+  });
+
+  it('conflict lookups exclude system-library rows, so a bundle can never update an is_system script', async () => {
+    h.state.selectQueue.push([]);
+    await importBundle(makeAuth(), validBundle([baseEntry]), { mode: 'new-version', availability: 'org' });
+    // The first SELECT is findExistingByName; its WHERE must filter on
+    // is_system (= false) so a system script sharing the name is never
+    // matched — and therefore never rewritten by new-version mode.
+    expect(h.state.selectWheres.length).toBeGreaterThan(0);
+    expect(conditionMentionsColumn(h.state.selectWheres[0], 'is_system')).toBe(true);
+    expect(conditionMentionsColumn(h.state.selectWheres[0], 'deleted_at')).toBe(true);
+  });
+
+  it('records invalid entries per-entry and imports the valid ones', async () => {
+    const envelope = {
+      bundleVersion: 1 as const,
+      scripts: [
+        { ...baseEntry, timeoutSeconds: 99999 }, // fails createScriptSchema parity bounds
+        { ...baseEntry, name: 'Valid script' }
+      ]
+    };
+    h.state.selectQueue.push([]); // valid entry: no conflict
+    const result = await importBundle(makeAuth(), envelope, { mode: 'skip', availability: 'org' });
+    expect('error' in result).toBe(false);
+    if ('errors' in result) {
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]!.error).toContain('timeoutSeconds');
+      expect(result.imported).toBe(1);
+    }
   });
 });
 

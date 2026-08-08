@@ -25,7 +25,7 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE
 } from '../services/partnerWideAccess';
 import { exportBundle, importBundle, previewBundle } from '../services/scriptBundle';
-import { MAX_BUNDLE_SCRIPTS, scriptBundleSchema } from '../services/scriptBundle/schema';
+import { MAX_BUNDLE_SCRIPTS, scriptBundleEnvelopeSchema } from '../services/scriptBundle/schema';
 
 export const scriptBundleRoutes = new Hono();
 
@@ -41,7 +41,9 @@ const exportQuerySchema = z.object({
 });
 
 const bundleTargetFields = {
-  bundle: scriptBundleSchema,
+  // Envelope only — entries are validated PER ENTRY inside the service so one
+  // bad entry fails individually instead of rejecting the whole bundle.
+  bundle: scriptBundleEnvelopeSchema,
   // Default 'org' — partner-wide fan-out must always be an explicit ask.
   availability: z.enum(['org', 'partner']).default('org'),
   orgId: z.string().guid().optional()

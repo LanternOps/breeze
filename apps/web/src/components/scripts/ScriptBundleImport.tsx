@@ -1,10 +1,12 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Download, Loader2, Upload, X } from 'lucide-react';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { getJwtClaims } from '@/lib/authScope';
 import { runAction, ActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
+import { asList } from '@/lib/asList';
 import {
   filesToBundle,
   downloadBundle,
@@ -14,12 +16,16 @@ import { cn } from '@/lib/utils';
 // Initializes the shared i18next singleton (see ScriptsPage.tsx).
 import '../../lib/i18n';
 
+/** Server-side cap on scripts per bundle (mirrors MAX_BUNDLE_SCRIPTS). */
+const MAX_BUNDLE_SCRIPTS = 200;
+
 type ImportMode = 'skip' | 'rename' | 'new-version';
 
 type PreviewEntry = {
   index: number;
   name: string;
-  status: 'new' | 'name-conflict';
+  status: 'new' | 'name-conflict' | 'invalid';
+  error?: string;
   existingVersion?: number;
 };
 
@@ -38,19 +44,52 @@ type ImportResult = {
 export type ExportableScript = { id: string; name: string; language?: string; category?: string };
 
 export function ScriptBundleExportModal({
-  scripts,
   isOpen,
   onClose
 }: {
-  scripts: ExportableScript[];
   isOpen: boolean;
   onClose: () => void;
 }) {
   const { t } = useTranslation('scripts');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [exporting, setExporting] = useState(false);
+  const [scripts, setScripts] = useState<ExportableScript[]>([]);
+  const [loadingList, setLoadingList] = useState(false);
+
+  // The Scripts page keeps only the first page of GET /scripts (default limit
+  // 50) — fetch the full library here so every script is offered for export.
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    (async () => {
+      setLoadingList(true);
+      try {
+        const all: ExportableScript[] = [];
+        // API caps limit at 100/page; walk pages (bounded) until exhausted.
+        for (let page = 1; page <= 10; page++) {
+          const response = await fetchWithAuth(`/scripts?limit=100&page=${page}`);
+          if (!response.ok) break;
+          const data = await response.json();
+          const rows = asList(data, 'scripts') as ExportableScript[];
+          all.push(...rows.map(s => ({ id: s.id, name: s.name, language: s.language })));
+          const total = (data as { pagination?: { total?: number } })?.pagination?.total;
+          if (rows.length === 0 || (typeof total === 'number' && all.length >= total)) break;
+        }
+        if (!cancelled) setScripts(all);
+      } catch {
+        // List failure leaves an empty modal; the empty-state copy covers it.
+      } finally {
+        if (!cancelled) setLoadingList(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
 
   if (!isOpen) return null;
+
+  const overLimit = selected.size > MAX_BUNDLE_SCRIPTS;
 
   const toggle = (id: string) => {
     setSelected(prev => {
@@ -117,7 +156,11 @@ export function ScriptBundleExportModal({
         </div>
 
         <div className="flex-1 overflow-y-auto p-4">
-          {scripts.length === 0 ? (
+          {loadingList ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : scripts.length === 0 ? (
             <p className="py-8 text-center text-sm text-muted-foreground">
               {t('bundle.exportEmpty')}
             </p>
@@ -144,6 +187,11 @@ export function ScriptBundleExportModal({
         </div>
 
         <div className="flex items-center justify-end gap-3 border-t px-6 py-4">
+          {overLimit && (
+            <p className="mr-auto text-sm text-destructive">
+              {t('bundle.exportLimit', { max: MAX_BUNDLE_SCRIPTS })}
+            </p>
+          )}
           <button
             type="button"
             onClick={onClose}
@@ -154,7 +202,7 @@ export function ScriptBundleExportModal({
           <button
             type="button"
             onClick={handleExport}
-            disabled={selected.size === 0 || exporting}
+            disabled={selected.size === 0 || overLimit || exporting}
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
             data-testid="bundle-export-submit"
           >
@@ -191,8 +239,13 @@ export function ScriptBundleImportModal({
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
 
-  // Same UX gate as ScriptForm: absent = capable; the server enforces (#3262).
+  // Same UX gate as ScriptForm (#3262): the option is only meaningful for
+  // partner-scope callers (the route rejects every other scope), and within
+  // partner scope only for users with the partner-wide capability (absent =
+  // capable; the server enforces regardless).
   const canManagePartnerWide = useAuthStore(s => s.user?.canManagePartnerWide ?? true);
+  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
+  const showPartnerWide = jwtScope === 'partner' && !!jwtPartnerId && canManagePartnerWide;
   const currentOrgId = useOrgStore(s => s.currentOrgId);
 
   if (!isOpen) return null;
@@ -218,6 +271,10 @@ export function ScriptBundleImportModal({
 
   const runPreview = async (nextBundle: ScriptBundle, nextPartnerWide = partnerWide) => {
     setBusy(true);
+    // Clear any previous preview FIRST: if this request fails, a stale
+    // conflict table must not leave the Import button armed for a bundle or
+    // target scope the table was never computed against.
+    setPreview(null);
     try {
       const data = await runAction<{ entries: PreviewEntry[] }>({
         request: () =>
@@ -239,6 +296,9 @@ export function ScriptBundleImportModal({
 
   const handleFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
+    // Invalidate the previous selection before parsing the new one.
+    setBundle(null);
+    setPreview(null);
     const { bundle: parsed, errors } = await filesToBundle(Array.from(fileList));
     setFileErrors(errors);
     if (!parsed) {
@@ -398,13 +458,20 @@ export function ScriptBundleImportModal({
                               'inline-flex items-center rounded-full px-2 py-0.5 text-xs',
                               entry.status === 'new'
                                 ? 'bg-green-500/15 text-green-700 dark:text-green-400'
-                                : 'bg-amber-500/15 text-amber-700 dark:text-amber-400'
+                                : entry.status === 'name-conflict'
+                                  ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400'
+                                  : 'bg-destructive/15 text-destructive'
                             )}
                           >
                             {entry.status === 'new'
                               ? t('bundle.statusNew')
-                              : t('bundle.statusConflict')}
+                              : entry.status === 'name-conflict'
+                                ? t('bundle.statusConflict')
+                                : t('bundle.statusInvalid')}
                           </span>
+                          {entry.status === 'invalid' && entry.error && (
+                            <p className="mt-1 text-xs text-destructive">{entry.error}</p>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -429,7 +496,7 @@ export function ScriptBundleImportModal({
                 </select>
               </div>
 
-              {canManagePartnerWide && (
+              {showPartnerWide && (
                 <label className="flex items-center gap-2 text-sm">
                   <input
                     type="checkbox"

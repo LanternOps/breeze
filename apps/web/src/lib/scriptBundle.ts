@@ -72,21 +72,21 @@ type ReadableFile = { name: string; text: () => Promise<string> };
 
 /**
  * Turn a user file selection into a bundle:
- * - exactly one `.json` file → parsed as an existing bundle (shape-checked
- *   lightly; the server schema is authoritative);
- * - otherwise every file must be a supported loose script file.
+ * - exactly one file, and it's `.json` → parsed as an existing bundle
+ *   (shape-checked lightly; the server schema is authoritative);
+ * - otherwise, supported loose script files are converted and everything
+ *   else — including stray `.json` files inside a picked folder, which the
+ *   folder picker cannot exclude — is reported in `errors` and skipped.
+ *
+ * `errors` contains only file names (rendered after a localized label);
+ * this module never emits user-facing prose.
  */
 export async function filesToBundle(files: ReadableFile[]): Promise<FilesToBundleResult> {
   const errors: string[] = [];
-  if (files.length === 0) return { bundle: null, errors: ['no files selected'] };
+  if (files.length === 0) return { bundle: null, errors: [] };
 
-  const jsonFiles = files.filter((f) => f.name.toLowerCase().endsWith('.json'));
-  if (jsonFiles.length > 1 || (jsonFiles.length === 1 && files.length > 1)) {
-    return { bundle: null, errors: ['select either one .json bundle or a set of script files'] };
-  }
-
-  if (jsonFiles.length === 1) {
-    const file = jsonFiles[0]!;
+  if (files.length === 1 && files[0]!.name.toLowerCase().endsWith('.json')) {
+    const file = files[0]!;
     try {
       const parsed = JSON.parse(await file.text()) as Partial<ScriptBundle>;
       if (typeof parsed?.bundleVersion !== 'number' || !Array.isArray(parsed?.scripts)) {
@@ -101,7 +101,9 @@ export async function filesToBundle(files: ReadableFile[]): Promise<FilesToBundl
   const entries: ScriptBundleEntry[] = [];
   for (const file of files) {
     try {
-      const entry = looseFileToEntry(file.name, await file.text());
+      const entry = file.name.toLowerCase().endsWith('.json')
+        ? null
+        : looseFileToEntry(file.name, await file.text());
       if (entry) entries.push(entry);
       else errors.push(file.name);
     } catch {

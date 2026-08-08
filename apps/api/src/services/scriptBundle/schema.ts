@@ -114,16 +114,41 @@ export const bundleScriptEntrySchema = z.object({
   exitCodeSeverityMapping: bundleSeverityMappingSchema
 });
 
+const bundleVersionSchema = z
+  .number()
+  .int()
+  .refine((v) => v === SCRIPT_BUNDLE_VERSION, {
+    message: `Unsupported bundleVersion — this server only understands version ${SCRIPT_BUNDLE_VERSION}`
+  });
+
+/**
+ * The envelope the routes validate: version + a bounded array of UNVALIDATED
+ * entries. Entries are validated individually inside the service so one bad
+ * entry (e.g. a legitimately-authored script whose content exceeds the bundle
+ * cap) fails per-entry instead of rejecting the whole bundle wholesale —
+ * preview annotates it `invalid`, import records it in `errors` and proceeds.
+ */
+export const scriptBundleEnvelopeSchema = z.object({
+  bundleVersion: bundleVersionSchema,
+  exportedAt: z.string().optional(),
+  scripts: z.array(z.unknown()).min(1).max(MAX_BUNDLE_SCRIPTS)
+});
+
+/** Fully-validated bundle shape — what export emits. */
 export const scriptBundleSchema = z.object({
-  bundleVersion: z
-    .number()
-    .int()
-    .refine((v) => v === SCRIPT_BUNDLE_VERSION, {
-      message: `Unsupported bundleVersion — this server only understands version ${SCRIPT_BUNDLE_VERSION}`
-    }),
+  bundleVersion: bundleVersionSchema,
   exportedAt: z.string().optional(),
   scripts: z.array(bundleScriptEntrySchema).min(1).max(MAX_BUNDLE_SCRIPTS)
 });
 
 export type ScriptBundleEntry = z.infer<typeof bundleScriptEntrySchema>;
 export type ScriptBundle = z.infer<typeof scriptBundleSchema>;
+export type ScriptBundleEnvelope = z.infer<typeof scriptBundleEnvelopeSchema>;
+
+/** Flatten a Zod failure into a compact per-entry error message. */
+export function formatEntryIssues(error: z.ZodError): string {
+  return error.issues
+    .slice(0, 5)
+    .map((i) => (i.path.length > 0 ? `${i.path.join('.')}: ${i.message}` : i.message))
+    .join('; ');
+}

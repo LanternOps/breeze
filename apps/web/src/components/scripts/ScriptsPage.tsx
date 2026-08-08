@@ -488,11 +488,7 @@ export default function ScriptsPage() {
 
       {/* Bundle export/import (#3245) */}
       {modalMode === 'bundle-export' && (
-        <ScriptBundleExportModal
-          scripts={scripts.map(s => ({ id: s.id, name: s.name, language: s.language }))}
-          isOpen={true}
-          onClose={handleCloseModal}
-        />
+        <ScriptBundleExportModal isOpen={true} onClose={handleCloseModal} />
       )}
       {modalMode === 'bundle-import' && (
         <ScriptBundleImportModal

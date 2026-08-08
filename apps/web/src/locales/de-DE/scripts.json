@@ -1206,6 +1206,8 @@
     "partnerWide": "Für alle Organisationen verfügbar machen (partnerweit)",
     "importCommit": "{{count}} Skripte importieren",
     "resultSummary": "{{imported}} importiert, {{renamed}} umbenannt, {{versioned}} versioniert, {{skipped}} übersprungen, {{failed}} fehlgeschlagen",
-    "scriptCount": "{{count}} Skripte im Bundle"
+    "scriptCount": "{{count}} Skripte im Bundle",
+    "statusInvalid": "Ungültig",
+    "exportLimit": "Sie können bis zu {{max}} Skripte pro Bundle exportieren."
   }
 }

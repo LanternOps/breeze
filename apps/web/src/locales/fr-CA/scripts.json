@@ -1206,6 +1206,8 @@
     "partnerWide": "Rendre disponible pour toutes les organisations (à l'échelle du partenaire)",
     "importCommit": "Importer {{count}} scripts",
     "resultSummary": "{{imported}} importés, {{renamed}} renommés, {{versioned}} versionnés, {{skipped}} ignorés, {{failed}} en échec",
-    "scriptCount": "{{count}} scripts dans le bundle"
+    "scriptCount": "{{count}} scripts dans le bundle",
+    "statusInvalid": "Invalide",
+    "exportLimit": "Vous pouvez exporter jusqu’à {{max}} scripts par bundle."
   }
 }

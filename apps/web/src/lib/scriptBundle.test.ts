@@ -62,15 +62,16 @@ describe('filesToBundle', () => {
     expect(result.errors).toEqual(['notes.txt']);
   });
 
-  it('refuses a mix of .json bundle and loose files', async () => {
-    const result = await filesToBundle([file('bundle.json', '{}'), file('a.ps1', 'x')]);
-    expect(result.bundle).toBeNull();
-    expect(result.errors.length).toBeGreaterThan(0);
+  it('skips stray .json files inside a multi-file (folder) selection instead of aborting', async () => {
+    const result = await filesToBundle([file('package.json', '{}'), file('a.ps1', 'Write-Host a')]);
+    expect(result.bundle?.scripts.map((s) => s.name)).toEqual(['a']);
+    expect(result.errors).toEqual(['package.json']);
   });
 
   it('returns null bundle when nothing is convertible', async () => {
     const result = await filesToBundle([file('x.txt', 'nope')]);
     expect(result.bundle).toBeNull();
     expect(result.errors).toEqual(['x.txt']);
+    expect(await filesToBundle([])).toEqual({ bundle: null, errors: [] });
   });
 });
