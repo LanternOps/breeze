@@ -2,13 +2,15 @@ import { Hono, type Context } from 'hono';
 import { randomUUID } from 'node:crypto';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, eq, desc, inArray, isNull, or } from 'drizzle-orm';
+import { and, eq, desc, inArray, isNull, lt, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { tunnelSessions, tunnelAllowlists, devices, users, remoteSessions, sites, auditLogs } from '../db/schema';
 import { captureException } from '../services/sentry';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
+import { HTTP_TUNNEL_MAX_SESSION_HOURS } from './tunnelHttp';
 import { createWsTicket, createVncConnectCode, consumeVncConnectCode, getViewerAccessTokenExpirySeconds, HTTP_TICKET_TTL_MS } from '../services/remoteSessionAuth';
 import {
   createViewerAccessToken,
@@ -37,6 +39,19 @@ const allowlistIdParamSchema = idParamSchema;
 const CONNECTABLE_TUNNEL_STATUSES = ['pending', 'connecting', 'active'] as const;
 const VNC_EXCHANGE_RATE_LIMIT = 20;
 const VNC_EXCHANGE_RATE_WINDOW_SECONDS = 60;
+
+// Proxy tunnels get no agent-side reaper once `tunnel_open` is skipped for them
+// (see POST /tunnels below) — GET /tunnels lazily expires stale rows on every
+// read instead. 10 minutes comfortably exceeds the 300s cookie TTL + the
+// activity-bump throttle slack, so a live session is never flipped early.
+const PROXY_IDLE_EXPIRY_MS = 10 * 60 * 1000;
+
+// Absolute session cap (design spec A.3-3), shared with tunnelHttp.ts (which
+// owns the canonical export). tunnelHttp.ts enforces this per-request on the
+// proxied path (writes the row terminal + 410s mid-session); this route
+// enforces it at ticket-mint time so a caller can't refresh past a dead
+// session with a fresh ticket.
+const HTTP_TUNNEL_MAX_SESSION_MS = HTTP_TUNNEL_MAX_SESSION_HOURS * 60 * 60 * 1000;
 
 const createTunnelSchema = z.discriminatedUnion('type', [
   z.object({ deviceId: z.string().guid(), type: z.literal('vnc') }),
@@ -380,24 +395,31 @@ tunnelRoutes.post(
       })
       .returning();
 
-    // Send tunnel_open command to agent
-    const allowlistPatterns = isVNC ? [] : await getActiveAllowlistPatterns(device.orgId);
-    const sent = sendCommandToAgent(device.agentId!, {
-      id: `tun-open-${session!.id}`,
-      type: 'tunnel_open',
-      payload: {
-        tunnelId: session!.id,
-        targetHost,
-        targetPort,
-        tunnelType: body.type,
-        allowlistRules: allowlistPatterns,
-      },
-    });
-    if (!sent) {
-      await db.update(tunnelSessions)
-        .set({ status: 'failed', errorMessage: 'Agent disconnected before tunnel could be opened', endedAt: new Date() })
-        .where(eq(tunnelSessions.id, session!.id));
-      return c.json({ error: 'Agent disconnected before tunnel could be opened' }, 503);
+    // Send tunnel_open command to agent — skipped for proxy tunnels. The raw
+    // TCP socket it opens is unused on the HTTP-proxy path (tunnelHttp.ts
+    // dispatches its own per-request http_request commands), and the agent's
+    // 5-minute idle reap on that socket was one of two independent mechanisms
+    // that killed proxy sessions early (the other was the cookie TTL, now
+    // owned by tunnelHttp.ts's sliding refresh + 12h absolute cap).
+    if (body.type !== 'proxy') {
+      const allowlistPatterns = isVNC ? [] : await getActiveAllowlistPatterns(device.orgId);
+      const sent = sendCommandToAgent(device.agentId!, {
+        id: `tun-open-${session!.id}`,
+        type: 'tunnel_open',
+        payload: {
+          tunnelId: session!.id,
+          targetHost,
+          targetPort,
+          tunnelType: body.type,
+          allowlistRules: allowlistPatterns,
+        },
+      });
+      if (!sent) {
+        await db.update(tunnelSessions)
+          .set({ status: 'failed', errorMessage: 'Agent disconnected before tunnel could be opened', endedAt: new Date() })
+          .where(eq(tunnelSessions.id, session!.id));
+        return c.json({ error: 'Agent disconnected before tunnel could be opened' }, 503);
+      }
     }
 
     await logTunnelAudit(
@@ -447,6 +469,34 @@ tunnelRoutes.get(
       }
       conditions.push(inArray(tunnelSessions.deviceId, allowedDeviceIds));
     }
+    // Lazy expiry: flip stale proxy rows to `disconnected` before reading.
+    // Scoped to the SAME caller-visibility conditions built above (org/user/
+    // site — never broadened) and deliberately NOT the `?status=` filter below
+    // (that only narrows what's returned, it must not narrow what gets swept).
+    // With `tunnel_open` skipped for proxy tunnels (see POST /tunnels), nothing
+    // else ever reaps these rows:
+    //   (a) `active` rows idle >10min past their last bumped `lastActivityAt`;
+    //   (b) abandoned `pending` rows >10min old that never got a
+    //       `lastActivityAt` at all (the ticket->cookie exchange never
+    //       happened, so without this they'd stay "connectable" forever).
+    const now = new Date();
+    const staleCutoff = new Date(now.getTime() - PROXY_IDLE_EXPIRY_MS);
+    await db
+      .update(tunnelSessions)
+      .set({ status: 'disconnected', endedAt: now })
+      .where(and(
+        ...conditions,
+        eq(tunnelSessions.type, 'proxy'),
+        or(
+          and(eq(tunnelSessions.status, 'active'), lt(tunnelSessions.lastActivityAt, staleCutoff)),
+          and(
+            eq(tunnelSessions.status, 'pending'),
+            lt(tunnelSessions.createdAt, staleCutoff),
+            isNull(tunnelSessions.lastActivityAt),
+          ),
+        )!,
+      ));
+
     if (status) {
       const validStatuses = ['pending', 'connecting', 'active', 'disconnected', 'failed'] as const;
       if (validStatuses.includes(status as any)) {
@@ -454,14 +504,25 @@ tunnelRoutes.get(
       }
     }
 
-    const sessions = await db
-      .select()
+    // Join `devices` for the bridge device's siteId — tunnel_sessions has no
+    // siteId column of its own (OrgRemoteAccessSettings groups rows by site).
+    const rows = await db
+      .select({ session: tunnelSessions, siteId: devices.siteId })
       .from(tunnelSessions)
+      .leftJoin(devices, eq(tunnelSessions.deviceId, devices.id))
       .where(conditions.length > 0 ? and(...conditions) : undefined)
       .orderBy(desc(tunnelSessions.createdAt))
       .limit(100);
 
-    return c.json(sessions);
+    // Server-computed idle time, never raw timestamps: the client must not
+    // diff a server timestamp against its own clock (clock-skew review finding).
+    const result = rows.map(({ session, siteId }) => {
+      const lastActive = session.lastActivityAt ?? session.createdAt;
+      const idleSeconds = Math.max(0, Math.floor((now.getTime() - new Date(lastActive).getTime()) / 1000));
+      return { ...session, siteId: siteId ?? null, idleSeconds };
+    });
+
+    return c.json(result);
   }
 );
 
@@ -527,19 +588,30 @@ tunnelRoutes.post(
       return c.json({ error: 'Site not found for this organization' }, 404);
     }
 
-    const [rule] = await db
-      .insert(tunnelAllowlists)
-      .values({
-        orgId,
-        siteId: body.siteId || null,
-        direction: body.direction,
-        pattern: body.pattern,
-        description: body.description || null,
-        source: body.source || 'manual',
-        discoveredAssetId: body.discoveredAssetId || null,
-        createdBy: auth.user.id,
-      })
-      .returning();
+    let rule: typeof tunnelAllowlists.$inferSelect | undefined;
+    try {
+      [rule] = await db
+        .insert(tunnelAllowlists)
+        .values({
+          orgId,
+          siteId: body.siteId || null,
+          direction: body.direction,
+          pattern: body.pattern,
+          description: body.description || null,
+          source: body.source || 'manual',
+          discoveredAssetId: body.discoveredAssetId || null,
+          createdBy: auth.user.id,
+        })
+        .returning();
+    } catch (err) {
+      // The expression unique index on (orgId, direction, pattern, siteId)
+      // raises 23505 on a duplicate rule — map it to a clear 409 instead of
+      // letting it bubble as a raw 500.
+      if (isPgUniqueViolation(err)) {
+        return c.json({ error: 'An identical allowlist rule already exists for this organization' }, 409);
+      }
+      throw err;
+    }
 
     await logTunnelAudit(
       'tunnel.allowlist.create',
@@ -852,6 +924,14 @@ tunnelRoutes.post(
 
     if (session.userId !== auth.user.id) {
       return c.json({ error: 'Not the session owner' }, 403);
+    }
+
+    // Absolute 12h cap (spec A.3-3) — reject minting a fresh ticket for a
+    // session past its lifetime even if its status still reads connectable.
+    // tunnelHttp.ts enforces the same cap per-request on the proxied path and
+    // writes the row terminal there; this is the mint-time backstop.
+    if (Date.now() - new Date(session.createdAt).getTime() > HTTP_TUNNEL_MAX_SESSION_MS) {
+      return c.json({ error: 'session_expired' }, 410);
     }
 
     if (!CONNECTABLE_TUNNEL_STATUSES.includes(session.status as (typeof CONNECTABLE_TUNNEL_STATUSES)[number])) {
