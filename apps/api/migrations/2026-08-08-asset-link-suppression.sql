@@ -1,0 +1,30 @@
+-- Asset-link lifecycle (issue #3261): durable unlink suppression.
+--
+-- Design: docs/superpowers/specs/monitoring/2026-08-08-asset-link-lifecycle-design.md
+-- (Architecture A.1-A.4).
+--
+-- Why this column exists: today, `DELETE /discovery/assets/:id/link` clears
+-- `linked_device_id`/`link_source` and nothing else. The very next discovery
+-- scan re-runs the MAC/IP auto-linker, re-matches the same identity, and
+-- writes the link right back (`discoveryWorker.ts` auto-linker). So a manual
+-- "Unlink" click undoes itself within one scan cycle — there is nothing in
+-- the schema that records "a user said no to this link". This column is that
+-- record: a single nullable timestamp durably suppresses re-linking until a
+-- human explicitly re-asserts identity via manual link.
+--
+-- Design decision this reflects (reversal, see spec A.4): the 2026-06-27
+-- unlink design made unlink manual-links-only, because without suppression
+-- unlinking an auto-link was pointless — it would just be re-created on the
+-- next scan. Suppression removes that constraint, so unlink now applies
+-- uniformly to both provenances (auto and manual). That routing/gating change
+-- lands in a later task (routes/discovery.ts); this migration only adds the
+-- durable state it depends on.
+--
+-- Set by: manual unlink (`DELETE /discovery/assets/:id/link`), for links of
+--         either provenance (`link_source = 'auto'` or `'manual'`).
+-- Cleared by: a subsequent manual link (`POST /discovery/assets/:id/link`) —
+--         an explicit human assertion outranks a past unlink.
+-- Read by: the auto-linker (`discoveryWorker.ts`), which skips any asset
+--         where this column is non-null. Cross-site link self-healing is
+--         unchanged and must NOT set this column — it isn't a user's "no".
+ALTER TABLE "discovered_assets" ADD COLUMN IF NOT EXISTS "auto_link_suppressed_at" timestamptz;

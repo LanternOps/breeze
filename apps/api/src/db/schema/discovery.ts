@@ -138,6 +138,11 @@ export const discoveredAssets = pgTable('discovered_assets', {
   responseTimeMs: real('response_time_ms'),
   linkedDeviceId: uuid('linked_device_id').references(() => devices.id),
   linkSource: discoveredAssetLinkSourceEnum('link_source'),
+  // Durable unlink suppression (#3261) — set by manual unlink, cleared by a
+  // subsequent manual link. See 2026-08-08-asset-link-suppression.sql for the
+  // full rationale (without this, the auto-linker re-links the same MAC/IP
+  // match on the very next discovery scan).
+  autoLinkSuppressedAt: timestamp('auto_link_suppressed_at', { withTimezone: true }),
   typeSource: discoveredAssetTypeSourceEnum('type_source').notNull().default('auto'),
   detectedAssetType: discoveredAssetTypeEnum('detected_asset_type'),
   firstSeenAt: timestamp('first_seen_at').defaultNow().notNull(),
