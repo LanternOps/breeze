@@ -180,6 +180,75 @@ describe('POST /register-partner — SR2-21: email-first, no account created bef
   });
 });
 
+describe('POST /register-partner — business-email requirement', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.IS_HOSTED = 'true';
+    vi.mocked(getRedis).mockReturnValue({} as never);
+    vi.mocked(createPendingRegistration).mockResolvedValue({ rawToken: 'raw-token', tokenHash: 'f'.repeat(64) });
+  });
+
+  afterEach(() => {
+    delete process.env.IS_HOSTED;
+    delete process.env.SIGNUP_REQUIRE_BUSINESS_EMAIL;
+    delete process.env.SIGNUP_ALLOWED_EMAIL_DOMAINS;
+    delete process.env.SIGNUP_BUSINESS_EMAIL_CONTACT_URL;
+  });
+
+  it('rejects a consumer-mailbox signup with an actionable 400 and parks NOTHING', async () => {
+    process.env.SIGNUP_BUSINESS_EMAIL_CONTACT_URL = 'https://cal.example/breeze';
+    const res = await postRegisterPartner({ ...VALID_BODY, email: 'someone@gmail.com' });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      code: 'BUSINESS_EMAIL_REQUIRED',
+      actionUrl: 'https://cal.example/breeze',
+      actionLabel: 'Schedule a call',
+    });
+    // The whole point of rejecting before the park: no pending record, no email.
+    expect(vi.mocked(createPendingRegistration)).not.toHaveBeenCalled();
+    expect(vi.mocked(createPartner)).not.toHaveBeenCalled();
+  });
+
+  it('allows a business-domain signup', async () => {
+    const res = await postRegisterPartner(VALID_BODY);
+    expect(res.status).toBe(200);
+    expect(vi.mocked(createPendingRegistration)).toHaveBeenCalled();
+  });
+
+  it('does NOT apply to self-hosted signups', async () => {
+    // Self-hosted takes the setup-admin gate, so seed one and let it through.
+    delete process.env.IS_HOSTED;
+    vi.mocked(db.select).mockReturnValue(selectChain([{ setupCompletedAt: new Date() }]) as never);
+
+    const res = await postRegisterPartner({ ...VALID_BODY, email: 'owner@gmail.com' });
+    expect(res.status).toBe(200);
+    expect(vi.mocked(createPendingRegistration)).toHaveBeenCalled();
+  });
+
+  it('is disabled by the kill switch', async () => {
+    process.env.SIGNUP_REQUIRE_BUSINESS_EMAIL = 'false';
+    const res = await postRegisterPartner({ ...VALID_BODY, email: 'someone@gmail.com' });
+    expect(res.status).toBe(200);
+    expect(vi.mocked(createPendingRegistration)).toHaveBeenCalled();
+  });
+
+  it('honours the per-domain allowlist', async () => {
+    process.env.SIGNUP_ALLOWED_EMAIL_DOMAINS = 'gmail.com';
+    const res = await postRegisterPartner({ ...VALID_BODY, email: 'someone@gmail.com' });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects before the existence-independent work, so it cannot become an oracle', async () => {
+    // Two different consumer addresses must be byte-identical in response —
+    // the verdict depends on the DOMAIN only, never on account state.
+    const a = await postRegisterPartner({ ...VALID_BODY, email: 'has-account@gmail.com' });
+    const b = await postRegisterPartner({ ...VALID_BODY, email: 'no-account@gmail.com' });
+    expect(a.status).toBe(b.status);
+    expect(await a.text()).toBe(await b.text());
+  });
+});
+
 describe('POST /register-partner setup-admin gate (still enforced pre-park)', () => {
   const originalFlag = process.env.IS_HOSTED;
 
