@@ -1,8 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { psaRoutes } from './psa';
+import { PsaConfigError } from '../services/psa/credentials';
 
 vi.mock('../services', () => ({}));
+
+// Service boundary: the routes construct adapters via createPSAProvider; the
+// adapters themselves are covered by their own unit tests.
+const { createPSAProviderMock } = vi.hoisted(() => ({
+  createPSAProviderMock: vi.fn(),
+}));
+
+vi.mock('../services/psa', () => ({
+  createPSAProvider: createPSAProviderMock,
+}));
 
 const { permissionGate, mfaGate, selectMock, insertMock, updateMock, deleteMock } = vi.hoisted(() => {
   function chainMock(resolvedValue: unknown = []) {
@@ -89,6 +100,7 @@ vi.mock('../services/permissions', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
+  dbAccessContextFromAuth: vi.fn(() => ({})),
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'organization',
@@ -226,17 +238,50 @@ describe('psa route security gates', () => {
   });
 });
 
-describe.skip('psa routes', () => {
+describe('psa routes', () => {
   let app: Hono;
+
+  const NOW = new Date('2026-05-02T00:00:00.000Z');
+
+  const connectionRow = (overrides: Record<string, unknown> = {}) => ({
+    id: 'conn-1',
+    orgId: 'org-123',
+    provider: 'jira',
+    name: 'Primary PSA',
+    credentials: `enc:${JSON.stringify({
+      baseUrl: 'https://acme.atlassian.net',
+      username: 'admin@acme.com',
+      apiToken: 'tok-123',
+      password: 'pw-456'
+    })}`,
+    settings: { defaultQueue: 'OPS' },
+    syncSettings: {},
+    createdAt: NOW,
+    updatedAt: NOW,
+    lastSyncAt: null,
+    ...overrides
+  });
+
+  const makeChain = (rows: unknown[]) => {
+    const chain: Record<string, any> = {};
+    for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'innerJoin', 'leftJoin', 'orderBy', 'offset']) {
+      chain[method] = vi.fn(() => Object.assign(Promise.resolve(rows), chain));
+    }
+    return Object.assign(Promise.resolve(rows), chain);
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionGate.deny = false;
+    mfaGate.deny = false;
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: 'organization',
         partnerId: null,
         orgId: 'org-123',
-        user: { id: 'user-123', email: 'test@example.com' }
+        user: { id: 'user-123', email: 'test@example.com' },
+        canAccessOrg: (orgId: string) => orgId === 'org-123',
+        accessibleOrgIds: ['org-123']
       });
       return next();
     });
@@ -244,76 +289,149 @@ describe.skip('psa routes', () => {
     app.route('/psa', psaRoutes);
   });
 
-  const createConnection = async (overrides: Record<string, unknown> = {}) => {
-    return app.request('/psa', {
+  it('creates a PSA connection and never echoes credentials', async () => {
+    insertMock.mockReturnValueOnce({
+      values: vi.fn(() => ({
+        returning: vi.fn(async () => [connectionRow()])
+      }))
+    } as any);
+
+    const res = await app.request('/psa/connections', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        orgId: 'org-override',
         provider: 'jira',
         name: 'Primary PSA',
-        credentials: { apiKey: 'secret' },
-        settings: { region: 'us-east-1' },
-        ...overrides
+        credentials: { baseUrl: 'https://acme.atlassian.net', username: 'admin@acme.com', apiToken: 'tok-123' },
+        settings: { defaultQueue: 'OPS' }
       })
     });
-  };
-
-  it('should create a PSA connection for org scope', async () => {
-    const res = await createConnection();
 
     expect(res.status).toBe(201);
     const body = await res.json();
-    expect(body.id).toBeDefined();
+    expect(body.id).toBe('conn-1');
     expect(body.orgId).toBe('org-123');
-    expect(body.credentials).toBeDefined();
+    expect(body.status).toBe('active');
+    expect(body.credentials).toBeUndefined();
+    expect(body.hasCredentials).toBeUndefined();
   });
 
-  it('should list PSA connections without credentials', async () => {
-    const createRes = await createConnection({ name: 'List PSA' });
-    const created = await createRes.json();
+  it('rejects providers outside the shared implemented list', async () => {
+    const res = await app.request('/psa/connections', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'halo', // DB enum value with no adapter — the route zod is the gate
+        name: 'Dead provider',
+        credentials: { baseUrl: 'https://halo.example.com' }
+      })
+    });
 
-    const res = await app.request('/psa', { method: 'GET' });
+    expect(res.status).toBe(400);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('lists PSA connections without credential material', async () => {
+    selectMock
+      .mockReturnValueOnce(makeChain([connectionRow()]) as never)
+      .mockReturnValueOnce(makeChain([{ count: 1 }]) as never);
+
+    const res = await app.request('/psa/connections', { method: 'GET' });
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    const match = body.data.find((item: { id: string }) => item.id === created.id);
-    expect(match).toBeDefined();
-    expect(match.credentials).toBeUndefined();
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0].id).toBe('conn-1');
+    expect(body.data[0].status).toBe('active');
+    expect(body.data[0].credentials).toBeUndefined();
+    expect(body.data[0].hasCredentials).toBeUndefined();
+    expect(body.pagination.total).toBe(1);
   });
 
-  it('should fetch a PSA connection with credentials', async () => {
-    const createRes = await createConnection({ name: 'Fetch PSA' });
-    const created = await createRes.json();
+  it('returns non-secret prefill fields and per-field secret flags on detail GET', async () => {
+    selectMock.mockReturnValueOnce(makeChain([connectionRow()]) as never);
 
-    const res = await app.request(`/psa/${created.id}`, { method: 'GET' });
+    const res = await app.request('/psa/connections/conn-1', { method: 'GET' });
 
     expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.id).toBe(created.id);
-    expect(body.credentials).toBeDefined();
+    const { data } = await res.json();
+    expect(data.credentials).toEqual({
+      baseUrl: 'https://acme.atlassian.net',
+      username: 'admin@acme.com'
+    });
+    expect(data.credentials.apiToken).toBeUndefined();
+    expect(data.credentials.password).toBeUndefined();
+    expect(data.hasCredentials).toEqual({
+      password: true,
+      apiToken: true,
+      clientSecret: false
+    });
+    expect(data.settings).toEqual({ defaultQueue: 'OPS' });
   });
 
-  it('should update a PSA connection', async () => {
-    const createRes = await createConnection({ name: 'Update PSA' });
-    const created = await createRes.json();
+  it('derives paused status from settings.status', async () => {
+    selectMock.mockReturnValueOnce(
+      makeChain([connectionRow({ settings: { status: 'paused' } })]) as never
+    );
 
-    const res = await app.request(`/psa/${created.id}`, {
+    const res = await app.request('/psa/connections/conn-1', { method: 'GET' });
+
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.status).toBe('paused');
+  });
+
+  it('updates name without touching credentials', async () => {
+    selectMock.mockReturnValueOnce(makeChain([connectionRow()]) as never);
+    const setSpy = vi.fn(() => ({
+      where: vi.fn(() => ({
+        returning: vi.fn(async () => [connectionRow({ name: 'Renamed PSA' })])
+      }))
+    }));
+    updateMock.mockReturnValueOnce({ set: setSpy } as any);
+
+    const res = await app.request('/psa/connections/conn-1', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Updated PSA' })
+      body: JSON.stringify({ name: 'Renamed PSA' })
     });
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.name).toBe('Updated PSA');
+    expect(body.name).toBe('Renamed PSA');
+    expect(setSpy).toHaveBeenCalledWith(expect.not.objectContaining({ credentials: expect.anything() }));
   });
 
-  it('should reject empty updates', async () => {
-    const createRes = await createConnection({ name: 'Empty Update PSA' });
-    const created = await createRes.json();
+  it('merges PATCHed credentials over the stored blob (untouched secrets survive)', async () => {
+    selectMock.mockReturnValueOnce(makeChain([connectionRow()]) as never);
+    const setSpy = vi.fn(() => ({
+      where: vi.fn(() => ({
+        returning: vi.fn(async () => [connectionRow()])
+      }))
+    }));
+    updateMock.mockReturnValueOnce({ set: setSpy } as any);
 
-    const res = await app.request(`/psa/${created.id}`, {
+    const res = await app.request('/psa/connections/conn-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        credentials: { apiToken: 'tok-NEW', password: null }
+      })
+    });
+
+    expect(res.status).toBe(200);
+    const setArg = setSpy.mock.calls[0]![0] as { credentials: string };
+    const persisted = JSON.parse(setArg.credentials.replace(/^enc:/, ''));
+    // apiToken overwritten, password deleted via explicit null, the rest kept.
+    expect(persisted).toEqual({
+      baseUrl: 'https://acme.atlassian.net',
+      username: 'admin@acme.com',
+      apiToken: 'tok-NEW'
+    });
+  });
+
+  it('rejects empty updates', async () => {
+    const res = await app.request('/psa/connections/conn-1', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({})
@@ -322,49 +440,97 @@ describe.skip('psa routes', () => {
     expect(res.status).toBe(400);
   });
 
-  it('should delete a PSA connection', async () => {
-    const createRes = await createConnection({ name: 'Delete PSA' });
-    const created = await createRes.json();
+  it('deletes a PSA connection and its ticket mappings', async () => {
+    selectMock.mockReturnValueOnce(makeChain([connectionRow()]) as never);
 
-    const res = await app.request(`/psa/${created.id}`, { method: 'DELETE' });
+    const res = await app.request('/psa/connections/conn-1', { method: 'DELETE' });
 
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-
-    const followUp = await app.request(`/psa/${created.id}`, { method: 'GET' });
-    expect(followUp.status).toBe(404);
+    expect(deleteMock).toHaveBeenCalledTimes(2);
   });
 
-  it('should test PSA credentials', async () => {
-    const createRes = await createConnection({ name: 'Test PSA' });
-    const created = await createRes.json();
+  it('runs a real connection test and persists verified on success', async () => {
+    selectMock.mockReturnValueOnce(makeChain([connectionRow()]) as never);
+    const setSpy = vi.fn(() => ({ where: vi.fn(async () => []) }));
+    updateMock.mockReturnValueOnce({ set: setSpy } as any);
+    const testConnection = vi.fn(async () => ({ success: true, message: 'Connected as Admin' }));
+    createPSAProviderMock.mockReturnValueOnce({ testConnection });
 
-    const res = await app.request(`/psa/${created.id}/test`, { method: 'POST' });
+    const res = await app.request('/psa/connections/conn-1/test', { method: 'POST' });
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.result.success).toBe(true);
-    expect(body.testedAt).toBeDefined();
+    expect(body).toEqual({ success: true, message: 'Connected as Admin' });
+
+    expect(createPSAProviderMock).toHaveBeenCalledWith(
+      'jira',
+      expect.objectContaining({ baseUrl: 'https://acme.atlassian.net', apiToken: 'tok-123' }),
+      { defaultQueue: 'OPS' }
+    );
+    expect(testConnection).toHaveBeenCalledTimes(1);
+    const setArg = setSpy.mock.calls[0]![0] as { syncSettings: Record<string, unknown> };
+    expect(setArg.syncSettings.status).toBe('verified');
+    expect(typeof setArg.syncSettings.lastTestedAt).toBe('string');
   });
 
-  it('should enqueue a PSA sync', async () => {
-    const createRes = await createConnection({ name: 'Sync PSA' });
-    const created = await createRes.json();
+  it('returns success:false and persists failed when the provider rejects the credentials', async () => {
+    selectMock.mockReturnValueOnce(makeChain([connectionRow()]) as never);
+    const setSpy = vi.fn(() => ({ where: vi.fn(async () => []) }));
+    updateMock.mockReturnValueOnce({ set: setSpy } as any);
+    createPSAProviderMock.mockReturnValueOnce({
+      testConnection: vi.fn(async () => ({ success: false, message: 'Jira API error (401): bad token' }))
+    });
 
-    const res = await app.request(`/psa/${created.id}/sync`, { method: 'POST' });
+    const res = await app.request('/psa/connections/conn-1/test', { method: 'POST' });
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.status).toBe('queued');
-    expect(body.syncedAt).toBeDefined();
+    expect(body.success).toBe(false);
+    expect(body.error).toBe('Jira API error (401): bad token');
+
+    const setArg = setSpy.mock.calls[0]![0] as { syncSettings: Record<string, unknown> };
+    expect(setArg.syncSettings.status).toBe('failed');
   });
 
-  it('should list PSA tickets for a connection', async () => {
-    const createRes = await createConnection({ name: 'Tickets PSA' });
-    const created = await createRes.json();
+  it('maps PsaConfigError to a 400 instead of a deep TypeError', async () => {
+    selectMock.mockReturnValueOnce(makeChain([connectionRow()]) as never);
+    createPSAProviderMock.mockImplementationOnce(() => {
+      throw new PsaConfigError('jira connection is missing required credential field(s): baseUrl');
+    });
 
-    const res = await app.request(`/psa/${created.id}/tickets?page=1&limit=10`, {
+    const res = await app.request('/psa/connections/conn-1/test', { method: 'POST' });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('missing required credential field');
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when testing a nonexistent connection', async () => {
+    selectMock.mockReturnValueOnce(makeChain([]) as never);
+
+    const res = await app.request('/psa/connections/missing/test', { method: 'POST' });
+
+    expect(res.status).toBe(404);
+    expect(createPSAProviderMock).not.toHaveBeenCalled();
+  });
+
+  it('answers sync with an honest 501 and performs no DB work', async () => {
+    const res = await app.request('/psa/connections/conn-1/sync', { method: 'POST' });
+
+    expect(res.status).toBe(501);
+    const body = await res.json();
+    expect(body.error).toBe('PSA ticket sync is not implemented yet');
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('lists PSA tickets for a connection', async () => {
+    selectMock.mockReturnValueOnce(makeChain([connectionRow()]) as never);
+
+    const res = await app.request('/psa/connections/conn-1/tickets?page=1&limit=10', {
       method: 'GET'
     });
 
@@ -375,19 +541,8 @@ describe.skip('psa routes', () => {
   });
 
   it('narrows PSA ticket lists through mapped device sites for site-restricted callers', async () => {
-    const makeTicketChain = (rows: unknown[]) => {
-      const chain: Record<string, any> = {};
-      chain.innerJoin = vi.fn(() => chain);
-      chain.leftJoin = vi.fn(() => chain);
-      chain.where = vi.fn(() => chain);
-      chain.orderBy = vi.fn(() => chain);
-      chain.limit = vi.fn(() => chain);
-      chain.offset = vi.fn(async () => rows);
-      chain.from = vi.fn(() => chain);
-      return chain;
-    };
-    const rowsChain = makeTicketChain([]);
-    const countChain = makeTicketChain([{ count: 0 }]);
+    const rowsChain = makeChain([]);
+    const countChain = makeChain([{ count: 0 }]);
     selectMock
       .mockReturnValueOnce(rowsChain as never)
       .mockReturnValueOnce(countChain as never);
@@ -402,42 +557,23 @@ describe.skip('psa routes', () => {
     expect(countChain.leftJoin).toHaveBeenCalled();
   });
 
-  it('should deny partner access when organization is not linked', async () => {
-    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
-      c.set('auth', {
-        scope: 'system',
-        partnerId: null,
-        orgId: null,
-        user: { id: 'user-123', email: 'test@example.com' }
-      });
-      return next();
-    });
-
-    const createRes = await createConnection({
-      orgId: 'org-denied',
-      name: 'Denied PSA'
-    });
-    const created = await createRes.json();
-
+  it('denies partner access when the organization is not linked', async () => {
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: 'partner',
         partnerId: 'partner-123',
         orgId: null,
-        user: { id: 'user-123', email: 'test@example.com' }
+        user: { id: 'user-123', email: 'test@example.com' },
+        canAccessOrg: () => false,
+        accessibleOrgIds: []
       });
       return next();
     });
-    vi.mocked(db.select).mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([])
-        })
-      })
-    } as any);
+    selectMock.mockReturnValueOnce(makeChain([connectionRow({ orgId: 'org-denied' })]) as never);
 
-    const res = await app.request(`/psa/${created.id}`, { method: 'GET' });
+    const res = await app.request('/psa/connections/conn-1', { method: 'GET' });
 
     expect(res.status).toBe(403);
   });
 });
+

@@ -17,14 +17,61 @@ type TestResult = {
   error?: string;
 };
 
-type PsaConnectionDetails = PsaConnectionFormValues & {
+// Server round-trip contract (see serializeConnection in apps/api/src/routes/psa.ts):
+// GET /psa/connections/:id returns nested `settings`, the NON-SECRET credential
+// fields for edit prefill, and per-field secret presence flags. Secrets are
+// never returned.
+type PsaConnectionDetails = {
   id: string;
+  name: string;
+  provider: PsaConnectionFormValues['provider'];
+  settings?: {
+    defaultQueue?: string;
+    syncEnabled?: boolean;
+    syncInterval?: PsaConnectionFormValues['syncInterval'];
+    syncDirection?: PsaConnectionFormValues['syncDirection'];
+    syncOnClose?: boolean;
+    includeNotes?: boolean;
+  };
+  credentials?: {
+    baseUrl?: string;
+    username?: string;
+    clientId?: string;
+  };
   hasCredentials?: {
     password?: boolean;
     apiToken?: boolean;
     clientSecret?: boolean;
   };
 };
+
+const CREDENTIAL_FIELDS = ['baseUrl', 'username', 'password', 'apiToken', 'clientId', 'clientSecret'] as const;
+
+// Map flat form values onto the server's nested {credentials, settings} payload.
+// Empty credential fields are omitted: on PATCH the server merges provided keys
+// over the stored blob, so omitting an untouched secret keeps it.
+function toConnectionPayload(values: PsaConnectionFormValues) {
+  const credentials: Record<string, string> = {};
+  for (const field of CREDENTIAL_FIELDS) {
+    const value = values[field];
+    if (typeof value === 'string' && value.trim() !== '') {
+      credentials[field] = value;
+    }
+  }
+
+  return {
+    name: values.name,
+    credentials,
+    settings: {
+      ...(values.defaultQueue && values.defaultQueue.trim() !== '' ? { defaultQueue: values.defaultQueue } : {}),
+      syncEnabled: values.syncEnabled,
+      syncInterval: values.syncInterval,
+      syncDirection: values.syncDirection,
+      syncOnClose: values.syncOnClose,
+      includeNotes: values.includeNotes
+    }
+  };
+}
 
 export default function PsaConnectionsPage() {
   const { t } = useTranslation('common');
@@ -99,23 +146,6 @@ export default function PsaConnectionsPage() {
     setModalMode('edit');
   };
 
-  const handleSyncNow = async (connection: PsaConnection) => {
-    try {
-      const response = await fetchWithAuth(`/psa/connections/${connection.id}/sync`, {
-        method: 'POST'
-      });
-
-      if (!response.ok) {
-        throw new Error(t('longTail.psa.PsaConnectionsPage.errors.startSync'));
-      }
-
-      await fetchConnections();
-      await fetchTickets();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.psa.PsaConnectionsPage.errors.generic'));
-    }
-  };
-
   const handleToggleStatus = async (connection: PsaConnection, newStatus: 'active' | 'paused') => {
     try {
       const response = await fetchWithAuth(`/psa/connections/${connection.id}/status`, {
@@ -177,12 +207,8 @@ export default function PsaConnectionsPage() {
         : '/psa/connections';
       const method = modalMode === 'edit' ? 'PATCH' : 'POST';
 
-      const payload = { ...values } as Partial<PsaConnectionFormValues>;
-      if (modalMode === 'edit') {
-        if (!payload.password) delete payload.password;
-        if (!payload.apiToken) delete payload.apiToken;
-        if (!payload.clientSecret) delete payload.clientSecret;
-      }
+      const base = toConnectionPayload(values);
+      const payload = modalMode === 'edit' ? base : { ...base, provider: values.provider };
 
       const response = await fetchWithAuth(url, {
         method,
@@ -283,7 +309,6 @@ export default function PsaConnectionsPage() {
       <PsaConnectionList
         connections={connections}
         onEdit={handleEdit}
-        onSyncNow={handleSyncNow}
         onToggleStatus={handleToggleStatus}
         onDelete={handleDelete}
       />
@@ -312,18 +337,21 @@ export default function PsaConnectionsPage() {
                   ? {
                       name: selectedConnectionDetails.name,
                       provider: selectedConnectionDetails.provider,
-                      baseUrl: selectedConnectionDetails.baseUrl || '',
-                      defaultQueue: selectedConnectionDetails.defaultQueue || '',
-                      username: selectedConnectionDetails.username || '',
+                      baseUrl: selectedConnectionDetails.credentials?.baseUrl || '',
+                      defaultQueue: selectedConnectionDetails.settings?.defaultQueue || '',
+                      username: selectedConnectionDetails.credentials?.username || '',
+                      // Secrets are never returned by the server; leave them
+                      // empty so an untouched field is omitted from the PATCH
+                      // (the form shows a "keep existing" placeholder instead).
                       password: '',
                       apiToken: '',
-                      clientId: selectedConnectionDetails.clientId || '',
+                      clientId: selectedConnectionDetails.credentials?.clientId || '',
                       clientSecret: '',
-                      syncEnabled: selectedConnectionDetails.syncEnabled ?? true,
-                      syncInterval: selectedConnectionDetails.syncInterval || '1h',
-                      syncDirection: selectedConnectionDetails.syncDirection || 'bidirectional',
-                      syncOnClose: selectedConnectionDetails.syncOnClose ?? true,
-                      includeNotes: selectedConnectionDetails.includeNotes ?? true
+                      syncEnabled: selectedConnectionDetails.settings?.syncEnabled ?? true,
+                      syncInterval: selectedConnectionDetails.settings?.syncInterval || '1h',
+                      syncDirection: selectedConnectionDetails.settings?.syncDirection || 'bidirectional',
+                      syncOnClose: selectedConnectionDetails.settings?.syncOnClose ?? true,
+                      includeNotes: selectedConnectionDetails.settings?.includeNotes ?? true
                     }
                   : undefined
               }

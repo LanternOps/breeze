@@ -2,12 +2,14 @@ import { useMemo, useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { psaProviderIdSchema } from '@breeze/shared';
 import { providerMeta, type PsaProvider } from './PsaConnectionList';
 import { useTranslation } from 'react-i18next';
 
 const createPsaConnectionSchema = (t: (key: string) => string) => z.object({
   name: z.string().min(1, t('longTail.psa.PsaConnectionForm.validation.nameRequired')),
-  provider: z.enum(['jira', 'servicenow', 'connectwise', 'autotask', 'freshservice', 'zendesk']),
+  // Single-source provider list — @breeze/shared PSA_PROVIDERS.
+  provider: psaProviderIdSchema,
   baseUrl: z.string().url(t('longTail.psa.PsaConnectionForm.validation.validUrl')).optional().or(z.literal('')),
   defaultQueue: z.string().optional(),
   username: z.string().optional(),
