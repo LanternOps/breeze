@@ -435,6 +435,99 @@ func filesUnderCommonRoot(t *testing.T, n int) (string, []backupFile) {
 	return root, files
 }
 
+// dyingOnRetryProvider fails a file's FIRST attempt with a permission denial
+// (the #3259 case, which takes the short retry) while the snapshot is still
+// alive, then kills the snapshot as part of serving the RETRY. Every other file
+// uploads cleanly.
+//
+// That last part is what makes this test isolate the SECOND liveness probe:
+// with only healthy files afterwards, no later per-file failure ever occurs, so
+// the pre-retry probe can never fire again. If the post-retry probe in
+// createSnapshotWithProgress were removed, the dead snapshot would be recorded
+// as a lone per-file failure and the run would report success.
+type dyingOnRetryProvider struct {
+	mu       sync.Mutex
+	target   string
+	attempts map[string]int
+	onDeath  func()
+}
+
+func (p *dyingOnRetryProvider) UploadContext(_ context.Context, localPath, _ string) error {
+	p.mu.Lock()
+	p.attempts[localPath]++
+	n := p.attempts[localPath]
+	isTarget := localPath == p.target
+	onDeath := p.onDeath
+	p.mu.Unlock()
+
+	if !isTarget {
+		return nil
+	}
+	if n == 1 {
+		// Snapshot still healthy here — the pre-retry probe must say "alive".
+		return permissionErr(localPath)
+	}
+	// The retry itself is where the shadow copy goes away. #3260's tell was
+	// exactly this: one file's error flipping ACCESS_DENIED -> PATH_NOT_FOUND
+	// between the first attempt and the retry.
+	if onDeath != nil {
+		onDeath()
+	}
+	return notFoundErr(localPath)
+}
+
+func (p *dyingOnRetryProvider) Upload(localPath, remotePath string) error {
+	return p.UploadContext(context.Background(), localPath, remotePath)
+}
+func (p *dyingOnRetryProvider) Download(string, string) error { return nil }
+func (p *dyingOnRetryProvider) List(string) ([]string, error) { return nil, nil }
+func (p *dyingOnRetryProvider) Delete(string) error           { return nil }
+
+// The snapshot can die during the retry backoff, not just before it — the
+// upload loop probes liveness on both sides of the retry, and this pins the
+// second probe specifically.
+func TestCreateSnapshot_ShadowCopyLostDuringRetry_AbortsExplicitly(t *testing.T) {
+	defer setShortUploadRetryDelayForTest(0)()
+	defer setUploadRetryDelayForTest(0)()
+
+	f := newFakeStat()
+	f.install(t)
+
+	root, files := filesUnderCommonRoot(t, 4)
+	f.set(root, true)
+
+	provider := &dyingOnRetryProvider{
+		target:   files[1].sourcePath,
+		attempts: map[string]int{},
+		onDeath:  func() { f.set(root, false) },
+	}
+	liveness := newShadowRootLiveness(map[string]string{`C:`: root})
+	if liveness == nil {
+		t.Fatal("test setup: want a liveness probe, got nil")
+	}
+
+	snap, err := createSnapshotWithProgress(context.Background(), provider, files, nil, nil, nil, liveness)
+
+	if !errors.Is(err, errSourceSnapshotGone) {
+		t.Fatalf("want errSourceSnapshotGone when the snapshot dies during the retry, got %v", err)
+	}
+	if snap != nil {
+		t.Fatalf("want no snapshot from an aborted run, got one with %d files", len(snap.Files))
+	}
+	// File 2 was attempted twice (initial + retry); files 3-4 must never have
+	// been reached.
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if got := provider.attempts[files[1].sourcePath]; got != 2 {
+		t.Fatalf("want 2 attempts on the failing file (initial + retry), got %d", got)
+	}
+	for _, later := range files[2:] {
+		if got := provider.attempts[later.sourcePath]; got != 0 {
+			t.Fatalf("file %s was uploaded against a dead snapshot (%d attempts)", later.snapshotPath, got)
+		}
+	}
+}
+
 // A run with no snapshot to defend (nil probe — the non-VSS case) must behave
 // exactly as before: per-file failures stay per-file, the job carries on.
 func TestCreateSnapshot_NilLiveness_KeepsPerFileFailureBehaviour(t *testing.T) {

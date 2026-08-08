@@ -172,12 +172,15 @@ func classifyUploadFailure(err error, sourcePath string) (uploadRetryPolicy, str
 	}
 	// Portable: a source file the agent is not permitted to read. Covers
 	// EACCES/EPERM on Unix and (redundantly with the table above)
-	// ERROR_ACCESS_DENIED on Windows, since syscall.Errno.Is maps all three to
-	// fs.ErrPermission. Same reasoning as the table entry: a permission denial
-	// on the source is overwhelmingly structural, so it keeps exactly one retry
-	// but not the 30s wait. Ordered AFTER the not-exist branch because Windows
-	// maps ERROR_SHARING_VIOLATION to fs.ErrPermission too, and that code is
-	// already resolved to skipWithoutRetry by the table above.
+	// ERROR_ACCESS_DENIED on Windows — syscall.Errno.Is maps exactly those
+	// three to fs.ErrPermission, and notably NOT ERROR_SHARING_VIOLATION,
+	// which reaches skipWithoutRetry only via the Win32 table. Same reasoning
+	// as the table entry: a permission denial on the source is overwhelmingly
+	// structural, so it keeps exactly one retry but not the 30s wait.
+	//
+	// Reached only for codes the table did not resolve, so on Windows the
+	// table's more specific verdict and reason string always win. That
+	// ordering is asserted by TestClassifyUploadFailure_RealWindowsErrno.
 	if errors.Is(pathErr, fs.ErrPermission) {
 		return retryAfterShortDelay, "permission denied"
 	}

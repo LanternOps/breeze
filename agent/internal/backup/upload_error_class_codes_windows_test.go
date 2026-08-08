@@ -51,13 +51,20 @@ func TestClassifyUploadFailure_RealWindowsErrno(t *testing.T) {
 		{"ERROR_SHARING_VIOLATION", windows.ERROR_SHARING_VIOLATION, skipWithoutRetry},
 		{"ERROR_LOCK_VIOLATION", windows.ERROR_LOCK_VIOLATION, skipWithoutRetry},
 		{"ERROR_CLOUD_FILE_ACCESS_DENIED", windows.ERROR_CLOUD_FILE_ACCESS_DENIED, skipWithoutRetry},
-		// #3259. Note the ordering guarantee this asserts: Go maps BOTH
-		// ERROR_ACCESS_DENIED and ERROR_SHARING_VIOLATION onto fs.ErrPermission,
-		// so the Win32 table must be consulted before the portable
-		// fs.ErrPermission branch — otherwise a sharing violation would
-		// downgrade from skipWithoutRetry to retryAfterShortDelay and start
-		// paying a backoff again. The ERROR_SHARING_VIOLATION row above is what
-		// catches that regression.
+		// #3259. Two regressions this row and the ones above jointly catch:
+		//
+		//  1. The Win32 table being dropped or dead-coded. syscall.Errno.Is
+		//     maps only ERROR_ACCESS_DENIED / EACCES / EPERM to
+		//     fs.ErrPermission — NOT ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
+		//     or ERROR_CLOUD_FILE_ACCESS_DENIED. Those three have no portable
+		//     branch to fall back on, so if the table stops being consulted
+		//     they silently regain the 30s backoff. The rows above are the
+		//     canary for that.
+		//  2. The table being consulted AFTER the portable branch. Policy
+		//     would still come out right for ERROR_ACCESS_DENIED, but the
+		//     reason string would degrade from the precise
+		//     "ERROR_ACCESS_DENIED" to the generic "permission denied" — which
+		//     is what support reads. The exact-name assertion below catches it.
 		{"ERROR_ACCESS_DENIED", windows.ERROR_ACCESS_DENIED, retryAfterShortDelay},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
