@@ -98,6 +98,14 @@ describe('FleetPostureReport', () => {
     expect(screen.getByText('Datto RMM')).toBeTruthy();
     expect(screen.getAllByText(/2[^0-9]+3/).length).toBeGreaterThan(0);
 
+    // Progress chips PARTITION the fleet from the fresh counts: stale-clean
+    // devices must NOT read as "verified clean". both=freshDetected(2),
+    // breezeOnly = 10 total - 2 never - 1 stale - 2 freshDetected = 5,
+    // unknown = never+stale = 3; 2+5+3 == 10.
+    expect(screen.getByTestId('posture-progress-both').textContent).toContain('2');
+    expect(screen.getByTestId('posture-progress-breeze-only').textContent).toContain('5');
+    expect(screen.getByTestId('posture-progress-unknown').textContent).toContain('3');
+
     // Both summary requests went to the new aggregate endpoint.
     const urls = fetchWithAuthMock.mock.calls.map((c) => c[0] as string);
     expect(urls.some((u) => u.includes('/devices/management-posture/summary?category=rmm&stalenessDays=7'))).toBe(true);
@@ -182,6 +190,9 @@ describe('FleetPostureReport', () => {
       if (url.includes('/management-posture/devices')) {
         expect(url).toContain('product=NinjaOne');
         expect(url).toContain('status=installed');
+        // The drill-down must pin the org whose count it explains — in
+        // All-organizations mode nothing else scopes the request.
+        expect(url).toContain('orgId=org-1');
         return makeJsonResponse({
           data: {
             total: 1,
@@ -226,6 +237,33 @@ describe('FleetPostureReport', () => {
     });
     expect(screen.getByText('PC-01')).toBeTruthy();
     expect(screen.getByText('5.0')).toBeTruthy();
+  });
+
+  it('keeps the main report when the best-effort remote-access fetch rejects, with an explicit unavailable note', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (url.includes('category=remoteAccess')) throw new Error('network down');
+      return makeJsonResponse(
+        summaryPayload({
+          totals: { totalDevices: 2 },
+          orgs: [
+            {
+              orgId: 'org-1', totalDevices: 2, neverScanned: 0, stale: 0,
+              scannedNoneDetected: 2, detectedDevices: 0, freshDetectedDevices: 0,
+              products: [],
+            },
+          ],
+        })
+      );
+    });
+
+    render(<FleetPostureReport />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('posture-org-section')).toBeTruthy();
+    });
+    // Main report rendered; missing security findings surfaced, not silent.
+    expect(screen.getByTestId('posture-orphan-unavailable')).toBeTruthy();
+    expect(screen.queryByTestId('posture-orphan-callout')).toBeNull();
   });
 
   it('shows a friendly error with retry when the summary request fails', async () => {

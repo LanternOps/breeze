@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   ChevronDown,
@@ -17,23 +17,14 @@ import { toCsv } from "../../lib/csvExport";
 import { downloadBlob } from "../../lib/downloadBlob";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import {
+  CATEGORY_LABELS,
+  STATUS_BADGE,
+  isCategoryKey,
+  type CategoryKey,
+} from "../../lib/postureCategories";
 
 // ── Types (mirror GET /devices/management-posture/summary) ───────────
-
-type DetectionStatus = "active" | "installed" | "unknown";
-
-type CategoryKey =
-  | "mdm"
-  | "rmm"
-  | "remoteAccess"
-  | "endpointSecurity"
-  | "policyEngine"
-  | "backup"
-  | "identityMfa"
-  | "siem"
-  | "dnsFiltering"
-  | "zeroTrustVpn"
-  | "patchManagement";
 
 type ProductRow = {
   product: string;
@@ -82,20 +73,6 @@ type DrillDevice = {
 
 // ── Constants (same conventions as DeviceManagementTab) ──────────────
 
-const CATEGORY_LABELS: Record<CategoryKey, string> = {
-  mdm: "MDM",
-  rmm: "RMM",
-  remoteAccess: "Remote Access",
-  endpointSecurity: "Endpoint Security",
-  policyEngine: "Policy Engine",
-  backup: "Backup",
-  identityMfa: "Identity / MFA",
-  siem: "SIEM",
-  dnsFiltering: "DNS Filtering",
-  zeroTrustVpn: "Zero Trust / VPN",
-  patchManagement: "Patch Management",
-};
-
 const CATEGORY_ORDER: CategoryKey[] = [
   "rmm",
   "remoteAccess",
@@ -110,16 +87,22 @@ const CATEGORY_ORDER: CategoryKey[] = [
   "patchManagement",
 ];
 
-const STATUS_BADGE: Record<DetectionStatus, string> = {
-  active: "bg-emerald-500/20 text-emerald-700 border-emerald-500/40",
-  installed: "bg-blue-500/20 text-blue-700 border-blue-500/40",
-  unknown: "bg-gray-500/20 text-gray-600 border-gray-500/30",
-};
-
 const WINDOW_OPTIONS = [7, 14, 30, 90];
 
+/**
+ * Remote-access products that ship as a separately-installed component of a
+ * competing RMM and SURVIVE that RMM's uninstall (the plan's definition of an
+ * orphan risk): ScreenConnect outlives a ConnectWise Automate uninstall;
+ * Splashtop outlives Atera and Syncro uninstalls. Deliberately NOT every
+ * remote-access detection — flagging an MSP's own sanctioned TeamViewer/
+ * AnyDesk on every visit would train users to ignore the banner. A true
+ * per-device orphan check (RA present AND its parent RMM absent) needs a
+ * server-side cross-category query — follow-up on #3244.
+ */
+const ORPHAN_RISK_REMOTE_ACCESS = new Set(["ScreenConnect", "Splashtop"]);
+
 function statusBadgeClass(status: string): string {
-  return STATUS_BADGE[(status as DetectionStatus)] ?? STATUS_BADGE.unknown;
+  return STATUS_BADGE[(status as keyof typeof STATUS_BADGE)] ?? STATUS_BADGE.unknown;
 }
 
 function formatDateTime(value: string): string {
@@ -137,7 +120,10 @@ function formatDateTime(value: string): string {
 function categoryFromHash(): CategoryKey {
   if (typeof window !== "undefined") {
     const raw = window.location.hash.replace(/^#/, "");
-    if (raw in CATEGORY_LABELS) return raw as CategoryKey;
+    // isCategoryKey does an own-property check — a plain `raw in ...` would
+    // also match inherited keys like '#toString' and wedge the page on an
+    // invalid category.
+    if (isCategoryKey(raw)) return raw;
   }
   return "rmm";
 }
@@ -149,12 +135,17 @@ function DrillDownList({
   product,
   status,
   stalenessDays,
+  orgId,
   orgNames,
 }: {
   category: CategoryKey;
   product: string;
   status: string;
   stalenessDays: number;
+  /** The org whose count this drill-down explains. Passed explicitly: in
+   *  "All organizations" mode fetchWithAuth injects no orgId, and without it
+   *  the list would span every accessible org under one org's heading. */
+  orgId: string;
   orgNames: Map<string, string>;
 }) {
   const { t } = useTranslation("devices");
@@ -173,6 +164,7 @@ function DrillDownList({
           category,
           product,
           status,
+          orgId,
           stalenessDays: String(stalenessDays),
           page: String(nextPage),
           limit: "50",
@@ -191,16 +183,12 @@ function DrillDownList({
         setLoading(false);
       }
     },
-    [category, product, status, stalenessDays]
+    [category, product, status, stalenessDays, orgId]
   );
 
   useEffect(() => {
     fetchPage(1, false);
   }, [fetchPage]);
-
-  if (error) {
-    return <div className="p-3 text-sm text-destructive">{error}</div>;
-  }
 
   return (
     <div className="border-t border-border bg-muted/30 p-3" data-testid="posture-drilldown">
@@ -236,7 +224,21 @@ function DrillDownList({
           {t("fleetPosture.loading")}
         </div>
       )}
-      {!loading && devices.length < total && (
+      {/* Errors render inline so an already-loaded page of rows survives a
+          failed "Load more"; retrying refetches only the failed page. */}
+      {error && !loading && (
+        <div className="flex items-center gap-2 py-2 text-sm text-destructive" data-testid="posture-drilldown-error">
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={() => fetchPage(page + (devices.length > 0 ? 1 : 0), devices.length > 0)}
+            className="rounded-md border border-border px-2 py-0.5 text-xs hover:bg-muted"
+          >
+            {t("fleetPosture.retry")}
+          </button>
+        </div>
+      )}
+      {!loading && !error && devices.length < total && (
         <button
           type="button"
           onClick={() => fetchPage(page + 1, true)}
@@ -261,37 +263,50 @@ export default function FleetPostureReport() {
   const [stalenessDays, setStalenessDays] = useState(7);
   const [summary, setSummary] = useState<Summary>();
   const [remoteAccess, setRemoteAccess] = useState<Summary>();
+  const [raUnavailable, setRaUnavailable] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [expanded, setExpanded] = useState<string>();
+  // Out-of-order guard: rapid category/window switches fire overlapping
+  // fetches; only the latest request may commit state, otherwise a slower
+  // older response would render under the newer selection.
+  const requestSeq = useRef(0);
 
   const orgNames = new Map(organizations.map((o) => [o.id, o.name]));
 
   const fetchSummary = useCallback(async () => {
+    const seq = ++requestSeq.current;
     setLoading(true);
     setError(undefined);
     setExpanded(undefined);
     try {
       const query = (cat: CategoryKey) =>
         `/devices/management-posture/summary?category=${cat}&stalenessDays=${stalenessDays}`;
+      // The orphaned-remote-access callout is best-effort; the main report
+      // must not fail because of it — so its rejection is swallowed here and
+      // surfaced as an explicit "findings unavailable" note instead.
       const [main, ra] = await Promise.all([
         fetchWithAuth(query(category)),
-        category === "remoteAccess" ? Promise.resolve(undefined) : fetchWithAuth(query("remoteAccess")),
+        category === "remoteAccess"
+          ? Promise.resolve(undefined)
+          : fetchWithAuth(query("remoteAccess")).catch(() => undefined),
       ]);
+      if (seq !== requestSeq.current) return;
       if (!main.ok) throw new Error(`${main.status} ${main.statusText}`);
-      setSummary((await main.json()).data);
-      if (ra) {
-        // The orphaned-remote-access callout is best-effort; the main report
-        // must not fail because of it.
-        setRemoteAccess(ra.ok ? (await ra.json()).data : undefined);
-      } else {
-        setRemoteAccess(undefined);
-      }
+      const mainData = (await main.json()).data;
+      const raData = ra && ra.ok ? (await ra.json()).data : undefined;
+      if (seq !== requestSeq.current) return;
+      setSummary(mainData);
+      setRemoteAccess(raData);
+      // Missing security findings must be visible, not silent — this report
+      // is the only place the orphaned-RA exposure surfaces.
+      setRaUnavailable(category !== "remoteAccess" && raData === undefined);
     } catch (err) {
+      if (seq !== requestSeq.current) return;
       setError(friendlyFetchError(err));
       setSummary(undefined);
     } finally {
-      setLoading(false);
+      if (seq === requestSeq.current) setLoading(false);
     }
   }, [category, stalenessDays, currentOrgId]);
 
@@ -333,7 +348,9 @@ export default function FleetPostureReport() {
 
   const orphanProducts =
     remoteAccess?.orgs.flatMap((o) =>
-      o.products.map((p) => ({ orgId: o.orgId, ...p }))
+      o.products
+        .filter((p) => ORPHAN_RISK_REMOTE_ACCESS.has(p.product))
+        .map((p) => ({ orgId: o.orgId, ...p }))
     ) ?? [];
 
   return (
@@ -470,6 +487,12 @@ export default function FleetPostureReport() {
               </div>
             )}
 
+          {raUnavailable && (
+            <p className="text-xs text-muted-foreground" data-testid="posture-orphan-unavailable">
+              {t("fleetPosture.securityUnavailable")}
+            </p>
+          )}
+
           {orphanProducts.length > 0 && category !== "remoteAccess" && (
             <div
               className="rounded-md border border-red-500/40 bg-red-500/10 p-4"
@@ -503,16 +526,24 @@ export default function FleetPostureReport() {
             <div key={org.orgId} className="rounded-md border border-border" data-testid="posture-org-section">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border p-3">
                 <h2 className="font-medium">{orgNames.get(org.orgId) ?? org.orgId}</h2>
-                {/* Per-org migration progress: enrolled / both / Breeze-only / unknown */}
+                {/* Per-org migration progress. The three non-enrolled chips
+                    PARTITION the fleet (fresh-detected + fresh-clean +
+                    unknown == total): the raw coverage buckets overlap on
+                    stale devices (a stale-clean scan is NOT "verified
+                    clean"), so both/Breeze-only are derived from the fresh
+                    counts only and every stale device counts as unknown. */}
                 <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
                   <span data-testid="posture-progress-enrolled">
                     {t("fleetPosture.progressEnrolled", { count: org.totalDevices })}
                   </span>
                   <span data-testid="posture-progress-both">
-                    {t("fleetPosture.progressBoth", { count: org.detectedDevices })}
+                    {t("fleetPosture.progressBoth", { count: org.freshDetectedDevices })}
                   </span>
                   <span data-testid="posture-progress-breeze-only">
-                    {t("fleetPosture.progressBreezeOnly", { count: org.scannedNoneDetected })}
+                    {t("fleetPosture.progressBreezeOnly", {
+                      count:
+                        org.totalDevices - org.neverScanned - org.stale - org.freshDetectedDevices,
+                    })}
                   </span>
                   <span
                     className={org.neverScanned + org.stale > 0 ? "text-amber-600" : undefined}
@@ -551,6 +582,7 @@ export default function FleetPostureReport() {
                           product={p}
                           category={summary.category}
                           stalenessDays={summary.stalenessDays}
+                          orgId={org.orgId}
                           orgNames={orgNames}
                         />
                       );
@@ -596,6 +628,7 @@ function FragmentRow({
   product,
   category,
   stalenessDays,
+  orgId,
   orgNames,
 }: {
   isOpen: boolean;
@@ -603,6 +636,7 @@ function FragmentRow({
   product: ProductRow;
   category: CategoryKey;
   stalenessDays: number;
+  orgId: string;
   orgNames: Map<string, string>;
 }) {
   const { t } = useTranslation("devices");
@@ -642,6 +676,7 @@ function FragmentRow({
               product={product.product}
               status={product.status}
               stalenessDays={stalenessDays}
+              orgId={orgId}
               orgNames={orgNames}
             />
           </td>

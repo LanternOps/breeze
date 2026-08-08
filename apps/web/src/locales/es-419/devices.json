@@ -2238,6 +2238,7 @@
     "viewOldDevice": "Ver dispositivo antiguo"
   },
   "fleetPosture": {
+    "securityUnavailable": "No se pudieron cargar los hallazgos de seguridad de acceso remoto para esta vista.",
       "title": "Informe de postura de la flota",
       "subtitle": "Qué endpoints aún ejecutan herramientas de administración de la competencia y dónde es seguro retirarlas.",
       "labelCategory": "Categoría",

@@ -2238,6 +2238,7 @@
     "viewOldDevice": "Visualizza il vecchio dispositivo"
   },
   "fleetPosture": {
+    "securityUnavailable": "Impossibile caricare i rilievi di sicurezza sull'accesso remoto per questa vista.",
       "title": "Report sulla postura della flotta",
       "subtitle": "Quali endpoint eseguono ancora strumenti di gestione concorrenti — e dove è sicuro dismetterli.",
       "labelCategory": "Categoria",

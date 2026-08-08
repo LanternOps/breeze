@@ -2238,6 +2238,7 @@
     "viewOldDevice": "Ver dispositivo antigo"
   },
   "fleetPosture": {
+    "securityUnavailable": "Não foi possível carregar os achados de segurança de acesso remoto para esta visualização.",
       "title": "Relatório de postura da frota",
       "subtitle": "Quais endpoints ainda executam ferramentas de gerenciamento concorrentes — e onde é seguro desativá-las.",
       "labelCategory": "Categoria",

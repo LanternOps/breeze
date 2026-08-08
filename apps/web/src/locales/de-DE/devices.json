@@ -2238,6 +2238,7 @@
     "viewOldDevice": "Altes Gerät anzeigen"
   },
   "fleetPosture": {
+    "securityUnavailable": "Sicherheitsbefunde zum Fernzugriff konnten für diese Ansicht nicht geladen werden.",
       "title": "Flottenstatus-Bericht",
       "subtitle": "Auf welchen Endpunkten läuft noch konkurrierende Verwaltungssoftware — und wo kann sie sicher außer Betrieb genommen werden.",
       "labelCategory": "Kategorie",

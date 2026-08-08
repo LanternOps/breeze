@@ -1,10 +1,9 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
-import { eq, inArray, type SQL, and } from 'drizzle-orm';
-import { devices } from '../../db/schema';
 import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { buildDeviceScope } from './scope';
 import {
   MANAGEMENT_POSTURE_CATEGORIES,
   getManagementPostureSummary,
@@ -44,35 +43,6 @@ const devicesQuerySchema = baseQuerySchema.extend({
   limit: z.string().optional(),
 });
 
-type ScopeResult = { scope: SQL | undefined } | { emptyAllowlist: true } | { forbidden: true };
-
-function buildScope(
-  auth: {
-    orgCondition: (col: typeof devices.orgId) => SQL | undefined;
-    canAccessOrg: (orgId: string) => boolean;
-  },
-  permissions: UserPermissions | undefined,
-  orgId: string | undefined
-): ScopeResult {
-  const conditions: SQL[] = [];
-
-  const orgFilter = auth.orgCondition(devices.orgId);
-  if (orgFilter) conditions.push(orgFilter);
-
-  if (orgId) {
-    if (!auth.canAccessOrg(orgId)) return { forbidden: true };
-    conditions.push(eq(devices.orgId, orgId));
-  }
-
-  const allowedSiteIds = permissions?.allowedSiteIds;
-  if (allowedSiteIds) {
-    if (allowedSiteIds.length === 0) return { emptyAllowlist: true };
-    conditions.push(inArray(devices.siteId, allowedSiteIds));
-  }
-
-  return { scope: conditions.length > 0 ? and(...conditions) : undefined };
-}
-
 postureRoutes.get(
   '/management-posture/summary',
   requireScope('organization', 'partner', 'system'),
@@ -83,7 +53,7 @@ postureRoutes.get(
     const query = c.req.valid('query');
     const permissions = c.get('permissions') as UserPermissions | undefined;
 
-    const scoped = buildScope(auth, permissions, query.orgId);
+    const scoped = buildDeviceScope(auth, permissions, query.orgId);
     if ('forbidden' in scoped) {
       return c.json({ error: 'Access to this organization denied' }, 403);
     }
@@ -125,7 +95,7 @@ postureRoutes.get(
     const limit = Math.min(500, Math.max(1, Number.parseInt(query.limit ?? '50', 10) || 50));
     const offset = (page - 1) * limit;
 
-    const scoped = buildScope(auth, permissions, query.orgId);
+    const scoped = buildDeviceScope(auth, permissions, query.orgId);
     if ('forbidden' in scoped) {
       return c.json({ error: 'Access to this organization denied' }, 403);
     }

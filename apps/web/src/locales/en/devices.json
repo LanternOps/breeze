@@ -2238,6 +2238,7 @@
     "viewOldDevice": "View old device"
   },
   "fleetPosture": {
+    "securityUnavailable": "Remote-access security findings could not be loaded for this view.",
       "title": "Fleet Posture Report",
       "subtitle": "Which endpoints still run competing management tooling — and whether it is safe to decommission it there.",
       "labelCategory": "Category",

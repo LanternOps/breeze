@@ -19,9 +19,14 @@ import { fetchWithAuth } from "../../stores/auth";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
-// ── Types ────────────────────────────────────────────────────────────
+import {
+  CATEGORY_LABELS,
+  STATUS_BADGE,
+  type CategoryKey,
+  type DetectionStatus,
+} from "../../lib/postureCategories";
 
-type DetectionStatus = "active" | "installed" | "unknown";
+// ── Types ────────────────────────────────────────────────────────────
 
 type Detection = {
   name: string;
@@ -49,19 +54,6 @@ type IdentityStatus = {
   source: string;
 };
 
-type CategoryKey =
-  | "mdm"
-  | "rmm"
-  | "remoteAccess"
-  | "endpointSecurity"
-  | "policyEngine"
-  | "backup"
-  | "identityMfa"
-  | "siem"
-  | "dnsFiltering"
-  | "zeroTrustVpn"
-  | "patchManagement";
-
 type ManagementPosture = {
   collectedAt: string;
   scanDurationMs: number;
@@ -78,20 +70,6 @@ type PostureResponse = {
 };
 
 // ── Constants ────────────────────────────────────────────────────────
-
-const CATEGORY_LABELS: Record<CategoryKey, string> = {
-  mdm: "MDM",
-  rmm: "RMM",
-  remoteAccess: "Remote Access",
-  endpointSecurity: "Endpoint Security",
-  policyEngine: "Policy Engine",
-  backup: "Backup",
-  identityMfa: "Identity / MFA",
-  siem: "SIEM",
-  dnsFiltering: "DNS Filtering",
-  zeroTrustVpn: "Zero Trust / VPN",
-  patchManagement: "Patch Management",
-};
 
 const CATEGORY_ORDER: CategoryKey[] = [
   "mdm",
@@ -113,12 +91,6 @@ const JOIN_TYPE_LABELS: Record<JoinType, string> = {
   on_prem_ad: "On-Premises Active Directory",
   workplace: "Workplace Join",
   none: "Not Joined",
-};
-
-const STATUS_BADGE: Record<DetectionStatus, string> = {
-  active: "bg-emerald-500/20 text-emerald-700 border-emerald-500/40",
-  installed: "bg-blue-500/20 text-blue-700 border-blue-500/40",
-  unknown: "bg-gray-500/20 text-gray-600 border-gray-500/30",
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────

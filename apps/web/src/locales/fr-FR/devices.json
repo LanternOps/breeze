@@ -2238,6 +2238,7 @@
     "viewOldDevice": "Voir l’ancien appareil"
   },
   "fleetPosture": {
+    "securityUnavailable": "Impossible de charger les constats de sécurité d'accès distant pour cette vue.",
       "title": "Rapport de posture du parc",
       "subtitle": "Quels terminaux exécutent encore un outil de gestion concurrent — et où sa mise hors service est-elle sûre.",
       "labelCategory": "Catégorie",
