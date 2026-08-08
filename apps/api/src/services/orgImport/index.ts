@@ -429,29 +429,57 @@ async function commitGroup(
       reactivated = true;
     }
 
+    // Persist the link row for ANY acknowledged non-link match carrying an
+    // externalId, in BOTH modes: every surviving name-match or soft-deleted
+    // match passed checkExpectation's explicit acknowledgement, and the
+    // acknowledgement is the durable fact ("this external id IS this org") —
+    // without the link row every subsequent import re-derives the match and
+    // re-prompts for the same confirmation.
+    let createdLink = false;
+    let linkWarning: string | undefined;
+    if (group.externalId && group.annotation !== 'link-match') {
+      const attach = await attachExternalLink(group, partnerId, actor, orgId);
+      if (attach.status === 'conflict') {
+        // A concurrent import linked this external id to a DIFFERENT org after
+        // our snapshot. Reporting confirmation while the durable link points
+        // elsewhere would silently drop the acknowledgement — refuse instead.
+        for (const r of rows) {
+          summary.errors.push({
+            index: r.index,
+            organization: r.organization,
+            error: `External id "${group.externalId}" (${group.system}) is already linked to a different organization`
+              + `${attach.linkedOrgId ? ` (${attach.linkedOrgId})` : ''} — expected ${orgId}; re-run preview`,
+          });
+        }
+        return;
+      }
+      if (attach.status === 'failed') {
+        // Update mode is doing writes for this group anyway — fail it loudly
+        // (pre-existing behavior). Skip mode's link write is an optional extra
+        // on an otherwise write-free path: keep the rows reported as skipped
+        // and surface a warning instead of reclassifying the group as errors.
+        if (mode === 'update') throw attach.error;
+        linkWarning = 'Match confirmed, but persisting the external link failed: '
+          + `${attach.error instanceof Error ? attach.error.message : String(attach.error)} — the next import will ask again`;
+      }
+      createdLink = attach.status === 'created';
+    }
+
     if (mode === 'skip' && !reactivated) {
-      // An acknowledged name-match carrying an externalId persists its link row
-      // even in skip mode: the acknowledgement is the durable fact ("this
-      // external id IS this org"), and without the link row every subsequent
-      // import would re-derive a name-match and re-prompt for the same
-      // confirmation. checkExpectation already guaranteed the acknowledgement
-      // for every surviving row in this group.
-      const createdLink = group.annotation === 'name-match' && group.externalId
-        ? await attachExternalLink(group, partnerId, actor, orgId)
-        : false;
       for (const r of rows) {
         summary.skipped.push({
           index: r.index,
           organization: r.organization,
           organizationId: orgId,
           reason: group.annotation === 'link-match' ? 'already_linked' : 'name_match_confirmed',
-          ...(createdLink && r === rows[0] ? { createdLink: true } : {}),
+          createdLink: createdLink && r === rows[0],
+          ...(linkWarning && r === rows[0] ? { warning: linkWarning } : {}),
         });
       }
       return;
     }
 
-    await updateGroup(group, rows, partnerId, actor, mode, orgId, reactivated, summary);
+    await updateGroup(group, rows, mode, orgId, reactivated, { createdLink, warning: linkWarning }, summary);
   } catch (err) {
     console.error('[org-import] group failed', {
       partnerId,
@@ -468,17 +496,29 @@ async function commitGroup(
   }
 }
 
+type AttachLinkOutcome =
+  | { status: 'created' }
+  /** The identical link (same org) already exists — idempotent re-acknowledgement. */
+  | { status: 'already-linked' }
+  /** The external id is linked to a DIFFERENT org (concurrent import won the race). */
+  | { status: 'conflict'; linkedOrgId: string | null }
+  /** The insert (or the post-conflict re-read) failed for a non-unique reason. */
+  | { status: 'failed'; error: unknown };
+
 /**
- * Insert the organization_external_links row for a matched group, treating a
- * unique violation as "already linked" (idempotent re-acknowledgement or a
- * concurrent import winning the race). Returns true when a new row was written.
+ * Insert the organization_external_links row for a matched group. Never
+ * throws — every outcome is reported so the caller decides the policy
+ * (skip-mode keeps its rows skipped with a warning; update-mode fails loud).
+ * A unique violation is not blindly "already linked": the row is re-read and
+ * compared, because the winner of the race may be a different org and
+ * reporting confirmation then would silently drop the acknowledgement.
  */
 async function attachExternalLink(
   group: RowGroup,
   partnerId: string,
   actor: OrgImportActor,
   orgId: string,
-): Promise<boolean> {
+): Promise<AttachLinkOutcome> {
   try {
     await runOutsideDbContext(() => withSystemDbAccessContext(() =>
       db.insert(organizationExternalLinks).values({
@@ -489,10 +529,26 @@ async function attachExternalLink(
         createdBy: actor.userId,
       })
     ));
-    return true;
+    return { status: 'created' };
   } catch (err) {
-    if (!isPgUniqueViolation(err)) throw err;
-    return false;
+    if (!isConcurrentLinkViolation(err)) return { status: 'failed', error: err };
+    try {
+      const existing = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+        db.select({ orgId: organizationExternalLinks.orgId })
+          .from(organizationExternalLinks)
+          .where(and(
+            eq(organizationExternalLinks.partnerId, partnerId),
+            eq(organizationExternalLinks.system, group.system),
+            eq(organizationExternalLinks.externalId, group.externalId!),
+          ))
+          .limit(1)
+      )) as Array<{ orgId: string }>;
+      const winner = existing[0]?.orgId ?? null;
+      if (winner === orgId) return { status: 'already-linked' };
+      return { status: 'conflict', linkedOrgId: winner };
+    } catch (reReadErr) {
+      return { status: 'failed', error: reReadErr };
+    }
   }
 }
 
@@ -528,49 +584,57 @@ async function createGroup(
   let createdLink = false;
   let siteIdByIndex: Map<number, { id: string; name: string }>;
   try {
-    // One all-or-nothing transaction for the whole group: a failing site
-    // insert must not strand a freshly created org with no default site — the
-    // org, its link row, and every site commit or roll back together, and a
-    // failure reports as one per-group error.
-    const created = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-      db.transaction(async (tx) => {
-        const [org] = await tx.insert(organizations).values({
+    // All-or-nothing for the whole group: withSystemDbAccessContext runs its
+    // callback inside ONE transaction (its RLS GUCs are SET LOCAL, so the
+    // helper holds an open transaction for the duration — db/index.ts). The
+    // org, its link row, and every site therefore commit or roll back
+    // together; a failing site insert cannot strand a freshly created org
+    // with no default site, it fails the group as one per-group error.
+    const created = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      const [org] = await db.insert(organizations).values({
+        partnerId,
+        name: clamp(group.organization, 255)!,
+        // annotateGroups always resolves a slug for 'create' groups.
+        slug: group.slug!,
+        type: 'customer' as const,
+        ...(firstContact ? { billingContact: firstContact } : {}),
+      }).returning();
+      let linked = false;
+      if (group.externalId) {
+        await db.insert(organizationExternalLinks).values({
+          orgId: org!.id,
           partnerId,
-          name: clamp(group.organization, 255)!,
-          // annotateGroups always resolves a slug for 'create' groups.
-          slug: group.slug!,
-          type: 'customer' as const,
-          ...(firstContact ? { billingContact: firstContact } : {}),
+          system: group.system,
+          externalId: group.externalId,
+          createdBy: actor.userId,
+        });
+        linked = true;
+      }
+      // One site per distinct (case-insensitive) name; rows whose site name
+      // duplicates an earlier row's map to the already-created site.
+      const siteByName = new Map<string, { id: string; name: string }>();
+      const siteMap = new Map<number, { id: string; name: string }>();
+      for (const r of effective) {
+        const siteName = r.site ?? group.organization;
+        const nameKey = siteName.toLowerCase();
+        const existing = siteByName.get(nameKey);
+        if (existing) {
+          siteMap.set(r.index, existing);
+          continue;
+        }
+        const [site] = await db.insert(sites).values({
+          orgId: org!.id,
+          name: clamp(siteName, 255)!,
+          timezone: r.row.timezone ?? 'UTC',
+          ...(r.row.address !== undefined ? { address: r.row.address } : {}),
+          ...(r.row.contact ? { contact: r.row.contact } : {}),
         }).returning();
-        let linked = false;
-        if (group.externalId) {
-          await tx.insert(organizationExternalLinks).values({
-            orgId: org!.id,
-            partnerId,
-            system: group.system,
-            externalId: group.externalId,
-            createdBy: actor.userId,
-          });
-          linked = true;
-        }
-        const createdSiteNames = new Set<string>();
-        const siteMap = new Map<number, { id: string; name: string }>();
-        for (const r of effective) {
-          const siteName = r.site ?? group.organization;
-          if (createdSiteNames.has(siteName.toLowerCase())) continue;
-          const [site] = await tx.insert(sites).values({
-            orgId: org!.id,
-            name: clamp(siteName, 255)!,
-            timezone: r.row.timezone ?? 'UTC',
-            ...(r.row.address !== undefined ? { address: r.row.address } : {}),
-            ...(r.row.contact ? { contact: r.row.contact } : {}),
-          }).returning();
-          createdSiteNames.add(siteName.toLowerCase());
-          siteMap.set(r.index, { id: site!.id as string, name: siteName });
-        }
-        return { orgId: org!.id as string, linked, siteMap };
-      })
-    ));
+        const entry = { id: site!.id as string, name: siteName };
+        siteByName.set(nameKey, entry);
+        siteMap.set(r.index, entry);
+      }
+      return { orgId: org!.id as string, linked, siteMap };
+    }));
     orgId = created.orgId;
     createdLink = created.linked;
     siteIdByIndex = created.siteMap;
@@ -599,6 +663,7 @@ async function createGroup(
           organization: r.organization,
           organizationId: existing[0]?.orgId ?? null,
           reason: 'created_concurrently',
+          createdLink: false,
         });
       }
       return;
@@ -606,7 +671,6 @@ async function createGroup(
     throw err;
   }
 
-  let first = true;
   for (const r of rows) {
     const site = siteIdByIndex.get(r.index) ?? null;
     summary.imported.push({
@@ -615,26 +679,24 @@ async function createGroup(
       organizationId: orgId,
       siteId: site?.id ?? null,
       siteName: site?.name ?? null,
-      createdOrganization: first,
-      createdLink: first && createdLink,
-      slug: first ? group.slug : null,
+      createdOrganization: r === rows[0],
+      createdLink: createdLink && r === rows[0],
+      slug: r === rows[0] ? group.slug : null,
     });
-    first = false;
   }
 }
 
 async function updateGroup(
   group: RowGroup,
   rows: NormalizedRow[],
-  partnerId: string,
-  actor: OrgImportActor,
   mode: OrgImportMode,
   orgId: string,
   reactivated: boolean,
+  // Link persistence already happened in commitGroup (both modes) — this is
+  // its outcome, reported on the group's first summary row.
+  link: { createdLink: boolean; warning?: string },
   summary: OrgImportSummary,
 ): Promise<void> {
-  let createdLink = false;
-
   if (mode === 'update') {
     // Patch the org name only when it actually changed (case/spacing edits).
     if (group.matchedOrganizationName !== group.organization) {
@@ -644,13 +706,6 @@ async function updateGroup(
           .where(eq(organizations.id, orgId))
       ));
     }
-  }
-
-  // Attach the link row for an acknowledged name-match (or reactivated
-  // soft-deleted match) carrying an externalId, so the NEXT import matches by
-  // id instead of name. Skip-mode name-matches get theirs in commitGroup.
-  if (mode === 'update' && group.externalId && group.annotation !== 'link-match') {
-    createdLink = await attachExternalLink(group, partnerId, actor, orgId);
   }
 
   const existingSites = mode === 'update'
@@ -713,8 +768,9 @@ async function updateGroup(
       siteId,
       siteName,
       createdSite,
-      createdLink: createdLink && r === rows[0],
+      createdLink: link.createdLink && r === rows[0],
       reactivated,
+      ...(link.warning && r === rows[0] ? { warning: link.warning } : {}),
     });
   }
 }

@@ -105,6 +105,8 @@ export interface OrgImportSummary {
     createdSite: boolean;
     createdLink: boolean;
     reactivated: boolean;
+    /** Non-fatal note (e.g. the optional link persistence failed) — first row only. */
+    warning?: string;
   }>;
   skipped: Array<{
     index: number;
@@ -112,10 +114,12 @@ export interface OrgImportSummary {
     organizationId: string | null;
     reason: string;
     /**
-     * True on the group's first row when a skip-mode commit persisted the link
-     * row for an acknowledged name-match (so future imports resolve by id).
+     * True on the group's first row when the commit persisted the link row for
+     * an acknowledged match (so future imports resolve by id, not name).
      */
-    createdLink?: boolean;
+    createdLink: boolean;
+    /** Non-fatal note (e.g. the optional link persistence failed) — first row only. */
+    warning?: string;
   }>;
   errors: Array<{
     index: number;
