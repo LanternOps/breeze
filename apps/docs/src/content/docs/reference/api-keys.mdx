@@ -87,11 +87,13 @@ Scopes can be updated after creation via the `PATCH` endpoint without rotating t
 
 ### Authentication Flow
 
-To authenticate with an API key, include it in the `X-API-Key` header:
+To authenticate with an API key, include it in the `X-API-Key` header — on one of
+the routes that accept it (see [Where API keys work](#where-api-keys-work) below;
+the general REST API is not one of them):
 
 ```bash
 curl -H "X-API-Key: brz_aBcDeFgHiJkLmNoPqRsTuVwXyZ012" \
-  https://breeze.yourdomain.com/api/v1/devices
+  https://breeze.yourdomain.com/api/v1/devices/$DEVICE_ID/custom-fields
 ```
 
 The middleware performs these steps in order:
@@ -116,9 +118,28 @@ The middleware performs these steps in order:
 | `X-RateLimit-Reset` | Unix timestamp when the window resets. |
 | `Retry-After` | Seconds until the rate limit resets (only on 429 responses). |
 
+### Where API keys work
+
+An API key authenticates **three surfaces**, not the API as a whole:
+
+| Endpoint | Required scope |
+|---|---|
+| `/api/v1/mcp/*` — the [MCP server](/features/mcp-server/) | `ai:*` |
+| `POST /api/v1/dev/push` | `devices:execute` |
+| `GET /api/v1/devices/:id/custom-fields` | `devices:read` |
+| `PATCH /api/v1/devices/:id/custom-fields` | `devices:write` |
+
+Every other route authenticates from the `Authorization` header alone and never
+looks at `X-API-Key`, so a key sent anywhere else returns
+`401 Missing or invalid authorization header`. A key with `devices:read` will not
+authenticate `GET /api/v1/devices` — that route needs a user JWT. Scopes gate what
+a key may do on the routes above; they do not widen where it is accepted.
+
 ### Dual Authentication
 
-Some endpoints accept either a JWT bearer token or an API key. When both headers are present, the API key takes precedence: the route handler checks for `X-API-Key` first and authenticates via `apiKeyAuthMiddleware`, falling back to `authMiddleware` only when that header is absent.
+The routes listed above accept either a JWT bearer token or an API key. When both headers are present, the API key takes precedence: the route handler checks for `X-API-Key` first and authenticates via `apiKeyAuthMiddleware`, falling back to `authMiddleware` only when that header is absent.
+
+On the JWT path some of them are stricter than the key path: `PATCH /devices/:id/custom-fields` and `POST /dev/push` additionally require MFA, matching the permissions they mirror.
 
 ### Key Rotation
 

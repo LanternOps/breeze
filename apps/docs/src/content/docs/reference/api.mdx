@@ -23,12 +23,41 @@ curl -H "Authorization: Bearer $TOKEN" \
   https://breeze.yourdomain.com/api/v1/devices
 ```
 
-API keys can also be used via the `X-API-Key` header:
+### API keys are not general-purpose auth
+
+<Aside type="caution" title="An API key will not authenticate the general REST API">
+`X-API-Key` is accepted on **three** surfaces only. Every other route reads the
+`Authorization` header and nothing else, so sending a key to (for example)
+`GET /api/v1/devices` returns `401 Missing or invalid authorization header` —
+the key is never consulted.
+</Aside>
+
+The surfaces that accept `X-API-Key`:
+
+| Endpoint | Required key scope |
+|---|---|
+| `/api/v1/mcp/*` — the [MCP server](/features/mcp-server/) | `ai:*` |
+| `POST /api/v1/dev/push` | `devices:execute` |
+| `GET /api/v1/devices/:id/custom-fields` | `devices:read` |
+| `PATCH /api/v1/devices/:id/custom-fields` | `devices:write` |
+
+Those four routes are dual-auth: they use the key when `X-API-Key` is present
+and fall back to a user JWT when it is absent. Everything else is JWT-only.
 
 ```bash
+# Works — a dual-auth route.
+curl -H "X-API-Key: brz_..." \
+  https://breeze.yourdomain.com/api/v1/devices/$DEVICE_ID/custom-fields
+
+# Returns 401 — the devices list is JWT-only.
 curl -H "X-API-Key: brz_..." \
   https://breeze.yourdomain.com/api/v1/devices
 ```
+
+If you are scripting against Breeze, log in and use the resulting JWT. Note that
+some write routes additionally require MFA on the JWT path — including
+`POST /orgs/partners`, `POST /orgs/organizations` and `POST /orgs/sites` — so an
+account without MFA enrolled cannot create tenancy unattended.
 
 ### Login
 
