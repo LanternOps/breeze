@@ -50,7 +50,7 @@ func atCapWarning() string {
 // tiers that fired.
 func fittedWarning(t *testing.T, in backupCommandResultFixture) (warning string, degraded string) {
 	t.Helper()
-	fitted, degraded := fitBackupResultToIPC(in.result())
+	fitted, degraded := fitBackupResultForDelivery(in.result())
 	if got := payloadSize(t, fitted); got > resultPayloadBudget {
 		t.Fatalf("fitted payload is %d bytes, over the %d budget", got, resultPayloadBudget)
 	}

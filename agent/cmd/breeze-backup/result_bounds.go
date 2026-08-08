@@ -9,6 +9,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/wire"
 )
 
 // Issue #3001: a backup run's terminal result is unbounded, but the IPC frame
@@ -24,6 +25,20 @@ import (
 //
 // Deliberately NOT fixed by raising ipc.MaxMessageSize: the payload has to be
 // bounded regardless, and a bigger cap only moves the cliff.
+//
+// #3001 RESIDUAL (v0.104.0). The above fixed the loud failure and missed a
+// quiet one, for a reason worth stating plainly: this file bounded against the
+// NEXT HOP rather than the DESTINATION. The IPC frame is merely the first of
+// four limits the result passes; the tightest is the server's 1 MiB cap on the
+// command_result `result` field, 16x below the budget used here. So a
+// 4,000-file run (~2 MB of snapshot index) cleared every check in this file,
+// was written to the socket successfully, and was refused on arrival — with no
+// error logged on either side, because the send had genuinely succeeded and the
+// server's rejection was an id-less frame the agent discarded. The job sat
+// `running` until the reaper failed a backup that had completed.
+//
+// The rule the fix encodes: bound against the tightest limit anywhere on the
+// path (see serverResultBudget), never against the one nearest to hand.
 
 const (
 	// resultEnvelopeHeadroom reserves room for the ipc.Envelope fields wrapped
@@ -35,6 +50,25 @@ const (
 	// resultPayloadBudget is the largest marshalled BackupCommandResult we will
 	// hand to conn.Send.
 	resultPayloadBudget = ipc.MaxMessageSize - resultEnvelopeHeadroom
+
+	// serverResultBudget is the largest Stdout body the SERVER will accept, and
+	// it — not resultPayloadBudget — is what actually binds.
+	//
+	// #3001 residual: bounding against the next hop is not the same as bounding
+	// against the destination. This file shipped bounding only against the
+	// 16 MiB IPC frame, but Stdout does not stop at the agent: the forwarder
+	// (internal/heartbeat, case TypeBackupResult) parses it and assigns it to
+	// the `result` field of the WS command_result, where the server caps it at
+	// wire.MaxCommandResultBytes — 16x tighter. So every tier below was dead
+	// code for the failure that mattered: a 4,000-file run built a ~2 MB
+	// snapshot index, sailed through a 15.9 MiB budget, and was refused by the
+	// server. Nothing logged on either side and the job was reaped as stalled.
+	//
+	// Checked against Stdout alone rather than the whole marshalled result
+	// because that is the field the cap applies to server-side; Stderr rides
+	// the separate `error` field (capped at 10,000 there, and already held to
+	// maxResultTextBytes here).
+	serverResultBudget = wire.CommandResultBudget
 
 	// maxResultTextBytes caps free-text fields (warning, stderr) that are built
 	// by joining per-file errors. summarizeUploadFailures already caps the
@@ -113,8 +147,9 @@ var snapshotIdentityKeys = []string{"id", "timestamp", "size", "formatVersion", 
 // Anything under it is cheaper to keep than to reason about.
 const bulkFieldThreshold = 4 * 1024
 
-// fitBackupResultToIPC returns result bounded so its marshalled payload fits
-// resultPayloadBudget, degrading in tiers and stopping at the first that fits:
+// fitBackupResultForDelivery returns result bounded so it fits EVERY limit on
+// the path to the server — serverResultBudget as well as resultPayloadBudget —
+// degrading in tiers and stopping at the first that fits:
 //
 //  1. always: truncate the free-text stderr field (cheap, no JSON parse);
 //  2. empty the per-file snapshot index, cap the warning text, and drop any
@@ -138,8 +173,30 @@ const bulkFieldThreshold = 4 * 1024
 // The second return value describes what was dropped, and is "" when the result
 // was already within budget. It is non-empty exactly when the caller should log
 // loudly — a degraded result is a real (if survivable) loss of detail.
-func fitBackupResultToIPC(result backupipc.BackupCommandResult) (backupipc.BackupCommandResult, string) {
+func fitBackupResultForDelivery(result backupipc.BackupCommandResult) (backupipc.BackupCommandResult, string) {
+	fitted, notes, _, _ := fitBackupResult(result)
+	return fitted, notes
+}
+
+// fitBackupResult is fitBackupResultForDelivery plus the attribution the log line
+// needs: the name and value of the limit that forced the degradation.
+//
+// #3001: the caller used to log ipc.MaxMessageSize unconditionally, so a run
+// degraded ONLY by the 8 KiB stderr cap reported "exceeded the IPC limit …
+// sentBytes=10195 limitBytes=16777216" — a 10 KB payload described as
+// overflowing a 16 MiB frame. Naming a limit 2,000x larger than the one that
+// fired is worse than saying nothing: it asserts, wrongly, that the frame was
+// the problem. The trigger is therefore tracked as the tiers run rather than
+// assumed at the end.
+func fitBackupResult(result backupipc.BackupCommandResult) (
+	fitted backupipc.BackupCommandResult, notesText, limitName string, limitBytes int,
+) {
 	var notes []string
+
+	// Captured BEFORE any tier runs: once the tiers have shrunk the payload the
+	// binding limit is no longer observable, and reporting a limit derived from
+	// the already-degraded result is how the wrong one gets named.
+	limitName, limitBytes = exceededLimit(result)
 
 	// Tier 1 — always applied, and cheap (no JSON parse). Bounding the failure
 	// detail BEFORE marshalling is the primary fix; the tiers below are the
@@ -152,7 +209,7 @@ func fitBackupResultToIPC(result backupipc.BackupCommandResult) (backupipc.Backu
 		notes = append(notes, fmt.Sprintf("stderr truncated (%d bytes dropped)", dropped))
 	}
 	if fits(result) {
-		return result, joinNotes(notes)
+		return finishBounding(result, notes, limitName, limitBytes)
 	}
 
 	// Only reached when the result is actually oversize, so the ordinary path
@@ -160,7 +217,7 @@ func fitBackupResultToIPC(result backupipc.BackupCommandResult) (backupipc.Backu
 	obj, isObject := decodeStdoutObject(result.Stdout)
 	if !isObject {
 		notes = append(notes, "result body could not be summarised and was replaced with an oversize failure")
-		return oversizeFailureResult(result), joinNotes(notes)
+		return finishBounding(oversizeFailureResult(result), notes, limitName, limitBytes)
 	}
 
 	// Tier 2 — cap the warning text, empty the per-file snapshot index, and
@@ -184,7 +241,7 @@ func fitBackupResultToIPC(result backupipc.BackupCommandResult) (backupipc.Backu
 	}
 	result.Stdout = encodeStdoutObject(obj, result.Stdout)
 	if fits(result) {
-		return result, joinNotes(notes)
+		return finishBounding(result, notes, limitName, limitBytes)
 	}
 
 	// Tier 3 — scalar fields plus the snapshot identity only.
@@ -192,7 +249,7 @@ func fitBackupResultToIPC(result backupipc.BackupCommandResult) (backupipc.Backu
 		result.Stdout = reduced
 		notes = append(notes, "result reduced to summary scalars only")
 		if fits(result) {
-			return result, joinNotes(notes)
+			return finishBounding(result, notes, limitName, limitBytes)
 		}
 	}
 
@@ -202,7 +259,24 @@ func fitBackupResultToIPC(result backupipc.BackupCommandResult) (backupipc.Backu
 	result.Stdout = lastResortStdout(result.Stdout)
 	result.Stderr, _ = truncateText(result.Stderr, maxLastResortFieldBytes)
 	result.CommandID, _ = truncateText(result.CommandID, maxLastResortFieldBytes)
-	return result, joinNotes(notes)
+	return finishBounding(result, notes, limitName, limitBytes)
+}
+
+// finishBounding assembles fitBackupResult's return, attributing the
+// degradation to the free-text cap when no delivery limit was breached.
+//
+// That branch is the whole point of the attribution: tier 1 runs on EVERY
+// result and fires whenever stderr is over 8 KiB, including on results that
+// were always going to fit the wire comfortably. Those are the runs the old log
+// line mislabelled as frame overflows.
+func finishBounding(
+	result backupipc.BackupCommandResult, notes []string, limitName string, limitBytes int,
+) (backupipc.BackupCommandResult, string, string, int) {
+	notesText := joinNotes(notes)
+	if notesText != "" && limitName == "" {
+		limitName, limitBytes = limitResultText, maxResultTextBytes
+	}
+	return result, notesText, limitName, limitBytes
 }
 
 // sendBackupResult sends a terminal backup_result envelope, bounding the
@@ -214,18 +288,22 @@ func fitBackupResultToIPC(result backupipc.BackupCommandResult) (backupipc.Backu
 // log-shipping threshold and therefore on the server.
 func sendBackupResult(conn *ipc.Conn, envelopeID string, result backupipc.BackupCommandResult) error {
 	log := logging.L("backup")
-	fitted, degraded := fitBackupResultToIPC(result)
+	fitted, degraded, limitName, limitBytes := fitBackupResult(result)
 	if degraded != "" {
 		// Sizes are reported from the raw fields rather than a full marshal of
 		// the original: re-marshalling tens of megabytes just to populate a log
 		// field is not worth it at the tail of a backup run.
-		log.Error("backup result payload exceeded the IPC limit and was degraded to fit",
+		//
+		// The message no longer claims which hop overflowed — limitName says
+		// that, and it is frequently NOT the IPC frame.
+		log.Error("backup result payload was degraded to fit a delivery limit",
 			"commandId", result.CommandID,
 			"degraded", degraded,
+			"limitName", limitName,
+			"limitBytes", limitBytes,
 			"originalStdoutBytes", len(result.Stdout),
 			"originalStderrBytes", len(result.Stderr),
 			"sentBytes", marshalledSize(fitted),
-			"limitBytes", ipc.MaxMessageSize,
 		)
 	}
 	if err := conn.SendTyped(envelopeID, backupipc.TypeBackupResult, fitted); err != nil {
@@ -242,13 +320,33 @@ func sendBackupResult(conn *ipc.Conn, envelopeID string, result backupipc.Backup
 
 // --- helpers ---
 
-// fits reports whether result's marshalled payload is within budget. The raw
-// text fields are checked first as a cheap lower bound — JSON string encoding
-// never shrinks its input — so an oversize result is rejected without
-// marshalling tens of megabytes on the endpoint.
+// fits reports whether result is within every delivery limit on the path to
+// the server.
 func fits(result backupipc.BackupCommandResult) bool {
+	name, _ := exceededLimit(result)
+	return name == ""
+}
+
+// exceededLimit names the first delivery limit result's payload breaches, and
+// that limit's value; it returns ("", 0) when the result is deliverable.
+//
+// Both limits are checked, tightest first, because "which limit fired" is not a
+// detail — it is the whole diagnosis. A run degraded by the server's `result`
+// cap and a run degraded by the IPC frame are different bugs on different hops,
+// and the log line that conflated them (see sendBackupResult) sent #3001's
+// investigation to the wrong layer twice.
+//
+// The raw text fields are measured before marshalling as a cheap lower bound —
+// JSON string encoding never shrinks its input — so an oversize result is
+// rejected without marshalling tens of megabytes on the endpoint.
+func exceededLimit(result backupipc.BackupCommandResult) (string, int) {
+	// Tightest first. Stdout alone, because Stdout is what becomes the server's
+	// `result` field; see serverResultBudget.
+	if len(result.Stdout) > serverResultBudget {
+		return limitServerResult, wire.MaxCommandResultBytes
+	}
 	if len(result.Stdout)+len(result.Stderr)+len(result.CommandID) > resultPayloadBudget {
-		return false
+		return limitIPCFrame, ipc.MaxMessageSize
 	}
 	size := marshalledSize(result)
 	// A result that cannot be marshalled at all is not "fitting" — treating
@@ -256,11 +354,19 @@ func fits(result backupipc.BackupCommandResult) bool {
 	// payload from a function whose contract is that the send will succeed.
 	// (BackupCommandResult is only strings/bool/int64, so this is unreachable
 	// today; it is guarded so it stays unreachable if the type grows a field.)
-	if size < 0 {
-		return false
+	if size < 0 || size > resultPayloadBudget {
+		return limitIPCFrame, ipc.MaxMessageSize
 	}
-	return size <= resultPayloadBudget
+	return "", 0
 }
+
+// Limit names used in the degradation log line. They are the identifiers an
+// operator can grep for in this repo, not prose.
+const (
+	limitServerResult = "server command_result `result` cap (wire.MaxCommandResultBytes)"
+	limitIPCFrame     = "agent IPC frame (ipc.MaxMessageSize)"
+	limitResultText   = "free-text field cap (maxResultTextBytes)"
+)
 
 // marshalledSize returns the marshalled byte length of result, or -1 when it
 // cannot be marshalled at all (which conn.Send would reject anyway).

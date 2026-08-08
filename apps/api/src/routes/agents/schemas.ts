@@ -278,6 +278,53 @@ export const processSampleSchema = z.object({
 // Commands
 // ============================================
 
+/**
+ * MAX_COMMAND_RESULT_BYTES bounds the `result` field of an agent command
+ * result. It is the TIGHTEST limit anywhere on the agent→server result path —
+ * tighter than the 16 MiB agent IPC frame, the agent's 16 MiB WS read limit and
+ * the `ws` server's 100 MiB default `maxPayload` — so it, not any of those, is
+ * the limit an agent has to bound its payload against.
+ *
+ * That is not obvious from the agent side, and #3001 is what it costs when it
+ * is missed: the backup helper emitted a BackupJob body carrying one
+ * `snapshot.files` entry per backed-up file (~522 B each), the agent put that
+ * body in `result`, and every backup over ~2,000 files was rejected here. The
+ * agent's own tiered degradation was bounding against the 16 MiB IPC frame —
+ * 16x too loose — so it never fired, nothing logged on either side, and the job
+ * sat `running` until the stale-backup reaper falsely failed a backup that had
+ * in fact succeeded.
+ *
+ * MIRRORED IN GO as `wire.MaxCommandResultBytes`
+ * (agent/internal/wire/limits.go). The two are pinned equal by
+ * `schemas.commandResult.test.ts` here and `TestMaxCommandResultBytesMatchesServerSchema`
+ * there — both assert the literal 1048576, so raising one alone reddens CI on
+ * both sides rather than silently re-opening #3001.
+ *
+ * Deliberately NOT raised to match the 5 MB `stdout`/`stderr` caps: a larger cap
+ * only moves the cliff (a 100k-file snapshot index is ~52 MB and fits no sane
+ * cap), and the agent-side bound is the actual fix. Changing this value is a
+ * one-line, reversible decision — but it must be changed on BOTH sides.
+ */
+export const MAX_COMMAND_RESULT_BYTES = 1_048_576;
+
+/**
+ * commandResultResultByteLength returns the encoded size the `result` field
+ * will occupy, or null when the value cannot be serialised at all (a cycle, or
+ * a throwing toJSON). Exported so the WS layer can report the measured size in
+ * its rejection log instead of leaving an operator to guess why a result was
+ * refused.
+ */
+export function commandResultResultByteLength(val: unknown): number | null {
+  if (val === undefined || val === null) return 0;
+  try {
+    const encoded = JSON.stringify(val);
+    if (encoded === undefined) return 0;
+    return Buffer.byteLength(encoded, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
 export const commandResultSchema = z.object({
   status: z.enum(['completed', 'failed', 'timeout']),
   exitCode: z.number().int().optional(),
@@ -291,10 +338,14 @@ export const commandResultSchema = z.object({
   error: z.string().max(10_000).optional(),
   result: z.any().optional().refine(
     (val) => {
-      if (val === undefined || val === null) return true;
-      try { return Buffer.byteLength(JSON.stringify(val), 'utf8') <= 1_048_576; } catch { return false; }
+      const size = commandResultResultByteLength(val);
+      return size !== null && size <= MAX_COMMAND_RESULT_BYTES;
     },
-    { message: 'Command result payload exceeds 1 MB limit' }
+    {
+      message:
+        `Command result payload exceeds the ${MAX_COMMAND_RESULT_BYTES}-byte \`result\` limit ` +
+        '(the agent must degrade the payload before sending — see #3001)'
+    }
   )
 });
 

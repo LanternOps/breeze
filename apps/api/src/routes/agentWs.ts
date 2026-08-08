@@ -62,7 +62,11 @@ import {
   SW_INSTALL_COMMAND_ID_REGEX,
 } from '../services/softwareDeploymentResult';
 import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
-import { commandResultSchema as baseCommandResultSchema } from './agents/schemas';
+import {
+  commandResultSchema as baseCommandResultSchema,
+  commandResultResultByteLength,
+  MAX_COMMAND_RESULT_BYTES,
+} from './agents/schemas';
 import { commandResultHandlers, normalizeDiscoveryHosts } from '../services/commandResultHandlers';
 
 /** Capabilities advertised to agents in the post-connect `connected` message. */
@@ -2285,11 +2289,45 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         const parsed = agentMessageSchema.safeParse(message);
 
         if (!parsed.success) {
-          console.warn(`Invalid message from agent ${agentId}:`, parsed.error.issues);
+          // #3001: this branch used to be a bare console.warn carrying only the
+          // raw Zod issues. When it rejected a `command_result` — the terminal
+          // status of a job the server is actively waiting on — the operator
+          // saw no commandId, no size, no message type, and none of the
+          // downstream backup logs (those live in processCommandResult, past
+          // this return). The result read as having vanished in transit, and a
+          // succeeded backup was reaped as stalled 15 minutes later.
+          //
+          // A rejected command_result is a LOST TERMINAL STATUS, so it logs at
+          // error with everything needed to identify the job and the offending
+          // field; anything else stays a warning.
+          const rejectedType = typeof message?.type === 'string' ? message.type : 'unknown';
+          const rejectedCommandId = typeof message?.commandId === 'string'
+            ? message.commandId
+            : undefined;
+          if (rejectedType === 'command_result') {
+            const resultBytes = commandResultResultByteLength(message?.result);
+            console.error(
+              `[AgentWs] REJECTED command_result from agent ${agentId} — the job will have no ` +
+              `terminal status and will be failed by a reaper. commandId=${rejectedCommandId ?? 'unknown'} ` +
+              `frameBytes=${data.length} resultBytes=${resultBytes ?? 'unencodable'} ` +
+              `resultLimitBytes=${MAX_COMMAND_RESULT_BYTES}:`,
+              parsed.error.issues
+            );
+          } else {
+            console.warn(
+              `Invalid message from agent ${agentId} (type=${rejectedType}, frameBytes=${data.length}):`,
+              parsed.error.issues
+            );
+          }
           ws.send(JSON.stringify({
             type: 'error',
             code: 'INVALID_MESSAGE',
             message: 'Invalid message format',
+            // Echoed so the agent can attribute the rejection to the command it
+            // sent. Without it the agent sees an unattributable error frame and
+            // has nothing to log against the job.
+            messageType: rejectedType,
+            commandId: rejectedCommandId,
             details: parsed.error.issues
           }));
           return;
