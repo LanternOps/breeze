@@ -2761,6 +2761,66 @@
     },
     "empty": "Keine Organisationen gefunden. Versuchen Sie, Ihre Suche oder Filter anzupassen."
   },
+  "bulkOrgImport": {
+    "title": "Massenimport",
+    "description": "Organisationen und Standorte aus einer CSV-Datei Ihres bisherigen RMM importieren.",
+    "dropzone": "CSV-Datei hier ablegen oder klicken zum Auswählen",
+    "dropzoneHint": "Spalten: Organisation (erforderlich), Standort, externe ID, externes System, Zeitzone",
+    "actions": {
+      "close": "Schließen",
+      "preview": "{{count}} Zeilen prüfen",
+      "previewing": "Vorschau wird geladen…",
+      "import": "{{count}} ausgewählte importieren",
+      "importing": "Import läuft…"
+    },
+    "mapping": {
+      "title": "Spaltenzuordnung",
+      "unmapped": "Nicht zugeordnet",
+      "organization": "Organisation",
+      "site": "Standort",
+      "externalId": "Externe ID",
+      "externalSystem": "Externes System",
+      "timezone": "Zeitzone",
+      "organizationRequired": "Ordnen Sie die Organisationsspalte zu, um fortzufahren."
+    },
+    "mode": {
+      "label": "Bestehende Organisationen",
+      "skip": "Überspringen (unverändert lassen)",
+      "update": "Aus Datei aktualisieren"
+    },
+    "preview": {
+      "title": "Vorschau",
+      "selectAll": "Alle auswählen",
+      "organization": "Organisation",
+      "site": "Standort",
+      "externalId": "Externe ID",
+      "status": "Status",
+      "matches": "entspricht „{{name}}“",
+      "reactivateHint": "Auswahl reaktiviert die gelöschte Organisation"
+    },
+    "badges": {
+      "create": "Neu",
+      "linkMatch": "Bereits verknüpft",
+      "nameMatch": "Namensübereinstimmung — bestätigen",
+      "softDeleted": "Gelöschte Organisation",
+      "conflict": "Konflikt"
+    },
+    "summary": {
+      "imported": "{{count}} importiert",
+      "updated": "{{count}} aktualisiert",
+      "skipped": "{{count}} übersprungen",
+      "failed": "{{count}} fehlgeschlagen",
+      "allFailed": "Import fehlgeschlagen — {{summary}}."
+    },
+    "failures": {
+      "title_one": "{{count}} Zeile fehlgeschlagen",
+      "title_other": "{{count}} Zeilen fehlgeschlagen"
+    },
+    "errors": {
+      "previewFailed": "Vorschau des Imports fehlgeschlagen.",
+      "importFailed": "Import der Organisationen fehlgeschlagen."
+    }
+  },
   "organizationsPage": {
     "loading": "Organisationen werden geladen...",
     "title": "Organisationen und Standorte",

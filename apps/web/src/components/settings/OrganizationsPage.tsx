@@ -6,6 +6,7 @@ import type { Organization } from './OrganizationList';
 import OrganizationForm from './OrganizationForm';
 import SiteList, { type Site } from './SiteList';
 import SiteForm from './SiteForm';
+import BulkOrgImport from '../organizations/BulkOrgImport';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { extractApiError } from '@/lib/apiError';
@@ -52,6 +53,7 @@ export default function OrganizationsPage() {
   const [initialOrgId] = useHashState<string | null>(null, (h) => h || undefined);
   const [submitting, setSubmitting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [showBulkImport, setShowBulkImport] = useState(false);
   const [draggedOrgId, setDraggedOrgId] = useState<string | null>(null);
   const [dragOverOrgId, setDragOverOrgId] = useState<string | null>(null);
 
@@ -503,14 +505,32 @@ export default function OrganizationsPage() {
           <h1 className="text-xl font-semibold tracking-tight">{t('organizationsPage.title')}</h1>
           <p className="text-muted-foreground">{t('organizationsPage.description')}</p>
         </div>
-        <button
-          type="button"
-          onClick={handleAdd}
-          className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-        >
-          {t('organizationsPage.actions.addOrganization')}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            data-testid="bulk-org-import-toggle"
+            onClick={() => setShowBulkImport((v) => !v)}
+            className="inline-flex h-10 items-center justify-center rounded-md border bg-background px-4 text-sm font-medium transition hover:bg-muted"
+          >
+            {t('bulkOrgImport.title')}
+          </button>
+          <button
+            type="button"
+            onClick={handleAdd}
+            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+          >
+            {t('organizationsPage.actions.addOrganization')}
+          </button>
+        </div>
       </div>
+
+      {showBulkImport && (
+        <BulkOrgImport
+          onImported={() => void fetchOrganizations()}
+          onClose={() => setShowBulkImport(false)}
+          onUnauthorized={() => void navigateTo('/login', { replace: true })}
+        />
+      )}
 
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

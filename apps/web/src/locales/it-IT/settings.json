@@ -2809,6 +2809,66 @@
     },
     "empty": "Nessuna organizzazione trovata. Prova a modificare ricerca o filtri."
   },
+  "bulkOrgImport": {
+    "title": "Importazione in blocco",
+    "description": "Importa organizzazioni e sedi da un CSV esportato dal tuo RMM precedente.",
+    "dropzone": "Trascina qui un file CSV o fai clic per sfogliare",
+    "dropzoneHint": "Colonne: organizzazione (obbligatoria), sede, ID esterno, sistema esterno, fuso orario",
+    "actions": {
+      "close": "Chiudi",
+      "preview": "Anteprima di {{count}} righe",
+      "previewing": "Anteprima in corso…",
+      "import": "Importa {{count}} selezionate",
+      "importing": "Importazione…"
+    },
+    "mapping": {
+      "title": "Mappatura colonne",
+      "unmapped": "Non mappata",
+      "organization": "Organizzazione",
+      "site": "Sede",
+      "externalId": "ID esterno",
+      "externalSystem": "Sistema esterno",
+      "timezone": "Fuso orario",
+      "organizationRequired": "Mappa la colonna organizzazione per continuare."
+    },
+    "mode": {
+      "label": "Organizzazioni esistenti",
+      "skip": "Salta (lascia invariate)",
+      "update": "Aggiorna dal file"
+    },
+    "preview": {
+      "title": "Anteprima",
+      "selectAll": "Seleziona tutto",
+      "organization": "Organizzazione",
+      "site": "Sede",
+      "externalId": "ID esterno",
+      "status": "Stato",
+      "matches": "corrisponde a “{{name}}”",
+      "reactivateHint": "La selezione riattiverà l’organizzazione eliminata"
+    },
+    "badges": {
+      "create": "Nuova",
+      "linkMatch": "Già collegata",
+      "nameMatch": "Corrispondenza nome — conferma",
+      "softDeleted": "Organizzazione eliminata",
+      "conflict": "Conflitto"
+    },
+    "summary": {
+      "imported": "{{count}} importate",
+      "updated": "{{count}} aggiornate",
+      "skipped": "{{count}} saltate",
+      "failed": "{{count}} non riuscite",
+      "allFailed": "Importazione non riuscita — {{summary}}."
+    },
+    "failures": {
+      "title_one": "{{count}} riga non riuscita",
+      "title_other": "{{count}} righe non riuscite"
+    },
+    "errors": {
+      "previewFailed": "Anteprima dell’importazione non riuscita.",
+      "importFailed": "Importazione delle organizzazioni non riuscita."
+    }
+  },
   "organizationsPage": {
     "loading": "Caricamento organizzazioni...",
     "title": "Organizzazioni e siti",

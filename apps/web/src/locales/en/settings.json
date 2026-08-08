@@ -2814,6 +2814,66 @@
     },
     "empty": "No organizations found. Try adjusting your search or filters."
   },
+  "bulkOrgImport": {
+    "title": "Bulk import",
+    "description": "Import organizations and sites from a CSV exported from your previous RMM.",
+    "dropzone": "Drop a CSV file here or click to browse",
+    "dropzoneHint": "Columns: organization (required), site, external ID, external system, timezone",
+    "actions": {
+      "close": "Close",
+      "preview": "Preview {{count}} rows",
+      "previewing": "Previewing…",
+      "import": "Import {{count}} selected",
+      "importing": "Importing…"
+    },
+    "mapping": {
+      "title": "Column mapping",
+      "unmapped": "Not mapped",
+      "organization": "Organization",
+      "site": "Site",
+      "externalId": "External ID",
+      "externalSystem": "External system",
+      "timezone": "Timezone",
+      "organizationRequired": "Map the organization column to continue."
+    },
+    "mode": {
+      "label": "Existing organizations",
+      "skip": "Skip (leave untouched)",
+      "update": "Update from file"
+    },
+    "preview": {
+      "title": "Preview",
+      "selectAll": "Select all",
+      "organization": "Organization",
+      "site": "Site",
+      "externalId": "External ID",
+      "status": "Status",
+      "matches": "matches “{{name}}”",
+      "reactivateHint": "Selecting will reactivate the deleted organization"
+    },
+    "badges": {
+      "create": "New",
+      "linkMatch": "Already linked",
+      "nameMatch": "Name match — confirm",
+      "softDeleted": "Deleted org match",
+      "conflict": "Conflict"
+    },
+    "summary": {
+      "imported": "{{count}} imported",
+      "updated": "{{count}} updated",
+      "skipped": "{{count}} skipped",
+      "failed": "{{count}} failed",
+      "allFailed": "Import failed — {{summary}}."
+    },
+    "failures": {
+      "title_one": "{{count}} row failed",
+      "title_other": "{{count}} rows failed"
+    },
+    "errors": {
+      "previewFailed": "Failed to preview the import.",
+      "importFailed": "Failed to import organizations."
+    }
+  },
   "organizationsPage": {
     "loading": "Loading organizations...",
     "title": "Organizations & Sites",

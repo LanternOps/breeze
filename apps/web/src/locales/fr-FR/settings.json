@@ -2761,6 +2761,66 @@
     },
     "empty": "Aucune organisation trouvée. Essayez d’ajuster votre recherche ou vos filtres."
   },
+  "bulkOrgImport": {
+    "title": "Importation en masse",
+    "description": "Importez des organisations et des sites depuis un CSV exporté de votre RMM précédent.",
+    "dropzone": "Déposez un fichier CSV ici ou cliquez pour parcourir",
+    "dropzoneHint": "Colonnes : organisation (obligatoire), site, ID externe, système externe, fuseau horaire",
+    "actions": {
+      "close": "Fermer",
+      "preview": "Prévisualiser {{count}} lignes",
+      "previewing": "Prévisualisation…",
+      "import": "Importer {{count}} sélectionnées",
+      "importing": "Importation…"
+    },
+    "mapping": {
+      "title": "Mappage des colonnes",
+      "unmapped": "Non mappée",
+      "organization": "Organisation",
+      "site": "Site",
+      "externalId": "ID externe",
+      "externalSystem": "Système externe",
+      "timezone": "Fuseau horaire",
+      "organizationRequired": "Mappez la colonne organisation pour continuer."
+    },
+    "mode": {
+      "label": "Organisations existantes",
+      "skip": "Ignorer (ne rien modifier)",
+      "update": "Mettre à jour depuis le fichier"
+    },
+    "preview": {
+      "title": "Aperçu",
+      "selectAll": "Tout sélectionner",
+      "organization": "Organisation",
+      "site": "Site",
+      "externalId": "ID externe",
+      "status": "Statut",
+      "matches": "correspond à « {{name}} »",
+      "reactivateHint": "La sélection réactivera l’organisation supprimée"
+    },
+    "badges": {
+      "create": "Nouvelle",
+      "linkMatch": "Déjà liée",
+      "nameMatch": "Correspondance de nom — confirmer",
+      "softDeleted": "Organisation supprimée",
+      "conflict": "Conflit"
+    },
+    "summary": {
+      "imported": "{{count}} importées",
+      "updated": "{{count}} mises à jour",
+      "skipped": "{{count}} ignorées",
+      "failed": "{{count}} en échec",
+      "allFailed": "Échec de l’importation — {{summary}}."
+    },
+    "failures": {
+      "title_one": "{{count}} ligne en échec",
+      "title_other": "{{count}} lignes en échec"
+    },
+    "errors": {
+      "previewFailed": "Échec de la prévisualisation de l’importation.",
+      "importFailed": "Échec de l’importation des organisations."
+    }
+  },
   "organizationsPage": {
     "loading": "Chargement des organisations...",
     "title": "Organisations & Sites",
