@@ -10,7 +10,7 @@ import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Breeze RMM provides two distinct key types for different purposes:
 
-- **API Keys** grant programmatic access to the REST API for automation, integrations, and scripting.
+- **API Keys** grant programmatic access to a small set of integration surfaces (the MCP server, the dev-push endpoint, and device custom-field values -- see [Where API Keys Work](#where-api-keys-work)).
 - **Enrollment Keys** are short-lived tokens used to onboard new agents into a specific organization and (optionally) site.
 
 Both key types are organization-scoped and require appropriate permissions to manage.
@@ -19,7 +19,7 @@ Both key types are organization-scoped and require appropriate permissions to ma
 
 ## API Keys
 
-API keys allow external systems to authenticate against the Breeze API without a user session. Each key is tied to a single organization and can be scoped to restrict which operations it may perform.
+API keys allow external systems to authenticate against specific Breeze API surfaces without a user session. Each key is tied to a single organization and can be scoped to restrict which operations it may perform. They are **not** accepted by the general REST API -- see [Where API Keys Work](#where-api-keys-work) for the exact surfaces, and the [Partner API](/reference/api/#partner-api-service-principals) for broad machine-to-machine access.
 
 ### Key Format
 
@@ -87,11 +87,14 @@ Scopes can be updated after creation via the `PATCH` endpoint without rotating t
 
 ### Authentication Flow
 
-To authenticate with an API key, include it in the `X-API-Key` header:
+To authenticate with an API key, include it in the `X-API-Key` header. Note
+that `brz_` keys only authenticate the surfaces listed under
+[Where API keys work](#where-api-keys-work) — for example, reading a device's
+custom-field values:
 
 ```bash
 curl -H "X-API-Key: brz_aBcDeFgHiJkLmNoPqRsTuVwXyZ012" \
-  https://breeze.yourdomain.com/api/v1/devices
+  https://breeze.yourdomain.com/api/v1/devices/DEVICE_UUID/custom-fields
 ```
 
 The middleware performs these steps in order:
@@ -116,9 +119,26 @@ The middleware performs these steps in order:
 | `X-RateLimit-Reset` | Unix timestamp when the window resets. |
 | `Retry-After` | Seconds until the rate limit resets (only on 429 responses). |
 
+### Where API Keys Work
+
+A `brz_` API key is **not** a general-purpose credential for the REST API —
+most endpoints reject it with `401` and require a user JWT. It authenticates
+exactly three surfaces:
+
+| Surface | Method(s) | Required key scope |
+|---------|-----------|--------------------|
+| `/mcp/*` ([MCP server](/features/mcp-server/)) | `POST` | per-tool |
+| `/dev/push` (development push endpoint) | `POST` | -- |
+| `/devices/:id/custom-fields` | `GET` / `PATCH` | `devices:read` / `devices:write` |
+
+For scripted machine-to-machine access to tenancy data (device exports,
+provisioning, migrations), use the [Partner API](/reference/api/#partner-api-service-principals)
+with a partner service-principal key (`brz_sp_…`) instead — see
+[Partner Service Principal Scopes](#partner-service-principal-scopes) below.
+
 ### Dual Authentication
 
-Some endpoints accept either a JWT bearer token or an API key. When both headers are present, the API key takes precedence: the route handler checks for `X-API-Key` first and authenticates via `apiKeyAuthMiddleware`, falling back to `authMiddleware` only when that header is absent.
+The device custom-field-value endpoints accept either a JWT bearer token or an API key. When both headers are present, the API key takes precedence: the route handler checks for `X-API-Key` first and authenticates via `apiKeyAuthMiddleware`, falling back to `authMiddleware` only when that header is absent.
 
 ### Key Rotation
 
