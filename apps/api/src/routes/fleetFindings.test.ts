@@ -17,8 +17,15 @@ const h = vi.hoisted(() => {
   const updateQueue: unknown[][] = [];
   const capturedWheres: unknown[] = [];
   const capturedUpdates: Record<string, unknown>[] = [];
+  // One entry per `db.select(...)` call, in call order — lets a test inspect
+  // whether THAT SPECIFIC call chained `.limit(n)` (e.g. the resolved-history
+  // fetch cap), without disturbing `capturedWheres`'s existing flat ordering.
+  // Each entry is a mutable ref (`{ value }`) so it keeps reporting the
+  // captured value even though `.limit()` is called after the entry is
+  // pushed.
+  const selectCallLimits: Array<{ value: unknown }> = [];
 
-  function makeSelectChain(rows: unknown[]) {
+  function makeSelectChain(rows: unknown[], limitRef: { value: unknown }) {
     const chain: Record<string, unknown> = {};
     const pass = () => chain;
     chain.from = pass;
@@ -29,14 +36,21 @@ const h = vi.hoisted(() => {
       return chain;
     };
     chain.orderBy = pass;
-    chain.limit = pass;
+    chain.limit = (n: unknown) => {
+      limitRef.value = n;
+      return chain;
+    };
     chain.offset = pass;
     chain.then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
       Promise.resolve(rows).then(resolve, reject);
     return chain;
   }
 
-  const mockSelect = vi.fn(() => makeSelectChain(selectQueue.shift() ?? []));
+  const mockSelect = vi.fn(() => {
+    const limitRef: { value: unknown } = { value: undefined };
+    selectCallLimits.push(limitRef);
+    return makeSelectChain(selectQueue.shift() ?? [], limitRef);
+  });
   const mockUpdate = vi.fn(() => ({
     set: (values: Record<string, unknown>) => {
       capturedUpdates.push(values);
@@ -48,7 +62,7 @@ const h = vi.hoisted(() => {
     },
   }));
 
-  return { selectQueue, updateQueue, capturedWheres, capturedUpdates, mockSelect, mockUpdate };
+  return { selectQueue, updateQueue, capturedWheres, capturedUpdates, selectCallLimits, mockSelect, mockUpdate };
 });
 
 vi.mock('../db', () => ({ db: { select: h.mockSelect, update: h.mockUpdate } }));
@@ -248,6 +262,7 @@ beforeEach(() => {
   h.updateQueue.length = 0;
   h.capturedWheres.length = 0;
   h.capturedUpdates.length = 0;
+  h.selectCallLimits.length = 0;
   h.mockSelect.mockClear();
   h.mockUpdate.mockClear();
   vi.mocked(writeRouteAudit).mockClear();
@@ -398,11 +413,75 @@ describe('GET /fleet/findings — pagination', () => {
   });
 });
 
+describe('GET /fleet/findings — resolved-history fetch is bounded', () => {
+  function manyRows(count: number) {
+    return Array.from({ length: count }, (_, i) => findingRow({ id: `finding-${i}`, status: 'resolved' }));
+  }
+
+  it('does NOT apply a SQL limit when the status filter excludes resolved (live path unchanged)', async () => {
+    h.selectQueue.push([findingRow({ status: 'open' })]);
+    await get(makeAuth(), '/?status=open');
+
+    expect(h.selectCallLimits[0]!.value).toBeUndefined();
+  });
+
+  it('applies a SQL-side limit bounded by offset+limit when status includes resolved', async () => {
+    h.selectQueue.push(manyRows(30));
+    const res = await get(makeAuth(), '/?status=resolved&limit=10&offset=5');
+    expect(res.status).toBe(200);
+
+    // offset(5) + limit(10) = 15, well under the hard cap.
+    expect(h.selectCallLimits[0]!.value).toBe(15);
+  });
+
+  it('never asks the DB for more than the hard cap, even with a huge offset', async () => {
+    h.selectQueue.push(manyRows(30));
+    const res = await get(makeAuth(), '/?status=resolved&limit=50&offset=1000000');
+    expect(res.status).toBe(200);
+
+    expect(h.selectCallLimits[0]!.value).toBe(500);
+    const body = await res.json();
+    // The requested page is entirely beyond the fetched (windowed) rows —
+    // fails closed to an empty page rather than crashing or leaking rows.
+    expect(body.findings).toEqual([]);
+  });
+
+  it('applies the cap when resolved is combined with other statuses', async () => {
+    h.selectQueue.push(manyRows(5));
+    await get(makeAuth(), '/?status=open,resolved&limit=50&offset=0');
+
+    expect(h.selectCallLimits[0]!.value).toBe(50);
+  });
+});
+
 describe('GET /fleet/findings/:id', () => {
   it('returns 404 for an unknown id', async () => {
     h.selectQueue.push([]);
     const res = await get(makeAuth(), `/${FINDING_1}`);
     expect(res.status).toBe(404);
+  });
+
+  it('org token cannot see a finding belonging to a foreign org (404, org-condition applied)', async () => {
+    // The real WHERE (org-scoped by RLS/eq) would return nothing for a
+    // finding in another org — simulated here by an empty result set.
+    h.selectQueue.push([]);
+    const res = await get(makeAuth({ scope: 'organization', orgId: ORG_1 }), `/${FINDING_1}`);
+    expect(res.status).toBe(404);
+
+    const where = h.capturedWheres[0] as { args: unknown[] };
+    expect(where.args).toContainEqual({ op: 'eq', column: fleetFindings.orgId, value: ORG_1 });
+  });
+
+  it('partner token cannot see a finding outside its accessibleOrgIds (404, inArray condition applied)', async () => {
+    h.selectQueue.push([]);
+    const res = await get(
+      makeAuth({ scope: 'partner', orgId: null, accessibleOrgIds: [ORG_1, ORG_2] }),
+      `/${FINDING_1}`
+    );
+    expect(res.status).toBe(404);
+
+    const where = h.capturedWheres[0] as { args: unknown[] };
+    expect(where.args).toContainEqual({ op: 'inArray', column: fleetFindings.orgId, values: [ORG_1, ORG_2] });
   });
 
   it('assembles finding + members + runs for an unrestricted caller', async () => {
@@ -511,6 +590,32 @@ describe('PATCH /fleet/findings/:id — lifecycle transitions', () => {
     h.selectQueue.push([]);
     const res = await patch(makeAuth(), `/${FINDING_1}`, { action: 'acknowledge' });
     expect(res.status).toBe(404);
+  });
+
+  it('org token cannot act on a finding belonging to a foreign org (404, org-condition applied, no update issued)', async () => {
+    h.selectQueue.push([]);
+    const res = await patch(makeAuth({ scope: 'organization', orgId: ORG_1 }), `/${FINDING_1}`, {
+      action: 'acknowledge',
+    });
+    expect(res.status).toBe(404);
+    expect(h.mockUpdate).not.toHaveBeenCalled();
+
+    const where = h.capturedWheres[0] as { args: unknown[] };
+    expect(where.args).toContainEqual({ op: 'eq', column: fleetFindings.orgId, value: ORG_1 });
+  });
+
+  it('partner token cannot act on a finding outside its accessibleOrgIds (404, inArray condition applied, no update issued)', async () => {
+    h.selectQueue.push([]);
+    const res = await patch(
+      makeAuth({ scope: 'partner', orgId: null, accessibleOrgIds: [ORG_1, ORG_2] }),
+      `/${FINDING_1}`,
+      { action: 'acknowledge' }
+    );
+    expect(res.status).toBe(404);
+    expect(h.mockUpdate).not.toHaveBeenCalled();
+
+    const where = h.capturedWheres[0] as { args: unknown[] };
+    expect(where.args).toContainEqual({ op: 'inArray', column: fleetFindings.orgId, values: [ORG_1, ORG_2] });
   });
 
   it('acknowledge: open -> acknowledged stamps the actor and timestamp', async () => {

@@ -210,6 +210,21 @@ function buildOrgCondition(auth: AuthContext, requestedOrgId: string | undefined
   return auth.orgCondition(fleetFindings.orgId);
 }
 
+// The "fetch everything, filter/paginate in JS" trade-off below only holds
+// for LIVE findings: `fleet_findings_live_episode_uq` (WHERE resolved_at IS
+// NULL) caps the live set at one row per org/kind/semanticKey, so a full
+// per-org fetch is always small. Resolved findings carry no such bound —
+// they accumulate forever — so a `status` filter that includes `resolved`
+// would otherwise pull an org's entire resolved-finding history before ever
+// touching the JS slice. When `resolved` is requested, cap the SQL fetch
+// itself (ordered by `lastSeenAt DESC`, same ordering the feed index
+// supports) instead. This makes resolved-history browsing a *windowed* view:
+// paging past `RESOLVED_HISTORY_FETCH_CAP` rows returns an empty page rather
+// than the true tail of history. Acceptable for a hygiene-findings audit
+// trail; the live-status path's exact site-filter-then-count consistency is
+// untouched (no SQL limit applied there).
+const RESOLVED_HISTORY_FETCH_CAP = 500;
+
 /**
  * List findings visible to `auth`, with site-axis narrowing applied.
  *
@@ -230,12 +245,17 @@ export async function listFleetFindings(
   if (filters.severity) conditions.push(eq(fleetFindings.severity, filters.severity));
   conditions.push(inArray(fleetFindings.status, filters.statuses));
 
-  const rows = (await db
+  const baseQuery = db
     .select({ ...FINDING_COLUMNS, orgName: organizations.name })
     .from(fleetFindings)
     .leftJoin(organizations, eq(fleetFindings.orgId, organizations.id))
     .where(and(...conditions))
-    .orderBy(desc(fleetFindings.lastSeenAt))) as RawFindingRow[];
+    .orderBy(desc(fleetFindings.lastSeenAt));
+
+  const includesResolvedHistory = filters.statuses.includes('resolved');
+  const rows = (includesResolvedHistory
+    ? await baseQuery.limit(Math.min(filters.offset + filters.limit, RESOLVED_HISTORY_FETCH_CAP))
+    : await baseQuery) as RawFindingRow[];
 
   let scoped = rows;
 
