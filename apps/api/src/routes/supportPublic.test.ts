@@ -59,8 +59,17 @@ function createFakeRedis() {
   };
   return {
     multi,
-    /** Test-only: how much budget has been spent. */
+    /** Test-only: how much of the GLOBAL backstop has been spent. */
     missCount: () => (zsets.get('support-code:miss-budget') ?? []).length,
+    /** Test-only: how much of one /64 sub-budget has been spent (IPv4 folds to itself). */
+    sourceMissCount: (folded: string) =>
+      (zsets.get(`support-code:miss-budget:src:${folded}`) ?? []).length,
+    /** Test-only: pre-load `n` fresh misses under a key without N requests. */
+    seedMisses: (key: string, n: number) => {
+      const arr = entries(key);
+      const now = Date.now();
+      for (let i = 0; i < n; i++) arr.push({ score: now, member: `seed-${i}-${Math.random()}` });
+    },
   };
 }
 
@@ -150,7 +159,8 @@ vi.mock('../db/schema', () => ({
 
 import { hashSupportCode } from '../services/quickSupportCode';
 import {
-  MISS_BUDGET_PER_WINDOW,
+  MISS_BUDGET_PER_SOURCE_PER_WINDOW,
+  MISS_BUDGET_GLOBAL_PER_WINDOW,
   _resetSupportCodeMissBudgetStateForTests,
 } from '../services/supportCodeMissBudget';
 import { supportPublicRoutes } from './supportPublic';
@@ -441,11 +451,14 @@ describe('GET /check/:code', () => {
 });
 
 /**
- * The control that actually bounds a DISTRIBUTED guesser. Per-IP limits only
- * ever constrain one host; these tests are about the deployment-wide counter.
+ * The two-tier miss budget: a per-source /64 sub-budget (an attacking network
+ * can only degrade itself) plus a much higher deployment-wide backstop (trips
+ * only under broadly distributed guessing). The cross-caller property — that a
+ * single source can no longer 429 Quick Support for every partner — is the
+ * whole reason this control exists.
  */
-describe('deployment-wide miss budget', () => {
-  /** Burn `n` well-formed misses through /check. */
+describe('two-tier miss budget', () => {
+  /** Burn `n` well-formed misses through /check from the currently mocked IP. */
   async function burnMisses(n: number) {
     for (let i = 0; i < n; i++) {
       selectResults.push([]);
@@ -465,6 +478,10 @@ describe('deployment-wide miss budget', () => {
     selectResults.push([]);
     await redeem();
     expect(fakeRedis.missCount()).toBe(3);
+
+    // The default caller is 203.0.113.9 (an IPv4, which folds to itself), so
+    // every one of those misses also landed on its /64 sub-budget.
+    expect(fakeRedis.sourceMissCount('203.0.113.9')).toBe(3);
   });
 
   it('does not charge a successful lookup', async () => {
@@ -478,6 +495,7 @@ describe('deployment-wide miss budget', () => {
     expect((await redeem()).status).toBe(200);
 
     expect(fakeRedis.missCount()).toBe(0);
+    expect(fakeRedis.sourceMissCount('203.0.113.9')).toBe(0);
   });
 
   it('does not charge malformed input', async () => {
@@ -488,6 +506,7 @@ describe('deployment-wide miss budget', () => {
     // alphabet so normalizeSupportCode still rejects it.
     await redeem({ code: '111111111' });
     expect(fakeRedis.missCount()).toBe(0);
+    expect(fakeRedis.sourceMissCount('203.0.113.9')).toBe(0);
   });
 
   it('does not charge a lost claim race — that code was real', async () => {
@@ -496,41 +515,93 @@ describe('deployment-wide miss budget', () => {
     updateResults.push([]); // the racer already flipped it
     expect((await redeem()).status).toBe(404);
     expect(fakeRedis.missCount()).toBe(0);
+    expect(fakeRedis.sourceMissCount('203.0.113.9')).toBe(0);
   });
 
-  it('429s a DIFFERENT IP once one guesser has spent the budget', async () => {
-    getTrustedClientIp.mockReturnValue('198.51.100.1'); // the misser
-    await burnMisses(MISS_BUDGET_PER_WINDOW);
-    expect(fakeRedis.missCount()).toBe(MISS_BUDGET_PER_WINDOW);
+  it('429s only the exhausted /64, and leaves a DIFFERENT source fully working', async () => {
+    // The lever being removed: one source spends its own sub-budget…
+    getTrustedClientIp.mockReturnValue('198.51.100.1');
+    await burnMisses(MISS_BUDGET_PER_SOURCE_PER_WINDOW);
+    expect(fakeRedis.sourceMissCount('198.51.100.1')).toBe(MISS_BUDGET_PER_SOURCE_PER_WINDOW);
 
-    // A completely unrelated caller, well under its own per-IP limit.
-    getTrustedClientIp.mockReturnValue('203.0.113.77');
-    rateLimiter.mockResolvedValue({ allowed: true, currentCount: 1 });
-
-    const check = await supportPublicRoutes.request(`/check/${CODE}`);
-    expect(check.status).toBe(429);
-    expect(check.headers.get('Cache-Control')).toBe('no-store, private');
+    // …so IT is now 429'd across all three endpoints…
+    expect((await supportPublicRoutes.request(`/check/${CODE}`)).status).toBe(429);
     expect((await supportPublicRoutes.request(`/download/windows?code=${CODE}`)).status).toBe(429);
     expect((await redeem()).status).toBe(429);
 
-    // The exhausted answer is byte-identical to the per-IP-limited one — a
-    // guesser must not learn that a global control exists.
-    expect(await check.json()).toEqual({ error: 'rate limited' });
-    // And nothing reached the database.
+    // …but a completely unrelated source is untouched (the global backstop is
+    // nowhere near its far-higher limit).
+    getTrustedClientIp.mockReturnValue('203.0.113.77');
+    selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
+    const other = await supportPublicRoutes.request(`/check/${CODE}`);
+    expect(other.status).toBe(200);
+    expect(await other.json()).toEqual({ valid: true, branding: null });
+  });
+
+  it('shares one sub-budget across a /64 but keeps different /64s independent', async () => {
+    getTrustedClientIp.mockReturnValue('2001:db8:1:2::1');
+    await burnMisses(MISS_BUDGET_PER_SOURCE_PER_WINDOW - 1);
+
+    // A second host in the SAME /64 spends the last unit of the shared budget.
+    getTrustedClientIp.mockReturnValue('2001:db8:1:2:ffff:ffff:ffff:ffff');
+    selectResults.push([]);
+    await supportPublicRoutes.request(`/check/${CODE}`);
+
+    // Both hosts in that /64 are now denied — they draw on one bucket.
+    expect((await supportPublicRoutes.request(`/check/${CODE}`)).status).toBe(429);
+    getTrustedClientIp.mockReturnValue('2001:db8:1:2::1');
+    expect((await supportPublicRoutes.request(`/check/${CODE}`)).status).toBe(429);
+
+    // A host in a DIFFERENT /64 has its own independent bucket.
+    getTrustedClientIp.mockReturnValue('2001:db8:1:3::1');
+    selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
+    expect((await supportPublicRoutes.request(`/check/${CODE}`)).status).toBe(200);
+  });
+
+  it('trips the global backstop once enough DISTINCT /64s each contribute misses', async () => {
+    // Each /64 is capped at its sub-budget, so reaching the backstop takes many
+    // networks — the distributed case the backstop exists for.
+    const sourcesNeeded = Math.ceil(MISS_BUDGET_GLOBAL_PER_WINDOW / MISS_BUDGET_PER_SOURCE_PER_WINDOW);
+    for (let s = 0; s <= sourcesNeeded; s++) {
+      getTrustedClientIp.mockReturnValue(`198.18.${s}.1`);
+      await burnMisses(MISS_BUDGET_PER_SOURCE_PER_WINDOW);
+    }
+    expect(fakeRedis.missCount()).toBeGreaterThanOrEqual(MISS_BUDGET_GLOBAL_PER_WINDOW);
+
+    // A brand-new /64 that has spent nothing of its own sub-budget is now
+    // denied by the backstop — this is the accepted broad-attack degradation.
+    getTrustedClientIp.mockReturnValue('203.0.113.200');
+    expect((await supportPublicRoutes.request(`/check/${CODE}`)).status).toBe(429);
+  });
+
+  it('returns a byte-identical 429 whichever limit tripped (per-IP, sub-budget, or backstop)', async () => {
+    // A guesser must not be able to tell which control they hit.
+    getTrustedClientIp.mockReturnValue('203.0.113.9');
+    rateLimiter.mockResolvedValue({ allowed: false, currentCount: 99 });
+    const perIp = await supportPublicRoutes.request(`/check/${CODE}`);
+
+    rateLimiter.mockResolvedValue({ allowed: true, currentCount: 1 });
+    fakeRedis.seedMisses('support-code:miss-budget:src:203.0.113.9', MISS_BUDGET_PER_SOURCE_PER_WINDOW);
+    const sourceTier = await supportPublicRoutes.request(`/check/${CODE}`);
+
+    getTrustedClientIp.mockReturnValue('203.0.113.250');
+    fakeRedis.seedMisses('support-code:miss-budget', MISS_BUDGET_GLOBAL_PER_WINDOW);
+    const globalTier = await supportPublicRoutes.request(`/check/${CODE}`);
+
+    expect(perIp.status).toBe(429);
+    expect(sourceTier.status).toBe(429);
+    expect(globalTier.status).toBe(429);
+    const bodies = await Promise.all([perIp.json(), sourceTier.json(), globalTier.json()]);
+    expect(new Set(bodies.map((b) => JSON.stringify(b))).size).toBe(1);
+    for (const r of [perIp, sourceTier, globalTier]) {
+      expect(r.headers.get('Cache-Control')).toBe('no-store, private');
+    }
+    // None of the three denials reached the database.
     expect(selectResults).toHaveLength(0);
   });
 
-  it('warns exactly once per trip rather than per request', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    await burnMisses(MISS_BUDGET_PER_WINDOW + 5);
-    const budgetWarns = warn.mock.calls.filter((args) => String(args[0]).includes('[support-code-budget]'));
-    expect(budgetWarns).toHaveLength(1);
-    expect(String(budgetWarns[0]?.[0])).toContain(String(MISS_BUDGET_PER_WINDOW));
-    warn.mockRestore();
-  });
-
-  it('lets a caller holding a real code through right up to exhaustion', async () => {
-    await burnMisses(MISS_BUDGET_PER_WINDOW - 1);
+  it('lets a caller holding a real code through right up to its sub-budget exhaustion', async () => {
+    await burnMisses(MISS_BUDGET_PER_SOURCE_PER_WINDOW - 1);
     selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
     const res = await supportPublicRoutes.request(`/check/${CODE}`);
     expect(res.status).toBe(200);

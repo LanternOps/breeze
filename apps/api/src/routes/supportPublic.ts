@@ -32,16 +32,19 @@ import { logSessionAudit } from './remote/helpers';
  *
  * Everything here is unauthenticated by design (the end user is a stranger
  * holding a code their technician read out), so the guards are: ~27 bits of
- * code entropy, a 15-minute redemption TTL, per-IP rate limits, a
- * DEPLOYMENT-WIDE failed-lookup budget (services/supportCodeMissBudget.ts),
- * and a single atomic pending->claimed transition that makes a code strictly
- * single-use.
+ * code entropy, a 15-minute redemption TTL, per-IP rate limits, a two-tier
+ * failed-lookup budget (services/supportCodeMissBudget.ts), and a single atomic
+ * pending->claimed transition that makes a code strictly single-use.
  *
  * The miss budget is the control that matters against a distributed guesser:
- * per-IP limits only bound one host, so 1,000 hosts each staying politely
- * under 30/min would otherwise get 30,000 guesses a minute. Every well-formed
- * code that matches no live session — on ANY of the three endpoints here —
- * spends from one global counter; successful lookups never do.
+ * per-IP limits only bound one host. Every well-formed code that matches no
+ * live session — on ANY of the three endpoints here — spends from the caller's
+ * per-source /64 sub-budget AND a much higher deployment-wide backstop;
+ * successful lookups never do. A single source can only ever degrade itself;
+ * blanket degradation needs a broadly distributed attack that trips the
+ * backstop. A miss carries no partner (the code resolved to nothing), so a
+ * per-partner budget is not possible — the source /64 is the only identity it
+ * has.
  *
  * These handlers run under withSystemDbAccessContext because an anonymous
  * caller has no org context at all — the code lookup is the authorization.
@@ -124,10 +127,11 @@ type CheckRow = {
  * reward for already holding a live code, never a way to enumerate tenants.
  *
  * GUESSING is bounded by three independent controls, not by entropy alone:
- * per-IP limits (30/min shared with /download, 10/min on /redeem), the
- * deployment-wide miss budget below (~100 well-formed misses/min across all
- * three endpoints, which is what stops a distributed guesser), and the
- * 15-minute TTL that replaces the entire target set four times an hour.
+ * per-IP limits (30/min shared with /download, 10/min on /redeem), the two-tier
+ * miss budget below (a per-source /64 sub-budget of ~30 well-formed misses/min
+ * that stops one guessing network without touching anyone else, plus a ~500/min
+ * deployment-wide backstop that only trips under broadly distributed guessing),
+ * and the 15-minute TTL that replaces the entire target set four times an hour.
  * Successful lookups never spend budget, so holding a real code is unaffected.
  */
 supportPublicRoutes.get('/check/:code', async (c) => {
@@ -144,10 +148,10 @@ supportPublicRoutes.get('/check/:code', async (c) => {
   // exactly as cheap to send).
   if (!code) return c.json({ valid: false }, 200, CHECK_CACHE_HEADERS);
 
-  // Budget spent for this window => answer exactly as if per-IP limited. The
-  // two causes are deliberately indistinguishable: telling a guesser they
-  // tripped a global control tells them the control exists and its period.
-  if (await isSupportCodeMissBudgetExhausted(redis)) {
+  // Sub-budget or backstop spent for this window => answer exactly as if per-IP
+  // limited. The causes are deliberately indistinguishable: telling a guesser
+  // which control they tripped tells them the control exists and its period.
+  if (await isSupportCodeMissBudgetExhausted(redis, ip)) {
     return c.json({ error: 'rate limited' }, 429, CHECK_CACHE_HEADERS);
   }
 
@@ -171,7 +175,7 @@ supportPublicRoutes.get('/check/:code', async (c) => {
     .limit(1)) as CheckRow[];
 
   if (!row || row.status !== 'pending' || row.codeExpiresAt <= new Date()) {
-    await recordSupportCodeMiss(redis);
+    await recordSupportCodeMiss(redis, ip);
     return c.json({ valid: false }, 200, CHECK_CACHE_HEADERS);
   }
 
@@ -334,9 +338,9 @@ supportPublicRoutes.get('/download/:platform', async (c) => {
   const code = normalizeSupportCode(c.req.query('code') ?? '');
   if (!code) return c.json({ error: 'invalid or expired code' }, 404, DOWNLOAD_CACHE_HEADERS);
 
-  // Same deployment-wide guess budget as /check and /redeem, and the same
-  // indistinguishable 429 when it is spent.
-  if (await isSupportCodeMissBudgetExhausted(redis)) {
+  // Same two-tier guess budget as /check and /redeem, and the same
+  // indistinguishable 429 when either tier is spent.
+  if (await isSupportCodeMissBudgetExhausted(redis, ip)) {
     return c.json({ error: 'rate limited' }, 429, DOWNLOAD_CACHE_HEADERS);
   }
 
@@ -350,7 +354,7 @@ supportPublicRoutes.get('/download/:platform', async (c) => {
     .limit(1)) as Array<{ status: string; codeExpiresAt: Date }>;
 
   if (!row || row.status !== 'pending' || row.codeExpiresAt <= new Date()) {
-    await recordSupportCodeMiss(redis);
+    await recordSupportCodeMiss(redis, ip);
     return c.json({ error: 'invalid or expired code' }, 404, DOWNLOAD_CACHE_HEADERS);
   }
 
@@ -450,7 +454,7 @@ supportPublicRoutes.post('/redeem', zValidator('json', redeemSupportSessionSchem
   // already-claimed codes — nothing here should confirm a code ever existed.
   if (!code) return c.json({ error: 'invalid or expired code' }, 404);
 
-  if (await isSupportCodeMissBudgetExhausted(redis)) {
+  if (await isSupportCodeMissBudgetExhausted(redis, ip)) {
     return c.json({ error: 'rate limited' }, 429);
   }
 
@@ -524,7 +528,7 @@ supportPublicRoutes.post('/redeem', zValidator('json', redeemSupportSessionSchem
   });
 
   if (!result) {
-    if (lookupMissed) await recordSupportCodeMiss(redis);
+    if (lookupMissed) await recordSupportCodeMiss(redis, ip);
     return c.json({ error: 'invalid or expired code' }, 404);
   }
 

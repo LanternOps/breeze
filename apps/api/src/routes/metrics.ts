@@ -348,18 +348,27 @@ const proxyTrustUntrustedPeerTotal = new Counter({
 // valid support code that matched no live session on /support/check,
 // /support/download or /support/redeem. Legit misses are near zero (the code
 // normally rides in the download filename), so any sustained rate is an online
-// guessing attack against the ~27-bit code space; the trip counter fires when
-// the deployment-wide miss budget is spent and all three endpoints start 429ing.
-// `services/supportCodeMissBudget.ts` holds the thin recorder (same
-// import-cycle rationale as `abuseMetrics.ts`).
+// guessing attack against the ~27-bit code space. The budget is two-tier: a
+// per-source /64 sub-budget (an attacking network only degrades itself) and a
+// much higher deployment-wide backstop (trips only under broadly distributed
+// guessing, when all three endpoints start 429ing every caller). The two trip
+// counters are kept SEPARATE so a source sub-budget trip — routine, local — is
+// never confused with a global-backstop trip, which is the operationally
+// interesting distributed-attack event. `services/supportCodeMissBudget.ts`
+// holds the thin recorder (same import-cycle rationale as `abuseMetrics.ts`).
 const supportCodeLookupMissesTotal = new Counter({
   name: 'breeze_support_code_lookup_misses_total',
   help: 'Well-formed Quick Support codes that matched no live session (check/download/redeem)',
   registers: [register]
 });
+const supportCodeSourceBudgetTripsTotal = new Counter({
+  name: 'breeze_support_code_source_budget_trips_total',
+  help: 'Times a single source /64 exhausted its Quick Support miss sub-budget in a rolling window (affects only that network)',
+  registers: [register]
+});
 const supportCodeMissBudgetTripsTotal = new Counter({
   name: 'breeze_support_code_miss_budget_trips_total',
-  help: 'Times the deployment-wide Quick Support miss budget was exhausted in a rolling window',
+  help: 'Times the deployment-wide Quick Support miss backstop was exhausted in a rolling window (broadly distributed attack; 429s all callers)',
   registers: [register]
 });
 
@@ -596,6 +605,7 @@ function initializeMetricDefaults(): void {
   opsAlertDeliveriesTotal.labels('webhook', 'success').inc(0);
   proxyTrustUntrustedPeerTotal.inc(0);
   supportCodeLookupMissesTotal.inc(0);
+  supportCodeSourceBudgetTripsTotal.inc(0);
   supportCodeMissBudgetTripsTotal.inc(0);
   extensionRequestsTotal.labels('unknown', 'unknown').inc(0);
   extensionRequestErrorsTotal.labels('unknown', 'unknown').inc(0);
@@ -1044,7 +1054,8 @@ function bindMetricsRecorders(): void {
 
   setSupportCodeMetricsRecorder({
     onMiss: () => supportCodeLookupMissesTotal.inc(),
-    onBudgetTrip: () => supportCodeMissBudgetTripsTotal.inc(),
+    onSourceBudgetTrip: () => supportCodeSourceBudgetTripsTotal.inc(),
+    onGlobalBudgetTrip: () => supportCodeMissBudgetTripsTotal.inc(),
   });
 
   setExtensionMetricsRecorder({
