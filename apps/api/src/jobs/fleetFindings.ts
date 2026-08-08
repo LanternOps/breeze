@@ -48,9 +48,10 @@ function compactIso(value: Date | string): string {
 // Must match SCAN_REPEAT_CRON's cadence: floors `now` to the 10-minute slot
 // it falls in, so every scan cycle mints a fresh dedupe key while duplicate
 // adds within the same cycle (e.g. a retried scan-orgs job) still collapse
-// onto the same jobId. Mirrors jobs/metricRollups.ts's buildMetricRollupJobId
-// windowing scheme exactly — see that file's recentWindow() for the sibling
-// bucket-floor logic.
+// onto the same jobId. Mirrors the bucket-floor approach of
+// jobs/metricRollups.ts's buildMetricRollupJobId — not its parameters: that
+// one floors to 5-minute buckets and keys on a (from, to) pair, this one uses
+// a single 10-minute slot.
 const SCAN_SLOT_BUCKET_MS = 10 * 60 * 1000;
 
 export function fleetFindingsScanSlot(now: Date = new Date()): Date {
@@ -129,7 +130,17 @@ async function processOrg(data: ProcessOrgJobData): Promise<ProcessOrgResult> {
     .where(eq(organizations.id, data.orgId))
     .limit(1);
 
-  if (!isFleetFindingsEnabled(org?.settings)) {
+  // No org row: the org was deleted between scan-orgs fan-out and this job
+  // running. `org?.settings` would be `undefined`, which
+  // `isFleetFindingsEnabled` reads as "absent settings -> enabled" — the right
+  // default for a live org, exactly wrong for one that no longer exists. Skip
+  // rather than run three producers and a reconcile against a dead tenant.
+  if (!org) {
+    console.warn(`[fleetFindings] processOrg: org ${data.orgId} not found — skipping scan`);
+    return { skipped: true };
+  }
+
+  if (!isFleetFindingsEnabled(org.settings)) {
     return { skipped: true };
   }
 

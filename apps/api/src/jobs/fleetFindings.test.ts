@@ -290,4 +290,24 @@ describe('fleet findings queue helpers', () => {
     expect(reconcileOrgFindingsMock).not.toHaveBeenCalled();
     expect(result).toEqual({ skipped: true });
   });
+
+  it('skips (and warns) when the org row is gone, instead of reading a missing row as default-enabled', async () => {
+    // `isFleetFindingsEnabled(undefined)` is `true` — the right default for a
+    // live org with no settings, exactly wrong for one deleted between the
+    // scan-orgs fan-out and this job running.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    limitMock.mockResolvedValue([]);
+
+    await scheduleFleetFindingsJobs();
+
+    const result = await workerProcessorMock({
+      data: { type: 'process-org', orgId: 'org-gone', queuedAt: '2026-08-07T12:00:00.000Z' },
+    });
+
+    expect(result).toEqual({ skipped: true });
+    expect(produceMetricAnomalyPatternsMock).not.toHaveBeenCalled();
+    expect(reconcileOrgFindingsMock).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('org-gone'));
+    warn.mockRestore();
+  });
 });

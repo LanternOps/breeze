@@ -14,10 +14,12 @@
  * DB context themselves so they stay testable as plain functions and so the
  * context-wrapping stays centralized in one place (the worker).
  *
- * commandType mapping (see task-7-report.md for the full rationale):
+ * commandType mapping:
  *   - 'restart_service' -> CommandTypes.RESTART_SERVICE ('restart_service')
- *   - 'reboot'          -> literal 'reboot' (existing precedent: devices/schemas.ts,
- *                          commandQueue.ts's own AUTO_AUDIT_COMMAND_TYPES list)
+ *   - 'reboot'          -> literal 'reboot'. There is no CommandTypes constant
+ *                          for reboot; the literal is the existing precedent
+ *                          (devices/schemas.ts, commandQueue.ts's own
+ *                          AUTO_AUDIT_COMMAND_TYPES list both spell it out).
  *   - 'clear_temp_files' EXCLUDED: the real disk-cleanup primitive
  *     (aiToolsFilesystem.ts's disk_cleanup tool) requires an existing
  *     filesystem snapshot + a caller-selected set of paths, dispatched as N
@@ -41,16 +43,33 @@ import {
 } from '../../db/schema/fleetFindings';
 import type { AuthContext } from '../../middleware/auth';
 import { CommandTypes, queueCommandForExecution } from '../commandQueue';
+import { captureException } from '../sentry';
 import { getFleetFinding } from './query';
 
-export interface RemediateRequest {
-  actionKind: 'script' | 'command';
-  scriptId?: string;
-  commandType?: string;
+/** Real commandType values a caller may request under `actionKind: 'command'`. */
+export const REMEDIATION_COMMAND_TYPE_ALLOWLIST = ['restart_service', 'reboot'] as const;
+export type RemediationCommandType = (typeof REMEDIATION_COMMAND_TYPE_ALLOWLIST)[number];
+
+interface RemediateRequestBase {
   parameters: Record<string, unknown>;
   /** Subset of finding membership; absent = all current members. */
   deviceIds?: string[];
 }
+
+/**
+ * Discriminated on `actionKind` so the required companion field is part of the
+ * TYPE, not a runtime branch: `scriptId` exists exactly when the action is a
+ * script, `commandType` exactly when it is a command. The previous
+ * `scriptId?/commandType?`-both-optional shape made every legal request
+ * representable alongside four illegal ones (neither field; both fields; the
+ * wrong field for the kind), which is why the service carried a hand-rolled
+ * validation branch and four non-null assertions to re-derive what the type
+ * should have guaranteed. The route's `z.discriminatedUnion` is the runtime
+ * half of the same contract.
+ */
+export type RemediateRequest =
+  | (RemediateRequestBase & { actionKind: 'script'; scriptId: string })
+  | (RemediateRequestBase & { actionKind: 'command'; commandType: RemediationCommandType });
 
 export type RemediationSkipReason = 'site_denied' | 'not_member' | 'decommissioned';
 
@@ -66,10 +85,6 @@ export interface CreateRemediationRunResult {
   /** Extra beyond the documented shape — lets the route audit-log without a redundant re-fetch. */
   orgId: string;
 }
-
-/** Real commandType values a caller may request under `actionKind: 'command'`. */
-export const REMEDIATION_COMMAND_TYPE_ALLOWLIST = ['restart_service', 'reboot'] as const;
-type RemediationCommandType = (typeof REMEDIATION_COMMAND_TYPE_ALLOWLIST)[number];
 
 const COMMAND_TYPE_DISPATCH_MAP: Record<RemediationCommandType, string> = {
   restart_service: CommandTypes.RESTART_SERVICE,
@@ -110,29 +125,18 @@ interface DeviceCandidate {
  * `pending` (ready for the dispatch worker), invalid ones as `skipped` with
  * a `skipReason` — never silently dropped. `targetCount` on the run and in
  * the return value counts ALL candidate rows (valid + skipped), matching the
- * schema's `targetCount = succeededCount + failedCount + skippedCount`
- * (+ in-flight) invariant.
+ * counts invariant `pollRunProgress` maintains: `targetCount =
+ * succeededCount + failedCount + skippedCount` (+ still in flight).
+ *
+ * Request shape is enforced by the `RemediateRequest` discriminated union and,
+ * at the HTTP boundary, by the route's `z.discriminatedUnion` — this function
+ * carries no hand-rolled re-validation of `scriptId`/`commandType` presence.
  */
 export async function createRemediationRun(
   auth: AuthContext,
   findingId: string,
   req: RemediateRequest
 ): Promise<CreateRemediationRunResult> {
-  if (req.actionKind === 'command') {
-    if (!req.commandType || !(REMEDIATION_COMMAND_TYPE_ALLOWLIST as readonly string[]).includes(req.commandType)) {
-      throw new RemediationRequestError(
-        `Invalid commandType. Allowed values: ${REMEDIATION_COMMAND_TYPE_ALLOWLIST.join(', ')}`,
-        400
-      );
-    }
-  } else if (req.actionKind === 'script') {
-    if (!req.scriptId) {
-      throw new RemediationRequestError('scriptId is required for actionKind "script"', 400);
-    }
-  } else {
-    throw new RemediationRequestError('actionKind must be "script" or "command"', 400);
-  }
-
   // Fails closed exactly like GET /:id: null means not found, inaccessible
   // org, OR (site-restricted caller) zero in-scope members.
   const finding = await getFleetFinding(auth, findingId);
@@ -140,7 +144,7 @@ export async function createRemediationRun(
     throw new RemediationRequestError('Finding not found or access denied', 403);
   }
 
-  const scriptCheck = req.actionKind === 'script' ? await validateRemediationScript(req.scriptId!, finding.orgId) : null;
+  const scriptCheck = req.actionKind === 'script' ? await validateRemediationScript(req.scriptId, finding.orgId) : null;
   if (scriptCheck?.error) {
     throw new RemediationRequestError(scriptCheck.error, 400);
   }
@@ -228,8 +232,8 @@ export async function createRemediationRun(
       findingId,
       findingRevision: finding.revision,
       actionKind: req.actionKind,
-      scriptId: req.actionKind === 'script' ? req.scriptId! : null,
-      commandType: req.actionKind === 'command' ? req.commandType! : null,
+      scriptId: req.actionKind === 'script' ? req.scriptId : null,
+      commandType: req.actionKind === 'command' ? req.commandType : null,
       parameterSnapshot: req.parameters ?? {},
       status,
       targetCount,
@@ -317,7 +321,15 @@ async function markTargetFailed(runId: string, deviceId: string, message: string
  */
 export async function dispatchRunChunk(runId: string, chunkIndex: number): Promise<void> {
   const [run] = await db.select().from(fleetRemediationRuns).where(eq(fleetRemediationRuns.id, runId)).limit(1);
-  if (!run) return;
+  if (!run) {
+    // Not reachable by design — the route enqueues these jobs only after the
+    // run row is committed. Reaching it means the run was deleted (org
+    // erasure/cascade) or the job outlived its run, and the chunk's targets
+    // will never be dispatched by anything. Silence here is how that becomes
+    // invisible.
+    console.warn(`[fleetFindings] dispatchRunChunk: run ${runId} not found (chunk ${chunkIndex} dropped)`);
+    return;
+  }
 
   if (run.status === 'queued') {
     await db
@@ -344,6 +356,11 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
 
   const pendingTargets = targets.filter((t) => t.status === 'pending');
   if (pendingTargets.length === 0) return;
+
+  // An unexpected throw inside the per-target loop is the same defect
+  // repeated once per target; report it to Sentry once per chunk so a
+  // 500-target run cannot produce 500 identical issues.
+  let reportedUnexpected = false;
 
   let scriptPayload: { language: string; content: string; timeoutSeconds: number; runAs: string } | null = null;
   if (run.actionKind === 'script' && run.scriptId) {
@@ -413,7 +430,17 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
         };
       } else {
         const commandType = run.commandType as RemediationCommandType | null;
-        type = (commandType && COMMAND_TYPE_DISPATCH_MAP[commandType]) || run.commandType || '';
+        const mapped = commandType ? COMMAND_TYPE_DISPATCH_MAP[commandType] : undefined;
+        if (!mapped) {
+          // Never fall back to the raw stored value. A run whose commandType
+          // is not in the dispatch map is a row the allowlist should have made
+          // impossible (a hand-written row, or an allowlist entry added
+          // without a map entry); dispatching `run.commandType || ''` would
+          // hand the agent an unknown — or empty — command type that dies
+          // somewhere far from here, or worse, silently no-ops.
+          throw new Error(`Unsupported command type: ${run.commandType ?? '(none)'}`);
+        }
+        type = mapped;
         payload = (run.parameterSnapshot ?? {}) as Record<string, unknown>;
       }
 
@@ -439,6 +466,25 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
           )
         );
     } catch (err) {
+      // Everything the dispatcher EXPECTS to go wrong (a queue refusal, a
+      // vanished script) is handled above by an explicit markTargetFailed.
+      // Reaching this catch means an exception nobody planned for — a driver
+      // error, a bug in the payload builder, an unsupported command type. The
+      // target is still marked failed so the run terminates, but the target
+      // row alone is not enough to notice a systemic failure across a whole
+      // fleet run.
+      console.error(
+        `[fleetFindings] Unexpected error dispatching run ${runId} target ${target.targetDeviceUuid}:`,
+        err
+      );
+      if (!reportedUnexpected) {
+        reportedUnexpected = true;
+        captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+          service: 'fleetFindings.dispatchRunChunk',
+          runId,
+          chunkIndex: String(chunkIndex),
+        });
+      }
       await markTargetFailed(
         runId,
         target.targetDeviceUuid,
@@ -457,7 +503,14 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
  */
 export async function pollRunProgress(runId: string): Promise<void> {
   const [run] = await db.select().from(fleetRemediationRuns).where(eq(fleetRemediationRuns.id, runId)).limit(1);
-  if (!run) return;
+  if (!run) {
+    // The poll scheduler outlived its run row (deleted run, org erasure). The
+    // worker removes the scheduler on this same tick, so this is terminal for
+    // the run — worth a line, because from the outside it is indistinguishable
+    // from a healthy run that simply completed.
+    console.warn(`[fleetFindings] pollRunProgress: run ${runId} not found — nothing to reconcile`);
+    return;
+  }
 
   const allTargets = await db
     .select()
@@ -480,7 +533,12 @@ export async function pollRunProgress(runId: string): Promise<void> {
   for (const target of inFlight) {
     const command = target.deviceCommandId ? commandsById.get(target.deviceCommandId) : undefined;
 
-    if (command && (command.status === 'completed' || command.status === 'failed')) {
+    // `cancelled` is terminal for a device_command too (device deleted, agent
+    // deauthorized, an operator cancelling from the device page). Treating it
+    // as unresolved left the target in flight until the 30-minute timeout
+    // rewrote it as a bare "timeout" — losing the real reason, which the
+    // command's own result text carries.
+    if (command && (command.status === 'completed' || command.status === 'failed' || command.status === 'cancelled')) {
       const nextStatus: FleetTargetStatus = command.status === 'completed' ? 'succeeded' : 'failed';
       const resultSummary = truncateSummary(JSON.stringify(command.result ?? {}));
       await db
@@ -549,10 +607,12 @@ export const DISPATCH_ENQUEUE_FAILED_REASON = 'dispatch_enqueue_failed';
  * outage) AFTER `createRemediationRun` already committed the run + its
  * `pending` targets. Without this, that run is stranded forever: `queued`/
  * `running` with no dispatch job ever enqueued and no poll job to notice.
- * Marks every still-`pending` target `skipped` (never dispatched — distinct
- * from `failed`, which means a dispatch attempt actually happened) and
+ * Marks every still-`pending` target `skipped` (never dispatched) and
  * recomputes the run to a terminal `failed` state so it stops showing as
- * in-progress.
+ * in-progress. `skipped` rather than `failed` because nothing was ever sent to
+ * the device — note the converse does NOT hold: `failed` does not prove a
+ * dispatch attempt happened, since `pollRunProgress` also writes `failed` for a
+ * target that timed out waiting.
  */
 export async function markRunDispatchFailed(
   runId: string,

@@ -100,6 +100,54 @@ describe('createBreezeMcpServer tool coverage vs TOOL_TIERS', () => {
 });
 
 /**
+ * The step BEFORE the coverage guard at the top of this file. `TOOL_TIERS` is
+ * the gate: `createSessionPreToolUse` rejects a tool with no tier as "Unknown
+ * tool", and `BREEZE_MCP_TOOL_NAMES` is derived from `TOOL_TIERS`. A tool wired
+ * into `aiTools` + `toolInputSchemas` + `TOOL_PERMISSIONS` but NOT into
+ * `TOOL_TIERS` is therefore invisible AND uncallable — and the three tests above
+ * cannot see it, because they only ever iterate `TOOL_TIERS` itself.
+ *
+ * That is exactly how the two fleet-hygiene tools shipped: registered, schema'd
+ * and permissioned, absent from `TOOL_TIERS`, so the chat model never saw them
+ * and every suite stayed green.
+ *
+ * A blanket `aiTools` -> `TOOL_TIERS` parity assertion is NOT possible today:
+ * ~85 registry tools (the backup/MSSQL/Hyper-V/vault/C2C/DR family, the m365
+ * and google executors, `get_network_changes` and friends) have no `TOOL_TIERS`
+ * entry, which is a real pre-existing gap far wider than this file's scope.
+ * Pinning the family end-to-end — the same shape as the `#2605` vulnerability
+ * block below — is the assertion that actually holds.
+ */
+const FLEET_HYGIENE_TOOLS = ['get_fleet_findings', 'analyze_fleet_metrics'] as const;
+
+describe('fleet hygiene tools reach the chat model (registry -> TOOL_TIERS -> tool())', () => {
+  it.each(FLEET_HYGIENE_TOOLS)('%s is in the aiTools execution registry', (name) => {
+    expect(aiTools.has(name)).toBe(true);
+  });
+
+  it.each(FLEET_HYGIENE_TOOLS)('%s has a TOOL_TIERS entry', (name) => {
+    expect(
+      (TOOL_TIERS as Record<string, number>)[name],
+      `${name} is registered but untiered — createSessionPreToolUse rejects it as "Unknown tool"`,
+    ).toBeDefined();
+  });
+
+  it.each(FLEET_HYGIENE_TOOLS)('%s is declared in createBreezeMcpServer', (name) => {
+    expect(declaredToolNames().has(name), `tool('${name}', ...) missing`).toBe(true);
+  });
+
+  it.each(FLEET_HYGIENE_TOOLS)('%s advertises exactly the keys it validates', (name) => {
+    const advertised = Object.keys(
+      aiTools.get(name)!.definition.input_schema.properties as Record<string, unknown>,
+    ).sort();
+    const enforced = Object.keys(
+      (toolInputSchemas[name] as z.ZodObject<z.ZodRawShape>).shape,
+    ).sort();
+    expect(enforced).toEqual(advertised);
+  });
+});
+
+/**
  * Registration is necessary but NOT sufficient (#2814). A tool the model can
  * see still fails on every call if the downstream gates don't know it:
  * `validateToolInput` rejects a tool with no `toolInputSchemas` entry, and

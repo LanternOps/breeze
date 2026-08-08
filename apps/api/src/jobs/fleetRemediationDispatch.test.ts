@@ -172,6 +172,38 @@ describe('fleet remediation dispatch job helpers', () => {
         })
       );
     });
+
+    it('creates the poll scheduler BEFORE enqueuing chunks', async () => {
+      await enqueueRemediationDispatch(RUN_1, 10);
+
+      // Ordering is the safety property: if addBulk ran first and the
+      // scheduler upsert then failed, the route would mark the run
+      // dispatch-failed and return a 502 while the already-enqueued chunks
+      // went on rebooting real devices behind it.
+      expect(upsertJobSchedulerMock.mock.invocationCallOrder[0]!)
+        .toBeLessThan(addBulkMock.mock.invocationCallOrder[0]!);
+    });
+
+    it('does not enqueue any chunk when the poll scheduler cannot be created', async () => {
+      upsertJobSchedulerMock.mockRejectedValueOnce(new Error('redis down'));
+
+      await expect(enqueueRemediationDispatch(RUN_1, 10)).rejects.toThrow('redis down');
+      expect(addBulkMock).not.toHaveBeenCalled();
+    });
+
+    it('gives chunk jobs 3 attempts with exponential backoff', async () => {
+      // A chunk lost to a transient fault would otherwise strand its whole
+      // page of targets as `pending` until the 30-minute poll timeout rewrote
+      // them as failures. dispatchRunChunk claims each target with a
+      // conditional UPDATE, so a retry re-dispatches nothing it already sent.
+      await enqueueRemediationDispatch(RUN_1, 10);
+
+      const jobs = addBulkMock.mock.calls[0]![0] as Array<{ opts: Record<string, unknown> }>;
+      expect(jobs[0]!.opts).toMatchObject({
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 5000 },
+      });
+    });
   });
 
   describe('worker processor', () => {
@@ -207,13 +239,20 @@ describe('fleet remediation dispatch job helpers', () => {
       expect(removeJobSchedulerMock).toHaveBeenCalledWith(buildPollRunJobId(RUN_1));
     });
 
-    it('does not remove the job scheduler when the run is not found', async () => {
+    it('removes the job scheduler when the run row is gone (deleted run must not leak a poll forever)', async () => {
+      // A missing run is terminal too: nothing will ever move it, so leaving
+      // the scheduler in place means a repeatable job re-firing every 30s for
+      // the lifetime of the Redis instance.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       await scheduleFleetRemediationDispatchJobs();
       limitMock.mockResolvedValue([]);
 
       await workerProcessorMock({ data: { type: 'poll-run', runId: RUN_1 } });
 
-      expect(removeJobSchedulerMock).not.toHaveBeenCalled();
+      expect(removeJobSchedulerMock).toHaveBeenCalledWith(buildPollRunJobId(RUN_1));
+      expect(isTerminalRunStatusMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(RUN_1));
+      warn.mockRestore();
     });
   });
 

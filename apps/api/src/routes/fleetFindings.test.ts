@@ -181,6 +181,9 @@ vi.mock('../jobs/fleetRemediationDispatch', () => ({
   enqueueRemediationDispatch: enqueueRemediationDispatchMock,
 }));
 
+const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
+vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
+
 import { fleetFindingsRoutes } from './fleetFindings';
 import { writeRouteAudit } from '../services/auditEvents';
 import { fleetFindings, fleetRemediationRuns } from '../db/schema/fleetFindings';
@@ -193,6 +196,7 @@ const DEVICE_1 = 'd1111111-1111-4111-8111-111111111111';
 const DEVICE_2 = 'd2222222-2222-4222-8222-222222222222';
 const SITE_1 = 's1111111-1111-4111-8111-111111111111';
 const SITE_2 = 's2222222-2222-4222-8222-222222222222';
+const SCRIPT_1 = 'c1111111-1111-4111-8111-111111111111';
 
 interface AuthOverrides {
   scope?: 'organization' | 'partner' | 'system';
@@ -314,6 +318,7 @@ beforeEach(() => {
   createRemediationRunMock.mockReset();
   markRunDispatchFailedMock.mockReset().mockResolvedValue(undefined);
   enqueueRemediationDispatchMock.mockReset().mockResolvedValue(undefined);
+  captureExceptionMock.mockReset();
 });
 
 describe('GET /fleet/findings — org scoping', () => {
@@ -880,6 +885,59 @@ describe('POST /fleet/findings/:id/remediate', () => {
     expect(createRemediationRunMock).not.toHaveBeenCalled();
   });
 
+  it('rejects a body carrying BOTH scriptId and commandType (400, not a silent strip)', async () => {
+    // Under the old both-optional object this validated, `commandType` was
+    // stripped, and the caller was never told which of the two things they
+    // asked for actually ran. The discriminated union's `.strict()` branches
+    // make it a 400.
+    const res = await post(makeAuth(), `/${FINDING_1}/remediate`, {
+      actionKind: 'script',
+      scriptId: SCRIPT_1,
+      commandType: 'reboot',
+      parameters: {},
+    });
+    expect(res.status).toBe(400);
+    expect(createRemediationRunMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects actionKind "script" with no scriptId (400)', async () => {
+    const res = await post(makeAuth(), `/${FINDING_1}/remediate`, {
+      actionKind: 'script',
+      parameters: {},
+    });
+    expect(res.status).toBe(400);
+    expect(createRemediationRunMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects actionKind "command" with no commandType (400)', async () => {
+    const res = await post(makeAuth(), `/${FINDING_1}/remediate`, {
+      actionKind: 'command',
+      parameters: {},
+    });
+    expect(res.status).toBe(400);
+    expect(createRemediationRunMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown actionKind (400)', async () => {
+    const res = await post(makeAuth(), `/${FINDING_1}/remediate`, {
+      actionKind: 'bogus',
+      parameters: {},
+    });
+    expect(res.status).toBe(400);
+    expect(createRemediationRunMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a command body carrying a scriptId (400)', async () => {
+    const res = await post(makeAuth(), `/${FINDING_1}/remediate`, {
+      actionKind: 'command',
+      commandType: 'reboot',
+      scriptId: SCRIPT_1,
+      parameters: {},
+    });
+    expect(res.status).toBe(400);
+    expect(createRemediationRunMock).not.toHaveBeenCalled();
+  });
+
   it('rejects a deviceIds array above the 5000-entry bound at the zod validation layer (400)', async () => {
     const res = await post(makeAuth(), `/${FINDING_1}/remediate`, {
       actionKind: 'command',
@@ -984,11 +1042,32 @@ describe('POST /fleet/findings/:id/remediate', () => {
     );
   });
 
+  it('still returns the 502 when markRunDispatchFailed itself throws (stranded run stays visible)', async () => {
+    // The recovery write can fail for the same reason the enqueue did. If it
+    // escapes, the caller gets an opaque 500 that hides the original enqueue
+    // failure AND the run stays `queued` with pending targets forever.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    createRemediationRunMock.mockResolvedValue({ runId: 'run-1', targetCount: 2, skipped: [], orgId: ORG_1 });
+    enqueueRemediationDispatchMock.mockRejectedValue(new Error('Redis unreachable'));
+    markRunDispatchFailedMock.mockRejectedValue(new Error('db gone too'));
+
+    const res = await post(makeAuth(), `/${FINDING_1}/remediate`, {
+      actionKind: 'command',
+      commandType: 'reboot',
+      parameters: {},
+    });
+
+    expect(res.status).toBe(502);
+    expect((await res.json()).runId).toBe('run-1');
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('stranded'), expect.anything());
+    errorSpy.mockRestore();
+  });
+
   it('passes the validated body through to createRemediationRun', async () => {
     createRemediationRunMock.mockResolvedValue({ runId: 'run-1', targetCount: 1, skipped: [], orgId: ORG_1 });
 
     const auth = makeAuth();
-    const scriptId = 'c1111111-1111-4111-8111-111111111111';
+    const scriptId = SCRIPT_1;
     const res = await post(auth, `/${FINDING_1}/remediate`, {
       actionKind: 'script',
       scriptId,

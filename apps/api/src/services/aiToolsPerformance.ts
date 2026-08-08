@@ -57,6 +57,18 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/**
+ * SQL aggregates come back as strings for the 64-bit types (`SUM(integer)` and
+ * `COUNT(*)` are `bigint`, `AVG(double precision)` is `numeric`), so arithmetic
+ * on them silently concatenates instead of adding. Normalizes to a number, or
+ * `null` for SQL NULL / anything unparseable.
+ */
+function toNumber(value: number | string | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 async function verifyDeviceAccess(
   deviceId: string,
   auth: AuthContext,
@@ -383,85 +395,93 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       // devices and narrow by siteId for a site-restricted caller.
       if (isSiteRestricted) conditions.push(inArray(devices.siteId, auth.allowedSiteIds!));
 
-      const rows = await db
+      // The per-device fold runs in Postgres, not here. Selecting raw rollup
+      // rows materialized (org devices) x (buckets in window) — a 168h window
+      // at the hourly tier is 168 rows PER DEVICE, and the 24h/5-minute tier
+      // is 288 — only to collapse them to one object per device in JS. The
+      // GROUP BY below returns exactly one row per device, and the ORDER BY /
+      // LIMIT means the ranked page never leaves the database either.
+      const perDeviceSubquery = db
         .select({
           deviceId: metricRollups.deviceId,
           hostname: devices.hostname,
-          avgValue: metricRollups.avgValue,
-          maxValue: metricRollups.maxValue,
-          p95Value: metricRollups.p95Value,
-          sampleCount: metricRollups.sampleCount,
+          // Sample-count-weighted numerator; divided by totalSamples below.
+          weightedAvgSum: sql<number | string | null>`SUM(${metricRollups.avgValue} * ${metricRollups.sampleCount})`.as('weighted_avg_sum'),
+          totalSamples: sql<number | string | null>`SUM(${metricRollups.sampleCount})`.as('total_samples'),
+          maxValue: sql<number | string | null>`MAX(${metricRollups.maxValue})`.as('max_value'),
+          // Each device's PEAK per-bucket p95 — a MAX, not a re-aggregated
+          // percentile (see the caveat comment above this tool).
+          peakP95: sql<number | string | null>`MAX(${metricRollups.p95Value})`.as('peak_p95'),
         })
         .from(metricRollups)
         .innerJoin(devices, eq(metricRollups.deviceId, devices.id))
-        .where(and(...conditions));
+        .where(and(...conditions))
+        .groupBy(metricRollups.deviceId, devices.hostname)
+        .as('per_device');
 
-      type DeviceAgg = {
-        hostname: string;
-        weightedAvgSum: number;
-        totalSamples: number;
-        maxValue: number | null;
-        peakP95: number | null;
-      };
-      const byDevice = new Map<string, DeviceAgg>();
-      for (const row of rows) {
-        const entry = byDevice.get(row.deviceId) ?? {
+      const topRows = await db
+        .select()
+        .from(perDeviceSubquery)
+        // NULLS LAST, not the default: Postgres sorts NULL first under DESC,
+        // so a device with no p95 at all would otherwise head the
+        // worst-offenders list.
+        .orderBy(sql`${perDeviceSubquery.peakP95} DESC NULLS LAST`)
+        .limit(topN);
+
+      // Fleet summary over EVERY device in scope, not just the topN page —
+      // aggregated from the same grouped rows so it never materializes them.
+      const [fleetRow] = await db
+        .select({
+          deviceCount: sql<number | string>`COUNT(*)`,
+          weightedAvgSum: sql<number | string | null>`SUM(${perDeviceSubquery.weightedAvgSum})`,
+          totalSamples: sql<number | string | null>`SUM(${perDeviceSubquery.totalSamples})`,
+          maxValue: sql<number | string | null>`MAX(${perDeviceSubquery.maxValue})`,
+          // AVG of the per-device peaks — the documented approximation, not a
+          // fleet-wide percentile.
+          avgPeakP95: sql<number | string | null>`AVG(${perDeviceSubquery.peakP95})`,
+        })
+        .from(perDeviceSubquery);
+
+      const perDevice = topRows.map((row) => {
+        const totalSamples = toNumber(row.totalSamples) ?? 0;
+        const weightedAvgSum = toNumber(row.weightedAvgSum);
+        const peakP95 = toNumber(row.peakP95);
+        const maxValue = toNumber(row.maxValue);
+        return {
+          deviceId: row.deviceId,
           hostname: row.hostname,
-          weightedAvgSum: 0,
-          totalSamples: 0,
-          maxValue: null,
-          peakP95: null,
+          avg: totalSamples > 0 && weightedAvgSum !== null ? round2(weightedAvgSum / totalSamples) : null,
+          p95: peakP95 !== null ? round2(peakP95) : null,
+          max: maxValue !== null ? round2(maxValue) : null,
+          sampleCount: totalSamples,
         };
-        const samples = row.sampleCount ?? 0;
-        entry.totalSamples += samples;
-        entry.weightedAvgSum += (row.avgValue ?? 0) * samples;
-        if (row.maxValue !== null) {
-          entry.maxValue = entry.maxValue === null ? row.maxValue : Math.max(entry.maxValue, row.maxValue);
-        }
-        if (row.p95Value !== null) {
-          entry.peakP95 = entry.peakP95 === null ? row.p95Value : Math.max(entry.peakP95, row.p95Value);
-        }
-        byDevice.set(row.deviceId, entry);
-      }
+      });
 
-      const perDevice = Array.from(byDevice.entries())
-        .map(([deviceId, e]) => ({
-          deviceId,
-          hostname: e.hostname,
-          avg: e.totalSamples > 0 ? round2(e.weightedAvgSum / e.totalSamples) : null,
-          p95: e.peakP95 !== null ? round2(e.peakP95) : null,
-          max: e.maxValue !== null ? round2(e.maxValue) : null,
-          sampleCount: e.totalSamples,
-        }))
-        .sort((a, b) => (b.p95 ?? -Infinity) - (a.p95 ?? -Infinity));
-
-      const totalSamples = perDevice.reduce((sum, d) => sum + d.sampleCount, 0);
-      const fleetAvg = totalSamples > 0
-        ? round2(perDevice.reduce((sum, d) => sum + (d.avg ?? 0) * d.sampleCount, 0) / totalSamples)
-        : null;
-      const fleetP95Values = perDevice.map((d) => d.p95).filter((v): v is number => v !== null);
-      const fleetMaxValues = perDevice.map((d) => d.max).filter((v): v is number => v !== null);
+      const fleetTotalSamples = toNumber(fleetRow?.totalSamples) ?? 0;
+      const fleetWeightedAvgSum = toNumber(fleetRow?.weightedAvgSum);
+      const fleetAvgPeakP95 = toNumber(fleetRow?.avgPeakP95);
+      const fleetMax = toNumber(fleetRow?.maxValue);
 
       return JSON.stringify({
         metricName,
         windowHours,
         bucketSeconds,
         topN,
-        deviceCount: perDevice.length,
+        deviceCount: toNumber(fleetRow?.deviceCount) ?? 0,
         fleetSummary: {
-          avg: fleetAvg,
+          avg: fleetTotalSamples > 0 && fleetWeightedAvgSum !== null
+            ? round2(fleetWeightedAvgSum / fleetTotalSamples)
+            : null,
           // Self-describing key (not a bare `p95`): this is the AVERAGE of
           // each device's peak per-bucket p95, not a true recomputed
           // fleet-wide percentile — see the aggregation-caveat comment above
           // and the tool description. A bare `p95` name would silently read
           // as a real percentile to a model consuming this output.
-          p95ApproxAvgOfDevicePeaks: fleetP95Values.length > 0
-            ? round2(fleetP95Values.reduce((a, b) => a + b, 0) / fleetP95Values.length)
-            : null,
-          max: fleetMaxValues.length > 0 ? round2(Math.max(...fleetMaxValues)) : null,
-          sampleCount: totalSamples,
+          p95ApproxAvgOfDevicePeaks: fleetAvgPeakP95 !== null ? round2(fleetAvgPeakP95) : null,
+          max: fleetMax !== null ? round2(fleetMax) : null,
+          sampleCount: fleetTotalSamples,
         },
-        topDevices: perDevice.slice(0, topN),
+        topDevices: perDevice,
       });
     }
   });

@@ -27,8 +27,12 @@ function jsonEqual(a: unknown, b: unknown): boolean {
 
 /**
  * Reconciles this pass's candidate findings against the org's live episodes
- * (fleet_findings rows with resolved_at IS NULL). See task-4-brief.md for the
- * six semantics this implements; each has a dedicated test in reconcile.test.ts.
+ * (fleet_findings rows with resolved_at IS NULL). Six semantics, each with a
+ * dedicated test in reconcile.test.ts: (1) a candidate with no live episode
+ * opens one; (2) membership rows always track the candidate; (3) an unchanged
+ * live episode is left untouched (no revision bump); (4) a changed one is
+ * bumped; (5) a dismissed episode is never mutated at the finding level; (6) a
+ * live episode with no candidate this pass is resolved.
  *
  * Runs inside whatever DB access context the caller (the scheduled job, task 5)
  * has already established — this module only ever touches the ambient `db`,
@@ -121,6 +125,12 @@ async function insertNewFinding(orgId: string, candidate: CandidateFinding, now:
  * candidate regardless of that outcome (semantic #2), but a dismissed episode
  * is never reopened or otherwise mutated at the finding level (semantic #5),
  * and an unchanged live episode is left untouched (semantic #3).
+ *
+ * Semantic #5 is scoped to THIS function — i.e. to a dismissed episode that a
+ * candidate still matches. The resolve loop in `reconcileOrgFindings` is
+ * deliberately unconditional on status: a dismissed episode whose source has
+ * cleared IS resolved (`source_cleared`), which is correct — dismissal
+ * suppresses the finding, it does not pin it open forever.
  */
 async function reconcileExistingFinding(existing: FleetFindingRow, candidate: CandidateFinding, now: Date): Promise<boolean> {
   return db.transaction(async (tx) => {

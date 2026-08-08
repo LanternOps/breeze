@@ -168,8 +168,11 @@ export async function produceLogCorrelationFindings(orgId: string): Promise<Cand
  * A single org-wide finding for devices whose reliability score has dropped
  * below RELIABILITY_WARN_THRESHOLD. Ephemeral (Quick Support) devices are
  * excluded via the codebase-standard `isEphemeral = false` predicate used
- * throughout services/*.ts (reliabilityScoring.ts itself has no ephemeral
- * filter to copy — see task-4-report.md for the discrepancy note).
+ * throughout services/*.ts. Note this producer is STRICTER than its own data
+ * source: reliabilityScoring.ts scores ephemeral devices too (it carries no
+ * ephemeral filter), so `device_reliability` legitimately holds rows this
+ * query drops. Do not "fix" the discrepancy by removing the filter — a Quick
+ * Support device that existed for ten minutes is not a fleet hygiene offender.
  */
 export async function produceReliabilityOffenders(orgId: string): Promise<CandidateFinding[]> {
   const rows = await db

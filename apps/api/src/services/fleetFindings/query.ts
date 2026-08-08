@@ -419,8 +419,15 @@ export interface FleetRemediationRunDetail extends FleetFindingRun {
  * condition on the run's own `orgId` column, then an app-layer site filter on
  * its target rows (a caller's site grant can shrink after a run was created,
  * so this is re-applied on every read rather than trusted from creation
- * time). Returns `null` when not found, inaccessible, or the caller has no
- * accessible sites at all.
+ * time).
+ *
+ * Returns `null` when the run doesn't exist, isn't in an accessible org, or
+ * (for a site-restricted caller) has zero targets in an allowed site —
+ * including the `allowedSiteIds: []` case. That last branch fails closed for
+ * the same reason `getFleetFinding` does: a run's own metadata (which finding,
+ * which script/command, how many devices, when, by whom) is a description of
+ * activity on devices the caller cannot see, so returning it with an empty
+ * `targets` array would leak exactly the thing the site axis exists to hide.
  */
 export async function getRemediationRun(auth: AuthContext, runId: string): Promise<FleetRemediationRunDetail | null> {
   const conditions: SQL[] = [eq(fleetRemediationRuns.id, runId)];
@@ -445,6 +452,8 @@ export async function getRemediationRun(auth: AuthContext, runId: string): Promi
     allowedSiteIds === undefined
       ? targetRows
       : targetRows.filter((t) => t.siteIdSnapshot && allowedSiteIds.includes(t.siteIdSnapshot));
+
+  if (allowedSiteIds !== undefined && visibleTargets.length === 0) return null;
 
   return {
     id: run.id,

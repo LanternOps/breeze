@@ -132,8 +132,8 @@ CREATE POLICY breeze_org_isolation_delete ON fleet_findings FOR DELETE USING (
 GRANT SELECT, INSERT, UPDATE, DELETE ON fleet_findings TO breeze_app;
 
 -- fleet_finding_devices: live membership -- which devices currently belong
--- to a finding. device_id is NOT the primary key alone; a device can only
--- belong once per finding.
+-- to a finding. PK is (finding_id, device_id): one membership row per device
+-- per finding.
 CREATE TABLE IF NOT EXISTS fleet_finding_devices (
   finding_id uuid NOT NULL,
   org_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,

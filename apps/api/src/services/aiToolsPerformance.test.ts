@@ -20,7 +20,9 @@ const mockDb = db as unknown as { select: ReturnType<typeof vi.fn> };
 
 function createChain(result: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'groupBy', 'orderBy', 'limit', 'innerJoin']) {
+  // `as` is the subquery terminator (`.groupBy(...).as('per_device')`) —
+  // analyze_fleet_metrics builds one and reuses it for both of its queries.
+  for (const method of ['from', 'where', 'groupBy', 'orderBy', 'limit', 'innerJoin', 'as']) {
     chain[method] = vi.fn(() => chain);
   }
   chain.then = (onFulfilled?: (value: unknown) => unknown, onRejected?: (reason: unknown) => unknown) =>
@@ -30,6 +32,44 @@ function createChain(result: unknown = []) {
 
 function mockSelectOnce(result: unknown) {
   mockDb.select.mockImplementationOnce(() => createChain(result));
+}
+
+/**
+ * analyze_fleet_metrics issues THREE `db.select()` calls, in this order:
+ *   1. the grouped per-device subquery builder (`.groupBy(...).as(...)`) —
+ *      never awaited on its own, but it is the call that carries the WHERE
+ *      tree, so site/org condition assertions hook here;
+ *   2. the ranked top-N page selected FROM that subquery;
+ *   3. the single-row fleet summary aggregated FROM the same subquery.
+ *
+ * The per-device fold and the fleet summary both happen in SQL now, so the
+ * fixtures below are already-grouped rows (one per device), not raw buckets.
+ */
+function mockFleetMetricsQueries(
+  topRows: unknown[],
+  fleetRow: Record<string, unknown> | null = null,
+): { capturedWhere: () => unknown } {
+  let captured: unknown;
+  mockDb.select.mockImplementationOnce(() => {
+    const chain = createChain([]);
+    chain.where = vi.fn((condition: unknown) => {
+      captured = condition;
+      return chain;
+    });
+    return chain;
+  });
+  mockSelectOnce(topRows);
+  mockSelectOnce(fleetRow ? [fleetRow] : []);
+  return { capturedWhere: () => captured };
+}
+
+/** One already-grouped per-device row, as the GROUP BY now returns it. */
+function groupedDeviceRow(
+  deviceId: string,
+  hostname: string,
+  agg: { weightedAvgSum: number | string; totalSamples: number | string; maxValue: number | null; peakP95: number | null },
+) {
+  return { deviceId, hostname, ...agg };
 }
 
 function handlerFor(name: string): AiTool['handler'] {
@@ -192,7 +232,7 @@ describe('analyze_fleet_metrics AI tool', () => {
   });
 
   it('defaults to a 24h window, topN 10, and the 5-minute bucket tier', async () => {
-    mockSelectOnce([]);
+    mockFleetMetricsQueries([]);
     const result = await handlerFor('analyze_fleet_metrics')({ metricName: 'cpu_percent' }, makeAuth());
     const parsed = JSON.parse(result);
 
@@ -202,7 +242,7 @@ describe('analyze_fleet_metrics AI tool', () => {
   });
 
   it('clamps windowHours to 168 and topN to 50, switching to the hourly bucket tier above 24h', async () => {
-    mockSelectOnce([]);
+    mockFleetMetricsQueries([]);
     const result = await handlerFor('analyze_fleet_metrics')(
       { metricName: 'cpu_percent', windowHours: 9999, topN: 9999 },
       makeAuth()
@@ -215,7 +255,7 @@ describe('analyze_fleet_metrics AI tool', () => {
   });
 
   it('treats a negative windowHours/topN as invalid input and floors to 1 (matches analyze_metrics convention: 0/falsy falls back to the default)', async () => {
-    mockSelectOnce([]);
+    mockFleetMetricsQueries([]);
     const result = await handlerFor('analyze_fleet_metrics')(
       { metricName: 'cpu_percent', windowHours: -5, topN: -5 },
       makeAuth()
@@ -226,12 +266,16 @@ describe('analyze_fleet_metrics AI tool', () => {
     expect(parsed.topN).toBe(1);
   });
 
-  it('aggregates per-device avg (weighted)/peak-p95 (max)/max across buckets and ranks by peak p95 desc', async () => {
-    mockSelectOnce([
-      { deviceId: 'd1', hostname: 'host-1', avgValue: 40, maxValue: 60, p95Value: 55, sampleCount: 10 },
-      { deviceId: 'd1', hostname: 'host-1', avgValue: 60, maxValue: 90, p95Value: 85, sampleCount: 10 },
-      { deviceId: 'd2', hostname: 'host-2', avgValue: 10, maxValue: 20, p95Value: 15, sampleCount: 5 },
-    ]);
+  it('renders per-device avg from the SQL-weighted sum and ranks by peak p95 desc', async () => {
+    // Already-grouped rows: d1's two buckets (avg 40 x 10 samples, avg 60 x 10)
+    // were folded by SUM(avg_value * sample_count) = 1000 over 20 samples.
+    mockFleetMetricsQueries(
+      [
+        groupedDeviceRow('d1', 'host-1', { weightedAvgSum: 1000, totalSamples: 20, maxValue: 90, peakP95: 85 }),
+        groupedDeviceRow('d2', 'host-2', { weightedAvgSum: 50, totalSamples: 5, maxValue: 20, peakP95: 15 }),
+      ],
+      { deviceCount: 2, weightedAvgSum: 1050, totalSamples: 25, maxValue: 90, avgPeakP95: 50 },
+    );
 
     const result = await handlerFor('analyze_fleet_metrics')({ metricName: 'cpu_percent' }, makeAuth());
     const parsed = JSON.parse(result);
@@ -243,12 +287,52 @@ describe('analyze_fleet_metrics AI tool', () => {
     expect(parsed.topDevices[1].deviceId).toBe('d2');
     expect(parsed.fleetSummary.max).toBe(90);
     expect(parsed.fleetSummary.sampleCount).toBe(25);
+    expect(parsed.fleetSummary.avg).toBe(42);
     // Fleet-level p95 is an explicitly-approximate figure (average of each
     // device's peak p95: (85+15)/2 = 50) — named accordingly so a model
     // consuming this output can't mistake it for a true fleet-wide
     // percentile. Must NOT be exposed under a bare `p95` key.
     expect(parsed.fleetSummary.p95ApproxAvgOfDevicePeaks).toBe(50);
     expect(parsed.fleetSummary).not.toHaveProperty('p95');
+  });
+
+  it('coerces bigint/numeric aggregates returned as strings (SUM(integer), COUNT(*), AVG)', async () => {
+    // postgres.js hands back int8/numeric as strings; arithmetic on those
+    // concatenates instead of adding, so the tool must coerce.
+    mockFleetMetricsQueries(
+      [groupedDeviceRow('d1', 'host-1', { weightedAvgSum: '1000', totalSamples: '20', maxValue: 90, peakP95: 85 })],
+      { deviceCount: '1', weightedAvgSum: '1000', totalSamples: '20', maxValue: 90, avgPeakP95: '85' },
+    );
+
+    const parsed = JSON.parse(
+      await handlerFor('analyze_fleet_metrics')({ metricName: 'cpu_percent' }, makeAuth())
+    );
+
+    expect(parsed.deviceCount).toBe(1);
+    expect(parsed.topDevices[0].avg).toBe(50);
+    expect(parsed.topDevices[0].sampleCount).toBe(20);
+    expect(parsed.fleetSummary.avg).toBe(50);
+    expect(parsed.fleetSummary.sampleCount).toBe(20);
+  });
+
+  it('pushes the fold into SQL: GROUP BY device, ORDER BY peak p95 DESC NULLS LAST, LIMIT topN', async () => {
+    const chains: Array<Record<string, any>> = [];
+    mockDb.select.mockImplementation(() => {
+      const chain = createChain([]);
+      chains.push(chain);
+      return chain;
+    });
+
+    await handlerFor('analyze_fleet_metrics')({ metricName: 'cpu_percent', topN: 7 }, makeAuth());
+
+    // Chain 0 = the grouped subquery builder; chain 1 = the ranked page.
+    const [builder, page] = chains;
+    expect(builder!.groupBy).toHaveBeenCalledTimes(1);
+    expect(builder!.as).toHaveBeenCalledWith('per_device');
+    expect(page!.limit).toHaveBeenCalledWith(7);
+
+    const rendered = new PgDialect().sqlToQuery(page!.orderBy.mock.calls[0]![0] as SQL);
+    expect(rendered.sql).toContain('DESC NULLS LAST');
   });
 
   it('discloses the fleet p95 approximation in the tool description (not just a source comment)', () => {
@@ -260,11 +344,17 @@ describe('analyze_fleet_metrics AI tool', () => {
     expect(description.toLowerCase()).toContain('approximation');
   });
 
-  it('caps topDevices at topN while still reporting the full deviceCount', async () => {
-    const rows = Array.from({ length: 5 }, (_, i) => ({
-      deviceId: `d${i}`, hostname: `host-${i}`, avgValue: i, maxValue: i, p95Value: i, sampleCount: 1,
-    }));
-    mockSelectOnce(rows);
+  it('reports the full deviceCount from the fleet aggregate, not the length of the topN page', async () => {
+    // The LIMIT is applied in SQL, so the page really is only topN rows —
+    // deviceCount must come from the separate COUNT(*) over every grouped row
+    // or the tool would under-report the fleet on every truncated result.
+    mockFleetMetricsQueries(
+      [
+        groupedDeviceRow('d4', 'host-4', { weightedAvgSum: 4, totalSamples: 1, maxValue: 4, peakP95: 4 }),
+        groupedDeviceRow('d3', 'host-3', { weightedAvgSum: 3, totalSamples: 1, maxValue: 3, peakP95: 3 }),
+      ],
+      { deviceCount: 5, weightedAvgSum: 10, totalSamples: 5, maxValue: 4, avgPeakP95: 2 },
+    );
 
     const result = await handlerFor('analyze_fleet_metrics')(
       { metricName: 'cpu_percent', topN: 2 },
@@ -274,8 +364,24 @@ describe('analyze_fleet_metrics AI tool', () => {
 
     expect(parsed.topDevices).toHaveLength(2);
     expect(parsed.deviceCount).toBe(5);
-    // Ranked by p95 desc: d4 (p95=4), d3 (p95=3)
     expect(parsed.topDevices.map((d: { deviceId: string }) => d.deviceId)).toEqual(['d4', 'd3']);
+  });
+
+  it('returns nulls (not NaN) for a fleet summary row of all NULLs — no rollups in window', async () => {
+    mockFleetMetricsQueries(
+      [],
+      { deviceCount: 0, weightedAvgSum: null, totalSamples: null, maxValue: null, avgPeakP95: null },
+    );
+
+    const parsed = JSON.parse(
+      await handlerFor('analyze_fleet_metrics')({ metricName: 'cpu_percent' }, makeAuth())
+    );
+
+    expect(parsed.deviceCount).toBe(0);
+    expect(parsed.topDevices).toEqual([]);
+    expect(parsed.fleetSummary).toEqual({
+      avg: null, p95ApproxAvgOfDevicePeaks: null, max: null, sampleCount: 0,
+    });
   });
 
   it('short-circuits for a zero-site restricted caller without querying the db', async () => {
@@ -291,45 +397,25 @@ describe('analyze_fleet_metrics AI tool', () => {
   });
 
   it('adds a devices.siteId inArray condition to the query for a site-restricted caller', async () => {
-    let capturedCondition: SQL | undefined;
-    mockDb.select.mockImplementationOnce(() => {
-      const chain: Record<string, any> = {};
-      chain.from = () => chain;
-      chain.innerJoin = () => chain;
-      chain.where = (condition: SQL) => {
-        capturedCondition = condition;
-        return chain;
-      };
-      chain.then = (onFulfilled?: (value: unknown) => unknown) => Promise.resolve([]).then(onFulfilled);
-      return chain;
-    });
+    const { capturedWhere } = mockFleetMetricsQueries([]);
 
     const restrictedAuth = authWith({ allowedSiteIds: ['site-A'], canAccessSite: (s) => s === 'site-A' });
     await handlerFor('analyze_fleet_metrics')({ metricName: 'cpu_percent' }, restrictedAuth);
 
-    expect(capturedCondition).toBeDefined();
-    const rendered = new PgDialect().sqlToQuery(capturedCondition!);
+    const condition = capturedWhere() as SQL | undefined;
+    expect(condition).toBeDefined();
+    const rendered = new PgDialect().sqlToQuery(condition!);
     expect(rendered.params).toContain('site-A');
   });
 
   it('does not add a site condition for an unrestricted caller (no regression)', async () => {
-    let capturedCondition: SQL | undefined;
-    mockDb.select.mockImplementationOnce(() => {
-      const chain: Record<string, any> = {};
-      chain.from = () => chain;
-      chain.innerJoin = () => chain;
-      chain.where = (condition: SQL) => {
-        capturedCondition = condition;
-        return chain;
-      };
-      chain.then = (onFulfilled?: (value: unknown) => unknown) => Promise.resolve([]).then(onFulfilled);
-      return chain;
-    });
+    const { capturedWhere } = mockFleetMetricsQueries([]);
 
     await handlerFor('analyze_fleet_metrics')({ metricName: 'cpu_percent' }, makeAuth());
 
-    expect(capturedCondition).toBeDefined();
-    const rendered = new PgDialect().sqlToQuery(capturedCondition!);
+    const condition = capturedWhere() as SQL | undefined;
+    expect(condition).toBeDefined();
+    const rendered = new PgDialect().sqlToQuery(condition!);
     expect(rendered.params).not.toContain('site-A');
   });
 });

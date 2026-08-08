@@ -6,6 +6,10 @@ import { users } from './users';
 export type FleetFindingKind = 'metric_anomaly_pattern' | 'log_correlation' | 'reliability_offenders';
 export type FleetFindingStatus = 'open' | 'acknowledged' | 'dismissed' | 'resolved';
 export type FleetFindingSeverity = 'info' | 'warning' | 'error' | 'critical';
+// `cancelled` is RESERVED for a future "cancel this run" affordance — no code
+// path writes it today (isTerminalRunStatus accepts it, the UI renders a chip
+// for it, nothing produces it). Kept in the union so adding cancellation is a
+// behaviour change, not a schema+i18n+chip migration.
 export type FleetRunStatus = 'queued' | 'running' | 'partial' | 'succeeded' | 'failed' | 'cancelled';
 export type FleetTargetStatus = 'pending' | 'queued' | 'succeeded' | 'failed' | 'skipped';
 

@@ -173,11 +173,16 @@ vi.mock('../commandQueue', () => ({
   queueCommandForExecution: queueCommandForExecutionMock,
 }));
 
+const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
+vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
+
 import { fleetRemediationRuns } from '../../db/schema/fleetFindings';
 import {
   createRemediationRun,
+  DISPATCH_ENQUEUE_FAILED_REASON,
   dispatchRunChunk,
   isTerminalRunStatus,
+  markRunDispatchFailed,
   pollRunProgress,
   REMEDIATION_CHUNK_SIZE,
   REMEDIATION_COMMAND_TYPE_ALLOWLIST,
@@ -262,36 +267,28 @@ beforeEach(() => {
   h.mockUpdate.mockClear();
   getFleetFindingMock.mockReset();
   queueCommandForExecutionMock.mockReset();
+  captureExceptionMock.mockReset();
 });
 
+/**
+ * Request-shape validation moved OUT of this service. `RemediateRequest` is a
+ * discriminated union on `actionKind`, so "command with no commandType" and
+ * "script with no scriptId" are no longer representable values that need a
+ * runtime branch — they are compile errors. The runtime half of the contract
+ * (an untyped HTTP body) is enforced by the route's `z.discriminatedUnion`,
+ * covered in routes/fleetFindings.test.ts.
+ *
+ * What remains here is the part the type cannot state: that every allowlisted
+ * commandType is actually dispatchable (see the COMMAND_TYPE_DISPATCH_MAP
+ * coverage test at the end of the dispatchRunChunk block).
+ */
 describe('createRemediationRun — request-shape validation', () => {
-  it('rejects an actionKind of "command" with a non-allowlisted commandType (400)', async () => {
-    const req: RemediateRequest = { actionKind: 'command', commandType: 'clear_temp_files', parameters: {} };
-    await expectRemediationError(createRemediationRun(makeAuth(), FINDING_1, req), 400);
-    expect(getFleetFindingMock).not.toHaveBeenCalled();
-  });
-
-  it('rejects an actionKind of "command" with a missing commandType (400)', async () => {
-    const req: RemediateRequest = { actionKind: 'command', parameters: {} };
-    await expectRemediationError(createRemediationRun(makeAuth(), FINDING_1, req), 400);
-  });
-
-  it('accepts every allowlisted commandType at the shape-validation stage', async () => {
+  it('accepts every allowlisted commandType (each is a legal union member)', async () => {
     for (const commandType of REMEDIATION_COMMAND_TYPE_ALLOWLIST) {
-      getFleetFindingMock.mockResolvedValueOnce(null); // short-circuit after shape validation
+      getFleetFindingMock.mockResolvedValueOnce(null); // short-circuit on access
       const req: RemediateRequest = { actionKind: 'command', commandType, parameters: {} };
       await expectRemediationError(createRemediationRun(makeAuth(), FINDING_1, req), 403);
     }
-  });
-
-  it('rejects actionKind "script" with no scriptId (400)', async () => {
-    const req: RemediateRequest = { actionKind: 'script', parameters: {} };
-    await expectRemediationError(createRemediationRun(makeAuth(), FINDING_1, req), 400);
-  });
-
-  it('rejects an unknown actionKind (400)', async () => {
-    const req = { actionKind: 'bogus', parameters: {} } as unknown as RemediateRequest;
-    await expectRemediationError(createRemediationRun(makeAuth(), FINDING_1, req), 400);
   });
 });
 
@@ -813,11 +810,76 @@ describe('dispatchRunChunk', () => {
     expect(h.capturedUpdates.some((u) => (u.values as Record<string, unknown>).status === 'failed')).toBe(false);
   });
 
-  it('returns early (no-op) when the run does not exist', async () => {
+  it('returns early (no-op) when the run does not exist, and says so', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     h.selectQueue.push([]);
+
     await dispatchRunChunk(RUN_1, 0);
+
     expect(h.capturedUpdates).toHaveLength(0);
     expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    // A chunk that silently evaporates is a run whose targets are never
+    // dispatched and never explained.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(RUN_1));
+    warn.mockRestore();
+  });
+
+  it('fails the target loudly when the run\'s commandType has no dispatch-map entry', async () => {
+    // A commandType that passed the allowlist but was never added to
+    // COMMAND_TYPE_DISPATCH_MAP (or a hand-written run row). The old code fell
+    // back to `run.commandType || ''`, handing the agent an unknown — or
+    // empty — command type instead of failing here.
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    h.selectQueue.push([runRow({ status: 'running', commandType: 'defragment_everything' })]);
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    const failure = h.capturedUpdates.find((u) => (u.values as Record<string, unknown>).status === 'failed')!;
+    expect(failure).toBeDefined();
+    expect(failure.values.resultSummary).toContain('Unsupported command type');
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    error.mockRestore();
+  });
+
+  it('reports an unexpected per-target exception to Sentry once per chunk, not once per target', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    h.selectQueue.push([runRow({ status: 'running', commandType: 'reboot' })]);
+    h.selectQueue.push([
+      { runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' },
+      { runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_2, status: 'pending' },
+      { runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_3, status: 'pending' },
+    ]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_2 }]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_3 }]);
+    queueCommandForExecutionMock.mockRejectedValue(new Error('driver exploded'));
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    // Every target is still individually marked failed…
+    expect(h.capturedUpdates.filter((u) => (u.values as Record<string, unknown>).status === 'failed')).toHaveLength(3);
+    expect(error).toHaveBeenCalledTimes(3);
+    // …but a 500-target run must not open 500 Sentry issues for one defect.
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    error.mockRestore();
+  });
+
+  it('every allowlisted commandType has a dispatch-map entry (no unsupported-type dead end)', async () => {
+    for (const commandType of REMEDIATION_COMMAND_TYPE_ALLOWLIST) {
+      h.capturedUpdates.length = 0;
+      h.selectQueue.push([runRow({ status: 'running', commandType })]);
+      h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+      h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
+      queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-1' } });
+
+      await dispatchRunChunk(RUN_1, 0);
+
+      const failure = h.capturedUpdates.find((u) => (u.values as Record<string, unknown>).status === 'failed');
+      expect(failure, `commandType "${commandType}" is allowlisted but not dispatchable`).toBeUndefined();
+    }
   });
 
   it('regression: a page containing already-queued targets (from a prior chunk) does not re-dispatch them', async () => {
@@ -987,9 +1049,112 @@ describe('pollRunProgress', () => {
   });
 
   it('is a no-op when the run does not exist', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     h.selectQueue.push([]);
     await pollRunProgress(RUN_1);
     expect(h.capturedUpdates).toHaveLength(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(RUN_1));
+    warn.mockRestore();
+  });
+
+  it('treats a cancelled device_command as terminal-failed, carrying its result text', async () => {
+    // `cancelled` (device deleted, agent deauthorized, operator cancelled the
+    // command) is terminal for the command. Left unhandled the target sat in
+    // flight for 30 minutes and was then rewritten as a bare "timeout",
+    // discarding the real reason.
+    h.selectQueue.push([runRow()]);
+    h.selectQueue.push([
+      { runId: RUN_1, targetDeviceUuid: DEVICE_1, status: 'queued', deviceCommandId: 'cmd-1', queuedAt: new Date() },
+    ]);
+    h.selectQueue.push([{ id: 'cmd-1', status: 'cancelled', result: { reason: 'device deauthorized' } }]);
+
+    await pollRunProgress(RUN_1);
+
+    const targetUpdate = h.capturedUpdates.find(
+      (u) => (u.values as Record<string, unknown>).status === 'failed'
+    )!;
+    expect(targetUpdate).toBeDefined();
+    expect(targetUpdate.values.resultSummary).toContain('device deauthorized');
+    // Resolved by the command, NOT by the timeout path.
+    expect(targetUpdate.values.skipReason).toBeUndefined();
+    expect(targetUpdate.values.completedAt).toBeInstanceOf(Date);
+  });
+
+  it('times out a target that was never claimed (no queuedAt, no command) using run.createdAt', async () => {
+    // The enqueue succeeded but the chunk job never ran (worker down, job
+    // lost). Nothing ever stamped queuedAt or a deviceCommandId, so the only
+    // clock available is the run's own createdAt — without that fallback the
+    // target would stay `pending` forever and the run would never terminate.
+    h.selectQueue.push([runRow({ createdAt: new Date(Date.now() - 31 * 60 * 1000) })]);
+    h.selectQueue.push([
+      { runId: RUN_1, targetDeviceUuid: DEVICE_1, status: 'pending', deviceCommandId: null, queuedAt: null },
+    ]);
+    // No command-id lookup happens at all — nothing to look up.
+
+    await pollRunProgress(RUN_1);
+
+    const targetUpdate = h.capturedUpdates.find(
+      (u) => (u.values as Record<string, unknown>).skipReason === 'timeout'
+    )!;
+    expect(targetUpdate).toBeDefined();
+    expect(targetUpdate.values.status).toBe('failed');
+
+    const runUpdate = h.capturedUpdates[h.capturedUpdates.length - 1]!;
+    expect(runUpdate.values).toMatchObject({ status: 'failed', failedCount: 1 });
+    expect(runUpdate.values.completedAt).toBeInstanceOf(Date);
+  });
+});
+
+describe('markRunDispatchFailed', () => {
+  it('flips only still-pending targets to skipped, recomputes counts, and terminates the run', async () => {
+    // The pending->skipped UPDATE is a single conditional statement, so the
+    // post-update re-read is what proves the succeeded/failed rows survived.
+    h.selectQueue.push([
+      { runId: RUN_1, targetDeviceUuid: DEVICE_1, status: 'succeeded' },
+      { runId: RUN_1, targetDeviceUuid: DEVICE_2, status: 'failed' },
+      { runId: RUN_1, targetDeviceUuid: DEVICE_3, status: 'skipped' },
+    ]);
+
+    await markRunDispatchFailed(RUN_1);
+
+    const [targetUpdate, runUpdate] = h.capturedUpdates;
+    expect(targetUpdate!.values).toMatchObject({
+      status: 'skipped',
+      skipReason: DISPATCH_ENQUEUE_FAILED_REASON,
+    });
+    expect(targetUpdate!.values.completedAt).toBeInstanceOf(Date);
+    // The status='pending' predicate is what protects already-resolved rows.
+    expect(JSON.stringify(h.capturedWheres[0])).toContain('pending');
+
+    expect(runUpdate!.values).toMatchObject({
+      status: 'failed',
+      succeededCount: 1,
+      failedCount: 1,
+      skippedCount: 1,
+    });
+    expect(runUpdate!.values.completedAt).toBeInstanceOf(Date);
+  });
+
+  it('accepts a custom reason and defaults to dispatch_enqueue_failed', async () => {
+    h.selectQueue.push([]);
+    await markRunDispatchFailed(RUN_1, 'redis_unavailable');
+    expect(h.capturedUpdates[0]!.values.skipReason).toBe('redis_unavailable');
+
+    h.capturedUpdates.length = 0;
+    h.selectQueue.push([]);
+    await markRunDispatchFailed(RUN_1);
+    expect(h.capturedUpdates[0]!.values.skipReason).toBe(DISPATCH_ENQUEUE_FAILED_REASON);
+  });
+
+  it('terminates a run with zero surviving targets as failed with all-zero counts', async () => {
+    h.selectQueue.push([]);
+
+    await markRunDispatchFailed(RUN_1);
+
+    const runUpdate = h.capturedUpdates[1]!;
+    expect(runUpdate.values).toMatchObject({
+      status: 'failed', succeededCount: 0, failedCount: 0, skippedCount: 0,
+    });
   });
 });
 

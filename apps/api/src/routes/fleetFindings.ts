@@ -20,6 +20,7 @@ import {
 } from '../services/fleetFindings/query';
 import { enqueueRemediationDispatch } from '../jobs/fleetRemediationDispatch';
 import { PERMISSIONS } from '../services/permissions';
+import { captureException } from '../services/sentry';
 
 export const fleetFindingsRoutes = new Hono();
 
@@ -62,10 +63,7 @@ const patchBodySchema = z.object({
   notes: z.string().max(2000).optional(),
 });
 
-const remediateBodySchema = z.object({
-  actionKind: z.enum(['script', 'command']),
-  scriptId: z.string().guid().optional(),
-  commandType: z.enum(REMEDIATION_COMMAND_TYPE_ALLOWLIST).optional(),
+const remediateSharedFields = {
   parameters: z.record(z.string(), z.unknown()).default({}),
   // Subset of finding membership; ABSENT = all current members, `[]` is
   // rejected outright (`.min(1)`) rather than silently treated the same as
@@ -79,7 +77,27 @@ const remediateBodySchema = z.object({
   // legitimately spanning thousands of devices is an expected shape, not
   // an abuse signal.
   deviceIds: z.array(z.string().guid()).min(1).max(5000).optional(),
-});
+};
+
+// Discriminated on `actionKind`, mirroring the `RemediateRequest` union in
+// services/fleetFindings/dispatch.ts: `scriptId` is REQUIRED for a script and
+// absent for a command, `commandType` vice versa. Both branches are `.strict()`
+// so a body carrying BOTH fields is a 400 rather than a silent strip — under
+// the previous both-optional object, `{actionKind:'script', scriptId, commandType:'reboot'}`
+// validated, `commandType` was dropped on the floor, and the caller was never
+// told which of the two things they asked for actually ran.
+const remediateBodySchema = z.discriminatedUnion('actionKind', [
+  z.object({
+    actionKind: z.literal('script'),
+    scriptId: z.string().guid(),
+    ...remediateSharedFields,
+  }).strict(),
+  z.object({
+    actionKind: z.literal('command'),
+    commandType: z.enum(REMEDIATION_COMMAND_TYPE_ALLOWLIST),
+    ...remediateSharedFields,
+  }).strict(),
+]);
 
 const requireFindingsRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 const requireFindingsWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
@@ -183,8 +201,33 @@ fleetFindingsRoutes.post(
       await enqueueRemediationDispatch(result.runId, result.targetCount);
     } catch (err) {
       dispatchEnqueueFailed = true;
-      await markRunDispatchFailed(result.runId);
       console.error(`[fleetFindings] Failed to enqueue remediation dispatch for run ${result.runId}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)), c, {
+        service: 'fleetFindings.remediate',
+        stage: 'enqueue',
+        runId: result.runId,
+      });
+
+      // The recovery write can itself fail (the same outage that broke the
+      // enqueue, an RLS denial, a dead connection). If it does, the run stays
+      // `queued` with `pending` targets and NOTHING will ever move it — the
+      // exact stranding markRunDispatchFailed exists to prevent — so it must
+      // not be allowed to escape as an unhandled 500 that hides the original
+      // enqueue failure. Report it and still return the 502 below: the caller
+      // gets the same answer either way, but the stranded run is now visible.
+      try {
+        await markRunDispatchFailed(result.runId);
+      } catch (markErr) {
+        console.error(
+          `[fleetFindings] Failed to mark run ${result.runId} dispatch-failed — run is stranded:`,
+          markErr
+        );
+        captureException(markErr instanceof Error ? markErr : new Error(String(markErr)), c, {
+          service: 'fleetFindings.remediate',
+          stage: 'markRunDispatchFailed',
+          runId: result.runId,
+        });
+      }
     }
 
     writeRouteAudit(c, {
@@ -196,8 +239,8 @@ fleetFindingsRoutes.post(
       details: {
         runId: result.runId,
         actionKind: body.actionKind,
-        commandType: body.commandType ?? null,
-        scriptId: body.scriptId ?? null,
+        commandType: body.actionKind === 'command' ? body.commandType : null,
+        scriptId: body.actionKind === 'script' ? body.scriptId : null,
         targetCount: result.targetCount,
         skippedCount: result.skipped.length,
         dispatchEnqueueFailed,
