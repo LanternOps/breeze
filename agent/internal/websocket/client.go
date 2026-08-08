@@ -17,6 +17,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/netcache"
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/secmem"
+	"github.com/breeze-rmm/agent/internal/wire"
 )
 
 var log = logging.L("websocket")
@@ -441,10 +442,17 @@ func (c *Client) readPump() {
 			continue
 		}
 
-		// Skip non-command messages (ack, heartbeat_ack, error, etc.)
+		// A server rejection of something this agent sent. Handled BEFORE the
+		// id-less skip below, which used to swallow it (#3001).
+		if msg.Type == "error" {
+			logServerErrorFrame(message)
+			continue
+		}
+
+		// Skip non-command messages (ack, heartbeat_ack, etc.)
 		// Commands have both an ID and a type like "run_script", "list_processes", etc.
 		if msg.ID == "" {
-			// Server acknowledgments, errors, etc. - not commands
+			// Server acknowledgments and other notices - not commands
 			continue
 		}
 
@@ -739,8 +747,36 @@ func (c *Client) processCommand(cmd Command) {
 // re-persists it on failure.
 func (c *Client) SendResult(result CommandResult) error {
 	data, err := json.Marshal(result)
-	if err != nil {
-		return fmt.Errorf("failed to marshal result: %w", err)
+	switch {
+	case err != nil:
+		// The body is the ONLY field that can fail to encode — every other
+		// field on CommandResult is a string or an int — so an encoding error
+		// means the body is at fault and dropping it is both sufficient and
+		// correct. Returning here instead would lose the terminal status to an
+		// unencodable detail field (a NaN in a metrics map is enough), which is
+		// precisely the trade #3001 exists to prevent: detail is expendable,
+		// the terminal status is not.
+		bounded, dropped := boundResultFieldForServer(result)
+		if !dropped {
+			// No body to drop, so the failure is something this cannot repair.
+			return fmt.Errorf("failed to marshal result: %w", err)
+		}
+		result = bounded
+		if data, err = json.Marshal(result); err != nil {
+			return fmt.Errorf("failed to marshal result after dropping its body: %w", err)
+		}
+
+	case len(data) > wire.CommandResultBudget:
+		// Only pay for the precise per-field measurement once the whole frame
+		// is over the budget — the `result` field's encoded bytes are a subset
+		// of the frame's, so a frame under the budget cannot contain a field
+		// over it.
+		if bounded, dropped := boundResultFieldForServer(result); dropped {
+			result = bounded
+			if data, err = json.Marshal(result); err != nil {
+				return fmt.Errorf("failed to marshal bounded result: %w", err)
+			}
+		}
 	}
 
 	select {
@@ -751,6 +787,112 @@ func (c *Client) SendResult(result CommandResult) error {
 	default:
 		return fmt.Errorf("send channel is full")
 	}
+}
+
+// resultOmittedMarker is the body substituted for an oversize `result`. The
+// key is deliberately distinctive so it can be grepped for in stored command
+// results and correlated with the agent-side error log.
+const resultOmittedMarker = "_breezeResultOmitted"
+
+// boundResultFieldForServer replaces an oversize `result` body with a small
+// marker describing what was dropped, returning the bounded result and whether
+// any change was made.
+//
+// This is the LAST line of defence for #3001, and it is deliberately generic
+// rather than backup-specific. The server rejects a command_result whose
+// `result` field exceeds wire.MaxCommandResultBytes, and it rejects the WHOLE
+// message when it does — status, exit code and error text included. So an
+// oversize body did not merely lose its detail: it lost the fact that the
+// command had finished at all, leaving the server to reap a job that had
+// succeeded. Every command type shares that exposure (software inventory,
+// patch scans, filesystem analysis are all `result` bodies that scale with the
+// endpoint), not just backups.
+//
+// Trading the body for a marker is therefore always the right trade: losing
+// the detail is bad, losing the terminal status is far worse.
+//
+// Producers should still bound their own payloads intelligently — the backup
+// helper's tiers keep the snapshot identity and counters, which this cannot —
+// so reaching here at all means a producer's own bounding was missing or wrong,
+// and it logs at error accordingly.
+func boundResultFieldForServer(result CommandResult) (CommandResult, bool) {
+	if result.Result == nil {
+		return result, false
+	}
+	encoded, err := json.Marshal(result.Result)
+	if err != nil {
+		log.Error("command result body cannot be marshalled; sending the terminal status without it",
+			"commandId", result.CommandID,
+			"status", result.Status,
+			"error", err.Error(),
+		)
+		result.Result = map[string]any{
+			resultOmittedMarker: true,
+			"reason":            "result body could not be encoded",
+		}
+		return result, true
+	}
+	// Measured against the BUDGET, not the bare cap. The server does not check
+	// these bytes: it re-encodes with JSON.stringify after JSON.parse and checks
+	// the result of that, so Go's count is a close proxy but not the same
+	// number. Spending the headroom here is nearly free — it drops a body only
+	// in the narrow band just under the cap, and the terminal status still
+	// lands — whereas being wrong by one byte costs the entire message. For
+	// every command type other than backup this is the only guard there is.
+	if len(encoded) <= wire.CommandResultBudget {
+		return result, false
+	}
+
+	log.Error("command result body exceeds the server's result budget and was dropped to preserve the terminal status",
+		"commandId", result.CommandID,
+		"status", result.Status,
+		"resultBytes", len(encoded),
+		"budgetBytes", wire.CommandResultBudget,
+		"limitBytes", wire.MaxCommandResultBytes,
+	)
+	result.Result = map[string]any{
+		resultOmittedMarker: true,
+		"reason":            "result body exceeded the server's command_result size limit",
+		"originalBytes":     len(encoded),
+		"limitBytes":        wire.MaxCommandResultBytes,
+	}
+	return result, true
+}
+
+// logServerErrorFrame surfaces a server-side rejection of something this agent
+// sent.
+//
+// Before #3001 these frames were discarded by the `msg.ID == ""` skip below,
+// which is why a rejected terminal backup result produced NO agent-side trace
+// whatsoever — the write succeeded, so every send path reported success, and
+// the server's explanation was thrown away on arrival. An operator comparing
+// agent and server logs saw a result that left the endpoint and never landed,
+// with nothing anywhere naming a cause.
+func logServerErrorFrame(raw []byte) {
+	var frame struct {
+		Code        string          `json:"code"`
+		Message     string          `json:"message"`
+		MessageType string          `json:"messageType"`
+		CommandID   string          `json:"commandId"`
+		Details     json.RawMessage `json:"details"`
+	}
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		log.Error("server rejected a message and the error frame could not be parsed",
+			"error", err.Error())
+		return
+	}
+	// Bounded so a verbose `details` array cannot flood the agent log.
+	details := string(frame.Details)
+	if len(details) > 2048 {
+		details = details[:2048] + "…(truncated)"
+	}
+	log.Error("server rejected a message sent by this agent",
+		"code", frame.Code,
+		"serverMessage", frame.Message,
+		"rejectedType", frame.MessageType,
+		"commandId", frame.CommandID,
+		"details", details,
+	)
 }
 
 // handleResultWriteFailure hands a command result that writePump could not

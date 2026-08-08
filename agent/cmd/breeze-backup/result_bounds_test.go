@@ -75,7 +75,7 @@ func buildLargeRunJob(files, failures int) *backup.BackupJob {
 // Building and marshalling a 60k-entry manifest costs ~5s under -race, and
 // several tests need the identical input, so the marshalled stdout is built
 // once per package run. The fixtures are treated strictly read-only (Go strings
-// are immutable and fitBackupResultToIPC takes its argument by value).
+// are immutable and fitBackupResultForDelivery takes its argument by value).
 var (
 	oversizeRunOnce   sync.Once
 	oversizeRunStdout string
@@ -155,10 +155,10 @@ func TestUnboundedRunResultExceedsIPCLimit(t *testing.T) {
 // TestFitBackupResultBoundsLargeRun is the core contract: whatever the run
 // produced, the result handed to conn.Send fits the frame.
 func TestFitBackupResultBoundsLargeRun(t *testing.T) {
-	fitted, degraded := fitBackupResultToIPC(oversizeRunResult(t))
+	fitted, degraded := fitBackupResultForDelivery(oversizeRunResult(t))
 
 	if degraded == "" {
-		t.Fatal("expected fitBackupResultToIPC to report that it degraded the payload")
+		t.Fatal("expected fitBackupResultForDelivery to report that it degraded the payload")
 	}
 	if got := payloadSize(t, fitted); got > resultPayloadBudget {
 		t.Fatalf("fitted payload is %d bytes, over the %d budget", got, resultPayloadBudget)
@@ -171,7 +171,7 @@ func TestFitBackupResultBoundsLargeRun(t *testing.T) {
 // truncation. Losing error detail is acceptable; losing the fact that the
 // backup succeeded is not.
 func TestFitBackupResultPreservesTerminalStatus(t *testing.T) {
-	fitted, _ := fitBackupResultToIPC(oversizeRunResult(t))
+	fitted, _ := fitBackupResultForDelivery(oversizeRunResult(t))
 
 	if !fitted.Success {
 		t.Error("expected Success to survive truncation")
@@ -230,7 +230,7 @@ func TestFitBackupResultPreservesTerminalStatus(t *testing.T) {
 // turns into the browsable restore file list.
 func TestFitBackupResultKeepsFileIndexWhenItFits(t *testing.T) {
 	job := buildLargeRunJob(500, 0)
-	fitted, degraded := fitBackupResultToIPC(mustRunResult(t, job))
+	fitted, degraded := fitBackupResultForDelivery(mustRunResult(t, job))
 
 	if degraded != "" {
 		t.Errorf("expected no degradation for a small run, got %q", degraded)
@@ -257,7 +257,7 @@ func TestFitBackupResultBoundsOversizeStderr(t *testing.T) {
 	huge := strings.Repeat("open C:\\Users\\jdoe\\file.dat: access is denied; ", 900000)
 	result := backupipc.BackupCommandResult{CommandID: "cmd-1", Success: false, Stderr: huge}
 
-	fitted, degraded := fitBackupResultToIPC(result)
+	fitted, degraded := fitBackupResultForDelivery(result)
 	if degraded == "" {
 		t.Error("expected an oversize stderr to be reported as degraded")
 	}
@@ -324,7 +324,7 @@ func TestFitBackupResultAlwaysFits(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			fitted, _ := fitBackupResultToIPC(tc.in)
+			fitted, _ := fitBackupResultForDelivery(tc.in)
 			if got := payloadSize(t, fitted); got > resultPayloadBudget {
 				t.Fatalf("fitted payload is %d bytes, over the %d budget", got, resultPayloadBudget)
 			}
@@ -419,7 +419,7 @@ func TestFitBackupResultPreservesRestoreScalars(t *testing.T) {
 	}
 	in := backupipc.BackupCommandResult{CommandID: "restore-1", Success: true, Stdout: string(data)}
 
-	fitted, degraded := fitBackupResultToIPC(in)
+	fitted, degraded := fitBackupResultForDelivery(in)
 	if degraded == "" {
 		t.Fatal("expected an oversize restore result to be reported as degraded")
 	}
@@ -469,7 +469,7 @@ func TestFitBackupResultRejectsUnsummarisableBody(t *testing.T) {
 		Stdout:    "[" + strings.Repeat(entry, 400000) + `{"id":"tail"}]`,
 	}
 
-	fitted, degraded := fitBackupResultToIPC(in)
+	fitted, degraded := fitBackupResultForDelivery(in)
 	if degraded == "" {
 		t.Fatal("expected an oversize list result to be reported as degraded")
 	}
@@ -482,7 +482,7 @@ func TestFitBackupResultRejectsUnsummarisableBody(t *testing.T) {
 	if fitted.Stdout != "" {
 		t.Errorf("expected an empty stdout, got %.80q", fitted.Stdout)
 	}
-	if !strings.Contains(fitted.Stderr, "IPC limit") {
+	if !strings.Contains(fitted.Stderr, limitExceededPhrase) {
 		t.Errorf("expected the stderr to explain the oversize, got %.120q", fitted.Stderr)
 	}
 }
@@ -493,7 +493,7 @@ func TestFitBackupResultRejectsUnsummarisableBody(t *testing.T) {
 // would leave a previous delivery's backup_snapshot_files rows in place while
 // hasIndexedFiles flipped to false — two states that then disagree.
 func TestEmptySnapshotFilesKeepsTheFilesKey(t *testing.T) {
-	fitted, _ := fitBackupResultToIPC(oversizeRunResult(t))
+	fitted, _ := fitBackupResultForDelivery(oversizeRunResult(t))
 
 	var out map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(fitted.Stdout), &out); err != nil {
@@ -528,7 +528,7 @@ func TestFitBackupResultDropsOversizeSystemStateManifest(t *testing.T) {
 		`"snapshot":{"id":"snapshot-1","size":345},"systemStateManifest":` + manifest + `}`
 	in := backupipc.BackupCommandResult{CommandID: "sysimage-1", Success: true, Stdout: stdout}
 
-	fitted, degraded := fitBackupResultToIPC(in)
+	fitted, degraded := fitBackupResultForDelivery(in)
 	if got := payloadSize(t, fitted); got > resultPayloadBudget {
 		t.Fatalf("fitted payload is %d bytes, over the %d budget", got, resultPayloadBudget)
 	}
@@ -579,7 +579,7 @@ func TestFitBackupResultReducesToScalars(t *testing.T) {
 		t.Fatalf("fixture must be oversize, got %d bytes", len(in.Stdout))
 	}
 
-	fitted, degraded := fitBackupResultToIPC(in)
+	fitted, degraded := fitBackupResultForDelivery(in)
 	if got := payloadSize(t, fitted); got > resultPayloadBudget {
 		t.Fatalf("fitted payload is %d bytes, over the %d budget", got, resultPayloadBudget)
 	}
@@ -641,7 +641,7 @@ func TestFitBackupResultLastResortRecoversStatus(t *testing.T) {
 	b.WriteString("}")
 	in := backupipc.BackupCommandResult{CommandID: "cmd-lastresort", Success: true, Stdout: b.String()}
 
-	fitted, degraded := fitBackupResultToIPC(in)
+	fitted, degraded := fitBackupResultForDelivery(in)
 	if got := payloadSize(t, fitted); got > resultPayloadBudget {
 		t.Fatalf("fitted payload is %d bytes, over the %d budget", got, resultPayloadBudget)
 	}
@@ -666,7 +666,7 @@ func TestFitBackupResultLastResortRecoversStatus(t *testing.T) {
 	if out.ID != "job-9" {
 		t.Errorf("expected tier 4 to recover the job id, got %q", out.ID)
 	}
-	if !strings.Contains(out.Warning, "IPC limit") {
+	if !strings.Contains(out.Warning, limitExceededPhrase) {
 		t.Errorf("expected tier 4 to explain itself in the warning, got %q", out.Warning)
 	}
 }

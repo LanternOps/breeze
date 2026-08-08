@@ -50,7 +50,7 @@ func atCapWarning() string {
 // tiers that fired.
 func fittedWarning(t *testing.T, in backupCommandResultFixture) (warning string, degraded string) {
 	t.Helper()
-	fitted, degraded := fitBackupResultToIPC(in.result())
+	fitted, degraded := fitBackupResultForDelivery(in.result())
 	if got := payloadSize(t, fitted); got > resultPayloadBudget {
 		t.Fatalf("fitted payload is %d bytes, over the %d budget", got, resultPayloadBudget)
 	}
@@ -254,7 +254,7 @@ func TestTier4PreservesOperatorWarning(t *testing.T) {
 	}
 	// The tier still has to say what it did — a preserved warning that hid the
 	// truncation would be its own kind of lie.
-	if !strings.Contains(warning, "IPC limit") {
+	if !strings.Contains(warning, limitExceededPhrase) {
 		t.Errorf("tier 4 stopped explaining itself; warning = %.300q", warning)
 	}
 }
@@ -272,7 +272,7 @@ func TestTier4BoundsThePreservedWarning(t *testing.T) {
 	if len(warning) > maxResultTextBytes {
 		t.Errorf("tier 4 left the warning unbounded at %d bytes", len(warning))
 	}
-	if !strings.Contains(warning, "IPC limit") {
+	if !strings.Contains(warning, limitExceededPhrase) {
 		t.Errorf("tier 4 stopped explaining itself; warning = %.300q", warning)
 	}
 }
@@ -312,7 +312,7 @@ func TestBoundingNotesAreIndividuallyCapped(t *testing.T) {
 	if !strings.Contains(warning, "read from the live volume") {
 		t.Errorf("the operator signal was evicted by an oversized note; warning = %.300q", warning)
 	}
-	if !strings.Contains(warning, "IPC limit") {
+	if !strings.Contains(warning, limitExceededPhrase) {
 		t.Errorf("an oversized earlier note crowded the last tier's note out of the reserve; warning = %.400q", warning)
 	}
 }

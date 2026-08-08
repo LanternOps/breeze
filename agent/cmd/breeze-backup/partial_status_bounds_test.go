@@ -25,7 +25,7 @@ import (
 // tier that fired.
 func fitPartial(t *testing.T, in backupipc.BackupCommandResult) (status string, degraded string, fitted backupipc.BackupCommandResult) {
 	t.Helper()
-	fitted, degraded = fitBackupResultToIPC(in)
+	fitted, degraded = fitBackupResultForDelivery(in)
 	if got := payloadSize(t, fitted); got > resultPayloadBudget {
 		t.Fatalf("fitted payload is %d bytes, over the %d budget", got, resultPayloadBudget)
 	}
