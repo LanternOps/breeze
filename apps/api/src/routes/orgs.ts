@@ -1407,7 +1407,10 @@ function resolveImportPartnerId(
   return { partnerId };
 }
 
-orgRoutes.post('/import/preview', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), zValidator('json', previewOrgImportSchema), async (c) => {
+// The import creates SITES as well as orgs, so it is gated on sites:write in
+// addition to orgs:write (#3242). Preview carries the same gate for an early,
+// honest failure — a preview a caller could never commit is a trap.
+orgRoutes.post('/import/preview', requireScope('partner', 'system'), requireOrgWrite, requireSiteWrite, requireMfa(), zValidator('json', previewOrgImportSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { rows, partnerId: bodyPartnerId } = c.req.valid('json');
 
@@ -1420,7 +1423,7 @@ orgRoutes.post('/import/preview', requireScope('partner', 'system'), requireOrgW
   return c.json({ rows: annotated });
 });
 
-orgRoutes.post('/import', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), zValidator('json', commitOrgImportSchema), async (c) => {
+orgRoutes.post('/import', requireScope('partner', 'system'), requireOrgWrite, requireSiteWrite, requireMfa(), zValidator('json', commitOrgImportSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { rows, mode, partnerId: bodyPartnerId } = c.req.valid('json');
 

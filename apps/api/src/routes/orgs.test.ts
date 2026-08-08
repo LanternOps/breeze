@@ -195,9 +195,11 @@ vi.mock('drizzle-orm', async (importActual) => {
 
 // Mutable switch for the requirePermission mock so individual tests can
 // simulate a caller whose role LACKS the gated permission (the real middleware
-// 403s). Hoisted because the vi.mock factory below references it. Reset to
-// granted in beforeEach.
-const permissionMockState = vi.hoisted(() => ({ granted: true }));
+// 403s). `granted = false` denies everything; `denied` denies specific
+// `resource:action` pairs so a test can withhold ONE permission (e.g.
+// sites:write) while the rest stay granted. Hoisted because the vi.mock
+// factory below references it. Reset to granted/empty in beforeEach.
+const permissionMockState = vi.hoisted(() => ({ granted: true, denied: new Set<string>() }));
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
@@ -221,8 +223,8 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requirePartner: vi.fn((c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (c: any, next: any) => {
-    if (!permissionMockState.granted) {
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    if (!permissionMockState.granted || permissionMockState.denied.has(`${resource}:${action}`)) {
       return c.json({ error: 'Permission denied' }, 403);
     }
     return next();
@@ -304,6 +306,7 @@ describe('org routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     permissionMockState.granted = true;
+    permissionMockState.denied.clear();
     setAuthContext();
     app = new Hono();
     app.route('/orgs', orgRoutes);
@@ -4541,6 +4544,28 @@ describe('org routes', () => {
       });
       expect(res.status).toBe(403);
       expect(orgImportMocks.commitOrgImport).not.toHaveBeenCalled();
+    });
+
+    it('403s commit when the caller lacks sites:write (the import creates sites too)', async () => {
+      permissionMockState.denied.add('sites:write');
+      const res = await app.request('/orgs/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(previewBody),
+      });
+      expect(res.status).toBe(403);
+      expect(orgImportMocks.commitOrgImport).not.toHaveBeenCalled();
+    });
+
+    it('403s preview when the caller lacks sites:write (early honest failure)', async () => {
+      permissionMockState.denied.add('sites:write');
+      const res = await app.request('/orgs/import/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(previewBody),
+      });
+      expect(res.status).toBe(403);
+      expect(orgImportMocks.previewOrgImport).not.toHaveBeenCalled();
     });
 
     it('rejects a partner-scope body naming a different partner', async () => {

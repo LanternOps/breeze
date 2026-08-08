@@ -11,6 +11,9 @@ const { selectMock, insertMock, updateMock, restoreOrgAccessMock } = vi.hoisted(
 vi.mock('../../db', () => ({
   db: { select: selectMock, insert: insertMock, update: updateMock },
   runOutsideDbContext: (fn: () => unknown) => fn(),
+  // The real helper runs its callback inside ONE transaction (SET LOCAL RLS
+  // GUCs), which is what makes createGroup all-or-nothing; the pass-through
+  // here means rejections propagate like a rollback would.
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
 
@@ -240,6 +243,22 @@ describe('commitOrgImport — create', () => {
     expect(insertedValues[3]!.values).toMatchObject({ name: 'Warehouse', timezone: 'UTC' });
   });
 
+  it('maps a case-duplicate site row to the already-created site instead of null', async () => {
+    stubState([], []);
+    const summary = await commitOrgImport([
+      { organization: 'Acme', site: 'HQ' },
+      { organization: 'Acme', site: 'hq' },
+    ], 'p1', { userId: null }, 'skip');
+    expect(summary.errors).toEqual([]);
+    expect(summary.imported).toHaveLength(2);
+    // org insert + ONE site insert — the duplicate name is not re-created…
+    expect(insertedValues).toHaveLength(2);
+    // …but the deduped row still reports the created site, not null.
+    expect(summary.imported[0]!.siteId).not.toBeNull();
+    expect(summary.imported[1]!.siteId).toBe(summary.imported[0]!.siteId);
+    expect(summary.imported[1]!.siteName).toBe('HQ');
+  });
+
   it('creates a default site named after the org when no row names a site', async () => {
     stubState([], []);
     const summary = await commitOrgImport([{ organization: 'Acme' }], 'p1', { userId: null }, 'skip');
@@ -259,7 +278,7 @@ describe('commitOrgImport — create', () => {
       'p1', { userId: null }, 'skip',
     );
     expect(summary.skipped).toEqual([
-      { index: 0, organization: 'Acme', organizationId: 'org-1', reason: 'already_linked' },
+      { index: 0, organization: 'Acme', organizationId: 'org-1', reason: 'already_linked', createdLink: false },
     ]);
     expect(insertMock).not.toHaveBeenCalled();
   });
@@ -282,7 +301,7 @@ describe('commitOrgImport — create', () => {
 
   it('reclassifies a concurrent link unique-violation as skipped', async () => {
     stubState([], [], [[{ orgId: 'org-winner' }]]);
-    const dup = Object.assign(new Error('dup'), { code: '23505' });
+    const dup = Object.assign(new Error('dup'), { code: '23505', constraint: 'organization_external_links_uniq' });
     // Org insert succeeds; the link insert hits the unique index.
     stubInserts({ failOn: (v) => ('externalId' in v ? dup : null) });
     const summary = await commitOrgImport(
@@ -291,7 +310,58 @@ describe('commitOrgImport — create', () => {
     );
     expect(summary.errors).toEqual([]);
     expect(summary.skipped).toEqual([
-      { index: 0, organization: 'Acme', organizationId: 'org-winner', reason: 'created_concurrently' },
+      { index: 0, organization: 'Acme', organizationId: 'org-winner', reason: 'created_concurrently', createdLink: false },
+    ]);
+  });
+
+  it('also takes the concurrent-link path for the legacy accounting constraint (postgres.js constraint_name field)', async () => {
+    stubState([], [], [[{ orgId: 'org-winner' }]]);
+    const dup = Object.assign(new Error('dup'), { code: '23505', constraint_name: 'organizations_accounting_external_uniq' });
+    stubInserts({ failOn: (v) => ('externalId' in v ? dup : null) });
+    const summary = await commitOrgImport(
+      [{ organization: 'Acme', externalId: '1' }],
+      'p1', { userId: null }, 'skip',
+    );
+    expect(summary.errors).toEqual([]);
+    expect(summary.skipped).toEqual([
+      { index: 0, organization: 'Acme', organizationId: 'org-winner', reason: 'created_concurrently', createdLink: false },
+    ]);
+  });
+
+  it('reports a NON-link unique violation as a per-group error, never created_concurrently (#3242)', async () => {
+    stubState([], []);
+    // A site unique index trips inside the group transaction. Before the
+    // constraint check this misreported as created_concurrently with a null
+    // organizationId; it must surface as an ordinary error naming the index.
+    const dup = Object.assign(
+      new Error('duplicate key value violates unique constraint "sites_org_id_name_uniq"'),
+      { code: '23505', constraint: 'sites_org_id_name_uniq' },
+    );
+    stubInserts({ failOn: (v) => ('timezone' in v ? dup : null) });
+    const summary = await commitOrgImport(
+      [{ organization: 'Acme', site: 'HQ', externalId: '1' }],
+      'p1', { userId: null }, 'skip',
+    );
+    expect(summary.skipped).toEqual([]);
+    expect(summary.imported).toEqual([]);
+    expect(summary.errors).toHaveLength(1);
+    expect(summary.errors[0]!.error).toMatch(/sites_org_id_name_uniq/);
+  });
+
+  it('fails the WHOLE group when a site insert fails — no stranded org with partial sites', async () => {
+    stubState([], []);
+    // Second site insert fails; org + link + first site must roll back with it
+    // (single transaction), reporting one per-group error for every row.
+    stubInserts({ failOn: (v) => (v.name === 'Depot' ? new Error('site boom') : null) });
+    const summary = await commitOrgImport([
+      { organization: 'Acme', site: 'HQ', externalId: '1' },
+      { organization: 'Acme', site: 'Depot', externalId: '1' },
+    ], 'p1', { userId: null }, 'skip');
+    expect(summary.imported).toEqual([]);
+    expect(summary.skipped).toEqual([]);
+    expect(summary.errors).toEqual([
+      { index: 0, organization: 'Acme', error: 'site boom' },
+      { index: 1, organization: 'Acme', error: 'site boom' },
     ]);
   });
 });
@@ -310,7 +380,7 @@ describe('commitOrgImport — expectation guard', () => {
     const rows: CommitRowInput[] = [{ organization: 'Acme', expectedAnnotation: 'name-match' }];
     const summary = await commitOrgImport(rows, 'p1', { userId: null }, 'skip');
     expect(summary.skipped).toEqual([
-      { index: 0, organization: 'Acme', organizationId: 'org-1', reason: 'name_match_confirmed' },
+      { index: 0, organization: 'Acme', organizationId: 'org-1', reason: 'name_match_confirmed', createdLink: false },
     ]);
   });
 
@@ -337,7 +407,7 @@ describe('commitOrgImport — expectation guard', () => {
     const summary = await commitOrgImport(rows, 'p1', { userId: null }, 'skip');
     expect(summary.errors).toEqual([]);
     expect(summary.skipped).toEqual([
-      { index: 0, organization: 'Acme', organizationId: 'org-1', reason: 'name_match_confirmed' },
+      { index: 0, organization: 'Acme', organizationId: 'org-1', reason: 'name_match_confirmed', createdLink: false },
     ]);
   });
 
@@ -383,6 +453,106 @@ describe('commitOrgImport — expectation guard', () => {
     ]);
     expect(updatedValues[0]!.set).toMatchObject({ deletedAt: null, status: 'active' });
     expect(restoreOrgAccessMock).toHaveBeenCalledWith('org-1');
+  });
+});
+
+describe('commitOrgImport — skip-mode link persistence (#3242)', () => {
+  it('writes the link row for an acknowledged name-match with an externalId even in skip mode', async () => {
+    stubState([{ id: 'org-1', name: 'Acme', slug: 'acme' }], []);
+    const rows: CommitRowInput[] = [
+      { organization: 'Acme', externalId: '42', externalSystem: 'datto_rmm', expectedAnnotation: 'name-match' },
+    ];
+    const summary = await commitOrgImport(rows, 'p1', { userId: 'u1' }, 'skip');
+    expect(summary.errors).toEqual([]);
+    expect(summary.skipped).toEqual([
+      { index: 0, organization: 'Acme', organizationId: 'org-1', reason: 'name_match_confirmed', createdLink: true },
+    ]);
+    // Exactly ONE insert — the link row. The org itself stays untouched (skip).
+    expect(insertedValues).toHaveLength(1);
+    expect(insertedValues[0]!.values).toMatchObject({
+      orgId: 'org-1', partnerId: 'p1', system: 'datto_rmm', externalId: '42', createdBy: 'u1',
+    });
+  });
+
+  it('treats a lost race that linked the SAME org as already linked (no createdLink flag)', async () => {
+    // Link insert loses the race; the re-read shows the winner is our org-1 —
+    // an idempotent re-acknowledgement, still a plain skip.
+    stubState([{ id: 'org-1', name: 'Acme', slug: 'acme' }], [], [[{ orgId: 'org-1' }]]);
+    const dup = Object.assign(new Error('dup'), { code: '23505', constraint: 'organization_external_links_uniq' });
+    stubInserts({ failOn: () => dup });
+    const summary = await commitOrgImport(
+      [{ organization: 'Acme', externalId: '42', expectedAnnotation: 'name-match' } as CommitRowInput],
+      'p1', { userId: null }, 'skip',
+    );
+    expect(summary.errors).toEqual([]);
+    expect(summary.skipped).toEqual([
+      { index: 0, organization: 'Acme', organizationId: 'org-1', reason: 'name_match_confirmed', createdLink: false },
+    ]);
+  });
+
+  it('refuses the acknowledgement when a concurrent import linked the external id to a DIFFERENT org', async () => {
+    // Link insert loses the race and the re-read shows the winner is org-2:
+    // reporting name_match_confirmed for org-1 would silently drop the
+    // acknowledgement while the durable link points elsewhere.
+    stubState([{ id: 'org-1', name: 'Acme', slug: 'acme' }], [], [[{ orgId: 'org-2' }]]);
+    const dup = Object.assign(new Error('dup'), { code: '23505', constraint: 'organization_external_links_uniq' });
+    stubInserts({ failOn: () => dup });
+    const summary = await commitOrgImport(
+      [{ organization: 'Acme', externalId: '42', expectedAnnotation: 'name-match' } as CommitRowInput],
+      'p1', { userId: null }, 'skip',
+    );
+    expect(summary.skipped).toEqual([]);
+    expect(summary.updated).toEqual([]);
+    expect(summary.errors).toHaveLength(1);
+    expect(summary.errors[0]!.error).toMatch(/different organization/);
+    expect(summary.errors[0]!.error).toMatch(/org-2/);
+  });
+
+  it('keeps the group skipped (with a warning) when the optional link persistence fails non-fatally', async () => {
+    stubState([{ id: 'org-1', name: 'Acme', slug: 'acme' }], []);
+    stubInserts({ failOn: () => new Error('connection reset') });
+    const summary = await commitOrgImport(
+      [{ organization: 'Acme', externalId: '42', expectedAnnotation: 'name-match' } as CommitRowInput],
+      'p1', { userId: null }, 'skip',
+    );
+    // The skip path was write-free before the link attach existed — a failed
+    // optional write must not reclassify the group as errors.
+    expect(summary.errors).toEqual([]);
+    expect(summary.skipped).toHaveLength(1);
+    expect(summary.skipped[0]).toMatchObject({
+      index: 0, organizationId: 'org-1', reason: 'name_match_confirmed', createdLink: false,
+    });
+    expect(summary.skipped[0]!.warning).toMatch(/connection reset/);
+  });
+
+  it('persists the link row for a reactivated soft-deleted match in skip mode too', async () => {
+    // Soft-deleted org matched by NAME with an externalId on the row: the
+    // reactivate opt-in is an explicit acknowledgement, so the link must be
+    // written even though mode is skip.
+    stubState([{ id: 'org-1', name: 'Acme', slug: 'acme', deletedAt: new Date('2026-01-01') }], []);
+    const rows: CommitRowInput[] = [
+      { organization: 'Acme', externalId: '42', externalSystem: 'datto_rmm', expectedAnnotation: 'matched-soft-deleted', reactivate: true },
+    ];
+    const summary = await commitOrgImport(rows, 'p1', { userId: 'u1' }, 'skip');
+    expect(summary.errors).toEqual([]);
+    expect(summary.updated).toEqual([
+      expect.objectContaining({ organizationId: 'org-1', reactivated: true, createdLink: true }),
+    ]);
+    expect(insertedValues[0]!.values).toMatchObject({
+      orgId: 'org-1', partnerId: 'p1', system: 'datto_rmm', externalId: '42', createdBy: 'u1',
+    });
+  });
+
+  it('writes no link row for an acknowledged name-match WITHOUT an externalId', async () => {
+    stubState([{ id: 'org-1', name: 'Acme', slug: 'acme' }], []);
+    const summary = await commitOrgImport(
+      [{ organization: 'Acme', expectedAnnotation: 'name-match' } as CommitRowInput],
+      'p1', { userId: null }, 'skip',
+    );
+    expect(summary.skipped).toEqual([
+      { index: 0, organization: 'Acme', organizationId: 'org-1', reason: 'name_match_confirmed', createdLink: false },
+    ]);
+    expect(insertMock).not.toHaveBeenCalled();
   });
 });
 
