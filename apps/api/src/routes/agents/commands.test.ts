@@ -79,6 +79,20 @@ vi.mock('../../services/auditBaselineService', () => ({
   processCollectedAuditPolicyCommandResult: vi.fn(),
 }));
 
+// #3097 — the shared registry this route now dispatches for the handful of
+// types it never post-processed inline. `cis_benchmark` is present here on
+// purpose: it is one of the thirteen keys this route DOES handle inline, so its
+// mock existing proves the route skips the registry by intent rather than
+// because the handler happened to be missing.
+const scriptRegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
+const cisRegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
+vi.mock('../../services/commandResultHandlers', () => ({
+  commandResultHandlers: {
+    script: (...args: unknown[]) => scriptRegistryHandlerMock(...(args as [])),
+    cis_benchmark: (...args: unknown[]) => cisRegistryHandlerMock(...(args as [])),
+  },
+}));
+
 vi.mock('../../services/sentry', () => ({
   captureException: vi.fn(),
   // BREEZE-X: the terminal CAS now runs through dbWriteExpectingRows, which
@@ -88,6 +102,7 @@ vi.mock('../../services/sentry', () => ({
 }));
 
 import { captureMessage } from '../../services/sentry';
+import { handleCisCommandResult } from './helpers';
 import { commandsRoutes } from './commands';
 import { and, eq } from 'drizzle-orm';
 import { deploymentResults } from '../../db/schema';
@@ -163,6 +178,72 @@ describe('agent commands routes', () => {
       });
     }
   );
+
+  // #3097 — a script result submitted over HTTP used to reach no per-type
+  // handler at all, so script_executions kept whatever status the reaper had
+  // written while the real output sat in device_commands.result.
+  it('dispatches a script result to the shared handler over the HTTP path', async () => {
+    const command = {
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'script',
+      status: 'sent',
+      payload: { executionId: '33333333-3333-4333-8333-333333333333' },
+    };
+    selectMock.mockReturnValueOnce(chainMock([command]));
+    updateMock.mockReturnValueOnce(chainMock([{ id: 'cmd-1' }]));
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commandId,
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'hello from the script',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(scriptRegistryHandlerMock).toHaveBeenCalledTimes(1);
+    expect(scriptRegistryHandlerMock).toHaveBeenCalledWith({
+      agentId: 'agent-1',
+      command: expect.objectContaining({ id: commandId, type: 'script' }),
+      // The id comes from the authorized path param, never the request body.
+      commandId,
+      result: expect.objectContaining({ status: 'completed', exitCode: 0 }),
+      resolvedDeviceId: 'device-1',
+      stdout: 'hello from the script',
+    });
+  });
+
+  // The other half of the contract: types this route already post-processes
+  // inline must NOT also go through the registry, or every one of them would
+  // run twice.
+  it('does not re-dispatch a type it already handles inline', async () => {
+    selectMock.mockReturnValueOnce(
+      chainMock([
+        {
+          id: commandId,
+          deviceId: 'device-1',
+          type: 'cis_benchmark',
+          status: 'sent',
+        },
+      ])
+    );
+    updateMock.mockReturnValueOnce(chainMock([{ id: 'cmd-1' }]));
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', stdout: '{}' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(cisRegistryHandlerMock).not.toHaveBeenCalled();
+    // …and the inline path is what actually ran.
+    expect(vi.mocked(handleCisCommandResult)).toHaveBeenCalledTimes(1);
+  });
 
   it('claims commands for the authenticated credential role only', async () => {
     claimPendingCommandsForDeviceMock.mockResolvedValueOnce([
