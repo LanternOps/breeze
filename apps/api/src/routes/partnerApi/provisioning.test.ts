@@ -161,10 +161,22 @@ beforeEach(() => {
 });
 
 describe('POST /organizations', () => {
-  function primeSuccess({ maxOrganizations = null as number | null, orgCount = 0 } = {}) {
+  function primeSuccess({
+    maxOrganizations = null as number | null,
+    orgCount = 0,
+    postInsertCount = null as number | null,
+  } = {}) {
+    // Select order with a cap configured: partner row → pre-insert count →
+    // post-insert recount → export-stamp re-read. Without a cap the counts
+    // are skipped entirely.
     selectResults = maxOrganizations === null
       ? [[{ maxOrganizations }], [{ partnerExportUpdatedAt: UPDATED_AT }]]
-      : [[{ maxOrganizations }], [{ value: orgCount }], [{ partnerExportUpdatedAt: UPDATED_AT }]];
+      : [
+        [{ maxOrganizations }],
+        [{ value: orgCount }],
+        [{ value: postInsertCount ?? orgCount + 1 }],
+        [{ partnerExportUpdatedAt: UPDATED_AT }],
+      ];
     insertResults = [[orgRow]];
   }
 
@@ -212,6 +224,16 @@ describe('POST /organizations', () => {
     primeSuccess({ maxOrganizations: 3, orgCount: 2 });
     const res = await post('/organizations', 'organizations:write', { name: 'Acme', slug: 'acme' });
     expect(res.status).toBe(201);
+  });
+
+  it('rolls back an insert a concurrent create raced past the cap', async () => {
+    // Pre-insert count passes (2 < 3) but the post-insert recount sees 4 —
+    // a concurrent transaction committed first. The insert must be rolled
+    // back and reported as the same specific quota error.
+    primeSuccess({ maxOrganizations: 3, orgCount: 2, postInsertCount: 4 });
+    const res = await post('/organizations', 'organizations:write', { name: 'Acme', slug: 'acme' });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as any).code).toBe('partner_provisioning_org_limit_reached');
   });
 
   it('maps a slug unique violation to 409', async () => {

@@ -114,6 +114,15 @@ function partnerScopedDbContext(principal: PartnerApiPrincipalContext): DbAccess
   };
 }
 
+/** Thrown inside the create-organization transaction to roll back an insert
+ *  that a concurrent create pushed past `partner.maxOrganizations`. */
+class OrgQuotaExceededError extends Error {
+  constructor(readonly cap: number) {
+    super('partner organization quota exceeded');
+    this.name = 'OrgQuotaExceededError';
+  }
+}
+
 function isUniqueViolation(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const code = (error as { code?: unknown }).code;
@@ -187,6 +196,18 @@ partnerProvisioningRoutes.post(
       | { kind: 'quota'; cap: number }
       | { kind: 'failed' };
 
+    async function countPartnerOrganizations(partnerId: string): Promise<number> {
+      const [tally] = await db
+        .select({ value: sql<number>`count(*)::int` })
+        .from(organizations)
+        .where(and(
+          eq(organizations.partnerId, partnerId),
+          isNull(organizations.deletedAt),
+          ne(organizations.type, 'quick_support'),
+        ));
+      return tally?.value ?? 0;
+    }
+
     let outcome: CreateOutcome;
     try {
       // System context (bounded to this operation): a freshly created org's id
@@ -195,31 +216,17 @@ partnerProvisioningRoutes.post(
       // under partner scope — same escape the human route uses. Partner
       // authority was established by the auth middleware.
       outcome = await withSystemDbAccessContext(async (): Promise<CreateOutcome> => {
-        // Take the partner-export discovery lock EXCLUSIVE up front. This (a)
-        // serializes concurrent creates for the same partner so the
-        // maxOrganizations check below cannot be raced past the cap, and (b)
-        // pre-empts the `organizations` insert trigger, which takes the same
-        // lock and treats an already-held exclusive as re-entrant.
-        await db.execute(sql`SELECT public.breeze_partner_export_lock_partners_exclusive(
-          ARRAY[${principal.partnerId}::uuid]
-        )`);
-
         const [partnerRow] = await db
           .select({ maxOrganizations: partners.maxOrganizations })
           .from(partners)
           .where(eq(partners.id, principal.partnerId))
           .limit(1);
         const cap = partnerRow?.maxOrganizations ?? null;
-        if (cap !== null) {
-          const [tally] = await db
-            .select({ value: sql<number>`count(*)::int` })
-            .from(organizations)
-            .where(and(
-              eq(organizations.partnerId, principal.partnerId),
-              isNull(organizations.deletedAt),
-              ne(organizations.type, 'quick_support'),
-            ));
-          if ((tally?.value ?? 0) >= cap) return { kind: 'quota', cap };
+        // Fast path: refuse before inserting. This check alone is racy — two
+        // concurrent creates could both pass it — so it is backed by the
+        // post-insert recount below.
+        if (cap !== null && await countPartnerOrganizations(principal.partnerId) >= cap) {
+          return { kind: 'quota', cap };
         }
 
         const [organization] = await db
@@ -233,6 +240,20 @@ partnerProvisioningRoutes.post(
           })
           .returning();
         if (!organization) return { kind: 'failed' };
+
+        // Race-free quota enforcement WITHOUT calling the partner-export lock
+        // functions (EXECUTE is deliberately revoked from breeze_app — they
+        // are private to the SECURITY DEFINER insert triggers, see
+        // 2026-07-22-partner-export-lock-upgrade-hardening.sql). The insert
+        // statement's own AFTER trigger takes the partner discovery lock
+        // EXCLUSIVE, so concurrent same-partner org inserts serialize on it
+        // until COMMIT: by the time a second transaction's insert returns,
+        // the first one's row is committed and visible to this READ COMMITTED
+        // recount. Over the cap → throw, which rolls the whole transaction
+        // (and our insert) back.
+        if (cap !== null && await countPartnerOrganizations(principal.partnerId) > cap) {
+          throw new OrgQuotaExceededError(cap);
+        }
 
         // The AFTER-statement export trigger has already stamped
         // partner_export_updated_at by now; re-read it so the create response
@@ -249,13 +270,17 @@ partnerProvisioningRoutes.post(
         };
       });
     } catch (error) {
-      if (isUniqueViolation(error)) {
+      if (error instanceof OrgQuotaExceededError) {
+        // The transaction (including the over-cap insert) has rolled back.
+        outcome = { kind: 'quota', cap: error.cap };
+      } else if (isUniqueViolation(error)) {
         return c.json({
           error: 'An organization with this slug already exists.',
           code: 'partner_provisioning_slug_conflict',
         }, 409);
+      } else {
+        throw error;
       }
-      throw error;
     }
 
     if (outcome.kind === 'quota') {
