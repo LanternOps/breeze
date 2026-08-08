@@ -784,7 +784,11 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
     try {
     // Check if asset already exists (by org + IP)
     const [existing] = await db
-      .select({ id: discoveredAssets.id, typeSource: discoveredAssets.typeSource })
+      .select({
+        id: discoveredAssets.id,
+        typeSource: discoveredAssets.typeSource,
+        autoLinkSuppressedAt: discoveredAssets.autoLinkSuppressedAt
+      })
       .from(discoveredAssets)
       .where(
         and(
@@ -880,8 +884,12 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       newCount++;
     }
 
-    // Auto-link: match discovered asset to enrolled device by MAC or IP
-    if (upsertedAssetId && !alreadyLinked && (assetData.macAddress || assetData.ipAddress)) {
+    // Auto-link: match discovered asset to enrolled device by MAC or IP.
+    // Skip entirely (no match attempt, no write) when a user has manually
+    // unlinked this asset — auto_link_suppressed_at is cleared only by a
+    // manual (re-)link, never by this worker. See design doc A.3.
+    const autoLinkSuppressed = !!existing?.autoLinkSuppressedAt;
+    if (upsertedAssetId && !alreadyLinked && !autoLinkSuppressed && (assetData.macAddress || assetData.ipAddress)) {
       try {
         const conditions = [];
         if (assetData.macAddress) conditions.push(eq(deviceNetwork.macAddress, assetData.macAddress));

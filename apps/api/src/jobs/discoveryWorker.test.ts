@@ -32,7 +32,8 @@ vi.mock('../db/schema', () => ({
     linkedDeviceId: 'discoveredAssets.linkedDeviceId',
     linkSource: 'discoveredAssets.linkSource',
     typeSource: 'discoveredAssets.typeSource',
-    detectedAssetType: 'discoveredAssets.detectedAssetType'
+    detectedAssetType: 'discoveredAssets.detectedAssetType',
+    autoLinkSuppressedAt: 'discoveredAssets.autoLinkSuppressedAt'
   },
   networkTopology: {
     id: 'networkTopology.id',
@@ -381,6 +382,93 @@ describe('processResults — type_source', () => {
       linkSource: null,
     }));
     expect(buildApprovalDecision).toHaveBeenCalled();
+  });
+
+  it('unlink-then-rescan: suppresses auto-link until manually re-linked, then resumes', async () => {
+    // Three phases against the SAME MAC/IP, each a separate processResults()
+    // call (i.e. a separate worker run). updatesByPhase[n] collects every
+    // `.set(...)` payload written during phase n.
+    const updatesByPhase: Record<string, unknown>[][] = [[], [], []];
+    let phase = 0;
+    vi.mocked(mockDb.update).mockImplementation(() => {
+      const chain: Record<string, unknown> = {};
+      chain.set = (args: Record<string, unknown>) => {
+        updatesByPhase[phase]!.push(args);
+        return chain;
+      };
+      chain.where = () => Promise.resolve([]);
+      return chain;
+    });
+
+    // assetType deliberately maps to 'unknown' (not in mapAssetType's table) so
+    // device-role propagation never fires — irrelevant to this test and would
+    // otherwise require mocking an extra select per phase.
+    const host: DiscoveredHostResult = {
+      ip: '192.168.1.60',
+      mac: 'aa:bb:cc:dd:ee:60',
+      assetType: 'unrecognized-type',
+      methods: [],
+    };
+
+    // ── Phase 1 (first worker run): fresh asset, MAC/IP matches an enrolled
+    // device — auto-link writes linkedDeviceId + link_source:'auto'. ──
+    phase = 0;
+    selectCallIndex = 0;
+    selectQueue = [
+      ...baseSelectQueue(),
+      [],                          // [6] no existing asset yet
+      [{ deviceId: 'device-1' }],  // [7] auto-link match found
+    ];
+    await processResults(makeData([host]));
+
+    expect(updatesByPhase[0]).toContainEqual(expect.objectContaining({
+      linkedDeviceId: 'device-1',
+      linkSource: 'auto',
+    }));
+
+    // ── Phase 2: simulate a manual unlink directly on the fixture — the
+    // route under test elsewhere sets these; here we're only testing the
+    // WORKER's read of that state. Rescanning the identical MAC/IP match
+    // must skip the auto-linker entirely: no match query attempted, no
+    // re-link write, row stays unlinked. ──
+    phase = 1;
+    selectCallIndex = 0;
+    selectQueue = [
+      ...baseSelectQueue(),
+      [{
+        id: 'new-asset-id',
+        typeSource: 'auto',
+        autoLinkSuppressedAt: new Date('2026-08-08T00:00:00Z'),
+      }],                                                     // [6] existing, suppressed
+      [{ linkedDeviceId: null, linkedDeviceSiteId: null }],    // [7] currentAsset — unlinked
+      // Deliberately no [8]: if the worker still queried for a match while
+      // suppressed, it would consume this slot and find no seeded rows — but
+      // the real assertion is that NO re-link write happens below.
+    ];
+    await processResults(makeData([host]));
+
+    expect(updatesByPhase[1]).not.toContainEqual(expect.objectContaining({ linkSource: 'auto' }));
+    expect(
+      updatesByPhase[1]!.some((u) => 'linkedDeviceId' in u && u.linkedDeviceId != null)
+    ).toBe(false);
+
+    // ── Phase 3: simulate what a manual re-link does — clears
+    // auto_link_suppressed_at back to null. Rescanning the SAME MAC/IP match
+    // now succeeds again: auto-linking resumes. ──
+    phase = 2;
+    selectCallIndex = 0;
+    selectQueue = [
+      ...baseSelectQueue(),
+      [{ id: 'new-asset-id', typeSource: 'auto', autoLinkSuppressedAt: null }], // [6] existing, suppression cleared
+      [{ linkedDeviceId: null, linkedDeviceSiteId: null }],                     // [7] currentAsset — still unlinked
+      [{ deviceId: 'device-1' }],                                              // [8] auto-link match found again
+    ];
+    await processResults(makeData([host]));
+
+    expect(updatesByPhase[2]).toContainEqual(expect.objectContaining({
+      linkedDeviceId: 'device-1',
+      linkSource: 'auto',
+    }));
   });
 });
 
