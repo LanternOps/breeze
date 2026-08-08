@@ -39,3 +39,31 @@ CVE-2026-55698
 GHSA-72r4-9c5j-mj57
 GHSA-fr4h-3cph-29xv
 GHSA-qrv3-253h-g69c
+
+# ──────────────────────────────────────────────────────────────────────────
+# image-size 1.2.1 — CVE-2025-71329, CVE-2025-71330 (both HIGH, DoS)
+# ──────────────────────────────────────────────────────────────────────────
+# Pulled in by metro@0.84.4 (the React Native bundler) and nothing else —
+# confirmed sole dependent in pnpm-lock.yaml.
+#
+# No fixed version exists upstream: Trivy reports both as `affected` with an
+# empty "Fixed Version" column, so neither a pnpm override nor an upgrade can
+# close them today. That is why these are ignored rather than bumped — unlike
+# nanoid CVE-2026-67213 in the same Trivy DB refresh, which had a 3.3.17 fix and
+# was closed with an override instead.
+#
+# Not exploitable in our artifacts: metro is a BUILD-TIME bundler for
+# apps/mobile. It runs on developer machines and in CI, never in a shipped
+# image and never on a server or customer device. Both CVEs are denial-of-
+# service via a crafted image (a malformed ICNS for -71330) parsed by
+# image-size. Reaching the vulnerable path means feeding a hostile image to our
+# own bundler during our own build — i.e. the attacker already controls the
+# source tree, at which point a bundler DoS is not the interesting problem.
+#
+# Remove when: image-size ships a fix, metro drops the dependency, or
+# image-size appears outside the metro build chain. Re-check with:
+#   grep -B30 'image-size@1.2.1' pnpm-lock.yaml
+#
+# Added 2026-08-07 (Trivy DB refresh during v0.104.0 release QA).
+CVE-2025-71329
+CVE-2025-71330
