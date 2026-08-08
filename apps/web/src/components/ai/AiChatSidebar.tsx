@@ -285,7 +285,7 @@ export default function AiChatSidebar() {
           /* Chat panel */
           <>
             {/* Cost indicator */}
-            <AiCostIndicator enabled={isOpen} />
+            <AiCostIndicator enabled={isOpen} isStreaming={isStreaming} />
 
             {/* M365 customer selector — only when starting a new session */}
             {!sessionId && m365Connections.length > 0 && (
