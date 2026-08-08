@@ -87,6 +87,7 @@ import { authenticatorRoutes, approverDevicesRoutes } from './routes/authenticat
 import { lifecycleRoutes, lifecycleAdminRoutes } from './routes/lifecycle';
 import { mobileDeviceBlockedMiddleware } from './middleware/mobileDeviceBlocked';
 import { analyticsRoutes } from './routes/analytics';
+import { fleetFindingsRoutes } from './routes/fleetFindings';
 import { discoveryRoutes } from './routes/discovery';
 import { networkBaselineRoutes } from './routes/networkBaselines';
 import { networkChangeRoutes } from './routes/networkChanges';
@@ -1071,6 +1072,7 @@ api.route('/me/approver-devices', approverDevicesRoutes);
 api.route('/', lifecycleRoutes);
 api.route('/', lifecycleAdminRoutes);
 api.route('/analytics', analyticsRoutes);
+api.route('/fleet/findings', fleetFindingsRoutes);
 api.route('/discovery', discoveryRoutes);
 api.route('/network/baselines', networkBaselineRoutes);
 api.route('/network/changes', networkChangeRoutes);
