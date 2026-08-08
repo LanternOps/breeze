@@ -235,6 +235,39 @@ func (b *Broker) StopBackupHelper() {
 	bh.session = nil
 }
 
+// StopBackupHelperIfIdle stops any resident backup helper process IF no
+// backup run is currently in flight, reporting whether it did so (true) or
+// deferred because a run is active (false). Used by the agent's backup-binary
+// delivery paths (upgrade swap, reconcile) before replacing the on-disk
+// breeze-backup binary: swapping the file out from under a job that's
+// mid-upload would corrupt or kill it. The check-and-stop happens atomically
+// under bh.mu, so a run cannot start in the gap between "no active runs" and
+// "kill the process".
+//
+// A nil/never-spawned helper (nothing to stop) also returns true — there is
+// nothing in the way of the swap.
+func (b *Broker) StopBackupHelperIfIdle() bool {
+	b.mu.Lock()
+	bh := b.backup
+	b.mu.Unlock()
+	if bh == nil {
+		return true
+	}
+
+	bh.mu.Lock()
+	defer bh.mu.Unlock()
+	if len(bh.activeRuns) > 0 {
+		return false
+	}
+	if bh.process != nil {
+		log.Info("stopping idle backup helper for binary swap", "pid", bh.process.Pid)
+		_ = bh.process.Kill()
+		bh.process = nil
+	}
+	bh.session = nil
+	return true
+}
+
 // ForwardBackupCommand sends a command to the backup helper and waits for the
 // result. async, when true, tells the helper this is a backup_run request
 // that should be acked immediately ({"started":true}) with the real result

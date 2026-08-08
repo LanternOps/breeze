@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { db } from "../db";
 import { agentVersions } from "../db/schema";
 import { isS3Configured, syncDirectory } from "./s3Storage";
@@ -81,6 +81,14 @@ const USER_HELPER_TARGETS = [
 // and lets the agent's handleWatchdogUpgrade self-heal fetch the matching binary.
 // Same asset-name shape as the agent: breeze-watchdog-{goos}-{goarch}[.exe].
 const WATCHDOG_TARGETS = AGENT_TARGETS;
+
+// breeze-backup is the standalone backup-job runner sibling of breeze-agent,
+// built+signed+published per-arch on every platform the agent itself targets
+// (same AGENT_TARGETS matrix). It ships as its own release asset
+// (breeze-backup-{goos}-{goarch}[.exe]) so the install.sh flow and the local
+// (BINARY_SOURCE=local) binary scan can fetch/register it independently of the
+// agent binary — mirrors WATCHDOG_TARGETS exactly.
+const BACKUP_TARGETS = AGENT_TARGETS;
 
 interface BinaryInfo {
   filename: string;
@@ -663,11 +671,13 @@ export async function syncBinaries(): Promise<void> {
     }
   }
 
-  // Scan and register agent binaries in DB. The watchdog ships in the same
-  // directory as its per-arch sibling (breeze-watchdog-{os}-{arch}[.exe]) and is
-  // served by the same /download/watchdog route.
+  // Scan and register agent binaries in DB. The watchdog and backup binaries
+  // ship in the same directory as their per-arch siblings
+  // (breeze-watchdog-{os}-{arch}[.exe], breeze-backup-{os}-{arch}[.exe]) and are
+  // served by the matching /download/watchdog and /download/backup routes.
   const binaries = await scanBinaryDir(agentBinaryDir);
   const watchdogBinaries = await scanBinaryDir(agentBinaryDir, "watchdog");
+  const backupBinaries = await scanBinaryDir(agentBinaryDir, "backup");
 
   if (binaries.length > 0) {
     const serverUrl =
@@ -764,6 +774,34 @@ export async function syncBinaries(): Promise<void> {
     } else {
       console.warn(
         "[binarySync] No local watchdog binaries found — watchdog auto-update unavailable on this self-hosted deploy",
+      );
+    }
+
+    // Register the backup component too, mirroring the watchdog registration
+    // above — same per-component try/catch isolation so a backup-only failure
+    // (e.g. signing) doesn't abort the agent/watchdog registration that already
+    // succeeded.
+    if (backupBinaries.length > 0) {
+      try {
+        await registerLocalBinaries({
+          binaries: backupBinaries,
+          component: "backup",
+          version,
+          keyId,
+          downloadUrlFor: (osParam, arch) =>
+            `${serverUrl}/api/v1/agents/download/backup/${osParam}/${arch}`,
+        });
+        console.log(
+          `[binarySync] Registered ${backupBinaries.length} backup binaries (version: ${version})`,
+        );
+      } catch (err) {
+        console.error(
+          `[binarySync] Failed to register local backup binaries — breeze-backup auto-update unavailable: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    } else {
+      console.warn(
+        "[binarySync] No local backup binaries found — breeze-backup auto-update unavailable on this self-hosted deploy",
       );
     }
   } else {
@@ -972,6 +1010,51 @@ export async function syncFromGitHub(
     );
   }
 
+  // Sync backup binaries. Same per-arch asset shape as the agent/watchdog.
+  // Missing for any release predating the backup component being published —
+  // the `release.assets.find` returns undefined and the loop body
+  // short-circuits.
+  for (const target of BACKUP_TARGETS) {
+    const suffix = target.goos === "windows" ? ".exe" : "";
+    const assetName = `breeze-backup-${target.goos}-${target.goarch}${suffix}`;
+    const asset = release.assets.find((a) => a.name === assetName);
+    if (!asset) continue;
+    const metadata = await getReleaseAssetMetadata({
+      asset,
+      trustedManifest,
+      fallbackChecksums,
+      releaseTag: release.tag_name,
+    });
+    if (!metadata) {
+      // See agent loop above: `!metadata` after `!asset` passed indicates an
+      // unexpected manifest/checksums inconsistency, not a missing artifact.
+      console.warn(
+        `[binarySync] Missing metadata for backup asset (release=${release.tag_name}, asset=${assetName}, component=backup); skipping`,
+      );
+      continue;
+    }
+    const platform = GH_PLATFORM_MAP[target.goos];
+    if (!platform) continue;
+
+    try {
+      await upsertVersion(
+        version,
+        platform,
+        target.goarch,
+        "backup",
+        asset.browser_download_url,
+        metadata,
+        release.body,
+      );
+      synced.push(`backup:${platform}/${target.goarch}`);
+    } catch (err) {
+      console.error(
+        `[binarySync] Failed to upsert backup version for ${platform}/${target.goarch}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
   console.log(
     `[binarySync] GitHub sync: registered ${synced.length} binaries (version: ${version})`,
   );
@@ -997,18 +1080,45 @@ async function ensureCurrentVersionRegistered(): Promise<void> {
     return;
 
   try {
-    const [existing] = await db
-      .select({ version: agentVersions.version })
+    // Check both the agent row AND its version-slaved backup companion.
+    // A server that registered agent rows for this version before backup
+    // component support shipped would otherwise never backfill the backup
+    // row — the old check only looked at component="agent" and returned
+    // early, leaving breeze-backup permanently unregistered for that version.
+    const existingRows = await db
+      .select({
+        component: agentVersions.component,
+        platform: agentVersions.platform,
+        architecture: agentVersions.architecture,
+        isLatest: agentVersions.isLatest,
+      })
       .from(agentVersions)
       .where(
         and(
           eq(agentVersions.version, currentVersion),
-          eq(agentVersions.component, "agent"),
+          inArray(agentVersions.component, ["agent", "backup"]),
         ),
-      )
-      .limit(1);
+      );
 
-    if (existing) return; // Already registered
+    const agentRows = existingRows.filter((r) => r.component === "agent");
+    const hasAgent = agentRows.length > 0;
+    const hasBackup = existingRows.some((r) => r.component === "backup");
+
+    if (hasAgent && hasBackup) return; // Already registered
+
+    if (hasAgent && !hasBackup) {
+      // The agent row is already registered for this version — running the
+      // FULL syncFromGitHub just to backfill the (possibly nonexistent)
+      // backup row is not acceptable: with AGENT_AUTO_PROMOTE default true
+      // it re-stamps isLatest on every component (silently reverting manual
+      // fleet promotions), and its onConflictDoUpdate overwrites
+      // locally-registered rows' downloadUrl/checksum with github.com
+      // values on BINARY_SOURCE=local deploys. Do a narrow backup-only
+      // backfill instead: one GitHub release fetch, touching only
+      // component=backup rows for this version.
+      await backfillBackupRowsForVersion(currentVersion, agentRows);
+      return;
+    }
 
     // This safety net runs after BOTH sync modes. In github mode, syncing the
     // current version from GitHub is the primary path, not a fallback — leave
@@ -1038,6 +1148,105 @@ async function ensureCurrentVersionRegistered(): Promise<void> {
     console.error(
       `[binarySync] Failed to auto-sync version ${currentVersion} from GitHub:`,
       err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+/**
+ * Narrow companion to ensureCurrentVersionRegistered's hasAgent && !hasBackup
+ * branch: registers ONLY component=backup rows for currentVersion, without
+ * running the full syncFromGitHub (which re-stamps isLatest on every
+ * component under AGENT_AUTO_PROMOTE and overwrites locally-registered rows'
+ * downloadUrl/checksum). Fetches the single GitHub release tagged for this
+ * version and upserts backup rows whose isLatest mirrors the sibling agent
+ * row for the same (platform, architecture) — never the auto-promote demote
+ * logic, and no non-backup row is touched. If the release predates
+ * breeze-backup, or has no matching assets, logs once and returns; the next
+ * boot may retry (one cheap GitHub release fetch per boot is acceptable).
+ */
+async function backfillBackupRowsForVersion(
+  currentVersion: string,
+  agentRows: { platform: string; architecture: string; isLatest: boolean }[],
+): Promise<void> {
+  const ghUrl = `https://api.github.com/repos/${GITHUB_REPO}/releases/tags/v${currentVersion}`;
+  const ghToken =
+    process.env.GITHUB_TOKEN?.trim() || process.env.GH_TOKEN?.trim();
+  const ghHeaders: Record<string, string> = {
+    Accept: "application/vnd.github.v3+json",
+    "User-Agent": "breeze-api",
+  };
+  if (ghToken) {
+    ghHeaders.Authorization = `Bearer ${ghToken}`;
+  }
+
+  const ghResp = await fetch(ghUrl, { headers: ghHeaders });
+  if (!ghResp.ok) {
+    throw new Error(`GitHub API error: ${ghResp.status}`);
+  }
+
+  const release = (await ghResp.json()) as {
+    tag_name: string;
+    body?: string;
+    assets: GitHubReleaseAsset[];
+  };
+
+  const trustedManifest = await fetchTrustedReleaseManifest(release.assets);
+  const fallbackChecksums = trustedManifest
+    ? null
+    : await parseChecksumsFallback(release.assets);
+
+  let backfilled = 0;
+  for (const target of BACKUP_TARGETS) {
+    const suffix = target.goos === "windows" ? ".exe" : "";
+    const assetName = `breeze-backup-${target.goos}-${target.goarch}${suffix}`;
+    const asset = release.assets.find((a) => a.name === assetName);
+    if (!asset) continue;
+    const metadata = await getReleaseAssetMetadata({
+      asset,
+      trustedManifest,
+      fallbackChecksums,
+      releaseTag: release.tag_name,
+    });
+    if (!metadata) {
+      console.warn(
+        `[binarySync] Missing metadata for backup asset (release=${release.tag_name}, asset=${assetName}, component=backup); skipping`,
+      );
+      continue;
+    }
+    const platform = GH_PLATFORM_MAP[target.goos];
+    if (!platform) continue;
+
+    // Mirror the sibling agent row's isLatest for this (platform,
+    // architecture) instead of running upsertVersion's auto-promote
+    // demote/insert logic — this backfill must never flip another row's
+    // isLatest or touch a non-backup component.
+    const siblingAgentRow = agentRows.find(
+      (r) => r.platform === platform && r.architecture === target.goarch,
+    );
+    const isLatest = siblingAgentRow?.isLatest ?? false;
+
+    try {
+      await upsertBackupVersionExplicit(
+        currentVersion,
+        platform,
+        target.goarch,
+        asset.browser_download_url,
+        metadata,
+        release.body,
+        isLatest,
+      );
+      backfilled++;
+    } catch (err) {
+      console.error(
+        `[binarySync] Failed to backfill backup version for ${platform}/${target.goarch}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  if (backfilled === 0) {
+    console.log(
+      `[binarySync] release v${currentVersion} has no breeze-backup assets; backup auto-update unavailable for this version`,
     );
   }
 }
@@ -1172,6 +1381,66 @@ async function upsertVersion(
           fileSize: BigInt(signedMetadata.size),
           releaseNotes: releaseNotes ?? null,
           ...(autoPromote ? { isLatest: true } : {}),
+        },
+      });
+  });
+}
+
+// Narrow variant used only by backfillBackupRowsForVersion. upsertVersion's
+// autoPromote branch is deliberately unsuitable here: it either demotes every
+// other isLatest row for the tuple (autoPromote=true) or unconditionally
+// registers isLatest=false (autoPromote=false) — neither expresses "set
+// isLatest to whatever the sibling agent row already has, and touch nothing
+// else." Never runs the demote UPDATE and only ever inserts/updates the
+// single component=backup row for this (version, platform, architecture).
+async function upsertBackupVersionExplicit(
+  version: string,
+  platform: string,
+  arch: string,
+  downloadUrl: string,
+  metadata: {
+    checksum: string;
+    size: number;
+    releaseManifest?: string;
+    manifestSignature?: string;
+    signingKeyId?: string;
+  },
+  releaseNotes: string | null | undefined,
+  isLatest: boolean,
+) {
+  await db.transaction(async (tx) => {
+    await tx
+      .insert(agentVersions)
+      .values({
+        version,
+        platform,
+        architecture: arch,
+        downloadUrl,
+        checksum: metadata.checksum,
+        releaseManifest: metadata.releaseManifest,
+        manifestSignature: metadata.manifestSignature,
+        signingKeyId: metadata.signingKeyId,
+        fileSize: BigInt(metadata.size),
+        releaseNotes: releaseNotes ?? null,
+        isLatest,
+        component: "backup",
+      })
+      .onConflictDoUpdate({
+        target: [
+          agentVersions.version,
+          agentVersions.platform,
+          agentVersions.architecture,
+          agentVersions.component,
+        ],
+        set: {
+          downloadUrl,
+          checksum: metadata.checksum,
+          releaseManifest: metadata.releaseManifest,
+          manifestSignature: metadata.manifestSignature,
+          signingKeyId: metadata.signingKeyId,
+          fileSize: BigInt(metadata.size),
+          releaseNotes: releaseNotes ?? null,
+          isLatest,
         },
       });
   });

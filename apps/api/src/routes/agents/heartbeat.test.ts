@@ -2666,6 +2666,58 @@ describe('POST /agents/:id/heartbeat — watchdogVersion telemetry (#1802)', () 
   });
 });
 
+describe('POST /agents/:id/heartbeat — backupVersion telemetry', () => {
+  // Mirrors the watchdogVersion telemetry suite above (#1802): breeze-backup
+  // is a separate agent-shipped component, so devices.backup_version is kept
+  // fresh from the same heartbeat field, with no server-driven upgrade path
+  // (unlike watchdog, there is no backupUpgradeTo in the response).
+  const deviceRow = {
+    id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host',
+    osType: 'windows', architecture: 'amd64', agentVersion: '0.66.0',
+    backupVersion: '0.65.0', deviceRoleSource: 'auto',
+    lastSeenAt: new Date(), mainAgentSilentSince: null,
+  };
+
+  function arrange(setSpy: ReturnType<typeof vi.fn>) {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+  }
+
+  async function post(body: Record<string, unknown>) {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', metrics: minimalHeartbeatBody.metrics, ...body }),
+    });
+  }
+
+  it('persists the backupVersion the agent reports to the device row', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    arrange(setSpy);
+
+    const resp = await post({ agentVersion: '0.66.0', backupVersion: '0.66.0' });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.backupVersion).toBe('0.66.0');
+  });
+
+  it('leaves the stored backupVersion untouched when the agent omits it (old agent, or breeze-backup not installed)', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    arrange(setSpy);
+
+    const resp = await post({ agentVersion: '0.66.0' });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg).not.toHaveProperty('backupVersion');
+  });
+});
+
 // ---------------------------------------------------------------------
 // #2288 — active control-plane URL persistence
 // ---------------------------------------------------------------------

@@ -98,6 +98,7 @@ type HeartbeatPayload struct {
 	DroppedLogs            int64          `json:"droppedLogs,omitempty"`
 	HelperVersion          string         `json:"helperVersion,omitempty"`
 	WatchdogVersion        string         `json:"watchdogVersion,omitempty"`
+	BackupVersion          string         `json:"backupVersion,omitempty"`
 	// ServerURL is the control-plane base URL this heartbeat is POSTed to
 	// (#2288). Set per-attempt in postHeartbeat, so a backup probe reports
 	// the backup URL and the device row shows real fleet position.
@@ -598,7 +599,90 @@ type Heartbeat struct {
 	watchdogVersionDisk       string
 	watchdogVersionRead       bool
 	watchdogVersionReadWarned bool
-	hbConsecutiveFailures     int // guarded by h.mu
+
+	// backupVersionReader is an optional test seam: when non-nil,
+	// installedBackupVersion calls this instead of the real on-disk read
+	// (readInstalledBackupVersion, which execs `breeze-backup --version`). It
+	// returns (version, outcome) — see backupProbeOutcome for what each
+	// outcome means and how it is cached. nil in production.
+	backupVersionReader func() (string, backupProbeOutcome)
+
+	// backupVersionMu guards the backupVersion* cache fields below, mirroring
+	// the watchdog version cache above but kept separate since it has nothing
+	// to do with watchdog upgrade bookkeeping.
+	backupVersionMu sync.Mutex
+	// backupVersionDisk caches the version parsed from the on-disk breeze-backup
+	// binary so we exec it at most once per process run (until invalidated).
+	// backupVersionOutcome is the outcome that produced backupVersionDisk;
+	// backupVersionRead records that a DURABLY-cached read happened (ok or
+	// not-installed) — a probe failure is cached separately, on a cooldown
+	// (backupVersionProbeFailedAt + backupVersionProbeCooldown), and an
+	// unresolved-path failure is never cached at all. backupVersionReadWarned
+	// throttles the ship-to-server WARN for a present-but-unreadable backup
+	// helper to once per failure streak (re-armed on the next ok/not-installed
+	// read) so a wedged/old binary doesn't emit ~1 warn/heartbeat.
+	backupVersionDisk          string
+	backupVersionOutcome       backupProbeOutcome
+	backupVersionProbeFailedAt time.Time
+	backupVersionRead          bool
+	backupVersionReadWarned    bool
+
+	// backupHelperDownloader is an optional test seam: when non-nil,
+	// prefetchBackupHelper / reconcileBackupHelper call this instead of
+	// constructing a real updater.Updater (Component: "backup") and invoking
+	// DownloadBinary. nil in production. Signature mirrors
+	// updater.Updater.DownloadBinary.
+	backupHelperDownloader func(targetVersion string) (string, error)
+
+	// backupHelperInstaller is an optional test seam: when non-nil,
+	// reconcileBackupHelper calls this instead of the real installBackupBinary
+	// (copy into place + broker hash-allowlist refresh + version-cache
+	// invalidation). nil in production. Signature is
+	// (tempPath, installPath, version).
+	backupHelperInstaller func(tempPath, installPath, version string) error
+
+	// backupHelperStopIfIdle is an optional test seam: when non-nil,
+	// reconcileBackupHelper calls this instead of
+	// h.sessionBroker.StopBackupHelperIfIdle(). nil in production — and
+	// whenever h.sessionBroker itself is nil, which is treated as "nothing to
+	// stop, proceed" rather than calling a method on a nil broker.
+	backupHelperStopIfIdle func() bool
+
+	// backupHelperInstallMu serializes installBackupBinary so the periodic
+	// reconcile and any future manual dev-push surface for this component
+	// can't race on the shared install path, mirroring userHelperInstallMu.
+	backupHelperInstallMu sync.Mutex
+
+	// backupHelperReconcileFailures counts consecutive reconcileBackupHelper
+	// failures so a permanently-unfetchable/uninstallable backup binary
+	// escalates from WARN to a distinct, greppable ERROR instead of looping at
+	// WARN forever. Reset to 0 on the first success (or when found healthy).
+	// Mirrors userHelperReconcileFailures.
+	backupHelperReconcileFailures atomic.Int32
+
+	// backupPrefetchFailureMu guards the two fields below, which track
+	// consecutive backupUpgradeCompanion prefetch failures FOR ONE TARGET
+	// VERSION, mirroring the target-version dedupe style of
+	// watchdogLastAttemptVer/watchdogLastAttemptAt above. Unlike the watchdog
+	// dedupe (which throttles retries), this is an escape hatch: a backup
+	// artifact that is permanently missing for a given release (self-hosted
+	// server with no backup binaries registered, or a release tag missing the
+	// asset) must not wedge agent upgrades forever just because a breeze-backup
+	// binary happens to already be installed. See backupUpgradeCompanion.
+	backupPrefetchFailureMu sync.Mutex
+	// backupPrefetchFailureVersion is the targetVersion the current failure
+	// streak below is counted against. A prefetch failure for a DIFFERENT
+	// target resets the streak — an operator cutting a new release shouldn't
+	// inherit a stale failure count from the release before it.
+	backupPrefetchFailureVersion string
+	// backupPrefetchFailureCount is the consecutive prefetch-failure count for
+	// backupPrefetchFailureVersion. Reset to 0 on a successful prefetch or a
+	// target-version change. At backupPrefetchFailureCap, backupUpgradeCompanion
+	// proceeds agent-only instead of aborting, logging an ERROR that the backup
+	// binary will drift until reconcile succeeds.
+	backupPrefetchFailureCount int
+
+	hbConsecutiveFailures int // guarded by h.mu
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -1289,6 +1373,11 @@ func (h *Heartbeat) Start() {
 	// every interval after (issue #816 follow-up).
 	const userHelperCheckInterval = 30 * time.Minute
 	var lastUserHelperCheck time.Time
+	// Self-heal a missing or version-mismatched breeze-backup binary, on ALL
+	// platforms (unlike the Windows-only user-helper check above). Same
+	// zero-valued-timer-fires-on-first-tick shape.
+	const backupHelperCheckInterval = 30 * time.Minute
+	var lastBackupHelperCheck time.Time
 
 	// Send initial heartbeat after jitter
 	h.sendHeartbeatWithWatchdog()
@@ -1442,6 +1531,17 @@ func (h *Heartbeat) Start() {
 				go func() {
 					defer observability.Recoverer("heartbeat.reconcileUserHelper")
 					h.reconcileUserHelperFromExecutable()
+				}()
+			}
+
+			// Reconcile a missing or stale breeze-backup binary, decoupled
+			// from any in-progress agent upgrade. Runs on every platform —
+			// breeze-backup ships everywhere, unlike the user-helper above.
+			if now.Sub(lastBackupHelperCheck) >= backupHelperCheckInterval {
+				lastBackupHelperCheck = now
+				go func() {
+					defer observability.Recoverer("heartbeat.reconcileBackupHelper")
+					h.reconcileBackupHelperFromExecutable()
 				}()
 			}
 
@@ -3691,6 +3791,7 @@ func (h *Heartbeat) sendHeartbeat() {
 		AgentVersion:    h.agentVersion,
 		HelperVersion:   h.helperMgr.InstalledVersion(),
 		WatchdogVersion: h.installedWatchdogVersion(),
+		BackupVersion:   h.installedBackupVersion(),
 		HealthStatus:    h.healthMon.Summary(),
 		DeviceRole:      deviceRole,
 		IsHeadless:      h.currentHeadless(),
@@ -6431,8 +6532,39 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	// outcome.
 	userHelperPair := h.prefetchUserHelper(targetVersion, binaryPath)
 
+	// breeze-backup is slaved to the agent version (no independent directive)
+	// and is prefetched on every platform. Unlike the user-helper prefetch
+	// above, a failure here can ABORT the whole agent upgrade — see
+	// backupUpgradeCompanion for the present-vs-absent-vs-persistently-failing
+	// policy split.
+	backupPair, abortForBackup := h.backupUpgradeCompanion(targetVersion)
+	if abortForBackup {
+		// UpdateToWithOptions — the usual owner of companion-temp cleanup on
+		// failure — is never reached from an abort this early, so the
+		// already-downloaded userHelperPair.Temp (backupPair is always nil on
+		// this path) would otherwise be orphaned on disk.
+		removeStagedUpgradeTemps(userHelperPair, backupPair)
+		return
+	}
+
+	// A backup job may be mid-upload right now. The Windows restart script
+	// force-kills breeze-backup.exe whenever a swap is staged (see
+	// buildRestartScript), and the non-Windows swap path replaces the binary
+	// file unconditionally too — so a staged backupPair must not proceed
+	// while a job is active, or it kills/corrupts an in-flight upload. Only
+	// gated when there's actually a backup swap staged: an agent-only or
+	// backup-less upgrade has nothing here that could touch breeze-backup.
+	// This is a routine, expected deferral (not a failure), so it must NOT
+	// count against backupUpgradeCompanion's failure cap above — a busy
+	// backup job says nothing about whether the artifact itself is fetchable.
+	if backupPair != nil && !h.backupHelperIdle() {
+		removeStagedUpgradeTemps(userHelperPair, backupPair)
+		log.Info("agent upgrade deferred: backup job in progress; retrying next cycle", "targetVersion", targetVersion)
+		return
+	}
+
 	u := updater.New(updaterCfg)
-	if err := u.UpdateToWithOptions(targetVersion, updater.UpdateOptions{UserHelper: userHelperPair}); err != nil {
+	if err := u.UpdateToWithOptions(targetVersion, updater.UpdateOptions{UserHelper: userHelperPair, Backup: backupPair}); err != nil {
 		// If the filesystem is read-only, stop retrying — this is permanent
 		// until the service unit is fixed or the filesystem is remounted.
 		// Intentionally NOT persisted to disk (unlike dev_push in handlers_devupdate.go)

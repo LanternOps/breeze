@@ -3,6 +3,7 @@ set -euo pipefail
 
 AGENT_BINARY="/usr/local/bin/breeze-agent"
 WATCHDOG_BINARY="/usr/local/bin/breeze-watchdog"
+BACKUP_BINARY="/usr/local/bin/breeze-backup"
 
 fatal() {
   echo "Error: $*" >&2
@@ -39,6 +40,7 @@ uninstall_macos() {
   rm -f "$user_plist"
   rm -f "$AGENT_BINARY"
   rm -f "$WATCHDOG_BINARY"
+  rm -f "$BACKUP_BINARY"
 
   echo "Breeze Agent uninstalled."
   echo "Config at /Library/Application Support/Breeze/ was preserved."
@@ -79,6 +81,7 @@ uninstall_linux() {
   rm -f "$xdg_autostart"
   rm -f "$AGENT_BINARY"
   rm -f "$WATCHDOG_BINARY"
+  rm -f "$BACKUP_BINARY"
   rmdir "$ipc_dir" 2>/dev/null || true
 
   if command -v systemctl >/dev/null 2>&1; then
