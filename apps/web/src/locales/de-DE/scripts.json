@@ -1176,5 +1176,38 @@
       "import": "Importieren",
       "availableCount": "{{count}} Skript(e) verfügbar"
     }
+  },
+  "bundle": {
+    "exportButton": "Exportieren",
+    "importButton": "Bundle importieren",
+    "exportTitle": "Skript-Bundle exportieren",
+    "exportDescription": "Skripte auswählen, um sie als portables JSON-Bundle herunterzuladen.",
+    "selectAll": "Alle auswählen",
+    "clearSelection": "Auswahl aufheben",
+    "exportSelected": "{{count}} ausgewählte exportieren",
+    "exportEmpty": "Keine Skripte zum Exportieren verfügbar.",
+    "exportFailed": "Skripte konnten nicht exportiert werden",
+    "importTitle": "Skript-Bundle importieren",
+    "importDescription": "Ein Bundle (.json) oder einzelne Skriptdateien (.ps1, .sh, .py, .bat) hochladen.",
+    "systemWarning": "Importierte Skripte können als SYSTEM auf verwalteten Geräten ausgeführt werden. Importieren Sie Bundles nur aus vertrauenswürdigen Quellen.",
+    "chooseFiles": "Dateien auswählen",
+    "chooseFolder": "Ordner auswählen",
+    "parseErrors": "Einige Dateien konnten nicht gelesen werden",
+    "previewFailed": "Bundle-Vorschau fehlgeschlagen",
+    "importFailed": "Bundle-Import fehlgeschlagen",
+    "nameColumn": "Skriptname",
+    "previewTitle": "Zustand",
+    "statusNew": "Neu",
+    "statusConflict": "Namenskonflikt",
+    "modeLabel": "Wenn ein Skript mit demselben Namen bereits existiert",
+    "modeSkip": "Überspringen",
+    "modeRename": "Mit neuem Namen importieren",
+    "modeNewVersion": "Als neue Version des vorhandenen Skripts hinzufügen",
+    "partnerWide": "Für alle Organisationen verfügbar machen (partnerweit)",
+    "importCommit": "{{count}} Skripte importieren",
+    "resultSummary": "{{imported}} importiert, {{renamed}} umbenannt, {{versioned}} versioniert, {{skipped}} übersprungen, {{failed}} fehlgeschlagen",
+    "scriptCount": "{{count}} Skripte im Bundle",
+    "statusInvalid": "Ungültig",
+    "exportLimit": "Sie können bis zu {{max}} Skripte pro Bundle exportieren."
   }
 }

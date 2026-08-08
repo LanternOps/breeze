@@ -45,6 +45,51 @@ Breeze provides a shared system library of pre-built scripts available to all or
 
 </Steps>
 
+### Importing and exporting script bundles
+
+A **script bundle** is a versioned JSON file that carries whole script libraries between Breeze instances — or in from another RMM — including the metadata that makes a library a library: parameters, category, tags, timeout, run-as level, and exit-code severity mappings.
+
+**Export:** on the Scripts page, click **Export**, select the scripts to include, and download the bundle as a `.json` file. Bundles are portable by design: they contain no organization, partner, or user identifiers, and system-library scripts export as ordinary scripts.
+
+**Import:** click **Import bundle** and upload either:
+
+- a `.json` bundle exported from Breeze, or
+- loose script files (`.ps1`, `.sh`, `.py`, `.bat`) — the browser converts them into a bundle, inferring the language and OS types from each file extension and the script name from the filename.
+
+The preview shows each script as **New** or **Name conflict**; for conflicts choose to skip, import under a new name, or add the bundle's content as a new version of the existing script. Imports default to the current organization; partner users with full org access can instead import partner-wide ("all organizations").
+
+The equivalent API endpoints are `GET /api/v1/scripts/bundle/export?ids=…`, `POST /api/v1/scripts/bundle/preview`, and `POST /api/v1/scripts/bundle/import` (`{ bundle, mode: "skip" | "rename" | "new-version", availability: "org" | "partner", orgId? }`).
+
+:::caution
+Bundles are **unsigned**: a bundle is exactly as trustworthy as the person importing it, and imported scripts can run as SYSTEM on managed devices. Only import bundles from a source you trust. Imports never execute anything by themselves, cannot carry automations or schedules, and cannot mark scripts as system-library entries — but the script content itself is whatever the bundle author wrote.
+:::
+
+Bundle format (v1):
+
+```json
+{
+  "bundleVersion": 1,
+  "exportedAt": "2026-08-08T00:00:00Z",
+  "scripts": [
+    {
+      "name": "Clear print spooler",
+      "description": "Stops spooler, clears queue, restarts.",
+      "category": "Maintenance",
+      "tags": ["printing", "windows"],
+      "osTypes": ["windows"],
+      "language": "powershell",
+      "content": "…",
+      "parameters": {},
+      "timeoutSeconds": 300,
+      "runAs": "system",
+      "exitCodeSeverityMapping": { "1": "high" }
+    }
+  ]
+}
+```
+
+Categories and tags travel by name and are created in the importing tenant when missing. An unknown `bundleVersion` is rejected. Bundles are capped at 200 scripts and 20&nbsp;MB, script content at 256&nbsp;KB, and `parameters` at 64&nbsp;KB.
+
 ### Creating a script
 
 <Steps>

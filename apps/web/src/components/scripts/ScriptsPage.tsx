@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { extractApiError } from '@/lib/apiError';
-import { Plus, Download, Search, X, Loader2, Check, FileCode, ArrowRight } from 'lucide-react';
+import { Plus, Download, Search, Upload, X, Loader2, Check, FileCode, ArrowRight } from 'lucide-react';
 import ScriptList, { type Script, type ScriptLanguage, type OSType } from './ScriptList';
+import { ScriptBundleExportModal, ScriptBundleImportModal } from './ScriptBundleImport';
 import ScriptExecutionModal, { type Device, type Site } from './ScriptExecutionModal';
 import ExecutionDetails from './ExecutionDetails';
 import type { ScriptExecution } from './ExecutionHistory';
@@ -18,7 +19,14 @@ import { asList } from '@/lib/asList';
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 
-type ModalMode = 'closed' | 'execute' | 'delete' | 'execution-details' | 'import-library';
+type ModalMode =
+  | 'closed'
+  | 'execute'
+  | 'delete'
+  | 'execution-details'
+  | 'import-library'
+  | 'bundle-export'
+  | 'bundle-import';
 
 type ScriptWithDetails = Script & {
   parameters?: ScriptParameter[];
@@ -361,6 +369,25 @@ export default function ScriptsPage() {
         <div className="flex items-center gap-2">
           <button
             type="button"
+            onClick={() => setModalMode('bundle-import')}
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
+            data-testid="bundle-import-open"
+          >
+            <Upload className="h-4 w-4" />
+            {t('bundle.importButton')}
+          </button>
+          <button
+            type="button"
+            onClick={() => setModalMode('bundle-export')}
+            disabled={scripts.length === 0}
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            data-testid="bundle-export-open"
+          >
+            <Download className="h-4 w-4" />
+            {t('bundle.exportButton')}
+          </button>
+          <button
+            type="button"
             onClick={handleOpenLibrary}
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
           >
@@ -457,6 +484,18 @@ export default function ScriptsPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Bundle export/import (#3245) */}
+      {modalMode === 'bundle-export' && (
+        <ScriptBundleExportModal isOpen={true} onClose={handleCloseModal} />
+      )}
+      {modalMode === 'bundle-import' && (
+        <ScriptBundleImportModal
+          isOpen={true}
+          onClose={handleCloseModal}
+          onImported={() => void fetchScripts()}
+        />
       )}
 
       {/* Import from Library Modal */}

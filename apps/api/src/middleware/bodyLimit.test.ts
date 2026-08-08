@@ -68,6 +68,23 @@ describe('bodyLimitForPath', () => {
     expect(bodyLimitForPath('/api/v1/software/catalog/cat-123/versions/upload/extra').maxSize).toBe(1 * MB);
   });
 
+  // Script bundle intake (#3245): a bundle can carry a whole script library;
+  // the schema caps scripts-per-bundle and per-content size, and 20MB is the
+  // effective total-bundle cap.
+  it('carves out script bundle import/preview at 20MB', () => {
+    expect(bodyLimitForPath('/api/v1/scripts/bundle/import')).toEqual({
+      maxSize: 20 * MB,
+      error: 'Bundle too large (max 20MB)',
+    });
+    expect(bodyLimitForPath('/api/v1/scripts/bundle/preview')).toEqual({
+      maxSize: 20 * MB,
+      error: 'Bundle too large (max 20MB)',
+    });
+    // Export (GET, no body) and the rest of /scripts stay on the default.
+    expect(bodyLimitForPath('/api/v1/scripts/bundle/export').maxSize).toBe(1 * MB);
+    expect(bodyLimitForPath('/api/v1/scripts').maxSize).toBe(1 * MB);
+  });
+
   // Chunked package uploads (#2951): each chunk is a raw octet-stream request
   // of at most 8MB (the client's UPLOAD_CHUNK_SIZE); 9MB gives the route's own
   // per-chunk size check headroom to answer with its specific message.
