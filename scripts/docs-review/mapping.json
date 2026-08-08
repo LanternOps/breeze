@@ -524,6 +524,7 @@
     {
       "pattern": "apps/api/src/routes/approvals.ts",
       "docs": [
+        "features/ai.mdx",
         "features/mobile.mdx",
         "features/mcp-server.mdx"
       ]
@@ -1779,7 +1780,8 @@
       "docs": [
         "features/configuration-policies.mdx",
         "features/software-policies.mdx",
-        "features/security.mdx"
+        "features/security.mdx",
+        "features/scripts.mdx"
       ]
     },
     {
@@ -2095,6 +2097,45 @@
       "docs": [
         "features/ai.mdx",
         "features/identity-console.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/quickSupport*.ts",
+      "docs": [
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/quickSupportReaper.ts",
+      "docs": [
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/validators/quickSupport.ts",
+      "docs": [
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/pages/remote/quick-support.astro",
+      "docs": [
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/eventLoop*.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "monitoring/stack.mdx",
+        "reference/troubleshooting.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/dbPoolHealth*.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "reference/troubleshooting.mdx"
       ]
     }
   ]

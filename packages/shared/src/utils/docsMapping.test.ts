@@ -156,6 +156,12 @@ describe('getDocsForPath', () => {
       expect(result.url).toContain('/features/system-tools/');
     });
 
+    it('/remote/quick-support maps to the Quick Support section, not generic remote access', () => {
+      const result = getDocsForPath('/remote/quick-support');
+      expect(result.label).toBe('Quick Support');
+      expect(result.url).toContain('/features/remote-access/#quick-support-ad-hoc-sessions');
+    });
+
     it('/setup maps to setup wizard docs', () => {
       const result = getDocsForPath('/setup');
       expect(result.label).toBe('Setup Wizard');

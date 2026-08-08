@@ -23,6 +23,12 @@ The **Scripts** page in the sidebar opens the Script Library, where you manage a
 
 The Script Library displays your scripts in a searchable list with columns for name, language, category, target OS, and last run time. Use the search bar and filters to find scripts by name, language, category, or OS type.
 
+### Partner-wide vs. organization scripts
+
+A script is owned either by a **single organization** or **partner-wide** — available to every organization you manage. Partner-scope users with more than one organization see an **Available to** picker on the script form: choose **All my organizations** to make the script partner-wide, or **A specific organization** to scope it down. An existing script can be re-scoped the same way — moved between organizations or promoted to partner-wide.
+
+Creating, editing, or re-scoping a **partner-wide** script requires an account with access to **all** of the partner's organizations — the same rule as other partner-wide policies. A technician restricted to selected organizations can still *see and run* partner-wide scripts, but the form marks them read-only and the partner-wide option is unavailable when they create scripts.
+
 ### Importing from the system library
 
 Breeze provides a shared system library of pre-built scripts available to all organizations. To import one:
@@ -178,7 +184,7 @@ An empty mapping `{}` is treated the same as omitting the field (default behavio
 
 ## Creating Scripts via API
 
-Scripts can also be created and managed programmatically. Scripts belong to an organization and are scoped by the multi-tenant hierarchy.
+Scripts can also be created and managed programmatically. A script belongs either to a single organization or to the partner as a whole (partner-wide — see [Partner-wide vs. organization scripts](#partner-wide-vs-organization-scripts)) and is scoped by the multi-tenant hierarchy. Partner-wide writes through the API are subject to the same full-partner-access requirement as the dashboard.
 
 ```bash
 POST /scripts

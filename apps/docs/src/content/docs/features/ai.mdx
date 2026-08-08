@@ -41,7 +41,33 @@ The AI Risk Engine categorises every AI tool into one of four tiers that control
 
 ### Approval workflow
 
-When the AI proposes a Tier 3 action, it enters a **pending** state and waits for human approval.
+When the AI proposes a Tier 3 action, it enters a **pending** state and waits for human approval. Tier 3 actions fall into one of two approval scopes:
+
+- **Supervised** (the default) — the technician who asked for the action approves it themselves, directly in chat. The model here is that the AI is the actor and *you* are the approver: routine device work you could do by hand should not need a second person.
+- **Four-eyes** (a fixed high-stakes list) — a **second** person must approve. Reviewing a proposed high-stakes action and authorising it are kept as separate responsibilities.
+
+#### Supervised actions — approve in chat
+
+Routine device work is supervised: running commands and scripts, file and registry operations, starting/stopping services, killing processes, installing patches, disk cleanup, agent upgrades, triggering backups, and policy, deployment, monitor, group, and automation changes.
+
+The chat approval card offers a plain **Approve** / **Deny**. Approving is gated on your **own** permissions for the underlying action — if your role lets you do the operation by hand, you can approve the AI doing it; no second person is involved. The request is still stored durably and the execution is written to the audit trail, marked as a self-approval. A supervised request raised in chat waits up to 5 minutes for your decision.
+
+<Aside type="note">
+  If your partner enforces an authentication-assurance floor, approving a supervised action prompts the corresponding step-up verification (for example Touch ID / Windows Hello) instead of accepting a plain click.
+</Aside>
+
+#### Four-eyes actions — a second person approves
+
+A small, fixed set of actions always requires a different user to approve:
+
+- **Financial or externally binding** — issuing invoices, recording or voiding payments, activating or cancelling contracts, sending quotes
+- **Tenant shape** — creating organizations, changing an organization's status, moving tickets between organizations
+- **Identity and account control** (Microsoft 365 / Google Workspace) — password and 2FA resets, mail forwarding and delegates, mailbox permissions, disabling or offboarding users, device wipe
+- **Restores and rollbacks** — VM checkpoint delete/apply, restore-as-VM and DR plan runs, patch rollback, snapshot and database restores
+- **Computer control** and unattended remote session creation
+- **Releasing security containment** — un-isolating a device, rolling back threats. (Isolating or quarantining stays supervised — urgent protective containment should not wait on a colleague.)
+
+To decide a pending four-eyes request:
 
 <Steps>
 
@@ -55,22 +81,24 @@ When the AI proposes a Tier 3 action, it enters a **pending** state and waits fo
 
 </Steps>
 
-Approved actions execute immediately. Rejected actions are logged and the AI is notified.
+Approved actions execute immediately. Rejected actions are logged and the AI is notified. A four-eyes request raised in chat waits up to **60 minutes** for a decision; an approval that arrives after the chat turn has moved on still executes, and the session shows the result when you return to it.
+
+If what the request refers to changes while it waits — the script is edited, the quote or invoice is revised, the organization's state moves on — the approved action does **not** run against the drifted content. It fails with a content-changed error instead, and the AI has to raise a fresh request.
 
 #### Approving your own request when you are the only approver
 
-If the technician who asked for a Tier 3 action is also the **only** user eligible to approve it (a sole-operator setup), the chat's approval card offers **Verify & Approve** directly inline. Clicking it runs a **Touch ID / Windows Hello** (WebAuthn platform authenticator) verification in the browser, and that verification — not the click — is what satisfies the assurance requirement for approving your own request. Cancel the prompt and nothing is approved.
+If the technician who asked for a four-eyes action is also the **only** user eligible to approve it (a sole-operator setup), the chat's approval card offers **Verify & Approve** directly inline. Clicking it runs a **Touch ID / Windows Hello** (WebAuthn platform authenticator) verification in the browser, and that verification — not the click — is what satisfies the assurance requirement for approving your own request. Cancel the prompt and nothing is approved.
 
-When other users are eligible to approve, the inline button does not appear: someone else must approve from **Approval History** or the mobile app. That four-eyes separation is deliberate.
+When other users are eligible to approve, the inline button does not appear: someone else must approve from **Approval History** or the mobile app. That four-eyes separation is deliberate. Disabled and invited (not-yet-accepted) users do not count as eligible approvers, so a team whose only other admin account is disabled behaves as a sole-operator setup.
 
 #### Who can approve
 
-Approving or rejecting a Tier 3 action requires the **`approvals:decide`** permission. It is granted by default to **Org Admin** (and to Partner Admin through its full-access role) and is deliberately **not** granted to Org Technician or Org Viewer — reviewing a proposed action and authorising it are separate responsibilities.
+Approving or rejecting a **four-eyes** action requires the **`approvals:decide`** permission. It is granted by default to **Org Admin** (and to Partner Admin through its full-access role) and is deliberately **not** granted to Org Technician or Org Viewer. Approving a **supervised** action needs no extra permission — only the requester's own permission for the underlying action, which was already checked when the AI proposed it.
 
-To let another role approve actions, add `approvals:decide` to it under **Settings → Users & Roles**. See [Users and Roles](/reference/users-and-roles/).
+To let another role approve four-eyes actions, add `approvals:decide` to it under **Settings → Users & Roles**. See [Users and Roles](/reference/users-and-roles/).
 
 <Aside type="note">
-  If an organization has no user whose role grants `approvals:decide`, a Tier 3 request has nobody who can act on it and is automatically cancelled rather than left pending indefinitely.
+  If an organization has no user whose role grants `approvals:decide`, a four-eyes request has nobody who can act on it and is automatically cancelled rather than left pending indefinitely.
 </Aside>
 
 #### Pending approvals survive a restart

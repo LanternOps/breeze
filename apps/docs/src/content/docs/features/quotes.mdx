@@ -113,6 +113,16 @@ When a customer accepts a quote, Breeze turns it into the documents that bill it
 
 If the accepted quote contains **Pax8-backed** catalog items, acceptance also **stages a Pax8 order** for those items alongside the invoice and contracts. Acceptance doesn't submit anything to Pax8; you complete the commitment and provisioning details and submit it afterward. See [Distributor Integrations → Complete an order staged from a quote](/features/distributor-integrations/#complete-an-order-staged-from-a-quote).
 
+### Ordering What You Sold
+
+Once a quote is won (accepted or converted), its detail view grows a **To be ordered** procurement breakdown of the SKU-bearing lines — item, SKU, part number, vendor, quantity, and (if you can see margin) unit cost, extended cost, and markup — so you can place vendor orders without re-deriving a purchase order from the pricing tables. Lines are grouped by vendor, with cost totals per group.
+
+- **Mark ordered** — select lines and record the order against them: vendor, order reference, tracking number, expected arrival date, notes, and per-line quantities. Partial quantities are supported, so a line can be split across orders.
+- **Mark received** — record arrivals as they land; lines track **Ordered → Partly received → Received**, and order lines can be cancelled.
+- **Export** — copy the breakdown for a spreadsheet or download it as CSV to hand to a purchasing system.
+
+Vendor cost figures are the quote's own snapshot of each line at the time it was priced, so the breakdown reflects what you sold, not today's catalog price. Pax8-backed lines carry a badge showing their Pax8 order state (staged, ordered, failed, or needs review) alongside the manual tracking.
+
 ## Sending and Tracking
 
 <Steps>

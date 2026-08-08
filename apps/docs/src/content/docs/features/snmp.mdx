@@ -265,7 +265,7 @@ The SNMP polling system is built on BullMQ with Redis as the message broker. It 
 
 <Steps>
 
-1. **Scheduler** -- A repeatable BullMQ job runs every 60 seconds, scanning the `snmp_devices` table for active devices whose `pollingInterval` has elapsed since their `lastPolled` timestamp (or that have never been polled).
+1. **Scheduler** -- A repeatable BullMQ job runs every 60 seconds, scanning the `snmp_devices` table for active devices whose `pollingInterval` has elapsed since the last poll **attempt** (or that have never been polled). Because the due-check runs off the last attempt rather than the last success, a device whose polls keep failing is not retried harder than its configured interval -- instead, consecutive failures back the device off: the effective interval doubles per failure (capped at 1 hour) and resets to the configured interval on the first successful poll.
 
 2. **Poll dispatch** -- For each due device, the scheduler enqueues a `poll-device` job. The worker loads the device's template OIDs, finds an online Breeze agent in the same organization, and sends an `snmp_poll` command over the agent's WebSocket connection.
 
@@ -440,6 +440,9 @@ The polling scheduler runs every 60 seconds. After enabling SNMP, wait at least 
 
 **Poll status stuck on `offline` or `unknown`.**
 This means the SNMP poll command was sent to the agent but no results were returned. Common causes: the target IP is unreachable from the agent's network, the SNMP port is blocked by a firewall, or the community string / SNMPv3 credentials are incorrect. Test connectivity from the agent host using `snmpwalk` or `snmpget` directly.
+
+**Metric gaps widen while a device is failing.**
+Expected. A device whose polls keep failing is automatically backed off -- each consecutive failure doubles the effective polling interval (up to a 1-hour cap), so a persistently unreachable device is polled progressively less often rather than hammered on every scheduler tick. The first successful poll resets the device to its configured interval. Fix the underlying reachability or credential problem and normal cadence resumes on its own.
 
 **"No online agent for org" in worker logs.**
 The SNMP worker dispatches poll commands to any online agent in the same organization as the SNMP device. If no agents are connected via WebSocket, polls cannot be dispatched. Ensure at least one agent in the organization is running and connected.

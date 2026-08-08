@@ -149,6 +149,7 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/patches', docsPath: '/features/patch-management/', label: 'Patch Management' },
   { pattern: '/vulnerabilities', docsPath: '/features/vulnerability-management/', label: 'Vulnerability Management' },
   { pattern: '/remote/tools', docsPath: '/features/system-tools/', label: 'System Tools' },
+  { pattern: '/remote/quick-support', docsPath: '/features/remote-access/#quick-support-ad-hoc-sessions', label: 'Quick Support' },
   { pattern: '/remote', docsPath: '/features/remote-access/', label: 'Remote Access' },
   { pattern: '/discovery', docsPath: '/features/discovery/', label: 'Network Discovery' },
   { pattern: '/dns-security', docsPath: '/features/dns-security/', label: 'DNS Security' },
