@@ -1796,6 +1796,97 @@
           "medium": "Mittel",
           "low": "Niedrig"
         }
+      },
+      "FindingsFeed": {
+        "title": "Flotten-Befunde",
+        "description": "Geräteübergreifende Muster, die eine einzige Maßnahme statt vieler verdienen",
+        "filters": {
+          "orgLabel": "Nach Organisation filtern",
+          "kindLabel": "Nach Befundtyp filtern",
+          "severityLabel": "Nach Schweregrad filtern",
+          "statusLabel": "Nach Status filtern",
+          "allOrgs": "Alle Organisationen",
+          "allKinds": "Alle Befundtypen",
+          "allSeverities": "Alle Schweregrade"
+        },
+        "kinds": {
+          "metricAnomalyPattern": "Metrik-Anomalie",
+          "logCorrelation": "Log-Korrelation",
+          "reliabilityOffenders": "Zuverlässigkeits-Wiederholungstäter"
+        },
+        "severities": {
+          "critical": "Kritisch",
+          "error": "Fehler",
+          "warning": "Warnung",
+          "info": "Informativ"
+        },
+        "statuses": {
+          "open": "Offen",
+          "acknowledged": "Bestätigt",
+          "dismissed": "Verworfen",
+          "resolved": "Behoben"
+        },
+        "status": {
+          "active": "Offen und bestätigt",
+          "dismissed": "Verworfen",
+          "resolved": "Behoben"
+        },
+        "deviceCount": "{{count}} Geräte",
+        "deviceCount_one": "{{count}} Gerät",
+        "deviceCount_other": "{{count}} Geräte",
+        "showing": "{{shown}} von {{total}} werden angezeigt",
+        "empty": {
+          "title": "Die Flotte ist sauber",
+          "body": "Derzeit passt kein Befund zu diesen Filtern."
+        },
+        "errors": {
+          "loadFailed": "Flotten-Befunde konnten nicht geladen werden"
+        }
+      },
+      "FindingDrawer": {
+        "heading": "Befunddetails",
+        "meta": {
+          "firstSeen": "Erstmals gesehen {{when}}",
+          "lastSeen": "Zuletzt gesehen {{when}}"
+        },
+        "summaryHeading": "Zusammenfassung",
+        "dismissNotesHeading": "Verwerfungsnotiz",
+        "evidenceHeading": "Nachweise",
+        "membersHeading": "Betroffene Geräte",
+        "membersEmpty": "Für diesen Befund sind keine Geräte erfasst.",
+        "table": {
+          "device": "Gerät",
+          "source": "Quelle",
+          "lastSeen": "Zuletzt gesehen"
+        },
+        "runsHeading": "Behebungsverlauf",
+        "runsEmpty": "Für diesen Befund wurde noch keine Behebung ausgeführt.",
+        "runCounts": "{{succeeded}} erfolgreich, {{failed}} fehlgeschlagen, {{skipped}} übersprungen von {{targets}} Zielen",
+        "runStatuses": {
+          "queued": "In Warteschlange",
+          "running": "Läuft",
+          "partial": "Teilweise",
+          "succeeded": "Erfolgreich",
+          "failed": "Fehlgeschlagen",
+          "cancelled": "Abgebrochen"
+        },
+        "dismiss": {
+          "notesLabel": "Warum verwerfen Sie diesen Befund? (erforderlich)",
+          "notesPlaceholder": "Bekannter Fehlalarm, anderswo verfolgt, Risiko akzeptiert…",
+          "confirm": "Befund verwerfen"
+        },
+        "actions": {
+          "remediate": "Auf {{count}} Geräten beheben",
+          "remediate_one": "Auf {{count}} Gerät beheben",
+          "remediate_other": "Auf {{count}} Geräten beheben",
+          "acknowledge": "Bestätigen",
+          "dismiss": "Verwerfen",
+          "reopen": "Wieder öffnen"
+        },
+        "errors": {
+          "loadFailed": "Befund konnte nicht geladen werden",
+          "lifecycleFailed": "Befund konnte nicht aktualisiert werden"
+        }
       }
     },
     "help": {

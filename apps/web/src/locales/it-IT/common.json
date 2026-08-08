@@ -1796,6 +1796,97 @@
           "medium": "Medio",
           "low": "Basso"
         }
+      },
+      "FindingsFeed": {
+        "title": "Rilevazioni della flotta",
+        "description": "Schemi trasversali ai dispositivi che meritano una sola azione invece di molte",
+        "filters": {
+          "orgLabel": "Filtra per organizzazione",
+          "kindLabel": "Filtra per tipo di rilevazione",
+          "severityLabel": "Filtra per gravità",
+          "statusLabel": "Filtra per stato",
+          "allOrgs": "Tutte le organizzazioni",
+          "allKinds": "Tutti i tipi di rilevazione",
+          "allSeverities": "Tutte le gravità"
+        },
+        "kinds": {
+          "metricAnomalyPattern": "Anomalia di metrica",
+          "logCorrelation": "Correlazione dei log",
+          "reliabilityOffenders": "Recidivi di affidabilità"
+        },
+        "severities": {
+          "critical": "Critico",
+          "error": "Errore",
+          "warning": "Avviso",
+          "info": "Informativo"
+        },
+        "statuses": {
+          "open": "Aperto",
+          "acknowledged": "Preso in carico",
+          "dismissed": "Ignorato",
+          "resolved": "Risolto"
+        },
+        "status": {
+          "active": "Aperti e presi in carico",
+          "dismissed": "Ignorati",
+          "resolved": "Risolti"
+        },
+        "deviceCount": "{{count}} dispositivi",
+        "deviceCount_one": "{{count}} dispositivo",
+        "deviceCount_other": "{{count}} dispositivi",
+        "showing": "Visualizzati {{shown}} di {{total}}",
+        "empty": {
+          "title": "La flotta è pulita",
+          "body": "Nessuna rilevazione corrisponde a questi filtri al momento."
+        },
+        "errors": {
+          "loadFailed": "Impossibile caricare le rilevazioni della flotta"
+        }
+      },
+      "FindingDrawer": {
+        "heading": "Dettagli della rilevazione",
+        "meta": {
+          "firstSeen": "Vista per la prima volta {{when}}",
+          "lastSeen": "Vista per l'ultima volta {{when}}"
+        },
+        "summaryHeading": "Riepilogo",
+        "dismissNotesHeading": "Nota di archiviazione",
+        "evidenceHeading": "Prove",
+        "membersHeading": "Dispositivi interessati",
+        "membersEmpty": "Nessun dispositivo registrato per questa rilevazione.",
+        "table": {
+          "device": "Dispositivo",
+          "source": "Origine",
+          "lastSeen": "Vista l'ultima volta"
+        },
+        "runsHeading": "Cronologia delle correzioni",
+        "runsEmpty": "Nessuna correzione è ancora stata eseguita per questa rilevazione.",
+        "runCounts": "{{succeeded}} riuscite, {{failed}} fallite, {{skipped}} saltate su {{targets}} destinazioni",
+        "runStatuses": {
+          "queued": "In coda",
+          "running": "In esecuzione",
+          "partial": "Parziale",
+          "succeeded": "Riuscito",
+          "failed": "Fallito",
+          "cancelled": "Annullato"
+        },
+        "dismiss": {
+          "notesLabel": "Perché la stai ignorando? (obbligatorio)",
+          "notesPlaceholder": "Falso positivo noto, tracciato altrove, rischio accettato…",
+          "confirm": "Ignora la rilevazione"
+        },
+        "actions": {
+          "remediate": "Correggi su {{count}} dispositivi",
+          "remediate_one": "Correggi su {{count}} dispositivo",
+          "remediate_other": "Correggi su {{count}} dispositivi",
+          "acknowledge": "Prendi in carico",
+          "dismiss": "Ignora",
+          "reopen": "Riapri"
+        },
+        "errors": {
+          "loadFailed": "Impossibile caricare la rilevazione",
+          "lifecycleFailed": "Impossibile aggiornare la rilevazione"
+        }
       }
     },
     "help": {

@@ -1796,6 +1796,97 @@
           "medium": "Medio",
           "low": "Bajo"
         }
+      },
+      "FindingsFeed": {
+        "title": "Hallazgos de la flota",
+        "description": "Patrones entre dispositivos que ameritan una sola acción en lugar de muchas",
+        "filters": {
+          "orgLabel": "Filtrar por organización",
+          "kindLabel": "Filtrar por tipo de hallazgo",
+          "severityLabel": "Filtrar por severidad",
+          "statusLabel": "Filtrar por estado",
+          "allOrgs": "Todas las organizaciones",
+          "allKinds": "Todos los tipos de hallazgo",
+          "allSeverities": "Todas las severidades"
+        },
+        "kinds": {
+          "metricAnomalyPattern": "Anomalía de métrica",
+          "logCorrelation": "Correlación de registros",
+          "reliabilityOffenders": "Reincidentes de confiabilidad"
+        },
+        "severities": {
+          "critical": "Crítico",
+          "error": "Error",
+          "warning": "Advertencia",
+          "info": "Informativo"
+        },
+        "statuses": {
+          "open": "Abierto",
+          "acknowledged": "Reconocido",
+          "dismissed": "Descartado",
+          "resolved": "Resuelto"
+        },
+        "status": {
+          "active": "Abiertos y reconocidos",
+          "dismissed": "Descartados",
+          "resolved": "Resueltos"
+        },
+        "deviceCount": "{{count}} dispositivos",
+        "deviceCount_one": "{{count}} dispositivo",
+        "deviceCount_other": "{{count}} dispositivos",
+        "showing": "Mostrando {{shown}} de {{total}}",
+        "empty": {
+          "title": "La flota está limpia",
+          "body": "Ningún hallazgo coincide con estos filtros en este momento."
+        },
+        "errors": {
+          "loadFailed": "No se pudieron cargar los hallazgos de la flota"
+        }
+      },
+      "FindingDrawer": {
+        "heading": "Detalles del hallazgo",
+        "meta": {
+          "firstSeen": "Visto por primera vez {{when}}",
+          "lastSeen": "Visto por última vez {{when}}"
+        },
+        "summaryHeading": "Resumen",
+        "dismissNotesHeading": "Nota de descarte",
+        "evidenceHeading": "Evidencia",
+        "membersHeading": "Dispositivos afectados",
+        "membersEmpty": "No hay dispositivos registrados para este hallazgo.",
+        "table": {
+          "device": "Dispositivo",
+          "source": "Origen",
+          "lastSeen": "Visto por última vez"
+        },
+        "runsHeading": "Historial de remediación",
+        "runsEmpty": "Todavía no se ha ejecutado ninguna remediación para este hallazgo.",
+        "runCounts": "{{succeeded}} con éxito, {{failed}} con error, {{skipped}} omitidos de {{targets}} objetivos",
+        "runStatuses": {
+          "queued": "En cola",
+          "running": "En ejecución",
+          "partial": "Parcial",
+          "succeeded": "Con éxito",
+          "failed": "Con error",
+          "cancelled": "Cancelado"
+        },
+        "dismiss": {
+          "notesLabel": "¿Por qué lo descartas? (obligatorio)",
+          "notesPlaceholder": "Falso positivo conocido, gestionado en otro lugar, riesgo aceptado…",
+          "confirm": "Descartar hallazgo"
+        },
+        "actions": {
+          "remediate": "Remediar en {{count}} dispositivos",
+          "remediate_one": "Remediar en {{count}} dispositivo",
+          "remediate_other": "Remediar en {{count}} dispositivos",
+          "acknowledge": "Reconocer",
+          "dismiss": "Descartar",
+          "reopen": "Reabrir"
+        },
+        "errors": {
+          "loadFailed": "No se pudo cargar el hallazgo",
+          "lifecycleFailed": "No se pudo actualizar el hallazgo"
+        }
       }
     },
     "help": {

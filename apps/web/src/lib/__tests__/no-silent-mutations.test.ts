@@ -133,6 +133,12 @@ const TARGET_GLOBS = [
   // the connection list is empty — so a failed save on a populated page was
   // silent (#3291 review).
   'src/components/psa/PsaConnectionsPage.tsx',
+  // Fleet findings: the lifecycle PATCH (acknowledge/dismiss/reopen) lives in
+  // the service, and the two components must not grow their own bare mutations
+  // alongside it.
+  'src/services/fleetFindings.ts',
+  'src/components/fleet/FindingsFeed.tsx',
+  'src/components/fleet/FindingDrawer.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -324,7 +330,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(83);
+    expect(absoluteFiles.length).toBe(86);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

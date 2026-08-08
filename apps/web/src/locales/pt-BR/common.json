@@ -1796,6 +1796,97 @@
           "medium": "Médio",
           "low": "Baixo"
         }
+      },
+      "FindingsFeed": {
+        "title": "Descobertas da frota",
+        "description": "Padrões entre dispositivos que valem uma ação em vez de várias",
+        "filters": {
+          "orgLabel": "Filtrar por organização",
+          "kindLabel": "Filtrar por tipo de descoberta",
+          "severityLabel": "Filtrar por gravidade",
+          "statusLabel": "Filtrar por situação",
+          "allOrgs": "Todas as organizações",
+          "allKinds": "Todos os tipos de descoberta",
+          "allSeverities": "Todas as gravidades"
+        },
+        "kinds": {
+          "metricAnomalyPattern": "Anomalia de métrica",
+          "logCorrelation": "Correlação de logs",
+          "reliabilityOffenders": "Reincidentes de confiabilidade"
+        },
+        "severities": {
+          "critical": "Crítico",
+          "error": "Erro",
+          "warning": "Aviso",
+          "info": "Informativo"
+        },
+        "statuses": {
+          "open": "Aberto",
+          "acknowledged": "Reconhecido",
+          "dismissed": "Descartado",
+          "resolved": "Resolvido"
+        },
+        "status": {
+          "active": "Abertos e reconhecidos",
+          "dismissed": "Descartados",
+          "resolved": "Resolvidos"
+        },
+        "deviceCount": "{{count}} dispositivos",
+        "deviceCount_one": "{{count}} dispositivo",
+        "deviceCount_other": "{{count}} dispositivos",
+        "showing": "Exibindo {{shown}} de {{total}}",
+        "empty": {
+          "title": "A frota está limpa",
+          "body": "Nenhuma descoberta corresponde a estes filtros no momento."
+        },
+        "errors": {
+          "loadFailed": "Falha ao carregar as descobertas da frota"
+        }
+      },
+      "FindingDrawer": {
+        "heading": "Detalhes da descoberta",
+        "meta": {
+          "firstSeen": "Vista pela primeira vez {{when}}",
+          "lastSeen": "Vista pela última vez {{when}}"
+        },
+        "summaryHeading": "Resumo",
+        "dismissNotesHeading": "Nota de descarte",
+        "evidenceHeading": "Evidências",
+        "membersHeading": "Dispositivos afetados",
+        "membersEmpty": "Nenhum dispositivo registrado para esta descoberta.",
+        "table": {
+          "device": "Dispositivo",
+          "source": "Origem",
+          "lastSeen": "Visto por último"
+        },
+        "runsHeading": "Histórico de remediação",
+        "runsEmpty": "Nenhuma remediação foi executada para esta descoberta ainda.",
+        "runCounts": "{{succeeded}} com sucesso, {{failed}} com falha, {{skipped}} ignorados de {{targets}} alvos",
+        "runStatuses": {
+          "queued": "Na fila",
+          "running": "Em execução",
+          "partial": "Parcial",
+          "succeeded": "Concluído",
+          "failed": "Falhou",
+          "cancelled": "Cancelado"
+        },
+        "dismiss": {
+          "notesLabel": "Por que você está descartando isto? (obrigatório)",
+          "notesPlaceholder": "Falso positivo conhecido, acompanhado em outro lugar, risco aceito…",
+          "confirm": "Descartar descoberta"
+        },
+        "actions": {
+          "remediate": "Remediar em {{count}} dispositivos",
+          "remediate_one": "Remediar em {{count}} dispositivo",
+          "remediate_other": "Remediar em {{count}} dispositivos",
+          "acknowledge": "Reconhecer",
+          "dismiss": "Descartar",
+          "reopen": "Reabrir"
+        },
+        "errors": {
+          "loadFailed": "Falha ao carregar a descoberta",
+          "lifecycleFailed": "Falha ao atualizar a descoberta"
+        }
       }
     },
     "help": {

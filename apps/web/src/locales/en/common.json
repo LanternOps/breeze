@@ -1796,6 +1796,97 @@
           "medium": "Medium",
           "low": "Low"
         }
+      },
+      "FindingsFeed": {
+        "title": "Fleet Findings",
+        "description": "Cross-device patterns worth one action instead of many",
+        "filters": {
+          "orgLabel": "Filter by organization",
+          "kindLabel": "Filter by finding type",
+          "severityLabel": "Filter by severity",
+          "statusLabel": "Filter by status",
+          "allOrgs": "All organizations",
+          "allKinds": "All finding types",
+          "allSeverities": "All severities"
+        },
+        "kinds": {
+          "metricAnomalyPattern": "Metric anomaly",
+          "logCorrelation": "Log correlation",
+          "reliabilityOffenders": "Reliability offenders"
+        },
+        "severities": {
+          "critical": "Critical",
+          "error": "Error",
+          "warning": "Warning",
+          "info": "Informational"
+        },
+        "statuses": {
+          "open": "Open",
+          "acknowledged": "Acknowledged",
+          "dismissed": "Dismissed",
+          "resolved": "Resolved"
+        },
+        "status": {
+          "active": "Open & acknowledged",
+          "dismissed": "Dismissed",
+          "resolved": "Resolved"
+        },
+        "deviceCount": "{{count}} devices",
+        "deviceCount_one": "{{count}} device",
+        "deviceCount_other": "{{count}} devices",
+        "showing": "Showing {{shown}} of {{total}}",
+        "empty": {
+          "title": "Fleet is clean",
+          "body": "No findings match these filters right now."
+        },
+        "errors": {
+          "loadFailed": "Failed to load fleet findings"
+        }
+      },
+      "FindingDrawer": {
+        "heading": "Finding details",
+        "meta": {
+          "firstSeen": "First seen {{when}}",
+          "lastSeen": "Last seen {{when}}"
+        },
+        "summaryHeading": "Summary",
+        "dismissNotesHeading": "Dismissal note",
+        "evidenceHeading": "Evidence",
+        "membersHeading": "Affected devices",
+        "membersEmpty": "No member devices are recorded for this finding.",
+        "table": {
+          "device": "Device",
+          "source": "Source",
+          "lastSeen": "Last seen"
+        },
+        "runsHeading": "Remediation history",
+        "runsEmpty": "No remediation has been run for this finding yet.",
+        "runCounts": "{{succeeded}} succeeded, {{failed}} failed, {{skipped}} skipped of {{targets}} targeted",
+        "runStatuses": {
+          "queued": "Queued",
+          "running": "Running",
+          "partial": "Partial",
+          "succeeded": "Succeeded",
+          "failed": "Failed",
+          "cancelled": "Cancelled"
+        },
+        "dismiss": {
+          "notesLabel": "Why are you dismissing this? (required)",
+          "notesPlaceholder": "Known false positive, tracked elsewhere, accepted risk…",
+          "confirm": "Dismiss finding"
+        },
+        "actions": {
+          "remediate": "Remediate across {{count}} devices",
+          "remediate_one": "Remediate on {{count}} device",
+          "remediate_other": "Remediate across {{count}} devices",
+          "acknowledge": "Acknowledge",
+          "dismiss": "Dismiss",
+          "reopen": "Reopen"
+        },
+        "errors": {
+          "loadFailed": "Failed to load finding",
+          "lifecycleFailed": "Failed to update finding"
+        }
       }
     },
     "help": {

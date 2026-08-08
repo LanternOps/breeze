@@ -1796,6 +1796,97 @@
           "medium": "Moyenne",
           "low": "Faible"
         }
+      },
+      "FindingsFeed": {
+        "title": "Constats de la flotte",
+        "description": "Des tendances inter-appareils qui méritent une seule action plutôt que plusieurs",
+        "filters": {
+          "orgLabel": "Filtrer par organisation",
+          "kindLabel": "Filtrer par type de constat",
+          "severityLabel": "Filtrer par gravité",
+          "statusLabel": "Filtrer par statut",
+          "allOrgs": "Toutes les organisations",
+          "allKinds": "Tous les types de constat",
+          "allSeverities": "Toutes les gravités"
+        },
+        "kinds": {
+          "metricAnomalyPattern": "Anomalie de métrique",
+          "logCorrelation": "Corrélation de journaux",
+          "reliabilityOffenders": "Récidivistes de fiabilité"
+        },
+        "severities": {
+          "critical": "Critique",
+          "error": "Erreur",
+          "warning": "Avertissement",
+          "info": "Informatif"
+        },
+        "statuses": {
+          "open": "Ouvert",
+          "acknowledged": "Pris en compte",
+          "dismissed": "Écarté",
+          "resolved": "Résolu"
+        },
+        "status": {
+          "active": "Ouverts et pris en compte",
+          "dismissed": "Écartés",
+          "resolved": "Résolus"
+        },
+        "deviceCount": "{{count}} appareils",
+        "deviceCount_one": "{{count}} appareil",
+        "deviceCount_other": "{{count}} appareils",
+        "showing": "Affichage de {{shown}} sur {{total}}",
+        "empty": {
+          "title": "La flotte est saine",
+          "body": "Aucun constat ne correspond à ces filtres pour le moment."
+        },
+        "errors": {
+          "loadFailed": "Échec du chargement des constats de la flotte"
+        }
+      },
+      "FindingDrawer": {
+        "heading": "Détails du constat",
+        "meta": {
+          "firstSeen": "Première détection {{when}}",
+          "lastSeen": "Dernière détection {{when}}"
+        },
+        "summaryHeading": "Résumé",
+        "dismissNotesHeading": "Note d'écartement",
+        "evidenceHeading": "Éléments probants",
+        "membersHeading": "Appareils concernés",
+        "membersEmpty": "Aucun appareil n'est enregistré pour ce constat.",
+        "table": {
+          "device": "Appareil",
+          "source": "Origine",
+          "lastSeen": "Dernière détection"
+        },
+        "runsHeading": "Historique des remédiations",
+        "runsEmpty": "Aucune remédiation n'a encore été exécutée pour ce constat.",
+        "runCounts": "{{succeeded}} réussies, {{failed}} en échec, {{skipped}} ignorées sur {{targets}} ciblées",
+        "runStatuses": {
+          "queued": "En file d'attente",
+          "running": "En cours",
+          "partial": "Partiel",
+          "succeeded": "Réussi",
+          "failed": "Échoué",
+          "cancelled": "Annulé"
+        },
+        "dismiss": {
+          "notesLabel": "Pourquoi écartez-vous ce constat ? (obligatoire)",
+          "notesPlaceholder": "Faux positif connu, suivi ailleurs, risque accepté…",
+          "confirm": "Écarter le constat"
+        },
+        "actions": {
+          "remediate": "Remédier sur {{count}} appareils",
+          "remediate_one": "Remédier sur {{count}} appareil",
+          "remediate_other": "Remédier sur {{count}} appareils",
+          "acknowledge": "Prendre en compte",
+          "dismiss": "Écarter",
+          "reopen": "Rouvrir"
+        },
+        "errors": {
+          "loadFailed": "Échec du chargement du constat",
+          "lifecycleFailed": "Échec de la mise à jour du constat"
+        }
       }
     },
     "help": {
