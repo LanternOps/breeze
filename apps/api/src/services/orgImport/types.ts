@@ -59,6 +59,14 @@ export interface CommitRowInput extends ImportRow {
    */
   expectedAnnotation?: RowAnnotation;
   /**
+   * The organizationId the client saw the row match at preview time. When
+   * provided, commit rejects the row if the re-derived match resolves to a
+   * DIFFERENT organization — an acknowledgement ("yes, this is org X") must
+   * never be silently transferred to org Y that took over the name/link
+   * between preview and commit.
+   */
+  expectedOrganizationId?: string;
+  /**
    * Explicit opt-in to reactivate a soft-deleted matched org. Without it,
    * `matched-soft-deleted` rows are refused: never silently attach sites to a
    * dead tenant, never silently mint a duplicate beside it.

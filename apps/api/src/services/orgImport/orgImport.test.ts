@@ -314,6 +314,33 @@ describe('commitOrgImport — expectation guard', () => {
     ]);
   });
 
+  it('rejects an acknowledged match that now resolves to a DIFFERENT organization (identity pinning)', async () => {
+    // At preview the name matched org-1; since then org-1 was renamed and
+    // org-2 took the name. The acknowledgement must not transfer to org-2.
+    stubState([{ id: 'org-2', name: 'Acme', slug: 'acme-2' }], []);
+    const rows: CommitRowInput[] = [
+      { organization: 'Acme', expectedAnnotation: 'name-match', expectedOrganizationId: 'org-1' },
+    ];
+    const summary = await commitOrgImport(rows, 'p1', { userId: null }, 'update');
+    expect(summary.errors).toHaveLength(1);
+    expect(summary.errors[0]!.error).toMatch(/different organization/);
+    expect(summary.updated).toEqual([]);
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts an acknowledged match whose pinned organization still matches', async () => {
+    stubState([{ id: 'org-1', name: 'Acme', slug: 'acme' }], []);
+    const rows: CommitRowInput[] = [
+      { organization: 'Acme', expectedAnnotation: 'name-match', expectedOrganizationId: 'org-1' },
+    ];
+    const summary = await commitOrgImport(rows, 'p1', { userId: null }, 'skip');
+    expect(summary.errors).toEqual([]);
+    expect(summary.skipped).toEqual([
+      { index: 0, organization: 'Acme', organizationId: 'org-1', reason: 'name_match_confirmed' },
+    ]);
+  });
+
   it('rejects a row whose annotation changed since preview', async () => {
     // Client previewed 'create', but the org has since been created + linked.
     stubState(

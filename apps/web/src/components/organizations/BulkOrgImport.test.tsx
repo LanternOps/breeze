@@ -92,6 +92,31 @@ describe('BulkOrgImport', () => {
     expect(screen.getByTestId('bulk-org-import-select-3')).toBeDisabled();
   });
 
+  it('select-all only toggles create/link-match rows — never acknowledges name-matches or reactivates soft-deleted matches', async () => {
+    render(<BulkOrgImport />);
+    await uploadCsv();
+    fetchWithAuthMock.mockReturnValueOnce(jsonResponse({
+      rows: [
+        { index: 0, organization: 'Acme', annotation: 'create', slug: 'acme', organizationId: null },
+        { index: 1, organization: 'Old Co', annotation: 'name-match', slug: null, organizationId: 'org-o', matchedOrganizationName: 'Old Co' },
+        { index: 2, organization: 'Dead Co', annotation: 'matched-soft-deleted', slug: null, organizationId: 'org-dead' },
+      ],
+    }));
+    fireEvent.click(screen.getByTestId('bulk-org-import-preview'));
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-org-import-select-all')).toBeInTheDocument(),
+    );
+
+    // create pre-selected → select-all reads checked; clicking it clears only
+    // the bulk set, then clicking again re-adds only the bulk set.
+    fireEvent.click(screen.getByTestId('bulk-org-import-select-all'));
+    expect(screen.getByTestId('bulk-org-import-select-0')).not.toBeChecked();
+    fireEvent.click(screen.getByTestId('bulk-org-import-select-all'));
+    expect(screen.getByTestId('bulk-org-import-select-0')).toBeChecked();
+    expect(screen.getByTestId('bulk-org-import-select-1')).not.toBeChecked();
+    expect(screen.getByTestId('bulk-org-import-select-2')).not.toBeChecked();
+  });
+
   it('commits selected rows with expectedAnnotation and shows a success toast', async () => {
     render(<BulkOrgImport />);
     await uploadAndPreview();
@@ -114,7 +139,8 @@ describe('BulkOrgImport', () => {
     // Only the two default-selected rows, each carrying its preview annotation.
     expect(body.rows).toEqual([
       { organization: 'Acme', site: 'HQ', externalId: '1', expectedAnnotation: 'create' },
-      { organization: 'Widget', site: 'Depot', externalId: '2', expectedAnnotation: 'link-match' },
+      // Matched rows pin the acknowledged org identity for the commit re-check.
+      { organization: 'Widget', site: 'Depot', externalId: '2', expectedAnnotation: 'link-match', expectedOrganizationId: 'org-w' },
     ]);
   });
 
@@ -143,7 +169,7 @@ describe('BulkOrgImport', () => {
     await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
     const body = JSON.parse((fetchWithAuthMock.mock.calls[1]![1] as RequestInit).body as string);
     expect(body.rows).toEqual([
-      { organization: 'Acme', expectedAnnotation: 'matched-soft-deleted', reactivate: true },
+      { organization: 'Acme', expectedAnnotation: 'matched-soft-deleted', expectedOrganizationId: 'org-dead', reactivate: true },
     ]);
   });
 

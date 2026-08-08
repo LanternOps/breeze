@@ -2816,13 +2816,13 @@
   },
   "bulkOrgImport": {
     "title": "Importação em massa",
-    "description": "Importe organizações e locais de um CSV exportado do seu RMM anterior.",
+    "description": "Importe organizações e locais a partir de um CSV exportado do seu RMM anterior.",
     "dropzone": "Solte um arquivo CSV aqui ou clique para procurar",
     "dropzoneHint": "Colunas: organização (obrigatória), local, ID externo, sistema externo, fuso horário",
     "actions": {
       "close": "Fechar",
       "preview": "Pré-visualizar {{count}} linhas",
-      "previewing": "Gerando pré-visualização…",
+      "previewing": "Pré-visualizando…",
       "import": "Importar {{count}} selecionadas",
       "importing": "Importando…"
     },
@@ -2838,7 +2838,7 @@
     },
     "mode": {
       "label": "Organizações existentes",
-      "skip": "Ignorar (manter como está)",
+      "skip": "Ignorar (manter sem alterações)",
       "update": "Atualizar a partir do arquivo"
     },
     "preview": {
@@ -2855,7 +2855,7 @@
       "create": "Nova",
       "linkMatch": "Já vinculada",
       "nameMatch": "Nome coincide — confirmar",
-      "softDeleted": "Organização excluída",
+      "softDeleted": "Corresponde a organização excluída",
       "conflict": "Conflito"
     },
     "summary": {
@@ -2871,7 +2871,7 @@
     },
     "errors": {
       "previewFailed": "Falha ao pré-visualizar a importação.",
-      "importFailed": "Falha ao importar organizações."
+      "importFailed": "Falha ao importar as organizações."
     }
   },
   "organizationsPage": {

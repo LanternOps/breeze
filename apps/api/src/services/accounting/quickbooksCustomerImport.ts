@@ -36,11 +36,12 @@ function clamp(value: string | undefined | null, max: number): string | null {
   return value.length > max ? value.slice(0, max) : value;
 }
 
-// Postgres unique_violation — a concurrent import linked this customer after our
-// dedup snapshot. The partial unique index is the backstop; treat it as a skip.
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505';
-}
+// Postgres unique_violation — a concurrent import linked this customer after
+// our dedup snapshot; the unique indexes are the backstop, treat it as a skip.
+// Uses the shared cause-chain-walking helper: Drizzle wraps postgres.js errors
+// in DrizzleQueryError whose top-level `.code` is undefined (utils/pgErrors.ts),
+// so a local top-level check would miss every Drizzle-issued insert.
+import { isPgUniqueViolation as isUniqueViolation } from '../../utils/pgErrors';
 
 export interface AnnotatedCustomer extends RemoteCustomer {
   alreadyImported: boolean;

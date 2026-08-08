@@ -196,6 +196,9 @@ export default function BulkOrgImport({ onImported, onUnauthorized, onClose }: P
         ...(r.externalSystem ? { externalSystem: r.externalSystem } : {}),
         ...(r.timezone ? { timezone: r.timezone } : {}),
         expectedAnnotation: r.annotation,
+        // Pin the identity the user acknowledged: commit re-derives the match
+        // and rejects the row if it now resolves to a DIFFERENT organization.
+        ...(r.organizationId ? { expectedOrganizationId: r.organizationId } : {}),
         ...(r.annotation === 'matched-soft-deleted' ? { reactivate: true } : {}),
       }));
     if (rows.length === 0) return;
@@ -246,7 +249,12 @@ export default function BulkOrgImport({ onImported, onUnauthorized, onClose }: P
     });
   }
 
-  const selectableRows = (previewRows ?? []).filter((r) => r.annotation !== 'conflict');
+  // Select-all only touches the safe annotations. name-match acknowledgement
+  // and soft-deleted reactivation are per-row decisions — a bulk toggle must
+  // never opt 500 rows into reactivating dead tenants in one click.
+  const bulkSelectableRows = (previewRows ?? []).filter(
+    (r) => r.annotation === 'create' || r.annotation === 'link-match',
+  );
 
   return (
     <div data-testid="bulk-org-import-panel" className="rounded-lg border bg-card p-4 shadow-xs">
@@ -306,7 +314,7 @@ export default function BulkOrgImport({ onImported, onUnauthorized, onClose }: P
             {MAPPABLE_FIELDS.map((field) => (
               <label key={field} className="block text-xs">
                 <span className="text-muted-foreground">
-                  {t(`bulkOrgImport.mapping.${field}`)}
+                  {t(/* i18n-dynamic */ `bulkOrgImport.mapping.${field}`)}
                   {field === 'organization' && ' *'}
                 </span>
                 <select
@@ -378,13 +386,19 @@ export default function BulkOrgImport({ onImported, onUnauthorized, onClose }: P
                       type="checkbox"
                       data-testid="bulk-org-import-select-all"
                       aria-label={t('bulkOrgImport.preview.selectAll')}
-                      checked={selectableRows.length > 0 && selectableRows.every((r) => selected.has(r.index))}
+                      checked={bulkSelectableRows.length > 0 && bulkSelectableRows.every((r) => selected.has(r.index))}
                       onChange={() => {
-                        if (selectableRows.every((r) => selected.has(r.index))) {
-                          setSelected(new Set());
-                        } else {
-                          setSelected(new Set(selectableRows.map((r) => r.index)));
-                        }
+                        setSelected((prev) => {
+                          const next = new Set(prev);
+                          if (bulkSelectableRows.every((r) => next.has(r.index))) {
+                            // Deselect the bulk set; explicit per-row opt-ins
+                            // (name-match / reactivate) stay as ticked.
+                            for (const r of bulkSelectableRows) next.delete(r.index);
+                          } else {
+                            for (const r of bulkSelectableRows) next.add(r.index);
+                          }
+                          return next;
+                        });
                       }}
                     />
                   </th>
@@ -418,7 +432,7 @@ export default function BulkOrgImport({ onImported, onUnauthorized, onClose }: P
                         data-testid={`bulk-org-import-badge-${r.index}`}
                         className={`inline-flex rounded-full border px-2 py-0.5 text-xs ${BADGE_STYLES[r.annotation]}`}
                       >
-                        {t(BADGE_LABEL_KEYS[r.annotation])}
+                        {t(/* i18n-dynamic */ BADGE_LABEL_KEYS[r.annotation])}
                       </span>
                       {r.annotation === 'name-match' && r.matchedOrganizationName && (
                         <span className="ml-2 text-xs text-muted-foreground">

@@ -2801,8 +2801,8 @@
     "badges": {
       "create": "Neu",
       "linkMatch": "Bereits verknüpft",
-      "nameMatch": "Namensübereinstimmung — bestätigen",
-      "softDeleted": "Gelöschte Organisation",
+      "nameMatch": "Namenstreffer — bestätigen",
+      "softDeleted": "Treffer auf gelöschte Organisation",
       "conflict": "Konflikt"
     },
     "summary": {

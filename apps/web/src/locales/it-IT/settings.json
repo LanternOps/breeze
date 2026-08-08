@@ -2849,8 +2849,8 @@
     "badges": {
       "create": "Nuova",
       "linkMatch": "Già collegata",
-      "nameMatch": "Corrispondenza nome — conferma",
-      "softDeleted": "Organizzazione eliminata",
+      "nameMatch": "Corrispondenza nome — confermare",
+      "softDeleted": "Corrisponde a organizzazione eliminata",
       "conflict": "Conflitto"
     },
     "summary": {
@@ -2865,8 +2865,8 @@
       "title_other": "{{count}} righe non riuscite"
     },
     "errors": {
-      "previewFailed": "Anteprima dell’importazione non riuscita.",
-      "importFailed": "Importazione delle organizzazioni non riuscita."
+      "previewFailed": "Impossibile generare l’anteprima dell’importazione.",
+      "importFailed": "Impossibile importare le organizzazioni."
     }
   },
   "organizationsPage": {

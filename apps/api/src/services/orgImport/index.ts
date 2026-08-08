@@ -20,6 +20,7 @@
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { organizations, organizationExternalLinks, sites } from '../../db/schema';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { restoreOrganizationTenantAccess } from '../tenantLifecycle';
 import { generateUniqueSlug, slugify } from './slug';
 import type {
@@ -48,10 +49,6 @@ export function normalizeOrgName(name: string): string {
 function clamp(value: string | undefined | null, max: number): string | null {
   if (value == null) return null;
   return value.length > max ? value.slice(0, max) : value;
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505';
 }
 
 interface ExistingOrg {
@@ -329,10 +326,23 @@ export async function previewOrgImport(rows: ImportRow[], partnerId: string): Pr
  * Validate a commit row's derived annotation against the client's
  * acknowledgement. Returns an error message when the row must be refused.
  */
-function checkExpectation(row: CommitRowInput, derived: RowAnnotation, matchedName: string | undefined): string | null {
+function checkExpectation(
+  row: CommitRowInput,
+  derived: RowAnnotation,
+  matchedName: string | undefined,
+  matchedOrgId: string | null,
+): string | null {
   if (derived === 'conflict') return null; // handled by the caller with the conflict reason
   if (row.expectedAnnotation && row.expectedAnnotation !== derived) {
     return `Annotation changed since preview: expected "${row.expectedAnnotation}", now "${derived}" — re-run preview`;
+  }
+  // Identity pinning: an acknowledgement made against org X must not be
+  // transferred to a different org that took over the name/link since preview.
+  if (row.expectedOrganizationId && matchedOrgId && matchedOrgId !== row.expectedOrganizationId) {
+    return `Match changed since preview: the row now resolves to a different organization — re-run preview`;
+  }
+  if (row.expectedOrganizationId && !matchedOrgId) {
+    return `Match changed since preview: the previously matched organization no longer matches — re-run preview`;
   }
   if (derived === 'name-match' && row.expectedAnnotation !== 'name-match') {
     return `Name matches existing organization "${matchedName ?? row.organization}" — confirm the match by committing with expectedAnnotation "name-match"`;
@@ -388,7 +398,7 @@ async function commitGroup(
   const rejected = new Set<number>();
   for (const r of group.rows) {
     const commitRow = r.row as CommitRowInput;
-    const problem = checkExpectation(commitRow, group.annotation, group.matchedOrganizationName);
+    const problem = checkExpectation(commitRow, group.annotation, group.matchedOrganizationName, group.organizationId);
     if (problem) {
       summary.errors.push({ index: r.index, organization: r.organization, error: problem });
       rejected.add(r.index);
@@ -488,7 +498,7 @@ async function createGroup(
     // Unique violation on the link row: a concurrent import linked this
     // external id after our snapshot — honor the skip contract instead of
     // reporting a raw constraint error. Re-read the winning org id.
-    if (isUniqueViolation(err) && group.externalId) {
+    if (isPgUniqueViolation(err) && group.externalId) {
       const existing = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
         db.select({ orgId: organizationExternalLinks.orgId })
           .from(organizationExternalLinks)
@@ -600,7 +610,7 @@ async function updateGroup(
       ));
       createdLink = true;
     } catch (err) {
-      if (!isUniqueViolation(err)) throw err;
+      if (!isPgUniqueViolation(err)) throw err;
     }
   }
 

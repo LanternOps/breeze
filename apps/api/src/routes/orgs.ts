@@ -1376,6 +1376,9 @@ const commitOrgImportSchema = z.object({
       // rejects rows whose annotation changed — and a name-match is never
       // applied without this explicit acknowledgement.
       expectedAnnotation: z.enum(['create', 'link-match', 'name-match', 'matched-soft-deleted']).optional(),
+      // The organizationId the row matched at preview; commit rejects the row
+      // if the re-derived match resolves to a different organization.
+      expectedOrganizationId: z.string().guid().optional(),
       // Explicit opt-in to reactivate a soft-deleted matched org.
       reactivate: z.boolean().optional(),
     }))
