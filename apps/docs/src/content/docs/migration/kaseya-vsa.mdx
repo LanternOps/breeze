@@ -1,0 +1,162 @@
+---
+title: Kaseya VSA → Breeze
+description: Export organizations, machine groups and agents from Kaseya VSA, push the Breeze agent via an Agent Procedure, and remove the Kaseya agent cleanly.
+sidebar:
+  order: 6
+  label: Kaseya VSA
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Kaseya VSA migrations are dominated by two facts: **Agent Procedures do not port** (they are proprietary step lists, like Automate scripts), and the **machine-group naming model** is unlike anything else. Device and org data export cleanly through the REST API.
+
+This page covers VSA 9 (on-premises and classic SaaS) and VSA X where the concepts differ.
+
+Read [Migrating to Breeze](/migration/overview/) first.
+
+---
+
+## Hierarchy Mapping
+
+Kaseya's identity for a machine is `machineName.groupName.orgName` — the machine group is embedded in the agent's identity, which is why re-organising machines in VSA is painful and why migration is a good moment to fix your structure.
+
+| Kaseya VSA | Breeze | Notes |
+|---|---|---|
+| VSA instance | Partner | |
+| **Organization** | **Organization** | Direct match. |
+| **Machine Group** | **Site** | Machine groups are usually locations or departments. Nested subgroups (`hq.acme`) flatten to one site each. |
+| View / filter | Device Group | VSA Views map to Breeze [dynamic device groups](/features/device-groups/). |
+| Agent | Device | |
+
+<Aside type="tip">
+  If your machine groups are departmental rather than geographic (`accounting.acme`, `warehouse.acme`), map them to Breeze **device groups** under a single site instead of to sites. Breeze sites carry a timezone and drive maintenance-window and patch scheduling; a department is not a timezone.
+</Aside>
+
+---
+
+## Phase 0 — Export from VSA
+
+VSA's REST API is at `https://<your-vsa>/api/v1.0`. Authentication is a two-step token exchange using a Base64 `Basic` header built from your username and a SHA-256 hash of the password concatenated with a random string — awkward enough that most people generate the token once from the VSA UI (**System → User Security → Users → REST API**) and paste it.
+
+<Steps>
+
+1. **Export the org → machine group tree:**
+
+   ```bash
+   AUTH="Authorization: Bearer $VSA_TOKEN"
+
+   curl -sf -H "$AUTH" "https://$VSA/api/v1.0/system/orgs?\$top=1000" \
+     | jq -r '.Result[] | [.OrgId, .OrgName] | @tsv' > vsa-orgs.tsv
+
+   curl -sf -H "$AUTH" "https://$VSA/api/v1.0/system/machinegroups?\$top=5000" \
+     | jq -r '.Result[] | [.OrgName, .MachineGroupName] | @csv' > tree.csv
+   sed -i '1i organization,site' tree.csv
+   ```
+
+   Feed `tree.csv` to [Recipe 1](/migration/toolkit/#recipe-1--bootstrap-the-tenancy-tree-from-csv).
+
+2. **Export agents** — your reconciliation checklist:
+
+   ```bash
+   curl -sf -H "$AUTH" "https://$VSA/api/v1.0/assetmgmt/agents?\$top=10000" \
+     | jq -r '.Result[] | [.OrgName, .GroupName, .ComputerName,
+                           .OSName, .LastCheckInTime, .Online] | @tsv' > vsa-agents.tsv
+   ```
+
+3. **Export custom fields:**
+
+   ```bash
+   curl -sf -H "$AUTH" "https://$VSA/api/v1.0/assetmgmt/assets/customfields" | jq .
+   ```
+
+4. **List your Agent Procedures for triage** (you will re-author, not import):
+
+   ```bash
+   curl -sf -H "$AUTH" "https://$VSA/api/v1.0/automation/agentprocs?\$top=2000" \
+     | jq -r '.Result[] | [.AgentProcedureId, .AgentProcedureName] | @tsv'
+   ```
+
+</Steps>
+
+---
+
+## Phase 3 — Deploy the Breeze Agent with an Agent Procedure
+
+<Steps>
+
+1. **Create the procedure.** **Agent Procedures → Manage Procedures → New Procedure**. You need one step: `Execute Shell Command` (or `Execute PowerShell Command (64-bit)` on modern VSA), run as **System**.
+
+2. **Parameterise the enrollment key.** Define a procedure variable for the per-machine-group key from [Recipe 2](/migration/toolkit/#recipe-2--mint-bulk-enrollment-keys). If you prefer one procedure for the whole estate, store the key in a custom field per machine group and read it with `#customfield#`.
+
+3. **Body:** the Windows PowerShell payload from [Recipe 3](/migration/toolkit/#recipe-3--the-push-payload).
+
+   <Aside type="caution">
+     Use `writeFile` to drop a `.ps1` onto the endpoint and then execute it, rather than passing a long command line to `Execute Shell Command`. VSA's command-line handling truncates and mis-escapes long PowerShell, and the resulting failure is silent.
+   </Aside>
+
+4. **Add AV/EDR exclusions in both directions** first — see [Antivirus Exceptions](/deploy/antivirus-exceptions/).
+
+5. **Schedule it, don't run it once.** Schedule the procedure against one machine group with **Distribution Window** spread over a few hours and a **daily recurrence** for the length of your rollout window. Enable *Skip if offline* with retry so the schedule sweeps up laptops. The `agent.yaml` check keeps re-runs harmless.
+
+</Steps>
+
+---
+
+## Agent Procedures: Plan to Re-author
+
+Agent Procedures are step-based XML. There is no path from a procedure into a PowerShell script, and writing a converter is not worth it.
+
+<Steps>
+
+1. **Rank by use.** VSA's *Agent Procedure Status* and script logs show what has actually executed in the last year. Anything at zero does not migrate.
+2. **Check the Breeze system library first** — `GET /scripts/system-library`. The standard maintenance procedures are already there.
+3. **Re-author the survivors** as PowerShell or bash. Procedures built from `executeShellCommand` / `writeFile` steps translate almost directly; procedures built from VSA's `getVariable`/`if` step logic need rethinking rather than reproducing.
+4. **Bulk-load** with [Recipe 6](/migration/toolkit/#recipe-6--bulk-script-import), `availability: "partner"`.
+
+</Steps>
+
+---
+
+## Monitor Sets and Patching
+
+| Kaseya VSA | Breeze |
+|---|---|
+| Monitor Sets (counter/service/process) | [Monitors](/features/service-monitoring/) + [alert rules](/features/alerts/) |
+| Event Log Sets | [Event log forwarding](/features/event-log-forwarding/) with alert rules |
+| Alarms → tickets | Alert rules bound to a [PSA integration](/features/psa-integrations/) |
+| Patch Management policies | [Patch policies](/features/patch-management/) |
+| Patch approval by classification | [Update rings](/features/update-rings/) |
+| Machine group scheduling | Site timezone + [maintenance windows](/features/maintenance-windows/) |
+
+Rebuild the top of your alarm-volume list partner-wide rather than porting monitor sets one for one.
+
+---
+
+## Phase 6 — Decommission the Kaseya Agent
+
+Only after [Recipe 4](/migration/toolkit/#recipe-4--reconcile-enrollment) is clean for that organization.
+
+<Steps>
+
+1. **Suspend alarms** for the machine group (**Agent → Suspend Alarms**). Leave the agent installed.
+2. **Wait one full patch cycle.**
+3. **Uninstall via VSA.** The supported route is **Agent → Uninstall Agent**, which removes the agent and deletes the account. To do it from a procedure instead:
+
+   ```powershell
+   $s = Get-Service -Name 'KaseyaAgent*' -ErrorAction SilentlyContinue
+   foreach ($svc in $s) {
+     $dir = (Get-CimInstance Win32_Service -Filter "Name='$($svc.Name)'").PathName -replace '^"?([^"]+)\\[^\\]+$','$1'
+     if (Test-Path "$dir\KASetup.exe") { & "$dir\KASetup.exe" /r /s /g }
+   }
+   ```
+
+   On macOS, run `/Library/Kaseya/*/Uninstaller.app` or Kaseya's supplied uninstall script.
+
+4. **Verify from Breeze.** [Recipe 5](/migration/toolkit/#recipe-5--find-endpoints-still-running-the-old-agent) — Breeze [Management Posture](/features/management-posture/) fingerprints Kaseya VSA. Drive the count to zero.
+5. **Delete the organization in VSA** and reduce your agent count, after exporting anything you must retain.
+
+</Steps>
+
+<Aside type="caution">
+  Because a VSA agent's identity encodes its machine group, a machine that was moved between groups may exist twice in your export — once live, once stale. Deduplicate on hostname before you use the export as a reconciliation target, or Phase 4 will show a permanent phantom gap.
+</Aside>

@@ -1,0 +1,152 @@
+---
+title: Atera → Breeze
+description: Export customers, agents and custom fields from Atera, deploy the Breeze agent via an Atera script, and remove the Atera agent cleanly.
+sidebar:
+  order: 8
+  label: Atera
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Atera is the simplest migration in this section. Its API is a plain REST API with a single header for authentication, its scripts are ordinary PowerShell and batch, and its data model is shallow. A small Atera estate can be through Phase 3 in an afternoon.
+
+The one thing that needs thought is the **ticketing split**: Atera bundles a PSA. Breeze has its own [ticketing](/features/ticketing/) and also integrates with external PSAs, so you need to decide which you are moving to before you migrate anything else.
+
+Read [Migrating to Breeze](/migration/overview/) first.
+
+---
+
+## Hierarchy Mapping
+
+Atera is flat — Customers contain Agents, with an optional Site/Folder layer that many estates never use.
+
+| Atera | Breeze | Notes |
+|---|---|---|
+| Account | Partner | |
+| **Customer** | **Organization** | Direct match. |
+| Site / folder | **Site** | If unused, create one `Main` site per organization. |
+| Agent | Device | |
+| Contact | — | Breeze cannot create contacts programmatically today; enter them by hand or via your PSA. |
+
+---
+
+## Phase 0 — Export from Atera
+
+Generate an API key under **Admin → API**. Everything below uses `X-API-KEY` against `https://app.atera.com/api/v3`. Atera paginates at 50 items per page by default — mind `itemsInPage` and `totalPages` on every collection call.
+
+<Steps>
+
+1. **Export customers** — your Breeze organization list:
+
+   ```bash
+   H="X-API-KEY: $ATERA_KEY"
+   echo 'organization,site' > tree.csv
+   page=1
+   while :; do
+     r=$(curl -sf -H "$H" "https://app.atera.com/api/v3/customers?page=$page&itemsInPage=50")
+     echo "$r" | jq -r '.items[] | [.CustomerName, "Main"] | @csv' >> tree.csv
+     [ "$page" -ge "$(echo "$r" | jq -r .totalPages)" ] && break
+     page=$((page+1))
+   done
+   ```
+
+   Feed `tree.csv` to [Recipe 1](/migration/toolkit/#recipe-1--bootstrap-the-tenancy-tree-from-csv).
+
+2. **Export agents** — your reconciliation checklist and licence audit:
+
+   ```bash
+   page=1
+   while :; do
+     r=$(curl -sf -H "$H" "https://app.atera.com/api/v3/agents?page=$page&itemsInPage=50")
+     echo "$r" | jq -r '.items[] | [.CustomerName, .MachineName, .OS,
+                                    .LastSeen, .Online] | @tsv'
+     [ "$page" -ge "$(echo "$r" | jq -r .totalPages)" ] && break
+     page=$((page+1))
+   done > atera-agents.tsv
+   ```
+
+3. **Export custom fields.** Atera custom values are read one field at a time per object:
+
+   ```bash
+   curl -sf -H "$H" \
+     "https://app.atera.com/api/v3/customvalues/agent/$AGENT_ID/$FIELD_NAME" | jq .
+   ```
+
+   List your configured fields in **Admin → Custom Fields** first, then loop that call across agents.
+
+4. **Export contacts and tickets if you are leaving Atera's PSA.** `GET /contacts` and `GET /tickets`. Ticket history does not migrate into Breeze — export it to storage for reference before you cancel.
+
+</Steps>
+
+---
+
+## Phase 3 — Deploy the Breeze Agent with an Atera Script
+
+<Steps>
+
+1. **Create the script.** **Admin → Scripts → New Script**, type **PowerShell**, and paste the Windows payload from [Recipe 3](/migration/toolkit/#recipe-3--the-push-payload). Atera scripts run as SYSTEM.
+
+2. **Parameterise the key.** Atera supports script parameters — declare `Server`, `Key`, and `Secret` and supply the per-customer enrollment key from [Recipe 2](/migration/toolkit/#recipe-2--mint-bulk-enrollment-keys) when you schedule.
+
+3. **Add AV/EDR exclusions in both directions** first — see [Antivirus Exceptions](/deploy/antivirus-exceptions/).
+
+4. **Schedule it as an automation profile, daily.** **Admin → Automation Profiles**, targeting one customer, daily for the length of your rollout window. The `agent.yaml` check makes repeat runs a no-op and the schedule sweeps up offline laptops.
+
+</Steps>
+
+---
+
+## Migrating Scripts
+
+Atera's script library is plain PowerShell, batch, shell, and Python — bodies port directly.
+
+| Atera | Breeze |
+|---|---|
+| Script parameters | Script [parameters](/features/scripts/) |
+| PowerShell / Batch / Bash / Python | `language: powershell` \| `cmd` \| `bash` \| `python` |
+| Automation profiles | [Automations](/features/automations/) |
+| Script exit code | `exitCodeSeverityMapping` for severity by exit code |
+
+Bulk-load with [Recipe 6](/migration/toolkit/#recipe-6--bulk-script-import), `availability: "partner"`.
+
+---
+
+## Thresholds, Alerting, and the PSA Decision
+
+Atera's monitoring is configured through **Threshold Profiles** applied per customer or agent. Rebuild them as Breeze [monitors](/features/service-monitoring/) plus [alert rules](/features/alerts/), defined **partner-wide** so one profile covers your whole estate rather than one per customer.
+
+Then make the ticketing decision explicitly:
+
+- **Moving to Breeze ticketing.** Use [Breeze tickets](/features/ticketing/) and point alert rules at them. Atera ticket history does not migrate — export it and keep it as an archive.
+- **Moving to an external PSA.** Connect it via [PSA integrations](/features/psa-integrations/) and point alert rules there.
+
+Either way, disable Atera's alerting for a customer only after Breeze alerting is proven for that customer.
+
+---
+
+## Phase 6 — Decommission the Atera Agent
+
+Only after [Recipe 4](/migration/toolkit/#recipe-4--reconcile-enrollment) is clean for that customer.
+
+<Steps>
+
+1. **Disable the customer's threshold profiles.** Leave the agent installed.
+2. **Wait one full patch cycle.**
+3. **Uninstall via Atera:**
+
+   ```powershell
+   $p = Get-CimInstance Win32_Product | Where-Object { $_.Name -like 'AteraAgent*' }
+   if ($p) { msiexec /x $p.IdentifyingNumber /qn /norestart }
+   Get-Service AteraAgent -ErrorAction SilentlyContinue | Stop-Service -Force
+   ```
+
+   On macOS and Linux, run Atera's supplied uninstall script from `/opt/AteraAgent/`.
+
+4. **Verify from Breeze.** [Recipe 5](/migration/toolkit/#recipe-5--find-endpoints-still-running-the-old-agent) — Breeze [Management Posture](/features/management-posture/) fingerprints Atera. Drive the count to zero.
+5. **Delete the customer in Atera** and reduce your device count, after exporting tickets and anything else you must retain.
+
+</Steps>
+
+<Aside type="caution">
+  Atera bundles Splashtop for remote access, installed separately from the Atera agent. Removing the Atera agent does not always remove Splashtop. Check for it and remove it deliberately — an orphaned remote-access tool you no longer monitor is a standing security exposure.
+</Aside>

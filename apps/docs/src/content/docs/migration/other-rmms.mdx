@@ -1,0 +1,162 @@
+---
+title: Other RMMs → Breeze
+description: Migration notes for Pulseway, Action1, Automox, Level, Tactical RMM, ScreenConnect and any RMM without a dedicated guide.
+sidebar:
+  order: 10
+  label: Other RMMs
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+The [overview playbook](/migration/overview/) and the [Migration Toolkit](/migration/toolkit/) are vendor-neutral, so they carry a migration from any RMM. This page holds the vendor-specific notes for platforms without a dedicated guide, and a checklist for adapting the playbook to one that is not listed at all.
+
+---
+
+## Pulseway
+
+Pulseway has the richest hierarchy of any RMM here, and it maps onto Breeze exactly.
+
+| Pulseway | Breeze |
+|---|---|
+| Account | Partner |
+| **Organization** | **Organization** |
+| **Site** | **Site** |
+| **Group** | **Device Group** |
+| System | Device |
+
+**Export** — REST API at `https://api.pulseway.com/v2/`, HTTP Basic auth with a token created under **Server Admin → API**:
+
+```bash
+A=(-u "$PW_USER:$PW_TOKEN")
+curl -sf "${A[@]}" 'https://api.pulseway.com/v2/organizations' | jq -r '.Data[] | [.Id,.Name] | @tsv'
+curl -sf "${A[@]}" 'https://api.pulseway.com/v2/sites'         | jq -r '.Data[] | [.OrganizationId,.Name] | @tsv'
+curl -sf "${A[@]}" 'https://api.pulseway.com/v2/systems?$top=1000' \
+  | jq -r '.Data[] | [.Name,.Description,.IsOnline] | @tsv'
+```
+
+Join organizations and sites into the `organization,site` CSV for [Recipe 1](/migration/toolkit/#recipe-1--bootstrap-the-tenancy-tree-from-csv), and carry the group layer across as [device groups](/features/device-groups/).
+
+**Deploy** — Pulseway automation scripts are PowerShell and bash and run as SYSTEM. Create a workflow or scheduled task with the [Recipe 3](/migration/toolkit/#recipe-3--the-push-payload) payload, scheduled daily.
+
+**Scripts** port cleanly; only the variable wrapper changes.
+
+**Uninstall** — `msiexec /x` the *Pulseway* product, or run `/usr/bin/pulseway-uninstall` on Linux. Breeze [Management Posture](/features/management-posture/) fingerprints Pulseway, so use [Recipe 5](/migration/toolkit/#recipe-5--find-endpoints-still-running-the-old-agent) to verify.
+
+---
+
+## Action1
+
+Action1 is patch-and-script focused, so a migration is usually an *expansion* into full RMM rather than a like-for-like replacement. Expect to build monitoring and alerting in Breeze that had no Action1 equivalent.
+
+| Action1 | Breeze |
+|---|---|
+| Organization | **Organization** |
+| — | **Site** (create one `Main`) |
+| Endpoint group | Device Group |
+| Endpoint | Device |
+
+**Export** — REST API at `https://app.action1.com/api/3.0` (or your regional host), OAuth2 client credentials from **Settings → API & Integrations**:
+
+```bash
+TOKEN=$(curl -sf -X POST 'https://app.action1.com/api/3.0/oauth2/token' \
+  -d grant_type=client_credentials \
+  -d "client_id=$A1_ID" -d "client_secret=$A1_SECRET" | jq -r .access_token)
+
+curl -sf -H "Authorization: Bearer $TOKEN" 'https://app.action1.com/api/3.0/organizations' | jq .
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  "https://app.action1.com/api/3.0/endpoints/managed/$ORG_ID" | jq -r '.items[].name'
+```
+
+**Deploy** — Action1's script/package deployment runs as SYSTEM; use the [Recipe 3](/migration/toolkit/#recipe-3--the-push-payload) payload on a recurring automation.
+
+**Patch policy** is where the design work is: Action1 automations map to Breeze [patch policies](/features/patch-management/) plus [update rings](/features/update-rings/), and the ring model is likely a better fit than a per-org automation.
+
+**Uninstall** — `msiexec /x` the *Action1 Agent* product.
+
+---
+
+## Automox
+
+Automox is patch management only. In almost every case it is a *supplement* being consolidated into Breeze rather than a full RMM being replaced, so migrate it alongside — not instead of — whatever RMM you also run.
+
+| Automox | Breeze |
+|---|---|
+| Organization | **Organization** |
+| Group | Device Group |
+| Device | Device |
+| Policy (patch/required software) | [Patch policy](/features/patch-management/) + [update rings](/features/update-rings/) |
+| **Worklet** | Script (bash/PowerShell — ports directly) |
+
+**Export** — `https://console.automox.com/api`, API key from **Settings → Keys**:
+
+```bash
+H="Authorization: Bearer $AUTOMOX_KEY"
+curl -sf -H "$H" 'https://console.automox.com/api/orgs' | jq -r '.[] | [.id,.name] | @tsv'
+curl -sf -H "$H" "https://console.automox.com/api/servers?o=$ORG_ID&limit=500" \
+  | jq -r '.[] | [.name, .os_family, .last_disconnect_time] | @tsv'
+```
+
+**Worklets** are the valuable part: each is a plain bash or PowerShell pair (evaluation + remediation). The remediation body ports directly into a Breeze script; the evaluation body maps well onto a Breeze [monitor](/features/service-monitoring/) or a script with `exitCodeSeverityMapping`.
+
+**Uninstall** — `msiexec /x` the *Automox Agent*, or `/opt/amagent/uninstall.sh` on Linux. Breeze Management Posture fingerprints Automox.
+
+---
+
+## Level
+
+Level's hierarchy is Organization → Group → Device, mapping to Breeze Organization → Site (create `Main`) → Device Group → Device. Its API is a bearer-token REST and GraphQL surface; scripts are PowerShell and bash and port directly. Deploy via a Level script on a recurring schedule using the [Recipe 3](/migration/toolkit/#recipe-3--the-push-payload) payload. Breeze Management Posture fingerprints Level.
+
+---
+
+## Tactical RMM
+
+Tactical RMM is self-hosted and open source, which makes it the easiest export of any platform here — you have direct database access.
+
+| Tactical RMM | Breeze |
+|---|---|
+| Client | **Organization** |
+| Site | **Site** |
+| Agent | Device |
+
+Export the client → site tree straight from the Postgres database (`clients_client`, `clients_site`) or via the API at `/clients/`. Tactical scripts are PowerShell, bash, and Python and port directly. Deploy via a Tactical script task on a schedule. Uninstall with Tactical's own agent-removal action. Breeze Management Posture fingerprints Tactical RMM.
+
+---
+
+## ScreenConnect / ConnectWise Control (remote access only)
+
+ScreenConnect is remote access, not RMM — there is no fleet monitoring to migrate. What matters is that it is frequently installed *alongside* another RMM and survives that RMM's uninstall.
+
+Breeze [remote access](/features/remote-access/) replaces it functionally. The migration action is a security one:
+
+<Steps>
+1. Use [Recipe 5](/migration/toolkit/#recipe-5--find-endpoints-still-running-the-old-agent) — Breeze Management Posture fingerprints ScreenConnect independently of ConnectWise Automate.
+2. Confirm Breeze remote access works for the technicians who relied on it.
+3. Uninstall the ScreenConnect client (`msiexec /x` the *ScreenConnect Client* product, service name `ScreenConnect Client (…)`).
+4. Re-run the posture report and drive the count to zero.
+</Steps>
+
+<Aside type="caution">
+  An orphaned ScreenConnect instance is an unmonitored, unattended remote-access path into a customer network, still reachable by whoever holds the relay credentials. Treat leftovers as a security finding, not migration housekeeping.
+</Aside>
+
+---
+
+## Adapting the Playbook to an Unlisted RMM
+
+Every guide in this section is the same seven questions. Answer them for your platform and you have a migration plan.
+
+| # | Question | Feeds |
+|---|---|---|
+| 1 | What is the tenancy hierarchy, and how does it map to `Organization → Site → Device Group`? | [Recipe 1](/migration/toolkit/#recipe-1--bootstrap-the-tenancy-tree-from-csv) |
+| 2 | How do I export the client/site tree and the device list as CSV? | Recipe 1, [Recipe 4](/migration/toolkit/#recipe-4--reconcile-enrollment) |
+| 3 | Can its script engine run PowerShell/bash as SYSTEM on a schedule? | [Recipe 3](/migration/toolkit/#recipe-3--the-push-payload) |
+| 4 | Are its scripts text-based (port) or step-based (re-author)? | [Recipe 6](/migration/toolkit/#recipe-6--bulk-script-import) |
+| 5 | Where do its custom fields / UDFs live, and which are populated? | [Custom fields](/features/custom-fields/) |
+| 6 | Which alerts actually generated tickets in the last 90 days? | [Monitors](/features/service-monitoring/) + [alert rules](/features/alerts/) |
+| 7 | What is the silent uninstall command, and does the platform bundle a *separate* remote-access agent? | [Recipe 5](/migration/toolkit/#recipe-5--find-endpoints-still-running-the-old-agent) |
+
+Question 7 is the one people miss. Datto, Atera, Syncro, and ConnectWise all ship remote-access components installed separately from the RMM agent, and all of them can survive the RMM uninstall.
+
+<Aside type="tip">
+  If your platform is not listed and you work through this checklist, please open an issue or a pull request on the [Breeze repository](https://github.com/LanternOps/breeze) with what you found. These guides are built from real migrations.
+</Aside>

@@ -1,0 +1,170 @@
+---
+title: NinjaOne → Breeze
+description: Export organizations, locations, devices and custom fields from NinjaOne, deploy the Breeze agent via a scheduled Ninja script, and decommission the NinjaRMMAgent.
+sidebar:
+  order: 4
+  label: NinjaOne
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+NinjaOne is the cleanest migration of any RMM in this section. Its hierarchy maps onto Breeze's one-for-one, its API is a well-behaved OAuth2 REST API, and its scripts are plain PowerShell and shell. Most of the effort goes into **policy inheritance**, which has no direct Breeze equivalent and generally simplifies on the way across.
+
+Read [Migrating to Breeze](/migration/overview/) first.
+
+---
+
+## Hierarchy Mapping
+
+| NinjaOne | Breeze | Notes |
+|---|---|---|
+| Instance | Partner | |
+| **Organization** | **Organization** | Direct match. |
+| **Location** | **Site** | Direct match, including the "Main Office" default. |
+| Device role / group | Device Group | Ninja's device roles map well to Breeze [dynamic device groups](/features/device-groups/). |
+| Device | Device | |
+
+This is as close to a lift-and-shift as RMM tenancy gets.
+
+---
+
+## Phase 0 — Export from NinjaOne
+
+Create an API client under **Administration → Apps → API**, with grant type **Client Credentials** and the `monitoring` and `management` scopes. Your region determines the host — `app.ninjarmm.com` (US), `eu.ninjarmm.com`, `oc.ninjarmm.com`, `ca.ninjarmm.com`.
+
+<Steps>
+
+1. **Get a token:**
+
+   ```bash
+   HOST=app.ninjarmm.com
+   TOKEN=$(curl -sf -X POST "https://$HOST/ws/oauth/token" \
+     -d grant_type=client_credentials \
+     -d "client_id=$NINJA_CLIENT_ID" \
+     -d "client_secret=$NINJA_CLIENT_SECRET" \
+     -d 'scope=monitoring management' | jq -r .access_token)
+   ```
+
+2. **Export the org → location tree.** This is your Breeze tenancy CSV, produced directly:
+
+   ```bash
+   curl -sf -H "Authorization: Bearer $TOKEN" "https://$HOST/v2/organizations" > orgs.json
+   curl -sf -H "Authorization: Bearer $TOKEN" "https://$HOST/v2/locations"     > locs.json
+
+   echo 'organization,site' > tree.csv
+   jq -r --slurpfile o orgs.json '
+     .[] as $l | ($o[0][] | select(.id == $l.organizationId)) as $org
+     | [$org.name, $l.name] | @csv' locs.json >> tree.csv
+   ```
+
+   Feed it to [Recipe 1](/migration/toolkit/#recipe-1--bootstrap-the-tenancy-tree-from-csv).
+
+3. **Export devices** — your reconciliation checklist:
+
+   ```bash
+   curl -sf -H "Authorization: Bearer $TOKEN" \
+     "https://$HOST/v2/devices-detailed" \
+     | jq -r '.[] | [.organizationId, .locationId, .systemName,
+                     .nodeClass, .offline, .lastContact] | @tsv' > ninja-devices.tsv
+   ```
+
+4. **Export custom fields.** Ninja custom fields exist at global, organization, location and device scope. Dump the device-scoped values, which are the ones that usually matter:
+
+   ```bash
+   curl -sf -H "Authorization: Bearer $TOKEN" \
+     "https://$HOST/v2/queries/custom-fields" | jq . > ninja-custom-fields.json
+   ```
+
+5. **Export policies for reference:** `GET /v2/policies`. You are not going to import these, but you need them open in a second window while you rebuild.
+
+</Steps>
+
+---
+
+## Phase 3 — Deploy the Breeze Agent with a Ninja Script
+
+<Steps>
+
+1. **Create the script.** **Administration → Library → Automation → Create → PowerShell**, run as **System**. Use the Windows payload from [Recipe 3](/migration/toolkit/#recipe-3--the-push-payload).
+
+   Ninja passes script variables as parameters, so parameterise the enrollment key rather than hardcoding it:
+
+   ```powershell
+   param(
+     [string]$Server = 'https://breeze.yourdomain.com',
+     [string]$Key,
+     [string]$Secret
+   )
+   ```
+
+   You can also read a Ninja custom field with `Ninja-Property-Get`, which lets you store the per-location enrollment key as an organization custom field and have one script resolve it automatically. That is the tidiest approach if you have more than a handful of customers.
+
+2. **Add AV/EDR exclusions first** — both directions. See [Antivirus Exceptions](/deploy/antivirus-exceptions/).
+
+3. **Schedule it, don't run it once.** Create a **Scheduled Task** targeting one organization, running daily. The `agent.yaml` check makes it idempotent, so it sweeps up offline laptops over the following days. A single manual run reliably misses 8–15% of a fleet.
+
+4. **Roll in waves.** Pilot org → 10% → the rest.
+
+</Steps>
+
+---
+
+## Migrating Scripts
+
+Ninja's automation library is PowerShell, batch, and shell, so bodies port directly. Rewrite the wrapper:
+
+| NinjaOne | Breeze |
+|---|---|
+| Script parameters / `$env:` variables | Script [parameters](/features/scripts/) |
+| `Ninja-Property-Get` / `Ninja-Property-Set` | [Custom field](/features/custom-fields/) reads/writes via the API |
+| Exit code `0` = success | Same, plus `exitCodeSeverityMapping` for severity by exit code |
+| Run As: System / Logged-on user | `runAs: "system"` / `"user"` |
+| Script categories | `category` field |
+
+The only real work is `Ninja-Property-Get` / `Ninja-Property-Set`, which have no drop-in replacement — replace with an authenticated call to the Breeze device custom-field-values endpoint.
+
+Bulk-load the converted scripts with [Recipe 6](/migration/toolkit/#recipe-6--bulk-script-import), setting `availability: "partner"`.
+
+---
+
+## Policies: The Part That Needs Design
+
+This is where NinjaOne migrations take their time. Ninja uses **nested, inheriting policies** — a parent policy with child overrides per organization or device role. Breeze does not model inheritance that way. Instead it is **partner-wide first**: a policy is owned by the partner and applies across every organization, or it is owned by one organization.
+
+The translation:
+
+| NinjaOne | Breeze |
+|---|---|
+| Base policy applied everywhere | Partner-wide [configuration policy](/features/configuration-policies/) |
+| Per-role child policy (Workstation / Server) | Separate partner-wide policy bound to a dynamic [device group](/features/device-groups/) by role |
+| Per-organization override | Organization-owned policy |
+| Policy conditions → alerts | [Monitors](/features/service-monitoring/) + [alert rules](/features/alerts/) |
+| Patching section of a policy | [Patch policies](/features/patch-management/) and [update rings](/features/update-rings/) |
+
+<Aside type="tip">
+  Flatten before you translate. Most Ninja estates have accumulated a deep policy tree where only two or three levels carry real differences. List the *effective* settings for each device role, dedupe, and you will usually end up with three or four partner-wide Breeze policies replacing twenty Ninja ones. Do this before Phase 1 and build the partner-wide defaults directly from the flattened set.
+</Aside>
+
+---
+
+## Phase 6 — Decommission NinjaRMMAgent
+
+Only after [Recipe 4](/migration/toolkit/#recipe-4--reconcile-enrollment) is clean for that organization.
+
+<Steps>
+
+1. **Disable alerting** on the Ninja policies bound to that org; leave the agent installed.
+2. **Wait one full patch cycle.**
+3. **Uninstall via Ninja.** The supported path is to delete the device in the Ninja console, which triggers agent removal. To do it by script:
+
+   ```powershell
+   $p = Get-CimInstance Win32_Product | Where-Object { $_.Name -like 'NinjaRMMAgent*' }
+   if ($p) { msiexec /x $p.IdentifyingNumber /qn /norestart }
+   ```
+
+   On macOS, run Ninja's `/Applications/NinjaRMMAgent/uninstall.sh`.
+
+4. **Verify from Breeze.** [Recipe 5](/migration/toolkit/#recipe-5--find-endpoints-still-running-the-old-agent) — Breeze [Management Posture](/features/management-posture/) fingerprints NinjaOne. Drive the count to zero. This catches the machines whose Ninja agent was already dead and which the Ninja console therefore cannot report on.
+5. **Remove the organization in Ninja** and reduce your licence count, after exporting anything you must retain.
+
+</Steps>

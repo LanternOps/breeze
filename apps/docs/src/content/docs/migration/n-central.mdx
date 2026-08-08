@@ -1,0 +1,157 @@
+---
+title: N-able N-central → Breeze
+description: Export customers, sites and devices from N-central, deploy the Breeze agent via a scheduled AMP, and remove the N-able agent and probe cleanly.
+sidebar:
+  order: 7
+  label: N-able N-central
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+N-central migrations have one structural wrinkle nobody expects: the **probe**. Alongside a per-endpoint agent, N-central deploys one or more Windows probes per site that perform network discovery and agentless monitoring of switches, printers, and ESXi hosts. Migrating the agents is straightforward; deciding what replaces the probe's agentless coverage is the part that gets forgotten until cutover.
+
+Service Templates and AMPs are the other two N-central-specific pieces. This page covers both.
+
+Read [Migrating to Breeze](/migration/overview/) first.
+
+---
+
+## Hierarchy Mapping
+
+| N-central | Breeze | Notes |
+|---|---|---|
+| Service Organization (SO) | Partner | |
+| **Customer** | **Organization** | Direct match. |
+| **Site** | **Site** | Direct match. Many N-central estates only use the implicit single site per customer. |
+| Device filter | Device Group | N-central filters map to Breeze [dynamic device groups](/features/device-groups/). |
+| Device | Device | |
+| **Probe** | — | Replaced by Breeze [network discovery](/features/discovery/) and [SNMP monitoring](/features/snmp/). See below. |
+
+---
+
+## Phase 0 — Export from N-central
+
+N-central exposes a legacy SOAP API and a newer REST API (`/api/…`, JWT-authenticated via a user's API access token generated under **Administration → User Management → your user → API Access**). The REST API is the better choice for a migration export; the SOAP API remains the only way to reach some older endpoints.
+
+<Steps>
+
+1. **Authenticate** and exchange your API-User token for a JWT:
+
+   ```bash
+   NC=ncentral.yourdomain.com
+   TOKEN=$(curl -sf -X POST "https://$NC/api/auth/authenticate" \
+     -H "Authorization: Bearer $NC_API_USER_TOKEN" | jq -r .tokens.access.token)
+   ```
+
+2. **Export the customer → site tree:**
+
+   ```bash
+   curl -sf -H "Authorization: Bearer $TOKEN" \
+     "https://$NC/api/org-units?pageSize=1000" > orgunits.json
+
+   echo 'organization,site' > tree.csv
+   jq -r '
+     [.data[] | select(.orgUnitType=="CUSTOMER")] as $c
+     | .data[] | select(.orgUnitType=="SITE") as $s
+     | ($c[] | select(.orgUnitId == $s.parentId)) as $parent
+     | [$parent.orgUnitName, $s.orgUnitName] | @csv' orgunits.json >> tree.csv
+   ```
+
+   Customers with no child site rows are single-site — emit them with a `Main` site.
+
+3. **Export devices** — your reconciliation checklist:
+
+   ```bash
+   curl -sf -H "Authorization: Bearer $TOKEN" \
+     "https://$NC/api/devices?pageSize=5000" \
+     | jq -r '.data[] | [.customerName, .siteName, .longName,
+                         .osName, .deviceClass, .lastLoggedInUser] | @tsv' > nc-devices.tsv
+   ```
+
+   Filter `deviceClass` — N-central inventories network gear and printers discovered by the probe alongside real agent-managed endpoints. Only the agent-managed rows are migration targets; the rest belong in the probe-replacement plan below.
+
+4. **Export custom properties**, which N-central carries at customer, site, and device level:
+
+   ```bash
+   curl -sf -H "Authorization: Bearer $TOKEN" \
+     "https://$NC/api/devices/$DEVICE_ID/custom-properties" | jq .
+   ```
+
+5. **Export Service Templates for reference.** You will rebuild these rather than import them, but you need the effective thresholds to hand.
+
+</Steps>
+
+---
+
+## Phase 3 — Deploy the Breeze Agent with an AMP
+
+<Steps>
+
+1. **Build the AMP.** N-central's Automation Manager (a desktop authoring tool) produces `.amp` files. You need a single **Execute PowerShell Script** object; the AMP is just a wrapper around it.
+
+2. **Parameterise the enrollment key.** Expose `BreezeServer`, `BreezeKey`, and `BreezeSecret` as AMP input parameters so one AMP serves every site, and supply the per-site key from [Recipe 2](/migration/toolkit/#recipe-2--mint-bulk-enrollment-keys) when you schedule it.
+
+3. **Body:** the Windows PowerShell payload from [Recipe 3](/migration/toolkit/#recipe-3--the-push-payload). AMPs execute as SYSTEM under the agent, so no elevation wrapper is needed.
+
+4. **Add AV/EDR exclusions in both directions** first — see [Antivirus Exceptions](/deploy/antivirus-exceptions/).
+
+5. **Upload and schedule.** **Configuration → Scheduled Tasks → Add → Automation Policy**, targeting one customer, on a **daily** recurrence for the length of your rollout window. Set the task to retry on failure. The `agent.yaml` check makes repeat runs a no-op.
+
+6. **Roll in waves.** Pilot customer → 10% → the rest.
+
+</Steps>
+
+---
+
+## Replacing the Probe
+
+This is the N-central-specific planning item. Before cutover, enumerate what your probes actually monitor — it is almost always more than people remember.
+
+| Probe function | Breeze replacement |
+|---|---|
+| Network discovery / new-device detection | [Network discovery](/features/discovery/) |
+| SNMP monitoring of switches, firewalls, UPSes | [SNMP monitoring](/features/snmp/) |
+| Agentless printer / device status | SNMP monitors |
+| ESXi / Hyper-V host monitoring | Agent on the host where supported; SNMP otherwise |
+| WMI-based agentless Windows checks | Install the Breeze agent — there is no agentless Windows path |
+
+Breeze's discovery and SNMP monitoring run from an enrolled agent acting as the collector on that network, so **designate a persistent, always-on machine per site** — the same box that runs the N-central probe today is usually the right choice. Do this in Phase 5, before you decommission, so you are never without network visibility.
+
+<Aside type="caution">
+  Agentless WMI monitoring has no Breeze equivalent. Any Windows machine currently monitored *only* by the probe — no agent installed — needs a Breeze agent, and those machines are invisible in an agent-based export. Find them by filtering your device export for agent-managed = false.
+</Aside>
+
+---
+
+## Service Templates and AMPs
+
+**Service Templates** are N-central's bundle of service monitors with thresholds, applied by device class or filter. Rebuild them as Breeze [monitors](/features/service-monitoring/) plus [alert rules](/features/alerts/), defined partner-wide so one definition covers every customer.
+
+The translation is usually a simplification. A typical N-central estate runs a dozen templates that differ only in threshold values; in Breeze those become one partner-wide monitor set with an organization-level override where a customer genuinely differs.
+
+**AMPs** are XML wrappers, and the useful part — the embedded PowerShell or VBScript — is extractable. Open the `.amp` in Automation Manager, copy the script object bodies out, and load them with [Recipe 6](/migration/toolkit/#recipe-6--bulk-script-import). AMPs built entirely from Automation Manager's own drag-and-drop objects (rather than a script object) do not port and need re-authoring.
+
+---
+
+## Phase 6 — Decommission the N-able Agent
+
+Only after [Recipe 4](/migration/toolkit/#recipe-4--reconcile-enrollment) is clean for that customer, **and** the probe's agentless coverage has been replaced.
+
+<Steps>
+
+1. **Disable notifications** for the customer at the SO level. Leave the agent installed.
+2. **Wait one full patch cycle.**
+3. **Uninstall via N-central.** Deleting a device in N-central triggers agent removal. To do it by AMP:
+
+   ```powershell
+   $p = Get-CimInstance Win32_Product |
+        Where-Object { $_.Name -match 'Windows Agent|N-able|SolarWinds MSP' }
+   foreach ($x in $p) { msiexec /x $x.IdentifyingNumber /qn /norestart }
+   ```
+
+   Remove the **probe** separately — it is a distinct install (*Windows Probe*) on a different machine.
+
+4. **Verify from Breeze.** [Recipe 5](/migration/toolkit/#recipe-5--find-endpoints-still-running-the-old-agent) — Breeze [Management Posture](/features/management-posture/) fingerprints N-able. Drive the count to zero, and check the probe machines explicitly since they will not appear in an agent-only list.
+5. **Delete the customer in N-central** and reduce your licence count, after exporting anything you must retain.
+
+</Steps>
