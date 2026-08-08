@@ -44,5 +44,12 @@ export function bodyLimitForPath(path: string): { maxSize: number; error: string
   if (path.match(/^\/api\/v1\/agents\/[^/]+\/commands\/[^/]+\/result$/)) {
     return { maxSize: 12 * 1024 * 1024, error: 'Command result too large (max 12MB)' };
   }
+  // Script bundle import/preview (#3245): a bundle carries whole script
+  // libraries (up to 200 scripts x 256KB content, both capped by the bundle
+  // schema). 20MB is the effective total-bundle cap; the schema's per-field
+  // caps answer with specific messages below it.
+  if (path === '/api/v1/scripts/bundle/import' || path === '/api/v1/scripts/bundle/preview') {
+    return { maxSize: 20 * 1024 * 1024, error: 'Bundle too large (max 20MB)' };
+  }
   return { maxSize: 1024 * 1024, error: 'Request body too large' };
 }

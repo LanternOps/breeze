@@ -24,6 +24,12 @@ import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../services/partnerWideAccess';
+import {
+  insertScriptRow,
+  isScriptScopeError,
+  resolveScriptCreateScope,
+} from '../services/scriptWrite';
+import { scriptBundleRoutes } from './scriptBundle';
 
 export const scriptRoutes = new Hono();
 
@@ -293,6 +299,11 @@ const scriptIdParamSchema = z.object({ id: z.string().guid() });
 // Apply auth middleware to all routes
 scriptRoutes.use('*', authMiddleware);
 
+// Bundle import/export (#3245). Mounted BEFORE the parameterized /:id routes
+// so /scripts/bundle/* never falls through to the guid param validator.
+// Inherits authMiddleware from the use('*') above.
+scriptRoutes.route('/bundle', scriptBundleRoutes);
+
 // GET /scripts - List scripts with filters
 scriptRoutes.get(
   '/',
@@ -548,69 +559,26 @@ scriptRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
-    // Determine orgId and partnerId
-    let orgId: string | null = data.orgId ?? null;
-    let partnerId: string | null = null;
-
-    if (auth.scope === 'organization') {
-      if (!auth.orgId) {
-        return c.json({ error: 'Organization context required' }, 403);
-      }
-      orgId = auth.orgId;
-      partnerId = auth.partnerId ?? null; // denormalized for RLS
-    } else if (auth.scope === 'partner') {
-      if (data.availability === 'partner') {
-        // #3262: partner SCOPE is not the same as partner-wide CAPABILITY. A
-        // partner user with org_access = 'selected' may be scoped to three of
-        // eighty customers; without this gate they could create a script that
-        // runs as SYSTEM across all eighty, including orgs they hold no grant
-        // for and orgs created later.
-        if (!canManagePartnerWidePolicies(auth)) {
-          return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
-        }
-        orgId = null;
-        partnerId = auth.partnerId ?? null;
-        if (!partnerId) return c.json({ error: 'Partner context required' }, 403);
-      } else {
-        if (!orgId) {
-          const singleOrg = auth.accessibleOrgIds?.[0];
-          if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
-            orgId = singleOrg;
-          } else {
-            return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
-          }
-        }
-        if (!ensureOrgAccess(orgId!, auth)) {
-          return c.json({ error: 'Access to this organization denied' }, 403);
-        }
-        partnerId = auth.partnerId ?? null;
-      }
+    // Tenancy resolution, the partner-wide capability gate (#3262: partner
+    // SCOPE is not the same as partner-wide CAPABILITY — a 'selected'-access
+    // user must not push SYSTEM-level code to every org under the partner),
+    // and the isSystem clamp all live in services/scriptWrite.ts. That module
+    // is the single chokepoint shared with the bundle importer (#3245), so
+    // the two intakes can never diverge (#3263 review).
+    const scope = resolveScriptCreateScope(
+      // partnerOrgAccess is an optional KEY on AuthContext but a required one
+      // on ScriptWriteAuth — spell it out so the compiler proves it threaded.
+      { ...auth, partnerOrgAccess: auth.partnerOrgAccess },
+      data.availability,
+      data.orgId
+    );
+    if (isScriptScopeError(scope)) {
+      return c.json({ error: scope.error }, scope.status);
     }
-    // System scope can create system scripts without orgId or specify any orgId
 
-    // Only system scope can create system scripts
-    const isSystem = auth.scope === 'system' ? (data.isSystem ?? false) : false;
-
-    const [script] = await db
-      .insert(scripts)
-      .values({
-        orgId: isSystem && !orgId ? null : orgId,
-        partnerId,
-        name: data.name,
-        description: data.description,
-        category: data.category,
-        osTypes: data.osTypes,
-        language: data.language,
-        content: data.content,
-        parameters: data.parameters,
-        timeoutSeconds: data.timeoutSeconds,
-        runAs: data.runAs,
-        isSystem,
-        version: 1,
-        exitCodeSeverityMapping: data.exitCodeSeverityMapping ?? null,
-        createdBy: auth.user.id
-      })
-      .returning();
+    const script = await insertScriptRow(auth, scope, data, {
+      requestedIsSystem: data.isSystem
+    });
 
     writeRouteAudit(c, {
       orgId: resolveScriptAuditOrgId(auth, script?.orgId ?? null),

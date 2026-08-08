@@ -1176,5 +1176,36 @@
       "import": "Importa",
       "availableCount": "{{count}} script disponibili"
     }
+  },
+  "bundle": {
+    "exportButton": "Esporta",
+    "importButton": "Importa bundle",
+    "exportTitle": "Esporta bundle di script",
+    "exportDescription": "Seleziona gli script da scaricare come bundle JSON portatile.",
+    "selectAll": "Seleziona tutto",
+    "clearSelection": "Annulla selezione",
+    "exportSelected": "Esporta {{count}} selezionati",
+    "exportEmpty": "Nessuno script disponibile per l'esportazione.",
+    "exportFailed": "Impossibile esportare gli script",
+    "importTitle": "Importa bundle di script",
+    "importDescription": "Carica un bundle (.json) o singoli file di script (.ps1, .sh, .py, .bat).",
+    "systemWarning": "Gli script importati possono essere eseguiti come SYSTEM sui dispositivi gestiti. Importa bundle solo da fonti attendibili.",
+    "chooseFiles": "Scegli file",
+    "chooseFolder": "Scegli cartella",
+    "parseErrors": "Impossibile leggere alcuni file",
+    "previewFailed": "Anteprima del bundle non riuscita",
+    "importFailed": "Importazione del bundle non riuscita",
+    "nameColumn": "Nome",
+    "previewTitle": "Stato",
+    "statusNew": "Nuovo",
+    "statusConflict": "Conflitto di nome",
+    "modeLabel": "Quando esiste già uno script con lo stesso nome",
+    "modeSkip": "Salta",
+    "modeRename": "Importa con un nuovo nome",
+    "modeNewVersion": "Aggiungi come nuova versione dello script esistente",
+    "partnerWide": "Rendi disponibile per tutte le organizzazioni (a livello di partner)",
+    "importCommit": "Importa {{count}} script",
+    "resultSummary": "{{imported}} importati, {{renamed}} rinominati, {{versioned}} versionati, {{skipped}} saltati, {{failed}} non riusciti",
+    "scriptCount": "{{count}} script nel bundle"
   }
 }

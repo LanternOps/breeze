@@ -1176,5 +1176,36 @@
       "import": "Importer",
       "availableCount": "Scripts disponibles : {{count}}"
     }
+  },
+  "bundle": {
+    "exportButton": "Exporter",
+    "importButton": "Importer un bundle",
+    "exportTitle": "Exporter un bundle de scripts",
+    "exportDescription": "Sélectionnez les scripts à télécharger sous forme de bundle JSON portable.",
+    "selectAll": "Tout sélectionner",
+    "clearSelection": "Effacer la sélection",
+    "exportSelected": "Exporter {{count}} sélectionnés",
+    "exportEmpty": "Aucun script disponible à exporter.",
+    "exportFailed": "Échec de l'export des scripts",
+    "importTitle": "Importer un bundle de scripts",
+    "importDescription": "Téléversez un bundle (.json) ou des fichiers de script isolés (.ps1, .sh, .py, .bat).",
+    "systemWarning": "Les scripts importés peuvent s'exécuter en tant que SYSTEM sur les appareils gérés. N'importez des bundles que depuis une source de confiance.",
+    "chooseFiles": "Choisir des fichiers",
+    "chooseFolder": "Choisir un dossier",
+    "parseErrors": "Certains fichiers n'ont pas pu être lus",
+    "previewFailed": "Échec de l'aperçu du bundle",
+    "importFailed": "Échec de l'import du bundle",
+    "nameColumn": "Nom",
+    "previewTitle": "Statut",
+    "statusNew": "Nouveau",
+    "statusConflict": "Conflit de nom",
+    "modeLabel": "Quand un script portant le même nom existe déjà",
+    "modeSkip": "L'ignorer",
+    "modeRename": "Importer sous un nouveau nom",
+    "modeNewVersion": "Ajouter comme nouvelle version du script existant",
+    "partnerWide": "Rendre disponible pour toutes les organisations (à l'échelle du partenaire)",
+    "importCommit": "Importer {{count}} scripts",
+    "resultSummary": "{{imported}} importés, {{renamed}} renommés, {{versioned}} versionnés, {{skipped}} ignorés, {{failed}} en échec",
+    "scriptCount": "{{count}} scripts dans le bundle"
   }
 }

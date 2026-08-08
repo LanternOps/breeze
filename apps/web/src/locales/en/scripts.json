@@ -1176,5 +1176,36 @@
       "import": "Import",
       "availableCount": "{{count}} script(s) available"
     }
+  },
+  "bundle": {
+    "exportButton": "Export",
+    "importButton": "Import bundle",
+    "exportTitle": "Export script bundle",
+    "exportDescription": "Select scripts to download as a portable JSON bundle.",
+    "selectAll": "Select all",
+    "clearSelection": "Clear selection",
+    "exportSelected": "Export {{count}} selected",
+    "exportEmpty": "No scripts available to export.",
+    "exportFailed": "Failed to export scripts",
+    "importTitle": "Import script bundle",
+    "importDescription": "Upload a bundle (.json) or loose script files (.ps1, .sh, .py, .bat).",
+    "systemWarning": "Imported scripts can run as SYSTEM on managed devices. Only import bundles from a source you trust.",
+    "chooseFiles": "Choose files",
+    "chooseFolder": "Choose folder",
+    "parseErrors": "Some files could not be read",
+    "previewFailed": "Failed to preview bundle",
+    "importFailed": "Failed to import bundle",
+    "nameColumn": "Name",
+    "previewTitle": "Status",
+    "statusNew": "New",
+    "statusConflict": "Name conflict",
+    "modeLabel": "When a script with the same name already exists",
+    "modeSkip": "Skip it",
+    "modeRename": "Import with a new name",
+    "modeNewVersion": "Add as a new version of the existing script",
+    "partnerWide": "Make available to all organizations (partner-wide)",
+    "importCommit": "Import {{count}} scripts",
+    "resultSummary": "{{imported}} imported, {{renamed}} renamed, {{versioned}} versioned, {{skipped}} skipped, {{failed}} failed",
+    "scriptCount": "{{count}} scripts in bundle"
   }
 }

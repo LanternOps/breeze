@@ -1176,5 +1176,36 @@
       "import": "Importar",
       "availableCount": "Scripts {{count}} disponibles"
     }
+  },
+  "bundle": {
+    "exportButton": "Exportar",
+    "importButton": "Importar paquete",
+    "exportTitle": "Exportar paquete de scripts",
+    "exportDescription": "Selecciona scripts para descargarlos como un paquete JSON portátil.",
+    "selectAll": "Seleccionar todo",
+    "clearSelection": "Borrar selección",
+    "exportSelected": "Exportar {{count}} seleccionados",
+    "exportEmpty": "No hay scripts disponibles para exportar.",
+    "exportFailed": "No se pudieron exportar los scripts",
+    "importTitle": "Importar paquete de scripts",
+    "importDescription": "Sube un paquete (.json) o archivos de script sueltos (.ps1, .sh, .py, .bat).",
+    "systemWarning": "Los scripts importados pueden ejecutarse como SYSTEM en los dispositivos administrados. Importa paquetes solo de fuentes de confianza.",
+    "chooseFiles": "Elegir archivos",
+    "chooseFolder": "Elegir carpeta",
+    "parseErrors": "Algunos archivos no se pudieron leer",
+    "previewFailed": "No se pudo previsualizar el paquete",
+    "importFailed": "No se pudo importar el paquete",
+    "nameColumn": "Nombre",
+    "previewTitle": "Estado",
+    "statusNew": "Nuevo",
+    "statusConflict": "Conflicto de nombre",
+    "modeLabel": "Cuando ya existe un script con el mismo nombre",
+    "modeSkip": "Omitirlo",
+    "modeRename": "Importar con un nombre nuevo",
+    "modeNewVersion": "Agregar como nueva versión del script existente",
+    "partnerWide": "Hacer disponible para todas las organizaciones (a nivel de partner)",
+    "importCommit": "Importar {{count}} scripts",
+    "resultSummary": "{{imported}} importados, {{renamed}} renombrados, {{versioned}} versionados, {{skipped}} omitidos, {{failed}} fallidos",
+    "scriptCount": "{{count}} scripts en el paquete"
   }
 }
