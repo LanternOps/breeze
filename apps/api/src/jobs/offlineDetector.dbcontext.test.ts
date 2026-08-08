@@ -28,7 +28,9 @@ const { mockDb, ctxState, queueMock } = vi.hoisted(() => ({
   ctxState: { depth: 0, events: [] as string[] },
   queueMock: {
     add: vi.fn(async () => ({ id: 'job-1' })),
-    addBulk: vi.fn(async () => []),
+    // Declared with the jobs parameter so the per-test mockImplementation that
+    // inspects the batch size still typechecks.
+    addBulk: vi.fn(async (_jobs: unknown) => []),
     getRepeatableJobs: vi.fn(async () => []),
     removeRepeatableByKey: vi.fn(async () => undefined),
     close: vi.fn(async () => undefined),
