@@ -21,10 +21,12 @@ const serverSchemaPath = "../../../apps/api/src/routes/agents/schemas.ts"
 // the agent, which leaves the agent bounding to a stale, tighter budget (merely
 // wasteful) or, if lowered, to a stale looser one, which is exactly the #3001
 // failure: the agent believed it had 16 MiB of room while the server allowed
-// 1 MiB, and every backup over ~2,000 files was silently rejected.
+// far less, and every backup over ~2,000 files was silently rejected.
 func TestMaxCommandResultBytesMatchesServerSchema(t *testing.T) {
-	if MaxCommandResultBytes != 1048576 {
-		t.Fatalf("MaxCommandResultBytes = %d, want 1048576; if the server cap really moved, update "+
+	// The literal, spelled out: this must equal the `stdout`/`stderr` caps in
+	// the server schema (5_000_000), not a rounded 5 * 1024 * 1024.
+	if MaxCommandResultBytes != 5000000 {
+		t.Fatalf("MaxCommandResultBytes = %d, want 5000000; if the server cap really moved, update "+
 			"apps/api/src/routes/agents/schemas.ts MAX_COMMAND_RESULT_BYTES in the SAME commit",
 			MaxCommandResultBytes)
 	}

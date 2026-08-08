@@ -290,22 +290,34 @@ export const processSampleSchema = z.object({
  * `snapshot.files` entry per backed-up file (~522 B each), the agent put that
  * body in `result`, and every backup over ~2,000 files was rejected here. The
  * agent's own tiered degradation was bounding against the 16 MiB IPC frame —
- * 16x too loose — so it never fired, nothing logged on either side, and the job
+ * far too loose — so it never fired, nothing logged on either side, and the job
  * sat `running` until the stale-backup reaper falsely failed a backup that had
  * in fact succeeded.
+ *
+ * IT EQUALS THE `stdout`/`stderr` CAPS IN THIS SAME SCHEMA, DELIBERATELY. All
+ * three fields ride one message from one authenticated agent, and the old
+ * 1 MiB-vs-5 MB split between them was a cause of #3001 rather than an
+ * incidental detail: the backup forwarder assigns its run body to `result`
+ * instead of `stdout` (agent/internal/heartbeat/heartbeat.go, case
+ * TypeBackupResult), so the payload silently inherited a limit five times
+ * tighter than the one anyone reasoned about. Keeping the three equal removes
+ * the trap. Do not "round" this to 5 * 1024 * 1024 — that would put `result`
+ * 242,880 bytes above `stdout` and re-create a smaller version of the same
+ * mismatch.
+ *
+ * Raising it does NOT replace the agent's degradation machinery, which is still
+ * what guarantees a terminal status: a 100k-file index is ~52 MB and fits no
+ * sane cap. It widens the band in which a snapshot keeps a browsable file index
+ * from ~2,000 files to ~9,500.
  *
  * MIRRORED IN GO as `wire.MaxCommandResultBytes`
  * (agent/internal/wire/limits.go). The two are pinned equal by
  * `schemas.commandResult.test.ts` here and `TestMaxCommandResultBytesMatchesServerSchema`
- * there — both assert the literal 1048576, so raising one alone reddens CI on
- * both sides rather than silently re-opening #3001.
- *
- * Deliberately NOT raised to match the 5 MB `stdout`/`stderr` caps: a larger cap
- * only moves the cliff (a 100k-file snapshot index is ~52 MB and fits no sane
- * cap), and the agent-side bound is the actual fix. Changing this value is a
- * one-line, reversible decision — but it must be changed on BOTH sides.
+ * there — both assert the literal 5000000 AND cross-parse the other language's
+ * declaration, so raising one alone reddens CI on both sides rather than
+ * silently re-opening #3001.
  */
-export const MAX_COMMAND_RESULT_BYTES = 1_048_576;
+export const MAX_COMMAND_RESULT_BYTES = 5_000_000;
 
 /**
  * commandResultResultByteLength returns the encoded size the `result` field

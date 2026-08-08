@@ -29,8 +29,9 @@ import (
 // #3001 RESIDUAL (v0.104.0). The above fixed the loud failure and missed a
 // quiet one, for a reason worth stating plainly: this file bounded against the
 // NEXT HOP rather than the DESTINATION. The IPC frame is merely the first of
-// four limits the result passes; the tightest is the server's 1 MiB cap on the
-// command_result `result` field, 16x below the budget used here. So a
+// four limits the result passes; the tightest is the server's cap on the
+// command_result `result` field, well below the budget used here (1 MiB against
+// 15.9 MiB at the time; 5 MB today). So a
 // 4,000-file run (~2 MB of snapshot index) cleared every check in this file,
 // was written to the socket successfully, and was refused on arrival — with no
 // error logged on either side, because the send had genuinely succeeded and the
@@ -59,10 +60,15 @@ const (
 	// 16 MiB IPC frame, but Stdout does not stop at the agent: the forwarder
 	// (internal/heartbeat, case TypeBackupResult) parses it and assigns it to
 	// the `result` field of the WS command_result, where the server caps it at
-	// wire.MaxCommandResultBytes — 16x tighter. So every tier below was dead
-	// code for the failure that mattered: a 4,000-file run built a ~2 MB
-	// snapshot index, sailed through a 15.9 MiB budget, and was refused by the
-	// server. Nothing logged on either side and the job was reaped as stalled.
+	// wire.MaxCommandResultBytes — 16x tighter at the time (1 MiB), and still
+	// over 3x tighter now that the cap has been raised to 5 MB to match the
+	// sibling `stdout`/`stderr` caps. So every tier below was dead code for the
+	// failure that mattered: a 4,000-file run built a ~2 MB snapshot index,
+	// sailed through a 15.9 MiB budget, and was refused by the server. Nothing
+	// logged on either side and the job was reaped as stalled.
+	//
+	// The raise moved the degradation threshold from ~2,000 files to ~9,500; it
+	// did not remove it. This budget remains the binding one.
 	//
 	// Checked against Stdout alone rather than the whole marshalled result
 	// because that is the field the cap applies to server-side; Stderr rides
@@ -304,8 +310,8 @@ func sendBackupResult(conn *ipc.Conn, envelopeID string, result backupipc.Backup
 			"limitName", limit.name,
 			// Both numbers: budgetBytes is the threshold actually crossed,
 			// limitBytes is what the enforcing party allows. Reporting only the
-			// latter would describe a 1,000,000-byte payload as having exceeded
-			// the 1,048,576-byte server cap, which is false.
+			// latter would describe a 4,960,000-byte payload as having exceeded
+			// the server cap, which is false.
 			"budgetBytes", limit.budget,
 			"limitBytes", limit.cap,
 			"originalStdoutBytes", len(result.Stdout),
@@ -373,9 +379,9 @@ func exceededLimit(result backupipc.BackupCommandResult) deliveryLimit {
 //
 // BUDGET AND CAP ARE TRACKED SEPARATELY because they are not the same number,
 // and conflating them produces the very class of false statement this file's
-// #3001 fix set out to kill. The server's cap is 1,048,576 but degradation
-// trips at serverResultBudget (983,040), so reporting the cap as the thing that
-// was "exceeded" tells an operator a 1,000,000-byte payload overflowed a limit
+// #3001 fix set out to kill. The server's cap is 5,000,000 but degradation
+// trips at serverResultBudget (4,934,464), so reporting the cap as the thing that
+// was "exceeded" tells an operator a 4,960,000-byte payload overflowed a limit
 // it was comfortably under. The warning text names the budget — the threshold
 // actually crossed — and the structured log carries both.
 type deliveryLimit struct {

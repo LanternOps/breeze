@@ -22,22 +22,36 @@ package wire
 // pinned by schemas.commandResult.test.ts. Both assert the literal, so raising
 // one alone reddens CI rather than quietly reintroducing #3001.
 //
-// WHY THIS IS THE LIMIT THAT MATTERS. It is the tightest bound anywhere on the
-// result path, and by a wide margin:
+// WHY THIS IS THE LIMIT THAT MATTERS. It is still the tightest bound anywhere
+// on the result path, even after the raise below:
 //
-//	  1 MiB  this — server-side Zod refine on `result`
+//	  5 MB   this — server-side Zod refine on `result`
 //	 16 MiB  ipc.MaxMessageSize (helper→agent frame)
 //	 16 MiB  websocket.maxMessageSize (agent's INBOUND read limit)
 //	100 MiB  the `ws` server's default maxPayload
 //
 // #3001: the backup helper's tiered degradation bounded against the 16 MiB IPC
 // frame — the next hop, not the binding one — so it stayed inert while every
-// backup over ~2,000 files was rejected by the server 16x below that budget.
+// backup over ~2,000 files was rejected by the server far below that budget.
 // The rejection logged as a generic invalid-message server-side and as nothing
 // at all agent-side, so a backup that had SUCCEEDED was reported to the user as
 // stalled by the stale-backup reaper. Bound against the tightest limit in the
 // whole chain, never merely the next one.
-const MaxCommandResultBytes = 1024 * 1024
+//
+// THE VALUE IS 5_000_000, NOT 5 * 1024 * 1024, and the difference is the point.
+// It is set to equal the `stdout`/`stderr` caps in the same schema exactly.
+// Those three fields travel in one message from one authenticated agent, and
+// the 1 MiB/5 MB split between them was itself a cause of #3001: the backup
+// forwarder put its run body in `result` rather than `stdout` and inherited a
+// limit five times tighter than the one the payload was sized against. Choosing
+// 5 * 1024 * 1024 here would leave `result` 242,880 bytes looser than `stdout`
+// and re-create a smaller version of exactly that mismatch.
+//
+// At ~522 B per snapshot file entry this carries a browsable restore index to
+// roughly 9,500 files, up from ~2,000. Past that the helper's tiers still drop
+// the index and land the terminal status — the raise widens the good path, it
+// does not replace the degradation machinery.
+const MaxCommandResultBytes = 5_000_000
 
 // CommandResultHeadroom is subtracted from MaxCommandResultBytes to get the
 // budget agent-side code should actually target.
@@ -61,6 +75,13 @@ const MaxCommandResultBytes = 1024 * 1024
 // the budget. Overshooting the margin costs a degraded body in a narrow band
 // below the cap; undershooting it costs the whole message, which is the failure
 // this package exists to prevent.
+//
+// Left at 64 KiB when the cap rose from 1 MiB to 5 MB. It is an absolute
+// allowance for encoding differences, not a percentage of the payload: the
+// re-encoding deltas it covers (HTML escaping, number formatting, string
+// quoting) scale with the number of affected characters, and 64 KiB already
+// covers a pathological body several times over. Scaling it with the cap would
+// have quietly widened it to 320 KiB for no reason.
 const CommandResultHeadroom = 64 * 1024
 
 // CommandResultBudget is the size agent-side code should keep its encoded
