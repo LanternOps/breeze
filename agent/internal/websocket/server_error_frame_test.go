@@ -20,7 +20,7 @@ const canonicalRejectionFrame = `{
   "message": "Invalid message format",
   "messageType": "command_result",
   "commandId": "cmd-7",
-  "details": [{"code":"custom","path":["result"],"message":"Command result payload exceeds the 1048576-byte ` + "`result`" + ` limit"}]
+  "details": [{"code":"custom","path":["result"],"message":"Command result payload exceeds the 5000000-byte ` + "`result`" + ` limit"}]
 }`
 
 // TestServerErrorFrameParsesEveryAttributionField is the agent half of the

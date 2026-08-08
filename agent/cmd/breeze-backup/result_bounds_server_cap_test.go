@@ -11,29 +11,76 @@ import (
 	"github.com/breeze-rmm/agent/internal/wire"
 )
 
-// qaResidualFileCount is the file count from the #3001 residual reproduction on
-// v0.104.0: two 4,000-file / 200 MB runs whose terminal result never arrived,
-// against a 1,200-file run that landed normally. The loss threshold sat between
-// them, which is 1_048_576 / ~522 B-per-entry ≈ 2,008 files.
+// The file counts from the #3001 residual reproduction on v0.104.0: two
+// 4,000-file / 200 MB runs whose terminal result never arrived, against a
+// 1,200-file run that landed normally. The loss threshold sat between them,
+// which under the original 1 MiB cap was 1_048_576 / ~522 B-per-entry ≈ 2,008
+// files.
+//
+// The cap is now 5,000,000, so BOTH of those runs deliver their file index
+// intact and the degradation threshold has moved out to ~9,500 files —
+// oversizeIndexFileCount is what exercises it. The 4,000-file fixture stays in
+// the suite precisely because it used to fail: it is the regression that proves
+// the raise reached the endpoints the QA reproduction was about.
 const (
 	qaResidualFileCount = 4000
 	qaPassingFileCount  = 1200
+
+	// oversizeIndexFileCount marshals to roughly 6.0 MB — buildLargeRunJob's
+	// entries encode to ~375 B each, shorter than the ~522 B of the field
+	// report — putting it over the ~4.93 MB server budget and comfortably under
+	// the ~15.9 MiB IPC budget. That band is the one the server cap owns, and
+	// every test using this count asserts it, so a cap change fails loudly
+	// instead of quietly retargeting these tests at the IPC limit.
+	oversizeIndexFileCount = 16000
 )
 
-// TestFourThousandFileRunIsDegradedForTheServerCap is the residual #3001
-// regression, and the one that would have caught it.
+// TestFourThousandFileRunSendsItsIndexIntact is the raise, stated as the
+// regression it is meant to be.
 //
-// The previous bounding stopped at the 15.9 MiB IPC budget, so a ~2 MB result
-// "fitted" and was sent verbatim — then refused by the server's 1 MiB `result`
-// cap with no log on either side, and the job was reaped as stalled 15 minutes
-// after a backup that had SUCCEEDED. The fixture is deliberately the size that
-// passed the old check and failed the real one.
-func TestFourThousandFileRunIsDegradedForTheServerCap(t *testing.T) {
+// This exact fixture is #3001's residual reproduction. Under the 1 MiB cap it
+// was refused by the server with no log on either side, and the job was reaped
+// as stalled 15 minutes after a backup that had SUCCEEDED; after the first fix
+// it was degraded to a terminal status with no file index. It must now arrive
+// whole — that is what raising the cap to match `stdout` bought, and a
+// regression to either earlier behaviour is invisible without this test.
+func TestFourThousandFileRunSendsItsIndexIntact(t *testing.T) {
 	result := mustRunResult(t, buildLargeRunJob(qaResidualFileCount, 3))
+
+	if len(result.Stdout) <= 1048576 {
+		t.Fatalf("fixture stdout is %d bytes, under the ORIGINAL 1 MiB cap — it no longer represents "+
+			"the payload that reproduced #3001 and proves nothing about the raise", len(result.Stdout))
+	}
+
+	fitted, notes, limit := fitBackupResult(result)
+
+	if notes != "" {
+		t.Fatalf("the 4,000-file QA reproduction was degraded (%q); it fits the raised cap and must "+
+			"now deliver its file index intact", notes)
+	}
+	if limit.fired() {
+		t.Fatalf("no limit should have fired for a %d-byte body under the %d byte budget, got %q",
+			len(result.Stdout), serverResultBudget, limit.name)
+	}
+	if fitted.Stdout != result.Stdout {
+		t.Fatal("stdout was modified for an in-budget result")
+	}
+	assertFileIndexEntries(t, fitted.Stdout, qaResidualFileCount)
+	assertTerminalStatusSurvives(t, fitted, result.CommandID)
+}
+
+// TestOversizeIndexIsDegradedForTheServerCap keeps the degradation path pinned
+// now that the QA fixture no longer reaches it.
+//
+// Without this the raise would have silently deleted coverage of the entire
+// reason the tiers exist: every remaining fixture would either fit outright or
+// be so large that the IPC frame could be blamed instead.
+func TestOversizeIndexIsDegradedForTheServerCap(t *testing.T) {
+	result := mustRunResult(t, buildLargeRunJob(oversizeIndexFileCount, 3))
 
 	if len(result.Stdout) > resultPayloadBudget {
 		t.Fatalf("fixture stdout is %d bytes, over the IPC budget %d — this test must exercise a "+
-			"payload the OLD (IPC-only) bounding considered acceptable", len(result.Stdout), resultPayloadBudget)
+			"payload only the SERVER cap rejects", len(result.Stdout), resultPayloadBudget)
 	}
 	if len(result.Stdout) <= wire.MaxCommandResultBytes {
 		t.Fatalf("fixture stdout is only %d bytes, under the server cap %d — the test would prove nothing",
@@ -65,7 +112,7 @@ func TestFourThousandFileRunIsDegradedForTheServerCap(t *testing.T) {
 
 	// The warning PERSISTED to backup_jobs.errorLog must name the same limit
 	// the log line does. Hardcoding the IPC limit here told the customer their
-	// 2 MB result had overflowed a 16 MiB frame.
+	// oversize result had overflowed a 16 MiB frame.
 	assertWarningNamesLimit(t, fitted.Stdout, limit)
 
 	assertTerminalStatusSurvives(t, fitted, result.CommandID)
@@ -90,16 +137,7 @@ func TestTwelveHundredFileRunIsSentIntact(t *testing.T) {
 		t.Fatal("stdout was modified for an in-budget result")
 	}
 
-	var job map[string]any
-	if err := json.Unmarshal([]byte(fitted.Stdout), &job); err != nil {
-		t.Fatalf("unmarshal fitted stdout: %v", err)
-	}
-	snap, _ := job["snapshot"].(map[string]any)
-	files, _ := snap["files"].([]any)
-	if len(files) != qaPassingFileCount {
-		t.Fatalf("file index has %d entries, want the full %d — restore browsing must survive here",
-			len(files), qaPassingFileCount)
-	}
+	assertFileIndexEntries(t, fitted.Stdout, qaPassingFileCount)
 }
 
 // TestHundredThousandFileRunStillReportsCompletion is fix requirement 1 stated
@@ -176,7 +214,7 @@ func TestStderrOnlyDegradationNamesTheTextCap(t *testing.T) {
 // wrapper honest, so the existing suite that calls it keeps testing the code
 // the sender actually runs.
 func TestDeliveryWrapperMatchesAttributedForm(t *testing.T) {
-	result := mustRunResult(t, buildLargeRunJob(qaResidualFileCount, 3))
+	result := mustRunResult(t, buildLargeRunJob(oversizeIndexFileCount, 3))
 
 	wrappedResult, wrappedNotes := fitBackupResultForDelivery(result)
 	fullResult, fullNotes, _ := fitBackupResult(result)
@@ -195,13 +233,13 @@ func TestDeliveryWrapperMatchesAttributedForm(t *testing.T) {
 // The structured log line stays on the endpoint; the `warning` these tiers
 // write is persisted to backup_jobs.errorLog and rendered in the UI. All five
 // tier warnings used to hardcode ipc.MaxMessageSize, so after this PR shifted
-// the dominant trigger to the 1 MiB server cap, the headline repro would have
+// the dominant trigger to the server result cap, the headline repro would have
 // told a customer that a 2 MB result exceeded a 16 MiB limit — false on its
 // face, and self-contradictory in oversizeFailureResult, which prints the
 // actual size right next to the limit it supposedly exceeded.
 func TestPersistedWarningNamesTheLimitThatFired(t *testing.T) {
 	t.Run("snapshot index dropped for the server cap", func(t *testing.T) {
-		result := mustRunResult(t, buildLargeRunJob(qaResidualFileCount, 3))
+		result := mustRunResult(t, buildLargeRunJob(oversizeIndexFileCount, 3))
 		fitted, _, limit := fitBackupResult(result)
 		warning := warningFromStdout(t, fitted.Stdout)
 
@@ -223,8 +261,10 @@ func TestPersistedWarningNamesTheLimitThatFired(t *testing.T) {
 		// backup_list's array body: it cannot be summarised, so tier 2 replaces
 		// it with an explicit failure. This is the site where the wrong limit
 		// was most visibly self-contradictory.
-		big := make([]string, 0, 40000)
-		for i := 0; i < 40000; i++ {
+		// Sized past the server budget: at ~43 B per element this is ~6.5 MB.
+		const arrayElements = 150000
+		big := make([]string, 0, arrayElements)
+		for i := 0; i < arrayElements; i++ {
 			big = append(big, strings.Repeat("s", 40))
 		}
 		encoded, err := json.Marshal(big)
@@ -282,7 +322,7 @@ func TestIPCFrameAttributionForOversizeStderr(t *testing.T) {
 
 // TestDeliveryLimitReportsTheThresholdActuallyCrossed guards the budget/cap
 // split. Reporting the cap as the thing "exceeded" would describe a payload of
-// 1,000,000 bytes — over the 983,040 budget, under the 1,048,576 cap — as
+// 4,960,000 bytes — over the 4,934,464 budget, under the 5,000,000 cap — as
 // having overflowed a limit it never reached.
 func TestDeliveryLimitReportsTheThresholdActuallyCrossed(t *testing.T) {
 	between := serverResultBudget + (wire.MaxCommandResultBytes-serverResultBudget)/2
@@ -304,6 +344,24 @@ func TestDeliveryLimitReportsTheThresholdActuallyCrossed(t *testing.T) {
 	}
 	if strings.Contains(limit.describe(), fmt.Sprint(limit.cap)) {
 		t.Fatalf("describe() must not present the cap as the threshold exceeded, got %q", limit.describe())
+	}
+}
+
+// assertFileIndexEntries checks how many snapshot file entries survived — the
+// difference between "this snapshot is browsable" and "the index was dropped
+// to fit". Zero is a legitimate degraded outcome; the WRONG non-zero count
+// would be a silently truncated index, which the server cannot distinguish
+// from a complete one.
+func assertFileIndexEntries(t *testing.T, stdout string, want int) {
+	t.Helper()
+	var job map[string]any
+	if err := json.Unmarshal([]byte(stdout), &job); err != nil {
+		t.Fatalf("unmarshal fitted stdout: %v", err)
+	}
+	snap, _ := job["snapshot"].(map[string]any)
+	files, _ := snap["files"].([]any)
+	if len(files) != want {
+		t.Fatalf("file index has %d entries, want %d — restore browsing depends on this", len(files), want)
 	}
 }
 

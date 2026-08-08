@@ -9,9 +9,17 @@ import (
 	"github.com/breeze-rmm/agent/internal/wire"
 )
 
-// oversizeResultBody builds a `result` body that marshals past the server's
-// cap, shaped like the per-file arrays that actually cause this (a snapshot
-// index, a software inventory, a filesystem walk).
+// oversizeEntryCount is the entry count used wherever a test needs a body that
+// marshals past the server's cap. Each entry encodes to roughly 340 bytes, so
+// this lands near 6.8 MB against a ~4.93 MB budget — comfortably over without
+// being so large it slows the suite under -race. Every test that uses it
+// asserts the resulting size, so a change to either the cap or the entry shape
+// fails loudly here rather than quietly making a test vacuous.
+const oversizeEntryCount = 20000
+
+// oversizeResultBody builds a `result` body of `entries` per-file records,
+// shaped like the arrays that actually cause this (a snapshot index, a software
+// inventory, a filesystem walk).
 func oversizeResultBody(entries int) map[string]any {
 	files := make([]map[string]any, 0, entries)
 	for i := 0; i < entries; i++ {
@@ -35,7 +43,7 @@ func oversizeResultBody(entries int) map[string]any {
 // status. Before this the whole message was refused server-side and the job was
 // reaped as stalled.
 func TestBoundResultFieldDropsOversizeBodyAndKeepsTerminalStatus(t *testing.T) {
-	body := oversizeResultBody(4000)
+	body := oversizeResultBody(oversizeEntryCount)
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("marshal fixture: %v", err)
@@ -99,7 +107,10 @@ func TestBoundResultFieldLeavesInBudgetResultsAlone(t *testing.T) {
 	}{
 		{"nil body", nil},
 		{"small object", map[string]any{"filesBackedUp": 1200, "status": "completed"}},
-		{"just under the budget", oversizeResultBody(1200)},
+		// Sized off the budget rather than an entry count so it stays genuinely
+		// "just under" whatever the cap becomes.
+		{"just under the budget", map[string]any{"p": strings.Repeat("x", wire.CommandResultBudget-1000)}},
+		{"a realistic in-budget file index", oversizeResultBody(1200)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.body != nil {
@@ -259,7 +270,7 @@ func TestSendResultBoundsOversizeBodyBeforeEnqueue(t *testing.T) {
 		Type:      "command_result",
 		CommandID: "cmd-3001",
 		Status:    "completed",
-		Result:    oversizeResultBody(4000),
+		Result:    oversizeResultBody(oversizeEntryCount),
 	}); err != nil {
 		t.Fatalf("SendResult: %v", err)
 	}
