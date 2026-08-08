@@ -174,7 +174,7 @@ const bulkFieldThreshold = 4 * 1024
 // was already within budget. It is non-empty exactly when the caller should log
 // loudly — a degraded result is a real (if survivable) loss of detail.
 func fitBackupResultForDelivery(result backupipc.BackupCommandResult) (backupipc.BackupCommandResult, string) {
-	fitted, notes, _, _ := fitBackupResult(result)
+	fitted, notes, _ := fitBackupResult(result)
 	return fitted, notes
 }
 
@@ -189,14 +189,16 @@ func fitBackupResultForDelivery(result backupipc.BackupCommandResult) (backupipc
 // the problem. The trigger is therefore tracked as the tiers run rather than
 // assumed at the end.
 func fitBackupResult(result backupipc.BackupCommandResult) (
-	fitted backupipc.BackupCommandResult, notesText, limitName string, limitBytes int,
+	fitted backupipc.BackupCommandResult, notesText string, limit deliveryLimit,
 ) {
 	var notes []string
 
 	// Captured BEFORE any tier runs: once the tiers have shrunk the payload the
 	// binding limit is no longer observable, and reporting a limit derived from
-	// the already-degraded result is how the wrong one gets named.
-	limitName, limitBytes = exceededLimit(result)
+	// the already-degraded result is how the wrong one gets named. Every tier
+	// below is handed this value so the warning it persists names the same
+	// limit the log line does.
+	limit = exceededLimit(result)
 
 	// Tier 1 — always applied, and cheap (no JSON parse). Bounding the failure
 	// detail BEFORE marshalling is the primary fix; the tiers below are the
@@ -209,7 +211,7 @@ func fitBackupResult(result backupipc.BackupCommandResult) (
 		notes = append(notes, fmt.Sprintf("stderr truncated (%d bytes dropped)", dropped))
 	}
 	if fits(result) {
-		return finishBounding(result, notes, limitName, limitBytes)
+		return finishBounding(result, notes, limit)
 	}
 
 	// Only reached when the result is actually oversize, so the ordinary path
@@ -217,7 +219,7 @@ func fitBackupResult(result backupipc.BackupCommandResult) (
 	obj, isObject := decodeStdoutObject(result.Stdout)
 	if !isObject {
 		notes = append(notes, "result body could not be summarised and was replaced with an oversize failure")
-		return finishBounding(oversizeFailureResult(result), notes, limitName, limitBytes)
+		return finishBounding(oversizeFailureResult(result, limit), notes, limit)
 	}
 
 	// Tier 2 — cap the warning text, empty the per-file snapshot index, and
@@ -233,33 +235,33 @@ func fitBackupResult(result backupipc.BackupCommandResult) (
 	if dropped := boundObjectWarning(obj); dropped > 0 {
 		notes = append(notes, fmt.Sprintf("warning truncated (%d bytes dropped)", dropped))
 	}
-	if entries, ok := emptySnapshotFiles(obj); ok {
+	if entries, ok := emptySnapshotFiles(obj, limit); ok {
 		notes = append(notes, fmt.Sprintf("snapshot file index dropped (%d entries)", entries))
 	}
-	for _, key := range dropBulkFields(obj) {
+	for _, key := range dropBulkFields(obj, limit) {
 		notes = append(notes, fmt.Sprintf("%s dropped (bulk field)", key))
 	}
 	result.Stdout = encodeStdoutObject(obj, result.Stdout)
 	if fits(result) {
-		return finishBounding(result, notes, limitName, limitBytes)
+		return finishBounding(result, notes, limit)
 	}
 
 	// Tier 3 — scalar fields plus the snapshot identity only.
-	if reduced, ok := reduceToScalars(result.Stdout); ok {
+	if reduced, ok := reduceToScalars(result.Stdout, limit); ok {
 		result.Stdout = reduced
 		notes = append(notes, "result reduced to summary scalars only")
 		if fits(result) {
-			return finishBounding(result, notes, limitName, limitBytes)
+			return finishBounding(result, notes, limit)
 		}
 	}
 
 	// Tier 4 — last resort. Every field is bounded by construction, so this
 	// always fits: a terminal status must land even when nothing else can.
 	notes = append(notes, "result replaced with a minimal terminal status")
-	result.Stdout = lastResortStdout(result.Stdout)
+	result.Stdout = lastResortStdout(result.Stdout, limit)
 	result.Stderr, _ = truncateText(result.Stderr, maxLastResortFieldBytes)
 	result.CommandID, _ = truncateText(result.CommandID, maxLastResortFieldBytes)
-	return finishBounding(result, notes, limitName, limitBytes)
+	return finishBounding(result, notes, limit)
 }
 
 // finishBounding assembles fitBackupResult's return, attributing the
@@ -270,13 +272,13 @@ func fitBackupResult(result backupipc.BackupCommandResult) (
 // were always going to fit the wire comfortably. Those are the runs the old log
 // line mislabelled as frame overflows.
 func finishBounding(
-	result backupipc.BackupCommandResult, notes []string, limitName string, limitBytes int,
-) (backupipc.BackupCommandResult, string, string, int) {
+	result backupipc.BackupCommandResult, notes []string, limit deliveryLimit,
+) (backupipc.BackupCommandResult, string, deliveryLimit) {
 	notesText := joinNotes(notes)
-	if notesText != "" && limitName == "" {
-		limitName, limitBytes = limitResultText, maxResultTextBytes
+	if notesText != "" && !limit.fired() {
+		limit = limitResultText
 	}
-	return result, notesText, limitName, limitBytes
+	return result, notesText, limit
 }
 
 // sendBackupResult sends a terminal backup_result envelope, bounding the
@@ -288,7 +290,7 @@ func finishBounding(
 // log-shipping threshold and therefore on the server.
 func sendBackupResult(conn *ipc.Conn, envelopeID string, result backupipc.BackupCommandResult) error {
 	log := logging.L("backup")
-	fitted, degraded, limitName, limitBytes := fitBackupResult(result)
+	fitted, degraded, limit := fitBackupResult(result)
 	if degraded != "" {
 		// Sizes are reported from the raw fields rather than a full marshal of
 		// the original: re-marshalling tens of megabytes just to populate a log
@@ -299,8 +301,13 @@ func sendBackupResult(conn *ipc.Conn, envelopeID string, result backupipc.Backup
 		log.Error("backup result payload was degraded to fit a delivery limit",
 			"commandId", result.CommandID,
 			"degraded", degraded,
-			"limitName", limitName,
-			"limitBytes", limitBytes,
+			"limitName", limit.name,
+			// Both numbers: budgetBytes is the threshold actually crossed,
+			// limitBytes is what the enforcing party allows. Reporting only the
+			// latter would describe a 1,000,000-byte payload as having exceeded
+			// the 1,048,576-byte server cap, which is false.
+			"budgetBytes", limit.budget,
+			"limitBytes", limit.cap,
 			"originalStdoutBytes", len(result.Stdout),
 			"originalStderrBytes", len(result.Stderr),
 			"sentBytes", marshalledSize(fitted),
@@ -323,8 +330,7 @@ func sendBackupResult(conn *ipc.Conn, envelopeID string, result backupipc.Backup
 // fits reports whether result is within every delivery limit on the path to
 // the server.
 func fits(result backupipc.BackupCommandResult) bool {
-	name, _ := exceededLimit(result)
-	return name == ""
+	return !exceededLimit(result).fired()
 }
 
 // exceededLimit names the first delivery limit result's payload breaches, and
@@ -339,14 +345,14 @@ func fits(result backupipc.BackupCommandResult) bool {
 // The raw text fields are measured before marshalling as a cheap lower bound —
 // JSON string encoding never shrinks its input — so an oversize result is
 // rejected without marshalling tens of megabytes on the endpoint.
-func exceededLimit(result backupipc.BackupCommandResult) (string, int) {
+func exceededLimit(result backupipc.BackupCommandResult) deliveryLimit {
 	// Tightest first. Stdout alone, because Stdout is what becomes the server's
 	// `result` field; see serverResultBudget.
 	if len(result.Stdout) > serverResultBudget {
-		return limitServerResult, wire.MaxCommandResultBytes
+		return limitServerResult
 	}
 	if len(result.Stdout)+len(result.Stderr)+len(result.CommandID) > resultPayloadBudget {
-		return limitIPCFrame, ipc.MaxMessageSize
+		return limitIPCFrame
 	}
 	size := marshalledSize(result)
 	// A result that cannot be marshalled at all is not "fitting" — treating
@@ -355,17 +361,76 @@ func exceededLimit(result backupipc.BackupCommandResult) (string, int) {
 	// (BackupCommandResult is only strings/bool/int64, so this is unreachable
 	// today; it is guarded so it stays unreachable if the type grows a field.)
 	if size < 0 || size > resultPayloadBudget {
-		return limitIPCFrame, ipc.MaxMessageSize
+		return limitIPCFrame
 	}
-	return "", 0
+	return deliveryLimit{}
 }
 
-// Limit names used in the degradation log line. They are the identifiers an
-// operator can grep for in this repo, not prose.
-const (
-	limitServerResult = "server command_result `result` cap (wire.MaxCommandResultBytes)"
-	limitIPCFrame     = "agent IPC frame (ipc.MaxMessageSize)"
-	limitResultText   = "free-text field cap (maxResultTextBytes)"
+// deliveryLimit identifies the limit that forced a degradation, in the three
+// forms this file needs: a grep-able identifier for structured logs, a short
+// phrase for the operator-facing warning persisted to backup_jobs.errorLog, and
+// the two byte counts.
+//
+// BUDGET AND CAP ARE TRACKED SEPARATELY because they are not the same number,
+// and conflating them produces the very class of false statement this file's
+// #3001 fix set out to kill. The server's cap is 1,048,576 but degradation
+// trips at serverResultBudget (983,040), so reporting the cap as the thing that
+// was "exceeded" tells an operator a 1,000,000-byte payload overflowed a limit
+// it was comfortably under. The warning text names the budget — the threshold
+// actually crossed — and the structured log carries both.
+type deliveryLimit struct {
+	name   string // grep-able identifier, for structured logs
+	label  string // short operator-facing phrase, for persisted warnings
+	budget int    // the threshold this code enforces; what was actually exceeded
+	cap    int    // the limit the enforcing party imposes; == budget when no headroom is held
+}
+
+// fired reports whether a limit was breached at all.
+func (l deliveryLimit) fired() bool { return l.name != "" }
+
+// limitExceededPhrase is the lead-in every tier's operator-facing note shares.
+//
+// It exists so a test can assert "this tier explained why it degraded" WITHOUT
+// pinning which limit fired. Several tests previously asserted the literal
+// "IPC limit" as that proxy, which quietly welded the suite to one specific
+// limit being the trigger forever — so when the binding limit moved to the
+// server cap, the tests kept passing on wording that had become false and would
+// have failed on wording that had become true. Assert the shared phrase, or the
+// specific limit via deliveryLimit.describe(); never a bare limit name.
+const limitExceededPhrase = "exceeded the "
+
+// describe renders the operator-facing form: the threshold that was crossed and
+// what imposes it. This is what reaches the customer in the job's error log, so
+// it names a real, honest number — never a limit the payload was under.
+func (l deliveryLimit) describe() string {
+	return fmt.Sprintf("%d byte %s", l.budget, l.label)
+}
+
+// The limits, in the order exceededLimit checks them.
+//
+// These deliberately are NOT consts: each carries the budget it is enforced at,
+// which is derived arithmetic, and the operator-facing label is part of the
+// value rather than duplicated at five call sites — the duplication being how
+// the five warning strings all came to hardcode the IPC limit.
+var (
+	limitServerResult = deliveryLimit{
+		name:   "server command_result `result` cap (wire.MaxCommandResultBytes)",
+		label:  "server result budget",
+		budget: serverResultBudget,
+		cap:    wire.MaxCommandResultBytes,
+	}
+	limitIPCFrame = deliveryLimit{
+		name:   "agent IPC frame (ipc.MaxMessageSize)",
+		label:  "agent IPC budget",
+		budget: resultPayloadBudget,
+		cap:    ipc.MaxMessageSize,
+	}
+	limitResultText = deliveryLimit{
+		name:   "free-text field cap (maxResultTextBytes)",
+		label:  "free-text field cap",
+		budget: maxResultTextBytes,
+		cap:    maxResultTextBytes,
+	}
 )
 
 // marshalledSize returns the marshalled byte length of result, or -1 when it
@@ -447,7 +512,7 @@ func boundObjectWarning(obj map[string]json.RawMessage) int {
 // the drop in the result's `warning`, so it is visible server-side (the warning
 // is persisted to the job's errorLog) rather than only in an endpoint log line.
 // Reports the number of entries dropped and whether anything was dropped.
-func emptySnapshotFiles(obj map[string]json.RawMessage) (int, bool) {
+func emptySnapshotFiles(obj map[string]json.RawMessage, limit deliveryLimit) (int, bool) {
 	rawSnap, present := obj["snapshot"]
 	if !present {
 		return 0, false
@@ -471,8 +536,8 @@ func emptySnapshotFiles(obj map[string]json.RawMessage) (int, bool) {
 	}
 	obj["snapshot"] = rebuilt
 	obj["warning"] = mustRawString(appendResultWarning(obj["warning"], fmt.Sprintf(
-		"snapshot file index omitted (%d entries): the result exceeded the %d byte agent IPC limit, so per-file restore browsing is unavailable for this snapshot",
-		len(files), ipc.MaxMessageSize)))
+		"snapshot file index omitted (%d entries): the result exceeded the %s, so per-file restore browsing is unavailable for this snapshot",
+		len(files), limit.describe())))
 	return len(files), true
 }
 
@@ -482,7 +547,7 @@ func emptySnapshotFiles(obj map[string]json.RawMessage) (int, bool) {
 // Snapshot.Files is. `snapshot` is exempt: emptySnapshotFiles already handled
 // its bulk and the rest of it is the identity the server needs. Returns the
 // keys dropped, sorted for a deterministic note, and records them in `warning`.
-func dropBulkFields(obj map[string]json.RawMessage) []string {
+func dropBulkFields(obj map[string]json.RawMessage, limit deliveryLimit) []string {
 	var dropped []string
 	for key, raw := range obj {
 		if key == "snapshot" || len(raw) <= bulkFieldThreshold {
@@ -499,8 +564,8 @@ func dropBulkFields(obj map[string]json.RawMessage) []string {
 	}
 	sort.Strings(dropped)
 	obj["warning"] = mustRawString(appendResultWarning(obj["warning"], fmt.Sprintf(
-		"detail field(s) omitted (%s): the result exceeded the %d byte agent IPC limit",
-		strings.Join(dropped, ", "), ipc.MaxMessageSize)))
+		"detail field(s) omitted (%s): the result exceeded the %s",
+		strings.Join(dropped, ", "), limit.describe())))
 	return dropped
 }
 
@@ -526,7 +591,7 @@ func isJSONContainer(raw json.RawMessage) bool {
 // what stops this tier from silently zeroing a counter the server reads
 // (filesRestored, filesFailed, errorCount, …) on a command shape it never
 // anticipated.
-func reduceToScalars(stdout string) (string, bool) {
+func reduceToScalars(stdout string, limit deliveryLimit) (string, bool) {
 	obj, ok := decodeStdoutObject(stdout)
 	if !ok {
 		return stdout, false
@@ -576,8 +641,8 @@ func reduceToScalars(stdout string) (string, bool) {
 	if len(containers) > 0 {
 		sort.Strings(containers)
 		kept["warning"] = mustRawString(appendResultWarning(kept["warning"], fmt.Sprintf(
-			"detail field(s) omitted (%s): the result exceeded the %d byte agent IPC limit",
-			strings.Join(containers, ", "), ipc.MaxMessageSize)))
+			"detail field(s) omitted (%s): the result exceeded the %s",
+			strings.Join(containers, ", "), limit.describe())))
 	}
 	return encodeStdoutObject(kept, stdout), true
 }
@@ -587,15 +652,15 @@ func reduceToScalars(stdout string) (string, bool) {
 // failure. A terminal status still lands — the point of #3001 — but an empty
 // body is never handed back under Success: true, where the server would read it
 // as a complete, empty answer.
-func oversizeFailureResult(result backupipc.BackupCommandResult) backupipc.BackupCommandResult {
+func oversizeFailureResult(result backupipc.BackupCommandResult, limit deliveryLimit) backupipc.BackupCommandResult {
 	// Size is captured before the fields are cleared — reporting it after would
 	// print the size of the replacement, not of what was dropped.
 	original := len(result.Stdout) + len(result.Stderr)
 	result.Stdout = ""
 	result.Success = false
 	result.Stderr = fmt.Sprintf(
-		"backup helper result exceeded the %d byte agent IPC limit (%d bytes) and could not be summarised; the command may have succeeded but its output could not be delivered",
-		ipc.MaxMessageSize, original)
+		"backup helper result exceeded the %s (%d bytes) and could not be summarised; the command may have succeeded but its output could not be delivered",
+		limit.describe(), original)
 	result.CommandID, _ = truncateText(result.CommandID, maxLastResortFieldBytes)
 	return result
 }
@@ -612,7 +677,7 @@ func oversizeFailureResult(result backupipc.BackupCommandResult) backupipc.Backu
 // clean-looking one on exactly the runs most likely to be degraded, since a
 // large run is what reaches this tier at all. The tier may truncate the warning
 // and must append its own note to it; it must never substitute for it.
-func lastResortStdout(stdout string) string {
+func lastResortStdout(stdout string, limit deliveryLimit) string {
 	minimal := map[string]string{}
 	var existingWarning json.RawMessage
 	if obj, ok := decodeStdoutObject(stdout); ok {
@@ -639,8 +704,8 @@ func lastResortStdout(stdout string) string {
 	// maxLastResortFieldBytes: 8 KiB against a ~16 MiB budget is free, and
 	// clipping an operator signal to 1 KiB would defeat the point of keeping it.
 	minimal["warning"] = appendResultWarning(existingWarning, fmt.Sprintf(
-		"backup result exceeded the %d byte agent IPC limit and was reduced to a terminal status; detail was dropped",
-		ipc.MaxMessageSize))
+		"backup result exceeded the %s and was reduced to a terminal status; detail was dropped",
+		limit.describe()))
 	data, err := json.Marshal(minimal)
 	if err != nil {
 		return `{"warning":"backup result could not be encoded"}`

@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 
@@ -178,6 +179,70 @@ func TestBoundResultFieldHandlesUnmarshallableBody(t *testing.T) {
 	}
 	if _, err := json.Marshal(out); err != nil {
 		t.Fatalf("bounded result still cannot be marshalled: %v", err)
+	}
+}
+
+// TestSendResultRecoversFromAnUnencodableBody exercises the marshal-error
+// recovery through the WIRED path, which is the only path that matters.
+//
+// The unit test for boundResultFieldForServer's marshal-error branch passed
+// while that branch was unreachable in production: SendResult marshalled the
+// whole result first and returned on error, so an unencodable body still lost
+// its terminal status and the test asserted a repair that never ran. A NaN in
+// any nested map is enough to trigger it — encoding/json rejects non-finite
+// floats — and metrics-shaped results carry floats routinely.
+func TestSendResultRecoversFromAnUnencodableBody(t *testing.T) {
+	c := &Client{
+		resultChan: make(chan outboundResult, 1),
+		done:       make(chan struct{}),
+	}
+
+	// Sanity: this really is unencodable, so the test cannot pass vacuously.
+	if _, err := json.Marshal(map[string]any{"cpu": math.NaN()}); err == nil {
+		t.Fatal("fixture encodes cleanly; it must fail to marshal for this test to mean anything")
+	}
+
+	if err := c.SendResult(CommandResult{
+		Type:      "command_result",
+		CommandID: "cmd-nan",
+		Status:    "completed",
+		ExitCode:  0,
+		Result:    map[string]any{"samples": []any{map[string]any{"cpu": math.NaN()}}},
+	}); err != nil {
+		t.Fatalf("SendResult returned %v; an unencodable BODY must not cost the terminal status", err)
+	}
+
+	select {
+	case queued := <-c.resultChan:
+		var decoded struct {
+			CommandID string         `json:"commandId"`
+			Status    string         `json:"status"`
+			Result    map[string]any `json:"result"`
+		}
+		if err := json.Unmarshal(queued.data, &decoded); err != nil {
+			t.Fatalf("unmarshal enqueued frame: %v", err)
+		}
+		if decoded.Status != "completed" || decoded.CommandID != "cmd-nan" {
+			t.Fatalf("terminal status lost: %+v", decoded)
+		}
+		if decoded.Result[resultOmittedMarker] != true {
+			t.Fatalf("enqueued frame does not carry the omission marker: %v", decoded.Result)
+		}
+	default:
+		t.Fatal("SendResult enqueued nothing; the terminal status was dropped")
+	}
+}
+
+// TestSendResultStillErrorsWhenThereIsNoBodyToDrop pins the other side of that
+// recovery: it must repair an unencodable BODY, not swallow every marshal
+// failure. With no body there is nothing to drop and the caller has to hear
+// about it.
+func TestSendResultStillErrorsWhenThereIsNoBodyToDrop(t *testing.T) {
+	// Result is nil, so boundResultFieldForServer reports nothing to drop.
+	// Nothing else on CommandResult can fail to encode, so this is a
+	// contract test rather than a reachable production path.
+	if _, dropped := boundResultFieldForServer(CommandResult{CommandID: "c1"}); dropped {
+		t.Fatal("a nil body must report nothing dropped, or the error path above would swallow real failures")
 	}
 }
 

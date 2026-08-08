@@ -330,6 +330,120 @@ const commandResultSchema = baseCommandResultSchema.extend({
 
 type AgentCommandResult = z.infer<typeof commandResultSchema>;
 
+/**
+ * MAX_PRECISE_RESULT_MEASURE_BYTES bounds when the rejection path is willing to
+ * re-serialise a `result` body to report its exact size.
+ *
+ * `commandResultResultByteLength` runs a synchronous `JSON.stringify` over a
+ * just-parsed object, and this branch is reached by definition on messages that
+ * failed validation — including unbounded ones. No `maxPayload` is configured
+ * on the agent WebSocket server, so `ws` allows frames up to its 100 MiB
+ * default, and pre-fix agents still in the field send genuinely unbounded
+ * results (#3001's original report was a 64 MB payload). Stringifying that on
+ * the event loop to produce a log field is a self-inflicted stall, and this
+ * repo has form for exactly that (#3236).
+ *
+ * Above the threshold the frame size is reported instead — a lower bound that
+ * is already enough to diagnose an oversize rejection, and free to compute.
+ */
+export const MAX_PRECISE_RESULT_MEASURE_BYTES = 8_000_000;
+
+/**
+ * MAX_ECHOED_FIELD_CHARS clamps the agent-supplied strings echoed back in a
+ * rejection. They come off an UNVALIDATED message — that is the whole point of
+ * this branch — so their length is whatever the agent chose to send.
+ */
+export const MAX_ECHOED_FIELD_CHARS = 200;
+
+/** MAX_ECHOED_ISSUES clamps how many Zod issues ride back in the reply. */
+export const MAX_ECHOED_ISSUES = 10;
+
+/**
+ * buildAgentMessageRejection assembles the log line and the error frame for a
+ * message that failed schema validation.
+ *
+ * #3001: this branch used to be a bare `console.warn` carrying only the raw Zod
+ * issues. When it rejected a `command_result` — the terminal status of a job
+ * the server is actively waiting on — the operator saw no commandId, no size
+ * and no message type, and none of the downstream backup logs, which live in
+ * `processCommandResult` past this early return. The result read as having
+ * vanished in transit, and a backup that had succeeded was reaped as stalled 15
+ * minutes later.
+ *
+ * A rejected `command_result` is a LOST TERMINAL STATUS, so it logs at error
+ * with everything needed to identify the job; anything else stays a warning.
+ *
+ * Pure and exported so the frame shape can be pinned by a test: the agent side
+ * parses `messageType`/`commandId` off this object (see `logServerErrorFrame`
+ * in agent/internal/websocket/client.go), and a rename on either side silently
+ * returns the agent to the no-trace state this issue was about.
+ */
+export function buildAgentMessageRejection(args: {
+  agentId: string;
+  message: unknown;
+  frameBytes: number;
+  issues: z.ZodIssue[];
+}): {
+  level: 'error' | 'warn';
+  log: string;
+  frame: {
+    type: 'error';
+    code: 'INVALID_MESSAGE';
+    message: string;
+    messageType: string;
+    commandId?: string;
+    details: z.ZodIssue[];
+  };
+} {
+  const { agentId, message, frameBytes, issues } = args;
+  // `message` is unvalidated and need not even be an object (a bare JSON number
+  // or null both reach here), so every read is guarded.
+  const raw = (message ?? {}) as Record<string, unknown>;
+  const clamp = (v: unknown): string | undefined =>
+    typeof v === 'string' ? v.slice(0, MAX_ECHOED_FIELD_CHARS) : undefined;
+
+  const messageType = clamp(raw.type) ?? 'unknown';
+  const commandId = clamp(raw.commandId);
+  const details = issues.slice(0, MAX_ECHOED_ISSUES);
+  const frame = {
+    type: 'error' as const,
+    code: 'INVALID_MESSAGE' as const,
+    message: 'Invalid message format',
+    // Echoed so the agent can attribute the rejection to the command it sent.
+    // Without these the agent sees an unattributable error frame and has
+    // nothing to log against the job.
+    messageType,
+    ...(commandId !== undefined ? { commandId } : {}),
+    details,
+  };
+
+  if (messageType !== 'command_result') {
+    return {
+      level: 'warn',
+      log: `Invalid message from agent ${agentId} (type=${messageType}, frameBytes=${frameBytes}):`,
+      frame,
+    };
+  }
+
+  let resultBytes: string;
+  if (frameBytes >= MAX_PRECISE_RESULT_MEASURE_BYTES) {
+    resultBytes = `unmeasured(frame ${frameBytes}B exceeds the ${MAX_PRECISE_RESULT_MEASURE_BYTES}B measure threshold)`;
+  } else {
+    const measured = commandResultResultByteLength(raw.result);
+    resultBytes = measured === null ? 'unencodable' : String(measured);
+  }
+
+  return {
+    level: 'error',
+    log:
+      `[AgentWs] REJECTED command_result from agent ${agentId} — the job will have no ` +
+      `terminal status and will be failed by a reaper. commandId=${commandId ?? 'unknown'} ` +
+      `frameBytes=${frameBytes} resultBytes=${resultBytes} ` +
+      `resultLimitBytes=${MAX_COMMAND_RESULT_BYTES}:`,
+    frame,
+  };
+}
+
 function commandResultToStdout(result: AgentCommandResult): string | undefined {
   return result.stdout ??
     (result.result !== undefined ? JSON.stringify(result.result) : undefined);
@@ -2289,47 +2403,18 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         const parsed = agentMessageSchema.safeParse(message);
 
         if (!parsed.success) {
-          // #3001: this branch used to be a bare console.warn carrying only the
-          // raw Zod issues. When it rejected a `command_result` — the terminal
-          // status of a job the server is actively waiting on — the operator
-          // saw no commandId, no size, no message type, and none of the
-          // downstream backup logs (those live in processCommandResult, past
-          // this return). The result read as having vanished in transit, and a
-          // succeeded backup was reaped as stalled 15 minutes later.
-          //
-          // A rejected command_result is a LOST TERMINAL STATUS, so it logs at
-          // error with everything needed to identify the job and the offending
-          // field; anything else stays a warning.
-          const rejectedType = typeof message?.type === 'string' ? message.type : 'unknown';
-          const rejectedCommandId = typeof message?.commandId === 'string'
-            ? message.commandId
-            : undefined;
-          if (rejectedType === 'command_result') {
-            const resultBytes = commandResultResultByteLength(message?.result);
-            console.error(
-              `[AgentWs] REJECTED command_result from agent ${agentId} — the job will have no ` +
-              `terminal status and will be failed by a reaper. commandId=${rejectedCommandId ?? 'unknown'} ` +
-              `frameBytes=${data.length} resultBytes=${resultBytes ?? 'unencodable'} ` +
-              `resultLimitBytes=${MAX_COMMAND_RESULT_BYTES}:`,
-              parsed.error.issues
-            );
+          const rejection = buildAgentMessageRejection({
+            agentId,
+            message,
+            frameBytes: Buffer.byteLength(data, 'utf8'),
+            issues: parsed.error.issues,
+          });
+          if (rejection.level === 'error') {
+            console.error(rejection.log, rejection.frame.details);
           } else {
-            console.warn(
-              `Invalid message from agent ${agentId} (type=${rejectedType}, frameBytes=${data.length}):`,
-              parsed.error.issues
-            );
+            console.warn(rejection.log, rejection.frame.details);
           }
-          ws.send(JSON.stringify({
-            type: 'error',
-            code: 'INVALID_MESSAGE',
-            message: 'Invalid message format',
-            // Echoed so the agent can attribute the rejection to the command it
-            // sent. Without it the agent sees an unattributable error frame and
-            // has nothing to log against the job.
-            messageType: rejectedType,
-            commandId: rejectedCommandId,
-            details: parsed.error.issues
-          }));
+          ws.send(JSON.stringify(rejection.frame));
           return;
         }
 

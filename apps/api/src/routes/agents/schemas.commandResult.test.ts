@@ -41,9 +41,12 @@ describe('command_result `result` size cap (#3001)', () => {
 
   it('matches the Go mirror in agent/internal/wire/limits.go', () => {
     const source = readFileSync(GO_LIMITS_PATH, 'utf8');
-    const declaration = source.match(/MaxCommandResultBytes\s*=\s*([0-9*\s]+)/)?.[1];
+    // Anchored on `const` so a doc comment containing
+    // "MaxCommandResultBytes = <number>" cannot retarget the pin onto prose,
+    // letting the real constant drift while this test passes against a sentence.
+    const declaration = source.match(/const\s+MaxCommandResultBytes\s*=\s*([0-9*\s]+)/)?.[1];
     if (declaration === undefined) {
-      throw new Error(`no MaxCommandResultBytes declaration found in ${GO_LIMITS_PATH}`);
+      throw new Error(`no \`const MaxCommandResultBytes = <number>\` declaration found in ${GO_LIMITS_PATH}`);
     }
 
     // The Go side writes it as an arithmetic literal (1024 * 1024).

@@ -482,7 +482,7 @@ func TestFitBackupResultRejectsUnsummarisableBody(t *testing.T) {
 	if fitted.Stdout != "" {
 		t.Errorf("expected an empty stdout, got %.80q", fitted.Stdout)
 	}
-	if !strings.Contains(fitted.Stderr, "IPC limit") {
+	if !strings.Contains(fitted.Stderr, limitExceededPhrase) {
 		t.Errorf("expected the stderr to explain the oversize, got %.120q", fitted.Stderr)
 	}
 }
@@ -666,7 +666,7 @@ func TestFitBackupResultLastResortRecoversStatus(t *testing.T) {
 	if out.ID != "job-9" {
 		t.Errorf("expected tier 4 to recover the job id, got %q", out.ID)
 	}
-	if !strings.Contains(out.Warning, "IPC limit") {
+	if !strings.Contains(out.Warning, limitExceededPhrase) {
 		t.Errorf("expected tier 4 to explain itself in the warning, got %q", out.Warning)
 	}
 }

@@ -747,18 +747,33 @@ func (c *Client) processCommand(cmd Command) {
 // re-persists it on failure.
 func (c *Client) SendResult(result CommandResult) error {
 	data, err := json.Marshal(result)
-	if err != nil {
-		return fmt.Errorf("failed to marshal result: %w", err)
-	}
-	if len(data) > wire.CommandResultBudget {
+	switch {
+	case err != nil:
+		// The body is the ONLY field that can fail to encode — every other
+		// field on CommandResult is a string or an int — so an encoding error
+		// means the body is at fault and dropping it is both sufficient and
+		// correct. Returning here instead would lose the terminal status to an
+		// unencodable detail field (a NaN in a metrics map is enough), which is
+		// precisely the trade #3001 exists to prevent: detail is expendable,
+		// the terminal status is not.
+		bounded, dropped := boundResultFieldForServer(result)
+		if !dropped {
+			// No body to drop, so the failure is something this cannot repair.
+			return fmt.Errorf("failed to marshal result: %w", err)
+		}
+		result = bounded
+		if data, err = json.Marshal(result); err != nil {
+			return fmt.Errorf("failed to marshal result after dropping its body: %w", err)
+		}
+
+	case len(data) > wire.CommandResultBudget:
 		// Only pay for the precise per-field measurement once the whole frame
 		// is over the budget — the `result` field's encoded bytes are a subset
 		// of the frame's, so a frame under the budget cannot contain a field
 		// over it.
-		if bounded, ok := boundResultFieldForServer(result); ok {
+		if bounded, dropped := boundResultFieldForServer(result); dropped {
 			result = bounded
-			data, err = json.Marshal(result)
-			if err != nil {
+			if data, err = json.Marshal(result); err != nil {
 				return fmt.Errorf("failed to marshal bounded result: %w", err)
 			}
 		}

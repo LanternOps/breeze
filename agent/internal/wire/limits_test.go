@@ -38,10 +38,14 @@ func TestMaxCommandResultBytesMatchesServerSchema(t *testing.T) {
 		t.Fatalf("cannot read the server schema at %s to verify the mirrored cap: %v", path, err)
 	}
 
-	re := regexp.MustCompile(`MAX_COMMAND_RESULT_BYTES\s*=\s*([0-9_]+)`)
+	// Anchored on the declaration keyword so a doc comment that happens to
+	// contain "MAX_COMMAND_RESULT_BYTES = <number>" cannot retarget the pin onto
+	// prose — which would let the real constant drift while this test kept
+	// passing against a sentence.
+	re := regexp.MustCompile(`export\s+const\s+MAX_COMMAND_RESULT_BYTES\s*=\s*([0-9_]+)`)
 	m := re.FindSubmatch(data)
 	if m == nil {
-		t.Fatalf("no `MAX_COMMAND_RESULT_BYTES = <number>` declaration found in %s — if it was "+
+		t.Fatalf("no `export const MAX_COMMAND_RESULT_BYTES = <number>` declaration found in %s — if it was "+
 			"renamed or moved, update serverSchemaPath and this pattern", path)
 	}
 	serverValue, err := strconv.Atoi(strings.ReplaceAll(string(m[1]), "_", ""))
