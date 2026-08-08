@@ -17,6 +17,7 @@ import { toCsv } from "../../lib/csvExport";
 import { downloadBlob } from "../../lib/downloadBlob";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import { useHashState } from "../../lib/useHashState";
 import {
   CATEGORY_LABELS,
   STATUS_BADGE,
@@ -115,17 +116,6 @@ function formatDateTime(value: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
-}
-
-function categoryFromHash(): CategoryKey {
-  if (typeof window !== "undefined") {
-    const raw = window.location.hash.replace(/^#/, "");
-    // isCategoryKey does an own-property check — a plain `raw in ...` would
-    // also match inherited keys like '#toString' and wedge the page on an
-    // invalid category.
-    if (isCategoryKey(raw)) return raw;
-  }
-  return "rmm";
 }
 
 // ── Drill-down device list ───────────────────────────────────────────
@@ -259,7 +249,13 @@ export default function FleetPostureReport() {
   const organizations = useOrgStore((s) => s.organizations);
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
 
-  const [category, setCategory] = useState<CategoryKey>(() => categoryFromHash());
+  // SSR-safe hash-derived tab state (#2421): starts from the default and
+  // adopts the hash pre-paint. isCategoryKey does an own-property check — a
+  // plain `raw in CATEGORY_LABELS` would also match inherited keys like
+  // '#toString' and wedge the page on an invalid category.
+  const [category, setCategory] = useHashState<CategoryKey>("rmm", (raw) =>
+    isCategoryKey(raw) ? raw : undefined
+  );
   const [stalenessDays, setStalenessDays] = useState(7);
   const [summary, setSummary] = useState<Summary>();
   const [remoteAccess, setRemoteAccess] = useState<Summary>();

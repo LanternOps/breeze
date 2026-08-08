@@ -39,79 +39,103 @@ function posture(collectedAt: string, categories: Record<string, unknown[]>) {
 }
 
 /** Two partners, two orgs; org 1 carries the mixed fixture, org 2 (a different
- *  partner) exists to prove scoping. Returns the org ids. */
+ *  partner) exists to prove scoping. Returns the org ids.
+ *
+ *  Seeded as ONE system-context transaction PER PARTNER SUBTREE.
+ *  withSystemDbAccessContext wraps its callback in a single transaction, and
+ *  the partner-export lock hierarchy (2026-07-18/21 migrations) forbids
+ *  acquiring a NEW partner lock after an organization lock inside one
+ *  transaction — so partner2's org cannot be inserted in the same tx that
+ *  already touched partner1's org ("partner export lock hierarchy violation").
+ *  Same shape as contractRenewal.integration.test.ts (one subtree per tx). */
 async function seedMixedFixture(): Promise<{ org1: string; org2: string }> {
   const sfx = Math.random().toString(36).slice(2, 8);
 
-  return withSystemDbAccessContext(async () => {
+  const subtree1 = await withSystemDbAccessContext(async () => {
     const [p1] = await db.insert(partners)
       .values({ name: `PostureP1 ${sfx}`, slug: `posture-p1-${sfx}`, type: 'msp', plan: 'pro', status: 'active' })
-      .returning({ id: partners.id });
-    const [p2] = await db.insert(partners)
-      .values({ name: `PostureP2 ${sfx}`, slug: `posture-p2-${sfx}`, type: 'msp', plan: 'pro', status: 'active' })
       .returning({ id: partners.id });
     const [o1] = await db.insert(organizations)
       .values({ partnerId: p1!.id, name: 'Posture Org 1', slug: `posture-o1-${sfx}` })
       .returning({ id: organizations.id });
-    const [o2] = await db.insert(organizations)
-      .values({ partnerId: p2!.id, name: 'Posture Org 2', slug: `posture-o2-${sfx}` })
-      .returning({ id: organizations.id });
     const [s1] = await db.insert(sites)
       .values({ orgId: o1!.id, name: 'HQ' })
       .returning({ id: sites.id });
+    return { orgId: o1!.id, siteId: s1!.id };
+  });
+
+  const subtree2 = await withSystemDbAccessContext(async () => {
+    const [p2] = await db.insert(partners)
+      .values({ name: `PostureP2 ${sfx}`, slug: `posture-p2-${sfx}`, type: 'msp', plan: 'pro', status: 'active' })
+      .returning({ id: partners.id });
+    const [o2] = await db.insert(organizations)
+      .values({ partnerId: p2!.id, name: 'Posture Org 2', slug: `posture-o2-${sfx}` })
+      .returning({ id: organizations.id });
     const [s2] = await db.insert(sites)
       .values({ orgId: o2!.id, name: 'HQ' })
       .returning({ id: sites.id });
+    return { orgId: o2!.id, siteId: s2!.id };
+  });
 
-    const base = (host: string, orgId: string, siteId: string) => ({
-      orgId,
-      siteId,
-      agentId: `posture-${sfx}-${host}`,
-      hostname: host,
-      osType: 'windows' as const,
-      osVersion: '10.0',
-      architecture: 'x64',
-      agentVersion: '1.0.0',
-    });
+  const base = (host: string, orgId: string, siteId: string) => ({
+    orgId,
+    siteId,
+    agentId: `posture-${sfx}-${host}`,
+    hostname: host,
+    osType: 'windows' as const,
+    osVersion: '10.0',
+    architecture: 'x64',
+    agentVersion: '1.0.0',
+  });
 
-    await db.insert(devices).values([
+  // Org 1's devices — one transaction, one org, so any export-state trigger
+  // stays within partner1's lock subtree.
+  await withSystemDbAccessContext(() =>
+    db.insert(devices).values([
       // A — NEVER SCANNED: management_posture IS NULL. Must land in
       // neverScanned, never in scannedNoneDetected ("clean").
-      { ...base('pst-a-never', o1!.id, s1!.id) },
+      { ...base('pst-a-never', subtree1.orgId, subtree1.siteId) },
       // B — STALE scan (40d old) that still carries a detection.
-      { ...base('pst-b-stale', o1!.id, s1!.id),
+      { ...base('pst-b-stale', subtree1.orgId, subtree1.siteId),
         managementPosture: posture(daysAgo(40), { rmm: [{ name: 'Datto RMM', status: 'active' }] }) },
       // C — fresh scan, rmm key present but EMPTY ARRAY => scanned, none
       // detected. (Also carries a remoteAccess detection to prove category
       // isolation.)
-      { ...base('pst-c-empty', o1!.id, s1!.id),
+      { ...base('pst-c-empty', subtree1.orgId, subtree1.siteId),
         managementPosture: posture(daysAgo(1), { rmm: [], remoteAccess: [{ name: 'ScreenConnect', status: 'active' }] }) },
       // D — fresh scan, rmm key ABSENT entirely => scanned, none detected.
-      { ...base('pst-d-absent', o1!.id, s1!.id),
+      { ...base('pst-d-absent', subtree1.orgId, subtree1.siteId),
         managementPosture: posture(daysAgo(1), {}) },
       // E — fresh scan with detections: active Datto + unknown NinjaOne.
-      { ...base('pst-e-detected', o1!.id, s1!.id),
+      { ...base('pst-e-detected', subtree1.orgId, subtree1.siteId),
         managementPosture: posture(daysAgo(1), { rmm: [
           { name: 'Datto RMM', status: 'active' },
           { name: 'NinjaOne', status: 'unknown' },
         ] }) },
       // F — fresh scan listing the SAME product/status twice (two services).
       // Must count the device ONCE.
-      { ...base('pst-f-dupe', o1!.id, s1!.id),
+      { ...base('pst-f-dupe', subtree1.orgId, subtree1.siteId),
         managementPosture: posture(daysAgo(1), { rmm: [
           { name: 'NinjaOne', status: 'installed', serviceName: 'svc-1' },
           { name: 'NinjaOne', status: 'installed', serviceName: 'svc-2' },
         ] }) },
       // H — decommissioned device with a detection: excluded from the fleet.
-      { ...base('pst-h-decom', o1!.id, s1!.id), status: 'decommissioned' as const,
+      { ...base('pst-h-decom', subtree1.orgId, subtree1.siteId), status: 'decommissioned' as const,
         managementPosture: posture(daysAgo(1), { rmm: [{ name: 'Datto RMM', status: 'active' }] }) },
-      // Org 2 (different partner) — must never leak into an org-1 scope.
-      { ...base('pst-g-other-org', o2!.id, s2!.id),
-        managementPosture: posture(daysAgo(1), { rmm: [{ name: 'Atera', status: 'active' }] }) },
-    ]);
+    ])
+  );
 
-    return { org1: o1!.id, org2: o2!.id };
-  });
+  // Org 2 (different partner) — separate transaction for the same lock-
+  // hierarchy reason as the subtree seeding above. Must never leak into an
+  // org-1 scope.
+  await withSystemDbAccessContext(() =>
+    db.insert(devices).values([
+      { ...base('pst-g-other-org', subtree2.orgId, subtree2.siteId),
+        managementPosture: posture(daysAgo(1), { rmm: [{ name: 'Atera', status: 'active' }] }) },
+    ])
+  );
+
+  return { org1: subtree1.orgId, org2: subtree2.orgId };
 }
 
 const opts = (org1: string) => ({
