@@ -8,7 +8,7 @@ import { getRedis, rateLimiter } from '../services';
 import { type AgentTokenSuspendReason } from '../services/agentTokenSuspension';
 import { enforceAgentCertificateBinding, readAgentCertificateAssertion } from '../services/agentCertificateBinding';
 import { createAuditLogAsync } from '../services/auditService';
-import { getTrustedClientIp } from '../services/clientIp';
+import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
 import { getAgentTenantState } from '../services/tenantStatus';
 import {
   AGENT_ORG_RATE_WINDOW_SECONDS,
@@ -432,7 +432,11 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // attacker doesn't also charge the per-agent bucket on rejected requests.
   const sourceIp = getTrustedClientIp(c);
   if (sourceIp && sourceIp !== 'unknown') {
-    const perIpKey = `agent_rate_ip:${device.id}:${sourceIp}`;
+    // Bucket identity, not the address: rateLimitIpKey folds IPv6 to its /64
+    // so a stolen token can't mint a fresh per-IP bucket per request by walking
+    // the low 64 bits of a subnet it already owns. `sourceIp` below stays raw —
+    // the IP-change audit signal needs the real address.
+    const perIpKey = `agent_rate_ip:${device.id}:${rateLimitIpKey(sourceIp)}`;
     const perIpCheck = await rateLimiter(
       redis,
       perIpKey,

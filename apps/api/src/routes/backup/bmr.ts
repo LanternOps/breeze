@@ -49,7 +49,7 @@ import {
   toRecoveryMediaSigningDetails,
 } from '../../services/recoveryMediaService';
 import { getCurrentRecoverySigningKey, getRecoverySigningKey, getRecoverySigningKeys } from '../../services/recoverySigning';
-import { getTrustedClientIp } from '../../services/clientIp';
+import { getTrustedClientIp, rateLimitIpKey } from '../../services/clientIp';
 import { rateLimiter } from '../../services/rate-limit';
 import { getRedis } from '../../services/redis';
 import { resolveScopedOrgId } from './helpers';
@@ -334,7 +334,7 @@ async function enforcePublicRateLimit(
   limit: number
 ) {
   const ip = getTrustedClientIp(c);
-  const rateCheck = await rateLimiter(getRedis(), `bmr:${action}:${ip}`, limit, 60);
+  const rateCheck = await rateLimiter(getRedis(), `bmr:${action}:${rateLimitIpKey(ip)}`, limit, 60);
   if (rateCheck.allowed) return null;
 
   const retryAfter = Math.max(1, Math.ceil((rateCheck.resetAt.getTime() - Date.now()) / 1000));

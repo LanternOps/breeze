@@ -24,6 +24,7 @@ import { hashEnrollmentKey, hashEnrollmentKeyCandidates } from "../services/enro
 import {
   getTrustedClientIp,
   getTrustedClientIpOrUndefined,
+  rateLimitIpKey,
 } from "../services/clientIp";
 import {
   buildMacosInstallerZip,
@@ -2291,7 +2292,7 @@ async function serveInstaller(
     }
     const rateResult = await rateLimiter(
       redis,
-      `public-installer:${ip}`,
+      `public-installer:${rateLimitIpKey(ip)}`,
       10,
       60,
     );

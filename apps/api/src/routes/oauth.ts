@@ -16,7 +16,7 @@ import { ERROR_IDS, logOauthDebug, logOauthError } from '../oauth/log';
 // rate-limit middleware itself only ever runs at request time.
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
-import { getTrustedClientIp } from '../services/clientIp';
+import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
 import { validateRedirectUris } from '../oauth/redirectUriPolicy';
 
 export const oauthRoutes = new Hono<{ Bindings: HttpBindings }>();
@@ -57,7 +57,9 @@ if (MCP_OAUTH_ENABLED) {
   }
 
   oauthRoutes.use('*', async (c, next) => {
-    const ip = getTrustedClientIp(c, c.env?.incoming?.socket?.remoteAddress ?? 'unknown');
+    // Rate-limit bucket identity only (IPv6 folded to its /64) — never used for
+    // audit attribution here, so folding at the source is safe.
+    const ip = rateLimitIpKey(getTrustedClientIp(c, c.env?.incoming?.socket?.remoteAddress ?? 'unknown'));
     const sub = c.req.path.replace(/^\/oauth/, '');
     const isRegistrationPath = sub === '/reg' || sub.startsWith('/reg/');
     const hasRegistrationBody =

@@ -44,7 +44,11 @@ vi.mock('../services/rate-limit', () => ({
 vi.mock('../services/redis', () => ({
   getRedis: vi.fn(() => ({}))
 }));
-vi.mock('../services/clientIp', () => ({
+// Partial mock: only the IP SOURCE is stubbed. rateLimitIpKey (the IPv6 /64
+// bucket folding used to build limiter keys) is kept REAL so the test exercises
+// the same key the production path produces.
+vi.mock('../services/clientIp', async (importOriginal) => ({
+  rateLimitIpKey: (await importOriginal<typeof import('../services/clientIp')>()).rateLimitIpKey,
   getTrustedClientIp: vi.fn(() => '1.2.3.4')
 }));
 

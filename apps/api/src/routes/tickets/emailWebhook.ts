@@ -24,7 +24,7 @@ import { Hono } from 'hono';
 import type { HttpBindings } from '@hono/node-server';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
-import { getTrustedClientIp } from '../../services/clientIp';
+import { getTrustedClientIp, rateLimitIpKey } from '../../services/clientIp';
 import { MailgunInboundProvider } from '../../services/inboundEmail/mailgun';
 import { enqueueInboundEmail } from '../../services/inboundEmailQueue';
 
@@ -40,7 +40,7 @@ const RATE_WINDOW_SECONDS = 60;
 emailWebhookRoutes.post('/email-inbound', async (c) => {
   // 1. Rate limit (keyed by source IP so a single abusive IP can't flood the queue)
   const ip = getTrustedClientIp(c, 'unknown');
-  const rate = await rateLimiter(getRedis(), `inbound-email:${ip}`, RATE_LIMIT, RATE_WINDOW_SECONDS);
+  const rate = await rateLimiter(getRedis(), `inbound-email:${rateLimitIpKey(ip)}`, RATE_LIMIT, RATE_WINDOW_SECONDS);
   if (!rate.allowed) {
     return c.json({ error: 'Too Many Requests' }, 429);
   }

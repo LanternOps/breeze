@@ -38,7 +38,7 @@ import {
 import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiToFamily, getUserEpochs, getRefreshFamily, rateLimiter, getRedis } from '../services';
 import { writeRouteAudit } from '../services/auditEvents';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
-import { getTrustedClientIp } from '../services/clientIp';
+import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { captureException } from '../services/sentry';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
@@ -1829,7 +1829,7 @@ ssoRoutes.get('/login/partner/:partnerId', zValidator('param', partnerIdParamSch
   const redis = getRedis();
   const ipRateCheck = await rateLimiter(
     redis,
-    `sso:login:ip:${ip}`,
+    `sso:login:ip:${rateLimitIpKey(ip)}`,
     SSO_LOGIN_IP_RATE_LIMIT.limit,
     SSO_LOGIN_IP_RATE_LIMIT.windowSeconds
   );
@@ -1841,7 +1841,7 @@ ssoRoutes.get('/login/partner/:partnerId', zValidator('param', partnerIdParamSch
   }
   const rateCheck = await rateLimiter(
     redis,
-    `sso:login:partner:${ip}:${partnerId}`,
+    `sso:login:partner:${rateLimitIpKey(ip)}:${partnerId}`,
     PARTNER_SSO_LOGIN_RATE_LIMIT.limit,
     PARTNER_SSO_LOGIN_RATE_LIMIT.windowSeconds
   );
@@ -1932,7 +1932,7 @@ ssoRoutes.get('/login/:orgId', zValidator('param', orgIdParamSchema), async (c) 
   const redis = getRedis();
   const ipRateCheck = await rateLimiter(
     redis,
-    `sso:login:ip:${ip}`,
+    `sso:login:ip:${rateLimitIpKey(ip)}`,
     SSO_LOGIN_IP_RATE_LIMIT.limit,
     SSO_LOGIN_IP_RATE_LIMIT.windowSeconds
   );
@@ -1944,7 +1944,7 @@ ssoRoutes.get('/login/:orgId', zValidator('param', orgIdParamSchema), async (c) 
   }
   const rateCheck = await rateLimiter(
     redis,
-    `sso:login:org:${ip}:${orgId}`,
+    `sso:login:org:${rateLimitIpKey(ip)}:${orgId}`,
     ORG_SSO_LOGIN_RATE_LIMIT.limit,
     ORG_SSO_LOGIN_RATE_LIMIT.windowSeconds
   );
