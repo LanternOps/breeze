@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { Globe, ExternalLink } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { DiscoveredAsset, OpenPortEntry, DiscoveredAssetType } from './DiscoveredAssetList';
@@ -8,7 +8,6 @@ import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { extractApiError } from '../../lib/apiError';
 import { formatDateTime } from '@/lib/dateTimeFormat';
-import { buildRemoteProxyPageUrl } from '@/lib/remoteTunnelUrls';
 import { isManualLink, type DiscoveredAssetLinkSource } from './networkTypes';
 import { formatNumber } from '@/lib/i18n/format';
 
@@ -72,18 +71,6 @@ export default function AssetDetailModal({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string>();
   const [saveSuccess, setSaveSuccess] = useState(false);
-  const [proxyEnabled, setProxyEnabled] = useState(false);
-  const [enablingProxy, setEnablingProxy] = useState(false);
-  const [proxyError, setProxyError] = useState<string>();
-  const [connectingProxy, setConnectingProxy] = useState(false);
-  const [selectedProxyPort, setSelectedProxyPort] = useState<number>(0);
-  const [selectedScheme, setSelectedScheme] = useState<'http' | 'https'>('http');
-  const [allowSelfSigned, setAllowSelfSigned] = useState(false);
-  // The bridge agent = which managed device's agent dials the target. This is
-  // independent of the identity link below — the right bridge is an online agent
-  // that can reach this device on the LAN, which may differ from the device you
-  // link for asset-tracking.
-  const [selectedBridgeDeviceId, setSelectedBridgeDeviceId] = useState('');
 
   useEffect(() => {
     if (asset?.linkedDeviceId) {
@@ -100,26 +87,7 @@ export default function AssetDetailModal({
     setEditType(asset?.type ?? 'unknown');
     setSaveError(undefined);
     setSaveSuccess(false);
-    setProxyEnabled((asset as any)?.proxyEnabled ?? false);
-    setProxyError(undefined);
-    const initialPort = asset?.openPorts?.[0]?.port ?? 80;
-    setSelectedProxyPort(initialPort);
-    const initialScheme = initialPort === 443 ? 'https' : 'http';
-    setSelectedScheme(initialScheme);
-    setAllowSelfSigned(false);
   }, [asset]);
-
-  // Default the proxy bridge agent: prefer the linked device when it's online,
-  // otherwise the first online device. Kept separate from the reset effect above
-  // so a device-list refresh doesn't clobber in-progress edits.
-  useEffect(() => {
-    const onlineIds = new Set((devices ?? []).filter(d => d.online).map(d => d.id));
-    if (asset?.linkedDeviceId && onlineIds.has(asset.linkedDeviceId)) {
-      setSelectedBridgeDeviceId(asset.linkedDeviceId);
-      return;
-    }
-    setSelectedBridgeDeviceId((devices ?? []).find(d => d.online)?.id ?? '');
-  }, [asset, devices]);
 
   const handleLink = async () => {
     if (!asset) return;
@@ -270,70 +238,6 @@ export default function AssetDetailModal({
     }
   };
 
-  const handleEnableProxy = useCallback(async () => {
-    if (!asset) return;
-    try {
-      setEnablingProxy(true);
-      setProxyError(undefined);
-      const ports = (asset.openPorts ?? []).map(p => p.port);
-      const portRange = ports.length > 0
-        ? (ports.length === 1 ? `${ports[0]}` : `${Math.min(...ports)}-${Math.max(...ports)}`)
-        : '80-443';
-      const response = await fetchWithAuth('/tunnels/allowlist', {
-        method: 'POST',
-        body: JSON.stringify({
-          direction: 'destination',
-          pattern: `${asset.ip}/32:${portRange}`,
-          description: `Auto-created for ${asset.label || asset.hostname || asset.ip}`,
-          source: 'discovery',
-          discoveredAssetId: asset.id,
-        }),
-      });
-      if (!response.ok) {
-        const detail = await response.json().catch(() => null);
-        throw new Error(detail?.error || t('assetDetailModal.errors.createAllowlist'));
-      }
-      setProxyEnabled(true);
-      onUpdated?.(asset.id);
-    } catch (err) {
-      setProxyError(err instanceof Error ? err.message : t('assetDetailModal.errors.generic'));
-    } finally {
-      setEnablingProxy(false);
-    }
-  }, [asset, onUpdated]);
-
-  const handleConnectProxy = useCallback(async () => {
-    if (!asset || !selectedBridgeDeviceId) return;
-    try {
-      setConnectingProxy(true);
-      setProxyError(undefined);
-      const port = selectedProxyPort || 80;
-      const response = await fetchWithAuth('/tunnels', {
-        method: 'POST',
-        body: JSON.stringify({
-          deviceId: selectedBridgeDeviceId,
-          type: 'proxy',
-          targetHost: asset.ip,
-          targetPort: port,
-          scheme: selectedScheme,
-          skipTlsVerify: selectedScheme === 'https' ? allowSelfSigned : false,
-        }),
-      });
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({ error: t('assetDetailModal.errors.createTunnel') }));
-        throw new Error(err.error || t('assetDetailModal.errors.createProxyTunnel'));
-      }
-      const tunnel = await response.json();
-
-      // Open proxy info in a new tab
-      window.open(buildRemoteProxyPageUrl(tunnel.id, `${asset.ip}:${port}`), '_blank');
-    } catch (err) {
-      setProxyError(err instanceof Error ? err.message : t('assetDetailModal.errors.generic'));
-    } finally {
-      setConnectingProxy(false);
-    }
-  }, [asset, selectedProxyPort, selectedScheme, allowSelfSigned, selectedBridgeDeviceId]);
-
   // No asset record yet: never render nothing while open, or a node click looks
   // like it did nothing. Show a loading state, then a graceful not-found state
   // with a retry path (#1728).
@@ -373,8 +277,6 @@ export default function AssetDetailModal({
   const openPorts = asset.openPorts ?? [];
   const osFingerprint = asset.osFingerprint ?? '—';
   const snmpData = asset.snmpData ?? {};
-  // Only online agents can bridge a proxy, so the bridge picker hides offline ones.
-  const onlineDevices = devices.filter(d => d.online);
 
   return (
     <Dialog open={open} onClose={onClose} title={asset.label || asset.hostname || asset.ip} maxWidth="5xl" alignTop className="flex flex-col max-h-[calc(100vh-4rem)]">
@@ -609,122 +511,14 @@ export default function AssetDetailModal({
                 <Globe className="h-4 w-4" />
                 {t('assetDetailModal.proxy.title')}
               </h3>
-              {!proxyEnabled ? (
-                <div className="mt-3">
-                  <p className="text-xs text-muted-foreground">
-                    {t('assetDetailModal.proxy.description')}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={handleEnableProxy}
-                    disabled={enablingProxy}
-                    className="mt-2 h-8 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-70"
-                  >
-                    {enablingProxy ? t('assetDetailModal.actions.enabling') : t('assetDetailModal.proxy.enable')}
-                  </button>
-                </div>
-              ) : (
-                <div className="mt-3 space-y-3">
-                  <div className="flex items-center gap-1.5">
-                    <span className="inline-flex items-center rounded-full bg-green-50 px-2 py-0.5 text-xs font-medium text-green-700 dark:bg-green-950 dark:text-green-400">
-                      {t('assetDetailModal.proxy.enabled')}
-                    </span>
-                  </div>
-                  {onlineDevices.length > 0 ? (
-                    <>
-                      <div>
-                        <label className="text-xs font-medium text-muted-foreground">
-                          {t('assetDetailModal.proxy.throughAgent')}
-                        </label>
-                        <p className="mt-0.5 chart-legend-xs text-muted-foreground">
-                          {t('assetDetailModal.proxy.throughAgentHelp', { ip: asset.ip })}
-                        </p>
-                        <select
-                          value={selectedBridgeDeviceId}
-                          onChange={e => setSelectedBridgeDeviceId(e.target.value)}
-                          data-testid="proxy-bridge-select"
-                          className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
-                        >
-                          {onlineDevices.map(d => (
-                            <option key={d.id} value={d.id}>
-                              {d.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <select
-                          value={selectedProxyPort}
-                          onChange={e => {
-                            const port = Number(e.target.value);
-                            setSelectedProxyPort(port);
-                            const newScheme = port === 443 ? 'https' : 'http';
-                            setSelectedScheme(newScheme);
-                            if (newScheme !== 'https') setAllowSelfSigned(false);
-                          }}
-                          className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
-                        >
-                          {openPorts.length > 0 ? (
-                            openPorts.map(p => (
-                              <option key={p.port} value={p.port}>
-                                {t('assetDetailModal.proxy.port', { port: p.port })}{p.service ? ` (${p.service})` : ''}
-                              </option>
-                            ))
-                          ) : (
-                            <>
-                              <option value={80}>{t('assetDetailModal.proxy.portWithService', { port: 80, service: 'HTTP' })}</option>
-                              <option value={443}>{t('assetDetailModal.proxy.portWithService', { port: 443, service: 'HTTPS' })}</option>
-                            </>
-                          )}
-                        </select>
-                        <select
-                          value={selectedScheme}
-                          onChange={e => {
-                            const scheme = e.target.value as 'http' | 'https';
-                            setSelectedScheme(scheme);
-                            if (scheme !== 'https') setAllowSelfSigned(false);
-                          }}
-                          data-testid="proxy-scheme-select"
-                          className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
-                        >
-                          <option value="http">HTTP</option>
-                          <option value="https">HTTPS</option>
-                        </select>
-                        <button
-                          type="button"
-                          onClick={handleConnectProxy}
-                          disabled={connectingProxy || !selectedBridgeDeviceId}
-                          data-testid="proxy-connect-btn"
-                          className="inline-flex h-8 items-center gap-1.5 rounded-md bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-70"
-                        >
-                          <ExternalLink className="h-3 w-3" />
-                          {connectingProxy ? t('assetDetailModal.actions.connecting') : t('assetDetailModal.actions.connect')}
-                        </button>
-                      </div>
-                      {selectedScheme === 'https' && (
-                        <label className="flex items-center gap-2 chart-legend-xs text-muted-foreground">
-                          <input
-                            type="checkbox"
-                            checked={allowSelfSigned}
-                            onChange={e => setAllowSelfSigned(e.target.checked)}
-                            data-testid="proxy-allow-self-signed"
-                          />
-                          {t('assetDetailModal.proxy.allowSelfSigned')}
-                        </label>
-                      )}
-                    </>
-                  ) : (
-                    <p className="text-xs text-amber-600 dark:text-amber-400">
-                      {t('assetDetailModal.proxy.noOnlineAgent', { ip: asset.ip })}
-                    </p>
-                  )}
-                </div>
-              )}
-              {proxyError && (
-                <div className="mt-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                  {proxyError}
-                </div>
-              )}
+              <a
+                href={`/devices/network/${asset.id}`}
+                data-testid="asset-modal-proxy-link"
+                className="mt-2 inline-flex items-center gap-1.5 text-sm text-primary hover:underline"
+              >
+                {t('assetDetailModal.proxy.manageOnDevicePage')}
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
             </div>
 
             <div className="flex items-center justify-between rounded-md border bg-muted/30 px-4 py-3">

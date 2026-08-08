@@ -62,15 +62,7 @@
       "tags": "p.ej. crítico, piso 2, redes"
     },
     "proxy": {
-      "allowSelfSigned": "Permitir certificado autofirmado (común para impresoras, iLO/IPMI, conmutadores)",
-      "description": "Acceda a la interfaz web de este dispositivo en su navegador, mediante un túnel a través de un agente en línea en su red. Habilitar la lista blanca de IP de este dispositivo para que un agente pueda utilizarlo como proxy.",
-      "enable": "Habilitar acceso proxy",
-      "enabled": "Proxy habilitado",
-      "noOnlineAgent": "No hay ningún agente en línea disponible para actuar como proxy en este dispositivo. Un agente debe estar en línea y en la misma red que {{ip}} para conectar la conexión.",
-      "port": "Puerto {{port}}",
-      "portWithService": "Puerto {{port}} ({{service}})",
-      "throughAgent": "Proxy a través de agente",
-      "throughAgentHelp": "Elija un agente en línea que pueda comunicarse con {{ip}} en su red (generalmente el que lo descubrió). Esto es independiente del enlace de identidad anterior.",
+      "manageOnDevicePage": "Administrar el acceso proxy en la página del dispositivo de red",
       "title": "Acceso proxy"
     },
     "snmpDataTitle": "SNMP Datos",

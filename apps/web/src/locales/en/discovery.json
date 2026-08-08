@@ -62,15 +62,7 @@
       "tags": "e.g. critical, floor-2, networking"
     },
     "proxy": {
-      "allowSelfSigned": "Allow self-signed certificate (common for printers, iLO/IPMI, switches)",
-      "description": "Reach this device's web interface in your browser, tunnelled through an online agent on its network. Enabling whitelists this device's IP so an agent is permitted to proxy to it.",
-      "enable": "Enable Proxy Access",
-      "enabled": "Proxy enabled",
-      "noOnlineAgent": "No online agent available to proxy to this device. An agent must be online and on the same network as {{ip}} to bridge the connection.",
-      "port": "Port {{port}}",
-      "portWithService": "Port {{port}} ({{service}})",
-      "throughAgent": "Proxy through agent",
-      "throughAgentHelp": "Pick an online agent that can reach {{ip}} on its network (usually the one that discovered it). This is separate from the identity link above.",
+      "manageOnDevicePage": "Manage proxy access on the network device page",
       "title": "Proxy Access"
     },
     "snmpDataTitle": "SNMP Data",

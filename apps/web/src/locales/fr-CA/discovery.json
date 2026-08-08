@@ -62,15 +62,7 @@
       "tags": "par exemple critique, étage 2, réseautage"
     },
     "proxy": {
-      "allowSelfSigned": "Autoriser les certificats auto-signés (courant pour les imprimantes, iLO/IPMI, commutateurs)",
-      "description": "Accédez à l’interface web de cet appareil dans votre navigateur, canalisée via un agent en ligne sur son réseau. Activer la liste blanche des IP de cet appareil afin qu’un agent soit autorisé à y faire un proxy.",
-      "enable": "Activer l’accès proxy",
-      "enabled": "Proxy activé",
-      "noOnlineAgent": "Aucun agent en ligne disponible pour faire le proxy de cet appareil. Un agent doit être en ligne et sur le même réseau que {{ip}} pour faire le pont entre les personnes.",
-      "port": "Port {{port}}",
-      "portWithService": "Port {{port}} ({{service}})",
-      "throughAgent": "Proxy via agent",
-      "throughAgentHelp": "Choisissez un agent en ligne qui peut atteindre {{ip}} sur son réseau (généralement celui qui l’a découvert). C’est distinct du lien d’identité ci-dessus.",
+      "manageOnDevicePage": "Gérer l'accès proxy sur la page de l'appareil réseau",
       "title": "Accès par procuration"
     },
     "snmpDataTitle": "Données SNMP",
