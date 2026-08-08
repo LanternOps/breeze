@@ -16,10 +16,14 @@ import {
   configPolicyFeatureLinks,
   configurationPolicies
 } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { executeScriptOnDevices } from '../services/scriptExecution';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../services/partnerWideAccess';
 
 export const scriptRoutes = new Hono();
 
@@ -70,8 +74,13 @@ function resolveScriptAuditOrgId(
 }
 
 type RescopeAuth = {
-  scope: string;
+  scope: AuthContext['scope'];
   partnerId: string | null;
+  // #3262: the partner-wide capability is NOT derivable from the other fields —
+  // a 'selected' user whose selection happens to cover every current org still
+  // must not administer partner-wide state. Carried explicitly so the widening
+  // branch below can check it.
+  partnerOrgAccess?: AuthContext['partnerOrgAccess'];
   accessibleOrgIds: string[] | null;
   canAccessOrg: (orgId: string) => boolean;
 };
@@ -119,6 +128,13 @@ function resolveRescopeTarget(
   }
 
   if (availability === 'partner') {
+    // #3262: widening an existing script to partner-wide is a second creation
+    // vector for the same privilege — it ends with a script running as SYSTEM
+    // on every org under the partner, including orgs onboarded later. Gate it
+    // exactly like the create path.
+    if (!canManagePartnerWidePolicies(auth)) {
+      return { error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, status: 403 };
+    }
     return { orgId: null, partnerId };
   }
 
@@ -505,6 +521,14 @@ scriptRoutes.post(
       partnerId = auth.partnerId ?? null; // denormalized for RLS
     } else if (auth.scope === 'partner') {
       if (data.availability === 'partner') {
+        // #3262: partner SCOPE is not the same as partner-wide CAPABILITY. A
+        // partner user with org_access = 'selected' may be scoped to three of
+        // eighty customers; without this gate they could create a script that
+        // runs as SYSTEM across all eighty, including orgs they hold no grant
+        // for and orgs created later.
+        if (!canManagePartnerWidePolicies(auth)) {
+          return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+        }
         orgId = null;
         partnerId = auth.partnerId ?? null;
         if (!partnerId) return c.json({ error: 'Partner context required' }, 403);
@@ -591,6 +615,13 @@ scriptRoutes.put(
     // Partner-wide records belong to the MSP: only partner/system scope may edit.
     if (script.orgId === null && script.partnerId !== null && auth.scope === 'organization') {
       return c.json({ error: 'This script is shared across your organization and is read-only here' }, 403);
+    }
+    // #3262: and within the partner, only a full-partner admin. Someone who
+    // cannot create a partner-wide script must not be able to edit one either —
+    // otherwise the body of a script already running as SYSTEM everywhere is
+    // rewritable by a 'selected'-access user.
+    if (script.orgId === null && script.partnerId !== null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
     // Cannot edit system scripts unless system scope
     if (script.isSystem && auth.scope !== 'system') {
@@ -759,6 +790,12 @@ scriptRoutes.delete(
     // Partner-wide records belong to the MSP: only partner/system scope may delete.
     if (script.orgId === null && script.partnerId !== null && auth.scope === 'organization') {
       return c.json({ error: 'This script is shared across your organization and is read-only here' }, 403);
+    }
+    // #3262: and within the partner, only a full-partner admin — same reasoning
+    // as the edit path. Deleting a partner-wide script removes automation from
+    // every org under the partner.
+    if (script.orgId === null && script.partnerId !== null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
     // Cannot delete system scripts unless system scope
     if (script.isSystem && auth.scope !== 'system') {
