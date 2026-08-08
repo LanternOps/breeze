@@ -185,10 +185,12 @@ All four tables get the standard 4 shape-1 policies. `gen_random_uuid()` only (n
 
 **Files:**
 - Modify: `apps/api/src/services/tenantCascade.ts` (`CORE_ORG_CASCADE_DELETE_ORDER`, line ~64) — insert `'fleet_finding_devices'`, `'fleet_findings'`, `'fleet_remediation_run_targets'`, `'fleet_remediation_runs'` in alphabetical position. (Order safety: `deleteOrgCascade` recomputes FK-safe order via `topologicalCascadeOrder()` from live pg_constraint; the list + alphabetical rule is the contract-test convention.)
+- Modify: `apps/api/src/routes/devices/core.ts` — add `'fleet_finding_devices'` to BOTH `CORE_DEVICE_CASCADE_DELETE_TABLES` and `CORE_DEVICE_ORG_DENORMALIZED_TABLES` (it has live `device_id` + denormalized `org_id`; `fleet_remediation_run_targets` joins neither — snapshot column).
 - Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts` — add 4 `tablePolicy("org_id", {...})` entries classifying **every** column. Buckets: all jsonb (`evidence`, `member_evidence`, `parameter_snapshot`) → `excludedOpen`; `result_summary` → `excludedSensitive` (command output can embed credentials); everything else (ids, statuses, counts, timestamps, titles, semantic keys, hostname/site snapshots) → `included`.
 
-- [ ] **Step 1: Make both edits.**
-- [ ] **Step 2: Run the contract suites against the live dev DB:** `pnpm --filter @breeze/api exec vitest run -c vitest.integration.config.ts tenantCascade tenant-export-policy tenantExportErasureRoundtrip rls-coverage`. Expected: PASS (alphabetical order, FK direction, full column coverage, shape-1 auto-discovery).
+- [ ] **Step 1: Make all four edits** (org cascade list, export policy, device cascade list, device org-denormalized list).
+- [ ] **Step 2: Run the static device-list unit tests:** `pnpm --filter @breeze/api test -- --run cascadeDelete moveOrg`. Expected: PASS.
+- [ ] **Step 2b: Run the contract suites against the live dev DB:** `pnpm --filter @breeze/api exec vitest run -c vitest.integration.config.ts tenantCascade tenant-export-policy tenantExportErasureRoundtrip rls-coverage`. Expected: PASS (alphabetical order, FK direction, full column coverage, shape-1 auto-discovery).
 - [ ] **Step 3: Commit.**
 
 ---

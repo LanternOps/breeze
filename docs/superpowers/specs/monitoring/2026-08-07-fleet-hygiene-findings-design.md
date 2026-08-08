@@ -82,7 +82,7 @@ Constraints/indexes:
 
 - RLS: enable + force + policies in the creating migration. Shape 1 is auto-discovered by `rls-coverage.integration.test.ts` — no allowlist entry.
 - `CORE_ORG_CASCADE_DELETE_ORDER` (`services/tenantCascade.ts`): all four tables, alphabetical. FK-direction check: `fleet_finding_devices` and `fleet_remediation_runs` sort before `fleet_findings` ✓, but `fleet_remediation_run_targets` sorts *after* `fleet_remediation_runs`, which it references — therefore the targets→runs FK is declared `ON DELETE CASCADE` so alphabetical order remains valid; `tenantCascade.integration.test.ts` asserts this.
-- `fleet_finding_devices` and `fleet_remediation_run_targets` deliberately do **not** join the device-cascade lists (no `device_id`-named column; snapshot semantics).
+- `fleet_finding_devices` HAS a live `device_id` + denormalized `org_id` → register in `CORE_DEVICE_CASCADE_DELETE_TABLES` **and** `CORE_DEVICE_ORG_DENORMALIZED_TABLES` (`routes/devices/core.ts`). `fleet_remediation_run_targets` joins neither list (`target_device_uuid` snapshot, trigger-exempt).
 - `CORE_TENANT_EXPORT_POLICY`: every column classified; all jsonb → `excludedOpen`.
 - Verify as `breeze_app` with a forged cross-tenant insert.
 
