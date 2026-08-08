@@ -151,7 +151,7 @@ export const fleetRemediationRunTargets = pgTable('fleet_remediation_run_targets
 ### Task 2: Migration
 
 **Files:**
-- Create: `apps/api/migrations/2026-08-16-fleet-hygiene-findings.sql` (adjust date to today; plain date prefix — no infix letter needed unless a same-day dependent file exists)
+- Create: `apps/api/migrations/2026-08-16-fleet-hygiene-findings.sql` (the repo already contains migrations dated through `2026-08-15`, so the filename must be `2026-08-16` or later to sort last — do NOT use today's calendar date if it sorts earlier)
 
 - [ ] **Step 1: Write the migration.** Copy the structure of `apps/api/migrations/2026-08-11-software-upload-sessions.sql` (header comment explaining tenancy + FK directions, `CREATE TABLE IF NOT EXISTS`, guarded `DO $$` constraint blocks, `CREATE INDEX IF NOT EXISTS`, `DROP POLICY IF EXISTS` + `CREATE POLICY` ×4 per table with `breeze_has_org_access(org_id)`, `ENABLE`+`FORCE` RLS, grants to `breeze_app`). Four tables exactly matching Task 1's Drizzle definitions. Key SQL details the template doesn't show:
 
