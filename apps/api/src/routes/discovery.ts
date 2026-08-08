@@ -372,7 +372,8 @@ const listAssetsSchema = z.object({
   assetType: z.enum([
     'workstation', 'server', 'printer', 'router', 'switch',
     'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'
-  ]).optional()
+  ]).optional(),
+  linkedDeviceId: z.string().guid().optional()
 });
 
 const linkAssetSchema = z.object({
@@ -1084,6 +1085,7 @@ discoveryRoutes.get(
     }
     if (query.approvalStatus) conditions.push(eq(discoveredAssets.approvalStatus, query.approvalStatus));
     if (query.assetType) conditions.push(eq(discoveredAssets.assetType, query.assetType));
+    if (query.linkedDeviceId) conditions.push(eq(discoveredAssets.linkedDeviceId, query.linkedDeviceId));
 
     const where = conditions.length ? and(...conditions) : undefined;
     const results = await db
@@ -1486,6 +1488,9 @@ discoveryRoutes.post(
         approvalStatus: 'approved',
         linkedDeviceId: body.deviceId,
         linkSource: 'manual',
+        // An explicit human link outranks a past unlink — resume auto-linking
+        // eligibility (spec §A2/A4).
+        autoLinkSuppressedAt: null,
         updatedAt: new Date()
       })
       .where(eq(discoveredAssets.id, assetId))
@@ -1547,11 +1552,10 @@ discoveryRoutes.delete(
       return c.json(existing);
     }
 
-    // Only manually-created links may be removed here.
-    if (existing.linkSource !== 'manual') {
-      return c.json({ error: 'Only manually linked assets can be unlinked' }, 403);
-    }
-
+    // Both auto- and manual-links may be removed here (spec §A2/A4, reversing
+    // the 2026-06-27 manual-only rule now that unlink is durable via
+    // auto_link_suppressed_at — an unlinked auto-link no longer just gets
+    // silently re-linked on the next scan).
     const previousDeviceId = existing.linkedDeviceId;
     // Scope the write to the same conditions as the read (id + org) so read- and
     // write-scope match. A 0-row result here means the row vanished or was
@@ -1561,6 +1565,10 @@ discoveryRoutes.delete(
       .set({
         linkedDeviceId: null,
         linkSource: null,
+        // Suppress auto-linking until a human explicitly re-links (cleared in
+        // POST /assets/:id/link). approvalStatus is intentionally left
+        // untouched (2026-06-27 decision stands).
+        autoLinkSuppressedAt: new Date(),
         updatedAt: new Date()
       })
       .where(and(...conditions))

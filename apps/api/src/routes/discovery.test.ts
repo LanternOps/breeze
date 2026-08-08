@@ -752,6 +752,76 @@ describe('discovery routes', () => {
       expect(joinLeaves).toContain('devices.siteId');
       expect(joinLeaves).toContain('discoveredAssets.siteId');
     });
+
+    it('scopes results with the linkedDeviceId filter, still org-scoped', async () => {
+      const now = new Date();
+      const linkedDeviceId = '00000000-0000-0000-0000-0000000000d1';
+      const row = {
+        asset: {
+          id: 'asset-linked',
+          orgId: '00000000-0000-0000-0000-000000000000',
+          assetType: 'workstation',
+          approvalStatus: 'approved',
+          isOnline: true,
+          hostname: 'host-1',
+          label: null,
+          ipAddress: '10.0.0.5',
+          macAddress: null,
+          manufacturer: null,
+          model: null,
+          openPorts: [],
+          snmpData: null,
+          responseTimeMs: null,
+          linkedDeviceId,
+          linkSource: 'manual',
+          discoveryMethods: [],
+          notes: null,
+          tags: [],
+          firstSeenAt: now,
+          lastSeenAt: now,
+          createdAt: now,
+          updatedAt: now,
+        },
+        linkedDeviceId,
+        snmpMonitoringEnabled: false,
+        networkMonitoringEnabled: false,
+        linkedDeviceHostname: 'host-1',
+        linkedDeviceDisplayName: null,
+        profileId: null,
+        profileName: null,
+        profileSubnets: null,
+      };
+      let capturedWhere: unknown;
+
+      (db.select as any).mockReturnValueOnce({
+        from: () => ({
+          leftJoin: () => ({
+            leftJoin: () => ({
+              leftJoin: () => ({
+                where: (cond: unknown) => {
+                  capturedWhere = cond;
+                  return { orderBy: () => Promise.resolve([row]) };
+                },
+              }),
+            }),
+          }),
+        }),
+      });
+
+      const res = await app.request(`/discovery/assets?linkedDeviceId=${linkedDeviceId}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].linkedDeviceId).toBe(linkedDeviceId);
+
+      // The filter must combine with (not replace) the org-scope condition.
+      const whereLeaves = collectSqlLeafStrings(capturedWhere);
+      expect(whereLeaves).toContain('discoveredAssets.linkedDeviceId');
+      expect(whereLeaves).toContain('discoveredAssets.orgId');
+    });
   });
 
   describe('GET /discovery/assets/:id', () => {
@@ -1780,6 +1850,41 @@ describe('discovery routes', () => {
         });
       });
 
+      it('clears auto_link_suppressed_at on manual link (explicit human assertion outranks a past unlink)', async () => {
+        setSiteRestrictedAuth([SITE_IN]);
+        mockAssetThenDevice(
+          { id: ASSET_IN, orgId: ORG, siteId: SITE_IN },
+          { id: DEVICE_ID, orgId: ORG, siteId: SITE_IN }
+        );
+        let capturedSetPayload: any;
+        vi.mocked(db.update).mockReturnValueOnce({
+          set: vi.fn((payload) => {
+            capturedSetPayload = payload;
+            return {
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{
+                  id: ASSET_IN,
+                  orgId: ORG,
+                  linkedDeviceId: DEVICE_ID,
+                  autoLinkSuppressedAt: null
+                }])
+              })
+            };
+          })
+        } as any);
+
+        const res = await app.request(`/discovery/assets/${ASSET_IN}/link`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ deviceId: DEVICE_ID })
+        });
+
+        expect(res.status).toBe(200);
+        expect(capturedSetPayload).toMatchObject({
+          autoLinkSuppressedAt: null
+        });
+      });
+
       it('does not gate when the caller is unrestricted (no allowedSiteIds)', async () => {
         setSiteRestrictedAuth(undefined);
         mockAssetThenDevice(
@@ -1815,7 +1920,7 @@ describe('discovery routes', () => {
         } as any);
       }
 
-      it('clears a manual link, keeps approval_status approved, writes audit', async () => {
+      it('clears a manual link, keeps approval_status approved, sets auto_link_suppressed_at, writes audit', async () => {
         setSiteRestrictedAuth([SITE_IN]);
         mockAssetOnly({
           id: ASSET_IN,
@@ -1838,7 +1943,8 @@ describe('discovery routes', () => {
                   hostname: 'printer-1',
                   ipAddress: '10.0.0.50',
                   linkedDeviceId: null,
-                  linkSource: null
+                  linkSource: null,
+                  autoLinkSuppressedAt: new Date()
                 }])
               })
             };
@@ -1853,7 +1959,8 @@ describe('discovery routes', () => {
         expect(res.status).toBe(200);
         expect(capturedSetPayload).toMatchObject({
           linkedDeviceId: null,
-          linkSource: null
+          linkSource: null,
+          autoLinkSuppressedAt: expect.any(Date)
         });
         expect(capturedSetPayload).not.toHaveProperty('approvalStatus');
         expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -1884,7 +1991,10 @@ describe('discovery routes', () => {
         expect(db.update).not.toHaveBeenCalled();
       });
 
-      it('returns 403 for an auto-linked asset', async () => {
+      it('unlinks an auto-linked asset and sets auto_link_suppressed_at (regression: previously 403)', async () => {
+        // 2026-06-27 restricted unlink to manual links only; the spec
+        // (2026-08-08-asset-link-lifecycle-design.md §A2/A4) reverses that now
+        // that suppression makes unlink durable for auto-links too.
         setSiteRestrictedAuth([SITE_IN]);
         mockAssetOnly({
           id: ASSET_IN,
@@ -1893,17 +2003,38 @@ describe('discovery routes', () => {
           linkedDeviceId: DEVICE_ID,
           linkSource: 'auto'
         });
+        let capturedSetPayload: any;
+        vi.mocked(db.update).mockReturnValueOnce({
+          set: vi.fn((payload) => {
+            capturedSetPayload = payload;
+            return {
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{
+                  id: ASSET_IN,
+                  orgId: ORG,
+                  linkedDeviceId: null,
+                  linkSource: null,
+                  autoLinkSuppressedAt: new Date()
+                }])
+              })
+            };
+          })
+        } as any);
 
         const res = await app.request(`/discovery/assets/${ASSET_IN}/link`, {
           method: 'DELETE',
           headers: { Authorization: 'Bearer token' }
         });
 
-        expect(res.status).toBe(403);
-        expect(db.update).not.toHaveBeenCalled();
+        expect(res.status).toBe(200);
+        expect(capturedSetPayload).toMatchObject({
+          linkedDeviceId: null,
+          linkSource: null,
+          autoLinkSuppressedAt: expect.any(Date)
+        });
       });
 
-      it('returns 403 for a NULL-source linked asset', async () => {
+      it('unlinks a NULL-source linked asset (guard removed entirely, not just for manual)', async () => {
         setSiteRestrictedAuth([SITE_IN]);
         mockAssetOnly({
           id: ASSET_IN,
@@ -1912,14 +2043,26 @@ describe('discovery routes', () => {
           linkedDeviceId: DEVICE_ID,
           linkSource: null
         });
+        vi.mocked(db.update).mockReturnValueOnce({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{
+                id: ASSET_IN,
+                orgId: ORG,
+                linkedDeviceId: null,
+                linkSource: null,
+                autoLinkSuppressedAt: new Date()
+              }])
+            })
+          })
+        } as any);
 
         const res = await app.request(`/discovery/assets/${ASSET_IN}/link`, {
           method: 'DELETE',
           headers: { Authorization: 'Bearer token' }
         });
 
-        expect(res.status).toBe(403);
-        expect(db.update).not.toHaveBeenCalled();
+        expect(res.status).toBe(200);
       });
 
       it('is a no-op for an already-unlinked asset', async () => {
