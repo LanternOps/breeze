@@ -181,7 +181,18 @@ func newShadowRootLiveness(shadowPaths map[string]string) sourceLivenessFn {
 		// Confirm before killing the run. A root that is genuinely gone stays
 		// gone; a one-off anomalous stat resolves on the second look.
 		time.Sleep(shadowRootConfirmDelay)
-		if confirmed, _ := shadowRootMissing(root); !confirmed {
+		confirmed, confirmErr := shadowRootMissing(root)
+		if confirmErr != nil {
+			// The second look neither confirmed nor cleared it. Report that
+			// honestly rather than as "came back" — an unactionable message
+			// that misdescribes what happened is the #3260 complaint itself.
+			log.Warn("shadow copy root went missing then answered inconclusively; not aborting the run",
+				"root", root,
+				"error", confirmErr.Error(),
+			)
+			return nil
+		}
+		if !confirmed {
 			log.Warn("shadow copy root briefly failed to resolve but came back, continuing",
 				"root", root,
 			)
