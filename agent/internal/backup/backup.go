@@ -429,9 +429,16 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 
 	// sourceLiveness watches the shadow-copy roots this run reads from so the
 	// upload loop can tell "the snapshot died" apart from "these files are
-	// bad" (#3260). Built here, immediately after the session is created and
-	// the paths are rewritten onto it, so its self-calibrating stat sees the
-	// roots at their freshest — the file walk below can itself take minutes.
+	// bad" (#3260).
+	//
+	// Built at the very top of the VSS block — before the path rewrite, and well
+	// before the file walk, which on a large volume runs for minutes. That
+	// ordering is load-bearing: newShadowRootLiveness calibrates by stat-ing
+	// each root once and watching only the ones that answer, so it has to run
+	// while the snapshot is as fresh as it will ever be. Calibrating after the
+	// walk would risk arming the guard against a snapshot that had already
+	// started to go.
+	//
 	// Stays nil for a non-VSS run: reading the live filesystem has nothing to
 	// defend.
 	var sourceLiveness sourceLivenessFn

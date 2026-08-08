@@ -14,6 +14,10 @@ import (
 // file takes the same skip-and-continue path, is appended to
 // Snapshot.UploadFailures (and so to job.ErrorCount), and never aborts the job.
 // Only the sleep changes.
+//
+// The one thing in the upload loop that CAN end a run early is the separate
+// sourceLiveness probe (see source_liveness.go) — but that is a verdict on the
+// source snapshot as a whole, not on any file, and nothing here influences it.
 type uploadRetryPolicy int
 
 const (

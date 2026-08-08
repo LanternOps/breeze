@@ -198,8 +198,13 @@ func TestNewShadowRootLiveness(t *testing.T) {
 // ShadowCopy2, and losing that unrelated volume would abort a healthy run.
 func TestMatchShadowRoot_MatchesOnPathBoundaryNotBarePrefix(t *testing.T) {
 	const shortRoot = `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy2`
-	// Longest-first, as newShadowRootLiveness orders them.
-	roots := []string{shadowC, shortRoot}
+	// Longest-first, as newShadowRootLiveness orders them. statPath is the
+	// bare form here; the prefix/statPath split is exercised separately by
+	// TestNewShadowRootLiveness_FallsBackToTrailingSeparatorForm.
+	roots := []watchedRoot{
+		{prefix: shadowC, statPath: shadowC},
+		{prefix: shortRoot, statPath: shortRoot},
+	}
 
 	tests := []struct {
 		name     string
@@ -237,12 +242,64 @@ func TestMatchShadowRoot_MatchesOnPathBoundaryNotBarePrefix(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root, ok := matchShadowRoot(roots, tc.path)
 			if ok != tc.wantOK {
-				t.Fatalf("matchShadowRoot(%q) ok = %v, want %v (root %q)", tc.path, ok, tc.wantOK, root)
+				t.Fatalf("matchShadowRoot(%q) ok = %v, want %v (root %q)", tc.path, ok, tc.wantOK, root.prefix)
 			}
-			if ok && root != tc.wantRoot {
-				t.Fatalf("matchShadowRoot(%q) = %q, want %q", tc.path, root, tc.wantRoot)
+			if ok && root.prefix != tc.wantRoot {
+				t.Fatalf("matchShadowRoot(%q) = %q, want %q", tc.path, root.prefix, tc.wantRoot)
 			}
 		})
+	}
+}
+
+// The arming precondition on real Windows. vss.CreateShadowCopy hands back
+// SnapshotDeviceObject verbatim — a BARE `\\?\GLOBALROOT\Device\...ShadowCopyNN`
+// with no trailing separator — and nothing in the codebase has ever shown that
+// form to be stat-able (the live VSS test and the file walk both go through a
+// subdirectory). If it is not, and there were no fallback, calibration would
+// exclude every root on every real run and the whole #3260 guard would be
+// silently inert.
+func TestNewShadowRootLiveness_FallsBackToTrailingSeparatorForm(t *testing.T) {
+	withSep := shadowC + `\`
+	// Only the trailing-separator form resolves — the shape a Windows device
+	// object is suspected to have.
+	f := newFakeStat(withSep)
+	f.install(t)
+
+	probe := newShadowRootLiveness(map[string]string{`C:`: shadowC})
+	if probe == nil {
+		t.Fatal("bare root did not stat and no trailing-separator fallback was tried: the guard would be inert on Windows")
+	}
+	// Still alive: nothing has gone away.
+	if err := probe(fileOnC); err != nil {
+		t.Fatalf("want the snapshot reported alive, got %v", err)
+	}
+	// Retiring the form that actually calibrated must be detected — i.e. the
+	// probe stats the SAME form it calibrated on, not the bare one.
+	f.set(withSep, false)
+	if err := probe(fileOnC); !errors.Is(err, errSourceSnapshotGone) {
+		t.Fatalf("want errSourceSnapshotGone once the calibrated form stopped resolving, got %v", err)
+	}
+}
+
+// Files are matched on the root's PREFIX (the text rewritePathsForVSS actually
+// prepended), never on whichever form happened to stat. Matching on a
+// trailing-separator statPath would break the path-boundary check and silently
+// stop matching every file.
+func TestNewShadowRootLiveness_MatchesOnPrefixNotStatForm(t *testing.T) {
+	withSep := shadowC + `\`
+	f := newFakeStat(withSep)
+	f.install(t)
+
+	probe := newShadowRootLiveness(map[string]string{`C:`: shadowC})
+	if probe == nil {
+		t.Fatal("want a probe, got nil")
+	}
+	f.set(withSep, false)
+
+	// fileOnC is shadowC + `\Users\...` — it must still be recognised as living
+	// under this root even though the watched stat form has the separator.
+	if err := probe(fileOnC); !errors.Is(err, errSourceSnapshotGone) {
+		t.Fatalf("file under the root was not matched to it, got %v", err)
 	}
 }
 
@@ -296,6 +353,44 @@ func TestShadowRootLiveness_TransientMissRequiresConfirmation(t *testing.T) {
 	}
 }
 
+// The third confirmation outcome: gone on the first look, then INCONCLUSIVE on
+// the confirmation look. That is not proof the snapshot went away, so the run
+// must survive it — a whole backup is too much to kill on an ambiguous answer.
+func TestShadowRootLiveness_MissThenInconclusiveDoesNotAbort(t *testing.T) {
+	// Scripted stat: construction resolves, the first probe says not-exist, the
+	// confirmation look fails with something that is neither.
+	var mu sync.Mutex
+	calls := 0
+	t.Cleanup(setSnapshotRootStatForTest(func(string) (os.FileInfo, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		switch calls {
+		case 1:
+			return nil, nil // calibration
+		case 2:
+			return nil, &fs.PathError{Op: "stat", Path: shadowC, Err: syscall.ENOENT}
+		default:
+			return nil, errors.New("the device is not ready")
+		}
+	}))
+	t.Cleanup(setShadowRootConfirmDelayForTest(0))
+
+	probe := newShadowRootLiveness(map[string]string{`C:`: shadowC})
+	if probe == nil {
+		t.Fatal("want a probe, got nil")
+	}
+	if err := probe(fileOnC); err != nil {
+		t.Fatalf("an inconclusive CONFIRMATION must not abort the run, got %v", err)
+	}
+	mu.Lock()
+	got := calls
+	mu.Unlock()
+	if got != 3 {
+		t.Fatalf("want 3 stats (calibration + miss + inconclusive confirmation), got %d", got)
+	}
+}
+
 // ...and a root that is still missing on the confirmation look IS gone.
 func TestShadowRootLiveness_ConfirmedMissIsGone(t *testing.T) {
 	f := newFakeStat(shadowC)
@@ -316,13 +411,21 @@ type expiringProvider struct {
 	mu sync.Mutex
 	// killAfter is the source path whose failure kills the snapshot.
 	killAfter string
-	dead      bool
-	onDeath   func()
-	attempts  []string
+	// srcRoot scopes the damage to files READ FROM the snapshot. A dead shadow
+	// copy does not stop the destination from accepting writes, so the manifest
+	// — written to a local temp file — must still upload.
+	srcRoot  string
+	dead     bool
+	onDeath  func()
+	attempts []string
 }
 
 func (p *expiringProvider) UploadContext(_ context.Context, localPath, _ string) error {
 	p.mu.Lock()
+	if p.srcRoot != "" && !strings.HasPrefix(localPath, p.srcRoot) {
+		p.mu.Unlock()
+		return nil // not read from the snapshot (e.g. the manifest)
+	}
 	p.attempts = append(p.attempts, localPath)
 	dead := p.dead
 	trigger := localPath == p.killAfter
@@ -378,6 +481,7 @@ func TestCreateSnapshot_ShadowCopyLostMidRun_AbortsExplicitly(t *testing.T) {
 
 	provider := &expiringProvider{
 		killAfter: files[2].sourcePath,
+		srcRoot:   root,
 		// The snapshot goes away at the same instant the third file fails.
 		onDeath: func() { f.set(root, false) },
 	}
@@ -394,8 +498,11 @@ func TestCreateSnapshot_ShadowCopyLostMidRun_AbortsExplicitly(t *testing.T) {
 	if !errors.Is(err, errSourceSnapshotGone) {
 		t.Fatalf("want errSourceSnapshotGone, got %v", err)
 	}
-	if snap != nil {
-		t.Fatalf("want no snapshot from an aborted run, got one with %d files", len(snap.Files))
+	// Journal-less abort keeps what landed: the two files uploaded before the
+	// loss come back as a published partial restore point (see
+	// TestCreateSnapshot_SourceGoneWithoutJournal_PublishesPartialManifest).
+	if snap == nil || len(snap.Files) != 2 {
+		t.Fatalf("want the 2 files that landed preserved, got %+v", snap)
 	}
 	// The whole point: files 4-6 were healthy and must never have been tried
 	// against a dead snapshot, let alone recorded as bad. Files 1-2 uploaded,
@@ -448,12 +555,17 @@ func filesUnderCommonRoot(t *testing.T, n int) (string, []backupFile) {
 type dyingOnRetryProvider struct {
 	mu       sync.Mutex
 	target   string
+	srcRoot  string
 	attempts map[string]int
 	onDeath  func()
 }
 
 func (p *dyingOnRetryProvider) UploadContext(_ context.Context, localPath, _ string) error {
 	p.mu.Lock()
+	if p.srcRoot != "" && !strings.HasPrefix(localPath, p.srcRoot) {
+		p.mu.Unlock()
+		return nil // not read from the snapshot (e.g. the manifest)
+	}
 	p.attempts[localPath]++
 	n := p.attempts[localPath]
 	isTarget := localPath == p.target
@@ -498,6 +610,7 @@ func TestCreateSnapshot_ShadowCopyLostDuringRetry_AbortsExplicitly(t *testing.T)
 
 	provider := &dyingOnRetryProvider{
 		target:   files[1].sourcePath,
+		srcRoot:  root,
 		attempts: map[string]int{},
 		onDeath:  func() { f.set(root, false) },
 	}
@@ -511,8 +624,8 @@ func TestCreateSnapshot_ShadowCopyLostDuringRetry_AbortsExplicitly(t *testing.T)
 	if !errors.Is(err, errSourceSnapshotGone) {
 		t.Fatalf("want errSourceSnapshotGone when the snapshot dies during the retry, got %v", err)
 	}
-	if snap != nil {
-		t.Fatalf("want no snapshot from an aborted run, got one with %d files", len(snap.Files))
+	if snap == nil || len(snap.Files) != 1 {
+		t.Fatalf("want the 1 file that landed before the loss preserved, got %+v", snap)
 	}
 	// File 2 was attempted twice (initial + retry); files 3-4 must never have
 	// been reached.
@@ -527,6 +640,205 @@ func TestCreateSnapshot_ShadowCopyLostDuringRetry_AbortsExplicitly(t *testing.T)
 		}
 	}
 }
+
+// With a journal, the source-loss abort must leave the remote prefix ALONE and
+// leave the journal on disk: together they are this run's resume state, and the
+// next attempt resumes into the very same snapshot ID. No manifest is published
+// — that would stake a completed-snapshot claim on an ID still being filled in.
+func TestCreateSnapshot_SourceGoneWithJournal_PreservesPrefixAndJournal(t *testing.T) {
+	defer setShortUploadRetryDelayForTest(0)()
+	defer setUploadRetryDelayForTest(0)()
+
+	f := newFakeStat()
+	f.install(t)
+	root, files := filesUnderCommonRoot(t, 5)
+	f.set(root, true)
+
+	backing := newMockProvider()
+	provider := &snapshotKillingProvider{
+		backing: backing,
+		target:  files[2].sourcePath,
+		srcRoot: root,
+		onDeath: func() { f.set(root, false) },
+	}
+
+	journalDir := t.TempDir()
+	journal, _, err := openSnapshotJournal(journalDir, "test-source-gone-identity", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	journalPath := journal.path
+
+	liveness := newShadowRootLiveness(map[string]string{`C:`: root})
+	snap, err := createSnapshotWithProgress(context.Background(), provider, files, nil, journal, nil, liveness)
+
+	if !errors.Is(err, errSourceSnapshotGone) {
+		t.Fatalf("want errSourceSnapshotGone, got %v", err)
+	}
+	if snap != nil {
+		t.Fatalf("a journal-backed abort resumes rather than publishing; want nil snapshot, got %d files", len(snap.Files))
+	}
+	if len(backing.deleteCalls) != 0 {
+		t.Fatalf("a journal-backed source-loss abort must NOT delete the partial prefix, got deletes: %v", backing.deleteCalls)
+	}
+	if _, statErr := os.Stat(journalPath); statErr != nil {
+		t.Fatalf("want the journal left on disk for resume, stat err = %v", statErr)
+	}
+	// No manifest was published for this snapshot ID.
+	if n := countManifestUploads(backing); n != 0 {
+		t.Fatalf("a journal-backed abort must not publish a manifest, but published %d", n)
+	}
+	// The files that landed before the loss are recorded and resumable.
+	j2, resumed, err := openSnapshotJournal(journalDir, "test-source-gone-identity", journalMaxAge)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	if !resumed {
+		t.Fatal("want the abandoned journal to resume on reopen")
+	}
+	if _, ok := j2.Lookup(files[0].sourcePath, files[0].size, files[0].modTime); !ok {
+		t.Error("want the file uploaded before the loss recorded in the journal")
+	}
+	j2.Abandon()
+}
+
+// WITHOUT a journal there is no resume state, so the uploaded objects would be
+// unreachable orphans if nothing published them. The abort must publish a
+// PARTIAL manifest instead of deleting them — deleting would be a regression
+// against pre-#3260 behaviour, where the same run left a usable (flagged)
+// restore point behind. The run is still reported as failed.
+func TestCreateSnapshot_SourceGoneWithoutJournal_PublishesPartialManifest(t *testing.T) {
+	defer setShortUploadRetryDelayForTest(0)()
+	defer setUploadRetryDelayForTest(0)()
+
+	f := newFakeStat()
+	f.install(t)
+	root, files := filesUnderCommonRoot(t, 5)
+	f.set(root, true)
+
+	backing := newMockProvider()
+	provider := &snapshotKillingProvider{
+		backing: backing,
+		target:  files[2].sourcePath,
+		srcRoot: root,
+		onDeath: func() { f.set(root, false) },
+	}
+
+	liveness := newShadowRootLiveness(map[string]string{`C:`: root})
+	snap, err := createSnapshotWithProgress(context.Background(), provider, files, nil, nil, nil, liveness)
+
+	if !errors.Is(err, errSourceSnapshotGone) {
+		t.Fatalf("want errSourceSnapshotGone so the job still reports failed, got %v", err)
+	}
+	// Non-nil snapshot alongside the error is what lets the manager record
+	// FilesBackedUp while still failing the job.
+	if snap == nil {
+		t.Fatal("want the partial snapshot returned so the manager can report what landed, got nil")
+	}
+	if len(snap.Files) != 2 {
+		t.Fatalf("want the 2 files that landed before the loss, got %d", len(snap.Files))
+	}
+	if len(backing.deleteCalls) != 0 {
+		t.Fatalf("uploaded backup data was DELETED on abort: %v", backing.deleteCalls)
+	}
+	manifests := countManifestUploads(backing)
+	if manifests != 1 {
+		t.Fatalf("want exactly 1 partial manifest published so the objects are restorable, got %d", manifests)
+	}
+}
+
+// Nothing landed: there is no restore point to preserve, so the journal-less
+// abort disposes of the prefix as any other journal-less abort would.
+func TestCreateSnapshot_SourceGoneWithoutJournal_NoFilesUploaded_CleansUp(t *testing.T) {
+	defer setShortUploadRetryDelayForTest(0)()
+	defer setUploadRetryDelayForTest(0)()
+
+	f := newFakeStat()
+	f.install(t)
+	root, files := filesUnderCommonRoot(t, 3)
+	f.set(root, true)
+
+	backing := newMockProvider()
+	provider := &snapshotKillingProvider{
+		backing: backing,
+		target:  files[0].sourcePath, // the very first file kills it
+		srcRoot: root,
+		onDeath: func() { f.set(root, false) },
+	}
+
+	liveness := newShadowRootLiveness(map[string]string{`C:`: root})
+	snap, err := createSnapshotWithProgress(context.Background(), provider, files, nil, nil, nil, liveness)
+
+	if !errors.Is(err, errSourceSnapshotGone) {
+		t.Fatalf("want errSourceSnapshotGone, got %v", err)
+	}
+	if snap != nil {
+		t.Fatalf("want nil snapshot when nothing was stored, got %d files", len(snap.Files))
+	}
+	// Nothing was stored, so there is nothing to publish and nothing worth
+	// keeping — in particular no manifest claiming an empty restore point.
+	if n := countManifestUploads(backing); n != 0 {
+		t.Fatalf("want no manifest when zero files landed, got %d", n)
+	}
+}
+
+// countManifestUploads counts snapshot manifests published to the mock.
+func countManifestUploads(m *mockProvider) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, call := range m.uploadCalls {
+		if strings.HasSuffix(call.remotePath, snapshotManifestKey) {
+			n++
+		}
+	}
+	return n
+}
+
+// snapshotKillingProvider delegates to a real mock provider (so uploads are
+// recorded and a manifest can actually be published) but fails one chosen file
+// with a permission denial, killing the snapshot as it does so.
+type snapshotKillingProvider struct {
+	backing *mockProvider
+	target  string
+	srcRoot string
+	mu      sync.Mutex
+	dead    bool
+	onDeath func()
+}
+
+func (p *snapshotKillingProvider) UploadContext(_ context.Context, localPath, remotePath string) error {
+	if p.srcRoot != "" && !strings.HasPrefix(localPath, p.srcRoot) {
+		// Not read from the snapshot (the manifest): the destination is fine.
+		return p.backing.Upload(localPath, remotePath)
+	}
+	p.mu.Lock()
+	dead := p.dead
+	trigger := localPath == p.target
+	if trigger && !dead {
+		p.dead = true
+	}
+	onDeath := p.onDeath
+	p.mu.Unlock()
+
+	if trigger {
+		if onDeath != nil {
+			onDeath()
+		}
+		return permissionErr(localPath)
+	}
+	if dead {
+		return notFoundErr(localPath)
+	}
+	return p.backing.Upload(localPath, remotePath)
+}
+
+func (p *snapshotKillingProvider) Upload(localPath, remotePath string) error {
+	return p.UploadContext(context.Background(), localPath, remotePath)
+}
+func (p *snapshotKillingProvider) Download(a, b string) error      { return p.backing.Download(a, b) }
+func (p *snapshotKillingProvider) List(a string) ([]string, error) { return p.backing.List(a) }
+func (p *snapshotKillingProvider) Delete(a string) error           { return p.backing.Delete(a) }
 
 // A run with no snapshot to defend (nil probe — the non-VSS case) must behave
 // exactly as before: per-file failures stay per-file, the job carries on.

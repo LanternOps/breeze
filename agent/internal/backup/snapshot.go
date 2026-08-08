@@ -475,22 +475,30 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	}
 
 	// abortSourceGone is the single exit point for the abort taken when the
-	// source snapshot goes away mid-run (#3260). It deliberately mirrors
-	// abortStopped: the run did not
-	// finish, so no manifest is written, and the partial remote prefix is
-	// cleaned up ONLY when there is no journal — with a journal, the prefix
-	// plus the journal are this run's resume state and the objects already
-	// uploaded stay usable for the next attempt.
+	// source snapshot goes away mid-run (#3260). The run stops either way; what
+	// differs is what happens to the objects already uploaded, and that turns
+	// entirely on whether this run has a checkpoint journal.
 	//
-	// Not written as a partial success on purpose. The already-uploaded objects
-	// are real data, but publishing a manifest for them would mint a snapshot
-	// that LOOKS complete while silently missing every file the loop never
-	// reached — a restore point that lies. Failing loudly and keeping the
-	// journal preserves the same bytes without the lie.
+	//   journal != nil — the prefix plus the journal ARE the resume state, and
+	//     the next attempt resumes into this very snapshot ID. No manifest:
+	//     publishing one now would stake a completed-snapshot claim on an ID
+	//     the next run is still filling in. Nothing is deleted.
+	//
+	//   journal == nil — there is no resume state, so leaving the prefix
+	//     unpublished would strand the uploaded objects as unreachable orphans.
+	//     Publish a PARTIAL manifest instead, making them a real restore point.
+	//     This is not a "snapshot that lies": a manifest enumerates what the
+	//     snapshot contains, it does not assert completeness, and the run is
+	//     still reported as FAILED with the source-loss reason and the counts.
+	//     Deleting them would be a regression against the pre-#3260 behaviour,
+	//     where the same run finished as a flagged partial success and left a
+	//     usable restore point behind.
 	//
 	// The error carries the counts because #3260's whole complaint is that the
 	// operator-visible failure said nothing useful about what happened.
 	abortSourceGone := func(cause error) (*Snapshot, error) {
+		detail := fmt.Errorf("%w (aborted after %d of %d files uploaded, %d failed)",
+			cause, len(snapshot.Files), filesTotal, len(errs))
 		log.Error("backup source snapshot is gone mid-run, aborting the run",
 			"snapshotId", snapshot.ID,
 			"filesUploaded", len(snapshot.Files),
@@ -499,11 +507,36 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			"resumable", journal != nil,
 			"error", cause.Error(),
 		)
-		if journal == nil {
-			cleanupSnapshotPrefix(provider, snapshot.ID)
+		if journal != nil {
+			return nil, detail
 		}
-		return nil, fmt.Errorf("%w (aborted after %d of %d files uploaded, %d failed)",
-			cause, len(snapshot.Files), filesTotal, len(errs))
+		if len(snapshot.Files) == 0 {
+			// Nothing landed, so there is no restore point to preserve and the
+			// prefix holds no recoverable data. Same disposal as any other
+			// journal-less abort.
+			cleanupSnapshotPrefix(provider, snapshot.ID)
+			return nil, detail
+		}
+		snapshot.UploadFailures = errs
+		if pubErr := publishSnapshotManifest(ctx, provider, snapshot, prefix); pubErr != nil {
+			// Deliberately NOT followed by cleanupSnapshotPrefix. Deletion is
+			// irreversible and this is a data-protection product: retained
+			// orphans cost storage, deleted backups cost the customer their
+			// files. Log loudly enough that an operator can find them.
+			log.Error("could not publish a partial manifest for the aborted run; the uploaded objects are RETAINED but unreachable without one",
+				"snapshotId", snapshot.ID,
+				"prefix", prefix,
+				"filesUploaded", len(snapshot.Files),
+				"error", pubErr.Error(),
+			)
+			return snapshot, errors.Join(detail, pubErr)
+		}
+		log.Warn("published a PARTIAL manifest for the aborted run; it restores the files that landed before the source snapshot went away",
+			"snapshotId", snapshot.ID,
+			"filesUploaded", len(snapshot.Files),
+			"filesTotal", filesTotal,
+		)
+		return snapshot, detail
 	}
 
 	for _, file := range files {
@@ -721,9 +754,38 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		return abortStopped()
 	}
 
+	if err := publishSnapshotManifest(ctx, provider, snapshot, prefix); err != nil {
+		if errors.Is(err, errBackupStopped) {
+			// A manifest-upload deadline expiry is fatal for the snapshot too
+			// (unlike a per-file data upload): without the manifest the
+			// snapshot isn't restorable, so there's nothing to keep going for.
+			return abortStopped()
+		}
+		return snapshot, err
+	}
+
+	if journal != nil {
+		if err := journal.Complete(); err != nil {
+			log.Warn("failed to remove completed checkpoint journal", "error", err.Error())
+		}
+		completed = true
+	}
+
+	return snapshot, nil
+}
+
+// publishSnapshotManifest serializes snapshot's manifest and uploads it under
+// prefix, making the objects already stored there a reachable restore point.
+//
+// Extracted so the mid-run source-loss abort can publish the partial set it
+// managed to store (see abortSourceGone) using exactly the same code path as a
+// normal completion — a second, subtly different manifest writer is how the two
+// would drift apart. errBackupStopped is returned unwrapped so callers can tell
+// a job cancel from a genuine manifest failure.
+func publishSnapshotManifest(ctx context.Context, provider providers.BackupProvider, snapshot *Snapshot, prefix string) error {
 	manifestPath, manifestErr := writeSnapshotManifest(snapshot)
 	if manifestErr != nil {
-		return snapshot, manifestErr
+		return manifestErr
 	}
 	defer os.Remove(manifestPath)
 
@@ -738,22 +800,11 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	cancelAttempt()
 	if manifestUploadErr != nil {
 		if errors.Is(manifestUploadErr, errBackupStopped) {
-			// A manifest-upload deadline expiry is fatal for the snapshot too
-			// (unlike a per-file data upload): without the manifest the
-			// snapshot isn't restorable, so there's nothing to keep going for.
-			return abortStopped()
+			return manifestUploadErr
 		}
-		return snapshot, fmt.Errorf("failed to upload snapshot manifest: %w", manifestUploadErr)
+		return fmt.Errorf("failed to upload snapshot manifest: %w", manifestUploadErr)
 	}
-
-	if journal != nil {
-		if err := journal.Complete(); err != nil {
-			log.Warn("failed to remove completed checkpoint journal", "error", err.Error())
-		}
-		completed = true
-	}
-
-	return snapshot, nil
+	return nil
 }
 
 // attemptFileUpload runs a single upload attempt for file against a fresh
