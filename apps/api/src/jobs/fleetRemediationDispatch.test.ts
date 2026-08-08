@@ -1,11 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
-  addMock,
   addBulkMock,
+  upsertJobSchedulerMock,
+  removeJobSchedulerMock,
   closeMock,
-  getRepeatableJobsMock,
-  removeRepeatableByKeyMock,
   attachWorkerObservabilityMock,
   workerProcessorMock,
   runOutsideDbContextMock,
@@ -18,11 +17,10 @@ const {
   whereMock,
   limitMock,
 } = vi.hoisted(() => ({
-  addMock: vi.fn(),
   addBulkMock: vi.fn(),
+  upsertJobSchedulerMock: vi.fn(),
+  removeJobSchedulerMock: vi.fn(),
   closeMock: vi.fn(),
-  getRepeatableJobsMock: vi.fn(),
-  removeRepeatableByKeyMock: vi.fn(),
   attachWorkerObservabilityMock: vi.fn(),
   workerProcessorMock: vi.fn(),
   runOutsideDbContextMock: vi.fn(<T>(fn: () => T) => fn()),
@@ -38,10 +36,9 @@ const {
 
 vi.mock('bullmq', () => ({
   Queue: class {
-    add = addMock;
     addBulk = addBulkMock;
-    getRepeatableJobs = getRepeatableJobsMock;
-    removeRepeatableByKey = removeRepeatableByKeyMock;
+    upsertJobScheduler = upsertJobSchedulerMock;
+    removeJobScheduler = removeJobSchedulerMock;
     close = closeMock;
   },
   Worker: class {
@@ -96,11 +93,10 @@ const RUN_1 = 'ee111111-1111-4111-8111-111111111111';
 
 describe('fleet remediation dispatch job helpers', () => {
   beforeEach(async () => {
-    addMock.mockReset();
     addBulkMock.mockReset();
+    upsertJobSchedulerMock.mockReset();
+    removeJobSchedulerMock.mockReset();
     closeMock.mockReset();
-    getRepeatableJobsMock.mockReset();
-    removeRepeatableByKeyMock.mockReset();
     attachWorkerObservabilityMock.mockReset();
     workerProcessorMock.mockReset();
     runOutsideDbContextMock.mockClear();
@@ -118,9 +114,9 @@ describe('fleet remediation dispatch job helpers', () => {
     fromMock.mockReturnValue({ where: whereMock });
     whereMock.mockReturnValue({ limit: limitMock });
     limitMock.mockResolvedValue([{ status: 'running' }]);
-    addMock.mockResolvedValue({ id: 'queued-job' });
     addBulkMock.mockResolvedValue([]);
-    getRepeatableJobsMock.mockResolvedValue([]);
+    upsertJobSchedulerMock.mockResolvedValue({ id: 'scheduled-job' });
+    removeJobSchedulerMock.mockResolvedValue(true);
     await shutdownFleetRemediationDispatchJobs();
   });
 
@@ -135,7 +131,7 @@ describe('fleet remediation dispatch job helpers', () => {
     it('is a no-op when targetCount is 0', async () => {
       await enqueueRemediationDispatch(RUN_1, 0);
       expect(addBulkMock).not.toHaveBeenCalled();
-      expect(addMock).not.toHaveBeenCalled();
+      expect(upsertJobSchedulerMock).not.toHaveBeenCalled();
     });
 
     it('splits 1200 targets into exactly 3 dispatch-chunk jobs', async () => {
@@ -164,13 +160,16 @@ describe('fleet remediation dispatch job helpers', () => {
       expect(jobs).toHaveLength(2);
     });
 
-    it('enqueues a repeatable poll-run job every 30s with jobId fleet-run-poll-<runId>', async () => {
+    it('upserts a poll-run job scheduler every 30s keyed by fleet-run-poll-<runId>', async () => {
       await enqueueRemediationDispatch(RUN_1, 10);
 
-      expect(addMock).toHaveBeenCalledWith(
-        'poll-run',
-        expect.objectContaining({ type: 'poll-run', runId: RUN_1 }),
-        expect.objectContaining({ jobId: buildPollRunJobId(RUN_1), repeat: { every: 30_000 } })
+      expect(upsertJobSchedulerMock).toHaveBeenCalledWith(
+        buildPollRunJobId(RUN_1),
+        { every: 30_000 },
+        expect.objectContaining({
+          name: 'poll-run',
+          data: expect.objectContaining({ type: 'poll-run', runId: RUN_1 }),
+        })
       );
     });
   });
@@ -194,31 +193,27 @@ describe('fleet remediation dispatch job helpers', () => {
       await workerProcessorMock({ data: { type: 'poll-run', runId: RUN_1 } });
 
       expect(pollRunProgressMock).toHaveBeenCalledWith(RUN_1);
-      expect(removeRepeatableByKeyMock).not.toHaveBeenCalled();
+      expect(removeJobSchedulerMock).not.toHaveBeenCalled();
     });
 
-    it('removes the repeatable poll job once the run reaches a terminal status', async () => {
+    it('removes the job scheduler by its own id once the run reaches a terminal status', async () => {
       await scheduleFleetRemediationDispatchJobs();
       limitMock.mockResolvedValue([{ status: 'succeeded' }]);
       isTerminalRunStatusMock.mockReturnValue(true);
-      getRepeatableJobsMock.mockResolvedValue([
-        { id: buildPollRunJobId(RUN_1), key: 'repeat-key-1', name: 'poll-run' },
-        { id: buildPollRunJobId('other-run'), key: 'repeat-key-2', name: 'poll-run' },
-      ]);
 
       await workerProcessorMock({ data: { type: 'poll-run', runId: RUN_1 } });
 
-      expect(removeRepeatableByKeyMock).toHaveBeenCalledTimes(1);
-      expect(removeRepeatableByKeyMock).toHaveBeenCalledWith('repeat-key-1');
+      expect(removeJobSchedulerMock).toHaveBeenCalledTimes(1);
+      expect(removeJobSchedulerMock).toHaveBeenCalledWith(buildPollRunJobId(RUN_1));
     });
 
-    it('does not remove any repeatable job when the run is not found', async () => {
+    it('does not remove the job scheduler when the run is not found', async () => {
       await scheduleFleetRemediationDispatchJobs();
       limitMock.mockResolvedValue([]);
 
       await workerProcessorMock({ data: { type: 'poll-run', runId: RUN_1 } });
 
-      expect(removeRepeatableByKeyMock).not.toHaveBeenCalled();
+      expect(removeJobSchedulerMock).not.toHaveBeenCalled();
     });
   });
 

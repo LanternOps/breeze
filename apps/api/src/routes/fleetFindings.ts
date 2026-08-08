@@ -66,8 +66,14 @@ const remediateBodySchema = z.object({
   scriptId: z.string().guid().optional(),
   commandType: z.enum(REMEDIATION_COMMAND_TYPE_ALLOWLIST).optional(),
   parameters: z.record(z.string(), z.unknown()).default({}),
-  // Subset of finding membership; absent = all current members.
-  deviceIds: z.array(z.string().guid()).optional(),
+  // Subset of finding membership; absent = all current members. Bounded to
+  // cap request-body size / worst-case validation cost from an authenticated
+  // caller — this is NOT `BULK_COMMAND_MAX_DEVICES` (500, chosen for a
+  // *synchronous* bulk-command endpoint bounded by Cloudflare's proxy
+  // timeout): remediation dispatch is async (BullMQ chunks of its own,
+  // ≤500 each), so a single fleet-wide finding legitimately spanning
+  // thousands of devices is an expected shape, not an abuse signal.
+  deviceIds: z.array(z.string().guid()).max(5000).optional(),
 });
 
 const requireFindingsRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);

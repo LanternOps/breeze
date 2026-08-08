@@ -878,6 +878,17 @@ describe('POST /fleet/findings/:id/remediate', () => {
     expect(createRemediationRunMock).not.toHaveBeenCalled();
   });
 
+  it('rejects a deviceIds array above the 5000-entry bound at the zod validation layer (400)', async () => {
+    const res = await post(makeAuth(), `/${FINDING_1}/remediate`, {
+      actionKind: 'command',
+      commandType: 'reboot',
+      parameters: {},
+      deviceIds: Array.from({ length: 5001 }, () => DEVICE_1),
+    });
+    expect(res.status).toBe(400);
+    expect(createRemediationRunMock).not.toHaveBeenCalled();
+  });
+
   it('maps a RemediationRequestError to its status (403 when the finding is inaccessible)', async () => {
     createRemediationRunMock.mockRejectedValue(new RemediationRequestErrorMock('Finding not found or access denied', 403));
 

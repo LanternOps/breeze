@@ -66,27 +66,30 @@ export async function enqueueRemediationDispatch(runId: string, targetCount: num
     }))
   );
 
-  await queue.add(
-    'poll-run',
-    { type: 'poll-run', runId },
+  // Job Schedulers (not the legacy `queue.add(..., {repeat})` +
+  // `getRepeatableJobs()`/`removeRepeatableByKey()` API used by
+  // jobs/fleetFindings.ts's singleton `scan-orgs` cron) — deliberately, for
+  // this per-RUN dynamic repeatable: a scheduler is addressed by a caller-
+  // chosen id (`buildPollRunJobId(runId)`) and removed by that same id via
+  // `removeJobScheduler`. The legacy API's `getRepeatableJobs()` returns
+  // `RepeatableJob.id` as `undefined` for jobs whose repeat metadata still
+  // exists in Redis (see bullmq's `Repeat.getRepeatableData`, which never
+  // populates `id` off the live hash) — matching on `.id` there always
+  // fails, silently leaking one repeatable poll job per run forever.
+  await queue.upsertJobScheduler(
+    buildPollRunJobId(runId),
+    { every: POLL_INTERVAL_MS },
     {
-      jobId: buildPollRunJobId(runId),
-      repeat: { every: POLL_INTERVAL_MS },
-      removeOnComplete: { count: 20 },
-      removeOnFail: { count: 50 },
+      name: 'poll-run',
+      data: { type: 'poll-run', runId },
+      opts: { removeOnComplete: { count: 20 }, removeOnFail: { count: 50 } },
     }
   );
 }
 
-async function removePollRepeatable(runId: string): Promise<void> {
+async function removePollScheduler(runId: string): Promise<void> {
   const queue = getFleetRemediationDispatchQueue();
-  const jobId = buildPollRunJobId(runId);
-  const repeatables = await queue.getRepeatableJobs();
-  for (const job of repeatables) {
-    if (job.id === jobId) {
-      await queue.removeRepeatableByKey(job.key);
-    }
-  }
+  await queue.removeJobScheduler(buildPollRunJobId(runId));
 }
 
 export function createFleetRemediationDispatchWorker(): Worker<FleetRemediationDispatchJobData> {
@@ -108,7 +111,7 @@ export function createFleetRemediationDispatchWorker(): Worker<FleetRemediationD
       );
 
       if (row && isTerminalRunStatus(row.status)) {
-        await removePollRepeatable(runId);
+        await removePollScheduler(runId);
       }
     },
     {

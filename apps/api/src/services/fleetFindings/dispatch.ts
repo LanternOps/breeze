@@ -155,8 +155,14 @@ export async function createRemediationRun(
     .where(eq(fleetFindingDevices.findingId, findingId));
   const memberIds = new Set(memberRows.map((r) => r.deviceId));
 
-  const candidateIds =
-    req.deviceIds && req.deviceIds.length > 0 ? req.deviceIds : Array.from(memberIds);
+  // Dedupe: `(run_id, target_device_uuid)` is the target table's primary key,
+  // so a caller-supplied `deviceIds` list with a repeated id would otherwise
+  // insert two rows with the same key — the insert throws AFTER the run row
+  // is already committed, leaving an orphaned run stuck in `queued` with no
+  // targets and no dispatch/poll ever enqueued.
+  const candidateIds = Array.from(
+    new Set(req.deviceIds && req.deviceIds.length > 0 ? req.deviceIds : Array.from(memberIds))
+  );
 
   const deviceRows =
     candidateIds.length > 0
@@ -307,15 +313,24 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
       .where(eq(fleetRemediationRuns.id, runId));
   }
 
+  // Page over ALL of the run's targets (not just `pending` ones), ordered by
+  // a stable key, then filter to `pending` in JS. Chunk boundaries must stay
+  // fixed regardless of what other chunks have already done: if the WHERE
+  // clause filtered to `status = 'pending'` directly, chunk 0 marking its
+  // page `queued` would shrink the pending set out from under chunk 1's
+  // `OFFSET 500`, silently skipping the next page of targets entirely. This
+  // also makes the function idempotent under a BullMQ retry of the same
+  // chunkIndex — already-`queued`/`failed` rows in the page are just skipped.
   const targets = await db
     .select()
     .from(fleetRemediationRunTargets)
-    .where(and(eq(fleetRemediationRunTargets.runId, runId), eq(fleetRemediationRunTargets.status, 'pending')))
+    .where(eq(fleetRemediationRunTargets.runId, runId))
     .orderBy(fleetRemediationRunTargets.targetDeviceUuid)
     .limit(REMEDIATION_CHUNK_SIZE)
     .offset(chunkIndex * REMEDIATION_CHUNK_SIZE);
 
-  if (targets.length === 0) return;
+  const pendingTargets = targets.filter((t) => t.status === 'pending');
+  if (pendingTargets.length === 0) return;
 
   let scriptPayload: { language: string; content: string; timeoutSeconds: number; runAs: string } | null = null;
   if (run.actionKind === 'script' && run.scriptId) {
@@ -332,7 +347,7 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
     scriptPayload = script ?? null;
   }
 
-  for (const target of targets) {
+  for (const target of pendingTargets) {
     try {
       let type: string;
       let payload: Record<string, unknown>;

@@ -479,6 +479,26 @@ describe('createRemediationRun — device revalidation matrix', () => {
     expect(result.skipped).toEqual([]);
   });
 
+  it('regression: dedupes a repeated deviceId instead of inserting two target rows with the same PK', async () => {
+    getFleetFindingMock.mockResolvedValue(findingDetail());
+    h.selectQueue.push([{ deviceId: DEVICE_1 }]); // membership
+    h.selectQueue.push([deviceRow({ id: DEVICE_1 })]); // devices lookup — inArray dedupes to one id
+    h.insertReturningQueue.push([{ id: RUN_1 }]);
+
+    const req: RemediateRequest = {
+      actionKind: 'command',
+      commandType: 'reboot',
+      parameters: {},
+      deviceIds: [DEVICE_1, DEVICE_1, DEVICE_1],
+    };
+    const result = await createRemediationRun(makeAuth(), FINDING_1, req);
+
+    expect(result.targetCount).toBe(1);
+    expect(result.skipped).toEqual([]);
+    const insertedTargetRows = h.capturedInserts[1]!.values as Array<Record<string, unknown>>;
+    expect(insertedTargetRows).toHaveLength(1);
+  });
+
   it('produces a mix of valid and skipped targets, never silently dropping a requested device', async () => {
     getFleetFindingMock.mockResolvedValue(findingDetail());
     h.selectQueue.push([{ deviceId: DEVICE_1 }, { deviceId: DEVICE_2 }]); // DEVICE_3 not a member
@@ -675,6 +695,37 @@ describe('dispatchRunChunk', () => {
     h.selectQueue.push([]);
     await dispatchRunChunk(RUN_1, 0);
     expect(h.capturedUpdates).toHaveLength(0);
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+  });
+
+  it('regression: a page containing already-queued targets (from a prior chunk) does not re-dispatch them', async () => {
+    // Simulates chunk 1 running after chunk 0 already marked its own page
+    // `queued` — the WHERE clause must NOT filter to `status = 'pending'`
+    // (that would shrink the pending set out from under this chunk's OFFSET
+    // and silently skip the remainder of the run's targets). The page here
+    // mixes an already-`queued` row with a still-`pending` one; only the
+    // pending one should be dispatched.
+    h.selectQueue.push([runRow({ status: 'running' })]);
+    h.selectQueue.push([
+      { runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'queued', deviceCommandId: 'cmd-already' },
+      { runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_2, status: 'pending' },
+    ]);
+    queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-new' } });
+
+    await dispatchRunChunk(RUN_1, 1);
+
+    expect(queueCommandForExecutionMock).toHaveBeenCalledTimes(1);
+    expect(queueCommandForExecutionMock).toHaveBeenCalledWith(DEVICE_2, expect.anything(), expect.anything(), expect.anything());
+  });
+
+  it('regression: no-ops (does not throw) when a chunk page has zero still-pending targets', async () => {
+    h.selectQueue.push([runRow({ status: 'running' })]);
+    h.selectQueue.push([
+      { runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'succeeded' },
+      { runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_2, status: 'skipped' },
+    ]);
+
+    await expect(dispatchRunChunk(RUN_1, 3)).resolves.toBeUndefined();
     expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
   });
 });
