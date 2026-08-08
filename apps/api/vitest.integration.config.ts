@@ -223,6 +223,11 @@ export default defineConfig({
       // The mocked list suite returns whatever rows it is handed regardless
       // of the predicate and cannot test this at all.
       'src/routes/enrollmentKeysExpiredFilter.integration.test.ts',
+      // Co-located real-DB integration test for the fleet posture report
+      // (#3244): the mixed never-scanned/stale/clean/detected fixture that
+      // guards the two-query split — a mocked unit test cannot catch the
+      // collapsed LEFT JOIN LATERAL form that reads never-scanned as clean.
+      'src/services/managementPostureReport.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;

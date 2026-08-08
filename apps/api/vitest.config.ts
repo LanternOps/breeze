@@ -48,6 +48,11 @@ export default defineConfig({
       // beforeAll), so the unit runner's no-DB environment fails the suite on
       // connect. Belongs to vitest.integration.config.ts.
       'src/routes/agents/changes.integration.test.ts',
+      // Fleet posture report real-DB test (#3244): the mixed
+      // never-scanned/stale/clean/detected fixture needs real Postgres (the
+      // shared integration setup + system DB context), so the no-DB unit
+      // runner must not pick it up. Belongs to vitest.integration.config.ts.
+      'src/services/managementPostureReport.integration.test.ts',
       // Patch ingest status-transition real-DB test (#2725): imports
       // `__tests__/integration/setup` (real postgres pool + autoMigrate), so
       // the no-DB unit runner would fail it on connect. Belongs to

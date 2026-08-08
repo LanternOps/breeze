@@ -1,0 +1,13 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import FleetPostureReport from '../../components/devices/FleetPostureReport';
+import Breadcrumbs from '../../components/layout/Breadcrumbs';
+---
+
+<DashboardLayout title="Fleet Posture">
+  <Breadcrumbs client:load items={[
+    { label: 'Devices', href: '/devices' },
+    { label: 'Fleet Posture' }
+  ]} />
+  <FleetPostureReport client:load />
+</DashboardLayout>

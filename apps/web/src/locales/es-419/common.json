@@ -1,5 +1,6 @@
 {
   "nav": {
+    "fleetPosture": "Postura de la flota",
     "dashboard": "Panel",
     "devices": "Dispositivos",
     "alerts": "Alertas",
