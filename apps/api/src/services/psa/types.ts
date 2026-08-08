@@ -1,10 +1,9 @@
-export type PSAProviderType =
-  | 'jira'
-  | 'servicenow'
-  | 'connectwise'
-  | 'autotask'
-  | 'freshservice'
-  | 'zendesk';
+import type { PsaProviderId } from '@breeze/shared';
+
+// Derived from the single-source provider list in @breeze/shared
+// (packages/shared/src/validators/psa.ts) so API, web, and service layer
+// can never drift.
+export type PSAProviderType = PsaProviderId;
 
 export interface PSAConnectionTest {
   success: boolean;

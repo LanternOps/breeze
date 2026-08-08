@@ -104,6 +104,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // RECONCILE_MAX_LIMIT, and still far better than the whole-handler
   // transaction this registration replaces. Hoisting it out is a follow-up.
   { method: 'POST', pattern: /^\/api\/v1\/backup\/reconcile\/?$/ },
+  // PSA connection "Test connection" — constructs a real PSA adapter and calls
+  // the remote PSA API (psaFetch, 20s timeout) against a TENANT-CONTROLLED
+  // baseUrl; a blackholed host would otherwise pin a pooled connection
+  // idle-in-transaction for the whole call. The handler wraps the connection
+  // read+decrypt and the result persist in their own short withDbAccessContext
+  // blocks (see withPsaDbContext in routes/psa.ts) and runs the HTTP call
+  // between them.
+  { method: 'POST', pattern: /^\/api\/v1\/psa\/connections\/[^/]+\/test\/?$/ },
 ];
 
 /**
