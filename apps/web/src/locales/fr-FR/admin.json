@@ -123,11 +123,11 @@
       "description": {
         "prefix": "Assistants IA et autres clients MCP que les utilisateurs utilisent",
         "yourOrganization": "Votre organisation",
-        "suffix": "Autorisé. Bloquez tout client pour qu’il révoque immédiatement toutes les subventions actives."
+        "suffix": "Autorisé. Bloquez un client pour révoquer immédiatement toutes ses autorisations actives."
       },
       "refresh": "Actualiser",
       "retry": "Réessayer",
-      "noOrg": "Choisissez une organisation dans le commutateur d’organisation pour consulter ses applications connectées.",
+      "noOrg": "Choisissez une organisation dans le sélecteur d’organisation pour consulter ses applications connectées.",
       "thisOrganization": "Cette organisation",
       "errors": {
         "network": "Erreur réseau",
@@ -186,7 +186,7 @@
         "title": "Débloquer {{name}} ?",
         "close": "Fermer",
         "descriptionPrefix": "Les utilisateurs de cette organisation pourront s’autoriser",
-        "descriptionSuffix": "encore. Les subventions existantes restent révoquées — chaque utilisateur doit se connecter à neuf via le flux OAuth.",
+        "descriptionSuffix": "de nouveau. Les autorisations existantes restent révoquées : chaque utilisateur doit se reconnecter via le flux OAuth.",
         "cancel": "Annuler",
         "unblocking": "Déblocage...",
         "unblock": "Débloquer"
@@ -257,7 +257,7 @@
         "testQueued": "Test en file d’attente pour {{name}}. Sondage pour le résultat..."
       },
       "prompt": {
-        "runSmokeTest": "Faire un test de fumée pour {{name}} à quelle version ?"
+        "runSmokeTest": "Sur quelle version souhaitez-vous exécuter le test de vérification de {{name}} ?"
       },
       "platformAdmin": {
         "title": "Accès administrateur de plateforme requis",
@@ -291,7 +291,7 @@
       },
       "actions": {
         "retest": "Retester",
-        "runSmokeTest": "Effectuez un test de fumée",
+        "runSmokeTest": "Exécuter un test de vérification",
         "edit": "Modifier",
         "delete": "Supprimer"
       }

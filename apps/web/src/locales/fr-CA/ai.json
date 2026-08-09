@@ -160,7 +160,7 @@
     "description": "Provisionnez l’assistant IA Excel par organisation cliente : associez le locataire Entra, accordez le consentement administrateur, activez la politique et déployez le complément.",
     "columns": {
       "aiEnabled": "IA activée",
-      "entraTenant": "Entrée locataire",
+      "entraTenant": "Locataire Entra",
       "costMtd": "Coût (MTD)",
       "messagesMtd": "Messages (mois en cours)"
     },

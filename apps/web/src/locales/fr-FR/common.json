@@ -564,7 +564,7 @@
       "lastDecision": "Dernière décision",
       "revokedToast": "{{app}} accès révoqué. Les jetons cessent de fonctionner en moins de 10 minutes.",
       "revokeTitle": "Annuler {{app}} ?",
-      "revokeDescription": "Toutes les subventions et jetons de rafraîchissement pour ce client seront effacés. Les jetons cessent de fonctionner en moins de 10 minutes. Vous devrez réautoriser la prochaine fois que vous l’utiliserez.",
+      "revokeDescription": "Toutes les autorisations et tous les jetons d’actualisation de ce client seront supprimés. Les jetons cesseront de fonctionner en moins de 10 minutes. Vous devrez accorder une nouvelle autorisation lors de la prochaine utilisation.",
       "onlyAppTitle": "C’est votre seule application autorisée.",
       "onlyAppDescription": "Après la révocation, vous devrez réautoriser avant qu’un assistant IA puisse agir sur votre locataire.",
       "reasonPlaceholder": "Plus besoin, activité suspecte, ...",
@@ -583,7 +583,7 @@
     "org": {
       "allOrganizations": "Toutes les organisations",
       "selectTitle": "Organisation sélectionnée (Cmd+O)",
-      "switching": "Échanger...",
+      "switching": "Changement en cours…",
       "organizations": "Organisations",
       "noneAvailable": "Aucune organisation disponible",
       "status": {
@@ -750,9 +750,9 @@
           "removedLabel": "Supprimé :",
           "title": "Réviser le texte soigné",
           "warningDescription": "Notre vérification automatique pense qu’un numéro, une mesure ou un code a pu changer. Comparez attentivement l’avant/après — l’IA peut reformuler des textes, mais elle ne doit pas modifier une spécification, un prix ou un modèle.",
-          "warningTitle": "⚠️ Vérifiez bien les détails avant de postuler."
+          "warningTitle": "⚠️ Vérifiez attentivement les détails avant d’appliquer les modifications."
         },
-        "title": "Corrigez la formulation avec l’IA — vos chiffres et spécifications restent ; Consultez la prévisualisation avant de postuler"
+        "title": "Améliorez la formulation avec l’IA sans modifier vos chiffres ni vos spécifications ; consultez l’aperçu avant d’appliquer les modifications"
       }
     },
     "monitors": {
@@ -1368,7 +1368,7 @@
         },
         "steps": {
           "provider": "Fournisseur",
-          "grantAccess": "Accès aux subventions",
+          "grantAccess": "Accorder l’accès",
           "confirm": "Confirmer",
           "credentials": "Diplômes",
           "scope": "Portée"
@@ -1397,8 +1397,8 @@
           "calendar": "Calendrier"
         },
         "useOwnAppRegistration": "Ou utilisez votre propre inscription à l’application",
-        "switchToManual": "Passage à la saisie manuelle des accréditations",
-        "switchToGrantAccess": "Passer à un accès à la subvention en un clic (recommandé)",
+        "switchToManual": "Passer à la saisie manuelle des identifiants",
+        "switchToGrantAccess": "Passer à l’octroi d’accès en un clic (recommandé)",
         "enterCredentials": "Saisissez vos identifiants de l’application {{provider}}.",
         "tenantId": "Locataire ID",
         "clientId": "ID client",
@@ -1954,7 +1954,7 @@
             "description": "Appuyez sur Cmd+K pour trouver instantanément les appareils, scripts, alertes, utilisateurs ou paramètres."
           },
           "switchOrgs": {
-            "title": "Organisations de changement",
+            "title": "Changer d’organisation",
             "description": "Gérer plusieurs clients ? Passez d’une organisation à l’autre ici."
           },
           "aiHelp": {

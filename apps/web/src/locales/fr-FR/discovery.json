@@ -57,7 +57,7 @@
       "selectManagedDevice": "Sélectionnez un appareil géré"
     },
     "placeholders": {
-      "displayName": "par exemple, interrupteur principal",
+      "displayName": "p. ex., commutateur principal",
       "notes": "par exemple situé dans le placard A, 2e étage",
       "tags": "par exemple critique, étage 2, réseautage"
     },
@@ -204,7 +204,7 @@
       "newProfile": "Nouveau profil"
     },
     "allOrgs": {
-      "description": "La découverte du réseau est regroupée sur une seule organisation, site et agent. Choisissez une organisation dans le commutateur de scope pour visualiser ses actifs découverts, ses profils, ses tâches de balayage et sa topologie."
+      "description": "La découverte réseau est limitée à une seule organisation, un seul site et un seul agent. Choisissez une organisation dans le sélecteur de périmètre pour afficher ses actifs découverts, ses profils, ses tâches d’analyse et sa topologie."
     },
     "confirmDeleteProfile": "Supprimer le profil « {{name}} » ? Cela supprimera également tous les travaux de scan associés.",
     "description": "Configurez les profils de découverte, surveillez les analyses et gérez les actifs réseau.",
@@ -700,7 +700,7 @@
     "server": "Serveur",
     "printer": "Imprimeur",
     "router": "Routeur",
-    "switch": "Changement",
+    "switch": "Commutateur",
     "firewall": "Pare-feu",
     "accessPoint": "Point d’accès",
     "phone": "Téléphone",

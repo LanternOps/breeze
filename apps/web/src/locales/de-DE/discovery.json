@@ -57,7 +57,7 @@
       "selectManagedDevice": "Wählen Sie ein verwaltetes Gerät aus"
     },
     "placeholders": {
-      "displayName": "z.B. Hauptschalter",
+      "displayName": "z. B. Core-Switch",
       "notes": "z.B. Befindet sich im Schrank A, 2. Etage",
       "tags": "z.B. kritisch, Etage 2, Networking"
     },
@@ -700,7 +700,7 @@
     "server": "Server",
     "printer": "Drucker",
     "router": "Router",
-    "switch": "Wechseln",
+    "switch": "Netzwerk-Switch",
     "firewall": "Firewall",
     "accessPoint": "Zugangspunkt",
     "phone": "Telefon",

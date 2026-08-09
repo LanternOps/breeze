@@ -30,7 +30,7 @@
       "target3": "Cible",
       "search": "Rechercher...",
       "loading": "Chargement...",
-      "restrictThisAssignmentToDevicesWithSpecific": "Limitez cette affectation aux appareils ayant des rôles spécifiques. Laissez des postes vacants pour postuler à tous les postes.",
+      "restrictThisAssignmentToDevicesWithSpecific": "Limitez cette affectation aux appareils ayant des rôles précis. Laissez ce champ vide pour l’appliquer à tous les rôles.",
       "lowerValuesOverrideHigherOnesWhenMultiple": "Des valeurs plus basses supplantent les plus élevées lorsque plusieurs politiques ciblent le même appareil au même niveau.",
       "partner": "partenaire",
       "scopeOfTheAssignmentMoreSpecificLevels": "Portée du devoir. Les niveaux plus spécifiques (dispositif) ont le pas sur les niveaux plus larges (organisation).",

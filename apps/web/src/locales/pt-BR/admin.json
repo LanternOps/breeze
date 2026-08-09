@@ -257,7 +257,7 @@
         "testQueued": "Teste enfileirado para {{name}}. Consultando resultado…"
       },
       "prompt": {
-        "runSmokeTest": "Executar teste de fumaça para {{name}} em qual versão?"
+        "runSmokeTest": "Em qual versão deseja executar o teste de verificação de {{name}}?"
       },
       "platformAdmin": {
         "title": "Acesso de administrador da plataforma necessário",
@@ -291,7 +291,7 @@
       },
       "actions": {
         "retest": "Testar novamente",
-        "runSmokeTest": "Executar teste de fumaça",
+        "runSmokeTest": "Executar teste de verificação",
         "edit": "Editar",
         "delete": "Excluir"
       }

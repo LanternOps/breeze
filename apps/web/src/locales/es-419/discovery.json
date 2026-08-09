@@ -57,7 +57,7 @@
       "selectManagedDevice": "Seleccione un dispositivo administrado"
     },
     "placeholders": {
-      "displayName": "p.ej. Interruptor principal",
+      "displayName": "p. ej., conmutador principal",
       "notes": "p.ej. Ubicado en el Armario A, 2do piso.",
       "tags": "p.ej. crítico, piso 2, redes"
     },
@@ -700,7 +700,7 @@
     "server": "Servidor",
     "printer": "Impresora",
     "router": "Enrutador",
-    "switch": "Cambiar",
+    "switch": "Conmutador",
     "firewall": "Cortafuegos",
     "accessPoint": "Punto de acceso",
     "phone": "Teléfono",

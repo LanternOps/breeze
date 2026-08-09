@@ -1400,7 +1400,7 @@
         "switchToManual": "Cambiar a entrada manual de credenciales",
         "switchToGrantAccess": "Cambiar a otorgar acceso con un solo clic (recomendado)",
         "enterCredentials": "Ingrese las credenciales de su aplicación {{provider}}.",
-        "tenantId": "Inquilino ID",
+        "tenantId": "ID del inquilino",
         "clientId": "Cliente ID",
         "clientIdPlaceholder": "Aplicación (cliente) ID",
         "clientSecret": "Secreto del cliente",
@@ -1412,7 +1412,7 @@
           "displayName": "Nombre para mostrar:",
           "scopes": "Alcances:",
           "auth": "Autenticación:",
-          "tenantId": "Inquilino ID:"
+          "tenantId": "ID del inquilino:"
         },
         "platformAppConsent": "Aplicación de plataforma (consentimiento con un clic)",
         "redirectingToMicrosoft": "Redirigiendo a Microsoft...",
@@ -1550,7 +1550,7 @@
         "placeholders": {
           "name": "Núcleo de Cisco",
           "vendor": "Cisco",
-          "deviceType": "Interruptor central",
+          "deviceType": "Conmutador central",
           "description": "Conmutadores de alto rendimiento con múltiples enlaces ascendentes",
           "oidName": "Tiempo de actividad del sistema",
           "oidDescription": "Lo que mide este OID"
@@ -1958,7 +1958,7 @@
             "description": "¿Administra varios clientes? Cambie de organización aquí."
           },
           "aiHelp": {
-            "title": "AI-ayuda impulsada",
+            "title": "Ayuda basada en IA",
             "description": "Haga preguntas sobre su flota, solucione problemas o genere informes. Presione Cmd+Shift+A en cualquier momento."
           }
         },

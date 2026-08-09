@@ -1340,7 +1340,7 @@
     "status": "Estado",
     "actions": "Acciones",
     "noAPIKeysFound": "No se encontraron claves API",
-    "mintedByTheMCPAgentBootstrapFlow": "Acuñado por el flujo de arranque del agente MCP",
+    "mintedByTheMCPAgentBootstrapFlow": "Generada por el flujo de arranque del agente MCP",
     "mCPProvisioning": "MCP Aprovisionamiento",
     "view": "Ver",
     "rotate": "Rotar",
