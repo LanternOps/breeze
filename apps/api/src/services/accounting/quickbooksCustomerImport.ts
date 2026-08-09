@@ -26,6 +26,7 @@ import type {
   CommitRowInput,
   ImportRow,
   OrgImportActor,
+  OrgImportErrorCode,
   OrgImportSummary,
 } from '../orgImport';
 import type { RemoteAddress, RemoteCustomer } from './types';
@@ -150,15 +151,16 @@ export async function listQuickbooksCustomersAnnotated(partnerId: string): Promi
   const annotated = await previewOrgImport(customers.map(toImportRow), partnerId);
   return customers.map((customer, i) => {
     const row = annotated[i];
-    // "Already imported" means a durable link exists — including one whose org
-    // was since soft-deleted. It must be keyed on HOW the row matched, not on
-    // the annotation alone: `matched-soft-deleted` is also reached by NAME, and
-    // an unrelated churned org named "Acme" would then badge the customer as
-    // already imported AND disable its checkbox, blocking it forever. A bare
-    // name match is not linkage — the row stays selectable and the import
-    // answers with the refusal message below.
-    const linked = row?.annotation === 'link-match'
-      || (row?.annotation === 'matched-soft-deleted' && row.matchedBy === 'link');
+    // "Already imported" means a LIVE organization is linked to this customer —
+    // `link-match` and nothing else. The two near-misses both disable the row's
+    // checkbox in the web UI, so getting this wrong strands the customer with
+    // no way to reach the refusal message that explains it:
+    //   - a NAME match (`matched-soft-deleted` is reached by name too) is not
+    //     linkage at all — an unrelated churned org that merely shares a name;
+    //   - a LINK match whose org was since soft-deleted is not importable
+    //     either, but it IS re-importable once the tech restores or replaces
+    //     it, so it must stay selectable.
+    const linked = row?.annotation === 'link-match';
     return {
       ...customer,
       alreadyImported: linked,
@@ -167,62 +169,68 @@ export async function listQuickbooksCustomersAnnotated(partnerId: string): Promi
   });
 }
 
-const BULK_IMPORT = 'Use Settings → Organizations → Bulk import to review and';
+const BULK_IMPORT = 'Settings → Organizations → Bulk import';
 
 /**
  * Why a previewed row is not auto-acknowledged. The seam only commits a
  * name-match or a soft-deleted match against an explicit acknowledgement, and
  * this importer has no confirmation UI to collect one — so it refuses and
- * points at the bulk-import screen, which does. Before the migration onto the
- * seam, a same-named-but-unlinked org silently got a duplicate beside it.
+ * explains. Before the migration onto the seam, a same-named-but-unlinked org
+ * silently got a duplicate beside it.
+ *
+ * The advice must fit the actual situation. Telling a tech to "confirm the
+ * match" when the matched org is ALREADY linked to another QuickBooks customer
+ * is actively harmful: the link unique index is `(partner_id, system,
+ * external_id)`, so confirming adds a SECOND link row and quietly collapses two
+ * QuickBooks customers onto one Breeze tenant.
  */
 function refusalMessage(customer: RemoteCustomer, row: AnnotatedRow | undefined): string {
   const matched = row?.matchedOrganizationName ?? customer.displayName;
+
+  if (row?.matchedOrganizationLinkedToSystem) {
+    return `"${matched}" is already linked to a different QuickBooks customer — `
+      + 'resolve the duplicate in QuickBooks, or unlink that organization in Breeze first.';
+  }
   if (row?.annotation === 'name-match') {
     return `An organization named "${matched}" already exists but isn't linked to QuickBooks. `
-      + `${BULK_IMPORT} confirm the match.`;
+      + `Use ${BULK_IMPORT} to confirm the match, or to create a separate organization.`;
   }
   if (row?.annotation === 'matched-soft-deleted') {
-    return `An organization named "${matched}" was deleted and still matches this customer. `
-      + `${BULK_IMPORT} restore it.`;
+    return row.matchedBy === 'link'
+      ? `This customer was imported before and its organization "${matched}" has since been deleted. `
+        + `Use ${BULK_IMPORT} to restore it, or to create a separate organization.`
+      : `A deleted organization named "${matched}" still matches this customer. `
+        + `Use ${BULK_IMPORT} to restore it, or to create a separate organization.`;
   }
   if (row?.conflictReason) return row.conflictReason;
   return `"${customer.displayName}" could not be matched to an organization — refresh the customer list and try again.`;
 }
 
-// The seam's expectation/link-conflict errors speak the bulk-import UI's
-// language ("re-run preview", "expectedAnnotation"). This screen has no preview
-// step, so the whole class — which can only mean "Breeze changed under the
-// import between our preview and our commit" — collapses into one actionable
-// sentence. Anything else (DB failures) passes through unchanged, as before.
-const SEAM_RECHECK_PREFIXES = [
-  'Annotation changed since preview',
-  'Match changed since preview',
-  'Name matches existing organization',
-  'Matches soft-deleted organization',
-  'External id "',
-];
-
-// Seam messages that describe the CUSTOMER DATA rather than a Breeze failure.
-// They are already human-readable, so they pass through verbatim — but they
-// must not raise a Sentry event: "two of your orgs share a name" is not an
-// incident. (A row normally cannot reach commit in conflict, but it can become
-// one between our preview and our commit.)
-const SEAM_CONFLICT_PREFIXES = [
-  'Multiple existing organizations are named',
-  'Multiple soft-deleted organizations are named',
-  'Organization name "',
-  'Missing organization name',
-  'Row is in conflict',
-];
-
+/**
+ * How this screen renders each seam error CODE. Switching on the code (not on
+ * the message text) is what lets the seam reword its bulk-import copy without
+ * silently changing QuickBooks behavior:
+ *
+ *  - `recheck` — the seam's expectation/link-conflict guards fired, which can
+ *    only mean Breeze changed between our preview and our commit. It speaks the
+ *    bulk-import UI's language ("re-run preview"), and this screen has no
+ *    preview step, so the class collapses into one actionable sentence.
+ *  - `conflict` — describes the customer's DATA ("two of your orgs share this
+ *    name"). Already human-readable, so it passes through verbatim, but it is
+ *    not an incident and must not raise a Sentry event.
+ *  - `failure` — a real write failure. Passes through and is captured.
+ */
 type SeamErrorKind = 'recheck' | 'conflict' | 'failure';
 
-function classifySeamError(message: string): SeamErrorKind {
-  if (SEAM_RECHECK_PREFIXES.some((prefix) => message.startsWith(prefix))) return 'recheck';
-  if (SEAM_CONFLICT_PREFIXES.some((prefix) => message.startsWith(prefix))) return 'conflict';
-  return 'failure';
-}
+const SEAM_ERROR_KIND: Record<OrgImportErrorCode, SeamErrorKind> = {
+  'annotation-changed': 'recheck',
+  'match-changed': 'recheck',
+  'name-match-unconfirmed': 'recheck',
+  'soft-deleted-unconfirmed': 'recheck',
+  'external-id-conflict': 'recheck',
+  'row-conflict': 'conflict',
+  'write-failed': 'failure',
+};
 
 export async function importQuickbooksCustomers(
   input: { partnerId: string; customerIds: string[]; actor?: OrgImportActor }
@@ -345,13 +353,15 @@ function mergeSummary(
 
   for (const row of result.errors) {
     const customer = commitCustomers[row.index];
-    const kind = classifySeamError(row.error);
+    const kind = SEAM_ERROR_KIND[row.code] ?? 'failure';
     const displayName = customer?.displayName ?? row.organization;
     if (kind === 'failure') {
-      // A real failure (DB error, constraint violation). The seam console.errors
-      // the thrown ones; keep the Sentry breadcrumb this importer has always
-      // produced, since the only other trace is a string in the response body.
-      captureException(new Error(`[qb-import] ${row.error}`));
+      // Report the ORIGINAL error, not a reconstruction of its message: the
+      // seam carries it on a non-enumerable `cause`, so Sentry keeps the stack,
+      // the cause chain and the pg SQLSTATE that `.message` alone throws away.
+      captureException(
+        row.cause instanceof Error ? row.cause : new Error(`[qb-import] ${row.error}`),
+      );
     }
     summary.errors.push({
       customerId: customer?.id ?? '',

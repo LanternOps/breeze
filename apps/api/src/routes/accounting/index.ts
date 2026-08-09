@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type MiddlewareHandler } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
@@ -27,12 +27,42 @@ import type { AccountingProviderId } from '../../services/accounting/types';
 export const accountingRoutes = new Hono();
 
 const partnerScopes = requireScope('partner', 'system');
-// The customer routes create organizations + their default sites, so they carry
-// the same permission gates as the bulk org import (routes/orgs.ts /import,
-// /import/preview) — partner scope + MFA alone would let a restricted partner
-// user without orgs:write mass-create orgs.
+
+// The IMPORT route creates organizations and their default sites, so it carries
+// the same permission pair as routes/orgs.ts POST /import. The customer LIST
+// route deliberately does NOT: it only reads QuickBooks and creates nothing,
+// and gating it on write permissions would lock the seeded "Partner Billing"
+// role — which owns the QuickBooks connection — out of a screen it has always
+// been able to browse.
 const requireOrgWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 const requireSiteWrite = requirePermission(PERMISSIONS.SITES_WRITE.resource, PERMISSIONS.SITES_WRITE.action);
+
+/**
+ * `requirePermission` resolves a role from `auth.partnerId`/`auth.orgId`, and a
+ * SYSTEM-scope token carries neither — `getUserPermissions` then returns null
+ * and every system-scope caller 403s, even though `requireScope('partner',
+ * 'system')` advertises support for them and the handler resolves the partner
+ * from `?partnerId=`. System scope is already the most privileged scope and is
+ * gated above, so the per-partner role check does not apply to it.
+ *
+ * Note routes/orgs.ts POST /import has the same latent gap; it is not fixed
+ * here to keep this PR's blast radius on the QuickBooks path.
+ */
+function partnerScopedPermission(...guards: MiddlewareHandler[]): MiddlewareHandler {
+  return async (c, next) => {
+    if (c.get('auth')?.scope === 'system') return next();
+    // Run the guards in order, propagating whatever a denying guard returns
+    // (its 403 Response) instead of falling through to the handler.
+    const run = (i: number): Promise<Response | void> => {
+      const guard = guards[i];
+      if (!guard) return next();
+      return Promise.resolve(guard(c, () => run(i + 1) as Promise<void>));
+    };
+    return run(0);
+  };
+}
+
+const requireImportPermissions = partnerScopedPermission(requireOrgWrite, requireSiteWrite);
 const providerParamSchema = z.object({ provider: z.enum(['quickbooks']) });
 const partnerQuerySchema = z.object({ partnerId: z.string().guid().optional() });
 const callbackQuerySchema = z.object({
@@ -267,10 +297,10 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('pa
 });
 
 // List remote QuickBooks customers, annotated with whether each is already
-// imported. Read-only but partner-privileged, so partner/system scope; it is
-// the preview step of an org+site create, so it carries the same write gates as
-// routes/orgs.ts POST /import/preview.
-accountingRoutes.get('/:provider/customers', authMiddleware, partnerScopes, requireOrgWrite, requireSiteWrite, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+// imported. Read-only — it creates nothing in Breeze — so partner/system scope
+// is the whole gate; see requireImportPermissions for why no write permission
+// is required here.
+accountingRoutes.get('/:provider/customers', authMiddleware, partnerScopes, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
@@ -285,7 +315,7 @@ accountingRoutes.get('/:provider/customers', authMiddleware, partnerScopes, requ
 });
 
 // Import selected QuickBooks customers as orgs + sites. Write + MFA-gated.
-accountingRoutes.post('/:provider/customers/import', authMiddleware, partnerScopes, requireOrgWrite, requireSiteWrite, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', importCustomersSchema), async (c) => {
+accountingRoutes.post('/:provider/customers/import', authMiddleware, partnerScopes, requireImportPermissions, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', importCustomersSchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);

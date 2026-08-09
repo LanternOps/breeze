@@ -8,7 +8,10 @@ const { listAnnotatedMock, importMock, writeRouteAuditMock, QbImportError, authS
   class QbImportError extends Error { code: string; status: number; constructor(m: string, c: string, s: number) { super(m); this.code = c; this.status = s; } }
   // Both customer routes create orgs + default sites, so both are gated on
   // organizations:write + sites:write.
-  const authState = { permissions: new Set<string>(['organizations:write', 'sites:write']) };
+  const authState = {
+    scope: 'partner' as 'partner' | 'system',
+    permissions: new Set<string>(['organizations:write', 'sites:write']),
+  };
   return { listAnnotatedMock, importMock, writeRouteAuditMock, QbImportError, authState };
 });
 vi.mock('../../services/accounting/quickbooksCustomerImport', () => ({
@@ -19,7 +22,14 @@ vi.mock('../../services/accounting/quickbooksCustomerImport', () => ({
 
 // Auth middleware stubs: inject a partner-scoped auth context.
 vi.mock('../../middleware/auth', () => ({
-  authMiddleware: async (c: any, next: any) => { c.set('auth', { scope: 'partner', partnerId: 'p1', user: { id: 'u1' } }); await next(); },
+  authMiddleware: async (c: any, next: any) => {
+    c.set('auth', {
+      scope: authState.scope,
+      partnerId: authState.scope === 'system' ? null : 'p1',
+      user: { id: 'u1' },
+    });
+    await next();
+  },
   requireScope: () => async (_c: any, next: any) => next(),
   requireMfa: () => async (_c: any, next: any) => next(),
   requirePermission: (resource: string, action: string) => async (c: any, next: any) => {
@@ -47,6 +57,7 @@ function app() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  authState.scope = 'partner';
   authState.permissions = new Set(['organizations:write', 'sites:write']);
 });
 
@@ -86,18 +97,14 @@ describe('GET /accounting/:provider/customers', () => {
     expect(listAnnotatedMock).not.toHaveBeenCalled();
   });
 
-  it('denies a caller without organizations:write (403)', async () => {
-    authState.permissions = new Set(['sites:write']);
+  it('allows a read-only caller with NO write permissions (listing creates nothing)', async () => {
+    // The seeded "Partner Billing" role owns the QuickBooks connection but has
+    // no orgs:write — it must still be able to browse customers.
+    authState.permissions = new Set();
+    listAnnotatedMock.mockResolvedValue([]);
     const res = await app().request('/accounting/quickbooks/customers');
-    expect(res.status).toBe(403);
-    expect(listAnnotatedMock).not.toHaveBeenCalled();
-  });
-
-  it('denies a caller without sites:write (403)', async () => {
-    authState.permissions = new Set(['organizations:write']);
-    const res = await app().request('/accounting/quickbooks/customers');
-    expect(res.status).toBe(403);
-    expect(listAnnotatedMock).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(listAnnotatedMock).toHaveBeenCalled();
   });
 });
 
@@ -144,6 +151,24 @@ describe('POST /accounting/:provider/customers/import', () => {
     });
     expect(res.status).toBe(403);
     expect(importMock).not.toHaveBeenCalled();
+  });
+
+  it('allows a SYSTEM-scope caller that holds no per-partner role', async () => {
+    // requirePermission resolves a role from auth.partnerId/orgId, which a
+    // system-scope token does not have — without the bypass every system-scope
+    // import 403s while requireScope still advertises support for it.
+    authState.scope = 'system';
+    authState.permissions = new Set();
+    importMock.mockResolvedValue({ imported: [], skipped: [], errors: [] });
+    const res = await app().request('/accounting/quickbooks/customers/import?partnerId=11111111-1111-4111-8111-111111111111', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customerIds: ['1'] }),
+    });
+    expect(res.status).toBe(200);
+    expect(importMock).toHaveBeenCalledWith(expect.objectContaining({
+      partnerId: '11111111-1111-4111-8111-111111111111',
+    }));
   });
 
   it('rejects an empty customerIds array with 400', async () => {

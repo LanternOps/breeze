@@ -180,15 +180,17 @@ describe('listQuickbooksCustomersAnnotated', () => {
     expect(result[0]).toMatchObject({ alreadyImported: false, organizationId: null });
   });
 
-  it('DOES mark a link-matched soft-deleted org as already imported', async () => {
+  it('does NOT mark a LINK-matched customer whose org was soft-deleted as already imported', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-9', displayName: 'Acme' }]);
-    // This one really was imported before; the org was deleted afterwards.
+    // Imported before, org deleted since. Reporting it as already-imported
+    // disables its checkbox forever — but it IS re-importable once the tech
+    // restores or replaces the org, so it must stay selectable.
     stubState(
       [{ id: 'org-dead', name: 'Acme', slug: 'acme', deletedAt: new Date() }],
       [{ orgId: 'org-dead', system: 'quickbooks', externalId: 'qb-9' }],
     );
     const result = await listQuickbooksCustomersAnnotated('p1');
-    expect(result[0]).toMatchObject({ alreadyImported: true, organizationId: 'org-dead' });
+    expect(result[0]).toMatchObject({ alreadyImported: false, organizationId: null });
   });
 
   it('throws QbImportError(not_connected) when no connection exists', async () => {
@@ -340,9 +342,32 @@ describe('importQuickbooksCustomers', () => {
       customerId: '1',
       displayName: 'Acme',
       error: 'An organization named "Acme" already exists but isn\'t linked to QuickBooks. '
-        + 'Use Settings → Organizations → Bulk import to review and confirm the match.',
+        + 'Use Settings → Organizations → Bulk import to confirm the match, or to create a separate organization.',
     }]);
     // The old behavior silently created a SECOND org beside the existing one.
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses with DIFFERENT advice when the name-matched org is already linked to another QB customer', async () => {
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-new', displayName: 'Acme' }]);
+    // org-1 is already linked to QuickBooks customer "qb-old". Telling the tech
+    // to "confirm the match" would add a SECOND link row for the same org (the
+    // unique index is on (partner_id, system, external_id)) and collapse two QB
+    // customers onto one tenant.
+    stubState(
+      [{ id: 'org-1', name: 'Acme', slug: 'acme' }],
+      [{ orgId: 'org-1', system: 'quickbooks', externalId: 'qb-old' }],
+    );
+
+    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['qb-new'] });
+
+    expect(summary.errors).toEqual([{
+      customerId: 'qb-new',
+      displayName: 'Acme',
+      error: '"Acme" is already linked to a different QuickBooks customer — '
+        + 'resolve the duplicate in QuickBooks, or unlink that organization in Breeze first.',
+    }]);
+    expect(summary.errors[0]!.error).not.toContain('Bulk import');
     expect(insertMock).not.toHaveBeenCalled();
   });
 
@@ -356,11 +381,27 @@ describe('importQuickbooksCustomers', () => {
     expect(summary.errors).toEqual([{
       customerId: '1',
       displayName: 'Acme',
-      error: 'An organization named "Acme" was deleted and still matches this customer. '
-        + 'Use Settings → Organizations → Bulk import to review and restore it.',
+      error: 'A deleted organization named "Acme" still matches this customer. '
+        + 'Use Settings → Organizations → Bulk import to restore it, or to create a separate organization.',
     }]);
     expect(insertMock).not.toHaveBeenCalled();
     expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('tells a previously-imported customer that ITS organization was deleted', async () => {
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-9', displayName: 'Acme' }]);
+    stubState(
+      [{ id: 'org-dead', name: 'Acme', slug: 'acme', deletedAt: new Date() }],
+      [{ orgId: 'org-dead', system: 'quickbooks', externalId: 'qb-9' }],
+    );
+    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['qb-9'] });
+    expect(summary.errors).toEqual([{
+      customerId: 'qb-9',
+      displayName: 'Acme',
+      error: 'This customer was imported before and its organization "Acme" has since been deleted. '
+        + 'Use Settings → Organizations → Bulk import to restore it, or to create a separate organization.',
+    }]);
+    expect(insertMock).not.toHaveBeenCalled();
   });
 
   it('still imports the other customers when one is refused (partial refusal)', async () => {
@@ -383,6 +424,46 @@ describe('importQuickbooksCustomers', () => {
     expect(summary.imported).toHaveLength(1);
     expect(summary.imported[0]!.customerId).toBe('2');
     // A genuine failure keeps its Sentry breadcrumb.
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+
+  it('passes the ORIGINAL error to Sentry, not a rebuilt one (keeps stack + pg code)', async () => {
+    listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
+    stubState();
+    const pgErr = Object.assign(new Error('deadlock detected'), { code: '40P01' });
+    stubInserts({ failOn: () => pgErr });
+
+    await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+
+    expect(captureExceptionMock).toHaveBeenCalledWith(pgErr);
+  });
+
+  it('does not Sentry-report a customer-data conflict', async () => {
+    listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
+    // Two live orgs share the name → the seam annotates 'conflict'.
+    stubState([
+      { id: 'org-1', name: 'Acme', slug: 'acme' },
+      { id: 'org-2', name: 'Acme', slug: 'acme-2' },
+    ], []);
+
+    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+
+    expect(summary.errors).toHaveLength(1);
+    expect(summary.errors[0]!.error).toContain('Multiple existing organizations are named');
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('classifies seam errors by CODE, so rewording seam copy cannot change behavior', async () => {
+    listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
+    stubState();
+    // A write failure whose message happens to read like a seam recheck string.
+    stubInserts({ failOn: () => new Error('Annotation changed since preview: totally not a recheck') });
+
+    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
+
+    // Prefix matching would have swallowed this as a benign "changed in Breeze"
+    // notice and skipped the Sentry event.
+    expect(summary.errors[0]!.error).toContain('totally not a recheck');
     expect(captureExceptionMock).toHaveBeenCalled();
   });
 
