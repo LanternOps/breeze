@@ -43,11 +43,11 @@ export class PsaCapabilityError extends Error {
 /**
  * Default ceiling on companies pulled from one PSA in one import.
  *
- * Aligned with the org-import seam's `MAX_IMPORT_ROWS` (1000): a preview that
- * returned more rows than the commit route's zod schema accepts would be a
- * dead end for the user.
+ * Defined in @breeze/shared alongside the capability list — the web UI quotes
+ * this number in its truncation warning, so it must be the same constant the
+ * server enforces, not a copy.
  */
-export const PSA_COMPANY_LIST_CAP = 1000;
+export { PSA_COMPANY_LIST_CAP } from '@breeze/shared';
 
 export interface PSAConnectionTest {
   success: boolean;

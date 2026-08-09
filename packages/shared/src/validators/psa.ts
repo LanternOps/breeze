@@ -61,3 +61,14 @@ export function isOrgImportCapableProvider(
 ): provider is OrgImportCapablePsaProvider {
   return (ORG_IMPORT_CAPABLE_PSA_PROVIDERS as readonly string[]).includes(provider);
 }
+
+/**
+ * Default ceiling on companies pulled from one PSA in one import (#3246).
+ *
+ * Lives here rather than in the API because the WEB UI quotes it in the
+ * truncation warning — the number a tech reads has to be the number the server
+ * actually enforced. Aligned with the org-import seam's `MAX_IMPORT_ROWS`
+ * (1000): a preview returning more rows than the commit route accepts would be
+ * a dead end.
+ */
+export const PSA_COMPANY_LIST_CAP = 1000;

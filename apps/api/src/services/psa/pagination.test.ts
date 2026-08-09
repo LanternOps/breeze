@@ -106,7 +106,7 @@ describe('collectPaginated', () => {
     expect(fetchPage).toHaveBeenNthCalledWith(3, 'p3');
   });
 
-  it('stops at the cap and reports truncated when more pages remain', async () => {
+  it('stops once it overshoots the cap and reports truncated', async () => {
     const fetchPage = vi
       .fn()
       .mockResolvedValueOnce({ items: [1, 2, 3], next: 'p2' })
@@ -115,7 +115,6 @@ describe('collectPaginated', () => {
     const result = await collectPaginated<number>(4, fetchPage);
 
     expect(result).toEqual({ items: [1, 2, 3, 4], truncated: true });
-    // Stopped as soon as the cap was reached — no third request.
     expect(fetchPage).toHaveBeenCalledTimes(2);
   });
 
@@ -130,15 +129,47 @@ describe('collectPaginated', () => {
     expect(result).toEqual({ items: [1, 2, 3, 4], truncated: false });
   });
 
-  it('IS truncated when the cap is hit exactly but another page is offered', async () => {
+  it('reads ONE page past an exact-multiple cap rather than crying truncation', async () => {
+    // The page/offset providers infer "another page exists" from a full page,
+    // so a partner holding exactly `limit` companies would otherwise be told
+    // rows were dropped when none were. The extra page disambiguates.
     const fetchPage = vi
       .fn()
       .mockResolvedValueOnce({ items: [1, 2], next: 'p2' })
-      .mockResolvedValueOnce({ items: [3, 4], next: 'p3' });
+      .mockResolvedValueOnce({ items: [3, 4], next: 'p3' }) // full page ⇒ inferred next
+      .mockResolvedValueOnce({ items: [], next: null });
+
+    const result = await collectPaginated<number>(4, fetchPage);
+
+    expect(result).toEqual({ items: [1, 2, 3, 4], truncated: false });
+    expect(fetchPage).toHaveBeenCalledTimes(3);
+  });
+
+  it('IS truncated when the page past the cap actually yields more', async () => {
+    const fetchPage = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [1, 2], next: 'p2' })
+      .mockResolvedValueOnce({ items: [3, 4], next: 'p3' })
+      .mockResolvedValueOnce({ items: [5, 6], next: 'p4' });
 
     const result = await collectPaginated<number>(4, fetchPage);
 
     expect(result).toEqual({ items: [1, 2, 3, 4], truncated: true });
+  });
+
+  it('stops on the wall-clock budget and reports truncated', async () => {
+    // A slow tenant-controlled host must not be able to keep one preview
+    // dialing for MAX_PSA_PAGES × the per-request timeout.
+    const nowSpy = vi.spyOn(Date, 'now');
+    nowSpy.mockReturnValueOnce(0).mockReturnValue(60_001);
+
+    const fetchPage = vi.fn().mockResolvedValue({ items: [1], next: 'more' });
+
+    const result = await collectPaginated<number>(1000, fetchPage);
+
+    expect(result.truncated).toBe(true);
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+    nowSpy.mockRestore();
   });
 
   it('terminates on an empty page even if a cursor keeps being offered', async () => {

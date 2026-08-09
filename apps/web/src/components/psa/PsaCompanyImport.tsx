@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { isOrgImportCapableProvider, type PsaProviderId } from '@breeze/shared';
+import { PSA_COMPANY_LIST_CAP, isOrgImportCapableProvider, type PsaProviderId } from '@breeze/shared';
 import OrgImportPreviewTable, {
   defaultPreviewSelection,
   toCommitRow,
@@ -23,12 +23,6 @@ import '../../lib/i18n';
  * raise (CSV never can).
  */
 
-/**
- * Ceiling the API applies to one company listing. Mirrors
- * `PSA_COMPANY_LIST_CAP` in apps/api/src/services/psa/types.ts; used for copy
- * only — the server, not this constant, enforces it.
- */
-const PSA_COMPANY_LIST_CAP = 1000;
 
 export interface PsaImportConnection {
   id: string;

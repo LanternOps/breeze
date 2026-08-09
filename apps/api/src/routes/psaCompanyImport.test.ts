@@ -355,6 +355,30 @@ describe('POST /connections/:id/import/preview', () => {
     expect((await res.json()).error).toContain('upstream exploded');
   });
 
+  it('403s when an org-owned connection resolves to a DIFFERENT partner', async () => {
+    // Defense in depth. ensureConnectionAccess already implies this via
+    // canAccessOrg, but if that helper ever loosened, the explicit partner
+    // equality check is what still stops a cross-tenant import.
+    selectQueue.push([connectionRow({ orgId: 'org-5', partnerId: null })]);
+    selectQueue.push([{ partnerId: OTHER_PARTNER }]);
+
+    const res = await preview();
+
+    expect(res.status).toBe(403);
+    expect(getCompaniesMock).not.toHaveBeenCalled();
+    expect(previewOrgImportMock).not.toHaveBeenCalled();
+  });
+
+  it('404s when an org-owned connection has no resolvable partner', async () => {
+    selectQueue.push([connectionRow({ orgId: 'org-5', partnerId: null })]);
+    selectQueue.push([]);
+
+    const res = await preview();
+
+    expect(res.status).toBe(404);
+    expect(getCompaniesMock).not.toHaveBeenCalled();
+  });
+
   it('resolves the partner from the OWNING ORG for an org-owned connection', async () => {
     selectQueue.push([connectionRow({ orgId: 'org-5', partnerId: null })]);
     selectQueue.push([{ partnerId: PARTNER }]);
@@ -503,5 +527,17 @@ describe('POST /connections/:id/import', () => {
     queueConnection();
     await commit({ rows: [{ organization: 'Acme', externalId: '1' }], mode: 'skip' });
     expect(getCompaniesMock).not.toHaveBeenCalled();
+  });
+
+  it('does not decrypt credentials or build an adapter on the commit path', async () => {
+    // Commit never talks to the PSA, so a connection whose credentials were
+    // rotated (or are unreadable) must still be able to finish an import the
+    // user already previewed.
+    queueConnection();
+
+    const res = await commit({ rows: [{ organization: 'Acme', externalId: '1' }], mode: 'skip' });
+
+    expect(res.status).toBe(200);
+    expect(createPSAProviderMock).not.toHaveBeenCalled();
   });
 });

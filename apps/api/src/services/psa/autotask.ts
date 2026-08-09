@@ -151,7 +151,10 @@ export class AutotaskProvider implements PSAProvider {
         ? await this.requestUrl<AutotaskCompanyResponse>('GET', cursor)
         : await this.request<AutotaskCompanyResponse>(
             'GET',
-            `/v1.0/Companies?$select=id,companyName&MaxRecords=${PSA_COMPANY_PAGE_SIZE}`
+            // `$top`, matching testConnection on this same endpoint. (`MaxRecords`
+            // is a field of Autotask's /query search JSON, not a URL parameter —
+            // it would be ignored here, making the page-size constant a lie.)
+            `/v1.0/Companies?$select=id,companyName&$top=${PSA_COMPANY_PAGE_SIZE}`
           );
 
       const nextPageUrl = Array.isArray(response)

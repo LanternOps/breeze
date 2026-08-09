@@ -1176,7 +1176,6 @@ interface ResolvedImportConnection {
   connection: PsaConnectionRow;
   partnerId: string;
   provider: OrgImportCapablePsaProvider;
-  source: PsaCompanyImportSource;
 }
 
 type ImportResolution =
@@ -1185,10 +1184,15 @@ type ImportResolution =
 
 /**
  * Shared front half of both import routes: load the connection, prove access,
- * prove capability, and build the import source from decrypted credentials.
+ * prove capability, and resolve the owning partner.
  *
  * Returns either the resolved bundle or a ready-to-send error, so the two
  * handlers cannot drift on any of the gates.
+ *
+ * Deliberately does NOT touch credentials. Commit makes no outbound call, so
+ * decrypting there would both do needless secret handling and let a connection
+ * with rotated credentials 400 a commit that never needed them — see
+ * `buildImportSource`, which preview alone calls.
  */
 async function resolveImportConnection(
   auth: AuthContext,
@@ -1234,6 +1238,17 @@ async function resolveImportConnection(
     return { ok: false, error: 'Access denied', status: 403 };
   }
 
+  return { ok: true, value: { connection, partnerId, provider } };
+}
+
+/**
+ * Decrypt credentials and build the company-import source. PREVIEW ONLY — the
+ * only half of the feature that talks to the PSA.
+ */
+function buildImportSource(
+  connection: PsaConnectionRow,
+  provider: OrgImportCapablePsaProvider
+): { ok: true; source: PsaCompanyImportSource } | { ok: false; error: string; status: 400 } {
   const credentials = decryptCredentials(connection.credentials);
   if (!credentials) {
     return { ok: false, error: 'PSA connection has no usable credentials', status: 400 };
@@ -1253,10 +1268,7 @@ async function resolveImportConnection(
     throw error;
   }
 
-  return {
-    ok: true,
-    value: { connection, partnerId, provider, source: createPsaCompanyImportSource({ provider, client }) }
-  };
+  return { ok: true, source: createPsaCompanyImportSource({ provider, client }) };
 }
 
 /** Map an outbound-listing failure onto an honest status. */
@@ -1266,8 +1278,19 @@ function companyListingError(error: unknown): { error: string; status: 400 | 502
   }
   if (error instanceof PsaCursorOriginError) {
     // The PSA steered pagination off its own host. Refused before dialing, so
-    // no credentials left the process — but the caller deserves the reason.
-    return { error: error.message, status: 502 };
+    // no credentials left the process.
+    //
+    // The overwhelmingly likely CAUSE is benign, so the message has to be
+    // actionable rather than just accusatory: Autotask assigns each customer a
+    // zone host and returns `nextPageUrl` on that zone, so a connection saved
+    // with the generic entry-point URL trips this on page 2 every time. The
+    // remedy is to correct the connection's base URL.
+    return {
+      error:
+        `${error.message}. If this is Autotask, set the connection's base URL to your ` +
+        `assigned zone URL (the host Autotask returns from zoneInformation), not the generic entry point.`,
+      status: 502
+    };
   }
   return {
     error: error instanceof Error
@@ -1298,12 +1321,17 @@ psaRoutes.post(
     if (!resolved.ok) {
       return c.json({ error: resolved.error }, resolved.status);
     }
-    const { partnerId, source } = resolved.value;
+    const { connection, partnerId, provider } = resolved.value;
+
+    const built = buildImportSource(connection, provider);
+    if (!built.ok) {
+      return c.json({ error: built.error }, built.status);
+    }
 
     // Outbound HTTP — deliberately outside every DB context above.
     let listing;
     try {
-      listing = await source.listCompanies({ partnerId });
+      listing = await built.source.listCompanies({ partnerId });
     } catch (error) {
       const mapped = companyListingError(error);
       return c.json({ error: mapped.error }, mapped.status);

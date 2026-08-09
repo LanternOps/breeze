@@ -81,13 +81,25 @@ export interface PsaCompanyImportSource extends OrgImportSource {
   listCompanies(ctx: OrgImportContext): Promise<PsaCompanyListing>;
 }
 
+/**
+ * Max organization name the commit route's zod schema accepts.
+ *
+ * The seam itself already clamps to this width when it writes
+ * (`clamp(group.organization, 255)`), but the WIRE schema rejects instead — so
+ * a single PSA company with an over-long name would preview cleanly and then
+ * 400 the ENTIRE commit batch, with no per-row remedy available to the user.
+ * Clamping at the mapping boundary keeps the batch importable and matches what
+ * the database would have stored anyway.
+ */
+const MAX_ORGANIZATION_NAME = 255;
+
 /** `PSACompany` → `ImportRow`. Exported for direct unit testing of the mapping. */
 export function psaCompanyToImportRow(
   company: PSACompany,
   system: OrgImportCapablePsaProvider
 ): ImportRow {
   return {
-    organization: company.name,
+    organization: company.name.slice(0, MAX_ORGANIZATION_NAME),
     // `externalId` is the vendor's stable UID; `id` is the same value for every
     // current adapter, but prefer the explicit field and fall back so a future
     // adapter that distinguishes them cannot silently produce an unkeyed row.
