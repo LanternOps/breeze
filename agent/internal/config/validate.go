@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/logging"
 )
 
@@ -88,6 +89,15 @@ func (c *Config) ValidateTiered() ValidationResult {
 			result.Fatals = append(result.Fatals, fmt.Errorf("server_url %q is not a valid URL: %w", c.ServerURL, err))
 		} else if u.Scheme != "http" && u.Scheme != "https" {
 			result.Fatals = append(result.Fatals, fmt.Errorf("server_url scheme must be http or https, got %q", u.Scheme))
+		} else if hostpolicy.Strict() {
+			// GAP-MODEL: only the strict build hard-fails a non-allowlisted
+			// primary server_url on this existing-fleet runtime path. A gap
+			// build (allowlist set, strict off) must not degrade a
+			// self-hosted fleet's persisted config — the migration is
+			// signaled elsewhere, not enforced here.
+			if err := hostpolicy.AllowedURL(c.ServerURL); err != nil {
+				result.Fatals = append(result.Fatals, err)
+			}
 		}
 	}
 
@@ -256,6 +266,15 @@ func ValidateBackupServerURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
 		return fmt.Errorf("backup_server_url %q is not a valid URL", raw)
+	}
+	if hostpolicy.Strict() {
+		// GAP-MODEL: only the strict build refuses a non-allowlisted backup
+		// host on this existing-fleet runtime path (enroll-response backup,
+		// heartbeat configUpdate push, self-heal). A gap build accepts it —
+		// the migration is signaled elsewhere, not enforced here.
+		if err := hostpolicy.AllowedURL(raw); err != nil {
+			return err
+		}
 	}
 	switch u.Scheme {
 	case "https":
