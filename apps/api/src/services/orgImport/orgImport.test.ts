@@ -130,6 +130,39 @@ describe('previewOrgImport', () => {
     expect(rows[0]).toMatchObject({ annotation: 'link-match', organizationId: 'org-1', matchedOrganizationName: 'Acme Co', slug: null });
   });
 
+  it('reports matchedBy so callers can tell a linked match from a name-only one', async () => {
+    // Same annotation ('matched-soft-deleted'), two very different facts: this
+    // dead org was never linked to the row's external id, it just shares a
+    // name. A caller that reads the annotation alone treats an unrelated
+    // churned org as "already imported".
+    stubState([{ id: 'org-dead', name: 'Acme', slug: 'acme', deletedAt: new Date() }], []);
+    const byName = await previewOrgImport([{ organization: 'Acme', externalId: 'x1', externalSystem: 'quickbooks' }], 'p1');
+    expect(byName[0]).toMatchObject({ annotation: 'matched-soft-deleted', matchedBy: 'name', organizationId: 'org-dead' });
+
+    stubState(
+      [{ id: 'org-dead', name: 'Acme', slug: 'acme', deletedAt: new Date() }],
+      [{ orgId: 'org-dead', system: 'quickbooks', externalId: 'x1' }],
+    );
+    const byLink = await previewOrgImport([{ organization: 'Acme', externalId: 'x1', externalSystem: 'quickbooks' }], 'p1');
+    expect(byLink[0]).toMatchObject({ annotation: 'matched-soft-deleted', matchedBy: 'link' });
+  });
+
+  it('marks an active name-match as matchedBy name and a link-match as matchedBy link', async () => {
+    stubState([{ id: 'org-1', name: 'Acme', slug: 'acme' }], []);
+    const nameRows = await previewOrgImport([{ organization: 'Acme' }], 'p1');
+    expect(nameRows[0]).toMatchObject({ annotation: 'name-match', matchedBy: 'name' });
+
+    stubState([{ id: 'org-1', name: 'Acme', slug: 'acme' }], [{ orgId: 'org-1', system: 'csv', externalId: '7' }]);
+    const linkRows = await previewOrgImport([{ organization: 'Acme', externalId: '7' }], 'p1');
+    expect(linkRows[0]).toMatchObject({ annotation: 'link-match', matchedBy: 'link' });
+  });
+
+  it('leaves matchedBy unset on a create row', async () => {
+    stubState([], []);
+    const rows = await previewOrgImport([{ organization: 'Acme' }], 'p1');
+    expect(rows[0]).not.toHaveProperty('matchedBy');
+  });
+
   it('matches via the legacy accounting_* columns when no link row exists (union read)', async () => {
     stubState(
       [{ id: 'org-1', name: 'Acme', slug: 'acme', accountingProvider: 'quickbooks', accountingExternalId: 'qb-7' }],

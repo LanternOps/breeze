@@ -150,10 +150,15 @@ export async function listQuickbooksCustomersAnnotated(partnerId: string): Promi
   const annotated = await previewOrgImport(customers.map(toImportRow), partnerId);
   return customers.map((customer, i) => {
     const row = annotated[i];
-    // "Already imported" means a durable link exists (or the linked org is
-    // soft-deleted). A bare name match is NOT already-imported: nothing links
-    // that org to this customer yet, and the import refuses it (see below).
-    const linked = row?.annotation === 'link-match' || row?.annotation === 'matched-soft-deleted';
+    // "Already imported" means a durable link exists — including one whose org
+    // was since soft-deleted. It must be keyed on HOW the row matched, not on
+    // the annotation alone: `matched-soft-deleted` is also reached by NAME, and
+    // an unrelated churned org named "Acme" would then badge the customer as
+    // already imported AND disable its checkbox, blocking it forever. A bare
+    // name match is not linkage — the row stays selectable and the import
+    // answers with the refusal message below.
+    const linked = row?.annotation === 'link-match'
+      || (row?.annotation === 'matched-soft-deleted' && row.matchedBy === 'link');
     return {
       ...customer,
       alreadyImported: linked,
@@ -198,8 +203,25 @@ const SEAM_RECHECK_PREFIXES = [
   'External id "',
 ];
 
-function isSeamRecheckError(message: string): boolean {
-  return SEAM_RECHECK_PREFIXES.some((prefix) => message.startsWith(prefix));
+// Seam messages that describe the CUSTOMER DATA rather than a Breeze failure.
+// They are already human-readable, so they pass through verbatim — but they
+// must not raise a Sentry event: "two of your orgs share a name" is not an
+// incident. (A row normally cannot reach commit in conflict, but it can become
+// one between our preview and our commit.)
+const SEAM_CONFLICT_PREFIXES = [
+  'Multiple existing organizations are named',
+  'Multiple soft-deleted organizations are named',
+  'Organization name "',
+  'Missing organization name',
+  'Row is in conflict',
+];
+
+type SeamErrorKind = 'recheck' | 'conflict' | 'failure';
+
+function classifySeamError(message: string): SeamErrorKind {
+  if (SEAM_RECHECK_PREFIXES.some((prefix) => message.startsWith(prefix))) return 'recheck';
+  if (SEAM_CONFLICT_PREFIXES.some((prefix) => message.startsWith(prefix))) return 'conflict';
+  return 'failure';
 }
 
 export async function importQuickbooksCustomers(
@@ -323,18 +345,18 @@ function mergeSummary(
 
   for (const row of result.errors) {
     const customer = commitCustomers[row.index];
-    const recheck = isSeamRecheckError(row.error);
+    const kind = classifySeamError(row.error);
     const displayName = customer?.displayName ?? row.organization;
-    if (!recheck) {
-      // A real failure (DB error, constraint violation). The seam already
-      // console.errors it; keep the Sentry breadcrumb this importer has always
+    if (kind === 'failure') {
+      // A real failure (DB error, constraint violation). The seam console.errors
+      // the thrown ones; keep the Sentry breadcrumb this importer has always
       // produced, since the only other trace is a string in the response body.
       captureException(new Error(`[qb-import] ${row.error}`));
     }
     summary.errors.push({
       customerId: customer?.id ?? '',
       ...(displayName ? { displayName } : {}),
-      error: recheck
+      error: kind === 'recheck'
         ? `"${displayName ?? 'This customer'}" changed in Breeze while the import was running — `
           + 'refresh the customer list and try again.'
         : row.error,

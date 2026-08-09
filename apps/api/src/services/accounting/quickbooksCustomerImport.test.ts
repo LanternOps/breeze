@@ -169,6 +169,28 @@ describe('listQuickbooksCustomersAnnotated', () => {
     expect(result[0]).toMatchObject({ alreadyImported: false, organizationId: null });
   });
 
+  it('does NOT mark a name-matched SOFT-DELETED org as already imported', async () => {
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-9', displayName: 'Acme' }]);
+    // An unrelated churned org that merely shares the name. Reporting it as
+    // already-imported would badge the customer green AND disable its checkbox
+    // in the web UI, blocking the import forever with no way to reach the
+    // refusal message.
+    stubState([{ id: 'org-dead', name: 'Acme', slug: 'acme', deletedAt: new Date() }], []);
+    const result = await listQuickbooksCustomersAnnotated('p1');
+    expect(result[0]).toMatchObject({ alreadyImported: false, organizationId: null });
+  });
+
+  it('DOES mark a link-matched soft-deleted org as already imported', async () => {
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-9', displayName: 'Acme' }]);
+    // This one really was imported before; the org was deleted afterwards.
+    stubState(
+      [{ id: 'org-dead', name: 'Acme', slug: 'acme', deletedAt: new Date() }],
+      [{ orgId: 'org-dead', system: 'quickbooks', externalId: 'qb-9' }],
+    );
+    const result = await listQuickbooksCustomersAnnotated('p1');
+    expect(result[0]).toMatchObject({ alreadyImported: true, organizationId: 'org-dead' });
+  });
+
   it('throws QbImportError(not_connected) when no connection exists', async () => {
     getConnectionMock.mockResolvedValue(null);
     await expect(listQuickbooksCustomersAnnotated('p1')).rejects.toMatchObject({ code: 'not_connected', status: 404 });

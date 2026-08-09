@@ -176,6 +176,8 @@ interface RowGroup {
   annotation: RowAnnotation;
   organizationId: string | null;
   matchedOrganizationName?: string;
+  /** Which branch resolved the match — see AnnotatedRow.matchedBy. */
+  matchedBy?: 'link' | 'name';
   conflictReason?: string;
   slug: string | null;
 }
@@ -274,6 +276,7 @@ function deriveGroupAnnotation(group: RowGroup, state: PartnerState): void {
       if (org) {
         group.organizationId = org.id;
         group.matchedOrganizationName = org.name;
+        group.matchedBy = 'link';
         group.annotation = org.deletedAt ? 'matched-soft-deleted' : 'link-match';
         return;
       }
@@ -292,6 +295,7 @@ function deriveGroupAnnotation(group: RowGroup, state: PartnerState): void {
   if (active.length === 1) {
     group.organizationId = active[0]!.id;
     group.matchedOrganizationName = active[0]!.name;
+    group.matchedBy = 'name';
     group.annotation = 'name-match';
     return;
   }
@@ -303,6 +307,8 @@ function deriveGroupAnnotation(group: RowGroup, state: PartnerState): void {
   if (deleted.length === 1) {
     group.organizationId = deleted[0]!.id;
     group.matchedOrganizationName = deleted[0]!.name;
+    // Name-only: this dead org was NEVER linked to the row's external id.
+    group.matchedBy = 'name';
     group.annotation = 'matched-soft-deleted';
     return;
   }
@@ -338,6 +344,7 @@ export async function previewOrgImport(rows: ImportRow[], partnerId: string): Pr
       slug: annotation === 'create' ? group?.slug ?? null : null,
       organizationId: group?.organizationId ?? null,
       ...(group?.matchedOrganizationName ? { matchedOrganizationName: group.matchedOrganizationName } : {}),
+      ...(group?.matchedBy && annotation !== 'conflict' ? { matchedBy: group.matchedBy } : {}),
       ...(r.conflictReason || group?.conflictReason
         ? { conflictReason: r.conflictReason ?? group?.conflictReason }
         : {}),

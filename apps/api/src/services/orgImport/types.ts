@@ -66,6 +66,15 @@ export interface AnnotatedRow extends ImportRow {
   organizationId: string | null;
   /** The matched organization's current name, for the preview UI. */
   matchedOrganizationName?: string;
+  /**
+   * HOW the row matched, when it matched. `'link'` means the durable
+   * `(system, external_id)` linkage resolved it; `'name'` means only the
+   * normalised name did. The annotation alone does not carry this:
+   * `matched-soft-deleted` is reached from BOTH branches, and a caller that
+   * treats a name-matched dead org as "already imported" blocks the row
+   * forever (the QuickBooks customer list did exactly that).
+   */
+  matchedBy?: 'link' | 'name';
   /** Populated when annotation === 'conflict'. */
   conflictReason?: string;
 }
