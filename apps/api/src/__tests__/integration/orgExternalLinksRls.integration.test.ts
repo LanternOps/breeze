@@ -9,7 +9,8 @@
  * Also proves:
  *  - the composite FK (org_id, partner_id) → organizations (id, partner_id)
  *    makes a drifted partner_id unrepresentable even under system scope;
- *  - the migration backfill maps legacy accounting_* columns into link rows
+ *  - the 2026-08-18 drop migration's DEFENSIVE re-backfill maps any surviving
+ *    legacy accounting_* values into link rows before removing the columns,
  *    exactly once, and replaying the migration is a no-op.
  *
  * Fixtures are re-seeded per test — the integration setup truncates tenant
@@ -26,13 +27,13 @@ import {
   withSystemDbAccessContext,
   type DbAccessContext,
 } from '../../db';
-import { organizationExternalLinks, organizations } from '../../db/schema';
+import { organizationExternalLinks } from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
-const MIGRATION_FILE = '2026-08-08-organization-external-links.sql';
+const MIGRATION_FILE = '2026-08-18-drop-organizations-accounting-columns.sql';
 
 function migrationText(): string {
   return readFileSync(join(__dirname, '../../../migrations', MIGRATION_FILE), 'utf8');
@@ -191,18 +192,53 @@ describe('organization_external_links RLS — org-axis forge (breeze_app role)',
   });
 });
 
-describe('organization_external_links migration backfill (replay = no-op)', () => {
-  runDb('backfills legacy accounting_* columns exactly once and is idempotent on replay', async () => {
-    const { partnerA } = await seedFixture();
+/** Column names that must NOT exist on organizations after the drop migration. */
+const LEGACY_COLUMNS = ['accounting_provider', 'accounting_external_id'] as const;
 
-    // An org linked the pre-link-table way (QuickBooks columns only).
-    const legacyOrg = await withSystemDbAccessContext(async () => {
-      const org = await createOrganization({ partnerId: partnerA.id });
-      await db.update(organizations)
-        .set({ accountingProvider: 'quickbooks', accountingExternalId: 'qb-backfill-1' })
-        .where(eq(organizations.id, org!.id));
-      return org!;
-    });
+async function legacyColumnsPresent(): Promise<string[]> {
+  const rows = await getTestDb().execute(sql`
+    SELECT column_name FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'organizations'
+      AND column_name IN ('accounting_provider', 'accounting_external_id')
+  `) as unknown as Array<{ column_name: string }>;
+  return rows.map((r) => r.column_name).sort();
+}
+
+describe('2026-08-18 drop of the legacy accounting columns', () => {
+  runDb('the columns and their partial unique index are gone from the migrated schema', async () => {
+    expect(await legacyColumnsPresent()).toEqual([]);
+    const idx = await getTestDb().execute(sql`
+      SELECT indexname FROM pg_indexes
+      WHERE schemaname = 'public' AND indexname = 'organizations_accounting_external_uniq'
+    `) as unknown as unknown[];
+    expect(idx.length).toBe(0);
+  });
+
+  // The defensive re-backfill exists for a deployment that wrote the legacy pair
+  // AFTER the 2026-08-08 backfill (an unmigrated code path, a manual UPDATE, or a
+  // self-hoster jumping several versions). Recreate that state with raw SQL —
+  // the Drizzle schema no longer knows these columns — and prove the drop
+  // migration rescues the linkage instead of destroying it.
+  runDb('re-backfills a legacy-only link before dropping, exactly once, and replays as a no-op', async () => {
+    const { partnerA } = await seedFixture();
+    const legacyOrg = await withSystemDbAccessContext(async () =>
+      (await createOrganization({ partnerId: partnerA.id }))!
+    );
+
+    // Put the database back into the pre-drop shape, then write a legacy-only link.
+    await getTestDb().execute(sql`
+      ALTER TABLE organizations ADD COLUMN IF NOT EXISTS accounting_provider text;
+      ALTER TABLE organizations ADD COLUMN IF NOT EXISTS accounting_external_id text;
+      CREATE UNIQUE INDEX IF NOT EXISTS organizations_accounting_external_uniq
+        ON organizations (partner_id, accounting_provider, accounting_external_id)
+        WHERE accounting_external_id IS NOT NULL;
+    `);
+    expect(await legacyColumnsPresent()).toEqual(LEGACY_COLUMNS.slice().sort());
+    await getTestDb().execute(sql`
+      UPDATE organizations
+      SET accounting_provider = 'quickbooks', accounting_external_id = 'qb-backfill-1'
+      WHERE id = ${legacyOrg.id}
+    `);
 
     const countLinks = async () =>
       withSystemDbAccessContext(async () => {
@@ -216,13 +252,17 @@ describe('organization_external_links migration backfill (replay = no-op)', () =
         return rows.length;
       });
 
-    // Replay the shipped migration (idempotent by construction): the backfill
-    // must create the link row for the legacy-linked org…
+    // The migration must rescue the linkage into the link table…
     await getTestDb().execute(sql.raw(migrationText()));
     expect(await countLinks()).toBe(1);
+    // …and remove the columns + index in the same pass.
+    expect(await legacyColumnsPresent()).toEqual([]);
 
-    // …and replaying again must not duplicate it.
+    // Replaying against the already-dropped schema must be a clean no-op — the
+    // backfill block is guarded on the columns still existing, so it neither
+    // throws nor duplicates the rescued row.
     await getTestDb().execute(sql.raw(migrationText()));
     expect(await countLinks()).toBe(1);
+    expect(await legacyColumnsPresent()).toEqual([]);
   });
 });

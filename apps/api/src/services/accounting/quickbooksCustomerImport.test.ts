@@ -65,8 +65,6 @@ interface OrgRow {
   slug: string;
   type?: string;
   deletedAt?: Date | null;
-  accountingProvider?: string | null;
-  accountingExternalId?: string | null;
 }
 interface LinkRow { orgId: string; system: string; externalId: string }
 
@@ -80,8 +78,6 @@ function stubState(orgs: OrgRow[] = [], links: LinkRow[] = [], laterLinkReads: u
   const orgRows = orgs.map((o) => ({
     type: 'customer',
     deletedAt: null,
-    accountingProvider: null,
-    accountingExternalId: null,
     ...o,
   }));
   let linkReads = 0;
@@ -138,22 +134,24 @@ beforeEach(() => {
 });
 
 describe('listQuickbooksCustomersAnnotated', () => {
-  it('annotates already-imported customers from the legacy accounting columns (union read)', async () => {
+  it('does not flag a same-named but unlinked org as already imported', async () => {
     listRemoteCustomersMock.mockResolvedValue([
       { id: '1', displayName: 'A' }, { id: '2', displayName: 'B' },
     ]);
-    stubState([{ id: 'org-1', name: 'A', slug: 'a', accountingProvider: 'quickbooks', accountingExternalId: '1' }]);
+    // The legacy organizations.accounting_* pair was dropped (2026-08-18):
+    // an org with no link row is a NAME match, never "already imported".
+    stubState([{ id: 'org-1', name: 'A', slug: 'a' }]);
 
     const result = await listQuickbooksCustomersAnnotated('p1');
 
     expect(result).toEqual([
-      expect.objectContaining({ id: '1', alreadyImported: true, organizationId: 'org-1' }),
+      expect.objectContaining({ id: '1', alreadyImported: false, organizationId: null }),
       expect.objectContaining({ id: '2', alreadyImported: false, organizationId: null }),
     ]);
     expect(getValidAccessTokenMock).toHaveBeenCalled();
   });
 
-  it('annotates customers linked only via organization_external_links', async () => {
+  it('annotates customers linked via organization_external_links', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-9', displayName: 'Acme' }]);
     stubState([{ id: 'org-9', name: 'Acme', slug: 'acme' }], [{ orgId: 'org-9', system: 'quickbooks', externalId: 'qb-9' }]);
     const result = await listQuickbooksCustomersAnnotated('p1');
@@ -234,8 +232,8 @@ describe('importQuickbooksCustomers', () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
     stubState();
     await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
-    // The seam owns linkage; the legacy single-valued columns are read-only now
-    // (dropped by a follow-up migration).
+    // The seam owns linkage. The legacy single-valued columns no longer exist
+    // (dropped 2026-08-18) — naming them in an insert would now throw at the DB.
     expect(orgInserts()[0]).not.toHaveProperty('accountingProvider');
     expect(orgInserts()[0]).not.toHaveProperty('accountingExternalId');
     expect(linkInserts()).toEqual([expect.objectContaining({ system: 'quickbooks', externalId: '1' })]);
@@ -282,16 +280,7 @@ describe('importQuickbooksCustomers', () => {
     expect(siteInserts()[0]!.address).toMatchObject({ state: 'TX', city: 'Austin' });
   });
 
-  it('skips customers already linked to an org via the legacy accounting columns', async () => {
-    listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
-    stubState([{ id: 'org-9', name: 'Acme', slug: 'acme', accountingProvider: 'quickbooks', accountingExternalId: '1' }]);
-    const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
-    expect(summary.imported).toEqual([]);
-    expect(summary.skipped).toEqual([{ customerId: '1', displayName: 'Acme', organizationId: 'org-9', reason: 'already_imported' }]);
-    expect(insertMock).not.toHaveBeenCalled();
-  });
-
-  it('skips customers linked ONLY via organization_external_links', async () => {
+  it('skips customers linked via organization_external_links', async () => {
     listRemoteCustomersMock.mockResolvedValue([{ id: '1', displayName: 'Acme' }]);
     stubState([{ id: 'org-9', name: 'Acme', slug: 'acme' }], [{ orgId: 'org-9', system: 'quickbooks', externalId: '1' }]);
     const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'] });
