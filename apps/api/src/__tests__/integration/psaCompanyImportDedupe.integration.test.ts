@@ -41,6 +41,51 @@ function fakeClient(companies: Array<{ id: string; name: string; externalId?: st
 }
 
 describe('PSA company import — cross-source dedupe', () => {
+  runDb('the ROUTE path skips a company already linked by a CSV import', async () => {
+    // What the preview route actually does since #3246 finding 3: it reads the
+    // partner's linked external ids for this provider and hands them to the
+    // adapter, which drops them DURING the walk so they never consume the cap.
+    // A company already imported therefore does not come back as a `link-match`
+    // row at all — it is simply absent, and counted in `alreadyLinked`.
+    const partner = await withSystemDbAccessContext(() => createPartner());
+
+    await commitOrgImport(
+      [{ organization: 'Acme Ltd', externalId: 'CW-1', externalSystem: 'connectwise' }],
+      partner.id,
+      actor,
+      'skip'
+    );
+
+    // Exactly the query the route runs to build the skip set.
+    const linkRows = await withSystemDbAccessContext(() =>
+      db
+        .select({ externalId: organizationExternalLinks.externalId })
+        .from(organizationExternalLinks)
+        .where(
+          and(
+            eq(organizationExternalLinks.partnerId, partner.id),
+            eq(organizationExternalLinks.system, 'connectwise')
+          )
+        )
+    );
+    const alreadyLinkedExternalIds = new Set(linkRows.map((r) => r.externalId));
+    expect(alreadyLinkedExternalIds.has('CW-1')).toBe(true);
+
+    const source = createPsaCompanyImportSource({
+      provider: 'connectwise',
+      client: fakeClient([
+        { id: 'CW-1', name: 'Acme Ltd' },
+        { id: 'CW-2', name: 'Globex' }
+      ]),
+      alreadyLinkedExternalIds
+    });
+
+    const listing = await source.listCompanies({ partnerId: partner.id });
+
+    expect(listing.alreadyLinked).toBe(1);
+    expect(listing.rows.map((r) => r.externalId)).toEqual(['CW-2']);
+  });
+
   runDb('matches an org linked by a CSV import under the same provider slug', async () => {
     const partner = await withSystemDbAccessContext(() => createPartner());
 
