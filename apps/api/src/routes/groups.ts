@@ -696,6 +696,18 @@ groupRoutes.delete(
     // Delete memberships first
     await db.delete(deviceGroupMemberships).where(eq(deviceGroupMemberships.groupId, id));
 
+    // …and the membership audit log, which also FKs device_groups with no
+    // ON DELETE (#3313). Every dynamic group accumulates rows here the first
+    // time its membership materializes, so without this the group can never be
+    // deleted again: the DELETE below raises 23503 and the route 500s.
+    //
+    // These two are the ONLY tables that reference device_groups.id.
+    // config_policy_assignments targets a group through a polymorphic
+    // (level, target_id) pair with no foreign key, so it cannot block the
+    // delete — its orphan-row problem is real but separate, and deliberately
+    // out of scope here.
+    await db.delete(groupMembershipLog).where(eq(groupMembershipLog.groupId, id));
+
     // Delete the group
     await db.delete(deviceGroups).where(eq(deviceGroups.id, id));
 
