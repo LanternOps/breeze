@@ -2194,5 +2194,12 @@
         "send": "Enviar"
       }
     }
+  },
+  "whatsNew": {
+    "title": "Novedades en {{version}}",
+    "gotIt": "Entendido",
+    "later": "Mostrar más tarde",
+    "learnMore": "Más información",
+    "link": "Novedades"
   }
 }

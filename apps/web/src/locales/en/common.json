@@ -2194,5 +2194,12 @@
         "send": "Send"
       }
     }
+  },
+  "whatsNew": {
+    "title": "What's new in {{version}}",
+    "gotIt": "Got it",
+    "later": "Show me later",
+    "learnMore": "Learn more",
+    "link": "What's new"
   }
 }
