@@ -1119,6 +1119,23 @@ func runAgent() {
 		}
 	}
 
+	log.Info("control-plane build mode", "mode", hostpolicy.Mode(), "allowedHosts", hostpolicy.Hosts())
+	if err := checkPersistedServerAllowed(cfg); err != nil {
+		if hostpolicy.Strict() {
+			log.Error("hosted build refuses to run against this server", "error", err.Error())
+			fmt.Fprintf(os.Stderr,
+				"This is a Breeze hosted-edition build and cannot manage a self-hosted server.\n"+
+					"Use the self-host build instead. Details: %v\n", err)
+			osExit(1)
+			return
+		}
+		// Gap build: warn and keep running. The migration-needed signal
+		// (Task 8) surfaces this on the self-hosted dashboard so the admin
+		// can migrate before the strict build ships. Do NOT exit.
+		log.Warn("hosted-edition agent is managing a self-hosted server; migrate to the self-host build before the enforced release",
+			"error", err.Error())
+	}
+
 	comps, err := startAgentFn(cfg)
 	if err != nil {
 		if isPermissionError(err) {
@@ -1228,6 +1245,18 @@ func assertHostnameNonEmpty(info *collectors.SystemInfo) error {
 		return errors.New("empty hostname after fallback chain")
 	}
 	return nil
+}
+
+// checkPersistedServerAllowed is a pure predicate: it reports the violation
+// when a hosted build (Enforced) has a persisted primary cfg.ServerURL
+// outside the compiled allowlist. It does NOT decide warn-vs-hard-fail —
+// that split is made by the caller in runAgent, gated on hostpolicy.Strict().
+// Empty server (unenrolled) and self-host builds always return nil.
+func checkPersistedServerAllowed(cfg *config.Config) error {
+	if cfg == nil || cfg.ServerURL == "" {
+		return nil
+	}
+	return hostpolicy.AllowedURL(cfg.ServerURL)
 }
 
 // gateEnrollPrimary refuses, in a hosted build, a primary control-plane
