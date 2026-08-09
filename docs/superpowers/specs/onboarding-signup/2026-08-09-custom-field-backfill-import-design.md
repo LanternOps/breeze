@@ -1,7 +1,7 @@
 # Custom-Field / UDF Backfill Import — Design
 
 **Date:** 2026-08-09
-**Status:** Ready for review — one decision deliberately surfaced to the user (§0)
+**Status:** Approved — all decisions settled; §0 resolved to **Option B** by the user 2026-08-09
 **Issue:** #3257 (epic #3249, Phase 3)
 **Related:** #3242 (the preview→commit pipeline this mirrors), #3258 (the other Phase-3 doc)
 
@@ -53,7 +53,7 @@ are about fixing the destination first.
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Value storage | **Promote to `device_custom_field_values`, keep `devices.custom_fields` as a trigger-maintained projection** | §0 — the flat value namespace corrupts a shipped export contract. Surfaced to the user. |
+| Value storage | **Promote to `device_custom_field_values`, keep `devices.custom_fields` as a trigger-maintained projection** | §0 — settled (Option B, 2026-08-09). The flat value namespace corrupts a shipped export contract. |
 | Destination hardening | **Four prerequisites, before any importer** | §2. Uniqueness, XOR, partner-wide gate, type validation. |
 | Mapping targets | **Custom fields *and* first-class columns (`device_warranty`)** | §3. Warranty expiry is the issue's headline field and already has a better home. |
 | Join key | **`deviceId` → serial → hostname, org-scoped, never guess** | §4 |
@@ -67,9 +67,9 @@ are about fixing the destination first.
 
 ## 0. Decision — where values live
 
-**This is the call I am surfacing rather than settling.** The issue reads as an import
-feature; it is actually a storage-model question, and answering it wrongly is the
-expensive outcome.
+**Settled 2026-08-09: Option B.** The issue reads as an import feature; it is actually a
+storage-model question, and answering it wrongly is the expensive outcome. Option A is
+recorded below as the rejected alternative.
 
 ### The problem with the current model
 
@@ -103,7 +103,7 @@ and refuses the row. Residual risk: the hazard remains open on the plain API (wh
 such check), the export gap stays (fixable — see below), and every `custom.<key>` filter
 stays unindexed as volume grows 100×.
 
-### Option B — `device_custom_field_values` + a trigger-maintained jsonb projection — **recommended**
+### Option B — `device_custom_field_values` + a trigger-maintained jsonb projection — CHOSEN
 
 A real values table keyed by `definition_id`, with `devices.custom_fields` kept as a
 derived projection so existing readers do not change.
@@ -147,14 +147,18 @@ has a `specific` escape hatch already used twice (registry `:119`, `:255`). So t
 is fixable under Option A too. It is a supporting argument for B, not a decisive one — the
 decisive argument is the export-contract corruption above.
 
-### Recommendation
+### Decision
 
-**Option B, sequenced as a prerequisite phase (3a) ahead of the importer (3b).** The reason
-is CLAUDE.md's own rule: retrofitting the storage model *after* backfilling 300k values is
-strictly worse than doing it before, and this is a correctness argument about shipped
-behaviour rather than a taste argument about schema style. If the user prefers to keep
-scope tight, Option A plus the preview-time collision refusal is a legitimate answer — it
-should be chosen deliberately, with the residual risk named.
+**Option B, sequenced as a prerequisite phase (3a) ahead of the importer (3b)** — chosen by
+the user on 2026-08-09. The reason is CLAUDE.md's own rule: retrofitting the storage model
+*after* backfilling 300k values is strictly worse than doing it before, and this is a
+correctness argument about shipped behaviour rather than a taste argument about schema style.
+
+Option A was declined. It remains the fallback if phase 3a proves larger than estimated, but
+taking it would mean accepting that the cross-axis collision stays reachable through the
+plain API, that `custom.<key>` filters stay unindexed at 100× volume, and that the
+tenant-export gap is closed by the `openContainerReviewed` escape hatch rather than by
+having queryable data.
 
 ---
 
@@ -502,10 +506,10 @@ different type is a conflict, never a silent change.
 - **Warranty target**: an imported `warranty_end_date` makes `warrantyAlertEvaluator` fire and
   appears in `routes/partnerApi/inventory.ts`; a `data_source='provider'` row is not clobbered
   without opt-in.
-- **Contracts** (Option B): RLS coverage, org cascade, device cascade
+- **Contracts**: RLS coverage, org cascade, device cascade
   (`CORE_DEVICE_CASCADE_DELETE_TABLES` **and** `CORE_DEVICE_ORG_DENORMALIZED_TABLES`, since the
   table carries `device_id` and a denormalized `org_id`), export policy, erasure roundtrip.
-- **Projection** (Option B): a value write updates both the table and `devices.custom_fields`,
+- **Projection**: a value write updates both the table and `devices.custom_fields`,
   and still bumps `partner_export_updated_at`.
 
 ---
@@ -517,7 +521,7 @@ different type is a conflict, never a silent change.
 | **Org/site-level custom fields** | No site axis on definitions, no value home. §8. | Not filed |
 | **Incumbent identity at enrollment** so late-enrolling devices get backfilled on arrival | Needs an enrollment-path change; pattern exists (`matchInviteOnEnrollment.ts`). §4. | Not filed |
 | **Dynamic-group recompute after import** | The whole device-change pipeline is unwired. §9. | Not filed |
-| **Per-key expression indexes** (Option A only) | Unnecessary under Option B. | Not filed |
+| **Per-key expression indexes** | Moot — Option B replaces the scan with a B-tree. | Not filed |
 | **More first-class mapping targets** (asset tag → a real column, primary user → `devices.last_user`) | Additive once §3's target model exists. | Not filed |
 
 ### Explicitly not planned

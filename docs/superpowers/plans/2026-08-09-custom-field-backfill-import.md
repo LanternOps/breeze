@@ -13,14 +13,13 @@
 
 ---
 
-## Blocking decision — resolve before Task 1
+## Decision — settled 2026-08-09
 
-**Spec §0 is not settled.** Values currently live in `devices.custom_fields`, a flat jsonb keyed by a bare string, while the definition namespace is dual-axis. The shipped partner-export query joins them by string match (`routes/partnerApi/configuration.ts:427-440`), so an org-owned and a partner-wide definition sharing a `field_key` emit **two export records for one datum** — and the importer is what manufactures that collision at scale.
+**Spec §0 is resolved: Option B.** Promote values to `device_custom_field_values` with a `definition_id` FK, behind a trigger-maintained `devices.custom_fields` projection so 34 of 37 consumers do not change.
 
-- **Option A** — stay on jsonb; the importer refuses cross-axis collisions at preview. Smaller. Residual risk stays open on the plain API, and every `custom.<key>` filter stays unindexed.
-- **Option B (recommended)** — `device_custom_field_values` with a `definition_id` FK, plus a trigger-maintained `devices.custom_fields` projection so 34 of 37 consumers do not change. Prerequisite phase 3a.
+Why it mattered: values live in a flat jsonb keyed by a bare string while the definition namespace is dual-axis, so the shipped partner-export query (`routes/partnerApi/configuration.ts:427-440`) emits **two contradictory export records for one datum** when an org-owned and a partner-wide definition share a `field_key` — and a per-org definitions import is exactly what manufactures that collision at scale.
 
-Tasks 1–3 below are the shared hardening and apply either way. **Task 4 exists only under Option B.**
+**Sequencing: Task 4 is a prerequisite PR (phase 3a), landing before the importer (phase 3b).** Tasks 1–3 are shared hardening and come first.
 
 ---
 
@@ -39,7 +38,7 @@ Tasks 1–3 below are the shared hardening and apply either way. **Task 4 exists
 | File | Responsibility |
 |---|---|
 | `apps/api/migrations/2026-08-19-custom-field-definition-constraints.sql` | Unique indexes, XOR check, duplicate report |
-| `apps/api/migrations/2026-08-20-device-custom-field-values.sql` | **Option B only** — values table, projection trigger, backfill |
+| `apps/api/migrations/2026-08-20-device-custom-field-values.sql` | Values table, projection trigger, backfill — the phase-3a prerequisite |
 | `apps/api/src/services/customFields/validateValue.ts` | `validateCustomFieldValue(definition, value)` — shared |
 | `apps/api/src/services/customFields/hardwareIdentity.ts` | Junk-serial denylist ported from the Go agent |
 | `apps/api/src/services/deviceCustomFieldImport/index.ts` | Preview / commit for values |
@@ -55,8 +54,8 @@ Tasks 1–3 below are the shared hardening and apply either way. **Task 4 exists
 | `apps/api/src/routes/devices/customFieldValues.ts` | Apply shared value validation |
 | `apps/api/src/routes/devices/core.ts` | Same, on the `PATCH /devices/:id` path |
 | `apps/web/src/components/settings/CustomFieldsPage.tsx` | `ownerScope` selector + "All orgs" badge |
-| `apps/api/src/services/filterEngine.ts` | **Option B** — rewrite the `custom.<key>` query |
-| `apps/api/src/routes/partnerApi/configuration.ts` | **Option B** — rewrite two jsonb queries |
+| `apps/api/src/services/filterEngine.ts` | Rewrite the `custom.<key>` query onto the values table (Task 4) |
+| `apps/api/src/routes/partnerApi/configuration.ts` | Rewrite two jsonb queries onto the values table (Task 4) |
 
 ---
 
@@ -87,7 +86,7 @@ Tasks 1–3 below are the shared hardening and apply either way. **Task 4 exists
 - [ ] Commit to snake_case keys explicitly; warn on any mapping to the reserved `asset_tag` / `inventory_id` / `external_id`, which feed `stableIdentifiers` in `routes/partnerApi/devices.ts:123-125`.
 - [ ] Tests: a `number` field rejects `"abc"`; a `dropdown` rejects a value outside `options.choices`; an unknown key is rejected; both existing write paths enforce it.
 
-## Task 4: Values table + projection — **Option B only**
+## Task 4: Values table + projection — PREREQUISITE PR (phase 3a)
 
 - [ ] `apps/api/migrations/2026-08-20-device-custom-field-values.sql`: `device_custom_field_values(id, device_id, org_id, definition_id, value_text, value_number, value_bool, value_date, source, created_at, updated_at)`, `UNIQUE (device_id, definition_id)`, FK to definitions with `ON DELETE CASCADE` (fixes the current orphaned-value bug).
 - [ ] Backfill from every existing `devices.custom_fields` blob, resolving each key to a definition; report counts, and report keys that resolve to no definition rather than dropping them silently.
@@ -154,5 +153,5 @@ Tasks 1–3 below are the shared hardening and apply either way. **Task 4 exists
 
 ## Out of scope
 
-- Org/site-level custom fields (#3257 spec §8), per-key expression indexes (Option A only), additional first-class mapping targets.
+- Org/site-level custom fields (#3257 spec §8), per-key expression indexes (moot under Option B), additional first-class mapping targets.
 - Contacts (#3258).

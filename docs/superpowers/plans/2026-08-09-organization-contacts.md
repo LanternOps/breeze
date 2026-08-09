@@ -13,11 +13,11 @@
 
 ---
 
-## Blocking decision — resolve before Task 1
+## Decision — settled 2026-08-09
 
-**Spec §0.2 is not settled.** The choice is between a new `contacts` table (recommended) and extending `portal_users`, which is already the de-facto contact store (`services/inboundEmail/resolveOrg.ts:44-73` is literally named `findOrCreateEmailContact`) and already carries every contract a new table must re-earn.
+**Spec §0.2 is resolved: build the new `contacts` table**, with `portal_users` becoming a login attached to a contact. The alternative (extending `portal_users`, already the de-facto contact store via `findOrCreateEmailContact`) was considered and declined.
 
-Do not start until the user has chosen. If `portal_users` is chosen, Tasks 1–3 collapse into a column-addition migration and Task 9 becomes the whole of the person-record work.
+**Consequence for this plan: Task 9 is mandatory, not conditional.** Without repointing inbound email and backfilling/linking existing portal users, the product ends up with two person tables that drift — which is the whole argument the rejected option was making.
 
 ---
 
@@ -81,7 +81,7 @@ Do not start until the user has chosen. If `portal_users` is chosen, Tasks 1–3
 
 ## Task 3: Backfill
 
-- [ ] Same migration: backfill from `sites.contact` (`roles='{site}'`, `site_id` set, `is_primary`), from `organizations.billing_contact` (`roles='{billing}'`), and — if §0.2 is accepted — one contact per `portal_users` row linked via the new `portal_users.contact_id`.
+- [ ] Same migration: backfill from `sites.contact` (`roles='{site}'`, `site_id` set, `is_primary`), from `organizations.billing_contact` (`roles='{billing}'`), and one contact per `portal_users` row linked via the new `portal_users.contact_id`.
 - [ ] Skip blobs that are NULL, `'{}'`, or carry no `name`/`email`/`phone`.
 - [ ] Every step reports its count: `DO $$ … GET DIAGNOSTICS n = ROW_COUNT; IF n > 0 THEN RAISE WARNING 'backfilled % <what>', n; END IF; END $$;`
 - [ ] Re-running the migration is a no-op.
@@ -135,7 +135,7 @@ Do not start until the user has chosen. If `portal_users` is chosen, Tasks 1–3
 - [ ] `BulkContactImport.tsx` modelled on `BulkOrgImport.tsx`: CSV → `lib/csvParse.ts` → column mapping → preview with status badges → commit.
 - [ ] `email-match` / `name-match` unchecked by default; select-all spans only `create` and `link-match`.
 
-## Task 9: Repoint inbound email — REQUIRED if §0.2 is accepted
+## Task 9: Repoint inbound email — REQUIRED (§0.2 is settled)
 
 - [ ] `services/inboundEmail/resolveOrg.ts` `findOrCreateEmailContact` creates a `contacts` row (creating a `portal_users` row only when portal access is actually granted).
 - [ ] Add nullable `portal_users.contact_id` FK; backfill and link one contact per existing portal user.

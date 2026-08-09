@@ -1,7 +1,7 @@
 # First-Class Organization Contacts — Design
 
 **Date:** 2026-08-09
-**Status:** Ready for review — one decision deliberately surfaced to the user (§0.2)
+**Status:** Approved — all decisions settled; §0.2 resolved by the user 2026-08-09
 **Issue:** #3258 (epic #3249, Phase 3)
 **Related:** #3242 (org import pipeline this reuses), #3257 (the other Phase-3 doc)
 
@@ -52,7 +52,7 @@ by dual-write. §2 is the reason, and it is the single most important section he
 | Decision | Choice | Rationale |
 |---|---|---|
 | Ownership model | **Local table; PSA/RMM/accounting are import sources** | §0.1 — no PSA adapter has any contact capability at all. |
-| Person record | **New `contacts`; `portal_users` becomes a login attached to one** | §0.2 — the contested call, surfaced to the user. |
+| Person record | **New `contacts`; `portal_users` becomes a login attached to one** | §0.2 — settled by the user 2026-08-09 over the cheaper `portal_users` extension. |
 | Tenancy shape | **Shape 1, `org_id NOT NULL`** | A contact is customer data, not config/policy. #2135's partner-wide default targets policy tables; the partner-side "person" is `users`. |
 | Site association | **Nullable `site_id`, composite FK `(site_id, org_id) → sites(id, org_id)`** | `sites_id_org_id_uniq` already exists (`2026-07-23-partner-export-material-state-hardening.sql:39`), so cross-org site pinning is unrepresentable. |
 | Re-import identity | **`contact_external_links`, unique `(org_id, system, external_id)`** | §1.2 — email is not a safe unique key, and emailless contacts are exactly the no-natural-key case the link pattern exists for. |
@@ -105,11 +105,12 @@ shape the epic already chose for organizations — and that drift is not current
 possible anyway: there is no PSA sync worker (`POST /psa/connections/:id/sync` is a
 501 stub with nothing consuming it). Sourcing is one-shot import, exactly like orgs.
 
-### 0.2 Contested — new `contacts` table vs. extending `portal_users`
+### 0.2 Settled — new `contacts` table, with `portal_users` linked to it
 
-**This is the one call I am surfacing rather than settling silently**, because an
-adversarial review made a strong case against my position and it is expensive to
-reverse either way.
+**Settled by the user on 2026-08-09**, in favour of the new table. This was the closest
+call in the document: an adversarial review made a strong case for extending
+`portal_users` instead, and that case is recorded below in full because it is the thing
+to re-read first if this design ever feels wrong.
 
 **The case for extending `portal_users`** (`db/schema/portal.ts:34-56`) is real:
 
@@ -154,9 +155,13 @@ To make that true rather than aspirational, this phase must also:
 
 Step 3 is not optional. Without it inbound email keeps minting people in the other
 table and "who do I email" is permanently split across two — precisely the objection
-that makes this decision close. If the user prefers the cheaper path, extending
-`portal_users` is a legitimate answer and §1 collapses to a column-addition migration;
-it should be chosen deliberately, not by default.
+that makes this decision close, so leaving it undone would concede the argument.
+
+**The rejected alternative, recorded:** extending `portal_users` would have collapsed §1
+to a column-addition migration and reused contracts that are already paid for. It was
+declined because a contact and a portal login are different things at different
+cardinalities, and merging them would put every imported contact on the portal
+user-management screen. Revisit only with that trade-off back in hand.
 
 ---
 
@@ -387,7 +392,7 @@ Same migration, every cleanup statement reporting its row count per CLAUDE.md:
    `site_id` set, `roles = '{site}'`, `is_primary = true`.
 2. **From `organizations.billing_contact`** → one contact per org with a non-empty blob,
    `site_id NULL`, `roles = '{billing}'`, `is_primary = true`.
-3. **From `portal_users`** (only if §0.2 is accepted) → one contact per portal user,
+3. **From `portal_users`** → one contact per portal user,
    linked via the new `portal_users.contact_id`.
 
 Blobs that are `NULL`, `'{}'`, or carry no `name`/`email`/`phone` are skipped — they are
