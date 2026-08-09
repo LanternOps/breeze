@@ -60,6 +60,15 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/psa/connections/conn-1/test'],
     ['POST', '/api/v1/psa/connections/conn-1/test/'],
     ['post', '/api/v1/psa/connections/conn-1/test'], // method is case-insensitive
+    // PSA company import (#3246) — preview walks the PSA's pagination (many
+    // 20s outbound calls); commit runs the org-import seam's own per-group
+    // transactions. Neither may inherit the ambient request transaction.
+    ['POST', '/api/v1/psa/connections/conn-1/import/preview'],
+    ['POST', '/api/v1/psa/connections/conn-1/import/preview/'],
+    ['post', '/api/v1/psa/connections/conn-1/import/preview'],
+    ['POST', '/api/v1/psa/connections/conn-1/import'],
+    ['POST', '/api/v1/psa/connections/conn-1/import/'],
+    ['post', '/api/v1/psa/connections/conn-1/import'],
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
@@ -129,6 +138,12 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/psa/connections/conn-1/test', 'test is POST-only'],
     ['POST', '/api/v1/psa/connections//test', 'empty connection id must not match'],
     ['POST', '/api/v1/psa/connections/conn-1/test/extra', 'extra segment must not match'],
+    ['GET', '/api/v1/psa/connections/conn-1/import', 'import is POST-only'],
+    ['GET', '/api/v1/psa/connections/conn-1/import/preview', 'preview is POST-only'],
+    ['POST', '/api/v1/psa/connections//import', 'empty connection id must not match'],
+    ['POST', '/api/v1/psa/connections//import/preview', 'empty connection id must not match'],
+    ['POST', '/api/v1/psa/connections/conn-1/import/extra', 'extra segment must not match'],
+    ['POST', '/api/v1/psa/connections/conn-1/import/preview/extra', 'extra segment must not match'],
   ];
 
   it.each(MATCH)('opts out: %s %s', (method, path) => {

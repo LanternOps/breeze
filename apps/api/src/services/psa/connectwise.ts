@@ -1,5 +1,16 @@
-import { PSACompany, PSAConnectionTest, PSAProvider, PSATicket, PSATicketCreate, PSATicketUpdate } from './types';
+import {
+  PSACompany,
+  PSACompanyList,
+  PSACompanyListOptions,
+  PSAConnectionTest,
+  PSAProvider,
+  PSATicket,
+  PSATicketCreate,
+  PSATicketUpdate,
+  PSA_COMPANY_LIST_CAP
+} from './types';
 import { psaFetch } from './http';
+import { PSA_COMPANY_PAGE_SIZE, collectPaginated } from './pagination';
 
 export interface ConnectWiseCredentials {
   baseUrl: string;
@@ -104,17 +115,34 @@ export class ConnectWiseProvider implements PSAProvider {
     }
   }
 
-  async getCompanies(): Promise<PSACompany[]> {
-    const response = await this.request<ConnectWiseCompany[]>(
-      'GET',
-      '/company/companies?fields=id,name&pageSize=100'
-    );
+  /**
+   * ConnectWise Manage paginates with a 1-based `page=` alongside `pageSize=`.
+   * It returns a bare array with no total, so "another page exists" is inferred
+   * from a full page — one extra request on an exact multiple, which is the
+   * correct trade against under-reading an MSP's company list.
+   */
+  async getCompanies(options: PSACompanyListOptions = {}): Promise<PSACompanyList> {
+    const limit = options.limit ?? PSA_COMPANY_LIST_CAP;
 
-    return (response || []).map((company) => ({
-      id: company.id.toString(),
-      name: company.name,
-      externalId: company.id.toString()
-    }));
+    const { items, truncated } = await collectPaginated<PSACompany>(limit, async (cursor) => {
+      const page = cursor ? Number(cursor) : 1;
+      const response = await this.request<ConnectWiseCompany[]>(
+        'GET',
+        `/company/companies?fields=id,name&pageSize=${PSA_COMPANY_PAGE_SIZE}&page=${page}`
+      );
+      const rows = response || [];
+
+      return {
+        items: rows.map((company) => ({
+          id: company.id.toString(),
+          name: company.name,
+          externalId: company.id.toString()
+        })),
+        next: rows.length === PSA_COMPANY_PAGE_SIZE ? String(page + 1) : null
+      };
+    });
+
+    return { companies: items, truncated };
   }
 
   async createTicket(input: PSATicketCreate): Promise<PSATicket> {

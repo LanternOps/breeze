@@ -112,6 +112,25 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // blocks (see withAuthDbAccessContext in middleware/auth.ts) and runs the HTTP call
   // between them.
   { method: 'POST', pattern: /^\/api\/v1\/psa\/connections\/[^/]+\/test\/?$/ },
+  // PSA company import (#3246), both halves.
+  //
+  // PREVIEW walks the PSA's own pagination — up to PSA_COMPANY_LIST_CAP/100
+  // requests at the 20s psaFetch timeout each, against a TENANT-CONTROLLED
+  // baseUrl. Holding a pooled connection idle-in-transaction across that is the
+  // same #1105 pool-poison as the /test route, only an order of magnitude
+  // longer, so it is rate-limited AND context-self-managed.
+  //
+  // COMMIT makes no outbound call, but `commitOrgImport` opens its own
+  // transaction per row group inside a SYSTEM db context (the new org's id
+  // cannot be in the caller's accessible_org_ids yet). Wrapping an ambient
+  // request transaction around hundreds of those pins a second connection for
+  // the entire import for no benefit — the seam's writes are deliberately not
+  // atomic across groups, so the outer tx buys no atomicity either.
+  //
+  // Both handlers read the connection through short `withAuthDbAccessContext`
+  // blocks and do everything else outside any context.
+  { method: 'POST', pattern: /^\/api\/v1\/psa\/connections\/[^/]+\/import\/preview\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/psa\/connections\/[^/]+\/import\/?$/ },
 ];
 
 /**
