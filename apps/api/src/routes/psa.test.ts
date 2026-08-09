@@ -53,6 +53,7 @@ vi.mock('../db/schema', () => ({
   psaConnections: {
     id: 'psa_connections.id',
     orgId: 'psa_connections.org_id',
+    partnerId: 'psa_connections.partner_id',
     provider: 'psa_connections.provider',
     name: 'psa_connections.name',
     credentials: 'psa_connections.credentials',
@@ -113,10 +114,14 @@ vi.mock('../middleware/auth', () => ({
     c.set('auth', {
       scope: 'organization',
       partnerId: null,
+      partnerOrgAccess: null,
       orgId: 'org-123',
       user: { id: 'user-123', email: 'test@example.com' },
       canAccessOrg: (orgId: string) => orgId === 'org-123',
-      accessibleOrgIds: ['org-123']
+      accessibleOrgIds: ['org-123'],
+      // Real AuthContext closure: an org-scope caller is restricted to
+      // its own org. A marker object suffices — `.where()` is mocked.
+      orgCondition: (col: unknown) => ({ orgEq: col, value: 'org-123' })
     });
     return next();
   }),
@@ -316,10 +321,14 @@ describe('psa routes', () => {
       c.set('auth', {
         scope: 'organization',
         partnerId: null,
+        partnerOrgAccess: null,
         orgId: 'org-123',
         user: { id: 'user-123', email: 'test@example.com' },
         canAccessOrg: (orgId: string) => orgId === 'org-123',
-        accessibleOrgIds: ['org-123']
+        accessibleOrgIds: ['org-123'],
+        // Real AuthContext closure: an org-scope caller is restricted to
+        // its own org. A marker object suffices — `.where()` is mocked.
+        orgCondition: (col: unknown) => ({ orgEq: col, value: 'org-123' })
       });
       return next();
     });
@@ -728,6 +737,249 @@ describe('psa routes', () => {
     expect(res.status).toBe(200);
     expect(rowsChain.leftJoin).toHaveBeenCalled();
     expect(countChain.leftJoin).toHaveBeenCalled();
+  });
+
+  // ---- Dual ownership: org XOR partner (epic #2135) ----
+
+  describe('dual ownership (org XOR partner)', () => {
+    /** Install a partner-scope auth context. `orgAccess` drives the partner-wide gate. */
+    function asPartner(opts: {
+      partnerId?: string;
+      orgAccess?: 'all' | 'selected' | 'none' | null;
+      orgs?: string[];
+    } = {}) {
+      const partnerId = opts.partnerId ?? 'partner-1';
+      const orgs = opts.orgs ?? ['org-123'];
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'partner',
+          partnerId,
+          partnerOrgAccess: opts.orgAccess ?? 'all',
+          orgId: null,
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: (orgId: string) => orgs.includes(orgId),
+          accessibleOrgIds: orgs,
+          orgCondition: (col: unknown) => ({ orgIn: col, value: orgs })
+        });
+        return next();
+      });
+    }
+
+    const partnerOwnedRow = (overrides: Record<string, unknown> = {}) =>
+      connectionRow({ orgId: null, partnerId: 'partner-1', ...overrides });
+
+    it('creates a partner-wide connection with org_id NULL and the token partner', async () => {
+      asPartner({ orgAccess: 'all' });
+      const values = vi.fn((_row: Record<string, unknown>) => ({ returning: vi.fn(async () => [partnerOwnedRow()]) }));
+      insertMock.mockReturnValueOnce({ values } as any);
+
+      const res = await app.request('/psa/connections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ownerScope: 'partner',
+          provider: 'jira',
+          name: 'MSP Jira',
+          credentials: { baseUrl: 'https://acme.atlassian.net', username: 'a@acme.com', apiToken: 't' }
+        })
+      });
+
+      expect(res.status).toBe(201);
+      // The XOR: org_id NULL, partner_id from the CALLER'S TOKEN (never the body).
+      const inserted = values.mock.calls[0]![0] as Record<string, unknown>;
+      expect(inserted.orgId).toBeNull();
+      expect(inserted.partnerId).toBe('partner-1');
+
+      const body = await res.json();
+      expect(body.ownerScope).toBe('partner');
+      expect(body.orgId).toBeNull();
+    });
+
+    it('ignores a body-supplied orgId when ownerScope is partner', async () => {
+      asPartner({ orgAccess: 'all' });
+      const values = vi.fn((_row: Record<string, unknown>) => ({ returning: vi.fn(async () => [partnerOwnedRow()]) }));
+      insertMock.mockReturnValueOnce({ values } as any);
+
+      const res = await app.request('/psa/connections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ownerScope: 'partner',
+          orgId: '11111111-1111-4111-8111-111111111111',
+          provider: 'jira',
+          name: 'MSP Jira',
+          credentials: { baseUrl: 'https://acme.atlassian.net', username: 'a@acme.com', apiToken: 't' }
+        })
+      });
+
+      expect(res.status).toBe(201);
+      expect((values.mock.calls[0]![0] as Record<string, unknown>).orgId).toBeNull();
+    });
+
+    it('denies partner-wide create without full partner org access', async () => {
+      asPartner({ orgAccess: 'selected' });
+
+      const res = await app.request('/psa/connections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ownerScope: 'partner',
+          provider: 'jira',
+          name: 'MSP Jira',
+          credentials: { baseUrl: 'https://acme.atlassian.net', username: 'a@acme.com', apiToken: 't' }
+        })
+      });
+
+      expect(res.status).toBe(403);
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it('denies partner-wide create from an org-scope caller', async () => {
+      // Default beforeEach auth is org scope with partnerId null.
+      const res = await app.request('/psa/connections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ownerScope: 'partner',
+          provider: 'jira',
+          name: 'MSP Jira',
+          credentials: { baseUrl: 'https://acme.atlassian.net', username: 'a@acme.com', apiToken: 't' }
+        })
+      });
+
+      expect(res.status).toBe(403);
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it('defaults to an org-owned connection when ownerScope is omitted', async () => {
+      const values = vi.fn((_row: Record<string, unknown>) => ({ returning: vi.fn(async () => [connectionRow({ partnerId: null })]) }));
+      insertMock.mockReturnValueOnce({ values } as any);
+
+      const res = await app.request('/psa/connections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: 'jira',
+          name: 'Customer Jira',
+          credentials: { baseUrl: 'https://acme.atlassian.net', username: 'a@acme.com', apiToken: 't' }
+        })
+      });
+
+      expect(res.status).toBe(201);
+      const inserted = values.mock.calls[0]![0] as Record<string, unknown>;
+      expect(inserted.orgId).toBe('org-123');
+      expect(inserted.partnerId).toBeNull();
+      expect((await res.json()).ownerScope).toBe('organization');
+    });
+
+    it('lets the owning partner read a partner-wide connection', async () => {
+      asPartner({ orgAccess: 'all' });
+      selectMock.mockReturnValueOnce(makeChain([partnerOwnedRow()]) as never);
+
+      const res = await app.request('/psa/connections/conn-1', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.ownerScope).toBe('partner');
+      expect(body.data.orgId).toBeNull();
+    });
+
+    it('denies a DIFFERENT partner access to a partner-wide connection', async () => {
+      asPartner({ partnerId: 'partner-2', orgAccess: 'all' });
+      selectMock.mockReturnValueOnce(makeChain([partnerOwnedRow()]) as never);
+
+      const res = await app.request('/psa/connections/conn-1', { method: 'GET' });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('denies an org-scope caller access to a partner-wide connection', async () => {
+      // Org tokens carry a partnerId but never pass breeze_has_partner_access,
+      // so the app layer must refuse rather than 200-with-no-rows.
+      selectMock.mockReturnValueOnce(makeChain([partnerOwnedRow()]) as never);
+
+      const res = await app.request('/psa/connections/conn-1', { method: 'GET' });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('denies PATCH of a partner-wide connection without full partner org access', async () => {
+      asPartner({ orgAccess: 'selected' });
+      selectMock.mockReturnValueOnce(makeChain([partnerOwnedRow()]) as never);
+
+      const res = await app.request('/psa/connections/conn-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' })
+      });
+
+      expect(res.status).toBe(403);
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('denies DELETE of a partner-wide connection without full partner org access', async () => {
+      asPartner({ orgAccess: 'selected' });
+      selectMock.mockReturnValueOnce(makeChain([partnerOwnedRow()]) as never);
+
+      const res = await app.request('/psa/connections/conn-1', { method: 'DELETE' });
+
+      expect(res.status).toBe(403);
+      expect(deleteMock).not.toHaveBeenCalled();
+    });
+
+    it('denies status changes on a partner-wide connection without full partner org access', async () => {
+      asPartner({ orgAccess: 'selected' });
+      selectMock.mockReturnValueOnce(makeChain([partnerOwnedRow()]) as never);
+
+      const res = await app.request('/psa/connections/conn-1/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'paused' })
+      });
+
+      expect(res.status).toBe(403);
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('allows a full partner admin to PATCH a partner-wide connection', async () => {
+      asPartner({ orgAccess: 'all' });
+      selectMock.mockReturnValueOnce(makeChain([partnerOwnedRow()]) as never);
+      updateMock.mockReturnValueOnce(makeChain([partnerOwnedRow({ name: 'Renamed' })]) as never);
+
+      const res = await app.request('/psa/connections/conn-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' })
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).ownerScope).toBe('partner');
+    });
+
+    it('rejects ownerScope on PATCH (ownership is immutable)', async () => {
+      asPartner({ orgAccess: 'all' });
+
+      const res = await app.request('/psa/connections/conn-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ownerScope: 'organization' })
+      });
+
+      // Unknown key only => no recognised updates.
+      expect(res.status).toBe(400);
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('serializes ownerScope organization for an org-owned row', async () => {
+      selectMock.mockReturnValueOnce(makeChain([connectionRow({ partnerId: null })]) as never);
+
+      const res = await app.request('/psa/connections/conn-1', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.ownerScope).toBe('organization');
+      expect(body.data.orgId).toBe('org-123');
+    });
   });
 
   it('denies partner access when the organization is not linked', async () => {

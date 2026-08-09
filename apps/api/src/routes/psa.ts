@@ -93,7 +93,14 @@ function getPagination(query: { page?: string; limit?: string }) {
   return { page, limit, offset: (page - 1) * limit };
 }
 
-type ConnectionOwner = { orgId: string | null; partnerId: string | null };
+// `partnerId`/`orgId` are nullable in Postgres; accept `undefined` too so a
+// partially-selected row can never be misread as partner-owned.
+type ConnectionOwner = { orgId?: string | null; partnerId?: string | null };
+
+/** The partner that owns this row, or null when it is org-owned. */
+function ownerPartnerId(connection: ConnectionOwner): string | null {
+  return connection.partnerId ?? null;
+}
 
 type OrgAccessAuth = Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>;
 
@@ -127,11 +134,12 @@ async function ensureConnectionAccess(
 ) {
   if (auth.scope === 'system') return true;
 
-  if (connection.partnerId !== null) {
-    return auth.scope === 'partner' && auth.partnerId === connection.partnerId;
+  const partnerId = ownerPartnerId(connection);
+  if (partnerId !== null) {
+    return auth.scope === 'partner' && auth.partnerId === partnerId;
   }
 
-  if (connection.orgId === null) return false;
+  if (!connection.orgId) return false;
   return ensureOrgAccess(connection.orgId, auth);
 }
 
@@ -155,7 +163,7 @@ function psaConnectionAccessCondition(
 
 /** 'partner' when the row is partner-wide ("All orgs"), else 'organization'. */
 function ownerScopeOf(connection: ConnectionOwner): 'organization' | 'partner' {
-  return connection.partnerId !== null ? 'partner' : 'organization';
+  return ownerPartnerId(connection) !== null ? 'partner' : 'organization';
 }
 
 /**
@@ -171,7 +179,7 @@ function partnerWideWriteBlocked(
   connection: ConnectionOwner,
   auth: Pick<AuthContext, 'scope' | 'partnerOrgAccess'>
 ): boolean {
-  return connection.partnerId !== null && !canManagePartnerWidePolicies(auth);
+  return ownerPartnerId(connection) !== null && !canManagePartnerWidePolicies(auth);
 }
 
 /**
@@ -181,9 +189,9 @@ function partnerWideWriteBlocked(
  */
 function auditOwnerFields(connection: ConnectionOwner) {
   return {
-    orgId: connection.orgId,
+    orgId: connection.orgId ?? null,
     ownerScope: ownerScopeOf(connection),
-    partnerId: connection.partnerId
+    partnerId: ownerPartnerId(connection)
   };
 }
 
