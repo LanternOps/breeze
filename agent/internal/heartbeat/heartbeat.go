@@ -31,6 +31,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/health"
 	"github.com/breeze-rmm/agent/internal/helper"
+	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/httputil"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
@@ -3495,6 +3496,18 @@ func (h *Heartbeat) recordHeartbeatFailure(payload *HeartbeatPayload) {
 // Only the URL that actually passed the probe may be promoted; re-reading
 // config here bricked stragglers with server_url="" during migrations.
 func (h *Heartbeat) promoteBackupServerURL(probedURL string) {
+	// Defense-in-depth: Task 4 already gated ingestion of backup_server_url,
+	// so probedURL should only ever be a previously-allowlisted value. This
+	// guards against a torn-persist or a backup that predates the hosted
+	// flip. Gated on Strict() (not Enforced()) so an existing-fleet gap
+	// build keeps promoting normally — only a strict build refuses.
+	if hostpolicy.Strict() {
+		if err := hostpolicy.AllowedURL(probedURL); err != nil {
+			log.Warn("refusing failover promotion to non-allowlisted host",
+				"host", probedURL, "error", err.Error())
+			return
+		}
+	}
 	if probedURL == "" {
 		log.Error("refusing to promote empty backup server URL")
 		return
