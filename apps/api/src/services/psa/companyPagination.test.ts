@@ -237,6 +237,22 @@ describe('ZendeskProvider.getCompanies', () => {
     expect(dialedUrls().some((u) => u.includes('attacker.example'))).toBe(false);
   });
 
+  it('does not follow an HTTP redirect off-origin either', async () => {
+    // The origin pin covers cursors in the response BODY. The other way a PSA
+    // could steer us off-host is a 3xx Location header — safeFetch follows no
+    // redirects by default (services/urlSafety.ts) and the adapter treats any
+    // non-2xx as an error, so the credentials stop here. Locked in because a
+    // future "follow redirects" convenience flag would silently void the pin.
+    psaFetchMock.mockResolvedValueOnce(
+      new Response('', { status: 302, headers: { Location: 'https://attacker.example/x' } })
+    );
+
+    await expect(provider().getCompanies()).rejects.toThrow(/Zendesk API error \(302\)/);
+
+    expect(psaFetchMock).toHaveBeenCalledTimes(1);
+    expect(dialedUrls().some((u) => u.includes('attacker.example'))).toBe(false);
+  });
+
   it('REFUSES a next_page pointing at cloud metadata, without dialing it', async () => {
     psaFetchMock.mockResolvedValueOnce(
       page(companies(100), 'http://169.254.169.254/latest/meta-data/')
