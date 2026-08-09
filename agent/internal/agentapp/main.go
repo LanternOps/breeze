@@ -26,6 +26,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/eventlog"
 	"github.com/breeze-rmm/agent/internal/heartbeat"
+	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/mtls"
@@ -1229,6 +1230,19 @@ func assertHostnameNonEmpty(info *collectors.SystemInfo) error {
 	return nil
 }
 
+// gateEnrollPrimary refuses, in a hosted build, a primary control-plane
+// server URL outside the compiled allowlist. serverURL is the one package
+// global fed by all three primary-server entry points — filename,
+// MSI property, and --server — so this single gate at the point it is
+// applied to cfg covers all of them. (The enroll *response* carries no
+// primary ServerURL — api.EnrollResponse has only BackupServerURL — so
+// there is no second gate needed on the response side, unlike bootstrap's
+// gateRedeemResponse.) No-op in self-host builds. Mirrors
+// gateBootstrapServer/gateRedeemResponse in bootstrap.go.
+func gateEnrollPrimary(server string) error {
+	return hostpolicy.AllowedURL(server)
+}
+
 func enrollDevice(enrollmentKey string) {
 	enrollmentKey, serverURL, enrollmentSecret = trimEnrollInputs(
 		enrollmentKey, serverURL, enrollmentSecret,
@@ -1240,6 +1254,19 @@ func enrollDevice(enrollmentKey string) {
 	}
 
 	if serverURL != "" {
+		// Gated here, before cfg.ServerURL is ever set: at this point in
+		// enrollDevice, logging has not been initialised yet (initEnrollLogging
+		// / the scoped enrollLog are set up a few lines below), so this uses
+		// enrollError — the function's existing four-sink failure reporter,
+		// which logs through the package-level `log` var rather than the
+		// not-yet-initialised enrollLog — exactly as the "server URL required"
+		// pre-flight check below does. catConfig is correct here: like that
+		// check, this fires before any HTTP call is made, so isRefundable4xx
+		// correctly treats it as non-refundable.
+		if err := gateEnrollPrimary(serverURL); err != nil {
+			enrollError(catConfig, "control-plane host not allowed", err)
+			return // enrollError does not return in production; belt-and-braces.
+		}
 		cfg.ServerURL = serverURL
 	}
 
