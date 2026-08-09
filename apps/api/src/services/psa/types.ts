@@ -8,28 +8,17 @@ export type PSAProviderType = PsaProviderId;
 /**
  * Providers whose adapter can enumerate companies for organization import.
  *
- * Derived from the shared `PSA_PROVIDERS` list via `satisfies`, so a typo or a
- * value that is not a real provider fails to compile. Jira is the one exclusion:
- * it is an issue tracker with no company/account object to map onto an
- * organization. `psaCompanyImport.test.ts` asserts this list plus `'jira'`
- * covers `PSA_PROVIDERS` exactly, so ADDING a new provider forces an explicit
- * capable/not-capable decision instead of silently defaulting to incapable.
+ * Defined in @breeze/shared (packages/shared/src/validators/psa.ts) and merely
+ * re-exported here: the WEB UI needs the same list to decide which connections
+ * may be offered the import action, and a second hand-maintained copy is the
+ * drift the shared package exists to prevent. Every existing importer of
+ * `./types` keeps working unchanged.
  */
-export const ORG_IMPORT_CAPABLE_PSA_PROVIDERS = [
-  'connectwise',
-  'autotask',
-  'freshservice',
-  'servicenow',
-  'zendesk'
-] as const satisfies readonly PsaProviderId[];
-
-export type OrgImportCapablePsaProvider = (typeof ORG_IMPORT_CAPABLE_PSA_PROVIDERS)[number];
-
-export function isOrgImportCapableProvider(
-  provider: string
-): provider is OrgImportCapablePsaProvider {
-  return (ORG_IMPORT_CAPABLE_PSA_PROVIDERS as readonly string[]).includes(provider);
-}
+export {
+  ORG_IMPORT_CAPABLE_PSA_PROVIDERS,
+  isOrgImportCapableProvider,
+  type OrgImportCapablePsaProvider
+} from '@breeze/shared';
 
 /**
  * Raised when a capability is asked of a provider that cannot serve it.

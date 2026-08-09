@@ -930,6 +930,27 @@
       }
     },
     "psa": {
+      "PsaCompanyImport": {
+        "title": "Import companies",
+        "subtitle": "Create organizations from the companies in {{name}}.",
+        "intro": "Companies are matched against your existing organizations first. Nothing is created until you review the list below and confirm.",
+        "capHint": "Up to {{cap}} companies are fetched per import.",
+        "empty": "This connection returned no companies.",
+        "actions": {
+          "fetch": "Fetch companies",
+          "fetching": "Fetching companies…",
+          "import": "Import {{count}} selected",
+          "importing": "Importing…"
+        },
+        "truncated": {
+          "title": "Partial company list",
+          "body": "Only the first {{cap}} companies were fetched, so this import will be incomplete. Any company beyond that limit was never read and will not be linked."
+        },
+        "errors": {
+          "previewFailed": "Failed to load companies from this connection.",
+          "importFailed": "Failed to import companies."
+        }
+      },
       "PsaConnectionForm": {
         "actions": {
           "testConnection": "Test connection",
@@ -1034,7 +1055,8 @@
         "actions": {
           "pause": "Pause",
           "resume": "Resume",
-          "syncNow": "Sync now"
+          "syncNow": "Sync now",
+          "importCompanies": "Import companies"
         },
         "connectionCount": "{{filtered}} of {{total}} connections",
         "empty": {

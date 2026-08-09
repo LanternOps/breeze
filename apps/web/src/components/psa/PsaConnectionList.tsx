@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Layers } from 'lucide-react';
-import type { PsaProviderId } from '@breeze/shared';
+import { isOrgImportCapableProvider, type PsaProviderId } from '@breeze/shared';
 
 // Derived from the single-source provider list in @breeze/shared.
 export type PsaProvider = PsaProviderId;
@@ -32,6 +32,12 @@ type PsaConnectionListProps = {
   onEdit?: (connection: PsaConnection) => void;
   onToggleStatus?: (connection: PsaConnection, newStatus: 'active' | 'paused') => void;
   onDelete?: (connection: PsaConnection) => void;
+  /**
+   * Opens the company-import modal (#3246). The action is rendered only for a
+   * provider whose adapter can enumerate companies — Jira is an issue tracker
+   * with no company object, so the route would answer 400.
+   */
+  onImportCompanies?: (connection: PsaConnection) => void;
 };
 
 const providerMeta: Record<PsaProvider, { label: string; className: string }> = {
@@ -136,6 +142,7 @@ export default function PsaConnectionList({
   onEdit,
   onToggleStatus,
   onDelete,
+  onImportCompanies,
   isLockedPartnerWide
 }: PsaConnectionListProps) {
   const { t } = useTranslation('common');
@@ -271,6 +278,18 @@ export default function PsaConnectionList({
                           disable rather than let them click into a 403 toast.
                           The server gate is authoritative either way. */}
                       <div className="flex justify-end gap-2">
+                        {onImportCompanies && isOrgImportCapableProvider(connection.provider) && (
+                          <button
+                            type="button"
+                            onClick={() => onImportCompanies(connection)}
+                            disabled={locked}
+                            title={locked ? lockedReason : undefined}
+                            className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                            data-testid="psa-connection-import-companies"
+                          >
+                            {t('longTail.psa.PsaConnectionList.actions.importCompanies')}
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => onEdit?.(connection)}

@@ -133,6 +133,10 @@ const TARGET_GLOBS = [
   // the connection list is empty — so a failed save on a populated page was
   // silent (#3291 review).
   'src/components/psa/PsaConnectionsPage.tsx',
+  // PSA company import (#3246): the commit creates organizations and sites in
+  // the partner's tenant tree from a remote list. A silent failure would leave
+  // the tech believing a tenant tree was provisioned when nothing was written.
+  'src/components/psa/PsaCompanyImport.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -324,7 +328,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(83);
+    expect(absoluteFiles.length).toBe(84);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

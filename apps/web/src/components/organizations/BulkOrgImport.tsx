@@ -5,34 +5,13 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { parseCsv, type ParsedCsv } from '../../lib/csvParse';
-
-// Mirrors apps/api/src/services/orgImport/types.ts — the JSON contract of
-// POST /orgs/import/preview and POST /orgs/import.
-type RowAnnotation = 'create' | 'link-match' | 'name-match' | 'matched-soft-deleted' | 'conflict';
-
-interface ImportRow {
-  organization: string;
-  site?: string;
-  externalId?: string;
-  externalSystem?: string;
-  timezone?: string;
-}
-
-interface AnnotatedRow extends ImportRow {
-  index: number;
-  annotation: RowAnnotation;
-  slug: string | null;
-  organizationId: string | null;
-  matchedOrganizationName?: string;
-  conflictReason?: string;
-}
-
-interface OrgImportSummary {
-  imported: Array<{ index: number; organization: string; organizationId: string }>;
-  updated: Array<{ index: number; organization: string; organizationId: string }>;
-  skipped: Array<{ index: number; organization: string; reason: string }>;
-  errors: Array<{ index: number; organization?: string; error: string }>;
-}
+import OrgImportPreviewTable, {
+  defaultPreviewSelection,
+  toCommitRow,
+  type AnnotatedRow,
+  type ImportRow,
+  type OrgImportSummary,
+} from './OrgImportPreviewTable';
 
 type MappableField = 'organization' | 'site' | 'externalId' | 'externalSystem' | 'timezone';
 
@@ -46,22 +25,6 @@ const FIELD_GUESSES: Record<MappableField, string[]> = {
   externalId: ['externalid', 'externalguid', 'uid', 'guid', 'id'],
   externalSystem: ['externalsystem', 'system', 'source', 'vendor'],
   timezone: ['timezone', 'tz'],
-};
-
-const BADGE_STYLES: Record<RowAnnotation, string> = {
-  'create': 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
-  'link-match': 'border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-400',
-  'name-match': 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400',
-  'matched-soft-deleted': 'border-orange-500/30 bg-orange-500/10 text-orange-700 dark:text-orange-400',
-  'conflict': 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400',
-};
-
-const BADGE_LABEL_KEYS: Record<RowAnnotation, string> = {
-  'create': 'bulkOrgImport.badges.create',
-  'link-match': 'bulkOrgImport.badges.linkMatch',
-  'name-match': 'bulkOrgImport.badges.nameMatch',
-  'matched-soft-deleted': 'bulkOrgImport.badges.softDeleted',
-  'conflict': 'bulkOrgImport.badges.conflict',
 };
 
 function guessMapping(headers: string[]): Partial<Record<MappableField, string>> {
@@ -173,11 +136,7 @@ export default function BulkOrgImport({ onImported, onUnauthorized, onClose }: P
       // create + link-match preselected; name-match must be ticked
       // deliberately; matched-soft-deleted selection IS the reactivate opt-in;
       // conflict rows are never selectable.
-      setSelected(new Set(
-        res.rows
-          .filter((r) => r.annotation === 'create' || r.annotation === 'link-match')
-          .map((r) => r.index),
-      ));
+      setSelected(defaultPreviewSelection(res.rows));
     } catch {
       // runAction already toasted.
     } finally {
@@ -189,18 +148,8 @@ export default function BulkOrgImport({ onImported, onUnauthorized, onClose }: P
     if (!previewRows) return;
     const rows = previewRows
       .filter((r) => selected.has(r.index))
-      .map((r) => ({
-        organization: r.organization,
-        ...(r.site ? { site: r.site } : {}),
-        ...(r.externalId ? { externalId: r.externalId } : {}),
-        ...(r.externalSystem ? { externalSystem: r.externalSystem } : {}),
-        ...(r.timezone ? { timezone: r.timezone } : {}),
-        expectedAnnotation: r.annotation,
-        // Pin the identity the user acknowledged: commit re-derives the match
-        // and rejects the row if it now resolves to a DIFFERENT organization.
-        ...(r.organizationId ? { expectedOrganizationId: r.organizationId } : {}),
-        ...(r.annotation === 'matched-soft-deleted' ? { reactivate: true } : {}),
-      }));
+      // CSV rows carry the user's own `externalSystem` column, so it is sent.
+      .map((r) => toCommitRow(r));
     if (rows.length === 0) return;
     setImporting(true);
     try {
@@ -239,22 +188,6 @@ export default function BulkOrgImport({ onImported, onUnauthorized, onClose }: P
       setImporting(false);
     }
   }
-
-  function toggleRow(index: number) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(index)) next.delete(index);
-      else next.add(index);
-      return next;
-    });
-  }
-
-  // Select-all only touches the safe annotations. name-match acknowledgement
-  // and soft-deleted reactivation are per-row decisions — a bulk toggle must
-  // never opt 500 rows into reactivating dead tenants in one click.
-  const bulkSelectableRows = (previewRows ?? []).filter(
-    (r) => r.annotation === 'create' || r.annotation === 'link-match',
-  );
 
   return (
     <div data-testid="bulk-org-import-panel" className="rounded-lg border bg-card p-4 shadow-xs">
@@ -377,82 +310,12 @@ export default function BulkOrgImport({ onImported, onUnauthorized, onClose }: P
             </label>
           </div>
 
-          <div className="mt-2 max-h-96 overflow-y-auto rounded-md border">
-            <table className="w-full text-sm" data-testid="bulk-org-import-table">
-              <thead>
-                <tr className="border-b bg-muted/50 text-left text-xs text-muted-foreground">
-                  <th className="w-8 px-2 py-1.5">
-                    <input
-                      type="checkbox"
-                      data-testid="bulk-org-import-select-all"
-                      aria-label={t('bulkOrgImport.preview.selectAll')}
-                      checked={bulkSelectableRows.length > 0 && bulkSelectableRows.every((r) => selected.has(r.index))}
-                      onChange={() => {
-                        setSelected((prev) => {
-                          const next = new Set(prev);
-                          if (bulkSelectableRows.every((r) => next.has(r.index))) {
-                            // Deselect the bulk set; explicit per-row opt-ins
-                            // (name-match / reactivate) stay as ticked.
-                            for (const r of bulkSelectableRows) next.delete(r.index);
-                          } else {
-                            for (const r of bulkSelectableRows) next.add(r.index);
-                          }
-                          return next;
-                        });
-                      }}
-                    />
-                  </th>
-                  <th className="px-2 py-1.5">{t('bulkOrgImport.preview.organization')}</th>
-                  <th className="px-2 py-1.5">{t('bulkOrgImport.preview.site')}</th>
-                  <th className="px-2 py-1.5">{t('bulkOrgImport.preview.externalId')}</th>
-                  <th className="px-2 py-1.5">{t('bulkOrgImport.preview.status')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {previewRows.map((r) => (
-                  <tr
-                    key={r.index}
-                    data-testid={`bulk-org-import-row-${r.index}`}
-                    className="border-b border-border/50 last:border-0"
-                  >
-                    <td className="px-2 py-1.5">
-                      <input
-                        type="checkbox"
-                        data-testid={`bulk-org-import-select-${r.index}`}
-                        checked={selected.has(r.index)}
-                        disabled={r.annotation === 'conflict'}
-                        onChange={() => toggleRow(r.index)}
-                      />
-                    </td>
-                    <td className="px-2 py-1.5">{r.organization}</td>
-                    <td className="px-2 py-1.5 text-muted-foreground">{r.site ?? '—'}</td>
-                    <td className="px-2 py-1.5 text-muted-foreground">{r.externalId ?? '—'}</td>
-                    <td className="px-2 py-1.5">
-                      <span
-                        data-testid={`bulk-org-import-badge-${r.index}`}
-                        className={`inline-flex rounded-full border px-2 py-0.5 text-xs ${BADGE_STYLES[r.annotation]}`}
-                      >
-                        {t(/* i18n-dynamic */ BADGE_LABEL_KEYS[r.annotation])}
-                      </span>
-                      {r.annotation === 'name-match' && r.matchedOrganizationName && (
-                        <span className="ml-2 text-xs text-muted-foreground">
-                          {t('bulkOrgImport.preview.matches', { name: r.matchedOrganizationName })}
-                        </span>
-                      )}
-                      {r.annotation === 'matched-soft-deleted' && (
-                        <span className="ml-2 text-xs text-orange-700 dark:text-orange-400">
-                          {t('bulkOrgImport.preview.reactivateHint')}
-                        </span>
-                      )}
-                      {r.annotation === 'conflict' && r.conflictReason && (
-                        <span className="ml-2 text-xs text-red-700 dark:text-red-400">{r.conflictReason}</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <OrgImportPreviewTable
+            rows={previewRows}
+            selected={selected}
+            onSelectedChange={setSelected}
+            testIdPrefix="bulk-org-import"
+          />
 
           <div className="mt-3">
             <button

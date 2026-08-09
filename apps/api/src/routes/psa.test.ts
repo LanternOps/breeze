@@ -101,6 +101,8 @@ vi.mock('../services/permissions', () => ({
   PERMISSIONS: {
     ORGS_READ: { resource: 'organizations', action: 'read' },
     ORGS_WRITE: { resource: 'organizations', action: 'write' },
+    // The company-import routes (#3246) create SITES as well as orgs.
+    SITES_WRITE: { resource: 'sites', action: 'write' },
   },
   hasPermission: vi.fn((_perms: unknown, _resource: string, action: string) =>
     action === 'write' ? orgsWriteGate.granted : true),
