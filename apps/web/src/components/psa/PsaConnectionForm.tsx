@@ -7,6 +7,10 @@ import { providerMeta, type PsaProvider } from './PsaConnectionList';
 import { useTranslation } from 'react-i18next';
 
 const createPsaConnectionSchema = (t: (key: string) => string) => z.object({
+  // Ownership axis (epic #2135). 'partner' = partner-wide / all-orgs: the MSP's
+  // own PSA. CREATE ONLY — ownership is immutable afterwards, and the server
+  // derives the partner from the caller's token, never from this value.
+  ownerScope: z.enum(['organization', 'partner']).optional(),
   name: z.string().min(1, t('longTail.psa.PsaConnectionForm.validation.nameRequired')),
   // Single-source provider list — @breeze/shared PSA_PROVIDERS.
   provider: psaProviderIdSchema,
@@ -115,6 +119,11 @@ type PsaConnectionFormProps = {
   loading?: boolean;
   testingConnection?: boolean;
   isEditing?: boolean;
+  /**
+   * Show the ownership-scope selector. Create-only, and only for partner users
+   * who may administer partner-wide state (epic #2135).
+   */
+  showOwnerScope?: boolean;
   /** Per-field presence of the STORED secrets (server: `credentialFields`). */
   credentialFields?: Partial<Record<PsaCredentialField, boolean>>;
 };
@@ -177,6 +186,7 @@ export default function PsaConnectionForm({
   loading,
   testingConnection,
   isEditing,
+  showOwnerScope = false,
   credentialFields
 }: PsaConnectionFormProps) {
   const { t } = useTranslation('common');
@@ -192,6 +202,10 @@ export default function PsaConnectionForm({
   } = useForm<PsaConnectionFormValues>({
     resolver: zodResolver(psaConnectionSchema),
     defaultValues: {
+      // An MSP's PSA is normally partner-level, so the form defaults to
+      // "All organizations". Only ever sent when showOwnerScope is true; the
+      // API's own default stays 'organization' for non-browser clients.
+      ownerScope: 'partner',
       name: '',
       provider: 'jira',
       baseUrl: '',
@@ -239,6 +253,39 @@ export default function PsaConnectionForm({
       })}
       className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
+      {/* Ownership scope — create-only, partner admins only (epic #2135) */}
+      {showOwnerScope && !isEditing && (
+        <fieldset
+          className="space-y-2 rounded-md border p-4"
+          data-testid="psa-connection-owner"
+        >
+          <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
+            {t('longTail.psa.PsaConnectionForm.ownerScope.legend')}
+          </legend>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              value="partner"
+              {...register('ownerScope')}
+              data-testid="psa-connection-owner-partner"
+            />
+            {t('longTail.psa.PsaConnectionForm.ownerScope.allOrganizations')}
+            <span className="text-muted-foreground">
+              {t('longTail.psa.PsaConnectionForm.ownerScope.partnerWideHint')}
+            </span>
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              value="organization"
+              {...register('ownerScope')}
+              data-testid="psa-connection-owner-org"
+            />
+            {t('longTail.psa.PsaConnectionForm.ownerScope.thisOrganizationOnly')}
+          </label>
+        </fieldset>
+      )}
+
       <div className="space-y-4">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           {t('longTail.psa.PsaConnectionForm.sections.basicInformation')}

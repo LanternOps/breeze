@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Layers } from 'lucide-react';
 import type { PsaProviderId } from '@breeze/shared';
 
 // Derived from the single-source provider list in @breeze/shared.
@@ -12,6 +13,12 @@ export type PsaConnection = {
   provider: PsaProvider;
   name: string;
   status: PsaConnectionStatus;
+  /**
+   * 'partner' = partner-wide ("All orgs"): the MSP's own PSA, shared by every
+   * organization under the partner (epic #2135). Optional so older cached
+   * payloads keep rendering as org-owned.
+   */
+  ownerScope?: 'organization' | 'partner';
 };
 
 type PsaConnectionListProps = {
@@ -230,7 +237,21 @@ export default function PsaConnectionList({
                         <span className="text-sm font-medium">{providerMeta[connection.provider].label}</span>
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-sm font-medium">{connection.name}</td>
+                    <td className="px-4 py-3 text-sm font-medium">
+                      <div className="flex items-center gap-2">
+                        <span>{connection.name}</span>
+                        {connection.ownerScope === 'partner' && (
+                          <span
+                            className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                            title={t('longTail.psa.PsaConnectionList.partnerWideTitle')}
+                            data-testid="partner-wide-badge"
+                          >
+                            <Layers className="h-3 w-3" />
+                            {t('longTail.psa.PsaConnectionList.allOrgs')}
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td className="px-4 py-3 text-sm">
                       <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusStyle.className}`}>
                         {t(/* i18n-dynamic */ statusStyle.labelKey)}

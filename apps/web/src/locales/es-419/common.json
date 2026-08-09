@@ -1021,6 +1021,12 @@
         "validation": {
           "nameRequired": "El nombre de la conexión es obligatorio.",
           "validUrl": "Debe ser un URL válido."
+        },
+        "ownerScope": {
+          "legend": "Propiedad",
+          "allOrganizations": "Todas las organizaciones",
+          "partnerWideHint": "(a nivel de socio — el PSA propio de su MSP)",
+          "thisOrganizationOnly": "Solo esta organización"
         }
       },
       "PsaConnectionList": {
@@ -1049,7 +1055,9 @@
           "paused": "En pausa",
           "syncing": "Sincronizando"
         },
-        "title": "Conexiones PSA"
+        "title": "Conexiones PSA",
+        "allOrgs": "Todas las orgs",
+        "partnerWideTitle": "Conexión a nivel de socio — compartida por todas las organizaciones"
       },
       "PsaConnectionsPage": {
         "actions": {

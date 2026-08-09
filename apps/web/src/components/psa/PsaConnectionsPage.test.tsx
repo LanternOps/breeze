@@ -4,10 +4,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import PsaConnectionsPage from './PsaConnectionsPage';
 import { fetchWithAuth } from '../../stores/auth';
 
+// `useAuthStore` is a zustand selector hook; the page reads only
+// `user.canManagePartnerWide` from it (epic #2135 ownerScope gate).
+const authUser: { canManagePartnerWide?: boolean } = {};
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
   registerOrgIdProvider: vi.fn(),
   resolveApiOrigin: vi.fn(() => 'https://us.2breeze.app'),
+  useAuthStore: (selector: (s: unknown) => unknown) => selector({ user: authUser }),
+}));
+
+// Default: org scope, so the ownerScope selector stays hidden and every
+// pre-existing assertion in this file describes an org-owned connection.
+const jwtClaims: { scope?: string; partnerId?: string | null } = { scope: 'organization', partnerId: null };
+vi.mock('@/lib/authScope', () => ({
+  getJwtClaims: () => jwtClaims,
 }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
@@ -261,6 +272,121 @@ describe('PsaConnectionsPage round-trip contract', () => {
 
     await waitFor(() => expect(testButton).toBeDisabled());
     expect(screen.getByTestId('psa-test-dirty-hint')).toBeInTheDocument();
+  });
+
+  // ---- Dual ownership: org XOR partner (epic #2135) ----
+
+  describe('ownerScope selector and All orgs badge', () => {
+    afterEach(() => {
+      // Restore the org-scope default the rest of the file assumes.
+      jwtClaims.scope = 'organization';
+      jwtClaims.partnerId = null;
+      delete authUser.canManagePartnerWide;
+    });
+
+    function asPartnerAdmin() {
+      jwtClaims.scope = 'partner';
+      jwtClaims.partnerId = 'p-1';
+      authUser.canManagePartnerWide = true;
+    }
+
+    it('renders the "All orgs" badge only for a partner-owned connection', async () => {
+      installFetchRouter(
+        {
+          'GET /psa/connections': {
+            data: [
+              { id: 'c1', provider: 'jira', name: 'MSP Jira', status: 'active', ownerScope: 'partner' },
+              { id: 'c2', provider: 'zendesk', name: 'Customer Zendesk', status: 'active', ownerScope: 'organization' },
+            ],
+          },
+        },
+        []
+      );
+
+      render(<PsaConnectionsPage />);
+
+      await screen.findByText('MSP Jira');
+      expect(screen.getAllByTestId('partner-wide-badge')).toHaveLength(1);
+    });
+
+    it('hides the ownerScope selector for an org-scope user', async () => {
+      installFetchRouter({ 'GET /psa/connections': { data: [] } }, []);
+
+      const user = userEvent.setup();
+      render(<PsaConnectionsPage />);
+      await user.click(await screen.findByRole('button', { name: /add connection/i }));
+
+      expect(screen.queryByTestId('psa-connection-owner')).toBeNull();
+    });
+
+    it('shows the selector defaulted to partner-wide and POSTs ownerScope:partner', async () => {
+      asPartnerAdmin();
+      const recorded: RecordedRequest[] = [];
+      installFetchRouter(
+        {
+          'GET /psa/connections': { data: [] },
+          'POST /psa/connections': { id: 'c-new', provider: 'jira', name: 'MSP Jira', status: 'active', ownerScope: 'partner' },
+        },
+        recorded
+      );
+
+      const user = userEvent.setup();
+      render(<PsaConnectionsPage />);
+      await user.click(await screen.findByRole('button', { name: /add connection/i }));
+
+      expect(screen.getByTestId('psa-connection-owner')).toBeInTheDocument();
+      // Partner-wide is the default for a new connection.
+      expect(screen.getByTestId('psa-connection-owner-partner')).toBeChecked();
+      expect(screen.getByTestId('psa-connection-owner-org')).not.toBeChecked();
+
+      await user.type(screen.getByLabelText(/connection name/i), 'MSP Jira');
+      await user.type(screen.getByLabelText(/instance url/i), 'https://acme.atlassian.net');
+      await user.type(screen.getByLabelText(/username or email/i), 'admin@acme.com');
+      await user.type(screen.getByLabelText(/api token/i), 'tok-123');
+      await user.click(screen.getByRole('button', { name: /create connection/i }));
+
+      await waitFor(() => expect(recorded).toHaveLength(1));
+      expect((recorded[0]!.body as Record<string, unknown>).ownerScope).toBe('partner');
+    });
+
+    it('POSTs ownerScope:organization when the org radio is chosen', async () => {
+      asPartnerAdmin();
+      const recorded: RecordedRequest[] = [];
+      installFetchRouter(
+        {
+          'GET /psa/connections': { data: [] },
+          'POST /psa/connections': { id: 'c-new', provider: 'jira', name: 'Cust Jira', status: 'active', ownerScope: 'organization' },
+        },
+        recorded
+      );
+
+      const user = userEvent.setup();
+      render(<PsaConnectionsPage />);
+      await user.click(await screen.findByRole('button', { name: /add connection/i }));
+
+      await user.click(screen.getByTestId('psa-connection-owner-org'));
+      await user.type(screen.getByLabelText(/connection name/i), 'Cust Jira');
+      await user.type(screen.getByLabelText(/instance url/i), 'https://acme.atlassian.net');
+      await user.type(screen.getByLabelText(/username or email/i), 'admin@acme.com');
+      await user.type(screen.getByLabelText(/api token/i), 'tok-123');
+      await user.click(screen.getByRole('button', { name: /create connection/i }));
+
+      await waitFor(() => expect(recorded).toHaveLength(1));
+      expect((recorded[0]!.body as Record<string, unknown>).ownerScope).toBe('organization');
+    });
+
+    it('hides the selector for a partner user without the partner-wide capability', async () => {
+      jwtClaims.scope = 'partner';
+      jwtClaims.partnerId = 'p-1';
+      authUser.canManagePartnerWide = false;
+      installFetchRouter({ 'GET /psa/connections': { data: [] } }, []);
+
+      const user = userEvent.setup();
+      render(<PsaConnectionsPage />);
+      await user.click(await screen.findByRole('button', { name: /add connection/i }));
+
+      expect(screen.queryByTestId('psa-connection-owner')).toBeNull();
+    });
   });
 
   it('no longer offers a "Sync now" action (sync endpoint is an honest 501)', async () => {

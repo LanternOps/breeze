@@ -5,7 +5,8 @@ import PsaConnectionForm, {
   type PsaCredentialField
 } from './PsaConnectionForm';
 import PsaTicketList, { type PsaTicket } from './PsaTicketList';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { getJwtClaims } from '@/lib/authScope';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { useTranslation } from 'react-i18next';
@@ -31,6 +32,8 @@ type TestResult = {
 type PsaConnectionDetails = {
   id: string;
   name: string;
+  /** 'partner' = partner-wide ("All orgs"), epic #2135. Immutable after create. */
+  ownerScope?: 'organization' | 'partner';
   provider: PsaConnectionFormValues['provider'];
   /** True when ANY credential material is stored (not permission-gated). */
   hasCredentials?: boolean;
@@ -105,6 +108,14 @@ export default function PsaConnectionsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [testingConnection, setTestingConnection] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
+
+  // Same UX gate as ScriptForm/ScriptBundleImport (#3262): partner-wide is only
+  // meaningful for partner-scope callers, and within partner scope only for
+  // users holding the partner-wide capability. Absent = capable; the server
+  // (canManagePartnerWidePolicies) enforces regardless — this is UX only.
+  const canManagePartnerWide = useAuthStore(s => s.user?.canManagePartnerWide ?? true);
+  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
+  const showOwnerScope = jwtScope === 'partner' && !!jwtPartnerId && canManagePartnerWide;
 
   const fetchConnections = useCallback(async () => {
     try {
@@ -241,7 +252,17 @@ export default function PsaConnectionsPage() {
       const method = modalMode === 'edit' ? 'PATCH' : 'POST';
 
       const base = toConnectionPayload(values);
-      const payload = modalMode === 'edit' ? base : { ...base, provider: values.provider };
+      // ownerScope is create-only (epic #2135) — the PATCH schema rejects it,
+      // and re-homing a connection is deliberately not a supported operation.
+      // Only sent when the selector was actually shown, so an org-scope user's
+      // create keeps the server's 'organization' default.
+      const payload = modalMode === 'edit'
+        ? base
+        : {
+            ...base,
+            provider: values.provider,
+            ...(showOwnerScope && values.ownerScope ? { ownerScope: values.ownerScope } : {})
+          };
 
       await runAction({
         request: () => fetchWithAuth(url, { method, body: JSON.stringify(payload) }),
@@ -364,6 +385,7 @@ export default function PsaConnectionsPage() {
             <PsaConnectionForm
               onSubmit={handleSubmit}
               onCancel={handleCloseModal}
+              showOwnerScope={showOwnerScope}
               onTestConnection={modalMode === 'edit' ? handleTestConnection : undefined}
               defaultValues={
                 selectedConnectionDetails

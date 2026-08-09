@@ -1021,6 +1021,12 @@
         "validation": {
           "nameRequired": "Connection name is required",
           "validUrl": "Must be a valid URL"
+        },
+        "ownerScope": {
+          "legend": "Ownership",
+          "allOrganizations": "All organizations",
+          "partnerWideHint": "(partner-wide — your MSP's own PSA)",
+          "thisOrganizationOnly": "This organization only"
         }
       },
       "PsaConnectionList": {
@@ -1049,7 +1055,9 @@
           "paused": "Paused",
           "syncing": "Syncing"
         },
-        "title": "PSA Connections"
+        "title": "PSA Connections",
+        "allOrgs": "All orgs",
+        "partnerWideTitle": "Partner-wide connection — shared by every organization"
       },
       "PsaConnectionsPage": {
         "actions": {
