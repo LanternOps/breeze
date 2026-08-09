@@ -599,6 +599,36 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		return nil, fmt.Errorf("startAgent called with unenrolled config — caller must waitForEnrollment first")
 	}
 
+	// Build-mode self-check. Lives here — not in runAgent — because this is
+	// the single choke point every entry point reaches: console/Unix via
+	// runAgent's startAgentFn call, the Windows SCM service and the Unix
+	// runAsService loop (both call startAgentFn directly), and the Quick
+	// Support session in support.go. runAgent alone would miss the two
+	// primary service deployment modes, which return into runAsService
+	// before ever reaching runAgent's own body.
+	log.Info("control-plane build mode", "mode", hostpolicy.Mode(), "allowedHosts", hostpolicy.Hosts())
+	if err := checkPersistedServerAllowed(cfg); err != nil {
+		if hostpolicy.Strict() {
+			// Belt-and-braces: config.Load -> ValidateTiered already fatals
+			// on a persisted out-of-allowlist ServerURL before any caller
+			// reaches startAgent, but keeping an explicit refusal here makes
+			// the invariant local to the function that actually starts
+			// components, instead of depending on every caller having gone
+			// through config.Load first.
+			log.Error("hosted build refuses to run against this server", "error", err.Error())
+			fmt.Fprintf(os.Stderr,
+				"This is a Breeze hosted-edition build and cannot manage a self-hosted server.\n"+
+					"Use the self-host build instead. Details: %v\n", err)
+			osExit(1)
+			return nil, err
+		}
+		// Gap build: warn and keep running. The migration-needed signal
+		// (Task 8) surfaces this on the self-hosted dashboard so the admin
+		// can migrate before the strict build ships. Do NOT exit.
+		log.Warn("hosted-edition agent is managing a self-hosted server; migrate to the self-host build before the enforced release",
+			"error", err.Error())
+	}
+
 	// Quick Support clients are throwaway, unelevated, and live entirely in a
 	// temp workspace. They must never touch the machine-wide install: no
 	// self-update (a support session outlives nothing), and every ProgramData
@@ -1119,22 +1149,11 @@ func runAgent() {
 		}
 	}
 
-	log.Info("control-plane build mode", "mode", hostpolicy.Mode(), "allowedHosts", hostpolicy.Hosts())
-	if err := checkPersistedServerAllowed(cfg); err != nil {
-		if hostpolicy.Strict() {
-			log.Error("hosted build refuses to run against this server", "error", err.Error())
-			fmt.Fprintf(os.Stderr,
-				"This is a Breeze hosted-edition build and cannot manage a self-hosted server.\n"+
-					"Use the self-host build instead. Details: %v\n", err)
-			osExit(1)
-			return
-		}
-		// Gap build: warn and keep running. The migration-needed signal
-		// (Task 8) surfaces this on the self-hosted dashboard so the admin
-		// can migrate before the strict build ships. Do NOT exit.
-		log.Warn("hosted-edition agent is managing a self-hosted server; migrate to the self-host build before the enforced release",
-			"error", err.Error())
-	}
+	// Build-mode self-check (log + gap/strict enforcement) now lives in
+	// startAgentFn/startAgent — the shared choke point reached by every
+	// entry point, including the Windows SCM and Unix service-manager
+	// paths that return early into runAsService above and never reach
+	// this point in runAgent.
 
 	comps, err := startAgentFn(cfg)
 	if err != nil {
