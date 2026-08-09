@@ -1381,6 +1381,12 @@ const commitOrgImportSchema = z.object({
       expectedOrganizationId: z.string().guid().optional(),
       // Explicit opt-in to reactivate a soft-deleted matched org.
       reactivate: z.boolean().optional(),
+      // Explicit "this is NOT that organization" — create a separate,
+      // slug-suffixed org instead of touching the name/soft-deleted match.
+      // Without it, a row colliding by name with a soft-deleted org is
+      // unimportable: the only other way to satisfy that match is `reactivate`,
+      // and reviving an unrelated dead tenant is the wrong answer.
+      forceCreate: z.boolean().optional(),
     }))
     .min(1)
     .max(MAX_IMPORT_ROWS),

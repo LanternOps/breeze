@@ -74,6 +74,9 @@ vi.mock('../../middleware/auth', () => ({
     if (!authState.mfa) return c.json({ error: 'MFA required' }, 403);
     return next();
   }),
+  // The customer routes are permission-gated (organizations:write +
+  // sites:write); this suite covers the OAuth/settings routes, so grant it.
+  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
 vi.mock('../../services/accounting/accountingConnectionService', () => ({

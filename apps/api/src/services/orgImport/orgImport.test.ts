@@ -1,11 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock the db module: select/insert/update plus pass-through context helpers.
-const { selectMock, insertMock, updateMock, restoreOrgAccessMock } = vi.hoisted(() => ({
+const { selectMock, insertMock, updateMock, restoreOrgAccessMock, systemContextCalls } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   insertMock: vi.fn(),
   updateMock: vi.fn(),
   restoreOrgAccessMock: vi.fn(),
+  // Counts how many separate system contexts (= transactions) were opened, so a
+  // test can assert the whole group create rode in ONE of them.
+  systemContextCalls: { count: 0 },
 }));
 
 vi.mock('../../db', () => ({
@@ -14,7 +17,10 @@ vi.mock('../../db', () => ({
   // The real helper runs its callback inside ONE transaction (SET LOCAL RLS
   // GUCs), which is what makes createGroup all-or-nothing; the pass-through
   // here means rejections propagate like a rollback would.
-  withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  withSystemDbAccessContext: (fn: () => unknown) => {
+    systemContextCalls.count += 1;
+    return fn();
+  },
 }));
 
 vi.mock('../tenantLifecycle', () => ({
@@ -63,13 +69,14 @@ function stubState(orgs: OrgRow[], links: LinkRow[], extraSelects: unknown[][] =
 }
 
 // Capture insert targets + values; resolve returning() with generated ids.
-const insertedValues: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+const insertedValues: Array<{ table: unknown; values: Record<string, unknown>; contextAt: number }> = [];
 function stubInserts(options: { failOn?: (values: Record<string, unknown>) => Error | null } = {}) {
   let n = 0;
   insertMock.mockImplementation((table: unknown) => ({
     values: (v: Record<string, unknown>) => {
       const err = options.failOn?.(v);
-      insertedValues.push({ table, values: v });
+      // Which system context (= transaction) this insert rode in.
+      insertedValues.push({ table, values: v, contextAt: systemContextCalls.count });
       n++;
       const id = `row-${n}`;
       if (err) {
@@ -98,6 +105,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   insertedValues.length = 0;
   updatedValues.length = 0;
+  systemContextCalls.count = 0;
   stubInserts();
   stubUpdates();
 });
@@ -128,6 +136,69 @@ describe('previewOrgImport', () => {
       'p1',
     );
     expect(rows[0]).toMatchObject({ annotation: 'link-match', organizationId: 'org-1', matchedOrganizationName: 'Acme Co', slug: null });
+  });
+
+  it('reports matchedBy so callers can tell a linked match from a name-only one', async () => {
+    // Same annotation ('matched-soft-deleted'), two very different facts: this
+    // dead org was never linked to the row's external id, it just shares a
+    // name. A caller that reads the annotation alone treats an unrelated
+    // churned org as "already imported".
+    stubState([{ id: 'org-dead', name: 'Acme', slug: 'acme', deletedAt: new Date() }], []);
+    const byName = await previewOrgImport([{ organization: 'Acme', externalId: 'x1', externalSystem: 'quickbooks' }], 'p1');
+    expect(byName[0]).toMatchObject({ annotation: 'matched-soft-deleted', matchedBy: 'name', organizationId: 'org-dead' });
+
+    stubState(
+      [{ id: 'org-dead', name: 'Acme', slug: 'acme', deletedAt: new Date() }],
+      [{ orgId: 'org-dead', system: 'quickbooks', externalId: 'x1' }],
+    );
+    const byLink = await previewOrgImport([{ organization: 'Acme', externalId: 'x1', externalSystem: 'quickbooks' }], 'p1');
+    expect(byLink[0]).toMatchObject({ annotation: 'matched-soft-deleted', matchedBy: 'link' });
+  });
+
+  it('marks an active name-match as matchedBy name and a link-match as matchedBy link', async () => {
+    stubState([{ id: 'org-1', name: 'Acme', slug: 'acme' }], []);
+    const nameRows = await previewOrgImport([{ organization: 'Acme' }], 'p1');
+    expect(nameRows[0]).toMatchObject({ annotation: 'name-match', matchedBy: 'name' });
+
+    stubState([{ id: 'org-1', name: 'Acme', slug: 'acme' }], [{ orgId: 'org-1', system: 'csv', externalId: '7' }]);
+    const linkRows = await previewOrgImport([{ organization: 'Acme', externalId: '7' }], 'p1');
+    expect(linkRows[0]).toMatchObject({ annotation: 'link-match', matchedBy: 'link' });
+  });
+
+  it('flags a name match whose org is already linked under the same system', async () => {
+    // org-1 is already linked to quickbooks customer "other". A second customer
+    // that merely shares its NAME must not be offered "confirm this match":
+    // confirming adds a SECOND link row (the unique index is on
+    // (partner_id, system, external_id)) and collapses two customers onto one
+    // tenant.
+    stubState(
+      [{ id: 'org-1', name: 'Acme', slug: 'acme' }],
+      [{ orgId: 'org-1', system: 'quickbooks', externalId: 'other' }],
+    );
+    const rows = await previewOrgImport(
+      [{ organization: 'Acme', externalId: 'mine', externalSystem: 'quickbooks' }],
+      'p1',
+    );
+    expect(rows[0]).toMatchObject({ annotation: 'name-match', matchedOrganizationLinkedToSystem: true });
+  });
+
+  it('does not flag a name match whose org is linked under a DIFFERENT system', async () => {
+    stubState(
+      [{ id: 'org-1', name: 'Acme', slug: 'acme' }],
+      [{ orgId: 'org-1', system: 'datto_rmm', externalId: 'other' }],
+    );
+    const rows = await previewOrgImport(
+      [{ organization: 'Acme', externalId: 'mine', externalSystem: 'quickbooks' }],
+      'p1',
+    );
+    expect(rows[0]).toMatchObject({ annotation: 'name-match' });
+    expect(rows[0]).not.toHaveProperty('matchedOrganizationLinkedToSystem');
+  });
+
+  it('leaves matchedBy unset on a create row', async () => {
+    stubState([], []);
+    const rows = await previewOrgImport([{ organization: 'Acme' }], 'p1');
+    expect(rows[0]).not.toHaveProperty('matchedBy');
   });
 
   it('matches via the legacy accounting_* columns when no link row exists (union read)', async () => {
@@ -259,6 +330,90 @@ describe('commitOrgImport — create', () => {
     expect(summary.imported[1]!.siteName).toBe('HQ');
   });
 
+  it('creates org + link + EVERY site inside ONE system context (one transaction)', async () => {
+    stubState([], []);
+    await commitOrgImport([
+      { organization: 'Acme', site: 'HQ', externalId: '1', externalSystem: 'datto_rmm' },
+      { organization: 'Acme', site: 'Warehouse', externalId: '1', externalSystem: 'datto_rmm' },
+    ], 'p1', { userId: null }, 'skip');
+
+    // 4 inserts (org, link, 2 sites) that all rode in the SAME context:
+    // withSystemDbAccessContext holds one transaction for its whole callback,
+    // so the group is all-or-nothing. Opening a context per site would let a
+    // failing site strand a committed org with no sites — un-importable ever
+    // after, since the retry would see its link row and skip it.
+    expect(insertedValues).toHaveLength(4);
+    expect(new Set(insertedValues.map((i) => i.contextAt)).size).toBe(1);
+  });
+
+  it('surfaces a SLUG unique violation as a real error, never as created_concurrently', async () => {
+    stubState([], []);
+    const slugErr = Object.assign(new Error('duplicate key value violates unique constraint "organizations_slug_key"'), {
+      code: '23505', constraint_name: 'organizations_slug_key',
+    });
+    stubInserts({ failOn: (v) => (v.slug ? slugErr : null) });
+
+    const summary = await commitOrgImport(
+      [{ organization: 'Acme', externalId: '1', externalSystem: 'quickbooks' }],
+      'p1', { userId: null }, 'skip',
+    );
+
+    // Misreporting this as a concurrent link import would tell the caller the
+    // org exists when it does not — an infinite benign-looking retry loop.
+    expect(summary.skipped).toEqual([]);
+    expect(summary.errors).toHaveLength(1);
+    expect(summary.errors[0]).toMatchObject({ code: 'write-failed' });
+    expect(summary.errors[0]!.cause).toBe(slugErr);
+  });
+
+  it('keeps the original error off the JSON wire (cause is non-enumerable)', async () => {
+    stubState([], []);
+    const boom = Object.assign(new Error('boom'), { query: 'insert into organizations ...' });
+    stubInserts({ failOn: () => boom });
+    const summary = await commitOrgImport([{ organization: 'Acme' }], 'p1', { userId: null }, 'skip');
+
+    expect(summary.errors[0]!.cause).toBe(boom);
+    // A route hands this straight to c.json(...) — the stack and query text
+    // must not ride along.
+    expect(JSON.parse(JSON.stringify(summary.errors[0]))).not.toHaveProperty('cause');
+  });
+
+  it('clamps a structured billingAddress onto the org billing columns (char(2) country guard)', async () => {
+    stubState([], []);
+    const summary = await commitOrgImport([{
+      organization: 'Acme',
+      billingAddress: {
+        line1: '1 Bill St',
+        city: 'C'.repeat(200),
+        region: 'TX',
+        postalCode: '78701',
+        country: 'United States',
+      },
+    }], 'p1', { userId: null }, 'skip');
+
+    expect(summary.errors).toEqual([]);
+    const org = insertedValues[0]!.values;
+    expect(org).toMatchObject({ billingAddressLine1: '1 Bill St', billingAddressRegion: 'TX', billingAddressPostalCode: '78701' });
+    // billing_address_city is varchar(120): an over-long value would throw and
+    // roll the whole group back.
+    expect(org.billingAddressCity).toHaveLength(120);
+    // billing_address_country is char(2): free-form names are dropped, not truncated.
+    expect(org.billingAddressCountry).toBeNull();
+  });
+
+  it('uppercases a genuine 2-letter billingAddress country', async () => {
+    stubState([], []);
+    await commitOrgImport([{ organization: 'Acme', billingAddress: { country: 'us' } }], 'p1', { userId: null }, 'skip');
+    expect(insertedValues[0]!.values.billingAddressCountry).toBe('US');
+  });
+
+  it('omits the billing columns entirely when no row carries a billingAddress', async () => {
+    stubState([], []);
+    await commitOrgImport([{ organization: 'Acme' }], 'p1', { userId: null }, 'skip');
+    expect(insertedValues[0]!.values).not.toHaveProperty('billingAddressLine1');
+    expect(insertedValues[0]!.values).not.toHaveProperty('billingAddressCountry');
+  });
+
   it('creates a default site named after the org when no row names a site', async () => {
     stubState([], []);
     const summary = await commitOrgImport([{ organization: 'Acme' }], 'p1', { userId: null }, 'skip');
@@ -293,7 +448,7 @@ describe('commitOrgImport — create', () => {
       { organization: 'Good Co' },
     ], 'p1', { userId: null }, 'skip');
     expect(summary.errors).toEqual([
-      { index: 0, organization: 'Bad Co', error: 'boom' },
+      { index: 0, organization: 'Bad Co', error: 'boom', code: 'write-failed' },
     ]);
     expect(summary.imported).toHaveLength(1);
     expect(summary.imported[0]).toMatchObject({ organization: 'Good Co' });
@@ -360,8 +515,8 @@ describe('commitOrgImport — create', () => {
     expect(summary.imported).toEqual([]);
     expect(summary.skipped).toEqual([]);
     expect(summary.errors).toEqual([
-      { index: 0, organization: 'Acme', error: 'site boom' },
-      { index: 1, organization: 'Acme', error: 'site boom' },
+      { index: 0, organization: 'Acme', error: 'site boom', code: 'write-failed' },
+      { index: 1, organization: 'Acme', error: 'site boom', code: 'write-failed' },
     ]);
   });
 });
@@ -372,6 +527,58 @@ describe('commitOrgImport — expectation guard', () => {
     const summary = await commitOrgImport([{ organization: 'Acme' }], 'p1', { userId: null }, 'skip');
     expect(summary.errors).toHaveLength(1);
     expect(summary.errors[0]!.error).toMatch(/confirm the match/);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('creates a separate slug-suffixed org for a name-match with forceCreate', async () => {
+    stubState([{ id: 'org-1', name: 'Acme', slug: 'acme' }], []);
+    const rows: CommitRowInput[] = [{ organization: 'Acme', forceCreate: true }];
+    const summary = await commitOrgImport(rows, 'p1', { userId: null }, 'skip');
+
+    expect(summary.errors).toEqual([]);
+    expect(summary.imported).toHaveLength(1);
+    expect(summary.imported[0]).toMatchObject({ createdOrganization: true, slug: 'acme-2' });
+    // The matched org is left completely alone.
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(insertedValues[0]!.values).toMatchObject({ name: 'Acme', slug: 'acme-2' });
+  });
+
+  it('creates a separate org for a soft-deleted match with forceCreate (never reactivates)', async () => {
+    // The ONLY way to import a source record that merely collides by name with
+    // a churned org: reactivating an unrelated dead tenant is wrong, and
+    // without forceCreate the row is unimportable by any route.
+    stubState([{ id: 'org-dead', name: 'Acme', slug: 'acme', deletedAt: new Date() }], []);
+    const rows: CommitRowInput[] = [
+      { organization: 'Acme', externalId: 'qb-1', externalSystem: 'quickbooks', forceCreate: true },
+    ];
+    const summary = await commitOrgImport(rows, 'p1', { userId: null }, 'skip');
+
+    expect(summary.errors).toEqual([]);
+    expect(summary.imported[0]).toMatchObject({ createdOrganization: true, createdLink: true, slug: 'acme-2' });
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(restoreOrgAccessMock).not.toHaveBeenCalled();
+  });
+
+  it('ignores forceCreate on a conflict row', async () => {
+    stubState([
+      { id: 'org-1', name: 'Acme', slug: 'acme' },
+      { id: 'org-2', name: 'Acme', slug: 'acme-2' },
+    ], []);
+    const summary = await commitOrgImport(
+      [{ organization: 'Acme', forceCreate: true } as CommitRowInput],
+      'p1', { userId: null }, 'skip',
+    );
+    expect(summary.imported).toEqual([]);
+    expect(summary.errors[0]).toMatchObject({ code: 'row-conflict' });
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('still pins identity when forceCreate is set (stale acknowledgement is caught first)', async () => {
+    stubState([{ id: 'org-2', name: 'Acme', slug: 'acme' }], []);
+    const summary = await commitOrgImport([
+      { organization: 'Acme', forceCreate: true, expectedAnnotation: 'name-match', expectedOrganizationId: 'org-1' },
+    ], 'p1', { userId: null }, 'skip');
+    expect(summary.errors[0]).toMatchObject({ code: 'match-changed' });
     expect(insertMock).not.toHaveBeenCalled();
   });
 
