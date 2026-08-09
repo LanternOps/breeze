@@ -1026,7 +1026,8 @@
           "legend": "Ownership",
           "allOrganizations": "All organizations",
           "partnerWideHint": "(partner-wide — your MSP's own PSA)",
-          "thisOrganizationOnly": "This organization only"
+          "thisOrganizationOnly": "This organization only",
+          "organization": "Organization"
         }
       },
       "PsaConnectionList": {
@@ -1057,7 +1058,8 @@
         },
         "title": "PSA Connections",
         "allOrgs": "All orgs",
-        "partnerWideTitle": "Partner-wide connection — shared by every organization"
+        "partnerWideTitle": "Partner-wide connection — shared by every organization",
+        "partnerWideLocked": "Partner-wide connection — requires full partner organization access to modify"
       },
       "PsaConnectionsPage": {
         "actions": {

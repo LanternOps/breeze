@@ -1026,7 +1026,8 @@
           "legend": "Propriété",
           "allOrganizations": "Toutes les organisations",
           "partnerWideHint": "(à l'échelle du partenaire — le PSA de votre MSP)",
-          "thisOrganizationOnly": "Cette organisation seulement"
+          "thisOrganizationOnly": "Cette organisation seulement",
+          "organization": "Organisation"
         }
       },
       "PsaConnectionList": {
@@ -1057,7 +1058,8 @@
         },
         "title": "Connexions PSA",
         "allOrgs": "Toutes les orgs",
-        "partnerWideTitle": "Connexion à l'échelle du partenaire — partagée par toutes les organisations"
+        "partnerWideTitle": "Connexion à l'échelle du partenaire — partagée par toutes les organisations",
+        "partnerWideLocked": "Connexion à l'échelle du partenaire — la modification requiert un accès complet aux organisations du partenaire"
       },
       "PsaConnectionsPage": {
         "actions": {

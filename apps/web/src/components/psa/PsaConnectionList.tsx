@@ -23,6 +23,12 @@ export type PsaConnection = {
 
 type PsaConnectionListProps = {
   connections: PsaConnection[];
+  /**
+   * True for a partner-wide connection the caller may see but not mutate
+   * (epic #2135). Row actions are disabled with a tooltip instead of letting
+   * the click land on the server's 403.
+   */
+  isLockedPartnerWide?: (connection: PsaConnection) => boolean;
   onEdit?: (connection: PsaConnection) => void;
   onToggleStatus?: (connection: PsaConnection, newStatus: 'active' | 'paused') => void;
   onDelete?: (connection: PsaConnection) => void;
@@ -129,7 +135,8 @@ export default function PsaConnectionList({
   connections,
   onEdit,
   onToggleStatus,
-  onDelete
+  onDelete,
+  isLockedPartnerWide
 }: PsaConnectionListProps) {
   const { t } = useTranslation('common');
   const [query, setQuery] = useState('');
@@ -229,6 +236,8 @@ export default function PsaConnectionList({
                 // Defensive fallback: an unexpected status string must not
                 // crash the whole list render.
                 const statusStyle = statusConfig[connection.status] ?? statusConfig.active;
+                const locked = isLockedPartnerWide?.(connection) ?? false;
+                const lockedReason = t('longTail.psa.PsaConnectionList.partnerWideLocked');
                 return (
                   <tr key={connection.id} className="transition hover:bg-muted/40">
                     <td className="px-4 py-3">
@@ -258,11 +267,17 @@ export default function PsaConnectionList({
                       </span>
                     </td>
                     <td className="px-4 py-3 text-right">
+                      {/* Partner-wide rows a restricted user cannot mutate:
+                          disable rather than let them click into a 403 toast.
+                          The server gate is authoritative either way. */}
                       <div className="flex justify-end gap-2">
                         <button
                           type="button"
                           onClick={() => onEdit?.(connection)}
-                          className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
+                          disabled={locked}
+                          title={locked ? lockedReason : undefined}
+                          className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                          data-testid="psa-connection-edit"
                         >
                           {t('common:actions.edit')}
                         </button>
@@ -272,14 +287,20 @@ export default function PsaConnectionList({
                             connection,
                             connection.status === 'active' ? 'paused' : 'active'
                           )}
-                          className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
+                          disabled={locked}
+                          title={locked ? lockedReason : undefined}
+                          className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                          data-testid="psa-connection-toggle"
                         >
                           {connection.status === 'active' ? t('longTail.psa.PsaConnectionList.actions.pause') : t('longTail.psa.PsaConnectionList.actions.resume')}
                         </button>
                         <button
                           type="button"
                           onClick={() => onDelete?.(connection)}
-                          className="rounded-md border border-destructive/40 px-3 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
+                          disabled={locked}
+                          title={locked ? lockedReason : undefined}
+                          className="rounded-md border border-destructive/40 px-3 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+                          data-testid="psa-connection-delete"
                         >
                           {t('common:actions.delete')}
                         </button>

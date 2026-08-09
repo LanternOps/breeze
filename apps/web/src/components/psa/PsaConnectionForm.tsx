@@ -11,6 +11,11 @@ const createPsaConnectionSchema = (t: (key: string) => string) => z.object({
   // own PSA. CREATE ONLY — ownership is immutable afterwards, and the server
   // derives the partner from the caller's token, never from this value.
   ownerScope: z.enum(['organization', 'partner']).optional(),
+  // Which org owns the connection when ownerScope is 'organization'. Required
+  // in that branch for a partner with 2+ orgs — the API cannot guess, and
+  // omitting it used to 400 ("orgId is required when partner has multiple
+  // organizations"). Org-scope callers never send it; the server derives it.
+  orgId: z.string().optional(),
   name: z.string().min(1, t('longTail.psa.PsaConnectionForm.validation.nameRequired')),
   // Single-source provider list — @breeze/shared PSA_PROVIDERS.
   provider: psaProviderIdSchema,
@@ -124,6 +129,8 @@ type PsaConnectionFormProps = {
    * who may administer partner-wide state (epic #2135).
    */
   showOwnerScope?: boolean;
+  /** Orgs the caller may create an org-owned connection for (partner scope). */
+  ownerOrgOptions?: ReadonlyArray<{ id: string; name: string }>;
   /** Per-field presence of the STORED secrets (server: `credentialFields`). */
   credentialFields?: Partial<Record<PsaCredentialField, boolean>>;
 };
@@ -187,6 +194,7 @@ export default function PsaConnectionForm({
   testingConnection,
   isEditing,
   showOwnerScope = false,
+  ownerOrgOptions = [],
   credentialFields
 }: PsaConnectionFormProps) {
   const { t } = useTranslation('common');
@@ -202,10 +210,13 @@ export default function PsaConnectionForm({
   } = useForm<PsaConnectionFormValues>({
     resolver: zodResolver(psaConnectionSchema),
     defaultValues: {
-      // An MSP's PSA is normally partner-level, so the form defaults to
-      // "All organizations". Only ever sent when showOwnerScope is true; the
-      // API's own default stays 'organization' for non-browser clients.
+      // Default comes from the caller via defaultValues (useDefaultOwnerScope
+      // in the page) — the repo-wide rule, not a literal, so this form tracks
+      // the convention if it changes. Partner-wide remains the default in the
+      // All-organizations view. The API's own default stays 'organization' for
+      // non-browser clients.
       ownerScope: 'partner',
+      orgId: '',
       name: '',
       provider: 'jira',
       baseUrl: '',
@@ -233,6 +244,7 @@ export default function PsaConnectionForm({
   });
 
   const selectedProvider = useWatch({ control, name: 'provider' });
+  const selectedOwnerScope = useWatch({ control, name: 'ownerScope' });
   const syncEnabled = useWatch({ control, name: 'syncEnabled' });
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
 
@@ -283,6 +295,27 @@ export default function PsaConnectionForm({
             />
             {t('longTail.psa.PsaConnectionForm.ownerScope.thisOrganizationOnly')}
           </label>
+
+          {/* Which org owns it. Without this a partner with 2+ orgs sends no
+              orgId and the create 400s. */}
+          {selectedOwnerScope === 'organization' && ownerOrgOptions.length > 0 && (
+            <div className="space-y-1 pl-6">
+              <label htmlFor="connection-owner-org" className="text-sm font-medium">
+                {t('longTail.psa.PsaConnectionForm.ownerScope.organization')}
+              </label>
+              <select
+                id="connection-owner-org"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                {...register('orgId')}
+                data-testid="psa-connection-owner-org-select"
+              >
+                {ownerOrgOptions.map((org) => (
+                  <option key={org.id} value={org.id}>{org.name}</option>
+                ))}
+              </select>
+              {errors.orgId && <p className="text-sm text-destructive">{errors.orgId.message}</p>}
+            </div>
+          )}
         </fieldset>
       )}
 

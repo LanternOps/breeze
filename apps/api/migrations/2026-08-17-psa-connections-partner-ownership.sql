@@ -100,19 +100,41 @@ CREATE POLICY psa_connections_isolation
 -- pc.org_id IS NULL — i.e. for every partner-owned connection. Collapsed from
 -- four per-command policies to one, matching the parent above.
 --
--- THREE arms, not two. The third (device_id -> devices.org_id) is not
--- cosmetic: deleteDeviceCascade (services/deviceDeletion.ts) runs in the
--- REQUEST context, which for an org-scope token is org-scoped RLS. Without the
--- device arm, a mapping hanging off a PARTNER-owned connection is invisible to
--- that token, its DELETE silently matches zero rows, and the subsequent
--- `DELETE FROM devices` fails with 23503 — a 500 on an ordinary device delete.
--- The arm is also correct on the merits: a ticket about MY device is MY org's
--- record, which is the same principle playbook step 5 states for every
--- worker-created child row (they take the DEVICE's org, not the policy's).
+-- USING and WITH CHECK are deliberately DIFFERENT, because reading and writing
+-- make different tenancy claims:
 --
--- connection_id is NOT NULL and remains the primary tenancy anchor; device_id
--- and alert_id are nullable, so they widen access but can never be the sole
--- basis for it.
+--   USING      = system OR connection-accessible OR device-org OR alert-org
+--   WITH CHECK = system OR connection-accessible ONLY
+--
+-- Reading or deleting a row that references YOUR OWN device or alert is a
+-- legitimate claim — that ticket is your org's record, the same principle
+-- playbook step 5 states for every worker-created child row (they take the
+-- DEVICE's org, not the policy's). But ATTACHING a mapping to a connection is a
+-- claim on the CONNECTION, so the write path must not accept device/alert
+-- ownership as a substitute. A symmetric policy would have let a tenant who
+-- merely owns a device forge a mapping onto a FOREIGN partner's connection,
+-- contradicting this file's own "connection_id is the tenancy anchor" rule.
+--
+-- Both read arms are load-bearing for deleteDeviceCascade
+-- (services/deviceDeletion.ts), which runs in the REQUEST context — org-scoped
+-- RLS for an org token. Its pre-clear matches on `alert_id IN (...) OR
+-- device_id = ...`, so under a PARTNER-owned connection:
+--   * device_id set   -> needs the device arm
+--   * device_id NULL, alert_id set -> needs the ALERT arm
+-- Without the relevant arm the DELETE silently matches zero rows and the
+-- cascade's follow-on `DELETE FROM alerts` / `DELETE FROM devices` fails with
+-- 23503 — a 500 on an ordinary device delete.
+--
+-- connection_id is NOT NULL and remains the primary tenancy anchor for WRITES;
+-- device_id and alert_id are nullable and widen READS only.
+--
+-- NOTE ON ROW VISIBILITY vs AUTHORIZATION: the connection arm passes for ANY
+-- partner-scope caller of the owning partner, necessarily so — a mapping with
+-- neither anchor has no org for Postgres to check. Postgres therefore cannot
+-- express partner_users.org_access='selected' here. Narrowing ticket reads to a
+-- restricted partner user's accessible orgs is done in the app layer by
+-- psaTicketMappingOrgCondition (routes/psa.ts); that condition is the
+-- enforcement point for the refinement and is not redundant with this policy.
 
 ALTER TABLE psa_ticket_mappings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE psa_ticket_mappings FORCE ROW LEVEL SECURITY;
@@ -124,6 +146,7 @@ DROP POLICY IF EXISTS breeze_org_isolation_delete ON psa_ticket_mappings;
 DROP POLICY IF EXISTS psa_ticket_mappings_isolation ON psa_ticket_mappings;
 CREATE POLICY psa_ticket_mappings_isolation
   ON psa_ticket_mappings
+  -- READ/DELETE: connection access, OR ownership of the referenced device or alert.
   USING (
     public.breeze_current_scope() = 'system'
     OR EXISTS (
@@ -139,7 +162,14 @@ CREATE POLICY psa_ticket_mappings_isolation
        WHERE d.id = psa_ticket_mappings.device_id
          AND public.breeze_has_org_access(d.org_id)
     )
+    OR EXISTS (
+      SELECT 1 FROM alerts a
+       WHERE a.id = psa_ticket_mappings.alert_id
+         AND public.breeze_has_org_access(a.org_id)
+    )
   )
+  -- WRITE: connection access ONLY. Owning the device or alert does NOT license
+  -- attaching a mapping to someone else's connection.
   WITH CHECK (
     public.breeze_current_scope() = 'system'
     OR EXISTS (
@@ -149,10 +179,5 @@ CREATE POLICY psa_ticket_mappings_isolation
            (pc.org_id IS NOT NULL AND public.breeze_has_org_access(pc.org_id))
            OR (pc.partner_id IS NOT NULL AND public.breeze_has_partner_access(pc.partner_id))
          )
-    )
-    OR EXISTS (
-      SELECT 1 FROM devices d
-       WHERE d.id = psa_ticket_mappings.device_id
-         AND public.breeze_has_org_access(d.org_id)
     )
   );

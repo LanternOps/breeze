@@ -970,6 +970,80 @@ describe('psa routes', () => {
       expect(updateMock).not.toHaveBeenCalled();
     });
 
+    it('withholds the credential prefill from a partner user who cannot manage partner-wide rows', async () => {
+      // orgs:write alone is NOT enough (review finding 5). This caller is
+      // refused every mutation on the row, so handing them the edit-form
+      // prefill would leak the exact material #3291 gated to someone who
+      // cannot use it.
+      asPartner({ orgAccess: 'selected' });
+      selectMock.mockReturnValueOnce(makeChain([partnerOwnedRow()]) as never);
+
+      const res = await app.request('/psa/connections/conn-1', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.credentials).toBeUndefined();
+      expect(body.data.credentialFields).toBeUndefined();
+      // The non-gated public boolean stays.
+      expect(body.data.hasCredentials).toBe(true);
+    });
+
+    it('still gives the credential prefill to a full partner admin', async () => {
+      asPartner({ orgAccess: 'all' });
+      selectMock.mockReturnValueOnce(makeChain([partnerOwnedRow()]) as never);
+
+      const res = await app.request('/psa/connections/conn-1', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.credentials).toBeDefined();
+      expect(body.data.credentialFields).toBeDefined();
+    });
+
+    it('scopes GET /tickets by the mapping org anchors, NOT by joining psa_connections', async () => {
+      // The innerJoin had to go: psa_connections RLS hides partner-wide rows
+      // from org tokens, so joining dropped every ticket about an org's own
+      // device whenever the MSP's PSA was partner-wide (review finding 8).
+      const rowsChain = makeChain([]);
+      const countChain = makeChain([{ count: 0 }]);
+      selectMock
+        .mockReturnValueOnce(rowsChain as never)
+        .mockReturnValueOnce(countChain as never);
+
+      const res = await app.request('/psa/tickets?page=1&limit=10', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      expect(rowsChain.innerJoin).not.toHaveBeenCalled();
+      expect(countChain.innerJoin).not.toHaveBeenCalled();
+      // A scoping predicate is still applied on both queries.
+      expect(rowsChain.where).toHaveBeenCalled();
+      expect(countChain.where).toHaveBeenCalled();
+      expect(rowsChain.where.mock.calls[0]![0]).toBeDefined();
+    });
+
+    it('applies an org filter to GET /connections/:id/tickets, not just connection access', async () => {
+      // Review finding 1: this route previously applied NO org filter once
+      // ensureConnectionAccess passed, so a restricted partner user read every
+      // org's external ticket ids through a partner-wide connection.
+      asPartner({ orgAccess: 'selected', orgs: ['org-123'] });
+      const rowsChain = makeChain([]);
+      const countChain = makeChain([{ count: 0 }]);
+      selectMock
+        .mockReturnValueOnce(makeChain([partnerOwnedRow()]) as never)
+        .mockReturnValueOnce(rowsChain as never)
+        .mockReturnValueOnce(countChain as never);
+
+      const res = await app.request('/psa/connections/conn-1/tickets?page=1&limit=10', {
+        method: 'GET'
+      });
+
+      expect(res.status).toBe(200);
+      // connectionId eq + the org-anchor condition => more than one predicate.
+      const whereArg = rowsChain.where.mock.calls[0]![0] as { queryChunks?: unknown[] };
+      expect(whereArg).toBeDefined();
+      expect(countChain.where).toHaveBeenCalled();
+    });
+
     it('serializes ownerScope organization for an org-owned row', async () => {
       selectMock.mockReturnValueOnce(makeChain([connectionRow({ partnerId: null })]) as never);
 

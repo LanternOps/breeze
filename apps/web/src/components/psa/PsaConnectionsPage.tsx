@@ -6,7 +6,8 @@ import PsaConnectionForm, {
 } from './PsaConnectionForm';
 import PsaTicketList, { type PsaTicket } from './PsaTicketList';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
-import { getJwtClaims } from '@/lib/authScope';
+import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
+import { useOrgStore } from '../../stores/orgStore';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { useTranslation } from 'react-i18next';
@@ -114,8 +115,26 @@ export default function PsaConnectionsPage() {
   // users holding the partner-wide capability. Absent = capable; the server
   // (canManagePartnerWidePolicies) enforces regardless — this is UX only.
   const canManagePartnerWide = useAuthStore(s => s.user?.canManagePartnerWide ?? true);
-  const { scope: jwtScope, partnerId: jwtPartnerId } = getJwtClaims();
-  const showOwnerScope = jwtScope === 'partner' && !!jwtPartnerId && canManagePartnerWide;
+  // Repo-wide rule for "what does a new config object default to" — do not
+  // inline a literal here (epic #2135; 8 surfaces share this hook).
+  const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
+  const showOwnerScope = isPartnerScope && canManagePartnerWide;
+  const organizations = useOrgStore(s => s.organizations);
+  const currentOrgId = useOrgStore(s => s.currentOrgId);
+  const ownerOrgOptions = showOwnerScope
+    ? organizations.map(o => ({ id: o.id, name: o.name }))
+    : [];
+
+  /**
+   * A partner-wide connection the caller may SEE but not MUTATE. Mirrors the
+   * server's canManagePartnerWidePolicies gate so restricted users don't meet a
+   * 403 toast after clicking (finding 7) — the server still enforces.
+   */
+  const isLockedPartnerWide = useCallback(
+    (connection: PsaConnection) =>
+      connection.ownerScope === 'partner' && !canManagePartnerWide,
+    [canManagePartnerWide]
+  );
 
   const fetchConnections = useCallback(async () => {
     try {
@@ -261,7 +280,13 @@ export default function PsaConnectionsPage() {
         : {
             ...base,
             provider: values.provider,
-            ...(showOwnerScope && values.ownerScope ? { ownerScope: values.ownerScope } : {})
+            ...(showOwnerScope && values.ownerScope ? { ownerScope: values.ownerScope } : {}),
+            // Only meaningful on the org-owned branch. A partner with 2+ orgs
+            // MUST send it or the API 400s; org-scope callers omit it and the
+            // server derives the org from their token.
+            ...(showOwnerScope && values.ownerScope === 'organization' && values.orgId
+              ? { orgId: values.orgId }
+              : {})
           };
 
       await runAction({
@@ -365,6 +390,7 @@ export default function PsaConnectionsPage() {
         onEdit={handleEdit}
         onToggleStatus={handleToggleStatus}
         onDelete={handleDelete}
+        isLockedPartnerWide={isLockedPartnerWide}
       />
 
       <PsaTicketList tickets={tickets} />
@@ -386,6 +412,7 @@ export default function PsaConnectionsPage() {
               onSubmit={handleSubmit}
               onCancel={handleCloseModal}
               showOwnerScope={showOwnerScope}
+              ownerOrgOptions={ownerOrgOptions}
               onTestConnection={modalMode === 'edit' ? handleTestConnection : undefined}
               defaultValues={
                 selectedConnectionDetails
@@ -417,7 +444,12 @@ export default function PsaConnectionsPage() {
                       syncOnClose: selectedConnectionDetails.settings?.syncOnClose ?? true,
                       includeNotes: selectedConnectionDetails.settings?.includeNotes ?? true
                     }
-                  : undefined
+                  : {
+                      // Create defaults. ownerScope comes from the shared hook,
+                      // not a literal, so this form follows the repo-wide rule.
+                      ownerScope: defaultOwnerScope,
+                      orgId: currentOrgId ?? ownerOrgOptions[0]?.id ?? ''
+                    }
               }
               submitLabel={modalMode === 'add' ? t('longTail.psa.PsaConnectionsPage.actions.createConnection') : t('longTail.psa.PsaConnectionsPage.actions.saveChanges')}
               loading={submitting}

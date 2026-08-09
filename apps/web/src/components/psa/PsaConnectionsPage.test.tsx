@@ -21,6 +21,25 @@ vi.mock('@/lib/authScope', () => ({
   getJwtClaims: () => jwtClaims,
 }));
 
+// The page reads its create-time ownerScope default from the shared hook
+// (review finding 4) rather than hard-coding 'partner'.
+const ownerScopeState: { isPartnerScope: boolean; defaultOwnerScope: 'organization' | 'partner' } = {
+  isPartnerScope: false,
+  defaultOwnerScope: 'organization',
+};
+vi.mock('@/hooks/useDefaultOwnerScope', () => ({
+  useDefaultOwnerScope: () => ownerScopeState,
+}));
+
+// Org picker source for the "This organization only" branch (finding 6).
+const orgStoreState: { organizations: Array<{ id: string; name: string }>; currentOrgId: string | null } = {
+  organizations: [],
+  currentOrgId: null,
+};
+vi.mock('../../stores/orgStore', () => ({
+  useOrgStore: (selector: (s: unknown) => unknown) => selector(orgStoreState),
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 function makeResponse(payload: unknown, ok = true, status = ok ? 200 : 500): Response {
@@ -282,12 +301,18 @@ describe('PsaConnectionsPage round-trip contract', () => {
       jwtClaims.scope = 'organization';
       jwtClaims.partnerId = null;
       delete authUser.canManagePartnerWide;
+      ownerScopeState.isPartnerScope = false;
+      ownerScopeState.defaultOwnerScope = 'organization';
+      orgStoreState.organizations = [];
+      orgStoreState.currentOrgId = null;
     });
 
     function asPartnerAdmin() {
       jwtClaims.scope = 'partner';
       jwtClaims.partnerId = 'p-1';
       authUser.canManagePartnerWide = true;
+      ownerScopeState.isPartnerScope = true;
+      ownerScopeState.defaultOwnerScope = 'partner';
     }
 
     it('renders the "All orgs" badge only for a partner-owned connection', async () => {
@@ -375,10 +400,145 @@ describe('PsaConnectionsPage round-trip contract', () => {
       expect((recorded[0]!.body as Record<string, unknown>).ownerScope).toBe('organization');
     });
 
+    it('takes its create default from useDefaultOwnerScope, not a literal', async () => {
+      // Review finding 4: with a concrete org selected the shared hook returns
+      // 'organization', and this form must follow it rather than always
+      // pre-selecting partner-wide.
+      asPartnerAdmin();
+      ownerScopeState.defaultOwnerScope = 'organization';
+      orgStoreState.organizations = [{ id: 'org-1', name: 'Acme' }];
+      orgStoreState.currentOrgId = 'org-1';
+      installFetchRouter({ 'GET /psa/connections': { data: [] } }, []);
+
+      const user = userEvent.setup();
+      render(<PsaConnectionsPage />);
+      await user.click(await screen.findByRole('button', { name: /add connection/i }));
+
+      expect(screen.getByTestId('psa-connection-owner-org')).toBeChecked();
+      expect(screen.getByTestId('psa-connection-owner-partner')).not.toBeChecked();
+    });
+
+    it('MULTI-ORG CREATE: sends orgId with the org-owned branch so the API does not 400', async () => {
+      // Review finding 6: the "This organization only" radio previously sent no
+      // orgId, so create failed for any partner with 2+ orgs.
+      asPartnerAdmin();
+      orgStoreState.organizations = [
+        { id: 'org-1', name: 'Acme' },
+        { id: 'org-2', name: 'Globex' },
+      ];
+      orgStoreState.currentOrgId = 'org-1';
+      const recorded: RecordedRequest[] = [];
+      installFetchRouter(
+        {
+          'GET /psa/connections': { data: [] },
+          'POST /psa/connections': { id: 'c-new', provider: 'jira', name: 'Globex Jira', status: 'active', ownerScope: 'organization' },
+        },
+        recorded
+      );
+
+      const user = userEvent.setup();
+      render(<PsaConnectionsPage />);
+      await user.click(await screen.findByRole('button', { name: /add connection/i }));
+
+      await user.click(screen.getByTestId('psa-connection-owner-org'));
+      // The picker only appears on the org-owned branch.
+      const picker = await screen.findByTestId('psa-connection-owner-org-select');
+      await user.selectOptions(picker, 'org-2');
+
+      await user.type(screen.getByLabelText(/connection name/i), 'Globex Jira');
+      await user.type(screen.getByLabelText(/instance url/i), 'https://acme.atlassian.net');
+      await user.type(screen.getByLabelText(/username or email/i), 'admin@acme.com');
+      await user.type(screen.getByLabelText(/api token/i), 'tok-123');
+      await user.click(screen.getByRole('button', { name: /create connection/i }));
+
+      await waitFor(() => expect(recorded).toHaveLength(1));
+      const body = recorded[0]!.body as Record<string, unknown>;
+      expect(body.ownerScope).toBe('organization');
+      expect(body.orgId).toBe('org-2');
+    });
+
+    it('hides the org picker on the partner-wide branch', async () => {
+      asPartnerAdmin();
+      orgStoreState.organizations = [{ id: 'org-1', name: 'Acme' }];
+      installFetchRouter({ 'GET /psa/connections': { data: [] } }, []);
+
+      const user = userEvent.setup();
+      render(<PsaConnectionsPage />);
+      await user.click(await screen.findByRole('button', { name: /add connection/i }));
+
+      expect(screen.getByTestId('psa-connection-owner-partner')).toBeChecked();
+      expect(screen.queryByTestId('psa-connection-owner-org-select')).toBeNull();
+    });
+
+    it('ROW ACTIONS: disables edit/pause/delete on a partner-wide row the user cannot manage', async () => {
+      // Review finding 7: these used to render enabled and the click landed on
+      // the server's new 403 as an error toast.
+      jwtClaims.scope = 'partner';
+      jwtClaims.partnerId = 'p-1';
+      authUser.canManagePartnerWide = false;
+      ownerScopeState.isPartnerScope = true;
+      installFetchRouter(
+        {
+          'GET /psa/connections': {
+            data: [{ id: 'c1', provider: 'jira', name: 'MSP Jira', status: 'active', ownerScope: 'partner' }],
+          },
+        },
+        []
+      );
+
+      render(<PsaConnectionsPage />);
+
+      await screen.findByText('MSP Jira');
+      expect(screen.getByTestId('psa-connection-edit')).toBeDisabled();
+      expect(screen.getByTestId('psa-connection-toggle')).toBeDisabled();
+      expect(screen.getByTestId('psa-connection-delete')).toBeDisabled();
+    });
+
+    it('leaves row actions enabled on an ORG-owned row for the same restricted user', async () => {
+      jwtClaims.scope = 'partner';
+      jwtClaims.partnerId = 'p-1';
+      authUser.canManagePartnerWide = false;
+      ownerScopeState.isPartnerScope = true;
+      installFetchRouter(
+        {
+          'GET /psa/connections': {
+            data: [{ id: 'c2', provider: 'zendesk', name: 'Customer Zendesk', status: 'active', ownerScope: 'organization' }],
+          },
+        },
+        []
+      );
+
+      render(<PsaConnectionsPage />);
+
+      await screen.findByText('Customer Zendesk');
+      expect(screen.getByTestId('psa-connection-edit')).toBeEnabled();
+      expect(screen.getByTestId('psa-connection-delete')).toBeEnabled();
+    });
+
+    it('leaves row actions enabled on a partner-wide row for a FULL partner admin', async () => {
+      asPartnerAdmin();
+      installFetchRouter(
+        {
+          'GET /psa/connections': {
+            data: [{ id: 'c1', provider: 'jira', name: 'MSP Jira', status: 'active', ownerScope: 'partner' }],
+          },
+        },
+        []
+      );
+
+      render(<PsaConnectionsPage />);
+
+      await screen.findByText('MSP Jira');
+      expect(screen.getByTestId('psa-connection-edit')).toBeEnabled();
+      expect(screen.getByTestId('psa-connection-delete')).toBeEnabled();
+    });
+
     it('hides the selector for a partner user without the partner-wide capability', async () => {
       jwtClaims.scope = 'partner';
       jwtClaims.partnerId = 'p-1';
       authUser.canManagePartnerWide = false;
+      ownerScopeState.isPartnerScope = true;
+      ownerScopeState.defaultOwnerScope = 'partner';
       installFetchRouter({ 'GET /psa/connections': { data: [] } }, []);
 
       const user = userEvent.setup();

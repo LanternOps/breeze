@@ -31,7 +31,7 @@ import './setup';
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { devices, psaConnections, psaTicketMappings } from '../../db/schema';
+import { alerts, devices, psaConnections, psaTicketMappings } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
 
 const SYSTEM_CTX: DbAccessContext = {
@@ -326,6 +326,85 @@ describe('psa_ticket_mappings RLS — dual-axis join through psa_connections', (
       db.delete(psaTicketMappings).where(eq(psaTicketMappings.deviceId, deviceId)).returning(),
     );
     expect(deleted).toHaveLength(1);
+  });
+
+  it('ALERT ARM (review finding 3): an org token can clear a mapping anchored ONLY by alert_id', async () => {
+    // The confirmed device-delete 500. deleteDeviceCascade pre-clears on
+    // `alert_id IN (device's alerts) OR device_id = ...` inside the REQUEST
+    // (org-scoped) context. For a mapping with device_id NULL and alert_id set,
+    // under a PARTNER-owned connection, the connection arm fails (org token)
+    // and the device arm fails (device_id NULL) — so without the alert arm the
+    // DELETE matched zero rows and the cascade's `DELETE FROM alerts` then
+    // raised 23503.
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const connectionId = await seedPartnerConnection(partner.id);
+    const deviceId = await seedDevice(org.id);
+
+    const [alertRow] = await withDbAccessContext(SYSTEM_CTX, () =>
+      db
+        .insert(alerts)
+        .values({
+          deviceId,
+          orgId: org.id,
+          configItemName: 'PSA alert-arm probe',
+          severity: 'high',
+          title: 'PSA alert-arm probe',
+        })
+        .returning({ id: alerts.id }),
+    );
+
+    const [mapping] = await withDbAccessContext(SYSTEM_CTX, () =>
+      db
+        .insert(psaTicketMappings)
+        .values({ connectionId, alertId: alertRow!.id, externalTicketId: 'OPS-5' })
+        .returning(),
+    );
+
+    const visibleToOrg = await withDbAccessContext(orgContext(org.id), () =>
+      db
+        .select({ id: psaTicketMappings.id })
+        .from(psaTicketMappings)
+        .where(eq(psaTicketMappings.id, mapping!.id)),
+    );
+    expect(visibleToOrg).toHaveLength(1);
+
+    // The exact statement deleteDeviceCascade issues, in the same context.
+    const deleted = await withDbAccessContext(orgContext(org.id), () =>
+      db.delete(psaTicketMappings).where(eq(psaTicketMappings.alertId, alertRow!.id)).returning(),
+    );
+    expect(deleted).toHaveLength(1);
+
+    // With the mapping gone the alert delete no longer raises 23503.
+    await expect(
+      withDbAccessContext(orgContext(org.id), () =>
+        db.delete(alerts).where(eq(alerts.id, alertRow!.id)).returning(),
+      ),
+    ).resolves.toHaveLength(1);
+  });
+
+  it('WITH CHECK is connection-only: owning the device does NOT license writing onto a foreign connection', async () => {
+    // Review finding 2. USING and WITH CHECK are asymmetric on purpose —
+    // reading a row about your own device is fine, forging one onto another
+    // tenant's connection is not.
+    const partnerA = await createPartner();
+    const partnerB = await createPartner();
+    const orgB = await createOrganization({ partnerId: partnerB.id });
+    const foreignConnectionId = await seedPartnerConnection(partnerA.id);
+    const ownDeviceId = await seedDevice(orgB.id);
+
+    await expect(
+      withDbAccessContext(orgContext(orgB.id), () =>
+        db
+          .insert(psaTicketMappings)
+          .values({
+            connectionId: foreignConnectionId,
+            deviceId: ownDeviceId,
+            externalTicketId: 'FORGED-VIA-DEVICE',
+          })
+          .returning(),
+      ),
+    ).rejects.toMatchObject({ cause: { code: '42501' } });
   });
 
   it('the device arm does NOT leak a mapping to an unrelated org', async () => {
