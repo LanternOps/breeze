@@ -8,11 +8,10 @@
  * integrations UI consumes. Matching, slug reservation, org/site creation,
  * link-row persistence and concurrent-import recovery all live in the seam.
  *
- * Linkage is written to `organization_external_links` ONLY — the legacy
- * `organizations.accounting_provider` / `accounting_external_id` columns are no
- * longer written by this importer. Every reader is a union reader in which the
- * link table wins, and the 2026-08-08 backfill shipped; the columns are dropped
- * separately.
+ * Linkage lives in `organization_external_links` ONLY. The legacy
+ * `organizations.accounting_provider` / `accounting_external_id` columns were
+ * backfilled into the link table on 2026-08-08 and dropped on 2026-08-18; no
+ * reader or writer refers to them any more.
  */
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';

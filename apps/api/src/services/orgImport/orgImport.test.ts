@@ -36,8 +36,6 @@ interface OrgRow {
   slug: string;
   type?: string;
   deletedAt?: Date | null;
-  accountingProvider?: string | null;
-  accountingExternalId?: string | null;
 }
 interface LinkRow { orgId: string; system: string; externalId: string }
 
@@ -49,8 +47,6 @@ function stubState(orgs: OrgRow[], links: LinkRow[], extraSelects: unknown[][] =
   const orgRows = orgs.map((o) => ({
     type: 'customer',
     deletedAt: null,
-    accountingProvider: null,
-    accountingExternalId: null,
     ...o,
   }));
   const queue: unknown[][] = [orgRows, links, ...extraSelects];
@@ -201,16 +197,27 @@ describe('previewOrgImport', () => {
     expect(rows[0]).not.toHaveProperty('matchedBy');
   });
 
-  it('matches via the legacy accounting_* columns when no link row exists (union read)', async () => {
-    stubState(
-      [{ id: 'org-1', name: 'Acme', slug: 'acme', accountingProvider: 'quickbooks', accountingExternalId: 'qb-7' }],
-      [],
-    );
+  // organization_external_links is the ONLY linkage store since the legacy
+  // organizations.accounting_provider / accounting_external_id pair was dropped
+  // (2026-08-18). An org with no link row is never a link match, however it was
+  // linked before — it falls through to the advisory name match.
+  it('a link match requires a link row — the legacy accounting columns are gone', async () => {
+    stubState([{ id: 'org-1', name: 'Acme', slug: 'acme' }], []);
     const rows = await previewOrgImport(
       [{ organization: 'Acme', externalId: 'qb-7', externalSystem: 'quickbooks' }],
       'p1',
     );
-    expect(rows[0]).toMatchObject({ annotation: 'link-match', organizationId: 'org-1' });
+    // matchedBy proves WHICH branch resolved it: the name index, not the link
+    // index. Asserting `annotation !== 'link-match'` would be vacuous once the
+    // line above has already pinned the annotation.
+    expect(rows[0]).toMatchObject({
+      annotation: 'name-match',
+      organizationId: 'org-1',
+      matchedBy: 'name',
+    });
+    // The org holds no link under this system, so the "already spoken for"
+    // guard must stay off — otherwise the QB importer would refuse the row.
+    expect(rows[0]).not.toHaveProperty('matchedOrganizationLinkedToSystem');
   });
 
   it('externalId dedupe is scoped by system — same id under another system creates', async () => {
@@ -469,9 +476,13 @@ describe('commitOrgImport — create', () => {
     ]);
   });
 
-  it('also takes the concurrent-link path for the legacy accounting constraint (postgres.js constraint_name field)', async () => {
+  // postgres.js surfaces the violated index as `constraint_name`; node-postgres
+  // uses `constraint`. Both must reach the concurrent-link path. (This case also
+  // used to cover the legacy organizations_accounting_external_uniq index, which
+  // was dropped with its columns on 2026-08-18.)
+  it('also takes the concurrent-link path via the postgres.js constraint_name field', async () => {
     stubState([], [], [[{ orgId: 'org-winner' }]]);
-    const dup = Object.assign(new Error('dup'), { code: '23505', constraint_name: 'organizations_accounting_external_uniq' });
+    const dup = Object.assign(new Error('dup'), { code: '23505', constraint_name: 'organization_external_links_uniq' });
     stubInserts({ failOn: (v) => ('externalId' in v ? dup : null) });
     const summary = await commitOrgImport(
       [{ organization: 'Acme', externalId: '1' }],

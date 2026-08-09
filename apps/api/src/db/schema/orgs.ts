@@ -1,5 +1,4 @@
 import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, numeric, char, uniqueIndex } from 'drizzle-orm/pg-core';
-import { sql } from 'drizzle-orm';
 
 export const partnerTypeEnum = pgEnum('partner_type', ['msp', 'enterprise', 'internal']);
 // `offboarding` (#2774) is the terminal-intent drain state: users locked out
@@ -126,8 +125,6 @@ export const organizations = pgTable('organizations', {
   billingAddressRegion: varchar('billing_address_region', { length: 120 }),
   billingAddressPostalCode: varchar('billing_address_postal_code', { length: 40 }),
   billingAddressCountry: char('billing_address_country', { length: 2 }),
-  accountingProvider: text('accounting_provider'),
-  accountingExternalId: text('accounting_external_id'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull(),
@@ -137,9 +134,6 @@ export const organizations = pgTable('organizations', {
   deletedAt: timestamp('deleted_at')
 }, (table) => ({
   orgPartnerUnique: uniqueIndex('organizations_id_partner_id_unique').on(table.id, table.partnerId),
-  accountingExternalUnique: uniqueIndex('organizations_accounting_external_uniq')
-    .on(table.partnerId, table.accountingProvider, table.accountingExternalId)
-    .where(sql`accounting_external_id IS NOT NULL`),
 }));
 
 export const sites = pgTable('sites', {
