@@ -185,8 +185,20 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
       const connectionId = input.connectionId as string | undefined;
 
       const conditions: SQL[] = [];
+      // Dual-axis (epic #2135): psa_connections is org-owned OR partner-wide.
+      // A bare orgCondition() is an eq/IN on org_id, which NULL never matches,
+      // so partner-wide connections were invisible to this tool — including to
+      // the very partner admin whose PSA it is. Partner arm gated on partner
+      // scope: an org token carries a partnerId but never passes
+      // breeze_has_partner_access, so RLS would return nothing anyway.
       const orgCond = auth.orgCondition(psaConnections.orgId);
-      if (orgCond) conditions.push(orgCond);
+      if (orgCond) {
+        conditions.push(
+          auth.scope === 'partner' && auth.partnerId
+            ? sql`(${orgCond} OR (${psaConnections.orgId} IS NULL AND ${psaConnections.partnerId} = ${auth.partnerId}))`
+            : orgCond
+        );
+      }
       if (connectionId) conditions.push(eq(psaConnections.id, connectionId));
 
       const rows = await db
@@ -194,6 +206,8 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
           id: psaConnections.id,
           provider: psaConnections.provider,
           name: psaConnections.name,
+          // 'partner' => the MSP's own PSA, shared across every org.
+          ownerScope: sql<'organization' | 'partner'>`CASE WHEN ${psaConnections.partnerId} IS NOT NULL THEN 'partner' ELSE 'organization' END`,
           enabled: psaConnections.enabled,
           lastSyncAt: psaConnections.lastSyncAt,
           lastSyncStatus: psaConnections.lastSyncStatus,

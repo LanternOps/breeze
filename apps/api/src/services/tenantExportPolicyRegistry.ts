@@ -230,7 +230,12 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "portal_branding": tablePolicy("org_id", {"included":["id","org_id","logo_url","favicon_url","primary_color","secondary_color","accent_color","custom_domain","domain_verified","welcome_message","support_email","support_phone","footer_text","custom_css","enable_tickets","enable_asset_checkout","enable_self_service","created_at","updated_at"],"reviewedIncluded":["enable_password_reset"],"excludedSensitive":[],"excludedOpen":[]}),
   "portal_users": tablePolicy("org_id", {"included":["id","org_id","email","name","entra_oid","entra_tenant_id","auth_method","linked_user_id","receive_notifications","last_login_at","status","created_at","updated_at"],"reviewedIncluded":["invited_by","invited_at"],"excludedSensitive":["password_hash"],"excludedOpen":[]}),
   "provision_credential_handles": tablePolicy("org_id", {"included":["id","org_id","device_id","created_by","created_at","expires_at","consumed_at","consumed_from_ip"],"reviewedIncluded":[],"excludedSensitive":["token"],"excludedOpen":["credentials"]}),
-  "psa_connections": tablePolicy("org_id", {"included":["id","org_id","provider","name","enabled","last_sync_at","last_sync_status","last_sync_error","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["credentials","settings","sync_settings"]}),
+  // partner_id (epic #2135, 2026-08-17): dual ownership — org_id XOR partner_id.
+  // A tenant identifier like org_id, so `included`. Note the org export only
+  // ever emits ORG-owned rows (the exporter filters on org_id), so a
+  // partner-owned connection never appears in a customer's export — correct:
+  // it is the MSP's credential, not the customer's data.
+  "psa_connections": tablePolicy("org_id", {"included":["id","org_id","partner_id","provider","name","enabled","last_sync_at","last_sync_status","last_sync_error","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["credentials","settings","sync_settings"]}),
   "quote_acceptances": tablePolicy("org_id", {"included":["id","quote_id","org_id","signer_name","signer_email","signed_at","ip_address","user_agent","quote_sha256","created_at"],"reviewedIncluded":[],"excludedSensitive":["acceptance_token_jti"],"excludedOpen":[]}),
   "quote_blocks": tablePolicy("org_id", {"included":["id","quote_id","org_id","block_type","sort_order","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["content"]}),
   "quote_images": tablePolicy("org_id", {"included":["id","quote_id","org_id","mime","byte_size","sha256","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["image_data"]}),

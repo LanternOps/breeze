@@ -15,7 +15,12 @@ import { db } from '../db';
 import { devices, psaConnections as psaConnectionsTable, psaTicketMappings } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
+import {
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+  canManagePartnerWidePolicies
+} from '../services/partnerWideAccess';
 import { createPSAProvider } from '../services/psa';
+import { psaTicketMappingOrgCondition } from '../services/psa/ticketScope';
 import {
   PsaConfigError,
   decryptCredentials,
@@ -42,6 +47,12 @@ const listConnectionsSchema = z.object({
 });
 
 const createConnectionSchema = z.object({
+  // Ownership axis (epic #2135). Absent => 'organization', preserving the
+  // pre-#2135 behaviour for every existing API client. The WEB form defaults
+  // its selector to 'partner' (an MSP's PSA is normally partner-wide), but the
+  // wire default stays org-scoped so an unaware caller can never accidentally
+  // publish a credential to every org under the partner.
+  ownerScope: z.enum(['organization', 'partner']).optional(),
   orgId: z.string().guid().optional(),
   provider: providerSchema,
   name: z.string().min(1).max(255),
@@ -55,6 +66,11 @@ const createConnectionSchema = z.object({
   ).optional().default({})
 });
 
+// Ownership is immutable after create — there is deliberately no `ownerScope`
+// (nor `orgId`/`partnerId`) here. Re-homing a connection would silently move
+// every psa_ticket_mappings child across a tenant boundary, and this schema is
+// hand-written rather than derived via `.partial()`, so there is nothing to
+// `.omit({ ownerScope: true })` from.
 const updateConnectionSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   credentials: z.record(z.string(), z.any()).refine(
@@ -78,10 +94,18 @@ function getPagination(query: { page?: string; limit?: string }) {
   return { page, limit, offset: (page - 1) * limit };
 }
 
-async function ensureOrgAccess(
-  orgId: string,
-  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
-) {
+// `partnerId`/`orgId` are nullable in Postgres; accept `undefined` too so a
+// partially-selected row can never be misread as partner-owned.
+type ConnectionOwner = { orgId?: string | null; partnerId?: string | null };
+
+/** The partner that owns this row, or null when it is org-owned. */
+function ownerPartnerId(connection: ConnectionOwner): string | null {
+  return connection.partnerId ?? null;
+}
+
+type OrgAccessAuth = Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>;
+
+async function ensureOrgAccess(orgId: string, auth: OrgAccessAuth) {
   if (auth.scope === 'organization') {
     return auth.orgId === orgId;
   }
@@ -91,6 +115,85 @@ async function ensureOrgAccess(
   }
 
   return true;
+}
+
+/**
+ * Dual-axis access check for one connection row (epic #2135). Replaces the
+ * org-only `ensureOrgAccess(connection.orgId, ...)` — a partner-owned row has
+ * `orgId === null`, which the org check can only ever reject.
+ *
+ * The partner arm is gated on `auth.scope === 'partner'`. An ORG-scope token
+ * carries a partnerId but never passes `breeze_has_partner_access`, so allowing
+ * it here would let the app layer approve a read that RLS then returns empty
+ * for — a confusing 200-with-no-rows instead of an honest 403. RLS is strictly
+ * stricter than this check; the two are NOT at parity and this function must
+ * never be described as enforcing isolation on its own.
+ */
+async function ensureConnectionAccess(
+  connection: ConnectionOwner,
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg' | 'partnerId'>
+) {
+  if (auth.scope === 'system') return true;
+
+  const partnerId = ownerPartnerId(connection);
+  if (partnerId !== null) {
+    return auth.scope === 'partner' && auth.partnerId === partnerId;
+  }
+
+  if (!connection.orgId) return false;
+  return ensureOrgAccess(connection.orgId, auth);
+}
+
+/**
+ * WHERE fragment restricting a psa_connections query to what `auth` may see:
+ * the caller's own orgs, OR (partner scope only) the partner's partner-wide
+ * rows. `undefined` means system scope — no filter.
+ *
+ * Mirrors `softwarePolicyAccessCondition` in routes/softwarePolicies.ts.
+ */
+function psaConnectionAccessCondition(
+  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'orgCondition'>
+): SQL | undefined {
+  const orgCond = auth.orgCondition(psaConnectionsTable.orgId);
+  if (!orgCond) return undefined;
+  if (auth.scope === 'partner' && auth.partnerId) {
+    return sql`(${orgCond} OR (${psaConnectionsTable.orgId} IS NULL AND ${psaConnectionsTable.partnerId} = ${auth.partnerId}))`;
+  }
+  return orgCond;
+}
+
+/** 'partner' when the row is partner-wide ("All orgs"), else 'organization'. */
+function ownerScopeOf(connection: ConnectionOwner): 'organization' | 'partner' {
+  return ownerPartnerId(connection) !== null ? 'partner' : 'organization';
+}
+
+/**
+ * True when the caller may SEE this connection but must not MUTATE it because
+ * it is partner-wide and they lack full partner org access (epic #2135).
+ *
+ * Applied to update, delete, status AND test. Status is an update by another
+ * name — pausing a partner-wide connection pauses it for every org — and test
+ * both writes `syncSettings.lastTestedAt/status` and exercises the MSP's own
+ * PSA credentials, so a 'selected'-access partner user is held to the same bar.
+ */
+function partnerWideWriteBlocked(
+  connection: ConnectionOwner,
+  auth: Pick<AuthContext, 'scope' | 'partnerOrgAccess'>
+): boolean {
+  return ownerPartnerId(connection) !== null && !canManagePartnerWidePolicies(auth);
+}
+
+/**
+ * Audit anchor for a connection. A partner-wide row has no org, so the audit
+ * row carries org_id NULL (RouteAuditInput allows it) and the partner id lands
+ * in `details` — otherwise the erasure/forensic trail loses the owner entirely.
+ */
+function auditOwnerFields(connection: ConnectionOwner) {
+  return {
+    orgId: connection.orgId ?? null,
+    ownerScope: ownerScopeOf(connection),
+    partnerId: ownerPartnerId(connection)
+  };
 }
 
 function extractLastTestedAt(syncSettings: unknown): Date | null {
@@ -168,7 +271,8 @@ function deriveConnectionStatus(settings: unknown): 'active' | 'paused' | 'error
 function serializeConnection(
   connection: {
     id: string;
-    orgId: string;
+    orgId: string | null;
+    partnerId: string | null;
     provider: string;
     name: string;
     credentials: unknown;
@@ -186,7 +290,11 @@ function serializeConnection(
 
   const response = {
     id: connection.id,
+    // NULL for a partner-wide connection (epic #2135). Kept in the response —
+    // removing a field is a breaking public-API change — but consumers should
+    // branch on `ownerScope`, not on `orgId == null`.
     orgId: connection.orgId,
+    ownerScope: ownerScopeOf(connection),
     provider: connection.provider,
     name: connection.name,
     status: deriveConnectionStatus(settings),
@@ -263,32 +371,19 @@ function mapTicketRow(row: {
   };
 }
 
-async function resolveOrgIds(
-  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>,
-  queryOrgId?: string
-): Promise<string[] | null> {
-  if (auth.scope === 'organization') {
-    if (!auth.orgId) return [];
-    return [auth.orgId];
-  }
-
-  if (auth.scope === 'partner') {
-    if (queryOrgId) {
-      const hasAccess = await ensureOrgAccess(queryOrgId, auth);
-      return hasAccess ? [queryOrgId] : [];
-    }
-
-    return auth.accessibleOrgIds ?? [];
-  }
-
-  return queryOrgId ? [queryOrgId] : null;
-}
+// `resolveOrgIds` used to live here. It returned a flat org-id list and every
+// caller turned that into `inArray(psa_connections.org_id, ids)` — the exact
+// org-only shape that made partner-wide connections invisible. Both call sites
+// now use psaConnectionAccessCondition (config visibility) or
+// psaTicketMappingOrgCondition (ticket data), so the helper is deleted rather
+// than left around for the next endpoint to copy.
 
 async function getConnectionById(id: string) {
   const [connection] = await db
     .select({
       id: psaConnectionsTable.id,
       orgId: psaConnectionsTable.orgId,
+      partnerId: psaConnectionsTable.partnerId,
       provider: psaConnectionsTable.provider,
       name: psaConnectionsTable.name,
       credentials: psaConnectionsTable.credentials,
@@ -317,18 +412,31 @@ psaRoutes.get(
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
-    const orgIds = await resolveOrgIds(auth, query.orgId);
-
     if (auth.scope === 'organization' && !auth.orgId) {
       return c.json({ error: 'Organization context required' }, 403);
     }
 
-    const conditions = [];
-    if (orgIds) {
-      if (orgIds.length === 0) {
+    const conditions: SQL[] = [];
+
+    if (query.orgId) {
+      // Explicit org filter. A partner-wide connection genuinely serves this
+      // org, so it stays in the result — dropping it here would recreate the
+      // exact "partner-wide row is invisible to the partner that made it" bug
+      // this change exists to fix. Partner arm gated on partner scope.
+      const hasAccess = await ensureOrgAccess(query.orgId, auth);
+      if (!hasAccess) {
         return c.json({ data: [], pagination: { page, limit, total: 0 } });
       }
-      conditions.push(inArray(psaConnectionsTable.orgId, orgIds));
+      const orgFilter = eq(psaConnectionsTable.orgId, query.orgId);
+      conditions.push(
+        auth.scope === 'partner' && auth.partnerId
+          ? sql`(${orgFilter} OR (${psaConnectionsTable.orgId} IS NULL AND ${psaConnectionsTable.partnerId} = ${auth.partnerId}))`
+          : orgFilter
+      );
+    } else {
+      // No explicit filter: everything the caller may see on EITHER axis.
+      const accessCondition = psaConnectionAccessCondition(auth);
+      if (accessCondition) conditions.push(accessCondition);
     }
 
     if (query.provider) {
@@ -341,6 +449,7 @@ psaRoutes.get(
       .select({
         id: psaConnectionsTable.id,
         orgId: psaConnectionsTable.orgId,
+        partnerId: psaConnectionsTable.partnerId,
         provider: psaConnectionsTable.provider,
         name: psaConnectionsTable.name,
         credentials: psaConnectionsTable.credentials,
@@ -378,28 +487,50 @@ psaRoutes.post(
     const auth = c.get('auth');
     const data = c.req.valid('json');
 
-    let orgId = data.orgId;
+    // Ownership axis (epic #2135). A partner-wide connection publishes ONE set
+    // of PSA credentials to every org under the partner — including orgs
+    // created later — so creating one is gated on the partner-wide capability.
+    // The partner is ALWAYS derived from the caller's own token, never from the
+    // request body.
+    let owner: ConnectionOwner;
 
-    if (auth.scope === 'organization') {
-      if (!auth.orgId) {
-        return c.json({ error: 'Organization context required' }, 403);
+    if (data.ownerScope === 'partner') {
+      if (!auth.partnerId) {
+        return c.json({ error: 'Partner-wide PSA connections require partner scope' }, 403);
       }
-      orgId = auth.orgId;
-    } else if (auth.scope === 'partner') {
-      if (!orgId) {
-        const singleOrg = auth.accessibleOrgIds?.[0];
-        if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
-          orgId = singleOrg;
-        } else {
-          return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+      if (!canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
+      owner = { orgId: null, partnerId: auth.partnerId };
+    } else {
+      let orgId = data.orgId;
+
+      if (auth.scope === 'organization') {
+        if (!auth.orgId) {
+          return c.json({ error: 'Organization context required' }, 403);
         }
+        orgId = auth.orgId;
+      } else if (auth.scope === 'partner') {
+        if (!orgId) {
+          const singleOrg = auth.accessibleOrgIds?.[0];
+          if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
+            orgId = singleOrg;
+          } else {
+            return c.json({ error: 'orgId is required when partner has multiple organizations' }, 400);
+          }
+        }
+        const hasAccess = await ensureOrgAccess(orgId, auth);
+        if (!hasAccess) {
+          return c.json({ error: 'Access to this organization denied' }, 403);
+        }
+      } else if (auth.scope === 'system' && !orgId) {
+        return c.json({ error: 'orgId is required for system scope' }, 400);
       }
-      const hasAccess = await ensureOrgAccess(orgId, auth);
-      if (!hasAccess) {
-        return c.json({ error: 'Access to this organization denied' }, 403);
+
+      if (!orgId) {
+        return c.json({ error: 'orgId is required for an organization-owned connection' }, 400);
       }
-    } else if (auth.scope === 'system' && !orgId) {
-      return c.json({ error: 'orgId is required for system scope' }, 400);
+      owner = { orgId, partnerId: null };
     }
 
     const baseUrlError = validatePsaCredentialBaseUrl(data.credentials);
@@ -430,7 +561,8 @@ psaRoutes.post(
     const [connection] = await db
       .insert(psaConnectionsTable)
       .values({
-        orgId: orgId as string,
+        orgId: owner.orgId,
+        partnerId: owner.partnerId,
         provider: data.provider as PsaProvider,
         name: data.name,
         credentials: credentialsEncrypted,
@@ -442,6 +574,7 @@ psaRoutes.post(
       .returning({
         id: psaConnectionsTable.id,
         orgId: psaConnectionsTable.orgId,
+        partnerId: psaConnectionsTable.partnerId,
         provider: psaConnectionsTable.provider,
         name: psaConnectionsTable.name,
         credentials: psaConnectionsTable.credentials,
@@ -462,7 +595,7 @@ psaRoutes.post(
       resourceType: 'psa_connection',
       resourceId: connection.id,
       resourceName: connection.name,
-      details: { provider: connection.provider }
+      details: { provider: connection.provider, ...auditOwnerFields(connection) }
     });
 
     return c.json(serializeConnection(connection, false), 201);
@@ -482,7 +615,7 @@ psaRoutes.get(
       return c.json({ error: 'PSA connection not found' }, 404);
     }
 
-    const hasAccess = await ensureOrgAccess(connection.orgId, auth);
+    const hasAccess = await ensureConnectionAccess(connection, auth);
     if (!hasAccess) {
       return c.json({ error: 'Access denied' }, 403);
     }
@@ -493,10 +626,17 @@ psaRoutes.get(
     // material or which auth mode a connection is configured with (#3291
     // review) — `requirePermission(ORGS_READ)` above has already resolved and
     // cached the permission set on the context.
+    //
+    // orgs:write is necessary but NOT sufficient (epic #2135): a partner user
+    // without full partner org access is refused every mutation on a
+    // partner-wide connection, so handing them the edit-form prefill would
+    // leak exactly the material #3291 gated to someone who cannot use it. The
+    // prefill gate must therefore mirror the write gate, not just the
+    // permission.
     const perms = c.get('permissions') as UserPermissions | undefined;
-    const canManage = perms
+    const canManage = (perms
       ? hasPermission(perms, PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action)
-      : false;
+      : false) && !partnerWideWriteBlocked(connection, auth);
 
     return c.json({ data: serializeConnection(connection, canManage) });
   }
@@ -522,9 +662,13 @@ psaRoutes.patch(
       return c.json({ error: 'PSA connection not found' }, 404);
     }
 
-    const hasAccess = await ensureOrgAccess(existing.orgId, auth);
+    const hasAccess = await ensureConnectionAccess(existing, auth);
     if (!hasAccess) {
       return c.json({ error: 'Access denied' }, 403);
+    }
+
+    if (partnerWideWriteBlocked(existing, auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
     const updates: Record<string, unknown> = {
@@ -588,6 +732,7 @@ psaRoutes.patch(
       .returning({
         id: psaConnectionsTable.id,
         orgId: psaConnectionsTable.orgId,
+        partnerId: psaConnectionsTable.partnerId,
         provider: psaConnectionsTable.provider,
         name: psaConnectionsTable.name,
         credentials: psaConnectionsTable.credentials,
@@ -608,7 +753,7 @@ psaRoutes.patch(
       resourceType: 'psa_connection',
       resourceId: updated.id,
       resourceName: updated.name,
-      details: { changedFields: Object.keys(data) }
+      details: { changedFields: Object.keys(data), ...auditOwnerFields(updated) }
     });
 
     return c.json(serializeConnection(updated, false));
@@ -629,9 +774,13 @@ psaRoutes.delete(
       return c.json({ error: 'PSA connection not found' }, 404);
     }
 
-    const hasAccess = await ensureOrgAccess(existing.orgId, auth);
+    const hasAccess = await ensureConnectionAccess(existing, auth);
     if (!hasAccess) {
       return c.json({ error: 'Access denied' }, 403);
+    }
+
+    if (partnerWideWriteBlocked(existing, auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
     await db.delete(psaTicketMappings).where(eq(psaTicketMappings.connectionId, connectionId));
@@ -642,7 +791,8 @@ psaRoutes.delete(
       action: 'psa.connection.delete',
       resourceType: 'psa_connection',
       resourceId: existing.id,
-      resourceName: existing.name
+      resourceName: existing.name,
+      details: { ...auditOwnerFields(existing) }
     });
 
     return c.json({ success: true });
@@ -672,9 +822,13 @@ psaRoutes.post(
       return c.json({ error: 'PSA connection not found' }, 404);
     }
 
-    const hasAccess = await ensureOrgAccess(existing.orgId, auth);
+    const hasAccess = await ensureConnectionAccess(existing, auth);
     if (!hasAccess) {
       return c.json({ error: 'Access denied' }, 403);
+    }
+
+    if (partnerWideWriteBlocked(existing, auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
     const credentials = decryptCredentials(existing.credentials);
@@ -733,7 +887,7 @@ psaRoutes.post(
       resourceType: 'psa_connection',
       resourceId: existing.id,
       resourceName: existing.name,
-      details: { success: result.success },
+      details: { success: result.success, ...auditOwnerFields(existing) },
       result: result.success ? 'success' : 'failure'
     });
 
@@ -780,9 +934,13 @@ psaRoutes.post(
       return c.json({ error: 'PSA connection not found' }, 404);
     }
 
-    const hasAccess = await ensureOrgAccess(existing.orgId, auth);
+    const hasAccess = await ensureConnectionAccess(existing, auth);
     if (!hasAccess) {
       return c.json({ error: 'Access denied' }, 403);
+    }
+
+    if (partnerWideWriteBlocked(existing, auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
     const body = await c.req.json<{ status: string }>();
@@ -802,7 +960,7 @@ psaRoutes.post(
       resourceType: 'psa_connection',
       resourceId: existing.id,
       resourceName: existing.name,
-      details: { status: body.status }
+      details: { status: body.status, ...auditOwnerFields(existing) }
     });
 
     return c.json({ success: true, status: body.status });
@@ -820,15 +978,19 @@ psaRoutes.get(
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
-    const orgIds = await resolveOrgIds(auth);
-    if (orgIds && orgIds.length === 0) {
-      return c.json({ data: [], pagination: { page, limit, total: 0 } });
-    }
-
     const conditions: SQL[] = [];
-    if (orgIds) {
-      conditions.push(inArray(psaConnectionsTable.orgId, orgIds));
-    }
+    // Tenancy comes from the MAPPING's own org anchors, not from the connection.
+    //
+    // There is deliberately NO innerJoin on psa_connections any more. That join
+    // could not coexist with correct org-scope behaviour: psa_connections RLS
+    // (rightly) hides partner-wide rows from org tokens, so the join silently
+    // dropped every ticket about an org's OWN device whenever the MSP's PSA was
+    // partner-wide — the connection was invisible, so the ticket vanished with
+    // it. Scoping the mapping rows directly fixes that and is also what closes
+    // the cross-org leak, since the connection arm alone cannot express
+    // org_access='selected'. psa_ticket_mappings RLS still bounds the partner.
+    const ticketOrgCondition = psaTicketMappingOrgCondition(auth.accessibleOrgIds);
+    if (ticketOrgCondition) conditions.push(ticketOrgCondition);
     if (perms?.allowedSiteIds) {
       conditions.push(or(
         isNull(psaTicketMappings.deviceId),
@@ -851,8 +1013,7 @@ psaRoutes.get(
         updatedAt: psaTicketMappings.updatedAt,
         createdAt: psaTicketMappings.createdAt
       })
-      .from(psaTicketMappings)
-      .innerJoin(psaConnectionsTable, eq(psaTicketMappings.connectionId, psaConnectionsTable.id));
+      .from(psaTicketMappings);
     const rows = await (perms?.allowedSiteIds
       ? rowsQuery.leftJoin(devices, eq(psaTicketMappings.deviceId, devices.id)).where(whereClause)
       : rowsQuery.where(whereClause))
@@ -862,8 +1023,7 @@ psaRoutes.get(
 
     const countQuery = db
       .select({ count: sql<number>`count(*)` })
-      .from(psaTicketMappings)
-      .innerJoin(psaConnectionsTable, eq(psaTicketMappings.connectionId, psaConnectionsTable.id));
+      .from(psaTicketMappings);
     const countRows = await (perms?.allowedSiteIds
       ? countQuery.leftJoin(devices, eq(psaTicketMappings.deviceId, devices.id)).where(whereClause)
       : countQuery.where(whereClause));
@@ -892,12 +1052,19 @@ psaRoutes.get(
       return c.json({ error: 'PSA connection not found' }, 404);
     }
 
-    const hasAccess = await ensureOrgAccess(connection.orgId, auth);
+    const hasAccess = await ensureConnectionAccess(connection, auth);
     if (!hasAccess) {
       return c.json({ error: 'Access denied' }, 403);
     }
 
     const conditions: SQL[] = [eq(psaTicketMappings.connectionId, connectionId)];
+    // `ensureConnectionAccess` above proves the caller may see the CONNECTION.
+    // It says nothing about which orgs' ticket DATA they may read: for a
+    // partner-wide connection it passes for every partner-scope caller,
+    // including an org_access='selected' user. Without this the route returned
+    // every org's external ticket ids and URLs under that connection.
+    const ticketOrgCondition = psaTicketMappingOrgCondition(auth.accessibleOrgIds);
+    if (ticketOrgCondition) conditions.push(ticketOrgCondition);
     if (perms?.allowedSiteIds) {
       conditions.push(or(
         isNull(psaTicketMappings.deviceId),
