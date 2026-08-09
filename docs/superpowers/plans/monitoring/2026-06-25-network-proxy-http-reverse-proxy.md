@@ -2,7 +2,7 @@
 > being ticked and without live-target verification (see
 > `docs/testing/FEATURE_TEST_LOG.md`). It is superseded by
 > `docs/superpowers/specs/monitoring/2026-08-08-proxy-access-consolidation-design.md`
-> and `docs/superpowers/plans/open/2026-08-08-proxy-access-consolidation.md`, which
+> and `docs/superpowers/plans/monitoring/2026-08-08-proxy-access-consolidation.md`, which
 > fix the session-lifetime and entry-point defects this plan left behind. Kept
 > below as historical record only — do not treat it as a description of current
 > or complete behavior.

@@ -3,7 +3,7 @@
 **Date:** 2026-08-08
 **Status:** Approved (owner, 2026-08-08) — independent adversarial
 code-verified review incorporated; Codex quorum unavailable.
-**Plan:** `docs/superpowers/plans/open/2026-08-08-proxy-access-consolidation.md`
+**Plan:** `docs/superpowers/plans/monitoring/2026-08-08-proxy-access-consolidation.md`
 **Issues addressed:** #3199
 **Branch:** —
 
