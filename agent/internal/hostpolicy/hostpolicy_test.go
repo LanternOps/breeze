@@ -1,0 +1,81 @@
+// agent/internal/hostpolicy/hostpolicy_test.go
+package hostpolicy
+
+import "testing"
+
+func TestSelfHostDefaultAllowsEverything(t *testing.T) {
+	// Repo default: allowedHosts is empty => self-host => unrestricted.
+	if Enforced() {
+		t.Fatalf("repo default must be self-host (Enforced()=false), got hosted")
+	}
+	if Mode() != "self-host" {
+		t.Fatalf("Mode()=%q, want self-host", Mode())
+	}
+	for _, h := range []string{"anything.example", "attacker.es", ""} {
+		if !AllowedHost(h) {
+			t.Errorf("self-host must allow %q", h)
+		}
+	}
+	if err := AllowedURL("https://attacker.es/x"); err != nil {
+		t.Errorf("self-host AllowedURL must be nil, got %v", err)
+	}
+}
+
+func TestHostedExactMatchAndSuffixAttack(t *testing.T) {
+	restore := SetAllowedHostsForTest("us.2breeze.app, eu.2breeze.app")
+	defer restore()
+
+	if !Enforced() || Mode() != "hosted-gap" {
+		t.Fatalf("expected hosted-gap mode after allowlist override, got %q", Mode())
+	}
+	if Strict() {
+		t.Fatal("strict must be false when only the allowlist is set (gap build)")
+	}
+	// Allowed: exact, case-insensitive, with port.
+	for _, ok := range []string{
+		"https://us.2breeze.app/api",
+		"https://US.2Breeze.App/api",
+		"https://eu.2breeze.app:443/api",
+	} {
+		if err := AllowedURL(ok); err != nil {
+			t.Errorf("AllowedURL(%q) should pass, got %v", ok, err)
+		}
+	}
+	// Refused: suffix attack, subdomain injection, lookalike, unparseable.
+	for _, bad := range []string{
+		"https://2breeze.app.evil.com/api", // suffix attack
+		"https://us.2breeze.app.evil.com",  // suffix attack
+		"https://evil-us.2breeze.app",      // not exact
+		"https://app.2breeze.app",          // sibling not allowlisted
+		"https://attacker.es",
+		"://nonsense",
+	} {
+		if err := AllowedURL(bad); err == nil {
+			t.Errorf("AllowedURL(%q) must be refused in hosted mode", bad)
+		}
+	}
+}
+
+func TestHostedRejectsUnparseableAndEmpty(t *testing.T) {
+	restore := SetAllowedHostsForTest("us.2breeze.app")
+	defer restore()
+	for _, bad := range []string{"", "   ", "not a url", "https://"} {
+		if err := AllowedURL(bad); err == nil {
+			t.Errorf("hosted AllowedURL(%q) must error", bad)
+		}
+	}
+}
+
+func TestStrictModeGate(t *testing.T) {
+	// Strict is meaningless without an allowlist.
+	rs := SetStrictModeForTest(true)
+	defer rs()
+	if Strict() {
+		t.Fatal("Strict() must be false in self-host even with strictMode set")
+	}
+	ra := SetAllowedHostsForTest("us.2breeze.app")
+	defer ra()
+	if !Strict() || Mode() != "hosted-strict" {
+		t.Fatalf("expected hosted-strict when both set, got Strict()=%v Mode()=%q", Strict(), Mode())
+	}
+}
