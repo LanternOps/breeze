@@ -6,7 +6,8 @@
  */
 
 import { isIP } from 'net';
-import { safeFetch, SsrfBlockedError } from '../urlSafety';
+import { isAlwaysBlockedIp, isPrivateIp, safeFetch, SsrfBlockedError } from '../urlSafety';
+import { selfHostAllowsPrivateNetwork } from '../../config/env';
 import { getOutboundHeaderValidationErrors, sanitizeOutboundHeaders, validateOutboundHeader } from '../outboundHeaders';
 
 export function redactUrlForLogs(rawUrl: string): string {
@@ -59,60 +60,6 @@ export interface SendResult {
   responseBody?: string;
 }
 
-function parseIpv4Octets(hostname: string): number[] | null {
-  const parts = hostname.split('.');
-  if (parts.length !== 4) return null;
-
-  const octets = parts.map((part) => Number(part));
-  if (octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
-    return null;
-  }
-
-  return octets;
-}
-
-function isPrivateIpv4(hostname: string): boolean {
-  const octets = parseIpv4Octets(hostname);
-  if (!octets) return false;
-
-  const a = octets[0]!;
-  const b = octets[1]!;
-  if (a === 10) return true;
-  if (a === 127) return true;
-  if (a === 169 && b === 254) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 100 && b >= 64 && b <= 127) return true;
-  if (a === 192 && b === 0 && octets[2] === 0) return true;
-  if (a === 192 && b === 0 && octets[2] === 2) return true;
-  if (a === 198 && b >= 18 && b <= 19) return true;
-  if (a === 198 && b === 51 && octets[2] === 100) return true;
-  if (a === 203 && b === 0 && octets[2] === 113) return true;
-  if (a >= 224) return true;
-  if (a === 0) return true;
-  return false;
-}
-
-function isPrivateIpv6(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
-
-  if (normalized === '::1' || normalized === '::') return true;
-  if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true; // Unique local
-  if (
-    normalized.startsWith('fe8')
-    || normalized.startsWith('fe9')
-    || normalized.startsWith('fea')
-    || normalized.startsWith('feb')
-  ) return true; // Link local fe80::/10
-
-  if (normalized.startsWith('::ffff:')) {
-    const ipv4Part = normalized.slice('::ffff:'.length);
-    if (isPrivateIpv4(ipv4Part)) return true;
-  }
-
-  return false;
-}
-
 export function validateWebhookUrlSafety(rawUrl: string): string[] {
   const errors: string[] = [];
   let parsed: URL;
@@ -123,7 +70,13 @@ export function validateWebhookUrlSafety(rawUrl: string): string[] {
     return ['Invalid URL format'];
   }
 
-  if (parsed.protocol !== 'https:') {
+  // Self-hosted operators own both ends of the connection, so an on-LAN
+  // receiver (SIEM, log collector, ticketing) may legitimately be plain http
+  // on an RFC1918 address. Hosted SaaS stays HTTPS-only: a private target is
+  // unreachable from us anyway and is a genuine SSRF vector.
+  const allowPrivate = selfHostAllowsPrivateNetwork();
+
+  if (parsed.protocol !== 'https:' && !(allowPrivate && parsed.protocol === 'http:')) {
     errors.push('Webhook URL must use HTTPS');
   }
 
@@ -137,12 +90,18 @@ export function validateWebhookUrlSafety(rawUrl: string): string[] {
     errors.push('Webhook URL cannot target localhost or local network hostnames');
   }
 
+  // `isAlwaysBlockedIp` is the shared policy: with private networking opted in
+  // it permits RFC1918/ULA only, and still refuses loopback, link-local, cloud
+  // metadata and CGNAT (100.64/10) — the ranges that are never a legitimate
+  // receiver. Without the opt-in, `isPrivateIp` refuses every private range.
+  const blocked = allowPrivate ? isAlwaysBlockedIp : isPrivateIp;
   const ipVersion = isIP(hostname);
-  if (ipVersion === 4 && isPrivateIpv4(hostname)) {
-    errors.push('Webhook URL cannot target private, loopback, or link-local IPv4 addresses');
-  }
-  if (ipVersion === 6 && isPrivateIpv6(hostname)) {
-    errors.push('Webhook URL cannot target private, loopback, or link-local IPv6 addresses');
+  if (ipVersion !== 0 && blocked(hostname)) {
+    errors.push(
+      allowPrivate
+        ? 'Webhook URL cannot target loopback, link-local, metadata, or CGNAT addresses'
+        : 'Webhook URL cannot target private, loopback, or link-local addresses'
+    );
   }
 
   return errors;
@@ -179,7 +138,7 @@ export async function validateWebhookUrlSafetyWithDns(rawUrl: string): Promise<s
 
     const blockedTargets = resolved
       .map((entry) => entry.address)
-      .filter((address) => isPrivateIpv4(address) || isPrivateIpv6(address));
+      .filter(selfHostAllowsPrivateNetwork() ? isAlwaysBlockedIp : isPrivateIp);
 
     if (blockedTargets.length > 0) {
       errors.push(`Webhook URL resolves to blocked address space: ${blockedTargets.join(', ')}`);
@@ -280,7 +239,11 @@ export async function sendWebhookNotification(
         headers,
         body,
         signal: controller.signal,
-        redirect: 'error'
+        redirect: 'error',
+        // Must mirror the save-time decision, or a URL we accepted would be
+        // refused at delivery — the TOCTOU re-check is meant to catch DNS
+        // rebinding, not to second-guess the deployment's own policy.
+        allowPrivateNetwork: selfHostAllowsPrivateNetwork()
       });
 
       clearTimeout(timeoutId);
